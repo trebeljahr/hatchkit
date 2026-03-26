@@ -5,7 +5,7 @@ import { createServer } from "http";
 import { createApp } from "./app.js";
 import { connectToDB, disconnectFromDB } from "./db/connection.js";
 import { connectRedis, disconnectRedis } from "./db/redis.js";
-import { initAuth } from "./auth/auth.js";
+import { initAuth, disconnectAuth } from "./auth/auth.js";
 import { setupWebSocket } from "./ws/handler.js";
 import { env } from "./config/env.js";
 
@@ -20,7 +20,7 @@ async function start(): Promise<void> {
     await connectRedis();
 
     // 2. Initialize auth (needs DB connection)
-    initAuth();
+    await initAuth();
 
     // 3. Start listening
     server.listen(env.PORT, () => {
@@ -46,7 +46,8 @@ async function shutdown(signal: string): Promise<void> {
   // Stop accepting new connections
   server.close();
 
-  // Disconnect from databases
+  // Disconnect from databases and auth
+  await disconnectAuth();
   await disconnectRedis();
   await disconnectFromDB();
 

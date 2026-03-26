@@ -19,7 +19,8 @@
     "paths": {
       "@/*": ["./src/*"],
       "@starter/shared": ["../shared/src/index.ts"],
-      "@starter/shared/*": ["../shared/src/*"]
+      "@starter/shared/*": ["../shared/src/*"],
+      "@starter/server/trpc": ["../server/src/trpc/router.ts"]
     },
     "baseUrl": "."
   },

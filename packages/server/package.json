@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./trpc": {
+      "types": "./src/trpc/router.ts"
+    }
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
@@ -31,8 +36,10 @@
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
+    "@types/express-serve-static-core": "^5.1.1",
     "@types/morgan": "^1.9.9",
     "@types/node": "^22.10.0",
+    "@types/qs": "^6.15.0",
     "@types/ws": "^8.5.13",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"

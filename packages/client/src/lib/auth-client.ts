@@ -1,14 +1,10 @@
 import { createAuthClient } from "better-auth/react";
 
+const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+
 export const authClient = createAuthClient({
-  baseURL: `${process.env.NEXT_PUBLIC_API_URL || ""}/api/auth`,
+  baseURL: `${apiUrl}/api/auth`,
 });
 
-export const {
-  signIn,
-  signUp,
-  signOut,
-  useSession,
-  forgetPassword,
-  resetPassword,
-} = authClient;
+// Re-export commonly used methods
+export const { signIn, signUp, signOut, useSession } = authClient;

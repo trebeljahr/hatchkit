@@ -1,20 +1,24 @@
 import { betterAuth } from "better-auth";
 import { mongodbAdapter } from "better-auth/adapters/mongodb";
+import { MongoClient } from "mongodb";
 import { env } from "../config/env.js";
-import { getMongoClient } from "../db/connection.js";
 import { sendEmail } from "../services/email.js";
 
 /**
  * better-auth instance. Must be initialized AFTER mongoose.connect() because
- * it needs the MongoClient from the established connection.
+ * it uses the same MongoDB URI.
  *
- * Call `initAuth()` after database connection is established.
+ * We create a separate MongoClient (not from mongoose) to avoid the type
+ * mismatch between mongoose's bundled mongodb driver and better-auth's.
  */
-let _auth: ReturnType<typeof betterAuth> | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _auth: any = null;
+let _authClient: MongoClient | null = null;
 
-export function initAuth(): void {
-  const client = getMongoClient();
-  const db = client.db();
+export async function initAuth(): Promise<void> {
+  _authClient = new MongoClient(env.MONGODB_URI);
+  await _authClient.connect();
+  const db = _authClient.db();
 
   _auth = betterAuth({
     database: mongodbAdapter(db),
@@ -25,7 +29,7 @@ export function initAuth(): void {
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: false, // Set to true once Mailgun is configured
-      async sendResetPassword({ user, url }) {
+      async sendResetPassword({ user, url }: { user: { email: string }; url: string }) {
         if (!env.MAILGUN_API_KEY) {
           console.log(`[auth] Password reset URL for ${user.email}: ${url}`);
           return;
@@ -37,7 +41,7 @@ export function initAuth(): void {
           html: `<p>Click <a href="${url}">here</a> to reset your password.</p>`,
         });
       },
-      async sendVerificationEmail({ user, url }) {
+      async sendVerificationEmail({ user, url }: { user: { email: string }; url: string }) {
         if (!env.MAILGUN_API_KEY) {
           console.log(`[auth] Verification URL for ${user.email}: ${url}`);
           return;
@@ -71,11 +75,18 @@ export function initAuth(): void {
   });
 }
 
-export function getAuth(): ReturnType<typeof betterAuth> {
+export function getAuth() {
   if (!_auth) {
     throw new Error(
       "Auth not initialized. Call initAuth() after database connection.",
     );
   }
   return _auth;
+}
+
+export async function disconnectAuth(): Promise<void> {
+  if (_authClient) {
+    await _authClient.close();
+    _authClient = null;
+  }
 }

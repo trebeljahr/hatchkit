@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { forgetPassword } from "@/lib/auth-client";
+
+
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
@@ -16,7 +17,13 @@ export default function ForgotPasswordPage() {
     setLoading(true);
 
     try {
-      await forgetPassword({ email, redirectTo: "/reset-password" });
+      // Request password reset via the API endpoint
+      await fetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/auth/forget-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, redirectTo: "/reset-password" }),
+        credentials: "include",
+      });
       setSent(true);
     } catch {
       setError("An unexpected error occurred");
