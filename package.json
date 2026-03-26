@@ -1,0 +1,32 @@
+{
+  "name": "node-realtime-starter",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:fixed": "node scripts/dev.mjs --fixed",
+    "dev:docs": "node scripts/dev.mjs --docs",
+    "dev:docs:fixed": "node scripts/dev.mjs --fixed --docs",
+    "build": "pnpm --filter @starter/shared run build && pnpm --filter @starter/server run build && pnpm --filter @starter/client run build",
+    "build:server": "pnpm --filter @starter/shared run build && pnpm --filter @starter/server run build",
+    "build:client": "pnpm --filter @starter/shared run build && pnpm --filter @starter/client run build",
+    "test": "pnpm run test:unit && pnpm run test:client && pnpm run test:e2e",
+    "test:unit": "pnpm --filter @starter/server run test",
+    "test:client": "pnpm --filter @starter/client run test",
+    "test:e2e": "npx playwright test",
+    "dev:infra": "docker compose -f docker-compose.dev.yml up -d",
+    "dev:infra:stop": "docker compose -f docker-compose.dev.yml down",
+    "dev:infra:reset": "docker compose -f docker-compose.dev.yml down -v",
+    "typecheck": "pnpm -r run typecheck"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "concurrently": "^9.1.0",
+    "mongodb": "^6.12.0",
+    "typescript": "^5.7.0"
+  }
+}

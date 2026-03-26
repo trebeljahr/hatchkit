@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.next/
+.turbo/
+
+# Environment (committed: .env.example, .env.development)
+.env
+.env.local
+.env.production
+.env.*.local
+
+# IDE
+.vscode/
+!.vscode/settings.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+test-results/
+playwright-report/
+coverage/
+
+# Docker
+.docker-data/
+
+# TypeScript
+*.tsbuildinfo
+
+# Docusaurus
+docs-site/.docusaurus/
+docs-site/build/
+
+# Misc
+*.log
+npm-debug.log*
