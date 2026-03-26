@@ -4,13 +4,14 @@ RUN corepack enable
 WORKDIR /app
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY packages/shared/package.json packages/shared/
-COPY packages/client/package.json packages/client/
-# Also need server package.json for the tRPC type import
 COPY packages/server/package.json packages/server/
-RUN pnpm install --frozen-lockfile --filter @starter/client --filter @starter/shared --filter @starter/server
+COPY packages/client/package.json packages/client/
+# Install all workspace deps (build stage is discarded)
+RUN pnpm install --frozen-lockfile
 
 # ── Stage 2: Build ───────────────────────────────────────────────────
 FROM deps AS build
+COPY tsconfig.base.json ./
 COPY packages/shared packages/shared
 COPY packages/server packages/server
 COPY packages/client packages/client

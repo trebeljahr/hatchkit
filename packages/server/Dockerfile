@@ -5,10 +5,12 @@ WORKDIR /app
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/server/package.json packages/server/
-RUN pnpm install --frozen-lockfile --filter @starter/server --filter @starter/shared
+# Install all workspace deps (build stage is discarded)
+RUN pnpm install --frozen-lockfile
 
 # ── Stage 2: Build ───────────────────────────────────────────────────
 FROM deps AS build
+COPY tsconfig.base.json ./
 COPY packages/shared packages/shared
 COPY packages/server packages/server
 RUN pnpm --filter @starter/shared run build
@@ -16,7 +18,6 @@ RUN pnpm --filter @starter/server run build
 
 # ── Stage 3: Production runtime ─────────────────────────────────────
 FROM node:22-bookworm-slim AS runtime
-RUN corepack enable
 WORKDIR /app
 
 ENV NODE_ENV=production

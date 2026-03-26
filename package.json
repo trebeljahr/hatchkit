@@ -18,9 +18,9 @@
     "test:unit": "pnpm --filter @starter/server run test",
     "test:client": "pnpm --filter @starter/client run test",
     "test:e2e": "npx playwright test",
-    "dev:infra": "docker compose -f docker-compose.dev.yml up -d",
-    "dev:infra:stop": "docker compose -f docker-compose.dev.yml down",
-    "dev:infra:reset": "docker compose -f docker-compose.dev.yml down -v",
+    "dev:infra": "docker-compose -f docker-compose.dev.yml up -d",
+    "dev:infra:stop": "docker-compose -f docker-compose.dev.yml down",
+    "dev:infra:reset": "docker-compose -f docker-compose.dev.yml down -v",
     "typecheck": "pnpm -r run typecheck"
   },
   "devDependencies": {
