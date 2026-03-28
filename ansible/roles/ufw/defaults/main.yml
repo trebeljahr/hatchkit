@@ -1,0 +1,18 @@
+# Ports to allow through UFW (TCP inbound)
+ufw_allowed_tcp_ports:
+  - 22
+  - 80
+  - 443
+
+# Extra ports for bootstrap phase (e.g., Coolify dashboard)
+# These get removed by the lockdown playbook.
+ufw_extra_tcp_ports: []
+
+# Restrict SSH to Tailscale CGNAT range only.
+# When true, port 22 is removed from the general allow list and replaced
+# with a rule allowing 100.64.0.0/10 only.
+ufw_restrict_ssh_to_tailscale: false
+
+# Docker-UFW conflict mitigation: add DOCKER-USER iptables rules
+# to prevent Docker-published ports from bypassing UFW.
+ufw_docker_mitigation: false
