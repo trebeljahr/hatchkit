@@ -1,0 +1,99 @@
+# Group variables for all hosts.
+# Copy to all.yml and adjust values for your environment.
+
+# ---------------------------------------------------------------------------
+# Base
+# ---------------------------------------------------------------------------
+server_timezone: UTC
+
+base_packages:
+  - ca-certificates
+  - curl
+  - fail2ban
+  - git
+  - jq
+  - qemu-guest-agent
+  - ufw
+  - unattended-upgrades
+  - apt-listchanges
+  - software-properties-common
+  - apt-transport-https
+
+swapfile_size: 2G
+
+# Services to disable on the server (safe defaults for Hetzner VPS)
+disabled_services:
+  - snapd.socket
+  - snapd.service
+  - snapd.seeded.service
+
+# fail2ban
+fail2ban_maxretry: 3
+fail2ban_findtime: 600
+fail2ban_bantime: 86400
+
+# Unattended upgrades
+unattended_upgrades_auto_reboot: "true"
+unattended_upgrades_reboot_time: "04:00"
+
+# sysctl
+sysctl_disable_ipv6: false
+sysctl_tcp_timestamps: false
+sysctl_disable_module_loading: false  # Set true to prevent loading kernel modules after boot
+
+# Filesystem mount hardening
+harden_tmp_mount: true    # Mount /tmp with noexec,nosuid,nodev
+harden_shm_mount: true    # Mount /dev/shm with noexec,nosuid,nodev
+
+# Core dumps
+disable_core_dumps: true
+
+# Umask (027 = owner full, group read, others nothing)
+default_umask: "027"
+
+# Resource limits
+limits_nproc: 4096
+limits_nofile: 65535
+
+# ---------------------------------------------------------------------------
+# SSH hardening
+# ---------------------------------------------------------------------------
+ssh_permit_root_login: "no"
+ssh_password_authentication: "no"
+ssh_kbd_interactive_authentication: "no"
+ssh_pubkey_authentication: "yes"
+ssh_allowed_users:
+  - root
+ssh_max_auth_tries: 3
+ssh_client_alive_interval: 300
+ssh_client_alive_count_max: 2
+
+# ---------------------------------------------------------------------------
+# UFW firewall
+# ---------------------------------------------------------------------------
+ufw_allowed_tcp_ports:
+  - 22
+  - 80
+  - 443
+
+# For Coolify bootstrap, uncomment:
+# ufw_extra_tcp_ports:
+#   - 8000
+#   - 6001
+#   - 6002
+
+ufw_restrict_ssh_to_tailscale: false
+ufw_docker_mitigation: false
+
+# ---------------------------------------------------------------------------
+# Tailscale
+# ---------------------------------------------------------------------------
+tailscale_enabled: true
+tailscale_auth_key: ""  # Set via TF_VAR or pass with -e on command line
+tailscale_hostname: "{{ inventory_hostname }}"
+tailscale_restrict_ssh: false  # Set true AFTER verifying Tailscale SSH works
+
+# ---------------------------------------------------------------------------
+# Lynis audit
+# ---------------------------------------------------------------------------
+lynis_enabled: true       # Run Lynis audit as final step of hardening
