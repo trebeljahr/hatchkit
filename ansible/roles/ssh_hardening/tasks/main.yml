@@ -1,0 +1,16 @@
+# SSH hardening role — deploys a comprehensive sshd config via template.
+# The config goes into sshd_config.d/ so it overrides defaults cleanly
+# without modifying the main sshd_config file.
+
+- name: Deploy hardened SSH configuration
+  ansible.builtin.template:
+    src: sshd_hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/hardening.conf
+    mode: "0644"
+  notify: Restart ssh
+
+# Validate the full config (main + drop-in files) after deploying the snippet.
+# If this fails, the handler won't restart sshd, keeping the old config active.
+- name: Validate full SSH configuration
+  ansible.builtin.command: sshd -t
+  changed_when: false
