@@ -1,0 +1,91 @@
+# Managed by Ansible — do not edit manually.
+# See docs/hardening-guide.md for explanations of each parameter.
+
+# ===========================================================================
+# Network hardening
+# ===========================================================================
+
+# IP spoofing protection (reverse path filtering)
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+
+# Disable ICMP redirects (MITM protection)
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+
+# Disable source routing
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+net.ipv6.conf.all.accept_source_route = 0
+net.ipv6.conf.default.accept_source_route = 0
+
+# Broadcast ICMP protection (smurf attack)
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+
+# TCP hardening
+net.ipv4.tcp_rfc1337 = 1
+{% if not sysctl_tcp_timestamps %}
+net.ipv4.tcp_timestamps = 0
+{% endif %}
+
+# Performance tuning
+net.core.somaxconn = 1024
+net.ipv4.tcp_congestion_control = bbr
+
+# Memory
+vm.swappiness = 10
+
+{% if sysctl_disable_ipv6 %}
+# Disable IPv6
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+{% endif %}
+
+# ===========================================================================
+# Kernel hardening
+# ===========================================================================
+
+# Restrict dmesg to root
+kernel.dmesg_restrict = 1
+
+# Hide kernel pointers from non-root
+kernel.kptr_restrict = 2
+
+# Restrict ptrace to parent processes
+kernel.yama.ptrace_scope = 1
+
+# Disable unprivileged BPF
+kernel.unprivileged_bpf_disabled = 1
+net.core.bpf_jit_harden = 2
+
+# Disable kexec (prevent loading replacement kernels)
+kernel.kexec_load_disabled = 1
+
+# Disable SysRq key (not useful via SSH anyway)
+kernel.sysrq = 0
+
+# Restrict perf events
+kernel.perf_event_paranoid = 3
+
+# Disable io_uring for unprivileged users
+kernel.io_uring_disabled = 2
+
+# ASLR enhancement
+vm.mmap_rnd_bits = 32
+vm.mmap_rnd_compat_bits = 16
+
+{% if disable_core_dumps | default(true) %}
+# Disable core dumps for SUID programs
+fs.suid_dumpable = 0
+{% endif %}
+
+{% if sysctl_disable_module_loading | default(false) %}
+# Prevent loading kernel modules after boot (irreversible until reboot)
+kernel.modules_disabled = 1
+{% endif %}
