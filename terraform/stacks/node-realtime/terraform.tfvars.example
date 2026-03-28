@@ -1,0 +1,38 @@
+# terraform.tfvars.example — Copy to terraform.tfvars and fill in your values.
+#
+# IMPORTANT: terraform.tfvars contains real config. It's gitignored.
+# Secrets (tokens, passwords) should go in environment variables instead:
+#   export TF_VAR_hcloud_token="your-hetzner-api-token"
+#   export TF_VAR_inwx_username="your-inwx-username"
+#   export TF_VAR_inwx_password="your-inwx-password"
+#   export TF_VAR_s3_access_key="your-hetzner-s3-access-key"
+#   export TF_VAR_s3_secret_key="your-hetzner-s3-secret-key"
+
+# --- Hetzner ---
+server_name     = "myapp-prod"
+server_type     = "cpx21"       # 3 vCPU / 4 GB — good for managed DB setups
+server_location = "nbg1"        # Nuremberg
+ssh_key_name    = "deploy-key"
+ssh_public_key  = "ssh-ed25519 AAAA... your-email@example.com"
+
+# --- DNS ---
+domain = "example.com"
+subdomains = {
+  "myapp"     = "Frontend + API paths"
+  "api.myapp" = "Dedicated API subdomain"
+  "admin"     = "Coolify dashboard"
+}
+dns_ttl = 300  # 5 min during setup, raise to 3600 once stable
+
+# --- Firewall ---
+firewall_enabled = true
+
+# --- S3 (Hetzner Object Storage) ---
+# The bucket is created by Terraform via the MinIO provider.
+# Credentials must be generated in the Hetzner Cloud console first:
+#   Console → your project → Object Storage → Manage credentials
+# Then export them as TF_VAR_s3_access_key and TF_VAR_s3_secret_key.
+s3_enabled     = true
+s3_bucket_name = "myapp-assets"
+s3_bucket_acl  = "private"
+s3_location    = "nbg1"         # Same as server_location for lowest latency
