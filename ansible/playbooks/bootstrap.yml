@@ -1,0 +1,8 @@
+- name: Bootstrap reusable VPS baseline
+  hosts: all
+  become: true
+  roles:
+    - base
+    - ssh_hardening
+    - role: tailscale
+      when: tailscale_enabled | bool
