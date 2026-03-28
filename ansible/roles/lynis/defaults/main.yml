@@ -1,0 +1,2 @@
+# Run Lynis audit after installation
+lynis_run_audit: true

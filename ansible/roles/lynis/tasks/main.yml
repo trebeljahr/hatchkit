@@ -1,0 +1,40 @@
+# Lynis security auditing role — installs and optionally runs an audit.
+
+- name: Install Lynis
+  ansible.builtin.apt:
+    name: lynis
+    state: present
+
+- name: Run Lynis system audit
+  ansible.builtin.command: lynis audit system --no-colors --quick
+  register: lynis_output
+  changed_when: false
+  failed_when: false
+  when: lynis_run_audit
+
+- name: Extract Lynis hardening index
+  ansible.builtin.shell: >
+    grep -oP 'Hardening index : \[\K[0-9]+' /var/log/lynis.log | tail -1
+  register: lynis_score
+  changed_when: false
+  failed_when: false
+  when: lynis_run_audit
+
+- name: Display Lynis hardening score
+  ansible.builtin.debug:
+    msg: >
+      Lynis hardening index: {{ lynis_score.stdout | default('unknown') }}/100.
+      Full report: /var/log/lynis-report.dat
+      Suggestions: grep 'suggestion' /var/log/lynis-report.dat
+  when: lynis_run_audit
+
+- name: List SUID binaries for review
+  ansible.builtin.shell: find / -perm -4000 -type f 2>/dev/null
+  register: suid_binaries
+  changed_when: false
+  failed_when: false
+
+- name: Display SUID binaries
+  ansible.builtin.debug:
+    msg: "{{ suid_binaries.stdout_lines }}"
+  when: suid_binaries.stdout_lines | length > 0
