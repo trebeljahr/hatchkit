@@ -1,0 +1,8 @@
+tailscale_enabled: true
+tailscale_auth_key: ""
+tailscale_hostname: "{{ inventory_hostname }}"
+
+# After Tailscale is verified running, restrict SSH in UFW to tailnet only.
+# WARNING: Only enable this if you've verified Tailscale SSH works first.
+# If Tailscale is down and this is true, you can only access via Hetzner console.
+tailscale_restrict_ssh: false
