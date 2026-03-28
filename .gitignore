@@ -1,0 +1,25 @@
+*.retry
+*.log
+*.tmp
+.ansible/
+.env
+.env.*
+node_modules/
+.DS_Store
+
+# Terraform
+# State files contain ALL resource attributes including secrets.
+# NEVER commit these. Use remote state (S3, Terraform Cloud) for teams.
+*.tfstate
+*.tfstate.backup
+*.tfstate.*.backup
+.terraform/
+.terraform.lock.hcl
+
+# Terraform variable files with real values (the .example versions are committed)
+terraform.tfvars
+*.auto.tfvars
+
+# Stack config files with real values
+stacks/*.env
+!stacks/*.env.example
