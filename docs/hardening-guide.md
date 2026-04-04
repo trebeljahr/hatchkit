@@ -1,13 +1,9 @@
 # Hetzner VPS Hardening Guide
 
-A deep dive into securing a Linux VPS on Hetzner Cloud. Each section explains
-what the measure does, the attack vector it mitigates, the exact commands to
-apply it manually, and what can go wrong. The automation in this repo
-(`playbooks/harden.yml`) implements everything in Tiers 1 and 2 automatically.
+A deep dive into securing a Linux VPS on Hetzner Cloud. Each section explains what the measure does, the attack vector it mitigates, the exact commands to apply it manually, and what can go wrong. The automation in this repo (`playbooks/harden.yml`) implements everything in Tiers 1 and 2 automatically.
 
 **Target OS:** Ubuntu 24.04 LTS
-**Threat model:** Internet-facing VPS running web services (Coolify, Docker
-containers, game servers). Single operator, no shared access.
+**Threat model:** Internet-facing VPS running web services (Coolify, Docker containers, game servers). Single operator, no shared access.
 
 ---
 
@@ -67,63 +63,46 @@ Each section follows this structure:
 - **What could go wrong** — failure modes, gotchas, and how to recover
 - **Automation** — which Ansible role handles this (if applicable)
 
-Commands assume you're logged in as root on a fresh Ubuntu 24.04 server. If
-you're using the Ansible automation, you don't need to run these manually.
+Commands assume you're logged in as root on a fresh Ubuntu 24.04 server. If you're using the Ansible automation, you don't need to run these manually.
 
 ---
 
 ## Tier 1 — Non-negotiable
 
-These are the absolute minimum. Every guide agrees on these. Skip any of them
-and you're leaving a door wide open.
+These are the absolute minimum. Every guide agrees on these. Skip any of them and you're leaving a door wide open.
 
 ### 1.1 Create a non-root user
 
-**What it does:** Creates a dedicated user (e.g., `deploy`) with sudo
-privileges and SSH key authentication. Root login is subsequently disabled.
+**What it does:** Creates a dedicated user (e.g., `rico`) with sudo privileges and SSH key authentication. Root login is subsequently disabled.
 
-**Why it matters:** The `root` account is the #1 target for automated attacks.
-Every bot on the internet tries `ssh root@<your-ip>` with common passwords.
-Even with key-only auth, running as root means any process you launch has
-unrestricted system access. A bug in your application could `rm -rf /` or read
-`/etc/shadow`. A non-root user with sudo means you get root when you
-explicitly ask for it, and your regular processes run with limited privileges.
+**Why it matters:** The `root` account is the #1 target for automated attacks. Every bot on the internet tries `ssh root@<your-ip>` with common passwords. Even with key-only auth, running as root means any process you launch has unrestricted system access. A bug in your application could `rm -rf /` or read `/etc/shadow`. A non-root user with sudo means you get root when you explicitly ask for it, and your regular processes run with limited privileges.
 
-**The attack vector:** Credential stuffing. Botnets scan IPv4 ranges and try
-thousands of username/password combinations per minute. Hetzner IPs are in
-well-known ranges and get targeted within minutes of a server going live.
+**The attack vector:** Credential stuffing. Botnets scan IPv4 ranges and try thousands of username/password combinations per minute. Hetzner IPs are in well-known ranges and get targeted within minutes of a server going live.
 
 **How to apply:**
 
 ```bash
 # Create user with no password (key-only auth)
-adduser --disabled-password --gecos "" deploy
+adduser --disabled-password --gecos "" rico
 
 # Grant passwordless sudo
-echo "deploy ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/deploy
-chmod 440 /etc/sudoers.d/deploy
+echo "rico ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/rico
+chmod 440 /etc/sudoers.d/rico
 
 # Set up SSH key
-mkdir -p /home/deploy/.ssh
-cp /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
-chown -R deploy:deploy /home/deploy/.ssh
-chmod 700 /home/deploy/.ssh
-chmod 600 /home/deploy/.ssh/authorized_keys
+mkdir -p /home/rico/.ssh
+cp /root/.ssh/authorized_keys /home/rico/.ssh/authorized_keys
+chown -R rico:rico /home/rico/.ssh
+chmod 700 /home/rico/.ssh
+chmod 600 /home/rico/.ssh/authorized_keys
 ```
 
 **What could go wrong:**
-- **Locking yourself out:** If you disable root login before verifying the
-  deploy user can SSH in, you're locked out. Always test from a second terminal
-  before closing your root session.
-- **Passwordless sudo debate:** Some guides require a password for sudo. For a
-  single-operator server with key-only SSH, passwordless sudo is fine — the
-  SSH key IS your authentication factor. Requiring a password you'd have to
-  store somewhere doesn't add meaningful security.
-- **Hetzner rescue mode:** If you do lock yourself out, Hetzner's rescue
-  system lets you mount your disk and fix the SSH config. It's your safety net.
+- **Locking yourself out:** If you disable root login before verifying the rico user can SSH in, you're locked out. Always test from a second terminal before closing your root session.
+- **Passwordless sudo debate:** Some guides require a password for sudo. For a single-operator server with key-only SSH, passwordless sudo is fine — the SSH key IS your authentication factor. Requiring a password you'd have to store somewhere doesn't add meaningful security.
+- **Hetzner rescue mode:** If you do lock yourself out, Hetzner's rescue system lets you mount your disk and fix the SSH config. It's your safety net.
 
-**Automation:** `cloud-init/ubuntu-24.04-hardened.yaml` creates this user on
-first boot. The SSH key comes from Terraform (`hcloud_ssh_key`).
+**Automation:** `cloud-init/ubuntu-24.04-hardened.yaml` creates this user on first boot. The SSH key comes from Terraform (`hcloud_ssh_key`).
 
 > **Further reading:**
 > - [Unix/Linux permissions model](https://wiki.archlinux.org/title/Users_and_groups) — ArchWiki's thorough explanation of users, groups, and how the Unix permission model works under the hood
@@ -133,29 +112,15 @@ first boot. The SSH key comes from Terraform (`hcloud_ssh_key`).
 
 ### 1.2 SSH hardening
 
-**What it does:** Reconfigures the SSH daemon to reject password-based logins,
-disable root login, limit authentication attempts, and disable unnecessary
-features like X11 forwarding and TCP forwarding.
+**What it does:** Reconfigures the SSH daemon to reject password-based logins, disable root login, limit authentication attempts, and disable unnecessary features like X11 forwarding and TCP forwarding.
 
-**Why it matters:** SSH is the only management interface exposed to the
-internet (at least initially, before Tailscale). Every weakness in its
-configuration is a potential entry point. The default Ubuntu SSH config is
-permissive — it allows password auth, root login, and various forwarding
-features that most servers never need.
+**Why it matters:** SSH is the only management interface exposed to the internet (at least initially, before Tailscale). Every weakness in its configuration is a potential entry point. The default Ubuntu SSH config is permissive — it allows password auth, root login, and various forwarding features that most servers never need.
 
 **The attack vectors:**
-- **Password brute-force:** Even with fail2ban, allowing passwords means an
-  attacker with a large botnet can distribute attempts across thousands of IPs.
-  Key-only auth makes brute-force mathematically infeasible (2^256 keyspace
-  for Ed25519).
-- **Root login:** Even with key-only auth, if root login is allowed and your
-  key is compromised, the attacker has immediate god-mode access. With a
-  non-root user, they'd need to also find a privilege escalation vector.
-- **TCP forwarding abuse:** An attacker with SSH access can use your server as
-  a proxy (`ssh -D` for SOCKS proxy, `-L` for port forwarding). Disabling
-  this limits what a compromised account can do.
-- **X11 forwarding:** Historically riddled with vulnerabilities. On a headless
-  server there's zero reason to have it enabled.
+- **Password brute-force:** Even with fail2ban, allowing passwords means an attacker with a large botnet can distribute attempts across thousands of IPs. Key-only auth makes brute-force mathematically infeasible (2^256 keyspace for Ed25519).
+- **Root login:** Even with key-only auth, if root login is allowed and your key is compromised, the attacker has immediate god-mode access. With a non-root user, they'd need to also find a privilege escalation vector.
+- **TCP forwarding abuse:** An attacker with SSH access can use your server as a proxy (`ssh -D` for SOCKS proxy, `-L` for port forwarding). Disabling this limits what a compromised account can do.
+- **X11 forwarding:** Historically riddled with vulnerabilities. On a headless server there's zero reason to have it enabled.
 
 **How to apply:**
 
@@ -187,7 +152,7 @@ GatewayPorts no
 PermitUserEnvironment no
 
 # Restrict to specific users (adjust to your username)
-AllowUsers deploy
+AllowUsers rico
 ```
 
 Validate and restart:
@@ -197,21 +162,13 @@ sshd -t                    # Validate config syntax
 systemctl restart sshd
 ```
 
-**Critical:** Test SSH from a new terminal before closing your current session.
-If the config has errors, your existing session stays alive but new ones fail.
+**Critical:** Test SSH from a new terminal before closing your current session. If the config has errors, your existing session stays alive but new ones fail.
 
 **What could go wrong:**
-- **Config syntax error:** `sshd -t` catches these. Always validate before
-  restarting. A typo in the config file can prevent SSH from starting at all.
-- **AllowUsers typo:** If you misspell the username in `AllowUsers`, nobody
-  can log in. The Ansible role uses a variable to avoid this.
-- **ClientAliveInterval too aggressive:** 300 seconds (5 min) is generous.
-  Setting it to 30 seconds will disconnect you every time you pause to think.
-  For tmux/screen users this is less of an issue since the session survives.
-- **MaxStartups:** `3:50:10` means: after 3 unauthenticated connections, start
-  randomly dropping 50% of new ones, hard-cap at 10. This rate-limits
-  brute-force attempts at the connection level, before fail2ban even sees them.
-  Too aggressive and you might block yourself if you have multiple terminal
+- **Config syntax error:** `sshd -t` catches these. Always validate before restarting. A typo in the config file can prevent SSH from starting at all.
+- **AllowUsers typo:** If you misspell the username in `AllowUsers`, nobody can log in. The Ansible role uses a variable to avoid this.
+- **ClientAliveInterval too aggressive:** 300 seconds (5 min) is generous. Setting it to 30 seconds will disconnect you every time you pause to think. For tmux/screen users this is less of an issue since the session survives.
+- **MaxStartups:** `3:50:10` means: after 3 unauthenticated connections, start randomly dropping 50% of new ones, hard-cap at 10. This rate-limits brute-force attempts at the connection level, before fail2ban even sees them. Too aggressive and you might block yourself if you have multiple terminal
   tabs connecting simultaneously.
 
 **Automation:** `ansible/roles/ssh_hardening/`
@@ -226,18 +183,11 @@ If the config has errors, your existing session stays alive but new ones fail.
 
 ### 1.3 Hetzner Cloud Firewall
 
-**What it does:** Hetzner's cloud firewall operates at the hypervisor level,
-outside your VM. Traffic that doesn't match an allow rule is dropped before it
-ever reaches your server's network interface.
+**What it does:** Hetzner's cloud firewall operates at the hypervisor level, outside your VM. Traffic that doesn't match an allow rule is dropped before it ever reaches your server's network interface.
 
-**Why it matters:** This is defense in depth. Even if you misconfigure UFW, or
-Docker bypasses it (see section 2.4), or a service binds to 0.0.0.0 on an
-unexpected port, the Hetzner firewall blocks it. The traffic never reaches your
-VM's kernel, so there's zero CPU cost for filtering.
+**Why it matters:** This is defense in depth. Even if you misconfigure UFW, or Docker bypasses it (see section 2.4), or a service binds to 0.0.0.0 on an unexpected port, the Hetzner firewall blocks it. The traffic never reaches your VM's kernel, so there's zero CPU cost for filtering.
 
-**How it works internally:** Hetzner implements this in the hypervisor's
-virtual switch (Open vSwitch / DPDK-based filtering). Your VM sees nothing in
-`iptables` — the packets are silently dropped upstream. This means:
+**How it works internally:** Hetzner implements this in the hypervisor's virtual switch (Open vSwitch / DPDK-based filtering). Your VM sees nothing in `iptables` — the packets are silently dropped upstream. This means:
 - You cannot disable it from inside the VM
 - It has zero performance overhead on your VM
 - It works even if your VM is completely compromised
@@ -265,15 +215,9 @@ virtual switch (Open vSwitch / DPDK-based filtering). Your VM sees nothing in
 Remove these after Coolify is configured with a domain and HTTPS.
 
 **What could go wrong:**
-- **Locking yourself out of SSH:** If you remove port 22 from the Hetzner
-  firewall, you can't SSH in. Unlike UFW, you can't fix this from inside the
-  VM. You'd need to use Hetzner's web console or API to fix the firewall rule.
-- **Forgetting outbound rules:** If you create the firewall with only inbound
-  rules and no outbound rules, your server can't reach the internet. No apt
-  updates, no DNS resolution, no Tailscale connection. The default Hetzner
-  firewall denies everything not explicitly allowed, including outbound.
-- **IPv6:** If your server has an IPv6 address, you need ::/0 rules too.
-  Forgetting this leaves IPv6 wide open (no firewall) or fully blocked.
+- **Locking yourself out of SSH:** If you remove port 22 from the Hetzner firewall, you can't SSH in. Unlike UFW, you can't fix this from inside the VM. You'd need to use Hetzner's web console or API to fix the firewall rule.
+- **Forgetting outbound rules:** If you create the firewall with only inbound rules and no outbound rules, your server can't reach the internet. No apt updates, no DNS resolution, no Tailscale connection. The default Hetzner firewall denies everything not explicitly allowed, including outbound.
+- **IPv6:** If your server has an IPv6 address, you need ::/0 rules too. Forgetting this leaves IPv6 wide open (no firewall) or fully blocked.
 
 **Automation:** `terraform/stacks/hardened-vps/main.tf` creates this firewall.
 
@@ -318,25 +262,13 @@ ufw status verbose
 ```
 
 **How UFW works internally:** UFW writes iptables rules to
-`/etc/ufw/user.rules` and `/etc/ufw/user6.rules`. When enabled, it loads
-these into the kernel's netfilter framework. The kernel checks every incoming
-packet against these rules in order (first match wins). Denied packets are
-either dropped (silently discarded) or rejected (ICMP unreachable sent back).
+`/etc/ufw/user.rules` and `/etc/ufw/user6.rules`. When enabled, it loads these into the kernel's netfilter framework. The kernel checks every incoming packet against these rules in order (first match wins). Denied packets are either dropped (silently discarded) or rejected (ICMP unreachable sent back).
 
 **What could go wrong:**
-- **Enabling UFW without allowing SSH first:** Classic lockout. UFW's default
-  deny will block your SSH connection. Always `ufw allow 22/tcp` before
-  `ufw enable`. The Ansible role handles this ordering correctly.
-- **UFW + Docker conflict:** This is serious enough to have its own section
-  (2.4). Docker manipulates iptables directly, bypassing UFW entirely.
-  Container ports exposed with `-p 0.0.0.0:8080:8080` are accessible from the
-  internet regardless of UFW rules.
-- **Rule ordering:** UFW processes rules top-to-bottom, first match wins. If
-  you have `deny from 1.2.3.4` after `allow 22/tcp`, the allow rule matches
-  first. Use `ufw insert 1` to prepend rules.
-- **IPv6:** UFW handles IPv6 by default (controlled by `IPV6=yes` in
-  `/etc/default/ufw`). If you disable IPv6 in UFW but your server has an IPv6
-  address, that interface is unfiltered.
+- **Enabling UFW without allowing SSH first:** Classic lockout. UFW's default deny will block your SSH connection. Always `ufw allow 22/tcp` before `ufw enable`. The Ansible role handles this ordering correctly.
+- **UFW + Docker conflict:** This is serious enough to have its own section (2.4). Docker manipulates iptables directly, bypassing UFW entirely. Container ports exposed with `-p 0.0.0.0:8080:8080` are accessible from the internet regardless of UFW rules.
+- **Rule ordering:** UFW processes rules top-to-bottom, first match wins. If you have `deny from 1.2.3.4` after `allow 22/tcp`, the allow rule matches first. Use `ufw insert 1` to prepend rules.
+- **IPv6:** UFW handles IPv6 by default (controlled by `IPV6=yes` in `/etc/default/ufw`). If you disable IPv6 in UFW but your server has an IPv6 address, that interface is unfiltered.
 
 **Automation:** `ansible/roles/ufw/`
 
@@ -350,32 +282,16 @@ either dropped (silently discarded) or rejected (ICMP unreachable sent back).
 
 ### 1.5 fail2ban
 
-**What it does:** Monitors log files (primarily `/var/log/auth.log`) for
-patterns indicating brute-force attacks. After a configurable number of failed
-attempts within a time window, it bans the offending IP by adding a UFW deny
-rule.
+**What it does:** Monitors log files (primarily `/var/log/auth.log`) for patterns indicating brute-force attacks. After a configurable number of failed attempts within a time window, it bans the offending IP by adding a UFW deny rule.
 
-**Why it matters:** Even with key-only SSH, brute-force attempts consume
-resources (CPU for key exchange, bandwidth, log storage). More importantly,
-fail2ban reduces noise in your logs, making it easier to spot genuine threats.
-For any services that might temporarily have password auth (like a database
-admin panel), fail2ban is the difference between "someone tried 10,000
-passwords" and "someone tried 3 and got blocked."
+**Why it matters:** Even with key-only SSH, brute-force attempts consume resources (CPU for key exchange, bandwidth, log storage). More importantly, fail2ban reduces noise in your logs, making it easier to spot genuine threats. For any services that might temporarily have password auth (like a database admin panel), fail2ban is the difference between "someone tried 10,000 passwords" and "someone tried 3 and got blocked."
 
-**How it works internally:** fail2ban runs as a daemon that `tail -f`s log
-files. It applies regex "filters" to each line. When a filter matches (e.g.,
-"Failed password for"), it increments a counter for that source IP. When the
-counter exceeds `maxretry` within `findtime`, it executes a "ban action" — by
-default, adding a UFW deny rule. After `bantime` expires, it removes the rule.
+**How it works internally:** fail2ban runs as a daemon that `tail -f`s log files. It applies regex "filters" to each line. When a filter matches (e.g. "Failed password for"), it increments a counter for that source IP. When the counter exceeds `maxretry` within `findtime`, it executes a "ban action" — by default, adding a UFW deny rule. After `bantime` expires, it removes the rule.
 
 The jail system:
-- **Filter:** Regex pattern matching log lines (e.g., `sshd` filter matches
-  "Failed password", "Connection closed by authenticating user", etc.)
-- **Jail:** Combines a filter with parameters (maxretry, bantime, findtime)
-  and an action (UFW ban, iptables ban, email notification, etc.)
-- **Action:** What happens when a ban triggers. `ufw` action adds
-  `ufw insert 1 deny from <ip>`. `iptables-multiport` adds a direct iptables
-  rule.
+- **Filter:** Regex pattern matching log lines (e.g., `sshd` filter matches "Failed password", "Connection closed by authenticating user", etc.)
+- **Jail:** Combines a filter with parameters (maxretry, bantime, findtime) and an action (UFW ban, iptables ban, email notification, etc.)
+- **Action:** What happens when a ban triggers. `ufw` action adds `ufw insert 1 deny from <ip>`. `iptables-multiport` adds a direct iptables rule.
 
 **How to apply:**
 
@@ -414,23 +330,13 @@ fail2ban-client status sshd
   reliable on modern Ubuntu)
 
 **What could go wrong:**
-- **Banning yourself:** If you typo your password or key 3 times, your IP
-  gets banned for 24 hours. Fix: SSH from a different IP, or use Hetzner's
-  web console to run `fail2ban-client set sshd unbanip <your-ip>`.
-- **fail2ban + UFW timing:** If fail2ban starts before UFW, ban actions fail
-  silently (UFW not ready). The Ansible playbook starts UFW before fail2ban.
-- **Log rotation:** If `/var/log/auth.log` gets rotated and fail2ban doesn't
-  notice, it stops detecting attacks. The `systemd` backend avoids this by
-  reading from journald instead of files.
-- **Distributed attacks:** fail2ban bans individual IPs. A botnet with 10,000
-  IPs can do 3 attempts each (30,000 total) before every IP is banned. This is
-  why key-only auth is non-negotiable — fail2ban is a layer, not a solution.
-- **Resource usage:** On a heavily attacked server, fail2ban can accumulate
-  thousands of UFW rules. Each rule costs memory and CPU during packet
-  filtering. The 24-hour bantime means rules expire, keeping the list bounded.
+- **Banning yourself:** If you typo your password or key 3 times, your IP gets banned for 24 hours. Fix: SSH from a different IP, or use Hetzner's web console to run `fail2ban-client set sshd unbanip <your-ip>`.
+- **fail2ban + UFW timing:** If fail2ban starts before UFW, ban actions fail silently (UFW not ready). The Ansible playbook starts UFW before fail2ban.
+- **Log rotation:** If `/var/log/auth.log` gets rotated and fail2ban doesn't notice, it stops detecting attacks. The `systemd` backend avoids this by reading from journald instead of files.
+- **Distributed attacks:** fail2ban bans individual IPs. A botnet with 10,000 IPs can do 3 attempts each (30,000 total) before every IP is banned. This is why key-only auth is non-negotiable — fail2ban is a layer, not a solution.
+- **Resource usage:** On a heavily attacked server, fail2ban can accumulate thousands of UFW rules. Each rule costs memory and CPU during packet filtering. The 24-hour bantime means rules expire, keeping the list bounded.
 
-**Automation:** `ansible/roles/base/` (fail2ban config is in the base role
-since it's so fundamental).
+**Automation:** `ansible/roles/base/` (fail2ban config is in the base role since it's so fundamental).
 
 > **Further reading:**
 > - [How fail2ban Works to Protect Services (DigitalOcean)](https://www.digitalocean.com/community/tutorials/how-fail2ban-works-to-protect-services-on-a-linux-server) — excellent architectural explanation of filters, jails, and actions with diagrams
@@ -442,13 +348,9 @@ since it's so fundamental).
 
 ### 1.6 Unattended security upgrades
 
-**What it does:** Automatically downloads and installs security patches daily.
-Optionally reboots the server when kernel updates require it.
+**What it does:** Automatically downloads and installs security patches daily. Optionally reboots the server when kernel updates require it.
 
-**Why it matters:** The majority of server compromises exploit known, patched
-vulnerabilities. The time between a CVE publication and active exploitation is
-often hours, not days. If you rely on manually running `apt upgrade`, there's
-always a window where your server is running known-vulnerable software.
+**Why it matters:** The majority of server compromises exploit known, patched vulnerabilities. The time between a CVE publication and active exploitation is often hours, not days. If you rely on manually running `apt upgrade`, there's always a window where your server is running known-vulnerable software.
 
 **The timeline of a typical vulnerability:**
 1. Researcher discovers vulnerability
@@ -497,19 +399,10 @@ unattended-upgrades --dry-run --debug
 ```
 
 **What could go wrong:**
-- **Breaking changes in security updates:** Rare but possible. A security
-  patch to OpenSSL could break TLS in your application. The risk is real but
-  small — Ubuntu security updates are conservative and well-tested.
-- **Automatic reboot during peak hours:** The `Automatic-Reboot-Time "04:00"`
-  setting helps, but if your users are global, there's no good time. For
-  game servers with active sessions, this is a real concern. Consider disabling
-  auto-reboot and scheduling maintenance windows instead.
-- **Disk space:** Old kernels accumulate. `Remove-Unused-Kernel-Packages` and
-  `Remove-Unused-Dependencies` prevent `/boot` from filling up. A full `/boot`
-  partition blocks all future updates — a surprisingly common failure mode.
-- **apt lock contention:** If you're running `apt` manually while
-  unattended-upgrades is running, you'll get lock errors. Not dangerous, just
-  annoying. Wait and retry.
+- **Breaking changes in security updates:** Rare but possible. A security patch to OpenSSL could break TLS in your application. The risk is real but small — Ubuntu security updates are conservative and well-tested.
+- **Automatic reboot during peak hours:** The `Automatic-Reboot-Time "04:00"` setting helps, but if your users are global, there's no good time. For game servers with active sessions, this is a real concern. Consider disabling auto-reboot and scheduling maintenance windows instead.
+- **Disk space:** Old kernels accumulate `Remove-Unused-Kernel-Packages` and  `Remove-Unused-Dependencies` prevent `/boot` from filling up. A full `/boot` partition blocks all future updates — a surprisingly common failure mode.
+- **apt lock contention:** If you're running `apt` manually while unattended-upgrades is running, you'll get lock errors. Not dangerous, just annoying. Wait and retry.
 
 **Automation:** `ansible/roles/base/` (templates for both config files).
 
@@ -522,12 +415,9 @@ unattended-upgrades --dry-run --debug
 
 ### 1.7 Disable unused services
 
-**What it does:** Stops and disables services that ship with Ubuntu but aren't
-needed on a headless server.
+**What it does:** Stops and disables services that ship with Ubuntu but aren't needed on a headless server.
 
-**Why it matters:** Every running service is attack surface. A service you
-don't use is attack surface you get nothing from. The principle of least
-functionality — only run what you need.
+**Why it matters:** Every running service is attack surface. A service you don't use is attack surface you get nothing from. The principle of least functionality — only run what you need.
 
 **Services to consider disabling:**
 
@@ -553,49 +443,31 @@ systemctl disable --now ModemManager 2>/dev/null
 ```
 
 **What could go wrong:**
-- **Disabling something Coolify needs:** Coolify uses Docker, which uses
-  containerd, which uses snapd on some Ubuntu installations. If Coolify was
-  installed via snap (it's not — it uses Docker), disabling snapd would break
-  it. The safe approach: only disable services you've verified are unnecessary.
-- **Ubuntu Pro / ESM:** `snapd` is also used by Ubuntu Pro for some features.
-  If you have a Pro subscription, check before disabling.
+- **Disabling something Coolify needs:** Coolify uses Docker, which uses containerd, which uses snapd on some Ubuntu installations. If Coolify was installed via snap (it's not — it uses Docker), disabling snapd would break it. The safe approach: only disable services you've verified are unnecessary.
+- **Ubuntu Pro / ESM:** `snapd` is also used by Ubuntu Pro for some features. If you have a Pro subscription, check before disabling.
 
-**Automation:** `ansible/roles/base/` (configurable list of services to
-disable).
+**Automation:** `ansible/roles/base/` (configurable list of services to disable).
 
 ---
 
 ## Tier 2 — Strongly recommended
 
-These significantly improve your security posture. The Ansible automation
-applies all of these by default.
+These significantly improve your security posture. The Ansible automation applies all of these by default.
 
 ### 2.1 Tailscale — zero-trust SSH access
 
-**What it does:** Tailscale creates a WireGuard-based mesh VPN (a "tailnet")
-between your devices. Once your VPS and your laptop are both on the tailnet,
-you can SSH via Tailscale's private network — and close port 22 to the public
-internet entirely.
+**What it does:** Tailscale creates a WireGuard-based mesh VPN (a "tailnet") between your devices. Once your VPS and your laptop are both on the tailnet, you can SSH via Tailscale's private network — and close port 22 to the public internet entirely.
 
-**Why it matters:** This is the single most impactful change after basic SSH
-hardening. With port 22 closed publicly:
+**Why it matters:** This is the single most impactful change after basic SSH hardening. With port 22 closed publicly:
 - Zero brute-force attempts reach your server (nothing to attack)
 - Zero fail2ban bans needed (nothing triggers them)
 - Zero SSH vulnerabilities exploitable from the internet (no listener)
 - Your server becomes invisible to port scanners
 
 **How it works internally:** Tailscale assigns each device a 100.x.y.z
-address from the CGNAT range (100.64.0.0/10). Traffic between devices is
-encrypted end-to-end with WireGuard (ChaCha20-Poly1305). The coordination
-server (Tailscale's infrastructure) handles key exchange and NAT traversal,
-but never sees your traffic. Direct connections use UDP hole-punching; when
-that fails, traffic relays through Tailscale's DERP servers (still encrypted).
+address from the CGNAT range (100.64.0.0/10). Traffic between devices is encrypted end-to-end with WireGuard (ChaCha20-Poly1305). The coordination server (Tailscale's infrastructure) handles key exchange and NAT traversal, but never sees your traffic. Direct connections use UDP hole-punching; when that fails, traffic relays through Tailscale's DERP servers (still encrypted).
 
-**The CGNAT range (100.64.0.0/10):** This is a reserved range that ISPs use
-for carrier-grade NAT. Tailscale reuses it because these addresses never
-appear on the public internet, avoiding conflicts with your LAN. When you
-restrict SSH to this range in UFW, you're saying "only Tailscale peers can
-connect."
+**The CGNAT range (100.64.0.0/10):** This is a reserved range that ISPs use for carrier-grade NAT. Tailscale reuses it because these addresses never appear on the public internet, avoiding conflicts with your LAN. When you restrict SSH to this range in UFW, you're saying "only Tailscale peers can connect."
 
 **How to apply:**
 
@@ -614,26 +486,13 @@ ufw delete allow 22/tcp
 ufw allow from 100.64.0.0/10 to any port 22 proto tcp comment 'SSH via Tailscale'
 ```
 
-**Tailscale SSH mode:** The `--ssh` flag enables Tailscale's built-in SSH
-server. This means you can use `tailscale ssh deploy@<hostname>` without
-configuring SSH keys at all — Tailscale handles authentication via your
-identity provider. Your regular OpenSSH server still works over the tailnet
-for compatibility.
+**Tailscale SSH mode:** The `--ssh` flag enables Tailscale's built-in SSH server. This means you can use `tailscale ssh rico@<hostname>` without configuring SSH keys at all — Tailscale handles authentication via your identity provider. Your regular OpenSSH server still works over the tailnet for compatibility.
 
 **What could go wrong:**
-- **Locking yourself out by closing port 22 too early:** If Tailscale isn't
-  working and you've already closed public SSH, you're locked out. ALWAYS
-  verify Tailscale SSH works from another device before closing port 22.
-  The Ansible role verifies Tailscale connectivity before modifying UFW.
-- **Tailscale outage:** If Tailscale's coordination servers go down, existing
-  connections survive but new ones can't be established. Emergency access: use
-  Hetzner's web console (VNC) to temporarily re-allow port 22.
-- **Auth key expiry:** Tailscale auth keys can expire. Use a reusable,
-  pre-authorized key and be aware it's valid for 90 days by default. Generate
-  a new one in the Tailscale admin console.
-- **Tailscale + Docker:** Tailscale runs in userspace by default. If you also
-  use it as a Docker network (exit node, subnet router), configuration gets
-  complex. For basic SSH access, the default setup is fine.
+- **Locking yourself out by closing port 22 too early:** If Tailscale isn't working and you've already closed public SSH, you're locked out. ALWAYS verify Tailscale SSH works from another device before closing port 22. The Ansible role verifies Tailscale connectivity before modifying UFW.
+- **Tailscale outage:** If Tailscale's coordination servers go down, existing connections survive but new ones can't be established. Emergency access: use Hetzner's web console (VNC) to temporarily re-allow port 22.
+- **Auth key expiry:** Tailscale auth keys can expire. Use a reusable, pre-authorized key and be aware it's valid for 90 days by default. Generate a new one in the Tailscale admin console.
+- **Tailscale + Docker:** Tailscale runs in userspace by default. If you also use it as a Docker network (exit node, subnet router), configuration gets complex. For basic SSH access, the default setup is fine.
 
 **Automation:** `ansible/roles/tailscale/`
 
@@ -647,13 +506,9 @@ for compatibility.
 
 ### 2.2 sysctl network hardening
 
-**What it does:** Configures kernel parameters via sysctl to harden the
-network stack against various attacks.
+**What it does:** Configures kernel parameters via sysctl to harden the network stack against various attacks.
 
-**Why it matters:** The Linux network stack has sensible defaults for general
-use, but a public-facing server needs stricter settings. These parameters
-disable features that are either dangerous (ICMP redirects), unnecessary
-(source routing), or leak information (TCP timestamps).
+**Why it matters:** The Linux network stack has sensible defaults for general use, but a public-facing server needs stricter settings. These parameters disable features that are either dangerous (ICMP redirects), unnecessary (source routing), or leak information (TCP timestamps).
 
 **The parameters and their attack vectors:**
 
@@ -727,16 +582,9 @@ sysctl -p /etc/sysctl.d/99-hardening.conf
 ```
 
 **What could go wrong:**
-- **TCP timestamps and load balancers:** Some load balancers rely on TCP
-  timestamps for PAWS (Protection Against Wrapped Sequences). On a single VPS
-  with no external load balancer, disabling timestamps is safe.
-- **Disabling IPv6 breaks things:** Docker sometimes relies on IPv6 for
-  container networking. Hetzner DNS resolution can use IPv6. If you disable
-  IPv6, test thoroughly. The safe default is to leave IPv6 enabled but harden
-  it (disable redirects, source routing).
-- **rp_filter and asymmetric routing:** If your server has multiple network
-  interfaces with different routes, strict rp_filter (value 1) can drop
-  legitimate packets. On a single-NIC Hetzner VPS, this isn't an issue.
+- **TCP timestamps and load balancers:** Some load balancers rely on TCP timestamps for PAWS (Protection Against Wrapped Sequences). On a single VPS with no external load balancer, disabling timestamps is safe.
+- **Disabling IPv6 breaks things:** Docker sometimes relies on IPv6 for container networking. Hetzner DNS resolution can use IPv6. If you disable IPv6, test thoroughly. The safe default is to leave IPv6 enabled but harden it (disable redirects, source routing).
+- **rp_filter and asymmetric routing:** If your server has multiple network interfaces with different routes, strict rp_filter (value 1) can drop legitimate packets. On a single-NIC Hetzner VPS, this isn't an issue.
 
 **Automation:** `ansible/roles/base/` (`templates/99-hardening.conf.j2`).
 
@@ -750,12 +598,9 @@ sysctl -p /etc/sysctl.d/99-hardening.conf
 
 ### 2.3 sysctl kernel hardening
 
-**What it does:** Restricts access to kernel information and debugging
-interfaces that unprivileged processes shouldn't need.
+**What it does:** Restricts access to kernel information and debugging interfaces that unprivileged processes shouldn't need.
 
-**Why it matters:** If an attacker gains code execution as a non-root user
-(e.g., through a vulnerability in your web app), these settings limit what
-they can learn about the system and what escalation techniques they can use.
+**Why it matters:** If an attacker gains code execution as a non-root user (e.g., through a vulnerability in your web app), these settings limit what they can learn about the system and what escalation techniques they can use.
 
 ```ini
 # --- Kernel Information Disclosure ---
@@ -810,15 +655,9 @@ vm.mmap_rnd_compat_bits = 16
 ```
 
 **What could go wrong:**
-- **io_uring and modern apps:** Some high-performance applications (like
-  recent versions of liburing-based tools) use io_uring. Disabling it breaks
-  them. Docker containers aren't affected unless they specifically use io_uring
-  system calls.
-- **perf_event_paranoid = 3:** This breaks `perf` for debugging. If you need
-  to profile your application, temporarily set it to 2 (`sysctl -w
-  kernel.perf_event_paranoid=2`), profile, then set it back.
-- **ptrace_scope = 1:** Breaks `strace` on arbitrary processes. You can still
-  strace your own children or use `sudo strace`. GDB also needs adjustment.
+- **io_uring and modern apps:** Some high-performance applications (like recent versions of liburing-based tools) use io_uring. Disabling it breaks them. Docker containers aren't affected unless they specifically use io_uring system calls.
+- **perf_event_paranoid = 3:** This breaks `perf` for debugging. If you need to profile your application, temporarily set it to 2 (`sysctl -w kernel.perf_event_paranoid=2`), profile, then set it back.
+- **ptrace_scope = 1:** Breaks `strace` on arbitrary processes. You can still strace your own children or use `sudo strace`. GDB also needs adjustment.
 
 **Automation:** `ansible/roles/base/` (same sysctl template).
 
@@ -832,15 +671,9 @@ vm.mmap_rnd_compat_bits = 16
 
 ### 2.4 Docker and UFW — the hidden backdoor
 
-**What it does:** Documents and mitigates Docker's habit of bypassing UFW by
-directly manipulating iptables.
+**What it does:** Documents and mitigates Docker's habit of bypassing UFW by directly manipulating iptables.
 
-**Why it matters:** This is the #1 surprise in Linux server security. You
-carefully configure UFW to only allow ports 22, 80, and 443. You verify with
-`ufw status`. Everything looks locked down. Then you run
-`docker run -p 8080:80 nginx` and port 8080 is accessible from the entire
-internet. UFW never sees this traffic because Docker inserts its rules into
-the `DOCKER` iptables chain, which is evaluated before UFW's chains.
+**Why it matters:** This is the #1 surprise in Linux server security. You carefully configure UFW to only allow ports 22, 80, and 443. You verify with `ufw status`. Everything looks locked down. Then you run `docker run -p 8080:80 nginx` and port 8080 is accessible from the entire internet. UFW never sees this traffic because Docker inserts its rules into the `DOCKER` iptables chain, which is evaluated before UFW's chains.
 
 **How Docker's networking works internally:**
 1. Docker creates a virtual bridge (`docker0` or a custom network)
@@ -848,12 +681,9 @@ the `DOCKER` iptables chain, which is evaluated before UFW's chains.
 3. When you publish a port (`-p 8080:80`), Docker adds NAT rules to iptables:
    - `PREROUTING -p tcp --dport 8080 -j DNAT --to-destination 172.17.0.2:80`
    - `FORWARD -d 172.17.0.2 -p tcp --dport 80 -j ACCEPT`
-4. These rules are in the `DOCKER` chain, which is evaluated in the `FORWARD`
-   and `PREROUTING` chains — before UFW's `ufw-before-forward` chain
+4. These rules are in the `DOCKER` chain, which is evaluated in the `FORWARD` and `PREROUTING` chains — before UFW's `ufw-before-forward` chain
 
-**The result:** Your UFW rules are completely irrelevant for Docker-published
-ports. `ufw deny 8080` does nothing because the packet is DNATed and forwarded
-before UFW's input chain processes it.
+**The result:** Your UFW rules are completely irrelevant for Docker-published ports. `ufw deny 8080` does nothing because the packet is DNATed and forwarded before UFW's input chain processes it.
 
 **Mitigation strategies (pick one):**
 
@@ -872,8 +702,7 @@ Coolify does this automatically with Traefik.
 
 **Option B — DOCKER-USER chain:**
 
-Docker provides the `DOCKER-USER` chain specifically for user rules. It's
-evaluated before Docker's own rules:
+Docker provides the `DOCKER-USER` chain specifically for user rules. It's evaluated before Docker's own rules:
 
 ```bash
 # Drop all external traffic to Docker containers
@@ -896,22 +725,13 @@ In `/etc/docker/daemon.json`:
 { "iptables": false }
 ```
 
-This breaks Docker's internal networking. Container-to-container communication
-stops working unless you manually configure routes. Not recommended unless you
-deeply understand iptables.
+This breaks Docker's internal networking. Container-to-container communication stops working unless you manually configure routes. Not recommended unless you deeply understand iptables.
 
 **What could go wrong:**
-- **Coolify and Docker ports:** Coolify manages containers and publishes ports
-  automatically. It uses Traefik as a reverse proxy, so application containers
-  should only be exposed through Traefik (ports 80/443). But Coolify's own
-  dashboard runs on port 8000, which Docker publishes. This is why we need the
-  bootstrap → lockdown flow.
-- **Docker Compose and port binding:** If your compose file says `ports:
-  "8080:80"`, that's `0.0.0.0:8080`. You need `ports: "127.0.0.1:8080:80"`.
-  Easy to forget, especially with third-party compose files.
+- **Coolify and Docker ports:** Coolify manages containers and publishes ports automatically. It uses Traefik as a reverse proxy, so application containers should only be exposed through Traefik (ports 80/443). But Coolify's own dashboard runs on port 8000, which Docker publishes. This is why we need the bootstrap → lockdown flow.
+- **Docker Compose and port binding:** If your compose file says `ports: "8080:80"`, that's `0.0.0.0:8080`. You need `ports: "127.0.0.1:8080:80"`. Easy to forget, especially with third-party compose files.
 
-**Automation:** The `ansible/roles/ufw/` role sets up DOCKER-USER chain rules.
-The guide recommends Option A (localhost binding) as the primary approach.
+**Automation:** The `ansible/roles/ufw/` role sets up DOCKER-USER chain rules. The guide recommends Option A (localhost binding) as the primary approach.
 
 > **Further reading:**
 > - [Docker and UFW security flaw (GitHub issue #690)](https://github.com/docker/for-linux/issues/690) — the canonical issue thread; hundreds of comments documenting the problem since 2019
@@ -922,14 +742,9 @@ The guide recommends Option A (localhost binding) as the primary approach.
 
 ### 2.5 Strong SSH cryptography
 
-**What it does:** Restricts SSH to use only modern, high-security cryptographic
-algorithms, removing legacy ciphers that may have weaknesses.
+**What it does:** Restricts SSH to use only modern, high-security cryptographic algorithms, removing legacy ciphers that may have weaknesses.
 
-**Why it matters:** The default SSH configuration supports algorithms dating
-back to the 2000s for backwards compatibility. Some of these have known
-weaknesses (e.g., SHA-1 based MACs, CBC-mode ciphers vulnerable to padding
-oracle attacks). By restricting to modern algorithms, you eliminate these
-attack vectors.
+**Why it matters:** The default SSH configuration supports algorithms dating back to the 2000s for backwards compatibility. Some of these have known weaknesses (e.g., SHA-1 based MACs, CBC-mode ciphers vulnerable to padding oracle attacks). By restricting to modern algorithms, you eliminate these attack vectors.
 
 **Configuration** (add to `/etc/ssh/sshd_config.d/hardening.conf`):
 
@@ -948,28 +763,15 @@ HostKeyAlgorithms ssh-ed25519,ssh-ed25519-cert-v01@openssh.com
 ```
 
 **The algorithms explained:**
-- **sntrup761x25519:** Hybrid post-quantum + classical key exchange. Protects
-  against future quantum computers that could break X25519 alone. Available in
-  OpenSSH 9.0+.
-- **chacha20-poly1305:** ChaCha20 stream cipher + Poly1305 MAC. Designed by
-  Daniel Bernstein. Faster than AES on CPUs without hardware AES (ARM, older
-  x86). Constant-time implementation, no timing side channels.
-- **aes256-gcm:** AES in Galois/Counter Mode. Hardware-accelerated on modern
-  x86 CPUs (AES-NI instruction set). AEAD cipher — authentication is built in.
-- **hmac-sha2-512-etm:** Encrypt-then-MAC with SHA-512. ETM is
-  cryptographically stronger than MAC-then-encrypt (which is vulnerable to
-  padding oracle attacks).
-- **Ed25519:** Elliptic curve signature scheme. 128-bit security level with
-  compact 32-byte keys. Faster and more secure than RSA-2048.
+- **sntrup761x25519:** Hybrid post-quantum + classical key exchange. Protects against future quantum computers that could break X25519 alone. Available in OpenSSH 9.0+.
+- **chacha20-poly1305:** ChaCha20 stream cipher + Poly1305 MAC. Designed by Daniel Bernstein. Faster than AES on CPUs without hardware AES (ARM, older x86). Constant-time implementation, no timing side channels.
+- **aes256-gcm:** AES in Galois/Counter Mode. Hardware-accelerated on modern x86 CPUs (AES-NI instruction set). AEAD cipher — authentication is built in.
+- **hmac-sha2-512-etm:** Encrypt-then-MAC with SHA-512. ETM is cryptographically stronger than MAC-then-encrypt (which is vulnerable to padding oracle attacks).
+- **Ed25519:** Elliptic curve signature scheme. 128-bit security level with compact 32-byte keys. Faster and more secure than RSA-2048.
 
 **What could go wrong:**
-- **Old SSH clients can't connect:** If you SSH from a machine with OpenSSH
-  < 7.3 (released 2016), it might not support these algorithms. macOS and
-  recent Linux have been compatible for years. Windows OpenSSH (built-in since
-  Windows 10 1803) supports them. Putty 0.75+ supports them.
-- **sntrup761 unavailability:** Some older OpenSSH versions (< 9.0) don't
-  have sntrup761. The config lists it first but falls back to curve25519.
-  `ssh -Q kex` on your client shows supported algorithms.
+- **Old SSH clients can't connect:** If you SSH from a machine with OpenSSH < 7.3 (released 2016), it might not support these algorithms. macOS and recent Linux have been compatible for years. Windows OpenSSH (built-in since Windows 10 1803) supports them. Putty 0.75+ supports them.
+- **sntrup761 unavailability:** Some older OpenSSH versions (< 9.0) don't have sntrup761. The config lists it first but falls back to curve25519. `ssh -Q kex` on your client shows supported algorithms.
 
 **Automation:** `ansible/roles/ssh_hardening/` (part of the sshd template).
 
@@ -984,14 +786,9 @@ HostKeyAlgorithms ssh-ed25519,ssh-ed25519-cert-v01@openssh.com
 
 ### 2.6 Swap and memory tuning
 
-**What it does:** Creates a swap file and tunes the kernel's memory management
-for server workloads.
+**What it does:** Creates a swap file and tunes the kernel's memory management for server workloads.
 
-**Why it matters:** A server without swap can be killed by the OOM (Out of
-Memory) killer when memory pressure spikes. The OOM killer picks the "most
-expendable" process to kill, which might be your database or application
-server. With swap, the system has a buffer — it slows down instead of killing
-processes.
+**Why it matters:** A server without swap can be killed by the OOM (Out of Memory) killer when memory pressure spikes. The OOM killer picks the "most expendable" process to kill, which might be your database or application server. With swap, the system has a buffer — it slows down instead of killing processes.
 
 **How to apply:**
 
@@ -1008,11 +805,7 @@ echo 'vm.swappiness = 10' >> /etc/sysctl.d/99-hardening.conf
 sysctl -p /etc/sysctl.d/99-hardening.conf
 ```
 
-**Swappiness explained:** The `vm.swappiness` parameter (0-200, default 60)
-controls how aggressively the kernel moves memory pages to swap. A value of 10
-means "only swap when absolutely necessary." For a server with limited RAM
-running Docker containers, this is ideal — you want swap as a safety net, not
-as routine overflow.
+**Swappiness explained:** The `vm.swappiness` parameter (0-200, default 60) controls how aggressively the kernel moves memory pages to swap. A value of 10 means "only swap when absolutely necessary." For a server with limited RAM running Docker containers, this is ideal — you want swap as a safety net, not as routine overflow.
 
 **TCP BBR congestion control:**
 
@@ -1021,18 +814,11 @@ net.core.somaxconn = 1024
 net.ipv4.tcp_congestion_control = bbr
 ```
 
-BBR (Bottleneck Bandwidth and Round-trip propagation time) is Google's TCP
-congestion control algorithm. It significantly improves throughput and
-reduces latency compared to the default CUBIC, especially on lossy or
-high-latency connections. For a game server serving players worldwide, this
-is a measurable improvement.
+BBR (Bottleneck Bandwidth and Round-trip propagation time) is Google's TCP congestion control algorithm. It significantly improves throughput and reduces latency compared to the default CUBIC, especially on lossy or high-latency connections. For a game server serving players worldwide, this is a measurable improvement.
 
 **What could go wrong:**
-- **SSD wear from excessive swapping:** If swappiness is too high on an SSD
-  (like Hetzner's NVMe drives), constant swapping wears the drive. swappiness
-  10 avoids this.
-- **BBR and fairness:** BBR can be unfair to competing CUBIC flows on the same
-  link. On a dedicated VPS, this isn't an issue since you own the link.
+- **SSD wear from excessive swapping:** If swappiness is too high on an SSD (like Hetzner's NVMe drives), constant swapping wears the drive. swappiness 10 avoids this.
+- **BBR and fairness:** BBR can be unfair to competing CUBIC flows on the same link. On a dedicated VPS, this isn't an issue since you own the link.
 
 **Automation:** `ansible/roles/base/`
 
@@ -1044,24 +830,16 @@ is a measurable improvement.
 
 ### 2.7 Filesystem mount hardening
 
-**What it does:** Adds restrictive mount options to `/tmp`, `/var/tmp`, and
-`/dev/shm` that prevent executing binaries, using SUID programs, or creating
-device files in these directories.
+**What it does:** Adds restrictive mount options to `/tmp`, `/var/tmp`, and `/dev/shm` that prevent executing binaries, using SUID programs, or creating device files in these directories.
 
-**Why it matters:** These world-writable directories are the #1 staging ground
-for attackers. The typical post-exploitation playbook is:
+**Why it matters:** These world-writable directories are the #1 staging ground for attackers. The typical post-exploitation playbook is:
 1. Exploit a web app vulnerability to upload a binary
 2. Write it to `/tmp` (always writable, always available)
 3. `chmod +x /tmp/payload && /tmp/payload`
 
-With `noexec` on `/tmp`, step 3 fails. The attacker can still write the file,
-but can't execute it. Combined with `nosuid` (prevents SUID escalation) and
-`nodev` (prevents creating device files), you eliminate an entire class of
-post-exploitation techniques.
+With `noexec` on `/tmp`, step 3 fails. The attacker can still write the file, but can't execute it. Combined with `nosuid` (prevents SUID escalation) and `nodev` (prevents creating device files), you eliminate an entire class of post-exploitation techniques.
 
-**`/dev/shm` is especially dangerous:** It's a tmpfs backed by RAM — fast and
-never touches disk. Malware authors love it because payloads loaded from
-`/dev/shm` leave no disk forensic trace.
+**`/dev/shm` is especially dangerous:** It's a tmpfs backed by RAM — fast and never touches disk. Malware authors love it because payloads loaded from `/dev/shm` leave no disk forensic trace.
 
 **How to apply:**
 
@@ -1692,7 +1470,7 @@ alone isn't enough — the attacker also needs your phone.
 apt install libpam-google-authenticator -y
 ```
 
-As your deploy user:
+As your rico user:
 
 ```bash
 google-authenticator -t -d -f -r 3 -R 30 -w 3
