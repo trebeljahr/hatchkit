@@ -1,0 +1,80 @@
+import "dotenv/config";
+import express from "express";
+import cors from "cors";
+import helmet from "helmet";
+{{#if websocket}}
+import { createServer } from "node:http";
+import { setupWebSocket } from "./ws.js";
+{{/if}}
+{{#if analytics}}
+import { initSentry } from "./analytics/sentry.js";
+import { errorTrackingMiddleware } from "./analytics/middleware.js";
+{{/if}}
+import { connectDb } from "./db.js";
+import { healthRouter } from "./routes/health.js";
+import { authRouter } from "./auth/routes.js";
+{{#if stripe}}
+import { stripeWebhookRouter } from "./stripe/webhook.js";
+import { checkoutRouter } from "./stripe/checkout.js";
+{{/if}}
+import { config } from "./config.js";
+
+const app = express();
+{{#if analytics}}
+initSentry(app);
+{{/if}}
+
+{{#if stripe}}
+// Stripe webhook needs raw body — mount BEFORE json parser
+app.use("/api/stripe/webhook", stripeWebhookRouter);
+{{/if}}
+
+app.use(helmet());
+app.use(cors({ origin: config.FRONTEND_URL, credentials: true }));
+app.use(express.json());
+
+// Routes
+app.use("/api/health", healthRouter);
+app.use("/api/auth", authRouter);
+{{#if stripe}}
+app.use("/api/stripe", checkoutRouter);
+{{/if}}
+
+{{#if analytics}}
+app.use(errorTrackingMiddleware);
+{{/if}}
+
+async function start() {
+  await connectDb();
+{{#if websocket}}
+
+  const server = createServer(app);
+  setupWebSocket(server);
+
+  server.listen(config.PORT, () => {
+    console.log(`Server running on port ${config.PORT}`);
+  });
+
+  // Graceful shutdown
+  process.on("SIGTERM", () => {
+    console.log("SIGTERM received, shutting down gracefully...");
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(1), 10_000);
+  });
+{{else}}
+
+  app.listen(config.PORT, () => {
+    console.log(`Server running on port ${config.PORT}`);
+  });
+
+  process.on("SIGTERM", () => {
+    console.log("SIGTERM received, shutting down...");
+    process.exit(0);
+  });
+{{/if}}
+}
+
+start().catch((err) => {
+  console.error("Failed to start:", err);
+  process.exit(1);
+});

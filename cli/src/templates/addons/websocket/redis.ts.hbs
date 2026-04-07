@@ -1,0 +1,25 @@
+import Redis from "ioredis";
+import { config } from "../config.js";
+
+export const redis = new Redis(config.REDIS_URL);
+
+// Separate connection for pub/sub (Redis requires dedicated connections for subscribers)
+const subscriber = new Redis(config.REDIS_URL);
+const publisher = new Redis(config.REDIS_URL);
+
+const handlers = new Map<string, (message: string) => void>();
+
+subscriber.on("message", (channel, message) => {
+  const handler = handlers.get(channel);
+  if (handler) handler(message);
+});
+
+export const pubsub = {
+  publish(channel: string, message: string) {
+    publisher.publish(channel, message);
+  },
+  subscribe(channel: string, handler: (message: string) => void) {
+    handlers.set(channel, handler);
+    subscriber.subscribe(channel);
+  },
+};

@@ -1,0 +1,16 @@
+import * as Sentry from "@sentry/node";
+import type { Express } from "express";
+import { config } from "../config.js";
+
+export function initSentry(app: Express): void {
+  if (!config.GLITCHTIP_DSN) return;
+
+  Sentry.init({
+    dsn: config.GLITCHTIP_DSN,
+    integrations: [
+      Sentry.httpIntegration(),
+      Sentry.expressIntegration({ app }),
+    ],
+    tracesSampleRate: 0.1,
+  });
+}

@@ -1,0 +1,13 @@
+{
+  "name": "devops-cli-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Interactive CLI for scaffolding full-stack projects with composable ML services",
+  "scripts": {
+    "build": "pnpm --filter devops-cli run build",
+    "dev": "pnpm --filter devops-cli run dev",
+    "start": "pnpm --filter devops-cli run start",
+    "create": "pnpm --filter devops-cli run start",
+    "typecheck": "pnpm --filter devops-cli run typecheck"
+  }
+}

@@ -1,0 +1,20 @@
+import { config } from "../config.js";
+
+export async function generate3dModel(imageBuffer: Buffer): Promise<{
+  glbBuffer: Buffer;
+}> {
+  const formData = new FormData();
+  formData.append("file", new Blob([imageBuffer]));
+
+  const res = await fetch(config.ML_3D_EXTRACTION_ENDPOINT, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!res.ok) {
+    throw new Error(`3D extraction failed: ${res.status} ${res.statusText}`);
+  }
+
+  const glbBuffer = Buffer.from(await res.arrayBuffer());
+  return { glbBuffer };
+}

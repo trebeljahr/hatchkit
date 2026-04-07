@@ -1,0 +1,6 @@
+[submodule "starter"]
+	path = starter
+	url = git@github.com:trebeljahr/node-realtime-starter.git
+[submodule "infra"]
+	path = infra
+	url = git@github.com:trebeljahr/dev-ops-automation.git
