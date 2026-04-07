@@ -8,7 +8,7 @@ test.describe("Smoke tests", () => {
 
   test("login page loads", async ({ page }) => {
     await page.goto("/login");
-    await expect(page.getByText("Log in")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Log in" })).toBeVisible();
   });
 
   test("signup page loads", async ({ page }) => {

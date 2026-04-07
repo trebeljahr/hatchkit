@@ -45,7 +45,7 @@ test.describe("Dashboard CRUD", () => {
     await expect(page.getByText("Item to delete")).toBeVisible();
 
     // Delete it
-    await page.getByText("Delete").first().click();
+    await page.getByRole("button", { name: "Delete" }).first().click();
     await expect(page.getByText("Item to delete")).not.toBeVisible();
   });
 });

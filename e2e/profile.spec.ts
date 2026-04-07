@@ -26,8 +26,8 @@ test.describe("Profile", () => {
   });
 
   test("shows profile page with user name", async ({ page }) => {
-    await expect(page.getByText("Profile")).toBeVisible();
-    await expect(page.getByText(TEST_USER.name)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Profile" })).toBeVisible();
+    await expect(page.getByRole("main").getByText(TEST_USER.name)).toBeVisible();
   });
 
   test("can edit bio", async ({ page }) => {

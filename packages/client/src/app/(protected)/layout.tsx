@@ -57,6 +57,12 @@ export default function ProtectedLayout({
             >
               Settings
             </Link>
+            <Link
+              href="/playground"
+              className="text-muted-foreground hover:text-foreground"
+            >
+              Playground
+            </Link>
           </nav>
           <div className="flex items-center gap-4">
             <span className="text-sm text-muted-foreground">

@@ -17,6 +17,14 @@ export function createApp() {
 
   app.set("trust proxy", 1);
 
+  // ── 0. CORS — must be before all route handlers so preflight works ─
+  app.use(
+    cors({
+      origin: env.FRONTEND_URL ? [env.FRONTEND_URL] : false,
+      credentials: true,
+    }),
+  );
+
   // ── 1. better-auth — BEFORE express.json() ────────────────────────
   // better-auth handles its own body parsing. Mounting express.json()
   // before this will consume the body and break auth.
@@ -42,12 +50,6 @@ export function createApp() {
 
   // ── 4. Security + logging ──────────────────────────────────────────
   app.use(helmet());
-  app.use(
-    cors({
-      origin: env.FRONTEND_URL ? [env.FRONTEND_URL] : false,
-      credentials: true,
-    }),
-  );
   app.use(morgan(env.isProduction ? "combined" : "dev"));
 
   // ── 5. tRPC ────────────────────────────────────────────────────────
