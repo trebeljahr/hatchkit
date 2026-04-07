@@ -23,3 +23,7 @@ terraform.tfvars
 # Stack config files with real values
 stacks/*.env
 !stacks/*.env.example
+
+# claude code
+.claude/settings.local.json
+.claude/worktrees/
