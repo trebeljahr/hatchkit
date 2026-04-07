@@ -44,8 +44,9 @@ write_files:
       bantime = 86400
       banaction = ufw
 
-  # sysctl — basic hardening applied on first boot
-  # Ansible will overwrite this with a more comprehensive version later.
+  # sysctl — full hardening applied on first boot.
+  # Matches the Ansible template (roles/base/templates/99-hardening.conf.j2)
+  # with safe static defaults for conditional params.
   - path: /etc/sysctl.d/99-hardening.conf
     owner: root:root
     permissions: "0644"
@@ -57,21 +58,33 @@ write_files:
       net.ipv4.conf.default.accept_redirects = 0
       net.ipv4.conf.all.send_redirects = 0
       net.ipv4.conf.default.send_redirects = 0
+      net.ipv6.conf.all.accept_redirects = 0
+      net.ipv6.conf.default.accept_redirects = 0
       net.ipv4.conf.all.accept_source_route = 0
       net.ipv4.conf.default.accept_source_route = 0
+      net.ipv6.conf.all.accept_source_route = 0
+      net.ipv6.conf.default.accept_source_route = 0
       net.ipv4.icmp_echo_ignore_broadcasts = 1
+      net.ipv4.icmp_ignore_bogus_error_responses = 1
       net.ipv4.tcp_rfc1337 = 1
       net.ipv4.tcp_timestamps = 0
+      net.core.somaxconn = 1024
+      net.ipv4.tcp_congestion_control = bbr
+      vm.swappiness = 10
       # Kernel hardening
       kernel.dmesg_restrict = 1
       kernel.kptr_restrict = 2
+      kernel.yama.ptrace_scope = 1
+      kernel.unprivileged_bpf_disabled = 1
+      net.core.bpf_jit_harden = 2
+      kernel.kexec_load_disabled = 1
       kernel.sysrq = 0
+      kernel.perf_event_paranoid = 3
+      kernel.io_uring_disabled = 2
+      vm.mmap_rnd_bits = 32
+      vm.mmap_rnd_compat_bits = 16
       # Core dumps
       fs.suid_dumpable = 0
-      # Performance
-      vm.swappiness = 10
-      net.core.somaxconn = 1024
-      net.ipv4.tcp_congestion_control = bbr
 
   # Resource limits — prevent fork bombs and core dumps
   - path: /etc/security/limits.d/hardening.conf
@@ -118,9 +131,13 @@ runcmd:
   - [sh, -lc, "grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab"]
   # Disable snapd
   - [sh, -lc, "systemctl disable --now snapd.socket snapd.service snapd.seeded.service 2>/dev/null || true"]
+  # Harden /tmp mount (noexec,nosuid,nodev on tmpfs)
+  - [sh, -lc, "grep -q '/tmp.*tmpfs.*noexec' /etc/fstab || echo 'tmpfs /tmp tmpfs rw,noexec,nosuid,nodev,size=2G,mode=1777 0 0' >> /etc/fstab"]
+  # Bind-mount /var/tmp to /tmp (inherits noexec restrictions)
+  - [sh, -lc, "grep -q '/var/tmp.*/tmp.*bind' /etc/fstab || echo '/tmp /var/tmp none bind 0 0' >> /etc/fstab"]
   # Harden /dev/shm mount (noexec)
   - [sh, -lc, "grep -q '/dev/shm.*noexec' /etc/fstab || echo 'tmpfs /dev/shm tmpfs rw,noexec,nosuid,nodev,size=1G 0 0' >> /etc/fstab"]
-  - [sh, -lc, "mount -o remount /dev/shm 2>/dev/null || true"]
+  # All three take effect on reboot (first boot completes with a reboot anyway)
   # Set umask to 027
   - [sh, -lc, "sed -i 's/^UMASK.*/UMASK\\t\\t027/' /etc/login.defs"]
   # Completion marker

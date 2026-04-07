@@ -15,11 +15,19 @@ base_packages:
 
 swapfile_size: 2G
 
-# Services to disable (empty by default — uncomment as needed)
+# Services to disable. 2>/dev/null equivalent: the task loop uses
+# failed_when: false, so services not installed are silently skipped.
 disabled_services:
   - snapd.socket
   - snapd.service
   - snapd.seeded.service
+  - multipathd.service
+  - ModemManager.service
+  - bluetooth.service
+  - cups.service
+  - cups-browsed.service
+  - avahi-daemon.service
+  - avahi-daemon.socket
 
 # fail2ban
 fail2ban_maxretry: 3

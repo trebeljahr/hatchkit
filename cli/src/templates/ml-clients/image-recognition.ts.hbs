@@ -1,0 +1,22 @@
+import { config } from "../config.js";
+
+export interface RecognitionResult {
+  label: string;
+  score: number;
+}
+
+export async function recognizeImage(imageBuffer: Buffer): Promise<RecognitionResult[]> {
+  const formData = new FormData();
+  formData.append("file", new Blob([imageBuffer]));
+
+  const res = await fetch(config.ML_IMAGE_RECOGNITION_ENDPOINT, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!res.ok) {
+    throw new Error(`Image recognition failed: ${res.status} ${res.statusText}`);
+  }
+
+  return res.json() as Promise<RecognitionResult[]>;
+}

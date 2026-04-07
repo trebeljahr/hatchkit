@@ -1,0 +1,2 @@
+# Modal deployment dependencies (separate from the API server)
+modal>=0.64.0

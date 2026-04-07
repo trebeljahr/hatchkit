@@ -15,4 +15,12 @@ ufw_restrict_ssh_to_tailscale: false
 
 # Docker-UFW conflict mitigation: add DOCKER-USER iptables rules
 # to prevent Docker-published ports from bypassing UFW.
+# When enabled, drops ALL external traffic to Docker on eth0,
+# then allows only the ports listed below.
+# Coolify ports like 8080 (Traefik dashboard) and 8001 (GlitchTip)
+# are blocked by the default-drop rule automatically.
 ufw_docker_mitigation: false
+
+ufw_docker_allowed_ports:
+  - "80"
+  - "443"

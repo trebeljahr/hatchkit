@@ -16,9 +16,11 @@ Opinionated, reusable infrastructure for deploying small SaaS apps on dedicated 
 .
 ├── terraform/
 │   ├── stacks/node-realtime/     # Stampable infra: server + DNS + S3 bucket
+│   ├── stacks/gpu-inference/     # API server + dual S3 buckets for photo-to-3D
 │   └── modules/inwx-dns/        # Reusable DNS module
 ├── stacks/
-│   └── node-realtime.env.example # Coolify app config template
+│   ├── node-realtime.env.example # Coolify app config template
+│   └── gpu-inference.env.example # GPU inference API config template
 ├── scripts/
 │   ├── setup-coolify-stack.sh    # Creates app + DBs + env vars via Coolify API
 │   ├── create-hetzner-server.sh  # Thin wrapper around hcloud CLI
@@ -32,6 +34,7 @@ Opinionated, reusable infrastructure for deploying small SaaS apps on dedicated 
 │   └── ubuntu-24.04-coolify.yaml # First-boot provisioning
 ├── templates/
 │   ├── apps/node-express-websocket/
+│   ├── apps/gpu-inference-api/   # FastAPI + Modal/RunPod GPU dispatch
 │   └── services/{minio,uptime-kuma}/
 ├── docs/                         # Runbooks and decision records
 └── Makefile                      # Orchestrates everything
@@ -206,6 +209,32 @@ These are documented in `docs/coolify-stamps.md`:
 - **node-realtime-ha**: Node + WebSockets, 2+ replicas, shared state via Redis pubsub. Near-zero downtime.
 - **node-api-postgres**: CRUD/API apps with PostgreSQL.
 - **node-api-mongo**: Document-heavy apps with MongoDB.
+- **gpu-inference**: FastAPI server that dispatches to external GPU platforms (Modal, RunPod, AWS Batch). Dual S3 buckets for uploads + generated models. *(See `docs/gpu-inference-pipeline.md` for platform comparison and cost analysis.)*
+
+## GPU inference stack
+
+For ML workloads (image processing, 3D model generation, etc.) that need GPU:
+
+```bash
+# 1. Provision API server + S3 buckets
+make tf-apply STACK=gpu-inference
+
+# 2. Bootstrap, harden, install Coolify (same as node-realtime)
+
+# 3. Set up Coolify app
+make coolify-setup STACK=gpu-inference
+
+# 4. Deploy GPU pipeline to Modal (recommended for V1)
+cd templates/apps/gpu-inference-api/modal
+pip install modal && modal setup
+modal deploy pipeline.py
+```
+
+The Hetzner server runs the web API (receives uploads, dispatches jobs, serves results). GPU inference runs on an external platform that scales to zero. See `docs/gpu-inference-pipeline.md` for:
+- Platform comparison (Modal vs RunPod vs AWS Batch)
+- 3D reconstruction model benchmarks (SF3D, TripoSR, TRELLIS.2)
+- Cost analysis and cold start strategies
+- Migration path from external platforms to self-hosted
 
 ## Zero downtime notes
 

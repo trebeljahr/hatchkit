@@ -104,6 +104,32 @@ chmod 600 /home/rico/.ssh/authorized_keys
 
 **Automation:** `cloud-init/ubuntu-24.04-hardened.yaml` creates this user on first boot. The SSH key comes from Terraform (`hcloud_ssh_key`).
 
+**Already have things running? Check what's running as root:**
+
+If you're hardening a server that already has services running (e.g., you installed Coolify or Docker before following this guide), it's worth checking which user your processes are running as:
+
+```bash
+# See all running processes with their user
+ps aux
+
+# Just the Docker-related processes
+ps aux | grep -E 'docker|containerd'
+
+# See which user each Docker container's main process runs as
+docker ps -q | xargs -I{} docker inspect --format '{{.Name}}: User={{.Config.User}}' {}
+```
+
+**How Docker users work:** The Docker daemon itself always runs as root — this is normal and required (it needs root to manage namespaces, cgroups, and networking). But the processes *inside* containers can run as any user. When `Config.User` is empty, the container runs as whatever user is specified in the Dockerfile's `USER` directive (or root if none is set).
+
+Running as root *inside* a container is less dangerous than root on the host because Docker uses Linux namespaces — the container's "root" is isolated from the host. But it's still better practice for containers to use a non-root user, because namespace escapes (container breakouts) do happen, and a non-root container user limits the damage.
+
+**What to check if you already have Docker running:**
+- `docker ps` — look for containers with `-p 0.0.0.0:PORT:PORT` (publicly exposed, see section 2.4)
+- `docker inspect <container> | grep Privileged` — any container with `"Privileged": true` has full host access and effectively bypasses all isolation. This should never be used in production unless absolutely required.
+- `docker inspect <container> | grep AppArmor` — should show `docker-default`, not empty (see section 3.2)
+
+Coolify's own containers (dashboard, Traefik, etc.) run as root inside the container, which is expected — they need elevated privileges to manage other containers and bind to ports. Your application containers deployed through Coolify should ideally specify a non-root user in their Dockerfile.
+
 > **Further reading:**
 > - [Unix/Linux permissions model](https://wiki.archlinux.org/title/Users_and_groups) — ArchWiki's thorough explanation of users, groups, and how the Unix permission model works under the hood
 > - [sudoers manual](https://www.sudo.ws/docs/man/sudoers.man/) — the canonical reference for sudo configuration; dense but authoritative
@@ -155,6 +181,8 @@ PermitUserEnvironment no
 AllowUsers rico
 ```
 
+> **Coolify users:** If you plan to run Coolify on this server, you need an additional `Match` block in this config to allow Coolify's Docker-internal SSH access. See [SSH hardening and Coolify compatibility](#ssh-hardening-and-coolify-compatibility) before finalizing your SSH config.
+
 Validate and restart:
 
 ```bash
@@ -168,8 +196,7 @@ systemctl restart sshd
 - **Config syntax error:** `sshd -t` catches these. Always validate before restarting. A typo in the config file can prevent SSH from starting at all.
 - **AllowUsers typo:** If you misspell the username in `AllowUsers`, nobody can log in. The Ansible role uses a variable to avoid this.
 - **ClientAliveInterval too aggressive:** 300 seconds (5 min) is generous. Setting it to 30 seconds will disconnect you every time you pause to think. For tmux/screen users this is less of an issue since the session survives.
-- **MaxStartups:** `3:50:10` means: after 3 unauthenticated connections, start randomly dropping 50% of new ones, hard-cap at 10. This rate-limits brute-force attempts at the connection level, before fail2ban even sees them. Too aggressive and you might block yourself if you have multiple terminal
-  tabs connecting simultaneously.
+- **MaxStartups:** `3:50:10` means: after 3 unauthenticated connections, start randomly dropping 50% of new ones, hard-cap at 10. This rate-limits brute-force attempts at the connection level, before fail2ban even sees them. Too aggressive and you might block yourself if you have multiple terminal tabs connecting simultaneously.
 
 **Automation:** `ansible/roles/ssh_hardening/`
 
@@ -229,15 +256,10 @@ Remove these after Coolify is configured with a domain and HTTPS.
 
 ### 1.4 UFW — host-level firewall
 
-**What it does:** UFW (Uncomplicated Firewall) is a user-friendly frontend for
-`iptables`/`nftables`. It configures the Linux kernel's built-in packet filter
-to drop traffic that doesn't match explicit allow rules.
+**What it does:** UFW (Uncomplicated Firewall) is a user-friendly frontend for `iptables`/`nftables`. It configures the Linux kernel's built-in packet filter to drop traffic that doesn't match explicit allow rules.
 
-**Why it matters:** Even though Hetzner's firewall handles the perimeter, UFW
-provides a second layer inside the VM. This matters because:
-- It protects against lateral movement (if another VM in your Hetzner project
-  is compromised, Hetzner's firewall won't help — it's between your project
-  and the internet, not between your VMs)
+**Why it matters:** Even though Hetzner's firewall handles the perimeter, UFW provides a second layer inside the VM. This matters because:
+- It protects against lateral movement (if another VM in your Hetzner project is compromised, Hetzner's firewall won't help — it's between your project and the internet, not between your VMs)
 - It provides logging of blocked attempts (Hetzner's firewall drops silently)
 - It's the firewall that fail2ban integrates with
 - It's your safety net if you accidentally remove the Hetzner firewall
@@ -261,8 +283,7 @@ echo "y" | ufw enable
 ufw status verbose
 ```
 
-**How UFW works internally:** UFW writes iptables rules to
-`/etc/ufw/user.rules` and `/etc/ufw/user6.rules`. When enabled, it loads these into the kernel's netfilter framework. The kernel checks every incoming packet against these rules in order (first match wins). Denied packets are either dropped (silently discarded) or rejected (ICMP unreachable sent back).
+**How UFW works internally:** UFW writes iptables rules to `/etc/ufw/user.rules` and `/etc/ufw/user6.rules`. When enabled, it loads these into the kernel's netfilter framework. The kernel checks every incoming packet against these rules in order (first match wins). Denied packets are either dropped (silently discarded) or rejected (ICMP unreachable sent back).
 
 **What could go wrong:**
 - **Enabling UFW without allowing SSH first:** Classic lockout. UFW's default deny will block your SSH connection. Always `ufw allow 22/tcp` before `ufw enable`. The Ansible role handles this ordering correctly.
@@ -326,8 +347,7 @@ fail2ban-client status sshd
 - `findtime = 600` — within a 10-minute window
 - `bantime = 86400` — ban for 24 hours (86400 seconds)
 - `banaction = ufw` — use UFW to enforce bans (not raw iptables)
-- `backend = systemd` — read from journald instead of log files (more
-  reliable on modern Ubuntu)
+- `backend = systemd` — read from journald instead of log files (more reliable on modern Ubuntu)
 
 **What could go wrong:**
 - **Banning yourself:** If you typo your password or key 3 times, your IP gets banned for 24 hours. Fix: SSH from a different IP, or use Hetzner's web console to run `fail2ban-client set sshd unbanip <your-ip>`.
@@ -401,7 +421,7 @@ unattended-upgrades --dry-run --debug
 **What could go wrong:**
 - **Breaking changes in security updates:** Rare but possible. A security patch to OpenSSL could break TLS in your application. The risk is real but small — Ubuntu security updates are conservative and well-tested.
 - **Automatic reboot during peak hours:** The `Automatic-Reboot-Time "04:00"` setting helps, but if your users are global, there's no good time. For game servers with active sessions, this is a real concern. Consider disabling auto-reboot and scheduling maintenance windows instead.
-- **Disk space:** Old kernels accumulate `Remove-Unused-Kernel-Packages` and  `Remove-Unused-Dependencies` prevent `/boot` from filling up. A full `/boot` partition blocks all future updates — a surprisingly common failure mode.
+- **Disk space:** Old kernels accumulate and fill `/boot`. The `Remove-Unused-Kernel-Packages` and `Remove-Unused-Dependencies` settings in the config above prevent this by automatically cleaning up old kernels and orphaned packages during unattended upgrades. Without these settings, a full `/boot` partition blocks all future updates — a surprisingly common failure mode.
 - **apt lock contention:** If you're running `apt` manually while unattended-upgrades is running, you'll get lock errors. Not dangerous, just annoying. Wait and retry.
 
 **Automation:** `ansible/roles/base/` (templates for both config files).
@@ -436,11 +456,17 @@ unattended-upgrades --dry-run --debug
 # Check what's running
 systemctl list-units --type=service --state=running
 
-# Disable unnecessary services
+# Disable unnecessary services (2>/dev/null suppresses errors for
+# services that aren't installed — not every Ubuntu image ships all of these)
 systemctl disable --now snapd snapd.socket snapd.seeded 2>/dev/null
 systemctl disable --now multipathd 2>/dev/null
 systemctl disable --now ModemManager 2>/dev/null
+systemctl disable --now bluetooth 2>/dev/null
+systemctl disable --now cups cups-browsed 2>/dev/null
+systemctl disable --now avahi-daemon avahi-daemon.socket 2>/dev/null
 ```
+
+**Note:** The `2>/dev/null` on each line suppresses "unit not found" errors. If a service from the table above isn't installed on your system, the command silently does nothing — this is safe and expected. Minimal cloud images (like Hetzner's Ubuntu 24.04) typically don't ship with `bluetooth`, `cups`, or `ModemManager`, but it costs nothing to ensure they're disabled.
 
 **What could go wrong:**
 - **Disabling something Coolify needs:** Coolify uses Docker, which uses containerd, which uses snapd on some Ubuntu installations. If Coolify was installed via snap (it's not — it uses Docker), disabling snapd would break it. The safe approach: only disable services you've verified are unnecessary.
@@ -464,8 +490,7 @@ These significantly improve your security posture. The Ansible automation applie
 - Zero SSH vulnerabilities exploitable from the internet (no listener)
 - Your server becomes invisible to port scanners
 
-**How it works internally:** Tailscale assigns each device a 100.x.y.z
-address from the CGNAT range (100.64.0.0/10). Traffic between devices is encrypted end-to-end with WireGuard (ChaCha20-Poly1305). The coordination server (Tailscale's infrastructure) handles key exchange and NAT traversal, but never sees your traffic. Direct connections use UDP hole-punching; when that fails, traffic relays through Tailscale's DERP servers (still encrypted).
+**How it works internally:** Tailscale assigns each device a 100.x.y.z address from the CGNAT range (100.64.0.0/10). Traffic between devices is encrypted end-to-end with WireGuard (ChaCha20-Poly1305). The coordination server (Tailscale's infrastructure) handles key exchange and NAT traversal, but never sees your traffic. Direct connections use UDP hole-punching; when that fails, traffic relays through Tailscale's DERP servers (still encrypted).
 
 **The CGNAT range (100.64.0.0/10):** This is a reserved range that ISPs use for carrier-grade NAT. Tailscale reuses it because these addresses never appear on the public internet, avoiding conflicts with your LAN. When you restrict SSH to this range in UFW, you're saying "only Tailscale peers can connect."
 
@@ -602,6 +627,10 @@ sysctl -p /etc/sysctl.d/99-hardening.conf
 
 **Why it matters:** If an attacker gains code execution as a non-root user (e.g., through a vulnerability in your web app), these settings limit what they can learn about the system and what escalation techniques they can use.
 
+**How to apply:**
+
+Add these to the same `/etc/sysctl.d/99-hardening.conf` file from section 2.2, then apply with `sysctl -p /etc/sysctl.d/99-hardening.conf`.
+
 ```ini
 # --- Kernel Information Disclosure ---
 # Restrict dmesg to root. dmesg contains hardware info, driver messages,
@@ -687,6 +716,8 @@ vm.mmap_rnd_compat_bits = 16
 
 **Mitigation strategies (pick one):**
 
+> **For Coolify users:** Option A is what you want. Coolify already uses Traefik as a reverse proxy and handles port binding correctly for application containers. The main risk is Coolify's own dashboard port (8000) during bootstrap — see the [Coolify-specific hardening](#coolify-specific-hardening) section.
+
 **Option A — Bind to localhost only (recommended):**
 
 ```bash
@@ -697,8 +728,7 @@ docker run -p 8080:80 nginx          # Accessible from internet!
 docker run -p 127.0.0.1:8080:80 nginx  # Only accessible locally
 ```
 
-Then use a reverse proxy (Caddy, Traefik, Nginx) on the host to route traffic.
-Coolify does this automatically with Traefik.
+Then use a reverse proxy (Caddy, Traefik, Nginx) on the host to route traffic. Coolify does this automatically with Traefik.
 
 **Option B — DOCKER-USER chain:**
 
@@ -807,7 +837,7 @@ sysctl -p /etc/sysctl.d/99-hardening.conf
 
 **Swappiness explained:** The `vm.swappiness` parameter (0-200, default 60) controls how aggressively the kernel moves memory pages to swap. A value of 10 means "only swap when absolutely necessary." For a server with limited RAM running Docker containers, this is ideal — you want swap as a safety net, not as routine overflow.
 
-**TCP BBR congestion control:**
+**TCP BBR congestion control** (add to `/etc/sysctl.d/99-hardening.conf`):
 
 ```ini
 net.core.somaxconn = 1024
@@ -841,76 +871,79 @@ With `noexec` on `/tmp`, step 3 fails. The attacker can still write the file, bu
 
 **`/dev/shm` is especially dangerous:** It's a tmpfs backed by RAM — fast and never touches disk. Malware authors love it because payloads loaded from `/dev/shm` leave no disk forensic trace.
 
+**How it works under the hood:**
+
+On a default Ubuntu install, `/tmp` is just a regular directory on your root filesystem (`/`). It inherits whatever mount options the root filesystem has — which includes `exec` (allows running binaries). There's nothing special about it.
+
+The key concept: mount options like `noexec` are per-filesystem, not per-directory. You can't set `noexec` on just one directory within a filesystem — it applies to the entire mounted filesystem. So to give `/tmp` different options than `/`, you need it to be its own separate mount. That's what the fstab entries below do — they tell Linux to mount a separate tmpfs (RAM-backed filesystem) on top of each directory, replacing the regular directory with a restricted filesystem.
+
+This has a side benefit: since tmpfs lives in RAM, `/tmp` becomes faster and temp files don't wear your SSD. Files in tmpfs are also wiped on reboot, which is the expected behavior for `/tmp` anyway.
+
+`/dev/shm` is already a tmpfs by default on Ubuntu, but without the `noexec` restriction. The fstab entry overrides it with stricter options. `/var/tmp` gets a bind mount to `/tmp` — this makes `/var/tmp` point to the same tmpfs, so it inherits the same restrictions. Without it, `/var/tmp` would still be on the root filesystem with `exec` allowed.
+
 **How to apply:**
 
-Add to `/etc/fstab`:
+Add all three lines to `/etc/fstab`:
 
 ```
 tmpfs /tmp        tmpfs rw,noexec,nosuid,nodev,size=2G,mode=1777 0 0
 tmpfs /dev/shm    tmpfs rw,noexec,nosuid,nodev,size=1G           0 0
+/tmp  /var/tmp    none  bind                                      0 0
 ```
 
-For `/var/tmp`, bind-mount it to `/tmp` so it inherits the same restrictions:
-
-```
-/tmp /var/tmp none bind 0 0
-```
-
-Then remount:
+Then reboot to apply (a reboot is the cleanest way since processes are actively using `/tmp`):
 
 ```bash
-mount -o remount /tmp
-mount -o remount /dev/shm
+reboot
+```
+
+After reboot, verify the mounts are active with the correct options:
+
+```bash
+mount | grep -E '/tmp|/dev/shm'
+# You should see noexec,nosuid,nodev in the output
 ```
 
 **What could go wrong:**
-- **Build tools that execute from /tmp:** Some package installers (`dpkg`,
-  `apt`) and build systems extract and execute scripts in `/tmp`. If an `apt
-  upgrade` fails with "Permission denied", temporarily remount:
-  `mount -o remount,exec /tmp`, do the upgrade, then remount with `noexec`.
-- **Docker and /dev/shm:** Docker containers have their own `/dev/shm` (not
-  the host's), so container workloads are unaffected. The host's `/dev/shm`
-  restriction only applies to host processes.
-- **Applications that need /tmp execution:** Some Java applications and
-  snap packages need to execute from `/tmp`. Test before deploying.
+- **Build tools that execute from /tmp:** Some package installers (`dpkg`, `apt`) and build systems extract and execute scripts in `/tmp`. If an `apt upgrade` fails with "Permission denied", temporarily remount: `mount -o remount,exec /tmp`, do the upgrade, then remount with `noexec`.
+- **Docker and /dev/shm:** Docker containers have their own `/dev/shm` (not the host's), so container workloads are unaffected. The host's `/dev/shm` restriction only applies to host processes.
+- **Applications that need /tmp execution:** Some Java applications and snap packages need to execute from `/tmp`. Test before deploying.
 
-**Automation:** `ansible/roles/base/` (fstab entries for `/tmp`, `/dev/shm`,
-`/var/tmp`).
+**Automation:** `ansible/roles/base/` (fstab entries for `/tmp`, `/dev/shm`, `/var/tmp`).
 
 ---
 
 ### 2.8 Core dumps disabled
 
-**What it does:** Prevents processes from writing memory dumps to disk when
-they crash.
+**What it does:** Prevents processes from writing memory dumps to disk when they crash.
 
-**Why it matters:** When a process crashes, the kernel can write its entire
-memory contents to a "core dump" file. This includes everything the process
-had in memory: environment variables (API keys, database passwords), session
-tokens, encryption keys, user data. An attacker who can trigger a crash (e.g.,
-via a crafted request that causes a segfault) and read the core dump gets all
-of these secrets for free.
+**Why it matters:** When a process crashes, the kernel can write its entire memory contents to a "core dump" file. This includes everything the process had in memory: environment variables (API keys, database passwords), session tokens, encryption keys, user data. An attacker who can trigger a crash (e.g., via a crafted request that causes a segfault) and read the core dump gets all of these secrets for free.
 
-Even without an attacker, core dumps sitting on disk are a liability — they
-contain secrets that survive process termination.
+Even without an attacker, core dumps sitting on disk are a liability — they contain secrets that survive process termination.
 
 **How to apply:**
 
-sysctl (`/etc/sysctl.d/99-hardening.conf`):
+Core dumps are controlled by three independent systems on Ubuntu, so you need to disable all three. Here's the order:
+
+**Step 1 — sysctl:** Add this line to `/etc/sysctl.d/99-hardening.conf` (the same file from sections 2.2 and 2.3):
 
 ```ini
 # Disable core dumps for SUID programs
 fs.suid_dumpable = 0
 ```
 
-Limits (`/etc/security/limits.d/hardening.conf`):
+**Step 2 — PAM limits:** Create the file `/etc/security/limits.d/hardening.conf`:
 
 ```
 # Disable core dumps for all users
 *    hard    core    0
 ```
 
-systemd (`/etc/systemd/coredump.conf.d/hardening.conf`):
+**Step 3 — systemd-coredump:** Create the directory and config file `/etc/systemd/coredump.conf.d/hardening.conf`:
+
+```bash
+mkdir -p /etc/systemd/coredump.conf.d
+```
 
 ```ini
 [Coredump]
@@ -918,33 +951,32 @@ Storage=none
 ProcessSizeMax=0
 ```
 
-**What could go wrong:**
-- **Debugging crashes becomes harder:** Without core dumps, you lose the
-  ability to post-mortem debug with `gdb`. If you need to debug a crash,
-  temporarily re-enable: `ulimit -c unlimited` in the debugging session.
-- **systemd-coredump:** Ubuntu uses systemd-coredump by default, which
-  stores dumps in `/var/lib/systemd/coredump/`. The systemd config above
-  disables this.
+**Step 4 — Apply everything:**
 
-**Automation:** `ansible/roles/base/` (sysctl template, limits file, and
-systemd coredump config).
+```bash
+sysctl -p /etc/sysctl.d/99-hardening.conf
+systemctl daemon-reload
+```
+
+The sysctl and systemd changes take effect immediately. The PAM limits apply to new login sessions (your current session is unaffected — log out and back in, or reboot).
+
+**Why three files?** Each controls a different layer: sysctl prevents the kernel from dumping SUID binaries, PAM limits prevent any user process from requesting a core dump, and the systemd config disables Ubuntu's default core dump collector (`systemd-coredump`). An attacker only needs one of these to be missing to get a dump.
+
+**What could go wrong:**
+- **Debugging crashes becomes harder:** Without core dumps, you lose the ability to post-mortem debug with `gdb`. If you need to debug a crash, temporarily re-enable: `ulimit -c unlimited` in the debugging session.
+- **systemd-coredump:** Ubuntu uses systemd-coredump by default, which stores dumps in `/var/lib/systemd/coredump/`. The systemd config above disables this.
+
+**Automation:** `ansible/roles/base/` (sysctl template, limits file, and systemd coredump config).
 
 ---
 
 ### 2.9 Default umask
 
-**What it does:** Sets the default file creation permission mask so new files
-are not world-readable.
+**What it does:** Sets the default file creation permission mask so new files are not world-readable.
 
-**Why it matters:** Ubuntu's default umask is `022`, meaning every file you
-create is readable by all users (`-rw-r--r--`) and every directory is
-listable by all users (`drwxr-xr-x`). On a multi-user system this enables
-information disclosure; on a single-user server it's less critical but still
-violates the principle of least privilege.
+**Why it matters:** Ubuntu's default umask is `022`, meaning every file you create is readable by all users (`-rw-r--r--`) and every directory is listable by all users (`drwxr-xr-x`). On a multi-user system this enables information disclosure; on a single-user server it's less critical but still violates the principle of least privilege.
 
-A umask of `027` means: owner gets full access, group gets read/execute,
-others get nothing. Files are created as `-rw-r-----`, directories as
-`drwxr-x---`.
+A umask of `027` means: owner gets full access, group gets read/execute, others get nothing. Files are created as `-rw-r-----`, directories as `drwxr-x---`.
 
 **How to apply:**
 
@@ -961,12 +993,8 @@ UMASK 077
 ```
 
 **What could go wrong:**
-- **Web server file permissions:** If your app creates files that a web
-  server needs to read (e.g., static assets), a strict umask may break this.
-  Docker containers have their own umask, so containerized apps are unaffected.
-- **Shared directories:** If multiple services need to access the same
-  files, `027` may be too restrictive. `027` is the safe default for a
-  single-operator server.
+- **Web server file permissions:** If your app creates files that a web server needs to read (e.g., static assets), a strict umask may break this. Docker containers have their own umask, so containerized apps are unaffected.
+- **Shared directories:** If multiple services need to access the same files, `027` may be too restrictive. `027` is the safe default for a single-operator server.
 
 **Automation:** `ansible/roles/base/` (sets `UMASK` in `/etc/login.defs`).
 
@@ -974,24 +1002,16 @@ UMASK 077
 
 ### 2.10 Time synchronization
 
-**What it does:** Ensures your server's clock is accurate and synchronized
-with trusted time sources using NTP (Network Time Protocol).
+**What it does:** Ensures your server's clock is accurate and synchronized with trusted time sources using NTP (Network Time Protocol).
 
 **Why it matters:** An inaccurate clock breaks more than you'd think:
-- **TLS certificate validation:** Certificates have validity windows. A clock
-  that's off by more than a few minutes can cause TLS handshakes to fail
-  (your server rejects valid certs as "not yet valid" or "expired").
-- **fail2ban timing:** `findtime` and `bantime` depend on accurate
-  timestamps. A wrong clock means fail2ban's sliding windows are wrong.
-- **Log correlation:** If you're investigating an incident, timestamps that
-  don't match reality make forensics nearly impossible.
+- **TLS certificate validation:** Certificates have validity windows. A clock that's off by more than a few minutes can cause TLS handshakes to fail (your server rejects valid certs as "not yet valid" or "expired").
+- **fail2ban timing:** `findtime` and `bantime` depend on accurate timestamps. A wrong clock means fail2ban's sliding windows are wrong.
+- **Log correlation:** If you're investigating an incident, timestamps that don't match reality make forensics nearly impossible.
 - **Kerberos / OAuth:** Token-based auth systems have tight time tolerances.
-- **Replay attacks:** An attacker who can skew your clock can replay expired
-  tokens or certificates.
+- **Replay attacks:** An attacker who can skew your clock can replay expired tokens or certificates.
 
-Ubuntu 24.04 ships with `systemd-timesyncd` enabled by default, which syncs
-with `ntp.ubuntu.com`. This is adequate for most setups. For higher security,
-use `chrony` with multiple trusted sources.
+Ubuntu 24.04 ships with `systemd-timesyncd` enabled by default, which syncs with `ntp.ubuntu.com`. This is adequate for most setups. For higher security, use `chrony` with multiple trusted sources.
 
 **How to apply:**
 
@@ -1019,15 +1039,10 @@ minsources 3
 ```
 
 **What could go wrong:**
-- **NTP port blocked:** NTP uses UDP port 123. If your outbound firewall
-  blocks this (section 3.7), time sync breaks. The Hetzner firewall allows
-  outbound by default.
-- **Time jumps:** Large clock adjustments can confuse applications. `chrony`
-  handles this gracefully with slewing (gradual adjustment) rather than
-  stepping (instant jump).
+- **NTP port blocked:** NTP uses UDP port 123. If your outbound firewall blocks this (section 3.7), time sync breaks. The Hetzner firewall allows outbound by default.
+- **Time jumps:** Large clock adjustments can confuse applications. `chrony` handles this gracefully with slewing (gradual adjustment) rather than stepping (instant jump).
 
-**Automation:** `ansible/roles/base/` (ensures `systemd-timesyncd` or
-`chrony` is running and configured).
+**Automation:** `ansible/roles/base/` (ensures `systemd-timesyncd` or `chrony` is running and configured).
 
 > **Further reading:**
 > - [chrony documentation](https://chrony-project.org/documentation.html) — official docs; covers NTS (Network Time Security) for authenticated NTP
@@ -1037,18 +1052,13 @@ minsources 3
 
 ## Tier 3 — Advanced / optional
 
-These provide additional hardening but add complexity. Apply them based on your
-threat model and comfort level. The Ansible automation does NOT apply these by
-default — they require opt-in.
+These provide additional hardening but add complexity. Apply them based on your threat model and comfort level. The Ansible automation does NOT apply these by default — they require opt-in.
 
 ### 3.1 Kernel boot parameters
 
-**What it does:** Configures kernel hardening features at boot time via GRUB
-command line parameters.
+**What it does:** Configures kernel hardening features at boot time via GRUB command line parameters.
 
-**Why it matters:** Some security features can only be enabled at boot, before
-the kernel initializes memory and process management. These parameters harden
-memory allocation, enable security modules, and mitigate CPU vulnerabilities.
+**Why it matters:** Some security features can only be enabled at boot, before the kernel initializes memory and process management. These parameters harden memory allocation, enable security modules, and mitigate CPU vulnerabilities.
 
 **Key parameters:**
 
@@ -1075,24 +1085,24 @@ lsm=landlock,lockdown,yama,apparmor
 
 **How to apply:**
 
-Edit `/etc/default/grub`, add to `GRUB_CMDLINE_LINUX_DEFAULT`, then:
+Edit `/etc/default/grub` and append the parameters (space-separated) to the `GRUB_CMDLINE_LINUX_DEFAULT` line:
+
+```
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1 slab_nomerge randomize_kstack_offset=1 vsyscall=none spectre_v2=on l1tf=full,force spec_store_bypass_disable=on apparmor=1 lsm=landlock,lockdown,yama,apparmor"
+```
+
+Then apply and reboot:
 
 ```bash
 update-grub
 reboot
 ```
 
-**Performance impact:** `init_on_alloc=1` and `init_on_free=1` have a 1-5%
-CPU overhead depending on allocation patterns. For a web/game server, this is
-negligible. `slab_nomerge` increases memory usage slightly by preventing the
-kernel from combining similar-sized allocations.
+**Performance impact:** `init_on_alloc=1` and `init_on_free=1` have a 1-5% CPU overhead depending on allocation patterns. For a web/game server, this is negligible. `slab_nomerge` increases memory usage slightly by preventing the kernel from combining similar-sized allocations.
 
 **What could go wrong:**
-- **Boot failure:** A wrong GRUB parameter can prevent booting. Hetzner's
-  rescue mode lets you mount the disk and fix GRUB.
-- **Performance regression:** If your workload is allocation-heavy (e.g., a
-  JVM with large heap), `init_on_free=1` can be noticeable. Test with your
-  workload.
+- **Boot failure:** A wrong GRUB parameter can prevent booting. Hetzner's rescue mode lets you mount the disk and fix GRUB.
+- **Performance regression:** If your workload is allocation-heavy (e.g., a JVM with large heap), `init_on_free=1` can be noticeable. Test with your workload.
 
 > **Further reading:**
 > - [Linux Hardening Guide (Madaidan) — Kernel section](https://madaidans-insecurities.github.io/guides/linux-hardening.html#kernel) — the most detailed public reference for kernel boot parameters; explains each parameter's security impact
@@ -1103,60 +1113,199 @@ kernel from combining similar-sized allocations.
 
 ### 3.2 AppArmor
 
-**What it does:** Mandatory Access Control (MAC) system that confines programs
-to a limited set of resources. Unlike traditional Unix permissions (which are
-discretionary — the file owner decides), AppArmor policies are enforced by the
-kernel regardless of the process's UID.
+**What it does:** Mandatory Access Control (MAC) system that confines programs to a limited set of resources. Unlike traditional Unix permissions (which are discretionary — the file owner decides), AppArmor policies are enforced by the kernel regardless of the process's UID.
 
-**Why it matters:** If your web application is compromised, AppArmor limits
-what the attacker can access — even if they're running as the same user as
-your app. The app can only read/write files explicitly listed in its profile.
+**Why it matters:** If your web application is compromised, AppArmor limits what the attacker can access — even if they're running as the same user as your app. The app can only read/write files explicitly listed in its profile.
 
-Ubuntu ships with AppArmor enabled and profiles for common services. Docker
-containers get a default AppArmor profile that blocks most dangerous
-operations. For custom applications, you'd write custom profiles.
+**Is it already installed?** Yes. Ubuntu 24.04 ships with AppArmor installed, enabled, and enforcing by default. You don't need to install anything — it's been protecting your system since first boot. It comes with profiles for common services like `sshd`, `apt`, and `man`.
 
-**How to check:**
+**How to check the current state:**
 
 ```bash
-aa-status                    # List loaded profiles and their modes
-aa-enforce /etc/apparmor.d/* # Enforce all profiles (vs. complain mode)
+# See all loaded profiles and whether they're in enforce or complain mode
+aa-status
+
+# You should see output like:
+# apparmor module is loaded.
+# 42 profiles are loaded.
+# 20 profiles are in enforce mode.
+# ...
 ```
 
-**When to invest time here:** If you're running untrusted code (user uploads,
-plugins) or high-value services (payment processing). For a typical game
-server running your own code in Docker, the default Docker AppArmor profile
-is sufficient.
+**How AppArmor relates to Docker:** Docker automatically applies a default AppArmor profile (`docker-default`) to every container it launches. This profile blocks containers from:
+- Writing to `/proc` and `/sys` (prevents kernel tampering)
+- Mounting filesystems
+- Accessing raw network sockets
+- Loading kernel modules
+- Modifying AppArmor profiles from inside the container
+
+You can verify this with `docker inspect <container> | grep AppArmor` — you should see `"AppArmorProfile": "docker-default"`. If you see `"AppArmorProfile": ""` or the container was started with `--security-opt apparmor=unconfined`, that container has no AppArmor protection.
+
+**When to invest time in custom profiles:** The default Docker profile is solid for most workloads. Custom AppArmor profiles are worth writing if you're running untrusted code (user uploads, plugins), high-value services (payment processing), or if you want to restrict a specific container beyond the defaults (e.g., preventing it from reading certain host-mounted volumes). For a typical game server running your own code in Docker, the default profile is sufficient.
+
+**How to enforce all profiles:**
+
+```bash
+# Enforce mode = violations are blocked and logged
+aa-enforce /etc/apparmor.d/*
+
+# Complain mode = violations are logged but allowed (useful for testing)
+aa-complain /etc/apparmor.d/*
+```
 
 ---
 
 ### 3.3 AIDE — file integrity monitoring
 
-**What it does:** AIDE (Advanced Intrusion Detection Environment) creates a
-database of cryptographic hashes for system files. Periodic checks compare
-current files against the database, alerting you if anything changed.
+**What it does:** AIDE (Advanced Intrusion Detection Environment) creates a database of cryptographic hashes for system files. Periodic checks compare current files against the database, alerting you if anything changed.
 
-**Why it matters:** If an attacker modifies system binaries (rootkit), adds
-SSH keys, or changes config files, AIDE detects it. This is your alarm system
-for "someone was here."
+**Why it matters:** If an attacker modifies system binaries (rootkit), adds SSH keys, or changes config files, AIDE detects it. This is your alarm system for "someone was here."
 
 **How to apply:**
 
 ```bash
 apt install aide -y
+```
+
+During installation, `apt` will pull in a mail transport agent (`postfix`) as a dependency for the `mail` command used in AIDE's cron job. This triggers a configuration wizard — choose **No configuration** for now. We'll set up `msmtp` instead, which is lighter and more reliable for sending alerts to an external email address.
+
+The wizard then asks for a **System mail name** — just accept the default (your hostname) and continue.
+
+> **Why not use postfix directly?** Sending mail directly from a VPS almost never works. Cloud VPS IPs are on spam blocklists, most providers block outbound port 25, and Gmail will silently drop messages from unknown servers. The reliable approach is relaying through an authenticated SMTP service — and `msmtp` is the simplest way to do that.
+
+**Setting up email alerts with msmtp + Gmail:**
+
+You'll need a Gmail **App Password** (Gmail blocks plain password login from scripts). Generate one at: Google Account > Security > 2-Step Verification > App passwords. Select "Mail" and any device name — you'll get a 16-character password.
+
+**Step 1 — Install msmtp and set it as the system default:**
+
+```bash
+apt install msmtp msmtp-mta bsd-mailx -y
+```
+
+`msmtp-mta` installs a symlink at `/usr/sbin/sendmail` that points to `msmtp`, so any program that sends mail (cron, `mail`, AIDE) will automatically route through it.
+
+**Step 2 — Configure msmtp** by creating `/etc/msmtprc`:
+
+```
+# Gmail SMTP relay
+defaults
+auth           on
+tls            on
+tls_trust_file /etc/ssl/certs/ca-certificates.crt
+logfile        /var/log/msmtp.log
+
+account        gmail
+host           smtp.gmail.com
+port           587
+from           your-email@gmail.com
+user           your-email@gmail.com
+password       xxxx-xxxx-xxxx-xxxx
+
+account default : gmail
+```
+
+Replace `your-email@gmail.com` with your Gmail address and `xxxx-xxxx-xxxx-xxxx` with the App Password you generated.
+
+**Step 3 — Secure the config** (it contains your password):
+
+```bash
+chmod 600 /etc/msmtprc
+```
+
+**Step 4 — Test it:**
+
+```bash
+echo "Test from $(hostname)" | mail -s "VPS alert test" your-email@gmail.com
+```
+
+Check your Gmail inbox (and spam folder the first time). If it works, every cron job and system alert on the server will now deliver to your email.
+
+**Step 5 — Set up a mail alias** so mail sent to `root` (which is where most system alerts go) forwards to your email. Create or edit `/etc/aliases`:
+
+```
+root: your-email@gmail.com
+default: your-email@gmail.com
+```
+
+**Reducing false positives — what AIDE should and shouldn't monitor:**
+
+AIDE's default config on Ubuntu (`/etc/aide/aide.conf`) monitors almost everything, which means you'll get flooded with alerts from routine activity: security updates changing system binaries, Docker rebuilding container layers on every deploy, log files rotating. The fix is to tell AIDE to ignore paths that change legitimately, so that when you do get an alert, it actually means something.
+
+Create `/etc/aide/aide.conf.d/99-exclusions.conf` to exclude noisy paths:
+
+```
+# Docker — everything under here changes on every container build/deploy.
+# AIDE monitoring Docker internals is pointless: container images, layers,
+# overlay filesystems, and volumes all change constantly during normal
+# Coolify/Docker operation.
+!/var/lib/docker
+!/var/lib/containerd
+
+# Package manager state — changes on every apt upgrade/install.
+# These are the database files that track what's installed, not the
+# actual binaries (which we DO want to monitor).
+!/var/lib/dpkg
+!/var/lib/apt
+!/var/cache/apt
+!/var/cache/debconf
+
+# Logs — rotate and grow constantly. Not useful for integrity monitoring
+# (use log shipping to an external service for tamper-evident logging).
+!/var/log
+
+# Temporary and runtime state
+!/tmp
+!/var/tmp
+!/run
+!/var/run
+
+# Coolify-specific state
+!/var/lib/coolify
+
+# Mail spool (changes when AIDE sends its own reports)
+!/var/mail
+!/var/spool/mail
+```
+
+**What AIDE still monitors after these exclusions:** The things that actually matter — system binaries (`/usr/bin`, `/usr/sbin`), configuration files (`/etc`), kernel modules (`/lib/modules`), boot files (`/boot`), and cron jobs (`/etc/cron*`). If an attacker replaces `sshd`, adds a backdoor to `/etc/pam.d/`, or drops a rootkit in `/usr/lib/`, AIDE will catch it.
+
+**Auto-updating after unattended-upgrades:**
+
+Security updates legitimately change system binaries — that's the whole point. To avoid getting alerted every time `unattended-upgrades` patches a package, set up a hook that automatically refreshes the AIDE database after successful upgrades.
+
+Create `/etc/apt/apt.conf.d/99-aide-update`:
+
+```
+// After unattended-upgrades runs successfully, update the AIDE database
+// so patched binaries become the new baseline (not flagged as tampered).
+Dpkg::Post-Invoke { "if [ -x /usr/bin/aide ]; then /usr/bin/aide --update && mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db; fi"; };
+```
+
+This runs after any `dpkg` operation (including unattended-upgrades). It rebuilds the AIDE database with the newly installed binaries as the baseline, so the next AIDE check only flags changes that happened *outside* of legitimate package management.
+
+Now initialize the AIDE database:
+
+```bash
 aide --init
 mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+```
 
-# Daily check via cron
-echo '0 5 * * * root /usr/bin/aide --check | mail -s "AIDE report" you@example.com' \
+Set up a daily check via cron (replace the email address with your own):
+
+```bash
+echo '0 5 * * * root /usr/bin/aide --check | mail -s "AIDE report" your-email@gmail.com' \
   > /etc/cron.d/aide-check
 ```
 
+**What this means in practice:** With these exclusions and the auto-update hook, you should get near-zero noise from daily reports. A report with changes in it now actually means something — either a file was modified outside of `apt` (suspicious), or you manually edited a config file (expected, run `aide --update` afterward). If you deploy a new app through Coolify, no alert. If `unattended-upgrades` patches OpenSSL overnight, no alert. If someone replaces `/usr/bin/sshd` with a backdoor, you get an alert.
+
 **What could go wrong:**
-- **False positives everywhere:** Every `apt upgrade` changes system binaries.
-  You'll need to run `aide --update` after every legitimate change.
-- **No email configured:** AIDE reports go to email. If you haven't set up
-  mail (msmtp, postfix), reports go nowhere.
+- **An attacker who has root could update AIDE's database** to hide their changes. AIDE is a tripwire, not a prevention mechanism — it catches unsophisticated attacks and gives you an audit trail, but a skilled attacker with root access can tamper with AIDE itself. For stronger guarantees, store the AIDE database on a read-only mount or off-server.
+- **The `Dpkg::Post-Invoke` hook adds time to every apt operation.** AIDE database rebuilds take 30-60 seconds depending on how many files are monitored. This is a one-time cost after each upgrade, not a ongoing performance hit.
+- **Gmail rate limits:** Gmail limits App Password accounts to ~500 emails/day. For daily AIDE reports this is a non-issue, but if you add other alerting (fail2ban notifications, logwatch, etc.) keep the total volume in mind.
+- **App Password revoked:** If you revoke the App Password or change your Google account password, mail silently stops sending. Check `/var/log/msmtp.log` if alerts stop arriving.
+- **Password in plaintext:** The App Password sits in `/etc/msmtprc`. The `chmod 600` restricts it to root, but it's still plaintext on disk. This is an acceptable trade-off for a single-operator server — the App Password only grants SMTP access, not full Google account access. If this bothers you, use a dedicated throwaway Gmail account for server alerts.
 
 ---
 
@@ -1164,8 +1313,7 @@ echo '0 5 * * * root /usr/bin/aide --check | mail -s "AIDE report" you@example.c
 
 **Tools:** `rkhunter` and `chkrootkit`
 
-**What they do:** Scan for known rootkit signatures, suspicious files, and
-unusual system state (hidden processes, modified binaries).
+**What they do:** Scan for known rootkit signatures, suspicious files, and unusual system state (hidden processes, modified binaries).
 
 ```bash
 apt install rkhunter chkrootkit -y
@@ -1174,50 +1322,36 @@ rkhunter --check --skip-keypress
 chkrootkit
 ```
 
-**Limitations:** Signature-based detection only finds known rootkits. A
-sophisticated attacker with a custom rootkit won't be detected. These tools
-are most useful against automated/commodity attacks.
+**Limitations:** Signature-based detection only finds known rootkits. A sophisticated attacker with a custom rootkit won't be detected. These tools are most useful against automated/commodity attacks.
 
 ---
 
 ### 3.5 Log monitoring
 
-**What it does:** Tools like `logwatch` aggregate and summarize log files,
-sending daily reports.
+**What it does:** Tools like `logwatch` aggregate and summarize log files, sending daily reports.
 
 ```bash
 apt install logwatch -y
 logwatch --detail med --output stdout --range today
 ```
 
-**Alternative:** For a more modern approach, consider shipping logs to an
-external service (Grafana Loki, Datadog, etc.) so they survive even if the
-server is compromised.
+**Alternative:** For a more modern approach, consider shipping logs to an external service (Grafana Loki, Datadog, etc.) so they survive even if the server is compromised.
 
 ---
 
 ### 3.6 Encrypted DNS
 
-**What it does:** DNS queries are normally sent in plaintext UDP. Anyone on
-the network path can see what domains you're resolving. `dnscrypt-proxy` or
-`systemd-resolved` with DNS-over-TLS encrypts these queries.
+**What it does:** DNS queries are normally sent in plaintext UDP. Anyone on the network path can see what domains you're resolving. Encrypted DNS (DNS-over-TLS or DNS-over-HTTPS) prevents this.
 
-```bash
-apt install dnscrypt-proxy -y
-# Configure /etc/dnscrypt-proxy/dnscrypt-proxy.toml
-# Point to encrypted resolvers (Cloudflare, Quad9)
-```
+**When it matters:** If you're worried about DNS-based surveillance or DNS poisoning attacks. For most Hetzner VPS setups, the default DNS resolvers are local to Hetzner's network and already reasonably trustworthy — encrypted DNS adds marginal benefit.
 
-**When it matters:** If you're worried about DNS-based surveillance or
-DNS poisoning attacks. For most VPS setups, Hetzner's DNS resolvers are
-trustworthy and on the same network.
+> **Note:** This section is intentionally a stub. DNS configuration is environment-specific and a misconfiguration can break all name resolution on your server (no DNS = no apt updates, no Docker pulls, no outbound connections). If you want to pursue this, see the [dnscrypt-proxy wiki](https://github.com/DNSCrypt/dnscrypt-proxy/wiki) for complete setup instructions, including how to integrate with `systemd-resolved` on Ubuntu 24.04. An alternative is configuring `systemd-resolved` directly for DNS-over-TLS with Cloudflare (`1.1.1.1`) or Quad9 (`9.9.9.9`) — see the [systemd-resolved docs](https://www.freedesktop.org/software/systemd/man/resolved.conf.html).
 
 ---
 
 ### 3.7 Outbound firewall restrictions
 
-**What it does:** Instead of allowing all outbound traffic, restrict outgoing
-connections to specific ports and destinations.
+**What it does:** Instead of allowing all outbound traffic, restrict outgoing connections to specific ports and destinations.
 
 ```bash
 ufw default deny outgoing
@@ -1228,30 +1362,21 @@ ufw allow out 123/udp    # NTP
 ufw allow out 443/tcp    # HTTPS
 ```
 
-**Why it matters:** If an attacker compromises your server, outbound
-restrictions prevent them from:
+**Why it matters:** If an attacker compromises your server, outbound restrictions prevent them from:
 - Exfiltrating data to arbitrary hosts
 - Downloading additional tools/malware
 - Establishing reverse shells on non-standard ports
 - Using your server as a proxy
 
-**What could go wrong:** Docker, Tailscale, and many services need outbound
-connectivity. Restricting outbound traffic is high-maintenance — every new
-service needs a rule. For a single-operator VPS, the benefit may not justify
-the ongoing effort.
+**What could go wrong:** Docker, Tailscale, and many services need outbound connectivity. Restricting outbound traffic is high-maintenance — every new service needs a rule. For a single-operator VPS, the benefit may not justify the ongoing effort.
 
 ---
 
 ### 3.8 Lynis security auditing
 
-**What it does:** Lynis scans your system and produces a hardening score with
-specific, actionable recommendations. It checks hundreds of settings across
-SSH, filesystems, kernel, networking, authentication, and more.
+**What it does:** Lynis scans your system and produces a hardening score with specific, actionable recommendations. It checks hundreds of settings across SSH, filesystems, kernel, networking, authentication, and more.
 
-**Why it matters:** After applying hardening, you need a way to verify
-nothing was missed and to catch regressions. Lynis is the standard tool
-for this — trusted by enterprises, used in CIS benchmark validation, and
-completely open source.
+**Why it matters:** After applying hardening, you need a way to verify nothing was missed and to catch regressions. Lynis is the standard tool for this — trusted by enterprises, used in CIS benchmark validation, and completely open source.
 
 **How to apply:**
 
@@ -1265,8 +1390,7 @@ lynis audit system
 # Suggestions are listed at the end of stdout
 ```
 
-Lynis outputs a "Hardening index" (0-100). A freshly hardened server using
-this guide typically scores 75-85. Getting above 90 requires Tier 3 measures.
+Lynis outputs a "Hardening index" (0-100). A freshly hardened server using this guide typically scores 75-85. Getting above 90 requires Tier 3 measures.
 
 **How to read the output:**
 - **[WARNING]** — serious issues that should be fixed
@@ -1281,13 +1405,9 @@ Run Lynis periodically (monthly) or after major changes to catch drift.
 
 ### 3.9 SUID/SGID binary audit
 
-**What it does:** Identifies binaries with the SUID or SGID bit set — these
-run with elevated privileges regardless of who executes them.
+**What it does:** Identifies binaries with the SUID or SGID bit set — these run with elevated privileges regardless of who executes them.
 
-**Why it matters:** SUID binaries are the classic privilege escalation vector.
-A vulnerability in any SUID-root binary gives an attacker instant root access.
-Ubuntu ships with dozens of SUID binaries, most of which your server never
-needs.
+**Why it matters:** SUID binaries are the classic privilege escalation vector. A vulnerability in any SUID-root binary gives an attacker instant root access. Ubuntu ships with dozens of SUID binaries, most of which your server never needs.
 
 **How to audit:**
 
@@ -1316,10 +1436,8 @@ chmod u-s /usr/bin/chfn /usr/bin/chsh /usr/bin/newgrp
 ```
 
 **What could go wrong:**
-- **Stripping sudo or su:** Don't. You'll lock yourself out of privilege
-  escalation entirely.
-- **Package updates restore SUID:** `apt upgrade` will restore the SUID bit
-  on updated binaries. Re-audit after upgrades.
+- **Stripping sudo or su:** Don't. You'll lock yourself out of privilege escalation entirely.
+- **Package updates restore SUID:** `apt upgrade` will restore the SUID bit on updated binaries. Re-audit after upgrades.
 
 ---
 
@@ -1327,10 +1445,7 @@ chmod u-s /usr/bin/chfn /usr/bin/chsh /usr/bin/newgrp
 
 **What it does:** After boot, prevents loading new kernel modules entirely.
 
-**Why it matters:** Kernel modules run with full kernel privileges. A rootkit
-loaded as a kernel module has complete control over the system and is nearly
-undetectable. By disabling module loading after boot, even root can't load
-a malicious module.
+**Why it matters:** Kernel modules run with full kernel privileges. A rootkit loaded as a kernel module has complete control over the system and is nearly undetectable. By disabling module loading after boot, even root can't load a malicious module.
 
 **How to apply:**
 
@@ -1346,31 +1461,19 @@ kernel.modules_disabled = 1
 ```
 
 **What could go wrong:**
-- **This is irreversible until reboot.** Once set, you can't load any
-  kernel module — not even legitimate ones. Plugging in a USB device that
-  needs a module, loading a filesystem driver, or adding a network module
-  all fail.
-- **Docker and modules:** Docker sometimes needs to load the `br_netfilter`
-  or `overlay` modules. If these aren't loaded before the restriction takes
-  effect, Docker networking breaks. The Ansible role loads required modules
-  first, then restricts.
-- **VPN modules:** WireGuard/Tailscale may need the `wireguard` module. On
-  modern kernels it's built-in, but check with `lsmod | grep wireguard`.
+- **This is irreversible until reboot.** Once set, you can't load any kernel module — not even legitimate ones. Plugging in a USB device that needs a module, loading a filesystem driver, or adding a network module all fail.
+- **Docker and modules:** Docker sometimes needs to load the `br_netfilter` or `overlay` modules. If these aren't loaded before the restriction takes effect, Docker networking breaks. The Ansible role loads required modules first, then restricts.
+- **VPN modules:** WireGuard/Tailscale may need the `wireguard` module. On modern kernels it's built-in, but check with `lsmod | grep wireguard`.
 
-**Automation:** `ansible/roles/base/` (optional, via `sysctl_disable_module_loading`
-variable; loads required modules before restricting).
+**Automation:** `ansible/roles/base/` (optional, via `sysctl_disable_module_loading` variable; loads required modules before restricting).
 
 ---
 
 ### 3.11 Resource limits
 
-**What it does:** Configures per-user resource limits to prevent processes
-from consuming excessive system resources.
+**What it does:** Configures per-user resource limits to prevent processes from consuming excessive system resources.
 
-**Why it matters:** Without limits, a single runaway process (or a deliberate
-fork bomb: `:(){ :|:& };:`) can consume all PIDs, memory, or file descriptors,
-crashing every service on the server. Limits are your safety net against both
-bugs and attacks.
+**Why it matters:** Without limits, a single runaway process (or a deliberate fork bomb: `:(){ :|:& };:`) can consume all PIDs, memory, or file descriptors, crashing every service on the server. Limits are your safety net against both bugs and attacks.
 
 **How to apply:**
 
@@ -1389,11 +1492,8 @@ Create `/etc/security/limits.d/hardening.conf`:
 ```
 
 **What could go wrong:**
-- **nproc too low for Docker:** Docker can spawn many processes. 4096 is
-  generous for a server, but if you're running many containers, increase it.
-- **nofile too low for databases:** Databases like MongoDB and PostgreSQL
-  need many open file descriptors. 65535 is usually sufficient; check your
-  database docs.
+- **nproc too low for Docker:** Docker can spawn many processes. 4096 is generous for a server, but if you're running many containers, increase it.
+- **nofile too low for databases:** Databases like MongoDB and PostgreSQL need many open file descriptors. 65535 is usually sufficient; check your database docs.
 
 **Automation:** `ansible/roles/base/` (deploys limits config file).
 
@@ -1401,53 +1501,123 @@ Create `/etc/security/limits.d/hardening.conf`:
 
 ### 3.12 auditd — system call auditing
 
-**What it does:** The Linux Audit Framework (`auditd`) records system calls,
-file access, privilege escalation attempts, and user commands at the kernel
-level. It's the most comprehensive logging system available on Linux.
+**What it does:** The Linux Audit Framework (`auditd`) records system calls, file access, privilege escalation attempts, and user commands at the kernel level. It's the most comprehensive logging system available on Linux.
 
-**Why it matters:** If your server is compromised, `auditd` logs tell you
-exactly what the attacker did: what files they read, what commands they ran,
-what processes they spawned. Regular logs only capture what applications
-choose to log; `auditd` captures everything at the kernel level.
+**Why it matters:** If your server is compromised, `auditd` logs tell you exactly what the attacker did: what files they read, what commands they ran, what processes they spawned. Regular logs only capture what applications choose to log; `auditd` captures everything at the kernel level.
 
 **How to apply:**
 
+**Step 1 — Install auditd:**
+
 ```bash
 apt install auditd audispd-plugins -y
+```
 
-# Example rules — add to /etc/audit/rules.d/hardening.rules
+**Step 2 — Configure log rotation** to prevent audit logs from filling your disk. Edit `/etc/audit/auditd.conf` and find/change these settings:
 
-# Log all commands executed by root
+```ini
+# Maximum size of a single log file in MB. When this is reached, auditd
+# rotates to a new file.
+max_log_file = 50
+
+# How many rotated log files to keep. With 50MB x 10 files = 500MB max
+# disk usage for audit logs. Adjust based on your disk size.
+num_logs = 10
+
+# What to do when max_log_file is reached: ROTATE creates a new file
+# (the safe choice). Other options: IGNORE (keep writing, risky),
+# SYSLOG (send to syslog), SUSPEND (stop logging), HALT (shut down the system).
+max_log_file_action = ROTATE
+
+# What to do when disk space is low. SUSPEND stops logging rather than
+# crashing your server. On a VPS with limited disk, this matters.
+space_left_action = SYSLOG
+admin_space_left_action = SUSPEND
+disk_full_action = SUSPEND
+```
+
+**Step 3 — Create audit rules.** Create the file `/etc/audit/rules.d/hardening.rules`:
+
+```
+# Delete any pre-existing rules (clean slate)
+-D
+
+# Set buffer size (how many audit messages to queue in kernel memory).
+# 8192 is generous — increase if you see "audit backlog limit exceeded" in dmesg.
+-b 8192
+
+# Log all commands executed by root. This is the most valuable rule —
+# if an attacker gets root, you'll see every command they ran.
+# -a = add rule, always,exit = log on syscall exit
+# -F arch=b64 = 64-bit syscalls, -F euid=0 = effective user is root
+# -S execve = the "execute program" syscall, -k = searchable tag
 -a always,exit -F arch=b64 -F euid=0 -S execve -k root_commands
 
-# Log changes to authentication files
+# Log changes to authentication files. These are the files an attacker
+# would modify to add a backdoor user, change passwords, or grant sudo.
+# -w = watch this file, -p wa = trigger on writes (w) and attribute changes (a)
 -w /etc/passwd -p wa -k auth_changes
 -w /etc/shadow -p wa -k auth_changes
 -w /etc/sudoers -p wa -k auth_changes
+-w /etc/sudoers.d -p wa -k auth_changes
 -w /etc/ssh/sshd_config -p wa -k ssh_changes
+-w /etc/ssh/sshd_config.d -p wa -k ssh_changes
 
-# Log privilege escalation
+# Log privilege escalation attempts
+# -p x = trigger on execute
 -w /usr/bin/sudo -p x -k privilege_escalation
 -w /usr/bin/su -p x -k privilege_escalation
 
-# Make audit config immutable (requires reboot to change)
+# Log changes to audit config itself (an attacker might try to disable auditing)
+-w /etc/audit/ -p wa -k audit_config_changes
+-w /etc/audit/rules.d/ -p wa -k audit_config_changes
+
+# Make audit config immutable — once loaded, rules cannot be changed
+# without a reboot. This prevents an attacker from disabling auditing
+# at runtime, even with root access. Remove this line while you're still
+# testing and tuning rules, then add it back once you're happy.
 -e 2
 ```
+
+**Step 4 — Load the rules and enable auditd:**
 
 ```bash
 systemctl enable auditd
 systemctl restart auditd
 
-# Search audit logs
-ausearch -k root_commands --start recent
-aureport --summary
+# Verify rules are loaded
+auditctl -l
 ```
 
+**Step 5 — Reading the logs.** auditd's raw logs (`/var/log/audit/audit.log`) are dense and hard to read. Use the reporting tools instead:
+
+```bash
+# Summary of all activity (the report you saw earlier)
+aureport --summary
+
+# What commands did root run recently?
+ausearch -k root_commands --start recent --interpret
+
+# Were any auth files modified?
+ausearch -k auth_changes --start recent --interpret
+
+# Any privilege escalation?
+ausearch -k privilege_escalation --start today --interpret
+
+# Failed syscalls (permission denials, AppArmor blocks, etc.)
+aureport --syscall --failed --summary
+
+# Anomaly events (unusual system behavior)
+aureport --anomaly
+```
+
+The `--interpret` flag translates numeric UIDs, syscall numbers, and timestamps into human-readable text. Without it, you'd see `uid=0` instead of `uid=root` and `syscall=59` instead of `syscall=execve`.
+
 **What could go wrong:**
-- **Disk space:** `auditd` generates a lot of logs. Configure log rotation
-  in `/etc/audit/auditd.conf` (set `max_log_file` and `num_logs`).
-- **Performance:** Auditing every system call has overhead. The rules above
-  are targeted (only root commands and auth files), keeping impact minimal.
+- **Disk space without rotation:** Without the log rotation config in step 2, auditd will write logs indefinitely. On an active server with Docker, audit logs can grow by hundreds of MB per day. The rotation config caps total usage at ~500MB.
+- **Performance:** Auditing every system call has overhead. The rules above are targeted (only root commands and auth files), keeping impact minimal. Avoid broad rules like `-a always,exit -S open` (log every file open) — these generate massive log volumes and measurable CPU overhead.
+- **The `-e 2` immutable flag:** Once loaded, you can't modify audit rules without rebooting. This is the point (it prevents an attacker from disabling auditing), but it means you need to reboot after any rule change. Leave `-e 2` commented out while testing, then uncomment when you're done tuning.
+- **Docker noise:** Docker container activity generates audit events (process creation, network syscalls, etc.). The rules above focus on host-level activity (root commands, auth files), so Docker noise is minimal. Avoid adding rules that watch `/var/lib/docker/` or you'll be flooded.
 
 > **Further reading:**
 > - [Red Hat: Linux Audit system reference](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/7/html/security_guide/chap-system_auditing) — the most thorough auditd guide available
@@ -1456,13 +1626,9 @@ aureport --summary
 
 ### 3.13 SSH two-factor authentication
 
-**What it does:** Adds a TOTP (Time-based One-Time Password) second factor
-to SSH, requiring both an SSH key and a 6-digit code from an authenticator
-app (Google Authenticator, Authy, etc.).
+**What it does:** Adds a TOTP (Time-based One-Time Password) second factor to SSH, requiring both an SSH key and a 6-digit code from an authenticator app (Google Authenticator, Authy, etc.).
 
-**Why it matters:** SSH keys can be stolen (malware on your laptop, backup
-leaked, key agent forwarded to a compromised host). 2FA means a stolen key
-alone isn't enough — the attacker also needs your phone.
+**Why it matters:** SSH keys can be stolen (malware on your laptop, backup leaked, key agent forwarded to a compromised host). 2FA means a stolen key alone isn't enough — the attacker also needs your phone.
 
 **How to apply:**
 
@@ -1491,28 +1657,17 @@ KbdInteractiveAuthentication yes
 ```
 
 **What could go wrong:**
-- **Locked out if you lose your phone:** Keep the emergency backup codes
-  from the initial setup. Store them securely (password manager, not on the
-  server).
-- **Automated tools break:** Any script that SSHes in (Ansible, CI/CD)
-  can't type a TOTP code. Exempt specific users or use Tailscale SSH for
-  automated access.
-- **Tailscale SSH bypasses 2FA:** Tailscale SSH authenticates via your
-  identity provider, not PAM. If you use Tailscale SSH exclusively,
-  PAM-based 2FA on OpenSSH becomes irrelevant (but still protects the
-  fallback OpenSSH path).
+- **Locked out if you lose your phone:** Keep the emergency backup codes from the initial setup. Store them securely (password manager, not on the server).
+- **Automated tools break:** Any script that SSHes in (Ansible, CI/CD) can't type a TOTP code. Exempt specific users or use Tailscale SSH for automated access.
+- **Tailscale SSH bypasses 2FA:** Tailscale SSH authenticates via your identity provider, not PAM. If you use Tailscale SSH exclusively, PAM-based 2FA on OpenSSH becomes irrelevant (but still protects the fallback OpenSSH path).
 
-**When to use:** High-value servers (production databases, payment systems)
-or if you don't use Tailscale. For a solo dev with Tailscale, the value is
-marginal — Tailscale already provides strong identity verification.
+**When to use:** High-value servers (production databases, payment systems) or if you don't use Tailscale. For a solo dev with Tailscale, the value is marginal — Tailscale already provides strong identity verification.
 
 ---
 
 ### 3.14 Cloudflare Tunnel
 
-**What it does:** Creates an outbound-only encrypted tunnel from your server
-to Cloudflare's edge network. Traffic reaches your server through this tunnel
-— no inbound ports needed at all.
+**What it does:** Creates an outbound-only encrypted tunnel from your server to Cloudflare's edge network. Traffic reaches your server through this tunnel — no inbound ports needed at all.
 
 **Why it matters:** This is the most aggressive network lockdown possible:
 - Zero inbound ports open (not even 80 or 443)
@@ -1557,17 +1712,11 @@ systemctl enable cloudflared
 ```
 
 **What could go wrong:**
-- **Cloudflare dependency:** Your site goes down if Cloudflare goes down.
-  For most users, Cloudflare's uptime exceeds what you'd achieve yourself.
-- **WebSocket support:** Cloudflare Tunnels support WebSockets. For game
-  servers with persistent connections, test latency — the extra hop through
-  Cloudflare adds 5-20ms.
-- **Cost:** The free plan covers most use cases. You pay for Cloudflare's
-  premium features, not the tunnel itself.
+- **Cloudflare dependency:** Your site goes down if Cloudflare goes down. For most users, Cloudflare's uptime exceeds what you'd achieve yourself.
+- **WebSocket support:** Cloudflare Tunnels support WebSockets. For game servers with persistent connections, test latency — the extra hop through Cloudflare adds 5-20ms.
+- **Cost:** The free plan covers most use cases. You pay for Cloudflare's premium features, not the tunnel itself.
 
-**Trade-off vs. Tailscale:** Tailscale secures admin access (SSH). Cloudflare
-Tunnel secures public access (web traffic). They complement each other:
-Tailscale for you, Cloudflare for your users.
+**Trade-off vs. Tailscale:** Tailscale secures admin access (SSH). Cloudflare Tunnel secures public access (web traffic). They complement each other: Tailscale for you, Cloudflare for your users.
 
 ---
 
@@ -1576,13 +1725,10 @@ Tailscale for you, Cloudflare for your users.
 **What it does:** Creates regular, tested, off-server copies of your data.
 
 **Why it matters:** Backups are security. They protect against:
-- **Ransomware:** Attacker encrypts your disk, demands payment. You restore
-  from backup instead.
-- **Accidental destruction:** `terraform destroy` on the wrong stack, `rm
-  -rf` in the wrong directory, a failed upgrade that corrupts data.
+- **Ransomware:** Attacker encrypts your disk, demands payment. You restore from backup instead.
+- **Accidental destruction:** `terraform destroy` on the wrong stack, `rm -rf` in the wrong directory, a failed upgrade that corrupts data.
 - **Hardware failure:** Hetzner disks can fail (rare but real).
-- **Compromised server:** If an attacker modifies your data, you can restore
-  a known-good state.
+- **Compromised server:** If an attacker modifies your data, you can restore a known-good state.
 
 **The 3-2-1 rule:**
 - **3** copies of your data (original + 2 backups)
@@ -1608,14 +1754,9 @@ echo '0 3 * * * root restic -r s3:... backup /var/lib/docker/volumes --quiet' \
 ```
 
 **What could go wrong:**
-- **Untested backups:** A backup you've never restored from is not a backup.
-  Test restoration quarterly.
-- **Backup credentials on the server:** If the attacker has your server and
-  your backup credentials, they can delete your backups too. Use append-only
-  backup credentials where possible.
-- **Backing up the wrong things:** For Docker/Coolify, the important data is
-  in `/var/lib/docker/volumes/` (databases, uploads) and your `.env` files.
-  The server itself is reproducible via Terraform + Ansible.
+- **Untested backups:** A backup you've never restored from is not a backup. Test restoration quarterly.
+- **Backup credentials on the server:** If the attacker has your server and your backup credentials, they can delete your backups too. Use append-only backup credentials where possible.
+- **Backing up the wrong things:** For Docker/Coolify, the important data is in `/var/lib/docker/volumes/` (databases, uploads) and your `.env` files. The server itself is reproducible via Terraform + Ansible.
 
 > **Further reading:**
 > - [restic documentation](https://restic.readthedocs.io/) — excellent backup tool with encryption, deduplication, and S3 support
@@ -1625,13 +1766,54 @@ echo '0 3 * * * root restic -r s3:... backup /var/lib/docker/volumes --quiet' \
 
 ## Coolify-specific hardening
 
-Coolify has a unique lifecycle that requires a two-phase security approach.
+Coolify has a unique lifecycle that requires a two-phase security approach. If you're hardening a server that already has Coolify running, read the SSH compatibility section first — the SSH hardening from section 1.2 will break Coolify's server management if not adjusted.
+
+> **When to apply:** If following this guide sequentially and planning to use Coolify, read this entire section first. Apply the SSH Match block during section 1.2 (before installing Coolify). Apply the DOCKER-USER rules after Coolify is installed and you've audited `docker ps` for exposed ports.
+
+### SSH hardening and Coolify compatibility
+
+**The problem:** Coolify manages your server by SSHing into it as `root` from inside its own Docker container (via `host.docker.internal` on port 22). The SSH hardening in section 1.2 blocks this in two ways:
+
+- `PermitRootLogin no` — blocks root login entirely
+- `AllowUsers rico` — only allows your user, not root
+
+After applying section 1.2, Coolify's dashboard will show "Not reachable & Not usable by Coolify" on the localhost server. Deploys, container management, and server validation all stop working.
+
+**The fix:** Allow root login *only* from Docker's internal network (private IP ranges), while keeping it blocked from the public internet. Edit `/etc/ssh/sshd_config.d/hardening.conf`:
+
+First, update the `AllowUsers` line to include root:
+
+```
+AllowUsers rico root
+```
+
+Then add a `Match` block at the **very end** of the file (Match blocks must come last in SSH config — any directives after a Match block are scoped to that match, not global):
+
+```
+# Allow Coolify to SSH in as root from Docker's internal network.
+# prohibit-password means key-only (no password auth).
+# This does NOT allow root login from the internet — the global
+# PermitRootLogin no still applies to all other addresses.
+Match Address 172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1
+    PermitRootLogin prohibit-password
+```
+
+Validate and restart:
+
+```bash
+sshd -t && systemctl restart sshd
+```
+
+Then go to Coolify's dashboard → Servers → localhost → click "Validate Server". It should go green.
+
+**Why this is safe:** The `Match Address` block only applies to connections originating from private RFC 1918 IP ranges and localhost — these are Docker's internal bridge networks. Traffic from the public internet arrives on your server's public IP and matches the global `PermitRootLogin no` rule instead. An attacker on the internet cannot spoof a source address from these ranges because your kernel's `rp_filter` (section 2.2) drops packets with forged source addresses.
+
+**If you're setting up Coolify on a fresh server:** Apply the SSH hardening from section 1.2 with the `Match` block included from the start, before installing Coolify. This avoids the "it was working, now it's broken" moment.
 
 ### Phase 1 — Bootstrap (ports open)
 
 During initial setup, Coolify needs:
-- **Port 8000:** Dashboard web UI (used to create admin account, configure
-  domain, set up HTTPS)
+- **Port 8000:** Dashboard web UI (used to create admin account, configure domain, set up HTTPS)
 - **Port 6001/6002:** WebSocket connections for real-time dashboard updates
 
 These must be accessible from your IP to complete the initial setup.
@@ -1655,27 +1837,81 @@ ufw delete allow 6001/tcp
 ufw delete allow 6002/tcp
 ```
 
-After lockdown, Coolify's dashboard is only accessible via its domain
-(proxied through Traefik on ports 80/443). If you have Tailscale, you can
-also access it via `http://<tailscale-ip>:8000`.
+After lockdown, Coolify's dashboard is only accessible via its domain (proxied through Traefik on ports 80/443). If you have Tailscale, you can also access it via `http://<tailscale-ip>:8000`.
 
 ### Docker port safety with Coolify
 
-Coolify uses Traefik as its reverse proxy. Application containers should NOT
-have their ports published directly. Instead, Traefik routes traffic based on
-domain names:
+Coolify uses Traefik as its reverse proxy. Application containers should NOT have their ports published directly. Instead, Traefik routes traffic based on domain names:
 
 ```
 Internet → :443 → Traefik → Docker internal network → Your container :3000
 ```
 
-This means your application container doesn't need any published ports — it's
-only accessible via Traefik's internal Docker network. This is the correct
-and secure setup.
+This means your application container doesn't need any published ports — it's only accessible via Traefik's internal Docker network. This is the correct and secure setup.
 
-**Red flag:** If you see your app containers with `-p 0.0.0.0:3000:3000` in
-`docker ps`, something is misconfigured. The port is accessible from the
-internet regardless of UFW.
+**Red flag:** If you see your app containers with `-p 0.0.0.0:3000:3000` in `docker ps`, something is misconfigured. The port is accessible from the internet regardless of UFW.
+
+### Auditing what Coolify exposes
+
+After setting up Coolify and deploying services, run `docker ps` and look at the PORTS column. You'll likely see something like this:
+
+```
+# GOOD — port only on Docker internal network (no 0.0.0.0)
+tiao-client     80/tcp
+postgres        5432/tcp
+valkey          6379/tcp
+
+# EXPECTED — Traefik needs 80/443 public for web traffic
+coolify-proxy   0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp
+
+# PROBLEM — additional ports bound to 0.0.0.0
+coolify-proxy   0.0.0.0:8080->8080/tcp     ← Traefik dashboard/API
+glitchtip-web   0.0.0.0:8001->8001/tcp     ← Error tracking UI
+```
+
+When you see `0.0.0.0:<port>`, that port is bound to all network interfaces on the host. As explained in section 2.4, Docker publishes these ports by inserting iptables rules that bypass UFW entirely. The only reason these aren't reachable from the internet right now is the Hetzner Cloud Firewall — which only allows ports 22, 80, and 443 inbound. But relying on a single layer is fragile:
+
+- If you (or Terraform, or a script) ever modify the Hetzner firewall to open more ports, these services are instantly exposed
+- Traffic between VMs in the same Hetzner project bypasses the cloud firewall entirely, so another compromised VM could reach them
+- It's a single point of failure — defense in depth means not trusting any one layer
+
+**Why this happens:** Coolify and the services it deploys configure their Docker port bindings. You don't always control how a third-party Docker image publishes ports. Traefik's `8080` is its dashboard/API port (enabled by Coolify's Traefik config with `--api.insecure=true`). Services like GlitchTip may expose management ports alongside their main application port. The result is `0.0.0.0` bindings you didn't explicitly ask for.
+
+**How to fix — lock down with DOCKER-USER iptables rules:**
+
+The `DOCKER-USER` chain (see section 2.4, Option B) lets you add firewall rules that are evaluated *before* Docker's own rules. This is the only reliable way to firewall Docker-published ports from the host level:
+
+```bash
+# Block external access to Traefik dashboard and any other leaked ports.
+# eth0 is the public interface — this blocks traffic from the internet
+# while still allowing localhost and Docker-internal traffic to work.
+iptables -I DOCKER-USER -i eth0 -p tcp --dport 8080 -j DROP
+iptables -I DOCKER-USER -i eth0 -p tcp --dport 8001 -j DROP
+
+# Add more rules here for any other 0.0.0.0 ports you find in docker ps.
+# The pattern is always: iptables -I DOCKER-USER -i eth0 -p tcp --dport <PORT> -j DROP
+```
+
+Verify it works:
+
+```bash
+# From the VPS itself — should still respond (traffic comes from lo, not eth0)
+curl -s http://localhost:8080
+
+# From your local machine — should now be blocked even without Hetzner firewall
+curl -s http://<your-vps-ip>:8080
+```
+
+Persist the rules across reboots:
+
+```bash
+apt install iptables-persistent -y
+netfilter-persistent save
+```
+
+**What this does internally:** The `DOCKER-USER` chain is evaluated in the `FORWARD` chain before Docker's own `DOCKER` chain. The `-i eth0` match means the rule only applies to packets arriving from the external network interface — traffic from `localhost` (loopback) and Docker's internal bridge networks passes through unaffected. So your services still work internally (Traefik can still reach containers, you can still `curl localhost:8080` from the VPS), but the ports are unreachable from outside.
+
+**Ongoing maintenance:** Every time you deploy a new service through Coolify, re-check `docker ps` for new `0.0.0.0` bindings. If a new service publishes a port you didn't expect, add another DOCKER-USER rule and run `netfilter-persistent save` to persist it.
 
 ---
 
@@ -1683,10 +1919,8 @@ internet regardless of UFW.
 
 ### "I locked myself out of SSH"
 
-1. **Hetzner web console:** Cloud Console → Server → Console (VNC). Gives you
-   a terminal directly on the VM, bypassing SSH entirely.
-2. **Hetzner rescue mode:** Boot into a rescue system, mount your disk, fix
-   `/etc/ssh/sshd_config` or `/etc/ufw/user.rules`.
+1. **Hetzner web console:** Cloud Console → Server → Console (VNC). Gives you a terminal directly on the VM, bypassing SSH entirely.
+2. **Hetzner rescue mode:** Boot into a rescue system, mount your disk, fix `/etc/ssh/sshd_config` or `/etc/ufw/user.rules`.
 3. **Hetzner API:** `hcloud server reset <id>` if the server is hung.
 
 ### "fail2ban banned my IP"
@@ -1728,8 +1962,7 @@ echo 'Unattended-Upgrade::Automatic-Reboot "false";' > /etc/apt/apt.conf.d/99-no
 
 ## Hardening checklist
 
-Use this to verify your server after manual setup or to audit an existing
-server:
+Use this to verify your server after manual setup or to audit an existing server:
 
 ```
 Tier 1:
@@ -1780,8 +2013,7 @@ This guide synthesizes recommendations from:
 
 ## Learning Resources
 
-Curated reading for building a deeper understanding of Linux security.
-Organized from "start here" to "go deeper."
+Curated reading for building a deeper understanding of Linux security. Organized from "start here" to "go deeper."
 
 ### Start here — the best comprehensive guides
 

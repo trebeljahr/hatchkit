@@ -23,7 +23,10 @@ help:
 	@echo "  Coolify (app stack):"
 	@echo "    coolify-setup  Create app + DB in Coolify     STACK=<name>"
 	@echo ""
-	@echo "  Stacks: hardened-vps, node-realtime"
+	@echo "  Stacks: hardened-vps, node-realtime, gpu-inference, dns-only"
+	@echo ""
+	@echo "  CLI:"
+	@echo "    create         Interactive project scaffolder"
 
 # Full security hardening (Tier 1 + Tier 2 from docs/hardening-guide.md)
 harden:
@@ -57,3 +60,6 @@ tf-destroy:
 
 coolify-setup:
 	./scripts/setup-coolify-stack.sh --config stacks/$(STACK).env
+
+create:
+	cd cli && npm run dev

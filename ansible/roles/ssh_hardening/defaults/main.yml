@@ -8,7 +8,14 @@ ssh_pubkey_authentication: "yes"
 
 # Users allowed to SSH in. Must match actual user on the system.
 ssh_allowed_users:
-  - root
+  - rico
+
+# Coolify compatibility: allow root login from Docker internal networks only.
+# When true, adds a Match block that permits root key-based SSH from private
+# IP ranges (Docker bridges), and appends 'root' to AllowUsers automatically.
+# See docs/hardening-guide.md "Coolify-specific hardening" section.
+ssh_coolify_compatibility: false
+ssh_coolify_match_addresses: "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1"
 
 # Session limits
 ssh_max_auth_tries: 3

@@ -1,0 +1,23 @@
+import { Router } from "express";
+import multer from "multer";
+import { randomUUID } from "node:crypto";
+import { uploadToS3, getPresignedUrl } from "./s3.js";
+
+const upload = multer({ limits: { fileSize: 50 * 1024 * 1024 } }); // 50 MB
+
+export const uploadRouter = Router();
+
+uploadRouter.post("/", upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    res.status(400).json({ error: "No file uploaded" });
+    return;
+  }
+
+  const ext = req.file.originalname.split(".").pop();
+  const key = `uploads/${randomUUID()}.${ext}`;
+
+  await uploadToS3(key, req.file.buffer, req.file.mimetype);
+  const url = await getPresignedUrl(key);
+
+  res.json({ key, url });
+});

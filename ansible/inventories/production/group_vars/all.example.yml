@@ -21,11 +21,19 @@ base_packages:
 
 swapfile_size: 2G
 
-# Services to disable on the server (safe defaults for Hetzner VPS)
+# Services to disable on the server (safe defaults for Hetzner VPS).
+# Services not installed are silently skipped.
 disabled_services:
   - snapd.socket
   - snapd.service
   - snapd.seeded.service
+  - multipathd.service
+  - ModemManager.service
+  - bluetooth.service
+  - cups.service
+  - cups-browsed.service
+  - avahi-daemon.service
+  - avahi-daemon.socket
 
 # fail2ban
 fail2ban_maxretry: 3
@@ -63,10 +71,15 @@ ssh_password_authentication: "no"
 ssh_kbd_interactive_authentication: "no"
 ssh_pubkey_authentication: "yes"
 ssh_allowed_users:
-  - root
+  - rico
 ssh_max_auth_tries: 3
 ssh_client_alive_interval: 300
 ssh_client_alive_count_max: 2
+
+# Coolify compatibility: allow root login from Docker internal networks.
+# Set to true if running Coolify. See docs/hardening-guide.md Coolify section.
+ssh_coolify_compatibility: false
+# ssh_coolify_match_addresses: "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1"
 
 # ---------------------------------------------------------------------------
 # UFW firewall
@@ -83,7 +96,14 @@ ufw_allowed_tcp_ports:
 #   - 6002
 
 ufw_restrict_ssh_to_tailscale: false
+
+# Docker-UFW mitigation: block Docker-published ports from external access.
+# When enabled, only ports in ufw_docker_allowed_ports are reachable from
+# the internet. Coolify ports like 8080 (Traefik dashboard) are blocked.
 ufw_docker_mitigation: false
+# ufw_docker_allowed_ports:
+#   - "80"
+#   - "443"
 
 # ---------------------------------------------------------------------------
 # Tailscale

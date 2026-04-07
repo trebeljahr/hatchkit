@@ -11,7 +11,7 @@ PubkeyAuthentication {{ ssh_pubkey_authentication }}
 PermitEmptyPasswords no
 MaxAuthTries {{ ssh_max_auth_tries }}
 AuthenticationMethods publickey
-AllowUsers {{ ssh_allowed_users | join(' ') }}
+AllowUsers {{ ssh_allowed_users | join(' ') }}{% if ssh_coolify_compatibility and 'root' not in ssh_allowed_users %} root{% endif %}
 
 # ===========================================================================
 # Session limits
@@ -39,3 +39,14 @@ KexAlgorithms {{ ssh_kex_algorithms | regex_replace('\\s+', '') }}
 Ciphers {{ ssh_ciphers | regex_replace('\\s+', '') }}
 MACs {{ ssh_macs | regex_replace('\\s+', '') }}
 HostKeyAlgorithms ssh-ed25519,ssh-ed25519-cert-v01@openssh.com
+{% if ssh_coolify_compatibility %}
+
+# ===========================================================================
+# Coolify compatibility — allow root login from Docker internal networks
+# ===========================================================================
+# Coolify manages the server by SSHing in as root from its Docker container
+# (via host.docker.internal). The global PermitRootLogin no still applies to
+# all other addresses. Match blocks must come last in sshd config.
+Match Address {{ ssh_coolify_match_addresses }}
+    PermitRootLogin prohibit-password
+{% endif %}
