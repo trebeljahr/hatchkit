@@ -122,12 +122,17 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
 
   const { baseDomain, subdomain } = parseDomain(domain);
 
-  // Deploy target
+  // Deploy target. Non-interactive default is "new" rather than
+  // "existing": "existing" has no sensible default (it needs a real
+  // serverId + serverIp that only make sense with a configured
+  // Coolify), while "new" provisions a Hetzner server with defaults
+  // (cpx21, nbg1). Users who want existing pass `--deploy-target
+  // existing` + serverId/serverIp via --config.
   const deployTarget = await presetOrPrompt(
     presets.deployTarget,
     nonInteractive,
     selectDeployTarget,
-    "existing",
+    "new",
   );
 
   let serverId: number | undefined;
