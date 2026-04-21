@@ -75,6 +75,30 @@ export class CoolifyApi {
   async createProject(name: string): Promise<{ id: number; name: string }> {
     return this.request("POST", "/projects", { name });
   }
+
+  /** List Coolify apps/services so callers can resolve a UUID by name. */
+  async listApplications(): Promise<Array<{ uuid: string; name: string; description?: string }>> {
+    return this.request("GET", "/applications");
+  }
+
+  /** Upsert an env variable on a Coolify application. The Coolify API
+   *  accepts multiple envs in one call so this is idempotent. */
+  async setAppEnv(
+    appUuid: string,
+    envs: Record<string, string>,
+    options: { isPreview?: boolean } = {},
+  ): Promise<void> {
+    const body = {
+      data: Object.entries(envs).map(([key, value]) => ({
+        key,
+        value,
+        is_preview: options.isPreview ?? false,
+        is_build_time: false,
+        is_literal: true,
+      })),
+    };
+    await this.request("PATCH", `/applications/${appUuid}/envs/bulk`, body);
+  }
 }
 
 /** Verify Coolify connection. Returns version string or throws. */

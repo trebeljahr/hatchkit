@@ -20,6 +20,7 @@ import {
 import { runCoolifySetup } from "./deploy/coolify.js";
 import { setupGitHub } from "./deploy/github.js";
 import { deployMlServices } from "./deploy/gpu.js";
+import { pushProjectKeyToCoolify, showProjectKey } from "./deploy/keys.js";
 import { runTerraform } from "./deploy/terraform.js";
 import { collectProjectConfig } from "./prompts.js";
 import { scaffoldApp } from "./scaffold/app.js";
@@ -78,8 +79,33 @@ async function main(): Promise<void> {
       if (args.includes("--help")) return printHelp("update");
       await handleUpdate();
       break;
+    case "keys":
+      if (args.includes("--help") && args.length === 2) return printHelp("keys");
+      await handleKeys();
+      break;
     default:
       printHelp();
+  }
+}
+
+async function handleKeys(): Promise<void> {
+  const sub = args[1];
+  const projectName = args[2];
+  if (!sub || !projectName) {
+    console.log("Usage: devops-cli keys <show|push> <project-name>");
+    process.exit(1);
+  }
+  switch (sub) {
+    case "show":
+      await showProjectKey(projectName);
+      break;
+    case "push":
+      await pushProjectKeyToCoolify(projectName);
+      break;
+    default:
+      console.log(`Unknown keys subcommand: ${sub}`);
+      console.log("Valid: show, push");
+      process.exit(1);
   }
 }
 
@@ -106,9 +132,8 @@ async function handleCreate(): Promise<void> {
   if (forceNoDeploy) config.runDeployment = false;
 
   // Ensure needed providers are configured (lazy prompting).
-  // Coolify is only needed when deploying OR when picking from
-  // existing servers. This lets scaffold-only + --no-deploy runs
-  // skip the Coolify setup prompt entirely.
+  // Coolify + Hetzner are only needed when actually deploying —
+  // scaffold-only + --no-deploy runs skip their setup prompts.
   if (config.deployTarget === "existing" || config.runDeployment) {
     await ensureCoolify();
   }
@@ -117,7 +142,7 @@ async function handleCreate(): Promise<void> {
   if (config.createGithubRepo) {
     await ensureGitHub();
   }
-  if (config.deployTarget === "new") {
+  if (config.deployTarget === "new" && config.runDeployment) {
     await ensureHetzner();
   }
   if (
@@ -162,7 +187,7 @@ async function handleCreate(): Promise<void> {
   }
 
   // Step 1: Scaffold app repo
-  let scaffoldResult: { ports: { server: number; client: number; nativeHmr?: number } } | undefined;
+  let scaffoldResult: Awaited<ReturnType<typeof scaffoldApp>> | undefined;
   if (config.scaffoldRepo) {
     scaffoldResult = await scaffoldApp(config, appDir);
     const { ports } = scaffoldResult;
@@ -172,6 +197,10 @@ async function handleCreate(): Promise<void> {
           (ports.nativeHmr ? `, native HMR=${ports.nativeHmr}` : ""),
       ),
     );
+    if (scaffoldResult.dotenvx) {
+      const { printDotenvxSummary } = await import("./scaffold/dotenvx.js");
+      printDotenvxSummary(scaffoldResult.dotenvx, config.name);
+    }
   }
 
   if (config.dryRun) {
@@ -195,10 +224,14 @@ async function handleCreate(): Promise<void> {
         ),
       );
     } else {
-      const shouldInstall = await confirm({
-        message: "Install dependencies now (pnpm install)?",
-        default: true,
-      });
+      // In non-interactive mode, auto-accept the install so `--yes`
+      // doesn't stall waiting on a y/n prompt.
+      const shouldInstall = nonInteractive
+        ? true
+        : await confirm({
+            message: "Install dependencies now (pnpm install)?",
+            default: true,
+          });
       if (shouldInstall) {
         const res = await exec("pnpm", ["install"], {
           cwd: appDir,
@@ -235,6 +268,23 @@ async function handleCreate(): Promise<void> {
   // Step 6: Coolify setup
   if (config.runDeployment) {
     await runCoolifySetup(config, INFRA_ROOT);
+
+    // Push the dotenvx private key to Coolify so the starter's server
+    // can decrypt .env.production at runtime. Best-effort — if the
+    // Coolify app doesn't exist yet (race with the stack script), we
+    // print the manual command instead of failing the whole flow.
+    if (scaffoldResult?.dotenvx) {
+      try {
+        await pushProjectKeyToCoolify(config.name);
+      } catch (err) {
+        console.log(chalk.yellow(`  Couldn't auto-push dotenvx key: ${(err as Error).message}`));
+        console.log(
+          chalk.dim(
+            `  Push manually once the Coolify app exists: devops-cli keys push ${config.name}`,
+          ),
+        );
+      }
+    }
   }
 
   // Step 7: Deploy ML services
@@ -440,7 +490,7 @@ async function handleConfig(): Promise<void> {
   }
 }
 
-function printHelp(topic?: "create" | "init" | "config" | "update"): void {
+function printHelp(topic?: "create" | "init" | "config" | "update" | "keys"): void {
   if (topic === "create") {
     console.log(`
   ${chalk.bold("devops-cli create")} — scaffold a new project
@@ -470,6 +520,24 @@ function printHelp(topic?: "create" | "init" | "config" | "update"): void {
   Prompts for: GitHub (via gh CLI), Coolify (URL + token), optionally
   Hetzner Cloud, DNS provider, S3, and GPU platforms. Tokens go to the
   OS keychain; metadata to ${chalk.dim(getConfigPath())}.
+`);
+    return;
+  }
+  if (topic === "keys") {
+    console.log(`
+  ${chalk.bold("devops-cli keys")} — manage per-project dotenvx private keys
+
+  ${chalk.bold("Subcommands:")}
+    keys show <project>   Print DOTENV_PRIVATE_KEY_PRODUCTION from the
+                          OS keychain. Useful for piping into pbcopy or
+                          pasting into Coolify / CI secret stores.
+    keys push <project>   Upsert the key onto the project's Coolify
+                          app via the Coolify API. Assumes the app
+                          already exists (created by \`create\` with
+                          runDeployment or manually).
+
+  The key is generated at scaffold time and lives in macOS Keychain /
+  libsecret under the "devops-cli" service. Never written to git.
 `);
     return;
   }
@@ -508,6 +576,8 @@ function printHelp(topic?: "create" | "init" | "config" | "update"): void {
   ${chalk.bold("Commands:")}
     create          Scaffold a new project (default)
     update          Add features to an already-scaffolded project (run in project dir)
+    keys show <p>   Print the dotenvx private key for a project
+    keys push <p>   Push the key onto the project's Coolify app
     init            Run first-time setup / onboarding
     config          Show provider status
     config add <p>  Configure a provider (coolify, hetzner, dns, s3, modal, etc.)

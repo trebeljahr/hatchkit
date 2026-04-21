@@ -21,8 +21,13 @@ import { tmpdir } from "node:os";
 // imports above the `process.env = ...` line, so config.ts would
 // otherwise read the real `~/Library/Preferences/devops-cli-nodejs/`
 // path before the env var is set. Dynamic imports (below) run AFTER
-// this assignment, so the isolated path actually takes effect.
+// this assignment, so the isolated paths actually take effect.
 process.env.DEVOPS_CLI_CONF_DIR = mkdtempSync(join(tmpdir(), "scaffold-conf-"));
+// Same story for the OS keychain: every scaffold mints a dotenvx
+// private key and stashes it under the "devops-cli" service. Route
+// the test suite to a throwaway service so we don't pollute the real
+// user's keychain. clearAllSecrets() at the end wipes it.
+process.env.DEVOPS_CLI_KEYTAR_SERVICE = `devops-cli-test-${process.pid}`;
 
 const { scaffoldApp } = await import("./src/scaffold/app.js");
 type Feature = import("./src/prompts.js").Feature;
@@ -404,6 +409,78 @@ console.log("\n── update: manifest round-trip for web-only project ───
   }
 }
 
+// dotenvx: scaffold a project with some real + some missing env values,
+// verify .env.production has a public-key header + one encrypted value
+// + one plaintext CHANGE_ME_<KEY>, and that the private key ends up in
+// the (isolated) keychain.
+console.log("\n── dotenvx: .env.production is sealed correctly ─────────────────────────────");
+{
+  const d = mkdtempSync(join(tmpdir(), "scaffold-dotenvx-"));
+  try {
+    const c = cfg("dotenvx-test", ["stripe"]);
+    c.envValues = {
+      MONGODB_URI: "mongodb+srv://real-host/real-db",
+      STRIPE_SECRET_KEY: "sk_live_REAL_VALUE",
+      // STRIPE_WEBHOOK_SECRET deliberately omitted → CHANGE_ME path.
+    };
+    const result = await scaffoldApp(c, d);
+
+    const envProd = readFileSync(join(d, "packages/server/.env.production"), "utf-8");
+    const envKeys = readFileSync(join(d, "packages/server/.env.keys"), "utf-8");
+    const { getSecret, SECRET_KEYS } = await import("./src/utils/secrets.js");
+    const keychainKey = await getSecret(SECRET_KEYS.dotenvxPrivateKey(c.name));
+
+    const checks: Check[] = [
+      ["dotenvx result is populated", !!result.dotenvx],
+      [
+        "encryptedKeys includes STRIPE_SECRET_KEY",
+        result.dotenvx?.encryptedKeys.includes("STRIPE_SECRET_KEY") ?? false,
+      ],
+      [
+        "placeholderKeys includes STRIPE_WEBHOOK_SECRET",
+        result.dotenvx?.placeholderKeys.includes("STRIPE_WEBHOOK_SECRET") ?? false,
+      ],
+      [
+        ".env.production has DOTENV_PUBLIC_KEY_PRODUCTION",
+        /DOTENV_PUBLIC_KEY_PRODUCTION=/.test(envProd),
+      ],
+      [
+        "STRIPE_SECRET_KEY is encrypted (no plaintext sk_live_REAL_VALUE in file)",
+        !envProd.includes("sk_live_REAL_VALUE") && /STRIPE_SECRET_KEY="encrypted:/.test(envProd),
+      ],
+      [
+        "STRIPE_WEBHOOK_SECRET is plaintext CHANGE_ME",
+        /STRIPE_WEBHOOK_SECRET="?CHANGE_ME_STRIPE_WEBHOOK_SECRET"?/.test(envProd),
+      ],
+      [
+        "BETTER_AUTH_SECRET auto-generated + encrypted",
+        !envProd.includes("CHANGE_ME_BETTER_AUTH_SECRET") &&
+          /BETTER_AUTH_SECRET="encrypted:/.test(envProd),
+      ],
+      [
+        ".env.keys has DOTENV_PRIVATE_KEY_PRODUCTION (on disk, gitignored)",
+        /DOTENV_PRIVATE_KEY_PRODUCTION=/.test(envKeys),
+      ],
+      [
+        "private key mirrored into (isolated) keychain",
+        typeof keychainKey === "string" && keychainKey.length > 0,
+      ],
+      [
+        "keychain key matches .env.keys",
+        keychainKey === result.dotenvx?.privateKey,
+      ],
+    ];
+    let ok = true;
+    for (const [n, c] of checks) {
+      console.log(`  ${c ? "✓" : "✗"} ${n}`);
+      if (!c) ok = false;
+    }
+    results.dotenvx = ok;
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+}
+
 // Port availability check — must run LAST in the port-test sequence
 // because it aggressively reserves most of the server range, which
 // would starve any later scaffold.
@@ -574,7 +651,12 @@ console.log("\n── existing-dir guard ─────────────
   }
 }
 
-// Clean up the isolated config dir.
+// Clean up the isolated config dir + every keychain entry scoped to
+// the throwaway service.
+{
+  const { clearAllSecrets } = await import("./src/utils/secrets.js");
+  await clearAllSecrets();
+}
 rmSync(process.env.DEVOPS_CLI_CONF_DIR!, { recursive: true, force: true });
 
 console.log("\n=== SUMMARY ===");

@@ -13,7 +13,10 @@
 
 import keytar from "keytar";
 
-const SERVICE = "devops-cli";
+// Tests set DEVOPS_CLI_KEYTAR_SERVICE to a throwaway value so they
+// don't pollute the real user's keychain with scaffold-test artifacts.
+// In normal runs this is unset and everything lives under "devops-cli".
+const SERVICE = process.env.DEVOPS_CLI_KEYTAR_SERVICE ?? "devops-cli";
 
 /** Well-known secret keys used across the CLI. New secrets should add
  *  their key here so `clearAllSecrets` can reach them on reset. */
@@ -25,6 +28,10 @@ export const SECRET_KEYS = {
   s3AccessKey: (provider: string) => `s3:${provider}:access-key`,
   s3SecretKey: (provider: string) => `s3:${provider}:secret-key`,
   gpuApiKey: (platform: string) => `gpu:${platform}:api-key`,
+  /** Per-scaffolded-project dotenvx private key for .env.production.
+   *  Stored in the OS keychain so the CLI's on-disk state never holds
+   *  decryption material for the starter's encrypted env. */
+  dotenvxPrivateKey: (projectName: string) => `dotenvx:${projectName}:production-private-key`,
 } as const;
 
 export async function getSecret(key: string): Promise<string | null> {

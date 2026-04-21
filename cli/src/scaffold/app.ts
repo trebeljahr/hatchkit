@@ -31,6 +31,7 @@ import type { MlService, ProjectConfig } from "../prompts.js";
 import { explainFsError } from "../utils/errors.js";
 import { type ProjectPorts, pickProjectPorts } from "../utils/ports.js";
 import { getCliVersion } from "../utils/version.js";
+import { type DotenvxSeedResult, seedDotenvxProduction } from "./dotenvx.js";
 import { MANIFEST_FILENAME, toManifest, writeManifest } from "./manifest.js";
 import {
   stripPackageJsonBuildBlock,
@@ -54,6 +55,9 @@ const STARTER_ROOT = join(MONOREPO_ROOT, "starter");
 export interface ScaffoldResult {
   modifications: string[];
   ports: ProjectPorts;
+  /** Populated by seedDotenvxProduction on real (non-dry-run) scaffolds.
+   *  The private key is also mirrored into the OS keychain. */
+  dotenvx?: DotenvxSeedResult;
 }
 
 /** Scaffold a new app by copying the starter template and customizing it. */
@@ -349,7 +353,15 @@ async function runScaffoldSteps(
   writeManifest(outputDir, toManifest(config, ports, getCliVersion()));
   modifications.push(".devops-cli.json (project manifest)");
 
-  return { modifications, ports };
+  // Seed .env.production via dotenvx: encrypt supplied values, mint a
+  // keypair, mirror the private key into the OS keychain. Unsupplied
+  // keys land as plaintext CHANGE_ME_<KEY> placeholders.
+  const dotenvx = await seedDotenvxProduction(outputDir, config, config.envValues ?? {});
+  modifications.push(
+    `dotenvx: ${dotenvx.encryptedKeys.length} encrypted, ${dotenvx.placeholderKeys.length} placeholders`,
+  );
+
+  return { modifications, ports, dotenvx };
 }
 
 /** Dry run — list what would happen without touching disk. */

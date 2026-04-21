@@ -1,0 +1,28 @@
+name: gitleaks
+
+# Runs secret scanning on every push + PR across the whole monorepo.
+# Catches accidentally-committed tokens (AWS, Stripe, GitHub, dotenvx
+# .env.keys contents, etc.). Out-of-the-box rules catch the common
+# providers; tune via .gitleaks.toml if needed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # full history scan on pushes to main
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
+          GITLEAKS_ENABLE_SUMMARY: "true"
