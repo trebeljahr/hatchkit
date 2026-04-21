@@ -2,10 +2,26 @@
 *.log
 *.tmp
 .ansible/
-.env
-.env.*
 node_modules/
 .DS_Store
+
+# Environment files. The broad `.env*` pattern also catches:
+#   .env.keys         — dotenvx private keys (NEVER commit)
+#   .env.production.local, .env.*.local — local overrides
+# If you want to commit a plaintext .env.example as reference, name
+# it explicitly and add `!.env.example` below.
+.env
+.env.*
+.env.keys
+!.env.example
+
+# Anything else marked explicitly secret (belt-and-suspenders)
+*.secret
+*.secret.*
+secrets/
+*.pem
+*.key
+!**/authorized_keys
 
 # Terraform
 # State files contain ALL resource attributes including secrets.

@@ -1,0 +1,32 @@
+name: gitleaks
+
+# Scan every push + PR for accidentally-committed secrets (API keys,
+# tokens, private keys, dotenvx .env.keys contents, etc.). Gitleaks
+# runs a battery of regex + entropy checks — it catches the usual
+# suspects (AWS, Stripe, GitHub tokens) out of the box.
+#
+# If a scan fails: the offending commit is flagged in the PR view.
+# Rotate the leaked secret immediately; fixing the history doesn't
+# unleak a credential once it's been pushed publicly.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # gitleaks scans full history on pushes
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
+          GITLEAKS_ENABLE_SUMMARY: "true"
