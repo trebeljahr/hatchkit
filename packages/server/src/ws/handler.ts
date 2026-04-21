@@ -3,7 +3,7 @@ import type { Server } from "http";
 import type { ClientToServerMessage } from "@starter/shared";
 import { authenticateUpgrade } from "./auth.js";
 import { RoomManager } from "./rooms.js";
-import { env } from "../config/env.js";
+import { env, getTrustedOrigins } from "../config/env.js";
 
 const PING_INTERVAL_MS = 10_000;
 const PONG_TIMEOUT_MS = 5_000;
@@ -25,9 +25,10 @@ export function setupWebSocket(server: Server): WebSocketServer {
     }
 
     // Origin validation in production
-    if (env.isProduction && env.FRONTEND_URL) {
+    if (env.isProduction) {
+      const trusted = getTrustedOrigins();
       const origin = req.headers.origin;
-      if (origin && !env.FRONTEND_URL.includes(origin)) {
+      if (origin && trusted.length > 0 && !trusted.includes(origin)) {
         socket.destroy();
         return;
       }

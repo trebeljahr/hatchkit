@@ -1,7 +1,7 @@
 import { betterAuth } from "better-auth";
 import { mongodbAdapter } from "better-auth/adapters/mongodb";
 import { MongoClient } from "mongodb";
-import { env } from "../config/env.js";
+import { env, getTrustedOrigins } from "../config/env.js";
 import { sendEmail } from "../services/email.js";
 
 /**
@@ -24,7 +24,7 @@ export async function initAuth(): Promise<void> {
     database: mongodbAdapter(db),
     secret: env.BETTER_AUTH_SECRET,
     baseURL: env.BETTER_AUTH_URL,
-    trustedOrigins: env.FRONTEND_URL ? [env.FRONTEND_URL] : [],
+    trustedOrigins: getTrustedOrigins(),
 
     emailAndPassword: {
       enabled: true,

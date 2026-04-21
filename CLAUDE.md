@@ -28,6 +28,63 @@ pnpm run test:e2e                     # Playwright E2E tests
 pnpm run build                        # build all packages
 ```
 
+## Desktop (Electron) + Mobile (Capacitor)
+
+Both targets wrap the Next.js client as a **static export** (`output: "export"`).
+The Express server is always remote — the client talks to it over HTTPS.
+
+### Desktop
+
+```bash
+pnpm dev:desktop                      # Next dev + Electron window, HMR recovery
+pnpm build:desktop                    # static export + compile electron/
+pnpm electron:build                   # electron-builder → dmg/zip/exe/AppImage
+pnpm icons:desktop                    # regenerate icns/ico/png set (electron-icon-builder; cross-platform)
+```
+
+Replace `build/icon.png` with a 512×512 logo before shipping.
+Bundle config lives in root `package.json` `"build"` (electron-builder).
+Electron IPC bridge: `electron/preload.ts` exposes `window.electronAPI`.
+
+### Mobile
+
+```bash
+pnpm cap:add:ios                      # one-time — requires Xcode
+pnpm cap:add:android                  # one-time — requires Android Studio / SDK
+pnpm dev:ios                          # live-reload on Simulator
+pnpm dev:android                      # live-reload on emulator/device
+pnpm build:mobile                     # static export + cap sync
+pnpm mobile:assets                    # generate icons/splash from resources/
+pnpm build:android:release            # AAB for Play Store
+pnpm build:ios:release                # opens Xcode for App Store archive
+```
+
+Bridge runs in `packages/client/src/mobile/bridge.ts` — lifecycle, splash,
+status bar, orientation. Durable persistence mirror in `durable.ts`.
+
+### Native client auth
+
+Better-auth uses cookies; native shells need extra CORS/trust origins.
+Set `TRUSTED_ORIGINS` on the server (comma-separated):
+
+```
+TRUSTED_ORIGINS=capacitor://localhost,https://localhost
+```
+
+Electron `file://` sends `Origin: null` and can't be trusted with
+credentials. Register a custom protocol in `electron/main.ts` and add
+it (e.g. `app://-`) instead.
+
+### Static export caveats
+
+- `NEXT_PUBLIC_API_URL` is baked at build time — desktop/mobile binaries
+  are locked to whichever API URL they were built against. Rebuild to
+  retarget.
+- No `rewrites()`, no `middleware.ts`, no server components with runtime
+  data. Dynamic routes need `generateStaticParams`.
+- Next `<Image>` uses the default loader only because `images.unoptimized`
+  is set in `next.config.ts`.
+
 ## Code Style
 
 - TypeScript strict mode everywhere. No `any` — use `unknown` and narrow.

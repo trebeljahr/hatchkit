@@ -10,7 +10,7 @@ import { createContext } from "./trpc/context.js";
 import { handleStripeWebhook } from "./services/stripe.js";
 import { isDatabaseReady } from "./db/connection.js";
 import { notFoundHandler, errorHandler } from "./middleware/error-handler.js";
-import { env } from "./config/env.js";
+import { env, getTrustedOrigins } from "./config/env.js";
 
 export function createApp() {
   const app = express();
@@ -18,9 +18,10 @@ export function createApp() {
   app.set("trust proxy", 1);
 
   // ── 0. CORS — must be before all route handlers so preflight works ─
+  const trustedOrigins = getTrustedOrigins();
   app.use(
     cors({
-      origin: env.FRONTEND_URL ? [env.FRONTEND_URL] : false,
+      origin: trustedOrigins.length > 0 ? trustedOrigins : false,
       credentials: true,
     }),
   );

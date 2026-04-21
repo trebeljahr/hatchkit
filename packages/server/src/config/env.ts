@@ -33,6 +33,14 @@ export const env = {
   BETTER_AUTH_SECRET: getRequired("BETTER_AUTH_SECRET"),
   BETTER_AUTH_URL: getRequired("BETTER_AUTH_URL"),
   FRONTEND_URL: getRequired("FRONTEND_URL"),
+  // Additional CORS / auth origins, comma-separated. Use this for
+  // native clients:
+  //   capacitor://localhost,https://localhost   (Capacitor iOS+Android)
+  //   app://-                                    (custom Electron protocol)
+  // Electron file:// sends Origin: null, which can't be allowed with
+  // credentials:true — register a custom protocol in the main process
+  // and list it here instead.
+  TRUSTED_ORIGINS: getOptional("TRUSTED_ORIGINS"),
   GOOGLE_CLIENT_ID: getOptional("GOOGLE_CLIENT_ID"),
   GOOGLE_CLIENT_SECRET: getOptional("GOOGLE_CLIENT_SECRET"),
 
@@ -65,3 +73,13 @@ export const env = {
   isProduction: getOptional("NODE_ENV") === "production",
   isTest: getOptional("NODE_ENV") === "test",
 } as const;
+
+/** All origins trusted for CORS + better-auth. Merges FRONTEND_URL with
+ *  the optional TRUSTED_ORIGINS CSV so native shells (Capacitor, custom
+ *  Electron protocols) can authenticate against the same API. */
+export function getTrustedOrigins(): string[] {
+  const extras = env.TRUSTED_ORIGINS
+    ? env.TRUSTED_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+  return env.FRONTEND_URL ? [env.FRONTEND_URL, ...extras] : extras;
+}

@@ -21,12 +21,85 @@
     "dev:infra": "docker-compose -f docker-compose.dev.yml up -d",
     "dev:infra:stop": "docker-compose -f docker-compose.dev.yml down",
     "dev:infra:reset": "docker-compose -f docker-compose.dev.yml down -v",
-    "typecheck": "pnpm -r run typecheck"
+    "typecheck": "pnpm -r run typecheck && pnpm typecheck:electron",
+    "typecheck:electron": "tsc -p electron --noEmit",
+    "dev:desktop": "concurrently -k -n next,electron -c blue,magenta \"pnpm --filter @starter/client dev\" \"wait-on http://localhost:3000 && pnpm electron:compile && electron electron/main.js\"",
+    "build:desktop": "pnpm build:client && pnpm electron:compile",
+    "electron:compile": "tsc -p electron",
+    "electron:build": "pnpm build:desktop && electron-builder",
+    "electron:preview": "pnpm build:desktop && electron-builder --dir",
+    "icons:desktop": "electron-icon-builder --input=build/icon.png --output=build --flatten",
+    "itch:push:mac": "butler push release/*-mac.zip $ITCH_USER/$ITCH_GAME:mac",
+    "itch:push:win": "butler push release/*-win.exe $ITCH_USER/$ITCH_GAME:win",
+    "itch:push:linux": "butler push release/*.AppImage $ITCH_USER/$ITCH_GAME:linux",
+    "dev:android": "bash scripts/android-dev.sh",
+    "dev:ios": "bash scripts/ios-dev.sh",
+    "build:mobile": "pnpm build:client && cap sync",
+    "cap:add:ios": "pnpm build:client && cap add ios",
+    "cap:add:android": "pnpm build:client && cap add android",
+    "cap:sync": "cap sync",
+    "cap:run:ios": "cap run ios",
+    "cap:run:android": "cap run android",
+    "build:ios:release": "pnpm build:mobile && cap open ios",
+    "build:android:release": "pnpm build:mobile && cd android && ./gradlew bundleRelease",
+    "build:android:apk": "pnpm build:mobile && cd android && ./gradlew assembleRelease",
+    "mobile:assets": "capacitor-assets generate --iconBackgroundColor '#ffffff'"
   },
   "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^6.2.0",
     "@playwright/test": "^1.50.0",
     "concurrently": "^9.1.0",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "electron-icon-builder": "^2.0.1",
     "mongodb": "^6.12.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "wait-on": "^8.0.1"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/app": "^6.0.2",
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/ios": "^6.2.0",
+    "@capacitor/preferences": "^6.0.3",
+    "@capacitor/screen-orientation": "^6.0.3",
+    "@capacitor/splash-screen": "^6.0.3",
+    "@capacitor/status-bar": "^6.0.2"
+  },
+  "build": {
+    "appId": "com.example.{{bundleId}}",
+    "productName": "{{projectName}}",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "packages/client/out/**/*",
+      "electron/main.js",
+      "electron/preload.js",
+      "electron/package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.utilities"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "build/icon.png",
+      "category": "Utility"
+    }
   }
 }

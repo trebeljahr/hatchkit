@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { TRPCProvider } from "@/providers/trpc-provider";
 import { AuthProvider } from "@/providers/auth-provider";
+import { MobileBridgeLoader } from "@/mobile/MobileBridgeLoader";
 import "@/styles/globals.css";
 
 export const metadata: Metadata = {
@@ -31,6 +32,7 @@ export default function RootLayout({
         )}
       </head>
       <body className="min-h-screen bg-background font-sans antialiased">
+        <MobileBridgeLoader />
         <TRPCProvider>
           <AuthProvider>{children}</AuthProvider>
         </TRPCProvider>
