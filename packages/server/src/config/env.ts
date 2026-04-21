@@ -1,14 +1,24 @@
-import "dotenv/config";
+import { config as dotenvxConfig } from "@dotenvx/dotenvx";
 import { existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
-// Load .env.development if it exists and NODE_ENV is not production
+// dotenvx handles encrypted .env files transparently. It looks for
+// `DOTENV_PRIVATE_KEY_*` either in the process env (Coolify / CI set
+// it there) or in a local .env.keys file (dev workstation).
+//
+// Load order mirrors conventional dotenv behavior:
+//   - production: only .env.production (encrypted, committed to git)
+//   - otherwise:  .env.development (plaintext, local-dev defaults)
+// Any plaintext values in a production file stay plaintext — dotenvx
+// only decrypts values whose cipher prefix starts with "encrypted:".
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const devEnvPath = resolve(__dirname, "../../.env.development");
-if (process.env.NODE_ENV !== "production" && existsSync(devEnvPath)) {
-  const dotenv = await import("dotenv");
-  dotenv.config({ path: devEnvPath });
+const serverRoot = resolve(__dirname, "../..");
+const envFile =
+  process.env.NODE_ENV === "production" ? ".env.production" : ".env.development";
+const envPath = resolve(serverRoot, envFile);
+if (existsSync(envPath)) {
+  dotenvxConfig({ path: envPath });
 }
 
 function getRequired(key: string): string {

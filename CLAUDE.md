@@ -85,6 +85,57 @@ it (e.g. `app://-`) instead.
 - Next `<Image>` uses the default loader only because `images.unoptimized`
   is set in `next.config.ts`.
 
+## Environment & Secrets (dotenvx)
+
+The server uses **[dotenvx](https://dotenvx.com)** for env handling — a
+drop-in replacement for `dotenv` that transparently decrypts values
+marked `encrypted:...`. `packages/server/src/config/env.ts` loads
+either `.env.production` (when `NODE_ENV=production`) or
+`.env.development` (otherwise).
+
+```
+packages/server/
+  .env.example        plaintext, committed (reference, no real secrets)
+  .env.development    plaintext, committed (local-dev defaults, localhost)
+  .env.production     mixed: plaintext config + encrypted secrets,
+                      committed to git. Public key lives at the top.
+  .env.keys           DOTENV_PRIVATE_KEY_PRODUCTION lives here locally;
+                      gitignored. In production, set it as an env var
+                      instead.
+```
+
+### Setting an encrypted value
+
+```bash
+pnpm --filter @starter/server exec dotenvx set STRIPE_SECRET_KEY sk_live_... -f .env.production
+```
+
+Writes the encrypted ciphertext into `.env.production` and appends
+the private key to `.env.keys` if it wasn't there already.
+
+### Running locally against production values
+
+`.env.keys` is read automatically — no extra step:
+```bash
+NODE_ENV=production pnpm --filter @starter/server start
+```
+
+### Deploying to Coolify
+
+The CLI's `devops-cli create` (with `runDeployment: true`) pushes
+`DOTENV_PRIVATE_KEY_PRODUCTION` to Coolify's env for you. The
+encrypted `.env.production` ships with the repo; Coolify injects the
+key at runtime and dotenvx decrypts on load.
+
+### Key rotation
+
+```bash
+pnpm --filter @starter/server exec dotenvx rotate -f .env.production
+# Then re-deploy so Coolify picks up the new private key.
+```
+
+Keep `.env.keys` out of commits. `.gitignore` enforces this.
+
 ## Code Style
 
 - TypeScript strict mode everywhere. No `any` — use `unknown` and narrow.
