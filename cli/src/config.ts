@@ -164,12 +164,19 @@ export async function resetConfig(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function migrateSecret(keyInStore: string, keytarKey: string): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const raw = (store as any).get(keyInStore) as string | undefined;
+  // Conf's typed API restricts keys to `keyof CliConfig`. Migration
+  // reaches into arbitrary nested paths ("providers.coolify.token",
+  // etc.) that Conf supports at runtime but not in the type. Cast
+  // once to a permissive shape for just these two operations so the
+  // rest of the file keeps the typed API.
+  const rawStore = store as unknown as {
+    get(key: string): string | undefined;
+    delete(key: string): void;
+  };
+  const raw = rawStore.get(keyInStore);
   if (!raw) return;
   await setSecret(keytarKey, raw);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (store as any).delete(keyInStore);
+  rawStore.delete(keyInStore);
 }
 
 // ---------------------------------------------------------------------------
