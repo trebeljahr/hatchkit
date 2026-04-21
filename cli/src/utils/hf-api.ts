@@ -57,10 +57,7 @@ export function suggestGpu(info: HfModelInfo): string {
   ) {
     return "A100";
   }
-  if (
-    info.pipelineTag === "text-to-image" ||
-    info.pipelineTag === "image-segmentation"
-  ) {
+  if (info.pipelineTag === "text-to-image" || info.pipelineTag === "image-segmentation") {
     return "A10G";
   }
   return "T4";

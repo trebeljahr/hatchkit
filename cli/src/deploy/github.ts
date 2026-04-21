@@ -1,12 +1,9 @@
 import chalk from "chalk";
-import { exec, execStream } from "../utils/exec.js";
 import type { ProjectConfig } from "../prompts.js";
+import { exec } from "../utils/exec.js";
 
 /** Initialize git repo, create GitHub remote, and push. */
-export async function setupGitHub(
-  config: ProjectConfig,
-  appDir: string,
-): Promise<string | null> {
+export async function setupGitHub(config: ProjectConfig, appDir: string): Promise<string | null> {
   console.log(chalk.bold("\n  ── GitHub ────────────────────────────────────────────────\n"));
 
   // Git init
@@ -35,7 +32,15 @@ export async function setupGitHub(
   );
 
   if (createResult.exitCode !== 0) {
-    console.log(chalk.yellow("  Warning: Could not create GitHub repo. You can do this manually later."));
+    console.log(chalk.yellow("  Could not create GitHub repo. Your local git repo is ready;"));
+    console.log(chalk.yellow(`  push it manually once the remote exists:`));
+    console.log(chalk.dim(`    cd ${appDir}`));
+    console.log(chalk.dim(`    gh repo create ${config.name} --private --source=. --push`));
+    console.log(
+      chalk.yellow(
+        '  Note: the Coolify env will have GITHUB_REPO_URL="" — update it after pushing.',
+      ),
+    );
     return null;
   }
 

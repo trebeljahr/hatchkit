@@ -1,12 +1,8 @@
-import { input, select, checkbox, confirm } from "@inquirer/prompts";
+import { checkbox, confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
-import { validateDomain, validateProjectName, parseDomain } from "./utils/validate.js";
+import { getCoolifyConfig, getMlServices } from "./config.js";
 import { CoolifyApi, type CoolifyServer } from "./utils/coolify-api.js";
-import {
-  getConfig,
-  getMlServices,
-  type CoolifyConfig,
-} from "./config.js";
+import { parseDomain, validateDomain, validateProjectName } from "./utils/validate.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -17,11 +13,7 @@ export type DnsProvider = "inwx" | "cloudflare" | "manual";
 export type S3Provider = "hetzner" | "r2" | "aws" | "existing" | "none";
 export type GpuPlatform = "modal" | "runpod" | "hf" | "replicate";
 
-export type Feature =
-  | "websocket"
-  | "stripe"
-  | "analytics"
-  | "s3";
+export type Feature = "websocket" | "stripe" | "analytics" | "s3" | "desktop" | "mobile";
 
 export type MlService =
   | "3d-extraction"
@@ -51,6 +43,10 @@ export interface ProjectConfig {
   s3ExistingRegion?: string;
 
   mlServices: MlService[];
+  /** Subset of mlServices the user wants to redeploy even though the
+   *  registry has them. Used to recover from stale entries (upstream
+   *  service was deleted) or platform migrations. */
+  forceRedeployMl: MlService[];
   gpuPlatform?: GpuPlatform;
   customHfModelId?: string;
   customHfGpuType?: string;
@@ -65,27 +61,74 @@ export interface ProjectConfig {
 // Main prompt flow
 // ---------------------------------------------------------------------------
 
-export async function collectProjectConfig(options: {
+/** If a preset value is provided, use it. In non-interactive mode,
+ *  fall back to the provided default (or throw if none). Otherwise
+ *  run the interactive prompt. */
+async function presetOrPrompt<T>(
+  preset: T | undefined,
+  nonInteractive: boolean,
+  prompt: () => Promise<T>,
+  fallback?: T,
+): Promise<T> {
+  if (preset !== undefined) return preset;
+  if (nonInteractive) {
+    if (fallback !== undefined) return fallback;
+    throw new Error(
+      "Required value missing in --config / flags and no default is available. Re-run without --yes to be prompted.",
+    );
+  }
+  return prompt();
+}
+
+export interface CollectOptions {
   dryRun?: boolean;
-}): Promise<ProjectConfig> {
-  console.log(chalk.bold("\n  ── New Project ─────────────────────────────────────────────\n"));
+  /** Preset values to skip prompts for. Values here override defaults
+   *  and skip the corresponding prompt entirely. */
+  presets?: Partial<ProjectConfig>;
+  /** Non-interactive mode: any missing value falls back to its
+   *  default if one exists, else throws. */
+  nonInteractive?: boolean;
+}
+
+export async function collectProjectConfig(options: CollectOptions): Promise<ProjectConfig> {
+  const presets = options.presets ?? {};
+  const nonInteractive = options.nonInteractive ?? false;
+
+  if (!nonInteractive) {
+    console.log(chalk.bold("\n  ── New Project ─────────────────────────────────────────────\n"));
+  }
 
   // Project basics
-  const name = await input({
-    message: "Project name:",
-    validate: (v) => validateProjectName(v),
-  });
+  const name = await presetOrPrompt(presets.name, nonInteractive, () =>
+    input({ message: "Project name:", validate: (v) => validateProjectName(v) }),
+  );
+  // Validate preset name since we skipped the prompt's built-in check.
+  const nameErr = validateProjectName(name);
+  if (nameErr !== true) throw new Error(`--name invalid: ${nameErr}`);
 
-  const domain = await input({
-    message: "Domain:",
-    default: `${name}.ricos.site`,
-    validate: (v) => validateDomain(v),
-  });
+  const domain = await presetOrPrompt(
+    presets.domain,
+    nonInteractive,
+    () =>
+      input({
+        message: "Domain:",
+        default: `${name}.ricos.site`,
+        validate: (v) => validateDomain(v),
+      }),
+    `${name}.ricos.site`,
+  );
+  const domainErr = validateDomain(domain);
+  if (domainErr !== true) throw new Error(`--domain invalid: ${domainErr}`);
 
   const { baseDomain, subdomain } = parseDomain(domain);
 
   // Deploy target
-  const deployTarget = await selectDeployTarget();
+  const deployTarget = await presetOrPrompt(
+    presets.deployTarget,
+    nonInteractive,
+    selectDeployTarget,
+    "existing",
+  );
 
   let serverId: number | undefined;
   let serverIp: string | undefined;
@@ -93,38 +136,67 @@ export async function collectProjectConfig(options: {
   let serverLocation: string | undefined;
 
   if (deployTarget === "existing") {
-    const server = await selectExistingServer();
-    serverId = server.id;
-    serverIp = server.ip;
+    if (presets.serverId !== undefined && presets.serverIp !== undefined) {
+      serverId = presets.serverId;
+      serverIp = presets.serverIp;
+    } else if (nonInteractive) {
+      throw new Error(
+        "--deploy-target existing requires serverId + serverIp in --config (or remove --yes to pick interactively).",
+      );
+    } else {
+      const server = await selectExistingServer();
+      serverId = server.id;
+      serverIp = server.ip;
+    }
   } else {
-    serverSize = await select({
-      message: "Server size:",
-      choices: [
-        { name: "cpx21 — 3 vCPU / 4 GB (€4.35/mo)", value: "cpx21" },
-        { name: "cpx31 — 4 vCPU / 8 GB (€8.10/mo)", value: "cpx31" },
-        { name: "cpx41 — 8 vCPU / 16 GB (€15.90/mo)", value: "cpx41" },
-      ],
-    });
-    serverLocation = await select({
-      message: "Server location:",
-      choices: [
-        { name: "Nuremberg (nbg1) — Central Europe", value: "nbg1" },
-        { name: "Falkenstein (fsn1) — Eastern Germany", value: "fsn1" },
-        { name: "Helsinki (hel1) — Northern Europe", value: "hel1" },
-      ],
-    });
+    serverSize = await presetOrPrompt(
+      presets.serverSize,
+      nonInteractive,
+      () =>
+        select({
+          message: "Server size:",
+          choices: [
+            { name: "cpx21 — 3 vCPU / 4 GB (€4.35/mo)", value: "cpx21" },
+            { name: "cpx31 — 4 vCPU / 8 GB (€8.10/mo)", value: "cpx31" },
+            { name: "cpx41 — 8 vCPU / 16 GB (€15.90/mo)", value: "cpx41" },
+          ],
+        }),
+      "cpx21",
+    );
+    serverLocation = await presetOrPrompt(
+      presets.serverLocation,
+      nonInteractive,
+      () =>
+        select({
+          message: "Server location:",
+          choices: [
+            { name: "Nuremberg (nbg1) — Central Europe", value: "nbg1" },
+            { name: "Falkenstein (fsn1) — Eastern Germany", value: "fsn1" },
+            { name: "Helsinki (hel1) — Northern Europe", value: "hel1" },
+          ],
+        }),
+      "nbg1",
+    );
   }
 
   // Features
-  const features = await checkbox<Feature>({
-    message: "Features:",
-    choices: [
-      { name: "WebSocket/realtime (includes Redis)", value: "websocket" },
-      { name: "Stripe billing", value: "stripe" },
-      { name: "S3 file storage", value: "s3" },
-      { name: "Analytics (Plausible) + Error tracking (GlitchTip)", value: "analytics" },
-    ],
-  });
+  const features = await presetOrPrompt(
+    presets.features,
+    nonInteractive,
+    () =>
+      checkbox<Feature>({
+        message: "Features:",
+        choices: [
+          { name: "WebSocket/realtime (includes Redis)", value: "websocket" },
+          { name: "Stripe billing", value: "stripe" },
+          { name: "S3 file storage", value: "s3" },
+          { name: "Analytics (Plausible) + Error tracking (GlitchTip)", value: "analytics" },
+          { name: "Desktop app (Electron + itch.io release)", value: "desktop" },
+          { name: "Mobile app (Capacitor / iOS + Android)", value: "mobile" },
+        ],
+      }),
+    [],
+  );
 
   // S3 provider (if selected)
   let s3Provider: S3Provider = "none";
@@ -135,116 +207,175 @@ export async function collectProjectConfig(options: {
   let s3ExistingRegion: string | undefined;
 
   if (features.includes("s3")) {
-    s3Provider = await select<S3Provider>({
-      message: "S3 storage provider:",
-      choices: [
-        { name: "Hetzner Object Storage", value: "hetzner" },
-        { name: "Cloudflare R2 (zero egress)", value: "r2" },
-        { name: "AWS S3", value: "aws" },
-        { name: "Use existing bucket", value: "existing" },
-      ],
-    });
+    s3Provider = await presetOrPrompt(
+      presets.s3Provider,
+      nonInteractive,
+      () =>
+        select<S3Provider>({
+          message: "S3 storage provider:",
+          choices: [
+            { name: "Hetzner Object Storage", value: "hetzner" },
+            { name: "Cloudflare R2 (zero egress)", value: "r2" },
+            { name: "AWS S3", value: "aws" },
+            { name: "Use existing bucket", value: "existing" },
+          ],
+        }),
+      "hetzner",
+    );
 
     if (s3Provider === "existing") {
-      s3ExistingEndpoint = await input({ message: "S3 endpoint URL:" });
-      s3ExistingBucket = await input({ message: "S3 bucket name:" });
-      s3ExistingAccessKey = await input({ message: "S3 access key:" });
-      s3ExistingSecretKey = await input({ message: "S3 secret key:" });
-      s3ExistingRegion = await input({ message: "S3 region:", default: "us-east-1" });
+      // Existing-bucket credentials are never defaulted — these are
+      // secrets and infrastructure coords that must be explicit.
+      if (nonInteractive && (!presets.s3ExistingEndpoint || !presets.s3ExistingBucket)) {
+        throw new Error(
+          "--s3-provider existing requires s3ExistingEndpoint/Bucket/AccessKey/SecretKey/Region in --config.",
+        );
+      }
+      s3ExistingEndpoint = await presetOrPrompt(presets.s3ExistingEndpoint, nonInteractive, () =>
+        input({ message: "S3 endpoint URL:" }),
+      );
+      s3ExistingBucket = await presetOrPrompt(presets.s3ExistingBucket, nonInteractive, () =>
+        input({ message: "S3 bucket name:" }),
+      );
+      s3ExistingAccessKey = await presetOrPrompt(presets.s3ExistingAccessKey, nonInteractive, () =>
+        input({ message: "S3 access key:" }),
+      );
+      s3ExistingSecretKey = await presetOrPrompt(presets.s3ExistingSecretKey, nonInteractive, () =>
+        input({ message: "S3 secret key:" }),
+      );
+      s3ExistingRegion = await presetOrPrompt(
+        presets.s3ExistingRegion,
+        nonInteractive,
+        () => input({ message: "S3 region:", default: "us-east-1" }),
+        "us-east-1",
+      );
     }
   }
 
   // ML services
-  const mlServices = await checkbox<MlService>({
-    message: "ML services:",
-    choices: [
-      { name: "3D model extraction (photo → GLB)", value: "3d-extraction" },
-      { name: "Subtitle generation (audio/video → SRT)", value: "subtitles" },
-      { name: "Image recognition", value: "image-recognition" },
-      { name: "Background removal", value: "background-removal" },
-      { name: "Custom HuggingFace model", value: "custom-hf" },
-    ],
-  });
+  const mlServices = await presetOrPrompt(
+    presets.mlServices,
+    nonInteractive,
+    () =>
+      checkbox<MlService>({
+        message: "ML services:",
+        choices: [
+          { name: "3D model extraction (photo → GLB)", value: "3d-extraction" },
+          { name: "Subtitle generation (audio/video → SRT)", value: "subtitles" },
+          { name: "Image recognition", value: "image-recognition" },
+          { name: "Background removal", value: "background-removal" },
+          { name: "Custom HuggingFace model", value: "custom-hf" },
+        ],
+      }),
+    [],
+  );
 
   let gpuPlatform: GpuPlatform | undefined;
   let customHfModelId: string | undefined;
   let customHfGpuType: string | undefined;
 
+  const forceRedeploy = new Set<MlService>();
   if (mlServices.length > 0) {
     // Check for existing services in registry
     const registry = getMlServices();
     const reusable = mlServices.filter((s) => registry[s]);
     if (reusable.length > 0) {
-      console.log(chalk.dim(`\n  Found existing ML services: ${reusable.join(", ")}`));
+      console.log(chalk.dim(`\n  Found existing ML services in registry:`));
       for (const svc of reusable) {
         const entry = registry[svc];
         console.log(
-          chalk.dim(`    ${svc}: ${entry.endpoint} (${entry.platform}, deployed ${entry.deployedAt})`),
+          chalk.dim(
+            `    ${svc}: ${entry.endpoint} (${entry.platform}, deployed ${entry.deployedAt})`,
+          ),
         );
       }
+      // Let the user force re-deploy — covers stale entries (service
+      // was deleted upstream) or platform changes.
+      const toRedeploy = await checkbox<MlService>({
+        message: "Redeploy any of these (leave empty to reuse all)?",
+        choices: reusable.map((s) => ({ name: s, value: s })),
+      });
+      for (const s of toRedeploy) forceRedeploy.add(s);
     }
 
-    const needsDeploy = mlServices.filter((s) => !registry[s]);
+    const needsDeploy = mlServices.filter((s) => !registry[s] || forceRedeploy.has(s));
     if (needsDeploy.length > 0) {
-      gpuPlatform = await select<GpuPlatform>({
-        message: "GPU platform for new ML services:",
-        choices: [
-          {
-            name: "Modal (recommended — best DX, $30/mo free, 2-4s cold starts)",
-            value: "modal",
-          },
-          {
-            name: "RunPod Serverless (cheapest, Docker-native)",
-            value: "runpod",
-          },
-          {
-            name: "HuggingFace Inference Endpoints (simplest for HF models)",
-            value: "hf",
-          },
-          {
-            name: "Replicate (via Cog, good for sharing)",
-            value: "replicate",
-          },
-        ],
-      });
+      gpuPlatform = await presetOrPrompt(
+        presets.gpuPlatform,
+        nonInteractive,
+        () =>
+          select<GpuPlatform>({
+            message: "GPU platform for new ML services:",
+            choices: [
+              {
+                name: "Modal (recommended — best DX, $30/mo free, 2-4s cold starts)",
+                value: "modal",
+              },
+              { name: "RunPod Serverless (cheapest, Docker-native)", value: "runpod" },
+              { name: "HuggingFace Inference Endpoints (simplest for HF models)", value: "hf" },
+              { name: "Replicate (via Cog, good for sharing)", value: "replicate" },
+            ],
+          }),
+        "modal",
+      );
     }
 
     if (mlServices.includes("custom-hf")) {
-      customHfModelId = await input({
-        message: "HuggingFace model ID (e.g. meta-llama/Llama-3-8B):",
-      });
-      customHfGpuType = await select({
-        message: "GPU type for custom model:",
-        choices: [
-          { name: "T4 (16GB VRAM, cheapest)", value: "T4" },
-          { name: "A10G (24GB VRAM, good balance)", value: "A10G" },
-          { name: "A100 (40/80GB VRAM, large models)", value: "A100" },
-          { name: "H100 (80GB VRAM, fastest)", value: "H100" },
-        ],
-      });
+      customHfModelId = await presetOrPrompt(presets.customHfModelId, nonInteractive, () =>
+        input({ message: "HuggingFace model ID (e.g. meta-llama/Llama-3-8B):" }),
+      );
+      customHfGpuType = await presetOrPrompt(
+        presets.customHfGpuType,
+        nonInteractive,
+        () =>
+          select({
+            message: "GPU type for custom model:",
+            choices: [
+              { name: "T4 (16GB VRAM, cheapest)", value: "T4" },
+              { name: "A10G (24GB VRAM, good balance)", value: "A10G" },
+              { name: "A100 (40/80GB VRAM, large models)", value: "A100" },
+              { name: "H100 (80GB VRAM, fastest)", value: "H100" },
+            ],
+          }),
+        "A10G",
+      );
     }
   }
 
   // Scaffold options
-  const scaffoldRepo = await confirm({
-    message: "Scaffold app repo?",
-    default: true,
-  });
+  const scaffoldRepo = await presetOrPrompt(
+    presets.scaffoldRepo,
+    nonInteractive,
+    () => confirm({ message: "Scaffold app repo?", default: true }),
+    true,
+  );
 
   let createGithubRepo = false;
   if (scaffoldRepo) {
-    createGithubRepo = await confirm({
-      message: "Create GitHub remote repo?",
-      default: true,
-    });
+    createGithubRepo = await presetOrPrompt(
+      presets.createGithubRepo,
+      nonInteractive,
+      () =>
+        confirm({
+          message: "Create GitHub remote repo?",
+          default: true,
+        }),
+      true,
+    );
   }
 
   const runDeployment = options.dryRun
     ? false
-    : await confirm({
-        message: "Run deployment now?",
-        default: true,
-      });
+    : await presetOrPrompt(
+        presets.runDeployment,
+        nonInteractive,
+        () =>
+          confirm({
+            message: "Run deployment now?",
+            default: true,
+          }),
+        true,
+      );
 
   return {
     name,
@@ -264,6 +395,7 @@ export async function collectProjectConfig(options: {
     s3ExistingSecretKey,
     s3ExistingRegion,
     mlServices,
+    forceRedeployMl: [...forceRedeploy],
     gpuPlatform,
     customHfModelId,
     customHfGpuType,
@@ -289,8 +421,7 @@ async function selectDeployTarget(): Promise<DeployTarget> {
 }
 
 async function selectExistingServer(): Promise<CoolifyServer> {
-  const config = getConfig();
-  const coolifyConfig = config.providers.coolify as CoolifyConfig;
+  const coolifyConfig = await getCoolifyConfig();
 
   if (!coolifyConfig?.url || !coolifyConfig?.token) {
     throw new Error("Coolify is not configured. Run devops-cli init first.");
@@ -306,7 +437,9 @@ async function selectExistingServer(): Promise<CoolifyServer> {
   }
 
   if (servers.length === 0) {
-    throw new Error("No servers found in Coolify. Create one first or choose 'New Hetzner server'.");
+    throw new Error(
+      "No servers found in Coolify. Create one first or choose 'New Hetzner server'.",
+    );
   }
 
   if (servers.length === 1) {

@@ -1,0 +1,55 @@
+name: CLI CI
+
+# Runs typecheck, lint, and the scaffold matrix on every push + PR.
+# The test suite skips gracefully when the `starter` submodule isn't
+# initialized, so this workflow works even without the submodule SSH
+# key being available in CI. When the submodule IS initialized (e.g.
+# via a public clone), the full 12-group matrix runs.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cli/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "cli/**"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Init the starter submodule if it's publicly accessible. If
+          # the submodule URL requires auth, this falls back silently
+          # and the tests skip their starter-dependent blocks.
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: cli/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test (scaffold matrix)
+        run: pnpm test

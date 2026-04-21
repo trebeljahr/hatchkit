@@ -1,18 +1,21 @@
 import chalk from "chalk";
-import { getMlServices, registerMlService, ensureGpuProvider, type MlServiceEntry } from "../config.js";
-import type { ProjectConfig, MlService, GpuPlatform } from "../prompts.js";
+import { type MlServiceEntry, getMlServices } from "../config.js";
+import type { MlService, ProjectConfig } from "../prompts.js";
 
-/** Resolve ML services — reuse existing or mark for deployment. */
+/** Resolve ML services — reuse existing or mark for deployment.
+ *  Services in config.forceRedeployMl bypass the registry and always
+ *  go to the deploy list, which recovers from stale registry entries. */
 export async function resolveMlServices(config: ProjectConfig): Promise<{
   reuse: Array<{ service: MlService; entry: MlServiceEntry }>;
   deploy: MlService[];
 }> {
   const registry = getMlServices();
+  const forceSet = new Set(config.forceRedeployMl ?? []);
   const reuse: Array<{ service: MlService; entry: MlServiceEntry }> = [];
   const deploy: MlService[] = [];
 
   for (const service of config.mlServices) {
-    if (registry[service]) {
+    if (registry[service] && !forceSet.has(service)) {
       reuse.push({ service, entry: registry[service] });
     } else {
       deploy.push(service);

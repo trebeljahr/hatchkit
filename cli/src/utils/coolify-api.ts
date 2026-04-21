@@ -20,11 +20,7 @@ export class CoolifyApi {
     this.token = options.token;
   }
 
-  private async request<T>(
-    method: string,
-    path: string,
-    body?: unknown,
-  ): Promise<T> {
+  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const res = await fetch(`${this.url}/api/v1${path}`, {
       method,
       headers: {
@@ -82,10 +78,7 @@ export class CoolifyApi {
 }
 
 /** Verify Coolify connection. Returns version string or throws. */
-export async function verifyCoolify(
-  url: string,
-  token: string,
-): Promise<string> {
+export async function verifyCoolify(url: string, token: string): Promise<string> {
   const api = new CoolifyApi({ url, token });
   return api.getVersion();
 }

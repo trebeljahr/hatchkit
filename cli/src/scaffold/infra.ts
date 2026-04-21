@@ -1,17 +1,24 @@
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
-import { renderString } from "../utils/template.js";
+import { type S3ProviderMeta, getConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
-import { getConfig, type DnsConfig, type S3ProviderConfig } from "../config.js";
+import { renderString } from "../utils/template.js";
 
 /** Generate Terraform tfvars for the project. */
 export function generateTfvars(config: ProjectConfig): string {
-  const subdomains: Record<string, string> = {
-    [config.subdomain]: "Web app + API paths",
-    [`api.${config.subdomain}`]: "REST API",
-    admin: "Coolify dashboard",
+  // Avoid silent duplicate-key drop when the user's chosen subdomain
+  // collides with a reserved name ("admin", "api.<sub>"). Build the map
+  // iteratively and skip duplicates.
+  const subdomains: Record<string, string> = {};
+  const addSubdomain = (key: string, description: string) => {
+    if (!key) return;
+    if (subdomains[key]) return;
+    subdomains[key] = description;
   };
+  addSubdomain(config.subdomain, "Web app + API paths");
+  addSubdomain(`api.${config.subdomain}`, "REST API");
+  addSubdomain("admin", "Coolify dashboard");
 
   if (config.deployTarget === "new") {
     return renderString(TFVARS_TEMPLATE, {
@@ -36,7 +43,10 @@ export function generateTfvars(config: ProjectConfig): string {
 }
 
 /** Generate Coolify stack .env for the project. */
-export function generateCoolifyEnv(config: ProjectConfig): string {
+export function generateCoolifyEnv(
+  config: ProjectConfig,
+  extras: { repoUrl?: string; serverPort?: number; clientPort?: number } = {},
+): string {
   const coolifyConfig = getConfig().providers.coolify;
   const s3Config = getS3Config(config);
 
@@ -44,6 +54,9 @@ export function generateCoolifyEnv(config: ProjectConfig): string {
     coolifyUrl: coolifyConfig?.url || "https://admin.example.com",
     name: config.name,
     domain: config.domain,
+    repoUrl: extras.repoUrl ?? "",
+    serverPort: extras.serverPort ?? 3000,
+    clientPort: extras.clientPort ?? 3000,
     mongoEnabled: true,
     redisEnabled: config.features.includes("websocket"),
     s3Provider: config.s3Provider === "existing" ? "custom" : config.s3Provider,
@@ -56,16 +69,35 @@ export function generateCoolifyEnv(config: ProjectConfig): string {
   });
 }
 
+export interface ScaffoldInfraOptions {
+  repoUrl?: string;
+  serverPort?: number;
+  clientPort?: number;
+}
+
 /** Write infra config files. */
 export function scaffoldInfra(
   config: ProjectConfig,
   repoRoot: string,
+  options: ScaffoldInfraOptions = {},
 ): void {
+  // Fail early with a clear message if the infra submodule isn't
+  // populated — otherwise Terraform writes are silently skipped and the
+  // later terraform/coolify exec steps crash cryptically.
+  if (!config.dryRun && !existsSync(join(repoRoot, "terraform"))) {
+    throw new Error(
+      `Infra submodule is empty at ${repoRoot}. Run 'git submodule update --init' in the monorepo root before deploying.`,
+    );
+  }
   const stacksDir = join(repoRoot, "stacks");
   if (!existsSync(stacksDir)) mkdirSync(stacksDir, { recursive: true });
 
   const tfvars = generateTfvars(config);
-  const coolifyEnv = generateCoolifyEnv(config);
+  const coolifyEnv = generateCoolifyEnv(config, {
+    repoUrl: options.repoUrl,
+    serverPort: options.serverPort,
+    clientPort: options.clientPort,
+  });
 
   if (config.dryRun) {
     console.log(chalk.bold("\n  [dry-run] Infra config:\n"));
@@ -77,9 +109,10 @@ export function scaffoldInfra(
   }
 
   // Write Terraform tfvars
-  const tfDir = config.deployTarget === "new"
-    ? join(repoRoot, "terraform", "stacks", "node-realtime")
-    : join(repoRoot, "terraform", "stacks", "dns-only");
+  const tfDir =
+    config.deployTarget === "new"
+      ? join(repoRoot, "terraform", "stacks", "node-realtime")
+      : join(repoRoot, "terraform", "stacks", "dns-only");
 
   if (existsSync(tfDir)) {
     writeFileSync(join(tfDir, `${config.name}.tfvars`), tfvars, "utf-8");
@@ -95,7 +128,9 @@ export function scaffoldInfra(
 // Helpers
 // ---------------------------------------------------------------------------
 
-function getS3Config(config: ProjectConfig): { bucket: string; endpoint: string; region: string } | null {
+function getS3Config(
+  config: ProjectConfig,
+): { bucket: string; endpoint: string; region: string } | null {
   if (!config.features.includes("s3")) return null;
 
   if (config.s3Provider === "existing") {
@@ -106,7 +141,7 @@ function getS3Config(config: ProjectConfig): { bucket: string; endpoint: string;
     };
   }
 
-  const providerConfig = getConfig().providers.s3[config.s3Provider] as S3ProviderConfig | undefined;
+  const providerConfig = getConfig().providers.s3[config.s3Provider] as S3ProviderMeta | undefined;
   return {
     bucket: `${config.name}-assets`,
     endpoint: providerConfig?.endpoint || "",
@@ -161,8 +196,9 @@ PROJECT_NAME="{{name}}"
 ENVIRONMENT_NAME="production"
 
 APP_NAME="{{name}}-web"
-GITHUB_REPO_URL=""
-APP_PORT="3000"
+GITHUB_REPO_URL="{{repoUrl}}"
+APP_PORT="{{clientPort}}"
+SERVER_PORT="{{serverPort}}"
 
 APP_DOMAIN="{{domain}}"
 

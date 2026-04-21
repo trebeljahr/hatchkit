@@ -1,4 +1,4 @@
-import { execa, type Options as ExecaOptions } from "execa";
+import { execa } from "execa";
 import ora from "ora";
 
 export interface ExecResult {
