@@ -118,8 +118,16 @@ async function deployToReplicate(
 
 function getDefaultModelId(service: MlService): string {
   switch (service) {
+    case "3d-sam-objects":
+      return "facebook/sam-3d-objects";
+    case "3d-sam-body":
+      return "facebook/sam-3d-body";
+    case "3d-hunyuan":
+      return "tencent/Hunyuan3D-3";
+    case "3d-trellis":
+      return "microsoft/TRELLIS-2";
     case "3d-extraction":
-      return "stabilityai/stable-fast-3d";
+      return "stabilityai/TripoSR";
     case "subtitles":
       return "openai/whisper-large-v3";
     case "image-recognition":

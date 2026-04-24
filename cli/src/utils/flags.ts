@@ -39,6 +39,10 @@ const KNOWN_FEATURES: readonly Feature[] = [
   "mobile",
 ];
 const KNOWN_ML_SERVICES: readonly MlService[] = [
+  "3d-sam-objects",
+  "3d-sam-body",
+  "3d-hunyuan",
+  "3d-trellis",
   "3d-extraction",
   "subtitles",
   "image-recognition",

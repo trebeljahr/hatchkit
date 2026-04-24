@@ -16,6 +16,10 @@ export type GpuPlatform = "modal" | "runpod" | "hf" | "replicate";
 export type Feature = "websocket" | "stripe" | "analytics" | "s3" | "desktop" | "mobile";
 
 export type MlService =
+  | "3d-sam-objects"
+  | "3d-sam-body"
+  | "3d-hunyuan"
+  | "3d-trellis"
   | "3d-extraction"
   | "subtitles"
   | "image-recognition"
@@ -270,7 +274,26 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       checkbox<MlService>({
         message: "ML services:",
         choices: [
-          { name: "3D model extraction (photo → GLB)", value: "3d-extraction" },
+          {
+            name: "3D — SAM 3D Objects (Meta, single image → mesh; SOTA real-image textures)",
+            value: "3d-sam-objects",
+          },
+          {
+            name: "3D — SAM 3D Body (Meta, single image → posed human body; apparel/try-on)",
+            value: "3d-sam-body",
+          },
+          {
+            name: "3D — Hunyuan3D 3.0 (Tencent, 8K PBR textures, open weights)",
+            value: "3d-hunyuan",
+          },
+          {
+            name: "3D — TRELLIS 2 (Microsoft, sparse-voxel geometry, strong topology)",
+            value: "3d-trellis",
+          },
+          {
+            name: "3D — TripoSR (legacy, fast but lower quality)",
+            value: "3d-extraction",
+          },
           { name: "Subtitle generation (audio/video → SRT)", value: "subtitles" },
           { name: "Image recognition", value: "image-recognition" },
           { name: "Background removal", value: "background-removal" },

@@ -303,6 +303,10 @@ async function runScaffoldSteps(
     "subtitles",
     "image-recognition",
     "3d-extraction",
+    "3d-sam-objects",
+    "3d-sam-body",
+    "3d-hunyuan",
+    "3d-trellis",
   ];
   for (const service of allMlServices) {
     if (!config.mlServices.includes(service)) {
@@ -391,6 +395,10 @@ function scaffoldDryRun(config: ProjectConfig, outputDir: string): string[] {
       "subtitles",
       "image-recognition",
       "3d-extraction",
+      "3d-sam-objects",
+      "3d-sam-body",
+      "3d-hunyuan",
+      "3d-trellis",
     ].filter((s) => !config.mlServices.includes(s as MlService));
     if (removed.length > 0) {
       actions.push(`Remove unused ML pages: ${removed.join(", ")}`);

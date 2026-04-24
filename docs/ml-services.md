@@ -11,12 +11,24 @@ Hatchkit treats GPU-backed inference as a first-class feature. You pick which on
 
 Templates live under `services/ml/` in the repo.
 
-| Service | What it does | Typical input → output |
-|---|---|---|
-| `image-recognition` | Vision classifier / tagger | image → labels + scores |
-| `subtitles` | Speech-to-text with timestamps | audio/video → SRT / VTT |
-| `3d-extraction` | 3D geometry / depth extraction | image → mesh / depth map |
-| `background-removal` | Foreground segmentation | image → RGBA with alpha |
+| Service | Model | What it does | Typical input → output |
+|---|---|---|---|
+| `3d-sam-objects` | SAM 3D Objects (Meta) | Single image → textured 3D mesh. SOTA on real-image textures (5:1 human-preference win rate). | image → GLB |
+| `3d-sam-body` | SAM 3D Body (Meta) | Single image → posed human body mesh. Built for apparel / try-on. | image → GLB |
+| `3d-hunyuan` | Hunyuan3D (Tencent) | Open-weight leader with PBR textures up to 8K. Non-commercial license by default. | image → GLB |
+| `3d-trellis` | TRELLIS 2 (Microsoft) | Sparse-voxel geometry with strong topology + PBR materials. MIT-licensed. | image → GLB |
+| `3d-extraction` | TripoSR (legacy) | Fast but lower quality. Kept for backwards compatibility. | image → GLB |
+| `image-recognition` | CLIP | Vision classifier / tagger | image → labels + scores |
+| `subtitles` | Whisper | Speech-to-text with timestamps | audio/video → SRT / VTT |
+| `background-removal` | RMBG-2.0 | Foreground segmentation | image → RGBA with alpha |
+
+### Picking a 3D model
+
+- **Default — `3d-sam-objects`**: Meta's benchmark leader for in-the-wild product photos. Best starting point for e-commerce / retail 3D.
+- **Apparel / body — `3d-sam-body`**: Pair with `3d-sam-objects` if your product line includes clothing, accessories on models, or anything where body pose matters.
+- **Highest-quality geometry — `3d-hunyuan`**: 4K-8K PBR textures. Heavier compute (A100). Verify Tencent's license terms before shipping commercially.
+- **Open-source geometry + topology — `3d-trellis`**: MIT-licensed, strong on sharp features. Use this if the Hunyuan license is a blocker.
+- **`3d-extraction` (TripoSR)**: Kept for backwards compatibility. Skip for new projects — benchmarks have moved on.
 
 Each service is a small repo with:
 
