@@ -24,23 +24,51 @@ interface CheckResult {
   name: string;
   status: "ok" | "fail" | "skip";
   detail?: string;
+  /** Multi-line troubleshooting hint, shown under a failing check. */
+  hint?: string[];
 }
 
-async function check(name: string, fn: () => Promise<string | void>): Promise<CheckResult> {
+type HintFn = (detail: string) => string[] | undefined;
+
+async function check(
+  name: string,
+  fn: () => Promise<string | void>,
+  hintFn?: HintFn,
+): Promise<CheckResult> {
   try {
     const detail = await fn();
     return { name, status: "ok", detail: detail || undefined };
   } catch (err) {
-    return { name, status: "fail", detail: err instanceof Error ? err.message : String(err) };
+    const detail = err instanceof Error ? err.message : String(err);
+    return { name, status: "fail", detail, hint: hintFn?.(detail) };
   }
+}
+
+/** Pull the HTTP status code out of a "HTTP 401 ..." style error message. */
+function httpCode(detail: string): number | undefined {
+  const m = detail.match(/HTTP (\d{3})/);
+  return m ? Number(m[1]) : undefined;
 }
 
 async function checkGitHub(): Promise<CheckResult> {
   if (!(await execOk("gh", ["--version"]))) {
-    return { name: "GitHub (gh CLI)", status: "fail", detail: "gh CLI not installed" };
+    return {
+      name: "GitHub (gh CLI)",
+      status: "fail",
+      detail: "gh CLI not installed",
+      hint: [
+        "Install: `brew install gh` (macOS) or see https://cli.github.com",
+        "Then authenticate: `gh auth login`",
+      ],
+    };
   }
   if (!(await execOk("gh", ["auth", "status"]))) {
-    return { name: "GitHub (gh CLI)", status: "fail", detail: "not authenticated — run `gh auth login`" };
+    return {
+      name: "GitHub (gh CLI)",
+      status: "fail",
+      detail: "not authenticated",
+      hint: ["Run `gh auth login` and pick GitHub.com → HTTPS → browser."],
+    };
   }
   return { name: "GitHub (gh CLI)", status: "ok" };
 }
@@ -48,37 +76,98 @@ async function checkGitHub(): Promise<CheckResult> {
 async function checkCoolify(): Promise<CheckResult> {
   const cfg = await getCoolifyConfig();
   if (!cfg) return { name: "Coolify", status: "skip" };
-  return check("Coolify", async () => {
-    const v = await verifyCoolify(cfg.url, cfg.token);
-    return `v${v}`;
-  });
+  return check(
+    "Coolify",
+    async () => {
+      const v = await verifyCoolify(cfg.url, cfg.token);
+      return `v${v}`;
+    },
+    (detail) => {
+      const code = httpCode(detail);
+      if (code === 401 || code === 403) {
+        return [
+          "API token invalid or expired.",
+          `Create a new one: ${cfg.url.replace(/\/$/, "")}/security/api-tokens`,
+          "Then re-run: `hatchkit config add coolify`",
+        ];
+      }
+      if (/ENOTFOUND|ECONNREFUSED|fetch failed/i.test(detail)) {
+        return [
+          `Can't reach Coolify at ${cfg.url}.`,
+          "Check the URL is reachable from this machine, or re-run `hatchkit config add coolify`.",
+        ];
+      }
+      return undefined;
+    },
+  );
 }
 
 async function checkHetzner(): Promise<CheckResult> {
   const cfg = await getHetznerConfig();
   if (!cfg) return { name: "Hetzner Cloud", status: "skip" };
-  return check("Hetzner Cloud", async () => {
-    const res = await fetch("https://api.hetzner.cloud/v1/servers?per_page=1", {
-      headers: { Authorization: `Bearer ${cfg.token}` },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const body = (await res.json()) as { meta?: { pagination?: { total_entries?: number } } };
-    return `${body.meta?.pagination?.total_entries ?? "?"} server(s)`;
-  });
+  return check(
+    "Hetzner Cloud",
+    async () => {
+      const res = await fetch("https://api.hetzner.cloud/v1/servers?per_page=1", {
+        headers: { Authorization: `Bearer ${cfg.token}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { meta?: { pagination?: { total_entries?: number } } };
+      return `${body.meta?.pagination?.total_entries ?? "?"} server(s)`;
+    },
+    (detail) => {
+      const code = httpCode(detail);
+      if (code === 401) {
+        return [
+          "Hetzner API token is invalid or was revoked.",
+          "Create a new one: https://console.hetzner.cloud/ → project → Security → API tokens (Read & Write)",
+          "Then re-run: `hatchkit config add hetzner`",
+        ];
+      }
+      if (code === 403) {
+        return [
+          "Token lacks permissions — needs Read & Write on the project.",
+          "Re-create it and re-run `hatchkit config add hetzner`.",
+        ];
+      }
+      return undefined;
+    },
+  );
 }
 
 async function checkDns(): Promise<CheckResult> {
   const cfg = await getDnsConfig();
   if (!cfg || cfg.provider === "manual") return { name: "DNS", status: "skip" };
   if (cfg.provider === "cloudflare") {
-    return check("DNS (Cloudflare)", async () => {
-      const res = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
-        headers: { Authorization: `Bearer ${cfg.apiToken}` },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as { result?: { status?: string } };
-      return body.result?.status ?? "active";
-    });
+    return check(
+      "DNS (Cloudflare)",
+      async () => {
+        const res = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
+          headers: { Authorization: `Bearer ${cfg.apiToken}` },
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = (await res.json()) as { result?: { status?: string } };
+        return body.result?.status ?? "active";
+      },
+      (detail) => {
+        const code = httpCode(detail);
+        if (code === 401) {
+          return [
+            "Cloudflare API token is invalid, expired, or revoked.",
+            "Create a new one: https://dash.cloudflare.com/profile/api-tokens",
+            "Required permissions: Zone:DNS:Edit + Zone:Zone:Read (scope to the zones you'll use).",
+            "Then re-run: `hatchkit config add dns`",
+          ];
+        }
+        if (code === 403) {
+          return [
+            "Token authenticates but lacks Zone:DNS:Edit + Zone:Zone:Read on the target zones.",
+            "Edit the token at https://dash.cloudflare.com/profile/api-tokens or create a new one, then `hatchkit config add dns`.",
+          ];
+        }
+        return undefined;
+      },
+    );
   }
   // INWX uses XML-RPC login — skip active-verify (cheap check would require a login call).
   return { name: "DNS (INWX)", status: "ok", detail: "credentials stored (not test-authenticated)" };
@@ -104,34 +193,64 @@ async function checkGpu(platform: string): Promise<CheckResult> {
     });
   }
   const key = await getSecret(SECRET_KEYS.gpuApiKey(platform));
-  if (!key) return { name, status: "fail", detail: "API key missing from keychain" };
+  if (!key) {
+    return {
+      name,
+      status: "fail",
+      detail: "API key missing from keychain",
+      hint: [`Re-run: \`hatchkit config add gpu\` and pick ${platform}.`],
+    };
+  }
+  const gpuHint = (label: string, createUrl: string): HintFn => (detail) => {
+    const code = httpCode(detail);
+    if (code === 401 || code === 403) {
+      return [
+        `${label} API key is invalid or expired.`,
+        `Create a new one: ${createUrl}`,
+        "Then re-run: `hatchkit config add gpu`",
+      ];
+    }
+    return undefined;
+  };
   if (platform === "hf") {
-    return check(name, async () => {
-      const res = await fetch("https://huggingface.co/api/whoami-v2", {
-        headers: { Authorization: `Bearer ${key}` },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as { name?: string };
-      return body.name ?? "authenticated";
-    });
+    return check(
+      name,
+      async () => {
+        const res = await fetch("https://huggingface.co/api/whoami-v2", {
+          headers: { Authorization: `Bearer ${key}` },
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = (await res.json()) as { name?: string };
+        return body.name ?? "authenticated";
+      },
+      gpuHint("Hugging Face", "https://huggingface.co/settings/tokens"),
+    );
   }
   if (platform === "replicate") {
-    return check(name, async () => {
-      const res = await fetch("https://api.replicate.com/v1/account", {
-        headers: { Authorization: `Token ${key}` },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return "authenticated";
-    });
+    return check(
+      name,
+      async () => {
+        const res = await fetch("https://api.replicate.com/v1/account", {
+          headers: { Authorization: `Token ${key}` },
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return "authenticated";
+      },
+      gpuHint("Replicate", "https://replicate.com/account/api-tokens"),
+    );
   }
   if (platform === "runpod") {
-    return check(name, async () => {
-      const res = await fetch("https://rest.runpod.io/v1/user", {
-        headers: { Authorization: `Bearer ${key}` },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return "authenticated";
-    });
+    return check(
+      name,
+      async () => {
+        const res = await fetch("https://rest.runpod.io/v1/user", {
+          headers: { Authorization: `Bearer ${key}` },
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return "authenticated";
+      },
+      gpuHint("RunPod", "https://www.runpod.io/console/user/settings"),
+    );
   }
   return { name, status: "ok", detail: "credentials stored" };
 }
@@ -139,40 +258,94 @@ async function checkGpu(platform: string): Promise<CheckResult> {
 async function checkGlitchtip(): Promise<CheckResult> {
   const cfg = await getGlitchtipConfig();
   if (!cfg) return { name: "GlitchTip", status: "skip" };
-  return check("GlitchTip", async () => {
-    const res = await fetch(`${cfg.url}/api/0/organizations/${cfg.organizationSlug}/`, {
-      headers: { Authorization: `Bearer ${cfg.token}` },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return `org: ${cfg.organizationSlug}`;
-  });
+  return check(
+    "GlitchTip",
+    async () => {
+      const res = await fetch(`${cfg.url}/api/0/organizations/${cfg.organizationSlug}/`, {
+        headers: { Authorization: `Bearer ${cfg.token}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return `org: ${cfg.organizationSlug}`;
+    },
+    (detail) => {
+      const code = httpCode(detail);
+      const base = cfg.url.replace(/\/$/, "");
+      if (code === 401) {
+        return [
+          "Auth token is invalid or expired.",
+          `Create a new one: ${base}/profile/auth-tokens`,
+          "Then re-run: `hatchkit config add glitchtip`",
+        ];
+      }
+      if (code === 404) {
+        return [
+          `Organization "${cfg.organizationSlug}" not found — slug may be wrong.`,
+          `Check at ${base}/ and re-run: \`hatchkit config add glitchtip\``,
+        ];
+      }
+      return undefined;
+    },
+  );
 }
 
 async function checkOpenpanel(): Promise<CheckResult> {
   const cfg = await getOpenpanelConfig();
   if (!cfg) return { name: "OpenPanel", status: "skip" };
-  return check("OpenPanel", async () => {
-    const res = await fetch(`${cfg.url}/api/manage/projects`, {
-      headers: {
-        "openpanel-client-id": cfg.rootClientId,
-        "openpanel-client-secret": cfg.rootClientSecret,
-      },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return `root client OK`;
-  });
+  return check(
+    "OpenPanel",
+    async () => {
+      const res = await fetch(`${cfg.url}/api/manage/projects`, {
+        headers: {
+          "openpanel-client-id": cfg.rootClientId,
+          "openpanel-client-secret": cfg.rootClientSecret,
+        },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return `root client OK`;
+    },
+    (detail) => {
+      const code = httpCode(detail);
+      if (code === 401 || code === 403) {
+        return [
+          "Root client credentials rejected — may have been rotated or lack `write` access.",
+          "Re-run: `hatchkit config add openpanel` and paste the root client id/secret.",
+        ];
+      }
+      return undefined;
+    },
+  );
 }
 
 async function checkResend(): Promise<CheckResult> {
   const cfg = await getResendConfig();
   if (!cfg) return { name: "Resend", status: "skip" };
-  return check("Resend", async () => {
-    const res = await fetch("https://api.resend.com/domains", {
-      headers: { Authorization: `Bearer ${cfg.apiKey}` },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return "API key valid";
-  });
+  return check(
+    "Resend",
+    async () => {
+      const res = await fetch("https://api.resend.com/domains", {
+        headers: { Authorization: `Bearer ${cfg.apiKey}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return "API key valid";
+    },
+    (detail) => {
+      const code = httpCode(detail);
+      if (code === 401) {
+        return [
+          "Resend API key is invalid or was deleted.",
+          "Create a new one (full access): https://resend.com/api-keys",
+          "Then re-run: `hatchkit config add resend`",
+        ];
+      }
+      if (code === 403) {
+        return [
+          "API key lacks permissions — needs `Full access` to list/create domains and keys.",
+          "Re-create at https://resend.com/api-keys and re-run `hatchkit config add resend`.",
+        ];
+      }
+      return undefined;
+    },
+  );
 }
 
 export async function runDoctor(): Promise<void> {
@@ -201,5 +374,18 @@ export async function runDoctor(): Promise<void> {
   console.log(
     `\n  ${chalk.green(`${okCount} ok`)}  ${failCount ? chalk.red(`${failCount} failing`) : chalk.dim("0 failing")}  ${chalk.dim(`${skipCount} not configured`)}\n`,
   );
-  if (failCount > 0) process.exit(1);
+
+  const failed = results.filter((r) => r.status === "fail");
+  if (failed.length > 0) {
+    console.log(chalk.bold("  How to fix"));
+    for (const r of failed) {
+      console.log(`\n  ${chalk.red("✗")} ${chalk.bold(r.name)}`);
+      const lines = r.hint ?? [
+        "No specific hint — try re-running the relevant `hatchkit config add <provider>` to re-enter credentials.",
+      ];
+      for (const line of lines) console.log(`    ${chalk.dim("→")} ${line}`);
+    }
+    console.log();
+    process.exit(1);
+  }
 }
