@@ -439,6 +439,14 @@ async function handleCreate(): Promise<void> {
       await ensureS3(config.s3Provider);
     }
   }
+  // Pre-flight observability + email + Stripe providers used by `hatchkit
+  // create` directly (not just `add`): if the user picked the analytics
+  // feature, GlitchTip needs to be configured before we can mint a DSN
+  // for them. Same for Stripe webhook auto-provisioning.
+  if (config.features.includes("analytics")) {
+    const { ensureGlitchtip } = await import("./config.js");
+    await ensureGlitchtip();
+  }
 
   const appDir = resolve(config.name);
 
@@ -481,6 +489,31 @@ async function handleCreate(): Promise<void> {
     if (scaffoldResult.dotenvx) {
       const { printDotenvxSummary } = await import("./scaffold/dotenvx.js");
       printDotenvxSummary(scaffoldResult.dotenvx, config.name);
+    }
+
+    // Auto-provision GlitchTip + write its DSN encrypted into
+    // .env.production. The user picked the `analytics` feature; we
+    // already verified GlitchTip is configured during pre-flight.
+    if (config.features.includes("analytics")) {
+      try {
+        const { provisionGlitchtipClient } = await import("./provision/glitchtip.js");
+        const { set: dotenvxSet } = await import("@dotenvx/dotenvx");
+        const ora = (await import("ora")).default;
+        const spinner = ora(`GlitchTip: creating project ${config.name}`).start();
+        const res = await provisionGlitchtipClient(config.name);
+        spinner.succeed(`GlitchTip project ready (DSN encrypted into .env.production)`);
+        const prodEnvPath = join(appDir, "packages/server/.env.production");
+        dotenvxSet("GLITCHTIP_DSN", res.dsn, { path: prodEnvPath, encrypt: true });
+      } catch (err) {
+        console.log(
+          chalk.yellow(`  Couldn't auto-provision GlitchTip: ${(err as Error).message}`),
+        );
+        console.log(
+          chalk.dim(
+            `  Run \`hatchkit add ${config.name} glitchtip\` once GlitchTip is reachable.`,
+          ),
+        );
+      }
     }
   }
 
@@ -638,7 +671,7 @@ async function handleCreate(): Promise<void> {
   // Final summary
   console.log(chalk.bold("\n  ── Done! ─────────────────────────────────────────────────\n"));
   console.log(`  App:       ${chalk.cyan(`https://${config.domain}`)}`);
-  console.log(`  API:       ${chalk.cyan(`https://api.${config.domain}`)}`);
+  console.log(`  API:       ${chalk.cyan(`https://${config.domain}/api`)}`);
   console.log(`  App dir:   ${chalk.dim(appDir)}`);
   console.log(`  Config:    ${chalk.dim(getConfigPath())}`);
 
