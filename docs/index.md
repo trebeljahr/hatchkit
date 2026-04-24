@@ -1,0 +1,51 @@
+---
+title: Home
+layout: home
+nav_order: 1
+---
+
+# hatchkit
+{: .fs-9 }
+
+From `npx hatchkit` to a deployed full-stack app on your own infrastructure — including GPU-backed ML services — in minutes.
+{: .fs-6 .fw-300 }
+
+[Get started now](getting-started.html){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
+[View on GitHub](https://github.com/trebeljahr/hatchkit){: .btn .fs-5 .mb-4 .mb-md-0 }
+
+---
+
+## What it does
+
+Hatchkit is an interactive CLI that scaffolds, provisions, and deploys full-stack TypeScript products on infrastructure you own.
+
+One command takes you from empty folder to:
+
+- a fresh repo based on a production-ready starter (websockets, Stripe, auth, analytics, S3, desktop/mobile — opt-in),
+- a GitHub repository,
+- DNS + a Hetzner VPS + a Coolify app (via Terraform) — or a push to an existing server you already operate,
+- paired `-dev` / `-prod` clients for GlitchTip (errors), OpenPanel (analytics), and Resend (email),
+- GPU-backed ML endpoints deployed to Modal, RunPod, Hugging Face, or Replicate.
+
+Secrets are encrypted with dotenvx; private keys live in the OS keychain. Nothing sensitive touches git.
+
+## Why it exists
+
+Starting a new product is the same toil every time: pick a starter, wire up auth, pick error tracking, pick analytics, register a domain, point DNS, configure a server, set up a deployment pipeline, copy twenty env vars between dashboards. Hatchkit encodes the opinionated, repeatable parts so you can spend the first day on *product*, not on yak-shaving.
+
+## Design principles
+
+- **No vendor lock-in.** Your code, your GitHub repo, your Coolify, your server, your domain. Hatchkit is an orchestrator, not a platform.
+- **Lazy prompting.** You only get asked about a provider when you actually need it. `doctor` + `config` let you fix things without running the wizard again.
+- **Secrets stay out of git.** dotenvx for encrypted `.env.production`, OS keychain for provider tokens, per-project private keys pushed to Coolify.
+- **One starter, many shapes.** Features are stripped from the starter at scaffold time rather than layered on top — the output is lean, not scaffold-soup.
+
+## Next steps
+
+- [Getting Started](getting-started.html) — install + onboard + create your first project
+- [Commands reference](commands.html) — every command, every flag
+- [Providers](providers.html) — what hatchkit integrates with and how to configure it
+- [ML services](ml-services.html) — GPU workloads as first-class citizens
+- [GitHub Pages (`hatchkit pages`)](pages.html) — static / SPA / Jekyll deploys with a custom domain
+- [Architecture](architecture.html) — how scaffold, infra, and deploy fit together
+- [Deploying the docs site](deployment.html) — GitHub Pages flow used by this repo

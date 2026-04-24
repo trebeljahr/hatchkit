@@ -1,0 +1,123 @@
+---
+title: Providers
+nav_order: 4
+---
+
+# Providers
+
+Hatchkit talks to a handful of external systems. Every one is optional until a command actually needs it — you can start with just GitHub + Coolify and add the rest later.
+
+## Credential storage
+
+| Where | What |
+|---|---|
+| OS keychain (macOS Keychain / libsecret) | All tokens + secrets, scoped under the `hatchkit` service. |
+| `~/.config/hatchkit/config.json` | Non-sensitive metadata — URLs, user IDs, region hints, provider status. Override with `HATCHKIT_CONF_DIR`. |
+
+Re-check everything:
+
+```bash
+hatchkit config   # status
+hatchkit doctor   # live API check
+```
+
+---
+
+## GitHub
+
+**Auth:** `gh auth login`. Hatchkit shells out to the `gh` CLI — no tokens of its own.
+
+**Used by:** `create` (repo provisioning, first push).
+
+---
+
+## Coolify
+
+Self-hosted PaaS that runs the final app container. Hatchkit uses the Coolify API to:
+
+- Create the app from your GitHub repo,
+- Push encrypted env vars + the dotenvx private key,
+- Trigger deploys.
+
+**You need:** a Coolify URL (e.g. `https://coolify.example.com`) and an API token with write access to projects / applications / env vars.
+
+Configure: `hatchkit config add coolify`.
+
+---
+
+## Hetzner Cloud
+
+Optional. Used when you pick **"new VPS"** as a deploy target.
+
+**You need:** a Hetzner Cloud API token.
+
+Hatchkit will pick a server size interactively (CX22 / CX32 / CX42 / CX52 or the CAX ARM line) and Terraform will provision the VM, attach SSH keys, and bootstrap Coolify.
+
+Configure: `hatchkit config add hetzner`.
+
+---
+
+## DNS
+
+Hatchkit creates the apex + `api.` records pointing at the deploy target.
+
+**Supported:**
+
+- **INWX** — username + password + optional 2FA shared secret
+- **Cloudflare** — API token scoped to the zone
+
+Configure: `hatchkit config add dns`.
+
+---
+
+## S3-compatible storage
+
+Opt-in via the `s3` feature during `create`.
+
+| Provider | What you need |
+|---|---|
+| Hetzner Object Storage | access key + secret + region |
+| AWS S3 | access key + secret + region |
+| Cloudflare R2 | account ID + access key + secret |
+| Existing | paste your own bucket credentials into the app env |
+
+Configure: `hatchkit config add s3`.
+
+---
+
+## Email — Resend
+
+Hatchkit can create a **restricted** Resend API key per environment (dev/prod) tied to a sending domain you own. Returned `RESEND_API_KEY` is the only secret you need on the app side.
+
+Configure: `hatchkit config add resend`.
+
+---
+
+## Error tracking — GlitchTip
+
+Hatchkit provisions a GlitchTip project and returns a DSN ready to drop into Sentry-compatible SDKs.
+
+Configure: `hatchkit config add glitchtip`.
+
+---
+
+## Product analytics — OpenPanel
+
+Uses the **OpenPanel Management API** to provision client credentials against your self-hosted instance. Returns `OPENPANEL_CLIENT_ID` + `OPENPANEL_CLIENT_SECRET`.
+
+Configure: `hatchkit config add openpanel`.
+
+---
+
+## GPU / ML platforms
+
+For deploying ML services. See [ML services](ml-services.html) for the end-to-end flow.
+
+| Platform | Notes |
+|---|---|
+| **Modal** | Serverless GPUs. Hatchkit shells out to the `modal` CLI. |
+| **RunPod** | Serverless endpoints via the RunPod API. |
+| **Hugging Face** | Inference Endpoints API. |
+| **Replicate** | Hosted model API. |
+
+Configure: `hatchkit config add modal` (or `runpod`, `hf`, `replicate`).

@@ -1,0 +1,92 @@
+---
+title: Getting Started
+nav_order: 2
+---
+
+# Getting Started
+
+This page walks you from nothing to a deployed app.
+
+## 1. Install
+
+Hatchkit is an npm package. You can use it without installing (via `npx`) or install it globally.
+
+```bash
+# ad-hoc
+npx hatchkit --version
+
+# or global
+npm install -g hatchkit
+hatchkit --version
+```
+
+Requirements:
+
+- **Node.js 20+** and **pnpm 9+** on your machine
+- **git** and the **GitHub CLI** (`gh`) authenticated (`gh auth login`)
+- A **Coolify** instance reachable over HTTPS — your own server or a friend's
+- Optional for "deploy me a new server from scratch": a **Hetzner Cloud** API token, a **DNS provider** token (INWX or Cloudflare)
+
+## 2. One-time onboarding
+
+```bash
+hatchkit setup
+```
+
+This walks through every credential hatchkit knows about and stores:
+
+- **Tokens** → your OS keychain (macOS Keychain, libsecret on Linux) under the `hatchkit` service.
+- **Metadata** (URLs, user IDs, non-secret IDs) → `~/.config/hatchkit/config.json` (or `$HATCHKIT_CONF_DIR`).
+
+Skip anything you don't need right now — you'll be prompted on first use. At any time you can re-check with:
+
+```bash
+hatchkit config          # show provider status
+hatchkit doctor          # run a read-only API call against each one
+hatchkit config add coolify   # re-configure a single provider
+```
+
+## 3. Scaffold a project
+
+```bash
+hatchkit create
+```
+
+You'll be asked for:
+
+1. **Project name** (used for GitHub repo, Coolify app, subdomain prefix)
+2. **Domain** (e.g. `example.com` — the app ends up at `https://<name>.<domain>`)
+3. **Deploy target** — existing server (provide IP) or new Hetzner VPS (pick a size)
+4. **Features** — websocket, Stripe, analytics, S3, desktop (Electron), mobile (Capacitor), …
+5. **ML services** — pick any combination of the pre-built GPU templates, or a custom Hugging Face model
+6. **GPU platform** (if any ML was selected) — Modal, RunPod, Hugging Face Inference, Replicate
+
+Hatchkit then:
+
+1. Copies the starter, strips unselected features, assigns unique ports (so you can run multiple projects locally).
+2. Runs `pnpm install` (if pnpm is on PATH and you opt in).
+3. `git init`, first commit, creates the GitHub repo (if you opted in).
+4. Writes Terraform tfvars + Coolify `.env` into `infra/`.
+5. If you opted into deployment: runs Terraform (DNS + optionally server), runs the Coolify setup script, pushes the dotenvx private key to Coolify, deploys any ML services, and prints the env block.
+
+## 4. Run it locally
+
+```bash
+cd <project-name>
+pnpm dev
+```
+
+The starter runs server + client on the ports hatchkit assigned (collision-free across projects). Mobile / desktop targets have their own `pnpm` scripts printed at the end of `create`.
+
+## 5. Non-interactive / CI
+
+```bash
+hatchkit create --yes --config ./project.json --no-github --no-deploy
+```
+
+Any field missing from the config file falls back to a sane default — no prompts will run. Useful for reproducible test environments or scripted fleets.
+
+## Next
+
+- [Commands reference](commands.html)
+- [Architecture](architecture.html) for what actually happens under the hood
