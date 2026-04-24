@@ -278,11 +278,13 @@ export async function ensureCoolify(): Promise<CoolifyConfig> {
   // is easy, and re-running the whole onboarding just to retry is rude.
   let token = "";
   for (;;) {
-    token = (
-      await password({
-        message: "Coolify API token (from Settings → API Tokens):",
-      })
-    ).trim();
+    const raw = await password({
+      message: "Coolify API token (from Settings → API Tokens):",
+    });
+    // Strip bracketed-paste escapes + all control/non-printable ASCII that
+    // some terminals inject on paste. `.trim()` alone misses these.
+    token = raw.replace(/\x1b\[2\d\d~/g, "").replace(/[^\x20-\x7e]/g, "").trim();
+    console.log(chalk.dim(`  token length: ${token.length} chars`));
 
     const spinner = ora("Testing Coolify connection...").start();
     try {
