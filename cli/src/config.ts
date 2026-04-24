@@ -274,22 +274,32 @@ export async function ensureCoolify(): Promise<CoolifyConfig> {
     })
   ).trim();
 
-  const token = (
-    await password({
-      message: "Coolify API token (from Settings → API Tokens):",
-    })
-  ).trim();
+  // Loop on the token until it authenticates — pasting the wrong token
+  // is easy, and re-running the whole onboarding just to retry is rude.
+  let token = "";
+  for (;;) {
+    token = (
+      await password({
+        message: "Coolify API token (from Settings → API Tokens):",
+      })
+    ).trim();
 
-  const spinner = ora("Testing Coolify connection...").start();
-  try {
-    const version = await verifyCoolify(url, token);
-    spinner.succeed(`Connected to Coolify v${version}`);
-  } catch (error) {
-    spinner.fail("Could not connect to Coolify");
-    throw error;
+    const spinner = ora("Testing Coolify connection...").start();
+    try {
+      const version = await verifyCoolify(url, token);
+      spinner.succeed(`Connected to Coolify v${version}`);
+      break;
+    } catch (error) {
+      spinner.fail("Could not connect to Coolify");
+      console.log(chalk.dim(`  ${error instanceof Error ? error.message : String(error)}`));
+      const retry = await confirm({
+        message: "Try a different token?",
+        default: true,
+      });
+      if (!retry) throw error;
+    }
   }
 
-  // Cache server list
   const { CoolifyApi } = await import("./utils/coolify-api.js");
   const api = new CoolifyApi({ url, token });
   const servers = await api.listServers();
