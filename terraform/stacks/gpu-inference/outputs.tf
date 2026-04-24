@@ -26,6 +26,27 @@ output "dns_records" {
   }
 }
 
+# Unified outputs consumed by devops-cli after `terraform apply`:
+# the CLI reads these with `terraform output -json` to know which domain
+# was touched and, if Cloudflare, which nameservers to point INWX at.
+
+output "dns_provider" {
+  description = "Which DNS provider this stack was applied with."
+  value       = var.dns_provider
+}
+
+output "dns_domain" {
+  description = "Base domain this stack manages."
+  value       = var.domain
+}
+
+output "dns_nameservers" {
+  description = "Cloudflare nameservers for the zone (empty when dns_provider is not 'cloudflare')."
+  value = var.dns_provider == "cloudflare" && length(module.dns_cloudflare) > 0 ? (
+    module.dns_cloudflare[0].name_servers
+  ) : []
+}
+
 output "ssh_command" {
   description = "SSH command to connect to the server."
   value       = "ssh root@${hcloud_server.main.ipv4_address}"

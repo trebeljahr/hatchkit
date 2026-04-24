@@ -24,10 +24,20 @@ terraform {
     }
 
     # INWX — manages DNS records (A, AAAA, CNAME, MX, TXT, etc.)
-    # Official provider from INWX themselves.
+    # Official provider from INWX themselves. Used when dns_provider = "inwx".
     inwx = {
       source  = "inwx/inwx"
       version = "~> 1.0"
+    }
+
+    # Cloudflare — manages DNS records in Cloudflare zones. Used when
+    # dns_provider = "cloudflare". We pin ~> 4.0 rather than 5.x because
+    # v5 moved cloudflare_record → cloudflare_dns_record with breaking
+    # schema changes and the ecosystem (data sources, examples) is still
+    # catching up.
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 4.0"
     }
 
     # MinIO provider — manages S3-compatible buckets.

@@ -46,6 +46,14 @@ provider "inwx" {
   # because records were going to sandbox.
 }
 
+# Cloudflare is declared unconditionally alongside INWX so the stack can
+# switch between them via var.dns_provider. Terraform only initializes a
+# provider when a resource references it, so leaving api_token = "" is
+# harmless when dns_provider = "inwx".
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
+}
+
 # The MinIO provider speaks the S3 protocol. We point it at Hetzner's
 # S3-compatible endpoint. Despite the provider name, this has nothing to do
 # with running MinIO yourself — it's just an S3 client that can create buckets.
@@ -133,25 +141,25 @@ resource "hcloud_firewall" "web" {
 
   # Outbound — allow all (restricting at Hetzner level breaks apt, Tailscale, Docker)
   rule {
-    description = "All TCP outbound"
-    direction   = "out"
-    protocol    = "tcp"
-    port        = "1-65535"
+    description     = "All TCP outbound"
+    direction       = "out"
+    protocol        = "tcp"
+    port            = "1-65535"
     destination_ips = ["0.0.0.0/0", "::/0"]
   }
 
   rule {
-    description = "All UDP outbound"
-    direction   = "out"
-    protocol    = "udp"
-    port        = "1-65535"
+    description     = "All UDP outbound"
+    direction       = "out"
+    protocol        = "udp"
+    port            = "1-65535"
     destination_ips = ["0.0.0.0/0", "::/0"]
   }
 
   rule {
-    description = "ICMP outbound"
-    direction   = "out"
-    protocol    = "icmp"
+    description     = "ICMP outbound"
+    direction       = "out"
+    protocol        = "icmp"
     destination_ips = ["0.0.0.0/0", "::/0"]
   }
 }
@@ -199,39 +207,37 @@ resource "hcloud_server" "main" {
 # ---------------------------------------------------------------------------
 # DNS records
 # ---------------------------------------------------------------------------
-
-# For each subdomain, create an A record (IPv4) pointing to the server.
-# We use `for_each` which creates one resource instance per map entry.
 #
-# WHY for_each AND NOT count:
-# `count` uses numeric indices (dns_a[0], dns_a[1]). If you remove the
-# first entry, everything shifts and Terraform wants to destroy/recreate.
-# `for_each` uses the map key (dns_a["app"]), so adding/removing one
-# subdomain doesn't affect the others. This is much safer for DNS.
+# We dispatch DNS to one of two modules based on var.dns_provider. The
+# unused module is gated to count=0 and never runs. This keeps the stack
+# file small and lets us share the DNS logic with other stacks through
+# modules/inwx-dns/ and modules/cloudflare-dns/.
+#
+# Both modules use `for_each` internally on the subdomains map — the same
+# safety property as before (adding/removing one subdomain doesn't churn
+# the others).
 
-resource "inwx_nameserver_record" "a" {
-  for_each = var.subdomains
+module "dns_inwx" {
+  count  = var.dns_provider == "inwx" ? 1 : 0
+  source = "../../modules/inwx-dns"
 
-  domain  = var.domain
-  name    = "${each.key}.${var.domain}"
-  type    = "A"
-  content = hcloud_server.main.ipv4_address
-  ttl     = var.dns_ttl
-
-  # each.key   = the subdomain name (e.g. "app")
-  # each.value = the description (e.g. "Main application") — unused here
-  #              but useful for documentation in your .tfvars
+  domain     = var.domain
+  subdomains = var.subdomains
+  ipv4       = hcloud_server.main.ipv4_address
+  ipv6       = hcloud_server.main.ipv6_address
+  ttl        = var.dns_ttl
 }
 
-# AAAA records (IPv6) — same pattern.
-resource "inwx_nameserver_record" "aaaa" {
-  for_each = var.subdomains
+module "dns_cloudflare" {
+  count  = var.dns_provider == "cloudflare" ? 1 : 0
+  source = "../../modules/cloudflare-dns"
 
-  domain  = var.domain
-  name    = "${each.key}.${var.domain}"
-  type    = "AAAA"
-  content = hcloud_server.main.ipv6_address
-  ttl     = var.dns_ttl
+  domain     = var.domain
+  subdomains = var.subdomains
+  ipv4       = hcloud_server.main.ipv4_address
+  ipv6       = hcloud_server.main.ipv6_address
+  ttl        = var.dns_ttl
+  proxied    = var.cloudflare_proxied
 }
 
 # ---------------------------------------------------------------------------

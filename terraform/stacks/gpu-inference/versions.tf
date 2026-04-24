@@ -21,6 +21,11 @@ terraform {
       version = "~> 1.0"
     }
 
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 4.0"
+    }
+
     minio = {
       source  = "aminueza/minio"
       version = "~> 3.2"

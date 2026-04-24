@@ -54,23 +54,75 @@ variable "ssh_key_name" {
 }
 
 # ---------------------------------------------------------------------------
-# INWX DNS
+# DNS provider selection
 # ---------------------------------------------------------------------------
 
+variable "dns_provider" {
+  description = <<-EOT
+    Which DNS provider to use. One of: "inwx", "cloudflare".
+
+    "inwx"       — records are created in INWX's nameservers.
+    "cloudflare" — records are created in an existing Cloudflare zone.
+                   The zone must already exist — create it via the CF
+                   dashboard or cf-import.sh before running this stack.
+  EOT
+  type        = string
+  default     = "inwx"
+
+  validation {
+    condition     = contains(["inwx", "cloudflare"], var.dns_provider)
+    error_message = "dns_provider must be 'inwx' or 'cloudflare'."
+  }
+}
+
+# ---------------------------------------------------------------------------
+# INWX DNS
+# ---------------------------------------------------------------------------
+#
+# NOTE: Required even when dns_provider = "cloudflare". The INWX Terraform
+# provider calls account.login during Configure() before checking whether
+# any resource uses it. See node-realtime/variables.tf for the full story.
+
 variable "inwx_username" {
-  description = "INWX account username. Best set via TF_VAR_inwx_username env var."
+  description = "INWX account username. Required regardless of dns_provider. Best set via TF_VAR_inwx_username env var."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "inwx_password" {
-  description = "INWX account password. Best set via TF_VAR_inwx_password env var."
+  description = "INWX account password. Required regardless of dns_provider. Best set via TF_VAR_inwx_password env var."
   type        = string
   sensitive   = true
+  default     = ""
+}
+
+# ---------------------------------------------------------------------------
+# Cloudflare DNS (used when dns_provider = "cloudflare")
+# ---------------------------------------------------------------------------
+
+variable "cloudflare_api_token" {
+  description = <<-EOT
+    Cloudflare API token with Zone:Zone:Edit + Zone:DNS:Edit on the target
+    zone. Best set via TF_VAR_cloudflare_api_token env var.
+
+    Default is a format-valid placeholder so the CF provider sits idle
+    when dns_provider = "inwx" (the CF provider validates token format at
+    configure time even if no resource uses it).
+  EOT
+  type        = string
+  sensitive   = true
+  default     = "unused_placeholder_token_000000000000000"
+}
+
+variable "cloudflare_proxied" {
+  description = "If true, records are orange-cloud (proxied through Cloudflare's CDN/WAF). Ignored when dns_provider = 'inwx'."
+  type        = bool
+  default     = true
 }
 
 variable "domain" {
-  description = "Base domain managed in INWX (e.g. 'example.com')."
+  description = "Base domain (e.g. 'example.com'). Must already exist as a zone at the chosen DNS provider."
   type        = string
 }
 
@@ -87,8 +139,8 @@ variable "subdomains" {
   EOT
   type        = map(string)
   default = {
-    "3d"        = "Web app + upload UI"
-    "api.3d"    = "REST API"
+    "3d"     = "Web app + upload UI"
+    "api.3d" = "REST API"
   }
 }
 

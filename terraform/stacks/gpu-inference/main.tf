@@ -38,6 +38,13 @@ provider "inwx" {
   password = var.inwx_password
 }
 
+# Cloudflare is declared alongside INWX so this stack can swap DNS providers
+# via var.dns_provider. Terraform only initializes a provider when a resource
+# references it, so the unused one sits idle with empty credentials.
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
+}
+
 provider "minio" {
   minio_server   = "${var.s3_location}.your-objectstorage.com"
   minio_user     = var.s3_access_key
@@ -99,25 +106,25 @@ resource "hcloud_firewall" "web" {
   }
 
   rule {
-    description = "All TCP outbound"
-    direction   = "out"
-    protocol    = "tcp"
-    port        = "1-65535"
+    description     = "All TCP outbound"
+    direction       = "out"
+    protocol        = "tcp"
+    port            = "1-65535"
     destination_ips = ["0.0.0.0/0", "::/0"]
   }
 
   rule {
-    description = "All UDP outbound"
-    direction   = "out"
-    protocol    = "udp"
-    port        = "1-65535"
+    description     = "All UDP outbound"
+    direction       = "out"
+    protocol        = "udp"
+    port            = "1-65535"
     destination_ips = ["0.0.0.0/0", "::/0"]
   }
 
   rule {
-    description = "ICMP outbound"
-    direction   = "out"
-    protocol    = "icmp"
+    description     = "ICMP outbound"
+    direction       = "out"
+    protocol        = "icmp"
     destination_ips = ["0.0.0.0/0", "::/0"]
   }
 }
@@ -145,27 +152,30 @@ resource "hcloud_server" "main" {
 }
 
 # ---------------------------------------------------------------------------
-# DNS records
+# DNS records — dispatched to one of two modules based on var.dns_provider.
 # ---------------------------------------------------------------------------
 
-resource "inwx_nameserver_record" "a" {
-  for_each = var.subdomains
+module "dns_inwx" {
+  count  = var.dns_provider == "inwx" ? 1 : 0
+  source = "../../modules/inwx-dns"
 
-  domain  = var.domain
-  name    = "${each.key}.${var.domain}"
-  type    = "A"
-  content = hcloud_server.main.ipv4_address
-  ttl     = var.dns_ttl
+  domain     = var.domain
+  subdomains = var.subdomains
+  ipv4       = hcloud_server.main.ipv4_address
+  ipv6       = hcloud_server.main.ipv6_address
+  ttl        = var.dns_ttl
 }
 
-resource "inwx_nameserver_record" "aaaa" {
-  for_each = var.subdomains
+module "dns_cloudflare" {
+  count  = var.dns_provider == "cloudflare" ? 1 : 0
+  source = "../../modules/cloudflare-dns"
 
-  domain  = var.domain
-  name    = "${each.key}.${var.domain}"
-  type    = "AAAA"
-  content = hcloud_server.main.ipv6_address
-  ttl     = var.dns_ttl
+  domain     = var.domain
+  subdomains = var.subdomains
+  ipv4       = hcloud_server.main.ipv4_address
+  ipv6       = hcloud_server.main.ipv6_address
+  ttl        = var.dns_ttl
+  proxied    = var.cloudflare_proxied
 }
 
 # ---------------------------------------------------------------------------
