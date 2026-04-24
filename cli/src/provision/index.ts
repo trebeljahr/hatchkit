@@ -10,11 +10,17 @@
  */
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { input, select } from "@inquirer/prompts";
+import { dirname, join, resolve } from "node:path";
+import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { ensureGlitchtip, ensureOpenpanel, ensureResend, getConfigPath } from "../config.js";
 import { validateProjectName } from "../utils/validate.js";
+import {
+  parseEnvLines,
+  resolveEnvTarget,
+  writeDevEnv,
+  writeProdEnv,
+} from "./write-env.js";
 import {
   type GlitchtipClient,
   deleteGlitchtipClient,
@@ -41,6 +47,10 @@ export interface ProvisionOptions {
   services: ProvisionService[];
   /** Optional pre-selected Resend domain id, skipping the picker. */
   resendDomainId?: string;
+  /** Project directory to write `.env.{development,production}` into.
+   *  If omitted, the user is prompted (default `./<baseName>`). Pass
+   *  `false` to force the legacy copy-paste behaviour. */
+  projectDir?: string | false;
 }
 
 interface EnvSection {
@@ -93,21 +103,105 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
     sections.push({ env, lines });
   }
 
+  // Always persist a 0600 cache copy under ~/<conf-dir>/provisioned/
+  // so the values are recoverable without re-hitting the APIs. This
+  // file is *never* printed to stdout — the secret values would end
+  // up in the terminal's scrollback + shell history.
   const outDir = join(dirname(getConfigPath()), "provisioned");
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
-
-  console.log(chalk.bold("\n  ── Env blocks (copy-paste into the corresponding project) ─\n"));
+  const savedPaths: Record<"dev" | "prod", string> = {
+    dev: join(outDir, `${opts.baseName}.dev.env`),
+    prod: join(outDir, `${opts.baseName}.prod.env`),
+  };
   for (const section of sections) {
     const banner = `# --- ${opts.baseName} / ${section.env} ---`;
-    console.log(chalk.cyan(banner));
-    for (const line of section.lines) console.log(line);
-    console.log();
-
-    const path = join(outDir, `${opts.baseName}.${section.env}.env`);
-    writeFileSync(path, `${banner}\n${section.lines.join("\n")}\n`, "utf-8");
-    console.log(chalk.dim(`  saved: ${path}`));
+    writeFileSync(
+      savedPaths[section.env],
+      `${banner}\n${section.lines.join("\n")}\n`,
+      { mode: 0o600 },
+    );
   }
-  console.log();
+
+  // Resolve where to write values. Opting out of the write lands the
+  // user back at the copy-paste cache file with a warning that secrets
+  // are not meant to be echoed.
+  const writeTarget = await resolveWriteTarget(opts);
+
+  if (writeTarget === null) {
+    console.log(chalk.bold("\n  ── Provisioned ────────────────────────────────────────────\n"));
+    for (const section of sections) {
+      const keys = parseEnvLines(section.lines).map((p) => p.key);
+      console.log(
+        `  ${chalk.bold(section.env)}: ${chalk.green(`${keys.length} vars`)} — ${chalk.dim(keys.join(", "))}`,
+      );
+      console.log(chalk.dim(`    cached (0600): ${savedPaths[section.env]}`));
+    }
+    console.log(
+      chalk.yellow(
+        `\n  Secret values are in the cache files above — read them with \`cat\` from a\n` +
+          `  private terminal, or re-run \`hatchkit add ${opts.baseName}\` with a project\n` +
+          `  directory to write them directly (recommended).\n`,
+      ),
+    );
+    return;
+  }
+
+  // Write dev as plaintext + prod as dotenvx-encrypted directly into
+  // the project. No secret ever hits stdout.
+  const { baseDir, layout } = resolveEnvTarget(writeTarget);
+  const devPath = join(baseDir, ".env.development");
+  const prodPath = join(baseDir, ".env.production");
+
+  console.log(chalk.bold("\n  ── Writing env into the project ──────────────────────────\n"));
+  console.log(chalk.dim(`  Project: ${writeTarget}  (${layout} layout)`));
+  console.log(chalk.dim(`  Dev:     ${devPath}`));
+  console.log(chalk.dim(`  Prod:    ${prodPath}  (dotenvx-encrypted)\n`));
+
+  for (const section of sections) {
+    const pairs = parseEnvLines(section.lines);
+    if (pairs.length === 0) continue;
+    if (section.env === "dev") {
+      const keys = writeDevEnv(devPath, pairs);
+      console.log(`  ${chalk.green("✓")} .env.development: ${keys.join(", ")}`);
+    } else {
+      const keys = writeProdEnv(prodPath, pairs);
+      console.log(
+        `  ${chalk.green("✓")} .env.production: ${keys.join(", ")} ${chalk.dim("(encrypted)")}`,
+      );
+    }
+  }
+
+  console.log(chalk.dim(`\n  Cached copies (0600): ${outDir}/${opts.baseName}.{dev,prod}.env\n`));
+}
+
+/** Resolve the project directory to write into, or `null` to keep the
+ *  legacy cache-only behaviour. Accepts an explicit opt-out (`false`)
+ *  for automation that wants to stay headless. */
+async function resolveWriteTarget(opts: ProvisionOptions): Promise<string | null> {
+  if (opts.projectDir === false) return null;
+  if (typeof opts.projectDir === "string") return resolve(opts.projectDir);
+
+  const guess = resolve(opts.baseName);
+  const guessExists = existsSync(guess);
+  const wantWrite = await confirm({
+    message: guessExists
+      ? `Write values into ${chalk.cyan(guess)} (dev → .env.development, prod → dotenvx-encrypted .env.production)?`
+      : `Write values into a project directory? (keeps secrets off stdout)`,
+    default: true,
+  });
+  if (!wantWrite) return null;
+
+  const picked = (
+    await input({
+      message: "Project directory:",
+      default: guessExists ? guess : `./${opts.baseName}`,
+      validate: (v) => {
+        const abs = resolve(v.trim());
+        return existsSync(abs) ? true : `No such directory: ${abs}`;
+      },
+    })
+  ).trim();
+  return resolve(picked);
 }
 
 // ---------------------------------------------------------------------------

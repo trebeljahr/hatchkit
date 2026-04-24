@@ -252,7 +252,20 @@ async function handleAdd(): Promise<void> {
     services = requested as ProvisionService[];
   }
 
-  await runProvision({ baseName, services });
+  // Resolve write target from flags:
+  //   --no-write           → never write; print a cache-file summary only
+  //   --dir <path>         → write into <path> without prompting
+  //   (neither)            → prompt, defaulting to ./<baseName>
+  const noWrite = args.includes("--no-write");
+  const dirIdx = args.indexOf("--dir");
+  const dirFlag = dirIdx >= 0 ? args[dirIdx + 1] : undefined;
+  const projectDir: string | false | undefined = noWrite
+    ? false
+    : dirFlag
+      ? dirFlag
+      : undefined;
+
+  await runProvision({ baseName, services, projectDir });
 }
 
 async function handleRemove(): Promise<void> {
@@ -884,29 +897,35 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("hatchkit add")} — create per-service clients for an existing project
 
   ${chalk.bold("Usage:")}
-    hatchkit add [<project-name>] [<services>]
-
-  Both args are optional — anything missing is prompted for, including a
-  multi-select of which services to run. ${chalk.dim("(<services> is 'all', a single")}
-  ${chalk.dim("service, or a comma-separated list.)")}
+    hatchkit add [<project-name>] [<services>] [--dir <path> | --no-write]
 
   ${chalk.bold("What it does:")}
     For every selected service, creates two clients:
       - ${chalk.cyan("<project-name>-dev")}
       - ${chalk.cyan("<project-name>-prod")}
-    …and prints an env block for each, plus saves it under
+    …then writes the values straight into the project repo:
+      - ${chalk.cyan(".env.development")} — plain (gitignored)
+      - ${chalk.cyan(".env.production")}  — dotenvx-encrypted (commit-safe)
+    A 0600-permission cache copy is also saved under
     ${chalk.dim("<config-dir>/provisioned/<project-name>.{dev,prod}.env")}.
+
+    ${chalk.dim("Secret values never hit stdout — see the cached files or the")}
+    ${chalk.dim("written env files if you need to read them back.")}
 
   ${chalk.bold("Services:")}
     glitchtip   Creates a GlitchTip project, returns GLITCHTIP_DSN
-    openpanel   Creates an OpenPanel client, returns OPENPANEL_CLIENT_ID/_SECRET
+    openpanel   Creates an OpenPanel project, returns OPENPANEL_CLIENT_ID/_SECRET
     resend      Creates a restricted Resend API key, returns RESEND_API_KEY
+
+  ${chalk.bold("Flags:")}
+    --dir <path>  Write env into this project directory (skips the prompt).
+    --no-write    Don't write into any project — just save the 0600 cache.
 
   ${chalk.bold("Examples:")}
     hatchkit add
     hatchkit add raptor-runner
-    hatchkit add raptor-runner all
-    hatchkit add raptor-runner glitchtip,resend
+    hatchkit add raptor-runner all --dir ../raptor-runner
+    hatchkit add raptor-runner glitchtip,resend --no-write
 `);
     return;
   }
