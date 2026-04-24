@@ -200,7 +200,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
           { name: "WebSocket/realtime (includes Redis)", value: "websocket" },
           { name: "Stripe billing", value: "stripe" },
           { name: "S3 file storage", value: "s3" },
-          { name: "Analytics (Plausible) + Error tracking (GlitchTip)", value: "analytics" },
+          { name: "Analytics (OpenPanel) + Error tracking (GlitchTip)", value: "analytics" },
           { name: "Desktop app (Electron + itch.io release)", value: "desktop" },
           { name: "Mobile app (Capacitor / iOS + Android)", value: "mobile" },
         ],

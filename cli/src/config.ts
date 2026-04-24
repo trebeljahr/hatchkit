@@ -41,6 +41,27 @@ export interface GpuProviderMeta extends ProviderStatus {
   endpointId?: string;
 }
 
+export interface GlitchtipMeta extends ProviderStatus {
+  url: string;
+  /** Cached org slug so the CLI doesn't re-prompt on every provision. */
+  organizationSlug?: string;
+  /** Default team slug inside that org (GlitchTip requires a team to
+   *  own each project). */
+  teamSlug?: string;
+}
+
+export interface OpenpanelMeta extends ProviderStatus {
+  url: string;
+  /** Default organization slug, used as the "project group" when
+   *  creating a new project/client via the dashboard. */
+  organizationSlug?: string;
+}
+
+export interface ResendMeta extends ProviderStatus {
+  /** Optional default region for new sending domains ("us-east-1", "eu-west-1"…). */
+  defaultRegion?: string;
+}
+
 // === Full-config types — metadata + the associated secret. These are
 //     what `ensureX` returns and what deploy code typically wants. ===
 
@@ -63,6 +84,16 @@ export interface GpuProviderConfig extends GpuProviderMeta {
   tokenSecret?: string;
 }
 
+export interface GlitchtipConfig extends GlitchtipMeta {
+  token: string;
+}
+export interface OpenpanelConfig extends OpenpanelMeta {
+  token: string;
+}
+export interface ResendConfig extends ResendMeta {
+  apiKey: string;
+}
+
 export interface MlServiceEntry {
   platform: string;
   endpoint: string;
@@ -80,6 +111,9 @@ export interface CliConfig {
     dns?: DnsMeta;
     s3: Record<string, S3ProviderMeta>;
     gpu: Record<string, GpuProviderMeta>;
+    glitchtip?: GlitchtipMeta;
+    openpanel?: OpenpanelMeta;
+    resend?: ResendMeta;
   };
   mlServices: Record<string, MlServiceEntry>;
   /** Ports that are already assigned to scaffolded projects so the
@@ -561,6 +595,153 @@ export function getMlServices(): Record<string, MlServiceEntry> {
 
 export function registerMlService(name: string, entry: MlServiceEntry): void {
   store.set(`mlServices.${name}`, entry);
+}
+
+// ---------------------------------------------------------------------------
+// Provider: GlitchTip (self-hosted error tracking, Sentry-compatible API)
+// ---------------------------------------------------------------------------
+
+export async function ensureGlitchtip(): Promise<GlitchtipConfig> {
+  const existing = store.get("providers.glitchtip") as GlitchtipMeta | undefined;
+  const existingToken = await getSecret(SECRET_KEYS.glitchtipToken);
+
+  if (existing?.status === "configured" && existingToken) {
+    return { ...existing, token: existingToken };
+  }
+
+  console.log(chalk.yellow("\n  GlitchTip is not configured yet. Let's set it up."));
+  const url = await input({
+    message: "GlitchTip base URL:",
+    default: existing?.url ?? "https://glitchtip.trebeljahr.com",
+    validate: (v) => validateUrl(v),
+  });
+  const token = await password({
+    message: "GlitchTip auth token (Profile → Auth Tokens, needs project:admin):",
+  });
+  const organizationSlug = await input({
+    message: "GlitchTip organization slug:",
+    default: existing?.organizationSlug,
+    validate: validateRequired,
+  });
+  const teamSlug = await input({
+    message: "GlitchTip team slug (must exist under that org):",
+    default: existing?.teamSlug,
+    validate: validateRequired,
+  });
+
+  const meta: GlitchtipMeta = {
+    status: "configured",
+    url: url.replace(/\/$/, ""),
+    organizationSlug,
+    teamSlug,
+    lastVerified: new Date().toISOString(),
+  };
+  store.set("providers.glitchtip", meta);
+  await setSecret(SECRET_KEYS.glitchtipToken, token);
+  console.log(chalk.green("  ✓ GlitchTip configured"));
+  return { ...meta, token };
+}
+
+export async function getGlitchtipConfig(): Promise<GlitchtipConfig | null> {
+  const meta = store.get("providers.glitchtip") as GlitchtipMeta | undefined;
+  if (!meta || meta.status !== "configured") return null;
+  const token = await getSecret(SECRET_KEYS.glitchtipToken);
+  if (!token) return null;
+  return { ...meta, token };
+}
+
+// ---------------------------------------------------------------------------
+// Provider: OpenPanel (self-hosted product analytics)
+// ---------------------------------------------------------------------------
+
+export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
+  const existing = store.get("providers.openpanel") as OpenpanelMeta | undefined;
+  const existingToken = await getSecret(SECRET_KEYS.openpanelToken);
+
+  if (existing?.status === "configured" && existingToken) {
+    return { ...existing, token: existingToken };
+  }
+
+  console.log(chalk.yellow("\n  OpenPanel is not configured yet. Let's set it up."));
+  const url = await input({
+    message: "OpenPanel base URL:",
+    default: existing?.url ?? "https://analytics.trebeljahr.com",
+    validate: (v) => validateUrl(v),
+  });
+  const token = await password({
+    message: "OpenPanel personal access token (Settings → Access Tokens):",
+  });
+  const organizationSlug = await input({
+    message: "OpenPanel organization slug:",
+    default: existing?.organizationSlug,
+    validate: validateRequired,
+  });
+
+  const meta: OpenpanelMeta = {
+    status: "configured",
+    url: url.replace(/\/$/, ""),
+    organizationSlug,
+    lastVerified: new Date().toISOString(),
+  };
+  store.set("providers.openpanel", meta);
+  await setSecret(SECRET_KEYS.openpanelToken, token);
+  console.log(chalk.green("  ✓ OpenPanel configured"));
+  return { ...meta, token };
+}
+
+export async function getOpenpanelConfig(): Promise<OpenpanelConfig | null> {
+  const meta = store.get("providers.openpanel") as OpenpanelMeta | undefined;
+  if (!meta || meta.status !== "configured") return null;
+  const token = await getSecret(SECRET_KEYS.openpanelToken);
+  if (!token) return null;
+  return { ...meta, token };
+}
+
+// ---------------------------------------------------------------------------
+// Provider: Resend (transactional email SaaS)
+// ---------------------------------------------------------------------------
+
+export async function ensureResend(): Promise<ResendConfig> {
+  const existing = store.get("providers.resend") as ResendMeta | undefined;
+  const existingKey = await getSecret(SECRET_KEYS.resendApiKey);
+
+  if (existing?.status === "configured" && existingKey) {
+    return { ...existing, apiKey: existingKey };
+  }
+
+  console.log(chalk.yellow("\n  Resend is not configured yet. Let's set it up."));
+  const apiKey = await password({
+    message: "Resend API key (resend.com/api-keys, needs 'full access'):",
+  });
+
+  const spinner = ora("Verifying Resend API key...").start();
+  try {
+    const res = await fetch("https://api.resend.com/domains", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    spinner.succeed("Resend API key verified");
+  } catch (error) {
+    spinner.fail("Could not verify Resend API key");
+    throw error;
+  }
+
+  const meta: ResendMeta = {
+    status: "configured",
+    lastVerified: new Date().toISOString(),
+  };
+  store.set("providers.resend", meta);
+  await setSecret(SECRET_KEYS.resendApiKey, apiKey);
+  console.log(chalk.green("  ✓ Resend configured"));
+  return { ...meta, apiKey };
+}
+
+export async function getResendConfig(): Promise<ResendConfig | null> {
+  const meta = store.get("providers.resend") as ResendMeta | undefined;
+  if (!meta || meta.status !== "configured") return null;
+  const apiKey = await getSecret(SECRET_KEYS.resendApiKey);
+  if (!apiKey) return null;
+  return { ...meta, apiKey };
 }
 
 // ---------------------------------------------------------------------------

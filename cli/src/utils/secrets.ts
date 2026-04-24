@@ -28,6 +28,10 @@ export const SECRET_KEYS = {
   s3AccessKey: (provider: string) => `s3:${provider}:access-key`,
   s3SecretKey: (provider: string) => `s3:${provider}:secret-key`,
   gpuApiKey: (platform: string) => `gpu:${platform}:api-key`,
+  glitchtipToken: "glitchtip:auth-token",
+  openpanelToken: "openpanel:personal-access-token",
+  openpanelClientSecret: (name: string) => `openpanel:${name}:client-secret`,
+  resendApiKey: "resend:api-key",
   /** Per-scaffolded-project dotenvx private key for .env.production.
    *  Stored in the OS keychain so the CLI's on-disk state never holds
    *  decryption material for the starter's encrypted env. */

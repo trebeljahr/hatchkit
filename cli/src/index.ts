@@ -7,8 +7,11 @@ import {
   ensureCoolify,
   ensureDns,
   ensureGitHub,
+  ensureGlitchtip,
   ensureGpuProvider,
   ensureHetzner,
+  ensureOpenpanel,
+  ensureResend,
   ensureS3,
   getConfig,
   getConfigPath,
@@ -23,6 +26,7 @@ import { deployMlServices } from "./deploy/gpu.js";
 import { pushProjectKeyToCoolify, showProjectKey } from "./deploy/keys.js";
 import { runTerraform } from "./deploy/terraform.js";
 import { collectProjectConfig } from "./prompts.js";
+import { type ProvisionService, runProvision } from "./provision/index.js";
 import { scaffoldApp } from "./scaffold/app.js";
 import { scaffoldInfra } from "./scaffold/infra.js";
 import { mlEnvVarName, printMlSummary, resolveMlServices } from "./scaffold/ml-client.js";
@@ -83,6 +87,10 @@ async function main(): Promise<void> {
       if (args.includes("--help") && args.length === 2) return printHelp("keys");
       await handleKeys();
       break;
+    case "provision":
+      if (args.includes("--help")) return printHelp("provision");
+      await handleProvision();
+      break;
     default:
       printHelp();
   }
@@ -107,6 +115,55 @@ async function handleKeys(): Promise<void> {
       console.log("Valid: show, push");
       process.exit(1);
   }
+}
+
+async function handleProvision(): Promise<void> {
+  // Positional args are optional — anything missing is prompted for.
+  //   devops-cli provision                       (fully interactive)
+  //   devops-cli provision raptor-runner         (prompts for services)
+  //   devops-cli provision raptor-runner all
+  //   devops-cli provision raptor-runner glitchtip,resend
+  const positional = args.slice(1).filter((a) => !a.startsWith("--"));
+  let baseName = positional[0];
+  const rawService = positional[1];
+
+  const allServices: ProvisionService[] = ["glitchtip", "openpanel", "resend"];
+
+  if (!baseName) {
+    const { input } = await import("@inquirer/prompts");
+    const { validateProjectName } = await import("./utils/validate.js");
+    baseName = await input({
+      message: "Base name for the new clients (e.g. raptor-runner):",
+      validate: validateProjectName,
+    });
+  }
+
+  let services: ProvisionService[];
+  if (!rawService) {
+    const { checkbox } = await import("@inquirer/prompts");
+    services = await checkbox<ProvisionService>({
+      message: "Which services to provision (-dev and -prod pair each)?",
+      choices: [
+        { name: "GlitchTip (error tracking)", value: "glitchtip", checked: true },
+        { name: "OpenPanel (product analytics)", value: "openpanel", checked: true },
+        { name: "Resend (transactional email)", value: "resend", checked: true },
+      ],
+      required: true,
+    });
+  } else if (rawService === "all") {
+    services = allServices;
+  } else {
+    const requested = rawService.split(",").map((s) => s.trim().toLowerCase());
+    const invalid = requested.filter((s) => !(allServices as readonly string[]).includes(s));
+    if (invalid.length > 0) {
+      console.log(chalk.red(`  Unknown service(s): ${invalid.join(", ")}`));
+      console.log(chalk.dim(`  Valid: ${allServices.join(", ")}, or 'all'`));
+      process.exit(1);
+    }
+    services = requested as ProvisionService[];
+  }
+
+  await runProvision({ baseName, services });
 }
 
 // ---------------------------------------------------------------------------
@@ -392,7 +449,9 @@ async function handleConfig(): Promise<void> {
       const provider = args[2];
       if (!provider) {
         console.log("Usage: devops-cli config add <provider>");
-        console.log("Providers: coolify, hetzner, dns, s3, modal, runpod, hf, replicate");
+        console.log(
+          "Providers: coolify, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, resend",
+        );
         return;
       }
       // Handle provider setup based on name
@@ -411,6 +470,15 @@ async function handleConfig(): Promise<void> {
         case "dns":
           await ensureDns();
           break;
+        case "glitchtip":
+          await ensureGlitchtip();
+          break;
+        case "openpanel":
+          await ensureOpenpanel();
+          break;
+        case "resend":
+          await ensureResend();
+          break;
         case "s3": {
           const { select } = await import("@inquirer/prompts");
           const p = await select({
@@ -428,7 +496,9 @@ async function handleConfig(): Promise<void> {
           if (!isGpuPlatform(provider)) {
             console.log(chalk.red(`  Unknown provider: ${provider}`));
             console.log(
-              chalk.dim("  Valid: coolify, hetzner, dns, s3, modal, runpod, hf, replicate"),
+              chalk.dim(
+                "  Valid: coolify, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, resend",
+              ),
             );
             return;
           }
@@ -490,7 +560,7 @@ async function handleConfig(): Promise<void> {
   }
 }
 
-function printHelp(topic?: "create" | "init" | "config" | "update" | "keys"): void {
+function printHelp(topic?: "create" | "init" | "config" | "update" | "keys" | "provision"): void {
   if (topic === "create") {
     console.log(`
   ${chalk.bold("devops-cli create")} — scaffold a new project
@@ -558,6 +628,37 @@ function printHelp(topic?: "create" | "init" | "config" | "update" | "keys"): vo
 `);
     return;
   }
+  if (topic === "provision") {
+    console.log(`
+  ${chalk.bold("devops-cli provision")} — create per-service clients for an existing project
+
+  ${chalk.bold("Usage:")}
+    devops-cli provision [<base-name>] [<services>]
+
+  Both args are optional — anything missing is prompted for, including a
+  multi-select of which services to run. ${chalk.dim("(<services> is 'all', a single")}
+  ${chalk.dim("service, or a comma-separated list.)")}
+
+  ${chalk.bold("What it does:")}
+    For every selected service, creates two clients:
+      - ${chalk.cyan("<base-name>-dev")}
+      - ${chalk.cyan("<base-name>-prod")}
+    …and prints an env block for each, plus saves it under
+    ${chalk.dim("<config-dir>/provisioned/<base-name>.{dev,prod}.env")}.
+
+  ${chalk.bold("Services:")}
+    glitchtip   Creates a GlitchTip project, returns GLITCHTIP_DSN
+    openpanel   Creates an OpenPanel client, returns OPENPANEL_CLIENT_ID/_SECRET
+    resend      Creates a restricted Resend API key, returns RESEND_API_KEY
+
+  ${chalk.bold("Examples:")}
+    devops-cli provision
+    devops-cli provision raptor-runner
+    devops-cli provision raptor-runner all
+    devops-cli provision raptor-runner glitchtip,resend
+`);
+    return;
+  }
   if (topic === "config") {
     console.log(`
   ${chalk.bold("devops-cli config")} — manage provider credentials
@@ -575,6 +676,7 @@ function printHelp(topic?: "create" | "init" | "config" | "update" | "keys"): vo
 
   ${chalk.bold("Commands:")}
     create          Scaffold a new project (default)
+    provision       Create GlitchTip / OpenPanel / Resend clients for an existing project
     update          Add features to an already-scaffolded project (run in project dir)
     keys show <p>   Print the dotenvx private key for a project
     keys push <p>   Push the key onto the project's Coolify app

@@ -220,7 +220,9 @@ STRIPE_WEBHOOK_SECRET=""
 
 {{#if analytics}}
 GLITCHTIP_DSN=""
-PLAUSIBLE_DOMAIN="{{domain}}"
+OPENPANEL_API_URL=""
+OPENPANEL_CLIENT_ID=""
+OPENPANEL_CLIENT_SECRET=""
 {{/if}}
 
 {{#each mlServices}}
