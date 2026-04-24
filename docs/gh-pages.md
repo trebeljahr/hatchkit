@@ -1,9 +1,9 @@
 ---
-title: GitHub Pages (hatchkit pages)
+title: GitHub Pages (hatchkit gh-pages)
 nav_order: 6
 ---
 
-# `hatchkit pages`
+# `hatchkit gh-pages`
 
 Wire a GitHub Pages deployment for the **current repo** — including custom domain + DNS — in one command.
 
@@ -13,29 +13,49 @@ Built for the kind of project where `hatchkit create` is overkill: a sprite edit
 
 ```bash
 cd my-sprite-tool
-hatchkit pages
+hatchkit gh-pages
 ```
 
 That's it. Hatchkit will:
 
 1. Look up the repo via `gh repo view`.
-2. Detect whether this is a plain static site, a node build, or a Jekyll site.
-3. Ask whether you want a custom domain.
-4. Enable Pages via the GitHub API.
-5. Write `.github/workflows/pages.yml`.
-6. If you asked for a custom domain: set the Pages CNAME, write a `CNAME` file, and wire your DNS provider (Cloudflare automatic; INWX / manual prints the records).
+2. Scan the repo root and the common subfolders (`docs/`, `site/`, `www/`, `web/`) for candidate sites.
+3. If exactly one is found → auto-confirm. If multiple → prompt you to pick. If none → ask for kind + location manually.
+4. Ask whether you want a custom domain.
+5. Enable Pages via the GitHub API.
+6. Write `.github/workflows/gh-pages.yml` (refusing to overwrite any existing Pages workflow).
+7. If you asked for a custom domain: set the Pages CNAME, write a `CNAME` file, and wire your DNS provider (Cloudflare automatic; INWX / manual prints the records).
 
 Commit the new workflow + CNAME, push, done.
 
 ## What it detects
 
+Scans these locations: repo root, `docs/`, `site/`, `www/`, `web/`. In each, classifies the first of:
+
 | Kind | Trigger | What the workflow does |
 |---|---|---|
-| **static** | `index.html` at repo root, no `build` script | Checks out, uploads the repo root (or a folder you choose), deploys. |
-| **node-build** | `package.json` has a `build` script | Sets up your detected package manager (pnpm / npm / yarn / bun from the lockfile), installs, builds, uploads the build output (`dist` / `build` / `out` / …), deploys. |
-| **jekyll** | `Gemfile` + `_config.yml` at the root **or** under `docs/` | Sets up Ruby + bundler, `bundle exec jekyll build` with the correct `baseurl`, uploads `_site`, deploys. |
+| **jekyll** | `Gemfile` + `_config.yml` | Sets up Ruby + bundler, `bundle exec jekyll build` with the correct `baseurl` + `working-directory`, uploads `_site`, deploys. |
+| **node-build** | `package.json` has a `build` script (and isn't a workspace root) | Sets up your detected package manager (pnpm / npm / yarn / bun from the lockfile), installs + builds in the right `working-directory`, uploads the build output (`dist` / `build` / `out` / …), deploys. |
+| **static** | `index.html` | Checks out, uploads the source folder as-is, deploys. |
 
-For `node-build`, the publish dir is guessed from the build command and you get to confirm / change it before anything is written.
+For `node-build`, the publish dir is guessed from the build command (`vite` → `dist`, `react-scripts` → `build`, `astro` → `dist`, `next` → `out`) and you can override it before anything is written.
+
+## Monorepos / hybrid layouts
+
+If the same repo has both a root build **and** a `docs/` site (this repo, for example — a CLI at the root, Jekyll docs under `docs/`), you'll get a picker:
+
+```
+Found 2 possible sites — pick one:
+  ❯ jekyll at docs/ → docs/_site/
+    node-build at repo root (pnpm run build → dist/)
+```
+
+Run the command twice if you want to deploy both — but note that Pages only serves **one** site per repo. Typical setups:
+
+- CLI / app at the root, docs under `docs/` → deploy the docs (like hatchkit itself does).
+- Marketing page at the root, admin tool under `admin/` → deploy the root, host admin elsewhere.
+
+pnpm workspace roots (and other root `package.json`s with a `workspaces` field) are skipped from auto-detection — they rarely produce a single deployable site. You can still pick them via the manual fallback.
 
 ## Custom domain
 
@@ -60,13 +80,13 @@ mkdir sprite-tool && cd sprite-tool
 git init && gh repo create sprite-tool --public --source=.
 echo "<h1>Sprite tool</h1>" > index.html
 git add -A && git commit -m "init"
-hatchkit pages              # → https://<user>.github.io/sprite-tool/
+hatchkit gh-pages              # → https://<user>.github.io/sprite-tool/
 ```
 
 With a custom domain:
 
 ```bash
-hatchkit pages
+hatchkit gh-pages
 # Custom domain? Yes
 # Domain: sprites.example.com
 # (Cloudflare configured → CNAME created automatically)
@@ -84,6 +104,6 @@ git add -A && git commit -m "ci: pages" && git push
 Safe. The command is idempotent:
 
 - Pages enable: `POST` first, fallback to `PUT build_type=workflow` on `409 already exists`.
-- Workflow file: refuses to overwrite — delete `.github/workflows/pages.yml` if you want a fresh one.
+- Workflow file: refuses to overwrite — delete `.github/workflows/gh-pages.yml` if you want a fresh one.
 - Cloudflare DNS: updates records in place rather than duplicating them.
 - Pages CNAME: `PUT` is an upsert.

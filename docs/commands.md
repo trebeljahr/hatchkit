@@ -102,13 +102,13 @@ The resulting env blocks are printed **and** saved under `<config-dir>/provision
 
 ---
 
-## `hatchkit pages`
+## `hatchkit gh-pages`
 
 Wire GitHub Pages for the **current repo**. Run it from inside any repo — a sprite tool, a landing page, a docs folder — and it'll detect what's there, enable Pages, write the deploy workflow, and (optionally) configure a custom domain end-to-end.
 
 ```bash
 cd my-sprite-tool
-hatchkit pages
+hatchkit gh-pages
 ```
 
 ### What it detects

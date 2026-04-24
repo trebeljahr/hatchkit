@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { confirm, input } from "@inquirer/prompts";
+import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { ensureDns, getDnsConfig } from "../config.js";
 import { exec } from "../utils/exec.js";
@@ -10,19 +10,25 @@ import { parseDomain, validateDomain } from "../utils/validate.js";
 // Types
 // ---------------------------------------------------------------------------
 
-/** What kind of site lives in this repo — determines the build workflow. */
+/** What kind of site lives in a folder — determines the build workflow. */
 type SiteKind = "static" | "node-build" | "jekyll";
 
 interface Detected {
   kind: SiteKind;
-  /** Final folder uploaded to Pages. Relative to repo root. */
+  /** Folder uploaded to Pages. Relative to repo root. */
   publishDir: string;
   /** Package manager for node-build sites. */
   packageManager?: "pnpm" | "npm" | "yarn" | "bun";
   /** npm script name used for the build (usually "build"). */
   buildScript?: string;
-  /** Working directory for the build (e.g. "docs" for a Jekyll subsite). */
-  workDir?: string;
+  /** Working directory for the build. Empty string = repo root. */
+  workDir: string;
+}
+
+interface SiteCandidate {
+  /** Path relative to cwd. Empty string = repo root. */
+  dir: string;
+  detected: Detected;
 }
 
 interface RepoInfo {
@@ -33,15 +39,20 @@ interface RepoInfo {
   private: boolean;
 }
 
-// GitHub's apex A records (https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site)
+// GitHub's apex A records (docs: configuring-a-custom-domain-for-your-github-pages-site)
 const GITHUB_APEX_A = ["185.199.108.153", "185.199.109.153", "185.199.110.153", "185.199.111.153"];
+
+/** Directories we scan when looking for sites. Empty = repo root. */
+const SCAN_DIRS = ["", "docs", "site", "www", "web"];
+
+const WORKFLOW_FILENAME = "gh-pages.yml";
 
 // ---------------------------------------------------------------------------
 // Main entrypoint
 // ---------------------------------------------------------------------------
 
 export async function runPagesSetup(cwd: string): Promise<void> {
-  console.log(chalk.bold("\n  ── hatchkit pages ─────────────────────────────────────────\n"));
+  console.log(chalk.bold("\n  ── hatchkit gh-pages ──────────────────────────────────────\n"));
 
   // 1. Repo — must be a git repo with an `origin` pointing at GitHub.
   const repo = await detectRepo(cwd);
@@ -54,14 +65,10 @@ export async function runPagesSetup(cwd: string): Promise<void> {
     );
   }
 
-  // 2. Project type — detected defaults, confirmed interactively.
-  const detected = detectProject(cwd);
-  console.log(
-    chalk.dim(
-      `  Type:  ${detected.kind}${detected.workDir ? ` (in ${detected.workDir}/)` : ""}, publish ${detected.publishDir}/`,
-    ),
-  );
-  const confirmed = await confirmProjectShape(detected);
+  // 2. Pick a site. Auto-confirm when there's one obvious candidate;
+  //    ask when zero or many. Also let the user override the detected
+  //    publish folder before we commit to writing anything.
+  const confirmed = await pickSite(cwd);
 
   // 3. Custom domain (optional).
   const domain = await promptDomain();
@@ -69,17 +76,19 @@ export async function runPagesSetup(cwd: string): Promise<void> {
   // 4. Enable Pages via GitHub API.
   await enablePages(repo);
 
-  // 5. Write the workflow (and any adjacent bits — CNAME, base path).
+  // 5. Write the workflow — unless the repo already has a Pages-deploying
+  //    workflow (ours or otherwise). Avoids clobbering an existing setup.
   writeWorkflow(cwd, repo, confirmed);
+
+  // 6. CNAME file — only when a custom domain is chosen.
   if (domain) writeCnameFile(cwd, confirmed, domain);
 
-  // 6. Wire DNS if we can, else print manual records.
+  // 7. Pages CNAME + DNS wiring.
   if (domain) {
     await setPagesCname(repo, domain);
     await configureDns(domain);
   }
 
-  // 7. Summary.
   printSummary(repo, confirmed, domain);
 }
 
@@ -90,7 +99,7 @@ export async function runPagesSetup(cwd: string): Promise<void> {
 async function detectRepo(cwd: string): Promise<RepoInfo> {
   const res = await exec(
     "gh",
-    ["repo", "view", "--json", "nameWithOwner,url,visibility,defaultBranchRef,owner,name"],
+    ["repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef,owner,name"],
     { cwd, silent: true },
   );
   if (res.exitCode !== 0) {
@@ -115,50 +124,108 @@ async function detectRepo(cwd: string): Promise<RepoInfo> {
 }
 
 // ---------------------------------------------------------------------------
-// Project detection
+// Site detection
 // ---------------------------------------------------------------------------
 
-function detectProject(cwd: string): Detected {
-  // Jekyll: Gemfile + _config.yml, either at root or under docs/
-  for (const sub of ["", "docs"]) {
-    const dir = sub ? join(cwd, sub) : cwd;
-    if (existsSync(join(dir, "Gemfile")) && existsSync(join(dir, "_config.yml"))) {
-      return {
-        kind: "jekyll",
-        publishDir: sub ? `${sub}/_site` : "_site",
-        workDir: sub || undefined,
-      };
-    }
+async function pickSite(cwd: string): Promise<Detected> {
+  const candidates = findSiteCandidates(cwd);
+
+  if (candidates.length === 0) {
+    console.log(
+      chalk.yellow("  No site detected in the usual spots (root / docs / site / www / web)."),
+    );
+    return promptManualSite(cwd);
   }
 
-  // Node build: package.json with a "build" script
-  const pkgPath = join(cwd, "package.json");
+  let chosen: SiteCandidate;
+  if (candidates.length === 1) {
+    chosen = candidates[0];
+    console.log(chalk.dim(`  Site:  ${describeCandidate(chosen)} ${chalk.dim("(auto-detected)")}`));
+  } else {
+    console.log(chalk.dim(`  Found ${candidates.length} possible sites — pick one:`));
+    chosen = await select<SiteCandidate>({
+      message: "Which site do you want to deploy?",
+      choices: candidates.map((c) => ({ name: describeCandidate(c), value: c })),
+    });
+  }
+
+  return confirmProjectShape(chosen.detected);
+}
+
+function describeCandidate(c: SiteCandidate): string {
+  const loc = c.dir === "" ? "repo root" : `${c.dir}/`;
+  const extra =
+    c.detected.kind === "node-build"
+      ? ` (${c.detected.packageManager} run ${c.detected.buildScript} → ${c.detected.publishDir}/)`
+      : c.detected.kind === "jekyll"
+        ? ` → ${c.detected.publishDir}/`
+        : "";
+  return `${c.detected.kind} at ${loc}${extra}`;
+}
+
+function findSiteCandidates(cwd: string): SiteCandidate[] {
+  const results: SiteCandidate[] = [];
+  for (const sub of SCAN_DIRS) {
+    const abs = sub ? join(cwd, sub) : cwd;
+    if (sub && !existsSync(abs)) continue;
+    const detected = detectAt(abs, sub);
+    if (detected) results.push({ dir: sub, detected });
+  }
+  return results;
+}
+
+/** Classify a single directory. Returns null if nothing site-shaped lives there. */
+function detectAt(absDir: string, subPath: string): Detected | null {
+  // Jekyll first — clearest signal (Gemfile + _config.yml).
+  if (existsSync(join(absDir, "Gemfile")) && existsSync(join(absDir, "_config.yml"))) {
+    return {
+      kind: "jekyll",
+      publishDir: subPath ? `${subPath}/_site` : "_site",
+      workDir: subPath,
+    };
+  }
+
+  // Node build: package.json with a "build" script.
+  const pkgPath = join(absDir, "package.json");
   if (existsSync(pkgPath)) {
     try {
       const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
         scripts?: Record<string, string>;
+        private?: boolean;
+        workspaces?: unknown;
       };
-      const scripts = pkg.scripts ?? {};
-      const buildScript = scripts.build ? "build" : undefined;
-      if (buildScript) {
-        const pm = detectPackageManager(cwd);
+      const buildCmd = pkg.scripts?.build;
+      // Skip workspace roots (they typically fan out to children, not
+      // build a deployable site themselves). Heuristic: `workspaces` in
+      // package.json (npm/yarn/bun) or a `pnpm-workspace.yaml` sibling.
+      // User can still pick the root manually via promptManualSite.
+      const isWorkspaceRoot =
+        pkg.workspaces !== undefined || existsSync(join(absDir, "pnpm-workspace.yaml"));
+      if (buildCmd && !isWorkspaceRoot) {
+        const outDir = guessNodeOutDir(buildCmd);
         return {
           kind: "node-build",
-          publishDir: guessNodeOutDir(scripts.build ?? ""),
-          packageManager: pm,
-          buildScript,
+          publishDir: subPath ? `${subPath}/${outDir}` : outDir,
+          packageManager: detectPackageManager(absDir),
+          buildScript: "build",
+          workDir: subPath,
         };
       }
     } catch {
-      // fall through — treat as static
+      // fall through
     }
   }
 
-  // Static: index.html at root counts.
-  return {
-    kind: "static",
-    publishDir: ".",
-  };
+  // Plain static: index.html.
+  if (existsSync(join(absDir, "index.html"))) {
+    return {
+      kind: "static",
+      publishDir: subPath || ".",
+      workDir: subPath,
+    };
+  }
+
+  return null;
 }
 
 function detectPackageManager(cwd: string): "pnpm" | "npm" | "yarn" | "bun" {
@@ -171,14 +238,14 @@ function detectPackageManager(cwd: string): "pnpm" | "npm" | "yarn" | "bun" {
 /** Best-guess output folder from a typical build script. Users confirm it. */
 function guessNodeOutDir(buildCmd: string): string {
   if (buildCmd.includes("astro")) return "dist";
-  if (buildCmd.includes("next")) return "out"; // only valid with `next export`
+  if (buildCmd.includes("next")) return "out"; // requires `output: "export"`
   if (buildCmd.includes("vite")) return "dist";
   if (buildCmd.includes("react-scripts")) return "build";
   return "dist";
 }
 
 async function confirmProjectShape(detected: Detected): Promise<Detected> {
-  // For obvious cases (jekyll, static with no package.json) skip the back-and-forth.
+  // Jekyll always builds to _site — nothing to ask.
   if (detected.kind === "jekyll") return detected;
 
   const publishDir = await input({
@@ -188,8 +255,51 @@ async function confirmProjectShape(detected: Detected): Promise<Detected> {
   return { ...detected, publishDir };
 }
 
+/** Manual fallback when nothing was auto-detected. */
+async function promptManualSite(cwd: string): Promise<Detected> {
+  const kind = await select<SiteKind>({
+    message: "What kind of site is this?",
+    choices: [
+      { name: "static — plain HTML, no build step", value: "static" },
+      { name: "node-build — package.json with a `build` script", value: "node-build" },
+      { name: "jekyll", value: "jekyll" },
+    ],
+  });
+
+  const workDir = await input({
+    message: "Site lives in (relative to repo root, '.' for root):",
+    default: ".",
+  });
+  const normWorkDir = workDir === "." ? "" : workDir;
+
+  if (kind === "jekyll") {
+    return {
+      kind,
+      publishDir: normWorkDir ? `${normWorkDir}/_site` : "_site",
+      workDir: normWorkDir,
+    };
+  }
+
+  if (kind === "static") {
+    return { kind, publishDir: normWorkDir || ".", workDir: normWorkDir };
+  }
+
+  // node-build
+  const publishDir = await input({
+    message: "Build output folder (relative to repo root):",
+    default: normWorkDir ? `${normWorkDir}/dist` : "dist",
+  });
+  return {
+    kind,
+    publishDir,
+    packageManager: detectPackageManager(normWorkDir ? join(cwd, normWorkDir) : cwd),
+    buildScript: "build",
+    workDir: normWorkDir,
+  };
+}
+
 // ---------------------------------------------------------------------------
-// Domain prompts
+// Domain prompt
 // ---------------------------------------------------------------------------
 
 async function promptDomain(): Promise<string | null> {
@@ -198,12 +308,10 @@ async function promptDomain(): Promise<string | null> {
     default: false,
   });
   if (!wantCustom) return null;
-
-  const domain = await input({
+  return input({
     message: "Domain (e.g. sprites.example.com or example.com):",
     validate: validateDomain,
   });
-  return domain;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,8 +319,8 @@ async function promptDomain(): Promise<string | null> {
 // ---------------------------------------------------------------------------
 
 async function enablePages(repo: RepoInfo): Promise<void> {
-  // POST is the "create" call. If already enabled, GitHub returns 409 —
-  // treat that as success since the desired state matches.
+  // POST creates. If Pages is already enabled, GitHub returns 409 — fall
+  // back to PUT so build_type=workflow lands either way.
   const res = await exec(
     "gh",
     ["api", "-X", "POST", `repos/${repo.fullName}/pages`, "-f", "build_type=workflow"],
@@ -220,7 +328,6 @@ async function enablePages(repo: RepoInfo): Promise<void> {
   );
   if (res.exitCode === 0) return;
   if (res.stderr.includes("409") || res.stdout.includes("already")) {
-    // Already enabled — make sure build_type is workflow.
     const put = await exec(
       "gh",
       ["api", "-X", "PUT", `repos/${repo.fullName}/pages`, "-f", "build_type=workflow"],
@@ -241,8 +348,7 @@ async function setPagesCname(repo: RepoInfo, domain: string): Promise<void> {
     { silent: true, spinner: `Registering ${domain} with Pages...` },
   );
   if (res.exitCode !== 0) {
-    // Non-fatal: DNS might not be in place yet. Surface the error but
-    // don't abort — the rest of the setup is still useful.
+    // Non-fatal: DNS might not be in place yet.
     console.log(
       chalk.yellow(
         `  ⚠ Couldn't set Pages CNAME to ${domain} (${res.stderr.trim()}).\n    Set it manually in Settings → Pages once DNS resolves.`,
@@ -258,23 +364,38 @@ async function setPagesCname(repo: RepoInfo, domain: string): Promise<void> {
 function writeWorkflow(cwd: string, repo: RepoInfo, d: Detected): void {
   const workflowsDir = join(cwd, ".github", "workflows");
   mkdirSync(workflowsDir, { recursive: true });
-  const outPath = join(workflowsDir, "pages.yml");
-  if (existsSync(outPath)) {
+
+  // Don't overwrite any existing Pages-deploying workflow. Looking for
+  // `actions/deploy-pages` in every workflow file catches our own
+  // gh-pages.yml as well as hand-written ones (e.g. docs.yml).
+  const existing = findExistingPagesWorkflow(workflowsDir);
+  if (existing) {
     console.log(
       chalk.yellow(
-        `  ⚠ .github/workflows/pages.yml already exists — leaving it untouched.\n    Delete it and re-run if you want a fresh one.`,
+        `  ⚠ Existing Pages workflow found at .github/workflows/${existing} — leaving it untouched.\n    Delete it and re-run if you want a fresh ${WORKFLOW_FILENAME}.`,
       ),
     );
     return;
   }
-  const yaml = renderWorkflow(repo, d);
-  writeFileSync(outPath, yaml);
-  console.log(chalk.green(`  ✓ Wrote .github/workflows/pages.yml`));
+
+  const outPath = join(workflowsDir, WORKFLOW_FILENAME);
+  writeFileSync(outPath, renderWorkflow(repo, d));
+  console.log(chalk.green(`  ✓ Wrote .github/workflows/${WORKFLOW_FILENAME}`));
+}
+
+function findExistingPagesWorkflow(workflowsDir: string): string | null {
+  if (!existsSync(workflowsDir)) return null;
+  const files = readdirSync(workflowsDir).filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"));
+  for (const f of files) {
+    const contents = readFileSync(join(workflowsDir, f), "utf8");
+    if (contents.includes("actions/deploy-pages")) return f;
+  }
+  return null;
 }
 
 function renderWorkflow(repo: RepoInfo, d: Detected): string {
   const branch = repo.defaultBranch;
-  const head = `name: Deploy to GitHub Pages
+  const header = `name: Deploy to GitHub Pages
 
 on:
   push:
@@ -314,46 +435,25 @@ jobs:
 `;
 
   if (d.kind === "static") {
-    return `${head}${tail}`;
+    return `${header}${tail}`;
   }
 
   if (d.kind === "jekyll") {
-    const wd = d.workDir ? `\n        working-directory: ${d.workDir}` : "";
-    const buildPath = d.workDir ? `${d.workDir}/_site` : "_site";
-    return `name: Deploy to GitHub Pages
-
-on:
-  push:
-    branches: [${branch}]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ruby/setup-ruby@v1
+    const wdLine = d.workDir ? `\n          working-directory: ${d.workDir}` : "";
+    const jekyllWd = d.workDir ? `\n        working-directory: ${d.workDir}` : "";
+    return `${header}      - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.2"
-          bundler-cache: true${wd ? `\n          working-directory: ${d.workDir}` : ""}
+          bundler-cache: true${wdLine}
       - uses: actions/configure-pages@v5
         id: pages
       - name: Build with Jekyll
-        run: bundle exec jekyll build --baseurl "\${{ steps.pages.outputs.base_path }}"${wd}
+        run: bundle exec jekyll build --baseurl "\${{ steps.pages.outputs.base_path }}"${jekyllWd}
         env:
           JEKYLL_ENV: production
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: ${buildPath}
+          path: ${d.publishDir}
 
   deploy:
     needs: build
@@ -371,6 +471,7 @@ jobs:
   const pm = d.packageManager ?? "npm";
   const installCmd = pm === "npm" ? "npm ci" : `${pm} install --frozen-lockfile`;
   const buildCmd = `${pm} run ${d.buildScript ?? "build"}`;
+  const wd = d.workDir ? `\n        working-directory: ${d.workDir}` : "";
   const nodeSetup =
     pm === "pnpm"
       ? `      - uses: pnpm/action-setup@v4
@@ -379,52 +480,53 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: pnpm`
+          cache: pnpm${d.workDir ? `\n          cache-dependency-path: ${d.workDir}/pnpm-lock.yaml` : ""}`
       : pm === "yarn"
         ? `      - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: yarn`
+          cache: yarn${d.workDir ? `\n          cache-dependency-path: ${d.workDir}/yarn.lock` : ""}`
         : pm === "bun"
           ? `      - uses: oven-sh/setup-bun@v2`
           : `      - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm`;
+          cache: npm${d.workDir ? `\n          cache-dependency-path: ${d.workDir}/package-lock.json` : ""}`;
 
-  return `${head}${nodeSetup}
+  return `${header}${nodeSetup}
       - name: Install dependencies
-        run: ${installCmd}
+        run: ${installCmd}${wd}
       - name: Build
-        run: ${buildCmd}
+        run: ${buildCmd}${wd}
 ${tail}`;
 }
 
 function writeCnameFile(cwd: string, d: Detected, domain: string): void {
   // CNAME lives at the root of the *published* content so GitHub serves
-  // it from the built site. For static sites that's the repo root; for
-  // Jekyll it's the source folder (Jekyll copies it into _site). For
-  // node builds, drop it in `public/` if it exists, else at the root of
-  // the build output which the user will need to wire manually.
+  // it from the built site. Location depends on kind + workDir.
+  //   - jekyll / static: source dir (Jekyll copies it into _site; static
+  //     publishes the source dir directly).
+  //   - node-build: prefer `<workDir>/public/` (Vite/CRA/Astro copy that
+  //     verbatim into the build output). Fall back to the build dir root.
+  const siteDir = d.workDir ? join(cwd, d.workDir) : cwd;
   let target: string;
-  if (d.kind === "jekyll") {
-    target = d.workDir ? join(cwd, d.workDir, "CNAME") : join(cwd, "CNAME");
-  } else if (d.kind === "static") {
-    target = join(cwd, "CNAME");
-  } else {
-    // node-build: prefer `public/` (Vite, CRA, Astro all copy it verbatim).
-    const publicDir = join(cwd, "public");
+
+  if (d.kind === "node-build") {
+    const publicDir = join(siteDir, "public");
     if (existsSync(publicDir)) {
       target = join(publicDir, "CNAME");
     } else {
-      target = join(cwd, "CNAME");
+      target = join(siteDir, "CNAME");
       console.log(
         chalk.yellow(
-          `  ⚠ No public/ folder found. Wrote CNAME at the repo root — make sure your build copies it into ${d.publishDir}/.`,
+          `  ⚠ No public/ folder in ${d.workDir || "repo root"}. Wrote CNAME there — make sure your build copies it into ${d.publishDir}/.`,
         ),
       );
     }
+  } else {
+    target = join(siteDir, "CNAME");
   }
+
   writeFileSync(target, `${domain}\n`);
   console.log(chalk.green(`  ✓ Wrote ${target.slice(cwd.length + 1)}`));
 }
@@ -439,8 +541,6 @@ async function configureDns(domain: string): Promise<void> {
   const ghUser = await getGitHubUser();
   const target = `${ghUser}.github.io`;
 
-  // Figure out what DNS provider to use. If not configured, give the
-  // user a chance to configure one, else fall back to manual records.
   let dns = await getDnsConfig();
   if (!dns) {
     const wantConfigure = await confirm({
@@ -465,8 +565,7 @@ async function configureDns(domain: string): Promise<void> {
     return;
   }
 
-  // INWX: no automatic wiring yet — it's XML-RPC and rarely hosts
-  // GitHub Pages sites in practice. Fall back to manual instructions.
+  // INWX auto-wiring isn't implemented — XML-RPC + rarely used for Pages.
   console.log(
     chalk.dim("  INWX auto-configure isn't implemented for Pages — showing manual records:"),
   );
@@ -537,7 +636,6 @@ async function configureCloudflareDns(
   target: string,
   isApex: boolean,
 ): Promise<void> {
-  // Resolve the zone id from the base domain.
   const zones = await cfApi<CfZone[]>(token, `/zones?name=${encodeURIComponent(baseDomain)}`);
   if (zones.length === 0) {
     console.log(
@@ -556,8 +654,6 @@ async function configureCloudflareDns(
     : [{ type: "CNAME", name: recordName, content: target, proxied: false }];
 
   for (const rec of records) {
-    // Look for an existing record with the same name+type so we update
-    // rather than stacking duplicates on repeat runs.
     const existing = await cfApi<Array<{ id: string; content: string }>>(
       token,
       `/zones/${zone.id}/dns_records?type=${rec.type}&name=${encodeURIComponent(rec.name)}`,
@@ -567,9 +663,8 @@ async function configureCloudflareDns(
       console.log(chalk.dim(`    ${rec.type} ${rec.name} → ${rec.content} (already set)`));
       continue;
     }
-    // If there's an existing record for the same name+type with a
-    // different content, update the first one in place (apex A) or
-    // update the CNAME. Keeps the zone tidy.
+    // A different record with the same name+type — update in place to
+    // keep the zone tidy.
     const stale = existing[0];
     if (stale) {
       await cfApi(token, `/zones/${zone.id}/dns_records/${stale.id}`, {
@@ -592,8 +687,11 @@ function printSummary(repo: RepoInfo, d: Detected, domain: string | null): void 
   console.log(chalk.bold("\n  ── Done ───────────────────────────────────────────────────\n"));
   const url = domain ? `https://${domain}` : `https://${repo.owner}.github.io/${repo.repo}/`;
   console.log(`  Site:      ${chalk.cyan(url)}`);
-  console.log(`  Branch:    ${chalk.dim(repo.defaultBranch)} → triggers pages.yml`);
+  console.log(`  Branch:    ${chalk.dim(repo.defaultBranch)} → triggers ${WORKFLOW_FILENAME}`);
   console.log(`  Publish:   ${chalk.dim(d.publishDir + "/")}`);
+  if (d.workDir) {
+    console.log(`  Source:    ${chalk.dim(d.workDir + "/")}`);
+  }
   if (domain) {
     console.log(chalk.yellow(`\n  First-time DNS propagation can take a few minutes.`));
     console.log(

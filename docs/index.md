@@ -46,6 +46,6 @@ Starting a new product is the same toil every time: pick a starter, wire up auth
 - [Commands reference](commands.html) — every command, every flag
 - [Providers](providers.html) — what hatchkit integrates with and how to configure it
 - [ML services](ml-services.html) — GPU workloads as first-class citizens
-- [GitHub Pages (`hatchkit pages`)](pages.html) — static / SPA / Jekyll deploys with a custom domain
+- [GitHub Pages (`hatchkit gh-pages`)](gh-pages.html) — static / SPA / Jekyll deploys with a custom domain
 - [Architecture](architecture.html) — how scaffold, infra, and deploy fit together
 - [Deploying the docs site](deployment.html) — GitHub Pages flow used by this repo

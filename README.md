@@ -44,7 +44,7 @@ That's it. You'll be walked through name → domain → features → ML → depl
 | `hatchkit create` | Scaffold a new project (interactive) and optionally deploy it end-to-end. |
 | `hatchkit update` | Add features (desktop, mobile, …) to a project already scaffolded. |
 | `hatchkit add <project> [services]` | Provision `-dev` / `-prod` GlitchTip / OpenPanel / Resend clients. |
-| `hatchkit pages` | Wire GitHub Pages for the current repo (static / Vite / Jekyll) with optional custom domain + DNS. |
+| `hatchkit gh-pages` | Wire GitHub Pages for the current repo (static / Vite / Jekyll) with optional custom domain + DNS. |
 | `hatchkit doctor` | Health-check every configured provider with a read-only API call. |
 | `hatchkit keys show/push <project>` | Read or push the dotenvx private key to Coolify. |
 | `hatchkit config [add/reset]` | Inspect or modify stored provider credentials. |
@@ -87,7 +87,7 @@ Full docs live under [`docs/`](docs/) and are published to **GitHub Pages** at [
 - [Commands reference](docs/commands.md) — every command + every flag
 - [Providers](docs/providers.md) — GitHub, Coolify, Hetzner, DNS, S3, GPU platforms
 - [ML services](docs/ml-services.md) — deploy GPU-backed models the CLI understands
-- [GitHub Pages](docs/pages.md) — `hatchkit pages` for static sites, SPAs, sprite tools, Jekyll docs
+- [GitHub Pages](docs/gh-pages.md) — `hatchkit gh-pages` for static sites, SPAs, sprite tools, Jekyll docs
 - [Architecture](docs/architecture.md) — how scaffold / infra / deploy fit together
 - [Deploying the docs site](docs/deployment.md) — the GitHub Pages flow used by this repo
 
