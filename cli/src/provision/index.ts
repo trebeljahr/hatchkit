@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { input, select } from "@inquirer/prompts";
 import chalk from "chalk";
-import { getConfigPath } from "../config.js";
+import { ensureGlitchtip, ensureOpenpanel, ensureResend, getConfigPath } from "../config.js";
 import { validateProjectName } from "../utils/validate.js";
 import { type GlitchtipClient, provisionGlitchtipClient } from "./glitchtip.js";
 import { type OpenpanelClient, provisionOpenpanelClient } from "./openpanel.js";
@@ -42,6 +42,13 @@ interface EnvSection {
 export async function runProvision(opts: ProvisionOptions): Promise<void> {
   const nameCheck = validateProjectName(opts.baseName);
   if (nameCheck !== true) throw new Error(`Invalid base name: ${nameCheck}`);
+
+  // Ensure every selected provider is configured *before* any spinner
+  // starts. Otherwise a lazy `ensure*` prompt fires underneath the ora
+  // spinner and inquirer waits forever for invisible input.
+  if (opts.services.includes("glitchtip")) await ensureGlitchtip();
+  if (opts.services.includes("openpanel")) await ensureOpenpanel();
+  if (opts.services.includes("resend")) await ensureResend();
 
   // Resend domain: pick once, reused across dev + prod.
   let resendDomainId = opts.resendDomainId;
