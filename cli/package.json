@@ -6,8 +6,13 @@
   "bin": {
     "devops-cli": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "scripts",
+    "README.md"
+  ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-templates.mjs",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "test": "tsx test-scaffold.ts",
@@ -15,7 +20,14 @@
     "lint": "biome check src",
     "lint:fix": "biome check --write src",
     "format": "biome format --write src",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm run test"
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run test",
+    "install-local": "pnpm run build && npm install -g .",
+    "release": "pnpm run release:patch",
+    "release:patch": "npm version patch -m \"chore: release v%s\" && pnpm run _release:finish",
+    "release:minor": "npm version minor -m \"chore: release v%s\" && pnpm run _release:finish",
+    "release:major": "npm version major -m \"chore: release v%s\" && pnpm run _release:finish",
+    "_release:finish": "pnpm run build && pnpm run typecheck && npm publish --access public && git push --follow-tags && npm install -g .",
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
     "@inquirer/prompts": "^7.0.0",
