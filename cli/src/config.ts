@@ -94,7 +94,9 @@ export interface GlitchtipConfig extends GlitchtipMeta {
   token: string;
 }
 export interface OpenpanelConfig extends OpenpanelMeta {
-  token: string;
+  /** Root-mode credentials for the Management API. */
+  rootClientId: string;
+  rootClientSecret: string;
 }
 export interface ResendConfig extends ResendMeta {
   apiKey: string;
@@ -721,12 +723,11 @@ export async function getGlitchtipConfig(): Promise<GlitchtipConfig | null> {
 
 export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
   const existing = store.get("providers.openpanel") as OpenpanelMeta | undefined;
-  const existingToken = await getSecret(SECRET_KEYS.openpanelToken);
+  const existingId = await getSecret(SECRET_KEYS.openpanelRootClientId);
+  const existingSecret = await getSecret(SECRET_KEYS.openpanelRootClientSecret);
 
-  // Token is optional (OpenPanel self-hosted has no unified API-key concept),
-  // so `configured` means we have a URL + org slug; token is gravy.
-  if (existing?.status === "configured") {
-    return { ...existing, token: existingToken ?? "" };
+  if (existing?.status === "configured" && existingId && existingSecret) {
+    return { ...existing, rootClientId: existingId, rootClientSecret: existingSecret };
   }
 
   console.log(chalk.yellow("\n  OpenPanel is not configured yet. Let's set it up."));
@@ -737,24 +738,34 @@ export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
       validate: (v) => validateUrl(v.trim()),
     })
   ).trim();
-  console.log(
-    chalk.dim(
-      `  → OpenPanel self-hosted has no 'API tokens' page. Leave blank to use\n` +
-        `    the paste-in fallback (copy clientId/Secret per project from the UI).\n` +
-        `    If your instance exposes a personal token, paste it here.`,
-    ),
-  );
-  const token = (
-    await password({
-      message: "OpenPanel personal access token (optional, press Enter to skip):",
-      mask: "*",
-    })
-  ).trim();
   const organizationSlug = (
     await input({
       message: "OpenPanel organization slug:",
       default: existing?.organizationSlug,
       validate: validateRequired,
+    })
+  ).trim();
+
+  console.log(
+    chalk.dim(
+      `\n  OpenPanel auth uses a client id/secret pair, not a bearer token.\n` +
+        `  Create a root-mode client once so hatchkit can auto-create\n` +
+        `  per-project clients via the Management API.`,
+    ),
+  );
+  tokenHint(
+    `${url.replace(/\/$/, "")}/${organizationSlug}/settings/clients`,
+    "Type: root (Management API access — full org-wide)",
+  );
+  const rootClientId = (
+    await input({
+      message: "OpenPanel root clientId:",
+      validate: validateRequired,
+    })
+  ).trim();
+  const rootClientSecret = (
+    await password({
+      message: "OpenPanel root clientSecret (shown once at creation):",
     })
   ).trim();
 
@@ -765,16 +776,19 @@ export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
     lastVerified: new Date().toISOString(),
   };
   store.set("providers.openpanel", meta);
-  if (token) await setSecret(SECRET_KEYS.openpanelToken, token);
+  await setSecret(SECRET_KEYS.openpanelRootClientId, rootClientId);
+  await setSecret(SECRET_KEYS.openpanelRootClientSecret, rootClientSecret);
   console.log(chalk.green("  ✓ OpenPanel configured"));
-  return { ...meta, token };
+  return { ...meta, rootClientId, rootClientSecret };
 }
 
 export async function getOpenpanelConfig(): Promise<OpenpanelConfig | null> {
   const meta = store.get("providers.openpanel") as OpenpanelMeta | undefined;
   if (!meta || meta.status !== "configured") return null;
-  const token = (await getSecret(SECRET_KEYS.openpanelToken)) ?? "";
-  return { ...meta, token };
+  const rootClientId = await getSecret(SECRET_KEYS.openpanelRootClientId);
+  const rootClientSecret = await getSecret(SECRET_KEYS.openpanelRootClientSecret);
+  if (!rootClientId || !rootClientSecret) return null;
+  return { ...meta, rootClientId, rootClientSecret };
 }
 
 // ---------------------------------------------------------------------------

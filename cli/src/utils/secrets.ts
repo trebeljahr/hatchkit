@@ -29,7 +29,10 @@ export const SECRET_KEYS = {
   s3SecretKey: (provider: string) => `s3:${provider}:secret-key`,
   gpuApiKey: (platform: string) => `gpu:${platform}:api-key`,
   glitchtipToken: "glitchtip:auth-token",
-  openpanelToken: "openpanel:personal-access-token",
+  /** Root-mode OpenPanel client used by the Management API to auto-create
+   *  per-project clients. Created once in the OpenPanel dashboard. */
+  openpanelRootClientId: "openpanel:root-client-id",
+  openpanelRootClientSecret: "openpanel:root-client-secret",
   openpanelClientSecret: (name: string) => `openpanel:${name}:client-secret`,
   resendApiKey: "resend:api-key",
   /** Per-scaffolded-project dotenvx private key for .env.production.
