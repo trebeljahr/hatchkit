@@ -22,7 +22,7 @@ import { deployMlServices } from "./deploy/gpu.js";
 import { pushProjectKeyToCoolify, showProjectKey } from "./deploy/keys.js";
 import { runTerraform } from "./deploy/terraform.js";
 import { collectProjectConfig } from "./prompts.js";
-import { type ProvisionService, runProvision } from "./provision/index.js";
+import { type ProvisionService, runProvision, runUnprovision } from "./provision/index.js";
 import { scaffoldApp } from "./scaffold/app.js";
 import { scaffoldInfra } from "./scaffold/infra.js";
 import { mlEnvVarName, printMlSummary, resolveMlServices } from "./scaffold/ml-client.js";
@@ -123,6 +123,10 @@ async function main(): Promise<void> {
     case "add":
       if (args.includes("--help")) return printHelp("add");
       await handleAdd();
+      break;
+    case "remove":
+      if (args.includes("--help")) return printHelp("remove");
+      await handleRemove();
       break;
     case "doctor": {
       if (args.includes("--help")) return printHelp("doctor");
@@ -249,6 +253,71 @@ async function handleAdd(): Promise<void> {
   }
 
   await runProvision({ baseName, services });
+}
+
+async function handleRemove(): Promise<void> {
+  // Mirrors handleAdd: `hatchkit remove [<name>] [<services>] [--dry-run] [--yes]`
+  //   hatchkit remove                             (fully interactive)
+  //   hatchkit remove raptor-runner               (prompts for services)
+  //   hatchkit remove raptor-runner all
+  //   hatchkit remove raptor-runner glitchtip,resend
+  //   hatchkit remove raptor-runner all --yes     (skip confirmation)
+  const positional = args.slice(1).filter((a) => !a.startsWith("--"));
+  const dryRun = args.includes("--dry-run");
+  const skipConfirm = args.includes("--yes") || args.includes("-y");
+  let baseName = positional[0];
+  const rawService = positional[1];
+
+  const allServices: ProvisionService[] = ["glitchtip", "openpanel", "resend"];
+
+  if (!baseName) {
+    const { input } = await import("@inquirer/prompts");
+    const { validateProjectName } = await import("./utils/validate.js");
+    baseName = await input({
+      message: "Project name to remove (e.g. raptor-runner):",
+      validate: validateProjectName,
+    });
+  }
+
+  let services: ProvisionService[];
+  if (!rawService) {
+    const { checkbox } = await import("@inquirer/prompts");
+    services = await checkbox<ProvisionService>({
+      message: "Which services to remove (-dev AND -prod clients each)?",
+      choices: [
+        { name: "GlitchTip (deletes the project)", value: "glitchtip", checked: true },
+        { name: "OpenPanel (deletes the project)", value: "openpanel", checked: true },
+        { name: "Resend (deletes the API key)", value: "resend", checked: true },
+      ],
+      required: true,
+    });
+  } else if (rawService === "all") {
+    services = allServices;
+  } else {
+    const requested = rawService.split(",").map((s) => s.trim().toLowerCase());
+    const invalid = requested.filter((s) => !(allServices as readonly string[]).includes(s));
+    if (invalid.length > 0) {
+      console.log(chalk.red(`  Unknown service(s): ${invalid.join(", ")}`));
+      console.log(chalk.dim(`  Valid: ${allServices.join(", ")}, or 'all'`));
+      process.exit(1);
+    }
+    services = requested as ProvisionService[];
+  }
+
+  // Confirmation — deletion is permanent upstream. Skip on --yes or --dry-run.
+  if (!skipConfirm && !dryRun) {
+    const { confirm } = await import("@inquirer/prompts");
+    const ok = await confirm({
+      message: `Delete -dev and -prod clients of "${baseName}" from ${services.join(", ")}? This can't be undone.`,
+      default: false,
+    });
+    if (!ok) {
+      console.log(chalk.dim("  Cancelled."));
+      return;
+    }
+  }
+
+  await runUnprovision({ baseName, services, dryRun });
 }
 
 async function handleDns(): Promise<void> {
@@ -659,6 +728,7 @@ type HelpTopic =
   | "update"
   | "keys"
   | "add"
+  | "remove"
   | "doctor"
   | "status"
   | "explain"
@@ -840,6 +910,42 @@ function printHelp(topic?: HelpTopic): void {
 `);
     return;
   }
+  if (topic === "remove") {
+    console.log(`
+  ${chalk.bold("hatchkit remove")} — inverse of ${chalk.cyan("add")}: tear down per-project clients
+
+  ${chalk.bold("Usage:")}
+    hatchkit remove [<project-name>] [<services>] [--dry-run] [--yes]
+
+  Both positional args are optional — anything missing is prompted for.
+  ${chalk.dim("(<services> is 'all', a single service, or a comma-separated list.)")}
+
+  ${chalk.bold("What it does:")}
+    For every selected service, deletes both clients:
+      - ${chalk.cyan("<project-name>-dev")}
+      - ${chalk.cyan("<project-name>-prod")}
+    Also removes the local env cache at
+    ${chalk.dim("<config-dir>/provisioned/<project-name>.{dev,prod}.env")}.
+
+    Re-runs are idempotent — missing upstream resources log
+    ${chalk.dim("already gone")} and keep going.
+
+  ${chalk.bold("Services:")}
+    glitchtip   Deletes the GlitchTip project
+    openpanel   Deletes the OpenPanel project (and clears cached creds)
+    resend      Finds API keys by name and deletes them
+
+  ${chalk.bold("Options:")}
+    --dry-run   Print what would be deleted; hit no APIs, remove no files.
+    --yes, -y   Skip the interactive confirmation prompt.
+
+  ${chalk.bold("Examples:")}
+    hatchkit remove raptor-runner all
+    hatchkit remove raptor-runner glitchtip,resend --dry-run
+    hatchkit remove raptor-runner all --yes
+`);
+    return;
+  }
   if (topic === "config") {
     console.log(`
   ${chalk.bold("hatchkit config")} — manage provider credentials
@@ -906,6 +1012,7 @@ function printHelp(topic?: HelpTopic): void {
     create          Scaffold a new project (interactive)
     update          Add features to an already-scaffolded project (run in project dir)
     add             Create GlitchTip / OpenPanel / Resend clients for an existing project
+    remove          Delete the -dev/-prod clients created by 'add' (inverse of add)
     gh-pages        Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
     dns             DNS reconciliation helpers (link-to-cloudflare, …)
     keys show <p>   Print the dotenvx private key for a project

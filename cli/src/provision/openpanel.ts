@@ -9,7 +9,7 @@
  */
 
 import { ensureOpenpanel } from "../config.js";
-import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
+import { SECRET_KEYS, deleteSecret, getSecret, setSecret } from "../utils/secrets.js";
 
 export interface OpenpanelClient {
   projectName: string;
@@ -98,4 +98,51 @@ export async function provisionOpenpanelClient(clientName: string): Promise<Open
   await setSecret(SECRET_KEYS.openpanelClientSecret(clientName), clientSecret);
   await setSecret(cachedIdKey, clientId);
   return { projectName: clientName, clientId, clientSecret, apiUrl: url };
+}
+
+export type DeleteResult = "deleted" | "not-found";
+
+/**
+ * Delete an OpenPanel project created by `provisionOpenpanelClient`.
+ * Also wipes the cached id + secret from the keychain so a future
+ * provision round won't hand back stale creds.
+ *
+ * Tries the cached project id first (set when the project was created);
+ * falls back to the slug (clientName) if there's no cached id — covers
+ * the case where the keychain was cleared but the upstream project is
+ * still hanging around.
+ */
+export async function deleteOpenpanelClient(clientName: string): Promise<DeleteResult> {
+  const cfg = await ensureOpenpanel();
+  const { url, rootClientId, rootClientSecret } = cfg;
+
+  const cachedIdKey = SECRET_KEYS.openpanelClientSecret(`${clientName}:id`);
+  const cachedId = await getSecret(cachedIdKey);
+
+  const manageBase = `${url}/api/manage`;
+  const headers = {
+    "openpanel-client-id": rootClientId,
+    "openpanel-client-secret": rootClientSecret,
+    Accept: "application/json",
+  };
+
+  const target = cachedId ?? clientName;
+  const res = await fetch(`${manageBase}/projects/${target}`, {
+    method: "DELETE",
+    headers,
+  });
+
+  // Always clear cached creds — if the upstream project is gone (or
+  // already-gone), the local secrets have no reason to linger.
+  await deleteSecret(SECRET_KEYS.openpanelClientSecret(clientName));
+  await deleteSecret(cachedIdKey);
+
+  if (res.status === 404) return "not-found";
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `OpenPanel delete project failed: ${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`,
+    );
+  }
+  return "deleted";
 }

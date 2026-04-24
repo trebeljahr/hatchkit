@@ -9,17 +9,26 @@
  * so the output can be retrieved later without re-hitting the APIs.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { ensureGlitchtip, ensureOpenpanel, ensureResend, getConfigPath } from "../config.js";
 import { validateProjectName } from "../utils/validate.js";
-import { type GlitchtipClient, provisionGlitchtipClient } from "./glitchtip.js";
-import { type OpenpanelClient, provisionOpenpanelClient } from "./openpanel.js";
+import {
+  type GlitchtipClient,
+  deleteGlitchtipClient,
+  provisionGlitchtipClient,
+} from "./glitchtip.js";
+import {
+  type OpenpanelClient,
+  deleteOpenpanelClient,
+  provisionOpenpanelClient,
+} from "./openpanel.js";
 import {
   type ResendClient,
   createResendDomain,
+  deleteResendClient,
   listResendDomains,
   normalizeDomainInput,
   provisionResendClient,
@@ -99,6 +108,95 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
     console.log(chalk.dim(`  saved: ${path}`));
   }
   console.log();
+}
+
+// ---------------------------------------------------------------------------
+// Unprovision — inverse of runProvision. Deletes the -dev and -prod
+// clients from each selected service, plus the local .env cache.
+// ---------------------------------------------------------------------------
+
+export interface UnprovisionOptions {
+  baseName: string;
+  services: ProvisionService[];
+  /** Don't hit any API or remove any file — just print what would happen. */
+  dryRun?: boolean;
+}
+
+export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
+  const nameCheck = validateProjectName(opts.baseName);
+  if (nameCheck !== true) throw new Error(`Invalid base name: ${nameCheck}`);
+
+  // Configure providers before any spinner — same reasoning as runProvision.
+  if (opts.services.includes("glitchtip")) await ensureGlitchtip();
+  if (opts.services.includes("openpanel")) await ensureOpenpanel();
+  if (opts.services.includes("resend")) await ensureResend();
+
+  if (opts.dryRun) {
+    console.log(chalk.yellow("\n  [dry-run] No clients will be deleted.\n"));
+  }
+
+  for (const env of ["dev", "prod"] as const) {
+    const clientName = `${opts.baseName}-${env}`;
+    console.log(chalk.bold(`\n  ── ${clientName} ──────────────────────────────────────────\n`));
+
+    if (opts.services.includes("glitchtip")) {
+      await runDelete(`GlitchTip: deleting project ${clientName}`, opts.dryRun, () =>
+        deleteGlitchtipClient(clientName),
+      );
+    }
+    if (opts.services.includes("openpanel")) {
+      await runDelete(`OpenPanel: deleting project ${clientName}`, opts.dryRun, () =>
+        deleteOpenpanelClient(clientName),
+      );
+    }
+    if (opts.services.includes("resend")) {
+      await runDelete(`Resend: deleting API key ${clientName}`, opts.dryRun, () =>
+        deleteResendClient(clientName),
+      );
+    }
+  }
+
+  // Clean up the local .env cache. Mirror runProvision's write locations.
+  const outDir = join(dirname(getConfigPath()), "provisioned");
+  for (const env of ["dev", "prod"] as const) {
+    const path = join(outDir, `${opts.baseName}.${env}.env`);
+    if (!existsSync(path)) continue;
+    if (opts.dryRun) {
+      console.log(chalk.dim(`  would remove ${path}`));
+      continue;
+    }
+    rmSync(path);
+    console.log(chalk.dim(`  ✓ removed ${path}`));
+  }
+  console.log();
+}
+
+/** Run a delete via spinner, mapping "not-found" to a dim "already gone"
+ *  so re-runs stay quiet. */
+async function runDelete(
+  label: string,
+  dryRun: boolean | undefined,
+  fn: () => Promise<"deleted" | "not-found">,
+): Promise<void> {
+  if (dryRun) {
+    console.log(chalk.dim(`  would ${label.toLowerCase()}`));
+    return;
+  }
+  const ora = (await import("ora")).default;
+  const spinner = ora(label).start();
+  try {
+    const result = await fn();
+    if (result === "deleted") {
+      spinner.succeed(label);
+    } else {
+      spinner.info(`${label} — already gone`);
+    }
+  } catch (err) {
+    spinner.fail(label);
+    // Don't throw on one failure — a single service being flaky shouldn't
+    // block the rest of the teardown.
+    console.log(chalk.red(`    ${(err as Error).message}`));
+  }
 }
 
 // ---------------------------------------------------------------------------

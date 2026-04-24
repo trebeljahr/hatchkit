@@ -81,6 +81,44 @@ export async function createResendDomain(
   return { id: data.id, name: data.name, status: data.status ?? "not_started" };
 }
 
+export type DeleteResult = "deleted" | "not-found";
+
+/**
+ * Delete the Resend API key named `clientName`.
+ *
+ * Resend's create response only gives us the token, not the key's id,
+ * and we don't persist the id locally. So: list keys, find the one with
+ * the matching name, DELETE /api-keys/:id. If zero match, treat as
+ * already-gone; if more than one matches (rare — same name re-used),
+ * delete them all so the undo is total.
+ */
+export async function deleteResendClient(clientName: string): Promise<DeleteResult> {
+  const cfg = await ensureResend();
+  const auth = { Authorization: `Bearer ${cfg.apiKey}` };
+
+  const listRes = await fetch("https://api.resend.com/api-keys", { headers: auth });
+  if (!listRes.ok) {
+    throw new Error(`Resend list keys failed: HTTP ${listRes.status}`);
+  }
+  const body = (await listRes.json()) as { data?: Array<{ id: string; name: string }> };
+  const matches = (body.data ?? []).filter((k) => k.name === clientName);
+  if (matches.length === 0) return "not-found";
+
+  for (const key of matches) {
+    const delRes = await fetch(`https://api.resend.com/api-keys/${key.id}`, {
+      method: "DELETE",
+      headers: auth,
+    });
+    if (delRes.status === 404) continue;
+    if (!delRes.ok) {
+      throw new Error(
+        `Resend delete key ${key.id} failed: HTTP ${delRes.status} ${await delRes.text()}`,
+      );
+    }
+  }
+  return "deleted";
+}
+
 /** Normalize user-pasted domain input: strip scheme, path, whitespace. */
 export function normalizeDomainInput(raw: string): string {
   let s = raw.trim().toLowerCase();

@@ -57,3 +57,27 @@ export async function provisionGlitchtipClient(clientName: string): Promise<Glit
   }
   return { projectSlug: clientName, dsn: keys[0].dsn.public };
 }
+
+export type DeleteResult = "deleted" | "not-found";
+
+/** Delete a GlitchTip project. 404 → "not-found" (already gone). */
+export async function deleteGlitchtipClient(clientName: string): Promise<DeleteResult> {
+  const cfg = await ensureGlitchtip();
+  const { url, organizationSlug, token } = cfg;
+  if (!organizationSlug) {
+    throw new Error(
+      "GlitchTip config is missing organization slug. Re-run `hatchkit config add glitchtip`.",
+    );
+  }
+
+  const res = await fetch(`${url}/api/0/projects/${organizationSlug}/${clientName}/`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (res.status === 404) return "not-found";
+  if (!res.ok) {
+    throw new Error(`GlitchTip delete project failed: HTTP ${res.status} ${await res.text()}`);
+  }
+  return "deleted";
+}
