@@ -130,6 +130,11 @@ async function main(): Promise<void> {
       await runDoctor({ json: isJson });
       break;
     }
+    case "dns": {
+      if (args.includes("--help")) return printHelp("dns");
+      await handleDns();
+      break;
+    }
     case "gh-pages":
     case "pages": {
       if (args.includes("--help")) return printHelp("gh-pages");
@@ -244,6 +249,22 @@ async function handleAdd(): Promise<void> {
   }
 
   await runProvision({ baseName, services });
+}
+
+async function handleDns(): Promise<void> {
+  const sub = args[1];
+  switch (sub) {
+    case "link-to-cloudflare": {
+      const rest = args.slice(2);
+      const dryRun = rest.includes("--dry-run");
+      const domains = rest.filter((a) => !a.startsWith("--"));
+      const { runDnsLinkToCloudflare } = await import("./dns.js");
+      await runDnsLinkToCloudflare({ domains, dryRun });
+      break;
+    }
+    default:
+      printHelp("dns");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -642,7 +663,8 @@ type HelpTopic =
   | "status"
   | "explain"
   | "completion"
-  | "gh-pages";
+  | "gh-pages"
+  | "dns";
 
 function printHelp(topic?: HelpTopic): void {
   if (topic === "create") {
@@ -755,6 +777,27 @@ function printHelp(topic?: HelpTopic): void {
 `);
     return;
   }
+  if (topic === "dns") {
+    console.log(`
+  ${chalk.bold("hatchkit dns")} — DNS reconciliation helpers
+
+  ${chalk.bold("Subcommands:")}
+    link-to-cloudflare [domain...]
+        For each Cloudflare zone, push its nameservers to INWX as the
+        registrar delegation. Use after importing zones into Cloudflare
+        when you don't want to click through INWX per-domain.
+
+        No args  → processes every zone the token can see.
+        Args     → space-separated domain names, filters to those.
+        ${chalk.dim("--dry-run")}     → print-only, no API calls.
+        ${chalk.dim("INWX_SANDBOX=1")} → use the OTE sandbox instead of production.
+
+  ${chalk.bold("Prerequisites:")}
+    Run ${chalk.cyan("hatchkit config add dns")} and choose Cloudflare, then answer
+    ${chalk.cyan("yes")} to "Is INWX your domain registrar?" when prompted.
+`);
+    return;
+  }
   if (topic === "doctor") {
     console.log(`
   ${chalk.bold("hatchkit doctor")} — verify every configured provider
@@ -864,6 +907,7 @@ function printHelp(topic?: HelpTopic): void {
     update          Add features to an already-scaffolded project (run in project dir)
     add             Create GlitchTip / OpenPanel / Resend clients for an existing project
     gh-pages        Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
+    dns             DNS reconciliation helpers (link-to-cloudflare, …)
     keys show <p>   Print the dotenvx private key for a project
     keys push <p>   Push the key onto the project's Coolify app
 

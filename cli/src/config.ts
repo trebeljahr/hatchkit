@@ -71,7 +71,15 @@ export interface HetznerMeta extends ProviderStatus {}
 
 export interface DnsMeta extends ProviderStatus {
   provider: "inwx" | "cloudflare" | "manual";
+  /** INWX username when provider === "inwx". */
   username?: string;
+  /** Optional Cloudflare account id — scopes API calls to one account
+   *  when the token spans multiple. Non-sensitive; lives in metadata. */
+  accountId?: string;
+  /** INWX username for the *registrar* case: provider is Cloudflare but
+   *  the domain is still registered at INWX, so we need creds to flip the
+   *  delegated NS after deploys. Non-sensitive. */
+  registrarUsername?: string;
 }
 
 export interface S3ProviderMeta extends ProviderStatus {
@@ -118,6 +126,10 @@ export interface HetznerConfig extends HetznerMeta {
 export interface DnsConfig extends DnsMeta {
   password?: string;
   apiToken?: string;
+  /** Paired with `registrarUsername` — from the keychain. Present only
+   *  when provider === "cloudflare" AND the user told us INWX is their
+   *  registrar during onboarding. */
+  registrarPassword?: string;
 }
 export interface S3ProviderConfig extends S3ProviderMeta {
   accessKey: string;
@@ -441,10 +453,12 @@ export async function ensureDns(): Promise<DnsConfig> {
   if (existing?.status === "configured") {
     const password = await getSecret(SECRET_KEYS.dnsInwxPassword);
     const apiToken = await getSecret(SECRET_KEYS.dnsCloudflareToken);
+    const registrarPassword = await getSecret(SECRET_KEYS.dnsInwxRegistrarPassword);
     return {
       ...existing,
       password: password ?? undefined,
       apiToken: apiToken ?? undefined,
+      registrarPassword: registrarPassword ?? undefined,
     };
   }
 
@@ -483,14 +497,46 @@ export async function ensureDns(): Promise<DnsConfig> {
     "Zone:DNS:Edit + Zone:Zone:Read (scope to the zones you'll use)",
   );
   const apiToken = await confirmPastedSecret("Cloudflare API token");
+  const accountId = await input({
+    message: "Cloudflare account ID (optional — leave blank to span all accounts):",
+    default: "",
+  });
+
+  // Cross-provider case: DNS on Cloudflare, but the domain is still
+  // registered at INWX. Offer to store INWX registrar creds so deploys
+  // (and the `dns link-to-cloudflare` command) can flip the delegated NS
+  // to Cloudflare automatically without a UI click-through per domain.
+  const wireInwxRegistrar = await confirm({
+    message:
+      "Is INWX your domain registrar? (if yes, hatchkit will auto-point NS at Cloudflare on deploy)",
+    default: false,
+  });
+  let registrarUsername: string | undefined;
+  let registrarPassword: string | undefined;
+  if (wireInwxRegistrar) {
+    registrarUsername = await input({
+      message: "INWX username (registrar):",
+      validate: validateRequired,
+    });
+    registrarPassword = await confirmPastedSecret("INWX password (registrar)");
+  }
+
   const meta: DnsMeta = {
     status: "configured",
     provider: "cloudflare",
+    accountId: accountId.trim() || undefined,
+    registrarUsername,
   };
   store.set("providers.dns", meta);
   await setSecret(SECRET_KEYS.dnsCloudflareToken, apiToken);
+  if (registrarPassword) {
+    await setSecret(SECRET_KEYS.dnsInwxRegistrarPassword, registrarPassword);
+  }
   console.log(chalk.green("  ✓ Cloudflare DNS configured"));
-  return { ...meta, apiToken };
+  if (registrarUsername) {
+    console.log(chalk.green("  ✓ INWX registrar wired for auto-NS updates"));
+  }
+  return { ...meta, apiToken, registrarPassword };
 }
 
 export async function getDnsConfig(): Promise<DnsConfig | null> {
@@ -500,10 +546,12 @@ export async function getDnsConfig(): Promise<DnsConfig | null> {
   if (!meta || meta.status !== "configured") return null;
   const password = await getSecret(SECRET_KEYS.dnsInwxPassword);
   const apiToken = await getSecret(SECRET_KEYS.dnsCloudflareToken);
+  const registrarPassword = await getSecret(SECRET_KEYS.dnsInwxRegistrarPassword);
   return {
     ...meta,
     password: password ?? undefined,
     apiToken: apiToken ?? undefined,
+    registrarPassword: registrarPassword ?? undefined,
   };
 }
 
@@ -1035,7 +1083,8 @@ function buildSetupGroups(): SetupGroup[] {
       title: "S3 Storage",
       steps: (["hetzner", "aws", "r2"] as const).map((p) => ({
         key: `s3.${p}`,
-        label: p === "hetzner" ? "Hetzner Object Storage" : p === "aws" ? "AWS S3" : "Cloudflare R2",
+        label:
+          p === "hetzner" ? "Hetzner Object Storage" : p === "aws" ? "AWS S3" : "Cloudflare R2",
         status: () => {
           const m = store.get(`providers.s3.${p}`) as S3ProviderMeta | undefined;
           return { configured: m?.status === "configured", summary: m?.endpoint };
@@ -1128,9 +1177,7 @@ export async function runOnboarding(): Promise<void> {
     const firstUnconfigured = allSteps.find((s) => !s.status().configured);
     const defaultKey = firstUnconfigured?.key ?? "__done__";
 
-    const choices: Array<
-      Separator | { name: string; value: string; description?: string }
-    > = [];
+    const choices: Array<Separator | { name: string; value: string; description?: string }> = [];
     for (const group of groups) {
       choices.push(new Separator(renderGroupHeader(group)));
       for (const step of group.steps) {

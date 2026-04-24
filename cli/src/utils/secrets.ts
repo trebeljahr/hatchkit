@@ -25,6 +25,10 @@ export const SECRET_KEYS = {
   hetznerToken: "hetzner:token",
   dnsInwxPassword: "dns:inwx:password",
   dnsCloudflareToken: "dns:cloudflare:token",
+  /** Registrar password when DNS is on Cloudflare but the domain is
+   *  registered at INWX. Used by the post-apply NS flip in deploy/terraform
+   *  and by `hatchkit dns link-to-cloudflare`. */
+  dnsInwxRegistrarPassword: "dns:inwx-registrar:password",
   s3AccessKey: (provider: string) => `s3:${provider}:access-key`,
   s3SecretKey: (provider: string) => `s3:${provider}:secret-key`,
   gpuApiKey: (platform: string) => `gpu:${platform}:api-key`,

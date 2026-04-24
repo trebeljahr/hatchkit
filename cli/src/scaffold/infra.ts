@@ -20,6 +20,14 @@ export function generateTfvars(config: ProjectConfig): string {
   addSubdomain(`api.${config.subdomain}`, "REST API");
   addSubdomain("admin", "Coolify dashboard");
 
+  // The stack-level dns_provider defaults to "inwx" for backward compat,
+  // but the user's CLI config is the source of truth — emit whichever
+  // provider they configured. "manual" maps to "inwx" because the stack
+  // only accepts "inwx" | "cloudflare"; manual DNS skips Terraform DNS
+  // entirely and is handled upstream.
+  const cfgProvider = getConfig().providers.dns?.provider ?? "inwx";
+  const stackDnsProvider = cfgProvider === "cloudflare" ? "cloudflare" : "inwx";
+
   if (config.deployTarget === "new") {
     return renderString(TFVARS_TEMPLATE, {
       name: config.name,
@@ -27,6 +35,8 @@ export function generateTfvars(config: ProjectConfig): string {
       serverLocation: config.serverLocation || "nbg1",
       domain: config.baseDomain,
       subdomains,
+      dnsProvider: stackDnsProvider,
+      cloudflareProxied: true,
       s3Enabled: config.features.includes("s3") && config.s3Provider !== "existing",
       s3BucketName: `${config.name}-assets`,
       s3Location: config.serverLocation || "nbg1",
@@ -37,6 +47,8 @@ export function generateTfvars(config: ProjectConfig): string {
   return renderString(DNS_ONLY_TFVARS_TEMPLATE, {
     domain: config.baseDomain,
     subdomains,
+    dnsProvider: stackDnsProvider,
+    cloudflareProxied: true,
     targetIpv4: config.serverIp || "",
     targetIpv6: "",
   });
@@ -159,6 +171,9 @@ server_location = "{{serverLocation}}"
 ssh_key_name    = "deploy-key"
 ssh_public_key  = "ssh-ed25519 CHANGE_ME"
 
+dns_provider       = "{{dnsProvider}}"
+cloudflare_proxied = {{cloudflareProxied}}
+
 domain = "{{domain}}"
 subdomains = {
 {{#each subdomains}}
@@ -179,7 +194,10 @@ s3_enabled     = false
 {{/if}}
 `;
 
-const DNS_ONLY_TFVARS_TEMPLATE = `domain = "{{domain}}"
+const DNS_ONLY_TFVARS_TEMPLATE = `dns_provider       = "{{dnsProvider}}"
+cloudflare_proxied = {{cloudflareProxied}}
+
+domain = "{{domain}}"
 subdomains = {
 {{#each subdomains}}
   "{{@key}}" = "{{this}}"
