@@ -7,6 +7,12 @@ import { execOk } from "./utils/exec.js";
 import { SECRET_KEYS, clearAllSecrets, getSecret, setSecret } from "./utils/secrets.js";
 import { validateRequired, validateUrl } from "./utils/validate.js";
 
+/** Pretty-print "where to create this token" hint before a password prompt. */
+function tokenHint(url: string, scope: string): void {
+  console.log(chalk.dim(`  → Create at: ${chalk.cyan(url)}`));
+  console.log(chalk.dim(`    Permissions: ${scope}`));
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -277,9 +283,10 @@ export async function ensureCoolify(): Promise<CoolifyConfig> {
   // Loop on the token until it authenticates — pasting the wrong token
   // is easy, and re-running the whole onboarding just to retry is rude.
   let token = "";
+  tokenHint(`${url.replace(/\/$/, "")}/security/api-tokens`, "root (full access)");
   for (;;) {
     const raw = await password({
-      message: "Coolify API token (from Settings → API Tokens):",
+      message: "Coolify API token:",
     });
     // Strip bracketed-paste escapes + all control/non-printable ASCII that
     // some terminals inject on paste. `.trim()` alone misses these.
@@ -342,6 +349,10 @@ export async function ensureHetzner(): Promise<HetznerConfig> {
     return { ...existing, token: existingToken };
   }
 
+  tokenHint(
+    "https://console.hetzner.cloud/projects → Security → API Tokens",
+    "Read & Write (needed to create servers)",
+  );
   const token = await password({
     message: "Hetzner Cloud API token:",
   });
@@ -420,6 +431,10 @@ export async function ensureDns(): Promise<DnsConfig> {
   }
 
   // Cloudflare
+  tokenHint(
+    "https://dash.cloudflare.com/profile/api-tokens → Create Token",
+    "Zone:DNS:Edit + Zone:Zone:Read (scope to the zones you'll use)",
+  );
   const apiToken = await password({ message: "Cloudflare API token:" });
   const meta: DnsMeta = {
     status: "configured",
@@ -462,6 +477,22 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
   console.log(
     chalk.yellow(`\n  ${provider.toUpperCase()} S3 is not configured yet. Let's set it up.`),
   );
+
+  const s3Hints = {
+    hetzner: {
+      url: "https://console.hetzner.cloud → your project → Security → S3 credentials",
+      scope: "any (credentials are per-project)",
+    },
+    aws: {
+      url: "https://console.aws.amazon.com/iam → Users → Security credentials → Create access key",
+      scope: "s3:PutObject, s3:GetObject, s3:DeleteObject on the target bucket",
+    },
+    r2: {
+      url: "https://dash.cloudflare.com → R2 → Manage R2 API Tokens → Create Token",
+      scope: "Object Read & Write on the target bucket(s)",
+    },
+  } as const;
+  tokenHint(s3Hints[provider].url, s3Hints[provider].scope);
 
   const promptedAccessKey = await password({ message: `${provider} S3 access key:` });
   const promptedSecretKey = await password({ message: `${provider} S3 secret key:` });
@@ -548,12 +579,18 @@ export async function ensureGpuProvider(
       break;
     }
     case "runpod":
+      tokenHint("https://runpod.io/user/settings → API Keys", "Read & Write");
       apiKey = await password({ message: "RunPod API key:" });
       break;
     case "hf":
-      apiKey = await password({ message: "HuggingFace token (from hf.co/settings/tokens):" });
+      tokenHint(
+        "https://huggingface.co/settings/tokens",
+        "Read (or Write if you'll push models)",
+      );
+      apiKey = await password({ message: "HuggingFace token:" });
       break;
     case "replicate":
+      tokenHint("https://replicate.com/account/api-tokens", "any (account-scoped)");
       apiKey = await password({ message: "Replicate API token:" });
       break;
   }
@@ -633,9 +670,13 @@ export async function ensureGlitchtip(): Promise<GlitchtipConfig> {
       validate: (v) => validateUrl(v.trim()),
     })
   ).trim();
+  tokenHint(
+    `${url.replace(/\/$/, "")}/profile/auth-tokens`,
+    "project:admin (read + write projects & teams)",
+  );
   const token = (
     await password({
-      message: "GlitchTip auth token (Profile → Auth Tokens, needs project:admin):",
+      message: "GlitchTip auth token:",
     })
   ).trim();
   const organizationSlug = (
@@ -694,9 +735,13 @@ export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
       validate: (v) => validateUrl(v.trim()),
     })
   ).trim();
+  tokenHint(
+    `${url.replace(/\/$/, "")}/settings/access-tokens`,
+    "full access (create/manage clients + projects)",
+  );
   const token = (
     await password({
-      message: "OpenPanel personal access token (Settings → Access Tokens):",
+      message: "OpenPanel personal access token:",
     })
   ).trim();
   const organizationSlug = (
@@ -740,9 +785,10 @@ export async function ensureResend(): Promise<ResendConfig> {
   }
 
   console.log(chalk.yellow("\n  Resend is not configured yet. Let's set it up."));
+  tokenHint("https://resend.com/api-keys", "Full access (needed to create domain-scoped keys)");
   const apiKey = (
     await password({
-      message: "Resend API key (resend.com/api-keys, needs 'full access'):",
+      message: "Resend API key:",
     })
   ).trim();
 
