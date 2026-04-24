@@ -266,15 +266,19 @@ export async function ensureCoolify(): Promise<CoolifyConfig> {
     }
   }
 
-  const url = await input({
-    message: "Coolify dashboard URL:",
-    default: existing?.url,
-    validate: (v) => validateUrl(v),
-  });
+  const url = (
+    await input({
+      message: "Coolify dashboard URL:",
+      default: existing?.url,
+      validate: (v) => validateUrl(v.trim()),
+    })
+  ).trim();
 
-  const token = await password({
-    message: "Coolify API token (from Settings → API Tokens):",
-  });
+  const token = (
+    await password({
+      message: "Coolify API token (from Settings → API Tokens):",
+    })
+  ).trim();
 
   const spinner = ora("Testing Coolify connection...").start();
   try {
@@ -610,24 +614,32 @@ export async function ensureGlitchtip(): Promise<GlitchtipConfig> {
   }
 
   console.log(chalk.yellow("\n  GlitchTip is not configured yet. Let's set it up."));
-  const url = await input({
-    message: "GlitchTip base URL:",
-    default: existing?.url ?? "https://glitchtip.trebeljahr.com",
-    validate: (v) => validateUrl(v),
-  });
-  const token = await password({
-    message: "GlitchTip auth token (Profile → Auth Tokens, needs project:admin):",
-  });
-  const organizationSlug = await input({
-    message: "GlitchTip organization slug:",
-    default: existing?.organizationSlug,
-    validate: validateRequired,
-  });
-  const teamSlug = await input({
-    message: "GlitchTip team slug (must exist under that org):",
-    default: existing?.teamSlug,
-    validate: validateRequired,
-  });
+  const url = (
+    await input({
+      message: "GlitchTip base URL:",
+      default: existing?.url ?? "https://glitchtip.trebeljahr.com",
+      validate: (v) => validateUrl(v.trim()),
+    })
+  ).trim();
+  const token = (
+    await password({
+      message: "GlitchTip auth token (Profile → Auth Tokens, needs project:admin):",
+    })
+  ).trim();
+  const organizationSlug = (
+    await input({
+      message: "GlitchTip organization slug:",
+      default: existing?.organizationSlug,
+      validate: validateRequired,
+    })
+  ).trim();
+  const teamSlug = (
+    await input({
+      message: "GlitchTip team slug (must exist under that org):",
+      default: existing?.teamSlug,
+      validate: validateRequired,
+    })
+  ).trim();
 
   const meta: GlitchtipMeta = {
     status: "configured",
@@ -663,19 +675,25 @@ export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
   }
 
   console.log(chalk.yellow("\n  OpenPanel is not configured yet. Let's set it up."));
-  const url = await input({
-    message: "OpenPanel base URL:",
-    default: existing?.url ?? "https://analytics.trebeljahr.com",
-    validate: (v) => validateUrl(v),
-  });
-  const token = await password({
-    message: "OpenPanel personal access token (Settings → Access Tokens):",
-  });
-  const organizationSlug = await input({
-    message: "OpenPanel organization slug:",
-    default: existing?.organizationSlug,
-    validate: validateRequired,
-  });
+  const url = (
+    await input({
+      message: "OpenPanel base URL:",
+      default: existing?.url ?? "https://analytics.trebeljahr.com",
+      validate: (v) => validateUrl(v.trim()),
+    })
+  ).trim();
+  const token = (
+    await password({
+      message: "OpenPanel personal access token (Settings → Access Tokens):",
+    })
+  ).trim();
+  const organizationSlug = (
+    await input({
+      message: "OpenPanel organization slug:",
+      default: existing?.organizationSlug,
+      validate: validateRequired,
+    })
+  ).trim();
 
   const meta: OpenpanelMeta = {
     status: "configured",
@@ -710,9 +728,11 @@ export async function ensureResend(): Promise<ResendConfig> {
   }
 
   console.log(chalk.yellow("\n  Resend is not configured yet. Let's set it up."));
-  const apiKey = await password({
-    message: "Resend API key (resend.com/api-keys, needs 'full access'):",
-  });
+  const apiKey = (
+    await password({
+      message: "Resend API key (resend.com/api-keys, needs 'full access'):",
+    })
+  ).trim();
 
   const spinner = ora("Verifying Resend API key...").start();
   try {
@@ -798,6 +818,27 @@ export async function runOnboarding(): Promise<void> {
     console.log(chalk.dim("  Skipped — will prompt when you first need S3 storage."));
   }
 
+  // Observability & email — all skippable
+  console.log(chalk.bold("\n  ── Observability & Email (configure as needed) ────────────\n"));
+
+  const configGlitchtip = await confirm({
+    message: "Configure GlitchTip (error tracking)?",
+    default: false,
+  });
+  if (configGlitchtip) await ensureGlitchtip();
+
+  const configOpenpanel = await confirm({
+    message: "Configure OpenPanel (product analytics)?",
+    default: false,
+  });
+  if (configOpenpanel) await ensureOpenpanel();
+
+  const configResend = await confirm({
+    message: "Configure Resend (transactional email)?",
+    default: false,
+  });
+  if (configResend) await ensureResend();
+
   // GPU — all skippable
   console.log(chalk.bold("\n  ── GPU / ML Providers (configure when needed) ─────────────\n"));
   console.log(chalk.dim("  Skipped — will prompt when you first add an ML service.\n"));
@@ -812,6 +853,9 @@ export async function runOnboarding(): Promise<void> {
   if (dnsMeta?.provider && dnsMeta.provider !== "manual") {
     configuredProviders.push(dnsMeta.provider.toUpperCase());
   }
+  if (store.get("providers.glitchtip")) configuredProviders.push("GlitchTip");
+  if (store.get("providers.openpanel")) configuredProviders.push("OpenPanel");
+  if (store.get("providers.resend")) configuredProviders.push("Resend");
 
   console.log(chalk.green(`  ✓ Providers configured: ${configuredProviders.join(", ")}`));
   console.log(chalk.dim("  ✓ Skipped providers will be prompted when first needed.\n"));

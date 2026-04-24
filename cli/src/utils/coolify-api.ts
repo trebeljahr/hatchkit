@@ -38,7 +38,15 @@ export class CoolifyApi {
       );
     }
 
-    return res.json() as Promise<T>;
+    const text = await res.text();
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      const hint = text.trimStart().startsWith("<")
+        ? " (got HTML — token may be invalid or URL points to a login page)"
+        : "";
+      throw new Error(`Coolify API ${method} ${path}: response is not JSON${hint}`);
+    }
   }
 
   /** Test connection and get Coolify version. */

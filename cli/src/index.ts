@@ -67,7 +67,8 @@ async function main(): Promise<void> {
 
   switch (command) {
     case "init":
-      if (args.includes("--help")) return printHelp("init");
+    case "setup":
+      if (args.includes("--help")) return printHelp("setup");
       await runOnboarding();
       break;
     case "config":
@@ -87,9 +88,9 @@ async function main(): Promise<void> {
       if (args.includes("--help") && args.length === 2) return printHelp("keys");
       await handleKeys();
       break;
-    case "provision":
-      if (args.includes("--help")) return printHelp("provision");
-      await handleProvision();
+    case "add":
+      if (args.includes("--help")) return printHelp("add");
+      await handleAdd();
       break;
     default:
       printHelp();
@@ -117,12 +118,12 @@ async function handleKeys(): Promise<void> {
   }
 }
 
-async function handleProvision(): Promise<void> {
+async function handleAdd(): Promise<void> {
   // Positional args are optional — anything missing is prompted for.
-  //   hatchkit provision                       (fully interactive)
-  //   hatchkit provision raptor-runner         (prompts for services)
-  //   hatchkit provision raptor-runner all
-  //   hatchkit provision raptor-runner glitchtip,resend
+  //   hatchkit add                             (fully interactive)
+  //   hatchkit add raptor-runner               (prompts for services)
+  //   hatchkit add raptor-runner all
+  //   hatchkit add raptor-runner glitchtip,resend
   const positional = args.slice(1).filter((a) => !a.startsWith("--"));
   let baseName = positional[0];
   const rawService = positional[1];
@@ -133,7 +134,7 @@ async function handleProvision(): Promise<void> {
     const { input } = await import("@inquirer/prompts");
     const { validateProjectName } = await import("./utils/validate.js");
     baseName = await input({
-      message: "Base name for the new clients (e.g. raptor-runner):",
+      message: "Project name (e.g. raptor-runner):",
       validate: validateProjectName,
     });
   }
@@ -142,7 +143,7 @@ async function handleProvision(): Promise<void> {
   if (!rawService) {
     const { checkbox } = await import("@inquirer/prompts");
     services = await checkbox<ProvisionService>({
-      message: "Which services to provision (-dev and -prod pair each)?",
+      message: "Which services to add (-dev and -prod pair each)?",
       choices: [
         { name: "GlitchTip (error tracking)", value: "glitchtip", checked: true },
         { name: "OpenPanel (product analytics)", value: "openpanel", checked: true },
@@ -560,7 +561,9 @@ async function handleConfig(): Promise<void> {
   }
 }
 
-function printHelp(topic?: "create" | "init" | "config" | "update" | "keys" | "provision"): void {
+function printHelp(
+  topic?: "create" | "init" | "setup" | "config" | "update" | "keys" | "add",
+): void {
   if (topic === "create") {
     console.log(`
   ${chalk.bold("hatchkit create")} — scaffold a new project
@@ -583,13 +586,19 @@ function printHelp(topic?: "create" | "init" | "config" | "update" | "keys" | "p
 `);
     return;
   }
-  if (topic === "init") {
+  if (topic === "init" || topic === "setup") {
     console.log(`
-  ${chalk.bold("hatchkit init")} — one-time onboarding
+  ${chalk.bold("hatchkit setup")} — one-time onboarding ${chalk.dim("(alias: init)")}
 
-  Prompts for: GitHub (via gh CLI), Coolify (URL + token), optionally
-  Hetzner Cloud, DNS provider, S3, and GPU platforms. Tokens go to the
-  OS keychain; metadata to ${chalk.dim(getConfigPath())}.
+  Interactively wires up every credential hatchkit needs:
+    - GitHub (via gh CLI)
+    - Coolify (URL + token)
+    - Hetzner Cloud, DNS provider, S3 (optional)
+    - GlitchTip, OpenPanel, Resend (optional)
+
+  Tokens go to the OS keychain; metadata to
+  ${chalk.dim(getConfigPath())}.
+  Any skipped providers are prompted for on first use.
 `);
     return;
   }
@@ -628,12 +637,12 @@ function printHelp(topic?: "create" | "init" | "config" | "update" | "keys" | "p
 `);
     return;
   }
-  if (topic === "provision") {
+  if (topic === "add") {
     console.log(`
-  ${chalk.bold("hatchkit provision")} — create per-service clients for an existing project
+  ${chalk.bold("hatchkit add")} — create per-service clients for an existing project
 
   ${chalk.bold("Usage:")}
-    hatchkit provision [<base-name>] [<services>]
+    hatchkit add [<project-name>] [<services>]
 
   Both args are optional — anything missing is prompted for, including a
   multi-select of which services to run. ${chalk.dim("(<services> is 'all', a single")}
@@ -641,10 +650,10 @@ function printHelp(topic?: "create" | "init" | "config" | "update" | "keys" | "p
 
   ${chalk.bold("What it does:")}
     For every selected service, creates two clients:
-      - ${chalk.cyan("<base-name>-dev")}
-      - ${chalk.cyan("<base-name>-prod")}
+      - ${chalk.cyan("<project-name>-dev")}
+      - ${chalk.cyan("<project-name>-prod")}
     …and prints an env block for each, plus saves it under
-    ${chalk.dim("<config-dir>/provisioned/<base-name>.{dev,prod}.env")}.
+    ${chalk.dim("<config-dir>/provisioned/<project-name>.{dev,prod}.env")}.
 
   ${chalk.bold("Services:")}
     glitchtip   Creates a GlitchTip project, returns GLITCHTIP_DSN
@@ -652,10 +661,10 @@ function printHelp(topic?: "create" | "init" | "config" | "update" | "keys" | "p
     resend      Creates a restricted Resend API key, returns RESEND_API_KEY
 
   ${chalk.bold("Examples:")}
-    hatchkit provision
-    hatchkit provision raptor-runner
-    hatchkit provision raptor-runner all
-    hatchkit provision raptor-runner glitchtip,resend
+    hatchkit add
+    hatchkit add raptor-runner
+    hatchkit add raptor-runner all
+    hatchkit add raptor-runner glitchtip,resend
 `);
     return;
   }
@@ -676,11 +685,11 @@ function printHelp(topic?: "create" | "init" | "config" | "update" | "keys" | "p
 
   ${chalk.bold("Commands:")}
     create          Scaffold a new project (default)
-    provision       Create GlitchTip / OpenPanel / Resend clients for an existing project
+    add             Create GlitchTip / OpenPanel / Resend clients for an existing project
     update          Add features to an already-scaffolded project (run in project dir)
     keys show <p>   Print the dotenvx private key for a project
     keys push <p>   Push the key onto the project's Coolify app
-    init            Run first-time setup / onboarding
+    setup           Run first-time setup / onboarding (alias: init)
     config          Show provider status
     config add <p>  Configure a provider (coolify, hetzner, dns, s3, modal, etc.)
     config reset    Clear ALL CLI config (providers, tokens, ML registry, ports)
