@@ -42,17 +42,44 @@ export class CoolifyApi {
     try {
       return JSON.parse(text) as T;
     } catch {
+      const ct = res.headers.get("content-type") ?? "unknown";
+      const snippet = text.slice(0, 200).replace(/\s+/g, " ").trim();
       const hint = text.trimStart().startsWith("<")
         ? " (got HTML — token may be invalid or URL points to a login page)"
         : "";
-      throw new Error(`Coolify API ${method} ${path}: response is not JSON${hint}`);
+      throw new Error(
+        `Coolify API ${method} ${path}: response is not JSON${hint}\n  content-type: ${ct}\n  body: ${snippet || "(empty)"}`,
+      );
     }
   }
 
-  /** Test connection and get Coolify version. */
+  /** Test connection and get Coolify version. The endpoint returns a
+   *  plain-text version string on modern Coolify, but older builds
+   *  wrap it as `{ version: "..." }` — accept either. */
   async getVersion(): Promise<string> {
-    const data = await this.request<{ version: string }>("GET", "/version");
-    return data.version;
+    const res = await fetch(`${this.url}/api/v1/version`, {
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        Accept: "application/json, text/plain;q=0.9",
+      },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(
+        `Coolify API GET /version failed: ${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`,
+      );
+    }
+    const text = (await res.text()).trim();
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed === "string") return parsed;
+      if (parsed && typeof parsed === "object" && typeof parsed.version === "string") {
+        return parsed.version;
+      }
+    } catch {
+      // Fall through: plain-text version string (e.g. "4.0.0-beta.432")
+    }
+    return text;
   }
 
   /** List all servers. */
