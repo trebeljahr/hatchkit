@@ -4,3 +4,6 @@ dist/
 .env.local
 *.log
 .DS_Store
+# claude code
+.claude/settings.local.json
+.claude/worktrees/
