@@ -94,6 +94,12 @@ async function main(): Promise<void> {
       await runDoctor();
       break;
     }
+    case "pages": {
+      if (args.includes("--help")) return printHelp("pages");
+      const { runPagesSetup } = await import("./deploy/pages.js");
+      await runPagesSetup(resolve("."));
+      break;
+    }
     default:
       printHelp();
   }
@@ -554,7 +560,7 @@ async function handleConfig(): Promise<void> {
 }
 
 function printHelp(
-  topic?: "create" | "init" | "setup" | "config" | "update" | "keys" | "add" | "doctor",
+  topic?: "create" | "init" | "setup" | "config" | "update" | "keys" | "add" | "doctor" | "pages",
 ): void {
   if (topic === "create") {
     console.log(`
@@ -629,6 +635,38 @@ function printHelp(
 `);
     return;
   }
+  if (topic === "pages") {
+    console.log(`
+  ${chalk.bold("hatchkit pages")} — wire GitHub Pages for the current repo
+
+  ${chalk.bold("Usage:")}
+    cd <project-dir> && hatchkit pages
+
+  ${chalk.bold("What it does:")}
+    1. Reads the repo via \`gh repo view\` (must be a GitHub repo you own).
+    2. Detects the project type:
+         - ${chalk.cyan("static")}       (plain HTML — no build step)
+         - ${chalk.cyan("node-build")}   (package.json with a \`build\` script — pnpm/npm/yarn/bun)
+         - ${chalk.cyan("jekyll")}       (Gemfile + _config.yml, root or docs/)
+    3. Enables Pages via the GitHub API with ${chalk.dim("build_type=workflow")}.
+    4. Optionally registers a custom domain + wires DNS:
+         - Cloudflare: auto-configured via API (uses your stored token)
+         - INWX / manual: prints the records you need to add
+    5. Writes ${chalk.cyan(".github/workflows/pages.yml")} tailored to the project type.
+    6. If a custom domain was chosen, writes a ${chalk.cyan("CNAME")} file into the
+       published folder (or ${chalk.dim("public/")} for build-step projects).
+
+  ${chalk.bold("After running:")}
+    git add -A && git commit -m "ci: deploy to GitHub Pages" && git push
+
+  ${chalk.bold("Notes:")}
+    - Private repos need a paid GitHub plan for Pages. Free-tier repos
+      must be made public first.
+    - For ${chalk.dim("node-build")} sites, confirm the detected publish dir matches what
+      your build tool actually outputs (Vite → dist, CRA → build, etc).
+`);
+    return;
+  }
   if (topic === "doctor") {
     console.log(`
   ${chalk.bold("hatchkit doctor")} — verify every configured provider
@@ -689,6 +727,7 @@ function printHelp(
   ${chalk.bold("Commands:")}
     create          Scaffold a new project (default)
     add             Create GlitchTip / OpenPanel / Resend clients for an existing project
+    pages           Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
     doctor          Health-check every configured provider
     update          Add features to an already-scaffolded project (run in project dir)
     keys show <p>   Print the dotenvx private key for a project
