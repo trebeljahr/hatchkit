@@ -39,6 +39,8 @@ export const SECRET_KEYS = {
   openpanelRootClientSecret: "openpanel:root-client-secret",
   openpanelClientSecret: (name: string) => `openpanel:${name}:client-secret`,
   resendApiKey: "resend:api-key",
+  stripeSecretKey: "stripe:secret-key",
+  stripePublishableKey: "stripe:publishable-key",
   /** Per-scaffolded-project dotenvx private key for .env.production.
    *  Stored in the OS keychain so the CLI's on-disk state never holds
    *  decryption material for the starter's encrypted env. */

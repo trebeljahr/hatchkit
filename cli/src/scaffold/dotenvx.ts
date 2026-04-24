@@ -152,11 +152,11 @@ function candidateKeys(config: ProjectConfig): string[] {
   if (config.mongodbProvider !== "coolify") {
     base.unshift("MONGODB_URI");
   }
-  if (config.features.includes("stripe")) {
-    // STRIPE_WEBHOOK_SECRET is provisioned at deploy time when hatchkit
-    // registers the webhook endpoint — no CHANGE_ME placeholder needed.
-    base.push("STRIPE_SECRET_KEY");
-  }
+  // STRIPE_* are not seeded as CHANGE_ME placeholders. Hatchkit
+  // writes them all encrypted at deploy time:
+  //   · STRIPE_SECRET_KEY / STRIPE_PUBLISHABLE_KEY come from the
+  //     keychain (configured via `hatchkit setup`).
+  //   · STRIPE_WEBHOOK_SECRET comes from the live webhook registration.
   if (config.features.includes("analytics")) {
     base.push("SENTRY_DSN");
   }

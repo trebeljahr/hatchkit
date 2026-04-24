@@ -364,6 +364,33 @@ async function checkResend(): Promise<CheckResult> {
   );
 }
 
+async function checkStripe(): Promise<CheckResult> {
+  const { getStripeConfig } = await import("./config.js");
+  const cfg = await getStripeConfig();
+  if (!cfg) return { name: "Stripe", status: "skip" };
+  return check(
+    `Stripe (${cfg.mode})`,
+    async () => {
+      const res = await fetch("https://api.stripe.com/v1/balance", {
+        headers: { Authorization: `Bearer ${cfg.secretKey}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return "secret key valid";
+    },
+    (detail) => {
+      const code = httpCode(detail);
+      if (code === 401) {
+        return [
+          "Stripe secret key is invalid or was rotated.",
+          "Find the current pair at https://dashboard.stripe.com/apikeys",
+          "Then re-run: `hatchkit config add stripe`",
+        ];
+      }
+      return undefined;
+    },
+  );
+}
+
 export async function collectDoctorResults(): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   results.push(await checkGitHub());
@@ -375,6 +402,7 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   results.push(await checkGlitchtip());
   results.push(await checkOpenpanel());
   results.push(await checkResend());
+  results.push(await checkStripe());
   return results;
 }
 

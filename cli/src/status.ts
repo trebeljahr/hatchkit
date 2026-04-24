@@ -99,6 +99,13 @@ export function collectStatus(): StatusSnapshot {
     configured: !!config.providers.resend && config.providers.resend.status === "configured",
     configureCommand: "hatchkit config add resend",
   });
+  providers.push({
+    key: "stripe",
+    label: "Stripe (payments)",
+    configured: !!config.providers.stripe && config.providers.stripe.status === "configured",
+    detail: config.providers.stripe?.mode,
+    configureCommand: "hatchkit config add stripe",
+  });
 
   const services = getMlServices();
   const mlServiceList = Object.entries(services).map(([name, entry]) => ({

@@ -447,6 +447,10 @@ async function handleCreate(): Promise<void> {
     const { ensureGlitchtip } = await import("./config.js");
     await ensureGlitchtip();
   }
+  if (config.features.includes("stripe")) {
+    const { ensureStripe } = await import("./config.js");
+    await ensureStripe();
+  }
 
   const appDir = resolve(config.name);
 
@@ -511,6 +515,52 @@ async function handleCreate(): Promise<void> {
         console.log(
           chalk.dim(
             `  Run \`hatchkit add ${config.name} glitchtip\` once GlitchTip is reachable.`,
+          ),
+        );
+      }
+    }
+
+    // Stripe: register a webhook endpoint at https://<domain>/api/stripe/webhook
+    // and write STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET encrypted
+    // into .env.production. The publishable key is non-secret (it ships
+    // in the browser bundle); we still encrypt-write it so the same env
+    // file is the single source of truth per environment.
+    if (config.features.includes("stripe")) {
+      try {
+        const { provisionStripeWebhook } = await import("./provision/stripe.js");
+        const { getStripeConfig } = await import("./config.js");
+        const { set: dotenvxSet } = await import("@dotenvx/dotenvx");
+        const ora = (await import("ora")).default;
+        const spinner = ora(`Stripe: registering webhook for ${config.domain}`).start();
+        const stripeCfg = await getStripeConfig();
+        const webhook = await provisionStripeWebhook(config.name, config.domain);
+        spinner.succeed(
+          `Stripe webhook ready (${webhook.mode} mode → https://${config.domain}/api/stripe/webhook)`,
+        );
+        const prodEnvPath = join(appDir, "packages/server/.env.production");
+        if (stripeCfg) {
+          dotenvxSet("STRIPE_SECRET_KEY", stripeCfg.secretKey, {
+            path: prodEnvPath,
+            encrypt: true,
+          });
+          dotenvxSet("STRIPE_PUBLISHABLE_KEY", stripeCfg.publishableKey, {
+            path: prodEnvPath,
+            encrypt: true,
+          });
+        }
+        dotenvxSet("STRIPE_WEBHOOK_SECRET", webhook.signingSecret, {
+          path: prodEnvPath,
+          encrypt: true,
+        });
+      } catch (err) {
+        console.log(
+          chalk.yellow(`  Couldn't auto-provision Stripe webhook: ${(err as Error).message}`),
+        );
+        console.log(
+          chalk.dim(
+            `  Create one manually: dashboard.stripe.com → Developers → Webhooks,\n` +
+              `  point at https://${config.domain}/api/stripe/webhook, then\n` +
+              `  \`dotenvx set STRIPE_WEBHOOK_SECRET <whsec_…> -f packages/server/.env.production\`.`,
           ),
         );
       }
@@ -683,14 +733,6 @@ async function handleCreate(): Promise<void> {
     }
   }
 
-  if (config.features.includes("stripe")) {
-    console.log(
-      chalk.yellow(
-        "\n  Next: Set STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET in Coolify",
-      ),
-    );
-  }
-
   if (config.features.includes("mobile")) {
     console.log(chalk.yellow("\n  Next (mobile): generate native projects once:"));
     console.log(chalk.dim("    pnpm cap:add:ios       # requires Xcode"));
@@ -760,6 +802,7 @@ async function handleConfig(): Promise<void> {
         case "glitchtip":
         case "openpanel":
         case "resend":
+        case "stripe":
           await reconfigureProvider(provider);
           break;
         case "s3": {

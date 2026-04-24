@@ -120,6 +120,13 @@ export interface ResendMeta extends ProviderStatus {
   defaultRegion?: string;
 }
 
+export interface StripeMeta extends ProviderStatus {
+  /** "test" → sk_test_… / pk_test_…  vs  "live" → sk_live_… / pk_live_…
+   *  Used as a sanity check before provisioning a webhook on the wrong
+   *  account, and to label per-project webhook descriptions. */
+  mode?: "test" | "live";
+}
+
 // === Full-config types — metadata + the associated secret. These are
 //     what `ensureX` returns and what deploy code typically wants. ===
 
@@ -157,6 +164,12 @@ export interface OpenpanelConfig extends OpenpanelMeta {
 export interface ResendConfig extends ResendMeta {
   apiKey: string;
 }
+export interface StripeConfig extends StripeMeta {
+  /** Server-side API key — `sk_test_…` or `sk_live_…`. */
+  secretKey: string;
+  /** Public-safe key for the browser bundle — `pk_test_…` / `pk_live_…`. */
+  publishableKey: string;
+}
 
 export interface MlServiceEntry {
   platform: string;
@@ -178,6 +191,7 @@ export interface CliConfig {
     glitchtip?: GlitchtipMeta;
     openpanel?: OpenpanelMeta;
     resend?: ResendMeta;
+    stripe?: StripeMeta;
   };
   mlServices: Record<string, MlServiceEntry>;
   /** Ports that are already assigned to scaffolded projects so the
@@ -970,6 +984,88 @@ export async function getResendConfig(): Promise<ResendConfig | null> {
 }
 
 // ---------------------------------------------------------------------------
+// Provider: Stripe (payments — used to auto-provision per-project webhooks)
+// ---------------------------------------------------------------------------
+
+export async function ensureStripe(): Promise<StripeConfig> {
+  const existing = store.get("providers.stripe") as StripeMeta | undefined;
+  const existingSecret = await getSecret(SECRET_KEYS.stripeSecretKey);
+  const existingPublishable = await getSecret(SECRET_KEYS.stripePublishableKey);
+
+  if (existing?.status === "configured" && existingSecret && existingPublishable) {
+    return { ...existing, secretKey: existingSecret, publishableKey: existingPublishable };
+  }
+
+  console.log(chalk.yellow("\n  Stripe is not configured yet. Let's set it up."));
+  tokenHint(
+    "https://dashboard.stripe.com/apikeys",
+    "Standard restricted key with `webhook_endpoints:write` (or use the Secret key)",
+  );
+  console.log(
+    chalk.dim(
+      "  Use the test-mode pair (sk_test_… / pk_test_…) for non-prod work,\n" +
+        "  the live-mode pair for real charges. Hatchkit infers the mode from\n" +
+        "  the `sk_` prefix.\n",
+    ),
+  );
+
+  const secretKey = await confirmPastedSecret("Stripe secret key (sk_test_… or sk_live_…)");
+  if (!/^sk_(test|live)_/.test(secretKey)) {
+    throw new Error(
+      "Stripe secret key must start with `sk_test_` or `sk_live_`. Re-run `hatchkit config add stripe`.",
+    );
+  }
+  const mode: "test" | "live" = secretKey.startsWith("sk_live_") ? "live" : "test";
+
+  const publishableKey = (
+    await input({
+      message: "Stripe publishable key (pk_test_… or pk_live_…):",
+      validate: (v) => {
+        const t = v.trim();
+        if (!/^pk_(test|live)_/.test(t)) return "Must start with pk_test_ or pk_live_.";
+        if (t.startsWith("pk_live_") !== (mode === "live"))
+          return "Publishable key mode doesn't match the secret key mode.";
+        return true;
+      },
+    })
+  ).trim();
+
+  // Sanity check: hit /v1/balance — cheapest authenticated GET that
+  // proves the secret key is valid before storing it.
+  const verify = ora("Verifying Stripe secret key...").start();
+  try {
+    const res = await fetch("https://api.stripe.com/v1/balance", {
+      headers: { Authorization: `Bearer ${secretKey}` },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    verify.succeed(`Stripe secret key verified (${mode} mode)`);
+  } catch (err) {
+    verify.fail("Could not verify Stripe secret key");
+    throw err;
+  }
+
+  const meta: StripeMeta = {
+    status: "configured",
+    mode,
+    lastVerified: new Date().toISOString(),
+  };
+  store.set("providers.stripe", meta);
+  await setSecret(SECRET_KEYS.stripeSecretKey, secretKey);
+  await setSecret(SECRET_KEYS.stripePublishableKey, publishableKey);
+  console.log(chalk.green(`  ✓ Stripe configured (${mode} mode)`));
+  return { ...meta, secretKey, publishableKey };
+}
+
+export async function getStripeConfig(): Promise<StripeConfig | null> {
+  const meta = store.get("providers.stripe") as StripeMeta | undefined;
+  if (!meta || meta.status !== "configured") return null;
+  const secretKey = await getSecret(SECRET_KEYS.stripeSecretKey);
+  const publishableKey = await getSecret(SECRET_KEYS.stripePublishableKey);
+  if (!secretKey || !publishableKey) return null;
+  return { ...meta, secretKey, publishableKey };
+}
+
+// ---------------------------------------------------------------------------
 // First-time setup / onboarding
 // ---------------------------------------------------------------------------
 
@@ -1009,6 +1105,7 @@ type ReconfigurableProvider =
   | "glitchtip"
   | "openpanel"
   | "resend"
+  | "stripe"
   | `s3.${"hetzner" | "aws" | "r2"}`
   | `gpu.${"modal" | "runpod" | "hf" | "replicate"}`;
 
@@ -1040,6 +1137,12 @@ export async function reconfigureProvider(name: ReconfigurableProvider): Promise
   } else if (name === "resend") {
     await wipeProvider("providers.resend", [SECRET_KEYS.resendApiKey]);
     await ensureResend();
+  } else if (name === "stripe") {
+    await wipeProvider("providers.stripe", [
+      SECRET_KEYS.stripeSecretKey,
+      SECRET_KEYS.stripePublishableKey,
+    ]);
+    await ensureStripe();
   } else if (name.startsWith("s3.")) {
     const p = name.slice(3) as "hetzner" | "aws" | "r2";
     await wipeProvider(`providers.s3.${p}`, [
@@ -1155,6 +1258,15 @@ function buildSetupGroups(): SetupGroup[] {
             return { configured: m?.status === "configured" };
           },
           run: () => reconfigureProvider("resend"),
+        },
+        {
+          key: "stripe",
+          label: "Stripe (payments)",
+          status: () => {
+            const m = store.get("providers.stripe") as StripeMeta | undefined;
+            return { configured: m?.status === "configured", summary: m?.mode };
+          },
+          run: () => reconfigureProvider("stripe"),
         },
       ],
     },
