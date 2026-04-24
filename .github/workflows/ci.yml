@@ -1,10 +1,13 @@
 name: CLI CI
 
 # Runs typecheck, lint, and the scaffold matrix on every push + PR.
-# The test suite skips gracefully when the `starter` submodule isn't
-# initialized, so this workflow works even without the submodule SSH
-# key being available in CI. When the submodule IS initialized (e.g.
-# via a public clone), the full 12-group matrix runs.
+# The test suite skips the scaffold-matrix blocks gracefully when the
+# `starter` submodule isn't on disk, so we intentionally do NOT fetch
+# submodules here — both `starter` and `infra` point at private SSH
+# URLs that GitHub Actions' default token can't authenticate to.
+#
+# To run the full 12-group matrix locally (or in a runner with an SSH
+# deploy key configured), `git submodule update --init` first.
 
 on:
   push:
@@ -26,11 +29,6 @@ jobs:
         working-directory: cli
     steps:
       - uses: actions/checkout@v4
-        with:
-          # Init the starter submodule if it's publicly accessible. If
-          # the submodule URL requires auth, this falls back silently
-          # and the tests skip their starter-dependent blocks.
-          submodules: recursive
 
       - uses: pnpm/action-setup@v4
         with:
