@@ -1,13 +1,18 @@
 {
-  "name": "devops-cli-monorepo",
+  "name": "hatchkit-monorepo",
   "version": "0.1.0",
   "private": true,
   "description": "Interactive CLI for scaffolding full-stack projects with composable ML services",
   "scripts": {
-    "build": "pnpm --filter devops-cli run build",
-    "dev": "pnpm --filter devops-cli run dev",
-    "start": "pnpm --filter devops-cli run start",
-    "create": "pnpm --filter devops-cli run start",
-    "typecheck": "pnpm --filter devops-cli run typecheck"
+    "build": "pnpm --filter hatchkit run build",
+    "dev": "pnpm --filter hatchkit run dev",
+    "start": "pnpm --filter hatchkit run start",
+    "create": "pnpm --filter hatchkit run start",
+    "typecheck": "pnpm --filter hatchkit run typecheck",
+    "install-local": "pnpm --filter hatchkit run install-local",
+    "release": "pnpm --filter hatchkit run release",
+    "release:patch": "pnpm --filter hatchkit run release:patch",
+    "release:minor": "pnpm --filter hatchkit run release:minor",
+    "release:major": "pnpm --filter hatchkit run release:major"
   }
 }
