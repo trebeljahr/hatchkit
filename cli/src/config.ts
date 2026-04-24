@@ -293,7 +293,6 @@ export async function ensureCoolify(): Promise<CoolifyConfig> {
     // Strip bracketed-paste escapes + all control/non-printable ASCII that
     // some terminals inject on paste. `.trim()` alone misses these.
     token = raw.replace(/\x1b\[2\d\d~/g, "").replace(/[^\x20-\x7e]/g, "").trim();
-    console.log(chalk.dim(`  token length: ${token.length} chars`));
 
     const spinner = ora("Testing Coolify connection...").start();
     try {
