@@ -504,7 +504,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     }
   }
 
-  return {
+  let config: ProjectConfig = {
     name,
     domain,
     baseDomain,
@@ -533,6 +533,234 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     envValues,
     dryRun: options.dryRun || false,
   };
+
+  // Final review-and-edit loop. Lets the user step BACK and tweak any
+  // headline choice before scaffold begins — mirrors the structure of
+  // `hatchkit setup`'s stepper. Skipped in non-interactive mode.
+  if (!nonInteractive) {
+    config = await reviewAndEditLoop(config);
+  }
+
+  return config;
+}
+
+// ---------------------------------------------------------------------------
+// Review-and-edit loop
+// ---------------------------------------------------------------------------
+
+/** Render a one-screen summary of every choice and let the user pick
+ *  one to edit. Loops until they pick "Proceed" (or cancel via Ctrl-C
+ *  / Esc — inquirer throws which the outer error handler logs). */
+async function reviewAndEditLoop(initial: ProjectConfig): Promise<ProjectConfig> {
+  let cfg = initial;
+  for (;;) {
+    console.log(chalk.bold("\n  ── Review ────────────────────────────────────────────────\n"));
+    const lines = renderSummary(cfg);
+    for (const l of lines) console.log(l);
+    console.log();
+
+    type Action =
+      | "proceed"
+      | "name"
+      | "domain"
+      | "features"
+      | "deployTarget"
+      | "ml"
+      | "mongo"
+      | "scaffoldFlags";
+    const action = await select<Action>({
+      message: "Looks good?",
+      choices: [
+        { name: chalk.green("✓ Proceed — scaffold now"), value: "proceed" },
+        { name: "✏  Project name", value: "name" },
+        { name: "✏  Domain", value: "domain" },
+        { name: "✏  Features (websocket, stripe, analytics, s3, …)", value: "features" },
+        { name: "✏  Deploy target (existing / new Hetzner)", value: "deployTarget" },
+        { name: "✏  ML services + GPU platforms", value: "ml" },
+        { name: "✏  MongoDB strategy", value: "mongo" },
+        { name: "✏  Scaffold / GitHub / Deploy flags", value: "scaffoldFlags" },
+      ],
+    });
+
+    if (action === "proceed") return cfg;
+
+    cfg = await editSection(cfg, action);
+  }
+}
+
+/** Per-section editors — re-run the relevant prompt(s) and return an
+ *  updated config. Each is intentionally minimal: just the field the
+ *  user wanted to change, no cascading re-prompts. */
+async function editSection(cfg: ProjectConfig, section: string): Promise<ProjectConfig> {
+  if (section === "name") {
+    const name = (
+      await input({
+        message: "Project name:",
+        default: cfg.name,
+        validate: validateProjectName,
+      })
+    ).trim();
+    return { ...cfg, name };
+  }
+  if (section === "domain") {
+    const raw = (
+      await input({
+        message: "Domain (e.g. ai.trebeljahr.com):",
+        default: cfg.domain,
+        validate: validateDomain,
+      })
+    ).trim();
+    const parsed = parseDomain(raw);
+    return {
+      ...cfg,
+      domain: raw,
+      baseDomain: parsed.baseDomain,
+      subdomain: parsed.subdomain,
+      // Re-derive auto-seeded URLs from the new domain.
+      envValues: {
+        ...cfg.envValues,
+        FRONTEND_URL: `https://${raw}`,
+        BETTER_AUTH_URL: `https://${raw}`,
+      },
+    };
+  }
+  if (section === "features") {
+    const next = await checkbox<Feature>({
+      message: "Features:",
+      choices: [
+        { name: "websocket (real-time)", value: "websocket", checked: cfg.features.includes("websocket") },
+        { name: "stripe (payments)", value: "stripe", checked: cfg.features.includes("stripe") },
+        { name: "analytics (GlitchTip + OpenPanel)", value: "analytics", checked: cfg.features.includes("analytics") },
+        { name: "s3 (object storage)", value: "s3", checked: cfg.features.includes("s3") },
+        { name: "desktop (Electron wrapper)", value: "desktop", checked: cfg.features.includes("desktop") },
+        { name: "mobile (Capacitor wrapper)", value: "mobile", checked: cfg.features.includes("mobile") },
+      ],
+    });
+    return { ...cfg, features: next };
+  }
+  if (section === "deployTarget") {
+    const target = await selectDeployTarget();
+    if (target === "existing") {
+      const server = await selectExistingServer();
+      return {
+        ...cfg,
+        deployTarget: "existing",
+        serverId: server.id,
+        serverIp: server.ip,
+        serverSize: undefined,
+        serverLocation: undefined,
+      };
+    }
+    // New Hetzner
+    const serverSize = await select({
+      message: "Hetzner server size:",
+      choices: [
+        { name: "cpx11 (2 vCPU, 2GB RAM)", value: "cpx11" },
+        { name: "cpx21 (3 vCPU, 4GB RAM, recommended)", value: "cpx21" },
+        { name: "cpx31 (4 vCPU, 8GB RAM)", value: "cpx31" },
+      ],
+      default: cfg.serverSize ?? "cpx21",
+    });
+    return {
+      ...cfg,
+      deployTarget: "new",
+      serverId: undefined,
+      serverIp: undefined,
+      serverSize,
+      serverLocation: cfg.serverLocation ?? "nbg1",
+    };
+  }
+  if (section === "ml") {
+    const ml = await checkbox<MlService>({
+      message: "ML services:",
+      choices: [
+        { name: "subtitles", value: "subtitles", checked: cfg.mlServices.includes("subtitles") },
+        { name: "image-recognition", value: "image-recognition", checked: cfg.mlServices.includes("image-recognition") },
+        { name: "background-removal", value: "background-removal", checked: cfg.mlServices.includes("background-removal") },
+        { name: "3d-extraction", value: "3d-extraction", checked: cfg.mlServices.includes("3d-extraction") },
+      ],
+    });
+    let gpuPlatforms = cfg.gpuPlatforms;
+    if (ml.length > 0) {
+      gpuPlatforms = await checkbox<GpuPlatform>({
+        message: "GPU platforms (first is default ML_BACKEND):",
+        choices: [
+          { name: "Modal", value: "modal", checked: gpuPlatforms?.includes("modal") ?? true },
+          { name: "RunPod", value: "runpod", checked: gpuPlatforms?.includes("runpod") ?? false },
+          { name: "HuggingFace", value: "hf", checked: gpuPlatforms?.includes("hf") ?? false },
+          { name: "Replicate", value: "replicate", checked: gpuPlatforms?.includes("replicate") ?? false },
+        ],
+        required: true,
+      });
+    }
+    return { ...cfg, mlServices: ml, gpuPlatforms };
+  }
+  if (section === "mongo") {
+    const next = await select<"coolify" | "external">({
+      message: "Prod MongoDB:",
+      choices: [
+        { name: "Coolify container (recommended)", value: "coolify" },
+        { name: "External URI (Atlas, self-hosted, …)", value: "external" },
+      ],
+      default: cfg.mongodbProvider ?? "coolify",
+    });
+    return { ...cfg, mongodbProvider: next };
+  }
+  if (section === "scaffoldFlags") {
+    const scaffoldRepo = await confirm({
+      message: "Scaffold the starter repo?",
+      default: cfg.scaffoldRepo,
+    });
+    const createGithubRepo = scaffoldRepo
+      ? await confirm({ message: "Create a GitHub repo?", default: cfg.createGithubRepo })
+      : false;
+    const runDeployment = await confirm({
+      message: "Run deployment now (Terraform + Coolify + ML)?",
+      default: cfg.runDeployment,
+    });
+    return { ...cfg, scaffoldRepo, createGithubRepo, runDeployment };
+  }
+  return cfg;
+}
+
+/** Render the review-screen summary lines. Pure formatting — no
+ *  side effects, easy to keep in sync with the editable sections. */
+function renderSummary(cfg: ProjectConfig): string[] {
+  const out: string[] = [];
+  const row = (k: string, v: string): string => `  ${chalk.bold(k.padEnd(14))} ${v}`;
+  out.push(row("Project", chalk.cyan(cfg.name)));
+  out.push(row("Domain", chalk.cyan(cfg.domain)));
+  out.push(
+    row(
+      "URLs",
+      chalk.dim(`https://${cfg.domain}  ${chalk.bold("·")}  https://${cfg.domain}/api`),
+    ),
+  );
+  out.push(
+    row(
+      "Deploy",
+      cfg.deployTarget === "existing"
+        ? `existing server (${cfg.serverIp})`
+        : `new Hetzner ${cfg.serverSize ?? "cpx21"}`,
+    ),
+  );
+  out.push(row("Features", cfg.features.length > 0 ? cfg.features.join(", ") : chalk.dim("none")));
+  out.push(
+    row(
+      "ML",
+      cfg.mlServices.length > 0
+        ? `${cfg.mlServices.join(", ")}  ${chalk.dim(`→ ${cfg.gpuPlatforms?.join(", ") ?? "modal"}`)}`
+        : chalk.dim("none"),
+    ),
+  );
+  out.push(row("MongoDB", cfg.mongodbProvider === "coolify" ? "Coolify container" : "external URI"));
+  out.push(
+    row(
+      "Flags",
+      `scaffold=${cfg.scaffoldRepo ? "yes" : "no"} · github=${cfg.createGithubRepo ? "yes" : "no"} · deploy=${cfg.runDeployment ? "yes" : "no"}`,
+    ),
+  );
+  return out;
 }
 
 // ---------------------------------------------------------------------------
