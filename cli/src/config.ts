@@ -850,12 +850,14 @@ export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
     chalk.dim(
       `\n  OpenPanel auth uses a client id/secret pair, not a bearer token.\n` +
         `  Create a root-mode client once so hatchkit can auto-create\n` +
-        `  per-project clients via the Management API.`,
+        `  per-project clients via the Management API.\n\n` +
+        `  Where to create it:\n` +
+        `    1. Open ${chalk.cyan(`${url.replace(/\/$/, "")}/${organizationSlug}`)}\n` +
+        `    2. Pick any project (or create a placeholder "hatchkit-root" project)\n` +
+        `    3. Project → Settings → Clients → New client\n` +
+        `    4. Type: ${chalk.cyan("root")} (Management API access — full org-wide)\n` +
+        `    5. Copy the clientId and clientSecret (secret is shown once)\n`,
     ),
-  );
-  tokenHint(
-    `${url.replace(/\/$/, "")}/${organizationSlug}/settings/clients`,
-    "Type: root (Management API access — full org-wide)",
   );
   const rootClientId = (
     await input({
