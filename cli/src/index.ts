@@ -53,11 +53,17 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log(chalk.bold(`\n  hatchkit v${getCliVersion()}\n`));
+  const isJson = args.includes("--json");
 
-  // Global --help without a subcommand prints the top-level help.
-  if (command === "--help" || command === "-h") {
-    printHelp();
+  // Suppress the banner for machine-readable output so stdout is pure JSON.
+  if (!isJson) {
+    console.log(chalk.bold(`\n  hatchkit v${getCliVersion()}\n`));
+  }
+
+  // Global --help / help subcommand (with optional topic).
+  if (command === "--help" || command === "-h" || command === "help") {
+    const topic = command === "help" ? (args[1] as HelpTopic | undefined) : undefined;
+    printHelp(topic);
     return;
   }
 
@@ -71,10 +77,40 @@ async function main(): Promise<void> {
       if (args.includes("--help") && args.length === 2) return printHelp("config");
       await handleConfig();
       break;
+    case "status": {
+      if (args.includes("--help")) return printHelp("status");
+      const { collectStatus, renderStatusHuman } = await import("./status.js");
+      const s = collectStatus();
+      if (isJson) {
+        console.log(JSON.stringify(s, null, 2));
+      } else {
+        console.log(renderStatusHuman(s));
+      }
+      break;
+    }
+    case "explain": {
+      if (args.includes("--help")) return printHelp("explain");
+      const { renderExplain } = await import("./explain.js");
+      console.log(renderExplain({ json: isJson }));
+      break;
+    }
+    case "completion": {
+      if (args.includes("--help")) return printHelp("completion");
+      const { renderCompletion } = await import("./completion.js");
+      const shell = (args[1] ?? "").toLowerCase();
+      if (shell !== "zsh" && shell !== "bash" && shell !== "fish") {
+        console.log("Usage: hatchkit completion <zsh|bash|fish>");
+        process.exit(1);
+      }
+      console.log(renderCompletion(shell));
+      break;
+    }
     case "create":
-    case undefined:
       if (args.includes("--help")) return printHelp("create");
       await handleCreate();
+      break;
+    case undefined:
+      await handleNoArgs();
       break;
     case "update":
       if (args.includes("--help")) return printHelp("update");
@@ -91,7 +127,7 @@ async function main(): Promise<void> {
     case "doctor": {
       if (args.includes("--help")) return printHelp("doctor");
       const { runDoctor } = await import("./doctor.js");
-      await runDoctor();
+      await runDoctor({ json: isJson });
       break;
     }
     case "gh-pages":
@@ -111,6 +147,34 @@ async function main(): Promise<void> {
   }
 }
 
+/** No-args: show the status-aware menu. If stdin is a TTY, also offer
+ *  to kick off the most likely next step (setup or create). Agents
+ *  running non-interactively just get the menu + exit 0. */
+async function handleNoArgs(): Promise<void> {
+  const { collectStatus, renderMenu } = await import("./status.js");
+  const s = collectStatus();
+  console.log(renderMenu(s));
+
+  if (!process.stdin.isTTY) return;
+
+  const hasCore =
+    s.providers.find((p) => p.key === "coolify")?.configured &&
+    s.providers.find((p) => p.key === "hetzner")?.configured &&
+    s.providers.find((p) => p.key === "dns")?.configured &&
+    s.providers.find((p) => p.key === "github")?.configured;
+
+  if (!hasCore) {
+    const ok = await confirm({ message: "Run `hatchkit setup` now?", default: true });
+    if (ok) await runOnboarding();
+    return;
+  }
+  const ok = await confirm({
+    message: "Scaffold a new project now (`hatchkit create`)?",
+    default: true,
+  });
+  if (ok) await handleCreate();
+}
+
 async function handleKeys(): Promise<void> {
   const sub = args[1];
   const projectName = args[2];
@@ -118,9 +182,10 @@ async function handleKeys(): Promise<void> {
     console.log("Usage: hatchkit keys <show|push> <project-name>");
     process.exit(1);
   }
+  const isJson = args.includes("--json");
   switch (sub) {
     case "show":
-      await showProjectKey(projectName);
+      await showProjectKey(projectName, { json: isJson });
       break;
     case "push":
       await pushProjectKeyToCoolify(projectName);
@@ -565,18 +630,21 @@ async function handleConfig(): Promise<void> {
   }
 }
 
-function printHelp(
-  topic?:
-    | "create"
-    | "init"
-    | "setup"
-    | "config"
-    | "update"
-    | "keys"
-    | "add"
-    | "doctor"
-    | "gh-pages",
-): void {
+type HelpTopic =
+  | "create"
+  | "init"
+  | "setup"
+  | "config"
+  | "update"
+  | "keys"
+  | "add"
+  | "doctor"
+  | "status"
+  | "explain"
+  | "completion"
+  | "gh-pages";
+
+function printHelp(topic?: HelpTopic): void {
   if (topic === "create") {
     console.log(`
   ${chalk.bold("hatchkit create")} — scaffold a new project
@@ -734,32 +802,85 @@ function printHelp(
   ${chalk.bold("hatchkit config")} — manage provider credentials
 
   ${chalk.bold("Subcommands:")}
-    config              Show status of every configured provider
+    config              Show status of every configured provider (alias: \`status\`)
     config add <p>      Configure a provider
-                        (coolify, hetzner, dns, s3, modal, runpod, hf, replicate)
+                        (coolify, hetzner, dns, s3, modal, runpod, hf, replicate,
+                         glitchtip, openpanel, resend)
     config reset        Clear ALL CLI config (providers, tokens, ML registry, ports)
+`);
+    return;
+  }
+  if (topic === "status") {
+    console.log(`
+  ${chalk.bold("hatchkit status")} — show provider status + next-step hint
+
+  ${chalk.bold("Usage:")}
+    hatchkit status [--json]
+
+  ${chalk.bold("Output:")}
+    Human: ✓/· per provider, next-best-step, config path.
+    JSON:  full StatusSnapshot — stable shape for agents / scripts.
+`);
+    return;
+  }
+  if (topic === "explain") {
+    console.log(`
+  ${chalk.bold("hatchkit explain")} — one-page mental model of the CLI
+
+  ${chalk.bold("Usage:")}
+    hatchkit explain [--json]
+
+  Dumps a plain-text (or JSON) description of concepts, commands, and
+  the canonical workflow. Useful for humans with zero context and for
+  agents that need to "grok" hatchkit before driving it.
+`);
+    return;
+  }
+  if (topic === "completion") {
+    console.log(`
+  ${chalk.bold("hatchkit completion")} — print a shell-completion script
+
+  ${chalk.bold("Usage:")}
+    hatchkit completion <zsh|bash|fish>
+
+  Pipe into your shell config, e.g.:
+    hatchkit completion zsh  > ~/.zsh/completions/_hatchkit
+    hatchkit completion bash > /usr/local/etc/bash_completion.d/hatchkit
+    hatchkit completion fish > ~/.config/fish/completions/hatchkit.fish
 `);
     return;
   }
   console.log(`
   ${chalk.bold("Usage:")} hatchkit <command> [options]
 
-  ${chalk.bold("Commands:")}
-    create          Scaffold a new project (default)
+  ${chalk.bold("Getting started:")}
+    setup           One-time onboarding — wires up all credentials (alias: init)
+    status          Show what's configured and what's next
+    doctor          Health-check every provider with contextual fix hints
+    explain         One-page mental model of the CLI
+
+  ${chalk.bold("Projects:")}
+    create          Scaffold a new project (interactive)
+    update          Add features to an already-scaffolded project (run in project dir)
     add             Create GlitchTip / OpenPanel / Resend clients for an existing project
     gh-pages        Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
-    doctor          Health-check every configured provider
-    update          Add features to an already-scaffolded project (run in project dir)
     keys show <p>   Print the dotenvx private key for a project
     keys push <p>   Push the key onto the project's Coolify app
-    setup           Run first-time setup / onboarding (alias: init)
-    config          Show provider status
-    config add <p>  Configure a provider (coolify, hetzner, dns, s3, modal, etc.)
+
+  ${chalk.bold("Config:")}
+    config          Show provider status (same as \`status\`)
+    config add <p>  Configure a provider (coolify, hetzner, dns, s3, modal, …)
     config reset    Clear ALL CLI config (providers, tokens, ML registry, ports)
+
+  ${chalk.bold("For agents / scripts:")}
+    status --json   StatusSnapshot as JSON
+    doctor --json   Per-provider health with fix hints as JSON
+    completion <shell>  Print a zsh/bash/fish completion script
 
   ${chalk.bold("Options:")}
     --version, -v   Print the CLI version
     --help, -h      Show this help message (pass to a subcommand for detail)
+    --json          Machine-readable output (status, doctor, explain)
     --dry-run       (with \`create\`) show what would change without writing
     --yes, -y       (with \`create\`) skip prompts, use defaults / --config values
     --config <path> (with \`create\`) load JSON overrides for ProjectConfig fields
@@ -769,8 +890,8 @@ function printHelp(
 
   ${chalk.bold("Environment:")}
     HATCHKIT_CONF_DIR   Override the config/ports-registry location
-                          (advanced — useful for isolated per-workspace state
-                          or automated testing).
+
+  ${chalk.dim("Run `hatchkit help <command>` for per-command detail.")}
 `);
 }
 

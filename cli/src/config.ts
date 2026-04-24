@@ -4,7 +4,13 @@ import Conf from "conf";
 import ora from "ora";
 import { verifyCoolify } from "./utils/coolify-api.js";
 import { execOk } from "./utils/exec.js";
-import { SECRET_KEYS, clearAllSecrets, deleteSecret, getSecret, setSecret } from "./utils/secrets.js";
+import {
+  SECRET_KEYS,
+  clearAllSecrets,
+  deleteSecret,
+  getSecret,
+  setSecret,
+} from "./utils/secrets.js";
 import { validateRequired, validateUrl } from "./utils/validate.js";
 
 /** Pretty-print "where to create this token" hint before a password prompt. */
@@ -554,7 +560,8 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
     },
     r2: {
       url: `https://dash.cloudflare.com/${accountId ?? ""}/r2/api-tokens → Create Token`,
-      scope: "Object Read & Write — then copy from the 'Use the following credentials for S3 clients' section (NOT the 'Token value' at the top)",
+      scope:
+        "Object Read & Write — then copy from the 'Use the following credentials for S3 clients' section (NOT the 'Token value' at the top)",
     },
   } as const;
   tokenHint(s3Hints[provider].url, s3Hints[provider].scope);
@@ -637,10 +644,7 @@ export async function ensureGpuProvider(
       apiKey = await confirmPastedSecret("RunPod API key");
       break;
     case "hf":
-      tokenHint(
-        "https://huggingface.co/settings/tokens",
-        "Read (or Write if you'll push models)",
-      );
+      tokenHint("https://huggingface.co/settings/tokens", "Read (or Write if you'll push models)");
       apiKey = await confirmPastedSecret("HuggingFace token");
       break;
     case "replicate":

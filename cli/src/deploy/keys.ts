@@ -18,10 +18,26 @@ import { getCoolifyConfig } from "../config.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
 
-/** Print the private key for a project to stdout. */
-export async function showProjectKey(projectName: string): Promise<void> {
+/** Print the private key for a project to stdout. `--json` emits a
+ *  structured `{ project, key, found }` object so agents can parse
+ *  without scraping. */
+export async function showProjectKey(
+  projectName: string,
+  opts: { json?: boolean } = {},
+): Promise<void> {
   const key = await getSecret(SECRET_KEYS.dotenvxPrivateKey(projectName));
   if (!key) {
+    if (opts.json) {
+      process.stdout.write(
+        `${JSON.stringify({
+          project: projectName,
+          found: false,
+          error:
+            "No dotenvx key in keychain. Project may have been scaffolded before dotenvx integration, or `config reset` cleared the keychain.",
+        })}\n`,
+      );
+      process.exit(1);
+    }
     console.error(
       chalk.red(`  No dotenvx key found for project "${projectName}" in the keychain.`),
     );
@@ -31,6 +47,10 @@ export async function showProjectKey(projectName: string): Promise<void> {
       ),
     );
     process.exit(1);
+  }
+  if (opts.json) {
+    process.stdout.write(`${JSON.stringify({ project: projectName, found: true, key })}\n`);
+    return;
   }
   // Print plainly so it's easy to pipe into pbcopy etc. No chalk
   // around the value — chalk adds ANSI codes that corrupt the key

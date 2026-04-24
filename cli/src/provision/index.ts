@@ -18,11 +18,11 @@ import { validateProjectName } from "../utils/validate.js";
 import { type GlitchtipClient, provisionGlitchtipClient } from "./glitchtip.js";
 import { type OpenpanelClient, provisionOpenpanelClient } from "./openpanel.js";
 import {
+  type ResendClient,
   createResendDomain,
   listResendDomains,
   normalizeDomainInput,
   provisionResendClient,
-  type ResendClient,
 } from "./resend.js";
 
 export type ProvisionService = "glitchtip" | "openpanel" | "resend";

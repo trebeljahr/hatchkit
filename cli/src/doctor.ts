@@ -32,7 +32,7 @@ type HintFn = (detail: string) => string[] | undefined;
 
 async function check(
   name: string,
-  fn: () => Promise<string | void>,
+  fn: () => Promise<string | undefined>,
   hintFn?: HintFn,
 ): Promise<CheckResult> {
   try {
@@ -170,7 +170,11 @@ async function checkDns(): Promise<CheckResult> {
     );
   }
   // INWX uses XML-RPC login — skip active-verify (cheap check would require a login call).
-  return { name: "DNS (INWX)", status: "ok", detail: "credentials stored (not test-authenticated)" };
+  return {
+    name: "DNS (INWX)",
+    status: "ok",
+    detail: "credentials stored (not test-authenticated)",
+  };
 }
 
 async function checkS3(provider: "hetzner" | "aws" | "r2"): Promise<CheckResult> {
@@ -188,7 +192,8 @@ async function checkGpu(platform: string): Promise<CheckResult> {
   if (meta?.status !== "configured") return { name, status: "skip" };
   if (platform === "modal") {
     return check(name, async () => {
-      if (!(await execOk("modal", ["token", "current"]))) throw new Error("`modal token current` failed");
+      if (!(await execOk("modal", ["token", "current"])))
+        throw new Error("`modal token current` failed");
       return "authenticated";
     });
   }
@@ -201,17 +206,19 @@ async function checkGpu(platform: string): Promise<CheckResult> {
       hint: [`Re-run: \`hatchkit config add gpu\` and pick ${platform}.`],
     };
   }
-  const gpuHint = (label: string, createUrl: string): HintFn => (detail) => {
-    const code = httpCode(detail);
-    if (code === 401 || code === 403) {
-      return [
-        `${label} API key is invalid or expired.`,
-        `Create a new one: ${createUrl}`,
-        "Then re-run: `hatchkit config add gpu`",
-      ];
-    }
-    return undefined;
-  };
+  const gpuHint =
+    (label: string, createUrl: string): HintFn =>
+    (detail) => {
+      const code = httpCode(detail);
+      if (code === 401 || code === 403) {
+        return [
+          `${label} API key is invalid or expired.`,
+          `Create a new one: ${createUrl}`,
+          "Then re-run: `hatchkit config add gpu`",
+        ];
+      }
+      return undefined;
+    };
   if (platform === "hf") {
     return check(
       name,
@@ -348,8 +355,7 @@ async function checkResend(): Promise<CheckResult> {
   );
 }
 
-export async function runDoctor(): Promise<void> {
-  console.log(chalk.bold("\n  hatchkit doctor — checking configured providers\n"));
+export async function collectDoctorResults(): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   results.push(await checkGitHub());
   results.push(await checkCoolify());
@@ -360,7 +366,31 @@ export async function runDoctor(): Promise<void> {
   results.push(await checkGlitchtip());
   results.push(await checkOpenpanel());
   results.push(await checkResend());
+  return results;
+}
 
+export async function runDoctor(opts: { json?: boolean } = {}): Promise<void> {
+  const results = await collectDoctorResults();
+  const okCount = results.filter((r) => r.status === "ok").length;
+  const failCount = results.filter((r) => r.status === "fail").length;
+  const skipCount = results.filter((r) => r.status === "skip").length;
+
+  if (opts.json) {
+    const payload = {
+      summary: { ok: okCount, failing: failCount, not_configured: skipCount },
+      checks: results.map((r) => ({
+        name: r.name,
+        status: r.status,
+        detail: r.detail,
+        hint: r.hint,
+      })),
+    };
+    console.log(JSON.stringify(payload, null, 2));
+    if (failCount > 0) process.exit(1);
+    return;
+  }
+
+  console.log(chalk.bold("  hatchkit doctor — checking configured providers\n"));
   for (const r of results) {
     const icon =
       r.status === "ok" ? chalk.green("✓") : r.status === "fail" ? chalk.red("✗") : chalk.dim("·");
@@ -368,9 +398,6 @@ export async function runDoctor(): Promise<void> {
     const detail = r.detail ? chalk.dim(` — ${r.detail}`) : "";
     console.log(`  ${icon} ${name}${detail}`);
   }
-  const okCount = results.filter((r) => r.status === "ok").length;
-  const failCount = results.filter((r) => r.status === "fail").length;
-  const skipCount = results.filter((r) => r.status === "skip").length;
   console.log(
     `\n  ${chalk.green(`${okCount} ok`)}  ${failCount ? chalk.red(`${failCount} failing`) : chalk.dim("0 failing")}  ${chalk.dim(`${skipCount} not configured`)}\n`,
   );
