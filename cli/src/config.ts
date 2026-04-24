@@ -723,8 +723,10 @@ export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
   const existing = store.get("providers.openpanel") as OpenpanelMeta | undefined;
   const existingToken = await getSecret(SECRET_KEYS.openpanelToken);
 
-  if (existing?.status === "configured" && existingToken) {
-    return { ...existing, token: existingToken };
+  // Token is optional (OpenPanel self-hosted has no unified API-key concept),
+  // so `configured` means we have a URL + org slug; token is gravy.
+  if (existing?.status === "configured") {
+    return { ...existing, token: existingToken ?? "" };
   }
 
   console.log(chalk.yellow("\n  OpenPanel is not configured yet. Let's set it up."));
@@ -735,13 +737,17 @@ export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
       validate: (v) => validateUrl(v.trim()),
     })
   ).trim();
-  tokenHint(
-    `${url.replace(/\/$/, "")}/settings/access-tokens`,
-    "full access (create/manage clients + projects)",
+  console.log(
+    chalk.dim(
+      `  → OpenPanel self-hosted has no 'API tokens' page. Leave blank to use\n` +
+        `    the paste-in fallback (copy clientId/Secret per project from the UI).\n` +
+        `    If your instance exposes a personal token, paste it here.`,
+    ),
   );
   const token = (
     await password({
-      message: "OpenPanel personal access token:",
+      message: "OpenPanel personal access token (optional, press Enter to skip):",
+      mask: "*",
     })
   ).trim();
   const organizationSlug = (
@@ -759,7 +765,7 @@ export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
     lastVerified: new Date().toISOString(),
   };
   store.set("providers.openpanel", meta);
-  await setSecret(SECRET_KEYS.openpanelToken, token);
+  if (token) await setSecret(SECRET_KEYS.openpanelToken, token);
   console.log(chalk.green("  ✓ OpenPanel configured"));
   return { ...meta, token };
 }
@@ -767,8 +773,7 @@ export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
 export async function getOpenpanelConfig(): Promise<OpenpanelConfig | null> {
   const meta = store.get("providers.openpanel") as OpenpanelMeta | undefined;
   if (!meta || meta.status !== "configured") return null;
-  const token = await getSecret(SECRET_KEYS.openpanelToken);
-  if (!token) return null;
+  const token = (await getSecret(SECRET_KEYS.openpanelToken)) ?? "";
   return { ...meta, token };
 }
 
