@@ -892,195 +892,225 @@ export async function isFirstRun(): Promise<boolean> {
   return config.providers.github.status === "unconfigured" && !config.providers.coolify;
 }
 
-/** Decide whether to run `ensureFn` based on existing state + user intent.
- *  - If not yet configured: ask "Configure X?" (default = required).
- *  - If already configured: print a summary and ask "Reconfigure X?" (default No).
- *    On yes, wipes the stored meta + secrets so ensureFn falls through the
- *    not-configured branch and re-prompts everything. */
-async function maybeConfigure(opts: {
+// ---------------------------------------------------------------------------
+// Stepper — hatchkit setup as a pickable menu of provider steps
+// ---------------------------------------------------------------------------
+
+/** One provider step in the setup stepper. A step knows its current status
+ *  (rendered next to its name in the menu) and how to (re)configure itself. */
+interface SetupStep {
+  /** Stable id — used to keep the same step selected across reruns. */
+  key: string;
+  /** Human label shown in the menu. */
   label: string;
-  storeKey: string;
-  isConfigured: boolean;
-  summary?: string;
-  required?: boolean;
-  secretKeys?: string[];
-  ensureFn: () => Promise<unknown>;
-}): Promise<void> {
-  const { label, storeKey, isConfigured, summary, required, secretKeys, ensureFn } = opts;
-  if (isConfigured) {
-    console.log(chalk.green(`  ✓ ${label} already configured${summary ? ` — ${summary}` : ""}`));
-    const reconfigure = await confirm({
-      message: `Reconfigure ${label}?`,
-      default: false,
-    });
-    if (!reconfigure) return;
-    store.delete(storeKey);
-    for (const k of secretKeys ?? []) await deleteSecret(k);
-    await ensureFn();
-    return;
-  }
-  const wantIt = await confirm({
-    message: `Configure ${label}?`,
-    default: required ?? false,
-  });
-  if (wantIt) await ensureFn();
+  /** Returns `{ configured, summary? }`. Called before every render. */
+  status: () => { configured: boolean; summary?: string };
+  /** Runs the provider setup, wiping any stored meta/secrets first so the
+   *  ensureFn always re-prompts (otherwise it early-returns). */
+  run: () => Promise<void>;
 }
 
-export async function runOnboarding(): Promise<void> {
-  console.log(chalk.bold("\n  Welcome! Let's set up your development infrastructure."));
-  console.log(chalk.dim("  This is a one-time setup — metadata is stored locally in"));
-  console.log(chalk.dim(`  ${getConfigPath()}`));
-  console.log(chalk.dim(`  Secrets (tokens, passwords) go to your OS keychain.\n`));
+/** Wipe a provider's stored meta + secret keys so its ensureFn re-prompts. */
+async function wipeProvider(storeKey: string, secretKeys: string[]): Promise<void> {
+  store.delete(storeKey);
+  for (const k of secretKeys) await deleteSecret(k);
+}
 
-  // Core providers
-  console.log(chalk.bold("  ── Core Providers (required) ──────────────────────────────\n"));
-  await ensureGitHub();
-  const coolifyMeta = store.get("providers.coolify") as CoolifyMeta | undefined;
-  await maybeConfigure({
-    label: "Coolify",
-    storeKey: "providers.coolify",
-    isConfigured: coolifyMeta?.status === "configured",
-    summary: coolifyMeta?.url,
-    required: true,
-    secretKeys: [SECRET_KEYS.coolifyToken],
-    ensureFn: ensureCoolify,
-  });
+function buildSetupSteps(): SetupStep[] {
+  const steps: SetupStep[] = [
+    {
+      key: "github",
+      label: "GitHub (gh CLI)",
+      status: () => {
+        const s = store.get("providers.github.status") as string | undefined;
+        return { configured: s === "configured" };
+      },
+      run: async () => {
+        store.set("providers.github.status", "unconfigured");
+        await ensureGitHub();
+      },
+    },
+    {
+      key: "coolify",
+      label: "Coolify",
+      status: () => {
+        const m = store.get("providers.coolify") as CoolifyMeta | undefined;
+        return { configured: m?.status === "configured", summary: m?.url };
+      },
+      run: async () => {
+        await wipeProvider("providers.coolify", [SECRET_KEYS.coolifyToken]);
+        await ensureCoolify();
+      },
+    },
+    {
+      key: "hetzner",
+      label: "Hetzner Cloud",
+      status: () => {
+        const m = store.get("providers.hetzner") as HetznerMeta | undefined;
+        return { configured: m?.status === "configured" };
+      },
+      run: async () => {
+        await wipeProvider("providers.hetzner", [SECRET_KEYS.hetznerToken]);
+        await ensureHetzner();
+      },
+    },
+    {
+      key: "dns",
+      label: "DNS",
+      status: () => {
+        const m = store.get("providers.dns") as DnsMeta | undefined;
+        return {
+          configured: m?.status === "configured",
+          summary: m?.provider && m.provider !== "manual" ? m.provider : undefined,
+        };
+      },
+      run: async () => {
+        await wipeProvider("providers.dns", [
+          SECRET_KEYS.dnsInwxPassword,
+          SECRET_KEYS.dnsCloudflareToken,
+        ]);
+        await ensureDns();
+      },
+    },
+  ];
 
-  // Infrastructure providers
-  console.log(chalk.bold("\n  ── Infrastructure Providers ───────────────────────────────\n"));
-  const hetznerMeta = store.get("providers.hetzner") as HetznerMeta | undefined;
-  await maybeConfigure({
-    label: "Hetzner Cloud",
-    storeKey: "providers.hetzner",
-    isConfigured: hetznerMeta?.status === "configured",
-    required: true,
-    secretKeys: [SECRET_KEYS.hetznerToken],
-    ensureFn: ensureHetzner,
-  });
-
-  const dnsMeta = store.get("providers.dns") as DnsMeta | undefined;
-  const dnsConfigured = dnsMeta?.status === "configured";
-  if (dnsConfigured) {
-    console.log(chalk.green(`  ✓ DNS already configured — ${dnsMeta?.provider}`));
-    const redo = await confirm({ message: "Reconfigure DNS?", default: false });
-    if (redo) {
-      store.delete("providers.dns");
-      await deleteSecret(SECRET_KEYS.dnsInwxPassword);
-      await deleteSecret(SECRET_KEYS.dnsCloudflareToken);
-      await ensureDns();
-    }
-  } else {
-    await ensureDns();
-  }
-
-  // Storage — all skippable
-  console.log(chalk.bold("\n  ── Storage Providers (configure as needed) ────────────────\n"));
-  const s3Configured = (["hetzner", "aws", "r2"] as const).filter(
-    (p) => (store.get(`providers.s3.${p}`) as S3ProviderMeta | undefined)?.status === "configured",
-  );
-  if (s3Configured.length) {
-    console.log(chalk.green(`  ✓ S3 already configured — ${s3Configured.join(", ")}`));
-  }
-  const configStorage = await confirm({
-    message: s3Configured.length ? "Configure another S3 provider?" : "Configure any S3 storage provider now?",
-    default: false,
-  });
-  if (configStorage) {
-    const s3Provider = await select({
-      message: "Which S3 provider?",
-      choices: [
-        { name: "Hetzner Object Storage", value: "hetzner" as const },
-        { name: "AWS S3", value: "aws" as const },
-        { name: "Cloudflare R2", value: "r2" as const },
-      ],
+  for (const p of ["hetzner", "aws", "r2"] as const) {
+    steps.push({
+      key: `s3.${p}`,
+      label: `S3 — ${p === "hetzner" ? "Hetzner Object Storage" : p === "aws" ? "AWS S3" : "Cloudflare R2"}`,
+      status: () => {
+        const m = store.get(`providers.s3.${p}`) as S3ProviderMeta | undefined;
+        return { configured: m?.status === "configured", summary: m?.endpoint };
+      },
+      run: async () => {
+        await wipeProvider(`providers.s3.${p}`, [
+          SECRET_KEYS.s3AccessKey(p),
+          SECRET_KEYS.s3SecretKey(p),
+        ]);
+        await ensureS3(p);
+      },
     });
-    // Wipe existing for the chosen provider so re-selecting the same one
-    // reliably re-prompts rather than early-returning.
-    store.delete(`providers.s3.${s3Provider}`);
-    await deleteSecret(SECRET_KEYS.s3AccessKey(s3Provider));
-    await deleteSecret(SECRET_KEYS.s3SecretKey(s3Provider));
-    await ensureS3(s3Provider);
   }
 
-  // Observability & email — all skippable
-  console.log(chalk.bold("\n  ── Observability & Email (configure as needed) ────────────\n"));
-  const glitchtipMeta = store.get("providers.glitchtip") as GlitchtipMeta | undefined;
-  await maybeConfigure({
-    label: "GlitchTip (error tracking)",
-    storeKey: "providers.glitchtip",
-    isConfigured: glitchtipMeta?.status === "configured",
-    summary: glitchtipMeta?.url,
-    secretKeys: [SECRET_KEYS.glitchtipToken],
-    ensureFn: ensureGlitchtip,
-  });
-  const openpanelMeta = store.get("providers.openpanel") as OpenpanelMeta | undefined;
-  await maybeConfigure({
-    label: "OpenPanel (product analytics)",
-    storeKey: "providers.openpanel",
-    isConfigured: openpanelMeta?.status === "configured",
-    summary: openpanelMeta?.url,
-    secretKeys: [
-      SECRET_KEYS.openpanelRootClientId,
-      SECRET_KEYS.openpanelRootClientSecret,
-    ],
-    ensureFn: ensureOpenpanel,
-  });
-  const resendMeta = store.get("providers.resend") as ResendMeta | undefined;
-  await maybeConfigure({
-    label: "Resend (transactional email)",
-    storeKey: "providers.resend",
-    isConfigured: resendMeta?.status === "configured",
-    secretKeys: [SECRET_KEYS.resendApiKey],
-    ensureFn: ensureResend,
-  });
+  steps.push(
+    {
+      key: "glitchtip",
+      label: "GlitchTip (error tracking)",
+      status: () => {
+        const m = store.get("providers.glitchtip") as GlitchtipMeta | undefined;
+        return { configured: m?.status === "configured", summary: m?.url };
+      },
+      run: async () => {
+        await wipeProvider("providers.glitchtip", [SECRET_KEYS.glitchtipToken]);
+        await ensureGlitchtip();
+      },
+    },
+    {
+      key: "openpanel",
+      label: "OpenPanel (product analytics)",
+      status: () => {
+        const m = store.get("providers.openpanel") as OpenpanelMeta | undefined;
+        return { configured: m?.status === "configured", summary: m?.url };
+      },
+      run: async () => {
+        await wipeProvider("providers.openpanel", [
+          SECRET_KEYS.openpanelRootClientId,
+          SECRET_KEYS.openpanelRootClientSecret,
+        ]);
+        await ensureOpenpanel();
+      },
+    },
+    {
+      key: "resend",
+      label: "Resend (transactional email)",
+      status: () => {
+        const m = store.get("providers.resend") as ResendMeta | undefined;
+        return { configured: m?.status === "configured" };
+      },
+      run: async () => {
+        await wipeProvider("providers.resend", [SECRET_KEYS.resendApiKey]);
+        await ensureResend();
+      },
+    },
+  );
 
-  // GPU / ML — each platform is separately skippable
-  console.log(chalk.bold("\n  ── GPU / ML Providers (configure as needed) ──────────────\n"));
-  const gpuPlatforms = [
+  for (const p of [
     { key: "modal", name: "Modal" },
     { key: "runpod", name: "RunPod" },
     { key: "hf", name: "HuggingFace Inference" },
     { key: "replicate", name: "Replicate" },
-  ] as const;
-  for (const p of gpuPlatforms) {
-    const meta = store.get(`providers.gpu.${p.key}`) as GpuProviderMeta | undefined;
-    const configured = meta?.status === "configured";
-    if (configured) {
-      console.log(chalk.green(`  ✓ ${p.name} already configured`));
-      const redo = await confirm({ message: `Reconfigure ${p.name}?`, default: false });
-      if (!redo) continue;
-      store.delete(`providers.gpu.${p.key}`);
-      await deleteSecret(SECRET_KEYS.gpuApiKey(p.key));
-    } else {
-      const wantIt = await confirm({ message: `Configure ${p.name}?`, default: false });
-      if (!wantIt) continue;
+  ] as const) {
+    steps.push({
+      key: `gpu.${p.key}`,
+      label: `GPU — ${p.name}`,
+      status: () => {
+        const m = store.get(`providers.gpu.${p.key}`) as GpuProviderMeta | undefined;
+        return { configured: m?.status === "configured" };
+      },
+      run: async () => {
+        await wipeProvider(`providers.gpu.${p.key}`, [SECRET_KEYS.gpuApiKey(p.key)]);
+        await ensureGpuProvider(p.key);
+      },
+    });
+  }
+
+  return steps;
+}
+
+function renderStepLabel(step: SetupStep, index: number): string {
+  const { configured, summary } = step.status();
+  const num = String(index + 1).padStart(2, " ");
+  const mark = configured ? chalk.green("✓") : chalk.dim("·");
+  const tail = configured
+    ? chalk.dim(` — ${summary ?? "configured"}`)
+    : chalk.dim(" — not configured");
+  return `${num}. ${mark}  ${step.label}${tail}`;
+}
+
+export async function runOnboarding(): Promise<void> {
+  console.log(chalk.bold("\n  hatchkit setup"));
+  console.log(chalk.dim(`  Metadata: ${getConfigPath()}`));
+  console.log(chalk.dim("  Secrets: OS keychain"));
+  console.log(chalk.dim("  Pick any step to (re)configure. Choose 'Done' to exit.\n"));
+
+  const steps = buildSetupSteps();
+
+  for (;;) {
+    // Default the cursor to the first unconfigured step so Enter advances
+    // naturally on a first-time setup.
+    const firstUnconfigured = steps.find((s) => !s.status().configured);
+    const defaultKey = firstUnconfigured?.key ?? "__done__";
+
+    const picked = await select<string>({
+      message: "Next step:",
+      default: defaultKey,
+      pageSize: Math.min(20, steps.length + 2),
+      choices: [
+        ...steps.map((s, i) => ({ name: renderStepLabel(s, i), value: s.key })),
+        { name: chalk.bold("Done — exit setup"), value: "__done__" },
+      ],
+    });
+
+    if (picked === "__done__") break;
+    const step = steps.find((s) => s.key === picked);
+    if (!step) continue;
+
+    console.log();
+    try {
+      await step.run();
+    } catch (err) {
+      console.log(chalk.red(`\n  ✗ ${step.label} failed: ${err instanceof Error ? err.message : String(err)}`));
     }
-    await ensureGpuProvider(p.key as "modal" | "runpod" | "hf" | "replicate");
+    console.log();
   }
 
-  // Done
-  console.log(chalk.bold("\n  ── Done! ──────────────────────────────────────────────────\n"));
-
-  const configuredProviders: string[] = ["GitHub"];
-  if ((store.get("providers.coolify") as CoolifyMeta | undefined)?.status === "configured")
-    configuredProviders.push("Coolify");
-  if ((store.get("providers.hetzner") as HetznerMeta | undefined)?.status === "configured")
-    configuredProviders.push("Hetzner Cloud");
-  const finalDns = store.get("providers.dns") as DnsMeta | undefined;
-  if (finalDns?.status === "configured" && finalDns.provider && finalDns.provider !== "manual") {
-    configuredProviders.push(finalDns.provider.toUpperCase());
+  // Summary
+  const configured = steps.filter((s) => s.status().configured);
+  console.log(chalk.bold("\n  ── Done ───────────────────────────────────────────────────\n"));
+  if (configured.length === 0) {
+    console.log(chalk.yellow("  Nothing configured yet. Run `hatchkit setup` again anytime.\n"));
+  } else {
+    console.log(chalk.green(`  ✓ Configured: ${configured.map((s) => s.label).join(", ")}`));
+    console.log(chalk.dim("  ✓ Run `hatchkit doctor` to verify all providers.\n"));
   }
-  for (const p of gpuPlatforms) {
-    if ((store.get(`providers.gpu.${p.key}`) as GpuProviderMeta | undefined)?.status === "configured")
-      configuredProviders.push(p.name);
-  }
-  if ((store.get("providers.glitchtip") as GlitchtipMeta | undefined)?.status === "configured")
-    configuredProviders.push("GlitchTip");
-  if ((store.get("providers.openpanel") as OpenpanelMeta | undefined)?.status === "configured")
-    configuredProviders.push("OpenPanel");
-  if ((store.get("providers.resend") as ResendMeta | undefined)?.status === "configured")
-    configuredProviders.push("Resend");
-
-  console.log(chalk.green(`  ✓ Configured: ${configuredProviders.join(", ")}`));
-  console.log(chalk.dim("  ✓ Skipped providers will be prompted when first needed.\n"));
 }
