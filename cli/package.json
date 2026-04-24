@@ -1,10 +1,10 @@
 {
-  "name": "devops-cli",
+  "name": "hatchkit",
   "version": "0.1.0",
-  "description": "Interactive CLI for scaffolding full-stack projects with composable services",
+  "description": "Interactive CLI for scaffolding full-stack projects and provisioning observability/email clients",
   "type": "module",
   "bin": {
-    "devops-cli": "./dist/index.js"
+    "hatchkit": "./dist/index.js"
   },
   "files": [
     "dist",

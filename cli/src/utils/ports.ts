@@ -13,7 +13,7 @@
  *                               run side-by-side without stomping)
  *
  * Two layers of collision avoidance:
- *   1. The CLI config tracks ports handed out to prior `devops-cli
+ *   1. The CLI config tracks ports handed out to prior `hatchkit
  *      create` runs (usedPorts registry) — avoids picking the same
  *      port twice across scaffolds on this machine.
  *   2. Each candidate is tested by actually binding to it on
@@ -69,7 +69,7 @@ export async function pickPort(min: number, max: number, used: Set<number>): Pro
     busyPorts++;
   }
   throw new Error(
-    `No free port found in range ${min}-${max} — ${registryCollisions} registered to other scaffolds, ${busyPorts} held by other processes. Run \`devops-cli config reset\` to clear the registry if it's stale.`,
+    `No free port found in range ${min}-${max} — ${registryCollisions} registered to other scaffolds, ${busyPorts} held by other processes. Run \`hatchkit config reset\` to clear the registry if it's stale.`,
   );
 }
 

@@ -19,15 +19,15 @@ import { tmpdir } from "node:os";
 
 // Isolate the test from the real user config. ESM hoists static
 // imports above the `process.env = ...` line, so config.ts would
-// otherwise read the real `~/Library/Preferences/devops-cli-nodejs/`
+// otherwise read the real `~/Library/Preferences/hatchkit-nodejs/`
 // path before the env var is set. Dynamic imports (below) run AFTER
 // this assignment, so the isolated paths actually take effect.
-process.env.DEVOPS_CLI_CONF_DIR = mkdtempSync(join(tmpdir(), "scaffold-conf-"));
+process.env.HATCHKIT_CONF_DIR = mkdtempSync(join(tmpdir(), "scaffold-conf-"));
 // Same story for the OS keychain: every scaffold mints a dotenvx
-// private key and stashes it under the "devops-cli" service. Route
+// private key and stashes it under the "hatchkit" service. Route
 // the test suite to a throwaway service so we don't pollute the real
 // user's keychain. clearAllSecrets() at the end wipes it.
-process.env.DEVOPS_CLI_KEYTAR_SERVICE = `devops-cli-test-${process.pid}`;
+process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-${process.pid}`;
 
 const { scaffoldApp } = await import("./src/scaffold/app.js");
 type Feature = import("./src/prompts.js").Feature;
@@ -294,7 +294,7 @@ console.log("\n── ports: no collisions across two scaffolds ─────�
   }
 }
 
-// Manifest: verify .devops-cli.json is written with sanitized fields
+// Manifest: verify .hatchkit.json is written with sanitized fields
 // and NEVER contains credentials or infrastructure coordinates.
 console.log("\n── manifest: sanitized fields only, no leaks ─────────────────────────────");
 {
@@ -313,7 +313,7 @@ console.log("\n── manifest: sanitized fields only, no leaks ─────�
     cfgWithSecrets.serverLocation = "hel1";
     await scaffoldApp(cfgWithSecrets, d);
 
-    const manifest = JSON.parse(readFileSync(join(d, ".devops-cli.json"), "utf-8"));
+    const manifest = JSON.parse(readFileSync(join(d, ".hatchkit.json"), "utf-8"));
     const json = JSON.stringify(manifest);
     const checks: Check[] = [
       ["manifest exists", typeof manifest === "object"],
@@ -595,8 +595,8 @@ console.log("\n── keytar migration: legacy plaintext secret moved to keychai
 
   // Write a legacy shape directly into the isolated conf store.
   const rawStore = new Conf({
-    projectName: "devops-cli",
-    cwd: process.env.DEVOPS_CLI_CONF_DIR,
+    projectName: "hatchkit",
+    cwd: process.env.HATCHKIT_CONF_DIR,
   });
   rawStore.set("providers.coolify", {
     status: "configured",
@@ -657,7 +657,7 @@ console.log("\n── existing-dir guard ─────────────
   const { clearAllSecrets } = await import("./src/utils/secrets.js");
   await clearAllSecrets();
 }
-rmSync(process.env.DEVOPS_CLI_CONF_DIR!, { recursive: true, force: true });
+rmSync(process.env.HATCHKIT_CONF_DIR!, { recursive: true, force: true });
 
 console.log("\n=== SUMMARY ===");
 let allOk = true;

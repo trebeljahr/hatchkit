@@ -7,16 +7,16 @@
  * server lists, `lastVerified` timestamps, status flags).
  *
  * Naming:
- *   service = "devops-cli"
+ *   service = "hatchkit"
  *   account = stable slug, e.g. "coolify:token", "s3:hetzner:secret-key"
  */
 
 import keytar from "keytar";
 
-// Tests set DEVOPS_CLI_KEYTAR_SERVICE to a throwaway value so they
+// Tests set HATCHKIT_KEYTAR_SERVICE to a throwaway value so they
 // don't pollute the real user's keychain with scaffold-test artifacts.
-// In normal runs this is unset and everything lives under "devops-cli".
-const SERVICE = process.env.DEVOPS_CLI_KEYTAR_SERVICE ?? "devops-cli";
+// In normal runs this is unset and everything lives under "hatchkit".
+const SERVICE = process.env.HATCHKIT_KEYTAR_SERVICE ?? "hatchkit";
 
 /** Well-known secret keys used across the CLI. New secrets should add
  *  their key here so `clearAllSecrets` can reach them on reset. */

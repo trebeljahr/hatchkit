@@ -1,8 +1,8 @@
 /*
- * Project manifest — .devops-cli.json at the root of a scaffolded project.
+ * Project manifest — .hatchkit.json at the root of a scaffolded project.
  *
  * Purpose: capture just enough about how this project was scaffolded
- * that `devops-cli update` can diff the current feature set against a
+ * that `hatchkit update` can diff the current feature set against a
  * desired new one and apply only the delta.
  *
  * ============================================================
@@ -32,7 +32,7 @@ import { join } from "node:path";
 import type { Feature, GpuPlatform, MlService, ProjectConfig, S3Provider } from "../prompts.js";
 import type { ProjectPorts } from "../utils/ports.js";
 
-export const MANIFEST_FILENAME = ".devops-cli.json";
+export const MANIFEST_FILENAME = ".hatchkit.json";
 export const MANIFEST_VERSION = 1;
 
 export interface ProjectManifest {

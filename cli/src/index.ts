@@ -57,7 +57,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log(chalk.bold(`\n  devops-cli v${getCliVersion()}\n`));
+  console.log(chalk.bold(`\n  hatchkit v${getCliVersion()}\n`));
 
   // Global --help without a subcommand prints the top-level help.
   if (command === "--help" || command === "-h") {
@@ -100,7 +100,7 @@ async function handleKeys(): Promise<void> {
   const sub = args[1];
   const projectName = args[2];
   if (!sub || !projectName) {
-    console.log("Usage: devops-cli keys <show|push> <project-name>");
+    console.log("Usage: hatchkit keys <show|push> <project-name>");
     process.exit(1);
   }
   switch (sub) {
@@ -119,10 +119,10 @@ async function handleKeys(): Promise<void> {
 
 async function handleProvision(): Promise<void> {
   // Positional args are optional — anything missing is prompted for.
-  //   devops-cli provision                       (fully interactive)
-  //   devops-cli provision raptor-runner         (prompts for services)
-  //   devops-cli provision raptor-runner all
-  //   devops-cli provision raptor-runner glitchtip,resend
+  //   hatchkit provision                       (fully interactive)
+  //   hatchkit provision raptor-runner         (prompts for services)
+  //   hatchkit provision raptor-runner all
+  //   hatchkit provision raptor-runner glitchtip,resend
   const positional = args.slice(1).filter((a) => !a.startsWith("--"));
   let baseName = positional[0];
   const rawService = positional[1];
@@ -337,7 +337,7 @@ async function handleCreate(): Promise<void> {
         console.log(chalk.yellow(`  Couldn't auto-push dotenvx key: ${(err as Error).message}`));
         console.log(
           chalk.dim(
-            `  Push manually once the Coolify app exists: devops-cli keys push ${config.name}`,
+            `  Push manually once the Coolify app exists: hatchkit keys push ${config.name}`,
           ),
         );
       }
@@ -448,7 +448,7 @@ async function handleConfig(): Promise<void> {
     case "add": {
       const provider = args[2];
       if (!provider) {
-        console.log("Usage: devops-cli config add <provider>");
+        console.log("Usage: hatchkit config add <provider>");
         console.log(
           "Providers: coolify, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, resend",
         );
@@ -563,10 +563,10 @@ async function handleConfig(): Promise<void> {
 function printHelp(topic?: "create" | "init" | "config" | "update" | "keys" | "provision"): void {
   if (topic === "create") {
     console.log(`
-  ${chalk.bold("devops-cli create")} — scaffold a new project
+  ${chalk.bold("hatchkit create")} — scaffold a new project
 
   ${chalk.bold("Usage:")}
-    devops-cli create [--dry-run]
+    hatchkit create [--dry-run]
 
   ${chalk.bold("What it does (interactively):")}
     1. Prompts for project name, domain, deploy target, features, ML services
@@ -585,7 +585,7 @@ function printHelp(topic?: "create" | "init" | "config" | "update" | "keys" | "p
   }
   if (topic === "init") {
     console.log(`
-  ${chalk.bold("devops-cli init")} — one-time onboarding
+  ${chalk.bold("hatchkit init")} — one-time onboarding
 
   Prompts for: GitHub (via gh CLI), Coolify (URL + token), optionally
   Hetzner Cloud, DNS provider, S3, and GPU platforms. Tokens go to the
@@ -595,7 +595,7 @@ function printHelp(topic?: "create" | "init" | "config" | "update" | "keys" | "p
   }
   if (topic === "keys") {
     console.log(`
-  ${chalk.bold("devops-cli keys")} — manage per-project dotenvx private keys
+  ${chalk.bold("hatchkit keys")} — manage per-project dotenvx private keys
 
   ${chalk.bold("Subcommands:")}
     keys show <project>   Print DOTENV_PRIVATE_KEY_PRODUCTION from the
@@ -607,19 +607,19 @@ function printHelp(topic?: "create" | "init" | "config" | "update" | "keys" | "p
                           runDeployment or manually).
 
   The key is generated at scaffold time and lives in macOS Keychain /
-  libsecret under the "devops-cli" service. Never written to git.
+  libsecret under the "hatchkit" service. Never written to git.
 `);
     return;
   }
   if (topic === "update") {
     console.log(`
-  ${chalk.bold("devops-cli update")} — add features to an already-scaffolded project
+  ${chalk.bold("hatchkit update")} — add features to an already-scaffolded project
 
   ${chalk.bold("Usage:")}
-    cd <project-dir> && devops-cli update
+    cd <project-dir> && hatchkit update
 
   ${chalk.bold("What it does:")}
-    Reads the project's .devops-cli.json manifest, lets you pick a new
+    Reads the project's .hatchkit.json manifest, lets you pick a new
     feature set, and copies the additive pieces from the starter.
     Currently supported additions: ${chalk.cyan("desktop")}, ${chalk.cyan("mobile")}.
 
@@ -630,10 +630,10 @@ function printHelp(topic?: "create" | "init" | "config" | "update" | "keys" | "p
   }
   if (topic === "provision") {
     console.log(`
-  ${chalk.bold("devops-cli provision")} — create per-service clients for an existing project
+  ${chalk.bold("hatchkit provision")} — create per-service clients for an existing project
 
   ${chalk.bold("Usage:")}
-    devops-cli provision [<base-name>] [<services>]
+    hatchkit provision [<base-name>] [<services>]
 
   Both args are optional — anything missing is prompted for, including a
   multi-select of which services to run. ${chalk.dim("(<services> is 'all', a single")}
@@ -652,16 +652,16 @@ function printHelp(topic?: "create" | "init" | "config" | "update" | "keys" | "p
     resend      Creates a restricted Resend API key, returns RESEND_API_KEY
 
   ${chalk.bold("Examples:")}
-    devops-cli provision
-    devops-cli provision raptor-runner
-    devops-cli provision raptor-runner all
-    devops-cli provision raptor-runner glitchtip,resend
+    hatchkit provision
+    hatchkit provision raptor-runner
+    hatchkit provision raptor-runner all
+    hatchkit provision raptor-runner glitchtip,resend
 `);
     return;
   }
   if (topic === "config") {
     console.log(`
-  ${chalk.bold("devops-cli config")} — manage provider credentials
+  ${chalk.bold("hatchkit config")} — manage provider credentials
 
   ${chalk.bold("Subcommands:")}
     config              Show status of every configured provider
@@ -672,7 +672,7 @@ function printHelp(topic?: "create" | "init" | "config" | "update" | "keys" | "p
     return;
   }
   console.log(`
-  ${chalk.bold("Usage:")} devops-cli <command> [options]
+  ${chalk.bold("Usage:")} hatchkit <command> [options]
 
   ${chalk.bold("Commands:")}
     create          Scaffold a new project (default)
@@ -696,7 +696,7 @@ function printHelp(topic?: "create" | "init" | "config" | "update" | "keys" | "p
     --no-deploy     (with \`create\`) skip Terraform/Coolify/ML deployment
 
   ${chalk.bold("Environment:")}
-    DEVOPS_CLI_CONF_DIR   Override the config/ports-registry location
+    HATCHKIT_CONF_DIR   Override the config/ports-registry location
                           (advanced — useful for isolated per-workspace state
                           or automated testing).
 `);

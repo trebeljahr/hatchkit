@@ -1,5 +1,5 @@
 /*
- * Command-line flag parsing for `devops-cli create`.
+ * Command-line flag parsing for `hatchkit create`.
  *
  * Keeps the flag surface deliberately small — a few common flags plus
  * a `--config <path>` escape hatch that reads a JSON file matching

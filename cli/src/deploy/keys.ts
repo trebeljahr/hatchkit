@@ -1,5 +1,5 @@
 /*
- * `devops-cli keys` subcommands — retrieve + push the per-project
+ * `hatchkit keys` subcommands — retrieve + push the per-project
  * dotenvx private key that lives in the OS keychain.
  *
  *   keys show <project>   Print the DOTENV_PRIVATE_KEY_PRODUCTION for
@@ -54,7 +54,7 @@ export async function pushProjectKeyToCoolify(
 
   const coolify = await getCoolifyConfig();
   if (!coolify) {
-    throw new Error("Coolify is not configured. Run `devops-cli config add coolify` first.");
+    throw new Error("Coolify is not configured. Run `hatchkit config add coolify` first.");
   }
 
   const api = new CoolifyApi({ url: coolify.url, token: coolify.token });
@@ -67,7 +67,7 @@ export async function pushProjectKeyToCoolify(
     const match = apps.find((a) => a.name === appName);
     if (!match) {
       spinner.fail(
-        `No Coolify application named "${appName}". Run \`devops-cli create\` with runDeployment first.`,
+        `No Coolify application named "${appName}". Run \`hatchkit create\` with runDeployment first.`,
       );
       throw new Error(`Coolify app not found: ${appName}`);
     }

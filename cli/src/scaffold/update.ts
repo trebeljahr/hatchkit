@@ -1,9 +1,9 @@
 /*
- * `devops-cli update` — add feature scaffolding to an already-scaffolded
+ * `hatchkit update` — add feature scaffolding to an already-scaffolded
  * project.
  *
  * Scope of this MVP:
- *   • Read the .devops-cli.json manifest in cwd.
+ *   • Read the .hatchkit.json manifest in cwd.
  *   • Prompt for a new feature set (defaulting to the current one).
  *   • REFUSE to remove features — that risks deleting user code built
  *     on top of them. Removal stays a manual operation.
@@ -53,7 +53,7 @@ export async function runUpdate(projectDir: string): Promise<UpdateResult> {
   const manifest = readManifest(projectDir);
   if (!manifest) {
     throw new Error(
-      `No ${MANIFEST_FILENAME} found in ${projectDir}. This directory wasn't scaffolded by devops-cli, or the manifest was deleted.`,
+      `No ${MANIFEST_FILENAME} found in ${projectDir}. This directory wasn't scaffolded by hatchkit, or the manifest was deleted.`,
     );
   }
 

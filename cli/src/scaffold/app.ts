@@ -91,7 +91,7 @@ export async function scaffoldApp(
       // nudge the user toward `update` instead of a hard fail.
       const hasManifest = entries.includes(MANIFEST_FILENAME);
       const hint = hasManifest
-        ? ` This looks like a previously-scaffolded project (${MANIFEST_FILENAME} is present). Try \`devops-cli update\` from inside it to add features.`
+        ? ` This looks like a previously-scaffolded project (${MANIFEST_FILENAME} is present). Try \`hatchkit update\` from inside it to add features.`
         : "";
       throw new Error(
         `Output directory ${outputDir} already exists and is not empty. Move or remove it first.${hint}`,
@@ -347,11 +347,11 @@ async function runScaffoldSteps(
     modifications.push("removed: ML playground, ML router, ML types, ML navbar link");
   }
 
-  // Write the sanitized manifest so `devops-cli update` can diff
+  // Write the sanitized manifest so `hatchkit update` can diff
   // against this scaffold's choices later. See manifest.ts for the
   // strict list of fields that are safe to persist.
   writeManifest(outputDir, toManifest(config, ports, getCliVersion()));
-  modifications.push(".devops-cli.json (project manifest)");
+  modifications.push(".hatchkit.json (project manifest)");
 
   // Seed .env.production via dotenvx: encrypt supplied values, mint a
   // keypair, mirror the private key into the OS keychain. Unsupplied

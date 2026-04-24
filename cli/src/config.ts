@@ -117,7 +117,7 @@ export interface CliConfig {
   };
   mlServices: Record<string, MlServiceEntry>;
   /** Ports that are already assigned to scaffolded projects so the
-   *  picker avoids collisions across `devops-cli create` invocations. */
+   *  picker avoids collisions across `hatchkit create` invocations. */
   usedPorts: number[];
 }
 
@@ -125,7 +125,7 @@ export interface CliConfig {
 // Config store
 // ---------------------------------------------------------------------------
 
-// Tests set DEVOPS_CLI_CONF_DIR to a temp path so they don't pollute
+// Tests set HATCHKIT_CONF_DIR to a temp path so they don't pollute
 // the real user config. In normal CLI runs this is unset and Conf
 // falls back to its default OS-specific location.
 //
@@ -148,8 +148,8 @@ const STORE_DEFAULTS: CliConfig = {
 function createStore(): Conf<CliConfig> {
   try {
     return new Conf<CliConfig>({
-      projectName: "devops-cli",
-      cwd: process.env.DEVOPS_CLI_CONF_DIR,
+      projectName: "hatchkit",
+      cwd: process.env.HATCHKIT_CONF_DIR,
       clearInvalidConfig: true,
       defaults: STORE_DEFAULTS,
     });
@@ -157,14 +157,14 @@ function createStore(): Conf<CliConfig> {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(
       chalk.yellow(
-        `  [config] existing CLI config was unreadable (${msg}). Falling back to defaults; re-run \`devops-cli init\` to restore providers.`,
+        `  [config] existing CLI config was unreadable (${msg}). Falling back to defaults; re-run \`hatchkit init\` to restore providers.`,
       ),
     );
     // Last resort: an in-memory-only store so commands that don't
     // touch persistent state still work in this session.
     return new Conf<CliConfig>({
-      projectName: "devops-cli",
-      cwd: process.env.DEVOPS_CLI_CONF_DIR,
+      projectName: "hatchkit",
+      cwd: process.env.HATCHKIT_CONF_DIR,
       defaults: STORE_DEFAULTS,
       // `fileExtension: "json"` + a throwaway fallback file name so
       // Conf writes next to (not over) the broken original.

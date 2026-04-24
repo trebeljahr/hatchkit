@@ -471,7 +471,7 @@ async function selectExistingServer(): Promise<CoolifyServer> {
   const coolifyConfig = await getCoolifyConfig();
 
   if (!coolifyConfig?.url || !coolifyConfig?.token) {
-    throw new Error("Coolify is not configured. Run devops-cli init first.");
+    throw new Error("Coolify is not configured. Run hatchkit init first.");
   }
 
   // Use cached server list if available, otherwise fetch live

@@ -24,7 +24,7 @@ export async function provisionOpenpanelClient(clientName: string): Promise<Open
   const { url, organizationSlug, token } = cfg;
   if (!organizationSlug) {
     throw new Error(
-      "OpenPanel config is missing organization slug. Re-run `devops-cli config add openpanel`.",
+      "OpenPanel config is missing organization slug. Re-run `hatchkit config add openpanel`.",
     );
   }
 

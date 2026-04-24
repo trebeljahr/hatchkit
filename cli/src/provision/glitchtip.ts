@@ -21,7 +21,7 @@ export async function provisionGlitchtipClient(clientName: string): Promise<Glit
   const { url, organizationSlug, teamSlug, token } = cfg;
   if (!organizationSlug || !teamSlug) {
     throw new Error(
-      "GlitchTip config is missing organization/team slug. Re-run `devops-cli config add glitchtip`.",
+      "GlitchTip config is missing organization/team slug. Re-run `hatchkit config add glitchtip`.",
     );
   }
 

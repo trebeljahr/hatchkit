@@ -19,7 +19,7 @@
  *
  * None of the values (including the generated BETTER_AUTH_SECRET)
  * are ever logged. The private key is printed once via a deferred
- * hint pointing at `devops-cli keys show <project>`.
+ * hint pointing at `hatchkit keys show <project>`.
  */
 
 import { randomBytes } from "node:crypto";
@@ -192,8 +192,8 @@ export function printDotenvxSummary(result: DotenvxSeedResult, projectName: stri
     }
   }
   console.log(
-    chalk.yellow(`\n  dotenvx private key stored in macOS Keychain (devops-cli:${projectName}).`),
+    chalk.yellow(`\n  dotenvx private key stored in macOS Keychain (hatchkit:${projectName}).`),
   );
-  console.log(chalk.dim(`  Retrieve anytime:   devops-cli keys show ${projectName}`));
-  console.log(chalk.dim(`  Push to Coolify:    devops-cli keys push ${projectName}`));
+  console.log(chalk.dim(`  Retrieve anytime:   hatchkit keys show ${projectName}`));
+  console.log(chalk.dim(`  Push to Coolify:    hatchkit keys push ${projectName}`));
 }
