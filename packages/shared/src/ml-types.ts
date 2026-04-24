@@ -8,7 +8,11 @@ export type MlServiceName =
   | "background-removal"
   | "subtitles"
   | "image-recognition"
-  | "3d-extraction";
+  | "3d-extraction"
+  | "3d-sam-objects"
+  | "3d-sam-body"
+  | "3d-hunyuan"
+  | "3d-trellis";
 
 export type MlJobStatus = "pending" | "processing" | "complete" | "failed";
 
@@ -95,6 +99,50 @@ export type Model3dResult = {
 };
 
 // ---------------------------------------------------------------------------
+// SAM 3D Objects (Meta) — single image → textured 3D mesh
+// ---------------------------------------------------------------------------
+
+export const samObjectsInputSchema = z.object({
+  imageBase64: z.string(),
+  removeBg: z.boolean().default(true),
+});
+
+export type SamObjectsInput = z.infer<typeof samObjectsInputSchema>;
+
+// ---------------------------------------------------------------------------
+// SAM 3D Body (Meta) — single image → posed body mesh
+// ---------------------------------------------------------------------------
+
+export const samBodyInputSchema = z.object({
+  imageBase64: z.string(),
+});
+
+export type SamBodyInput = z.infer<typeof samBodyInputSchema>;
+
+// ---------------------------------------------------------------------------
+// Hunyuan3D (Tencent) — open-weight high-quality with PBR textures
+// ---------------------------------------------------------------------------
+
+export const hunyuan3dInputSchema = z.object({
+  imageBase64: z.string(),
+  removeBg: z.boolean().default(true),
+  withTexture: z.boolean().default(true),
+});
+
+export type Hunyuan3dInput = z.infer<typeof hunyuan3dInputSchema>;
+
+// ---------------------------------------------------------------------------
+// TRELLIS 2 (Microsoft) — sparse-voxel geometry with strong topology
+// ---------------------------------------------------------------------------
+
+export const trellis3dInputSchema = z.object({
+  imageBase64: z.string(),
+  removeBg: z.boolean().default(true),
+});
+
+export type Trellis3dInput = z.infer<typeof trellis3dInputSchema>;
+
+// ---------------------------------------------------------------------------
 // ML Service Config (available services)
 // ---------------------------------------------------------------------------
 
@@ -129,9 +177,37 @@ export const ML_SERVICES: MlServiceConfig[] = [
     maxFileSizeMb: 20,
   },
   {
+    name: "3d-sam-objects",
+    label: "SAM 3D Objects",
+    description: "Meta's SOTA single-image-to-3D for real product photos (textured mesh)",
+    acceptedTypes: ["image/jpeg", "image/png", "image/webp"],
+    maxFileSizeMb: 20,
+  },
+  {
+    name: "3d-sam-body",
+    label: "SAM 3D Body",
+    description: "Meta's posed-body reconstruction from a single image (apparel / try-on)",
+    acceptedTypes: ["image/jpeg", "image/png", "image/webp"],
+    maxFileSizeMb: 20,
+  },
+  {
+    name: "3d-hunyuan",
+    label: "Hunyuan3D",
+    description: "Tencent's open-weight model with up to 8K PBR textures",
+    acceptedTypes: ["image/jpeg", "image/png", "image/webp"],
+    maxFileSizeMb: 20,
+  },
+  {
+    name: "3d-trellis",
+    label: "TRELLIS 2",
+    description: "Microsoft's sparse-voxel 3D generation — strong topology, MIT-licensed",
+    acceptedTypes: ["image/jpeg", "image/png", "image/webp"],
+    maxFileSizeMb: 20,
+  },
+  {
     name: "3d-extraction",
-    label: "3D Model Extraction",
-    description: "Generate a 3D model from a single product photo",
+    label: "TripoSR (legacy)",
+    description: "Fast but lower quality. Kept for back-compat — prefer SAM 3D Objects.",
     acceptedTypes: ["image/jpeg", "image/png", "image/webp"],
     maxFileSizeMb: 20,
   },

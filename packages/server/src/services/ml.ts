@@ -140,7 +140,7 @@ export async function recognizeImage(
 }
 
 // ---------------------------------------------------------------------------
-// 3D Model Extraction
+// 3D Model Extraction (TripoSR — legacy)
 // ---------------------------------------------------------------------------
 
 export async function generate3dModel(
@@ -163,4 +163,94 @@ export async function generate3dModel(
   const glbUrl = await uploadResultToS3(glbBuffer, key, "model/gltf-binary");
 
   return { glbUrl, vertices };
+}
+
+// ---------------------------------------------------------------------------
+// Shared GLB pipeline — used by SAM 3D / Hunyuan3D / TRELLIS
+// ---------------------------------------------------------------------------
+
+async function callGlbEndpoint(
+  service: string,
+  imageBase64: string,
+  extraFields: Record<string, string> = {},
+  s3Prefix: string = "ml/3d-models",
+): Promise<{ glbUrl: string; vertices: number }> {
+  const imageBuffer = Buffer.from(imageBase64, "base64");
+  const formData = new FormData();
+  formData.append("file", new Blob([imageBuffer], { type: "image/png" }), "input.png");
+  for (const [k, v] of Object.entries(extraFields)) {
+    formData.append(k, v);
+  }
+
+  const res = await callMlEndpoint(service, formData);
+
+  const glbBuffer = Buffer.from(await res.arrayBuffer());
+  const vertices = parseInt(res.headers.get("X-Vertex-Count") || "0", 10);
+
+  const key = `${s3Prefix}/${randomUUID()}.glb`;
+  const glbUrl = await uploadResultToS3(glbBuffer, key, "model/gltf-binary");
+
+  return { glbUrl, vertices };
+}
+
+// ---------------------------------------------------------------------------
+// SAM 3D Objects (Meta)
+// ---------------------------------------------------------------------------
+
+export async function generate3dSamObjects(
+  imageBase64: string,
+  removeBg: boolean = true,
+): Promise<{ glbUrl: string; vertices: number }> {
+  return callGlbEndpoint(
+    "3d-sam-objects",
+    imageBase64,
+    { remove_bg: String(removeBg) },
+    "ml/sam-objects",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SAM 3D Body (Meta)
+// ---------------------------------------------------------------------------
+
+export async function generate3dSamBody(
+  imageBase64: string,
+): Promise<{ glbUrl: string; vertices: number }> {
+  return callGlbEndpoint("3d-sam-body", imageBase64, {}, "ml/sam-body");
+}
+
+// ---------------------------------------------------------------------------
+// Hunyuan3D (Tencent)
+// ---------------------------------------------------------------------------
+
+export async function generate3dHunyuan(
+  imageBase64: string,
+  removeBg: boolean = true,
+  withTexture: boolean = true,
+): Promise<{ glbUrl: string; vertices: number }> {
+  return callGlbEndpoint(
+    "3d-hunyuan",
+    imageBase64,
+    {
+      remove_bg: String(removeBg),
+      with_texture: String(withTexture),
+    },
+    "ml/hunyuan",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// TRELLIS 2 (Microsoft)
+// ---------------------------------------------------------------------------
+
+export async function generate3dTrellis(
+  imageBase64: string,
+  removeBg: boolean = true,
+): Promise<{ glbUrl: string; vertices: number }> {
+  return callGlbEndpoint(
+    "3d-trellis",
+    imageBase64,
+    { remove_bg: String(removeBg) },
+    "ml/trellis",
+  );
 }
