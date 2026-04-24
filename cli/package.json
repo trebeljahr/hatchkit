@@ -1,10 +1,10 @@
 {
   "name": "hatchkit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Interactive CLI for scaffolding full-stack projects and provisioning observability/email clients",
   "type": "module",
   "bin": {
-    "hatchkit": "./dist/index.js"
+    "hatchkit": "dist/index.js"
   },
   "files": [
     "dist",
