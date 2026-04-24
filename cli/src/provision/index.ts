@@ -11,13 +11,19 @@
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { select } from "@inquirer/prompts";
+import { input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { getConfigPath } from "../config.js";
 import { validateProjectName } from "../utils/validate.js";
 import { type GlitchtipClient, provisionGlitchtipClient } from "./glitchtip.js";
 import { type OpenpanelClient, provisionOpenpanelClient } from "./openpanel.js";
-import { type ResendClient, listResendDomains, provisionResendClient } from "./resend.js";
+import {
+  createResendDomain,
+  listResendDomains,
+  normalizeDomainInput,
+  provisionResendClient,
+  type ResendClient,
+} from "./resend.js";
 
 export type ProvisionService = "glitchtip" | "openpanel" | "resend";
 
@@ -40,24 +46,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   // Resend domain: pick once, reused across dev + prod.
   let resendDomainId = opts.resendDomainId;
   if (opts.services.includes("resend") && !resendDomainId) {
-    const domains = await listResendDomains();
-    const verified = domains.filter((d) => d.status === "verified");
-    if (verified.length === 0) {
-      console.log(
-        chalk.yellow(
-          "  No verified Resend domains found — API keys will be created without a domain restriction (account-wide).",
-        ),
-      );
-    } else {
-      const picked = await select({
-        message: "Resend sending domain (both keys will be scoped to it):",
-        choices: [
-          ...verified.map((d) => ({ name: d.name, value: d.id })),
-          { name: "— no domain restriction (account-wide) —", value: "" },
-        ],
-      });
-      if (picked) resendDomainId = picked;
-    }
+    resendDomainId = await pickResendDomain();
   }
 
   const sections: EnvSection[] = [];
@@ -120,6 +109,58 @@ async function withSpinner<T>(label: string, fn: () => Promise<T>): Promise<T> {
     spinner.fail(label);
     throw err;
   }
+}
+
+async function pickResendDomain(): Promise<string | undefined> {
+  const domains = await listResendDomains();
+  const sorted = [...domains].sort((a, b) => {
+    const av = a.status === "verified" ? 0 : 1;
+    const bv = b.status === "verified" ? 0 : 1;
+    return av - bv || a.name.localeCompare(b.name);
+  });
+
+  const ADD_NEW = "__add_new__";
+  const NONE = "";
+
+  const choices = [
+    ...sorted.map((d) => ({
+      name: d.status === "verified" ? d.name : `${d.name}  ${chalk.dim(`(${d.status})`)}`,
+      value: d.id,
+    })),
+    { name: chalk.cyan("＋ Add a new sending domain…"), value: ADD_NEW },
+    { name: "— no domain restriction (account-wide) —", value: NONE },
+  ];
+
+  const picked = await select({
+    message: "Resend sending domain (both keys will be scoped to it):",
+    choices,
+  });
+
+  if (picked === NONE) return undefined;
+  if (picked !== ADD_NEW) return picked;
+
+  // Add-new flow.
+  const raw = await input({
+    message: "New sending domain (bare domain — e.g. playtiao.com or mail.playtiao.com):",
+    validate: (v) => {
+      const n = normalizeDomainInput(v);
+      if (!n) return "Enter a domain.";
+      if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(n)) {
+        return "That doesn't look like a valid domain.";
+      }
+      return true;
+    },
+  });
+  const name = normalizeDomainInput(raw);
+  const created = await withSpinner(`Resend: creating domain ${name}`, () =>
+    createResendDomain(name),
+  );
+  console.log(
+    chalk.yellow(
+      `  ${created.name} created (status: ${created.status}). Add the DNS records in the Resend dashboard before sending — https://resend.com/domains/${created.id}`,
+    ),
+  );
+  return created.id;
 }
 
 function renderGlitchtipEnv(c: GlitchtipClient): string[] {

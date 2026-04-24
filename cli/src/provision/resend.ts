@@ -45,7 +45,7 @@ export async function provisionResendClient(
   return { keyName: clientName, apiKey: data.token, domainId, raw: data.token };
 }
 
-/** List verified Resend domains so the caller can pick one. */
+/** List Resend domains so the caller can pick one. */
 export async function listResendDomains(): Promise<
   Array<{ id: string; name: string; status: string }>
 > {
@@ -56,4 +56,36 @@ export async function listResendDomains(): Promise<
   if (!res.ok) throw new Error(`Resend list domains failed: HTTP ${res.status}`);
   const body = (await res.json()) as { data: Array<{ id: string; name: string; status: string }> };
   return body.data ?? [];
+}
+
+/** Create a new Resend sending domain. `name` must be a bare domain
+ *  (no scheme, no path) — e.g. "playtiao.com" or "mail.playtiao.com".
+ *  Newly created domains start unverified; DNS records must be added
+ *  before keys scoped to it can send. */
+export async function createResendDomain(
+  name: string,
+): Promise<{ id: string; name: string; status: string }> {
+  const cfg = await ensureResend();
+  const res = await fetch("https://api.resend.com/domains", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${cfg.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    throw new Error(`Resend create domain failed: HTTP ${res.status} ${await res.text()}`);
+  }
+  const data = (await res.json()) as { id: string; name: string; status?: string };
+  return { id: data.id, name: data.name, status: data.status ?? "not_started" };
+}
+
+/** Normalize user-pasted domain input: strip scheme, path, whitespace. */
+export function normalizeDomainInput(raw: string): string {
+  let s = raw.trim().toLowerCase();
+  s = s.replace(/^https?:\/\//, "");
+  s = s.replace(/\/.*$/, "");
+  s = s.replace(/^www\./, "");
+  return s;
 }
