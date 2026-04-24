@@ -1,0 +1,79 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build",
+      "type": "shell",
+      "command": "pnpm build",
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "dev",
+      "type": "shell",
+      "command": "pnpm dev",
+      "problemMatcher": [],
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "start",
+      "type": "shell",
+      "command": "pnpm start",
+      "problemMatcher": [],
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "create",
+      "type": "shell",
+      "command": "pnpm create",
+      "problemMatcher": []
+    },
+    {
+      "label": "typecheck",
+      "type": "shell",
+      "command": "pnpm typecheck",
+      "problemMatcher": []
+    },
+    {
+      "label": "install-local",
+      "type": "shell",
+      "command": "pnpm install-local",
+      "problemMatcher": []
+    },
+    {
+      "label": "release",
+      "type": "shell",
+      "command": "pnpm release",
+      "problemMatcher": []
+    },
+    {
+      "label": "release:patch",
+      "type": "shell",
+      "command": "pnpm release:patch",
+      "problemMatcher": []
+    },
+    {
+      "label": "release:minor",
+      "type": "shell",
+      "command": "pnpm release:minor",
+      "problemMatcher": []
+    },
+    {
+      "label": "release:major",
+      "type": "shell",
+      "command": "pnpm release:major",
+      "problemMatcher": []
+    }
+  ]
+}
