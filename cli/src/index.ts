@@ -5,18 +5,14 @@ import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
 import {
   ensureCoolify,
-  ensureDns,
   ensureGitHub,
-  ensureGlitchtip,
-  ensureGpuProvider,
   ensureHetzner,
-  ensureOpenpanel,
-  ensureResend,
   ensureS3,
   getConfig,
   getConfigPath,
   getMlServices,
   isFirstRun,
+  reconfigureProvider,
   resetConfig,
   runOnboarding,
 } from "./config.js";
@@ -469,22 +465,12 @@ async function handleConfig(): Promise<void> {
 
       switch (provider) {
         case "coolify":
-          await ensureCoolify();
-          break;
         case "hetzner":
-          await ensureHetzner();
-          break;
         case "dns":
-          await ensureDns();
-          break;
         case "glitchtip":
-          await ensureGlitchtip();
-          break;
         case "openpanel":
-          await ensureOpenpanel();
-          break;
         case "resend":
-          await ensureResend();
+          await reconfigureProvider(provider);
           break;
         case "s3": {
           const { select } = await import("@inquirer/prompts");
@@ -496,7 +482,7 @@ async function handleConfig(): Promise<void> {
               { name: "R2", value: "r2" as const },
             ],
           });
-          await ensureS3(p);
+          await reconfigureProvider(`s3.${p}`);
           break;
         }
         default:
@@ -509,7 +495,7 @@ async function handleConfig(): Promise<void> {
             );
             return;
           }
-          await ensureGpuProvider(provider);
+          await reconfigureProvider(`gpu.${provider}`);
       }
       break;
     }

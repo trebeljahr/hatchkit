@@ -916,6 +916,58 @@ async function wipeProvider(storeKey: string, secretKeys: string[]): Promise<voi
   for (const k of secretKeys) await deleteSecret(k);
 }
 
+type ReconfigurableProvider =
+  | "coolify"
+  | "hetzner"
+  | "dns"
+  | "glitchtip"
+  | "openpanel"
+  | "resend"
+  | `s3.${"hetzner" | "aws" | "r2"}`
+  | `gpu.${"modal" | "runpod" | "hf" | "replicate"}`;
+
+/** Wipe + re-prompt for a single provider. Shared by the stepper and by
+ *  `hatchkit config add <provider>` so both paths always re-prompt rather
+ *  than silently no-op on already-configured providers. */
+export async function reconfigureProvider(name: ReconfigurableProvider): Promise<void> {
+  if (name === "coolify") {
+    await wipeProvider("providers.coolify", [SECRET_KEYS.coolifyToken]);
+    await ensureCoolify();
+  } else if (name === "hetzner") {
+    await wipeProvider("providers.hetzner", [SECRET_KEYS.hetznerToken]);
+    await ensureHetzner();
+  } else if (name === "dns") {
+    await wipeProvider("providers.dns", [
+      SECRET_KEYS.dnsInwxPassword,
+      SECRET_KEYS.dnsCloudflareToken,
+    ]);
+    await ensureDns();
+  } else if (name === "glitchtip") {
+    await wipeProvider("providers.glitchtip", [SECRET_KEYS.glitchtipToken]);
+    await ensureGlitchtip();
+  } else if (name === "openpanel") {
+    await wipeProvider("providers.openpanel", [
+      SECRET_KEYS.openpanelRootClientId,
+      SECRET_KEYS.openpanelRootClientSecret,
+    ]);
+    await ensureOpenpanel();
+  } else if (name === "resend") {
+    await wipeProvider("providers.resend", [SECRET_KEYS.resendApiKey]);
+    await ensureResend();
+  } else if (name.startsWith("s3.")) {
+    const p = name.slice(3) as "hetzner" | "aws" | "r2";
+    await wipeProvider(`providers.s3.${p}`, [
+      SECRET_KEYS.s3AccessKey(p),
+      SECRET_KEYS.s3SecretKey(p),
+    ]);
+    await ensureS3(p);
+  } else if (name.startsWith("gpu.")) {
+    const p = name.slice(4) as "modal" | "runpod" | "hf" | "replicate";
+    await wipeProvider(`providers.gpu.${p}`, [SECRET_KEYS.gpuApiKey(p)]);
+    await ensureGpuProvider(p);
+  }
+}
+
 interface SetupGroup {
   title: string;
   steps: SetupStep[];
@@ -945,10 +997,7 @@ function buildSetupGroups(): SetupGroup[] {
             const m = store.get("providers.coolify") as CoolifyMeta | undefined;
             return { configured: m?.status === "configured", summary: m?.url };
           },
-          run: async () => {
-            await wipeProvider("providers.coolify", [SECRET_KEYS.coolifyToken]);
-            await ensureCoolify();
-          },
+          run: () => reconfigureProvider("coolify"),
         },
       ],
     },
@@ -962,10 +1011,7 @@ function buildSetupGroups(): SetupGroup[] {
             const m = store.get("providers.hetzner") as HetznerMeta | undefined;
             return { configured: m?.status === "configured" };
           },
-          run: async () => {
-            await wipeProvider("providers.hetzner", [SECRET_KEYS.hetznerToken]);
-            await ensureHetzner();
-          },
+          run: () => reconfigureProvider("hetzner"),
         },
         {
           key: "dns",
@@ -977,13 +1023,7 @@ function buildSetupGroups(): SetupGroup[] {
               summary: m?.provider && m.provider !== "manual" ? m.provider : undefined,
             };
           },
-          run: async () => {
-            await wipeProvider("providers.dns", [
-              SECRET_KEYS.dnsInwxPassword,
-              SECRET_KEYS.dnsCloudflareToken,
-            ]);
-            await ensureDns();
-          },
+          run: () => reconfigureProvider("dns"),
         },
       ],
     },
@@ -996,13 +1036,7 @@ function buildSetupGroups(): SetupGroup[] {
           const m = store.get(`providers.s3.${p}`) as S3ProviderMeta | undefined;
           return { configured: m?.status === "configured", summary: m?.endpoint };
         },
-        run: async () => {
-          await wipeProvider(`providers.s3.${p}`, [
-            SECRET_KEYS.s3AccessKey(p),
-            SECRET_KEYS.s3SecretKey(p),
-          ]);
-          await ensureS3(p);
-        },
+        run: () => reconfigureProvider(`s3.${p}`),
       })),
     },
     {
@@ -1015,10 +1049,7 @@ function buildSetupGroups(): SetupGroup[] {
             const m = store.get("providers.glitchtip") as GlitchtipMeta | undefined;
             return { configured: m?.status === "configured", summary: m?.url };
           },
-          run: async () => {
-            await wipeProvider("providers.glitchtip", [SECRET_KEYS.glitchtipToken]);
-            await ensureGlitchtip();
-          },
+          run: () => reconfigureProvider("glitchtip"),
         },
         {
           key: "openpanel",
@@ -1027,13 +1058,7 @@ function buildSetupGroups(): SetupGroup[] {
             const m = store.get("providers.openpanel") as OpenpanelMeta | undefined;
             return { configured: m?.status === "configured", summary: m?.url };
           },
-          run: async () => {
-            await wipeProvider("providers.openpanel", [
-              SECRET_KEYS.openpanelRootClientId,
-              SECRET_KEYS.openpanelRootClientSecret,
-            ]);
-            await ensureOpenpanel();
-          },
+          run: () => reconfigureProvider("openpanel"),
         },
         {
           key: "resend",
@@ -1042,10 +1067,7 @@ function buildSetupGroups(): SetupGroup[] {
             const m = store.get("providers.resend") as ResendMeta | undefined;
             return { configured: m?.status === "configured" };
           },
-          run: async () => {
-            await wipeProvider("providers.resend", [SECRET_KEYS.resendApiKey]);
-            await ensureResend();
-          },
+          run: () => reconfigureProvider("resend"),
         },
       ],
     },
@@ -1065,10 +1087,7 @@ function buildSetupGroups(): SetupGroup[] {
           const m = store.get(`providers.gpu.${p.key}`) as GpuProviderMeta | undefined;
           return { configured: m?.status === "configured" };
         },
-        run: async () => {
-          await wipeProvider(`providers.gpu.${p.key}`, [SECRET_KEYS.gpuApiKey(p.key)]);
-          await ensureGpuProvider(p.key);
-        },
+        run: () => reconfigureProvider(`gpu.${p.key}`),
       })),
     },
   ];
