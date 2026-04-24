@@ -128,6 +128,12 @@ async function main(): Promise<void> {
       if (args.includes("--help")) return printHelp("remove");
       await handleRemove();
       break;
+    case "rename-domain": {
+      if (args.includes("--help")) return printHelp("rename-domain");
+      const { runRenameDomainCli } = await import("./deploy/rename-domain.js");
+      await runRenameDomainCli(args.slice(1), MONOREPO_ROOT);
+      break;
+    }
     case "doctor": {
       if (args.includes("--help")) return printHelp("doctor");
       const { runDoctor } = await import("./doctor.js");
@@ -777,6 +783,7 @@ type HelpTopic =
   | "keys"
   | "add"
   | "remove"
+  | "rename-domain"
   | "doctor"
   | "status"
   | "explain"
@@ -1016,6 +1023,41 @@ function printHelp(topic?: HelpTopic): void {
 `);
     return;
   }
+  if (topic === "rename-domain") {
+    console.log(`
+  ${chalk.bold("hatchkit rename-domain")} — move a project to a new domain
+
+  ${chalk.bold("Usage:")}
+    cd <project-dir> && hatchkit rename-domain --to <new-domain>
+    hatchkit rename-domain --dir <project-dir> --to <new-domain> --dry-run
+
+  ${chalk.bold("What it rewrites:")}
+    ${chalk.cyan(".hatchkit.json")}                                (manifest domain)
+    ${chalk.cyan("infra/terraform/stacks/<stack>/<name>.tfvars")}  (domain + subdomain keys)
+    ${chalk.cyan("infra/stacks/<name>.env")}                       (APP_DOMAIN +
+                                                     any line that mentions the
+                                                     old full domain; skips
+                                                     COOLIFY_URL)
+
+  ${chalk.bold("What it does NOT touch (you run these manually):")}
+    - ${chalk.dim("terraform apply")} — review the plan before destroying old records.
+    - Coolify app FQDN + redeploy — UI or API. New TLS cert: 1-3 min.
+    - ${chalk.dim("hatchkit dns link-to-cloudflare")} if NS flip is needed.
+    - OAuth redirect URIs, Stripe webhooks, app-code references.
+
+  ${chalk.bold("Options:")}
+    --to <domain>   Target domain (prompted if omitted).
+    --dir <path>    Project dir (defaults to cwd).
+    --dry-run       Show the plan; don't write.
+    --yes, -y       Skip the confirmation prompt.
+
+  ${chalk.bold("Example:")}
+    cd ~/src/my-project
+    hatchkit rename-domain --to my-project.com --dry-run
+    hatchkit rename-domain --to my-project.com
+`);
+    return;
+  }
   if (topic === "config") {
     console.log(`
   ${chalk.bold("hatchkit config")} — manage provider credentials
@@ -1083,6 +1125,7 @@ function printHelp(topic?: HelpTopic): void {
     update          Add features to an already-scaffolded project (run in project dir)
     add             Create GlitchTip / OpenPanel / Resend clients for an existing project
     remove          Delete the -dev/-prod clients created by 'add' (inverse of add)
+    rename-domain   Move a scaffolded project to a new domain (rewrites tfvars/env/manifest)
     gh-pages        Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
     dns             DNS reconciliation helpers (link-to-cloudflare, …)
     keys show <p>   Print the dotenvx private key for a project
