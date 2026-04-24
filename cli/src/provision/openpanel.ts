@@ -20,22 +20,30 @@ export interface OpenpanelClient {
 
 export async function provisionOpenpanelClient(clientName: string): Promise<OpenpanelClient> {
   const cfg = await ensureOpenpanel();
-  const { url, organizationSlug, rootClientId, rootClientSecret } = cfg;
+  const { url, apiUrl, organizationSlug, rootClientId, rootClientSecret } = cfg;
   if (!organizationSlug) {
     throw new Error(
       "OpenPanel config is missing organization slug. Re-run `hatchkit config add openpanel`.",
     );
   }
+  // Paths under OpenPanel's Management API live at `/manage/*` on a
+  // dedicated API host (cloud: api.openpanel.dev; self-hosted: typically
+  // api.<dashboard-host>). Fall back to the dashboard URL if apiUrl is
+  // missing — pre-existing configs won't have it set.
+  const manageBase = `${(apiUrl ?? url).replace(/\/$/, "")}/manage`;
 
   // Reuse a previously-provisioned client so re-runs don't mint duplicates.
   const cachedSecret = await getSecret(SECRET_KEYS.openpanelClientSecret(clientName));
   const cachedIdKey = SECRET_KEYS.openpanelClientSecret(`${clientName}:id`);
   const cachedId = await getSecret(cachedIdKey);
   if (cachedSecret && cachedId) {
-    return { projectName: clientName, clientId: cachedId, clientSecret: cachedSecret, apiUrl: url };
+    return {
+      projectName: clientName,
+      clientId: cachedId,
+      clientSecret: cachedSecret,
+      apiUrl: manageBase,
+    };
   }
-
-  const manageBase = `${url}/api/manage`;
   const headers = {
     "openpanel-client-id": rootClientId,
     "openpanel-client-secret": rootClientSecret,
@@ -97,7 +105,7 @@ export async function provisionOpenpanelClient(clientName: string): Promise<Open
 
   await setSecret(SECRET_KEYS.openpanelClientSecret(clientName), clientSecret);
   await setSecret(cachedIdKey, clientId);
-  return { projectName: clientName, clientId, clientSecret, apiUrl: url };
+  return { projectName: clientName, clientId, clientSecret, apiUrl: manageBase };
 }
 
 export type DeleteResult = "deleted" | "not-found";
@@ -114,12 +122,12 @@ export type DeleteResult = "deleted" | "not-found";
  */
 export async function deleteOpenpanelClient(clientName: string): Promise<DeleteResult> {
   const cfg = await ensureOpenpanel();
-  const { url, rootClientId, rootClientSecret } = cfg;
+  const { url, apiUrl, rootClientId, rootClientSecret } = cfg;
 
   const cachedIdKey = SECRET_KEYS.openpanelClientSecret(`${clientName}:id`);
   const cachedId = await getSecret(cachedIdKey);
 
-  const manageBase = `${url}/api/manage`;
+  const manageBase = `${(apiUrl ?? url).replace(/\/$/, "")}/manage`;
   const headers = {
     "openpanel-client-id": rootClientId,
     "openpanel-client-secret": rootClientSecret,

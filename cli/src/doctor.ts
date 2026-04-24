@@ -298,10 +298,11 @@ async function checkGlitchtip(): Promise<CheckResult> {
 async function checkOpenpanel(): Promise<CheckResult> {
   const cfg = await getOpenpanelConfig();
   if (!cfg) return { name: "OpenPanel", status: "skip" };
+  const manageBase = `${(cfg.apiUrl ?? cfg.url).replace(/\/$/, "")}/manage`;
   return check(
     "OpenPanel",
     async () => {
-      const res = await fetch(`${cfg.url}/api/manage/projects`, {
+      const res = await fetch(`${manageBase}/projects`, {
         headers: {
           "openpanel-client-id": cfg.rootClientId,
           "openpanel-client-secret": cfg.rootClientSecret,
@@ -316,6 +317,14 @@ async function checkOpenpanel(): Promise<CheckResult> {
         return [
           "Root client credentials rejected — may have been rotated or lack `write` access.",
           "Re-run: `hatchkit config add openpanel` and paste the root client id/secret.",
+        ];
+      }
+      if (/Only HTML requests|<html/i.test(detail) || code === 404) {
+        return [
+          `Management API base URL looks wrong — response isn't JSON.`,
+          `Current: ${manageBase}`,
+          "Self-hosted OpenPanel puts the API on a separate subdomain (typically `api.<dashboard>`).",
+          "Re-run: `hatchkit config add openpanel` and set the API URL explicitly.",
         ];
       }
       return undefined;

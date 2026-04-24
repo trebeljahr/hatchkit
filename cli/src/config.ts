@@ -103,7 +103,13 @@ export interface GlitchtipMeta extends ProviderStatus {
 }
 
 export interface OpenpanelMeta extends ProviderStatus {
+  /** Dashboard URL (where the user logs in / manages projects). */
   url: string;
+  /** Management API URL — typically a separate subdomain in self-hosted
+   *  setups (e.g. `https://api.op.example.com`). Falls back to
+   *  `https://api.openpanel.dev` for cloud. Paths under this base are
+   *  `/manage/projects`, `/manage/clients`, etc. */
+  apiUrl?: string;
   /** Default organization slug, used as the "project group" when
    *  creating a new project/client via the dashboard. */
   organizationSlug?: string;
@@ -826,18 +832,45 @@ export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
   const existingId = await getSecret(SECRET_KEYS.openpanelRootClientId);
   const existingSecret = await getSecret(SECRET_KEYS.openpanelRootClientSecret);
 
-  if (existing?.status === "configured" && existingId && existingSecret) {
+  // Short-circuit only if *every* field is present. `apiUrl` was added
+  // after 0.1.x — configs written by earlier versions lack it, which is
+  // why a previously-"configured" setup now hits the dashboard URL
+  // instead of the API host. Fall through to the prompt flow so we can
+  // top it up without losing the rest of the config.
+  if (existing?.status === "configured" && existing.apiUrl && existingId && existingSecret) {
     return { ...existing, rootClientId: existingId, rootClientSecret: existingSecret };
   }
 
-  console.log(chalk.yellow("\n  OpenPanel is not configured yet. Let's set it up."));
+  if (existing?.status === "configured" && !existing.apiUrl) {
+    console.log(
+      chalk.yellow(
+        "\n  OpenPanel config is missing the Management API URL — let's fill that in.",
+      ),
+    );
+  } else {
+    console.log(chalk.yellow("\n  OpenPanel is not configured yet. Let's set it up."));
+  }
   const url = (
     await input({
-      message: "OpenPanel base URL:",
+      message: "OpenPanel dashboard URL:",
       default: existing?.url ?? "https://analytics.trebeljahr.com",
       validate: (v) => validateUrl(v.trim()),
     })
   ).trim();
+  // Self-hosted OpenPanel exposes the Management API on a separate
+  // subdomain (e.g. `api.op.example.com`). Default by prepending `api.`
+  // to the dashboard host, which matches the docs' recommended layout.
+  const defaultApiUrl =
+    existing?.apiUrl ?? url.replace(/^https?:\/\//, (m) => `${m}api.`).replace(/\/$/, "");
+  const apiUrl = (
+    await input({
+      message: "OpenPanel API URL (Management API base — usually api.<dashboard>):",
+      default: defaultApiUrl,
+      validate: (v) => validateUrl(v.trim()),
+    })
+  )
+    .trim()
+    .replace(/\/$/, "");
   const organizationSlug = (
     await input({
       message: "OpenPanel organization slug:",
@@ -872,6 +905,7 @@ export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
   const meta: OpenpanelMeta = {
     status: "configured",
     url: url.replace(/\/$/, ""),
+    apiUrl,
     organizationSlug,
     lastVerified: new Date().toISOString(),
   };
@@ -1213,13 +1247,28 @@ export async function runOnboarding(): Promise<void> {
     console.log();
   }
 
-  // Summary
+  // Summary — show both what's configured and what's still missing so
+  // the user notices optional-but-important steps (GlitchTip / OpenPanel
+  // / Resend) they may have skipped.
   const configured = allSteps.filter((s) => s.status().configured);
+  const unconfigured = allSteps.filter((s) => !s.status().configured);
   console.log(chalk.bold("\n  ── Done ───────────────────────────────────────────────────\n"));
   if (configured.length === 0) {
     console.log(chalk.yellow("  Nothing configured yet. Run `hatchkit setup` again anytime.\n"));
   } else {
     console.log(chalk.green(`  ✓ Configured: ${configured.map((s) => s.label).join(", ")}`));
-    console.log(chalk.dim("  ✓ Run `hatchkit doctor` to verify all providers.\n"));
   }
+  if (unconfigured.length > 0) {
+    console.log(
+      chalk.dim(
+        `  · Still unconfigured: ${unconfigured.map((s) => s.label).join(", ")}`,
+      ),
+    );
+    console.log(
+      chalk.dim(
+        "    (optional — add later via `hatchkit setup` or `hatchkit config add <provider>`)",
+      ),
+    );
+  }
+  console.log(chalk.dim("\n  ✓ Run `hatchkit doctor` to verify every configured provider.\n"));
 }
