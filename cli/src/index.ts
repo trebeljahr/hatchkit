@@ -21,7 +21,7 @@ import { setupGitHub } from "./deploy/github.js";
 import { deployMlServices } from "./deploy/gpu.js";
 import { pushProjectKeyToCoolify, showProjectKey } from "./deploy/keys.js";
 import { runTerraform } from "./deploy/terraform.js";
-import { collectProjectConfig } from "./prompts.js";
+import { type GpuPlatform, collectProjectConfig } from "./prompts.js";
 import { type ProvisionService, runProvision, runUnprovision } from "./provision/index.js";
 import { scaffoldApp } from "./scaffold/app.js";
 import { scaffoldInfra } from "./scaffold/infra.js";
@@ -569,31 +569,45 @@ async function handleCreate(): Promise<void> {
   }
 
   // Step 7: Deploy ML services
-  if (config.runDeployment && deploy.length > 0 && config.gpuPlatform) {
+  if (
+    config.runDeployment &&
+    deploy.length > 0 &&
+    config.gpuPlatforms &&
+    config.gpuPlatforms.length > 0
+  ) {
     const endpoints = await deployMlServices(
       deploy,
-      config.gpuPlatform,
+      config.gpuPlatforms,
       SERVICES_ROOT,
       config.customHfModelId,
     );
 
     // Print env vars to set
     if (Object.keys(endpoints).length > 0) {
+      const { mlPlatformUrlEnv } = await import("./scaffold/ml-client.js");
+      const knownServices = [
+        "3d-extraction",
+        "subtitles",
+        "image-recognition",
+        "background-removal",
+        "custom-hf",
+      ] as const;
+      type KnownService = (typeof knownServices)[number];
+
       console.log(chalk.bold("\n  ML service endpoints (add to Coolify env):"));
-      for (const [service, endpoint] of Object.entries(endpoints)) {
-        // Service keys come from our own `deploy: MlService[]` so the
-        // cast is sound, but narrow via the literal-array check so a
-        // stray unknown slips don't silently format wrong.
-        const knownServices = [
-          "3d-extraction",
-          "subtitles",
-          "image-recognition",
-          "background-removal",
-          "custom-hf",
-        ] as const;
-        type KnownService = (typeof knownServices)[number];
-        if ((knownServices as readonly string[]).includes(service)) {
-          console.log(chalk.dim(`    ${mlEnvVarName(service as KnownService)}=${endpoint}`));
+      console.log(chalk.dim(`    ML_BACKEND=${config.gpuPlatforms[0]}`));
+      for (const [service, byPlatform] of Object.entries(endpoints)) {
+        if (!(knownServices as readonly string[]).includes(service)) continue;
+        const svc = service as KnownService;
+        // Per-platform URL — the runtime config picks one based on ML_BACKEND.
+        for (const [platform, url] of Object.entries(byPlatform)) {
+          if (!url) continue;
+          console.log(chalk.dim(`    ${mlPlatformUrlEnv(svc, platform as GpuPlatform)}=${url}`));
+        }
+        // Legacy ENDPOINT for back-compat — points at the default platform.
+        const defaultUrl = byPlatform[config.gpuPlatforms[0]];
+        if (defaultUrl) {
+          console.log(chalk.dim(`    ${mlEnvVarName(svc)}=${defaultUrl}`));
         }
       }
     }

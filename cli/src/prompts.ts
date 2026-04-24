@@ -56,7 +56,11 @@ export interface ProjectConfig {
    *  as a plaintext CHANGE_ME_<KEY> placeholder that the user can
    *  encrypt later with `dotenvx set`. */
   envValues?: Record<string, string>;
-  gpuPlatform?: GpuPlatform;
+  /** GPU platforms to deploy each ML service to. The first entry is
+   *  the default backend at runtime; switch by setting `ML_BACKEND` on
+   *  the deploy. Multi-select lets you side-by-side benchmark or fail
+   *  over between Modal / RunPod / HF / Replicate. */
+  gpuPlatforms?: GpuPlatform[];
   customHfModelId?: string;
   customHfGpuType?: string;
 
@@ -303,7 +307,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     [],
   );
 
-  let gpuPlatform: GpuPlatform | undefined;
+  let gpuPlatforms: GpuPlatform[] | undefined;
   let customHfModelId: string | undefined;
   let customHfGpuType: string | undefined;
 
@@ -333,23 +337,26 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
 
     const needsDeploy = mlServices.filter((s) => !registry[s] || forceRedeploy.has(s));
     if (needsDeploy.length > 0) {
-      gpuPlatform = await presetOrPrompt(
-        presets.gpuPlatform,
+      gpuPlatforms = await presetOrPrompt(
+        presets.gpuPlatforms,
         nonInteractive,
         () =>
-          select<GpuPlatform>({
-            message: "GPU platform for new ML services:",
+          checkbox<GpuPlatform>({
+            message:
+              "GPU platforms to deploy to (multi-select — first becomes default ML_BACKEND):",
             choices: [
               {
                 name: "Modal (recommended — best DX, $30/mo free, 2-4s cold starts)",
                 value: "modal",
+                checked: true,
               },
               { name: "RunPod Serverless (cheapest, Docker-native)", value: "runpod" },
               { name: "HuggingFace Inference Endpoints (simplest for HF models)", value: "hf" },
               { name: "Replicate (via Cog, good for sharing)", value: "replicate" },
             ],
+            required: true,
           }),
-        "modal",
+        ["modal"],
       );
     }
 
@@ -465,7 +472,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     s3ExistingRegion,
     mlServices,
     forceRedeployMl: [...forceRedeploy],
-    gpuPlatform,
+    gpuPlatforms,
     customHfModelId,
     customHfGpuType,
     scaffoldRepo,

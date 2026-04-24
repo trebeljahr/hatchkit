@@ -1,9 +1,29 @@
+/** Resolve an ML service endpoint by picking the URL for the active
+ *  backend. Falls back to `ML_<SERVICE>_ENDPOINT` (set by hatchkit's
+ *  deploy step to the default platform's URL) when no per-platform
+ *  URL is set for the chosen backend.
+ *
+ *  Switch backends by setting `ML_BACKEND` on the deploy:
+ *    ML_BACKEND=runpod    → reads ML_<SERVICE>_RUNPOD_URL
+ *    ML_BACKEND=modal     → reads ML_<SERVICE>_MODAL_URL
+ *  Defaults to whatever was first in `gpuPlatforms` at scaffold time
+ *  (captured in `ML_<SERVICE>_ENDPOINT`). */
+function mlEndpoint(service: string): string {
+  const backend = (process.env.ML_BACKEND || "").toUpperCase();
+  if (backend) {
+    const perPlatform = process.env[`ML_${service}_${backend}_URL`];
+    if (perPlatform) return perPlatform;
+  }
+  return process.env[`ML_${service}_ENDPOINT`] || "";
+}
+
 export const config = {
   PORT: parseInt(process.env.PORT || "3000", 10),
   FRONTEND_URL: process.env.FRONTEND_URL || "http://localhost:3000",
   MONGODB_URI: process.env.MONGODB_URI || "mongodb://localhost:27017/{{name}}",
   AUTH_SECRET: process.env.AUTH_SECRET || "change-me",
   AUTH_URL: process.env.AUTH_URL || "http://localhost:3000",
+  ML_BACKEND: process.env.ML_BACKEND || "",
 {{#if websocket}}
   REDIS_URL: process.env.REDIS_URL || "redis://localhost:6379",
 {{/if}}
@@ -22,15 +42,15 @@ export const config = {
   S3_REGION: process.env.S3_REGION || "us-east-1",
 {{/if}}
 {{#if has3d}}
-  ML_3D_EXTRACTION_ENDPOINT: process.env.ML_3D_EXTRACTION_ENDPOINT || "",
+  ML_3D_EXTRACTION_ENDPOINT: mlEndpoint("3D_EXTRACTION"),
 {{/if}}
 {{#if hasSubtitles}}
-  ML_SUBTITLES_ENDPOINT: process.env.ML_SUBTITLES_ENDPOINT || "",
+  ML_SUBTITLES_ENDPOINT: mlEndpoint("SUBTITLES"),
 {{/if}}
 {{#if hasImageRecognition}}
-  ML_IMAGE_RECOGNITION_ENDPOINT: process.env.ML_IMAGE_RECOGNITION_ENDPOINT || "",
+  ML_IMAGE_RECOGNITION_ENDPOINT: mlEndpoint("IMAGE_RECOGNITION"),
 {{/if}}
 {{#if hasBgRemoval}}
-  ML_BACKGROUND_REMOVAL_ENDPOINT: process.env.ML_BACKGROUND_REMOVAL_ENDPOINT || "",
+  ML_BACKGROUND_REMOVAL_ENDPOINT: mlEndpoint("BACKGROUND_REMOVAL"),
 {{/if}}
 } as const;

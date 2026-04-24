@@ -56,8 +56,10 @@ export interface ProjectManifest {
   /** Where the app deploys. `existing` vs `new` is public-safe; the
    *  actual serverId/IP is not in the manifest. */
   deployTarget: "existing" | "new";
-  /** GPU platform choice, if any ML services need deployment. */
-  gpuPlatform?: GpuPlatform;
+  /** GPU platforms each ML service was deployed to. First entry is
+   *  the runtime default (`ML_BACKEND`); change `ML_BACKEND` on the
+   *  deploy to flip which one serves traffic. */
+  gpuPlatforms?: GpuPlatform[];
   /** HF model ID for custom-hf, if selected. HF models are public. */
   customHfModelId?: string;
   /** GPU tier (T4/A10G/A100/H100) — public product names. */
@@ -85,7 +87,7 @@ export function toManifest(
     mlServices: [...config.mlServices],
     s3Provider: config.s3Provider,
     deployTarget: config.deployTarget,
-    gpuPlatform: config.gpuPlatform,
+    gpuPlatforms: config.gpuPlatforms,
     customHfModelId: config.customHfModelId,
     customHfGpuType: config.customHfGpuType,
     ports: {

@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { type MlServiceEntry, getMlServices } from "../config.js";
-import type { MlService, ProjectConfig } from "../prompts.js";
+import type { GpuPlatform, MlService, ProjectConfig } from "../prompts.js";
 
 /** Resolve ML services — reuse existing or mark for deployment.
  *  Services in config.forceRedeployMl bypass the registry and always
@@ -25,10 +25,21 @@ export async function resolveMlServices(config: ProjectConfig): Promise<{
   return { reuse, deploy };
 }
 
-/** Get the env var name for an ML service endpoint. */
+/** Get the env var name for an ML service's *active* endpoint — what
+ *  the runtime client reads after picking `ML_BACKEND`. Kept stable
+ *  for back-compat with starter code that already references
+ *  `ML_<SERVICE>_ENDPOINT`. */
 export function mlEnvVarName(service: MlService): string {
   const name = service.replace(/-/g, "_").toUpperCase();
   return `ML_${name}_ENDPOINT`;
+}
+
+/** Per-platform URL env (`ML_<SERVICE>_<PLATFORM>_URL`) — set by the
+ *  deploy step so the runtime can flip backends via `ML_BACKEND`
+ *  without redeploying the ML pipelines themselves. */
+export function mlPlatformUrlEnv(service: MlService, platform: GpuPlatform): string {
+  const svc = service.replace(/-/g, "_").toUpperCase();
+  return `ML_${svc}_${platform.toUpperCase()}_URL`;
 }
 
 /** Print ML service resolution summary. */

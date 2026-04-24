@@ -4,60 +4,85 @@ import { ensureGpuProvider, registerMlService } from "../config.js";
 import type { GpuPlatform, MlService } from "../prompts.js";
 import { exec } from "../utils/exec.js";
 
-/** Deploy ML services that don't exist in the registry. */
+/** Per-service map of platform → endpoint URL. The default runtime
+ *  backend is the first platform in the input array; `ML_BACKEND` on
+ *  the deployed app picks which URL gets used at request time. */
+export type MlEndpointMap = Record<string, Partial<Record<GpuPlatform, string>>>;
+
+/** Deploy each requested ML service to each requested GPU platform.
+ *  Failures on one platform don't block the others — multi-platform
+ *  setups are typically used to A/B or fail over, and partial coverage
+ *  is still useful. */
 export async function deployMlServices(
   services: MlService[],
-  platform: GpuPlatform,
+  platforms: GpuPlatform[],
   repoRoot: string,
   customHfModelId?: string,
-): Promise<Record<string, string>> {
-  if (services.length === 0) return {};
+): Promise<MlEndpointMap> {
+  if (services.length === 0 || platforms.length === 0) return {};
 
   console.log(chalk.bold("\n  ── ML Service Deployment ─────────────────────────────────\n"));
+  if (platforms.length > 1) {
+    console.log(
+      chalk.dim(
+        `  Deploying ${services.length} service(s) to ${platforms.length} platform(s): ${platforms.join(", ")}\n  Default backend: ${platforms[0]} (override at runtime with ML_BACKEND).\n`,
+      ),
+    );
+  }
 
-  // Ensure GPU provider is configured
-  await ensureGpuProvider(platform);
+  // Ensure every selected GPU provider is configured up front so a
+  // mid-deploy `ensure*` prompt can't deadlock under an active spinner.
+  for (const platform of platforms) {
+    await ensureGpuProvider(platform);
+  }
 
-  const endpoints: Record<string, string> = {};
+  const endpoints: MlEndpointMap = {};
 
   for (const service of services) {
-    const spinner = ora(`Deploying ${service} to ${platform}...`).start();
+    endpoints[service] = {};
+    for (const platform of platforms) {
+      const spinner = ora(`Deploying ${service} to ${platform}...`).start();
 
-    try {
-      let endpoint: string;
+      try {
+        let endpoint: string;
 
-      switch (platform) {
-        case "modal":
-          endpoint = await deployToModal(service, repoRoot, customHfModelId);
-          break;
-        case "runpod":
-          endpoint = await deployToRunpod(service, repoRoot, customHfModelId);
-          break;
-        case "hf":
-          endpoint = await deployToHf(service, customHfModelId);
-          break;
-        case "replicate":
-          endpoint = await deployToReplicate(service, repoRoot, customHfModelId);
-          break;
-        default:
-          throw new Error(`Unsupported GPU platform: ${platform}`);
+        switch (platform) {
+          case "modal":
+            endpoint = await deployToModal(service, repoRoot, customHfModelId);
+            break;
+          case "runpod":
+            endpoint = await deployToRunpod(service, repoRoot, customHfModelId);
+            break;
+          case "hf":
+            endpoint = await deployToHf(service, customHfModelId);
+            break;
+          case "replicate":
+            endpoint = await deployToReplicate(service, repoRoot, customHfModelId);
+            break;
+          default:
+            throw new Error(`Unsupported GPU platform: ${platform}`);
+        }
+
+        spinner.succeed(`${service} on ${platform}: ${endpoint}`);
+        endpoints[service][platform] = endpoint;
+
+        // Registry record: only the first (default) platform is stored
+        // under the bare service name to keep the legacy reuse path
+        // working. Additional platforms are tracked under
+        // "<service>@<platform>" so re-runs can reuse them too.
+        const isDefault = platform === platforms[0];
+        registerMlService(isDefault ? service : `${service}@${platform}`, {
+          platform,
+          endpoint,
+          deployedAt: new Date().toISOString().split("T")[0],
+          gpu: "A10G",
+          model: service === "custom-hf" ? customHfModelId || "custom" : service,
+        });
+      } catch (error) {
+        spinner.fail(`Failed to deploy ${service} to ${platform}`);
+        console.error(chalk.red(`  ${error}`));
+        // Continue with other platform/service combos.
       }
-
-      spinner.succeed(`${service} deployed: ${endpoint}`);
-      endpoints[service] = endpoint;
-
-      // Register in the shared service registry
-      registerMlService(service, {
-        platform,
-        endpoint,
-        deployedAt: new Date().toISOString().split("T")[0],
-        gpu: "A10G",
-        model: service === "custom-hf" ? customHfModelId || "custom" : service,
-      });
-    } catch (error) {
-      spinner.fail(`Failed to deploy ${service}`);
-      console.error(chalk.red(`  ${error}`));
-      // Continue with other services
     }
   }
 
