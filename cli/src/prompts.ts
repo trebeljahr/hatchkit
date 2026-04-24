@@ -1,4 +1,4 @@
-import { checkbox, confirm, input, select } from "@inquirer/prompts";
+import { Separator, checkbox, confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { getCoolifyConfig, getMlServices } from "./config.js";
 import { CoolifyApi, type CoolifyServer } from "./utils/coolify-api.js";
@@ -548,44 +548,159 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
 // Review-and-edit loop
 // ---------------------------------------------------------------------------
 
-/** Render a one-screen summary of every choice and let the user pick
- *  one to edit. Loops until they pick "Proceed" (or cancel via Ctrl-C
- *  / Esc — inquirer throws which the outer error handler logs). */
+/** Render the review-and-edit stepper for `hatchkit create`. Mirrors
+ *  the layout of `hatchkit setup`'s onboarding stepper: grouped
+ *  sections with ✓/· marks per step, a summary tail showing the
+ *  current value, and a "Proceed" item at the bottom that closes the
+ *  loop. Selecting any step re-runs only that section's prompt(s).
+ *
+ *  Loops until the user picks "Proceed" (or aborts via Ctrl-C, which
+ *  inquirer turns into an exception caught by the outer handler).  */
 async function reviewAndEditLoop(initial: ProjectConfig): Promise<ProjectConfig> {
   let cfg = initial;
-  for (;;) {
-    console.log(chalk.bold("\n  ── Review ────────────────────────────────────────────────\n"));
-    const lines = renderSummary(cfg);
-    for (const l of lines) console.log(l);
-    console.log();
 
-    type Action =
-      | "proceed"
-      | "name"
-      | "domain"
-      | "features"
-      | "deployTarget"
-      | "ml"
-      | "mongo"
-      | "scaffoldFlags";
-    const action = await select<Action>({
-      message: "Looks good?",
-      choices: [
-        { name: chalk.green("✓ Proceed — scaffold now"), value: "proceed" },
-        { name: "✏  Project name", value: "name" },
-        { name: "✏  Domain", value: "domain" },
-        { name: "✏  Features (websocket, stripe, analytics, s3, …)", value: "features" },
-        { name: "✏  Deploy target (existing / new Hetzner)", value: "deployTarget" },
-        { name: "✏  ML services + GPU platforms", value: "ml" },
-        { name: "✏  MongoDB strategy", value: "mongo" },
-        { name: "✏  Scaffold / GitHub / Deploy flags", value: "scaffoldFlags" },
-      ],
+  console.log(chalk.bold("\n  hatchkit create — review"));
+  console.log(
+    chalk.dim("  Pick any step to change a choice. Choose 'Proceed' to scaffold.\n"),
+  );
+
+  for (;;) {
+    const groups = buildCreateStepGroups(cfg);
+    const allSteps = groups.flatMap((g) => g.steps);
+
+    // Default the cursor to the first not-yet-set step so a fresh user
+    // can press Enter through the review without thinking. After every
+    // field has a real value, "Proceed" becomes the default.
+    const firstUnset = allSteps.find((s) => !s.set);
+    const defaultKey = firstUnset?.key ?? "__proceed__";
+
+    const choices: Array<Separator | { name: string; value: string }> = [];
+    for (const group of groups) {
+      choices.push(new Separator(renderCreateGroupHeader(group)));
+      for (const step of group.steps) {
+        choices.push({ name: renderCreateStepLabel(step), value: step.key });
+      }
+    }
+    choices.push(new Separator(" "));
+    choices.push({ name: chalk.bold(chalk.green("✓  Proceed — scaffold now")), value: "__proceed__" });
+
+    const picked = await select<string>({
+      message: "Next step:",
+      default: defaultKey,
+      pageSize: Math.min(30, choices.length),
+      choices,
     });
 
-    if (action === "proceed") return cfg;
-
-    cfg = await editSection(cfg, action);
+    if (picked === "__proceed__") return cfg;
+    cfg = await editSection(cfg, picked);
   }
+}
+
+interface CreateStep {
+  /** Stable id used as the select value. */
+  key: string;
+  /** Display label (left of the summary tail). */
+  label: string;
+  /** Has the user given this step an explicit value (vs. an unset
+   *  default we'd want to nudge them to confirm)? */
+  set: boolean;
+  /** Right-side tail showing the current value. */
+  summary: string;
+}
+
+interface CreateStepGroup {
+  title: string;
+  steps: CreateStep[];
+}
+
+function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
+  return [
+    {
+      title: "Project",
+      steps: [
+        { key: "name", label: "Project name", set: !!cfg.name, summary: cfg.name },
+        {
+          key: "domain",
+          label: "Domain",
+          set: !!cfg.domain,
+          summary: cfg.domain
+            ? `${cfg.domain}  ${chalk.dim("→")}  https://${cfg.domain}/api`
+            : "(unset)",
+        },
+      ],
+    },
+    {
+      title: "Deployment",
+      steps: [
+        {
+          key: "deployTarget",
+          label: "Deploy target",
+          set: cfg.deployTarget === "existing" ? !!cfg.serverIp : !!cfg.serverSize,
+          summary:
+            cfg.deployTarget === "existing"
+              ? `existing server (${cfg.serverIp ?? "?"})`
+              : `new Hetzner ${cfg.serverSize ?? "?"} (${cfg.serverLocation ?? "nbg1"})`,
+        },
+      ],
+    },
+    {
+      title: "Stack",
+      steps: [
+        {
+          key: "features",
+          label: "Features",
+          set: true, // an empty selection is a real choice
+          summary: cfg.features.length > 0 ? cfg.features.join(", ") : chalk.dim("none"),
+        },
+        {
+          key: "mongo",
+          label: "MongoDB",
+          set: !!cfg.mongodbProvider,
+          summary:
+            cfg.mongodbProvider === "coolify"
+              ? "Coolify container (auto-provisioned)"
+              : cfg.mongodbProvider === "external"
+                ? "external URI"
+                : "(unset)",
+        },
+      ],
+    },
+    {
+      title: "ML & GPU",
+      steps: [
+        {
+          key: "ml",
+          label: "ML services",
+          set: true,
+          summary:
+            cfg.mlServices.length > 0
+              ? `${cfg.mlServices.join(", ")}  ${chalk.dim(`→ ${(cfg.gpuPlatforms ?? ["modal"]).join(", ")}`)}`
+              : chalk.dim("none"),
+        },
+      ],
+    },
+    {
+      title: "Run",
+      steps: [
+        {
+          key: "scaffoldFlags",
+          label: "Scaffold / GitHub / Deploy",
+          set: true,
+          summary: `scaffold=${cfg.scaffoldRepo ? "yes" : "no"} · github=${cfg.createGithubRepo ? "yes" : "no"} · deploy=${cfg.runDeployment ? "yes" : "no"}`,
+        },
+      ],
+    },
+  ];
+}
+
+function renderCreateStepLabel(step: CreateStep): string {
+  const mark = step.set ? chalk.green("✓") : chalk.dim("·");
+  const tail = step.summary ? chalk.dim(` — ${step.summary}`) : "";
+  return `${mark}  ${step.label.padEnd(18)}${tail}`;
+}
+
+function renderCreateGroupHeader(group: CreateStepGroup): string {
+  return chalk.bold(`── ${group.title} ──`);
 }
 
 /** Per-section editors — re-run the relevant prompt(s) and return an
@@ -721,46 +836,6 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     return { ...cfg, scaffoldRepo, createGithubRepo, runDeployment };
   }
   return cfg;
-}
-
-/** Render the review-screen summary lines. Pure formatting — no
- *  side effects, easy to keep in sync with the editable sections. */
-function renderSummary(cfg: ProjectConfig): string[] {
-  const out: string[] = [];
-  const row = (k: string, v: string): string => `  ${chalk.bold(k.padEnd(14))} ${v}`;
-  out.push(row("Project", chalk.cyan(cfg.name)));
-  out.push(row("Domain", chalk.cyan(cfg.domain)));
-  out.push(
-    row(
-      "URLs",
-      chalk.dim(`https://${cfg.domain}  ${chalk.bold("·")}  https://${cfg.domain}/api`),
-    ),
-  );
-  out.push(
-    row(
-      "Deploy",
-      cfg.deployTarget === "existing"
-        ? `existing server (${cfg.serverIp})`
-        : `new Hetzner ${cfg.serverSize ?? "cpx21"}`,
-    ),
-  );
-  out.push(row("Features", cfg.features.length > 0 ? cfg.features.join(", ") : chalk.dim("none")));
-  out.push(
-    row(
-      "ML",
-      cfg.mlServices.length > 0
-        ? `${cfg.mlServices.join(", ")}  ${chalk.dim(`→ ${cfg.gpuPlatforms?.join(", ") ?? "modal"}`)}`
-        : chalk.dim("none"),
-    ),
-  );
-  out.push(row("MongoDB", cfg.mongodbProvider === "coolify" ? "Coolify container" : "external URI"));
-  out.push(
-    row(
-      "Flags",
-      `scaffold=${cfg.scaffoldRepo ? "yes" : "no"} · github=${cfg.createGithubRepo ? "yes" : "no"} · deploy=${cfg.runDeployment ? "yes" : "no"}`,
-    ),
-  );
-  return out;
 }
 
 // ---------------------------------------------------------------------------
