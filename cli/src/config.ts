@@ -843,9 +843,7 @@ export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
 
   if (existing?.status === "configured" && !existing.apiUrl) {
     console.log(
-      chalk.yellow(
-        "\n  OpenPanel config is missing the Management API URL — let's fill that in.",
-      ),
+      chalk.yellow("\n  OpenPanel config is missing the Management API URL — let's fill that in."),
     );
   } else {
     console.log(chalk.yellow("\n  OpenPanel is not configured yet. Let's set it up."));
@@ -1260,9 +1258,7 @@ export async function runOnboarding(): Promise<void> {
   }
   if (unconfigured.length > 0) {
     console.log(
-      chalk.dim(
-        `  · Still unconfigured: ${unconfigured.map((s) => s.label).join(", ")}`,
-      ),
+      chalk.dim(`  · Still unconfigured: ${unconfigured.map((s) => s.label).join(", ")}`),
     );
     console.log(
       chalk.dim(

@@ -252,20 +252,55 @@ async function handleAdd(): Promise<void> {
     services = requested as ProvisionService[];
   }
 
-  // Resolve write target from flags:
-  //   --no-write           → never write; print a cache-file summary only
-  //   --dir <path>         → write into <path> without prompting
-  //   (neither)            → prompt, defaulting to ./<baseName>
+  // Flag parsing:
+  //   --no-write                      → never write; print a cache summary only
+  //   --enable-dev-obs                → also populate .env.development with GlitchTip/OpenPanel creds
+  //   --surfaces=<shared|separate|server-only|client-only>
+  //   --server-dir <path>             → absolute or project-relative env dir for the server
+  //   --client-dir <path>             → same for the client
+  //   (no surface flags)              → prompt interactively
   const noWrite = args.includes("--no-write");
-  const dirIdx = args.indexOf("--dir");
-  const dirFlag = dirIdx >= 0 ? args[dirIdx + 1] : undefined;
-  const projectDir: string | false | undefined = noWrite
-    ? false
-    : dirFlag
-      ? dirFlag
-      : undefined;
+  const enableDevObs = args.includes("--enable-dev-obs");
+  const surfaceFlag = args.find((a) => a.startsWith("--surfaces="))?.slice("--surfaces=".length);
+  const serverDirIdx = args.indexOf("--server-dir");
+  const clientDirIdx = args.indexOf("--client-dir");
+  const serverDirFlag = serverDirIdx >= 0 ? args[serverDirIdx + 1] : undefined;
+  const clientDirFlag = clientDirIdx >= 0 ? args[clientDirIdx + 1] : undefined;
 
-  await runProvision({ baseName, services, projectDir });
+  const { resolve: resolvePath } = await import("node:path");
+  const validSurfaceModes = ["shared", "separate", "server-only", "client-only"] as const;
+  let surfaces: Parameters<typeof runProvision>[0]["surfaces"] = undefined;
+  if (noWrite) {
+    surfaces = false;
+  } else if (surfaceFlag || serverDirFlag || clientDirFlag) {
+    // Non-interactive surface config: require every field we need.
+    if (!surfaceFlag || !(validSurfaceModes as readonly string[]).includes(surfaceFlag)) {
+      console.log(
+        chalk.red(
+          `  --surfaces=<mode> is required when --server-dir/--client-dir is passed.\n  Valid: ${validSurfaceModes.join(", ")}`,
+        ),
+      );
+      process.exit(1);
+    }
+    const mode = surfaceFlag as (typeof validSurfaceModes)[number];
+    const needsServer = mode === "shared" || mode === "separate" || mode === "server-only";
+    const needsClient = mode === "shared" || mode === "separate" || mode === "client-only";
+    if (needsServer && !serverDirFlag) {
+      console.log(chalk.red("  --server-dir <path> is required for this --surfaces mode."));
+      process.exit(1);
+    }
+    if (needsClient && !clientDirFlag) {
+      console.log(chalk.red("  --client-dir <path> is required for this --surfaces mode."));
+      process.exit(1);
+    }
+    surfaces = {
+      mode,
+      serverEnvDir: needsServer ? resolvePath(serverDirFlag as string) : undefined,
+      clientEnvDir: needsClient ? resolvePath(clientDirFlag as string) : undefined,
+    };
+  }
+
+  await runProvision({ baseName, services, surfaces, enableDevObs });
 }
 
 async function handleRemove(): Promise<void> {
@@ -894,38 +929,54 @@ function printHelp(topic?: HelpTopic): void {
   }
   if (topic === "add") {
     console.log(`
-  ${chalk.bold("hatchkit add")} — create per-service clients for an existing project
+  ${chalk.bold("hatchkit add")} — provision per-project clients and write env files
 
   ${chalk.bold("Usage:")}
-    hatchkit add [<project-name>] [<services>] [--dir <path> | --no-write]
+    hatchkit add [<project-name>] [<services>] [flags]
 
   ${chalk.bold("What it does:")}
-    For every selected service, creates two clients:
-      - ${chalk.cyan("<project-name>-dev")}
-      - ${chalk.cyan("<project-name>-prod")}
-    …then writes the values straight into the project repo:
-      - ${chalk.cyan(".env.development")} — plain (gitignored)
-      - ${chalk.cyan(".env.production")}  — dotenvx-encrypted (commit-safe)
-    A 0600-permission cache copy is also saved under
-    ${chalk.dim("<config-dir>/provisioned/<project-name>.{dev,prod}.env")}.
+    · GlitchTip / OpenPanel: ${chalk.bold("one project per product")}, events tagged by
+      \`environment\` so dev / staging / prod share the same dashboard.
+      Written to ${chalk.cyan(".env.production")} only — dev noise pollutes real metrics.
+      Pass ${chalk.cyan("--enable-dev-obs")} to populate ${chalk.cyan(".env.development")} too.
+    · Resend: separate ${chalk.cyan("-dev")} and ${chalk.cyan("-prod")} API keys (audience
+      safety). Written to the server's dev + prod env respectively.
+    · ${chalk.cyan(".env.production")} is dotenvx-encrypted — commit-safe.
+      ${chalk.cyan(".env.development")} is plaintext — gitignored, not encrypted.
+    · A 0600 cache of every value is saved under
+      ${chalk.dim("<config-dir>/provisioned/<project>.*.env")} for recoverability.
+      ${chalk.dim("Secret values never hit stdout.")}
 
-    ${chalk.dim("Secret values never hit stdout — see the cached files or the")}
-    ${chalk.dim("written env files if you need to read them back.")}
+  ${chalk.bold("Surfaces:")}
+    hatchkit asks which surfaces your project has. Options:
+      · ${chalk.cyan("shared")}       — server + client, one obs project (recommended)
+      · ${chalk.cyan("server-only")}  — no browser bundle (API, CLI, worker)
+      · ${chalk.cyan("client-only")}  — static site / SPA with no backend
+      · ${chalk.cyan("separate")}     — server + client, one obs project per surface
+
+    Env for each surface is written to its own directory (e.g.
+    ${chalk.dim("packages/server/.env.production")}, ${chalk.dim("packages/client/.env.production")}).
 
   ${chalk.bold("Services:")}
-    glitchtip   Creates a GlitchTip project, returns GLITCHTIP_DSN
-    openpanel   Creates an OpenPanel project, returns OPENPANEL_CLIENT_ID/_SECRET
-    resend      Creates a restricted Resend API key, returns RESEND_API_KEY
+    glitchtip   GLITCHTIP_DSN (server) / PUBLIC_GLITCHTIP_DSN (client)
+    openpanel   OPENPANEL_* (server) / PUBLIC_OPENPANEL_* (client)
+    resend      RESEND_API_KEY (server only)
 
   ${chalk.bold("Flags:")}
-    --dir <path>  Write env into this project directory (skips the prompt).
-    --no-write    Don't write into any project — just save the 0600 cache.
+    --enable-dev-obs            Also populate .env.development with obs creds.
+    --no-write                  Skip writing; save 0600 cache only.
+    --surfaces=<mode>           shared | server-only | client-only | separate
+    --server-dir <path>         Server env directory (skips prompt when set).
+    --client-dir <path>         Client env directory (skips prompt when set).
 
   ${chalk.bold("Examples:")}
     hatchkit add
     hatchkit add raptor-runner
-    hatchkit add raptor-runner all --dir ../raptor-runner
+    hatchkit add raptor-runner all --enable-dev-obs
     hatchkit add raptor-runner glitchtip,resend --no-write
+    hatchkit add raptor-runner all --surfaces=shared \\
+        --server-dir ./raptor-runner/packages/server \\
+        --client-dir ./raptor-runner/packages/client
 `);
     return;
   }

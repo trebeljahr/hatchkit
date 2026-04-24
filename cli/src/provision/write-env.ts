@@ -49,7 +49,10 @@ export function parseEnvLines(lines: string[]): EnvPair[] {
  *  starter keeps them under `packages/server/`; other layouts (a
  *  hand-maintained project root, a monorepo not from the starter) are
  *  also accepted. */
-export function resolveEnvTarget(projectDir: string): { baseDir: string; layout: "starter" | "root" } {
+export function resolveEnvTarget(projectDir: string): {
+  baseDir: string;
+  layout: "starter" | "root";
+} {
   const starterDir = join(projectDir, "packages/server");
   if (existsSync(starterDir)) {
     return { baseDir: starterDir, layout: "starter" };

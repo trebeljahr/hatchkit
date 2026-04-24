@@ -3,10 +3,16 @@ import type { Express } from "express";
 import { config } from "../config.js";
 
 export function initSentry(app: Express): void {
+  // No DSN = no init. `hatchkit add` writes GLITCHTIP_DSN to
+  // .env.production by default; dev doesn't get one (dev error noise
+  // pollutes real metrics). Pass `--enable-dev-obs` to opt in.
   if (!config.GLITCHTIP_DSN) return;
 
   Sentry.init({
     dsn: config.GLITCHTIP_DSN,
+    // `environment` drives GlitchTip's UI filter. DEPLOY_ENV wins so
+    // staging deploys tag correctly even when NODE_ENV is "production".
+    environment: process.env.DEPLOY_ENV || process.env.NODE_ENV || "development",
     integrations: [
       Sentry.httpIntegration(),
       Sentry.expressIntegration({ app }),

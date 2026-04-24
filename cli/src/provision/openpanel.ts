@@ -30,8 +30,7 @@ export interface OpenpanelClient {
  *  — separate from the client id slot so we can target the right row. */
 const projectIdKey = (clientName: string) =>
   SECRET_KEYS.openpanelClientSecret(`${clientName}:project-id`);
-const clientIdKey = (clientName: string) =>
-  SECRET_KEYS.openpanelClientSecret(`${clientName}:id`);
+const clientIdKey = (clientName: string) => SECRET_KEYS.openpanelClientSecret(`${clientName}:id`);
 
 function buildHeaders(rootClientId: string, rootClientSecret: string): Record<string, string> {
   return {
