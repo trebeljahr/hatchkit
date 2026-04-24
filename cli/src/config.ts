@@ -1,4 +1,4 @@
-import { confirm, input, password, select } from "@inquirer/prompts";
+import { Separator, confirm, input, password, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import Conf from "conf";
 import ora from "ora";
@@ -916,155 +916,178 @@ async function wipeProvider(storeKey: string, secretKeys: string[]): Promise<voi
   for (const k of secretKeys) await deleteSecret(k);
 }
 
-function buildSetupSteps(): SetupStep[] {
-  const steps: SetupStep[] = [
-    {
-      key: "github",
-      label: "GitHub (gh CLI)",
-      status: () => {
-        const s = store.get("providers.github.status") as string | undefined;
-        return { configured: s === "configured" };
-      },
-      run: async () => {
-        store.set("providers.github.status", "unconfigured");
-        await ensureGitHub();
-      },
-    },
-    {
-      key: "coolify",
-      label: "Coolify",
-      status: () => {
-        const m = store.get("providers.coolify") as CoolifyMeta | undefined;
-        return { configured: m?.status === "configured", summary: m?.url };
-      },
-      run: async () => {
-        await wipeProvider("providers.coolify", [SECRET_KEYS.coolifyToken]);
-        await ensureCoolify();
-      },
-    },
-    {
-      key: "hetzner",
-      label: "Hetzner Cloud",
-      status: () => {
-        const m = store.get("providers.hetzner") as HetznerMeta | undefined;
-        return { configured: m?.status === "configured" };
-      },
-      run: async () => {
-        await wipeProvider("providers.hetzner", [SECRET_KEYS.hetznerToken]);
-        await ensureHetzner();
-      },
-    },
-    {
-      key: "dns",
-      label: "DNS",
-      status: () => {
-        const m = store.get("providers.dns") as DnsMeta | undefined;
-        return {
-          configured: m?.status === "configured",
-          summary: m?.provider && m.provider !== "manual" ? m.provider : undefined,
-        };
-      },
-      run: async () => {
-        await wipeProvider("providers.dns", [
-          SECRET_KEYS.dnsInwxPassword,
-          SECRET_KEYS.dnsCloudflareToken,
-        ]);
-        await ensureDns();
-      },
-    },
-  ];
-
-  for (const p of ["hetzner", "aws", "r2"] as const) {
-    steps.push({
-      key: `s3.${p}`,
-      label: `S3 — ${p === "hetzner" ? "Hetzner Object Storage" : p === "aws" ? "AWS S3" : "Cloudflare R2"}`,
-      status: () => {
-        const m = store.get(`providers.s3.${p}`) as S3ProviderMeta | undefined;
-        return { configured: m?.status === "configured", summary: m?.endpoint };
-      },
-      run: async () => {
-        await wipeProvider(`providers.s3.${p}`, [
-          SECRET_KEYS.s3AccessKey(p),
-          SECRET_KEYS.s3SecretKey(p),
-        ]);
-        await ensureS3(p);
-      },
-    });
-  }
-
-  steps.push(
-    {
-      key: "glitchtip",
-      label: "GlitchTip (error tracking)",
-      status: () => {
-        const m = store.get("providers.glitchtip") as GlitchtipMeta | undefined;
-        return { configured: m?.status === "configured", summary: m?.url };
-      },
-      run: async () => {
-        await wipeProvider("providers.glitchtip", [SECRET_KEYS.glitchtipToken]);
-        await ensureGlitchtip();
-      },
-    },
-    {
-      key: "openpanel",
-      label: "OpenPanel (product analytics)",
-      status: () => {
-        const m = store.get("providers.openpanel") as OpenpanelMeta | undefined;
-        return { configured: m?.status === "configured", summary: m?.url };
-      },
-      run: async () => {
-        await wipeProvider("providers.openpanel", [
-          SECRET_KEYS.openpanelRootClientId,
-          SECRET_KEYS.openpanelRootClientSecret,
-        ]);
-        await ensureOpenpanel();
-      },
-    },
-    {
-      key: "resend",
-      label: "Resend (transactional email)",
-      status: () => {
-        const m = store.get("providers.resend") as ResendMeta | undefined;
-        return { configured: m?.status === "configured" };
-      },
-      run: async () => {
-        await wipeProvider("providers.resend", [SECRET_KEYS.resendApiKey]);
-        await ensureResend();
-      },
-    },
-  );
-
-  for (const p of [
-    { key: "modal", name: "Modal" },
-    { key: "runpod", name: "RunPod" },
-    { key: "hf", name: "HuggingFace Inference" },
-    { key: "replicate", name: "Replicate" },
-  ] as const) {
-    steps.push({
-      key: `gpu.${p.key}`,
-      label: `GPU — ${p.name}`,
-      status: () => {
-        const m = store.get(`providers.gpu.${p.key}`) as GpuProviderMeta | undefined;
-        return { configured: m?.status === "configured" };
-      },
-      run: async () => {
-        await wipeProvider(`providers.gpu.${p.key}`, [SECRET_KEYS.gpuApiKey(p.key)]);
-        await ensureGpuProvider(p.key);
-      },
-    });
-  }
-
-  return steps;
+interface SetupGroup {
+  title: string;
+  steps: SetupStep[];
 }
 
-function renderStepLabel(step: SetupStep, index: number): string {
+function buildSetupGroups(): SetupGroup[] {
+  return [
+    {
+      title: "Core",
+      steps: [
+        {
+          key: "github",
+          label: "GitHub (gh CLI)",
+          status: () => {
+            const s = store.get("providers.github.status") as string | undefined;
+            return { configured: s === "configured" };
+          },
+          run: async () => {
+            store.set("providers.github.status", "unconfigured");
+            await ensureGitHub();
+          },
+        },
+        {
+          key: "coolify",
+          label: "Coolify",
+          status: () => {
+            const m = store.get("providers.coolify") as CoolifyMeta | undefined;
+            return { configured: m?.status === "configured", summary: m?.url };
+          },
+          run: async () => {
+            await wipeProvider("providers.coolify", [SECRET_KEYS.coolifyToken]);
+            await ensureCoolify();
+          },
+        },
+      ],
+    },
+    {
+      title: "Infrastructure",
+      steps: [
+        {
+          key: "hetzner",
+          label: "Hetzner Cloud",
+          status: () => {
+            const m = store.get("providers.hetzner") as HetznerMeta | undefined;
+            return { configured: m?.status === "configured" };
+          },
+          run: async () => {
+            await wipeProvider("providers.hetzner", [SECRET_KEYS.hetznerToken]);
+            await ensureHetzner();
+          },
+        },
+        {
+          key: "dns",
+          label: "DNS",
+          status: () => {
+            const m = store.get("providers.dns") as DnsMeta | undefined;
+            return {
+              configured: m?.status === "configured",
+              summary: m?.provider && m.provider !== "manual" ? m.provider : undefined,
+            };
+          },
+          run: async () => {
+            await wipeProvider("providers.dns", [
+              SECRET_KEYS.dnsInwxPassword,
+              SECRET_KEYS.dnsCloudflareToken,
+            ]);
+            await ensureDns();
+          },
+        },
+      ],
+    },
+    {
+      title: "S3 Storage",
+      steps: (["hetzner", "aws", "r2"] as const).map((p) => ({
+        key: `s3.${p}`,
+        label: p === "hetzner" ? "Hetzner Object Storage" : p === "aws" ? "AWS S3" : "Cloudflare R2",
+        status: () => {
+          const m = store.get(`providers.s3.${p}`) as S3ProviderMeta | undefined;
+          return { configured: m?.status === "configured", summary: m?.endpoint };
+        },
+        run: async () => {
+          await wipeProvider(`providers.s3.${p}`, [
+            SECRET_KEYS.s3AccessKey(p),
+            SECRET_KEYS.s3SecretKey(p),
+          ]);
+          await ensureS3(p);
+        },
+      })),
+    },
+    {
+      title: "Observability & Email",
+      steps: [
+        {
+          key: "glitchtip",
+          label: "GlitchTip (error tracking)",
+          status: () => {
+            const m = store.get("providers.glitchtip") as GlitchtipMeta | undefined;
+            return { configured: m?.status === "configured", summary: m?.url };
+          },
+          run: async () => {
+            await wipeProvider("providers.glitchtip", [SECRET_KEYS.glitchtipToken]);
+            await ensureGlitchtip();
+          },
+        },
+        {
+          key: "openpanel",
+          label: "OpenPanel (product analytics)",
+          status: () => {
+            const m = store.get("providers.openpanel") as OpenpanelMeta | undefined;
+            return { configured: m?.status === "configured", summary: m?.url };
+          },
+          run: async () => {
+            await wipeProvider("providers.openpanel", [
+              SECRET_KEYS.openpanelRootClientId,
+              SECRET_KEYS.openpanelRootClientSecret,
+            ]);
+            await ensureOpenpanel();
+          },
+        },
+        {
+          key: "resend",
+          label: "Resend (transactional email)",
+          status: () => {
+            const m = store.get("providers.resend") as ResendMeta | undefined;
+            return { configured: m?.status === "configured" };
+          },
+          run: async () => {
+            await wipeProvider("providers.resend", [SECRET_KEYS.resendApiKey]);
+            await ensureResend();
+          },
+        },
+      ],
+    },
+    {
+      title: "GPU / ML Providers",
+      steps: (
+        [
+          { key: "modal", name: "Modal" },
+          { key: "runpod", name: "RunPod" },
+          { key: "hf", name: "HuggingFace Inference" },
+          { key: "replicate", name: "Replicate" },
+        ] as const
+      ).map((p) => ({
+        key: `gpu.${p.key}`,
+        label: p.name,
+        status: () => {
+          const m = store.get(`providers.gpu.${p.key}`) as GpuProviderMeta | undefined;
+          return { configured: m?.status === "configured" };
+        },
+        run: async () => {
+          await wipeProvider(`providers.gpu.${p.key}`, [SECRET_KEYS.gpuApiKey(p.key)]);
+          await ensureGpuProvider(p.key);
+        },
+      })),
+    },
+  ];
+}
+
+function renderStepLabel(step: SetupStep): string {
   const { configured, summary } = step.status();
-  const num = String(index + 1).padStart(2, " ");
   const mark = configured ? chalk.green("✓") : chalk.dim("·");
   const tail = configured
     ? chalk.dim(` — ${summary ?? "configured"}`)
     : chalk.dim(" — not configured");
-  return `${num}. ${mark}  ${step.label}${tail}`;
+  return `${mark}  ${step.label}${tail}`;
+}
+
+function renderGroupHeader(group: SetupGroup): string {
+  const total = group.steps.length;
+  const done = group.steps.filter((s) => s.status().configured).length;
+  const count = total > 1 ? chalk.dim(` ${done}/${total}`) : "";
+  return chalk.bold(`── ${group.title} ──${count}`);
 }
 
 export async function runOnboarding(): Promise<void> {
@@ -1073,39 +1096,53 @@ export async function runOnboarding(): Promise<void> {
   console.log(chalk.dim("  Secrets: OS keychain"));
   console.log(chalk.dim("  Pick any step to (re)configure. Choose 'Done' to exit.\n"));
 
-  const steps = buildSetupSteps();
+  const groups = buildSetupGroups();
+  const allSteps = groups.flatMap((g) => g.steps);
 
   for (;;) {
     // Default the cursor to the first unconfigured step so Enter advances
     // naturally on a first-time setup.
-    const firstUnconfigured = steps.find((s) => !s.status().configured);
+    const firstUnconfigured = allSteps.find((s) => !s.status().configured);
     const defaultKey = firstUnconfigured?.key ?? "__done__";
+
+    const choices: Array<
+      Separator | { name: string; value: string; description?: string }
+    > = [];
+    for (const group of groups) {
+      choices.push(new Separator(renderGroupHeader(group)));
+      for (const step of group.steps) {
+        choices.push({ name: renderStepLabel(step), value: step.key });
+      }
+    }
+    choices.push(new Separator(" "));
+    choices.push({ name: chalk.bold("Done — exit setup"), value: "__done__" });
 
     const picked = await select<string>({
       message: "Next step:",
       default: defaultKey,
-      pageSize: Math.min(20, steps.length + 2),
-      choices: [
-        ...steps.map((s, i) => ({ name: renderStepLabel(s, i), value: s.key })),
-        { name: chalk.bold("Done — exit setup"), value: "__done__" },
-      ],
+      pageSize: Math.min(30, choices.length),
+      choices,
     });
 
     if (picked === "__done__") break;
-    const step = steps.find((s) => s.key === picked);
+    const step = allSteps.find((s) => s.key === picked);
     if (!step) continue;
 
     console.log();
     try {
       await step.run();
     } catch (err) {
-      console.log(chalk.red(`\n  ✗ ${step.label} failed: ${err instanceof Error ? err.message : String(err)}`));
+      console.log(
+        chalk.red(
+          `\n  ✗ ${step.label} failed: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
     }
     console.log();
   }
 
   // Summary
-  const configured = steps.filter((s) => s.status().configured);
+  const configured = allSteps.filter((s) => s.status().configured);
   console.log(chalk.bold("\n  ── Done ───────────────────────────────────────────────────\n"));
   if (configured.length === 0) {
     console.log(chalk.yellow("  Nothing configured yet. Run `hatchkit setup` again anytime.\n"));
