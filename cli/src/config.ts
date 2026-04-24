@@ -4,13 +4,45 @@ import Conf from "conf";
 import ora from "ora";
 import { verifyCoolify } from "./utils/coolify-api.js";
 import { execOk } from "./utils/exec.js";
-import { SECRET_KEYS, clearAllSecrets, getSecret, setSecret } from "./utils/secrets.js";
+import { SECRET_KEYS, clearAllSecrets, deleteSecret, getSecret, setSecret } from "./utils/secrets.js";
 import { validateRequired, validateUrl } from "./utils/validate.js";
 
 /** Pretty-print "where to create this token" hint before a password prompt. */
 function tokenHint(url: string, scope: string): void {
   console.log(chalk.dim(`  → Create at: ${chalk.cyan(url)}`));
   console.log(chalk.dim(`    Permissions: ${scope}`));
+}
+
+/** Sanitize pasted secret: strip bracketed-paste escapes + non-printable
+ *  ASCII that some terminals inject on paste. Plain `.trim()` misses these. */
+function sanitizePastedSecret(raw: string): string {
+  return raw
+    .replace(/\x1b\[2\d\d~/g, "")
+    .replace(/[^\x20-\x7e]/g, "")
+    .trim();
+}
+
+/** Prompt for a secret, show a masked preview (`abcd…wxyz, 50 chars`),
+ *  and let the user re-enter if the paste looks wrong. Loops until the
+ *  user confirms. Values are never echoed in full. */
+async function confirmPastedSecret(label: string): Promise<string> {
+  for (;;) {
+    const raw = await password({ message: `${label}:` });
+    const value = sanitizePastedSecret(raw);
+    if (!value) {
+      console.log(chalk.yellow("  (empty — please paste again)"));
+      continue;
+    }
+    const preview =
+      value.length <= 8
+        ? `${"*".repeat(value.length)} (${value.length} chars — looks short?)`
+        : `${value.slice(0, 4)}…${value.slice(-4)} (${value.length} chars)`;
+    const ok = await confirm({
+      message: `Looks like: ${chalk.cyan(preview)} — use this?`,
+      default: true,
+    });
+    if (ok) return value;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -287,12 +319,7 @@ export async function ensureCoolify(): Promise<CoolifyConfig> {
   let token = "";
   tokenHint(`${url.replace(/\/$/, "")}/security/api-tokens`, "root (full access)");
   for (;;) {
-    const raw = await password({
-      message: "Coolify API token:",
-    });
-    // Strip bracketed-paste escapes + all control/non-printable ASCII that
-    // some terminals inject on paste. `.trim()` alone misses these.
-    token = raw.replace(/\x1b\[2\d\d~/g, "").replace(/[^\x20-\x7e]/g, "").trim();
+    token = await confirmPastedSecret("Coolify API token");
 
     const spinner = ora("Testing Coolify connection...").start();
     try {
@@ -354,9 +381,7 @@ export async function ensureHetzner(): Promise<HetznerConfig> {
     "https://console.hetzner.cloud/projects → Security → API Tokens",
     "Read & Write (needed to create servers)",
   );
-  const token = await password({
-    message: "Hetzner Cloud API token:",
-  });
+  const token = await confirmPastedSecret("Hetzner Cloud API token");
 
   const spinner = ora("Testing Hetzner connection...").start();
   try {
@@ -419,7 +444,7 @@ export async function ensureDns(): Promise<DnsConfig> {
 
   if (provider === "inwx") {
     const username = await input({ message: "INWX username:", validate: validateRequired });
-    const pwd = await password({ message: "INWX password:" });
+    const pwd = await confirmPastedSecret("INWX password");
     const meta: DnsMeta = {
       status: "configured",
       provider: "inwx",
@@ -436,7 +461,7 @@ export async function ensureDns(): Promise<DnsConfig> {
     "https://dash.cloudflare.com/profile/api-tokens → Create Token",
     "Zone:DNS:Edit + Zone:Zone:Read (scope to the zones you'll use)",
   );
-  const apiToken = await password({ message: "Cloudflare API token:" });
+  const apiToken = await confirmPastedSecret("Cloudflare API token");
   const meta: DnsMeta = {
     status: "configured",
     provider: "cloudflare",
@@ -479,6 +504,30 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
     chalk.yellow(`\n  ${provider.toUpperCase()} S3 is not configured yet. Let's set it up.`),
   );
 
+  // For R2 we need the account id BEFORE showing the create-token URL, so
+  // we can deep-link to the account-scoped page.
+  let endpoint: string | undefined;
+  let region: string | undefined;
+  let location: string | undefined;
+  let accountId: string | undefined;
+
+  if (provider === "r2") {
+    console.log(
+      chalk.dim(
+        "  Your Cloudflare account ID is in the dashboard URL:\n" +
+          "    dash.cloudflare.com/<account-id>/home/overview",
+      ),
+    );
+    accountId = (
+      await input({
+        message: "Cloudflare account ID:",
+        validate: validateRequired,
+      })
+    ).trim();
+    endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
+    region = "auto";
+  }
+
   const s3Hints = {
     hetzner: {
       url: "https://console.hetzner.cloud → your project → Security → S3 credentials",
@@ -489,18 +538,14 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
       scope: "s3:PutObject, s3:GetObject, s3:DeleteObject on the target bucket",
     },
     r2: {
-      url: "https://dash.cloudflare.com → R2 → Manage R2 API Tokens → Create Token",
-      scope: "Object Read & Write on the target bucket(s)",
+      url: `https://dash.cloudflare.com/${accountId ?? ""}/r2/api-tokens → Create Token`,
+      scope: "Object Read & Write — then copy from the 'Use the following credentials for S3 clients' section (NOT the 'Token value' at the top)",
     },
   } as const;
   tokenHint(s3Hints[provider].url, s3Hints[provider].scope);
 
-  const promptedAccessKey = await password({ message: `${provider} S3 access key:` });
-  const promptedSecretKey = await password({ message: `${provider} S3 secret key:` });
-
-  let endpoint: string | undefined;
-  let region: string | undefined;
-  let location: string | undefined;
+  const promptedAccessKey = await confirmPastedSecret(`${provider} S3 Access Key ID`);
+  const promptedSecretKey = await confirmPastedSecret(`${provider} S3 Secret Access Key`);
 
   if (provider === "hetzner") {
     location = await select({
@@ -513,14 +558,7 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
     });
     endpoint = `https://${location}.your-objectstorage.com`;
     region = location;
-  } else if (provider === "r2") {
-    const accountId = await input({
-      message: "Cloudflare account ID:",
-      validate: validateRequired,
-    });
-    endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
-    region = "auto";
-  } else {
+  } else if (provider === "aws") {
     region = await input({ message: "AWS region:", default: "us-east-1" });
     endpoint = `https://s3.${region}.amazonaws.com`;
   }
@@ -581,18 +619,18 @@ export async function ensureGpuProvider(
     }
     case "runpod":
       tokenHint("https://runpod.io/user/settings → API Keys", "Read & Write");
-      apiKey = await password({ message: "RunPod API key:" });
+      apiKey = await confirmPastedSecret("RunPod API key");
       break;
     case "hf":
       tokenHint(
         "https://huggingface.co/settings/tokens",
         "Read (or Write if you'll push models)",
       );
-      apiKey = await password({ message: "HuggingFace token:" });
+      apiKey = await confirmPastedSecret("HuggingFace token");
       break;
     case "replicate":
       tokenHint("https://replicate.com/account/api-tokens", "any (account-scoped)");
-      apiKey = await password({ message: "Replicate API token:" });
+      apiKey = await confirmPastedSecret("Replicate API token");
       break;
   }
 
@@ -675,11 +713,7 @@ export async function ensureGlitchtip(): Promise<GlitchtipConfig> {
     `${url.replace(/\/$/, "")}/profile/auth-tokens`,
     "project:admin (read + write projects & teams)",
   );
-  const token = (
-    await password({
-      message: "GlitchTip auth token:",
-    })
-  ).trim();
+  const token = await confirmPastedSecret("GlitchTip auth token");
   const organizationSlug = (
     await input({
       message: "GlitchTip organization slug:",
@@ -762,11 +796,9 @@ export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
       validate: validateRequired,
     })
   ).trim();
-  const rootClientSecret = (
-    await password({
-      message: "OpenPanel root clientSecret (shown once at creation):",
-    })
-  ).trim();
+  const rootClientSecret = await confirmPastedSecret(
+    "OpenPanel root clientSecret (shown once at creation)",
+  );
 
   const meta: OpenpanelMeta = {
     status: "configured",
@@ -804,11 +836,7 @@ export async function ensureResend(): Promise<ResendConfig> {
 
   console.log(chalk.yellow("\n  Resend is not configured yet. Let's set it up."));
   tokenHint("https://resend.com/api-keys", "Full access (needed to create domain-scoped keys)");
-  const apiKey = (
-    await password({
-      message: "Resend API key:",
-    })
-  ).trim();
+  const apiKey = await confirmPastedSecret("Resend API key");
 
   const spinner = ora("Verifying Resend API key...").start();
   try {
@@ -849,6 +877,40 @@ export async function isFirstRun(): Promise<boolean> {
   return config.providers.github.status === "unconfigured" && !config.providers.coolify;
 }
 
+/** Decide whether to run `ensureFn` based on existing state + user intent.
+ *  - If not yet configured: ask "Configure X?" (default = required).
+ *  - If already configured: print a summary and ask "Reconfigure X?" (default No).
+ *    On yes, wipes the stored meta + secrets so ensureFn falls through the
+ *    not-configured branch and re-prompts everything. */
+async function maybeConfigure(opts: {
+  label: string;
+  storeKey: string;
+  isConfigured: boolean;
+  summary?: string;
+  required?: boolean;
+  secretKeys?: string[];
+  ensureFn: () => Promise<unknown>;
+}): Promise<void> {
+  const { label, storeKey, isConfigured, summary, required, secretKeys, ensureFn } = opts;
+  if (isConfigured) {
+    console.log(chalk.green(`  ✓ ${label} already configured${summary ? ` — ${summary}` : ""}`));
+    const reconfigure = await confirm({
+      message: `Reconfigure ${label}?`,
+      default: false,
+    });
+    if (!reconfigure) return;
+    store.delete(storeKey);
+    for (const k of secretKeys ?? []) await deleteSecret(k);
+    await ensureFn();
+    return;
+  }
+  const wantIt = await confirm({
+    message: `Configure ${label}?`,
+    default: required ?? false,
+  });
+  if (wantIt) await ensureFn();
+}
+
 export async function runOnboarding(): Promise<void> {
   console.log(chalk.bold("\n  Welcome! Let's set up your development infrastructure."));
   console.log(chalk.dim("  This is a one-time setup — metadata is stored locally in"));
@@ -858,26 +920,54 @@ export async function runOnboarding(): Promise<void> {
   // Core providers
   console.log(chalk.bold("  ── Core Providers (required) ──────────────────────────────\n"));
   await ensureGitHub();
-  await ensureCoolify();
+  const coolifyMeta = store.get("providers.coolify") as CoolifyMeta | undefined;
+  await maybeConfigure({
+    label: "Coolify",
+    storeKey: "providers.coolify",
+    isConfigured: coolifyMeta?.status === "configured",
+    summary: coolifyMeta?.url,
+    required: true,
+    secretKeys: [SECRET_KEYS.coolifyToken],
+    ensureFn: ensureCoolify,
+  });
 
   // Infrastructure providers
   console.log(chalk.bold("\n  ── Infrastructure Providers ───────────────────────────────\n"));
-
-  const configHetzner = await confirm({
-    message: "Configure Hetzner Cloud? (needed for new servers)",
-    default: true,
+  const hetznerMeta = store.get("providers.hetzner") as HetznerMeta | undefined;
+  await maybeConfigure({
+    label: "Hetzner Cloud",
+    storeKey: "providers.hetzner",
+    isConfigured: hetznerMeta?.status === "configured",
+    required: true,
+    secretKeys: [SECRET_KEYS.hetznerToken],
+    ensureFn: ensureHetzner,
   });
-  if (configHetzner) {
-    await ensureHetzner();
-  }
 
-  await ensureDns();
+  const dnsMeta = store.get("providers.dns") as DnsMeta | undefined;
+  const dnsConfigured = dnsMeta?.status === "configured";
+  if (dnsConfigured) {
+    console.log(chalk.green(`  ✓ DNS already configured — ${dnsMeta?.provider}`));
+    const redo = await confirm({ message: "Reconfigure DNS?", default: false });
+    if (redo) {
+      store.delete("providers.dns");
+      await deleteSecret(SECRET_KEYS.dnsInwxPassword);
+      await deleteSecret(SECRET_KEYS.dnsCloudflareToken);
+      await ensureDns();
+    }
+  } else {
+    await ensureDns();
+  }
 
   // Storage — all skippable
   console.log(chalk.bold("\n  ── Storage Providers (configure as needed) ────────────────\n"));
-
+  const s3Configured = (["hetzner", "aws", "r2"] as const).filter(
+    (p) => (store.get(`providers.s3.${p}`) as S3ProviderMeta | undefined)?.status === "configured",
+  );
+  if (s3Configured.length) {
+    console.log(chalk.green(`  ✓ S3 already configured — ${s3Configured.join(", ")}`));
+  }
   const configStorage = await confirm({
-    message: "Configure any S3 storage provider now?",
+    message: s3Configured.length ? "Configure another S3 provider?" : "Configure any S3 storage provider now?",
     default: false,
   });
   if (configStorage) {
@@ -889,50 +979,93 @@ export async function runOnboarding(): Promise<void> {
         { name: "Cloudflare R2", value: "r2" as const },
       ],
     });
+    // Wipe existing for the chosen provider so re-selecting the same one
+    // reliably re-prompts rather than early-returning.
+    store.delete(`providers.s3.${s3Provider}`);
+    await deleteSecret(SECRET_KEYS.s3AccessKey(s3Provider));
+    await deleteSecret(SECRET_KEYS.s3SecretKey(s3Provider));
     await ensureS3(s3Provider);
-  } else {
-    console.log(chalk.dim("  Skipped — will prompt when you first need S3 storage."));
   }
 
   // Observability & email — all skippable
   console.log(chalk.bold("\n  ── Observability & Email (configure as needed) ────────────\n"));
-
-  const configGlitchtip = await confirm({
-    message: "Configure GlitchTip (error tracking)?",
-    default: false,
+  const glitchtipMeta = store.get("providers.glitchtip") as GlitchtipMeta | undefined;
+  await maybeConfigure({
+    label: "GlitchTip (error tracking)",
+    storeKey: "providers.glitchtip",
+    isConfigured: glitchtipMeta?.status === "configured",
+    summary: glitchtipMeta?.url,
+    secretKeys: [SECRET_KEYS.glitchtipToken],
+    ensureFn: ensureGlitchtip,
   });
-  if (configGlitchtip) await ensureGlitchtip();
-
-  const configOpenpanel = await confirm({
-    message: "Configure OpenPanel (product analytics)?",
-    default: false,
+  const openpanelMeta = store.get("providers.openpanel") as OpenpanelMeta | undefined;
+  await maybeConfigure({
+    label: "OpenPanel (product analytics)",
+    storeKey: "providers.openpanel",
+    isConfigured: openpanelMeta?.status === "configured",
+    summary: openpanelMeta?.url,
+    secretKeys: [
+      SECRET_KEYS.openpanelRootClientId,
+      SECRET_KEYS.openpanelRootClientSecret,
+    ],
+    ensureFn: ensureOpenpanel,
   });
-  if (configOpenpanel) await ensureOpenpanel();
-
-  const configResend = await confirm({
-    message: "Configure Resend (transactional email)?",
-    default: false,
+  const resendMeta = store.get("providers.resend") as ResendMeta | undefined;
+  await maybeConfigure({
+    label: "Resend (transactional email)",
+    storeKey: "providers.resend",
+    isConfigured: resendMeta?.status === "configured",
+    secretKeys: [SECRET_KEYS.resendApiKey],
+    ensureFn: ensureResend,
   });
-  if (configResend) await ensureResend();
 
-  // GPU — all skippable
-  console.log(chalk.bold("\n  ── GPU / ML Providers (configure when needed) ─────────────\n"));
-  console.log(chalk.dim("  Skipped — will prompt when you first add an ML service.\n"));
+  // GPU / ML — each platform is separately skippable
+  console.log(chalk.bold("\n  ── GPU / ML Providers (configure as needed) ──────────────\n"));
+  const gpuPlatforms = [
+    { key: "modal", name: "Modal" },
+    { key: "runpod", name: "RunPod" },
+    { key: "hf", name: "HuggingFace Inference" },
+    { key: "replicate", name: "Replicate" },
+  ] as const;
+  for (const p of gpuPlatforms) {
+    const meta = store.get(`providers.gpu.${p.key}`) as GpuProviderMeta | undefined;
+    const configured = meta?.status === "configured";
+    if (configured) {
+      console.log(chalk.green(`  ✓ ${p.name} already configured`));
+      const redo = await confirm({ message: `Reconfigure ${p.name}?`, default: false });
+      if (!redo) continue;
+      store.delete(`providers.gpu.${p.key}`);
+      await deleteSecret(SECRET_KEYS.gpuApiKey(p.key));
+    } else {
+      const wantIt = await confirm({ message: `Configure ${p.name}?`, default: false });
+      if (!wantIt) continue;
+    }
+    await ensureGpuProvider(p.key as "modal" | "runpod" | "hf" | "replicate");
+  }
 
   // Done
-  console.log(chalk.bold("  ── Done! ──────────────────────────────────────────────────\n"));
+  console.log(chalk.bold("\n  ── Done! ──────────────────────────────────────────────────\n"));
 
   const configuredProviders: string[] = ["GitHub"];
-  if (store.get("providers.coolify")) configuredProviders.push("Coolify");
-  if (store.get("providers.hetzner")) configuredProviders.push("Hetzner Cloud");
-  const dnsMeta = store.get("providers.dns") as DnsMeta | undefined;
-  if (dnsMeta?.provider && dnsMeta.provider !== "manual") {
-    configuredProviders.push(dnsMeta.provider.toUpperCase());
+  if ((store.get("providers.coolify") as CoolifyMeta | undefined)?.status === "configured")
+    configuredProviders.push("Coolify");
+  if ((store.get("providers.hetzner") as HetznerMeta | undefined)?.status === "configured")
+    configuredProviders.push("Hetzner Cloud");
+  const finalDns = store.get("providers.dns") as DnsMeta | undefined;
+  if (finalDns?.status === "configured" && finalDns.provider && finalDns.provider !== "manual") {
+    configuredProviders.push(finalDns.provider.toUpperCase());
   }
-  if (store.get("providers.glitchtip")) configuredProviders.push("GlitchTip");
-  if (store.get("providers.openpanel")) configuredProviders.push("OpenPanel");
-  if (store.get("providers.resend")) configuredProviders.push("Resend");
+  for (const p of gpuPlatforms) {
+    if ((store.get(`providers.gpu.${p.key}`) as GpuProviderMeta | undefined)?.status === "configured")
+      configuredProviders.push(p.name);
+  }
+  if ((store.get("providers.glitchtip") as GlitchtipMeta | undefined)?.status === "configured")
+    configuredProviders.push("GlitchTip");
+  if ((store.get("providers.openpanel") as OpenpanelMeta | undefined)?.status === "configured")
+    configuredProviders.push("OpenPanel");
+  if ((store.get("providers.resend") as ResendMeta | undefined)?.status === "configured")
+    configuredProviders.push("Resend");
 
-  console.log(chalk.green(`  ✓ Providers configured: ${configuredProviders.join(", ")}`));
+  console.log(chalk.green(`  ✓ Configured: ${configuredProviders.join(", ")}`));
   console.log(chalk.dim("  ✓ Skipped providers will be prompted when first needed.\n"));
 }
