@@ -5,7 +5,15 @@
  * Auth model: custom headers `openpanel-client-id` / `openpanel-client-secret`,
  * NOT Authorization: Bearer. See https://openpanel.dev/docs/api/authentication.
  *
- * Per-project secrets are cached in the keychain so re-runs are idempotent.
+ * Endpoint shapes (from the OpenPanel source):
+ *   POST  {apiUrl}/manage/projects   body: { name }           ->
+ *         { data: { id, ..., client: { id, secret } } }
+ *   POST  {apiUrl}/manage/clients    body: { name, projectId, type: "write" } ->
+ *         { data: { id, secret, ... } }
+ *   DELETE {apiUrl}/manage/projects/{projectId}
+ *
+ * Per-project ids + secrets are cached in the keychain so re-runs are
+ * idempotent and `delete` can target the exact upstream project.
  */
 
 import { ensureOpenpanel } from "../config.js";
@@ -18,24 +26,34 @@ export interface OpenpanelClient {
   apiUrl: string;
 }
 
+/** Extra cache slot for the upstream project id, used by `deleteOpenpanelClient`
+ *  — separate from the client id slot so we can target the right row. */
+const projectIdKey = (clientName: string) =>
+  SECRET_KEYS.openpanelClientSecret(`${clientName}:project-id`);
+const clientIdKey = (clientName: string) =>
+  SECRET_KEYS.openpanelClientSecret(`${clientName}:id`);
+
+function buildHeaders(rootClientId: string, rootClientSecret: string): Record<string, string> {
+  return {
+    "openpanel-client-id": rootClientId,
+    "openpanel-client-secret": rootClientSecret,
+    "Content-Type": "application/json",
+    Accept: "application/json",
+  };
+}
+
+function resolveManageBase(url: string, apiUrl: string | undefined): string {
+  return `${(apiUrl ?? url).replace(/\/$/, "")}/manage`;
+}
+
 export async function provisionOpenpanelClient(clientName: string): Promise<OpenpanelClient> {
   const cfg = await ensureOpenpanel();
-  const { url, apiUrl, organizationSlug, rootClientId, rootClientSecret } = cfg;
-  if (!organizationSlug) {
-    throw new Error(
-      "OpenPanel config is missing organization slug. Re-run `hatchkit config add openpanel`.",
-    );
-  }
-  // Paths under OpenPanel's Management API live at `/manage/*` on a
-  // dedicated API host (cloud: api.openpanel.dev; self-hosted: typically
-  // api.<dashboard-host>). Fall back to the dashboard URL if apiUrl is
-  // missing — pre-existing configs won't have it set.
-  const manageBase = `${(apiUrl ?? url).replace(/\/$/, "")}/manage`;
+  const { url, apiUrl, rootClientId, rootClientSecret } = cfg;
+  const manageBase = resolveManageBase(url, apiUrl);
 
   // Reuse a previously-provisioned client so re-runs don't mint duplicates.
   const cachedSecret = await getSecret(SECRET_KEYS.openpanelClientSecret(clientName));
-  const cachedIdKey = SECRET_KEYS.openpanelClientSecret(`${clientName}:id`);
-  const cachedId = await getSecret(cachedIdKey);
+  const cachedId = await getSecret(clientIdKey(clientName));
   if (cachedSecret && cachedId) {
     return {
       projectName: clientName,
@@ -44,19 +62,15 @@ export async function provisionOpenpanelClient(clientName: string): Promise<Open
       apiUrl: manageBase,
     };
   }
-  const headers = {
-    "openpanel-client-id": rootClientId,
-    "openpanel-client-secret": rootClientSecret,
-    "Content-Type": "application/json",
-    Accept: "application/json",
-  };
 
-  // Step 1: create the project. The response includes a default write client,
-  // which is exactly what we want to emit as GLITCHTIP_/OPENPANEL_* env.
+  const headers = buildHeaders(rootClientId, rootClientSecret);
+
+  // Step 1: create the project. The API authenticates the organization
+  // from the root client's auth — don't send organizationSlug.
   const projectRes = await fetch(`${manageBase}/projects`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ name: clientName, organizationSlug }),
+    body: JSON.stringify({ name: clientName }),
   });
   if (!projectRes.ok) {
     const text = await projectRes.text().catch(() => "");
@@ -64,25 +78,27 @@ export async function provisionOpenpanelClient(clientName: string): Promise<Open
       `OpenPanel create project failed: ${projectRes.status} ${projectRes.statusText}${text ? ` — ${text}` : ""}`,
     );
   }
-  const project = (await projectRes.json()) as {
-    id?: string;
-    projectId?: string;
-    client?: { clientId?: string; clientSecret?: string };
-    defaultClient?: { clientId?: string; clientSecret?: string };
+  const projectBody = (await projectRes.json()) as {
+    data?: {
+      id?: string;
+      client?: { id?: string; secret?: string } | null;
+    };
   };
-  const defaultClient = project.client ?? project.defaultClient;
-  let clientId = defaultClient?.clientId;
-  let clientSecret = defaultClient?.clientSecret;
+  const project = projectBody.data;
+  const projectId = project?.id;
+  let clientId = project?.client?.id;
+  let clientSecret = project?.client?.secret;
 
-  // Step 2 (fallback): if the project response didn't return credentials,
-  // create a dedicated write client attached to the new project.
+  if (!projectId) {
+    throw new Error(
+      `OpenPanel: project created but response lacked a project id (got ${JSON.stringify(projectBody).slice(0, 300)}).`,
+    );
+  }
+
+  // Step 2 (fallback): some self-hosted configurations disable the
+  // default-client on project creation. Mint one explicitly so the env
+  // block always has real credentials.
   if (!clientId || !clientSecret) {
-    const projectId = project.id ?? project.projectId;
-    if (!projectId) {
-      throw new Error(
-        "OpenPanel: project created but no projectId returned; can't attach a client.",
-      );
-    }
     const clientRes = await fetch(`${manageBase}/clients`, {
       method: "POST",
       headers,
@@ -94,17 +110,20 @@ export async function provisionOpenpanelClient(clientName: string): Promise<Open
         `OpenPanel create client failed: ${clientRes.status} ${clientRes.statusText}${text ? ` — ${text}` : ""}`,
       );
     }
-    const client = (await clientRes.json()) as { clientId?: string; clientSecret?: string };
-    clientId = client.clientId;
-    clientSecret = client.clientSecret;
+    const clientBody = (await clientRes.json()) as {
+      data?: { id?: string; secret?: string };
+    };
+    clientId = clientBody.data?.id;
+    clientSecret = clientBody.data?.secret;
   }
 
   if (!clientId || !clientSecret) {
-    throw new Error("OpenPanel: client created but response lacked clientId/clientSecret.");
+    throw new Error("OpenPanel: client created but response lacked id/secret.");
   }
 
   await setSecret(SECRET_KEYS.openpanelClientSecret(clientName), clientSecret);
-  await setSecret(cachedIdKey, clientId);
+  await setSecret(clientIdKey(clientName), clientId);
+  await setSecret(projectIdKey(clientName), projectId);
   return { projectName: clientName, clientId, clientSecret, apiUrl: manageBase };
 }
 
@@ -114,28 +133,25 @@ export type DeleteResult = "deleted" | "not-found";
  * Delete an OpenPanel project created by `provisionOpenpanelClient`.
  * Also wipes the cached id + secret from the keychain so a future
  * provision round won't hand back stale creds.
- *
- * Tries the cached project id first (set when the project was created);
- * falls back to the slug (clientName) if there's no cached id — covers
- * the case where the keychain was cleared but the upstream project is
- * still hanging around.
  */
 export async function deleteOpenpanelClient(clientName: string): Promise<DeleteResult> {
   const cfg = await ensureOpenpanel();
   const { url, apiUrl, rootClientId, rootClientSecret } = cfg;
 
-  const cachedIdKey = SECRET_KEYS.openpanelClientSecret(`${clientName}:id`);
-  const cachedId = await getSecret(cachedIdKey);
+  const cachedProjectId = await getSecret(projectIdKey(clientName));
+  const manageBase = resolveManageBase(url, apiUrl);
+  const headers = buildHeaders(rootClientId, rootClientSecret);
 
-  const manageBase = `${(apiUrl ?? url).replace(/\/$/, "")}/manage`;
-  const headers = {
-    "openpanel-client-id": rootClientId,
-    "openpanel-client-secret": rootClientSecret,
-    Accept: "application/json",
-  };
+  // With no cached project id there's nothing to target — OpenPanel
+  // projects are keyed by id (not name), so bail out quietly and let
+  // the caller move on.
+  if (!cachedProjectId) {
+    await deleteSecret(SECRET_KEYS.openpanelClientSecret(clientName));
+    await deleteSecret(clientIdKey(clientName));
+    return "not-found";
+  }
 
-  const target = cachedId ?? clientName;
-  const res = await fetch(`${manageBase}/projects/${target}`, {
+  const res = await fetch(`${manageBase}/projects/${cachedProjectId}`, {
     method: "DELETE",
     headers,
   });
@@ -143,7 +159,8 @@ export async function deleteOpenpanelClient(clientName: string): Promise<DeleteR
   // Always clear cached creds — if the upstream project is gone (or
   // already-gone), the local secrets have no reason to linger.
   await deleteSecret(SECRET_KEYS.openpanelClientSecret(clientName));
-  await deleteSecret(cachedIdKey);
+  await deleteSecret(clientIdKey(clientName));
+  await deleteSecret(projectIdKey(clientName));
 
   if (res.status === 404) return "not-found";
   if (!res.ok) {
