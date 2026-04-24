@@ -56,6 +56,15 @@ export interface ProjectConfig {
    *  as a plaintext CHANGE_ME_<KEY> placeholder that the user can
    *  encrypt later with `dotenvx set`. */
   envValues?: Record<string, string>;
+  /** Where the production MongoDB lives:
+   *    "coolify"  — hatchkit will provision a per-project MongoDB
+   *                 container on Coolify after the app deploys, and
+   *                 encrypt the resulting URL into .env.production.
+   *    "external" — the user provides MONGODB_URI themselves
+   *                 (Atlas, self-hosted, etc.).
+   *  Defaults to "coolify" when runDeployment is true, "external"
+   *  otherwise. */
+  mongodbProvider?: "coolify" | "external";
   /** GPU platforms to deploy each ML service to. The first entry is
    *  the default backend at runtime; switch by setting `ML_BACKEND` on
    *  the deploy. Multi-select lets you side-by-side benchmark or fail
@@ -417,6 +426,32 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
         true,
       );
 
+  // MongoDB strategy: provisioned by Coolify (recommended for the
+  // self-hosted path) vs. an external URI (Atlas, existing self-hosted
+  // Mongo, etc.). When "coolify", we DON'T ask for MONGODB_URI here —
+  // hatchkit provisions the container after the app deploys and writes
+  // the encrypted URL into .env.production automatically.
+  const mongodbProvider = await presetOrPrompt<"coolify" | "external">(
+    presets.mongodbProvider,
+    nonInteractive,
+    () =>
+      select<"coolify" | "external">({
+        message: "Prod MongoDB:",
+        choices: [
+          {
+            name: "Provision a dedicated container on Coolify (recommended)",
+            value: "coolify",
+          },
+          {
+            name: "I'll provide a URI (Atlas, self-hosted, …)",
+            value: "external",
+          },
+        ],
+        default: runDeployment ? "coolify" : "external",
+      }),
+    runDeployment ? "coolify" : "external",
+  );
+
   // Production env values. Anything not supplied gets a plaintext
   // CHANGE_ME_<KEY> placeholder the user can encrypt later with
   // `dotenvx set`. In non-interactive mode we only take presets —
@@ -434,7 +469,11 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
         });
         if (v.trim()) envValues[key] = v.trim();
       };
-      await askOptional("MONGODB_URI", "MongoDB URI");
+      // Only ask for MONGODB_URI when the user opted out of Coolify
+      // provisioning — otherwise hatchkit fills it in post-deploy.
+      if (mongodbProvider === "external") {
+        await askOptional("MONGODB_URI", "MongoDB URI");
+      }
       await askOptional("BETTER_AUTH_URL", "Auth URL (https://api.<domain>)");
       await askOptional("FRONTEND_URL", "Frontend URL (https://<domain>)");
       if (features.includes("stripe")) {
@@ -472,6 +511,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     s3ExistingRegion,
     mlServices,
     forceRedeployMl: [...forceRedeploy],
+    mongodbProvider,
     gpuPlatforms,
     customHfModelId,
     customHfGpuType,

@@ -122,7 +122,14 @@ export async function seedDotenvxProduction(
 /** Keys the scaffolder seeds into .env.production. Extend here when
  *  the starter gains new required env entries. */
 function candidateKeys(config: ProjectConfig): string[] {
-  const base = ["MONGODB_URI", "BETTER_AUTH_SECRET", "BETTER_AUTH_URL", "FRONTEND_URL"];
+  const base = ["BETTER_AUTH_SECRET", "BETTER_AUTH_URL", "FRONTEND_URL"];
+  // MONGODB_URI is only seeded as a CHANGE_ME placeholder when the
+  // user is bringing their own DB — for the Coolify path, hatchkit
+  // provisions the container post-deploy and writes the encrypted URL
+  // directly, so a CHANGE_ME placeholder would be misleading.
+  if (config.mongodbProvider !== "coolify") {
+    base.unshift("MONGODB_URI");
+  }
   if (config.features.includes("stripe")) {
     base.push("STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET");
   }

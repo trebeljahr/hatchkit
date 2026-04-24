@@ -134,6 +134,76 @@ export class CoolifyApi {
     };
     await this.request("PATCH", `/applications/${appUuid}/envs/bulk`, body);
   }
+
+  /** Create a MongoDB database. Coolify will auto-generate root creds
+   *  if they're not supplied; the returned `internal_db_url` is the
+   *  full connection string usable from inside Coolify's Docker network
+   *  (which is where the app container runs). */
+  async createMongodbDatabase(params: {
+    serverUuid: string;
+    projectUuid: string;
+    environmentName?: string;
+    environmentUuid?: string;
+    /** Defaults to `default` (the standard Coolify env). */
+    name: string;
+    initdbDatabase?: string;
+    initdbRootUsername?: string;
+    /** Coolify auto-generates one if omitted. */
+    initdbRootPassword?: string;
+    /** Start the container immediately on creation. */
+    instantDeploy?: boolean;
+  }): Promise<{ uuid: string; internal_db_url: string }> {
+    const body: Record<string, unknown> = {
+      server_uuid: params.serverUuid,
+      project_uuid: params.projectUuid,
+      environment_name: params.environmentName ?? "production",
+      name: params.name,
+      instant_deploy: params.instantDeploy ?? true,
+    };
+    if (params.environmentUuid) body.environment_uuid = params.environmentUuid;
+    if (params.initdbDatabase) body.mongo_initdb_database = params.initdbDatabase;
+    if (params.initdbRootUsername) body.mongo_initdb_root_username = params.initdbRootUsername;
+    if (params.initdbRootPassword) body.mongo_initdb_root_password = params.initdbRootPassword;
+    return this.request("POST", "/databases/mongodb", body);
+  }
+
+  /** Get a database (any engine) by uuid. We use this to read the
+   *  `internal_db_url` post-creation when the create response didn't
+   *  include it (older Coolify builds). */
+  async getDatabase(uuid: string): Promise<{ uuid: string; internal_db_url?: string }> {
+    return this.request("GET", `/databases/${uuid}`);
+  }
+
+  /** Find a project by exact name. Returns null if none matches. */
+  async findProjectByName(name: string): Promise<{ uuid: string; name: string } | null> {
+    const projects = (await this.request("GET", "/projects")) as Array<{
+      uuid?: string;
+      id?: number;
+      name: string;
+    }>;
+    const match = projects.find((p) => p.name === name);
+    if (!match || !match.uuid) return null;
+    return { uuid: match.uuid, name: match.name };
+  }
+
+  /** Find a server by exact name OR exact IP — the script-driven
+   *  Coolify setup typically targets the first server, but Hetzner
+   *  deploys are keyed by IP. Returns null if nothing matches. */
+  async findServer(query: {
+    name?: string;
+    ip?: string;
+  }): Promise<{ uuid: string; name: string; ip: string } | null> {
+    const servers = (await this.request("GET", "/servers")) as Array<{
+      uuid?: string;
+      name: string;
+      ip: string;
+    }>;
+    const match = servers.find(
+      (s) => (query.name && s.name === query.name) || (query.ip && s.ip === query.ip),
+    );
+    if (!match?.uuid) return null;
+    return { uuid: match.uuid, name: match.name, ip: match.ip };
+  }
 }
 
 /** Verify Coolify connection. Returns version string or throws. */

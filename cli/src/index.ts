@@ -550,6 +550,28 @@ async function handleCreate(): Promise<void> {
   if (config.runDeployment) {
     await runCoolifySetup(config, INFRA_ROOT);
 
+    // Provision a per-project MongoDB container on Coolify when the
+    // user picked that path. Best-effort: a failure here doesn't undo
+    // the app deploy — we surface clear instructions instead.
+    if (config.mongodbProvider === "coolify" && config.scaffoldRepo) {
+      try {
+        const { provisionCoolifyMongo } = await import("./deploy/coolify-mongo.js");
+        const serverEnvDir = join(appDir, "packages/server");
+        await provisionCoolifyMongo(config, serverEnvDir);
+      } catch (err) {
+        console.log(
+          chalk.yellow(`  Couldn't auto-provision MongoDB: ${(err as Error).message}`),
+        );
+        console.log(
+          chalk.dim(
+            `  Create one manually in Coolify: New → Database → MongoDB,\n` +
+              `  then set MONGODB_URI on the app's env (or run\n` +
+              `  \`dotenvx set MONGODB_URI <url> -f packages/server/.env.production\`).`,
+          ),
+        );
+      }
+    }
+
     // Push the dotenvx private key to Coolify so the starter's server
     // can decrypt .env.production at runtime. Best-effort — if the
     // Coolify app doesn't exist yet (race with the stack script), we
