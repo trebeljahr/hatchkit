@@ -92,6 +92,12 @@ async function main(): Promise<void> {
       if (args.includes("--help")) return printHelp("add");
       await handleAdd();
       break;
+    case "doctor": {
+      if (args.includes("--help")) return printHelp("doctor");
+      const { runDoctor } = await import("./doctor.js");
+      await runDoctor();
+      break;
+    }
     default:
       printHelp();
   }
@@ -562,7 +568,7 @@ async function handleConfig(): Promise<void> {
 }
 
 function printHelp(
-  topic?: "create" | "init" | "setup" | "config" | "update" | "keys" | "add",
+  topic?: "create" | "init" | "setup" | "config" | "update" | "keys" | "add" | "doctor",
 ): void {
   if (topic === "create") {
     console.log(`
@@ -637,6 +643,17 @@ function printHelp(
 `);
     return;
   }
+  if (topic === "doctor") {
+    console.log(`
+  ${chalk.bold("hatchkit doctor")} — verify every configured provider
+
+  Runs a read-only API call against each provider whose credentials are
+  stored (Coolify /version, Hetzner /servers, Cloudflare /tokens/verify,
+  Resend /domains, …). Reports ok / fail / not-configured per provider
+  and exits non-zero if any check fails. Safe to run repeatedly.
+`);
+    return;
+  }
   if (topic === "add") {
     console.log(`
   ${chalk.bold("hatchkit add")} — create per-service clients for an existing project
@@ -686,6 +703,7 @@ function printHelp(
   ${chalk.bold("Commands:")}
     create          Scaffold a new project (default)
     add             Create GlitchTip / OpenPanel / Resend clients for an existing project
+    doctor          Health-check every configured provider
     update          Add features to an already-scaffolded project (run in project dir)
     keys show <p>   Print the dotenvx private key for a project
     keys push <p>   Push the key onto the project's Coolify app

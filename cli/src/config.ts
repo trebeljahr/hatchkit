@@ -216,6 +216,13 @@ function createStore(): Conf<CliConfig> {
 
 const store = createStore();
 
+/** Exposed for internal modules that need raw access (e.g. the `doctor`
+ *  command). External consumers should prefer the typed `getXConfig()`
+ *  helpers. */
+export function getStore() {
+  return store;
+}
+
 export function getConfig(): CliConfig {
   return store.store;
 }
@@ -407,6 +414,14 @@ export async function ensureHetzner(): Promise<HetznerConfig> {
 export async function getHetznerToken(): Promise<string | null> {
   await migrateSecret("providers.hetzner.token", SECRET_KEYS.hetznerToken);
   return getSecret(SECRET_KEYS.hetznerToken);
+}
+
+export async function getHetznerConfig(): Promise<HetznerConfig | null> {
+  const meta = store.get("providers.hetzner") as HetznerMeta | undefined;
+  if (!meta || meta.status !== "configured") return null;
+  const token = await getHetznerToken();
+  if (!token) return null;
+  return { ...meta, token };
 }
 
 // ---------------------------------------------------------------------------
