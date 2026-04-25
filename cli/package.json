@@ -27,7 +27,7 @@
     "release:patch": "node scripts/release-prep.mjs && npm version patch -m \"chore: release v%s\" && pnpm run _release:finish",
     "release:minor": "node scripts/release-prep.mjs && npm version minor -m \"chore: release v%s\" && pnpm run _release:finish",
     "release:major": "node scripts/release-prep.mjs && npm version major -m \"chore: release v%s\" && pnpm run _release:finish",
-    "_release:finish": "pnpm run build && pnpm run typecheck && npm publish --access public && git push --follow-tags && npm install -g .",
+    "_release:finish": "pnpm run build && pnpm run typecheck && npm publish --access public && git -C ../infra push && git -C ../starter push && git push --follow-tags && npm install -g .",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
