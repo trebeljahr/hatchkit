@@ -32,7 +32,7 @@ The site itself is built with [Docusaurus 3](https://docusaurus.io). The CI pipe
                                       ▼                                       ▼
                               ┌──────────────┐                         ┌──────────────┐
                               │ build job    │                         │ deploy job   │
-                              │ Node 20 +    │   artifact upload       │ deploy-pages │
+                              │ Node 24 +    │   artifact upload       │ deploy-pages │
                               │ pnpm + cache │ ──────────────────────> │ → github.io  │
                               │ docusaurus   │                         │              │
                               │   build      │                         │              │
