@@ -1,6 +1,6 @@
 name: Deploy docs to GitHub Pages
 
-# Builds the Jekyll site in `docs/` and publishes it to GitHub Pages.
+# Builds the Docusaurus site in `docs/` and publishes it to GitHub Pages.
 # Triggers only when docs (or this workflow) actually change, so normal
 # CLI work doesn't rebuild the site needlessly.
 
@@ -32,24 +32,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ruby/setup-ruby@v1
+      - uses: pnpm/action-setup@v4
         with:
-          ruby-version: "3.2"
-          bundler-cache: true
-          working-directory: docs
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: docs/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v5
 
-      - name: Build with Jekyll
-        run: bundle exec jekyll build --baseurl "${{ steps.pages.outputs.base_path }}"
+      - name: Build with Docusaurus
+        # `baseUrl` in docusaurus.config.ts is the source of truth.
+        # The pages action exposes `base_path` purely for diagnostics.
+        run: pnpm build
         env:
-          JEKYLL_ENV: production
+          NODE_ENV: production
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/_site
+          path: docs/build
 
   deploy:
     needs: build

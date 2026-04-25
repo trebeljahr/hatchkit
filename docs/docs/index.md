@@ -1,17 +1,14 @@
 ---
+slug: /
+sidebar_position: 1
 title: Home
-layout: home
-nav_order: 1
 ---
 
 # hatchkit
-{: .fs-9 }
 
 From `npx hatchkit` to a deployed full-stack app on your own infrastructure — including GPU-backed ML services — in minutes.
-{: .fs-6 .fw-300 }
 
-[Get started now](getting-started.html){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
-[View on GitHub](https://github.com/trebeljahr/hatchkit){: .btn .fs-5 .mb-4 .mb-md-0 }
+[**Get started →**](./getting-started) &nbsp;·&nbsp; [GitHub](https://github.com/trebeljahr/hatchkit) &nbsp;·&nbsp; [npm](https://www.npmjs.com/package/hatchkit)
 
 ---
 
@@ -31,7 +28,7 @@ Secrets are encrypted with dotenvx; private keys live in the OS keychain. Nothin
 
 ## Why it exists
 
-Starting a new product is the same toil every time: pick a starter, wire up auth, pick error tracking, pick analytics, register a domain, point DNS, configure a server, set up a deployment pipeline, copy twenty env vars between dashboards. Hatchkit encodes the opinionated, repeatable parts so you can spend the first day on *product*, not on yak-shaving.
+Starting a new product is the same toil every time: pick a starter, wire up auth, pick error tracking, pick analytics, register a domain, point DNS, configure a server, set up a deployment pipeline, copy twenty env vars between dashboards. Hatchkit encodes the opinionated, repeatable parts so you can spend the first day on _product_, not on yak-shaving.
 
 ## Design principles
 
@@ -42,10 +39,10 @@ Starting a new product is the same toil every time: pick a starter, wire up auth
 
 ## Next steps
 
-- [Getting Started](getting-started.html) — install + onboard + create your first project
-- [Commands reference](commands.html) — every command, every flag
-- [Providers](providers.html) — what hatchkit integrates with and how to configure it
-- [ML services](ml-services.html) — GPU workloads as first-class citizens
-- [GitHub Pages (`hatchkit gh-pages`)](gh-pages.html) — static / SPA / Jekyll deploys with a custom domain
-- [Architecture](architecture.html) — how scaffold, infra, and deploy fit together
-- [Deploying the docs site](deployment.html) — GitHub Pages flow used by this repo
+- [Getting Started](./getting-started) — install + onboard + create your first project
+- [Commands reference](./commands) — every command, every flag
+- [Providers](./providers) — what hatchkit integrates with and how to configure it
+- [ML services](./ml-services) — GPU workloads as first-class citizens
+- [GitHub Pages (`hatchkit gh-pages`)](./gh-pages) — static / SPA / Jekyll / Docusaurus deploys with a custom domain
+- [Architecture](./architecture) — how scaffold, infra, and deploy fit together
+- [Deploying the docs site](./deployment) — GitHub Pages flow used by this repo

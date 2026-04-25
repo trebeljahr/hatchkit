@@ -1,6 +1,6 @@
 ---
+sidebar_position: 4
 title: Providers
-nav_order: 4
 ---
 
 # Providers
@@ -111,7 +111,7 @@ Configure: `hatchkit config add openpanel`.
 
 ## GPU / ML platforms
 
-For deploying ML services. See [ML services](ml-services.html) for the end-to-end flow.
+For deploying ML services. See [ML services](./ml-services) for the end-to-end flow.
 
 | Platform | Notes |
 |---|---|

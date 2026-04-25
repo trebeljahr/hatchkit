@@ -11,7 +11,7 @@ import { parseDomain, validateDomain } from "../utils/validate.js";
 // ---------------------------------------------------------------------------
 
 /** What kind of site lives in a folder — determines the build workflow. */
-type SiteKind = "static" | "node-build" | "jekyll";
+type SiteKind = "static" | "node-build" | "docusaurus" | "jekyll";
 
 interface Detected {
   kind: SiteKind;
@@ -157,9 +157,11 @@ function describeCandidate(c: SiteCandidate): string {
   const extra =
     c.detected.kind === "node-build"
       ? ` (${c.detected.packageManager} run ${c.detected.buildScript} → ${c.detected.publishDir}/)`
-      : c.detected.kind === "jekyll"
-        ? ` → ${c.detected.publishDir}/`
-        : "";
+      : c.detected.kind === "docusaurus"
+        ? ` (${c.detected.packageManager} run build → ${c.detected.publishDir}/)`
+        : c.detected.kind === "jekyll"
+          ? ` → ${c.detected.publishDir}/`
+          : "";
   return `${c.detected.kind} at ${loc}${extra}`;
 }
 
@@ -181,6 +183,22 @@ function detectAt(absDir: string, subPath: string): Detected | null {
     return {
       kind: "jekyll",
       publishDir: subPath ? `${subPath}/_site` : "_site",
+      workDir: subPath,
+    };
+  }
+
+  // Docusaurus before generic node-build — output dir is fixed (`build/`)
+  // and the workflow needs Pages-aware tweaks (cache key, baseUrl) the
+  // generic flow doesn't apply.
+  const docusaurusConfig = ["docusaurus.config.ts", "docusaurus.config.js", "docusaurus.config.mjs"]
+    .map((f) => join(absDir, f))
+    .find((p) => existsSync(p));
+  if (docusaurusConfig && existsSync(join(absDir, "package.json"))) {
+    return {
+      kind: "docusaurus",
+      publishDir: subPath ? `${subPath}/build` : "build",
+      packageManager: detectPackageManager(absDir),
+      buildScript: "build",
       workDir: subPath,
     };
   }
@@ -245,8 +263,8 @@ function guessNodeOutDir(buildCmd: string): string {
 }
 
 async function confirmProjectShape(detected: Detected): Promise<Detected> {
-  // Jekyll always builds to _site — nothing to ask.
-  if (detected.kind === "jekyll") return detected;
+  // Jekyll always builds to _site, Docusaurus to build/ — nothing to ask.
+  if (detected.kind === "jekyll" || detected.kind === "docusaurus") return detected;
 
   const publishDir = await input({
     message: "Folder to publish (relative to repo root):",
@@ -262,6 +280,7 @@ async function promptManualSite(cwd: string): Promise<Detected> {
     choices: [
       { name: "static — plain HTML, no build step", value: "static" },
       { name: "node-build — package.json with a `build` script", value: "node-build" },
+      { name: "docusaurus — docs site built with Docusaurus 3", value: "docusaurus" },
       { name: "jekyll", value: "jekyll" },
     ],
   });
@@ -276,6 +295,16 @@ async function promptManualSite(cwd: string): Promise<Detected> {
     return {
       kind,
       publishDir: normWorkDir ? `${normWorkDir}/_site` : "_site",
+      workDir: normWorkDir,
+    };
+  }
+
+  if (kind === "docusaurus") {
+    return {
+      kind,
+      publishDir: normWorkDir ? `${normWorkDir}/build` : "build",
+      packageManager: detectPackageManager(normWorkDir ? join(cwd, normWorkDir) : cwd),
+      buildScript: "build",
       workDir: normWorkDir,
     };
   }
@@ -467,16 +496,19 @@ jobs:
 `;
   }
 
-  // node-build
+  // node-build or docusaurus — both install + build via a node package
+  // manager. Docusaurus differs only in step labels and the implicit
+  // publishDir = `build/` (set by detectAt).
   const pm = d.packageManager ?? "npm";
   const installCmd = pm === "npm" ? "npm ci" : `${pm} install --frozen-lockfile`;
   const buildCmd = `${pm} run ${d.buildScript ?? "build"}`;
   const wd = d.workDir ? `\n        working-directory: ${d.workDir}` : "";
+  const buildLabel = d.kind === "docusaurus" ? "Build with Docusaurus" : "Build";
   const nodeSetup =
     pm === "pnpm"
       ? `      - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -496,7 +528,7 @@ jobs:
   return `${header}${nodeSetup}
       - name: Install dependencies
         run: ${installCmd}${wd}
-      - name: Build
+      - name: ${buildLabel}
         run: ${buildCmd}${wd}
 ${tail}`;
 }
@@ -506,12 +538,25 @@ function writeCnameFile(cwd: string, d: Detected, domain: string): void {
   // it from the built site. Location depends on kind + workDir.
   //   - jekyll / static: source dir (Jekyll copies it into _site; static
   //     publishes the source dir directly).
+  //   - docusaurus: `<workDir>/static/` — Docusaurus copies static/* verbatim into build/.
   //   - node-build: prefer `<workDir>/public/` (Vite/CRA/Astro copy that
   //     verbatim into the build output). Fall back to the build dir root.
   const siteDir = d.workDir ? join(cwd, d.workDir) : cwd;
   let target: string;
 
-  if (d.kind === "node-build") {
+  if (d.kind === "docusaurus") {
+    const staticDir = join(siteDir, "static");
+    if (existsSync(staticDir)) {
+      target = join(staticDir, "CNAME");
+    } else {
+      target = join(siteDir, "CNAME");
+      console.log(
+        chalk.yellow(
+          `  ⚠ No static/ folder in ${d.workDir || "repo root"}. Wrote CNAME there — Docusaurus normally copies static/ into build/.`,
+        ),
+      );
+    }
+  } else if (d.kind === "node-build") {
     const publicDir = join(siteDir, "public");
     if (existsSync(publicDir)) {
       target = join(publicDir, "CNAME");

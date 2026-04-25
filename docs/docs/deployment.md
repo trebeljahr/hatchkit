@@ -1,26 +1,30 @@
 ---
+sidebar_position: 7
 title: Deploying the docs site
-nav_order: 8
 ---
 
 # Deploying the docs site (GitHub Pages)
 
-This page documents exactly how **this documentation site** is published. If you fork hatchkit or want a similar flow for your own project, copy the three files referenced below and change the URL.
+This page documents exactly how **this documentation site** is published. If you fork hatchkit or want a similar flow for your own project, copy the three files referenced below and change the URLs.
+
+The site itself is built with [Docusaurus 3](https://docusaurus.io). The CI pipeline runs Node, builds the static site, and uploads it to GitHub Pages via the official actions.
 
 ## What's in the repo
 
 | File | Role |
 |---|---|
-| [`docs/_config.yml`](https://github.com/trebeljahr/hatchkit/blob/main/docs/_config.yml) | Jekyll site config. Uses the `just-the-docs` **remote theme** so there's nothing to vendor in. |
-| [`docs/Gemfile`](https://github.com/trebeljahr/hatchkit/blob/main/docs/Gemfile) | Ruby deps — pinned to Jekyll 4.3 + just-the-docs. |
-| [`docs/*.md`](https://github.com/trebeljahr/hatchkit/tree/main/docs) | The actual content (this file, `index.md`, etc). Plain markdown with front matter. |
+| [`docs/docusaurus.config.ts`](https://github.com/trebeljahr/hatchkit/blob/main/docs/docusaurus.config.ts) | Site config — title, base URL, theme, navbar, footer. |
+| [`docs/sidebars.ts`](https://github.com/trebeljahr/hatchkit/blob/main/docs/sidebars.ts) | Sidebar order. Plain TS; one entry per page. |
+| [`docs/package.json`](https://github.com/trebeljahr/hatchkit/blob/main/docs/package.json) | Docusaurus + plugin deps; `build` / `start` / `serve` scripts. |
+| [`docs/docs/*.md`](https://github.com/trebeljahr/hatchkit/tree/main/docs/docs) | The actual content. Plain markdown with Docusaurus front matter. |
+| [`docs/src/css/custom.css`](https://github.com/trebeljahr/hatchkit/blob/main/docs/src/css/custom.css) | Theme overrides on top of Docusaurus's classic theme. |
 | [`.github/workflows/docs.yml`](https://github.com/trebeljahr/hatchkit/blob/main/.github/workflows/docs.yml) | The GitHub Actions workflow that builds + deploys Pages. |
 
 ## The deployment flow, end-to-end
 
 ```
 ┌──────────────────────┐     push to main     ┌──────────────────────┐
-│ edit docs/*.md       │ ───────────────────> │ GitHub Actions:      │
+│ edit docs/docs/*.md  │ ───────────────────> │ GitHub Actions:      │
 │ locally + commit     │  (docs/** changed)    │ docs.yml workflow   │
 └──────────────────────┘                       └──────────┬───────────┘
                                                           │
@@ -28,15 +32,16 @@ This page documents exactly how **this documentation site** is published. If you
                                       ▼                                       ▼
                               ┌──────────────┐                         ┌──────────────┐
                               │ build job    │                         │ deploy job   │
-                              │ ruby 3.2 +   │   artifact upload       │ deploy-pages │
-                              │ bundler      │ ──────────────────────> │ → github.io  │
-                              │ jekyll build │                         │              │
+                              │ Node 20 +    │   artifact upload       │ deploy-pages │
+                              │ pnpm + cache │ ──────────────────────> │ → github.io  │
+                              │ docusaurus   │                         │              │
+                              │   build      │                         │              │
                               └──────────────┘                         └──────────────┘
 ```
 
-The workflow is defined in [`.github/workflows/docs.yml`](https://github.com/trebeljahr/hatchkit/blob/main/.github/workflows/docs.yml) and has two jobs:
+The workflow has two jobs:
 
-1. **build** — checks out the repo, sets up Ruby, runs `bundle install` (cached via `ruby/setup-ruby`'s `bundler-cache`), runs `jekyll build` with the correct `--baseurl`, and uploads `docs/_site` as a Pages artifact.
+1. **build** — checks out the repo, sets up Node + pnpm, installs deps inside `docs/`, runs `pnpm build` (which calls `docusaurus build` with the Pages base path), and uploads `docs/build` as a Pages artifact.
 2. **deploy** — calls `actions/deploy-pages@v4`. This is what publishes the artifact to the `github-pages` environment and returns the final URL.
 
 ### Path filters
@@ -84,17 +89,19 @@ One-time setup in the GitHub UI:
 
 ```bash
 cd docs
-bundle install          # once
-bundle exec jekyll serve --livereload
-# → http://127.0.0.1:4000/hatchkit/
+pnpm install --ignore-workspace   # once; --ignore-workspace because docs/ isn't part of the monorepo's pnpm workspace
+pnpm start                        # dev server with hot reload
+# → http://localhost:3000/hatchkit/
+
+# Or build + serve the production output exactly as Pages will:
+pnpm build && pnpm serve
 ```
 
-The `baseurl: "/hatchkit"` in `_config.yml` means local URLs include the prefix too, matching what Pages serves. If you forked and renamed the repo, update `baseurl` and `url` in `_config.yml`.
+The `baseUrl: "/hatchkit/"` in `docusaurus.config.ts` means local URLs include the prefix too, matching what Pages serves. If you forked and renamed the repo, update `baseUrl` and `url` in the config.
 
 ## Why this setup?
 
-- **No custom static site generator to learn** — it's just Markdown with YAML front matter.
-- **Remote theme** — no vendored CSS or theme files in the repo; `just-the-docs` ships nav, search, dark mode, and heading anchors out of the box.
+- **Docusaurus** — first-class TypeScript config, search via Algolia or local plugin, built-in dark mode, MDX support. Dev experience is much closer to a normal Node app than the previous Jekyll setup.
 - **Path-filtered workflow** — editing the CLI doesn't trigger a docs build, and editing docs doesn't trigger the CLI test matrix.
 - **Actions-based deploy**, not the legacy "branch source" mode — cleaner permissions model, works even on private repos with Pro/Team.
 
@@ -103,6 +110,10 @@ The `baseurl: "/hatchkit"` in `_config.yml` means local URLs include the prefix 
 | Symptom | Likely cause |
 |---|---|
 | 404 on every page after first deploy | Pages source not set to **GitHub Actions** in repo settings. |
-| CSS / JS 404s | `baseurl` in `_config.yml` doesn't match the repo name. |
-| `Could not find just-the-docs` in the build log | `docs/Gemfile` missing or `bundler-cache` couldn't resolve. Delete `docs/Gemfile.lock` and re-push. |
+| CSS / JS 404s | `baseUrl` in `docusaurus.config.ts` doesn't match the repo name. |
+| `Module not found` in build log | `pnpm install` step missing or lockfile out of sync. |
 | Workflow never runs | Your commit didn't touch a path in the filter, or Actions are disabled on the fork. |
+
+## Just want this setup for your own repo?
+
+Run `hatchkit gh-pages` from inside any repo with a Docusaurus site. It detects the config, writes the right workflow, optionally wires a custom domain at Cloudflare or INWX, and you're done. See [the `gh-pages` reference](./gh-pages).

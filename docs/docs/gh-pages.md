@@ -1,6 +1,6 @@
 ---
-title: GitHub Pages (hatchkit gh-pages)
-nav_order: 6
+sidebar_position: 6
+title: GitHub Pages
 ---
 
 # `hatchkit gh-pages`
@@ -34,19 +34,22 @@ Scans these locations: repo root, `docs/`, `site/`, `www/`, `web/`. In each, cla
 
 | Kind | Trigger | What the workflow does |
 |---|---|---|
+| **docusaurus** | `docusaurus.config.{ts,js,mjs}` | Node + detected pkg manager → `docusaurus build` → uploads `build/` → deploys. |
 | **jekyll** | `Gemfile` + `_config.yml` | Sets up Ruby + bundler, `bundle exec jekyll build` with the correct `baseurl` + `working-directory`, uploads `_site`, deploys. |
 | **node-build** | `package.json` has a `build` script (and isn't a workspace root) | Sets up your detected package manager (pnpm / npm / yarn / bun from the lockfile), installs + builds in the right `working-directory`, uploads the build output (`dist` / `build` / `out` / …), deploys. |
 | **static** | `index.html` | Checks out, uploads the source folder as-is, deploys. |
 
 For `node-build`, the publish dir is guessed from the build command (`vite` → `dist`, `react-scripts` → `build`, `astro` → `dist`, `next` → `out`) and you can override it before anything is written.
 
+Docusaurus is detected before `node-build` because the build dir is fixed (`build/`) and `baseUrl` handling needs Pages-aware tweaking that the generic node flow doesn't do.
+
 ## Monorepos / hybrid layouts
 
-If the same repo has both a root build **and** a `docs/` site (this repo, for example — a CLI at the root, Jekyll docs under `docs/`), you'll get a picker:
+If the same repo has both a root build **and** a `docs/` site (this repo, for example — a CLI at the root, a Docusaurus site under `docs/`), you'll get a picker:
 
 ```
 Found 2 possible sites — pick one:
-  ❯ jekyll at docs/ → docs/_site/
+  ❯ docusaurus at docs/ → docs/build/
     node-build at repo root (pnpm run build → dist/)
 ```
 
@@ -63,6 +66,7 @@ When you say yes:
 
 1. **Pages side:** `PUT /repos/:owner/:repo/pages -f cname=<domain>` — this is what makes GitHub serve the site at your domain and provision a cert.
 2. **CNAME file:** written into the *published* folder:
+   - Docusaurus → `static/CNAME` (Docusaurus copies `static/*` verbatim into `build/`).
    - Jekyll → the source dir (Jekyll copies it into `_site`).
    - Static → repo root.
    - Node build → `public/` if it exists (Vite/CRA/Astro all copy that verbatim into the build). Otherwise repo root with a warning to wire it into your build.
@@ -93,6 +97,20 @@ hatchkit gh-pages
 git add -A && git commit -m "ci: pages" && git push
 # → https://sprites.example.com
 ```
+
+## Docusaurus-size projects
+
+If you're building a docs site with Docusaurus, `gh-pages` knows what to do:
+
+```bash
+npx create-docusaurus@latest my-docs classic --typescript
+cd my-docs
+git init && gh repo create my-docs --public --source=.
+git add -A && git commit -m "init"
+hatchkit gh-pages              # detects Docusaurus, writes the right workflow
+```
+
+The generated workflow uses your lockfile's package manager and runs `docusaurus build` with the Pages base path, then uploads `build/`.
 
 ## Not a good fit for…
 

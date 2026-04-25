@@ -1,6 +1,6 @@
 ---
+sidebar_position: 2
 title: Getting Started
-nav_order: 2
 ---
 
 # Getting Started
@@ -88,5 +88,5 @@ Any field missing from the config file falls back to a sane default — no promp
 
 ## Next
 
-- [Commands reference](commands.html)
-- [Architecture](architecture.html) for what actually happens under the hood
+- [Commands reference](./commands)
+- [Architecture](./architecture) for what actually happens under the hood

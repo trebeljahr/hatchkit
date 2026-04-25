@@ -1,6 +1,6 @@
 ---
+sidebar_position: 8
 title: Architecture
-nav_order: 7
 ---
 
 # Architecture
@@ -23,6 +23,7 @@ hatchkit/
 │     └─ utils/           # flags, exec, validation, version
 ├─ starter/          # full-stack template (git submodule)
 ├─ infra/            # Terraform + Coolify scripts (git submodule)
+├─ docs/             # this Docusaurus site
 └─ services/ml/      # pre-built ML service templates
 ```
 

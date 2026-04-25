@@ -1,6 +1,6 @@
 ---
+sidebar_position: 3
 title: Commands
-nav_order: 3
 ---
 
 # Commands reference
@@ -117,6 +117,7 @@ hatchkit gh-pages
 |---|---|---|
 | `static` | `index.html` at the repo root, no `build` script | checkout → `upload-pages-artifact` → `deploy-pages` |
 | `node-build` | `package.json` with a `build` script (pnpm / npm / yarn / bun auto-detected from lockfile) | install → build → upload build output → deploy |
+| `docusaurus` | `docusaurus.config.{ts,js}` present | Node + `docusaurus build` → upload `build/` → deploy |
 | `jekyll` | `Gemfile` + `_config.yml` at the root **or** under `docs/` | Ruby + `bundle exec jekyll build` → upload `_site` → deploy |
 
 For `node-build`, the publish dir is guessed from the build command (`vite` → `dist`, `react-scripts` → `build`, `astro` → `dist`, `next` → `out`) and you confirm interactively.
@@ -126,7 +127,7 @@ For `node-build`, the publish dir is guessed from the build command (`vite` → 
 If you opt in:
 
 1. Calls `PUT /repos/:owner/:repo/pages -f cname=<domain>` to register it with Pages.
-2. Writes a `CNAME` file into the published folder (or `public/` for node builds).
+2. Writes a `CNAME` file into the published folder (or `public/` for node builds, `static/` for Docusaurus).
 3. Wires DNS at your provider:
    - **Cloudflare** — uses the token in your keychain; creates/updates `A` records (apex) or a `CNAME` (subdomain) to `<user>.github.io`. Idempotent.
    - **INWX / manual** — prints the records you need to add yourself.
@@ -135,7 +136,7 @@ If you opt in:
 
 - Sprite editors, palette tools, one-off demos (plain `index.html`).
 - Vite / Astro / CRA static sites (client-side only).
-- Jekyll or other SSGs whose output is pure HTML.
+- Docusaurus and other SSGs whose output is pure HTML.
 - A `docs/` folder inside a larger monorepo (like this one).
 
 ### Not a good fit
