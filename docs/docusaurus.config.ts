@@ -19,11 +19,7 @@ const config: Config = {
   trailingSlash: false,
 
   onBrokenLinks: "warn",
-  markdown: {
-    hooks: {
-      onBrokenMarkdownLinks: "warn",
-    },
-  },
+  onBrokenMarkdownLinks: "warn",
 
   i18n: {
     defaultLocale: "en",
