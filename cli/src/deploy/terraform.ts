@@ -1,44 +1,104 @@
-import { join } from "node:path";
+import { promises as dnsPromises } from "node:dns";
+import { select } from "@inquirer/prompts";
 import chalk from "chalk";
-import { type DnsConfig, getDnsConfig, getHetznerToken, getS3Config } from "../config.js";
+import {
+  type DnsConfig,
+  getDnsConfig,
+  getHetznerToken,
+  getS3Config,
+  promptAndSaveInwxRegistrarCreds,
+} from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
+import { resolveStackDir } from "../scaffold/infra.js";
+import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { exec, execStream } from "../utils/exec.js";
 import { InwxApi } from "../utils/inwx-api.js";
 
+/**
+ * Outcome of the registrar-flip preflight. Decided before plan; consumed
+ * after apply to decide whether to call INWX.
+ *
+ *  - flip:  perform the NS-flip post-apply with these creds
+ *  - skip:  no-op post-apply (already pointed, or user opted out)
+ */
+type RegistrarPlan =
+  | { action: "flip"; registrarUsername: string; registrarPassword: string }
+  | { action: "skip"; reason: string };
+
+/** Result of `runTerraform`. Returns metadata the caller can record in
+ *  the run ledger so a later rollback knows which stack to destroy. */
+export interface RunTerraformResult {
+  /** Set when an apply actually ran. Undefined for manual-DNS or skip. */
+  applied?: { stackDir: string; tfvarsPath: string };
+}
+
 /** Run Terraform for the project. */
-export async function runTerraform(config: ProjectConfig, repoRoot: string): Promise<void> {
+export async function runTerraform(
+  config: ProjectConfig,
+  repoRoot: string,
+): Promise<RunTerraformResult> {
   const hetznerToken = await getHetznerToken();
   const dnsConfig = await getDnsConfig();
+  const dnsProvider = (dnsConfig?.provider ?? "inwx") as "inwx" | "cloudflare" | "manual";
 
-  const stackDir =
-    config.deployTarget === "new"
-      ? join(repoRoot, "terraform", "stacks", "node-realtime")
-      : join(repoRoot, "terraform", "stacks", "dns-only");
+  console.log(chalk.bold("\n  ── Terraform ──────────────────────────────────────────────\n"));
 
-  const tfvarsFile = join(stackDir, `${config.name}.tfvars`);
+  // Manual DNS on an existing server: nothing for Terraform to do.
+  if (config.deployTarget === "existing" && dnsProvider === "manual") {
+    console.log(chalk.dim("  Manual DNS — no Terraform stack to apply. Set DNS records yourself."));
+    return {};
+  }
 
-  // Build env vars for Terraform
+  const stackDir = resolveStackDir(repoRoot, config.deployTarget, dnsProvider);
+  if (!stackDir) {
+    console.log(chalk.dim("  No matching Terraform stack — skipping."));
+    return {};
+  }
+  const tfvarsFile = `${stackDir}/${config.name}.tfvars`;
+
+  // Build env vars for Terraform — only what the chosen stack needs.
   const env: Record<string, string> = {};
 
   if (hetznerToken) {
     env.TF_VAR_hcloud_token = hetznerToken;
   }
 
-  // DNS credentials. The stack's dns_provider variable decides which
-  // provider actually *applies* records, but the INWX Terraform provider
-  // calls account.login during Configure() regardless, so valid INWX
-  // creds must always be passed through when we have them. Either the
-  // primary DNS creds (provider = "inwx") or the registrar creds
-  // (provider = "cloudflare" with INWX still holding the domain) satisfy
-  // that requirement.
-  if (dnsConfig?.provider === "inwx") {
-    env.TF_VAR_inwx_username = dnsConfig.username || "";
-    env.TF_VAR_inwx_password = dnsConfig.password || "";
-  } else if (dnsConfig?.provider === "cloudflare") {
-    env.TF_VAR_cloudflare_api_token = dnsConfig.apiToken || "";
-    if (dnsConfig.registrarUsername && dnsConfig.registrarPassword) {
-      env.TF_VAR_inwx_username = dnsConfig.registrarUsername;
-      env.TF_VAR_inwx_password = dnsConfig.registrarPassword;
+  // Preflight + DNS creds. The dns-only-* stacks each only declare one
+  // DNS provider, so we pass only that provider's creds. The legacy
+  // node-realtime stack still bundles both providers (count-gated
+  // modules) and inherits the older "INWX creds required even for CF"
+  // footgun — fixing that is a follow-up.
+  let registrarPlan: RegistrarPlan | null = null;
+  if (dnsProvider === "inwx") {
+    if (!dnsConfig?.username || !dnsConfig.password) {
+      throw new Error(
+        "INWX is configured as the DNS provider but credentials are missing. Re-run `hatchkit config add dns`.",
+      );
+    }
+    env.TF_VAR_inwx_username = dnsConfig.username;
+    env.TF_VAR_inwx_password = dnsConfig.password;
+  } else if (dnsProvider === "cloudflare") {
+    if (!dnsConfig?.apiToken) {
+      throw new Error(
+        "Cloudflare is configured as the DNS provider but the API token is missing from the keychain.",
+      );
+    }
+    env.TF_VAR_cloudflare_api_token = dnsConfig.apiToken;
+
+    // dns-only-cloudflare doesn't ask for INWX creds at all. The
+    // node-realtime path still does (legacy footgun) — we mirror the
+    // old behavior there until that stack is split too.
+    if (config.deployTarget === "new") {
+      if (dnsConfig.registrarUsername && dnsConfig.registrarPassword) {
+        env.TF_VAR_inwx_username = dnsConfig.registrarUsername;
+        env.TF_VAR_inwx_password = dnsConfig.registrarPassword;
+      }
+    } else {
+      // dns-only-cloudflare: figure out whether a registrar NS-flip is
+      // even needed *before* terraform runs, and prompt for INWX creds
+      // inline if it is. We only block on a working answer here so that
+      // the post-apply step has what it needs (or knows to skip).
+      registrarPlan = await preflightRegistrarFlip(config.baseDomain, dnsConfig);
     }
   }
 
@@ -53,8 +113,6 @@ export async function runTerraform(config: ProjectConfig, repoRoot: string): Pro
       env.TF_VAR_s3_secret_key = s3.secretKey;
     }
   }
-
-  console.log(chalk.bold("\n  ── Terraform ──────────────────────────────────────────────\n"));
 
   // Init
   const initResult = await exec("terraform", ["init"], {
@@ -86,30 +144,157 @@ export async function runTerraform(config: ProjectConfig, repoRoot: string): Pro
 
   console.log(chalk.green("\n  ✓ Terraform apply complete"));
 
-  // Post-apply: if we just deployed to Cloudflare but the domain is
-  // still registered at INWX, update INWX's delegated NS to point at
-  // Cloudflare. This is the "auto-wire" step that would otherwise
-  // require clicking through the INWX web UI for every domain.
-  if (
-    dnsConfig?.provider === "cloudflare" &&
-    dnsConfig.registrarUsername &&
+  // Post-apply: NS-flip if dns-only-cloudflare path decided one was
+  // needed and we now have creds. Both decisions live in registrarPlan
+  // so this code doesn't re-derive intent.
+  if (registrarPlan?.action === "flip") {
+    await updateInwxNameserversFromTfOutput(stackDir, env, {
+      username: registrarPlan.registrarUsername,
+      password: registrarPlan.registrarPassword,
+    });
+  } else if (registrarPlan?.action === "skip") {
+    console.log(chalk.dim(`  (registrar NS-flip skipped — ${registrarPlan.reason})`));
+  } else if (
+    config.deployTarget === "new" &&
+    dnsProvider === "cloudflare" &&
+    dnsConfig?.registrarUsername &&
     dnsConfig.registrarPassword
   ) {
-    await updateInwxNameserversFromTfOutput(stackDir, env, dnsConfig);
+    // Legacy node-realtime path — preserve the original behavior.
+    await updateInwxNameserversFromTfOutput(stackDir, env, {
+      username: dnsConfig.registrarUsername,
+      password: dnsConfig.registrarPassword,
+    });
   }
+
+  return { applied: { stackDir, tfvarsPath: tfvarsFile } };
+}
+
+/**
+ * Decide whether the registrar NS-flip is worth doing for this deploy:
+ *
+ *   1. Look the domain up in Cloudflare → its assigned name_servers.
+ *   2. Resolve the current public NS for the domain.
+ *   3. If they already match → skip (NS already pointed at Cloudflare).
+ *   4. If they don't match → a flip is needed. Use saved INWX registrar
+ *      creds if present; otherwise prompt for them inline (with an
+ *      "I'll do it manually" escape hatch).
+ *
+ * Returns a plan describing what post-apply should do. Network errors
+ * during the lookup (CF API down, no internet) degrade gracefully into
+ * "skip" with a note — the user can re-run `hatchkit dns
+ * link-to-cloudflare` later.
+ */
+async function preflightRegistrarFlip(
+  domain: string,
+  dnsConfig: DnsConfig,
+): Promise<RegistrarPlan> {
+  console.log(chalk.dim("\n  Checking whether the registrar NS-flip is needed..."));
+
+  // Strip subdomain — registrar delegation is at the apex.
+  const apex = apexDomain(domain);
+
+  let expectedNs: string[];
+  try {
+    if (!dnsConfig.apiToken) {
+      return { action: "skip", reason: "no Cloudflare token to look up zone" };
+    }
+    const cf = new CloudflareApi({ token: dnsConfig.apiToken, accountId: dnsConfig.accountId });
+    const zone = await cf.getZoneByName(apex);
+    if (!zone) {
+      return {
+        action: "skip",
+        reason: `${apex} isn't in your Cloudflare account yet — add the zone, then re-run`,
+      };
+    }
+    expectedNs = zone.name_servers.map((n) => n.toLowerCase()).sort();
+  } catch (err) {
+    return { action: "skip", reason: `Cloudflare lookup failed: ${(err as Error).message}` };
+  }
+
+  let currentNs: string[];
+  try {
+    const ns = await dnsPromises.resolveNs(apex);
+    currentNs = ns.map((n) => n.toLowerCase()).sort();
+  } catch {
+    // ENOTFOUND on a brand-new domain just means "no NS yet" — we
+    // definitely need the flip.
+    currentNs = [];
+  }
+
+  const same =
+    currentNs.length === expectedNs.length && currentNs.every((n, i) => n === expectedNs[i]);
+  if (same) {
+    return { action: "skip", reason: "NS already point at Cloudflare" };
+  }
+
+  console.log(chalk.dim(`    expected NS: ${expectedNs.join(", ")}`));
+  console.log(chalk.dim(`    current NS:  ${currentNs.length ? currentNs.join(", ") : "(none)"}`));
+
+  // Need a flip. Try saved creds first.
+  if (dnsConfig.registrarUsername && dnsConfig.registrarPassword) {
+    return {
+      action: "flip",
+      registrarUsername: dnsConfig.registrarUsername,
+      registrarPassword: dnsConfig.registrarPassword,
+    };
+  }
+
+  // No saved creds — ask inline.
+  console.log(
+    chalk.yellow(
+      `\n  ${apex} needs its registrar NS pointed at Cloudflare, but INWX registrar creds aren't configured.`,
+    ),
+  );
+  const choice = await select<"provide" | "skip">({
+    message: "How would you like to proceed?",
+    choices: [
+      {
+        name: "Provide INWX registrar credentials now (saved to keychain for reuse)",
+        value: "provide",
+      },
+      {
+        name: "Skip — I'll point NS at Cloudflare manually (or my registrar isn't INWX)",
+        value: "skip",
+      },
+    ],
+  });
+
+  if (choice === "skip") {
+    return { action: "skip", reason: "user opted to flip NS manually" };
+  }
+
+  const creds = await promptAndSaveInwxRegistrarCreds();
+  return {
+    action: "flip",
+    registrarUsername: creds.username,
+    registrarPassword: creds.password,
+  };
+}
+
+/** "ai.example.com" → "example.com". TLDs with second-level domains
+ *  (".co.uk") aren't auto-detected — registrar lookups only happen on
+ *  the apex anyway, so we just take the last two labels. Good enough
+ *  for >99% of cases; users with country-code 2LDs can pre-configure
+ *  registrar creds. */
+function apexDomain(domain: string): string {
+  const parts = domain.split(".");
+  if (parts.length <= 2) return domain;
+  return parts.slice(-2).join(".");
 }
 
 /**
  * Read the stack's dns_provider + dns_domain + dns_nameservers outputs
  * and push them to INWX as the new delegated NS for that domain. No-op
- * if the stack didn't actually apply a Cloudflare zone (e.g. user kept
- * dns_provider = "inwx" in tfvars even though their CLI config says
- * Cloudflare).
+ * if the stack didn't actually apply a Cloudflare zone (e.g. legacy
+ * node-realtime stack with dns_provider = "inwx" in tfvars). Caller is
+ * responsible for the decision to call this — the registrar plan in
+ * `runTerraform` handles preflight + creds.
  */
 async function updateInwxNameserversFromTfOutput(
   stackDir: string,
   env: Record<string, string>,
-  dnsConfig: DnsConfig,
+  registrarCreds: { username: string; password: string },
 ): Promise<void> {
   const out = await exec("terraform", ["output", "-json"], {
     cwd: stackDir,
@@ -157,15 +342,9 @@ async function updateInwxNameserversFromTfOutput(
   console.log(chalk.dim(`  Domain:  ${domain}`));
   console.log(chalk.dim(`  New NS:  ${nameservers.join(", ")}`));
 
-  // registrarUsername/Password presence is guaranteed by the caller's
-  // guard — assert here to keep the types clean.
-  if (!dnsConfig.registrarUsername || !dnsConfig.registrarPassword) {
-    return;
-  }
-
   const inwx = new InwxApi({
-    username: dnsConfig.registrarUsername,
-    password: dnsConfig.registrarPassword,
+    username: registrarCreds.username,
+    password: registrarCreds.password,
     sandbox: process.env.INWX_SANDBOX === "1",
   });
 

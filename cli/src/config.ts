@@ -559,6 +559,36 @@ export async function ensureDns(): Promise<DnsConfig> {
   return { ...meta, apiToken, registrarPassword };
 }
 
+/**
+ * Prompt for INWX *registrar* credentials and persist them. Used when the
+ * primary DNS provider is Cloudflare but the domain is still registered
+ * at INWX, and we discovered late (during `runTerraform` preflight) that
+ * the registrar NS-flip can't proceed without creds.
+ *
+ * Mirrors the inline branch in `ensureDns` ([config.ts] cloudflare path).
+ * Updates the existing dns metadata in place (preserves provider, token,
+ * accountId) and writes the password to the keychain.
+ */
+export async function promptAndSaveInwxRegistrarCreds(): Promise<{
+  username: string;
+  password: string;
+}> {
+  console.log(chalk.dim("\n  → Find these at: https://www.inwx.com → My Account"));
+  const username = await input({
+    message: "INWX username (registrar):",
+    validate: validateRequired,
+  });
+  const pwd = await confirmPastedSecret("INWX password (registrar)");
+
+  const meta = store.get("providers.dns") as DnsMeta | undefined;
+  if (meta) {
+    store.set("providers.dns", { ...meta, registrarUsername: username });
+  }
+  await setSecret(SECRET_KEYS.dnsInwxRegistrarPassword, pwd);
+  console.log(chalk.green("  ✓ INWX registrar credentials saved"));
+  return { username, password: pwd };
+}
+
 export async function getDnsConfig(): Promise<DnsConfig | null> {
   await migrateSecret("providers.dns.password", SECRET_KEYS.dnsInwxPassword);
   await migrateSecret("providers.dns.apiToken", SECRET_KEYS.dnsCloudflareToken);

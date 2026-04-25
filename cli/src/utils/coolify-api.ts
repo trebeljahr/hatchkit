@@ -174,6 +174,44 @@ export class CoolifyApi {
     return this.request("GET", `/databases/${uuid}`);
   }
 
+  /** Delete an application by uuid. Idempotent: 404 → no-op. Used by
+   *  the rollback flow when `hatchkit create` fails partway through. */
+  async deleteApplication(uuid: string): Promise<"deleted" | "not-found"> {
+    return this.delete(`/applications/${uuid}`);
+  }
+
+  /** Delete a database by uuid. Idempotent: 404 → no-op. */
+  async deleteDatabase(uuid: string): Promise<"deleted" | "not-found"> {
+    return this.delete(`/databases/${uuid}`);
+  }
+
+  /** Delete a project by uuid. Idempotent: 404 → no-op. Coolify rejects
+   *  this if the project still has resources, so call after deleting
+   *  apps + databases. */
+  async deleteProject(uuid: string): Promise<"deleted" | "not-found"> {
+    return this.delete(`/projects/${uuid}`);
+  }
+
+  /** Raw DELETE that handles both 404 (already gone) and empty bodies
+   *  (Coolify returns 200 with no body for some delete endpoints). */
+  private async delete(path: string): Promise<"deleted" | "not-found"> {
+    const res = await fetch(`${this.url}/api/v1${path}`, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        Accept: "application/json",
+      },
+    });
+    if (res.status === 404) return "not-found";
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(
+        `Coolify API DELETE ${path} failed: ${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`,
+      );
+    }
+    return "deleted";
+  }
+
   /** Find a project by exact name. Returns null if none matches. */
   async findProjectByName(name: string): Promise<{ uuid: string; name: string } | null> {
     const projects = (await this.request("GET", "/projects")) as Array<{

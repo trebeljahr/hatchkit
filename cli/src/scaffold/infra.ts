@@ -20,15 +20,16 @@ export function generateTfvars(config: ProjectConfig): string {
   addSubdomain(`api.${config.subdomain}`, "REST API");
   addSubdomain("admin", "Coolify dashboard");
 
-  // The stack-level dns_provider defaults to "inwx" for backward compat,
-  // but the user's CLI config is the source of truth — emit whichever
-  // provider they configured. "manual" maps to "inwx" because the stack
-  // only accepts "inwx" | "cloudflare"; manual DNS skips Terraform DNS
-  // entirely and is handled upstream.
+  // The user's CLI DNS config decides which stack we target.
+  // "manual" returns "" — caller skips writing tfvars entirely because
+  // neither dns-only stack runs in that case.
   const cfgProvider = getConfig().providers.dns?.provider ?? "inwx";
-  const stackDnsProvider = cfgProvider === "cloudflare" ? "cloudflare" : "inwx";
 
   if (config.deployTarget === "new") {
+    // node-realtime still uses the dual-provider stack (count-gated
+    // modules). The same INWX-eager-auth footgun exists there — split
+    // is deferred to a follow-up.
+    const stackDnsProvider = cfgProvider === "cloudflare" ? "cloudflare" : "inwx";
     return renderString(TFVARS_TEMPLATE, {
       name: config.name,
       serverType: config.serverSize || "cpx21",
@@ -43,15 +44,45 @@ export function generateTfvars(config: ProjectConfig): string {
     });
   }
 
-  // For existing server: DNS-only tfvars
-  return renderString(DNS_ONLY_TFVARS_TEMPLATE, {
+  // For existing server: DNS-only tfvars, per-provider template.
+  if (cfgProvider === "manual") return "";
+  if (cfgProvider === "cloudflare") {
+    return renderString(DNS_ONLY_CLOUDFLARE_TFVARS_TEMPLATE, {
+      domain: config.baseDomain,
+      subdomains,
+      cloudflareProxied: true,
+      targetIpv4: config.serverIp || "",
+      targetIpv6: "",
+    });
+  }
+  return renderString(DNS_ONLY_INWX_TFVARS_TEMPLATE, {
     domain: config.baseDomain,
     subdomains,
-    dnsProvider: stackDnsProvider,
-    cloudflareProxied: true,
     targetIpv4: config.serverIp || "",
     targetIpv6: "",
   });
+}
+
+/**
+ * Resolve the terraform stack directory for a project. Mirrored by
+ * `runTerraform` in deploy/terraform.ts and by `rename-domain.ts`.
+ *
+ * For deployTarget === "existing" the dns-only stack is split per
+ * provider (dns-only-cloudflare / dns-only-inwx) so each only configures
+ * the one provider it actually needs. Returns null for manual DNS — no
+ * Terraform stack runs.
+ */
+export function resolveStackDir(
+  repoRoot: string,
+  deployTarget: "new" | "existing",
+  dnsProvider: "inwx" | "cloudflare" | "manual",
+): string | null {
+  if (deployTarget === "new") {
+    return join(repoRoot, "terraform", "stacks", "node-realtime");
+  }
+  if (dnsProvider === "manual") return null;
+  const name = dnsProvider === "cloudflare" ? "dns-only-cloudflare" : "dns-only-inwx";
+  return join(repoRoot, "terraform", "stacks", name);
 }
 
 /** Generate Coolify stack .env for the project. */
@@ -87,12 +118,23 @@ export interface ScaffoldInfraOptions {
   clientPort?: number;
 }
 
+export interface ScaffoldInfraResult {
+  /** Absolute path of the tfvars file written, if any (omitted for
+   *  manual DNS or when the stack dir doesn't exist). */
+  tfvarsPath?: string;
+  /** Absolute path of the Coolify stack .env written. */
+  coolifyEnvPath?: string;
+  /** The stack dir the tfvars went into — needed for the rollback
+   *  ledger so we can run `terraform destroy` from the right place. */
+  stackDir?: string;
+}
+
 /** Write infra config files. */
 export function scaffoldInfra(
   config: ProjectConfig,
   repoRoot: string,
   options: ScaffoldInfraOptions = {},
-): void {
+): ScaffoldInfraResult {
   // Fail early with a clear message if the infra submodule isn't
   // populated — otherwise Terraform writes are silently skipped and the
   // later terraform/coolify exec steps crash cryptically.
@@ -117,23 +159,37 @@ export function scaffoldInfra(
     console.log(chalk.dim(tfvars));
     console.log(chalk.dim("  --- coolify .env ---"));
     console.log(chalk.dim(coolifyEnv));
-    return;
+    return {};
   }
 
-  // Write Terraform tfvars
-  const tfDir =
-    config.deployTarget === "new"
-      ? join(repoRoot, "terraform", "stacks", "node-realtime")
-      : join(repoRoot, "terraform", "stacks", "dns-only");
+  const result: ScaffoldInfraResult = {};
 
-  if (existsSync(tfDir)) {
-    writeFileSync(join(tfDir, `${config.name}.tfvars`), tfvars, "utf-8");
+  // Write Terraform tfvars (skipped for manual DNS — no stack runs).
+  const cfgProvider = (getConfig().providers.dns?.provider ?? "inwx") as
+    | "inwx"
+    | "cloudflare"
+    | "manual";
+  const tfDir = resolveStackDir(repoRoot, config.deployTarget, cfgProvider);
+
+  if (tfDir && tfvars && existsSync(tfDir)) {
+    const tfvarsPath = join(tfDir, `${config.name}.tfvars`);
+    writeFileSync(tfvarsPath, tfvars, "utf-8");
     console.log(chalk.green(`  ✓ Terraform config: ${tfDir}/${config.name}.tfvars`));
+    result.tfvarsPath = tfvarsPath;
+    result.stackDir = tfDir;
+  } else if (cfgProvider === "manual") {
+    console.log(
+      chalk.dim("  (manual DNS — no Terraform stack to write; set DNS records yourself)"),
+    );
   }
 
   // Write Coolify .env
-  writeFileSync(join(stacksDir, `${config.name}.env`), coolifyEnv, "utf-8");
+  const coolifyEnvPath = join(stacksDir, `${config.name}.env`);
+  writeFileSync(coolifyEnvPath, coolifyEnv, "utf-8");
   console.log(chalk.green(`  ✓ Coolify config: stacks/${config.name}.env`));
+  result.coolifyEnvPath = coolifyEnvPath;
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,10 +250,20 @@ s3_enabled     = false
 {{/if}}
 `;
 
-const DNS_ONLY_TFVARS_TEMPLATE = `dns_provider       = "{{dnsProvider}}"
-cloudflare_proxied = {{cloudflareProxied}}
+const DNS_ONLY_CLOUDFLARE_TFVARS_TEMPLATE = `cloudflare_proxied = {{cloudflareProxied}}
 
 domain = "{{domain}}"
+subdomains = {
+{{#each subdomains}}
+  "{{@key}}" = "{{this}}"
+{{/each}}
+}
+target_ipv4 = "{{targetIpv4}}"
+target_ipv6 = "{{targetIpv6}}"
+dns_ttl = 300
+`;
+
+const DNS_ONLY_INWX_TFVARS_TEMPLATE = `domain = "{{domain}}"
 subdomains = {
 {{#each subdomains}}
   "{{@key}}" = "{{this}}"

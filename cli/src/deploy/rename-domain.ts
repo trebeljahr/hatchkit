@@ -93,23 +93,51 @@ export async function runRenameDomain(opts: RenameDomainOptions): Promise<void> 
   const manifestPath = join(projectDir, ".hatchkit.json");
   edits.push(rewriteManifest(manifestPath, manifest, newDomain));
 
-  // 3b. Terraform tfvars — `dns-only` if deployTarget === "existing",
-  //     else `node-realtime`. Mirror the logic in deploy/terraform.ts.
-  const stackDirName = manifest.deployTarget === "existing" ? "dns-only" : "node-realtime";
-  const tfvarsPath = join(
-    monorepoRoot,
-    "infra",
-    "terraform",
-    "stacks",
-    stackDirName,
-    `${manifest.name}.tfvars`,
-  );
-  if (existsSync(tfvarsPath)) {
+  // 3b. Terraform tfvars — same dispatch logic as deploy/terraform.ts.
+  //     For existing-server deploys the dns-only stack is split per
+  //     provider (dns-only-cloudflare / dns-only-inwx); we don't have
+  //     the user's current DNS provider in the manifest, so try both
+  //     known locations and rewrite whichever exists. Manual DNS leaves
+  //     no tfvars to rewrite.
+  const candidatePaths =
+    manifest.deployTarget === "existing"
+      ? [
+          join(
+            monorepoRoot,
+            "infra",
+            "terraform",
+            "stacks",
+            "dns-only-cloudflare",
+            `${manifest.name}.tfvars`,
+          ),
+          join(
+            monorepoRoot,
+            "infra",
+            "terraform",
+            "stacks",
+            "dns-only-inwx",
+            `${manifest.name}.tfvars`,
+          ),
+        ]
+      : [
+          join(
+            monorepoRoot,
+            "infra",
+            "terraform",
+            "stacks",
+            "node-realtime",
+            `${manifest.name}.tfvars`,
+          ),
+        ];
+  const tfvarsPath = candidatePaths.find((p) => existsSync(p));
+  if (tfvarsPath) {
     edits.push(rewriteTfvars(tfvarsPath, oldDomain, newDomain, oldSub, newSub, newBase, oldBase));
   } else {
     console.log(
       chalk.yellow(
-        `  ! No tfvars at ${tfvarsPath.slice(monorepoRoot.length + 1)} — skipping terraform bit.`,
+        `  ! No tfvars found under ${candidatePaths
+          .map((p) => p.slice(monorepoRoot.length + 1))
+          .join(" or ")} — skipping terraform bit.`,
       ),
     );
   }
@@ -135,6 +163,14 @@ export async function runRenameDomain(opts: RenameDomainOptions): Promise<void> 
       console.log(chalk.dim(`    - ${change}`));
     }
   }
+
+  // Derive the stack-dir slug for the follow-up checklist from whichever
+  // tfvars we matched. Falls back to a sensible default if none matched.
+  const stackDirName = tfvarsPath
+    ? basename(tfvarsPath.slice(0, -`/${manifest.name}.tfvars`.length))
+    : manifest.deployTarget === "existing"
+      ? "dns-only-cloudflare"
+      : "node-realtime";
 
   if (opts.dryRun) {
     console.log(chalk.yellow("\n  [dry-run] No files written."));
