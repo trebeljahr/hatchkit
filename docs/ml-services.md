@@ -5,68 +5,91 @@ nav_order: 5
 
 # ML services
 
-Hatchkit treats GPU-backed inference as a first-class feature. You pick which ones you want during `create`, pick a GPU platform, and hatchkit deploys the matching service template and threads its endpoint into your app env.
+Hatchkit treats GPU-backed inference as a first-class feature. Pick which models you want during `create`, choose a deployment platform, and hatchkit deploys the matching service template and threads the endpoint into your app's env.
 
-## Built-in services
+---
 
-Templates live under `services/ml/` in the repo.
+## 3D generation
 
-| Service | Model | What it does | Typical input → output |
+Single image → 3D mesh (GLB). Five options — pick by quality, license, and intended product category.
+
+| Service | Model | License | Notes |
 |---|---|---|---|
-| `3d-sam-objects` | SAM 3D Objects (Meta) | Single image → textured 3D mesh. SOTA on real-image textures (5:1 human-preference win rate). | image → GLB |
-| `3d-sam-body` | SAM 3D Body (Meta) | Single image → posed human body mesh. Built for apparel / try-on. | image → GLB |
-| `3d-hunyuan` | Hunyuan3D (Tencent) | Open-weight leader with PBR textures up to 8K. Non-commercial license by default. | image → GLB |
-| `3d-trellis` | TRELLIS 2 (Microsoft) | Sparse-voxel geometry with strong topology + PBR materials. MIT-licensed. | image → GLB |
-| `3d-extraction` | TripoSR (legacy) | Fast but lower quality. Kept for backwards compatibility. | image → GLB |
-| `image-recognition` | CLIP | Vision classifier / tagger | image → labels + scores |
-| `subtitles` | Whisper | Speech-to-text with timestamps | audio/video → SRT / VTT |
-| `background-removal` | RMBG-2.0 | Foreground segmentation | image → RGBA with alpha |
+| `3d-sam-objects` | **SAM 3D Objects** (Meta) | Open weights | SOTA on real-image textures (5:1 human-preference win). Default. |
+| `3d-sam-body` | **SAM 3D Body** (Meta) | Open weights | Posed human-body reconstruction. For apparel / try-on. |
+| `3d-hunyuan` | **Hunyuan3D** (Tencent) | Non-commercial† | 4–8K PBR textures. Highest open-weight quality. |
+| `3d-trellis` | **TRELLIS 2** (Microsoft) | MIT | Sparse-voxel geometry. Strong topology. |
+| `3d-extraction` | **TripoSR** (Stability AI) | MIT | Legacy — lost the 2024–2025 benchmarks. Kept for back-compat. |
 
-### Picking a 3D model
+†Tencent offers a separate commercial license on request — verify terms before shipping.
 
-- **Default — `3d-sam-objects`**: Meta's benchmark leader for in-the-wild product photos. Best starting point for e-commerce / retail 3D.
-- **Apparel / body — `3d-sam-body`**: Pair with `3d-sam-objects` if your product line includes clothing, accessories on models, or anything where body pose matters.
-- **Highest-quality geometry — `3d-hunyuan`**: 4K-8K PBR textures. Heavier compute (A100). Verify Tencent's license terms before shipping commercially.
-- **Open-source geometry + topology — `3d-trellis`**: MIT-licensed, strong on sharp features. Use this if the Hunyuan license is a blocker.
-- **`3d-extraction` (TripoSR)**: Kept for backwards compatibility. Skip for new projects — benchmarks have moved on.
+### Which one to pick
 
-Each service is a small repo with:
+**Most product photography** → `3d-sam-objects`. Meta benchmarked it specifically on real, in-the-wild images.
 
-- a model loader,
-- a platform-specific entrypoint (Modal `app.py`, RunPod handler, HF inference handler, Replicate `cog.yaml`),
-- pinned dependencies.
+**Apparel or models-on-product** → also pick `3d-sam-body`. Pairs with objects for end-to-end fashion / try-on.
 
-## Custom Hugging Face model
+**Highest geometric fidelity** (heavier compute, license caveat) → `3d-hunyuan`.
 
-If you pick **"custom HF model"** in the wizard, hatchkit will prompt for a model ID (e.g. `runwayml/stable-diffusion-v1-5`) and deploy it via the Hugging Face Inference Endpoints API.
+**MIT-licensed alternative** if Hunyuan's license is a blocker → `3d-trellis`.
 
-## Platforms
+**`3d-extraction` is legacy.** Skip for new projects.
 
-| Platform | When to pick it |
+---
+
+## Vision, audio, custom
+
+| Service | Model | Input → Output |
+|---|---|---|
+| `image-recognition` | CLIP | image → labels + scores |
+| `subtitles` | Whisper large-v3 | audio / video → SRT / VTT |
+| `background-removal` | RMBG-2.0 | image → RGBA with alpha |
+| `custom-hf` | _any HuggingFace model_ | configurable per use case |
+
+For `custom-hf`, hatchkit prompts for a HuggingFace model ID (e.g. `runwayml/stable-diffusion-v1-5`) and deploys via the Hugging Face Inference Endpoints API.
+
+---
+
+## Deployment platforms
+
+Each service can deploy to one of four platforms:
+
+| Platform | Best for |
 |---|---|
-| **Modal** | You want the fastest iteration loop and already like Python. Best DX. |
-| **RunPod** | You need cheap serverless GPUs with broad GPU SKU choice. |
-| **Hugging Face Inference Endpoints** | You want hosted HF models with zero infra. |
-| **Replicate** | You already use Replicate; fits well for prototyping. |
+| **Modal** | Fastest iteration loop; best DX. |
+| **RunPod** | Cheap serverless GPUs with broad SKU choice. |
+| **Hugging Face** | Hosted HF models with zero infra. |
+| **Replicate** | Already use Replicate or want easy public sharing. |
 
-Configure your chosen platform once with `hatchkit config add modal` (or `runpod` / `hf` / `replicate`). Tokens go to the OS keychain.
+Configure with `hatchkit config add <modal|runpod|hf|replicate>` — tokens go to the OS keychain. See [Providers](providers.html) for full setup.
+
+---
 
 ## The deploy flow
 
-On `hatchkit create`, after Terraform + Coolify are done:
+On `hatchkit create`, after Terraform + Coolify finish:
 
-1. For each ML service you selected, hatchkit checks its **service registry** (`config.json`) — if you already deployed this service on this platform, it reuses the endpoint.
-2. Otherwise it deploys the template to the chosen platform and captures the endpoint.
-3. It prints an env block you should drop into Coolify:
+1. For each selected service, hatchkit checks its **registry** (`config.json`). If you've already deployed this service-platform pair, it reuses the existing endpoint.
+2. Otherwise it deploys the template (e.g. `services/ml/3d-sam-objects/modal/pipeline.py`) and captures the endpoint URL.
+3. The endpoint is injected into the app as `ML_<SERVICE>_ENDPOINT` (e.g. `ML_3D_SAM_OBJECTS_ENDPOINT`).
+4. The starter app's tRPC router has matching mutations and playground pages wired to those env vars out of the box.
 
-   ```
-   ML service endpoints (add to Coolify env):
-     SUBTITLES_ENDPOINT=https://...
-     IMAGE_RECOGNITION_ENDPOINT=https://...
-   ```
+---
 
-4. The starter app reads these via typed clients that are auto-generated by the scaffold step.
+## Pipeline anatomy
+
+Each service template under `services/ml/<service>/` ships:
+
+- a **model loader** that downloads weights via `huggingface_hub.snapshot_download`,
+- a **platform entrypoint** (e.g. `modal/pipeline.py`) defining the GPU function and a public web endpoint,
+- pinned Python dependencies in the image build spec.
+
+The web endpoint accepts `multipart/form-data` (`file=...`) or JSON (`{ image_base64: "..." }`) and returns raw GLB bytes with `model/gltf-binary` content type. Same shape across all four 3D models — your app code is portable.
+
+---
 
 ## Reuse across projects
 
-Every deployed ML service is stored in the hatchkit config's **ML registry** keyed by `service:platform`. Later projects that select the same service can **reuse** the existing endpoint rather than re-deploying. `hatchkit config` prints the current registry.
+Every deployed ML service is recorded in the hatchkit ML registry, keyed by `service:platform`. When a later project picks the same service, hatchkit **reuses** the existing endpoint instead of re-deploying.
+
+Inspect the registry with `hatchkit config`; force a redeploy by selecting the service in the wizard's "redeploy these?" prompt.
