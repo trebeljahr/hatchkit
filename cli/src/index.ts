@@ -20,6 +20,7 @@ import { runCoolifySetup } from "./deploy/coolify.js";
 import { setupGitHub } from "./deploy/github.js";
 import { deployMlServices } from "./deploy/gpu.js";
 import { pushProjectKeyToCoolify, showProjectKey } from "./deploy/keys.js";
+import { handleCreateFailure, runRollback } from "./deploy/rollback.js";
 import { runTerraform } from "./deploy/terraform.js";
 import { type GpuPlatform, collectProjectConfig } from "./prompts.js";
 import { type ProvisionService, runProvision, runUnprovision } from "./provision/index.js";
@@ -29,6 +30,8 @@ import { mlEnvVarName, printMlSummary, resolveMlServices } from "./scaffold/ml-c
 import { runUpdate } from "./scaffold/update.js";
 import { exec, execOk } from "./utils/exec.js";
 import { parseCreateFlags } from "./utils/flags.js";
+import { RunLedger } from "./utils/run-ledger.js";
+import { SECRET_KEYS } from "./utils/secrets.js";
 import { getCliVersion } from "./utils/version.js";
 
 // ---------------------------------------------------------------------------
@@ -127,6 +130,16 @@ async function main(): Promise<void> {
     case "remove":
       if (args.includes("--help")) return printHelp("remove");
       await handleRemove();
+      break;
+    case "adopt": {
+      if (args.includes("--help")) return printHelp("adopt");
+      const { runAdopt } = await import("./adopt.js");
+      await runAdopt(resolve("."));
+      break;
+    }
+    case "destroy":
+      if (args.includes("--help")) return printHelp("destroy");
+      await handleDestroy();
       break;
     case "rename-domain": {
       if (args.includes("--help")) return printHelp("rename-domain");
@@ -309,6 +322,54 @@ async function handleAdd(): Promise<void> {
   await runProvision({ baseName, services, surfaces, enableDevObs });
 }
 
+async function handleDestroy(): Promise<void> {
+  // `hatchkit destroy <project> [--yes] [--recipe]`
+  //   destroy reads the run ledger written by `hatchkit create` and
+  //   reverses the recorded steps. With --recipe it just prints the
+  //   shell-command rollback recipe and exits (no execution).
+  const positional = args.slice(1).filter((a) => !a.startsWith("--"));
+  const skipConfirm = args.includes("--yes") || args.includes("-y");
+  const recipeOnly = args.includes("--recipe");
+
+  let name = positional[0];
+  if (!name) {
+    const { input } = await import("@inquirer/prompts");
+    const { validateProjectName } = await import("./utils/validate.js");
+    name = await input({
+      message: "Project name to destroy:",
+      validate: validateProjectName,
+    });
+  }
+
+  const ledger = RunLedger.load(name);
+  if (!ledger) {
+    console.log(
+      chalk.yellow(
+        `  No run ledger found for "${name}". Either it was never created via \`hatchkit create\` or the ledger was already cleaned up.`,
+      ),
+    );
+    process.exit(1);
+  }
+
+  const { printRecipe } = await import("./deploy/rollback.js");
+  printRecipe(ledger);
+
+  if (recipeOnly) return;
+
+  if (!skipConfirm) {
+    const ok = await confirm({
+      message: `Roll back ${ledger.steps.length} step(s) for ${chalk.cyan(name)}?`,
+      default: false,
+    });
+    if (!ok) {
+      console.log(chalk.dim("  Aborted. Ledger left in place."));
+      return;
+    }
+  }
+
+  await runRollback(ledger, { yes: skipConfirm });
+}
+
 async function handleRemove(): Promise<void> {
   // Mirrors handleAdd: `hatchkit remove [<name>] [<services>] [--dry-run] [--yes]`
   //   hatchkit remove                             (fully interactive)
@@ -479,243 +540,288 @@ async function handleCreate(): Promise<void> {
     console.log(chalk.yellow("\n  [dry-run mode — no changes will be made]\n"));
   }
 
-  // Step 1: Scaffold app repo
+  // Run ledger — append-only record of what each step accomplished, so
+  // a mid-run failure can offer a tailored cleanup recipe + auto-undo.
+  // Skipped for dry-run (nothing to undo) and when the user opted out of
+  // both scaffolding and deployment (also nothing to undo).
+  const useLedger = !config.dryRun && (config.scaffoldRepo || config.runDeployment);
+  const ledger = useLedger ? RunLedger.start(config.name) : null;
+
+  // Hoisted across the try-block boundary so the success summary below
+  // can read them. Declared with let so they can be reassigned inside.
   let scaffoldResult: Awaited<ReturnType<typeof scaffoldApp>> | undefined;
-  if (config.scaffoldRepo) {
-    scaffoldResult = await scaffoldApp(config, appDir);
-    const { ports } = scaffoldResult;
-    console.log(
-      chalk.dim(
-        `  Ports: server=${ports.server}, client=${ports.client}` +
-          (ports.nativeHmr ? `, native HMR=${ports.nativeHmr}` : ""),
-      ),
-    );
-    if (scaffoldResult.dotenvx) {
-      const { printDotenvxSummary } = await import("./scaffold/dotenvx.js");
-      printDotenvxSummary(scaffoldResult.dotenvx, config.name);
-    }
+  let installedDeps = false;
 
-    // Auto-provision GlitchTip + write its DSN encrypted into
-    // .env.production. The user picked the `analytics` feature; we
-    // already verified GlitchTip is configured during pre-flight.
-    if (config.features.includes("analytics")) {
-      try {
-        const { provisionGlitchtipClient } = await import("./provision/glitchtip.js");
-        const { set: dotenvxSet } = await import("@dotenvx/dotenvx");
-        const ora = (await import("ora")).default;
-        const spinner = ora(`GlitchTip: creating project ${config.name}`).start();
-        const res = await provisionGlitchtipClient(config.name);
-        spinner.succeed(`GlitchTip project ready (DSN encrypted into .env.production)`);
-        const prodEnvPath = join(appDir, "packages/server/.env.production");
-        dotenvxSet("GLITCHTIP_DSN", res.dsn, { path: prodEnvPath, encrypt: true });
-      } catch (err) {
-        console.log(
-          chalk.yellow(`  Couldn't auto-provision GlitchTip: ${(err as Error).message}`),
-        );
-        console.log(
-          chalk.dim(
-            `  Run \`hatchkit add ${config.name} glitchtip\` once GlitchTip is reachable.`,
-          ),
-        );
-      }
-    }
-
-    // Stripe: register a webhook endpoint at https://<domain>/api/stripe/webhook
-    // and write STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET encrypted
-    // into .env.production. The publishable key is non-secret (it ships
-    // in the browser bundle); we still encrypt-write it so the same env
-    // file is the single source of truth per environment.
-    if (config.features.includes("stripe")) {
-      try {
-        const { provisionStripeWebhook } = await import("./provision/stripe.js");
-        const { getStripeConfig } = await import("./config.js");
-        const { set: dotenvxSet } = await import("@dotenvx/dotenvx");
-        const ora = (await import("ora")).default;
-        const spinner = ora(`Stripe: registering webhook for ${config.domain}`).start();
-        const stripeCfg = await getStripeConfig();
-        const webhook = await provisionStripeWebhook(config.name, config.domain);
-        spinner.succeed(
-          `Stripe webhook ready (${webhook.mode} mode → https://${config.domain}/api/stripe/webhook)`,
-        );
-        const prodEnvPath = join(appDir, "packages/server/.env.production");
-        if (stripeCfg) {
-          dotenvxSet("STRIPE_SECRET_KEY", stripeCfg.secretKey, {
-            path: prodEnvPath,
-            encrypt: true,
-          });
-          dotenvxSet("STRIPE_PUBLISHABLE_KEY", stripeCfg.publishableKey, {
-            path: prodEnvPath,
-            encrypt: true,
-          });
-        }
-        dotenvxSet("STRIPE_WEBHOOK_SECRET", webhook.signingSecret, {
-          path: prodEnvPath,
-          encrypt: true,
+  try {
+    // Step 1: Scaffold app repo
+    if (config.scaffoldRepo) {
+      scaffoldResult = await scaffoldApp(config, appDir);
+      ledger?.record({ kind: "scaffold", path: appDir });
+      if (scaffoldResult.dotenvx) {
+        ledger?.record({
+          kind: "keychain",
+          account: SECRET_KEYS.dotenvxPrivateKey(config.name),
         });
-      } catch (err) {
-        console.log(
-          chalk.yellow(`  Couldn't auto-provision Stripe webhook: ${(err as Error).message}`),
-        );
-        console.log(
-          chalk.dim(
-            `  Create one manually: dashboard.stripe.com → Developers → Webhooks,\n` +
-              `  point at https://${config.domain}/api/stripe/webhook, then\n` +
-              `  \`dotenvx set STRIPE_WEBHOOK_SECRET <whsec_…> -f packages/server/.env.production\`.`,
-          ),
-        );
+      }
+      const { ports } = scaffoldResult;
+      console.log(
+        chalk.dim(
+          `  Ports: server=${ports.server}, client=${ports.client}` +
+            (ports.nativeHmr ? `, native HMR=${ports.nativeHmr}` : ""),
+        ),
+      );
+      if (scaffoldResult.dotenvx) {
+        const { printDotenvxSummary } = await import("./scaffold/dotenvx.js");
+        printDotenvxSummary(scaffoldResult.dotenvx, config.name);
+      }
+
+      // Auto-provision GlitchTip + write its DSN encrypted into
+      // .env.production. The user picked the `analytics` feature; we
+      // already verified GlitchTip is configured during pre-flight.
+      if (config.features.includes("analytics")) {
+        try {
+          const { provisionGlitchtipClient } = await import("./provision/glitchtip.js");
+          const { set: dotenvxSet } = await import("@dotenvx/dotenvx");
+          const ora = (await import("ora")).default;
+          const spinner = ora(`GlitchTip: creating project ${config.name}`).start();
+          const res = await provisionGlitchtipClient(config.name);
+          ledger?.record({ kind: "glitchtip", project: config.name });
+          spinner.succeed(`GlitchTip project ready (DSN encrypted into .env.production)`);
+          const prodEnvPath = join(appDir, "packages/server/.env.production");
+          dotenvxSet("GLITCHTIP_DSN", res.dsn, { path: prodEnvPath, encrypt: true });
+        } catch (err) {
+          console.log(
+            chalk.yellow(`  Couldn't auto-provision GlitchTip: ${(err as Error).message}`),
+          );
+          console.log(
+            chalk.dim(
+              `  Run \`hatchkit add ${config.name} glitchtip\` once GlitchTip is reachable.`,
+            ),
+          );
+        }
+      }
+
+      // Stripe: register a webhook endpoint at https://<domain>/api/stripe/webhook
+      // and write STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET encrypted
+      // into .env.production. The publishable key is non-secret (it ships
+      // in the browser bundle); we still encrypt-write it so the same env
+      // file is the single source of truth per environment.
+      if (config.features.includes("stripe")) {
+        try {
+          const { provisionStripeWebhook } = await import("./provision/stripe.js");
+          const { getStripeConfig } = await import("./config.js");
+          const { set: dotenvxSet } = await import("@dotenvx/dotenvx");
+          const ora = (await import("ora")).default;
+          const spinner = ora(`Stripe: registering webhook for ${config.domain}`).start();
+          const stripeCfg = await getStripeConfig();
+          const webhook = await provisionStripeWebhook(config.name, config.domain);
+          spinner.succeed(
+            `Stripe webhook ready (${webhook.mode} mode → https://${config.domain}/api/stripe/webhook)`,
+          );
+          const prodEnvPath = join(appDir, "packages/server/.env.production");
+          if (stripeCfg) {
+            dotenvxSet("STRIPE_SECRET_KEY", stripeCfg.secretKey, {
+              path: prodEnvPath,
+              encrypt: true,
+            });
+            dotenvxSet("STRIPE_PUBLISHABLE_KEY", stripeCfg.publishableKey, {
+              path: prodEnvPath,
+              encrypt: true,
+            });
+          }
+          dotenvxSet("STRIPE_WEBHOOK_SECRET", webhook.signingSecret, {
+            path: prodEnvPath,
+            encrypt: true,
+          });
+        } catch (err) {
+          console.log(
+            chalk.yellow(`  Couldn't auto-provision Stripe webhook: ${(err as Error).message}`),
+          );
+          console.log(
+            chalk.dim(
+              `  Create one manually: dashboard.stripe.com → Developers → Webhooks,\n` +
+                `  point at https://${config.domain}/api/stripe/webhook, then\n` +
+                `  \`dotenvx set STRIPE_WEBHOOK_SECRET <whsec_…> -f packages/server/.env.production\`.`,
+            ),
+          );
+        }
       }
     }
-  }
 
-  if (config.dryRun) {
-    scaffoldInfra(config, INFRA_ROOT, {
+    if (config.dryRun) {
+      scaffoldInfra(config, INFRA_ROOT, {
+        serverPort: scaffoldResult?.ports.server,
+        clientPort: scaffoldResult?.ports.client,
+      });
+      console.log(chalk.green("\n  ✓ Dry run complete. No changes were made.\n"));
+      return;
+    }
+
+    // Step 2: Install deps. Required for the initial commit to pick up
+    // the lockfile delta and for the user to `pnpm dev` immediately.
+    if (config.scaffoldRepo) {
+      const hasPnpm = await execOk("pnpm", ["--version"]);
+      if (!hasPnpm) {
+        console.log(
+          chalk.yellow(
+            "  pnpm not found on PATH — skipping install step. Install deps with your preferred tool once available.",
+          ),
+        );
+      } else {
+        // In non-interactive mode, auto-accept the install so `--yes`
+        // doesn't stall waiting on a y/n prompt.
+        const shouldInstall = nonInteractive
+          ? true
+          : await confirm({
+              message: "Install dependencies now (pnpm install)?",
+              default: true,
+            });
+        if (shouldInstall) {
+          const res = await exec("pnpm", ["install"], {
+            cwd: appDir,
+            spinner: "Installing dependencies...",
+          });
+          if (res.exitCode === 0) {
+            installedDeps = true;
+          } else {
+            console.log(chalk.yellow("  pnpm install failed — continuing anyway."));
+          }
+        }
+      }
+    }
+
+    // Step 3: Git + GitHub — must run BEFORE scaffoldInfra so the repo
+    // URL can be threaded into the Coolify env (GITHUB_REPO_URL).
+    let repoUrl: string | null = null;
+    if (config.scaffoldRepo) {
+      repoUrl = await setupGitHub(config, appDir);
+      if (repoUrl) {
+        // Strip the https://github.com/ prefix so the recorded value is
+        // gh-CLI-friendly (`gh repo delete <owner>/<repo>`).
+        const slug = repoUrl.replace(/^https?:\/\/github\.com\//, "");
+        ledger?.record({ kind: "github", repo: slug });
+      }
+    }
+
+    // Step 4: Generate infra configs (with repo URL + ports baked in).
+    const infraResult = scaffoldInfra(config, INFRA_ROOT, {
+      repoUrl: repoUrl ?? undefined,
       serverPort: scaffoldResult?.ports.server,
       clientPort: scaffoldResult?.ports.client,
     });
-    console.log(chalk.green("\n  ✓ Dry run complete. No changes were made.\n"));
-    return;
-  }
+    if (infraResult.tfvarsPath) {
+      ledger?.record({ kind: "tfvars", path: infraResult.tfvarsPath });
+    }
+    if (infraResult.coolifyEnvPath) {
+      ledger?.record({ kind: "coolifyEnv", path: infraResult.coolifyEnvPath });
+    }
 
-  // Step 2: Install deps. Required for the initial commit to pick up
-  // the lockfile delta and for the user to `pnpm dev` immediately.
-  let installedDeps = false;
-  if (config.scaffoldRepo) {
-    const hasPnpm = await execOk("pnpm", ["--version"]);
-    if (!hasPnpm) {
-      console.log(
-        chalk.yellow(
-          "  pnpm not found on PATH — skipping install step. Install deps with your preferred tool once available.",
-        ),
-      );
-    } else {
-      // In non-interactive mode, auto-accept the install so `--yes`
-      // doesn't stall waiting on a y/n prompt.
-      const shouldInstall = nonInteractive
-        ? true
-        : await confirm({
-            message: "Install dependencies now (pnpm install)?",
-            default: true,
-          });
-      if (shouldInstall) {
-        const res = await exec("pnpm", ["install"], {
-          cwd: appDir,
-          spinner: "Installing dependencies...",
+    // Step 5: Terraform (DNS + optionally server)
+    if (config.runDeployment) {
+      const tfResult = await runTerraform(config, INFRA_ROOT);
+      if (tfResult.applied) {
+        ledger?.record({
+          kind: "terraformApplied",
+          stackDir: tfResult.applied.stackDir,
+          tfvarsPath: tfResult.applied.tfvarsPath,
         });
-        if (res.exitCode === 0) {
-          installedDeps = true;
-        } else {
-          console.log(chalk.yellow("  pnpm install failed — continuing anyway."));
+      }
+    }
+
+    // Step 6: Coolify setup
+    if (config.runDeployment) {
+      await runCoolifySetup(config, INFRA_ROOT);
+
+      // Provision a per-project MongoDB container on Coolify when the
+      // user picked that path. Best-effort: a failure here doesn't undo
+      // the app deploy — we surface clear instructions instead.
+      if (config.mongodbProvider === "coolify" && config.scaffoldRepo) {
+        try {
+          const { provisionCoolifyMongo } = await import("./deploy/coolify-mongo.js");
+          const serverEnvDir = join(appDir, "packages/server");
+          await provisionCoolifyMongo(config, serverEnvDir);
+        } catch (err) {
+          console.log(chalk.yellow(`  Couldn't auto-provision MongoDB: ${(err as Error).message}`));
+          console.log(
+            chalk.dim(
+              `  Create one manually in Coolify: New → Database → MongoDB,\n` +
+                `  then set MONGODB_URI on the app's env (or run\n` +
+                `  \`dotenvx set MONGODB_URI <url> -f packages/server/.env.production\`).`,
+            ),
+          );
+        }
+      }
+
+      // Push the dotenvx private key to Coolify so the starter's server
+      // can decrypt .env.production at runtime. Best-effort — if the
+      // Coolify app doesn't exist yet (race with the stack script), we
+      // print the manual command instead of failing the whole flow.
+      if (scaffoldResult?.dotenvx) {
+        try {
+          await pushProjectKeyToCoolify(config.name);
+        } catch (err) {
+          console.log(chalk.yellow(`  Couldn't auto-push dotenvx key: ${(err as Error).message}`));
+          console.log(
+            chalk.dim(
+              `  Push manually once the Coolify app exists: hatchkit keys push ${config.name}`,
+            ),
+          );
         }
       }
     }
-  }
 
-  // Step 3: Git + GitHub — must run BEFORE scaffoldInfra so the repo
-  // URL can be threaded into the Coolify env (GITHUB_REPO_URL).
-  let repoUrl: string | null = null;
-  if (config.scaffoldRepo) {
-    repoUrl = await setupGitHub(config, appDir);
-  }
+    // Step 7: Deploy ML services
+    if (
+      config.runDeployment &&
+      deploy.length > 0 &&
+      config.gpuPlatforms &&
+      config.gpuPlatforms.length > 0
+    ) {
+      const endpoints = await deployMlServices(
+        deploy,
+        config.gpuPlatforms,
+        SERVICES_ROOT,
+        config.customHfModelId,
+      );
 
-  // Step 4: Generate infra configs (with repo URL + ports baked in).
-  scaffoldInfra(config, INFRA_ROOT, {
-    repoUrl: repoUrl ?? undefined,
-    serverPort: scaffoldResult?.ports.server,
-    clientPort: scaffoldResult?.ports.client,
-  });
+      // Print env vars to set
+      if (Object.keys(endpoints).length > 0) {
+        const { mlPlatformUrlEnv } = await import("./scaffold/ml-client.js");
+        const knownServices = [
+          "3d-extraction",
+          "subtitles",
+          "image-recognition",
+          "background-removal",
+          "custom-hf",
+        ] as const;
+        type KnownService = (typeof knownServices)[number];
 
-  // Step 5: Terraform (DNS + optionally server)
-  if (config.runDeployment) {
-    await runTerraform(config, INFRA_ROOT);
-  }
-
-  // Step 6: Coolify setup
-  if (config.runDeployment) {
-    await runCoolifySetup(config, INFRA_ROOT);
-
-    // Provision a per-project MongoDB container on Coolify when the
-    // user picked that path. Best-effort: a failure here doesn't undo
-    // the app deploy — we surface clear instructions instead.
-    if (config.mongodbProvider === "coolify" && config.scaffoldRepo) {
-      try {
-        const { provisionCoolifyMongo } = await import("./deploy/coolify-mongo.js");
-        const serverEnvDir = join(appDir, "packages/server");
-        await provisionCoolifyMongo(config, serverEnvDir);
-      } catch (err) {
-        console.log(
-          chalk.yellow(`  Couldn't auto-provision MongoDB: ${(err as Error).message}`),
-        );
-        console.log(
-          chalk.dim(
-            `  Create one manually in Coolify: New → Database → MongoDB,\n` +
-              `  then set MONGODB_URI on the app's env (or run\n` +
-              `  \`dotenvx set MONGODB_URI <url> -f packages/server/.env.production\`).`,
-          ),
-        );
-      }
-    }
-
-    // Push the dotenvx private key to Coolify so the starter's server
-    // can decrypt .env.production at runtime. Best-effort — if the
-    // Coolify app doesn't exist yet (race with the stack script), we
-    // print the manual command instead of failing the whole flow.
-    if (scaffoldResult?.dotenvx) {
-      try {
-        await pushProjectKeyToCoolify(config.name);
-      } catch (err) {
-        console.log(chalk.yellow(`  Couldn't auto-push dotenvx key: ${(err as Error).message}`));
-        console.log(
-          chalk.dim(
-            `  Push manually once the Coolify app exists: hatchkit keys push ${config.name}`,
-          ),
-        );
-      }
-    }
-  }
-
-  // Step 7: Deploy ML services
-  if (
-    config.runDeployment &&
-    deploy.length > 0 &&
-    config.gpuPlatforms &&
-    config.gpuPlatforms.length > 0
-  ) {
-    const endpoints = await deployMlServices(
-      deploy,
-      config.gpuPlatforms,
-      SERVICES_ROOT,
-      config.customHfModelId,
-    );
-
-    // Print env vars to set
-    if (Object.keys(endpoints).length > 0) {
-      const { mlPlatformUrlEnv } = await import("./scaffold/ml-client.js");
-      const knownServices = [
-        "3d-extraction",
-        "subtitles",
-        "image-recognition",
-        "background-removal",
-        "custom-hf",
-      ] as const;
-      type KnownService = (typeof knownServices)[number];
-
-      console.log(chalk.bold("\n  ML service endpoints (add to Coolify env):"));
-      console.log(chalk.dim(`    ML_BACKEND=${config.gpuPlatforms[0]}`));
-      for (const [service, byPlatform] of Object.entries(endpoints)) {
-        if (!(knownServices as readonly string[]).includes(service)) continue;
-        const svc = service as KnownService;
-        // Per-platform URL — the runtime config picks one based on ML_BACKEND.
-        for (const [platform, url] of Object.entries(byPlatform)) {
-          if (!url) continue;
-          console.log(chalk.dim(`    ${mlPlatformUrlEnv(svc, platform as GpuPlatform)}=${url}`));
-        }
-        // Legacy ENDPOINT for back-compat — points at the default platform.
-        const defaultUrl = byPlatform[config.gpuPlatforms[0]];
-        if (defaultUrl) {
-          console.log(chalk.dim(`    ${mlEnvVarName(svc)}=${defaultUrl}`));
+        console.log(chalk.bold("\n  ML service endpoints (add to Coolify env):"));
+        console.log(chalk.dim(`    ML_BACKEND=${config.gpuPlatforms[0]}`));
+        for (const [service, byPlatform] of Object.entries(endpoints)) {
+          if (!(knownServices as readonly string[]).includes(service)) continue;
+          const svc = service as KnownService;
+          // Per-platform URL — the runtime config picks one based on ML_BACKEND.
+          for (const [platform, url] of Object.entries(byPlatform)) {
+            if (!url) continue;
+            console.log(chalk.dim(`    ${mlPlatformUrlEnv(svc, platform as GpuPlatform)}=${url}`));
+          }
+          // Legacy ENDPOINT for back-compat — points at the default platform.
+          const defaultUrl = byPlatform[config.gpuPlatforms[0]];
+          if (defaultUrl) {
+            console.log(chalk.dim(`    ${mlEnvVarName(svc)}=${defaultUrl}`));
+          }
         }
       }
     }
+    ledger?.complete();
+  } catch (err) {
+    if (ledger) {
+      await handleCreateFailure(ledger, err);
+    } else {
+      console.log(chalk.red(`\n  ✗ ${err instanceof Error ? err.message : String(err)}\n`));
+    }
+    process.exit(1);
   }
 
   // Final summary
@@ -894,7 +1000,9 @@ type HelpTopic =
   | "update"
   | "keys"
   | "add"
+  | "adopt"
   | "remove"
+  | "destroy"
   | "rename-domain"
   | "doctor"
   | "status"
@@ -1099,6 +1207,40 @@ function printHelp(topic?: HelpTopic): void {
 `);
     return;
   }
+  if (topic === "adopt") {
+    console.log(`
+  ${chalk.bold("hatchkit adopt")} — bring an existing project under hatchkit management
+
+  ${chalk.bold("Usage:")}
+    cd <project-dir> && hatchkit adopt
+
+  ${chalk.bold("What it does:")}
+    Inverse of \`hatchkit create\`. Inspects the current directory,
+    detects what's already there (package.json name, repo layout,
+    .env state, dotenvx encryption, Coolify app match, feature flags
+    inferable from deps), then runs a stepper-style review where you
+    confirm or change each detected value. On confirm:
+
+      · If \`.env.production\` isn't dotenvx-encrypted yet, encrypts it
+        (generates \`.env.keys\` with the private key).
+      · Imports DOTENV_PRIVATE_KEY_PRODUCTION into the OS keychain.
+      · Writes \`.hatchkit.json\` so \`update\`, \`add\`, \`keys\` recognise
+        the project.
+      · Optionally provisions GlitchTip / OpenPanel / Resend clients
+        (same machinery as \`hatchkit add\`).
+      · Optionally pushes the dotenvx private key to Coolify.
+
+  ${chalk.bold("When to use:")}
+    The project wasn't created by hatchkit but you want it to be
+    managed going forward.
+
+  ${chalk.bold("Refuses to run twice:")}
+    If \`.hatchkit.json\` already exists, exits with a hint to use
+    \`hatchkit update\` (add features) or \`hatchkit add\` (re-provision
+    clients) instead.
+`);
+    return;
+  }
   if (topic === "remove") {
     console.log(`
   ${chalk.bold("hatchkit remove")} — inverse of ${chalk.cyan("add")}: tear down per-project clients
@@ -1132,6 +1274,37 @@ function printHelp(topic?: HelpTopic): void {
     hatchkit remove raptor-runner all
     hatchkit remove raptor-runner glitchtip,resend --dry-run
     hatchkit remove raptor-runner all --yes
+`);
+    return;
+  }
+  if (topic === "destroy") {
+    console.log(`
+  ${chalk.bold("hatchkit destroy")} — undo a project that ${chalk.cyan("hatchkit create")} set up
+
+  ${chalk.bold("Usage:")}
+    hatchkit destroy [<project-name>] [--yes] [--recipe]
+
+  Reads the run ledger written by ${chalk.cyan("hatchkit create")} and reverses the
+  recorded steps in reverse order. Destructive operations
+  (rm -rf the local repo, gh repo delete, terraform destroy) prompt
+  per-step unless ${chalk.dim("--yes")} is passed.
+
+  ${chalk.bold("What it can undo:")}
+    - local project directory                  ${chalk.dim("rm -rf")}
+    - GitHub repo                              ${chalk.dim("gh repo delete")}
+    - GlitchTip project                        ${chalk.dim("DELETE /api/0/projects")}
+    - generated tfvars + Coolify .env files    ${chalk.dim("rm")}
+    - dotenvx private key in keychain          ${chalk.dim("keytar deletePassword")}
+    - Terraform-applied resources              ${chalk.dim("terraform destroy")}
+
+  ${chalk.bold("Options:")}
+    --yes, -y   Skip per-step confirmation on destructive operations.
+    --recipe    Print the rollback recipe (bash commands) and exit. No execution.
+
+  ${chalk.bold("Examples:")}
+    hatchkit destroy ai-playground
+    hatchkit destroy ai-playground --recipe   ${chalk.dim("# just print the recipe")}
+    hatchkit destroy ai-playground --yes      ${chalk.dim("# no confirmations")}
 `);
     return;
   }
@@ -1234,9 +1407,11 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Projects:")}
     create          Scaffold a new project (interactive)
+    adopt           Bring an existing project under hatchkit management (run in project dir)
     update          Add features to an already-scaffolded project (run in project dir)
     add             Create GlitchTip / OpenPanel / Resend clients for an existing project
     remove          Delete the -dev/-prod clients created by 'add' (inverse of add)
+    destroy         Roll back everything ${chalk.cyan("hatchkit create")} did for a project
     rename-domain   Move a scaffolded project to a new domain (rewrites tfvars/env/manifest)
     gh-pages        Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
     dns             DNS reconciliation helpers (link-to-cloudflare, …)

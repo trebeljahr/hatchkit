@@ -15,6 +15,7 @@ const TOP_LEVEL = [
   "doctor",
   "explain",
   "create",
+  "adopt",
   "update",
   "add",
   "keys",
@@ -196,6 +197,8 @@ function topDesc(cmd: string): string {
       return "One-page mental model of the CLI";
     case "create":
       return "Scaffold a new project";
+    case "adopt":
+      return "Adopt an existing project (run in project dir)";
     case "update":
       return "Add features to an already-scaffolded project";
     case "add":

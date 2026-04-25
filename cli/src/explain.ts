@@ -78,6 +78,12 @@ const MODEL: ExplainModel = {
       when: "Starting a new project.",
     },
     {
+      name: "hatchkit adopt",
+      summary:
+        "Bring an existing (non-hatchkit) project under management — detects layout / .env / dotenvx, writes a manifest, imports the dotenvx private key into the keychain, optionally provisions GlitchTip / OpenPanel / Resend.",
+      when: "`cd <project-dir>` first; the project wasn't created by hatchkit.",
+    },
+    {
       name: "hatchkit update",
       summary: "Add features (desktop, mobile) to an already-scaffolded project.",
       when: "`cd <project-dir>` first; expands an existing scaffold.",
