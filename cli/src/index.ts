@@ -1217,22 +1217,35 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("What it does:")}
     Inverse of \`hatchkit create\`. Inspects the current directory,
     detects what's already there (package.json name, repo layout,
-    .env state, dotenvx encryption, Coolify app match, feature flags
-    inferable from deps), then runs a stepper-style review where you
-    confirm or change each detected value. On confirm:
+    .env state, dotenvx encryption, Coolify app match, git origin,
+    feature flags inferable from deps), then runs a stepper-style
+    review. On confirm:
 
-      · If \`.env.production\` isn't dotenvx-encrypted yet, encrypts it
-        (generates \`.env.keys\` with the private key).
+      · ${chalk.cyan("Initialize dotenvx")} — generates an encrypted
+        \`.env.production\` + \`.env.keys\` if missing, or re-encrypts
+        an existing plain file. The keypair is what every other
+        hatchkit step depends on, so this defaults to ON.
       · Imports DOTENV_PRIVATE_KEY_PRODUCTION into the OS keychain.
       · Writes \`.hatchkit.json\` so \`update\`, \`add\`, \`keys\` recognise
         the project.
+      · ${chalk.cyan("GitHub remote")} — \`git init\` (if needed),
+        commit, \`gh repo create --private --source=. --push\`. Skipped
+        when an \`origin\` is already set.
       · Optionally provisions GlitchTip / OpenPanel / Resend clients
         (same machinery as \`hatchkit add\`).
       · Optionally pushes the dotenvx private key to Coolify.
 
+  ${chalk.bold("What adopt does NOT do (yet):")}
+    Adopt doesn't create the Coolify app or the DNS records — those
+    live in the hatchkit infra/ submodule's Terraform + stack
+    scripts, which need to be run from the hatchkit monorepo.
+    Create the Coolify app pointing at the new GitHub repo
+    yourself, then run \`hatchkit keys push <project>\` to ship the
+    dotenvx key.
+
   ${chalk.bold("When to use:")}
-    The project wasn't created by hatchkit but you want it to be
-    managed going forward.
+    The project wasn't created by hatchkit but you want it managed
+    going forward.
 
   ${chalk.bold("Refuses to run twice:")}
     If \`.hatchkit.json\` already exists, exits with a hint to use

@@ -34,16 +34,17 @@
  * exits early with a "use `hatchkit update` instead" hint.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { Separator, checkbox, confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
-import { getCoolifyConfig } from "./config.js";
+import { ensureGitHub, getCoolifyConfig } from "./config.js";
 import { pushProjectKeyToCoolify } from "./deploy/keys.js";
 import { type ProvisionService, runProvision } from "./provision/index.js";
 import { MANIFEST_FILENAME, type ProjectManifest, writeManifest } from "./scaffold/manifest.js";
 import type { Feature, S3Provider } from "./prompts.js";
 import { CoolifyApi } from "./utils/coolify-api.js";
+import { exec, execOk } from "./utils/exec.js";
 import { SECRET_KEYS, setSecret } from "./utils/secrets.js";
 import { validateDomain, validateProjectName } from "./utils/validate.js";
 import { getCliVersion } from "./utils/version.js";
@@ -69,6 +70,10 @@ interface DetectedState {
   hasEnvKeys: boolean;
   /** Coolify app name match, if any. */
   coolifyAppMatch?: { uuid: string; name: string };
+  /** Whether `<projectDir>/.git` exists. */
+  isGitRepo: boolean;
+  /** Origin URL from `git remote get-url origin`, if set. */
+  gitRemoteUrl?: string;
 }
 
 interface AdoptPlan {
@@ -77,6 +82,12 @@ interface AdoptPlan {
   features: Feature[];
   serverDir: string;
   clientDir?: string;
+  /** Always-on side effect — initialize dotenvx encryption if the
+   *  server dir doesn't already have an encrypted .env.production. */
+  bootstrapDotenvx: boolean;
+  /** Initialize git + create a GitHub remote (private repo). Skipped
+   *  silently when a remote already exists. */
+  setupGitHub: boolean;
   /** Provisioning to run after manifest write. */
   services: ProvisionService[];
   /** Push dotenvx key to Coolify after everything's written. */
@@ -105,13 +116,22 @@ export async function runAdopt(cwd: string): Promise<void> {
   printDetected(state);
 
   // Initial plan — pre-filled from detection.
+  //   bootstrapDotenvx: default ON when there's no encrypted prod env —
+  //     adopt's whole point is "make this manageable", and that needs a
+  //     dotenvx keypair so everything else (key push, encrypted writes
+  //     by `add`) has something to work with.
+  //   setupGitHub: default ON when there's no origin remote yet.
   let plan: AdoptPlan = {
     name: state.packageName ?? "",
     domain: "",
     features: state.features,
     serverDir: state.serverDir ?? state.projectDir,
     clientDir: state.clientDir,
+    bootstrapDotenvx: !state.prodEnvIsEncrypted,
+    setupGitHub: !state.gitRemoteUrl,
     services: ["glitchtip", "openpanel", "resend"],
+    // Default the push only when there's a Coolify app to push to —
+    // otherwise the push will fail loudly.
     pushKey: !!state.coolifyAppMatch,
   };
 
@@ -137,20 +157,29 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
     // No package.json at root — that's fine for a non-Node project.
   }
 
-  // Walk a small set of common monorepo layouts.
+  // Walk a generous set of common monorepo layouts.
   const serverDir = firstExisting(projectDir, [
     "packages/server",
     "apps/server",
     "apps/api",
+    "apps/backend",
     "server",
+    "backend",
+    "api",
+    "src/server",
+    "services/server",
   ]);
   const clientDir = firstExisting(projectDir, [
     "packages/client",
     "packages/web",
+    "packages/frontend",
     "apps/web",
     "apps/client",
+    "apps/frontend",
     "client",
+    "frontend",
     "web",
+    "src/client",
   ]);
 
   // Feature detection: cheap heuristics from package.json deps + env files.
@@ -188,6 +217,24 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
     // Best-effort only.
   }
 
+  // Git state — is this a repo? Does it already have an origin remote?
+  // We only auto-init + create a remote when the user opts in via the
+  // stepper; here we just gather state for the summary.
+  const isGitRepo = existsSync(join(projectDir, ".git"));
+  let gitRemoteUrl: string | undefined;
+  if (isGitRepo) {
+    try {
+      const res = await exec("git", ["remote", "get-url", "origin"], {
+        cwd: projectDir,
+        // No spinner — this is a sub-second silent check.
+      });
+      const url = res.stdout.trim();
+      if (res.exitCode === 0 && url) gitRemoteUrl = url;
+    } catch {
+      // Either no `origin` set yet (exit 128) or git failed — fine.
+    }
+  }
+
   return {
     projectDir,
     packageName,
@@ -198,6 +245,8 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
     prodEnvIsEncrypted,
     hasEnvKeys,
     coolifyAppMatch,
+    isGitRepo,
+    gitRemoteUrl,
   };
 }
 
@@ -212,28 +261,64 @@ function firstExisting(root: string, candidates: string[]): string | undefined {
 function detectFeatures(projectDir: string, serverDir: string | undefined): Feature[] {
   const found = new Set<Feature>();
 
-  // Look at root + server package.json deps.
-  const pkgJsonPaths = [
-    join(projectDir, "package.json"),
-    serverDir ? join(serverDir, "package.json") : undefined,
-  ].filter((p): p is string => !!p);
+  // Cast a wider net than just <root> + <serverDir>: also walk the
+  // first level of the common monorepo package roots so a project
+  // organized as e.g. `apps/web` + `apps/server` doesn't end up with
+  // "no features detected" when serverDir resolves to a sibling.
+  const pkgJsonPaths = new Set<string>();
+  pkgJsonPaths.add(join(projectDir, "package.json"));
+  if (serverDir) pkgJsonPaths.add(join(serverDir, "package.json"));
+  for (const root of ["packages", "apps", "services"]) {
+    const dir = join(projectDir, root);
+    if (!existsSync(dir)) continue;
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const e of entries) pkgJsonPaths.add(join(dir, e, "package.json"));
+  }
+
   for (const p of pkgJsonPaths) {
     if (!existsSync(p)) continue;
-    let json: { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+    let json: {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+    };
     try {
       json = JSON.parse(readFileSync(p, "utf-8"));
     } catch {
       continue;
     }
-    const deps = { ...(json.dependencies ?? {}), ...(json.devDependencies ?? {}) };
-    if ("stripe" in deps || "@stripe/stripe-js" in deps) found.add("stripe");
-    if ("socket.io" in deps || "ws" in deps) found.add("websocket");
-    if ("@sentry/node" in deps || "@sentry/browser" in deps || "@openpanel/web" in deps) {
+    const deps = {
+      ...(json.dependencies ?? {}),
+      ...(json.devDependencies ?? {}),
+      ...(json.peerDependencies ?? {}),
+      ...(json.optionalDependencies ?? {}),
+    };
+    if ("stripe" in deps || "@stripe/stripe-js" in deps || "@stripe/react-stripe-js" in deps) {
+      found.add("stripe");
+    }
+    if ("socket.io" in deps || "socket.io-client" in deps || "ws" in deps) {
+      found.add("websocket");
+    }
+    if (
+      "@sentry/node" in deps ||
+      "@sentry/browser" in deps ||
+      "@sentry/react" in deps ||
+      "@sentry/nextjs" in deps ||
+      "@openpanel/web" in deps ||
+      "@openpanel/sdk" in deps ||
+      "@openpanel/nextjs" in deps
+    ) {
       found.add("analytics");
     }
-    if ("@aws-sdk/client-s3" in deps) found.add("s3");
+    if ("@aws-sdk/client-s3" in deps || "minio" in deps) found.add("s3");
     if ("electron" in deps || "electron-builder" in deps) found.add("desktop");
-    if ("@capacitor/core" in deps) found.add("mobile");
+    if ("@capacitor/core" in deps || "@capacitor/cli" in deps) found.add("mobile");
   }
 
   // .env.production / .env.example as a hint when package.json is sparse.
@@ -288,7 +373,17 @@ function printDetected(state: DetectedState): void {
       "Coolify app",
       state.coolifyAppMatch
         ? chalk.green(`${state.coolifyAppMatch.name} ✓`)
-        : chalk.dim("(no match — keys push will be skipped by default)"),
+        : chalk.dim("(no match)"),
+    ),
+  );
+  lines.push(
+    row(
+      "git remote",
+      state.gitRemoteUrl
+        ? chalk.green(state.gitRemoteUrl)
+        : state.isGitRepo
+          ? chalk.yellow("repo present, no `origin` set")
+          : chalk.dim("not a git repo yet"),
     ),
   );
   lines.push(
@@ -403,6 +498,33 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
           label: "Features",
           set: true,
           summary: plan.features.length > 0 ? plan.features.join(", ") : chalk.dim("none"),
+        },
+      ],
+    },
+    {
+      title: "Bootstrap",
+      steps: [
+        {
+          key: "bootstrapDotenvx",
+          label: "Initialize dotenvx",
+          set: true,
+          summary: plan.bootstrapDotenvx
+            ? state.prodEnvIsEncrypted
+              ? chalk.dim("already encrypted — will skip")
+              : "yes — generate keypair + encrypt .env.production"
+            : chalk.dim("no"),
+        },
+        {
+          key: "setupGitHub",
+          label: "GitHub remote",
+          set: true,
+          summary: plan.setupGitHub
+            ? state.gitRemoteUrl
+              ? chalk.dim("already set — will skip")
+              : "yes — `gh repo create` + push"
+            : state.gitRemoteUrl
+              ? chalk.dim(state.gitRemoteUrl)
+              : chalk.dim("no"),
         },
       ],
     },
@@ -535,6 +657,32 @@ async function editAdoptStep(
     });
     return { ...plan, pushKey };
   }
+  if (step === "bootstrapDotenvx") {
+    const bootstrapDotenvx = await confirm({
+      message: state.prodEnvIsEncrypted
+        ? ".env.production is already encrypted — re-encrypt anyway?"
+        : "Initialize dotenvx (creates an encrypted .env.production + .env.keys)?",
+      default: plan.bootstrapDotenvx,
+    });
+    return { ...plan, bootstrapDotenvx };
+  }
+  if (step === "setupGitHub") {
+    if (state.gitRemoteUrl) {
+      console.log(
+        chalk.dim(
+          `\n  origin already set to ${state.gitRemoteUrl} — adopt won't replace it.\n`,
+        ),
+      );
+      return { ...plan, setupGitHub: false };
+    }
+    const setupGitHub = await confirm({
+      message: state.isGitRepo
+        ? "Create a GitHub repo and push this project to it?"
+        : "Initialize git, create a GitHub repo, and push?",
+      default: plan.setupGitHub,
+    });
+    return { ...plan, setupGitHub };
+  }
   return plan;
 }
 
@@ -545,8 +693,12 @@ async function editAdoptStep(
 async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void> {
   console.log(chalk.bold("\n  ── Adopting ──────────────────────────────────────────────\n"));
 
-  // Step 1: dotenvx encryption + key import.
-  await encryptIfNeeded(state, plan);
+  // Step 1: bootstrap / encrypt dotenvx so a key actually exists.
+  if (plan.bootstrapDotenvx) {
+    await bootstrapDotenvxNow(state, plan);
+  } else {
+    console.log(chalk.dim("  · Skipping dotenvx bootstrap (per stepper choice)."));
+  }
   await importKeyToKeychain(state, plan);
 
   // Step 2: write the manifest. Done after key import so a partial
@@ -557,7 +709,16 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
     chalk.green(`  ✓ Wrote ${MANIFEST_FILENAME} at ${relativeTo(state.projectDir)}`),
   );
 
-  // Step 3: provision clients via the existing `add` machinery so the
+  // Step 3: GitHub remote (init + create + push). Skipped if origin is
+  // already set or the user opted out.
+  let remoteUrl: string | undefined = state.gitRemoteUrl;
+  if (plan.setupGitHub && !state.gitRemoteUrl) {
+    remoteUrl = await setupGitHubRemote(state, plan);
+  } else if (state.gitRemoteUrl) {
+    console.log(chalk.dim(`  · git origin already set → ${state.gitRemoteUrl}`));
+  }
+
+  // Step 4: provision clients via the existing `add` machinery so the
   // surfaces stepper, idempotency, and env writes behave identically
   // to a normal `hatchkit add`.
   if (plan.services.length > 0) {
@@ -573,7 +734,7 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
     });
   }
 
-  // Step 4: push key to Coolify.
+  // Step 5: push key to Coolify.
   if (plan.pushKey) {
     try {
       await pushProjectKeyToCoolify(plan.name);
@@ -596,44 +757,116 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
   console.log(`  Server:    ${chalk.cyan(relativeTo(plan.serverDir))}`);
   if (plan.clientDir) console.log(`  Client:    ${chalk.cyan(relativeTo(plan.clientDir))}`);
   console.log(`  Manifest:  ${chalk.dim(join(state.projectDir, MANIFEST_FILENAME))}`);
-  console.log(
-    chalk.dim(
-      "\n  Next: `hatchkit doctor` to verify providers, `hatchkit keys push` if you skipped that step.\n",
-    ),
-  );
-}
+  if (remoteUrl) console.log(`  Git:       ${chalk.cyan(remoteUrl)}`);
 
-async function encryptIfNeeded(state: DetectedState, plan: AdoptPlan): Promise<void> {
-  if (state.prodEnvIsEncrypted) {
-    console.log(chalk.dim("  · .env.production already encrypted — skipping encrypt step."));
-    return;
-  }
-  const prodPath = join(plan.serverDir, ".env.production");
-  if (!existsSync(prodPath)) {
+  // Tell the user what adopt does NOT cover, so they don't expect
+  // their domain to magically resolve.
+  console.log(chalk.bold("\n  Not done by adopt:"));
+  if (!state.coolifyAppMatch) {
     console.log(
       chalk.dim(
-        `  · No .env.production at ${relativeTo(prodPath)} yet — provisioning will create + encrypt it.`,
+        "  · Coolify app + DNS records aren't created here — adopt doesn't run\n" +
+          "    Terraform or the Coolify-stack scripts (those need the hatchkit\n" +
+          "    monorepo's infra/ submodule). Create the Coolify app pointing at\n" +
+          `    ${remoteUrl ?? "your repo"}, set the domain to ${plan.domain || "<your-domain>"}, then\n` +
+          `    run \`hatchkit keys push ${plan.name}\` to ship the dotenvx key.`,
       ),
     );
-    return;
   }
+  console.log();
+}
+
+async function bootstrapDotenvxNow(state: DetectedState, plan: AdoptPlan): Promise<void> {
+  const prodPath = join(plan.serverDir, ".env.production");
   const ora = (await import("ora")).default;
-  const spinner = ora("Encrypting .env.production with dotenvx...").start();
+  const label = state.prodEnvIsEncrypted
+    ? "Re-encrypting .env.production with dotenvx..."
+    : existsSync(prodPath)
+      ? "Encrypting .env.production with dotenvx..."
+      : "Generating .env.production + .env.keys with dotenvx...";
+  const spinner = ora(label).start();
   try {
-    // Calling `dotenvx set` with a no-op key forces encryption of the
-    // existing file: it reads, encrypts, generates the keypair, and
-    // writes .env.keys. We use a sentinel that's a real string so it
-    // stays in the file (no harm, easy to grep + remove later).
+    // First call to `dotenvx set` with encrypt: true creates the file
+    // (if missing), generates the keypair, and writes .env.keys.
+    // Subsequent calls reuse the existing keypair. Using HATCHKIT_ADOPTED
+    // as the sentinel keeps the file non-empty so the keypair survives.
     const { set: dotenvxSet } = await import("@dotenvx/dotenvx");
     dotenvxSet("HATCHKIT_ADOPTED", new Date().toISOString(), {
       path: prodPath,
       encrypt: true,
     });
-    spinner.succeed("Encrypted .env.production");
+    spinner.succeed(
+      existsSync(prodPath)
+        ? "dotenvx initialized — .env.production is now encrypted"
+        : "dotenvx initialized",
+    );
   } catch (err) {
-    spinner.fail("Failed to encrypt .env.production");
+    spinner.fail("Failed to initialize dotenvx");
     throw err;
   }
+}
+
+async function setupGitHubRemote(
+  state: DetectedState,
+  plan: AdoptPlan,
+): Promise<string | undefined> {
+  // Pre-flight gh CLI auth. ensureGitHub prompts the user to log in
+  // when needed; if they cancel, surface a clear "you can do this
+  // later" rather than crashing the whole adopt run.
+  try {
+    await ensureGitHub();
+  } catch (err) {
+    console.log(
+      chalk.yellow(
+        `\n  Couldn't reach GitHub (${(err as Error).message}). Skipping remote creation.`,
+      ),
+    );
+    return undefined;
+  }
+
+  console.log(chalk.bold("\n  ── GitHub ────────────────────────────────────────────────\n"));
+
+  if (!state.isGitRepo) {
+    await exec("git", ["init"], {
+      cwd: state.projectDir,
+      spinner: "Initializing git repo...",
+    });
+  }
+  // Stage everything + commit when there's anything staged.
+  //   `git diff --cached --quiet` exits 0 → no diff (nothing staged)
+  //                                 1 → diff present (commit needed)
+  // execOk returns true on exit 0, so the inverse is "something to commit".
+  await exec("git", ["add", "-A"], { cwd: state.projectDir });
+  const cleanIndex = await execOk("git", ["diff", "--cached", "--quiet"], {
+    cwd: state.projectDir,
+  });
+  if (!cleanIndex) {
+    await exec("git", ["commit", "-m", "Adopt under hatchkit management"], {
+      cwd: state.projectDir,
+      spinner: "Creating commit...",
+    });
+  }
+
+  // `gh repo create` with --source=. + --push handles remote creation
+  // and the initial push in one shot. --private matches the default
+  // behaviour of `hatchkit create`.
+  const create = await exec(
+    "gh",
+    ["repo", "create", plan.name, "--private", "--source=.", "--push"],
+    { cwd: state.projectDir, spinner: `Creating GitHub repo: ${plan.name}...` },
+  );
+  if (create.exitCode !== 0) {
+    console.log(chalk.yellow("  Could not create GitHub repo. Push manually once it exists:"));
+    console.log(chalk.dim(`    cd ${state.projectDir}`));
+    console.log(chalk.dim(`    gh repo create ${plan.name} --private --source=. --push`));
+    return undefined;
+  }
+  const urlRes = await exec("gh", ["repo", "view", "--json", "url", "-q", ".url"], {
+    cwd: state.projectDir,
+  });
+  const url = urlRes.stdout.trim();
+  console.log(chalk.green(`  ✓ GitHub repo: ${url}`));
+  return url || undefined;
 }
 
 async function importKeyToKeychain(state: DetectedState, plan: AdoptPlan): Promise<void> {
