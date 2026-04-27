@@ -1231,17 +1231,25 @@ function printHelp(topic?: HelpTopic): void {
       · ${chalk.cyan("GitHub remote")} — \`git init\` (if needed),
         commit, \`gh repo create --private --source=. --push\`. Skipped
         when an \`origin\` is already set.
+      · ${chalk.cyan("Coolify + DNS")} — direct REST-API calls into the
+        Coolify and Cloudflare you already configured (no Terraform,
+        no submodule). Finds or creates the Coolify project, picks
+        the server (single-server setups auto-resolve), creates the
+        application from the GitHub repo (private repos use a
+        Coolify GitHub App source), pushes the baseline env
+        (DOTENV_PRIVATE_KEY_PRODUCTION + GITHUB_REPO_URL), upserts an
+        A record \`<domain> → <server-ip>\` on Cloudflare, and triggers
+        the first deploy. Defaults ON when no matching app exists.
       · Optionally provisions GlitchTip / OpenPanel / Resend clients
         (same machinery as \`hatchkit add\`).
-      · Optionally pushes the dotenvx private key to Coolify.
+      · Optionally pushes the dotenvx private key to Coolify
+        (redundant when the Coolify+DNS step ran — it already does).
 
-  ${chalk.bold("What adopt does NOT do (yet):")}
-    Adopt doesn't create the Coolify app or the DNS records — those
-    live in the hatchkit infra/ submodule's Terraform + stack
-    scripts, which need to be run from the hatchkit monorepo.
-    Create the Coolify app pointing at the new GitHub repo
-    yourself, then run \`hatchkit keys push <project>\` to ship the
-    dotenvx key.
+  ${chalk.bold("Limitations:")}
+    · Cloudflare only for DNS automation. INWX / manual users get a
+      "create the A record yourself" hint with the exact target IP.
+    · Doesn't provision new Hetzner servers — the Coolify wiring
+      assumes the server is already in your Coolify dashboard.
 
   ${chalk.bold("When to use:")}
     The project wasn't created by hatchkit but you want it managed

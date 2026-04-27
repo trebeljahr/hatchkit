@@ -106,9 +106,15 @@ export class CoolifyApi {
     return this.request("GET", "/projects");
   }
 
-  /** Create a new project. */
-  async createProject(name: string): Promise<{ id: number; name: string }> {
-    return this.request("POST", "/projects", { name });
+  /** Create a new project. Coolify v4 returns `uuid` (string) on the
+   *  POST response — this is the field used by every downstream API
+   *  call. Older builds may include a numeric `id` too; we accept both
+   *  but prefer uuid. */
+  async createProject(
+    name: string,
+    description?: string,
+  ): Promise<{ uuid: string; name: string; id?: number }> {
+    return this.request("POST", "/projects", { name, description });
   }
 
   /** List Coolify apps/services so callers can resolve a UUID by name. */
@@ -242,6 +248,101 @@ export class CoolifyApi {
     if (!match?.uuid) return null;
     return { uuid: match.uuid, name: match.name, ip: match.ip };
   }
+
+  // ---------------------------------------------------------------------
+  // Application creation
+  // ---------------------------------------------------------------------
+  //
+  // Coolify exposes one endpoint per source kind. We support the two the
+  // typical hatchkit project hits:
+  //   · POST /applications/public            — public GitHub repo
+  //   · POST /applications/private-github-app — private repo via a
+  //     Coolify-installed GitHub App. The user must have set up the
+  //     GitHub App in Coolify once; we list those via /sources/github
+  //     so the caller can pick.
+  // Other source flavours (deploy keys, Dockerfile, docker-compose) are
+  // out of scope for the current `hatchkit adopt` flow.
+
+  /** GitHub source connections registered in Coolify. Used to resolve
+   *  a `github_app_uuid` for private-repo application creation. The
+   *  endpoint is plural-ish across Coolify versions — try both shapes. */
+  async listGithubSources(): Promise<Array<{ uuid: string; name: string; html_url?: string }>> {
+    // Newer Coolify exposes /sources with a `type` discriminator.
+    try {
+      const sources = (await this.request("GET", "/sources")) as Array<{
+        uuid: string;
+        name: string;
+        type?: string;
+        html_url?: string;
+      }>;
+      return sources.filter((s) => !s.type || s.type === "github_app");
+    } catch {
+      // Older builds had /security/github-app or similar. Return [] so
+      // the caller can fall back to "ask the user for the uuid".
+      return [];
+    }
+  }
+
+  /** Common request body shape across both public + private-github-app
+   *  endpoints. Coolify mostly mirrors the docker-compose convention:
+   *  `ports_exposes` is the comma-separated container port(s). */
+  private buildAppCreateBody(input: ApplicationCreateInput): Record<string, unknown> {
+    return {
+      project_uuid: input.projectUuid,
+      server_uuid: input.serverUuid,
+      environment_name: input.environmentName ?? "production",
+      git_repository: input.gitRepository,
+      git_branch: input.gitBranch ?? "main",
+      ports_exposes: input.portsExposes ?? "3000",
+      build_pack: input.buildPack ?? "nixpacks",
+      name: input.name,
+      description: input.description,
+      domains: input.domains?.join(","),
+      instant_deploy: input.instantDeploy ?? true,
+    };
+  }
+
+  async createApplicationFromPublicRepo(
+    input: ApplicationCreateInput,
+  ): Promise<{ uuid: string; fqdn?: string }> {
+    return this.request("POST", "/applications/public", this.buildAppCreateBody(input));
+  }
+
+  async createApplicationFromPrivateGithubApp(
+    input: ApplicationCreateInput & { githubAppUuid: string },
+  ): Promise<{ uuid: string; fqdn?: string }> {
+    return this.request("POST", "/applications/private-github-app", {
+      ...this.buildAppCreateBody(input),
+      github_app_uuid: input.githubAppUuid,
+    });
+  }
+
+  /** Trigger a deploy of an existing application. Useful after we've
+   *  set env vars post-creation. */
+  async deployApplication(uuid: string): Promise<void> {
+    await this.request("POST", `/applications/${uuid}/start`);
+  }
+}
+
+export interface ApplicationCreateInput {
+  projectUuid: string;
+  serverUuid: string;
+  environmentName?: string;
+  /** Full URL for public repos (`https://github.com/owner/name`) or
+   *  the `owner/name` shorthand for private-github-app. Coolify
+   *  accepts both for either flavour. */
+  gitRepository: string;
+  gitBranch?: string;
+  /** Comma-separated container ports the app exposes. */
+  portsExposes?: string;
+  buildPack?: "nixpacks" | "static" | "dockerfile" | "dockercompose";
+  name?: string;
+  description?: string;
+  /** FQDNs Coolify should attach to this app. Leave undefined to let
+   *  Coolify pick a sslip.io host; pass `https://<domain>` to bind to
+   *  a real one (assumes DNS already points at the server). */
+  domains?: string[];
+  instantDeploy?: boolean;
 }
 
 /** Verify Coolify connection. Returns version string or throws. */

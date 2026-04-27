@@ -114,4 +114,60 @@ export class CloudflareApi {
     const data = await this.request<CloudflareZone[]>("GET", `/zones?${query.toString()}`);
     return data[0] ?? null;
   }
+
+  /** Find an exact name+type DNS record in a zone, or null. */
+  async findRecord(
+    zoneId: string,
+    name: string,
+    type: "A" | "AAAA" | "CNAME",
+  ): Promise<{ id: string; name: string; type: string; content: string; proxied: boolean } | null> {
+    const query = new URLSearchParams({ name, type });
+    const data = await this.request<
+      Array<{ id: string; name: string; type: string; content: string; proxied: boolean }>
+    >("GET", `/zones/${zoneId}/dns_records?${query.toString()}`);
+    return data[0] ?? null;
+  }
+
+  /** Upsert a DNS record by name+type. Idempotent — re-runs on the same
+   *  inputs return without changes if the record already matches.
+   *  `proxied: true` enables the orange-cloud Cloudflare proxy for the
+   *  record (TLS termination + DDoS, recommended for a webapp). */
+  async upsertRecord(
+    zoneId: string,
+    params: {
+      type: "A" | "AAAA" | "CNAME";
+      name: string;
+      content: string;
+      proxied?: boolean;
+      ttl?: number;
+    },
+  ): Promise<{ id: string; created: boolean; updated: boolean }> {
+    const existing = await this.findRecord(zoneId, params.name, params.type);
+    const body = {
+      type: params.type,
+      name: params.name,
+      content: params.content,
+      proxied: params.proxied ?? true,
+      ttl: params.ttl ?? 1, // 1 = automatic
+    };
+    if (!existing) {
+      const created = await this.request<{ id: string }>(
+        "POST",
+        `/zones/${zoneId}/dns_records`,
+        body,
+      );
+      return { id: created.id, created: true, updated: false };
+    }
+    const same =
+      existing.content === params.content &&
+      (existing.proxied ?? false) === (params.proxied ?? true) &&
+      existing.type === params.type;
+    if (same) return { id: existing.id, created: false, updated: false };
+    const updated = await this.request<{ id: string }>(
+      "PATCH",
+      `/zones/${zoneId}/dns_records/${existing.id}`,
+      body,
+    );
+    return { id: updated.id, created: false, updated: true };
+  }
 }

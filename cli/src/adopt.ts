@@ -88,6 +88,12 @@ interface AdoptPlan {
   /** Initialize git + create a GitHub remote (private repo). Skipped
    *  silently when a remote already exists. */
   setupGitHub: boolean;
+  /** Wire the repo into the user's existing Coolify + DNS via direct
+   *  API calls (no Terraform / no submodule). Defaults ON when there's
+   *  no Coolify app match yet. */
+  wireCoolify: boolean;
+  /** Container port the app exposes — defaults to "3000". */
+  appPort: string;
   /** Provisioning to run after manifest write. */
   services: ProvisionService[];
   /** Push dotenvx key to Coolify after everything's written. */
@@ -129,9 +135,13 @@ export async function runAdopt(cwd: string): Promise<void> {
     clientDir: state.clientDir,
     bootstrapDotenvx: !state.prodEnvIsEncrypted,
     setupGitHub: !state.gitRemoteUrl,
+    wireCoolify: !state.coolifyAppMatch,
+    appPort: "3000",
     services: ["glitchtip", "openpanel", "resend"],
-    // Default the push only when there's a Coolify app to push to —
-    // otherwise the push will fail loudly.
+    // Default the push only when there's already a Coolify app to push to.
+    // When wireCoolify creates a fresh app, it sets the baseline env
+    // itself (including the dotenvx key), so a separate push is
+    // redundant in that branch.
     pushKey: !!state.coolifyAppMatch,
   };
 
@@ -529,6 +539,23 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
       ],
     },
     {
+      title: "Deploy",
+      steps: [
+        {
+          key: "wireCoolify",
+          label: "Coolify + DNS",
+          set: true,
+          summary: plan.wireCoolify
+            ? state.coolifyAppMatch
+              ? chalk.dim(`existing app "${state.coolifyAppMatch.name}" — will skip create`)
+              : `yes — create app + upsert DNS (port ${plan.appPort})`
+            : state.coolifyAppMatch
+              ? chalk.dim(`already exists: ${state.coolifyAppMatch.name}`)
+              : chalk.dim("no"),
+        },
+      ],
+    },
+    {
       title: "Provisioning",
       steps: [
         {
@@ -683,6 +710,23 @@ async function editAdoptStep(
     });
     return { ...plan, setupGitHub };
   }
+  if (step === "wireCoolify") {
+    const wireCoolify = await confirm({
+      message: state.coolifyAppMatch
+        ? `App "${state.coolifyAppMatch.name}" already exists — re-wire (will create a duplicate)?`
+        : "Create a Coolify app + upsert DNS now?",
+      default: plan.wireCoolify,
+    });
+    if (!wireCoolify) return { ...plan, wireCoolify };
+    const appPort = (
+      await input({
+        message: "Container port the server listens on:",
+        default: plan.appPort,
+        validate: (v) => /^\d+$/.test(v.trim()) || "Must be an integer port number.",
+      })
+    ).trim();
+    return { ...plan, wireCoolify, appPort };
+  }
   return plan;
 }
 
@@ -716,6 +760,49 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
     remoteUrl = await setupGitHubRemote(state, plan);
   } else if (state.gitRemoteUrl) {
     console.log(chalk.dim(`  · git origin already set → ${state.gitRemoteUrl}`));
+  }
+
+  // Step 3b: Wire the repo into Coolify + DNS via direct API calls.
+  // No infra/ submodule, no Terraform — just hits the Coolify and
+  // DNS-provider REST endpoints with credentials we already have in
+  // keychain. Idempotent on the DNS side (upsert); not yet on the
+  // app-create side (Coolify accepts duplicate app names).
+  let coolifyResult: Awaited<ReturnType<typeof import("./deploy/coolify-app.js").wireProjectIntoCoolify>>
+    | undefined;
+  if (plan.wireCoolify && remoteUrl) {
+    try {
+      const { wireProjectIntoCoolify } = await import("./deploy/coolify-app.js");
+      coolifyResult = await wireProjectIntoCoolify({
+        projectName: plan.name,
+        domain: plan.domain,
+        gitRepository: remoteUrl,
+        portsExposes: plan.appPort,
+        // Default assumption: anything we just `gh repo create --private`d
+        // is private. If origin was already set we don't know for sure;
+        // try public first (cheaper auth) and let the orchestrator handle
+        // the fallback.
+        isPrivate: plan.setupGitHub,
+      });
+    } catch (err) {
+      console.log(
+        chalk.yellow(`\n  Couldn't wire Coolify: ${(err as Error).message}`),
+      );
+      console.log(
+        chalk.dim(
+          `  Create the app manually in the Coolify dashboard pointing at\n` +
+            `    ${remoteUrl}\n` +
+            `  with domain ${plan.domain} and port ${plan.appPort}, then run\n` +
+            `    hatchkit keys push ${plan.name}`,
+        ),
+      );
+    }
+  } else if (plan.wireCoolify && !remoteUrl) {
+    console.log(
+      chalk.yellow(
+        "  Coolify wiring needs a git remote URL — skipping (no `origin` set and the GitHub step\n" +
+          "  was off). Set the remote yourself or re-run with `setup GitHub remote = yes`.",
+      ),
+    );
   }
 
   // Step 4: provision clients via the existing `add` machinery so the
@@ -758,20 +845,17 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
   if (plan.clientDir) console.log(`  Client:    ${chalk.cyan(relativeTo(plan.clientDir))}`);
   console.log(`  Manifest:  ${chalk.dim(join(state.projectDir, MANIFEST_FILENAME))}`);
   if (remoteUrl) console.log(`  Git:       ${chalk.cyan(remoteUrl)}`);
-
-  // Tell the user what adopt does NOT cover, so they don't expect
-  // their domain to magically resolve.
-  console.log(chalk.bold("\n  Not done by adopt:"));
-  if (!state.coolifyAppMatch) {
-    console.log(
-      chalk.dim(
-        "  · Coolify app + DNS records aren't created here — adopt doesn't run\n" +
-          "    Terraform or the Coolify-stack scripts (those need the hatchkit\n" +
-          "    monorepo's infra/ submodule). Create the Coolify app pointing at\n" +
-          `    ${remoteUrl ?? "your repo"}, set the domain to ${plan.domain || "<your-domain>"}, then\n` +
-          `    run \`hatchkit keys push ${plan.name}\` to ship the dotenvx key.`,
-      ),
-    );
+  if (coolifyResult) {
+    console.log(`  Coolify:   ${chalk.cyan(coolifyResult.appUuid)}  ${chalk.dim(`@ ${coolifyResult.serverIp}`)}`);
+    if (coolifyResult.dnsManaged) {
+      console.log(`  DNS:       ${chalk.green("✓")}  ${chalk.dim(`A ${plan.domain} → ${coolifyResult.serverIp}`)}`);
+    } else if (plan.domain && coolifyResult.serverIp) {
+      console.log(
+        `  DNS:       ${chalk.yellow("✗")}  ${chalk.dim(
+          `add A ${plan.domain} → ${coolifyResult.serverIp} manually`,
+        )}`,
+      );
+    }
   }
   console.log();
 }
