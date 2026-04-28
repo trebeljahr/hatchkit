@@ -322,6 +322,24 @@ export class CoolifyApi {
   async deployApplication(uuid: string): Promise<void> {
     await this.request("POST", `/applications/${uuid}/start`);
   }
+
+  /** GET /servers/{uuid}/domains — returns one entry per running
+   *  domain on this server, keyed by the IP it resolves to. For a
+   *  localhost-Coolify server this falls back to the instance's
+   *  configured public_ipv4 / public_ipv6, which is exactly the data
+   *  we need to write A / AAAA records pointing at the box.
+   *
+   *  The server-side type is loose; it can return either an array
+   *  directly or `{ data: [...] }`, so we accept both. */
+  async getServerDomains(
+    uuid: string,
+  ): Promise<Array<{ ip?: string; domain?: string }>> {
+    const raw = (await this.request("GET", `/servers/${uuid}/domains`)) as
+      | Array<{ ip?: string; domain?: string }>
+      | { data?: Array<{ ip?: string; domain?: string }> };
+    if (Array.isArray(raw)) return raw;
+    return raw?.data ?? [];
+  }
 }
 
 export interface ApplicationCreateInput {

@@ -970,15 +970,29 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
   console.log(`  Manifest:  ${chalk.dim(join(state.projectDir, MANIFEST_FILENAME))}`);
   if (remoteUrl) console.log(`  Git:       ${chalk.cyan(remoteUrl)}`);
   if (coolifyResult) {
-    console.log(`  Coolify:   ${chalk.cyan(coolifyResult.appUuid)}  ${chalk.dim(`@ ${coolifyResult.serverIp}`)}`);
-    if (coolifyResult.dnsManaged) {
-      console.log(`  DNS:       ${chalk.green("✓")}  ${chalk.dim(`A ${plan.domain} → ${coolifyResult.serverIp}`)}`);
-    } else if (plan.domain && coolifyResult.serverIp) {
-      console.log(
-        `  DNS:       ${chalk.yellow("✗")}  ${chalk.dim(
-          `add A ${plan.domain} → ${coolifyResult.serverIp} manually`,
-        )}`,
-      );
+    const ipDisplay = [coolifyResult.serverIpv4, coolifyResult.serverIpv6]
+      .filter(Boolean)
+      .join(" / ");
+    console.log(
+      `  Coolify:   ${chalk.cyan(coolifyResult.appUuid)}  ${chalk.dim(`@ ${ipDisplay || "?"}`)}`,
+    );
+    if (coolifyResult.ipMismatchWarning) {
+      console.log(`  ${chalk.yellow("⚠")}  ${chalk.dim(coolifyResult.ipMismatchWarning)}`);
+    }
+    const records: string[] = [];
+    if (coolifyResult.dnsRecordId) records.push(`A ${plan.domain} → ${coolifyResult.serverIpv4}`);
+    if (coolifyResult.dnsRecordIdV6)
+      records.push(`AAAA ${plan.domain} → ${coolifyResult.serverIpv6}`);
+    if (coolifyResult.dnsManaged && records.length > 0) {
+      console.log(`  DNS:       ${chalk.green("✓")}  ${chalk.dim(records.join("  ·  "))}`);
+    } else if (plan.domain && (coolifyResult.serverIpv4 || coolifyResult.serverIpv6)) {
+      const manual = [
+        coolifyResult.serverIpv4 && `A ${plan.domain} → ${coolifyResult.serverIpv4}`,
+        coolifyResult.serverIpv6 && `AAAA ${plan.domain} → ${coolifyResult.serverIpv6}`,
+      ]
+        .filter(Boolean)
+        .join("  ·  ");
+      console.log(`  DNS:       ${chalk.yellow("✗")}  ${chalk.dim(`add ${manual} manually`)}`);
     }
   }
   console.log();

@@ -25,7 +25,7 @@
  *     a clear "add an A record yourself" hint.
  */
 
-import { resolve4 } from "node:dns/promises";
+import { resolve4, resolve6 } from "node:dns/promises";
 import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig, getDnsConfig } from "../config.js";
@@ -62,12 +62,20 @@ export interface WireUpResult {
   projectUuid: string;
   /** Coolify server uuid the app runs on. */
   serverUuid: string;
-  /** Server IP — used by the DNS step + reported back. */
-  serverIp: string;
-  /** Cloudflare DNS record id for the apex/sub A record, if we
-   *  managed it. */
+  /** Public IPv4 (preferred from Coolify, falling back to DNS). */
+  serverIpv4?: string;
+  /** Public IPv6 — only set when Coolify exposes one and we wrote
+   *  an AAAA record. */
+  serverIpv6?: string;
+  /** Whether the IPv4 reported by Coolify and the one resolved via
+   *  DNS for the dashboard hostname disagree. Useful to flag
+   *  misconfigured proxy / floating-IP setups. */
+  ipMismatchWarning?: string;
+  /** Cloudflare DNS record id for the A record, if managed. */
   dnsRecordId?: string;
-  /** True when DNS provider is Cloudflare and we wrote the A record. */
+  /** Cloudflare DNS record id for the AAAA record, if managed. */
+  dnsRecordIdV6?: string;
+  /** True when at least one DNS record (A or AAAA) was upserted. */
   dnsManaged: boolean;
 }
 
@@ -207,16 +215,22 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     );
   }
 
-  // ── 6. DNS (Cloudflare only for now). ──────────────────────────────
+  // ── 6. DNS — discover the box's public IP(s) and upsert records. ─
   //
-  // Coolify-in-Docker installs report `ip: "host.docker.internal"`
-  // (the container-internal hostname for the Docker host) on
-  // /servers. That's not routable from the public internet, so it'd
-  // fail Cloudflare's IPv4 validation. Fall back to resolving the
-  // Coolify dashboard URL's hostname — the dashboard already lives
-  // on the public IP we want to point at.
-  const publicIp = await resolvePublicIp(server.ip, cfg.url);
-  const dnsResult = await wireDns(input.domain, publicIp);
+  // Discovery order:
+  //   1. Coolify's `/servers/{uuid}/domains` exposes the configured
+  //      `public_ipv4` and `public_ipv6` for localhost-Coolify
+  //      installs (where /servers reports "host.docker.internal").
+  //   2. Independently resolve the Coolify dashboard URL's hostname
+  //      via dns.resolve4 + dns.resolve6 — that hostname IS public
+  //      (we're talking to it from the internet) so its A / AAAA
+  //      records are by definition the right pointers for new app
+  //      domains too.
+  // We use Coolify's value as primary, fall back to DNS resolution,
+  // and surface a warning when the two disagree (catches stale or
+  // misconfigured public_ipv4 / proxy setups).
+  const ips = await discoverPublicIps(api, resolveServer.uuid, server.ip, cfg.url);
+  const dnsResult = await wireDns(input.domain, ips);
 
   // ── 7. Trigger first deploy. ───────────────────────────────────────
   const deploy = ora("Coolify: triggering first deploy").start();
@@ -236,8 +250,11 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     appUuid,
     projectUuid,
     serverUuid: resolveServer.uuid,
-    serverIp: publicIp,
-    dnsRecordId: dnsResult.recordId,
+    serverIpv4: ips.v4,
+    serverIpv6: ips.v6,
+    ipMismatchWarning: ips.mismatchWarning,
+    dnsRecordId: dnsResult.recordIdV4,
+    dnsRecordIdV6: dnsResult.recordIdV6,
     dnsManaged: dnsResult.managed,
   };
 }
@@ -254,54 +271,116 @@ function isPublicIpv4(s: string): boolean {
   return true;
 }
 
-/** Best-effort resolution of the public IP the deploy actually lands
- *  on. Prefers Coolify's reported server.ip when it looks like a
- *  routable IPv4; otherwise resolves the Coolify dashboard URL's
- *  hostname (which has to be reachable from the public internet for
- *  the user to be running this command at all). Falls back to the
- *  original value if DNS resolution itself fails — the DNS step will
- *  then surface a clear error. */
-async function resolvePublicIp(coolifyServerIp: string, dashboardUrl: string): Promise<string> {
-  if (isPublicIpv4(coolifyServerIp)) return coolifyServerIp;
-  let host: string;
+/** True for valid public-routable IPv6 strings. Filters loopback
+ *  (::1) and link-local. Coarse — node:net.isIPv6 would be stricter
+ *  but the obvious filters cover the practical cases. */
+function isPublicIpv6(s: string): boolean {
+  if (!/^[0-9a-fA-F:]+$/.test(s) || !s.includes(":")) return false;
+  if (s === "::" || s === "::1") return false;
+  if (s.toLowerCase().startsWith("fe80:")) return false; // link-local
+  return true;
+}
+
+interface PublicIps {
+  v4?: string;
+  v6?: string;
+  /** Set when Coolify's IPv4 and DNS-resolved IPv4 disagree — the user
+   *  might have a stale public_ipv4 field, a misconfigured proxy, or
+   *  a floating IP that's pointed elsewhere. We still proceed using
+   *  Coolify's value (its self-reported truth), but flag it. */
+  mismatchWarning?: string;
+}
+
+/** Resolve the box's public IPv4 + IPv6, preferring Coolify's
+ *  configured values (via /servers/{uuid}/domains, which surfaces the
+ *  instance's `public_ipv4` / `public_ipv6` for localhost-Coolify
+ *  installs that report `host.docker.internal` on /servers), falling
+ *  back to DNS resolution of the dashboard hostname. Cross-checks
+ *  the two IPv4 sources and surfaces a warning when they disagree. */
+async function discoverPublicIps(
+  api: CoolifyApi,
+  serverUuid: string,
+  fallbackServerIp: string,
+  dashboardUrl: string,
+): Promise<PublicIps> {
+  // Step 1: Coolify-reported IPs. /servers/{uuid}/domains returns
+  // entries with `ip` set per running domain; for localhost-Coolify
+  // this falls back to the configured public_ipv4 / public_ipv6.
+  let coolifyV4: string | undefined;
+  let coolifyV6: string | undefined;
+  try {
+    const domains = await api.getServerDomains(serverUuid);
+    for (const d of domains) {
+      const ip = (d.ip ?? "").trim();
+      if (!coolifyV4 && isPublicIpv4(ip)) coolifyV4 = ip;
+      if (!coolifyV6 && isPublicIpv6(ip)) coolifyV6 = ip;
+    }
+  } catch {
+    // /servers/{uuid}/domains can 404 / 501 on older Coolify builds.
+    // Treat as "Coolify doesn't know" and fall back to DNS only.
+  }
+  // /servers itself may return a real IPv4 on non-Docker installs —
+  // use it as a last-resort source.
+  if (!coolifyV4 && isPublicIpv4(fallbackServerIp)) coolifyV4 = fallbackServerIp;
+  if (!coolifyV6 && isPublicIpv6(fallbackServerIp)) coolifyV6 = fallbackServerIp;
+
+  // Step 2: independent DNS resolution of the dashboard hostname.
+  let host: string | undefined;
   try {
     host = new URL(dashboardUrl).hostname;
   } catch {
-    return coolifyServerIp;
+    /* ignore — dashboard URL might be malformed */
   }
-  if (isPublicIpv4(host)) return host;
-  const spinner = ora(
-    `Coolify reported ${coolifyServerIp}; resolving public IP from ${host}`,
-  ).start();
-  try {
-    const addresses = await resolve4(host);
-    if (addresses.length > 0 && isPublicIpv4(addresses[0])) {
-      spinner.succeed(`Public IP: ${addresses[0]} (resolved from ${host})`);
-      return addresses[0];
+  let dnsV4: string | undefined;
+  let dnsV6: string | undefined;
+  if (host && !isPublicIpv4(host)) {
+    const spinner = ora(`Resolving ${host} for cross-check`).start();
+    try {
+      const [v4, v6] = await Promise.allSettled([resolve4(host), resolve6(host)]);
+      if (v4.status === "fulfilled" && v4.value[0] && isPublicIpv4(v4.value[0])) {
+        dnsV4 = v4.value[0];
+      }
+      if (v6.status === "fulfilled" && v6.value[0] && isPublicIpv6(v6.value[0])) {
+        dnsV6 = v6.value[0];
+      }
+      const parts = [dnsV4 && `A ${dnsV4}`, dnsV6 && `AAAA ${dnsV6}`].filter(Boolean);
+      spinner.succeed(`DNS for ${host}: ${parts.length > 0 ? parts.join(", ") : "no records"}`);
+    } catch {
+      spinner.fail(`Couldn't resolve ${host}`);
     }
-    spinner.fail(`No usable IPv4 returned for ${host}`);
-    return coolifyServerIp;
-  } catch (err) {
-    spinner.fail(`Couldn't resolve ${host}: ${(err as Error).message}`);
-    return coolifyServerIp;
+  } else if (host && isPublicIpv4(host)) {
+    dnsV4 = host;
   }
+
+  // Step 3: cross-check + decide. Prefer Coolify's value when we have
+  // it (it's the box's self-reported truth); fall back to DNS.
+  const v4 = coolifyV4 ?? dnsV4;
+  const v6 = coolifyV6 ?? dnsV6;
+  let mismatchWarning: string | undefined;
+  if (coolifyV4 && dnsV4 && coolifyV4 !== dnsV4) {
+    mismatchWarning = `Coolify reports public IPv4 ${coolifyV4} but ${host} resolves to ${dnsV4}. Using Coolify's value; double-check the DNS records and any floating-IP / proxy setup.`;
+    console.log(chalk.yellow(`  ⚠ ${mismatchWarning}`));
+  }
+  return { v4, v6, mismatchWarning };
 }
 
 interface DnsWireResult {
   managed: boolean;
-  recordId?: string;
+  recordIdV4?: string;
+  recordIdV6?: string;
 }
 
-async function wireDns(domain: string, serverIp: string): Promise<DnsWireResult> {
-  // Pre-flight: the DNS upsert needs a real IPv4. Anything else
-  // (host.docker.internal, IPv6, junk) gets bounced by Cloudflare
-  // with a 9005, so we may as well stop earlier with a usable hint.
-  if (!isPublicIpv4(serverIp)) {
+/** Upsert A and/or AAAA records for `domain` on Cloudflare. Either
+ *  IP being undefined is fine — we only upsert what we've got, so a
+ *  v6-only deploy gets just an AAAA record and v4-only gets just an A. */
+async function wireDns(domain: string, ips: PublicIps): Promise<DnsWireResult> {
+  if (!ips.v4 && !ips.v6) {
     console.log(
       chalk.yellow(
-        `  Couldn't resolve a public IPv4 for the Coolify server (got "${serverIp}").\n` +
-          `  Add an A record for ${domain} manually pointing at the box's public IP, or\n` +
-          `  fix the server's IP in the Coolify dashboard so /servers returns it.`,
+        "  Couldn't resolve a public IPv4 or IPv6 for the Coolify server.\n" +
+          `  Add an A (and optionally AAAA) record for ${domain} manually pointing at\n` +
+          "  the box's public IP, or fix the server's IP in the Coolify dashboard so\n" +
+          "  /servers/{uuid}/domains returns it.",
       ),
     );
     return { managed: false };
@@ -310,8 +389,9 @@ async function wireDns(domain: string, serverIp: string): Promise<DnsWireResult>
   if (!dns) {
     console.log(
       chalk.yellow(
-        "  No DNS provider configured. Add an A record yourself for\n" +
-          `    ${domain}  →  ${serverIp}\n` +
+        "  No DNS provider configured. Add records yourself:\n" +
+          (ips.v4 ? `    A    ${domain}  →  ${ips.v4}\n` : "") +
+          (ips.v6 ? `    AAAA ${domain}  →  ${ips.v6}\n` : "") +
           "  Or run `hatchkit config add dns` and re-run.",
       ),
     );
@@ -320,9 +400,10 @@ async function wireDns(domain: string, serverIp: string): Promise<DnsWireResult>
   if (dns.provider !== "cloudflare") {
     console.log(
       chalk.yellow(
-        `  DNS provider is ${dns.provider} — automatic A-record management isn't wired\n` +
-          "  up for that provider yet. Add the A record manually:\n" +
-          `    ${domain}  →  ${serverIp}`,
+        `  DNS provider is ${dns.provider} — automatic record management isn't wired\n` +
+          "  up for that provider yet. Add records manually:\n" +
+          (ips.v4 ? `    A    ${domain}  →  ${ips.v4}\n` : "") +
+          (ips.v6 ? `    AAAA ${domain}  →  ${ips.v6}\n` : ""),
       ),
     );
     return { managed: false };
@@ -337,45 +418,62 @@ async function wireDns(domain: string, serverIp: string): Promise<DnsWireResult>
   }
 
   const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
-
-  // Find the zone that owns this domain. The zone name is the eTLD+1
-  // — e.g. for `protocol.trebeljahr.com` the zone is `trebeljahr.com`.
   const zoneName = inferZone(domain);
-  const spinner = ora(`Cloudflare: locating zone "${zoneName}"`).start();
+  const zoneSpinner = ora(`Cloudflare: locating zone "${zoneName}"`).start();
   let zone: { id: string; name: string } | null;
   try {
     zone = await cf.getZoneByName(zoneName);
     if (!zone) {
-      spinner.fail();
+      zoneSpinner.fail();
       console.log(
         chalk.yellow(
           `  No Cloudflare zone matches "${zoneName}". Add one (or change the\n` +
-            "  domain) and re-run, or set the A record manually.",
+            "  domain) and set the records manually.",
         ),
       );
       return { managed: false };
     }
-    spinner.succeed(`Cloudflare zone: ${zone.name}`);
+    zoneSpinner.succeed(`Cloudflare zone: ${zone.name}`);
   } catch (err) {
-    spinner.fail(`Cloudflare zone lookup failed: ${(err as Error).message}`);
+    zoneSpinner.fail(`Cloudflare zone lookup failed: ${(err as Error).message}`);
     return { managed: false };
   }
 
-  const upsert = ora(`Cloudflare: upserting A record ${domain} → ${serverIp}`).start();
+  const result: DnsWireResult = { managed: false };
+  if (ips.v4) {
+    const id = await upsertOne(cf, zone.id, "A", domain, ips.v4);
+    if (id) {
+      result.recordIdV4 = id;
+      result.managed = true;
+    }
+  }
+  if (ips.v6) {
+    const id = await upsertOne(cf, zone.id, "AAAA", domain, ips.v6);
+    if (id) {
+      result.recordIdV6 = id;
+      result.managed = true;
+    }
+  }
+  return result;
+}
+
+async function upsertOne(
+  cf: CloudflareApi,
+  zoneId: string,
+  type: "A" | "AAAA",
+  domain: string,
+  content: string,
+): Promise<string | undefined> {
+  const spinner = ora(`Cloudflare: upserting ${type} ${domain} → ${content}`).start();
   try {
-    const res = await cf.upsertRecord(zone.id, {
-      type: "A",
-      name: domain,
-      content: serverIp,
-      proxied: true,
-    });
-    if (res.created) upsert.succeed(`Cloudflare: created A ${domain} → ${serverIp}`);
-    else if (res.updated) upsert.succeed(`Cloudflare: updated A ${domain} → ${serverIp}`);
-    else upsert.succeed(`Cloudflare: A ${domain} → ${serverIp} already correct`);
-    return { managed: true, recordId: res.id };
+    const res = await cf.upsertRecord(zoneId, { type, name: domain, content, proxied: true });
+    if (res.created) spinner.succeed(`Cloudflare: created ${type} ${domain} → ${content}`);
+    else if (res.updated) spinner.succeed(`Cloudflare: updated ${type} ${domain} → ${content}`);
+    else spinner.succeed(`Cloudflare: ${type} ${domain} → ${content} already correct`);
+    return res.id;
   } catch (err) {
-    upsert.fail(`Cloudflare: A-record upsert failed: ${(err as Error).message}`);
-    return { managed: false };
+    spinner.fail(`Cloudflare: ${type}-record upsert failed: ${(err as Error).message}`);
+    return undefined;
   }
 }
 
