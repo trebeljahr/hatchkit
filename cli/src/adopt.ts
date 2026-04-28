@@ -168,9 +168,14 @@ export async function runAdopt(cwd: string, opts: { resume?: boolean } = {}): Pr
   // Surfaces resolution order:
   //   1. Whatever was persisted in the manifest (`--resume` recovery —
   //      detection wouldn't see a client/ dir for an in-place static
-  //      site so re-inferring would always say "server-only").
+  //      site so re-inferring would always be wrong).
   //   2. Detection: both dirs → "both"; single dir → matching surface.
-  //   3. Fallback "server-only" for the original adopt behaviour.
+  //   3. Fallback "client-only" — non-monorepo modern projects (Vite
+  //      SPAs, plain static sites, Next.js) are vastly more often
+  //      client-only than headless backends. The stepper marks this
+  //      step as `set: false` (see buildAdoptGroups) when we land
+  //      here without a strong signal, so the cursor parks on it and
+  //      the user is nudged to confirm before hitting Adopt.
   const inferredSurfaces: AdoptSurface =
     m?.surfaces ??
     (state.serverDir && state.clientDir
@@ -179,7 +184,7 @@ export async function runAdopt(cwd: string, opts: { resume?: boolean } = {}): Pr
         ? "server-only"
         : state.clientDir
           ? "client-only"
-          : "server-only");
+          : "client-only");
   let plan: AdoptPlan = {
     name: m?.name ?? state.packageName ?? "",
     domain: m?.domain ?? "",
@@ -548,17 +553,33 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
     {
       title: "Layout",
       steps: [
-        {
-          key: "surfaces",
-          label: "Surfaces",
-          set: true,
-          summary:
+        // The Surfaces choice has three confidence levels:
+        //   · manifest persisted   → user already confirmed it once
+        //   · disk layout obvious  → detection found server/ or
+        //                            client/ dirs (or both)
+        //   · ambiguous            → neither — we GUESS client-only
+        //                            but want the user to confirm
+        // `set: false` in the ambiguous case parks the cursor on this
+        // step on first render so the user sees + confirms the guess
+        // before hitting Adopt. See the inference comment in runAdopt
+        // for the matching default.
+        ((): AdoptStep => {
+          const hasManifestSurfaces = !!state.existingManifest?.surfaces;
+          const detectionWasDefinitive = !!(state.serverDir || state.clientDir);
+          const inferred = !hasManifestSurfaces && !detectionWasDefinitive;
+          const baseSummary =
             plan.surfaces === "server-only"
               ? "server only (backend / API)"
               : plan.surfaces === "client-only"
                 ? "client only (static / SPA — no backend)"
-                : "server + client",
-        },
+                : "server + client";
+          return {
+            key: "surfaces",
+            label: "Surfaces",
+            set: !inferred,
+            summary: inferred ? `${baseSummary}  ${chalk.dim("(guess — confirm)")}` : baseSummary,
+          };
+        })(),
         // Only show the env-dir rows that are actually relevant for
         // the chosen surface. Hiding instead of greying-out keeps the
         // stepper consistent with the surfaces choice and avoids the
