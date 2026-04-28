@@ -156,34 +156,46 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     }
   }
 
-  // ── 4. Create the app. ─────────────────────────────────────────────
-  const baseInput: ApplicationCreateInput = {
-    projectUuid,
-    serverUuid: resolveServer.uuid,
-    gitRepository: input.gitRepository,
-    gitBranch: input.gitBranch ?? "main",
-    portsExposes: input.portsExposes ?? "3000",
-    buildPack: input.buildPack ?? "nixpacks",
-    name: input.projectName,
-    description: "Adopted by hatchkit",
-    domains: [`https://${input.domain}`],
-    instantDeploy: false,
-  };
-
-  const createApp = ora(`Coolify: creating app for ${input.gitRepository}`).start();
+  // ── 4. Create the app — or reuse an existing one with the same
+  //       name. Coolify doesn't enforce name uniqueness, but creating
+  //       a duplicate on every `--resume` is loud and confusing. ───
   let appUuid: string;
-  try {
-    const res = input.isPrivate
-      ? await api.createApplicationFromPrivateGithubApp({
-          ...baseInput,
-          githubAppUuid: githubAppUuid as string,
-        })
-      : await api.createApplicationFromPublicRepo(baseInput);
-    appUuid = res.uuid;
-    createApp.succeed(`Coolify app created (uuid: ${appUuid})`);
-  } catch (err) {
-    createApp.fail();
-    throw err;
+  const existingApp = await api.findApplicationByName(input.projectName);
+  if (existingApp) {
+    console.log(
+      chalk.dim(
+        `  · Coolify app "${input.projectName}" already exists (${existingApp.uuid}) — skipping create, will update env + DNS.`,
+      ),
+    );
+    appUuid = existingApp.uuid;
+  } else {
+    const baseInput: ApplicationCreateInput = {
+      projectUuid,
+      serverUuid: resolveServer.uuid,
+      gitRepository: input.gitRepository,
+      gitBranch: input.gitBranch ?? "main",
+      portsExposes: input.portsExposes ?? "3000",
+      buildPack: input.buildPack ?? "nixpacks",
+      name: input.projectName,
+      description: "Adopted by hatchkit",
+      domains: [`https://${input.domain}`],
+      instantDeploy: false,
+    };
+
+    const createApp = ora(`Coolify: creating app for ${input.gitRepository}`).start();
+    try {
+      const res = input.isPrivate
+        ? await api.createApplicationFromPrivateGithubApp({
+            ...baseInput,
+            githubAppUuid: githubAppUuid as string,
+          })
+        : await api.createApplicationFromPublicRepo(baseInput);
+      appUuid = res.uuid;
+      createApp.succeed(`Coolify app created (uuid: ${appUuid})`);
+    } catch (err) {
+      createApp.fail();
+      throw err;
+    }
   }
 
   // ── 5. Set the bare-minimum env vars on the app: the dotenvx

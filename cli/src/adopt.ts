@@ -158,18 +158,21 @@ export async function runAdopt(cwd: string, opts: { resume?: boolean } = {}): Pr
   //     by `add`) has something to work with.
   //   setupGitHub: default ON when there's no origin remote yet.
   const m = state.existingManifest;
-  // Surfaces inference: trust both detected dirs. When only one is
-  // detected, default to the matching surface; when both, "both"; when
-  // neither, fall back to "server-only" at the project root for
-  // backward compat with the original adopt behaviour.
+  // Surfaces resolution order:
+  //   1. Whatever was persisted in the manifest (`--resume` recovery —
+  //      detection wouldn't see a client/ dir for an in-place static
+  //      site so re-inferring would always say "server-only").
+  //   2. Detection: both dirs → "both"; single dir → matching surface.
+  //   3. Fallback "server-only" for the original adopt behaviour.
   const inferredSurfaces: AdoptSurface =
-    state.serverDir && state.clientDir
+    m?.surfaces ??
+    (state.serverDir && state.clientDir
       ? "both"
       : state.serverDir
         ? "server-only"
         : state.clientDir
           ? "client-only"
-          : "server-only";
+          : "server-only");
   let plan: AdoptPlan = {
     name: m?.name ?? state.packageName ?? "",
     domain: m?.domain ?? "",
@@ -948,7 +951,12 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
       );
     } else {
       try {
-        await pushProjectKeyToCoolify(plan.name);
+        // Use the matched app name when we have one — adopt creates
+        // apps with the bare project name (no `-web` suffix that the
+        // create-flow scaffold uses).
+        await pushProjectKeyToCoolify(plan.name, {
+          appName: state.coolifyAppMatch?.name ?? plan.name,
+        });
         console.log(chalk.green(`\n  ✓ Pushed dotenvx key to Coolify`));
       } catch (err) {
         console.log(
@@ -1141,6 +1149,10 @@ function writeAdoptManifest(projectDir: string, plan: AdoptPlan): void {
     s3Provider: ((): S3Provider => (plan.features.includes("s3") ? "existing" : "none"))(),
     deployTarget: "existing",
     ports: { server: 3000, client: 3001 },
+    // Persist the surface choice so `--resume` doesn't re-infer
+    // "server-only" just because there's no client/ directory in the
+    // current layout.
+    surfaces: plan.surfaces,
   };
   writeManifest(projectDir, manifest);
 }

@@ -122,6 +122,20 @@ export class CoolifyApi {
     return this.request("GET", "/applications");
   }
 
+  /** Find an existing application by exact name. Coolify doesn't
+   *  enforce name uniqueness across projects, but within a single
+   *  hatchkit-managed setup names ARE unique enough — first match
+   *  wins. Used by `hatchkit adopt --resume` so re-runs reuse the app
+   *  Coolify already created instead of minting a duplicate. */
+  async findApplicationByName(
+    name: string,
+  ): Promise<{ uuid: string; name: string } | null> {
+    const apps = await this.listApplications();
+    const match = apps.find((a) => a.name === name);
+    if (!match) return null;
+    return { uuid: match.uuid, name: match.name };
+  }
+
   /** Upsert an env variable on a Coolify application. The Coolify API
    *  accepts multiple envs in one call so this is idempotent. */
   async setAppEnv(

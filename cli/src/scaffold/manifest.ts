@@ -67,6 +67,13 @@ export interface ProjectManifest {
   /** Ports assigned to this project. They're already public in the
    *  scaffolded .env.development files and docker-compose.yml. */
   ports: { server: number; client: number; nativeHmr?: number };
+  /** What kind of project this is — server-only / client-only /
+   *  both. Captured by `hatchkit adopt` so subsequent re-runs (and
+   *  any future tooling that needs to know whether to look for a
+   *  server bundle) don't have to re-infer from disk layout.
+   *  Optional for back-compat with manifests written before this
+   *  field existed; readers should fall back to detection. */
+  surfaces?: "server-only" | "client-only" | "both";
 }
 
 /** Build a manifest from the internal ProjectConfig, explicitly
