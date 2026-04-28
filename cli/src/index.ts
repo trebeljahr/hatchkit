@@ -134,7 +134,7 @@ async function main(): Promise<void> {
     case "adopt": {
       if (args.includes("--help")) return printHelp("adopt");
       const { runAdopt } = await import("./adopt.js");
-      await runAdopt(resolve("."));
+      await runAdopt(resolve("."), { resume: args.includes("--resume") });
       break;
     }
     case "destroy":
@@ -1255,10 +1255,14 @@ function printHelp(topic?: HelpTopic): void {
     The project wasn't created by hatchkit but you want it managed
     going forward.
 
-  ${chalk.bold("Refuses to run twice:")}
-    If \`.hatchkit.json\` already exists, exits with a hint to use
-    \`hatchkit update\` (add features) or \`hatchkit add\` (re-provision
-    clients) instead.
+  ${chalk.bold("Refuses to run twice — unless you ask:")}
+    If \`.hatchkit.json\` already exists, adopt exits with a hint
+    pointing at \`hatchkit update\` / \`hatchkit add\`. When a previous
+    adopt run failed mid-way (e.g. Coolify rejected something) and
+    you want to retry, pass \`--resume\` to re-run over the existing
+    manifest. Already-finished steps (encrypted .env, configured
+    git origin, existing Coolify app) auto-skip; only the unfinished
+    bits actually run.
 `);
     return;
   }

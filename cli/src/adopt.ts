@@ -100,10 +100,10 @@ interface AdoptPlan {
   pushKey: boolean;
 }
 
-export async function runAdopt(cwd: string): Promise<void> {
+export async function runAdopt(cwd: string, opts: { resume?: boolean } = {}): Promise<void> {
   const state = await detectProject(cwd);
 
-  if (state.hasManifest) {
+  if (state.hasManifest && !opts.resume) {
     console.log(
       chalk.yellow(
         `\n  ${MANIFEST_FILENAME} already exists in ${relativeTo(state.projectDir)}.`,
@@ -111,14 +111,25 @@ export async function runAdopt(cwd: string): Promise<void> {
     );
     console.log(
       chalk.dim(
-        "  This project is already adopted. Use `hatchkit update` to add features, or\n" +
-          "  `hatchkit add <project>` to (re-)provision per-project clients.\n",
+        "  This project is already adopted. Options:\n" +
+          "    · `hatchkit update`              — add features to the scaffold\n" +
+          "    · `hatchkit add <project>`       — (re-)provision per-project clients\n" +
+          "    · `hatchkit adopt --resume`      — re-run adopt over the existing manifest\n" +
+          "                                       (handy when an earlier run failed mid-way)\n",
       ),
     );
     return;
   }
 
-  console.log(chalk.bold("\n  hatchkit adopt"));
+  console.log(chalk.bold(opts.resume ? "\n  hatchkit adopt --resume" : "\n  hatchkit adopt"));
+  if (opts.resume) {
+    console.log(
+      chalk.dim(
+        "  Resuming a previous adopt — already-finished steps (encrypted .env,\n" +
+          "  existing GitHub origin, existing Coolify app) will skip; the rest will run.",
+      ),
+    );
+  }
   printDetected(state);
 
   // Initial plan — pre-filled from detection.
@@ -821,20 +832,31 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
     });
   }
 
-  // Step 5: push key to Coolify.
-  if (plan.pushKey) {
-    try {
-      await pushProjectKeyToCoolify(plan.name);
-      console.log(chalk.green(`\n  ✓ Pushed dotenvx key to Coolify`));
-    } catch (err) {
-      console.log(
-        chalk.yellow(`\n  Couldn't push dotenvx key to Coolify: ${(err as Error).message}`),
-      );
+  // Step 5: push key to Coolify — but only when wireCoolify didn't
+  // already do it. wireCoolify's success path includes a setAppEnv
+  // pass that pushes DOTENV_PRIVATE_KEY_PRODUCTION; if it failed,
+  // there's no app to push to and pushing again would just produce
+  // a confusing second error message.
+  const wiredEnvAlready = plan.wireCoolify && coolifyResult !== undefined;
+  if (plan.pushKey && !wiredEnvAlready) {
+    if (plan.wireCoolify && !coolifyResult) {
       console.log(
         chalk.dim(
-          `  Once the app exists, run: \`hatchkit keys push ${plan.name}\``,
+          `  · Skipping standalone key push — Coolify wiring failed, no app to push to.`,
         ),
       );
+    } else {
+      try {
+        await pushProjectKeyToCoolify(plan.name);
+        console.log(chalk.green(`\n  ✓ Pushed dotenvx key to Coolify`));
+      } catch (err) {
+        console.log(
+          chalk.yellow(`\n  Couldn't push dotenvx key to Coolify: ${(err as Error).message}`),
+        );
+        console.log(
+          chalk.dim(`  Once the app exists, run: \`hatchkit keys push ${plan.name}\``),
+        );
+      }
     }
   }
 

@@ -82,10 +82,12 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       projectUuid = existing.uuid;
       findOrCreateProject.succeed(`Coolify project: ${input.projectName} (existing)`);
     } else {
-      const created = await api.createProject(
-        input.projectName,
-        `Adopted by hatchkit — ${input.gitRepository}`,
-      );
+      // Coolify's `description` field is validated against a narrow
+      // character class (letters/numbers/spaces and a small set of
+      // punctuation — see /api/v1 OpenAPI). Notably no `:`, so a
+      // URL won't pass. Keep the description plain prose; the GitHub
+      // repo URL ends up on the application itself anyway.
+      const created = await api.createProject(input.projectName, "Adopted by hatchkit");
       projectUuid = created.uuid;
       findOrCreateProject.succeed(`Coolify project: ${input.projectName} (created)`);
     }
