@@ -1,0 +1,27 @@
+# Harden a VPS with full security baseline.
+#
+# Role order matters:
+# 1. base    — packages, sysctl, swap, fail2ban, unattended-upgrades,
+#              filesystem hardening, core dumps, umask, resource limits, NTP
+# 2. ufw     — firewall (allow SSH before enabling, so we don't lock out)
+# 3. ssh_hardening — SSH config (after firewall ensures port 22 is open)
+# 4. tailscale — VPN + optional SSH restriction (after SSH is hardened)
+# 5. lynis   — security audit (last, to score the final state)
+#
+# Usage:
+#   ansible-playbook -i ansible/inventories/production/hosts.ini ansible/playbooks/harden.yml
+#
+# For Coolify servers, pass extra bootstrap ports:
+#   ansible-playbook ... -e '{"ufw_extra_tcp_ports": [8000, 6001, 6002]}'
+
+- name: Harden VPS with full security baseline
+  hosts: all
+  become: true
+  roles:
+    - base
+    - ufw
+    - ssh_hardening
+    - role: tailscale
+      when: tailscale_enabled | bool
+    - role: lynis
+      when: lynis_enabled | default(true) | bool

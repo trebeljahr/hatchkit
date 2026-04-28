@@ -1,0 +1,86 @@
+# UFW firewall role — sets default deny incoming, allows specific ports.
+# Order matters: we ALWAYS allow SSH first before enabling UFW.
+
+- name: Set UFW default deny incoming
+  community.general.ufw:
+    direction: incoming
+    default: deny
+
+- name: Set UFW default allow outgoing
+  community.general.ufw:
+    direction: outgoing
+    default: allow
+
+# Always allow SSH first (before enabling UFW) to prevent lockout
+- name: Allow SSH through UFW
+  community.general.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+    comment: SSH
+  when: not ufw_restrict_ssh_to_tailscale
+
+- name: Allow SSH from Tailscale only
+  community.general.ufw:
+    rule: allow
+    from_ip: 100.64.0.0/10
+    port: "22"
+    proto: tcp
+    comment: SSH via Tailscale
+  when: ufw_restrict_ssh_to_tailscale
+
+- name: Remove public SSH rule when restricting to Tailscale
+  community.general.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+    delete: true
+  when: ufw_restrict_ssh_to_tailscale
+  failed_when: false
+
+- name: Allow standard TCP ports
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+    comment: "Allowed port {{ item }}"
+  loop: "{{ ufw_allowed_tcp_ports | reject('equalto', 22) | list }}"
+
+- name: Allow extra bootstrap TCP ports
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+    comment: "Bootstrap port {{ item }} (remove after setup)"
+  loop: "{{ ufw_extra_tcp_ports }}"
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled
+
+# --- Docker-UFW conflict mitigation ---
+
+- name: Install iptables-persistent for Docker-UFW mitigation
+  ansible.builtin.apt:
+    name: iptables-persistent
+    state: present
+  when: ufw_docker_mitigation
+
+- name: Drop all external traffic to Docker containers by default
+  ansible.builtin.iptables:
+    chain: DOCKER-USER
+    in_interface: eth0
+    jump: DROP
+  when: ufw_docker_mitigation
+  notify: Save iptables rules
+
+- name: Allow specified ports through DOCKER-USER chain
+  ansible.builtin.iptables:
+    chain: DOCKER-USER
+    in_interface: eth0
+    protocol: tcp
+    destination_port: "{{ item }}"
+    jump: ACCEPT
+  loop: "{{ ufw_docker_allowed_ports }}"
+  when: ufw_docker_mitigation
+  notify: Save iptables rules

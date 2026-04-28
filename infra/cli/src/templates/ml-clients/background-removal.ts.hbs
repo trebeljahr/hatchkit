@@ -1,0 +1,17 @@
+import { config } from "../config.js";
+
+export async function removeBackground(imageBuffer: Buffer): Promise<Buffer> {
+  const formData = new FormData();
+  formData.append("file", new Blob([imageBuffer]));
+
+  const res = await fetch(config.ML_BACKGROUND_REMOVAL_ENDPOINT, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!res.ok) {
+    throw new Error(`Background removal failed: ${res.status} ${res.statusText}`);
+  }
+
+  return Buffer.from(await res.arrayBuffer());
+}

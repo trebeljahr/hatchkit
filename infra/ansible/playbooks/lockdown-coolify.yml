@@ -1,0 +1,57 @@
+# Post-Coolify lockdown: remove bootstrap ports after Coolify is configured
+# with a domain and HTTPS.
+#
+# Run this AFTER you have:
+# 1. Installed Coolify
+# 2. Created an admin account
+# 3. Configured your domain + HTTPS in Coolify settings
+# 4. Verified Coolify is accessible at https://your-domain.com
+#
+# Usage:
+#   ansible-playbook -i ansible/inventories/production/hosts.ini ansible/playbooks/lockdown-coolify.yml
+
+- name: Lock down Coolify bootstrap ports
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Remove Coolify dashboard bootstrap port (8000)
+      community.general.ufw:
+        rule: allow
+        port: "8000"
+        proto: tcp
+        delete: true
+      failed_when: false
+
+    - name: Remove Coolify websocket bootstrap port (6001)
+      community.general.ufw:
+        rule: allow
+        port: "6001"
+        proto: tcp
+        delete: true
+      failed_when: false
+
+    - name: Remove Coolify websocket bootstrap port (6002)
+      community.general.ufw:
+        rule: allow
+        port: "6002"
+        proto: tcp
+        delete: true
+      failed_when: false
+
+    - name: Show UFW status after lockdown
+      ansible.builtin.command: ufw status verbose
+      register: ufw_status
+      changed_when: false
+
+    - name: Print firewall status
+      ansible.builtin.debug:
+        msg: "{{ ufw_status.stdout_lines }}"
+
+    - name: Lockdown complete
+      ansible.builtin.debug:
+        msg: >
+          Bootstrap ports removed. Coolify dashboard is now only accessible
+          via its configured domain (HTTPS through Traefik) or via Tailscale
+          IP on port 8000. If you need to re-open temporarily, run:
+          ufw allow 8000/tcp

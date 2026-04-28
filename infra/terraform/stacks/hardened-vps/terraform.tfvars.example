@@ -1,0 +1,13 @@
+# terraform.tfvars.example — Copy to terraform.tfvars and fill in your values.
+#
+# Sensitive values (hcloud_token) should be set via environment variables:
+#   export TF_VAR_hcloud_token="your-token-here"
+
+server_name     = "hardened-vps"
+server_type     = "cpx21"       # 3 vCPU, 4 GB RAM — good starting point
+server_location = "nbg1"        # Nuremberg
+
+ssh_public_key  = "ssh-ed25519 AAAA... you@machine"
+ssh_key_name    = "deploy-key"
+
+firewall_enabled = true

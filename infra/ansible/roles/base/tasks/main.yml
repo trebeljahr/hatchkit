@@ -1,0 +1,201 @@
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ base_packages }}"
+    state: present
+
+- name: Set timezone
+  community.general.timezone:
+    name: "{{ server_timezone }}"
+
+# --- fail2ban ---
+
+- name: Configure fail2ban for SSH
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/jail.d/sshd.local
+    mode: "0644"
+    content: |
+      [sshd]
+      enabled = true
+      port = ssh
+      logpath = /var/log/auth.log
+      backend = systemd
+      maxretry = {{ fail2ban_maxretry }}
+      findtime = {{ fail2ban_findtime }}
+      bantime = {{ fail2ban_bantime }}
+      banaction = ufw
+  notify: Restart fail2ban
+
+- name: Enable fail2ban
+  ansible.builtin.service:
+    name: fail2ban
+    enabled: true
+    state: started
+
+# --- Unattended upgrades ---
+
+- name: Configure auto-upgrades schedule
+  ansible.builtin.template:
+    src: 20auto-upgrades.j2
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    mode: "0644"
+
+- name: Configure unattended-upgrades policy
+  ansible.builtin.template:
+    src: 50unattended-upgrades.j2
+    dest: /etc/apt/apt.conf.d/50unattended-upgrades
+    mode: "0644"
+
+- name: Enable unattended upgrades
+  ansible.builtin.service:
+    name: unattended-upgrades
+    enabled: true
+    state: started
+  failed_when: false
+
+# --- sysctl hardening ---
+
+- name: Deploy sysctl hardening configuration
+  ansible.builtin.template:
+    src: 99-hardening.conf.j2
+    dest: /etc/sysctl.d/99-hardening.conf
+    mode: "0644"
+  notify: Reload sysctl
+
+# --- Disable unused services ---
+
+- name: Disable unused services
+  ansible.builtin.service:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+  loop: "{{ disabled_services }}"
+  failed_when: false
+
+# --- Filesystem mount hardening ---
+
+- name: Mount /tmp with noexec,nosuid,nodev
+  ansible.builtin.mount:
+    name: /tmp
+    src: tmpfs
+    fstype: tmpfs
+    opts: rw,noexec,nosuid,nodev,size=2G,mode=1777
+    state: mounted
+  when: harden_tmp_mount
+
+- name: Mount /dev/shm with noexec,nosuid,nodev
+  ansible.builtin.mount:
+    name: /dev/shm
+    src: tmpfs
+    fstype: tmpfs
+    opts: rw,noexec,nosuid,nodev,size=1G
+    state: mounted
+  when: harden_shm_mount
+
+- name: Bind mount /var/tmp to /tmp
+  ansible.builtin.mount:
+    name: /var/tmp
+    src: /tmp
+    fstype: none
+    opts: bind
+    state: mounted
+  when: harden_tmp_mount
+
+# --- Core dumps ---
+
+- name: Ensure coredump.conf.d directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/coredump.conf.d
+    state: directory
+    mode: "0755"
+  when: disable_core_dumps
+
+- name: Deploy systemd coredump hardening
+  ansible.builtin.copy:
+    dest: /etc/systemd/coredump.conf.d/hardening.conf
+    mode: "0644"
+    content: |
+      [Coredump]
+      Storage=none
+      ProcessSizeMax=0
+  when: disable_core_dumps
+
+# --- Resource limits ---
+
+- name: Deploy security limits
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/hardening.conf
+    mode: "0644"
+    content: |
+      # Managed by Ansible
+      *    hard    nproc     {{ limits_nproc }}
+      *    hard    nofile    {{ limits_nofile }}
+      *    soft    nofile    {{ limits_nofile }}
+      *    hard    core      {{ '0' if disable_core_dumps else 'unlimited' }}
+
+# --- Umask ---
+
+- name: Set default umask in login.defs
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: '^UMASK'
+    line: "UMASK\t\t{{ default_umask }}"
+
+# --- Time synchronization ---
+
+- name: Ensure systemd-timesyncd is running
+  ansible.builtin.service:
+    name: systemd-timesyncd
+    enabled: true
+    state: started
+  failed_when: false
+
+# --- Kernel module loading restriction ---
+
+- name: Load required kernel modules before restricting
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - br_netfilter
+    - overlay
+    - wireguard
+  failed_when: false
+  when: sysctl_disable_module_loading
+
+# --- Swap ---
+
+- name: Create swap file if missing
+  ansible.builtin.command: "fallocate -l {{ swapfile_size }} /swapfile"
+  args:
+    creates: /swapfile
+
+- name: Set swap file permissions
+  ansible.builtin.file:
+    path: /swapfile
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Mark swap file as swap
+  ansible.builtin.command: mkswap /swapfile
+  register: swap_mkswap
+  changed_when: swap_mkswap.rc == 0
+
+- name: Enable swap immediately
+  ansible.builtin.command: swapon /swapfile
+  register: swap_on
+  failed_when: false
+  changed_when: swap_on.rc == 0
+
+- name: Persist swap in fstab
+  ansible.builtin.mount:
+    name: none
+    src: /swapfile
+    fstype: swap
+    opts: sw
+    state: present

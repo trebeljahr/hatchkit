@@ -1,0 +1,9 @@
+.git
+.gitignore
+.env
+*.md
+__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+modal/

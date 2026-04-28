@@ -1,0 +1,58 @@
+server_timezone: UTC
+
+base_packages:
+  - ca-certificates
+  - curl
+  - fail2ban
+  - git
+  - jq
+  - qemu-guest-agent
+  - unattended-upgrades
+  - apt-listchanges
+  - software-properties-common
+  - apt-transport-https
+  - ufw
+
+swapfile_size: 2G
+
+# Services to disable. 2>/dev/null equivalent: the task loop uses
+# failed_when: false, so services not installed are silently skipped.
+disabled_services:
+  - snapd.socket
+  - snapd.service
+  - snapd.seeded.service
+  - multipathd.service
+  - ModemManager.service
+  - bluetooth.service
+  - cups.service
+  - cups-browsed.service
+  - avahi-daemon.service
+  - avahi-daemon.socket
+
+# fail2ban
+fail2ban_maxretry: 3
+fail2ban_findtime: 600
+fail2ban_bantime: 86400
+
+# Unattended upgrades
+unattended_upgrades_auto_reboot: "true"
+unattended_upgrades_reboot_time: "04:00"
+
+# sysctl hardening
+sysctl_disable_ipv6: false
+sysctl_tcp_timestamps: false
+sysctl_disable_module_loading: false
+
+# Filesystem mount hardening
+harden_tmp_mount: true
+harden_shm_mount: true
+
+# Core dumps
+disable_core_dumps: true
+
+# Umask (027 = owner full, group read, others nothing)
+default_umask: "027"
+
+# Resource limits
+limits_nproc: 4096
+limits_nofile: 65535

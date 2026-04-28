@@ -1,0 +1,42 @@
+# terraform.tfvars.example — Copy to terraform.tfvars and fill in your values.
+#
+# IMPORTANT: terraform.tfvars is gitignored. Secrets go in env vars:
+#   export TF_VAR_hcloud_token="your-hetzner-api-token"
+#   # INWX path:
+#   export TF_VAR_inwx_username="your-inwx-username"
+#   export TF_VAR_inwx_password="your-inwx-password"
+#   # Cloudflare path:
+#   export TF_VAR_cloudflare_api_token="your-cf-api-token"
+#   # S3:
+#   export TF_VAR_s3_access_key="your-hetzner-s3-access-key"
+#   export TF_VAR_s3_secret_key="your-hetzner-s3-secret-key"
+
+# --- Hetzner ---
+server_name     = "photo3d-prod"
+server_type     = "cpx21"       # API server only — GPU runs elsewhere
+server_location = "nbg1"
+ssh_key_name    = "deploy-key"
+ssh_public_key  = "ssh-ed25519 AAAA... your-email@example.com"
+
+# --- DNS ---
+dns_provider = "inwx"  # or "cloudflare"
+
+domain = "example.com"
+subdomains = {
+  "3d"        = "Web app + upload UI"
+  "api.3d"    = "REST API for model generation"
+  "admin"     = "Coolify dashboard"
+}
+dns_ttl = 300  # 5 min during setup, raise to 3600 once stable
+
+# Only meaningful when dns_provider = "cloudflare".
+cloudflare_proxied = true
+
+# --- Firewall ---
+firewall_enabled = true
+
+# --- S3 (Hetzner Object Storage) ---
+s3_enabled             = true
+s3_uploads_bucket_name = "photo3d-uploads"
+s3_models_bucket_name  = "photo3d-models"
+s3_location            = "nbg1"

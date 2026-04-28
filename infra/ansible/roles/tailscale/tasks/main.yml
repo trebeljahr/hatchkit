@@ -1,0 +1,61 @@
+- name: Install Tailscale via official install script
+  ansible.builtin.shell: curl -fsSL https://tailscale.com/install.sh | sh
+  args:
+    creates: /usr/bin/tailscale
+
+- name: Check Tailscale status
+  ansible.builtin.command: tailscale status --json
+  register: tailscale_status
+  changed_when: false
+  failed_when: false
+
+- name: Enable and start tailscaled
+  ansible.builtin.service:
+    name: tailscaled
+    enabled: true
+    state: started
+
+- name: Bring up Tailscale
+  ansible.builtin.command: >
+    tailscale up
+    --authkey={{ tailscale_auth_key }}
+    --hostname={{ tailscale_hostname }}
+    --ssh
+    --accept-routes=false
+    --accept-dns=false
+  when:
+    - tailscale_auth_key | length > 0
+    - tailscale_status.rc != 0 or '"BackendState":"Running"' not in tailscale_status.stdout
+
+- name: Verify Tailscale is running
+  ansible.builtin.command: tailscale status
+  register: tailscale_verify
+  changed_when: false
+  failed_when: tailscale_verify.rc != 0
+  when: tailscale_restrict_ssh
+
+# Restrict SSH to Tailscale network after verifying connectivity
+- name: Restrict SSH to Tailscale CGNAT range
+  community.general.ufw:
+    rule: allow
+    from_ip: 100.64.0.0/10
+    port: "22"
+    proto: tcp
+    comment: SSH via Tailscale only
+  when: tailscale_restrict_ssh
+
+- name: Remove public SSH access
+  community.general.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+    delete: true
+  when: tailscale_restrict_ssh
+  failed_when: false
+
+- name: Print Tailscale access info
+  ansible.builtin.debug:
+    msg: >
+      Tailscale is running. SSH via tailnet: ssh {{ ssh_allowed_users | default(['root']) | first }}@{{ tailscale_hostname }}.
+      Emergency access: Hetzner web console (VNC) → ufw allow 22/tcp.
+  when: tailscale_restrict_ssh

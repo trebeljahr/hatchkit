@@ -1,0 +1,45 @@
+*.retry
+*.log
+*.tmp
+.ansible/
+node_modules/
+.DS_Store
+
+# Environment files. The broad `.env*` pattern also catches:
+#   .env.keys         — dotenvx private keys (NEVER commit)
+#   .env.production.local, .env.*.local — local overrides
+# If you want to commit a plaintext .env.example as reference, name
+# it explicitly and add `!.env.example` below.
+.env
+.env.*
+.env.keys
+!.env.example
+
+# Anything else marked explicitly secret (belt-and-suspenders)
+*.secret
+*.secret.*
+secrets/
+*.pem
+*.key
+!**/authorized_keys
+
+# Terraform
+# State files contain ALL resource attributes including secrets.
+# NEVER commit these. Use remote state (S3, Terraform Cloud) for teams.
+*.tfstate
+*.tfstate.backup
+*.tfstate.*.backup
+.terraform/
+.terraform.lock.hcl
+
+# Terraform variable files with real values (the .example versions are committed)
+terraform.tfvars
+*.auto.tfvars
+
+# Stack config files with real values
+stacks/*.env
+!stacks/*.env.example
+
+# claude code
+.claude/settings.local.json
+.claude/worktrees/
