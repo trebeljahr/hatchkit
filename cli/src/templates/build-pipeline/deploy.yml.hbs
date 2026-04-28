@@ -1,4 +1,4 @@
-# Build → push → deploy pipeline scaffolded by `hatchkit adopt`.
+# Build → push → deploy pipeline scaffolded by hatchkit.
 #
 #   1. Build the image from the repo's Dockerfile.
 #   2. Push it to GHCR as both `ghcr.io/<owner>/<name>:<short-sha>`
@@ -6,13 +6,20 @@
 #   3. Trigger Coolify to redeploy via the per-app deploy webhook.
 #
 # Required repo secrets (hatchkit sets these via `gh secret set`
-# during adopt; rotate via the GitHub UI / `gh` whenever needed):
+# during adopt / create; rotate via the GitHub UI / `gh` whenever
+# needed):
 #   COOLIFY_WEBHOOK_URL — full URL incl. uuid query param
 #   COOLIFY_TOKEN       — bearer token for the deploy endpoint
 #
 # GHCR auth uses the workflow's built-in GITHUB_TOKEN. For Coolify
 # to pull a private package, configure GHCR credentials in the
 # Coolify dashboard once (Servers → Settings → Registry).
+#
+# Action versions: pinned to the latest Node.js 24-native releases
+# where available. FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 below opts the
+# remaining Node 20 actions (docker/* family) into the Node 24 runner
+# until upstream cuts new majors — silences the GitHub Actions runner
+# deprecation warning that fires on every workflow run otherwise.
 name: Build & Deploy
 
 on:
@@ -28,11 +35,14 @@ concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: docker/setup-buildx-action@v3
 
@@ -50,7 +60,7 @@ jobs:
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - uses: docker/build-push-action@v5
+      - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
@@ -66,7 +76,7 @@ jobs:
           COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
         run: |
           if [ -z "$COOLIFY_WEBHOOK_URL" ]; then
-            echo "::warning::COOLIFY_WEBHOOK_URL not set — skipping deploy trigger"
+            echo "::notice::COOLIFY_WEBHOOK_URL not set — skipping Coolify webhook (image still pushed). Run \`hatchkit keys push <project>\` or set the secret manually if you want auto-deploy."
             exit 0
           fi
           curl -fsSL -X GET "$COOLIFY_WEBHOOK_URL" \

@@ -39,16 +39,22 @@ import { join, relative } from "node:path";
 import { Separator, checkbox, confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { ensureGitHub, getCoolifyConfig } from "./config.js";
+import {
+  ownerFromRemote,
+  repoSlugFromRemote,
+  setCoolifyDeploySecrets,
+} from "./deploy/gh-actions-secrets.js";
+import { pushInitialBranch } from "./deploy/github.js";
 import { pushProjectKeyToCoolify } from "./deploy/keys.js";
+import type { Feature, S3Provider } from "./prompts.js";
 import { type ProvisionService, runProvision } from "./provision/index.js";
+import { detectBuildPipeline, scaffoldBuildPipeline } from "./scaffold/build-pipeline.js";
 import {
   MANIFEST_FILENAME,
   type ProjectManifest,
   readManifest,
   writeManifest,
 } from "./scaffold/manifest.js";
-import { detectBuildPipeline, scaffoldBuildPipeline } from "./scaffold/build-pipeline.js";
-import type { Feature, S3Provider } from "./prompts.js";
 import { CoolifyApi } from "./utils/coolify-api.js";
 import { exec, execOk } from "./utils/exec.js";
 import { SECRET_KEYS, setSecret } from "./utils/secrets.js";
@@ -129,9 +135,7 @@ export async function runAdopt(cwd: string, opts: { resume?: boolean } = {}): Pr
 
   if (state.hasManifest && !opts.resume) {
     console.log(
-      chalk.yellow(
-        `\n  ${MANIFEST_FILENAME} already exists in ${relativeTo(state.projectDir)}.`,
-      ),
+      chalk.yellow(`\n  ${MANIFEST_FILENAME} already exists in ${relativeTo(state.projectDir)}.`),
     );
     console.log(
       chalk.dim(
@@ -221,7 +225,7 @@ export async function runAdopt(cwd: string, opts: { resume?: boolean } = {}): Pr
 
 async function detectProject(projectDir: string): Promise<DetectedState> {
   const hasManifest = existsSync(join(projectDir, MANIFEST_FILENAME));
-  const existingManifest = hasManifest ? readManifest(projectDir) ?? undefined : undefined;
+  const existingManifest = hasManifest ? (readManifest(projectDir) ?? undefined) : undefined;
 
   let packageName: string | undefined;
   try {
@@ -267,9 +271,7 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
   const prodEnvPath = serverDir
     ? join(serverDir, ".env.production")
     : join(projectDir, ".env.production");
-  const envKeysPath = serverDir
-    ? join(serverDir, ".env.keys")
-    : join(projectDir, ".env.keys");
+  const envKeysPath = serverDir ? join(serverDir, ".env.keys") : join(projectDir, ".env.keys");
   let prodEnvIsEncrypted = false;
   if (existsSync(prodEnvPath)) {
     const head = readFileSync(prodEnvPath, "utf-8").slice(0, 2000);
@@ -418,8 +420,7 @@ function detectFeatures(projectDir: string, serverDir: string | undefined): Feat
 
 function printDetected(state: DetectedState): void {
   const lines: string[] = [];
-  const row = (label: string, value: string) =>
-    `  ${chalk.dim(label.padEnd(18))} ${value}`;
+  const row = (label: string, value: string) => `  ${chalk.dim(label.padEnd(18))} ${value}`;
 
   lines.push(chalk.bold("\n  Detected:\n"));
   lines.push(row("project dir", chalk.cyan(relativeTo(state.projectDir))));
@@ -442,9 +443,7 @@ function printDetected(state: DetectedState): void {
           : chalk.dim("not present"),
     ),
   );
-  lines.push(
-    row(".env.keys", state.hasEnvKeys ? chalk.green("present ✓") : chalk.dim("missing")),
-  );
+  lines.push(row(".env.keys", state.hasEnvKeys ? chalk.green("present ✓") : chalk.dim("missing")));
   lines.push(
     row(
       "Coolify app",
@@ -837,9 +836,7 @@ async function editAdoptStep(
   if (step === "setupGitHub") {
     if (state.gitRemoteUrl) {
       console.log(
-        chalk.dim(
-          `\n  origin already set to ${state.gitRemoteUrl} — adopt won't replace it.\n`,
-        ),
+        chalk.dim(`\n  origin already set to ${state.gitRemoteUrl} — adopt won't replace it.\n`),
       );
       return { ...plan, setupGitHub: false };
     }
@@ -898,9 +895,7 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
   // failure doesn't leave a manifest pointing at no key. The
   // manifest lives at the project ROOT (not under packages/server).
   writeAdoptManifest(state.projectDir, plan);
-  console.log(
-    chalk.green(`  ✓ Wrote ${MANIFEST_FILENAME} at ${relativeTo(state.projectDir)}`),
-  );
+  console.log(chalk.green(`  ✓ Wrote ${MANIFEST_FILENAME} at ${relativeTo(state.projectDir)}`));
 
   // Step 3: GitHub remote (init + create + push). Skipped if origin is
   // already set or the user opted out.
@@ -925,7 +920,8 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
   // DNS-provider REST endpoints with credentials we already have in
   // keychain. Idempotent on the DNS side (upsert); not yet on the
   // app-create side (Coolify accepts duplicate app names).
-  let coolifyResult: Awaited<ReturnType<typeof import("./deploy/coolify-app.js").wireProjectIntoCoolify>>
+  let coolifyResult:
+    | Awaited<ReturnType<typeof import("./deploy/coolify-app.js").wireProjectIntoCoolify>>
     | undefined;
   if (plan.wireCoolify && remoteUrl) {
     try {
@@ -952,9 +948,7 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
         isPrivate: plan.setupGitHub,
       });
     } catch (err) {
-      console.log(
-        chalk.yellow(`\n  Couldn't wire Coolify: ${(err as Error).message}`),
-      );
+      console.log(chalk.yellow(`\n  Couldn't wire Coolify: ${(err as Error).message}`));
       console.log(
         chalk.dim(
           `  Create the app manually in the Coolify dashboard pointing at\n` +
@@ -977,10 +971,33 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
   // the scaffolded deploy.yml workflow can hit Coolify. Run whether
   // wireCoolify ran or not — covers both the "fresh app we just
   // created" and "app already existed before adopt" branches. Need
-  // an app uuid in either case.
+  // an app uuid in either case. Run BEFORE the initial git push
+  // (below) so the workflow's first run has the secrets in place.
   const appUuidForSecrets = coolifyResult?.appUuid ?? state.coolifyAppMatch?.uuid;
   if (plan.scaffoldBuildPipeline && appUuidForSecrets) {
-    await setActionsSecretsForDeploy(state, plan, appUuidForSecrets, remoteUrl);
+    const slug = repoSlugFromRemote(remoteUrl);
+    if (slug) {
+      await setCoolifyDeploySecrets({
+        projectDir: state.projectDir,
+        repoSlug: slug,
+        apps: [{ uuid: appUuidForSecrets }],
+      });
+    } else {
+      console.log(
+        chalk.dim(
+          "  · Couldn't resolve owner/repo from git remote — set the deploy secrets manually.",
+        ),
+      );
+    }
+  }
+
+  // Step 3d: push the working branch to origin. Done AFTER secrets
+  // are set so the workflow's first run can hit the Coolify webhook
+  // without falling through to the "secret not set" branch. Skipped
+  // when there's no remote yet (e.g. user opted out of GitHub) or
+  // when origin already had history before adopt.
+  if (plan.setupGitHub && remoteUrl && !state.gitRemoteUrl) {
+    await pushInitialBranch(state.projectDir);
   }
 
   // Step 4: provision clients via the existing `add` machinery so the
@@ -1016,9 +1033,7 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
   if (plan.pushKey && !wiredEnvAlready) {
     if (plan.wireCoolify && !coolifyResult) {
       console.log(
-        chalk.dim(
-          `  · Skipping standalone key push — Coolify wiring failed, no app to push to.`,
-        ),
+        chalk.dim(`  · Skipping standalone key push — Coolify wiring failed, no app to push to.`),
       );
     } else {
       try {
@@ -1033,9 +1048,7 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
         console.log(
           chalk.yellow(`\n  Couldn't push dotenvx key to Coolify: ${(err as Error).message}`),
         );
-        console.log(
-          chalk.dim(`  Once the app exists, run: \`hatchkit keys push ${plan.name}\``),
-        );
+        console.log(chalk.dim(`  Once the app exists, run: \`hatchkit keys push ${plan.name}\``));
       }
     }
   }
@@ -1157,14 +1170,16 @@ async function setupGitHubRemote(
     });
   }
 
-  // `gh repo create` with --source=. + --push handles remote creation
-  // and the initial push in one shot. --private matches the default
-  // behaviour of `hatchkit create`.
-  const create = await exec(
-    "gh",
-    ["repo", "create", plan.name, "--private", "--source=.", "--push"],
-    { cwd: state.projectDir, spinner: `Creating GitHub repo: ${plan.name}...` },
-  );
+  // Create the GitHub repo + register `origin`, but DO NOT push yet.
+  // The first push triggers the scaffolded GH Actions workflow, and
+  // we want the Coolify deploy secrets in place before that fires —
+  // otherwise the workflow's first run hits the "secret not set"
+  // branch and skips the redeploy. Push happens at the end of
+  // executePlan, once setCoolifyDeploySecrets has run.
+  const create = await exec("gh", ["repo", "create", plan.name, "--private", "--source=."], {
+    cwd: state.projectDir,
+    spinner: `Creating GitHub repo: ${plan.name}...`,
+  });
   if (create.exitCode !== 0) {
     console.log(chalk.yellow("  Could not create GitHub repo. Push manually once it exists:"));
     console.log(chalk.dim(`    cd ${state.projectDir}`));
@@ -1178,6 +1193,8 @@ async function setupGitHubRemote(
   console.log(chalk.green(`  ✓ GitHub repo: ${url}`));
   return url || undefined;
 }
+
+// (pushInitialBranch lives in deploy/github.ts so create + adopt share it.)
 
 async function importKeyToKeychain(state: DetectedState, plan: AdoptPlan): Promise<void> {
   const envKeysPath = join(dotenvxRootFor(plan, state.projectDir), ".env.keys");
@@ -1293,19 +1310,6 @@ async function scaffoldBuildPipelineNow(
   }
 }
 
-/** Extract `owner` from a git remote URL.
- *    git@github.com:owner/repo.git           → owner
- *    https://github.com/owner/repo[.git]     → owner
- *  Returns undefined if the URL doesn't match either GitHub form. */
-function ownerFromRemote(url: string | undefined): string | undefined {
-  if (!url) return undefined;
-  const ssh = url.match(/^git@github\.com:([^/]+)\/[^/]+?(?:\.git)?$/);
-  if (ssh) return ssh[1];
-  const https = url.match(/^https?:\/\/github\.com\/([^/]+)\/[^/]+?(?:\.git)?(?:\/.*)?$/);
-  if (https) return https[1];
-  return undefined;
-}
-
 /** Best-effort default branch detection. `git symbolic-ref` only
  *  works after `git remote set-head origin -a` has cached the
  *  upstream HEAD locally — `gh repo create --push` doesn't always do
@@ -1337,74 +1341,5 @@ async function detectDefaultBranch(projectDir: string): Promise<string> {
   return "main";
 }
 
-// ---------------------------------------------------------------------------
-// GitHub Actions secrets — set once after Coolify wiring lands the
-// app uuid we need to construct the deploy webhook URL.
-// ---------------------------------------------------------------------------
-
-/** Push COOLIFY_WEBHOOK_URL + COOLIFY_TOKEN to the project's GitHub
- *  repo as Actions secrets so deploy.yml can trigger redeploys.
- *  Best-effort — failures don't roll anything back; the user gets a
- *  copy-pasteable manual recipe instead. */
-async function setActionsSecretsForDeploy(
-  state: DetectedState,
-  plan: AdoptPlan,
-  appUuid: string,
-  remoteUrl: string | undefined,
-): Promise<void> {
-  const ownerRepo = repoSlugFromRemote(remoteUrl);
-  if (!ownerRepo) {
-    console.log(
-      chalk.dim(
-        "  · Couldn't resolve owner/repo from git remote — set the deploy secrets manually.",
-      ),
-    );
-    return;
-  }
-  const cfg = await (await import("./config.js")).getCoolifyConfig();
-  if (!cfg) return;
-  const webhookUrl = `${cfg.url.replace(/\/$/, "")}/api/v1/deploy?uuid=${appUuid}`;
-
-  const ora = (await import("ora")).default;
-  const spinner = ora(`GitHub: setting Actions secrets on ${ownerRepo}`).start();
-  try {
-    await ghSecretSet(state.projectDir, ownerRepo, "COOLIFY_WEBHOOK_URL", webhookUrl);
-    await ghSecretSet(state.projectDir, ownerRepo, "COOLIFY_TOKEN", cfg.token);
-    spinner.succeed("GitHub: Actions secrets set (COOLIFY_WEBHOOK_URL, COOLIFY_TOKEN)");
-  } catch (err) {
-    spinner.fail(`GitHub: setting secrets failed — ${(err as Error).message}`);
-    console.log(
-      chalk.dim(
-        `  Set them manually:\n` +
-          `    gh secret set COOLIFY_WEBHOOK_URL --repo ${ownerRepo} --body '${webhookUrl}'\n` +
-          `    gh secret set COOLIFY_TOKEN --repo ${ownerRepo} --body '<your coolify token>'`,
-      ),
-    );
-  }
-  void plan; // unused but kept for future feature gating
-}
-
-async function ghSecretSet(
-  cwd: string,
-  repo: string,
-  name: string,
-  value: string,
-): Promise<void> {
-  const res = await exec("gh", ["secret", "set", name, "--repo", repo, "--body", value], {
-    cwd,
-  });
-  if (res.exitCode !== 0) {
-    throw new Error(`gh secret set ${name} exited ${res.exitCode}: ${res.stderr.trim()}`);
-  }
-}
-
-/** Extract `owner/repo` from a git remote URL — same parsing as
- *  `ownerFromRemote` but keeping the repo segment too. */
-function repoSlugFromRemote(url: string | undefined): string | undefined {
-  if (!url) return undefined;
-  const ssh = url.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/);
-  if (ssh) return `${ssh[1]}/${ssh[2]}`;
-  const https = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/.*)?$/);
-  if (https) return `${https[1]}/${https[2]}`;
-  return undefined;
-}
+// (GitHub Actions secret push moved to deploy/gh-actions-secrets.ts so
+//  `hatchkit create` can call the same helper.)

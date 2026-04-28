@@ -768,6 +768,49 @@ async function handleCreate(): Promise<void> {
           );
         }
       }
+
+      // Set the GH Actions deploy secrets so the starter's
+      // build-and-deploy.yml workflow can hit Coolify on push.
+      // Mirrors the same flow `hatchkit adopt` runs: discover the
+      // matching Coolify app(s) by name, push COOLIFY_BASE_URL +
+      // COOLIFY_API_TOKEN + per-app resource uuids + webhook URLs.
+      // Best-effort — failures print a manual recipe.
+      if (repoUrl && config.scaffoldRepo) {
+        try {
+          const { findCoolifyAppsForProject } = await import("./deploy/coolify-app.js");
+          const { repoSlugFromRemote, setCoolifyDeploySecrets } = await import(
+            "./deploy/gh-actions-secrets.js"
+          );
+          const slug = repoSlugFromRemote(repoUrl);
+          const apps = await findCoolifyAppsForProject(config.name);
+          if (slug && apps.length > 0) {
+            await setCoolifyDeploySecrets({
+              projectDir: appDir,
+              repoSlug: slug,
+              apps,
+            });
+          } else if (apps.length === 0) {
+            console.log(
+              chalk.dim(
+                `  · No Coolify app named "${config.name}" / "${config.name}-server" / "${config.name}-client" / "${config.name}-web" found — skipping Actions secret push.`,
+              ),
+            );
+          }
+        } catch (err) {
+          console.log(
+            chalk.yellow(`  Couldn't push GH Actions deploy secrets: ${(err as Error).message}`),
+          );
+        }
+      }
+    }
+
+    // Step 6.5: push the working branch to origin. Done AFTER Coolify
+    // wiring + Actions-secret upserts so the workflow's first run
+    // already has the secrets it needs to deploy. setupGitHub above
+    // created the repo + `origin` but deliberately skipped the push.
+    if (config.scaffoldRepo && config.createGithubRepo && repoUrl) {
+      const { pushInitialBranch } = await import("./deploy/github.js");
+      await pushInitialBranch(appDir);
     }
 
     // Step 7: Deploy ML services

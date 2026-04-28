@@ -33,6 +33,7 @@ import { CloudflareApi } from "../utils/cloudflare-api.js";
 import type { ApplicationCreateInput } from "../utils/coolify-api.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
+import type { CoolifyDeployApp } from "./gh-actions-secrets.js";
 
 export interface WireUpInput {
   projectName: string;
@@ -502,4 +503,46 @@ function inferZone(domain: string): string {
   const parts = domain.split(".");
   if (parts.length <= 2) return domain;
   return parts.slice(-2).join(".");
+}
+
+/** Look up the Coolify apps belonging to a project for the
+ *  Actions-secrets push. Tries the names hatchkit / the starter
+ *  conventions produce, in priority order:
+ *    · `<name>-server` + `<name>-client`  → starter split layout
+ *    · `<name>`                            → adopt single-app layout
+ *    · `<name>-web` / `<name>-app` / `<name>-api` → setup-coolify-stack.sh
+ *      defaults (treated as single-app, no SERVER/CLIENT label).
+ *
+ *  Returns an empty array when Coolify isn't configured or no app
+ *  matches — callers log a manual-recipe hint in that case. */
+export async function findCoolifyAppsForProject(projectName: string): Promise<CoolifyDeployApp[]> {
+  const cfg = await getCoolifyConfig();
+  if (!cfg) return [];
+  const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+  const apps = await api.listApplications();
+  const byName = new Map(apps.map((a) => [a.name, a.uuid]));
+
+  const found: CoolifyDeployApp[] = [];
+  const serverUuid = byName.get(`${projectName}-server`);
+  const clientUuid = byName.get(`${projectName}-client`);
+  if (serverUuid) found.push({ uuid: serverUuid, label: "SERVER" });
+  if (clientUuid) found.push({ uuid: clientUuid, label: "CLIENT" });
+
+  if (found.length === 0) {
+    // Single-app fallbacks. Picked in priority order — first match wins.
+    for (const candidate of [
+      projectName,
+      `${projectName}-web`,
+      `${projectName}-app`,
+      `${projectName}-api`,
+    ]) {
+      const uuid = byName.get(candidate);
+      if (uuid) {
+        found.push({ uuid });
+        break;
+      }
+    }
+  }
+
+  return found;
 }
