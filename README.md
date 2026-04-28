@@ -145,8 +145,8 @@ Full docs live under [`docs/`](docs/) and are published to **GitHub Pages** at [
 hatchkit/
 ├─ cli/              # the npm package (published as `hatchkit`)
 ├─ mcp/              # @hatchkit/mcp — MCP server for agents
-├─ starter/          # full-stack starter template (git submodule)
-├─ infra/            # Terraform + Coolify automation (git submodule)
+├─ starter/          # full-stack starter template (subtree-merged)
+├─ infra/            # Terraform + Coolify automation (subtree-merged)
 ├─ services/ml/      # pre-built ML service templates
 │  ├─ image-recognition/
 │  ├─ subtitles/
@@ -177,10 +177,11 @@ pnpm --filter hatchkit check
 pnpm --filter hatchkit install-local
 ```
 
-The starter and infra directories are git submodules. Clone with:
+Clone the repo and you're set — `starter/` and `infra/` are in-tree
+(previously git submodules; merged via `git subtree`).
 
 ```bash
-git clone --recurse-submodules https://github.com/trebeljahr/hatchkit.git
+git clone https://github.com/trebeljahr/hatchkit.git
 ```
 
 ---

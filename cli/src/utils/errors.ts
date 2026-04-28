@@ -24,7 +24,7 @@ export function explainFsError(err: unknown, context: string): string {
     case "ENOSPC":
       return `${context}: out of disk space${path}. Fix: free up space and retry.`;
     case "ENOENT":
-      return `${context}: file not found${path}. Fix: make sure the starter submodule is initialized (\`git submodule update --init\` in the monorepo root).`;
+      return `${context}: file not found${path}. Fix: your hatchkit checkout looks incomplete — re-clone or pull the latest main.`;
     case "EEXIST":
       return `${context}: file already exists${path}. Fix: move or remove it, then retry.`;
     case "EROFS":

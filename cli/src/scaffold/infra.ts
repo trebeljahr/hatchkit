@@ -144,12 +144,12 @@ export function scaffoldInfra(
   repoRoot: string,
   options: ScaffoldInfraOptions = {},
 ): ScaffoldInfraResult {
-  // Fail early with a clear message if the infra submodule isn't
-  // populated — otherwise Terraform writes are silently skipped and the
-  // later terraform/coolify exec steps crash cryptically.
+  // Fail early with a clear message if infra/ is missing — otherwise
+  // Terraform writes are silently skipped and the later terraform /
+  // coolify exec steps crash cryptically.
   if (!config.dryRun && !existsSync(join(repoRoot, "terraform"))) {
     throw new Error(
-      `Infra submodule is empty at ${repoRoot}. Run 'git submodule update --init' in the monorepo root before deploying.`,
+      `Infra tree empty at ${repoRoot}. Your hatchkit checkout looks incomplete — re-clone or pull the latest main.`,
     );
   }
   const stacksDir = join(repoRoot, "stacks");

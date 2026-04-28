@@ -21,8 +21,8 @@ hatchkit/
 │     ├─ deploy/          # terraform, coolify, github, gpu, keys
 │     ├─ doctor.ts        # provider health checks
 │     └─ utils/           # flags, exec, validation, version
-├─ starter/          # full-stack template (git submodule)
-├─ infra/            # Terraform + Coolify scripts (git submodule)
+├─ starter/          # full-stack template (in-tree; subtree-merged)
+├─ infra/            # Terraform + Coolify scripts (in-tree; subtree-merged)
 ├─ docs/             # this Docusaurus site
 └─ services/ml/      # pre-built ML service templates
 ```

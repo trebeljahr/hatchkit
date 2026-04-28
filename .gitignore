@@ -37,3 +37,27 @@ venv/
 .env.test
 .envrc.local
 .vercel/
+
+# dotenvx private keys
+.env.keys
+
+# Terraform — state, lock files, and rendered plan binaries.
+# tfplan is what `terraform plan -out=tfplan` writes; it contains
+# resolved values including secrets. Pattern matches anywhere in tree.
+*.tfstate
+*.tfstate.backup
+*.tfstate.*.backup
+.terraform/
+.terraform.lock.hcl
+*.tfplan
+tfplan
+terraform.tfvars
+*.auto.tfvars
+
+# Catch-all for anything explicitly secret
+*.secret
+*.secret.*
+secrets/
+*.pem
+*.key
+!**/authorized_keys

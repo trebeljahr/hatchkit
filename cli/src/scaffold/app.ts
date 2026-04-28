@@ -78,7 +78,7 @@ export async function scaffoldApp(
 
   if (!existsSync(STARTER_ROOT)) {
     throw new Error(
-      `Starter template not found at ${STARTER_ROOT}. Run 'git submodule update --init' in the monorepo root.`,
+      `Starter template not found at ${STARTER_ROOT}. Your hatchkit checkout looks incomplete — re-clone or pull the latest main.`,
     );
   }
 

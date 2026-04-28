@@ -2,12 +2,10 @@
 /*
  * release-prep — strict pre-release verification.
  *
- * Refuses to release if any of the three repos (hatchkit main,
- * infra submodule, starter submodule) has uncommitted or untracked
- * changes. Exits with a clear list of which repos need handling and
- * what's dirty in each — release scripts assume a clean baseline so
- * the version commit + tag, the npm publish, and the cross-repo push
- * all line up against the same set of trees.
+ * Refuses to release if the working tree has uncommitted or untracked
+ * changes. Exits with a clear list of what's dirty so the version
+ * commit + tag, the npm publish, and the push all line up against the
+ * same baseline.
  *
  * ALSO refuses when the local cli/package.json version is at-or-
  * behind the version published to npm. `npm version patch` increments
@@ -42,26 +40,10 @@ try {
   process.exit(1);
 }
 
-const repos = [
-  { label: "hatchkit (main)", path: repoRoot, hint: `cd ${repoRoot}` },
-  {
-    label: "infra (submodule)",
-    path: join(repoRoot, "infra"),
-    hint: `cd ${join(repoRoot, "infra")}`,
-  },
-  {
-    label: "starter (submodule)",
-    path: join(repoRoot, "starter"),
-    hint: `cd ${join(repoRoot, "starter")}`,
-  },
-];
+const repos = [{ label: "hatchkit (main)", path: repoRoot, hint: `cd ${repoRoot}` }];
 
 const dirty = [];
 for (const r of repos) {
-  // Submodule may not be initialized — skip silently rather than fail.
-  // (`.git` is a file inside an initialized submodule, a dir at the root.)
-  if (!existsSync(join(r.path, ".git"))) continue;
-
   let status;
   try {
     status = sh("git status --porcelain", { cwd: r.path });
