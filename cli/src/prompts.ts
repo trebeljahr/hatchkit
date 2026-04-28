@@ -2,6 +2,7 @@ import { Separator, checkbox, confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { getCoolifyConfig, getMlServices } from "./config.js";
 import { CoolifyApi, type CoolifyServer } from "./utils/coolify-api.js";
+import { discoverPublicIps } from "./utils/coolify-server-ips.js";
 import { parseDomain, validateDomain, validateProjectName } from "./utils/validate.js";
 
 // ---------------------------------------------------------------------------
@@ -34,7 +35,31 @@ export interface ProjectConfig {
 
   deployTarget: DeployTarget;
   serverId?: number;
+  /** Coolify server uuid. Populated for `existing` deploys after we've
+   *  resolved the server via /servers; downstream code (Coolify
+   *  Mongo / app provisioning) can use it directly without a second
+   *  IP-keyed lookup. */
+  serverUuid?: string;
+  /** Raw `ip` field as returned by Coolify's /servers — may be a
+   *  Docker-internal hostname (`host.docker.internal`) on
+   *  localhost-Coolify installs, so it's NOT safe to feed into DNS.
+   *  Kept for diagnostics + as a coolify-mongo fallback (findServer
+   *  matches the same string Coolify reports). For DNS / Terraform,
+   *  use `serverIpv4` / `serverIpv6` below. */
   serverIp?: string;
+  /** Validated, public-routable IPv4 of the Coolify box. Discovered
+   *  from /servers/{uuid}/domains (preferred) or DNS resolution of
+   *  the dashboard hostname. This is what Terraform's `target_ipv4`
+   *  receives. */
+  serverIpv4?: string;
+  /** Validated, public-routable IPv6 of the Coolify box, when one
+   *  is configured. Empty string when absent — the Cloudflare DNS
+   *  module skips AAAA records on empty. */
+  serverIpv6?: string;
+  /** Set when Coolify's reported public IPv4 disagrees with the
+   *  dashboard's DNS A record. Used to surface a yellow warning in
+   *  the review summary. */
+  serverIpMismatchWarning?: string;
   serverSize?: string;
   serverLocation?: string;
 
@@ -158,7 +183,11 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
   );
 
   let serverId: number | undefined;
+  let serverUuid: string | undefined;
   let serverIp: string | undefined;
+  let serverIpv4: string | undefined;
+  let serverIpv6: string | undefined;
+  let serverIpMismatchWarning: string | undefined;
   let serverSize: string | undefined;
   let serverLocation: string | undefined;
 
@@ -166,6 +195,13 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     if (presets.serverId !== undefined && presets.serverIp !== undefined) {
       serverId = presets.serverId;
       serverIp = presets.serverIp;
+      // Trust presets when supplied: if the operator passes
+      // serverIp via --config, treat it as the validated public
+      // IPv4 (it has to be — they're driving Terraform with it).
+      // Optional preset overrides keep the IPv6 / uuid path open.
+      serverUuid = presets.serverUuid;
+      serverIpv4 = presets.serverIpv4 ?? presets.serverIp;
+      serverIpv6 = presets.serverIpv6;
     } else if (nonInteractive) {
       throw new Error(
         "--deploy-target existing requires serverId + serverIp in --config (or remove --yes to pick interactively).",
@@ -173,7 +209,11 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     } else {
       const server = await selectExistingServer();
       serverId = server.id;
+      serverUuid = server.uuid;
       serverIp = server.ip;
+      serverIpv4 = server.ipv4;
+      serverIpv6 = server.ipv6;
+      serverIpMismatchWarning = server.mismatchWarning;
     }
   } else {
     serverSize = await presetOrPrompt(
@@ -511,7 +551,11 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     subdomain,
     deployTarget,
     serverId,
+    serverUuid,
     serverIp,
+    serverIpv4,
+    serverIpv6,
+    serverIpMismatchWarning,
     serverSize,
     serverLocation,
     features,
@@ -560,9 +604,7 @@ async function reviewAndEditLoop(initial: ProjectConfig): Promise<ProjectConfig>
   let cfg = initial;
 
   console.log(chalk.bold("\n  hatchkit create — review"));
-  console.log(
-    chalk.dim("  Pick any step to change a choice. Choose 'Proceed' to scaffold.\n"),
-  );
+  console.log(chalk.dim("  Pick any step to change a choice. Choose 'Proceed' to scaffold.\n"));
 
   for (;;) {
     const groups = buildCreateStepGroups(cfg);
@@ -582,7 +624,10 @@ async function reviewAndEditLoop(initial: ProjectConfig): Promise<ProjectConfig>
       }
     }
     choices.push(new Separator(" "));
-    choices.push({ name: chalk.bold(chalk.green("✓  Proceed — scaffold now")), value: "__proceed__" });
+    choices.push({
+      name: chalk.bold(chalk.green("✓  Proceed — scaffold now")),
+      value: "__proceed__",
+    });
 
     const picked = await select<string>({
       message: "Next step:",
@@ -636,9 +681,13 @@ function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
           key: "deployTarget",
           label: "Deploy target",
           set: cfg.deployTarget === "existing" ? !!cfg.serverIp : !!cfg.serverSize,
+          // Show the validated public IPv4 — that's what Terraform
+          // actually writes into DNS. Fall back to the raw Coolify
+          // value (`host.docker.internal` etc.) only when discovery
+          // hasn't run yet, so the display still reflects state.
           summary:
             cfg.deployTarget === "existing"
-              ? `existing server (${cfg.serverIp ?? "?"})`
+              ? `existing server (${cfg.serverIpv4 ?? cfg.serverIp ?? "?"}${cfg.serverIpv6 ? ` · ${cfg.serverIpv6}` : ""})`
               : `new Hetzner ${cfg.serverSize ?? "?"} (${cfg.serverLocation ?? "nbg1"})`,
         },
       ],
@@ -743,12 +792,28 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     const next = await checkbox<Feature>({
       message: "Features:",
       choices: [
-        { name: "websocket (real-time)", value: "websocket", checked: cfg.features.includes("websocket") },
+        {
+          name: "websocket (real-time)",
+          value: "websocket",
+          checked: cfg.features.includes("websocket"),
+        },
         { name: "stripe (payments)", value: "stripe", checked: cfg.features.includes("stripe") },
-        { name: "analytics (GlitchTip + OpenPanel)", value: "analytics", checked: cfg.features.includes("analytics") },
+        {
+          name: "analytics (GlitchTip + OpenPanel)",
+          value: "analytics",
+          checked: cfg.features.includes("analytics"),
+        },
         { name: "s3 (object storage)", value: "s3", checked: cfg.features.includes("s3") },
-        { name: "desktop (Electron wrapper)", value: "desktop", checked: cfg.features.includes("desktop") },
-        { name: "mobile (Capacitor wrapper)", value: "mobile", checked: cfg.features.includes("mobile") },
+        {
+          name: "desktop (Electron wrapper)",
+          value: "desktop",
+          checked: cfg.features.includes("desktop"),
+        },
+        {
+          name: "mobile (Capacitor wrapper)",
+          value: "mobile",
+          checked: cfg.features.includes("mobile"),
+        },
       ],
     });
     return { ...cfg, features: next };
@@ -761,7 +826,11 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
         ...cfg,
         deployTarget: "existing",
         serverId: server.id,
+        serverUuid: server.uuid,
         serverIp: server.ip,
+        serverIpv4: server.ipv4,
+        serverIpv6: server.ipv6,
+        serverIpMismatchWarning: server.mismatchWarning,
         serverSize: undefined,
         serverLocation: undefined,
       };
@@ -780,7 +849,11 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
       ...cfg,
       deployTarget: "new",
       serverId: undefined,
+      serverUuid: undefined,
       serverIp: undefined,
+      serverIpv4: undefined,
+      serverIpv6: undefined,
+      serverIpMismatchWarning: undefined,
       serverSize,
       serverLocation: cfg.serverLocation ?? "nbg1",
     };
@@ -790,9 +863,21 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
       message: "ML services:",
       choices: [
         { name: "subtitles", value: "subtitles", checked: cfg.mlServices.includes("subtitles") },
-        { name: "image-recognition", value: "image-recognition", checked: cfg.mlServices.includes("image-recognition") },
-        { name: "background-removal", value: "background-removal", checked: cfg.mlServices.includes("background-removal") },
-        { name: "3d-extraction", value: "3d-extraction", checked: cfg.mlServices.includes("3d-extraction") },
+        {
+          name: "image-recognition",
+          value: "image-recognition",
+          checked: cfg.mlServices.includes("image-recognition"),
+        },
+        {
+          name: "background-removal",
+          value: "background-removal",
+          checked: cfg.mlServices.includes("background-removal"),
+        },
+        {
+          name: "3d-extraction",
+          value: "3d-extraction",
+          checked: cfg.mlServices.includes("3d-extraction"),
+        },
       ],
     });
     let gpuPlatforms = cfg.gpuPlatforms;
@@ -803,7 +888,11 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
           { name: "Modal", value: "modal", checked: gpuPlatforms?.includes("modal") ?? true },
           { name: "RunPod", value: "runpod", checked: gpuPlatforms?.includes("runpod") ?? false },
           { name: "HuggingFace", value: "hf", checked: gpuPlatforms?.includes("hf") ?? false },
-          { name: "Replicate", value: "replicate", checked: gpuPlatforms?.includes("replicate") ?? false },
+          {
+            name: "Replicate",
+            value: "replicate",
+            checked: gpuPlatforms?.includes("replicate") ?? false,
+          },
         ],
         required: true,
       });
@@ -852,19 +941,51 @@ async function selectDeployTarget(): Promise<DeployTarget> {
   });
 }
 
-async function selectExistingServer(): Promise<CoolifyServer> {
+/** Pick an existing Coolify server AND discover its real public IPs.
+ *
+ *  Coolify's `/servers` endpoint reports `ip: "host.docker.internal"`
+ *  on Docker-based installs — that's the container-internal alias for
+ *  the Docker host, not a routable IPv4. Feeding it to Terraform's
+ *  `target_ipv4` makes Cloudflare reject the A records. This helper
+ *  resolves the server uuid + the validated public IPv4/IPv6 in one
+ *  shot, so callers (initial create flow + review-edit) get a
+ *  pre-validated picture they can hand straight to tfvars. The same
+ *  discovery logic that `hatchkit adopt` uses, behind one shared
+ *  module — see utils/coolify-server-ips.ts. */
+export interface SelectedServer {
+  /** Numeric id from /servers — what `serversCache` keys on. */
+  id: number;
+  /** Coolify uuid — needed for /servers/{uuid}/domains and direct
+   *  application-/database-create calls. */
+  uuid: string;
+  /** Display name. */
+  name: string;
+  /** Raw `ip` from /servers (may be `host.docker.internal`). Kept for
+   *  diagnostics and as a coolify-mongo fallback. */
+  ip: string;
+  /** Validated public IPv4 — fed to Terraform's `target_ipv4`. */
+  ipv4?: string;
+  /** Validated public IPv6 — fed to Terraform's `target_ipv6`. */
+  ipv6?: string;
+  /** Set when Coolify's reported public IPv4 disagrees with what
+   *  dashboard DNS resolves to. */
+  mismatchWarning?: string;
+}
+
+async function selectExistingServer(): Promise<SelectedServer> {
   const coolifyConfig = await getCoolifyConfig();
 
   if (!coolifyConfig?.url || !coolifyConfig?.token) {
     throw new Error("Coolify is not configured. Run hatchkit init first.");
   }
 
+  const api = new CoolifyApi({ url: coolifyConfig.url, token: coolifyConfig.token });
+
   // Use cached server list if available, otherwise fetch live
   let servers: CoolifyServer[];
   if (coolifyConfig.serversCache && coolifyConfig.serversCache.length > 0) {
     servers = coolifyConfig.serversCache;
   } else {
-    const api = new CoolifyApi({ url: coolifyConfig.url, token: coolifyConfig.token });
     servers = await api.listServers();
   }
 
@@ -874,18 +995,48 @@ async function selectExistingServer(): Promise<CoolifyServer> {
     );
   }
 
+  let chosen: CoolifyServer;
   if (servers.length === 1) {
     console.log(chalk.dim(`  Auto-selected server: ${servers[0].name} (${servers[0].ip})`));
-    return servers[0];
+    chosen = servers[0];
+  } else {
+    const serverId = await select({
+      message: "Select server:",
+      choices: servers.map((s) => ({
+        name: `${s.name} (${s.ip})`,
+        value: s.id,
+      })),
+    });
+    chosen = servers.find((s) => s.id === serverId)!;
   }
 
-  const serverId = await select({
-    message: "Select server:",
-    choices: servers.map((s) => ({
-      name: `${s.name} (${s.ip})`,
-      value: s.id,
-    })),
-  });
+  // Resolve uuid + discover public IPs. listServers/serversCache only
+  // give us the numeric id; the uuid (and the real public_ipv4 /
+  // public_ipv6) only come from /servers via findServer + the
+  // /servers/{uuid}/domains endpoint.
+  const resolved = await api.findServer({ ip: chosen.ip });
+  if (!resolved) {
+    throw new Error(`Couldn't resolve uuid for server "${chosen.name}" (${chosen.ip}).`);
+  }
+  const ips = await discoverPublicIps(api, resolved.uuid, chosen.ip, coolifyConfig.url);
+  if (!ips.v4) {
+    console.log(
+      chalk.yellow(
+        `  ⚠ Couldn't determine a public IPv4 for "${chosen.name}". DNS records can't be created until you set the server's public_ipv4 in the Coolify dashboard.`,
+      ),
+    );
+  } else {
+    const v6Note = ips.v6 ? ` · IPv6 ${ips.v6}` : "";
+    console.log(chalk.dim(`  Resolved public IPv4: ${ips.v4}${v6Note}`));
+  }
 
-  return servers.find((s) => s.id === serverId)!;
+  return {
+    id: chosen.id,
+    uuid: resolved.uuid,
+    name: chosen.name,
+    ip: chosen.ip,
+    ipv4: ips.v4,
+    ipv6: ips.v6,
+    mismatchWarning: ips.mismatchWarning,
+  };
 }

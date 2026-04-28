@@ -17,7 +17,8 @@
  *
  * Fields that MUST NEVER be written here:
  *   - tokens, passwords, API keys (any credential)
- *   - serverIp, serverId (Coolify server coordinates)
+ *   - serverId / serverUuid / serverIp / serverIpv4 / serverIpv6
+ *     (Coolify server coordinates)
  *   - s3ExistingAccessKey / SecretKey / Endpoint / Bucket  (user creds)
  *   - serverSize / serverLocation (infrastructure cost signal)
  *

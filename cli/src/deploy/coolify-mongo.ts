@@ -54,15 +54,26 @@ export async function provisionCoolifyMongo(
   try {
     const project = await api.findProjectByName(config.name);
     if (!project) {
-      throw new Error(
-        `Coolify project "${config.name}" not found — did the stack script run?`,
-      );
+      throw new Error(`Coolify project "${config.name}" not found — did the stack script run?`);
     }
     projectUuid = project.uuid;
 
-    const ip = config.serverIp;
     let server: { uuid: string; name: string; ip: string } | null = null;
-    if (ip) server = await api.findServer({ ip });
+    // Prefer the uuid we resolved up front during server selection
+    // (`hatchkit create` populates `config.serverUuid` after picking
+    // an existing Coolify server). Falls back to IP- / name-keyed
+    // lookups for the new-Hetzner path, where the uuid only exists
+    // after Terraform creates the server and we never re-prompt.
+    if (config.serverUuid) {
+      const servers = await api.listServers();
+      const cached = servers.find((s) => s.id === config.serverId) ?? servers[0];
+      server = cached
+        ? { uuid: config.serverUuid, name: cached.name, ip: cached.ip }
+        : { uuid: config.serverUuid, name: "(server)", ip: config.serverIp ?? "" };
+    }
+    if (!server && config.serverIp) {
+      server = await api.findServer({ ip: config.serverIp });
+    }
     if (!server) {
       // Fall back to the first server. Single-server Hetzner deploys
       // are the common case, and the alternative is the user picking
@@ -74,7 +85,9 @@ export async function provisionCoolifyMongo(
       if (!server) throw new Error(`Couldn't resolve server uuid for "${first.name}".`);
     }
     serverUuid = server.uuid;
-    setup.succeed(`Coolify project ${chalk.cyan(config.name)} on server ${chalk.cyan(server.name)}`);
+    setup.succeed(
+      `Coolify project ${chalk.cyan(config.name)} on server ${chalk.cyan(server.name)}`,
+    );
   } catch (err) {
     setup.fail();
     throw err;

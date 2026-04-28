@@ -45,21 +45,30 @@ export function generateTfvars(config: ProjectConfig): string {
   }
 
   // For existing server: DNS-only tfvars, per-provider template.
+  // `serverIpv4` is the validated public IPv4 we discovered up front
+  // (via /servers/{uuid}/domains or DNS resolution of the dashboard
+  // hostname). Falling back to the raw `serverIp` is only correct
+  // when it happens to already be a routable IPv4 — but the same
+  // validation Terraform performs would reject anything else, so the
+  // empty-string fallback is harmless: tfvars renders `target_ipv4 = ""`,
+  // terraform plan fails fast with a clear message, and the user
+  // re-runs after the discovery issue is resolved (e.g. by setting
+  // public_ipv4 in the Coolify dashboard).
   if (cfgProvider === "manual") return "";
   if (cfgProvider === "cloudflare") {
     return renderString(DNS_ONLY_CLOUDFLARE_TFVARS_TEMPLATE, {
       domain: config.baseDomain,
       subdomains,
       cloudflareProxied: true,
-      targetIpv4: config.serverIp || "",
-      targetIpv6: "",
+      targetIpv4: config.serverIpv4 || "",
+      targetIpv6: config.serverIpv6 || "",
     });
   }
   return renderString(DNS_ONLY_INWX_TFVARS_TEMPLATE, {
     domain: config.baseDomain,
     subdomains,
-    targetIpv4: config.serverIp || "",
-    targetIpv6: "",
+    targetIpv4: config.serverIpv4 || "",
+    targetIpv6: config.serverIpv6 || "",
   });
 }
 

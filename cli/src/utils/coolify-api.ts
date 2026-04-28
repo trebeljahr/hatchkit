@@ -127,9 +127,7 @@ export class CoolifyApi {
    *  hatchkit-managed setup names ARE unique enough — first match
    *  wins. Used by `hatchkit adopt --resume` so re-runs reuse the app
    *  Coolify already created instead of minting a duplicate. */
-  async findApplicationByName(
-    name: string,
-  ): Promise<{ uuid: string; name: string } | null> {
+  async findApplicationByName(name: string): Promise<{ uuid: string; name: string } | null> {
     const apps = await this.listApplications();
     const match = apps.find((a) => a.name === name);
     if (!match) return null;
@@ -352,9 +350,7 @@ export class CoolifyApi {
    *
    *  The server-side type is loose; it can return either an array
    *  directly or `{ data: [...] }`, so we accept both. */
-  async getServerDomains(
-    uuid: string,
-  ): Promise<Array<{ ip?: string; domain?: string }>> {
+  async getServerDomains(uuid: string): Promise<Array<{ ip?: string; domain?: string }>> {
     const raw = (await this.request("GET", `/servers/${uuid}/domains`)) as
       | Array<{ ip?: string; domain?: string }>
       | { data?: Array<{ ip?: string; domain?: string }> };
