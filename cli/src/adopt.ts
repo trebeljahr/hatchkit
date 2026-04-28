@@ -943,12 +943,6 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
         ),
       );
     }
-    // After Coolify wiring, push the deploy-webhook secrets to the
-    // GitHub repo so the scaffolded deploy.yml workflow can hit the
-    // Coolify deploy endpoint. Best-effort.
-    if (coolifyResult && plan.scaffoldBuildPipeline) {
-      await setActionsSecretsForDeploy(state, plan, coolifyResult.appUuid, remoteUrl);
-    }
   } else if (plan.wireCoolify && !remoteUrl) {
     console.log(
       chalk.yellow(
@@ -956,6 +950,16 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
           "  was off). Set the remote yourself or re-run with `setup GitHub remote = yes`.",
       ),
     );
+  }
+
+  // Step 3c: push the deploy-webhook secrets to the GitHub repo so
+  // the scaffolded deploy.yml workflow can hit Coolify. Run whether
+  // wireCoolify ran or not — covers both the "fresh app we just
+  // created" and "app already existed before adopt" branches. Need
+  // an app uuid in either case.
+  const appUuidForSecrets = coolifyResult?.appUuid ?? state.coolifyAppMatch?.uuid;
+  if (plan.scaffoldBuildPipeline && appUuidForSecrets) {
+    await setActionsSecretsForDeploy(state, plan, appUuidForSecrets, remoteUrl);
   }
 
   // Step 4: provision clients via the existing `add` machinery so the
@@ -1281,13 +1285,26 @@ function ownerFromRemote(url: string | undefined): string | undefined {
   return undefined;
 }
 
-/** Best-effort default branch detection. `git symbolic-ref` works
- *  once `gh repo create --push` has set the upstream HEAD. Falls
- *  back to "main" — that's the GitHub default for new repos. */
+/** Best-effort default branch detection. `git symbolic-ref` only
+ *  works after `git remote set-head origin -a` has cached the
+ *  upstream HEAD locally — `gh repo create --push` doesn't always do
+ *  that. Run it ourselves first (silently), then read the symbolic
+ *  ref. Falls through to `main` (GitHub's default) when the remote
+ *  doesn't have one yet (e.g. brand-new empty repo). All exec calls
+ *  are silenced so the inevitable "not a symbolic ref" stderr noise
+ *  doesn't leak into adopt's clean output. */
 async function detectDefaultBranch(projectDir: string): Promise<string> {
   try {
+    // First, ask the remote what its HEAD is and cache it locally.
+    // No-ops + exits non-zero on offline / no-permissions / empty-repo
+    // cases; we don't care about the exit code.
+    await exec("git", ["remote", "set-head", "origin", "-a"], {
+      cwd: projectDir,
+      silent: true,
+    });
     const res = await exec("git", ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], {
       cwd: projectDir,
+      silent: true,
     });
     if (res.exitCode === 0) {
       const branch = res.stdout.trim().replace(/^origin\//, "");
