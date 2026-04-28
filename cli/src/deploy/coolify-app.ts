@@ -42,6 +42,11 @@ export interface WireUpInput {
   gitBranch?: string;
   /** Container port the app listens on. Default `3000`. */
   portsExposes?: string;
+  /** Coolify build pack. `nixpacks` for typical Node servers,
+   *  `static` for SPAs / static sites without a runtime, `dockerfile`
+   *  / `dockercompose` when the project ships its own. Default
+   *  `nixpacks`. */
+  buildPack?: "nixpacks" | "static" | "dockerfile" | "dockercompose";
   /** Treat the repo as private. When true, hatchkit picks (or asks
    *  for) a Coolify GitHub App uuid. */
   isPrivate?: boolean;
@@ -149,6 +154,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     gitRepository: input.gitRepository,
     gitBranch: input.gitBranch ?? "main",
     portsExposes: input.portsExposes ?? "3000",
+    buildPack: input.buildPack ?? "nixpacks",
     name: input.projectName,
     description: "Adopted by hatchkit",
     domains: [`https://${input.domain}`],

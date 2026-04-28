@@ -41,7 +41,12 @@ import chalk from "chalk";
 import { ensureGitHub, getCoolifyConfig } from "./config.js";
 import { pushProjectKeyToCoolify } from "./deploy/keys.js";
 import { type ProvisionService, runProvision } from "./provision/index.js";
-import { MANIFEST_FILENAME, type ProjectManifest, writeManifest } from "./scaffold/manifest.js";
+import {
+  MANIFEST_FILENAME,
+  type ProjectManifest,
+  readManifest,
+  writeManifest,
+} from "./scaffold/manifest.js";
 import type { Feature, S3Provider } from "./prompts.js";
 import { CoolifyApi } from "./utils/coolify-api.js";
 import { exec, execOk } from "./utils/exec.js";
@@ -74,13 +79,25 @@ interface DetectedState {
   isGitRepo: boolean;
   /** Origin URL from `git remote get-url origin`, if set. */
   gitRemoteUrl?: string;
+  /** Parsed `.hatchkit.json` if a previous adopt/scaffold landed
+   *  one. Used by `--resume` to pre-fill the stepper with the values
+   *  the user already chose, instead of starting from blank. */
+  existingManifest?: ProjectManifest;
 }
+
+type AdoptSurface = "server-only" | "client-only" | "both";
 
 interface AdoptPlan {
   name: string;
   domain: string;
   features: Feature[];
-  serverDir: string;
+  /** What kind of project this is — drives where env files go, which
+   *  Coolify build-pack we ask for, and which surfaces `hatchkit add`
+   *  provisions clients into. */
+  surfaces: AdoptSurface;
+  /** Required when `surfaces !== "client-only"`. */
+  serverDir?: string;
+  /** Required when `surfaces !== "server-only"`. */
   clientDir?: string;
   /** Always-on side effect — initialize dotenvx encryption if the
    *  server dir doesn't already have an encrypted .env.production. */
@@ -132,18 +149,39 @@ export async function runAdopt(cwd: string, opts: { resume?: boolean } = {}): Pr
   }
   printDetected(state);
 
-  // Initial plan — pre-filled from detection.
+  // Initial plan — pre-filled from (in order of preference) the
+  // existing manifest (so `--resume` recovers prior choices), then
+  // detection on disk, then sensible defaults.
   //   bootstrapDotenvx: default ON when there's no encrypted prod env —
   //     adopt's whole point is "make this manageable", and that needs a
   //     dotenvx keypair so everything else (key push, encrypted writes
   //     by `add`) has something to work with.
   //   setupGitHub: default ON when there's no origin remote yet.
+  const m = state.existingManifest;
+  // Surfaces inference: trust both detected dirs. When only one is
+  // detected, default to the matching surface; when both, "both"; when
+  // neither, fall back to "server-only" at the project root for
+  // backward compat with the original adopt behaviour.
+  const inferredSurfaces: AdoptSurface =
+    state.serverDir && state.clientDir
+      ? "both"
+      : state.serverDir
+        ? "server-only"
+        : state.clientDir
+          ? "client-only"
+          : "server-only";
   let plan: AdoptPlan = {
-    name: state.packageName ?? "",
-    domain: "",
-    features: state.features,
-    serverDir: state.serverDir ?? state.projectDir,
-    clientDir: state.clientDir,
+    name: m?.name ?? state.packageName ?? "",
+    domain: m?.domain ?? "",
+    // Manifest features are the source of truth when present — the user
+    // already curated them on the previous run. Detection is only a
+    // best-guess fallback for the first-ever adopt.
+    features: m?.features ?? state.features,
+    surfaces: inferredSurfaces,
+    serverDir:
+      inferredSurfaces === "client-only" ? undefined : (state.serverDir ?? state.projectDir),
+    clientDir:
+      inferredSurfaces === "server-only" ? undefined : (state.clientDir ?? state.projectDir),
     bootstrapDotenvx: !state.prodEnvIsEncrypted,
     setupGitHub: !state.gitRemoteUrl,
     wireCoolify: !state.coolifyAppMatch,
@@ -167,6 +205,7 @@ export async function runAdopt(cwd: string, opts: { resume?: boolean } = {}): Pr
 
 async function detectProject(projectDir: string): Promise<DetectedState> {
   const hasManifest = existsSync(join(projectDir, MANIFEST_FILENAME));
+  const existingManifest = hasManifest ? readManifest(projectDir) ?? undefined : undefined;
 
   let packageName: string | undefined;
   try {
@@ -268,6 +307,7 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
     coolifyAppMatch,
     isGitRepo,
     gitRemoteUrl,
+    existingManifest,
   };
 }
 
@@ -498,17 +538,40 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
       title: "Layout",
       steps: [
         {
-          key: "serverDir",
-          label: "Server env dir",
-          set: !!plan.serverDir,
-          summary: plan.serverDir ? relativeTo(plan.serverDir) : "(unset)",
+          key: "surfaces",
+          label: "Surfaces",
+          set: true,
+          summary:
+            plan.surfaces === "server-only"
+              ? "server only (backend / API)"
+              : plan.surfaces === "client-only"
+                ? "client only (static / SPA — no backend)"
+                : "server + client",
         },
-        {
-          key: "clientDir",
-          label: "Client env dir",
-          set: true, // optional — empty is fine
-          summary: plan.clientDir ? relativeTo(plan.clientDir) : chalk.dim("(none — server only)"),
-        },
+        // Only show the env-dir rows that are actually relevant for
+        // the chosen surface. Hiding instead of greying-out keeps the
+        // stepper consistent with the surfaces choice and avoids the
+        // "checkmark on a thing I can't unset" UX trap.
+        ...(plan.surfaces !== "client-only"
+          ? [
+              {
+                key: "serverDir",
+                label: "Server env dir",
+                set: !!plan.serverDir,
+                summary: plan.serverDir ? relativeTo(plan.serverDir) : "(unset)",
+              },
+            ]
+          : []),
+        ...(plan.surfaces !== "server-only"
+          ? [
+              {
+                key: "clientDir",
+                label: "Client env dir",
+                set: !!plan.clientDir,
+                summary: plan.clientDir ? relativeTo(plan.clientDir) : "(unset)",
+              },
+            ]
+          : []),
       ],
     },
     {
@@ -616,6 +679,32 @@ async function editAdoptStep(
     ).trim();
     return { ...plan, domain };
   }
+  if (step === "surfaces") {
+    const next = await select<AdoptSurface>({
+      message: "What kind of project is this?",
+      choices: [
+        { name: "Server only (backend / API)", value: "server-only" },
+        { name: "Client only (static site / SPA — no backend)", value: "client-only" },
+        { name: "Server + client (both)", value: "both" },
+      ],
+      default: plan.surfaces,
+    });
+    // Adjust the dir fields when the surface changes — dropping
+    // server/client dirs that are no longer relevant, and setting
+    // sane defaults for newly-relevant ones.
+    return {
+      ...plan,
+      surfaces: next,
+      serverDir:
+        next === "client-only"
+          ? undefined
+          : (plan.serverDir ?? state.serverDir ?? state.projectDir),
+      clientDir:
+        next === "server-only"
+          ? undefined
+          : (plan.clientDir ?? state.clientDir ?? state.projectDir),
+    };
+  }
   if (step === "serverDir") {
     const picked = (
       await input({
@@ -630,11 +719,9 @@ async function editAdoptStep(
     return { ...plan, serverDir: join(state.projectDir, picked) };
   }
   if (step === "clientDir") {
-    const useClient = await confirm({
-      message: "Does this project have a separate browser bundle?",
-      default: !!plan.clientDir,
-    });
-    if (!useClient) return { ...plan, clientDir: undefined };
+    // For client-only / both surfaces this row IS the env dir prompt.
+    // No extra "do you have a client?" yes/no — the surfaces step is
+    // where that decision lives now.
     const picked = (
       await input({
         message: "Client env directory (relative to project root):",
@@ -787,7 +874,13 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
         projectName: plan.name,
         domain: plan.domain,
         gitRepository: remoteUrl,
-        portsExposes: plan.appPort,
+        // For client-only projects (static sites / SPAs) Coolify wants
+        // its `static` build pack and doesn't need a runtime port —
+        // bind to 80 so the API still has the field it requires.
+        // Server / both surfaces fall back to nixpacks on the chosen
+        // port.
+        buildPack: plan.surfaces === "client-only" ? "static" : "nixpacks",
+        portsExposes: plan.surfaces === "client-only" ? "80" : plan.appPort,
         // Default assumption: anything we just `gh repo create --private`d
         // is private. If origin was already set we don't know for sure;
         // try public first (cheaper auth) and let the orchestrator handle
@@ -818,14 +911,22 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
 
   // Step 4: provision clients via the existing `add` machinery so the
   // surfaces stepper, idempotency, and env writes behave identically
-  // to a normal `hatchkit add`.
+  // to a normal `hatchkit add`. Forward the surface choice — runProvision
+  // uses the same vocabulary, so a client-only adopt produces a
+  // client-only `add`.
   if (plan.services.length > 0) {
     console.log();
+    const provisionMode =
+      plan.surfaces === "both"
+        ? "shared"
+        : plan.surfaces === "server-only"
+          ? "server-only"
+          : "client-only";
     await runProvision({
       baseName: plan.name,
       services: plan.services,
       surfaces: {
-        mode: plan.clientDir ? "shared" : "server-only",
+        mode: provisionMode,
         serverEnvDir: plan.serverDir,
         clientEnvDir: plan.clientDir,
       },
@@ -863,8 +964,9 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
   console.log(chalk.bold("\n  ── Adopted ───────────────────────────────────────────────\n"));
   console.log(`  Project:   ${chalk.cyan(plan.name)}`);
   console.log(`  Domain:    ${chalk.cyan(plan.domain)}`);
-  console.log(`  Server:    ${chalk.cyan(relativeTo(plan.serverDir))}`);
+  if (plan.serverDir) console.log(`  Server:    ${chalk.cyan(relativeTo(plan.serverDir))}`);
   if (plan.clientDir) console.log(`  Client:    ${chalk.cyan(relativeTo(plan.clientDir))}`);
+  console.log(`  Surfaces:  ${chalk.cyan(plan.surfaces)}`);
   console.log(`  Manifest:  ${chalk.dim(join(state.projectDir, MANIFEST_FILENAME))}`);
   if (remoteUrl) console.log(`  Git:       ${chalk.cyan(remoteUrl)}`);
   if (coolifyResult) {
@@ -882,8 +984,17 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
   console.log();
 }
 
+/** Where dotenvx writes the encrypted env. Server-only / both layouts
+ *  use the server dir (canonical for runtime decryption); client-only
+ *  layouts use the client dir. Both fall back to the project root if
+ *  detection / the user picked nothing more specific. */
+function dotenvxRootFor(plan: AdoptPlan, projectDir: string): string {
+  if (plan.surfaces === "client-only") return plan.clientDir ?? projectDir;
+  return plan.serverDir ?? projectDir;
+}
+
 async function bootstrapDotenvxNow(state: DetectedState, plan: AdoptPlan): Promise<void> {
-  const prodPath = join(plan.serverDir, ".env.production");
+  const prodPath = join(dotenvxRootFor(plan, state.projectDir), ".env.production");
   const ora = (await import("ora")).default;
   const label = state.prodEnvIsEncrypted
     ? "Re-encrypting .env.production with dotenvx..."
@@ -976,7 +1087,7 @@ async function setupGitHubRemote(
 }
 
 async function importKeyToKeychain(state: DetectedState, plan: AdoptPlan): Promise<void> {
-  const envKeysPath = join(plan.serverDir, ".env.keys");
+  const envKeysPath = join(dotenvxRootFor(plan, state.projectDir), ".env.keys");
   if (!existsSync(envKeysPath)) {
     console.log(
       chalk.yellow(
