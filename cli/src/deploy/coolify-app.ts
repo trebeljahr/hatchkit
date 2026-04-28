@@ -25,6 +25,7 @@
  *     a clear "add an A record yourself" hint.
  */
 
+import { resolve4 } from "node:dns/promises";
 import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig, getDnsConfig } from "../config.js";
@@ -207,7 +208,15 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
   }
 
   // ── 6. DNS (Cloudflare only for now). ──────────────────────────────
-  const dnsResult = await wireDns(input.domain, server.ip);
+  //
+  // Coolify-in-Docker installs report `ip: "host.docker.internal"`
+  // (the container-internal hostname for the Docker host) on
+  // /servers. That's not routable from the public internet, so it'd
+  // fail Cloudflare's IPv4 validation. Fall back to resolving the
+  // Coolify dashboard URL's hostname — the dashboard already lives
+  // on the public IP we want to point at.
+  const publicIp = await resolvePublicIp(server.ip, cfg.url);
+  const dnsResult = await wireDns(input.domain, publicIp);
 
   // ── 7. Trigger first deploy. ───────────────────────────────────────
   const deploy = ora("Coolify: triggering first deploy").start();
@@ -227,10 +236,55 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     appUuid,
     projectUuid,
     serverUuid: resolveServer.uuid,
-    serverIp: server.ip,
+    serverIp: publicIp,
     dnsRecordId: dnsResult.recordId,
     dnsManaged: dnsResult.managed,
   };
+}
+
+/** True for valid public-routable IPv4 strings. Filters out the
+ *  values Coolify hands back on Docker installs (`host.docker.internal`,
+ *  `localhost`, `127.0.0.1`) plus IPv6, which we don't auto-manage. */
+function isPublicIpv4(s: string): boolean {
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(s)) return false;
+  const parts = s.split(".").map((n) => Number(n));
+  if (parts.some((n) => n < 0 || n > 255)) return false;
+  if (parts[0] === 127) return false; // loopback
+  if (parts[0] === 0) return false;
+  return true;
+}
+
+/** Best-effort resolution of the public IP the deploy actually lands
+ *  on. Prefers Coolify's reported server.ip when it looks like a
+ *  routable IPv4; otherwise resolves the Coolify dashboard URL's
+ *  hostname (which has to be reachable from the public internet for
+ *  the user to be running this command at all). Falls back to the
+ *  original value if DNS resolution itself fails — the DNS step will
+ *  then surface a clear error. */
+async function resolvePublicIp(coolifyServerIp: string, dashboardUrl: string): Promise<string> {
+  if (isPublicIpv4(coolifyServerIp)) return coolifyServerIp;
+  let host: string;
+  try {
+    host = new URL(dashboardUrl).hostname;
+  } catch {
+    return coolifyServerIp;
+  }
+  if (isPublicIpv4(host)) return host;
+  const spinner = ora(
+    `Coolify reported ${coolifyServerIp}; resolving public IP from ${host}`,
+  ).start();
+  try {
+    const addresses = await resolve4(host);
+    if (addresses.length > 0 && isPublicIpv4(addresses[0])) {
+      spinner.succeed(`Public IP: ${addresses[0]} (resolved from ${host})`);
+      return addresses[0];
+    }
+    spinner.fail(`No usable IPv4 returned for ${host}`);
+    return coolifyServerIp;
+  } catch (err) {
+    spinner.fail(`Couldn't resolve ${host}: ${(err as Error).message}`);
+    return coolifyServerIp;
+  }
 }
 
 interface DnsWireResult {
@@ -239,6 +293,19 @@ interface DnsWireResult {
 }
 
 async function wireDns(domain: string, serverIp: string): Promise<DnsWireResult> {
+  // Pre-flight: the DNS upsert needs a real IPv4. Anything else
+  // (host.docker.internal, IPv6, junk) gets bounced by Cloudflare
+  // with a 9005, so we may as well stop earlier with a usable hint.
+  if (!isPublicIpv4(serverIp)) {
+    console.log(
+      chalk.yellow(
+        `  Couldn't resolve a public IPv4 for the Coolify server (got "${serverIp}").\n` +
+          `  Add an A record for ${domain} manually pointing at the box's public IP, or\n` +
+          `  fix the server's IP in the Coolify dashboard so /servers returns it.`,
+      ),
+    );
+    return { managed: false };
+  }
   const dns = await getDnsConfig();
   if (!dns) {
     console.log(
