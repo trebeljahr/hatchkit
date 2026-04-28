@@ -47,6 +47,7 @@ import {
   readManifest,
   writeManifest,
 } from "./scaffold/manifest.js";
+import { detectBuildPipeline, scaffoldBuildPipeline } from "./scaffold/build-pipeline.js";
 import type { Feature, S3Provider } from "./prompts.js";
 import { CoolifyApi } from "./utils/coolify-api.js";
 import { exec, execOk } from "./utils/exec.js";
@@ -111,6 +112,12 @@ interface AdoptPlan {
   wireCoolify: boolean;
   /** Container port the app exposes — defaults to "3000". */
   appPort: string;
+  /** Scaffold the build pipeline (Dockerfile + docker-compose.yml +
+   *  .github/workflows/deploy.yml) when those files don't exist yet.
+   *  Always coupled with wireCoolify since the compose file is what
+   *  Coolify reads. The detection step ensures this is a no-op when
+   *  the user already has their own. */
+  scaffoldBuildPipeline: boolean;
   /** Provisioning to run after manifest write. */
   services: ProvisionService[];
   /** Push dotenvx key to Coolify after everything's written. */
@@ -189,6 +196,7 @@ export async function runAdopt(cwd: string, opts: { resume?: boolean } = {}): Pr
     setupGitHub: !state.gitRemoteUrl,
     wireCoolify: !state.coolifyAppMatch,
     appPort: "3000",
+    scaffoldBuildPipeline: true,
     services: ["glitchtip", "openpanel", "resend"],
     // Default the push only when there's already a Coolify app to push to.
     // When wireCoolify creates a fresh app, it sets the baseline env
@@ -616,6 +624,17 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
       ],
     },
     {
+      title: "Build pipeline",
+      steps: [
+        {
+          key: "scaffoldBuildPipeline",
+          label: "Docker + GH Actions",
+          set: true,
+          summary: renderBuildPipelineSummary(state, plan),
+        },
+      ],
+    },
+    {
       title: "Deploy",
       steps: [
         {
@@ -811,6 +830,14 @@ async function editAdoptStep(
     });
     return { ...plan, setupGitHub };
   }
+  if (step === "scaffoldBuildPipeline") {
+    const scaffoldBuildPipeline = await confirm({
+      message:
+        "Scaffold the build pipeline (Dockerfile / docker-compose.yml / GitHub Actions deploy.yml as needed)?",
+      default: plan.scaffoldBuildPipeline,
+    });
+    return { ...plan, scaffoldBuildPipeline };
+  }
   if (step === "wireCoolify") {
     const wireCoolify = await confirm({
       message: state.coolifyAppMatch
@@ -863,6 +890,15 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
     console.log(chalk.dim(`  · git origin already set → ${state.gitRemoteUrl}`));
   }
 
+  // Step 3a: Scaffold the build pipeline (Dockerfile + compose +
+  // GitHub Actions workflow). Detection inside the scaffolder skips
+  // anything that already exists, so this is idempotent across re-runs.
+  // Must run BEFORE Coolify wiring so the docker-compose.yml exists
+  // by the time Coolify clones the repo for the first deploy.
+  if (plan.scaffoldBuildPipeline) {
+    await scaffoldBuildPipelineNow(state, plan, remoteUrl);
+  }
+
   // Step 3b: Wire the repo into Coolify + DNS via direct API calls.
   // No infra/ submodule, no Terraform — just hits the Coolify and
   // DNS-provider REST endpoints with credentials we already have in
@@ -877,12 +913,16 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
         projectName: plan.name,
         domain: plan.domain,
         gitRepository: remoteUrl,
-        // For client-only projects (static sites / SPAs) Coolify wants
-        // its `static` build pack and doesn't need a runtime port —
-        // bind to 80 so the API still has the field it requires.
-        // Server / both surfaces fall back to nixpacks on the chosen
-        // port.
-        buildPack: plan.surfaces === "client-only" ? "static" : "nixpacks",
+        // hatchkit's canonical pipeline = GitHub Actions builds image →
+        // pushes to GHCR → Coolify pulls via docker-compose.yml. The
+        // build-pipeline scaffold step (run earlier in this flow)
+        // either kept the user's existing compose or wrote one
+        // pointing at ghcr.io/<owner>/<name>:latest. Either way the
+        // Coolify app reads docker-compose.yml from the repo root.
+        buildPack: "dockercompose",
+        // ports_exposes is still required by the Coolify API even for
+        // dockercompose; it's purely metadata once the compose file
+        // takes over.
         portsExposes: plan.surfaces === "client-only" ? "80" : plan.appPort,
         // Default assumption: anything we just `gh repo create --private`d
         // is private. If origin was already set we don't know for sure;
@@ -902,6 +942,12 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
             `    hatchkit keys push ${plan.name}`,
         ),
       );
+    }
+    // After Coolify wiring, push the deploy-webhook secrets to the
+    // GitHub repo so the scaffolded deploy.yml workflow can hit the
+    // Coolify deploy endpoint. Best-effort.
+    if (coolifyResult && plan.scaffoldBuildPipeline) {
+      await setActionsSecretsForDeploy(state, plan, coolifyResult.appUuid, remoteUrl);
     }
   } else if (plan.wireCoolify && !remoteUrl) {
     console.log(
@@ -1160,4 +1206,167 @@ function writeAdoptManifest(projectDir: string, plan: AdoptPlan): void {
 function relativeTo(p: string, from = process.cwd()): string {
   const rel = relative(from, p);
   return rel === "" ? "." : rel.startsWith("..") ? p : `./${rel}`;
+}
+
+// ---------------------------------------------------------------------------
+// Build pipeline (Dockerfile + compose + GH Actions)
+// ---------------------------------------------------------------------------
+
+/** Compose the stepper summary for the build-pipeline row. Shows
+ *  what'll happen if the user hits Adopt right now — separately
+ *  noting which files already exist (will be left alone) vs which
+ *  will be scaffolded. */
+function renderBuildPipelineSummary(state: DetectedState, plan: AdoptPlan): string {
+  if (!plan.scaffoldBuildPipeline) return chalk.dim("no — leave files as-is");
+  const pipe = detectBuildPipeline(state.projectDir);
+  const willWrite: string[] = [];
+  const kept: string[] = [];
+  if (pipe.hasDockerfile) kept.push("Dockerfile");
+  else willWrite.push("Dockerfile");
+  if (pipe.hasCompose) kept.push(pipe.composePath?.split("/").pop() ?? "compose");
+  else willWrite.push("docker-compose.yml");
+  if (pipe.hasDeployWorkflow) kept.push(".github/workflows/deploy.yml");
+  else willWrite.push(".github/workflows/deploy.yml");
+  if (willWrite.length === 0) return chalk.dim("all files already present — nothing to write");
+  const writePart = `write ${willWrite.join(", ")}`;
+  const keepPart = kept.length > 0 ? chalk.dim(` · keep ${kept.join(", ")}`) : "";
+  return `${writePart}${keepPart}`;
+}
+
+async function scaffoldBuildPipelineNow(
+  state: DetectedState,
+  plan: AdoptPlan,
+  remoteUrl: string | undefined,
+): Promise<void> {
+  // Owner inference for the GHCR image. Falls back to "OWNER" if we
+  // can't tell — the scaffolded compose still works once the user
+  // edits it, and they get a clear hint in the summary.
+  const owner = ownerFromRemote(remoteUrl) ?? "OWNER";
+  const defaultBranch = await detectDefaultBranch(state.projectDir);
+  const result = scaffoldBuildPipeline({
+    projectDir: state.projectDir,
+    projectName: plan.name,
+    ghOwner: owner,
+    entrypoint: plan.surfaces === "client-only" ? "" : "dist/index.js",
+    port: Number(plan.appPort) || 3000,
+    surfaces: plan.surfaces,
+    defaultBranch,
+  });
+  if (result.written.length > 0) {
+    console.log(chalk.green(`  ✓ Scaffolded: ${result.written.join(", ")}`));
+  }
+  if (result.skipped.length > 0) {
+    console.log(chalk.dim(`  · Kept existing: ${result.skipped.join(", ")}`));
+  }
+  if (owner === "OWNER") {
+    console.log(
+      chalk.yellow(
+        "  ⚠ Couldn't infer GitHub owner from origin — edit `image: ghcr.io/OWNER/...`\n" +
+          "    in docker-compose.yml before pushing.",
+      ),
+    );
+  }
+}
+
+/** Extract `owner` from a git remote URL.
+ *    git@github.com:owner/repo.git           → owner
+ *    https://github.com/owner/repo[.git]     → owner
+ *  Returns undefined if the URL doesn't match either GitHub form. */
+function ownerFromRemote(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  const ssh = url.match(/^git@github\.com:([^/]+)\/[^/]+?(?:\.git)?$/);
+  if (ssh) return ssh[1];
+  const https = url.match(/^https?:\/\/github\.com\/([^/]+)\/[^/]+?(?:\.git)?(?:\/.*)?$/);
+  if (https) return https[1];
+  return undefined;
+}
+
+/** Best-effort default branch detection. `git symbolic-ref` works
+ *  once `gh repo create --push` has set the upstream HEAD. Falls
+ *  back to "main" — that's the GitHub default for new repos. */
+async function detectDefaultBranch(projectDir: string): Promise<string> {
+  try {
+    const res = await exec("git", ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], {
+      cwd: projectDir,
+    });
+    if (res.exitCode === 0) {
+      const branch = res.stdout.trim().replace(/^origin\//, "");
+      if (branch) return branch;
+    }
+  } catch {
+    /* ignore */
+  }
+  return "main";
+}
+
+// ---------------------------------------------------------------------------
+// GitHub Actions secrets — set once after Coolify wiring lands the
+// app uuid we need to construct the deploy webhook URL.
+// ---------------------------------------------------------------------------
+
+/** Push COOLIFY_WEBHOOK_URL + COOLIFY_TOKEN to the project's GitHub
+ *  repo as Actions secrets so deploy.yml can trigger redeploys.
+ *  Best-effort — failures don't roll anything back; the user gets a
+ *  copy-pasteable manual recipe instead. */
+async function setActionsSecretsForDeploy(
+  state: DetectedState,
+  plan: AdoptPlan,
+  appUuid: string,
+  remoteUrl: string | undefined,
+): Promise<void> {
+  const ownerRepo = repoSlugFromRemote(remoteUrl);
+  if (!ownerRepo) {
+    console.log(
+      chalk.dim(
+        "  · Couldn't resolve owner/repo from git remote — set the deploy secrets manually.",
+      ),
+    );
+    return;
+  }
+  const cfg = await (await import("./config.js")).getCoolifyConfig();
+  if (!cfg) return;
+  const webhookUrl = `${cfg.url.replace(/\/$/, "")}/api/v1/deploy?uuid=${appUuid}`;
+
+  const ora = (await import("ora")).default;
+  const spinner = ora(`GitHub: setting Actions secrets on ${ownerRepo}`).start();
+  try {
+    await ghSecretSet(state.projectDir, ownerRepo, "COOLIFY_WEBHOOK_URL", webhookUrl);
+    await ghSecretSet(state.projectDir, ownerRepo, "COOLIFY_TOKEN", cfg.token);
+    spinner.succeed("GitHub: Actions secrets set (COOLIFY_WEBHOOK_URL, COOLIFY_TOKEN)");
+  } catch (err) {
+    spinner.fail(`GitHub: setting secrets failed — ${(err as Error).message}`);
+    console.log(
+      chalk.dim(
+        `  Set them manually:\n` +
+          `    gh secret set COOLIFY_WEBHOOK_URL --repo ${ownerRepo} --body '${webhookUrl}'\n` +
+          `    gh secret set COOLIFY_TOKEN --repo ${ownerRepo} --body '<your coolify token>'`,
+      ),
+    );
+  }
+  void plan; // unused but kept for future feature gating
+}
+
+async function ghSecretSet(
+  cwd: string,
+  repo: string,
+  name: string,
+  value: string,
+): Promise<void> {
+  const res = await exec("gh", ["secret", "set", name, "--repo", repo, "--body", value], {
+    cwd,
+  });
+  if (res.exitCode !== 0) {
+    throw new Error(`gh secret set ${name} exited ${res.exitCode}: ${res.stderr.trim()}`);
+  }
+}
+
+/** Extract `owner/repo` from a git remote URL — same parsing as
+ *  `ownerFromRemote` but keeping the repo segment too. */
+function repoSlugFromRemote(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  const ssh = url.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/);
+  if (ssh) return `${ssh[1]}/${ssh[2]}`;
+  const https = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/.*)?$/);
+  if (https) return `${https[1]}/${https[2]}`;
+  return undefined;
 }

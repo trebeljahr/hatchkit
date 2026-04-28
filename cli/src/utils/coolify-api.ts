@@ -301,7 +301,7 @@ export class CoolifyApi {
    *  endpoints. Coolify mostly mirrors the docker-compose convention:
    *  `ports_exposes` is the comma-separated container port(s). */
   private buildAppCreateBody(input: ApplicationCreateInput): Record<string, unknown> {
-    return {
+    const body: Record<string, unknown> = {
       project_uuid: input.projectUuid,
       server_uuid: input.serverUuid,
       environment_name: input.environmentName ?? "production",
@@ -314,6 +314,13 @@ export class CoolifyApi {
       domains: input.domains?.join(","),
       instant_deploy: input.instantDeploy ?? true,
     };
+    // dockercompose build pack reads docker-compose.yml from the repo;
+    // tell Coolify where to find it. Default works when the file is
+    // at the repo root (the canonical hatchkit layout).
+    if (input.buildPack === "dockercompose") {
+      body.docker_compose_location = input.dockerComposeLocation ?? "/docker-compose.yml";
+    }
+    return body;
   }
 
   async createApplicationFromPublicRepo(
@@ -375,6 +382,9 @@ export interface ApplicationCreateInput {
    *  a real one (assumes DNS already points at the server). */
   domains?: string[];
   instantDeploy?: boolean;
+  /** Repo-relative path to the compose file when buildPack is
+   *  `dockercompose`. Defaults to `/docker-compose.yml`. */
+  dockerComposeLocation?: string;
 }
 
 /** Verify Coolify connection. Returns version string or throws. */

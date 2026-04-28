@@ -175,7 +175,12 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       gitRepository: input.gitRepository,
       gitBranch: input.gitBranch ?? "main",
       portsExposes: input.portsExposes ?? "3000",
-      buildPack: input.buildPack ?? "nixpacks",
+      // hatchkit's canonical pipeline = GitHub Actions builds image →
+      // pushes to GHCR → Coolify pulls via docker-compose.yml. Caller
+      // can still override (e.g. for legacy nixpacks paths) but
+      // `dockercompose` is the default for any project that's gone
+      // through `hatchkit adopt`'s build-pipeline scaffold.
+      buildPack: input.buildPack ?? "dockercompose",
       name: input.projectName,
       description: "Adopted by hatchkit",
       domains: [`https://${input.domain}`],

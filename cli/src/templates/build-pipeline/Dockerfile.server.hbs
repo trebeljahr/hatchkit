@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+#
+# Server / fullstack image for {{name}}.
+# Built by .github/workflows/deploy.yml, pushed to GHCR, pulled by
+# Coolify via docker-compose.yml. Uses dotenvx at runtime so the
+# committed encrypted .env.production decrypts only inside the
+# container (the private key comes from DOTENV_PRIVATE_KEY_PRODUCTION,
+# set on the Coolify app's env).
+ARG NODE_VERSION=22
+
+FROM node:${NODE_VERSION}-alpine AS deps
+WORKDIR /app
+COPY package.json pnpm-lock.yaml* ./
+RUN corepack enable && pnpm install --frozen-lockfile
+
+FROM node:${NODE_VERSION}-alpine AS build
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN corepack enable && pnpm build
+
+FROM node:${NODE_VERSION}-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT={{port}}
+COPY --from=build /app /app
+EXPOSE {{port}}
+# `dotenvx run` reads .env.production (encrypted, committed) and
+# decrypts in-process using DOTENV_PRIVATE_KEY_PRODUCTION before
+# spawning the actual server.
+CMD ["sh", "-c", "npx --yes @dotenvx/dotenvx run -- node {{entrypoint}}"]

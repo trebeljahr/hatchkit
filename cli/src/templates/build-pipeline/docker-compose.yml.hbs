@@ -1,0 +1,18 @@
+# Coolify reads this file (build pack: dockercompose) to deploy
+# {{name}}. The image is built by .github/workflows/deploy.yml and
+# pushed to GHCR; Coolify pulls it and (re)starts the service when
+# the workflow's deploy webhook fires.
+#
+# To pin a specific version, change the tag below from `latest` to a
+# git sha, semver tag, or whatever your release process uses.
+services:
+  app:
+    image: ghcr.io/{{owner}}/{{name}}:latest
+    restart: unless-stopped
+    ports:
+      - "{{port}}:{{port}}"
+    environment:
+      - NODE_ENV=production
+      # Forwarded from Coolify's app env. dotenvx inside the
+      # container uses this to decrypt .env.production at runtime.
+      - DOTENV_PRIVATE_KEY_PRODUCTION
