@@ -69,6 +69,16 @@ export interface Surfaces {
   clientEnvDir?: string;
 }
 
+/** Per-resource event surfaced to the caller as each provider succeeds.
+ *  Used by `hatchkit adopt` to record into the run ledger immediately
+ *  after a resource is created — that way a later failure inside
+ *  runProvision (e.g. Resend after GlitchTip already succeeded) still
+ *  leaves a complete trail of what to undo. */
+export type ProvisionedEvent =
+  | { service: "glitchtip"; project: string }
+  | { service: "openpanel"; project: string }
+  | { service: "resend"; client: string };
+
 export interface ProvisionOptions {
   baseName: string;
   services: ProvisionService[];
@@ -80,6 +90,11 @@ export interface ProvisionOptions {
   /** Also write observability values to `.env.development`. Off by
    *  default — see the file header. */
   enableDevObs?: boolean;
+  /** Fired after each provider successfully creates a resource. The
+   *  callback runs synchronously between the `withSpinner` succeed
+   *  and the next provider, so it can append to a ledger / log
+   *  without racing the next API call. */
+  onProvisioned?: (event: ProvisionedEvent) => void;
 }
 
 interface WriteBucket {
@@ -127,6 +142,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
         const res = await withSpinner(`GlitchTip: creating project ${projectName}`, () =>
           provisionGlitchtipClient(projectName),
         );
+        opts.onProvisioned?.({ service: "glitchtip", project: projectName });
         pushObsLines(buckets, side, renderGlitchtipEnv(res, side === "client"), enableDevObs);
       }
     } else {
@@ -134,6 +150,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
       const res = await withSpinner(`GlitchTip: creating project ${projectName}`, () =>
         provisionGlitchtipClient(projectName),
       );
+      opts.onProvisioned?.({ service: "glitchtip", project: projectName });
       // Shared-DSN case: the server SDK reads GLITCHTIP_DSN; the client
       // SDK reads GLITCHTIP_DSN_CLIENT (same value). Both SDKs tag
       // events with `sdk.name`, so filtering by surface in the UI is
@@ -155,6 +172,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
         const res = await withSpinner(`OpenPanel: creating project ${projectName}`, () =>
           provisionOpenpanelClient(projectName),
         );
+        opts.onProvisioned?.({ service: "openpanel", project: projectName });
         pushObsLines(buckets, side, renderOpenpanelEnv(res, side === "client"), enableDevObs);
       }
     } else {
@@ -162,6 +180,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
       const res = await withSpinner(`OpenPanel: creating project ${projectName}`, () =>
         provisionOpenpanelClient(projectName),
       );
+      opts.onProvisioned?.({ service: "openpanel", project: projectName });
       if (surfaces && (surfaces.mode === "shared" || surfaces.mode === "server-only")) {
         pushObsLines(buckets, "server", renderOpenpanelEnv(res, false), enableDevObs);
       }
@@ -185,10 +204,12 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
         `Resend: creating restricted API key ${opts.baseName}-dev`,
         () => provisionResendClient(`${opts.baseName}-dev`, resendDomainId),
       );
+      opts.onProvisioned?.({ service: "resend", client: `${opts.baseName}-dev` });
       const prodRes = await withSpinner(
         `Resend: creating restricted API key ${opts.baseName}-prod`,
         () => provisionResendClient(`${opts.baseName}-prod`, resendDomainId),
       );
+      opts.onProvisioned?.({ service: "resend", client: `${opts.baseName}-prod` });
       // Resend is the one case where dev gets its OWN value, not the
       // prod value — dev keys are audience-restricted so they can't
       // email real users.

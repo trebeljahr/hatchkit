@@ -35,8 +35,24 @@ interface RollbackOptions {
 /* ─────────────────────────────────────────────────────────────────────── */
 
 export async function handleCreateFailure(ledger: RunLedger, err: unknown): Promise<void> {
+  return handlePartialRunFailure(ledger, err, "create");
+}
+
+/** Same machinery as handleCreateFailure, just with adopt's verb in
+ *  the failure header. Adopt's ledger uses a strict subset of the
+ *  step kinds (no `scaffold`, no `terraformApplied`) so the recipe
+ *  printer + rollback executor are reusable as-is. */
+export async function handleAdoptFailure(ledger: RunLedger, err: unknown): Promise<void> {
+  return handlePartialRunFailure(ledger, err, "adopt");
+}
+
+async function handlePartialRunFailure(
+  ledger: RunLedger,
+  err: unknown,
+  verb: "create" | "adopt",
+): Promise<void> {
   const message = err instanceof Error ? err.message : String(err);
-  console.log(chalk.bold.red(`\n  ✗ hatchkit create failed: ${message}`));
+  console.log(chalk.bold.red(`\n  ✗ hatchkit ${verb} failed: ${message}`));
 
   if (ledger.steps.length === 0) {
     console.log(chalk.dim("  No steps completed before failure — nothing to clean up.\n"));
@@ -109,6 +125,10 @@ function recipeFor(step: LedgerStep): string | null {
       return chalk.dim(`# manual: delete database ${step.uuid} from the Coolify dashboard`);
     case "coolifyApp":
       return chalk.dim(`# manual: delete application ${step.uuid} from the Coolify dashboard`);
+    case "coolifyProject":
+      return chalk.dim(
+        `# manual: delete Coolify project ${step.uuid} (only after its apps are gone)`,
+      );
     case "terraformApplied":
       return `cd ${shellEscape(step.stackDir)} && terraform destroy -var-file=${shellEscape(step.tfvarsPath)}`;
     case "coolifyEnv":
@@ -117,12 +137,28 @@ function recipeFor(step: LedgerStep): string | null {
       return `rm ${shellEscape(step.path)}`;
     case "glitchtip":
       return `hatchkit remove ${shellEscape(step.project)} glitchtip --yes`;
+    case "openpanel":
+      return `hatchkit remove ${shellEscape(step.project)} openpanel --yes`;
+    case "resend":
+      return `hatchkit remove ${shellEscape(step.client)} resend --yes`;
     case "github":
       return `gh repo delete ${shellEscape(step.repo)} --yes`;
     case "scaffold":
       return `rm -rf ${shellEscape(step.path)}`;
     case "keychain":
       return `security delete-generic-password -s hatchkit -a ${shellEscape(step.account)}`;
+    case "manifest":
+      return `rm ${shellEscape(step.path)}`;
+    case "dotenvxKeysFile":
+      return `rm ${shellEscape(step.path)}`;
+    case "scaffoldedFile":
+      return `rm ${shellEscape(step.path)}`;
+    case "gitInit":
+      return `rm -rf ${shellEscape(step.path)}`;
+    case "cloudflareDnsRecord":
+      return chalk.dim(
+        `# manual: delete ${step.type} record ${step.name} (id ${step.recordId}) in Cloudflare zone ${step.zoneId}`,
+      );
   }
 }
 
@@ -217,10 +253,13 @@ function rewriteRemaining(ledger: RunLedger, remaining: LedgerStep[]): void {
 function isDestructive(step: LedgerStep): boolean {
   return (
     step.kind === "scaffold" ||
+    step.kind === "gitInit" ||
     step.kind === "github" ||
     step.kind === "terraformApplied" ||
     step.kind === "coolifyApp" ||
-    step.kind === "coolifyDb"
+    step.kind === "coolifyProject" ||
+    step.kind === "coolifyDb" ||
+    step.kind === "cloudflareDnsRecord"
   );
 }
 
@@ -232,6 +271,10 @@ function describeStep(step: LedgerStep): string {
       return `delete GitHub repo ${chalk.cyan(step.repo)}`;
     case "glitchtip":
       return `delete GlitchTip project ${chalk.cyan(step.project)}`;
+    case "openpanel":
+      return `delete OpenPanel project ${chalk.cyan(step.project)}`;
+    case "resend":
+      return `delete Resend API key ${chalk.cyan(step.client)}`;
     case "tfvars":
       return `remove ${chalk.cyan(step.path)}`;
     case "coolifyEnv":
@@ -242,10 +285,22 @@ function describeStep(step: LedgerStep): string {
       return `terraform destroy in ${chalk.cyan(step.stackDir)}`;
     case "coolifyApp":
       return `delete Coolify app ${chalk.cyan(step.uuid)}`;
+    case "coolifyProject":
+      return `delete Coolify project ${chalk.cyan(step.uuid)}`;
     case "coolifyDb":
       return `delete Coolify db ${chalk.cyan(step.uuid)}`;
     case "mlService":
       return `${chalk.cyan(step.platform)} ML service ${chalk.cyan(step.name)}`;
+    case "manifest":
+      return `remove ${chalk.cyan(step.path)}`;
+    case "dotenvxKeysFile":
+      return `remove ${chalk.cyan(step.path)}`;
+    case "scaffoldedFile":
+      return `remove ${chalk.cyan(step.path)}`;
+    case "gitInit":
+      return `remove .git dir at ${chalk.cyan(step.path)}`;
+    case "cloudflareDnsRecord":
+      return `delete Cloudflare ${step.type} record ${chalk.cyan(step.name)}`;
   }
 }
 
@@ -316,6 +371,51 @@ async function undoStep(step: LedgerStep): Promise<"done" | "skipped" | "not-fou
       if (!cfg) throw new Error("Coolify config no longer present");
       const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
       const result = await api.deleteDatabase(step.uuid);
+      return result === "not-found" ? "not-found" : "done";
+    }
+    case "coolifyProject": {
+      const cfg = await getCoolifyConfig();
+      if (!cfg) throw new Error("Coolify config no longer present");
+      const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+      const result = await api.deleteProject(step.uuid);
+      return result === "not-found" ? "not-found" : "done";
+    }
+    case "openpanel": {
+      const { deleteOpenpanelClient } = await import("../provision/openpanel.js");
+      const result = await deleteOpenpanelClient(step.project);
+      return result === "not-found" ? "not-found" : "done";
+    }
+    case "resend": {
+      const { deleteResendClient } = await import("../provision/resend.js");
+      const result = await deleteResendClient(step.client);
+      return result === "not-found" ? "not-found" : "done";
+    }
+    case "manifest":
+    case "dotenvxKeysFile":
+    case "scaffoldedFile": {
+      if (!existsSync(step.path)) return "not-found";
+      unlinkSync(step.path);
+      return "done";
+    }
+    case "gitInit": {
+      // Adopt only records this when `state.isGitRepo === false` at
+      // detection — i.e. it ran `git init` on a directory with no
+      // `.git/`. Removing it still drops the "Adopt under hatchkit
+      // management" commit + any work the user committed on top, so
+      // it stays gated behind the destructive-step confirmation in
+      // runRollback.
+      if (!existsSync(step.path)) return "not-found";
+      rmSync(step.path, { recursive: true, force: true });
+      return "done";
+    }
+    case "cloudflareDnsRecord": {
+      const dns = await getDnsConfig();
+      if (!dns || dns.provider !== "cloudflare" || !dns.apiToken) {
+        throw new Error("Cloudflare credentials no longer in keychain — re-add them, then retry");
+      }
+      const { CloudflareApi } = await import("../utils/cloudflare-api.js");
+      const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
+      const result = await cf.deleteRecord(step.zoneId, step.recordId);
       return result === "not-found" ? "not-found" : "done";
     }
     case "mlService":

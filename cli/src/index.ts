@@ -1357,23 +1357,36 @@ function printHelp(topic?: HelpTopic): void {
   }
   if (topic === "destroy") {
     console.log(`
-  ${chalk.bold("hatchkit destroy")} — undo a project that ${chalk.cyan("hatchkit create")} set up
+  ${chalk.bold("hatchkit destroy")} — undo a project that ${chalk.cyan("hatchkit create")} or ${chalk.cyan("hatchkit adopt")} set up
 
   ${chalk.bold("Usage:")}
     hatchkit destroy [<project-name>] [--yes] [--recipe]
 
-  Reads the run ledger written by ${chalk.cyan("hatchkit create")} and reverses the
-  recorded steps in reverse order. Destructive operations
-  (rm -rf the local repo, gh repo delete, terraform destroy) prompt
-  per-step unless ${chalk.dim("--yes")} is passed.
+  Reads the run ledger written by ${chalk.cyan("hatchkit create")} / ${chalk.cyan("hatchkit adopt")} and
+  reverses only the resources hatchkit actually created — pre-existing
+  files, repos, Coolify apps and DNS records the user had before the
+  run are NEVER touched. Destructive operations (rm -rf the local repo,
+  gh repo delete, terraform destroy, gitInit removal, Coolify app/project
+  delete, Cloudflare record delete) prompt per-step unless ${chalk.dim("--yes")} is passed.
 
   ${chalk.bold("What it can undo:")}
+    create-only:
     - local project directory                  ${chalk.dim("rm -rf")}
-    - GitHub repo                              ${chalk.dim("gh repo delete")}
-    - GlitchTip project                        ${chalk.dim("DELETE /api/0/projects")}
     - generated tfvars + Coolify .env files    ${chalk.dim("rm")}
-    - dotenvx private key in keychain          ${chalk.dim("keytar deletePassword")}
     - Terraform-applied resources              ${chalk.dim("terraform destroy")}
+
+    create + adopt:
+    - GitHub repo                              ${chalk.dim("gh repo delete")}
+    - dotenvx private key in keychain          ${chalk.dim("keytar deletePassword")}
+    - GlitchTip / OpenPanel / Resend           ${chalk.dim("DELETE")} per-vendor
+    - Coolify app / project / database         ${chalk.dim("DELETE /api/v1/...")}
+
+    adopt-only (fine-grained, never wider than what adopt itself wrote):
+    - .hatchkit.json + .env.keys               ${chalk.dim("rm")}
+    - Dockerfile / compose / GH Actions yml    ${chalk.dim("rm")} (only files adopt wrote)
+    - .git directory                            ${chalk.dim("rm -rf")} (only when adopt ran git init)
+    - Cloudflare DNS records                   ${chalk.dim("DELETE /zones/.../dns_records")}
+                                                (only records adopt CREATED, never updated)
 
   ${chalk.bold("Options:")}
     --yes, -y   Skip per-step confirmation on destructive operations.

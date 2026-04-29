@@ -46,6 +46,7 @@ import {
 } from "./deploy/gh-actions-secrets.js";
 import { pushInitialBranch } from "./deploy/github.js";
 import { pushProjectKeyToCoolify } from "./deploy/keys.js";
+import { handleAdoptFailure } from "./deploy/rollback.js";
 import type { Feature, S3Provider } from "./prompts.js";
 import { type ProvisionService, runProvision } from "./provision/index.js";
 import { detectBuildPipeline, scaffoldBuildPipeline } from "./scaffold/build-pipeline.js";
@@ -58,7 +59,8 @@ import {
 import { CoolifyApi } from "./utils/coolify-api.js";
 import { exec, execOk } from "./utils/exec.js";
 import { multiselect } from "./utils/multiselect.js";
-import { SECRET_KEYS, setSecret } from "./utils/secrets.js";
+import { RunLedger } from "./utils/run-ledger.js";
+import { SECRET_KEYS, getSecret, setSecret } from "./utils/secrets.js";
 import { validateDomain, validateProjectName } from "./utils/validate.js";
 import { getCliVersion } from "./utils/version.js";
 
@@ -83,6 +85,15 @@ interface DetectedState {
   hasEnvKeys: boolean;
   /** Coolify app name match, if any. */
   coolifyAppMatch?: { uuid: string; name: string };
+  /** Whether Coolify is configured. When false, all `coolify*` checks
+   *  below were skipped — the absence of a value doesn't mean "missing",
+   *  it means "we didn't ask". */
+  coolifyConfigured: boolean;
+  /** Count of Coolify GitHub App sources. Required for private-repo
+   *  app creation; zero means wireCoolify will fail with a clear
+   *  hint when `setupGitHub === true`. Undefined when Coolify isn't
+   *  configured at all. */
+  coolifyGithubSourceCount?: number;
   /** Whether `<projectDir>/.git` exists. */
   isGitRepo: boolean;
   /** Origin URL from `git remote get-url origin`, if set. */
@@ -217,7 +228,7 @@ export async function runAdopt(cwd: string, opts: { resume?: boolean } = {}): Pr
 
   plan = await reviewLoop(state, plan);
 
-  await executePlan(state, plan);
+  await executePlan(state, plan, { resume: !!opts.resume });
 }
 
 // ---------------------------------------------------------------------------
@@ -280,17 +291,28 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
   }
   const hasEnvKeys = existsSync(envKeysPath);
 
-  // Coolify app match — best-effort, requires Coolify configured. If
-  // it isn't, leave it undefined; the user can still adopt without it.
+  // Coolify probes — best-effort, requires Coolify configured. If
+  // it isn't, leave fields undefined; the user can still adopt without it.
+  // The two probes (apps + GitHub sources) are independent, so run
+  // them in parallel to keep detection latency in line with one call.
   let coolifyAppMatch: { uuid: string; name: string } | undefined;
+  let coolifyConfigured = false;
+  let coolifyGithubSourceCount: number | undefined;
   try {
     const cfg = await getCoolifyConfig();
-    if (cfg && packageName) {
+    if (cfg) {
+      coolifyConfigured = true;
       const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
-      const apps = await api.listApplications();
-      const wanted = [packageName, `${packageName}-web`, `${packageName}-server`];
-      const match = apps.find((a) => wanted.includes(a.name));
-      if (match) coolifyAppMatch = { uuid: match.uuid, name: match.name };
+      const [apps, sources] = await Promise.all([
+        api.listApplications(),
+        api.listGithubSources().catch(() => []),
+      ]);
+      coolifyGithubSourceCount = sources.length;
+      if (packageName) {
+        const wanted = [packageName, `${packageName}-web`, `${packageName}-server`];
+        const match = apps.find((a) => wanted.includes(a.name));
+        if (match) coolifyAppMatch = { uuid: match.uuid, name: match.name };
+      }
     }
   } catch {
     // Best-effort only.
@@ -324,6 +346,8 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
     prodEnvIsEncrypted,
     hasEnvKeys,
     coolifyAppMatch,
+    coolifyConfigured,
+    coolifyGithubSourceCount,
     isGitRepo,
     gitRemoteUrl,
     existingManifest,
@@ -453,6 +477,15 @@ function printDetected(state: DetectedState): void {
         : chalk.dim("(no match)"),
     ),
   );
+  // Only show the GitHub-App row when Coolify is configured AND the
+  // count is zero — having sources is the boring expected state and
+  // doesn't need a row of its own. Zero is the case worth surfacing
+  // because it'll bite at execute time for private repos.
+  if (state.coolifyConfigured && state.coolifyGithubSourceCount === 0) {
+    lines.push(
+      row("Coolify sources", chalk.yellow("no GitHub Apps installed — required for private repos")),
+    );
+  }
   lines.push(
     row(
       "git remote",
@@ -658,18 +691,34 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
     {
       title: "Deploy",
       steps: [
-        {
-          key: "wireCoolify",
-          label: "Coolify + DNS",
-          set: true,
-          summary: plan.wireCoolify
+        ((): AdoptStep => {
+          // Preflight: when adopt will create a (private) GitHub repo
+          // and Coolify has zero GitHub App sources, wireCoolify will
+          // throw at execute time with "no Coolify GitHub source
+          // configured". Surface that here so the cursor parks on this
+          // row and the user fixes it before hitting Adopt.
+          const willBePrivate = plan.setupGitHub;
+          const missingSource =
+            plan.wireCoolify &&
+            willBePrivate &&
+            state.coolifyConfigured &&
+            state.coolifyGithubSourceCount === 0;
+          const baseSummary = plan.wireCoolify
             ? state.coolifyAppMatch
               ? chalk.dim(`existing app "${state.coolifyAppMatch.name}" — will skip create`)
               : `yes — create app + upsert DNS (port ${plan.appPort})`
             : state.coolifyAppMatch
               ? chalk.dim(`already exists: ${state.coolifyAppMatch.name}`)
-              : chalk.dim("no"),
-        },
+              : chalk.dim("no");
+          return {
+            key: "wireCoolify",
+            label: "Coolify + DNS",
+            set: !missingSource,
+            summary: missingSource
+              ? `${baseSummary}  ${chalk.yellow("(needs Coolify GitHub App — install one or set this to no)")}`
+              : baseSummary,
+          };
+        })(),
       ],
     },
     {
@@ -881,180 +930,320 @@ async function editAdoptStep(
 // Execution
 // ---------------------------------------------------------------------------
 
-async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void> {
+/** A step that didn't complete during executePlan. Surfaced at the
+ *  end so the user sees one consolidated "what's missing + how to
+ *  fix" block instead of having to scroll back through the run log. */
+interface AdoptCaveat {
+  title: string;
+  /** One-line cause — usually the message from a caught error. */
+  reason: string;
+  /** Recovery recipe. Each entry becomes its own indented line. */
+  recovery: string[];
+}
+
+async function executePlan(
+  state: DetectedState,
+  plan: AdoptPlan,
+  opts: { resume: boolean } = { resume: false },
+): Promise<void> {
   console.log(chalk.bold("\n  ── Adopting ──────────────────────────────────────────────\n"));
+  const caveats: AdoptCaveat[] = [];
 
-  // Step 1: bootstrap / encrypt dotenvx so a key actually exists.
-  if (plan.bootstrapDotenvx) {
-    await bootstrapDotenvxNow(state, plan);
-  } else {
-    console.log(chalk.dim("  · Skipping dotenvx bootstrap (per stepper choice)."));
-  }
-  await importKeyToKeychain(state, plan);
-
-  // Step 2: write the manifest. Done after key import so a partial
-  // failure doesn't leave a manifest pointing at no key. The
-  // manifest lives at the project ROOT (not under packages/server).
-  writeAdoptManifest(state.projectDir, plan);
-  console.log(chalk.green(`  ✓ Wrote ${MANIFEST_FILENAME} at ${relativeTo(state.projectDir)}`));
-
-  // Step 3: GitHub remote (init + create + push). Skipped if origin is
-  // already set or the user opted out.
+  // Run ledger — append-only record of mutations so a mid-flight
+  // throw or a later `hatchkit destroy` can reverse just the things
+  // adopt actually created. Each `record(...)` call is gated by a
+  // "did this run create it (vs reuse)?" check captured BEFORE the
+  // mutation, so the user's pre-existing repo / files / Coolify
+  // resources never end up in the ledger. See cli/src/utils/run-ledger.ts.
+  //
+  // On --resume we preserve the previous attempt's ledger so undo
+  // covers BOTH runs' mutations — otherwise a Coolify app the first
+  // run created (and the second run finds-by-name and reuses) would
+  // be invisible to a later destroy.
+  const ledger = opts.resume ? RunLedger.resumeOrStart(plan.name) : RunLedger.start(plan.name);
   let remoteUrl: string | undefined = state.gitRemoteUrl;
-  if (plan.setupGitHub && !state.gitRemoteUrl) {
-    remoteUrl = await setupGitHubRemote(state, plan);
-  } else if (state.gitRemoteUrl) {
-    console.log(chalk.dim(`  · git origin already set → ${state.gitRemoteUrl}`));
-  }
-
-  // Step 3a: Scaffold the build pipeline (Dockerfile + compose +
-  // GitHub Actions workflow). Detection inside the scaffolder skips
-  // anything that already exists, so this is idempotent across re-runs.
-  // Must run BEFORE Coolify wiring so the docker-compose.yml exists
-  // by the time Coolify clones the repo for the first deploy.
-  if (plan.scaffoldBuildPipeline) {
-    await scaffoldBuildPipelineNow(state, plan, remoteUrl);
-  }
-
-  // Step 3b: Wire the repo into Coolify + DNS via direct API calls.
-  // No infra/ submodule, no Terraform — just hits the Coolify and
-  // DNS-provider REST endpoints with credentials we already have in
-  // keychain. Idempotent on the DNS side (upsert); not yet on the
-  // app-create side (Coolify accepts duplicate app names).
   let coolifyResult:
     | Awaited<ReturnType<typeof import("./deploy/coolify-app.js").wireProjectIntoCoolify>>
     | undefined;
-  if (plan.wireCoolify && remoteUrl) {
-    try {
-      const { wireProjectIntoCoolify } = await import("./deploy/coolify-app.js");
-      coolifyResult = await wireProjectIntoCoolify({
-        projectName: plan.name,
-        domain: plan.domain,
-        gitRepository: remoteUrl,
-        // hatchkit's canonical pipeline = GitHub Actions builds image →
-        // pushes to GHCR → Coolify pulls via docker-compose.yml. The
-        // build-pipeline scaffold step (run earlier in this flow)
-        // either kept the user's existing compose or wrote one
-        // pointing at ghcr.io/<owner>/<name>:latest. Either way the
-        // Coolify app reads docker-compose.yml from the repo root.
-        buildPack: "dockercompose",
-        // ports_exposes is still required by the Coolify API even for
-        // dockercompose; it's purely metadata once the compose file
-        // takes over.
-        portsExposes: plan.surfaces === "client-only" ? "80" : plan.appPort,
-        // Default assumption: anything we just `gh repo create --private`d
-        // is private. If origin was already set we don't know for sure;
-        // try public first (cheaper auth) and let the orchestrator handle
-        // the fallback.
-        isPrivate: plan.setupGitHub,
-      });
-    } catch (err) {
-      console.log(chalk.yellow(`\n  Couldn't wire Coolify: ${(err as Error).message}`));
-      console.log(
-        chalk.dim(
-          `  Create the app manually in the Coolify dashboard pointing at\n` +
-            `    ${remoteUrl}\n` +
-            `  with domain ${plan.domain} and port ${plan.appPort}, then run\n` +
-            `    hatchkit keys push ${plan.name}`,
-        ),
-      );
-    }
-  } else if (plan.wireCoolify && !remoteUrl) {
-    console.log(
-      chalk.yellow(
-        "  Coolify wiring needs a git remote URL — skipping (no `origin` set and the GitHub step\n" +
-          "  was off). Set the remote yourself or re-run with `setup GitHub remote = yes`.",
-      ),
-    );
-  }
-
-  // Step 3c: push the deploy-webhook secrets to the GitHub repo so
-  // the scaffolded deploy.yml workflow can hit Coolify. Run whether
-  // wireCoolify ran or not — covers both the "fresh app we just
-  // created" and "app already existed before adopt" branches. Need
-  // an app uuid in either case. Run BEFORE the initial git push
-  // (below) so the workflow's first run has the secrets in place.
-  const appUuidForSecrets = coolifyResult?.appUuid ?? state.coolifyAppMatch?.uuid;
-  if (plan.scaffoldBuildPipeline && appUuidForSecrets) {
-    const slug = repoSlugFromRemote(remoteUrl);
-    if (slug) {
-      await setCoolifyDeploySecrets({
-        projectDir: state.projectDir,
-        repoSlug: slug,
-        apps: [{ uuid: appUuidForSecrets }],
-      });
+  try {
+    // Step 1: bootstrap / encrypt dotenvx so a key actually exists.
+    if (plan.bootstrapDotenvx) {
+      const dotenvxResult = await bootstrapDotenvxNow(state, plan);
+      if (dotenvxResult.createdKeysFile) {
+        // Only record the keys file when *this run* generated it.
+        // A pre-existing .env.keys belongs to the user — never delete it.
+        ledger.record({ kind: "dotenvxKeysFile", path: dotenvxResult.keysPath });
+      }
     } else {
-      console.log(
-        chalk.dim(
-          "  · Couldn't resolve owner/repo from git remote — set the deploy secrets manually.",
-        ),
-      );
+      console.log(chalk.dim("  · Skipping dotenvx bootstrap (per stepper choice)."));
     }
-  }
+    const importResult = await importKeyToKeychain(state, plan);
+    if (importResult.imported && importResult.created) {
+      // Same gate: only record a keychain entry adopt itself just put
+      // there. A pre-existing entry is owned by an earlier run.
+      ledger.record({ kind: "keychain", account: importResult.account });
+    }
 
-  // Step 3d: push the working branch to origin. Done AFTER secrets
-  // are set so the workflow's first run can hit the Coolify webhook
-  // without falling through to the "secret not set" branch. Skipped
-  // when there's no remote yet (e.g. user opted out of GitHub) or
-  // when origin already had history before adopt.
-  if (plan.setupGitHub && remoteUrl && !state.gitRemoteUrl) {
-    await pushInitialBranch(state.projectDir);
-  }
+    // Step 2: write the manifest. Done after key import so a partial
+    // failure doesn't leave a manifest pointing at no key. The
+    // manifest lives at the project ROOT (not under packages/server).
+    const manifestPath = join(state.projectDir, MANIFEST_FILENAME);
+    writeAdoptManifest(state.projectDir, plan);
+    console.log(chalk.green(`  ✓ Wrote ${MANIFEST_FILENAME} at ${relativeTo(state.projectDir)}`));
+    if (!state.hasManifest) {
+      // Only on first-time adopt — `--resume` reuses the manifest the
+      // earlier run created, so that earlier run's ledger (if any) is
+      // the one responsible for cleanup.
+      ledger.record({ kind: "manifest", path: manifestPath });
+    }
 
-  // Step 4: provision clients via the existing `add` machinery so the
-  // surfaces stepper, idempotency, and env writes behave identically
-  // to a normal `hatchkit add`. Forward the surface choice — runProvision
-  // uses the same vocabulary, so a client-only adopt produces a
-  // client-only `add`.
-  if (plan.services.length > 0) {
-    console.log();
-    const provisionMode =
-      plan.surfaces === "both"
-        ? "shared"
-        : plan.surfaces === "server-only"
-          ? "server-only"
-          : "client-only";
-    await runProvision({
-      baseName: plan.name,
-      services: plan.services,
-      surfaces: {
-        mode: provisionMode,
-        serverEnvDir: plan.serverDir,
-        clientEnvDir: plan.clientDir,
-      },
-    });
-  }
+    // Step 3: GitHub remote (init + create + push). Skipped if origin is
+    // already set or the user opted out.
+    if (plan.setupGitHub && !state.gitRemoteUrl) {
+      const ghResult = await setupGitHubRemote(state, plan);
+      remoteUrl = ghResult.url;
+      // gitInit BEFORE github so that, on undo, the GitHub repo gets
+      // deleted first — the local .git would still exist long enough
+      // for the user to read the recipe / abort if they want.
+      if (ghResult.gitInitialized) {
+        ledger.record({ kind: "gitInit", path: join(state.projectDir, ".git") });
+      }
+      if (ghResult.repoSlug) {
+        ledger.record({ kind: "github", repo: ghResult.repoSlug });
+      }
+    } else if (state.gitRemoteUrl) {
+      console.log(chalk.dim(`  · git origin already set → ${state.gitRemoteUrl}`));
+    }
 
-  // Step 5: push key to Coolify — but only when wireCoolify didn't
-  // already do it. wireCoolify's success path includes a setAppEnv
-  // pass that pushes DOTENV_PRIVATE_KEY_PRODUCTION; if it failed,
-  // there's no app to push to and pushing again would just produce
-  // a confusing second error message.
-  const wiredEnvAlready = plan.wireCoolify && coolifyResult !== undefined;
-  if (plan.pushKey && !wiredEnvAlready) {
-    if (plan.wireCoolify && !coolifyResult) {
-      console.log(
-        chalk.dim(`  · Skipping standalone key push — Coolify wiring failed, no app to push to.`),
-      );
-    } else {
-      try {
-        // Use the matched app name when we have one — adopt creates
-        // apps with the bare project name (no `-web` suffix that the
-        // create-flow scaffold uses).
-        await pushProjectKeyToCoolify(plan.name, {
-          appName: state.coolifyAppMatch?.name ?? plan.name,
-        });
-        console.log(chalk.green(`\n  ✓ Pushed dotenvx key to Coolify`));
-      } catch (err) {
-        console.log(
-          chalk.yellow(`\n  Couldn't push dotenvx key to Coolify: ${(err as Error).message}`),
-        );
-        console.log(chalk.dim(`  Once the app exists, run: \`hatchkit keys push ${plan.name}\``));
+    // Step 3a: Scaffold the build pipeline (Dockerfile + compose +
+    // GitHub Actions workflow). Detection inside the scaffolder skips
+    // anything that already exists, so this is idempotent across re-runs.
+    // Must run BEFORE Coolify wiring so the docker-compose.yml exists
+    // by the time Coolify clones the repo for the first deploy.
+    if (plan.scaffoldBuildPipeline) {
+      const pipeResult = await scaffoldBuildPipelineNow(state, plan, remoteUrl);
+      // Record one ledger entry per actually-written file. `result.written`
+      // excludes anything pre-existing (the `kept` branch), so undo will
+      // never touch a Dockerfile / compose / workflow the user wrote.
+      for (const abs of pipeResult.writtenAbsPaths) {
+        ledger.record({ kind: "scaffoldedFile", path: abs });
       }
     }
+
+    // Step 3b: Wire the repo into Coolify + DNS via direct API calls.
+    // No infra/ submodule, no Terraform — just hits the Coolify and
+    // DNS-provider REST endpoints with credentials we already have in
+    // keychain. Idempotent on the DNS side (upsert); not yet on the
+    // app-create side (Coolify accepts duplicate app names).
+    if (plan.wireCoolify && remoteUrl) {
+      try {
+        const { wireProjectIntoCoolify } = await import("./deploy/coolify-app.js");
+        coolifyResult = await wireProjectIntoCoolify({
+          projectName: plan.name,
+          domain: plan.domain,
+          gitRepository: remoteUrl,
+          // hatchkit's canonical pipeline = GitHub Actions builds image →
+          // pushes to GHCR → Coolify pulls via docker-compose.yml. The
+          // build-pipeline scaffold step (run earlier in this flow)
+          // either kept the user's existing compose or wrote one
+          // pointing at ghcr.io/<owner>/<name>:latest. Either way the
+          // Coolify app reads docker-compose.yml from the repo root.
+          buildPack: "dockercompose",
+          // ports_exposes is still required by the Coolify API even for
+          // dockercompose; it's purely metadata once the compose file
+          // takes over.
+          portsExposes: plan.surfaces === "client-only" ? "80" : plan.appPort,
+          // Default assumption: anything we just `gh repo create --private`d
+          // is private. If origin was already set we don't know for sure;
+          // try public first (cheaper auth) and let the orchestrator handle
+          // the fallback.
+          isPrivate: plan.setupGitHub,
+        });
+        // Record only the bits we actually created. wireProjectIntoCoolify
+        // returns explicit `*Created` flags exactly so adopt can guard
+        // each ledger entry against the "found by name, reused" branch.
+        if (coolifyResult.appCreated) {
+          ledger.record({ kind: "coolifyApp", uuid: coolifyResult.appUuid });
+        }
+        if (coolifyResult.projectCreated) {
+          ledger.record({ kind: "coolifyProject", uuid: coolifyResult.projectUuid });
+        }
+        if (
+          coolifyResult.dnsRecordCreatedV4 &&
+          coolifyResult.dnsZoneId &&
+          coolifyResult.dnsRecordId
+        ) {
+          ledger.record({
+            kind: "cloudflareDnsRecord",
+            zoneId: coolifyResult.dnsZoneId,
+            recordId: coolifyResult.dnsRecordId,
+            name: plan.domain,
+            type: "A",
+          });
+        }
+        if (
+          coolifyResult.dnsRecordCreatedV6 &&
+          coolifyResult.dnsZoneId &&
+          coolifyResult.dnsRecordIdV6
+        ) {
+          ledger.record({
+            kind: "cloudflareDnsRecord",
+            zoneId: coolifyResult.dnsZoneId,
+            recordId: coolifyResult.dnsRecordIdV6,
+            name: plan.domain,
+            type: "AAAA",
+          });
+        }
+      } catch (err) {
+        // Brief inline note — the full recovery recipe lands in the
+        // caveats block at the end, so users see one consolidated
+        // "what's missing + how to fix" instead of competing hints
+        // scattered through the run.
+        console.log(chalk.yellow(`\n  ✗ Coolify wiring failed: ${(err as Error).message}`));
+        caveats.push({
+          title: "Coolify app not wired",
+          reason: (err as Error).message,
+          recovery: [
+            `After fixing the cause above, re-run: hatchkit adopt --resume`,
+            `Or create the app manually pointing at ${remoteUrl}`,
+            `(domain ${plan.domain}, port ${plan.appPort}), then: hatchkit keys push ${plan.name}`,
+          ],
+        });
+      }
+    } else if (plan.wireCoolify && !remoteUrl) {
+      console.log(chalk.yellow("\n  ✗ Coolify wiring skipped — no git remote available."));
+      caveats.push({
+        title: "Coolify app not wired",
+        reason: "No `origin` remote set and the GitHub step was disabled.",
+        recovery: [
+          `Set a remote yourself, then re-run: hatchkit adopt --resume`,
+          `Or re-run and toggle "GitHub remote = yes" in the stepper.`,
+        ],
+      });
+    }
+
+    // Step 3c: push the deploy-webhook secrets to the GitHub repo so
+    // the scaffolded deploy.yml workflow can hit Coolify. Run whether
+    // wireCoolify ran or not — covers both the "fresh app we just
+    // created" and "app already existed before adopt" branches. Need
+    // an app uuid in either case. Run BEFORE the initial git push
+    // (below) so the workflow's first run has the secrets in place.
+    const appUuidForSecrets = coolifyResult?.appUuid ?? state.coolifyAppMatch?.uuid;
+    if (plan.scaffoldBuildPipeline && appUuidForSecrets) {
+      const slug = repoSlugFromRemote(remoteUrl);
+      if (slug) {
+        await setCoolifyDeploySecrets({
+          projectDir: state.projectDir,
+          repoSlug: slug,
+          apps: [{ uuid: appUuidForSecrets }],
+        });
+      } else {
+        console.log(
+          chalk.dim(
+            "  · Couldn't resolve owner/repo from git remote — set the deploy secrets manually.",
+          ),
+        );
+      }
+    }
+
+    // Step 3d: push the working branch to origin. Done AFTER secrets
+    // are set so the workflow's first run can hit the Coolify webhook
+    // without falling through to the "secret not set" branch. Skipped
+    // when there's no remote yet (e.g. user opted out of GitHub) or
+    // when origin already had history before adopt.
+    if (plan.setupGitHub && remoteUrl && !state.gitRemoteUrl) {
+      await pushInitialBranch(state.projectDir);
+    }
+
+    // Step 4: provision clients via the existing `add` machinery so the
+    // surfaces stepper, idempotency, and env writes behave identically
+    // to a normal `hatchkit add`. Forward the surface choice — runProvision
+    // uses the same vocabulary, so a client-only adopt produces a
+    // client-only `add`.
+    if (plan.services.length > 0) {
+      console.log();
+      const provisionMode =
+        plan.surfaces === "both"
+          ? "shared"
+          : plan.surfaces === "server-only"
+            ? "server-only"
+            : "client-only";
+      await runProvision({
+        baseName: plan.name,
+        services: plan.services,
+        surfaces: {
+          mode: provisionMode,
+          serverEnvDir: plan.serverDir,
+          clientEnvDir: plan.clientDir,
+        },
+        // Record per-resource as runProvision creates them. Done via
+        // callback so a mid-loop failure (e.g. Resend after GlitchTip
+        // already succeeded) still leaves a complete trail of what
+        // to undo.
+        onProvisioned: (event) => {
+          if (event.service === "glitchtip") {
+            ledger.record({ kind: "glitchtip", project: event.project });
+          } else if (event.service === "openpanel") {
+            ledger.record({ kind: "openpanel", project: event.project });
+          } else if (event.service === "resend") {
+            ledger.record({ kind: "resend", client: event.client });
+          }
+        },
+      });
+    }
+
+    // Step 5: push key to Coolify — but only when wireCoolify didn't
+    // already do it. wireCoolify's success path includes a setAppEnv
+    // pass that pushes DOTENV_PRIVATE_KEY_PRODUCTION; if it failed,
+    // there's no app to push to and pushing again would just produce
+    // a confusing second error message.
+    const wiredEnvAlready = plan.wireCoolify && coolifyResult !== undefined;
+    if (plan.pushKey && !wiredEnvAlready) {
+      if (plan.wireCoolify && !coolifyResult) {
+        console.log(
+          chalk.dim(`  · Skipping standalone key push — Coolify wiring failed, no app to push to.`),
+        );
+      } else {
+        try {
+          // Use the matched app name when we have one — adopt creates
+          // apps with the bare project name (no `-web` suffix that the
+          // create-flow scaffold uses).
+          await pushProjectKeyToCoolify(plan.name, {
+            appName: state.coolifyAppMatch?.name ?? plan.name,
+          });
+          console.log(chalk.green(`\n  ✓ Pushed dotenvx key to Coolify`));
+        } catch (err) {
+          console.log(
+            chalk.yellow(`\n  ✗ Couldn't push dotenvx key to Coolify: ${(err as Error).message}`),
+          );
+          caveats.push({
+            title: "dotenvx key not pushed to Coolify",
+            reason: (err as Error).message,
+            recovery: [`Once the app exists, run: hatchkit keys push ${plan.name}`],
+          });
+        }
+      }
+    }
+    ledger.complete();
+  } catch (err) {
+    // Mid-flight throw — surface the partial state via the same
+    // recipe/rollback/leave UX `hatchkit create` uses, then exit.
+    // The ledger holds only resources adopt itself created (see the
+    // gating on each `ledger.record(...)` call above), so a "yes,
+    // roll back" choice is safe to take.
+    await handleAdoptFailure(ledger, err);
+    process.exit(1);
   }
 
-  console.log(chalk.bold("\n  ── Adopted ───────────────────────────────────────────────\n"));
+  // Banner reflects partial state — when caveats exist, callers see
+  // "Adopted (incomplete)" so the success line doesn't drown out the
+  // unfinished work that still needs them. The body is the same; the
+  // caveats block lands underneath.
+  const banner =
+    caveats.length > 0
+      ? "── Adopted (incomplete) ─────────────"
+      : "── Adopted ─────────────────────────";
+  console.log(chalk.bold(`\n  ${banner}─────────────────────\n`));
   console.log(`  Project:   ${chalk.cyan(plan.name)}`);
   console.log(`  Domain:    ${chalk.cyan(plan.domain)}`);
   if (plan.serverDir) console.log(`  Server:    ${chalk.cyan(relativeTo(plan.serverDir))}`);
@@ -1088,7 +1277,17 @@ async function executePlan(state: DetectedState, plan: AdoptPlan): Promise<void>
       console.log(`  DNS:       ${chalk.yellow("✗")}  ${chalk.dim(`add ${manual} manually`)}`);
     }
   }
-  console.log();
+  if (caveats.length > 0) {
+    console.log(chalk.bold(chalk.yellow(`\n  Caveats (${caveats.length}):\n`)));
+    for (const c of caveats) {
+      console.log(`  ${chalk.yellow("✗")} ${chalk.bold(c.title)}`);
+      console.log(`    ${chalk.dim(c.reason)}`);
+      for (const r of c.recovery) console.log(`    ${chalk.dim("→")} ${chalk.dim(r)}`);
+      console.log();
+    }
+  } else {
+    console.log();
+  }
 }
 
 /** Where dotenvx writes the encrypted env. Server-only / both layouts
@@ -1100,8 +1299,26 @@ function dotenvxRootFor(plan: AdoptPlan, projectDir: string): string {
   return plan.serverDir ?? projectDir;
 }
 
-async function bootstrapDotenvxNow(state: DetectedState, plan: AdoptPlan): Promise<void> {
-  const prodPath = join(dotenvxRootFor(plan, state.projectDir), ".env.production");
+interface BootstrapDotenvxResult {
+  /** Path to .env.keys (always set after a successful bootstrap). */
+  keysPath: string;
+  /** True iff this run created `.env.keys` from scratch (it didn't
+   *  exist on disk before this call). Adopt's ledger keys off this
+   *  so `hatchkit destroy` only deletes a keys file that adopt itself
+   *  generated — never one the user had before. */
+  createdKeysFile: boolean;
+}
+
+async function bootstrapDotenvxNow(
+  state: DetectedState,
+  plan: AdoptPlan,
+): Promise<BootstrapDotenvxResult> {
+  const root = dotenvxRootFor(plan, state.projectDir);
+  const prodPath = join(root, ".env.production");
+  const keysPath = join(root, ".env.keys");
+  // Snapshot existence BEFORE the dotenvx call so we know whether
+  // we're about to create the keys file or just reuse the existing one.
+  const keysExistedBefore = existsSync(keysPath);
   const ora = (await import("ora")).default;
   const label = state.prodEnvIsEncrypted
     ? "Re-encrypting .env.production with dotenvx..."
@@ -1128,12 +1345,25 @@ async function bootstrapDotenvxNow(state: DetectedState, plan: AdoptPlan): Promi
     spinner.fail("Failed to initialize dotenvx");
     throw err;
   }
+  return { keysPath, createdKeysFile: !keysExistedBefore };
+}
+
+interface SetupGitHubResult {
+  /** Final origin URL (the new repo's HTTPS URL on success). */
+  url?: string;
+  /** True iff this run executed `git init` because there was no `.git/`
+   *  before. Adopt records `gitInit` in the ledger only when this is
+   *  true — destroy/rollback then knows it's safe to `rm -rf .git`. */
+  gitInitialized: boolean;
+  /** Owner/repo slug for `gh repo delete <slug>` during rollback.
+   *  Only populated when this run actually created the repo. */
+  repoSlug?: string;
 }
 
 async function setupGitHubRemote(
   state: DetectedState,
   plan: AdoptPlan,
-): Promise<string | undefined> {
+): Promise<SetupGitHubResult> {
   // Pre-flight gh CLI auth. ensureGitHub prompts the user to log in
   // when needed; if they cancel, surface a clear "you can do this
   // later" rather than crashing the whole adopt run.
@@ -1145,16 +1375,18 @@ async function setupGitHubRemote(
         `\n  Couldn't reach GitHub (${(err as Error).message}). Skipping remote creation.`,
       ),
     );
-    return undefined;
+    return { gitInitialized: false };
   }
 
   console.log(chalk.bold("\n  ── GitHub ────────────────────────────────────────────────\n"));
 
+  let gitInitialized = false;
   if (!state.isGitRepo) {
     await exec("git", ["init"], {
       cwd: state.projectDir,
       spinner: "Initializing git repo...",
     });
+    gitInitialized = true;
   }
   // Stage everything + commit when there's anything staged.
   //   `git diff --cached --quiet` exits 0 → no diff (nothing staged)
@@ -1185,19 +1417,39 @@ async function setupGitHubRemote(
     console.log(chalk.yellow("  Could not create GitHub repo. Push manually once it exists:"));
     console.log(chalk.dim(`    cd ${state.projectDir}`));
     console.log(chalk.dim(`    gh repo create ${plan.name} --private --source=. --push`));
-    return undefined;
+    return { gitInitialized };
   }
   const urlRes = await exec("gh", ["repo", "view", "--json", "url", "-q", ".url"], {
     cwd: state.projectDir,
   });
   const url = urlRes.stdout.trim();
   console.log(chalk.green(`  ✓ GitHub repo: ${url}`));
-  return url || undefined;
+  const repoSlug = url ? url.replace(/^https?:\/\/github\.com\//, "") : undefined;
+  return { url: url || undefined, gitInitialized, repoSlug };
 }
 
 // (pushInitialBranch lives in deploy/github.ts so create + adopt share it.)
 
-async function importKeyToKeychain(state: DetectedState, plan: AdoptPlan): Promise<void> {
+interface ImportKeyResult {
+  /** Keychain account name we wrote to. Same string adopt would later
+   *  pass to `deleteSecret` during rollback. */
+  account: string;
+  /** True when the keychain entry didn't exist before this run. Adopt
+   *  only records a `keychain` ledger step on `created === true` — a
+   *  pre-existing entry is "owned" by an earlier run, so undoing this
+   *  run shouldn't yank it. */
+  created: boolean;
+  /** True when there was actually anything to import (i.e. `.env.keys`
+   *  was present and well-formed). Used by adopt to skip recording when
+   *  this call was a silent no-op. */
+  imported: boolean;
+}
+
+async function importKeyToKeychain(
+  state: DetectedState,
+  plan: AdoptPlan,
+): Promise<ImportKeyResult> {
+  const account = SECRET_KEYS.dotenvxPrivateKey(plan.name);
   const envKeysPath = join(dotenvxRootFor(plan, state.projectDir), ".env.keys");
   if (!existsSync(envKeysPath)) {
     console.log(
@@ -1205,7 +1457,7 @@ async function importKeyToKeychain(state: DetectedState, plan: AdoptPlan): Promi
         `  · No .env.keys at ${relativeTo(envKeysPath)} — nothing to import to keychain.`,
       ),
     );
-    return;
+    return { account, created: false, imported: false };
   }
   const text = readFileSync(envKeysPath, "utf-8");
   const m = text.match(/^DOTENV_PRIVATE_KEY_PRODUCTION="?([0-9a-fA-F]+)"?/m);
@@ -1215,12 +1467,18 @@ async function importKeyToKeychain(state: DetectedState, plan: AdoptPlan): Promi
         `  · ${relativeTo(envKeysPath)} doesn't contain DOTENV_PRIVATE_KEY_PRODUCTION — skipping import.`,
       ),
     );
-    return;
+    return { account, created: false, imported: false };
   }
-  await setSecret(SECRET_KEYS.dotenvxPrivateKey(plan.name), m[1]);
+  // Snapshot existence BEFORE writing so we can tell adopt's caller
+  // whether the keychain entry is brand-new (record for rollback) or
+  // a re-import of one that already existed (don't record — the
+  // earlier run owns the rollback).
+  const existing = await getSecret(account);
+  await setSecret(account, m[1]);
   console.log(
     chalk.green(`  ✓ Imported dotenvx private key into the OS keychain (service: hatchkit)`),
   );
+  return { account, created: !existing, imported: true };
 }
 
 function writeAdoptManifest(projectDir: string, plan: AdoptPlan): void {
@@ -1280,7 +1538,7 @@ async function scaffoldBuildPipelineNow(
   state: DetectedState,
   plan: AdoptPlan,
   remoteUrl: string | undefined,
-): Promise<void> {
+): Promise<{ writtenAbsPaths: string[] }> {
   // Owner inference for the GHCR image. Falls back to "OWNER" if we
   // can't tell — the scaffolded compose still works once the user
   // edits it, and they get a clear hint in the summary.
@@ -1309,6 +1567,12 @@ async function scaffoldBuildPipelineNow(
       ),
     );
   }
+  // `result.written` is project-relative; promote to absolute paths so
+  // adopt's caller can record a `scaffoldedFile` ledger entry per file
+  // without having to know the project root.
+  return {
+    writtenAbsPaths: result.written.map((rel) => join(state.projectDir, rel)),
+  };
 }
 
 /** Best-effort default branch detection. `git symbolic-ref` only

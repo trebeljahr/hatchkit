@@ -76,8 +76,28 @@ export interface WireUpResult {
   dnsRecordId?: string;
   /** Cloudflare DNS record id for the AAAA record, if managed. */
   dnsRecordIdV6?: string;
+  /** Cloudflare zone id used when records were managed — paired with
+   *  recordId/recordIdV6 for a future delete during rollback. */
+  dnsZoneId?: string;
   /** True when at least one DNS record (A or AAAA) was upserted. */
   dnsManaged: boolean;
+  // ── "Did this run actually create vs. reuse?" flags. Adopt's
+  //    ledger keys off these — only resources hatchkit *created* are
+  //    recorded, so a later rollback never deletes things the user
+  //    had before this run.
+  /** True when this call POSTed `/projects` (vs. matched an existing
+   *  Coolify project by name). */
+  projectCreated: boolean;
+  /** True when this call POSTed `/applications/{public,private}` (vs.
+   *  matched an existing Coolify application by name). */
+  appCreated: boolean;
+  /** True when the A record was newly created (not updated). On
+   *  `updated`, we'd be deleting a record whose original content we
+   *  overwrote — destructive in a way the user can't recover from,
+   *  so we deliberately don't track it for rollback. */
+  dnsRecordCreatedV4: boolean;
+  /** Same as dnsRecordCreatedV4, for the AAAA record. */
+  dnsRecordCreatedV6: boolean;
 }
 
 /** Top-level wire-up. Throws on the first hard failure (no project,
@@ -91,6 +111,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
   // ── 1. Resolve / create the Coolify project ─────────────────────────
   const findOrCreateProject = ora(`Coolify: locating project "${input.projectName}"`).start();
   let projectUuid: string;
+  let projectCreated = false;
   try {
     const existing = await api.findProjectByName(input.projectName);
     if (existing) {
@@ -104,6 +125,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       // repo URL ends up on the application itself anyway.
       const created = await api.createProject(input.projectName, "Adopted by hatchkit");
       projectUuid = created.uuid;
+      projectCreated = true;
       findOrCreateProject.succeed(`Coolify project: ${input.projectName} (created)`);
     }
   } catch (err) {
@@ -141,9 +163,10 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       githubAppUuid = sources[0].uuid;
       console.log(chalk.dim(`  Using Coolify GitHub source "${sources[0].name}".`));
     } else if (sources.length === 0) {
+      const sourcesUrl = `${cfg.url.replace(/\/$/, "")}/sources`;
       throw new Error(
-        "Repo is private but no Coolify GitHub source is configured. Add one in the Coolify dashboard\n" +
-          "  (Settings → Sources → GitHub Apps), then re-run.",
+        `Repo is private but no Coolify GitHub source is configured.\n` +
+          `  Install a GitHub App at ${sourcesUrl}, then re-run with \`hatchkit adopt --resume\`.`,
       );
     } else {
       const { select } = await import("@inquirer/prompts");
@@ -161,6 +184,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
   //       name. Coolify doesn't enforce name uniqueness, but creating
   //       a duplicate on every `--resume` is loud and confusing. ───
   let appUuid: string;
+  let appCreated = false;
   const existingApp = await api.findApplicationByName(input.projectName);
   if (existingApp) {
     console.log(
@@ -197,6 +221,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
           })
         : await api.createApplicationFromPublicRepo(baseInput);
       appUuid = res.uuid;
+      appCreated = true;
       createApp.succeed(`Coolify app created (uuid: ${appUuid})`);
     } catch (err) {
       createApp.fail();
@@ -273,7 +298,12 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     ipMismatchWarning: ips.mismatchWarning,
     dnsRecordId: dnsResult.recordIdV4,
     dnsRecordIdV6: dnsResult.recordIdV6,
+    dnsZoneId: dnsResult.zoneId,
     dnsManaged: dnsResult.managed,
+    projectCreated,
+    appCreated,
+    dnsRecordCreatedV4: dnsResult.createdV4,
+    dnsRecordCreatedV6: dnsResult.createdV6,
   };
 }
 
@@ -281,12 +311,22 @@ interface DnsWireResult {
   managed: boolean;
   recordIdV4?: string;
   recordIdV6?: string;
+  /** Cloudflare zone id, when the upsert reached the API. Surfaced so
+   *  the rollback ledger can target the right zone without having to
+   *  re-resolve it. */
+  zoneId?: string;
+  /** True when we POSTed (vs. PATCHed) the A record. Adopt only
+   *  records the rollback step on `created`, never on `updated` —
+   *  reverting an update means restoring content we don't have. */
+  createdV4: boolean;
+  createdV6: boolean;
 }
 
 /** Upsert A and/or AAAA records for `domain` on Cloudflare. Either
  *  IP being undefined is fine — we only upsert what we've got, so a
  *  v6-only deploy gets just an AAAA record and v4-only gets just an A. */
 async function wireDns(domain: string, ips: PublicIps): Promise<DnsWireResult> {
+  const empty: DnsWireResult = { managed: false, createdV4: false, createdV6: false };
   if (!ips.v4 && !ips.v6) {
     console.log(
       chalk.yellow(
@@ -296,7 +336,7 @@ async function wireDns(domain: string, ips: PublicIps): Promise<DnsWireResult> {
           "  /servers/{uuid}/domains returns it.",
       ),
     );
-    return { managed: false };
+    return empty;
   }
   const dns = await getDnsConfig();
   if (!dns) {
@@ -308,7 +348,7 @@ async function wireDns(domain: string, ips: PublicIps): Promise<DnsWireResult> {
           "  Or run `hatchkit config add dns` and re-run.",
       ),
     );
-    return { managed: false };
+    return empty;
   }
   if (dns.provider !== "cloudflare") {
     console.log(
@@ -319,7 +359,7 @@ async function wireDns(domain: string, ips: PublicIps): Promise<DnsWireResult> {
           (ips.v6 ? `    AAAA ${domain}  →  ${ips.v6}\n` : ""),
       ),
     );
-    return { managed: false };
+    return empty;
   }
   if (!dns.apiToken) {
     console.log(
@@ -327,7 +367,7 @@ async function wireDns(domain: string, ips: PublicIps): Promise<DnsWireResult> {
         "  Cloudflare token missing from keychain — re-run `hatchkit config add dns` to refresh.",
       ),
     );
-    return { managed: false };
+    return empty;
   }
 
   const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
@@ -344,26 +384,33 @@ async function wireDns(domain: string, ips: PublicIps): Promise<DnsWireResult> {
             "  domain) and set the records manually.",
         ),
       );
-      return { managed: false };
+      return empty;
     }
     zoneSpinner.succeed(`Cloudflare zone: ${zone.name}`);
   } catch (err) {
     zoneSpinner.fail(`Cloudflare zone lookup failed: ${(err as Error).message}`);
-    return { managed: false };
+    return empty;
   }
 
-  const result: DnsWireResult = { managed: false };
+  const result: DnsWireResult = {
+    managed: false,
+    zoneId: zone.id,
+    createdV4: false,
+    createdV6: false,
+  };
   if (ips.v4) {
-    const id = await upsertOne(cf, zone.id, "A", domain, ips.v4);
-    if (id) {
-      result.recordIdV4 = id;
+    const r = await upsertOne(cf, zone.id, "A", domain, ips.v4);
+    if (r) {
+      result.recordIdV4 = r.id;
+      result.createdV4 = r.created;
       result.managed = true;
     }
   }
   if (ips.v6) {
-    const id = await upsertOne(cf, zone.id, "AAAA", domain, ips.v6);
-    if (id) {
-      result.recordIdV6 = id;
+    const r = await upsertOne(cf, zone.id, "AAAA", domain, ips.v6);
+    if (r) {
+      result.recordIdV6 = r.id;
+      result.createdV6 = r.created;
       result.managed = true;
     }
   }
@@ -376,14 +423,14 @@ async function upsertOne(
   type: "A" | "AAAA",
   domain: string,
   content: string,
-): Promise<string | undefined> {
+): Promise<{ id: string; created: boolean } | undefined> {
   const spinner = ora(`Cloudflare: upserting ${type} ${domain} → ${content}`).start();
   try {
     const res = await cf.upsertRecord(zoneId, { type, name: domain, content, proxied: true });
     if (res.created) spinner.succeed(`Cloudflare: created ${type} ${domain} → ${content}`);
     else if (res.updated) spinner.succeed(`Cloudflare: updated ${type} ${domain} → ${content}`);
     else spinner.succeed(`Cloudflare: ${type} ${domain} → ${content} already correct`);
-    return res.id;
+    return { id: res.id, created: res.created };
   } catch (err) {
     spinner.fail(`Cloudflare: ${type}-record upsert failed: ${(err as Error).message}`);
     return undefined;

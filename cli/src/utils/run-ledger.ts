@@ -18,18 +18,47 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import { getStore } from "../config.js";
 
-/** One unit of mutation we know how to undo. */
+/** One unit of mutation we know how to undo.
+ *
+ *  CRITICAL safety invariant: every kind here describes something
+ *  hatchkit (create OR adopt) actually *created*. The undo path is
+ *  free to delete the named resource. Code that records into the
+ *  ledger MUST NOT record state that pre-existed — otherwise undo
+ *  will destroy the user's own data.
+ *
+ *  The `scaffold` kind in particular is `rm -rf <path>` — only ever
+ *  recorded by `hatchkit create` (which generates the project dir
+ *  itself). `hatchkit adopt` operates on existing repos and uses
+ *  the fine-grained kinds (`manifest`, `dotenvxKeysFile`,
+ *  `scaffoldedFile`, `gitInit`) instead — never `scaffold`. */
 export type LedgerStep =
   | { kind: "scaffold"; path: string }
   | { kind: "github"; repo: string }
   | { kind: "glitchtip"; project: string }
+  | { kind: "openpanel"; project: string }
+  | { kind: "resend"; client: string }
   | { kind: "tfvars"; path: string }
   | { kind: "coolifyEnv"; path: string }
   | { kind: "keychain"; account: string }
   | { kind: "terraformApplied"; stackDir: string; tfvarsPath: string }
+  | { kind: "coolifyProject"; uuid: string }
   | { kind: "coolifyApp"; uuid: string }
   | { kind: "coolifyDb"; uuid: string }
-  | { kind: "mlService"; platform: string; name: string };
+  | { kind: "mlService"; platform: string; name: string }
+  // Adopt-only kinds — fine-grained file/git removal so undo only
+  // touches things adopt itself wrote. Never `rm -rf` anything wider
+  // than what these point at.
+  | { kind: "manifest"; path: string }
+  | { kind: "dotenvxKeysFile"; path: string }
+  | { kind: "scaffoldedFile"; path: string }
+  | { kind: "gitInit"; path: string }
+  | {
+      kind: "cloudflareDnsRecord";
+      zoneId: string;
+      recordId: string;
+      name: string;
+      type: "A" | "AAAA" | "CNAME";
+    };
 
 export interface LedgerData {
   /** Project slug. Also the filename. */
@@ -86,6 +115,22 @@ export class RunLedger {
     } catch {
       return null;
     }
+  }
+
+  /** Resume an existing ledger (preserving recorded steps), or start
+   *  a new one. Used by `hatchkit adopt --resume` so a partial first
+   *  run's ledger entries survive into the second run — destroy of
+   *  the union is then the safe outcome if --resume itself fails.
+   *  Clears `finishedAt` so handleAdoptFailure knows we're in flight
+   *  again even if the previous attempt called `complete()`. */
+  static resumeOrStart(name: string): RunLedger {
+    const existing = RunLedger.load(name);
+    if (existing) {
+      existing.data.finishedAt = undefined;
+      existing.flush();
+      return existing;
+    }
+    return RunLedger.start(name);
   }
 
   /** Append a step and flush immediately. */

@@ -172,4 +172,17 @@ export class CloudflareApi {
     );
     return { id: updated.id, created: false, updated: true };
   }
+
+  /** Delete a DNS record by id. Returns "not-found" on 404 so the
+   *  caller can treat already-gone records as success during rollback. */
+  async deleteRecord(zoneId: string, recordId: string): Promise<"deleted" | "not-found"> {
+    try {
+      await this.request<unknown>("DELETE", `/zones/${zoneId}/dns_records/${recordId}`);
+      return "deleted";
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (/81044|not\s*found|404/i.test(msg)) return "not-found";
+      throw err;
+    }
+  }
 }
