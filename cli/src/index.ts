@@ -248,8 +248,8 @@ async function handleAdd(): Promise<void> {
 
   let services: ProvisionService[];
   if (!rawService) {
-    const { checkbox } = await import("@inquirer/prompts");
-    services = await checkbox<ProvisionService>({
+    const { multiselect } = await import("./utils/multiselect.js");
+    services = await multiselect<ProvisionService>({
       message: "Which services to add (-dev and -prod pair each)?",
       choices: [
         { name: "GlitchTip (error tracking)", value: "glitchtip", checked: true },
@@ -396,8 +396,8 @@ async function handleRemove(): Promise<void> {
 
   let services: ProvisionService[];
   if (!rawService) {
-    const { checkbox } = await import("@inquirer/prompts");
-    services = await checkbox<ProvisionService>({
+    const { multiselect } = await import("./utils/multiselect.js");
+    services = await multiselect<ProvisionService>({
       message: "Which services to remove (-dev AND -prod clients each)?",
       choices: [
         { name: "GlitchTip (deletes the project)", value: "glitchtip", checked: true },
@@ -460,7 +460,14 @@ async function handleCreate(): Promise<void> {
   // the flow non-interactive; otherwise we still prompt for anything
   // not supplied via flags / config file.
   const flags = parseCreateFlags(args);
-  const { yes: nonInteractive, dryRun, presets, forceNoGithub, forceNoDeploy } = flags;
+  const {
+    yes: nonInteractive,
+    dryRun,
+    presets,
+    forceNoGithub,
+    forceNoDeploy,
+    forceNoInstall,
+  } = flags;
 
   // Check if first run (skip onboarding when non-interactive — the
   // onboarding prompts would stall automation).
@@ -472,6 +479,7 @@ async function handleCreate(): Promise<void> {
   const config = await collectProjectConfig({ dryRun, presets, nonInteractive });
   if (forceNoGithub) config.createGithubRepo = false;
   if (forceNoDeploy) config.runDeployment = false;
+  if (forceNoInstall) config.installDeps = false;
 
   // Ensure needed providers are configured (lazy prompting).
   // Coolify + Hetzner are only needed when actually deploying —
@@ -537,6 +545,7 @@ async function handleCreate(): Promise<void> {
   );
   console.log(`  Scaffold:   ${config.scaffoldRepo ? "yes" : "no"}`);
   console.log(`  GitHub:     ${config.createGithubRepo ? "yes" : "no"}`);
+  console.log(`  Install:    ${config.installDeps ? "yes (pnpm install)" : "no"}`);
   console.log(`  Deploy now: ${config.runDeployment ? "yes" : "no"}`);
 
   if (config.dryRun) {
@@ -660,9 +669,11 @@ async function handleCreate(): Promise<void> {
       return;
     }
 
-    // Step 2: Install deps. Required for the initial commit to pick up
-    // the lockfile delta and for the user to `pnpm dev` immediately.
-    if (config.scaffoldRepo) {
+    // Step 2: Install deps. The decision was captured upfront (in the
+    // stepper) so the user can walk away — no mid-scaffold prompt here.
+    // Required for the initial commit to pick up the lockfile delta and
+    // for the user to `pnpm dev` immediately.
+    if (config.scaffoldRepo && config.installDeps) {
       const hasPnpm = await execOk("pnpm", ["--version"]);
       if (!hasPnpm) {
         console.log(
@@ -671,24 +682,14 @@ async function handleCreate(): Promise<void> {
           ),
         );
       } else {
-        // In non-interactive mode, auto-accept the install so `--yes`
-        // doesn't stall waiting on a y/n prompt.
-        const shouldInstall = nonInteractive
-          ? true
-          : await confirm({
-              message: "Install dependencies now (pnpm install)?",
-              default: true,
-            });
-        if (shouldInstall) {
-          const res = await exec("pnpm", ["install"], {
-            cwd: appDir,
-            spinner: "Installing dependencies...",
-          });
-          if (res.exitCode === 0) {
-            installedDeps = true;
-          } else {
-            console.log(chalk.yellow("  pnpm install failed — continuing anyway."));
-          }
+        const res = await exec("pnpm", ["install"], {
+          cwd: appDir,
+          spinner: "Installing dependencies...",
+        });
+        if (res.exitCode === 0) {
+          installedDeps = true;
+        } else {
+          console.log(chalk.yellow("  pnpm install failed — continuing anyway."));
         }
       }
     }

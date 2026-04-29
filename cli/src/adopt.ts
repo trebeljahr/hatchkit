@@ -36,7 +36,7 @@
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
-import { Separator, checkbox, confirm, input, select } from "@inquirer/prompts";
+import { Separator, confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { ensureGitHub, getCoolifyConfig } from "./config.js";
 import {
@@ -57,6 +57,7 @@ import {
 } from "./scaffold/manifest.js";
 import { CoolifyApi } from "./utils/coolify-api.js";
 import { exec, execOk } from "./utils/exec.js";
+import { multiselect } from "./utils/multiselect.js";
 import { SECRET_KEYS, setSecret } from "./utils/secrets.js";
 import { validateDomain, validateProjectName } from "./utils/validate.js";
 import { getCliVersion } from "./utils/version.js";
@@ -779,7 +780,7 @@ async function editAdoptStep(
     return { ...plan, clientDir: join(state.projectDir, picked) };
   }
   if (step === "features") {
-    const features = await checkbox<Feature>({
+    const features = await multiselect<Feature>({
       message: "Features active in this project:",
       choices: [
         { name: "websocket", value: "websocket", checked: plan.features.includes("websocket") },
@@ -793,7 +794,7 @@ async function editAdoptStep(
     return { ...plan, features };
   }
   if (step === "services") {
-    const services = await checkbox<ProvisionService>({
+    const services = await multiselect<ProvisionService>({
       message: "Provision per-project clients now?",
       choices: [
         {

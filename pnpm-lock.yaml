@@ -10,6 +10,12 @@ importers:
 
   cli:
     dependencies:
+      '@inquirer/core':
+        specifier: ^10.3.0
+        version: 10.3.2(@types/node@22.19.17)
+      '@inquirer/figures':
+        specifier: ^1.0.0
+        version: 1.0.15
       '@inquirer/prompts':
         specifier: ^7.0.0
         version: 7.10.1(@types/node@22.19.17)

@@ -20,10 +20,11 @@
 
 import { cpSync, existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { checkbox, confirm } from "@inquirer/prompts";
+import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
 import { addUsedPorts, getUsedPorts } from "../config.js";
 import type { Feature } from "../prompts.js";
+import { multiselect } from "../utils/multiselect.js";
 import { PORT_RANGES, pickPort } from "../utils/ports.js";
 import { getCliVersion } from "../utils/version.js";
 import {
@@ -68,7 +69,7 @@ export async function runUpdate(projectDir: string): Promise<UpdateResult> {
   console.log(chalk.dim(`  Supported additions: ${SUPPORTED_ADDITIONS.join(", ")}`));
 
   const allOptions: Feature[] = ["websocket", "stripe", "analytics", "s3", "desktop", "mobile"];
-  const desired = await checkbox<Feature>({
+  const desired = await multiselect<Feature>({
     message: "Desired feature set (current pre-selected):",
     choices: allOptions.map((f) => ({
       name:

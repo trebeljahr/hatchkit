@@ -1,8 +1,9 @@
-import { Separator, checkbox, confirm, input, select } from "@inquirer/prompts";
+import { Separator, confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { getCoolifyConfig, getMlServices } from "./config.js";
 import { CoolifyApi, type CoolifyServer } from "./utils/coolify-api.js";
 import { discoverPublicIps } from "./utils/coolify-server-ips.js";
+import { multiselect } from "./utils/multiselect.js";
 import { parseDomain, validateDomain, validateProjectName } from "./utils/validate.js";
 
 // ---------------------------------------------------------------------------
@@ -100,6 +101,11 @@ export interface ProjectConfig {
 
   scaffoldRepo: boolean;
   createGithubRepo: boolean;
+  /** Whether to run `pnpm install` in the scaffolded repo right after
+   *  files are written. Asked upfront in the stepper (rather than mid-
+   *  scaffold) so the whole `hatchkit create` flow is non-blocking once
+   *  the user proceeds — they can walk away while it runs. */
+  installDeps: boolean;
   runDeployment: boolean;
   dryRun: boolean;
 }
@@ -251,7 +257,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     presets.features,
     nonInteractive,
     () =>
-      checkbox<Feature>({
+      multiselect<Feature>({
         message: "Features:",
         choices: [
           { name: "WebSocket/realtime (includes Redis)", value: "websocket" },
@@ -324,7 +330,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     presets.mlServices,
     nonInteractive,
     () =>
-      checkbox<MlService>({
+      multiselect<MlService>({
         message: "ML services:",
         choices: [
           {
@@ -377,7 +383,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       }
       // Let the user force re-deploy — covers stale entries (service
       // was deleted upstream) or platform changes.
-      const toRedeploy = await checkbox<MlService>({
+      const toRedeploy = await multiselect<MlService>({
         message: "Redeploy any of these (leave empty to reuse all)?",
         choices: reusable.map((s) => ({ name: s, value: s })),
       });
@@ -390,7 +396,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
         presets.gpuPlatforms,
         nonInteractive,
         () =>
-          checkbox<GpuPlatform>({
+          multiselect<GpuPlatform>({
             message:
               "GPU platforms to deploy to (multi-select — first becomes default ML_BACKEND):",
             choices: [
@@ -452,6 +458,19 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       true,
     );
   }
+
+  // Ask about pnpm install BEFORE we proceed — we used to ask this
+  // mid-scaffold, which broke "kick off create and walk away" flows.
+  // The actual install runs later in handleCreate; we just capture the
+  // user's preference here so the rest of the flow is uninterrupted.
+  const installDeps = scaffoldRepo
+    ? await presetOrPrompt(
+        presets.installDeps,
+        nonInteractive,
+        () => confirm({ message: "Run pnpm install after scaffolding?", default: true }),
+        true,
+      )
+    : false;
 
   const runDeployment = options.dryRun
     ? false
@@ -573,6 +592,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     customHfGpuType,
     scaffoldRepo,
     createGithubRepo,
+    installDeps,
     runDeployment,
     envValues,
     dryRun: options.dryRun || false,
@@ -733,9 +753,9 @@ function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
       steps: [
         {
           key: "scaffoldFlags",
-          label: "Scaffold / GitHub / Deploy",
+          label: "Scaffold / GitHub / Install / Deploy",
           set: true,
-          summary: `scaffold=${cfg.scaffoldRepo ? "yes" : "no"} · github=${cfg.createGithubRepo ? "yes" : "no"} · deploy=${cfg.runDeployment ? "yes" : "no"}`,
+          summary: `scaffold=${cfg.scaffoldRepo ? "yes" : "no"} · github=${cfg.createGithubRepo ? "yes" : "no"} · install=${cfg.installDeps ? "yes" : "no"} · deploy=${cfg.runDeployment ? "yes" : "no"}`,
         },
       ],
     },
@@ -789,7 +809,7 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     };
   }
   if (section === "features") {
-    const next = await checkbox<Feature>({
+    const next = await multiselect<Feature>({
       message: "Features:",
       choices: [
         {
@@ -859,7 +879,7 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     };
   }
   if (section === "ml") {
-    const ml = await checkbox<MlService>({
+    const ml = await multiselect<MlService>({
       message: "ML services:",
       choices: [
         { name: "subtitles", value: "subtitles", checked: cfg.mlServices.includes("subtitles") },
@@ -882,7 +902,7 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     });
     let gpuPlatforms = cfg.gpuPlatforms;
     if (ml.length > 0) {
-      gpuPlatforms = await checkbox<GpuPlatform>({
+      gpuPlatforms = await multiselect<GpuPlatform>({
         message: "GPU platforms (first is default ML_BACKEND):",
         choices: [
           { name: "Modal", value: "modal", checked: gpuPlatforms?.includes("modal") ?? true },
@@ -918,11 +938,17 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     const createGithubRepo = scaffoldRepo
       ? await confirm({ message: "Create a GitHub repo?", default: cfg.createGithubRepo })
       : false;
+    const installDeps = scaffoldRepo
+      ? await confirm({
+          message: "Run pnpm install after scaffolding?",
+          default: cfg.installDeps,
+        })
+      : false;
     const runDeployment = await confirm({
       message: "Run deployment now (Terraform + Coolify + ML)?",
       default: cfg.runDeployment,
     });
-    return { ...cfg, scaffoldRepo, createGithubRepo, runDeployment };
+    return { ...cfg, scaffoldRepo, createGithubRepo, installDeps, runDeployment };
   }
   return cfg;
 }

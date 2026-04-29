@@ -680,7 +680,9 @@ async function configureCloudflareDns(
     });
     const status = result.created ? "created" : result.updated ? "updated" : "already set";
     const line = `    ${rec.type} ${recordName} → ${rec.content} (${status})`;
-    console.log(result.created || result.updated ? chalk.green(`✓ ${line.trimStart()}`) : chalk.dim(line));
+    console.log(
+      result.created || result.updated ? chalk.green(`✓ ${line.trimStart()}`) : chalk.dim(line),
+    );
   }
 }
 

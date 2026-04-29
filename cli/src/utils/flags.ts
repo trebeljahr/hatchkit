@@ -24,10 +24,11 @@ export interface ParsedCreateFlags {
   dryRun: boolean;
   /** Preset values parsed from individual flags + --config file. */
   presets: Partial<ProjectConfig>;
-  /** --no-github / --no-deploy hard-disable those steps regardless of
-   *  what the preset / prompts would say. */
+  /** --no-github / --no-deploy / --no-install hard-disable those steps
+   *  regardless of what the preset / prompts would say. */
   forceNoGithub: boolean;
   forceNoDeploy: boolean;
+  forceNoInstall: boolean;
 }
 
 const KNOWN_FEATURES: readonly Feature[] = [
@@ -68,6 +69,7 @@ export function parseCreateFlags(argv: string[]): ParsedCreateFlags {
   const dryRun = argv.includes("--dry-run");
   const forceNoGithub = argv.includes("--no-github");
   const forceNoDeploy = argv.includes("--no-deploy");
+  const forceNoInstall = argv.includes("--no-install");
 
   // Start from --config <path> if present, then layer individual flags on top.
   const presets: Partial<ProjectConfig> = {};
@@ -134,6 +136,7 @@ export function parseCreateFlags(argv: string[]): ParsedCreateFlags {
 
   if (forceNoGithub) presets.createGithubRepo = false;
   if (forceNoDeploy) presets.runDeployment = false;
+  if (forceNoInstall) presets.installDeps = false;
 
   // Validate that presets-provided values look right before we pass
   // them on (the prompt layer would also catch these, but failing
@@ -142,5 +145,5 @@ export function parseCreateFlags(argv: string[]): ParsedCreateFlags {
     // fine — may still come from --name flag or default
   }
 
-  return { yes, dryRun, presets, forceNoGithub, forceNoDeploy };
+  return { yes, dryRun, presets, forceNoGithub, forceNoDeploy, forceNoInstall };
 }
