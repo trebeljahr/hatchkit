@@ -1,14 +1,16 @@
 // Cloudflare REST API client.
 //
-// Minimal wrapper used by the `hatchkit dns link-to-cloudflare` command
-// to verify a token and list the zones in an account so we can
-// cross-reference them against domains registered at INWX. The DNS record
-// creation itself goes through Terraform (modules/cloudflare-dns) during
-// a normal `hatchkit create` flow — this client is for the standalone
-// migration / reconciliation command.
+// Used by:
+//   · `hatchkit dns link-to-cloudflare` — verifies a token and lists
+//     zones so we can cross-reference them against domains registered
+//     at INWX (standalone migration / reconciliation).
+//   · `hatchkit gh-pages` — upserts apex A records (or a subdomain
+//     CNAME) for a GitHub Pages site, with proxied=false because the
+//     orange cloud breaks Pages' Let's Encrypt cert issuance.
 //
-// NB: `hatchkit gh-pages` has its own inline Cloudflare DNS helper for
-// record CRUD. That path is separate and doesn't share this class.
+// During a normal `hatchkit create` flow the DNS records themselves
+// go through Terraform (modules/cloudflare-dns) — this client is for
+// command-line paths that don't run a full Terraform stack.
 
 export interface CloudflareZone {
   id: string;

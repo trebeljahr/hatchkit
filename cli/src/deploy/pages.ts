@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { ensureDns, getDnsConfig } from "../config.js";
+import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { exec } from "../utils/exec.js";
 import { parseDomain, validateDomain } from "../utils/validate.js";
 
@@ -642,38 +643,6 @@ function printManualDnsRecords(
   console.log(chalk.dim(`\n  Zone: ${baseDomain}\n`));
 }
 
-interface CfZone {
-  id: string;
-  name: string;
-}
-interface CfResp<T> {
-  success: boolean;
-  errors: Array<{ code: number; message: string }>;
-  result: T;
-}
-
-async function cfApi<T>(
-  token: string,
-  path: string,
-  init?: { method?: string; body?: unknown },
-): Promise<T> {
-  const res = await fetch(`https://api.cloudflare.com/client/v4${path}`, {
-    method: init?.method ?? "GET",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: init?.body ? JSON.stringify(init.body) : undefined,
-  });
-  const data = (await res.json()) as CfResp<T>;
-  if (!data.success) {
-    throw new Error(
-      `Cloudflare API ${path} failed: ${data.errors.map((e) => `${e.code} ${e.message}`).join(", ")}`,
-    );
-  }
-  return data.result;
-}
-
 async function configureCloudflareDns(
   token: string,
   baseDomain: string,
@@ -681,8 +650,9 @@ async function configureCloudflareDns(
   target: string,
   isApex: boolean,
 ): Promise<void> {
-  const zones = await cfApi<CfZone[]>(token, `/zones?name=${encodeURIComponent(baseDomain)}`);
-  if (zones.length === 0) {
+  const api = new CloudflareApi({ token });
+  const zone = await api.getZoneByName(baseDomain);
+  if (!zone) {
     console.log(
       chalk.yellow(
         `  ⚠ No Cloudflare zone found for ${baseDomain}. Falling back to manual records.`,
@@ -691,36 +661,26 @@ async function configureCloudflareDns(
     printManualDnsRecords(baseDomain, subdomain, target, isApex);
     return;
   }
-  const zone = zones[0];
   const recordName = isApex ? baseDomain : `${subdomain}.${baseDomain}`;
 
-  const records = isApex
-    ? GITHUB_APEX_A.map((ip) => ({ type: "A", name: recordName, content: ip, proxied: false }))
-    : [{ type: "CNAME", name: recordName, content: target, proxied: false }];
+  // GitHub Pages apex needs A records for all four IPs (round-robin
+  // redundancy). For a subdomain, one CNAME to the github.io target
+  // is enough. Both flavours run with proxied=false because Cloudflare's
+  // orange cloud breaks GitHub Pages' Let's Encrypt cert issuance.
+  const records: Array<{ type: "A" | "CNAME"; content: string }> = isApex
+    ? GITHUB_APEX_A.map((ip) => ({ type: "A", content: ip }))
+    : [{ type: "CNAME", content: target }];
 
   for (const rec of records) {
-    const existing = await cfApi<Array<{ id: string; content: string }>>(
-      token,
-      `/zones/${zone.id}/dns_records?type=${rec.type}&name=${encodeURIComponent(rec.name)}`,
-    );
-    const match = existing.find((r) => r.content === rec.content);
-    if (match) {
-      console.log(chalk.dim(`    ${rec.type} ${rec.name} → ${rec.content} (already set)`));
-      continue;
-    }
-    // A different record with the same name+type — update in place to
-    // keep the zone tidy.
-    const stale = existing[0];
-    if (stale) {
-      await cfApi(token, `/zones/${zone.id}/dns_records/${stale.id}`, {
-        method: "PUT",
-        body: rec,
-      });
-      console.log(chalk.green(`    ✓ ${rec.type} ${rec.name} → ${rec.content} (updated)`));
-    } else {
-      await cfApi(token, `/zones/${zone.id}/dns_records`, { method: "POST", body: rec });
-      console.log(chalk.green(`    ✓ ${rec.type} ${rec.name} → ${rec.content} (created)`));
-    }
+    const result = await api.upsertRecord(zone.id, {
+      type: rec.type,
+      name: recordName,
+      content: rec.content,
+      proxied: false,
+    });
+    const status = result.created ? "created" : result.updated ? "updated" : "already set";
+    const line = `    ${rec.type} ${recordName} → ${rec.content} (${status})`;
+    console.log(result.created || result.updated ? chalk.green(`✓ ${line.trimStart()}`) : chalk.dim(line));
   }
 }
 
