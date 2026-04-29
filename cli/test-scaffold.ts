@@ -632,6 +632,104 @@ console.log("\n── keytar migration: legacy plaintext secret moved to keychai
   await deleteSecret(SECRET_KEYS.coolifyToken);
 }
 
+// Build pipeline: NODE_VERSION auto-detect from engines.node + the
+// `created` vs `overwritten` split that adopt's ledger keys off.
+// Covers the bug where the Dockerfile baked in node:22-alpine while
+// the project's package.json pinned `engines.node: ">=24"`, producing
+// ERR_PNPM_UNSUPPORTED_ENGINE in CI. The detection MUST track the
+// project's engines field, and `force: true` must NEVER mark
+// pre-existing files as `created` (the safety invariant for undo).
+console.log("\n── build pipeline: engines.node detection + created/overwritten safety ─────");
+{
+  const { detectNodeMajorVersion, scaffoldBuildPipeline } = await import(
+    "./src/scaffold/build-pipeline.js"
+  );
+  const tmp = mkdtempSync(join(tmpdir(), "build-pipeline-test-"));
+  const checks: Check[] = [];
+
+  // 1. detectNodeMajorVersion handles the common engines.node shapes.
+  const cases: Array<[string | undefined, string]> = [
+    [undefined, "24"],
+    [">=24", "24"],
+    [">=24.0.0", "24"],
+    ["^24.0.0", "24"],
+    ["~24.5.1", "24"],
+    ["24.x", "24"],
+    [">=22", "22"],
+    [">=20.0.0 <24.0.0", "20"],
+    ["22 || 24", "22"],
+    ["weird", "24"],
+    [">=10", "24"],
+  ];
+  for (const [engines, expected] of cases) {
+    const dir = mkdtempSync(join(tmpdir(), "pkg-engines-"));
+    const pkg: { engines?: { node?: string } } = engines ? { engines: { node: engines } } : {};
+    writeFileSync(join(dir, "package.json"), JSON.stringify(pkg));
+    const got = detectNodeMajorVersion(dir);
+    checks.push([
+      `engines=${JSON.stringify(engines)} -> "${got}" (expected "${expected}")`,
+      got === expected,
+    ]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // 2. Dockerfile actually contains the detected version.
+  writeFileSync(join(tmp, "package.json"), JSON.stringify({ engines: { node: ">=24" } }));
+  const r1 = scaffoldBuildPipeline({
+    projectDir: tmp,
+    projectName: "test-app",
+    ghOwner: "owner",
+    entrypoint: "dist/index.js",
+    port: 3000,
+    surfaces: "client-only",
+    defaultBranch: "main",
+  });
+  const dockerfile = readFileSync(join(tmp, "Dockerfile"), "utf-8");
+  checks.push(["Dockerfile contains NODE_VERSION=24", /NODE_VERSION=24\b/.test(dockerfile)]);
+  checks.push([
+    "Dockerfile does NOT contain NODE_VERSION=22",
+    !/NODE_VERSION=22\b/.test(dockerfile),
+  ]);
+  checks.push(["created list includes Dockerfile", r1.created.includes("Dockerfile")]);
+  checks.push(["overwritten list is empty on first run", r1.overwritten.length === 0]);
+
+  // 3. Re-run with force=true. Pre-existing Dockerfile/compose/workflow
+  //    must land in `overwritten`, NOT `created` — the critical
+  //    invariant for the ledger so destroy never deletes user content.
+  const r2 = scaffoldBuildPipeline({
+    projectDir: tmp,
+    projectName: "test-app",
+    ghOwner: "owner",
+    entrypoint: "dist/index.js",
+    port: 3000,
+    surfaces: "client-only",
+    defaultBranch: "main",
+    force: true,
+  });
+  checks.push(["force=true: Dockerfile in overwritten", r2.overwritten.includes("Dockerfile")]);
+  checks.push(["force=true: Dockerfile NOT in created", !r2.created.includes("Dockerfile")]);
+  checks.push([
+    "force=true: docker-compose.yml in overwritten",
+    r2.overwritten.includes("docker-compose.yml"),
+  ]);
+  checks.push([
+    "force=true: deploy.yml in overwritten",
+    r2.overwritten.includes(".github/workflows/deploy.yml"),
+  ]);
+  checks.push([
+    "force=true: created list empty (everything pre-existed)",
+    r2.created.length === 0,
+  ]);
+
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  results.buildPipelineNodeVersion = ok;
+  rmSync(tmp, { recursive: true, force: true });
+}
+
 // Adopt rollback safety: every LedgerStep kind has a recipe + describe
 // + correct destructive flag, and the file-system undos only touch the
 // path they were given. This catches the safety invariant — if I add a

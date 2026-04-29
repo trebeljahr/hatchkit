@@ -6,7 +6,7 @@
 # committed encrypted .env.production decrypts only inside the
 # container (the private key comes from DOTENV_PRIVATE_KEY_PRODUCTION,
 # set on the Coolify app's env).
-ARG NODE_VERSION=22
+ARG NODE_VERSION={{nodeMajor}}
 
 FROM node:${NODE_VERSION}-alpine AS deps
 WORKDIR /app

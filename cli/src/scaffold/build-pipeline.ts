@@ -26,6 +26,41 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { renderTemplate } from "../utils/template.js";
 
+/** Default Node major used when the project doesn't pin one via
+ *  `engines.node`. Bumped to 24 (LTS since Oct 2025) to match what
+ *  GitHub Actions defaults to and what most modern dependencies
+ *  require — staying on 22 was producing `ERR_PNPM_UNSUPPORTED_ENGINE`
+ *  for projects that had quietly added `>=24` to engines.node. */
+const DEFAULT_NODE_MAJOR = "24";
+
+/** Pull the minimum major Node version out of `package.json#engines.node`.
+ *  Handles the common range syntaxes — `>=24`, `^24.0.0`, `24.x`, `22 || 24`,
+ *  `>=20.0.0 <24.0.0` — by grabbing the first integer that appears.
+ *  That's the lower bound of the range, which is what we want for the
+ *  Docker base image (running on the floor of the supported range avoids
+ *  surprising "this works on my machine but not in CI" version drift).
+ *  Falls back to DEFAULT_NODE_MAJOR when the field is missing or yields
+ *  a sub-18 number (probably a parse glitch — Node 18 is the oldest
+ *  realistic floor as of 2026). */
+export function detectNodeMajorVersion(projectDir: string): string {
+  const pkgPath = join(projectDir, "package.json");
+  if (!existsSync(pkgPath)) return DEFAULT_NODE_MAJOR;
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
+      engines?: { node?: string };
+    };
+    const range = pkg.engines?.node;
+    if (!range) return DEFAULT_NODE_MAJOR;
+    const m = range.match(/(\d+)/);
+    if (!m) return DEFAULT_NODE_MAJOR;
+    const major = Number(m[1]);
+    if (!Number.isFinite(major) || major < 18) return DEFAULT_NODE_MAJOR;
+    return String(major);
+  } catch {
+    return DEFAULT_NODE_MAJOR;
+  }
+}
+
 export interface BuildPipelineState {
   /** True when ANY of the recognized compose filenames is present. */
   hasCompose: boolean;
@@ -86,12 +121,34 @@ export interface ScaffoldBuildPipelineInput {
    *  trigger. Detected from `git symbolic-ref refs/remotes/origin/HEAD`
    *  by the caller, with a `main` fallback. */
   defaultBranch: string;
+  /** Major Node version to bake into the Dockerfile's `node:<v>-alpine`
+   *  base image. Detected from the project's `package.json#engines.node`
+   *  by `detectNodeMajorVersion`; falls back to the current LTS default
+   *  ("24" — see DEFAULT_NODE_MAJOR) when the field is missing or
+   *  unparseable. Overrideable for tests. */
+  nodeMajor?: string;
+  /** When true, overwrite Dockerfile + docker-compose.yml + the GH
+   *  Actions workflow even if they already exist. Default: false (the
+   *  existing idempotent-skip behaviour, so adopt-by-default never
+   *  clobbers user-authored files). Used by `hatchkit adopt
+   *  --regenerate-pipeline` for adopted projects that need to pick up
+   *  template fixes (e.g. the Node 22 → 24 base-image bump). */
+  force?: boolean;
 }
 
 export interface ScaffoldBuildPipelineResult {
   /** Files we wrote (relative to projectDir). Useful for printing a
-   *  summary + later git-add. */
+   *  summary + later git-add. Union of `created` and `overwritten`. */
   written: string[];
+  /** Files we wrote that DIDN'T exist before this call. Adopt records
+   *  these in its run ledger so a later rollback / destroy can delete
+   *  files hatchkit itself authored. */
+  created: string[];
+  /** Files we wrote that DID exist before this call (only possible
+   *  when `force: true`). Adopt deliberately does NOT record these
+   *  in the ledger — the file was the user's before regeneration,
+   *  and a later destroy must never delete pre-existing content. */
+  overwritten: string[];
   /** Files we skipped because they already existed. */
   skipped: string[];
 }
@@ -104,10 +161,26 @@ export function scaffoldBuildPipeline(
 ): ScaffoldBuildPipelineResult {
   const state = detectBuildPipeline(input.projectDir);
   const written: string[] = [];
+  const created: string[] = [];
+  const overwritten: string[] = [];
   const skipped: string[] = [];
 
+  // Helper: write a file and bucket it as created/overwritten based on
+  // whether it existed before this call. Adopt's ledger only records
+  // `created` entries — see ScaffoldBuildPipelineResult docs.
+  const write = (relPath: string, content: string, existedBefore: boolean): void => {
+    writeProjectFile(input.projectDir, relPath, content);
+    written.push(relPath);
+    if (existedBefore) overwritten.push(relPath);
+    else created.push(relPath);
+  };
+
   // Dockerfile.
-  if (!state.hasDockerfile) {
+  // Node version: caller can override (e.g. tests); otherwise we
+  // sniff `engines.node` from the project's package.json so the
+  // image matches what the user's dependencies actually require.
+  const nodeMajor = input.nodeMajor ?? detectNodeMajorVersion(input.projectDir);
+  if (input.force || !state.hasDockerfile) {
     const tpl =
       input.surfaces === "client-only"
         ? "build-pipeline/Dockerfile.client.hbs"
@@ -116,9 +189,9 @@ export function scaffoldBuildPipeline(
       name: input.projectName,
       port: input.port,
       entrypoint: input.entrypoint,
+      nodeMajor,
     });
-    writeProjectFile(input.projectDir, "Dockerfile", out);
-    written.push("Dockerfile");
+    write("Dockerfile", out, state.hasDockerfile);
   } else {
     skipped.push("Dockerfile");
   }
@@ -126,33 +199,31 @@ export function scaffoldBuildPipeline(
   // docker-compose.yml — only scaffold when no compose file (any of
   // the recognised names) is present. Always write to
   // `docker-compose.yml` since that's what Coolify expects by default.
-  if (!state.hasCompose) {
+  if (input.force || !state.hasCompose) {
     const out = renderTemplate("build-pipeline/docker-compose.yml.hbs", {
       name: input.projectName,
       owner: input.ghOwner,
       port: input.port,
     });
-    writeProjectFile(input.projectDir, "docker-compose.yml", out);
-    written.push("docker-compose.yml");
+    write("docker-compose.yml", out, state.hasCompose);
   } else {
     skipped.push(state.composePath?.replace(`${input.projectDir}/`, "") ?? "compose file");
   }
 
   // GitHub Actions deploy workflow.
-  if (!state.hasDeployWorkflow) {
+  if (input.force || !state.hasDeployWorkflow) {
     // The deploy template uses GitHub Actions' own `${{ … }}` syntax,
     // which clashes with Handlebars. We render it as a plain text
     // file with `__VAR__` placeholders that get substituted here
     // instead — no Handlebars on this one.
     const raw = readTemplateRaw("build-pipeline/deploy.yml.hbs");
     const filled = raw.replace(/__DEFAULT_BRANCH__/g, input.defaultBranch);
-    writeProjectFile(input.projectDir, DEPLOY_WORKFLOW_PATH, filled);
-    written.push(DEPLOY_WORKFLOW_PATH);
+    write(DEPLOY_WORKFLOW_PATH, filled, state.hasDeployWorkflow);
   } else {
     skipped.push(DEPLOY_WORKFLOW_PATH);
   }
 
-  return { written, skipped };
+  return { written, created, overwritten, skipped };
 }
 
 function writeProjectFile(projectDir: string, relPath: string, content: string): void {

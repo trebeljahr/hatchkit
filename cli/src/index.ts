@@ -134,7 +134,10 @@ async function main(): Promise<void> {
     case "adopt": {
       if (args.includes("--help")) return printHelp("adopt");
       const { runAdopt } = await import("./adopt.js");
-      await runAdopt(resolve("."), { resume: args.includes("--resume") });
+      await runAdopt(resolve("."), {
+        resume: args.includes("--resume"),
+        regeneratePipeline: args.includes("--regenerate-pipeline"),
+      });
       break;
     }
     case "destroy":
@@ -1316,6 +1319,16 @@ function printHelp(topic?: HelpTopic): void {
     manifest. Already-finished steps (encrypted .env, configured
     git origin, existing Coolify app) auto-skip; only the unfinished
     bits actually run.
+
+  ${chalk.bold("--regenerate-pipeline")}
+    Re-render the build pipeline files (Dockerfile, docker-compose.yml,
+    .github/workflows/deploy.yml) over the existing copies. Useful when
+    the templates picked up a fix you want — e.g. the Node base-image
+    auto-detection, newer GitHub Actions versions. Pre-existing files
+    that get overwritten are NOT recorded in the rollback ledger,
+    so a later \`hatchkit destroy\` won't surprise-delete them.
+    Combine with \`--resume\` if the project is already adopted:
+      hatchkit adopt --resume --regenerate-pipeline
 `);
     return;
   }

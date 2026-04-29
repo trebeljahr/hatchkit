@@ -142,7 +142,10 @@ interface AdoptPlan {
   pushKey: boolean;
 }
 
-export async function runAdopt(cwd: string, opts: { resume?: boolean } = {}): Promise<void> {
+export async function runAdopt(
+  cwd: string,
+  opts: { resume?: boolean; regeneratePipeline?: boolean } = {},
+): Promise<void> {
   const state = await detectProject(cwd);
 
   if (state.hasManifest && !opts.resume) {
@@ -228,7 +231,10 @@ export async function runAdopt(cwd: string, opts: { resume?: boolean } = {}): Pr
 
   plan = await reviewLoop(state, plan);
 
-  await executePlan(state, plan, { resume: !!opts.resume });
+  await executePlan(state, plan, {
+    resume: !!opts.resume,
+    regeneratePipeline: !!opts.regeneratePipeline,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -944,7 +950,7 @@ interface AdoptCaveat {
 async function executePlan(
   state: DetectedState,
   plan: AdoptPlan,
-  opts: { resume: boolean } = { resume: false },
+  opts: { resume: boolean; regeneratePipeline?: boolean } = { resume: false },
 ): Promise<void> {
   console.log(chalk.bold("\n  ── Adopting ──────────────────────────────────────────────\n"));
   const caveats: AdoptCaveat[] = [];
@@ -1021,11 +1027,16 @@ async function executePlan(
     // Must run BEFORE Coolify wiring so the docker-compose.yml exists
     // by the time Coolify clones the repo for the first deploy.
     if (plan.scaffoldBuildPipeline) {
-      const pipeResult = await scaffoldBuildPipelineNow(state, plan, remoteUrl);
-      // Record one ledger entry per actually-written file. `result.written`
-      // excludes anything pre-existing (the `kept` branch), so undo will
-      // never touch a Dockerfile / compose / workflow the user wrote.
-      for (const abs of pipeResult.writtenAbsPaths) {
+      const pipeResult = await scaffoldBuildPipelineNow(state, plan, remoteUrl, {
+        force: !!opts.regeneratePipeline,
+      });
+      // Record only files we *created*. The `overwritten` list is
+      // deliberately not recorded — those files existed before this
+      // run (the user's), and a later `hatchkit destroy` must never
+      // delete pre-existing content even after we rewrote it for
+      // them. Worst case post-destroy: the user is left with a
+      // hatchkit-flavoured Dockerfile they can simply delete.
+      for (const abs of pipeResult.createdAbsPaths) {
         ledger.record({ kind: "scaffoldedFile", path: abs });
       }
     }
@@ -1538,7 +1549,8 @@ async function scaffoldBuildPipelineNow(
   state: DetectedState,
   plan: AdoptPlan,
   remoteUrl: string | undefined,
-): Promise<{ writtenAbsPaths: string[] }> {
+  opts: { force?: boolean } = {},
+): Promise<{ createdAbsPaths: string[]; overwrittenAbsPaths: string[] }> {
   // Owner inference for the GHCR image. Falls back to "OWNER" if we
   // can't tell — the scaffolded compose still works once the user
   // edits it, and they get a clear hint in the summary.
@@ -1552,9 +1564,13 @@ async function scaffoldBuildPipelineNow(
     port: Number(plan.appPort) || 3000,
     surfaces: plan.surfaces,
     defaultBranch,
+    force: !!opts.force,
   });
-  if (result.written.length > 0) {
-    console.log(chalk.green(`  ✓ Scaffolded: ${result.written.join(", ")}`));
+  if (result.created.length > 0) {
+    console.log(chalk.green(`  ✓ Scaffolded: ${result.created.join(", ")}`));
+  }
+  if (result.overwritten.length > 0) {
+    console.log(chalk.yellow(`  ↻ Regenerated: ${result.overwritten.join(", ")}`));
   }
   if (result.skipped.length > 0) {
     console.log(chalk.dim(`  · Kept existing: ${result.skipped.join(", ")}`));
@@ -1567,11 +1583,11 @@ async function scaffoldBuildPipelineNow(
       ),
     );
   }
-  // `result.written` is project-relative; promote to absolute paths so
-  // adopt's caller can record a `scaffoldedFile` ledger entry per file
-  // without having to know the project root.
+  // Promote project-relative paths to absolute so the caller doesn't
+  // need to know the project root for ledger entries / dedup.
   return {
-    writtenAbsPaths: result.written.map((rel) => join(state.projectDir, rel)),
+    createdAbsPaths: result.created.map((rel) => join(state.projectDir, rel)),
+    overwrittenAbsPaths: result.overwritten.map((rel) => join(state.projectDir, rel)),
   };
 }
 

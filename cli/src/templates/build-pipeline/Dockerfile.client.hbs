@@ -5,7 +5,7 @@
 # Coolify via docker-compose.yml. nginx serves the built bundle —
 # no runtime Node, so dotenvx encryption isn't relevant here
 # (anything sensitive should never reach the browser bundle anyway).
-ARG NODE_VERSION=22
+ARG NODE_VERSION={{nodeMajor}}
 
 FROM node:${NODE_VERSION}-alpine AS build
 WORKDIR /app
