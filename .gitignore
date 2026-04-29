@@ -51,8 +51,12 @@ venv/
 .terraform.lock.hcl
 *.tfplan
 tfplan
-terraform.tfvars
+# tfvars files hold project-specific values (e.g. <project>.tfvars
+# written by `hatchkit create`) and may include secrets. Keep example
+# templates tracked via the negation below.
+*.tfvars
 *.auto.tfvars
+!*.tfvars.example
 
 # Catch-all for anything explicitly secret
 *.secret
