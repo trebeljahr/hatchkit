@@ -8,11 +8,10 @@
  * same baseline.
  *
  * ALSO refuses when the local cli/package.json version is at-or-
- * behind the version published to npm. `npm version patch` increments
- * from the LOCAL version, not the registry's, so drift between the
- * two leads to the script generating a number that's already taken
- * and the publish step crashing after build/typecheck. Catch it up
- * front instead.
+ * behind the version published to npm. release-bump.mjs increments
+ * from the LOCAL version, so drift between local and registry leads
+ * to the bump generating a number that's already taken and the
+ * publish step crashing after build/typecheck. Catch it up front.
  *
  * Skip with RELEASE_SKIP_PREP=1 (e.g. a CI-driven release that's
  * already vouched for cleanliness). RELEASE_SKIP_NPM_CHECK=1 only
@@ -118,13 +117,13 @@ function checkNpmDrift(repoRoot) {
     return [
       `local ${name}@${local} is behind the registry's ${registry}.`,
       "",
-      "  `npm version patch` increments from the LOCAL version, so a release now",
+      "  release-bump.mjs increments from the LOCAL version, so a release now",
       "  would try to publish a version that's already taken. Sync first:",
       "",
       `      cd ${join(repoRoot, "cli")}`,
       `      npm version ${registry} --no-git-tag-version    # match the registry`,
       `      cd ${repoRoot}`,
-      `      git add cli/package.json cli/package-lock.json`,
+      `      git add cli/package.json`,
       `      git commit -m "chore: release v${registry}"`,
       `      git tag v${registry}`,
       "",

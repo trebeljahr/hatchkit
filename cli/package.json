@@ -24,9 +24,9 @@
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test",
     "install-local": "pnpm run build && npm install -g .",
     "release": "pnpm run release:patch",
-    "release:patch": "node scripts/release-prep.mjs && npm version patch -m \"chore: release v%s\" && pnpm run _release:finish",
-    "release:minor": "node scripts/release-prep.mjs && npm version minor -m \"chore: release v%s\" && pnpm run _release:finish",
-    "release:major": "node scripts/release-prep.mjs && npm version major -m \"chore: release v%s\" && pnpm run _release:finish",
+    "release:patch": "node scripts/release-prep.mjs && node scripts/release-bump.mjs patch && pnpm run _release:finish",
+    "release:minor": "node scripts/release-prep.mjs && node scripts/release-bump.mjs minor && pnpm run _release:finish",
+    "release:major": "node scripts/release-prep.mjs && node scripts/release-bump.mjs major && pnpm run _release:finish",
     "_release:finish": "pnpm run build && pnpm run typecheck && npm publish --access public && git push --follow-tags && npm install -g .",
     "prepublishOnly": "pnpm run build"
   },
