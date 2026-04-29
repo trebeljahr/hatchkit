@@ -98,6 +98,11 @@ interface DetectedState {
   isGitRepo: boolean;
   /** Origin URL from `git remote get-url origin`, if set. */
   gitRemoteUrl?: string;
+  /** Visibility of the GitHub repo at `gitRemoteUrl`, when we can
+   *  resolve it via `gh repo view`. Undefined when no remote is set,
+   *  gh isn't authed, or the repo isn't on GitHub. Drives the default
+   *  for the AdoptPlan.isPrivate stepper choice. */
+  gitRemoteIsPrivate?: boolean;
   /** Parsed `.hatchkit.json` if a previous adopt/scaffold landed
    *  one. Used by `--resume` to pre-fill the stepper with the values
    *  the user already chose, instead of starting from blank. */
@@ -128,6 +133,15 @@ interface AdoptPlan {
    *  API calls (no Terraform / no submodule). Defaults ON when there's
    *  no Coolify app match yet. */
   wireCoolify: boolean;
+  /** Whether to treat the GitHub repo as private when wiring Coolify.
+   *  Private → Coolify clones via the configured GitHub App's SSH
+   *  deploy key. Public → Coolify clones via HTTPS, no auth needed.
+   *  Defaulted from `gh repo view --json visibility` when the remote
+   *  exists; defaults to true when adopt is creating a fresh
+   *  `--private` repo. Picking the wrong value is the #1 cause of
+   *  "Permission denied (publickey)" deploy failures, hence its own
+   *  stepper row instead of being silently inferred from setupGitHub. */
+  isPrivate: boolean;
   /** Container port the app exposes — defaults to "3000". */
   appPort: string;
   /** Scaffold the build pipeline (Dockerfile + docker-compose.yml +
@@ -219,6 +233,17 @@ export async function runAdopt(
     bootstrapDotenvx: !state.prodEnvIsEncrypted,
     setupGitHub: !state.gitRemoteUrl,
     wireCoolify: !state.coolifyAppMatch,
+    // isPrivate resolution order:
+    //   1. Detected remote visibility (`gh repo view`) — authoritative
+    //      when an origin is set on a GitHub repo.
+    //   2. Fallback: true. Reasoning: if adopt is creating a fresh
+    //      repo we're using `--private`; if an existing repo's
+    //      visibility couldn't be probed (gh not authed / not on
+    //      GitHub), assuming private is safer because Coolify's
+    //      private path with a configured GitHub App also clones
+    //      public repos fine, but the public path can't pull a
+    //      private one and produces "permission denied" on deploy.
+    isPrivate: state.gitRemoteIsPrivate ?? true,
     appPort: "3000",
     scaffoldBuildPipeline: true,
     services: ["glitchtip", "openpanel", "resend"],
@@ -342,6 +367,35 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
     }
   }
 
+  // Repo visibility on GitHub. Drives whether Coolify clones via
+  // HTTPS (public) or via a GitHub App's SSH deploy key (private).
+  // Picking the wrong path is the most common cause of "Permission
+  // denied (publickey)" deploy failures — Coolify tries SSH against
+  // a repo whose GitHub App isn't installed. We probe via `gh` here
+  // (cheap, authenticated), default the stepper from it, and let the
+  // user override.
+  let gitRemoteIsPrivate: boolean | undefined;
+  if (gitRemoteUrl) {
+    try {
+      const res = await exec(
+        "gh",
+        ["repo", "view", "--json", "visibility", "-q", ".visibility"],
+        { cwd: projectDir, silent: true },
+      );
+      if (res.exitCode === 0) {
+        const v = res.stdout.trim().toLowerCase();
+        // GitHub returns "PUBLIC" / "PRIVATE" / "INTERNAL". Internal
+        // repos (GitHub Enterprise) require auth like private ones,
+        // so treat as private for the Coolify-clone-path decision.
+        if (v === "public") gitRemoteIsPrivate = false;
+        else if (v) gitRemoteIsPrivate = true;
+      }
+    } catch {
+      // gh not installed / not authed / repo not on GitHub — leave
+      // undefined and let the stepper fall back to a sensible default.
+    }
+  }
+
   return {
     projectDir,
     packageName,
@@ -356,6 +410,7 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
     coolifyGithubSourceCount,
     isGitRepo,
     gitRemoteUrl,
+    gitRemoteIsPrivate,
     existingManifest,
   };
 }
@@ -698,20 +753,46 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
       title: "Deploy",
       steps: [
         ((): AdoptStep => {
-          // Preflight: when adopt will create a (private) GitHub repo
-          // and Coolify has zero GitHub App sources, wireCoolify will
-          // throw at execute time with "no Coolify GitHub source
-          // configured". Surface that here so the cursor parks on this
-          // row and the user fixes it before hitting Adopt.
-          const willBePrivate = plan.setupGitHub;
+          // Visibility row. Picking the wrong path here is the #1
+          // cause of "Permission denied (publickey)" deploy failures
+          // (Coolify tries SSH against a repo whose GitHub App isn't
+          // installed). Mark `set: false` when we couldn't auto-detect
+          // visibility from `gh repo view`, so the cursor parks on it.
+          const detected = state.gitRemoteIsPrivate;
+          const summaryBase = plan.isPrivate
+            ? "private — Coolify clones via GitHub App SSH key"
+            : "public — Coolify clones via HTTPS";
+          const detectedHint =
+            detected === undefined && state.gitRemoteUrl
+              ? chalk.dim(" (couldn't auto-detect — confirm)")
+              : detected !== undefined && detected !== plan.isPrivate
+                ? chalk.yellow(
+                    ` (gh says ${detected ? "private" : "public"} — overridden)`,
+                  )
+                : "";
+          return {
+            key: "isPrivate",
+            label: "Repo visibility",
+            // `set: false` when we have a remote but couldn't detect
+            // (forces the user to confirm before Adopt). Otherwise true.
+            set: !(detected === undefined && !!state.gitRemoteUrl),
+            summary: `${summaryBase}${detectedHint}`,
+          };
+        })(),
+        ((): AdoptStep => {
+          // Preflight: when adopt will be wiring a private repo into
+          // Coolify and Coolify has zero GitHub App sources, the wire
+          // step will throw at execute time with "no Coolify GitHub
+          // source configured". Surface that here so the cursor parks
+          // on this row and the user fixes it before hitting Adopt.
           const missingSource =
             plan.wireCoolify &&
-            willBePrivate &&
+            plan.isPrivate &&
             state.coolifyConfigured &&
             state.coolifyGithubSourceCount === 0;
           const baseSummary = plan.wireCoolify
             ? state.coolifyAppMatch
-              ? chalk.dim(`existing app "${state.coolifyAppMatch.name}" — will skip create`)
+              ? chalk.dim(`existing app "${state.coolifyAppMatch.name}" — will reconcile build pack`)
               : `yes — create app + upsert DNS (port ${plan.appPort})`
             : state.coolifyAppMatch
               ? chalk.dim(`already exists: ${state.coolifyAppMatch.name}`)
@@ -721,7 +802,7 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
             label: "Coolify + DNS",
             set: !missingSource,
             summary: missingSource
-              ? `${baseSummary}  ${chalk.yellow("(needs Coolify GitHub App — install one or set this to no)")}`
+              ? `${baseSummary}  ${chalk.yellow("(needs Coolify GitHub App — install one or set visibility to public)")}`
               : baseSummary,
           };
         })(),
@@ -915,7 +996,7 @@ async function editAdoptStep(
   if (step === "wireCoolify") {
     const wireCoolify = await confirm({
       message: state.coolifyAppMatch
-        ? `App "${state.coolifyAppMatch.name}" already exists — re-wire (will create a duplicate)?`
+        ? `App "${state.coolifyAppMatch.name}" already exists — re-wire (reconciles build pack)?`
         : "Create a Coolify app + upsert DNS now?",
       default: plan.wireCoolify,
     });
@@ -928,6 +1009,28 @@ async function editAdoptStep(
       })
     ).trim();
     return { ...plan, wireCoolify, appPort };
+  }
+  if (step === "isPrivate") {
+    const detected = state.gitRemoteIsPrivate;
+    const detectedSuffix =
+      detected === undefined
+        ? ""
+        : ` (gh detected: ${detected ? "private" : "public"})`;
+    const isPrivate = await select<boolean>({
+      message: `Coolify clone path for this repo${detectedSuffix}:`,
+      choices: [
+        {
+          name: "Private — Coolify uses a configured GitHub App's SSH deploy key",
+          value: true,
+        },
+        {
+          name: "Public — Coolify clones over HTTPS (no auth)",
+          value: false,
+        },
+      ],
+      default: plan.isPrivate,
+    });
+    return { ...plan, isPrivate };
   }
   return plan;
 }
@@ -1064,11 +1167,11 @@ async function executePlan(
           // dockercompose; it's purely metadata once the compose file
           // takes over.
           portsExposes: plan.surfaces === "client-only" ? "80" : plan.appPort,
-          // Default assumption: anything we just `gh repo create --private`d
-          // is private. If origin was already set we don't know for sure;
-          // try public first (cheaper auth) and let the orchestrator handle
-          // the fallback.
-          isPrivate: plan.setupGitHub,
+          // Explicit choice from the stepper. Defaulted from `gh repo
+          // view --json visibility` for existing remotes, `true` for
+          // newly-created `gh repo create --private` repos. See the
+          // comment on AdoptPlan.isPrivate.
+          isPrivate: plan.isPrivate,
         });
         // Record only the bits we actually created. wireProjectIntoCoolify
         // returns explicit `*Created` flags exactly so adopt can guard

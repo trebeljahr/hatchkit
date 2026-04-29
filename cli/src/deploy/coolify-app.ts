@@ -185,14 +185,43 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
   //       a duplicate on every `--resume` is loud and confusing. ───
   let appUuid: string;
   let appCreated = false;
+  const buildPack = input.buildPack ?? "dockercompose";
+  const portsExposes = input.portsExposes ?? "3000";
   const existingApp = await api.findApplicationByName(input.projectName);
   if (existingApp) {
     console.log(
       chalk.dim(
-        `  · Coolify app "${input.projectName}" already exists (${existingApp.uuid}) — skipping create, will update env + DNS.`,
+        `  · Coolify app "${input.projectName}" already exists (${existingApp.uuid}) — skipping create, will reconcile build pack + env + DNS.`,
       ),
     );
     appUuid = existingApp.uuid;
+    // Reconcile the build pack + compose location + ports against
+    // what hatchkit's pipeline expects. Catches the case where the
+    // app was created (by Coolify's UI, an older hatchkit, or a
+    // first-run that picked the wrong value) with build_pack=static
+    // or nixpacks — symptom is "Coolify ignores docker-compose.yml
+    // and tries to serve the repo as a static site". A blind PATCH
+    // is fine here: every adopted app goes through the same
+    // GHCR-pull-via-compose pipeline, so dockercompose is always
+    // the right answer once adopt has scaffolded the build files.
+    const reconcile = ora("Coolify: reconciling build pack on existing app").start();
+    try {
+      await api.updateApplication(existingApp.uuid, {
+        buildPack,
+        portsExposes,
+        dockerComposeLocation: buildPack === "dockercompose" ? "/docker-compose.yml" : undefined,
+        gitBranch: input.gitBranch ?? "main",
+        gitRepository: input.gitRepository,
+      });
+      reconcile.succeed(`Coolify: build pack set to ${buildPack}`);
+    } catch (err) {
+      reconcile.fail(`Coolify: couldn't reconcile build pack: ${(err as Error).message}`);
+      console.log(
+        chalk.dim(
+          `  Set Build Pack = ${buildPack} manually on the app's Configuration page in Coolify.`,
+        ),
+      );
+    }
   } else {
     const baseInput: ApplicationCreateInput = {
       projectUuid,

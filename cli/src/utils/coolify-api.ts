@@ -336,6 +336,34 @@ export class CoolifyApi {
     });
   }
 
+  /** Patch fields on an existing Coolify application. Used by adopt's
+   *  "found by name, reconcile config" path so a build_pack mismatch
+   *  on an app created by an earlier run (e.g. `static` baked in by
+   *  Coolify's New-App wizard, or by an older hatchkit default) gets
+   *  corrected to `dockercompose` on `--resume`. Only fields the caller
+   *  passes are sent — Coolify treats omitted keys as "leave as-is". */
+  async updateApplication(
+    uuid: string,
+    fields: {
+      buildPack?: "nixpacks" | "static" | "dockerfile" | "dockercompose";
+      portsExposes?: string;
+      dockerComposeLocation?: string;
+      gitBranch?: string;
+      gitRepository?: string;
+    },
+  ): Promise<void> {
+    const body: Record<string, unknown> = {};
+    if (fields.buildPack !== undefined) body.build_pack = fields.buildPack;
+    if (fields.portsExposes !== undefined) body.ports_exposes = fields.portsExposes;
+    if (fields.dockerComposeLocation !== undefined) {
+      body.docker_compose_location = fields.dockerComposeLocation;
+    }
+    if (fields.gitBranch !== undefined) body.git_branch = fields.gitBranch;
+    if (fields.gitRepository !== undefined) body.git_repository = fields.gitRepository;
+    if (Object.keys(body).length === 0) return;
+    await this.request("PATCH", `/applications/${uuid}`, body);
+  }
+
   /** Trigger a deploy of an existing application. Useful after we've
    *  set env vars post-creation. */
   async deployApplication(uuid: string): Promise<void> {
