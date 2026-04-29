@@ -91,7 +91,7 @@ output "next_steps" {
     2. Add server to Ansible inventory (ansible/inventories/production/hosts.ini)
     3. Run: make harden
     4. Install Coolify: ./scripts/install-coolify.sh
-    5. Configure Coolify: make coolify-setup STACK=gpu-inference
+    5. Configure Coolify app + DBs: hatchkit create  (interactive, drives the Coolify API)
 
     Phase 2 — Lockdown:
     6. Set coolify_bootstrapped = true in terraform.tfvars

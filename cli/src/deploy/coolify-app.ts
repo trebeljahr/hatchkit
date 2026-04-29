@@ -405,7 +405,7 @@ function inferZone(domain: string): string {
  *  conventions produce, in priority order:
  *    · `<name>-server` + `<name>-client`  → starter split layout
  *    · `<name>`                            → adopt single-app layout
- *    · `<name>-web` / `<name>-app` / `<name>-api` → setup-coolify-stack.sh
+ *    · `<name>-web` / `<name>-app` / `<name>-api` → `runCoolifySetup`
  *      defaults (treated as single-app, no SERVER/CLIENT label).
  *
  *  Returns an empty array when Coolify isn't configured or no app

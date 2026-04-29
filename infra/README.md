@@ -22,7 +22,6 @@ Opinionated, reusable infrastructure for deploying small SaaS apps on dedicated 
 │   ├── node-realtime.env.example # Coolify app config template
 │   └── gpu-inference.env.example # GPU inference API config template
 ├── scripts/
-│   ├── setup-coolify-stack.sh    # Creates app + DBs + env vars via Coolify API
 │   ├── create-hetzner-server.sh  # Thin wrapper around hcloud CLI
 │   ├── install-coolify.sh        # Installs Coolify on the server
 │   ├── repair-coolify-network.sh # Fixes the IPv6 Docker network bug
@@ -74,45 +73,27 @@ make bootstrap INVENTORY=ansible/inventories/production/hosts.ini
 
 ### Phase 3: App stack (Coolify API)
 
-Creates the Coolify project, MongoDB, Redis (optional), the application resource linked to your GitHub repo, sets all environment variables, and pushes GitHub Actions secrets via `gh` CLI:
+The `hatchkit` CLI (in `../cli`) creates the Coolify project, the application resource linked to your GitHub repo, optional per-project MongoDB, encrypted `.env.production` via dotenvx, and pushes the GitHub Actions deploy secrets:
 
 ```bash
-cp stacks/node-realtime.env.example stacks/myapp.env  # fill in your values
-export COOLIFY_TOKEN="..."
-
-make coolify-setup STACK=myapp
+hatchkit create     # interactive — runs Terraform + Coolify in one flow
 ```
 
-The script auto-wires:
-- `MONGODB_URI` pointing to the MongoDB container on the internal Docker network
-- `REDIS_URL` pointing to the Redis container (if enabled)
-- S3 bucket name, endpoint, and credentials (auto-read from Terraform output)
-- Coolify webhook URL and API token as GitHub Actions secrets
+`hatchkit create` auto-wires:
+- `MONGODB_URI` pointing to the MongoDB container on the internal Docker network (encrypted in `.env.production` via dotenvx)
+- S3 bucket name, endpoint, and region from your configured S3 provider
+- `COOLIFY_BASE_URL`, `COOLIFY_API_TOKEN`, and per-app deploy webhooks as GitHub Actions secrets
+- The dotenvx private key on the Coolify app so the runtime can decrypt `.env.production`
 
 ## Stamping a new project
 
-To deploy a new app that fits the node-realtime pattern (Node.js + WebSocket + MongoDB + optional Redis + S3):
+To deploy a new app that fits the node-realtime pattern (Node.js + WebSocket + MongoDB + optional Redis + S3), use the `hatchkit` CLI:
 
 ```bash
-# 1. Copy the infra template
-cp -r terraform/stacks/node-realtime terraform/stacks/chess
-cp terraform/stacks/node-realtime/terraform.tfvars.example terraform/stacks/chess/terraform.tfvars
-
-# 2. Copy the Coolify config template
-cp stacks/node-realtime.env.example stacks/chess.env
-
-# 3. Edit both files with your app-specific values
-
-# 4. Provision infra
-make tf-apply STACK=chess
-
-# 5. Bootstrap server + install Coolify (if new server)
-
-# 6. Create app stack in Coolify
-make coolify-setup STACK=chess
+hatchkit create     # interactive — picks deploy target, scaffolds repo, runs Terraform + Coolify
 ```
 
-If the new app goes on an **existing server** (you already have Coolify running), skip steps 4-5 and just run step 6.
+The CLI handles every step the manual workflow used to: tfvars + DNS, Coolify project + application, MongoDB provisioning, dotenvx-encrypted `.env.production`, and GitHub Actions deploy secrets. If the app goes on an **existing server** (you already have Coolify running), pick "Existing Coolify server" at the prompt and the CLI skips the Hetzner / Ansible / install-coolify steps.
 
 ## Domain routing
 
@@ -216,15 +197,10 @@ These are documented in `docs/coolify-stamps.md`:
 For ML workloads (image processing, 3D model generation, etc.) that need GPU:
 
 ```bash
-# 1. Provision API server + S3 buckets
-make tf-apply STACK=gpu-inference
+# 1. Scaffold the project + provision infra + create the Coolify app
+hatchkit create     # interactive — pick the gpu-inference template
 
-# 2. Bootstrap, harden, install Coolify (same as node-realtime)
-
-# 3. Set up Coolify app
-make coolify-setup STACK=gpu-inference
-
-# 4. Deploy GPU pipeline to Modal (recommended for V1)
+# 2. Deploy GPU pipeline to Modal (recommended for V1)
 cd templates/apps/gpu-inference-api/modal
 pip install modal && modal setup
 modal deploy pipeline.py
@@ -273,10 +249,9 @@ make tf-init   STACK=<name>   # Initialize providers
 make tf-plan   STACK=<name>   # Preview changes (always do this first)
 make tf-apply  STACK=<name>   # Apply changes
 make tf-destroy STACK=<name>  # Tear down infrastructure
-
-# Coolify (app stack)
-make coolify-setup STACK=<name>  # Create app + DBs + env vars + GitHub secrets
 ```
+
+For end-to-end project creation (Terraform + Coolify app + MongoDB + GitHub secrets), use `hatchkit create` from the `cli/` package — it orchestrates the same Makefile targets and the Coolify REST API in one interactive flow.
 
 ## Terraform providers used
 
@@ -286,7 +261,7 @@ make coolify-setup STACK=<name>  # Create app + DBs + env vars + GitHub secrets
 | inwx | `inwx/inwx` | DNS records (A, AAAA) |
 | minio | `aminueza/minio` | S3 bucket creation on Hetzner Object Storage |
 
-**Why no Coolify Terraform provider?** The community provider ([SierraJC/coolify](https://github.com/SierraJC/terraform-provider-coolify)) is 0.x with partial application/database support. The Coolify REST API is complete and stable, so we use it directly via `setup-coolify-stack.sh`. When the provider matures, the migration is straightforward — the concepts map 1:1.
+**Why no Coolify Terraform provider?** The community provider ([SierraJC/coolify](https://github.com/SierraJC/terraform-provider-coolify)) is 0.x with partial application/database support. The Coolify REST API is complete and stable, so we use it directly from the CLI (see `cli/src/utils/coolify-api.ts` and `cli/src/deploy/coolify.ts`). When the provider matures, the migration is straightforward — the concepts map 1:1.
 
 ## References
 

@@ -193,8 +193,8 @@ Implement Colyseus-like patterns directly in your Socket.IO/ws handlers:
 The `dev-ops-automation` repo handles:
 - **Terraform:** Hetzner server + INWX DNS + S3 bucket creation
 - **Ansible:** Server hardening (SSH, fail2ban, swap, Tailscale)
-- **Coolify API script:** Creates app + databases + env vars + GitHub secrets
-- **Stampable:** Copy templates, fill in values, `make tf-apply && make coolify-setup`
+- **Coolify provisioning:** `hatchkit create` (in `cli/`) drives the Coolify REST API to create app + databases + env vars + GitHub secrets
+- **Stampable:** `hatchkit create` walks an interactive flow that wires Terraform + Coolify in one shot
 
 The app starter repo is separate — different lifecycle, different concerns.
 

@@ -3,7 +3,7 @@ INVENTORY ?= ansible/inventories/production/hosts.ini
 STACK ?= node-realtime
 TF_DIR := terraform/stacks/$(STACK)
 
-.PHONY: help bootstrap harden lockdown verify tf-init tf-plan tf-apply tf-destroy coolify-setup
+.PHONY: help bootstrap harden lockdown verify tf-init tf-plan tf-apply tf-destroy create
 
 help:
 	@echo "Targets:"
@@ -20,13 +20,10 @@ help:
 	@echo "    tf-apply    Apply changes                     STACK=<name>"
 	@echo "    tf-destroy  Tear down infrastructure          STACK=<name>"
 	@echo ""
-	@echo "  Coolify (app stack):"
-	@echo "    coolify-setup  Create app + DB in Coolify     STACK=<name>"
-	@echo ""
 	@echo "  Stacks: hardened-vps, node-realtime, gpu-inference, dns-only"
 	@echo ""
-	@echo "  CLI:"
-	@echo "    create         Interactive project scaffolder"
+	@echo "  CLI (preferred entry point — handles Coolify app + DB + env vars):"
+	@echo "    create         Interactive project scaffolder    (or: hatchkit create)"
 
 # Full security hardening (Tier 1 + Tier 2 from docs/hardening-guide.md)
 harden:
@@ -58,8 +55,5 @@ tf-destroy:
 	@read _
 	cd $(TF_DIR) && terraform destroy
 
-coolify-setup:
-	./scripts/setup-coolify-stack.sh --config stacks/$(STACK).env
-
 create:
-	cd cli && npm run dev
+	cd ../cli && pnpm run dev

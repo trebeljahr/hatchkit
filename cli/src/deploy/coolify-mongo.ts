@@ -10,7 +10,7 @@
  *
  * Flow:
  *   1. Resolve the Coolify project_uuid (it was created by
- *      `setup-coolify-stack.sh` with the project name).
+ *      `runCoolifySetup` with the project name).
  *   2. Resolve the server_uuid by IP (Hetzner deploys carry the IP)
  *      or fall back to the first listed server.
  *   3. POST /databases/mongodb with `instant_deploy: true`.

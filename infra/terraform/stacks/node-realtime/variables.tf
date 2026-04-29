@@ -146,10 +146,10 @@ variable "subdomains" {
     This creates myapp.example.com, api.myapp.example.com, admin.example.com
     all pointing to your server IP.
 
-    IMPORTANT: The setup-coolify-stack.sh script auto-derives api.<app-domain>
-    from the APP_DOMAIN in your stack .env file. Make sure both the base
-    subdomain AND the api.* subdomain are listed here, or DNS won't resolve
-    and TLS cert issuance will fail.
+    IMPORTANT: `hatchkit create` auto-derives api.<app-domain> from the
+    project's domain. Make sure both the base subdomain AND the api.*
+    subdomain are listed here, or DNS won't resolve and TLS cert
+    issuance will fail.
   EOT
   type        = map(string)
   default = {

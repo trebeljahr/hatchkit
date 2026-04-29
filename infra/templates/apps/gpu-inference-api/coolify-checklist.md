@@ -11,7 +11,7 @@
 
 ## Coolify setup
 
-- [ ] Run `make coolify-setup STACK=gpu-inference`
+- [ ] Run `hatchkit create` and pick the gpu-inference template (drives Coolify project + app + GitHub Actions secrets via the Coolify API)
 - [ ] Verify environment variables are set in Coolify dashboard
 - [ ] Set up GitHub webhook for automatic deploys
 

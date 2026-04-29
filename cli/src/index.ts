@@ -733,7 +733,12 @@ async function handleCreate(): Promise<void> {
 
     // Step 6: Coolify setup
     if (config.runDeployment) {
-      await runCoolifySetup(config, INFRA_ROOT);
+      const coolifyResult = await runCoolifySetup(config, {
+        repoUrl: repoUrl ?? undefined,
+        serverPort: scaffoldResult?.ports.server,
+        clientPort: scaffoldResult?.ports.client,
+      });
+      ledger?.record({ kind: "coolifyApp", uuid: coolifyResult.appUuid });
 
       // Provision a per-project MongoDB container on Coolify when the
       // user picked that path. Best-effort: a failure here doesn't undo
@@ -742,7 +747,8 @@ async function handleCreate(): Promise<void> {
         try {
           const { provisionCoolifyMongo } = await import("./deploy/coolify-mongo.js");
           const serverEnvDir = join(appDir, "packages/server");
-          await provisionCoolifyMongo(config, serverEnvDir);
+          const mongoResult = await provisionCoolifyMongo(config, serverEnvDir);
+          ledger?.record({ kind: "coolifyDb", uuid: mongoResult.databaseUuid });
         } catch (err) {
           console.log(chalk.yellow(`  Couldn't auto-provision MongoDB: ${(err as Error).message}`));
           console.log(
