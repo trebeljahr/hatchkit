@@ -200,10 +200,11 @@ export function scaffoldBuildPipeline(
   // the recognised names) is present. Always write to
   // `docker-compose.yml` since that's what Coolify expects by default.
   if (input.force || !state.hasCompose) {
+    const servicePort = input.surfaces === "client-only" ? 80 : input.port;
     const out = renderTemplate("build-pipeline/docker-compose.yml.hbs", {
       name: input.projectName,
       owner: input.ghOwner,
-      port: input.port,
+      port: servicePort,
     });
     write("docker-compose.yml", out, state.hasCompose);
   } else {

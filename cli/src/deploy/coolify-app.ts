@@ -54,6 +54,9 @@ export interface WireUpInput {
   isPrivate?: boolean;
   /** When the user has already chosen one previously, skip the picker. */
   githubAppUuid?: string;
+  /** Compose service that should receive the public domain. Defaults to
+   *  the service name hatchkit scaffolds (`app`). */
+  dockerComposeServiceName?: string;
 }
 
 export interface WireUpResult {
@@ -187,6 +190,10 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
   let appCreated = false;
   const buildPack = input.buildPack ?? "dockercompose";
   const portsExposes = input.portsExposes ?? "3000";
+  const appDomain =
+    buildPack === "dockercompose"
+      ? formatDockerComposeDomain(input.domain, portsExposes)
+      : `https://${input.domain}`;
   const existingApp = await api.findApplicationByName(input.projectName);
   if (existingApp) {
     console.log(
@@ -237,7 +244,8 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       buildPack: input.buildPack ?? "dockercompose",
       name: input.projectName,
       description: "Adopted by hatchkit",
-      domains: [`https://${input.domain}`],
+      domains: [appDomain],
+      dockerComposeDomainServiceName: input.dockerComposeServiceName ?? "app",
       instantDeploy: false,
     };
 
@@ -309,7 +317,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
   try {
     await api.deployApplication(appUuid);
     deploy.succeed("Coolify: deploy triggered");
-  } catch (err) {
+  } catch {
     deploy.fail("Coolify: couldn't auto-trigger the deploy");
     console.log(
       chalk.dim(
@@ -334,6 +342,20 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     dnsRecordCreatedV4: dnsResult.createdV4,
     dnsRecordCreatedV6: dnsResult.createdV6,
   };
+}
+
+function formatDockerComposeDomain(domain: string, portsExposes: string): string {
+  const port = firstExposePort(portsExposes);
+  if (!port || port === "80" || port === "443") return `https://${domain}`;
+  return `https://${domain}:${port}`;
+}
+
+function firstExposePort(portsExposes: string): string | undefined {
+  const first = portsExposes
+    .split(",")
+    .map((p) => p.trim())
+    .find(Boolean);
+  return first?.split(":").pop()?.trim();
 }
 
 interface DnsWireResult {

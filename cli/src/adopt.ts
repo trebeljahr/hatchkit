@@ -377,11 +377,10 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
   let gitRemoteIsPrivate: boolean | undefined;
   if (gitRemoteUrl) {
     try {
-      const res = await exec(
-        "gh",
-        ["repo", "view", "--json", "visibility", "-q", ".visibility"],
-        { cwd: projectDir, silent: true },
-      );
+      const res = await exec("gh", ["repo", "view", "--json", "visibility", "-q", ".visibility"], {
+        cwd: projectDir,
+        silent: true,
+      });
       if (res.exitCode === 0) {
         const v = res.stdout.trim().toLowerCase();
         // GitHub returns "PUBLIC" / "PRIVATE" / "INTERNAL". Internal
@@ -766,9 +765,7 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
             detected === undefined && state.gitRemoteUrl
               ? chalk.dim(" (couldn't auto-detect — confirm)")
               : detected !== undefined && detected !== plan.isPrivate
-                ? chalk.yellow(
-                    ` (gh says ${detected ? "private" : "public"} — overridden)`,
-                  )
+                ? chalk.yellow(` (gh says ${detected ? "private" : "public"} — overridden)`)
                 : "";
           return {
             key: "isPrivate",
@@ -792,7 +789,9 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
             state.coolifyGithubSourceCount === 0;
           const baseSummary = plan.wireCoolify
             ? state.coolifyAppMatch
-              ? chalk.dim(`existing app "${state.coolifyAppMatch.name}" — will reconcile build pack`)
+              ? chalk.dim(
+                  `existing app "${state.coolifyAppMatch.name}" — will reconcile build pack`,
+                )
               : `yes — create app + upsert DNS (port ${plan.appPort})`
             : state.coolifyAppMatch
               ? chalk.dim(`already exists: ${state.coolifyAppMatch.name}`)
@@ -1013,9 +1012,7 @@ async function editAdoptStep(
   if (step === "isPrivate") {
     const detected = state.gitRemoteIsPrivate;
     const detectedSuffix =
-      detected === undefined
-        ? ""
-        : ` (gh detected: ${detected ? "private" : "public"})`;
+      detected === undefined ? "" : ` (gh detected: ${detected ? "private" : "public"})`;
     const isPrivate = await select<boolean>({
       message: `Coolify clone path for this repo${detectedSuffix}:`,
       choices: [
@@ -1167,6 +1164,10 @@ async function executePlan(
           // dockercompose; it's purely metadata once the compose file
           // takes over.
           portsExposes: plan.surfaces === "client-only" ? "80" : plan.appPort,
+          dockerComposeServiceName: detectDockerComposeDomainServiceName(
+            state.projectDir,
+            plan.surfaces,
+          ),
           // Explicit choice from the stepper. Defaulted from `gh repo
           // view --json visibility` for existing remotes, `true` for
           // newly-created `gh repo create --private` repos. See the
@@ -1646,6 +1647,78 @@ function renderBuildPipelineSummary(state: DetectedState, plan: AdoptPlan): stri
   const writePart = `write ${willWrite.join(", ")}`;
   const keepPart = kept.length > 0 ? chalk.dim(` · keep ${kept.join(", ")}`) : "";
   return `${writePart}${keepPart}`;
+}
+
+function detectDockerComposeDomainServiceName(projectDir: string, surfaces: AdoptSurface): string {
+  const pipe = detectBuildPipeline(projectDir);
+  if (!pipe.composePath) return "app";
+  const services = readComposeServiceNames(pipe.composePath);
+  if (services.length === 0) return "app";
+
+  const preferred =
+    surfaces === "client-only"
+      ? ["app", "web", "client", "frontend", "site"]
+      : ["app", "server", "api", "backend", "web", "client", "frontend"];
+  for (const name of preferred) {
+    if (services.includes(name)) return name;
+  }
+
+  const infraServices = new Set([
+    "db",
+    "database",
+    "postgres",
+    "postgresql",
+    "mysql",
+    "mariadb",
+    "mongo",
+    "mongodb",
+    "redis",
+    "cache",
+    "minio",
+    "mailhog",
+    "nginx",
+    "traefik",
+  ]);
+  return services.find((name) => !infraServices.has(name)) ?? services[0] ?? "app";
+}
+
+function readComposeServiceNames(composePath: string): string[] {
+  let content: string;
+  try {
+    content = readFileSync(composePath, "utf-8");
+  } catch {
+    return [];
+  }
+
+  const names: string[] = [];
+  let inServices = false;
+  let servicesIndent = 0;
+  let serviceIndent: number | undefined;
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    if (!rawLine.trim() || rawLine.trimStart().startsWith("#")) continue;
+    const indent = rawLine.match(/^\s*/)?.[0].length ?? 0;
+    const trimmed = rawLine.trim();
+
+    if (!inServices) {
+      if (/^services\s*:/.test(trimmed)) {
+        inServices = true;
+        servicesIndent = indent;
+      }
+      continue;
+    }
+
+    if (indent <= servicesIndent && /^[\w.-]+\s*:/.test(trimmed)) break;
+    if (indent <= servicesIndent) continue;
+    if (serviceIndent === undefined) serviceIndent = indent;
+    if (indent !== serviceIndent) continue;
+
+    const match = trimmed.match(/^["']?([\w.-]+)["']?\s*:/);
+    const name = match?.[1];
+    if (name && !name.startsWith("x-")) names.push(name);
+  }
+
+  return names;
 }
 
 async function scaffoldBuildPipelineNow(

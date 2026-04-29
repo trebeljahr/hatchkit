@@ -299,6 +299,7 @@ export class CoolifyApi {
    *  endpoints. Coolify mostly mirrors the docker-compose convention:
    *  `ports_exposes` is the comma-separated container port(s). */
   private buildAppCreateBody(input: ApplicationCreateInput): Record<string, unknown> {
+    const buildPack = input.buildPack ?? "nixpacks";
     const body: Record<string, unknown> = {
       project_uuid: input.projectUuid,
       server_uuid: input.serverUuid,
@@ -306,17 +307,29 @@ export class CoolifyApi {
       git_repository: input.gitRepository,
       git_branch: input.gitBranch ?? "main",
       ports_exposes: input.portsExposes ?? "3000",
-      build_pack: input.buildPack ?? "nixpacks",
+      build_pack: buildPack,
       name: input.name,
       description: input.description,
-      domains: input.domains?.join(","),
       instant_deploy: input.instantDeploy ?? true,
     };
     // dockercompose build pack reads docker-compose.yml from the repo;
     // tell Coolify where to find it. Default works when the file is
-    // at the repo root (the canonical hatchkit layout).
-    if (input.buildPack === "dockercompose") {
+    // at the repo root (the canonical hatchkit layout). Coolify rejects
+    // the regular `domains` field for dockercompose apps; domains must be
+    // attached to individual compose services instead.
+    if (buildPack === "dockercompose") {
       body.docker_compose_location = input.dockerComposeLocation ?? "/docker-compose.yml";
+      const dockerComposeDomains =
+        input.dockerComposeDomains ??
+        input.domains?.map((domain) => ({
+          name: input.dockerComposeDomainServiceName ?? "app",
+          domain,
+        }));
+      if (dockerComposeDomains && dockerComposeDomains.length > 0) {
+        body.docker_compose_domains = dockerComposeDomains;
+      }
+    } else if (input.domains && input.domains.length > 0) {
+      body.domains = input.domains.join(",");
     }
     return body;
   }
@@ -405,6 +418,12 @@ export interface ApplicationCreateInput {
    *  Coolify pick a sslip.io host; pass `https://<domain>` to bind to
    *  a real one (assumes DNS already points at the server). */
   domains?: string[];
+  /** Per-service domains for dockercompose apps. Coolify rejects the
+   *  top-level `domains` field when `build_pack=dockercompose`. */
+  dockerComposeDomains?: Array<{ name: string; domain: string }>;
+  /** Fallback service name when callers pass `domains` for a
+   *  dockercompose app. Defaults to the hatchkit scaffold's `app`. */
+  dockerComposeDomainServiceName?: string;
   instantDeploy?: boolean;
   /** Repo-relative path to the compose file when buildPack is
    *  `dockercompose`. Defaults to `/docker-compose.yml`. */

@@ -685,10 +685,16 @@ console.log("\n── build pipeline: engines.node detection + created/overwritt
     defaultBranch: "main",
   });
   const dockerfile = readFileSync(join(tmp, "Dockerfile"), "utf-8");
+  const compose = readFileSync(join(tmp, "docker-compose.yml"), "utf-8");
   checks.push(["Dockerfile contains NODE_VERSION=24", /NODE_VERSION=24\b/.test(dockerfile)]);
   checks.push([
     "Dockerfile does NOT contain NODE_VERSION=22",
     !/NODE_VERSION=22\b/.test(dockerfile),
+  ]);
+  checks.push(["client-only compose maps nginx port 80", compose.includes('"80:80"')]);
+  checks.push([
+    "client-only compose does NOT map default app port 3000",
+    !compose.includes('"3000:3000"'),
   ]);
   checks.push(["created list includes Dockerfile", r1.created.includes("Dockerfile")]);
   checks.push(["overwritten list is empty on first run", r1.overwritten.length === 0]);
@@ -728,6 +734,62 @@ console.log("\n── build pipeline: engines.node detection + created/overwritt
   }
   results.buildPipelineNodeVersion = ok;
   rmSync(tmp, { recursive: true, force: true });
+}
+
+// Coolify API: dockercompose app creation must use per-service domains,
+// not the top-level `domains` field that Coolify now rejects.
+console.log("\n── coolify api: dockercompose domains payload ─────────────────────────────");
+{
+  const { CoolifyApi } = await import("./src/utils/coolify-api.js");
+  const calls: RequestInit[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    calls.push(init ?? {});
+    return new Response(JSON.stringify({ uuid: "app-uuid" }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const api = new CoolifyApi({ url: "https://coolify.test", token: "test-token" });
+    await api.createApplicationFromPublicRepo({
+      projectUuid: "project-uuid",
+      serverUuid: "server-uuid",
+      gitRepository: "https://github.com/acme/app",
+      buildPack: "dockercompose",
+      domains: ["https://app.example.com:3000"],
+      dockerComposeDomainServiceName: "web",
+    });
+    await api.createApplicationFromPublicRepo({
+      projectUuid: "project-uuid",
+      serverUuid: "server-uuid",
+      gitRepository: "https://github.com/acme/app",
+      buildPack: "nixpacks",
+      domains: ["https://app.example.com"],
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const dockerComposeBody = JSON.parse(String(calls[0]?.body ?? "{}"));
+  const nixpacksBody = JSON.parse(String(calls[1]?.body ?? "{}"));
+  const checks: Check[] = [
+    ["dockercompose omits top-level domains", dockerComposeBody.domains === undefined],
+    [
+      "dockercompose sets service domain",
+      Array.isArray(dockerComposeBody.docker_compose_domains) &&
+        dockerComposeBody.docker_compose_domains[0]?.name === "web" &&
+        dockerComposeBody.docker_compose_domains[0]?.domain === "https://app.example.com:3000",
+    ],
+    ["nixpacks still uses top-level domains", nixpacksBody.domains === "https://app.example.com"],
+  ];
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  results.coolifyDockerComposeDomains = ok;
 }
 
 // Adopt rollback safety: every LedgerStep kind has a recipe + describe
