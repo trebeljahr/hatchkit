@@ -33,12 +33,14 @@ import type { ApplicationCreateInput } from "../utils/coolify-api.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { type PublicIps, discoverPublicIps } from "../utils/coolify-server-ips.js";
 import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
-import type { CoolifyDeployApp } from "./gh-actions-secrets.js";
+import { type CoolifyDeployApp, repoSlugFromRemote } from "./gh-actions-secrets.js";
 
 export interface WireUpInput {
   projectName: string;
   domain: string;
-  /** GitHub repo URL — `https://github.com/owner/repo`. */
+  /** GitHub repo remote. SSH and HTTPS GitHub remotes are normalized before
+   *  they are sent to Coolify so public apps clone over HTTPS and private
+   *  GitHub-App apps use the `owner/repo` selector. */
   gitRepository: string;
   /** Default `main`. */
   gitBranch?: string;
@@ -190,6 +192,14 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
   let appCreated = false;
   const buildPack = input.buildPack ?? "dockercompose";
   const portsExposes = input.portsExposes ?? "3000";
+  const repoRef = normalizeCoolifyGitRepository(input.gitRepository, !!input.isPrivate);
+  if (repoRef.gitRepository !== input.gitRepository) {
+    console.log(
+      chalk.dim(
+        `  · Coolify Git source: ${repoRef.gitRepository} (${input.isPrivate ? "GitHub App" : "public HTTPS"})`,
+      ),
+    );
+  }
   const appDomain =
     buildPack === "dockercompose"
       ? formatDockerComposeDomain(input.domain, portsExposes)
@@ -218,7 +228,8 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
         portsExposes,
         dockerComposeLocation: buildPack === "dockercompose" ? "/docker-compose.yml" : undefined,
         gitBranch: input.gitBranch ?? "main",
-        gitRepository: input.gitRepository,
+        gitRepository: repoRef.gitRepository,
+        githubAppUuid: input.isPrivate ? githubAppUuid : undefined,
       });
       reconcile.succeed(`Coolify: build pack set to ${buildPack}`);
     } catch (err) {
@@ -233,7 +244,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     const baseInput: ApplicationCreateInput = {
       projectUuid,
       serverUuid: resolveServer.uuid,
-      gitRepository: input.gitRepository,
+      gitRepository: repoRef.gitRepository,
       gitBranch: input.gitBranch ?? "main",
       portsExposes: input.portsExposes ?? "3000",
       // hatchkit's canonical pipeline = GitHub Actions builds image →
@@ -249,7 +260,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       instantDeploy: false,
     };
 
-    const createApp = ora(`Coolify: creating app for ${input.gitRepository}`).start();
+    const createApp = ora(`Coolify: creating app for ${repoRef.gitRepository}`).start();
     try {
       const res = input.isPrivate
         ? await api.createApplicationFromPrivateGithubApp({
@@ -275,7 +286,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     try {
       await api.setAppEnv(appUuid, {
         DOTENV_PRIVATE_KEY_PRODUCTION: dotenvKey,
-        GITHUB_REPO_URL: input.gitRepository,
+        GITHUB_REPO_URL: repoRef.webUrl ?? input.gitRepository,
       });
       setEnv.succeed("Coolify: baseline env set");
     } catch (err) {
@@ -341,6 +352,23 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     appCreated,
     dnsRecordCreatedV4: dnsResult.createdV4,
     dnsRecordCreatedV6: dnsResult.createdV6,
+  };
+}
+
+export function normalizeCoolifyGitRepository(
+  remoteUrl: string,
+  isPrivate: boolean,
+): { gitRepository: string; webUrl?: string } {
+  const slug = repoSlugFromRemote(remoteUrl);
+  if (!slug) return { gitRepository: remoteUrl };
+
+  const webUrl = `https://github.com/${slug}`;
+  return {
+    // Coolify's public endpoint should not receive an SSH remote; it has
+    // no deploy key and will fail with "Permission denied (publickey)".
+    // The private GitHub App endpoint is selected by repository slug.
+    gitRepository: isPrivate ? slug : webUrl,
+    webUrl,
   };
 }
 

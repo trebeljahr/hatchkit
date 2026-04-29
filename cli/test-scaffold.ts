@@ -741,6 +741,7 @@ console.log("\n── build pipeline: engines.node detection + created/overwritt
 console.log("\n── coolify api: dockercompose domains payload ─────────────────────────────");
 {
   const { CoolifyApi } = await import("./src/utils/coolify-api.js");
+  const { normalizeCoolifyGitRepository } = await import("./src/deploy/coolify-app.js");
   const calls: RequestInit[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
@@ -774,6 +775,8 @@ console.log("\n── coolify api: dockercompose domains payload ─────
 
   const dockerComposeBody = JSON.parse(String(calls[0]?.body ?? "{}"));
   const nixpacksBody = JSON.parse(String(calls[1]?.body ?? "{}"));
+  const publicRepo = normalizeCoolifyGitRepository("git@github.com:acme/app.git", false);
+  const privateRepo = normalizeCoolifyGitRepository("git@github.com:acme/app.git", true);
   const checks: Check[] = [
     ["dockercompose omits top-level domains", dockerComposeBody.domains === undefined],
     [
@@ -783,6 +786,8 @@ console.log("\n── coolify api: dockercompose domains payload ─────
         dockerComposeBody.docker_compose_domains[0]?.domain === "https://app.example.com:3000",
     ],
     ["nixpacks still uses top-level domains", nixpacksBody.domains === "https://app.example.com"],
+    ["public SSH remote normalizes to HTTPS", publicRepo.gitRepository === "https://github.com/acme/app"],
+    ["private SSH remote normalizes to owner/repo", privateRepo.gitRepository === "acme/app"],
   ];
   let ok = true;
   for (const [n, c] of checks) {

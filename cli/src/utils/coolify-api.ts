@@ -363,6 +363,7 @@ export class CoolifyApi {
       dockerComposeLocation?: string;
       gitBranch?: string;
       gitRepository?: string;
+      githubAppUuid?: string;
     },
   ): Promise<void> {
     const body: Record<string, unknown> = {};
@@ -373,6 +374,7 @@ export class CoolifyApi {
     }
     if (fields.gitBranch !== undefined) body.git_branch = fields.gitBranch;
     if (fields.gitRepository !== undefined) body.git_repository = fields.gitRepository;
+    if (fields.githubAppUuid !== undefined) body.github_app_uuid = fields.githubAppUuid;
     if (Object.keys(body).length === 0) return;
     await this.request("PATCH", `/applications/${uuid}`, body);
   }
