@@ -78,12 +78,24 @@ if (includeDocs) {
 }
 console.log(`  Server: http://127.0.0.1:${apiPort}\n`);
 
+// `@starter/shared` resolves via package.json `exports` to dist/. The
+// server runs under `tsx watch` which honours Node resolution, so on a
+// fresh checkout (no dist/) it errors with ERR_MODULE_NOT_FOUND. Build
+// once here, then watch in parallel so edits to shared propagate.
+console.log("  Building @starter/shared...");
+try {
+  execSync("pnpm --filter @starter/shared run build", { stdio: "inherit" });
+} catch {
+  process.exit(1);
+}
+
 const processes = [
+  `"pnpm --filter @starter/shared run dev"`,
   `"node scripts/wait-for-port.mjs ${apiPort} && PORT=${clientPort} NEXT_PUBLIC_API_URL=http://127.0.0.1:${apiPort} NEXT_PUBLIC_WS_URL=ws://127.0.0.1:${apiPort} pnpm --filter @starter/client run dev"`,
   `"PORT=${apiPort} FRONTEND_URL=http://127.0.0.1:${clientPort} pnpm --filter @starter/server run dev"`,
 ];
-const names = ["client", "server"];
-const colors = ["yellow", "cyan"];
+const names = ["shared", "client", "server"];
+const colors = ["green", "yellow", "cyan"];
 
 if (includeDocs) {
   processes.push(

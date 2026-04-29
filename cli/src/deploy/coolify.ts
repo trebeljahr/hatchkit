@@ -144,7 +144,12 @@ export async function runCoolifySetup(
         environmentName: "production",
         gitRepository: options.repoUrl,
         gitBranch: "main",
-        buildPack: "dockerfile",
+        // Canonical pipeline: GitHub Actions builds → pushes to GHCR →
+        // Coolify pulls via docker-compose.yml (scaffolded at the repo
+        // root by `scaffoldBuildPipeline`). `dockerfile` here would
+        // ignore that compose file and try to build the repo directly,
+        // which fails on the monorepo layout.
+        buildPack: "dockercompose",
         // Coolify exposes one container port. The starter's server
         // listens on `serverPort` and serves client assets in prod —
         // that's the right port to route to. The client dev port is a
