@@ -38,7 +38,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { Separator, confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
-import { ensureGitHub, getCoolifyConfig } from "./config.js";
+import { ensureGitHub, getCoolifyConfig, getGhcrConfig } from "./config.js";
 import {
   ownerFromRemote,
   repoSlugFromRemote,
@@ -1308,14 +1308,19 @@ async function executePlan(
           "./deploy/ghcr.js"
         );
         if (plan.isPrivate) {
-          const pullToken = await getSecret(SECRET_KEYS.ghcrPullToken);
+          // Read the full GHCR config (token + the PAT owner's GitHub
+          // login). When either is missing the helper surfaces a
+          // `hatchkit config add ghcr` caveat instead of failing the
+          // run, so the user can drop creds in and re-run --resume.
+          const ghcrConfig = await getGhcrConfig();
           const cfg = await getCoolifyConfig();
           if (cfg) {
             const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
             const r = await registerGhcrCredsWithCoolify({
               api,
               repoSlug: slug,
-              pullToken: pullToken ?? undefined,
+              pullToken: ghcrConfig?.pullToken,
+              username: ghcrConfig?.username,
             });
             if (r.kind === "private-registered") {
               ledger.record({

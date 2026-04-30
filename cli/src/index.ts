@@ -947,7 +947,7 @@ async function handleConfig(): Promise<void> {
       if (!provider) {
         console.log("Usage: hatchkit config add <provider>");
         console.log(
-          "Providers: coolify, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, resend",
+          "Providers: coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, resend, stripe",
         );
         return;
       }
@@ -965,6 +965,7 @@ async function handleConfig(): Promise<void> {
         case "openpanel":
         case "resend":
         case "stripe":
+        case "ghcr":
           await reconfigureProvider(provider);
           break;
         case "s3": {
@@ -985,7 +986,7 @@ async function handleConfig(): Promise<void> {
             console.log(chalk.red(`  Unknown provider: ${provider}`));
             console.log(
               chalk.dim(
-                "  Valid: coolify, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, resend",
+                "  Valid: coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, resend, stripe",
               ),
             );
             return;
@@ -1016,6 +1017,9 @@ async function handleConfig(): Promise<void> {
       );
       console.log(
         `  Coolify:  ${config.providers.coolify?.status === "configured" ? chalk.green("✓") : chalk.red("✗")}`,
+      );
+      console.log(
+        `  GHCR:     ${config.providers.ghcr?.status === "configured" ? chalk.green(`✓ (${config.providers.ghcr.username ?? ""})`) : chalk.dim("not configured (only needed for private adopt)")}`,
       );
       console.log(
         `  Hetzner:  ${config.providers.hetzner?.status === "configured" ? chalk.green("✓") : chalk.red("✗")}`,
@@ -1454,8 +1458,8 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Subcommands:")}
     config              Show status of every configured provider (alias: \`status\`)
     config add <p>      Configure a provider
-                        (coolify, hetzner, dns, s3, modal, runpod, hf, replicate,
-                         glitchtip, openpanel, resend)
+                        (coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate,
+                         glitchtip, openpanel, resend, stripe)
     config reset        Clear ALL CLI config (providers, tokens, ML registry, ports)
 `);
     return;

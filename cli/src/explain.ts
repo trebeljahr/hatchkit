@@ -107,7 +107,7 @@ const MODEL: ExplainModel = {
     {
       name: "hatchkit config add <provider>",
       summary:
-        "Configure one provider (coolify / hetzner / dns / s3 / gpu / glitchtip / openpanel / resend).",
+        "Configure one provider (coolify / ghcr / hetzner / dns / s3 / gpu / glitchtip / openpanel / resend / stripe).",
       when: "Rotating a token, or adding an optional provider you skipped during setup.",
     },
     {

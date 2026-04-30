@@ -127,6 +127,16 @@ export interface StripeMeta extends ProviderStatus {
   mode?: "test" | "live";
 }
 
+export interface GhcrMeta extends ProviderStatus {
+  /** GitHub login the PAT belongs to. Surfaced in `hatchkit config`
+   *  status and used as the username for Coolify's private-registry
+   *  entry — GHCR's anonymous-looking `_json_key`-style placeholder
+   *  isn't accepted by docker login. Captured at validation time
+   *  (`gh api /user --jq .login` while we already have the token in
+   *  hand) so adopt's Path B doesn't need a second round-trip. */
+  username?: string;
+}
+
 // === Full-config types — metadata + the associated secret. These are
 //     what `ensureX` returns and what deploy code typically wants. ===
 
@@ -170,6 +180,11 @@ export interface StripeConfig extends StripeMeta {
   /** Public-safe key for the browser bundle — `pk_test_…` / `pk_live_…`. */
   publishableKey: string;
 }
+export interface GhcrConfig extends GhcrMeta {
+  /** PAT with `read:packages` (and optionally `write:packages` for the
+   *  Path-A visibility flip path). Stored in the OS keychain. */
+  pullToken: string;
+}
 
 export interface MlServiceEntry {
   platform: string;
@@ -192,6 +207,7 @@ export interface CliConfig {
     openpanel?: OpenpanelMeta;
     resend?: ResendMeta;
     stripe?: StripeMeta;
+    ghcr?: GhcrMeta;
   };
   mlServices: Record<string, MlServiceEntry>;
   /** Ports that are already assigned to scaffolded projects so the
@@ -1103,6 +1119,96 @@ export async function getStripeConfig(): Promise<StripeConfig | null> {
 }
 
 // ---------------------------------------------------------------------------
+// Provider: GHCR (GitHub Container Registry pull credentials)
+// ---------------------------------------------------------------------------
+//
+// Used by `hatchkit adopt` Path B: when the user adopts a private repo,
+// GHCR's auto-created package inherits the privacy and Coolify can't pull
+// it without auth. Hatchkit registers this PAT with Coolify's private-
+// registries store so every adopted private app on this Coolify install
+// pulls authenticated. One PAT per machine — there's no per-project
+// state in here.
+//
+// Token requirements:
+//   · Minimum scope: `read:packages`. Hatchkit only ever uses it to pull.
+//   · The matching `username` is the token owner's GitHub login (we look
+//     it up via `gh api /user --jq .login` while we have the token in
+//     hand). Coolify stores it alongside the password — it's what its
+//     `docker login ghcr.io` ultimately sends.
+//
+// Token validation:
+//   · `GET /user` succeeds → token works, login captured.
+//   · 401/403 → wrong scope or revoked PAT; surface a precise error
+//     instead of letting it fail downstream during a 5-minute deploy.
+
+export async function ensureGhcr(): Promise<GhcrConfig> {
+  const existing = store.get("providers.ghcr") as GhcrMeta | undefined;
+  const existingToken = await getSecret(SECRET_KEYS.ghcrPullToken);
+
+  if (existing?.status === "configured" && existingToken && existing.username) {
+    return { ...existing, pullToken: existingToken };
+  }
+
+  console.log(chalk.yellow("\n  GHCR is not configured yet. Let's set it up."));
+  console.log(
+    chalk.dim(
+      "  Used by `hatchkit adopt` for private repos — Coolify needs a PAT to pull\n" +
+        "  the published GHCR image. One PAT per machine covers every adopted private\n" +
+        "  app on this Coolify install.\n",
+    ),
+  );
+  tokenHint(
+    "https://github.com/settings/tokens?type=beta",
+    "Fine-grained PAT, scope `read:packages` (no other access required)",
+  );
+  const pullToken = await confirmPastedSecret("GHCR pull token");
+
+  const spinner = ora("Verifying GHCR token (gh API /user)...").start();
+  let username: string;
+  try {
+    const res = await fetch("https://api.github.com/user", {
+      headers: {
+        Authorization: `Bearer ${pullToken}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "hatchkit",
+      },
+    });
+    if (!res.ok) {
+      throw new Error(
+        `HTTP ${res.status} — token rejected by GitHub. Check it has \`read:packages\` and isn't expired.`,
+      );
+    }
+    const body = (await res.json()) as { login?: string };
+    if (!body.login) {
+      throw new Error("GitHub returned no `login` for this token — is it a user PAT?");
+    }
+    username = body.login;
+    spinner.succeed(`GHCR token verified (user: ${username})`);
+  } catch (error) {
+    spinner.fail("Could not verify GHCR token");
+    throw error;
+  }
+
+  const meta: GhcrMeta = {
+    status: "configured",
+    lastVerified: new Date().toISOString(),
+    username,
+  };
+  store.set("providers.ghcr", meta);
+  await setSecret(SECRET_KEYS.ghcrPullToken, pullToken);
+  console.log(chalk.green(`  ✓ GHCR configured (${username})`));
+  return { ...meta, pullToken };
+}
+
+export async function getGhcrConfig(): Promise<GhcrConfig | null> {
+  const meta = store.get("providers.ghcr") as GhcrMeta | undefined;
+  if (!meta || meta.status !== "configured" || !meta.username) return null;
+  const pullToken = await getSecret(SECRET_KEYS.ghcrPullToken);
+  if (!pullToken) return null;
+  return { ...meta, pullToken };
+}
+
+// ---------------------------------------------------------------------------
 // First-time setup / onboarding
 // ---------------------------------------------------------------------------
 
@@ -1143,6 +1249,7 @@ type ReconfigurableProvider =
   | "openpanel"
   | "resend"
   | "stripe"
+  | "ghcr"
   | `s3.${"hetzner" | "aws" | "r2"}`
   | `gpu.${"modal" | "runpod" | "hf" | "replicate"}`;
 
@@ -1180,6 +1287,9 @@ export async function reconfigureProvider(name: ReconfigurableProvider): Promise
       SECRET_KEYS.stripePublishableKey,
     ]);
     await ensureStripe();
+  } else if (name === "ghcr") {
+    await wipeProvider("providers.ghcr", [SECRET_KEYS.ghcrPullToken]);
+    await ensureGhcr();
   } else if (name.startsWith("s3.")) {
     const p = name.slice(3) as "hetzner" | "aws" | "r2";
     await wipeProvider(`providers.s3.${p}`, [
@@ -1224,6 +1334,15 @@ function buildSetupGroups(): SetupGroup[] {
             return { configured: m?.status === "configured", summary: m?.url };
           },
           run: () => reconfigureProvider("coolify"),
+        },
+        {
+          key: "ghcr",
+          label: "GHCR (private-package pulls)",
+          status: () => {
+            const m = store.get("providers.ghcr") as GhcrMeta | undefined;
+            return { configured: m?.status === "configured", summary: m?.username };
+          },
+          run: () => reconfigureProvider("ghcr"),
         },
       ],
     },

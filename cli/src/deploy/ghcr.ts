@@ -135,10 +135,14 @@ export async function makeGhcrPackagePublic(options: GhcrSetupOptions): Promise<
 
 /**
  * Path B — register a GHCR PAT with Coolify so it can pull a private
- * package. Reads the PAT from a fixed secrets-keychain key
- * (`hatchkit.ghcrPullToken`); when missing, surfaces a caveat with the
- * exact `hatchkit config add ghcr` (TODO) recipe instead of prompting
- * mid-adopt.
+ * package. Reads the PAT (and its owner login) from `getGhcrConfig()`;
+ * when missing, surfaces a caveat pointing at `hatchkit config add
+ * ghcr` rather than prompting mid-adopt.
+ *
+ * Username vs repo owner: the registry login docker uses is the *PAT
+ * owner's* GitHub username, not necessarily the repo owner. They line
+ * up for personal repos but diverge for org-owned repos pulled with a
+ * personal PAT. Callers pass the username explicitly.
  *
  * The Coolify private-registries endpoint is system-wide: once a creds
  * entry exists for `ghcr.io`, every app on every server in this Coolify
@@ -148,24 +152,26 @@ export async function makeGhcrPackagePublic(options: GhcrSetupOptions): Promise<
 export async function registerGhcrCredsWithCoolify(
   options: GhcrSetupOptions & {
     api: CoolifyApi;
-    /** GHCR PAT (string, scope `read:packages`). Caller owns the
-     *  keychain lookup so this module stays IO-free aside from `gh`. */
+    /** GHCR PAT (scope `read:packages`). Caller owns the keychain
+     *  lookup so this module stays IO-free aside from `gh`. */
     pullToken: string | undefined;
+    /** GitHub login the PAT belongs to. Sent as the registry username.
+     *  When undefined we treat it as "creds incomplete" and surface
+     *  the same `config add ghcr` caveat. */
+    username: string | undefined;
   },
 ): Promise<GhcrSetupResult> {
-  const { api, repoSlug, pullToken } = options;
-  const [owner] = splitSlug(repoSlug);
+  const { api, pullToken, username } = options;
 
-  if (!pullToken) {
+  if (!pullToken || !username) {
     return {
       kind: "skipped",
-      reason: "No GHCR pull token in keychain.",
+      reason: "GHCR pull credentials are not configured.",
       recovery: [
-        "Create a fine-grained PAT scoped to `read:packages` only at",
-        "  https://github.com/settings/tokens?type=beta",
-        "Stash it for hatchkit to use:",
-        "  hatchkit config add ghcr   # (TODO — for now: keytar set hatchkit ghcrPullToken <pat>)",
-        "Re-run: hatchkit adopt --resume",
+        "Run: hatchkit config add ghcr",
+        "  → paste a fine-grained PAT scoped `read:packages`.",
+        "  → create one at https://github.com/settings/tokens?type=beta if needed.",
+        "Then re-run: hatchkit adopt --resume",
       ],
     };
   }
@@ -180,7 +186,7 @@ export async function registerGhcrCredsWithCoolify(
     const created = await api.addPrivateRegistry({
       name: "GHCR (hatchkit)",
       registryUrl: "ghcr.io",
-      username: owner,
+      username,
       password: pullToken,
     });
     spin.succeed(`Coolify: GHCR registry created (${created.uuid})`);
@@ -192,7 +198,7 @@ export async function registerGhcrCredsWithCoolify(
       reason: (err as Error).message,
       recovery: [
         "Add the registry manually in Coolify:",
-        `  Servers → <your server> → Private Registries → Add → ghcr.io / ${owner} / <PAT>`,
+        `  Servers → <your server> → Private Registries → Add → ghcr.io / ${username} / <PAT>`,
         "Then click Deploy in the Coolify dashboard.",
       ],
     };

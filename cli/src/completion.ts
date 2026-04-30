@@ -26,6 +26,7 @@ const TOP_LEVEL = [
 
 const CONFIG_ADD = [
   "coolify",
+  "ghcr",
   "hetzner",
   "dns",
   "s3",
@@ -36,6 +37,7 @@ const CONFIG_ADD = [
   "glitchtip",
   "openpanel",
   "resend",
+  "stripe",
 ] as const;
 
 const CONFIG_SUB = ["add", "reset"] as const;
