@@ -1179,6 +1179,10 @@ async function executePlan(
           // newly-created `gh repo create --private` repos. See the
           // comment on AdoptPlan.isPrivate.
           isPrivate: plan.isPrivate,
+          // Lets wireProjectIntoCoolify read the project's compose file
+          // to pick the right service name for `docker_compose_domains`
+          // (Coolify rejects flat `domains` for dockercompose apps).
+          projectDir: state.projectDir,
         });
         // Record only the bits we actually created. wireProjectIntoCoolify
         // returns explicit `*Created` flags exactly so adopt can guard
@@ -1274,6 +1278,69 @@ async function executePlan(
     // when origin already had history before adopt.
     if (plan.setupGitHub && remoteUrl && !state.gitRemoteUrl) {
       await pushInitialBranch(state.projectDir);
+    }
+
+    // Step 3e: GHCR setup. Two paths, gated on the user's earlier
+    // public/private choice:
+    //   · isPrivate=false → wait for the first Actions push to land
+    //     in GHCR, then PATCH the package to visibility=public so
+    //     Coolify can pull anonymously. (Without this, the package
+    //     defaults to private even when the source repo is public —
+    //     GHCR doesn't auto-inherit visibility from the repo, and
+    //     Coolify's anonymous pull fails with `unauthorized`.)
+    //   · isPrivate=true  → register a GHCR pull-PAT (from keychain)
+    //     with Coolify's private-registries store so it can pull the
+    //     private image. The PAT is shared across all hatchkit-managed
+    //     apps on this Coolify install.
+    //
+    // Either path failing is a soft caveat — adopt finishes, the user
+    // gets a copy-pasteable manual recipe, and the next `--resume`
+    // can retry without redoing the rest of the work.
+    if (
+      plan.wireCoolify &&
+      plan.scaffoldBuildPipeline &&
+      remoteUrl &&
+      coolifyResult !== undefined
+    ) {
+      const slug = repoSlugFromRemote(remoteUrl);
+      if (slug) {
+        const { makeGhcrPackagePublic, registerGhcrCredsWithCoolify } = await import(
+          "./deploy/ghcr.js"
+        );
+        if (plan.isPrivate) {
+          const pullToken = await getSecret(SECRET_KEYS.ghcrPullToken);
+          const cfg = await getCoolifyConfig();
+          if (cfg) {
+            const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+            const r = await registerGhcrCredsWithCoolify({
+              api,
+              repoSlug: slug,
+              pullToken: pullToken ?? undefined,
+            });
+            if (r.kind === "private-registered") {
+              ledger.record({
+                kind: "coolifyPrivateRegistry",
+                uuid: r.registryUuid,
+              });
+            } else if (r.kind !== "public-set") {
+              caveats.push({
+                title: "GHCR pull credentials not configured",
+                reason: r.reason,
+                recovery: r.recovery,
+              });
+            }
+          }
+        } else {
+          const r = await makeGhcrPackagePublic({ repoSlug: slug });
+          if (r.kind !== "public-set" && r.kind !== "private-registered") {
+            caveats.push({
+              title: "GHCR package not made public",
+              reason: r.reason,
+              recovery: r.recovery,
+            });
+          }
+        }
+      }
     }
 
     // Step 4: provision clients via the existing `add` machinery so the

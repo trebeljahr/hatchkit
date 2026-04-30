@@ -185,4 +185,117 @@ export class CloudflareApi {
       throw err;
     }
   }
+
+  // ---------------------------------------------------------------------
+  // Zone-level settings (edge hardening)
+  // ---------------------------------------------------------------------
+  //
+  // Cloudflare exposes per-zone toggles under `/zones/{id}/settings/{name}`.
+  // We use a curated subset to give every hatchkit-deployed site sane edge
+  // defaults — see `enableEdgeHardening`. The full setting catalog lives at
+  // https://developers.cloudflare.com/api/operations/zone-settings-get-all-zone-settings.
+  //
+  // Naming-convention note: Cloudflare returns each setting wrapped in
+  // `{ id, value, modified_on, editable }`. We GET the value first so we
+  // can skip a no-op PATCH (and so we don't blindly overwrite when the
+  // user has set something stricter — e.g. they'd already enabled
+  // `min_tls_version: "1.3"` and we shouldn't pull it back to 1.2).
+
+  /** Read a single zone setting's current value. Used by
+   *  `enableEdgeHardening` to skip no-op PATCHes (and avoid downgrading
+   *  user-set stricter values). Returns the raw `value` field — typed
+   *  loosely because each setting has its own value shape. */
+  async getZoneSetting(zoneId: string, settingId: string): Promise<unknown> {
+    const data = await this.request<{ id: string; value: unknown }>(
+      "GET",
+      `/zones/${zoneId}/settings/${settingId}`,
+    );
+    return data.value;
+  }
+
+  /** Patch a single zone setting. Returns the new value. */
+  async setZoneSetting(zoneId: string, settingId: string, value: unknown): Promise<unknown> {
+    const data = await this.request<{ id: string; value: unknown }>(
+      "PATCH",
+      `/zones/${zoneId}/settings/${settingId}`,
+      { value },
+    );
+    return data.value;
+  }
+
+  /** Apply hatchkit's curated edge-hardening defaults idempotently.
+   *  Only changes settings that are currently weaker than the target —
+   *  stricter user-set values are left alone (e.g. if the user has TLS
+   *  1.3 enforced, we don't pull it back to 1.2).
+   *
+   *  Settings (and why):
+   *    · `always_use_https = on` — 301s plain `http://` to `https://`
+   *      at the edge so users who type the bare URL aren't left wondering
+   *      why nothing loads. Default off, has to be opted in.
+   *    · `ssl = full` — Cloudflare → origin uses HTTPS, but accepts
+   *      self-signed certs. Coolify auto-issues Let's Encrypt at the
+   *      origin but the cert can be a few seconds late on a cold deploy;
+   *      `full` (vs `full (strict)`) means we don't 526 the user during
+   *      that window. Bump to `strict` once the deploy is stable.
+   *    · `min_tls_version = 1.2` — drops legacy TLS 1.0/1.1 with no
+   *      practical compat cost in 2026.
+   *    · `automatic_https_rewrites = on` — Cloudflare rewrites any
+   *      remaining `http://` references in HTML responses, killing the
+   *      mixed-content warnings that bite static-export apps.
+   *
+   *  Returns a per-setting summary for the caller to log. */
+  async enableEdgeHardening(zoneId: string): Promise<{
+    changed: Array<{ id: string; from: unknown; to: unknown }>;
+    kept: string[];
+    failed: Array<{ id: string; error: string }>;
+  }> {
+    // Each entry: id, target value, "is current value at-or-stricter than target?"
+    // The third arg gates whether we skip the change (preserve stricter user choice).
+    type Setting = {
+      id: string;
+      target: string;
+      atLeastAsStrict: (current: unknown) => boolean;
+    };
+    const settings: Setting[] = [
+      { id: "always_use_https", target: "on", atLeastAsStrict: (c) => c === "on" },
+      // SSL strictness ladder: off < flexible < full < strict. We aim for
+      // `full`; treat `strict` as already stronger.
+      {
+        id: "ssl",
+        target: "full",
+        atLeastAsStrict: (c) => c === "full" || c === "strict",
+      },
+      {
+        id: "min_tls_version",
+        target: "1.2",
+        atLeastAsStrict: (c) => typeof c === "string" && c >= "1.2",
+      },
+      {
+        id: "automatic_https_rewrites",
+        target: "on",
+        atLeastAsStrict: (c) => c === "on",
+      },
+    ];
+
+    const changed: Array<{ id: string; from: unknown; to: unknown }> = [];
+    const kept: string[] = [];
+    const failed: Array<{ id: string; error: string }> = [];
+    for (const s of settings) {
+      try {
+        const current = await this.getZoneSetting(zoneId, s.id);
+        if (s.atLeastAsStrict(current)) {
+          kept.push(s.id);
+          continue;
+        }
+        await this.setZoneSetting(zoneId, s.id, s.target);
+        changed.push({ id: s.id, from: current, to: s.target });
+      } catch (err) {
+        // One setting failing shouldn't sink the rest — Cloudflare zone
+        // plans differ (some toggles are Pro-only) and we'd rather light
+        // up the ones that work than refuse them all.
+        failed.push({ id: s.id, error: (err as Error).message });
+      }
+    }
+    return { changed, kept, failed };
+  }
 }

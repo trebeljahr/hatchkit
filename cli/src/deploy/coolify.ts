@@ -98,26 +98,36 @@ export async function runCoolifySetup(
     console.log(chalk.green(`  ✓ Project created: ${config.name} (${projectUuid})`));
   }
 
-  // Domain routing: five hosts on one container.
-  //   · https://<domain>                — frontend
-  //   · https://api.<domain>            — API subdomain
-  //   · https://<domain>/api            — path-based API (same-origin → no CORS)
-  //   · https://<domain>/api/ws         — websocket via path
-  //   · https://api.<domain>/ws         — websocket via subdomain
-  // Traefik forwards all five to the same Coolify app; the app's
-  // Express router decides what to do based on Host + path.
+  // Domain routing: split across the two public services in the starter's
+  // compose file (`server` and `client`). Coolify's dockercompose build
+  // pack rejects a flat `domains` field (422 — "Use docker_compose_domains
+  // instead to set domains for individual services") because routing has
+  // to be per-service. The starter ships:
+  //   · client : Next.js (static or Node) — frontend hostname only
+  //   · server : Express API + WebSocket   — every API/WS host
+  // Traefik routes each domain to the matching service inside the compose
+  // network; the app code itself only needs to handle the path/host
+  // dispatch within `server`.
   const apiDomain = `api.${config.domain}`;
-  const domains = [
-    `https://${config.domain}`,
+  const frontendDomain = `https://${config.domain}`;
+  const backendDomains = [
     `https://${apiDomain}`,
     `https://${config.domain}/api`,
     `https://${config.domain}/api/ws`,
     `https://${apiDomain}/ws`,
   ];
+  // Coolify's API takes a flat array of `{ name, domain }` entries, one
+  // per (service, hostname) pair. Multi-domain services (the server here)
+  // get one entry per domain rather than a comma-joined string — easier
+  // for Coolify's per-domain routing rules.
+  const dockerComposeDomains: Array<{ name: string; domain: string }> = [
+    { name: "client", domain: frontendDomain },
+    ...backendDomains.map((domain) => ({ name: "server", domain })),
+  ];
 
   console.log(chalk.dim("  Domain routing:"));
-  console.log(chalk.dim(`    Frontend: https://${config.domain}`));
-  console.log(chalk.dim(`    Backend:  ${domains.slice(1).join(", ")}`));
+  console.log(chalk.dim(`    Frontend (client): ${frontendDomain}`));
+  console.log(chalk.dim(`    Backend  (server): ${backendDomains.join(", ")}`));
 
   // Application: reuse-by-name. `findApplicationByName` matches across
   // every project the user can see; first hit wins. Within a single
@@ -150,13 +160,16 @@ export async function runCoolifySetup(
         // ignore that compose file and try to build the repo directly,
         // which fails on the monorepo layout.
         buildPack: "dockercompose",
-        // Coolify exposes one container port. The starter's server
-        // listens on `serverPort` and serves client assets in prod —
-        // that's the right port to route to. The client dev port is a
-        // build-time concern only.
+        // Coolify still requires a `ports_exposes` value even for
+        // dockercompose apps — it's metadata once the compose file
+        // takes over. The server's Express port is the conventional
+        // pick.
         portsExposes: String(options.serverPort ?? 3000),
         name: appName,
-        domains,
+        // Per-service routing (see comment above). Bypasses the
+        // `domains`-flat translation in coolify-api.ts because the
+        // starter's compose has more than one public service.
+        dockerComposeDomains,
         // First deploy lands via GitHub Actions on first push, so we
         // don't need Coolify to start the (empty) container right now.
         instantDeploy: false,

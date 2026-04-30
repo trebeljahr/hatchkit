@@ -129,6 +129,10 @@ function recipeFor(step: LedgerStep): string | null {
       return chalk.dim(
         `# manual: delete Coolify project ${step.uuid} (only after its apps are gone)`,
       );
+    case "coolifyPrivateRegistry":
+      return chalk.dim(
+        `# manual: delete private-registry credential ${step.uuid} from Coolify (Servers → Private Registries)`,
+      );
     case "terraformApplied":
       return `cd ${shellEscape(step.stackDir)} && terraform destroy -var-file=${shellEscape(step.tfvarsPath)}`;
     case "coolifyEnv":
@@ -289,6 +293,8 @@ function describeStep(step: LedgerStep): string {
       return `delete Coolify project ${chalk.cyan(step.uuid)}`;
     case "coolifyDb":
       return `delete Coolify db ${chalk.cyan(step.uuid)}`;
+    case "coolifyPrivateRegistry":
+      return `delete Coolify private-registry creds ${chalk.cyan(step.uuid)}`;
     case "mlService":
       return `${chalk.cyan(step.platform)} ML service ${chalk.cyan(step.name)}`;
     case "manifest":
@@ -378,6 +384,13 @@ async function undoStep(step: LedgerStep): Promise<"done" | "skipped" | "not-fou
       if (!cfg) throw new Error("Coolify config no longer present");
       const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
       const result = await api.deleteProject(step.uuid);
+      return result === "not-found" ? "not-found" : "done";
+    }
+    case "coolifyPrivateRegistry": {
+      const cfg = await getCoolifyConfig();
+      if (!cfg) throw new Error("Coolify config no longer present");
+      const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+      const result = await api.deletePrivateRegistry(step.uuid);
       return result === "not-found" ? "not-found" : "done";
     }
     case "openpanel": {

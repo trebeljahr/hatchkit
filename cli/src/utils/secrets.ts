@@ -45,6 +45,12 @@ export const SECRET_KEYS = {
    *  Stored in the OS keychain so the CLI's on-disk state never holds
    *  decryption material for the starter's encrypted env. */
   dotenvxPrivateKey: (projectName: string) => `dotenvx:${projectName}:production-private-key`,
+  /** GitHub PAT (fine-grained, scope `read:packages`) that hatchkit hands
+   *  to Coolify so it can pull private GHCR images. Single shared key —
+   *  one PAT per machine covers every adopted private repo on the same
+   *  Coolify install. Leave unset for public-everything deploys (Path A
+   *  flips visibility=public instead of using a token). */
+  ghcrPullToken: "ghcr:pull-token",
 } as const;
 
 export async function getSecret(key: string): Promise<string | null> {

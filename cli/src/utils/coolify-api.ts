@@ -210,6 +210,64 @@ export class CoolifyApi {
     return this.delete(`/projects/${uuid}`);
   }
 
+  // ---------------------------------------------------------------------
+  // Private registries
+  // ---------------------------------------------------------------------
+  //
+  // Coolify can hold credentials for image registries (Docker Hub, GHCR,
+  // etc.) so its Docker daemon can pull from private repos. We use this
+  // for Path B of GHCR setup — the user owns a private repo, so the GHCR
+  // package is also private and Coolify needs auth to pull it.
+  //
+  // Coolify treats this as system-wide config: one creds entry per
+  // hostname covers every app pulling from that registry. Idempotent
+  // lookup-by-url is on us (Coolify doesn't enforce uniqueness).
+
+  /** List private registries. Used to find an existing entry for a host
+   *  before creating a duplicate. */
+  async listPrivateRegistries(): Promise<
+    Array<{ uuid: string; name: string; url: string; username?: string }>
+  > {
+    return this.request("GET", "/private-registries");
+  }
+
+  /** Find a registry by its base URL (e.g. `ghcr.io`). First match wins
+   *  — the same hostname appearing twice would be a Coolify config bug
+   *  but isn't ours to police here. */
+  async findPrivateRegistry(query: {
+    url: string;
+  }): Promise<{ uuid: string; name: string; url: string } | null> {
+    const all = await this.listPrivateRegistries();
+    const want = normalizeRegistryUrl(query.url);
+    const hit = all.find((r) => normalizeRegistryUrl(r.url) === want);
+    if (!hit) return null;
+    return { uuid: hit.uuid, name: hit.name, url: hit.url };
+  }
+
+  /** Create a private-registry credential. Coolify v4 stores the
+   *  password encrypted at rest. The returned uuid is the handle the
+   *  caller should record in the run ledger so a later `hatchkit
+   *  destroy` can clean it up. */
+  async addPrivateRegistry(params: {
+    name: string;
+    registryUrl: string;
+    username: string;
+    password: string;
+  }): Promise<{ uuid: string }> {
+    return this.request("POST", "/private-registries", {
+      name: params.name,
+      registry_url: params.registryUrl,
+      username: params.username,
+      password: params.password,
+    });
+  }
+
+  /** Delete a private-registry entry by uuid. Idempotent: 404 → no-op.
+   *  Used by the rollback flow when adopt was the one that created it. */
+  async deletePrivateRegistry(uuid: string): Promise<"deleted" | "not-found"> {
+    return this.delete(`/private-registries/${uuid}`);
+  }
+
   /** Raw DELETE that handles both 404 (already gone) and empty bodies
    *  (Coolify returns 200 with no body for some delete endpoints). */
   private async delete(path: string): Promise<"deleted" | "not-found"> {
@@ -418,7 +476,12 @@ export interface ApplicationCreateInput {
   description?: string;
   /** FQDNs Coolify should attach to this app. Leave undefined to let
    *  Coolify pick a sslip.io host; pass `https://<domain>` to bind to
-   *  a real one (assumes DNS already points at the server). */
+   *  a real one (assumes DNS already points at the server). For
+   *  `dockercompose` apps, Coolify rejects this field — the API client
+   *  auto-translates entries here onto `dockerComposeDomains` using
+   *  `composeServiceName` (default `app`). For per-service routing
+   *  (different domains on different services) pass
+   *  `dockerComposeDomains` directly. */
   domains?: string[];
   /** Per-service domains for dockercompose apps. Coolify rejects the
    *  top-level `domains` field when `build_pack=dockercompose`. */
@@ -430,6 +493,18 @@ export interface ApplicationCreateInput {
   /** Repo-relative path to the compose file when buildPack is
    *  `dockercompose`. Defaults to `/docker-compose.yml`. */
   dockerComposeLocation?: string;
+}
+
+/** Normalize a registry URL for equality matching. Different Coolify
+ *  builds (and different humans) record GHCR as `ghcr.io`,
+ *  `https://ghcr.io`, or `https://ghcr.io/`. Strip the scheme and any
+ *  trailing slash so all three compare equal. */
+function normalizeRegistryUrl(url: string): string {
+  return url
+    .trim()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/+$/, "")
+    .toLowerCase();
 }
 
 /** Verify Coolify connection. Returns version string or throws. */

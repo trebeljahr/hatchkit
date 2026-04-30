@@ -44,6 +44,11 @@ export type LedgerStep =
   | { kind: "coolifyProject"; uuid: string }
   | { kind: "coolifyApp"; uuid: string }
   | { kind: "coolifyDb"; uuid: string }
+  /** Coolify private-registry credential entry. Recorded only when
+   *  hatchkit was the one that created it (Path B of GHCR setup) so
+   *  destroy doesn't yank registry creds the user added by hand for
+   *  unrelated apps. */
+  | { kind: "coolifyPrivateRegistry"; uuid: string }
   | { kind: "mlService"; platform: string; name: string }
   // Adopt-only kinds — fine-grained file/git removal so undo only
   // touches things adopt itself wrote. Never `rm -rf` anything wider

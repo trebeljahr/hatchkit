@@ -25,6 +25,8 @@
  *     a clear "add an A record yourself" hint.
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig, getDnsConfig } from "../config.js";
@@ -56,9 +58,17 @@ export interface WireUpInput {
   isPrivate?: boolean;
   /** When the user has already chosen one previously, skip the picker. */
   githubAppUuid?: string;
-  /** Compose service that should receive the public domain. Defaults to
-   *  the service name hatchkit scaffolds (`app`). */
+  /** Compose service that should receive the public domain. When set,
+   *  takes precedence over the `projectDir`-based autodetect below.
+   *  Defaults to `app` (hatchkit's scaffolded service name) when neither
+   *  is provided and no compose file is on disk. */
   dockerComposeServiceName?: string;
+  /** Project root on disk. When `dockerComposeServiceName` is unset, we
+   *  read the compose file here and pick the service whose `ports:`
+   *  mapping matches `portsExposes` — handles user-authored composes
+   *  with a non-default service name. Falls through to `app` when the
+   *  file isn't there or the parse fails. */
+  projectDir?: string;
 }
 
 export interface WireUpResult {
@@ -241,22 +251,38 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       );
     }
   } else {
+    // Pick the compose service name the public domain should bind to.
+    // Coolify's dockercompose build pack rejects a flat `domains` field
+    // (422 — "Use docker_compose_domains instead") because routing has
+    // to be per-service. Resolution order:
+    //   1. Explicit `dockerComposeServiceName` from the caller (e.g.
+    //      adopt's stepper override).
+    //   2. Auto-detect from the project's compose file by port match,
+    //      so user-authored composes with non-default service names
+    //      (`web`, `client`, …) just work.
+    //   3. `app` — hatchkit's scaffolded compose template uses that
+    //      name. Safe fallback when neither signal is present.
+    const dockerComposeServiceName =
+      buildPack === "dockercompose"
+        ? (input.dockerComposeServiceName ??
+          pickComposeServiceForPort(input.projectDir, portsExposes))
+        : undefined;
     const baseInput: ApplicationCreateInput = {
       projectUuid,
       serverUuid: resolveServer.uuid,
       gitRepository: repoRef.gitRepository,
       gitBranch: input.gitBranch ?? "main",
-      portsExposes: input.portsExposes ?? "3000",
+      portsExposes,
       // hatchkit's canonical pipeline = GitHub Actions builds image →
       // pushes to GHCR → Coolify pulls via docker-compose.yml. Caller
       // can still override (e.g. for legacy nixpacks paths) but
       // `dockercompose` is the default for any project that's gone
       // through `hatchkit adopt`'s build-pipeline scaffold.
-      buildPack: input.buildPack ?? "dockercompose",
+      buildPack,
       name: input.projectName,
       description: "Adopted by hatchkit",
       domains: [appDomain],
-      dockerComposeDomainServiceName: input.dockerComposeServiceName ?? "app",
+      dockerComposeDomainServiceName: dockerComposeServiceName,
       instantDeploy: false,
     };
 
@@ -323,19 +349,28 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
   const ips = await discoverPublicIps(api, resolveServer.uuid, server.ip, cfg.url);
   const dnsResult = await wireDns(input.domain, ips);
 
-  // ── 7. Trigger first deploy. ───────────────────────────────────────
-  const deploy = ora("Coolify: triggering first deploy").start();
-  try {
-    await api.deployApplication(appUuid);
-    deploy.succeed("Coolify: deploy triggered");
-  } catch {
-    deploy.fail("Coolify: couldn't auto-trigger the deploy");
-    console.log(
-      chalk.dim(
-        `  Click "Deploy" in the Coolify dashboard — the app exists, just isn't running yet.`,
-      ),
-    );
-  }
+  // ── 7. First deploy is owned by GitHub Actions, not us. ─────────────
+  //
+  // The compose file references `ghcr.io/<owner>/<repo>:latest`, which
+  // only exists after the scaffolded `.github/workflows/deploy.yml`
+  // has run (build → push to GHCR → call Coolify's deploy webhook).
+  // If we trigger a deploy here, Coolify tries to pull an image that
+  // hasn't been pushed yet and fails with `unauthorized` (GHCR's
+  // generic "manifest not found / no creds" response).
+  //
+  // The canonical hatchkit pipeline:
+  //   adopt scaffolds workflow → adopt pushes branch → Actions builds
+  //   + pushes image to GHCR → Actions hits Coolify deploy webhook →
+  //   Coolify pulls + starts containers.
+  //
+  // So we just print a heads-up here and let the workflow do its job.
+  console.log(
+    chalk.dim(
+      `  · First deploy runs when GitHub Actions builds + pushes the image to GHCR.\n` +
+        "    Watch the workflow in the repo's Actions tab; Coolify auto-pulls via\n" +
+        "    the deploy webhook once the image is up.",
+    ),
+  );
 
   return {
     appUuid,
@@ -493,7 +528,51 @@ async function wireDns(domain: string, ips: PublicIps): Promise<DnsWireResult> {
       result.managed = true;
     }
   }
+
+  // Edge hardening — only attempt once we've actually managed at least
+  // one record on this zone (i.e. it's a hatchkit-relevant zone, not a
+  // bystander one we happened to look up). Pure best-effort: failures
+  // here are logged but never fail the wire-up. Stricter user-set
+  // values are preserved (see CloudflareApi.enableEdgeHardening).
+  if (result.managed) {
+    const harden = ora(`Cloudflare: applying edge protection to ${zone.name}`).start();
+    try {
+      const r = await cf.enableEdgeHardening(zone.id);
+      const summary: string[] = [];
+      if (r.changed.length > 0) {
+        summary.push(`${r.changed.length} updated`);
+      }
+      if (r.kept.length > 0) {
+        summary.push(`${r.kept.length} already strict`);
+      }
+      if (r.failed.length > 0) {
+        summary.push(`${r.failed.length} skipped`);
+      }
+      harden.succeed(
+        `Cloudflare: edge protection on ${zone.name}` +
+          (summary.length > 0 ? ` (${summary.join(", ")})` : ""),
+      );
+      for (const c of r.changed) {
+        console.log(chalk.dim(`    · ${c.id}: ${formatSetting(c.from)} → ${formatSetting(c.to)}`));
+      }
+      for (const f of r.failed) {
+        console.log(chalk.dim(`    · ${f.id} skipped — ${f.error}`));
+      }
+    } catch (err) {
+      harden.fail(`Cloudflare: edge protection skipped — ${(err as Error).message}`);
+    }
+  }
+
   return result;
+}
+
+/** Format a zone-setting value for one-line display. Cloudflare returns
+ *  string scalars for the toggles we touch but the field is loosely
+ *  typed; coerce safely. */
+function formatSetting(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (v == null) return "(unset)";
+  return JSON.stringify(v);
 }
 
 async function upsertOne(
@@ -514,6 +593,118 @@ async function upsertOne(
     spinner.fail(`Cloudflare: ${type}-record upsert failed: ${(err as Error).message}`);
     return undefined;
   }
+}
+
+/** Read the project's compose file and pick the service the public
+ *  domain should bind to under Coolify's dockercompose build pack.
+ *
+ *  Why this exists: Coolify's API rejects the flat `domains` field for
+ *  dockercompose apps and requires `docker_compose_domains` keyed by
+ *  service name (422 — "Use docker_compose_domains instead to set
+ *  domains for individual services"). The compose file is the source
+ *  of truth for which service names exist on this project, so we read
+ *  it directly instead of guessing.
+ *
+ *  Selection rules (first match wins):
+ *    1. A service whose `ports:` mapping includes `<portsExposes>` —
+ *       most accurate signal that this is the public-facing service.
+ *    2. The first top-level service in the file — a sensible fallback
+ *       for compose files written without explicit port mappings (e.g.
+ *       hatchkit's own template, where the app service exposes the
+ *       port via a build arg).
+ *    3. `app` — the service name in hatchkit's compose template. Used
+ *       when there's no compose file on disk yet (the build-pipeline
+ *       scaffold may have written it after a hatchkit run that didn't
+ *       reach this branch) or the file can't be parsed.
+ *
+ *  We deliberately avoid pulling in a YAML library — the regex below
+ *  matches top-level `<name>:` keys and `<host>:<container>` port
+ *  entries, which is enough for any compose file that compose itself
+ *  parses successfully. */
+function pickComposeServiceForPort(projectDir: string | undefined, portsExposes: string): string {
+  if (!projectDir) return "app";
+  for (const name of ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"]) {
+    const path = join(projectDir, name);
+    if (!existsSync(path)) continue;
+    try {
+      const content = readFileSync(path, "utf-8");
+      const match = matchComposeService(content, portsExposes);
+      if (match) return match;
+    } catch {
+      // Fall through to the default — better to send a request that
+      // might fail with a clearer Coolify error than to crash the
+      // adopt flow on a malformed compose file.
+    }
+    break;
+  }
+  return "app";
+}
+
+/** Extract service-name candidates from a compose file. Returns the
+ *  first service with a port mapping that includes `portsExposes`,
+ *  else the first top-level service, else undefined. */
+function matchComposeService(content: string, portsExposes: string): string | undefined {
+  // Find the `services:` block. Anything before it (e.g. version, name)
+  // is irrelevant.
+  const lines = content.split(/\r?\n/);
+  let servicesIndent = -1;
+  let inServices = false;
+  let firstService: string | undefined;
+  let portMatchService: string | undefined;
+  let currentService: string | undefined;
+  let currentServiceIndent = -1;
+
+  for (const raw of lines) {
+    const line = raw.replace(/#.*$/, "").trimEnd();
+    if (!line.trim()) continue;
+    const indent = line.length - line.trimStart().length;
+
+    if (!inServices) {
+      if (/^services\s*:/.test(line)) {
+        inServices = true;
+        servicesIndent = indent;
+      }
+      continue;
+    }
+
+    // Exited the services block.
+    if (indent <= servicesIndent) break;
+
+    // A service header — `<name>:` indented deeper than `services:`
+    // and not deeper than another service. We track the first one we
+    // see at the shallowest depth; deeper lines belong to the same
+    // service definition.
+    if (currentServiceIndent === -1 || indent === currentServiceIndent) {
+      const m = line.match(/^\s*([A-Za-z0-9_.-]+)\s*:\s*$/);
+      if (m) {
+        currentService = m[1];
+        currentServiceIndent = indent;
+        if (!firstService) firstService = currentService;
+        continue;
+      }
+    }
+
+    // Inside a service body: look for a port mapping that includes
+    // the host or container port we care about. Compose accepts
+    // "<host>:<container>", "<container>", or the long form with a
+    // `target:` key — we match all three.
+    if (currentService && !portMatchService) {
+      const portsLine = line.match(/^\s*-\s*"?([0-9]+)(?::([0-9]+))?(?:\/[a-z]+)?"?$/);
+      if (portsLine) {
+        const host = portsLine[1];
+        const container = portsLine[2] ?? portsLine[1];
+        if (host === portsExposes || container === portsExposes) {
+          portMatchService = currentService;
+        }
+      }
+      const targetLine = line.match(/^\s*target\s*:\s*"?([0-9]+)"?\s*$/);
+      if (targetLine && targetLine[1] === portsExposes) {
+        portMatchService = currentService;
+      }
+    }
+  }
+
+  return portMatchService ?? firstService;
 }
 
 /** Best-effort eTLD+1 inference. Works for the common case
