@@ -246,7 +246,13 @@ export async function runAdopt(
     isPrivate: state.gitRemoteIsPrivate ?? true,
     appPort: "3000",
     scaffoldBuildPipeline: true,
-    services: ["glitchtip", "openpanel", "resend"],
+    // Provisioning is opt-in. Each service mints real resources on a
+    // third-party (GlitchTip project, OpenPanel project, Resend API
+    // key) and cleaning those up after the fact is a chore — better
+    // to require an explicit tick than to surprise the user with three
+    // new clients they didn't ask for. The user opens the "Provision
+    // clients" row and ticks whichever they want.
+    services: [],
     // Default the push only when there's already a Coolify app to push to.
     // When wireCoolify creates a fresh app, it sets the baseline env
     // itself (including the dotenvx key), so a separate push is
@@ -638,7 +644,7 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
           label: "Domain",
           set: !!plan.domain,
           summary: plan.domain
-            ? `${plan.domain}  ${chalk.dim("→")}  https://${plan.domain}/api`
+            ? `${plan.domain}  ${chalk.dim("→")}  https://${plan.domain}`
             : "(unset)",
         },
       ],
@@ -935,12 +941,12 @@ async function editAdoptStep(
         {
           name: "GlitchTip (error tracking)",
           value: "glitchtip",
-          checked: plan.services.includes("glitchtip") && plan.features.includes("analytics"),
+          checked: plan.services.includes("glitchtip"),
         },
         {
           name: "OpenPanel (analytics)",
           value: "openpanel",
-          checked: plan.services.includes("openpanel") && plan.features.includes("analytics"),
+          checked: plan.services.includes("openpanel"),
         },
         {
           name: "Resend (email)",

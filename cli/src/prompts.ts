@@ -689,7 +689,7 @@ function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
           label: "Domain",
           set: !!cfg.domain,
           summary: cfg.domain
-            ? `${cfg.domain}  ${chalk.dim("→")}  https://${cfg.domain}/api`
+            ? `${cfg.domain}  ${chalk.dim("→")}  https://${cfg.domain}`
             : "(unset)",
         },
       ],
