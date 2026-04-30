@@ -1027,6 +1027,13 @@ export async function ensureStripe(): Promise<StripeConfig> {
   }
 
   console.log(chalk.yellow("\n  Stripe is not configured yet. Let's set it up."));
+  console.log(
+    chalk.dim(
+      "  One-time setup — these keys go in your OS keychain and are reused for\n" +
+        "  every future `hatchkit create`. Per-project, hatchkit only auto-provisions\n" +
+        "  the webhook signing secret. You can re-run anytime via `hatchkit config add stripe`.\n",
+    ),
+  );
   tokenHint(
     "https://dashboard.stripe.com/apikeys",
     "Standard restricted key with `webhook_endpoints:write` (or use the Secret key)",
