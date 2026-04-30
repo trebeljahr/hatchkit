@@ -156,6 +156,17 @@ async function main(): Promise<void> {
       await runDoctor({ json: isJson });
       break;
     }
+    case "provision": {
+      const sub = args[1];
+      if (sub === "s3") {
+        await handleProvisionS3();
+        break;
+      }
+      console.log("Usage: hatchkit provision s3");
+      console.log("Provisions S3/R2 buckets for the project in the current directory.");
+      process.exit(1);
+      break;
+    }
     case "dns": {
       if (args.includes("--help")) return printHelp("dns");
       await handleDns();
@@ -323,6 +334,149 @@ async function handleAdd(): Promise<void> {
   }
 
   await runProvision({ baseName, services, surfaces, enableDevObs });
+}
+
+async function handleProvisionS3(): Promise<void> {
+  // `hatchkit provision s3` — create the public+private bucket pair
+  // for the adopted project in cwd, write credentials/URLs into its
+  // encrypted .env.production, and record bucket names in
+  // .hatchkit.json. Idempotent across re-runs.
+  const projectDir = resolve(".");
+  const { provisionS3ForProject } = await import("./provision/s3-buckets.js");
+  const { getSecret, setSecret, SECRET_KEYS: SK } = await import("./utils/secrets.js");
+  const { confirmPastedSecret, validateS3KeyPair } = await import("./config.js");
+
+  // Optional flags — keep minimal; the function reads everything else
+  // from the manifest + global config + keychain.
+  const flag = (name: string): string | undefined => {
+    const i = args.indexOf(name);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
+  const provider = flag("--provider");
+  const assetsBucketName = flag("--assets-bucket");
+  const stateBucketName = flag("--state-bucket");
+  const publicHostname = flag("--public-hostname");
+  const envPrefixFlag = flag("--env-prefix");
+  const envPrefix =
+    envPrefixFlag === "R2" || envPrefixFlag === "S3" || envPrefixFlag === "AWS"
+      ? envPrefixFlag
+      : undefined;
+  const generateCronSecret = !args.includes("--no-cron-secret");
+
+  // Admin token check — the R2 admin REST API needs a Bearer token
+  // with `Account > Workers R2 Storage > Edit` perms. Distinct from
+  // both the DNS token (Zone-scoped) and the S3 access/secret keys
+  // (object-level only — Cloudflare R2's S3 API doesn't implement
+  // CreateBucket). Prompt + store on first use, never re-prompt.
+  const existingAdmin = await getSecret(SK.r2AdminToken);
+  if (!existingAdmin) {
+    console.log(
+      chalk.yellow(
+        "\n  R2 admin token not configured. Bucket creation needs `Account > Workers R2 Storage > Edit`.",
+      ),
+    );
+    console.log(
+      chalk.dim(
+        "  Create one at: https://dash.cloudflare.com/profile/api-tokens → Create Token → Custom token",
+      ),
+    );
+    console.log(
+      chalk.dim(
+        "  Permissions:    Account > Workers R2 Storage > Edit  (and add Zone > Zone > Read if you want custom-domain attach)",
+      ),
+    );
+    console.log(chalk.dim("  Account scope:  All accounts (or just yours)\n"));
+    const token = await confirmPastedSecret("R2 admin Bearer token");
+    await setSecret(SK.r2AdminToken, token);
+    console.log(chalk.green(`  ✓ Stored under keychain ${SK.r2AdminToken}`));
+  }
+
+  // Repair pass on the S3 access/secret pair. Older inits had a
+  // paste-collision bug where the same 64-char value landed in both
+  // slots, leaving every runtime S3 call broken (400 InvalidArgument
+  // — "Credential access key has length 64, should be 32"). Detect
+  // and offer to repair while the user is on the same dashboard
+  // page where they got the Bearer token.
+  const provName = flag("--provider") ?? "r2";
+  const existingAccess = await getSecret(SK.s3AccessKey(provName));
+  const existingSecret = await getSecret(SK.s3SecretKey(provName));
+  if (existingAccess && existingSecret) {
+    const issue = validateS3KeyPair(provName, existingAccess, existingSecret);
+    if (issue) {
+      console.log(chalk.yellow(`\n  Existing ${provName} S3 keys look corrupt: ${issue}`));
+      console.log(
+        chalk.dim(
+          "  These are the Access Key ID + Secret Access Key shown next to your token, NOT the Bearer.",
+        ),
+      );
+      const { confirm } = await import("@inquirer/prompts");
+      const repair = await confirm({
+        message: "Re-paste them now to repair?",
+        default: true,
+      });
+      if (repair) {
+        let newAccess: string;
+        let newSecret: string;
+        for (;;) {
+          newAccess = await confirmPastedSecret(`${provName} S3 Access Key ID`);
+          newSecret = await confirmPastedSecret(`${provName} S3 Secret Access Key`);
+          const stillBroken = validateS3KeyPair(provName, newAccess, newSecret);
+          if (!stillBroken) break;
+          console.log(chalk.yellow(`  ${stillBroken}`));
+          console.log(chalk.dim("  Re-paste both values."));
+        }
+        await setSecret(SK.s3AccessKey(provName), newAccess);
+        await setSecret(SK.s3SecretKey(provName), newSecret);
+        console.log(chalk.green(`  ✓ Repaired ${provName} S3 access/secret keys`));
+      } else {
+        console.log(
+          chalk.dim(
+            "  · Skipping repair. .env.production will get the broken values; runtime S3 calls will 400.",
+          ),
+        );
+      }
+    }
+  }
+
+  console.log(chalk.bold("\n  hatchkit provision s3"));
+  const result = await provisionS3ForProject({
+    projectDir,
+    provider,
+    assetsBucketName,
+    stateBucketName,
+    publicHostname,
+    envPrefix,
+    generateCronSecret,
+  });
+
+  console.log();
+  console.log(chalk.green("  ✓ Buckets ready"));
+  console.log(
+    `    assets: ${chalk.cyan(result.assets.name)} → ${chalk.cyan(result.assets.publicUrl)}`,
+  );
+  console.log(`    state:  ${chalk.cyan(result.state.name)}  ${chalk.dim("(private)")}`);
+  if (result.envWritten.length > 0) {
+    console.log(
+      chalk.green(`\n  ✓ Wrote ${result.envWritten.length} encrypted entries to .env.production:`),
+    );
+    for (const k of result.envWritten) console.log(`    · ${k}`);
+  }
+  if (result.envKept.length > 0) {
+    console.log(
+      chalk.dim(`  · Kept ${result.envKept.length} existing entries: ${result.envKept.join(", ")}`),
+    );
+  }
+
+  console.log(chalk.bold("\n  rclone — paste into ~/.config/rclone/rclone.conf:"));
+  console.log();
+  for (const line of result.rcloneSnippet.split("\n")) console.log(`    ${chalk.dim(line)}`);
+  console.log(chalk.dim(`  Then upload with:`));
+  console.log(
+    chalk.dim(
+      `    rclone copy <local-dir>/ r2-${result.assets.name.replace(/-assets$/, "")}:${result.assets.name}/ \\\n      --progress --transfers=16 --checkers=32 --fast-list`,
+    ),
+  );
+  console.log();
 }
 
 async function handleDestroy(): Promise<void> {

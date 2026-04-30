@@ -31,6 +31,14 @@ export const SECRET_KEYS = {
   dnsInwxRegistrarPassword: "dns:inwx-registrar:password",
   s3AccessKey: (provider: string) => `s3:${provider}:access-key`,
   s3SecretKey: (provider: string) => `s3:${provider}:secret-key`,
+  /** Cloudflare API token with `Account > Workers R2 Storage > Edit`
+   *  permission. Used by `hatchkit provision s3` to create R2 buckets,
+   *  enable the managed `r2.dev` URL, and attach custom domains. Kept
+   *  separate from `dns:cloudflare:token` because the DNS token is
+   *  typically scoped narrowly to Zone:DNS:Edit + Zone:Zone:Read; the
+   *  R2 admin endpoints need account-level perms which most users
+   *  prefer not to mix into the DNS token (least-privilege rotation). */
+  r2AdminToken: "s3:r2:admin-token",
   gpuApiKey: (platform: string) => `gpu:${platform}:api-key`,
   glitchtipToken: "glitchtip:auth-token",
   /** Root-mode OpenPanel client used by the Management API to auto-create

@@ -75,6 +75,24 @@ export interface ProjectManifest {
    *  Optional for back-compat with manifests written before this
    *  field existed; readers should fall back to detection. */
   surfaces?: "server-only" | "client-only" | "both";
+  /** S3 buckets provisioned by `hatchkit provision s3`. Names go in
+   *  the manifest (so re-runs are idempotent and `hatchkit destroy`
+   *  knows what to undo); credentials never do — those live in the
+   *  global config / OS keychain.
+   *
+   *  `assets`  is the public bucket fronting NEXT_PUBLIC_ASSETS_BASE_URL
+   *           or equivalent. Reachable over HTTPS via either an r2.dev
+   *           managed domain or a custom domain on a zone the user owns.
+   *  `state`  is the private bucket — used for state files, logs, cron
+   *           inputs. Never publicly readable.
+   *
+   *  `publicUrl` is the canonical no-trailing-slash URL the runtime
+   *  should serve assets from. Always present on `assets`; null on
+   *  `state` (private buckets aren't publicly reachable). */
+  s3Buckets?: {
+    assets?: { name: string; publicUrl: string };
+    state?: { name: string; publicUrl: null };
+  };
 }
 
 /** Build a manifest from the internal ProjectConfig, explicitly

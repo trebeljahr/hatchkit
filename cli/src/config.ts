@@ -13,6 +13,38 @@ import {
 } from "./utils/secrets.js";
 import { validateRequired, validateUrl } from "./utils/validate.js";
 
+/** Sanity-check an S3 access/secret pair against shape rules. Returns
+ *  a human-readable problem description, or null when the pair is fine.
+ *
+ *  Caught real failures:
+ *    · access === secret  → user pasted the same value into both
+ *      prompts (very common with R2 because both fields are hex).
+ *    · R2 access key length != 32 → user pasted the secret into the
+ *      access slot (R2 access keys are exactly 32 hex chars).
+ *    · R2 secret length != 64 → user truncated paste / pasted token id.
+ *
+ *  Hetzner/AWS skip the per-provider length check because their access
+ *  key shapes vary across IAM versions and we'd rather accept than
+ *  false-positive — only the equality check applies there. */
+export function validateS3KeyPair(
+  provider: string,
+  accessKey: string,
+  secretKey: string,
+): string | null {
+  if (accessKey === secretKey) {
+    return "Access Key ID and Secret Access Key are the same value. They should be different.";
+  }
+  if (provider === "r2") {
+    if (!/^[0-9a-f]{32}$/i.test(accessKey)) {
+      return `R2 Access Key ID should be 32 hex chars (got ${accessKey.length}). Did you paste the Secret Access Key into the wrong field?`;
+    }
+    if (!/^[0-9a-f]{64}$/i.test(secretKey)) {
+      return `R2 Secret Access Key should be 64 hex chars (got ${secretKey.length}).`;
+    }
+  }
+  return null;
+}
+
 /** Pretty-print "where to create this token" hint before a password prompt. */
 function tokenHint(url: string, scope: string): void {
   console.log(chalk.dim(`  → Create at: ${chalk.cyan(url)}`));
@@ -31,7 +63,7 @@ function sanitizePastedSecret(raw: string): string {
 /** Prompt for a secret, show a masked preview (`abcd…wxyz, 50 chars`),
  *  and let the user re-enter if the paste looks wrong. Loops until the
  *  user confirms. Values are never echoed in full. */
-async function confirmPastedSecret(label: string): Promise<string> {
+export async function confirmPastedSecret(label: string): Promise<string> {
   for (;;) {
     const raw = await password({ message: `${label}:` });
     const value = sanitizePastedSecret(raw);
@@ -680,8 +712,22 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
   } as const;
   tokenHint(s3Hints[provider].url, s3Hints[provider].scope);
 
-  const promptedAccessKey = await confirmPastedSecret(`${provider} S3 Access Key ID`);
-  const promptedSecretKey = await confirmPastedSecret(`${provider} S3 Secret Access Key`);
+  // Loop on the access/secret pair until both pass validation. Real
+  // bug we hit in the wild: the user fast-clicks through the dashboard
+  // and pastes the same value (often the SHA256 secret) into BOTH
+  // prompts. The runtime then fails at S3-API time with a confusing
+  // 400 InvalidArgument. Catch it here while the user still has the
+  // dashboard open.
+  let promptedAccessKey: string;
+  let promptedSecretKey: string;
+  for (;;) {
+    promptedAccessKey = await confirmPastedSecret(`${provider} S3 Access Key ID`);
+    promptedSecretKey = await confirmPastedSecret(`${provider} S3 Secret Access Key`);
+    const issue = validateS3KeyPair(provider, promptedAccessKey, promptedSecretKey);
+    if (!issue) break;
+    console.log(chalk.yellow(`  ${issue}`));
+    console.log(chalk.dim("  Re-paste both values."));
+  }
 
   if (provider === "hetzner") {
     location = await select({

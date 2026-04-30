@@ -244,6 +244,139 @@ export class CloudflareApi {
    *      mixed-content warnings that bite static-export apps.
    *
    *  Returns a per-setting summary for the caller to log. */
+  // ---------------------------------------------------------------------
+  // R2 admin (account-level) — bucket create + public-domain wiring
+  // ---------------------------------------------------------------------
+  //
+  // The S3-compatible API used at runtime (PutObject etc.) takes
+  // access-key / secret-key auth against `<account>.r2.cloudflarestorage.com`.
+  // The admin endpoints used here are different: they take the same
+  // Bearer token used elsewhere on this client, but the token must
+  // carry the `Workers R2 Storage:Edit` permission scoped to the
+  // account. A token that only has Zone:DNS:Edit (the typical
+  // hatchkit DNS token) will 403 here. Callers should surface that
+  // as a clear "add R2 perm to your token" hint.
+  //
+  // Idempotency:
+  //   · createR2Bucket → 409 on duplicate; we treat as success.
+  //   · enableR2ManagedDomain → PUT, idempotent by definition.
+  //   · addR2CustomDomain → 409 on duplicate hostname; treat as success
+  //     and re-fetch the existing config.
+
+  /** Create a bucket. Returns the metadata. If the bucket already
+   *  exists (409), returns `{ existed: true }` plus a fresh GET. */
+  async createR2Bucket(
+    accountId: string,
+    name: string,
+    opts: { locationHint?: string; storageClass?: "Standard" | "InfrequentAccess" } = {},
+  ): Promise<{
+    name: string;
+    location?: string;
+    creation_date?: string;
+    storage_class?: string;
+    existed: boolean;
+  }> {
+    const body: Record<string, unknown> = { name };
+    if (opts.locationHint) body.locationHint = opts.locationHint;
+    if (opts.storageClass) body.storageClass = opts.storageClass;
+    try {
+      const res = await this.request<{
+        name: string;
+        location?: string;
+        creation_date?: string;
+        storage_class?: string;
+      }>("POST", `/accounts/${accountId}/r2/buckets`, body);
+      return { ...res, existed: false };
+    } catch (err) {
+      const msg = (err as Error).message;
+      // CF returns 10004 ("The bucket you tried to create already exists")
+      // for dupes. Match on either the code or "already exists".
+      if (/10004|already exists|409/i.test(msg)) {
+        const existing = await this.getR2Bucket(accountId, name);
+        return { ...(existing ?? { name }), existed: true };
+      }
+      throw err;
+    }
+  }
+
+  /** Get bucket metadata. Returns null on 404. */
+  async getR2Bucket(
+    accountId: string,
+    name: string,
+  ): Promise<{
+    name: string;
+    location?: string;
+    creation_date?: string;
+    storage_class?: string;
+  } | null> {
+    try {
+      return await this.request("GET", `/accounts/${accountId}/r2/buckets/${name}`);
+    } catch (err) {
+      if (/404|not\s*found|10006/i.test((err as Error).message)) return null;
+      throw err;
+    }
+  }
+
+  /** Enable (or disable) the managed `pub-<hash>.r2.dev` public URL on
+   *  a bucket. Returns the assigned `pub-<hash>.r2.dev` hostname. */
+  async enableR2ManagedDomain(
+    accountId: string,
+    bucket: string,
+    enabled = true,
+  ): Promise<{ bucketId: string; domain: string; enabled: boolean }> {
+    return this.request("PUT", `/accounts/${accountId}/r2/buckets/${bucket}/domains/managed`, {
+      enabled,
+    });
+  }
+
+  /** List custom domains attached to a bucket — used to short-circuit
+   *  re-runs that already added the domain. */
+  async listR2CustomDomains(
+    accountId: string,
+    bucket: string,
+  ): Promise<
+    Array<{ domain: string; enabled: boolean; status?: { ownership?: string; ssl?: string } }>
+  > {
+    type Resp = {
+      domains?: Array<{
+        domain: string;
+        enabled: boolean;
+        status?: { ownership?: string; ssl?: string };
+      }>;
+    };
+    const res = await this.request<Resp>(
+      "GET",
+      `/accounts/${accountId}/r2/buckets/${bucket}/domains/custom`,
+    );
+    return res.domains ?? [];
+  }
+
+  /** Attach a custom domain (a hostname on a Cloudflare zone you own)
+   *  to an R2 bucket. Idempotent — duplicates short-circuit via list. */
+  async addR2CustomDomain(
+    accountId: string,
+    bucket: string,
+    params: { domain: string; zoneId: string; minTLS?: "1.0" | "1.1" | "1.2" | "1.3" },
+  ): Promise<{ domain: string; enabled: boolean; zoneId: string; existed: boolean }> {
+    const existing = await this.listR2CustomDomains(accountId, bucket);
+    const match = existing.find((d) => d.domain === params.domain);
+    if (match) {
+      return { domain: match.domain, enabled: match.enabled, zoneId: params.zoneId, existed: true };
+    }
+    const body: Record<string, unknown> = {
+      domain: params.domain,
+      enabled: true,
+      zoneId: params.zoneId,
+    };
+    if (params.minTLS) body.minTLS = params.minTLS;
+    const res = await this.request<{ domain: string; enabled: boolean; zoneId: string }>(
+      "POST",
+      `/accounts/${accountId}/r2/buckets/${bucket}/domains/custom`,
+      body,
+    );
+    return { ...res, existed: false };
+  }
+
   async enableEdgeHardening(zoneId: string): Promise<{
     changed: Array<{ id: string; from: unknown; to: unknown }>;
     kept: string[];

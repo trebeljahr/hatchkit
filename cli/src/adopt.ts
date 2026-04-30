@@ -1385,6 +1385,57 @@ async function executePlan(
       });
     }
 
+    // Step 4b: S3 / R2 bucket provisioning — only when the project
+    // declared the `s3` feature and uses provider="r2" (the only one
+    // we can auto-create today). Re-runs are safe; bucket creation
+    // is idempotent (409→reuse) and `dotenvxSet` overwrites in place.
+    // Soft-fail to a caveat so a missing R2 token permission doesn't
+    // sink the rest of the adopt flow — the user can fix the token
+    // and re-run `hatchkit provision s3` to finish.
+    if (plan.features.includes("s3")) {
+      try {
+        const { provisionS3ForProject } = await import("./provision/s3-buckets.js");
+        const r = await provisionS3ForProject({ projectDir: state.projectDir });
+        console.log(
+          chalk.green(
+            `  ✓ S3 buckets ready — assets at ${r.assets.publicUrl}, state ${r.state.name}`,
+          ),
+        );
+        console.log(
+          chalk.dim(
+            `    Wrote ${r.envWritten.length} encrypted entries; rclone snippet at the end of this run.`,
+          ),
+        );
+        // Stash the snippet on caveats so the final summary block
+        // can render it underneath the banner. Misuse of `caveats`
+        // for non-failure info, but keeps the bottom of the run
+        // self-contained without inventing a parallel mechanism.
+        caveats.push({
+          title: "S3 — rclone snippet to upload assets",
+          reason: `Add this remote, then upload your local assets dir.`,
+          recovery: [
+            ...r.rcloneSnippet.split("\n").filter((l) => l !== ""),
+            "",
+            `Then: rclone copy <local-dir>/ r2-${plan.name}:${r.assets.name}/ --progress --transfers=16 --checkers=32 --fast-list`,
+          ],
+        });
+      } catch (err) {
+        console.log(
+          chalk.yellow(
+            `\n  ✗ S3 bucket provisioning failed: ${(err as Error).message.split("\n")[0]}`,
+          ),
+        );
+        caveats.push({
+          title: "S3 buckets not provisioned",
+          reason: (err as Error).message,
+          recovery: [
+            "Once fixed, finish with: hatchkit provision s3",
+            "(safe to re-run — bucket creation and env writes are idempotent)",
+          ],
+        });
+      }
+    }
+
     // Step 5: push key to Coolify — but only when wireCoolify didn't
     // already do it. wireCoolify's success path includes a setAppEnv
     // pass that pushes DOTENV_PRIVATE_KEY_PRODUCTION; if it failed,
