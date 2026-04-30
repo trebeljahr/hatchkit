@@ -29,8 +29,30 @@ export const SECRET_KEYS = {
    *  registered at INWX. Used by the post-apply NS flip in deploy/terraform
    *  and by `hatchkit dns link-to-cloudflare`. */
   dnsInwxRegistrarPassword: "dns:inwx-registrar:password",
+  /** @deprecated Account-wide S3 access/secret pair. Used by the
+   *  legacy single-project flow where every hatchkit-managed app
+   *  shared one credential against all buckets — bad blast radius
+   *  on leak. New code path is `s3ProjectAccessKey/secret` below:
+   *  per-project credentials minted by hatchkit at provision-time
+   *  and scoped to that project's buckets only.
+   *
+   *  Kept defined so the migration step in handleProvisionS3 can
+   *  detect + delete legacy entries. Don't WRITE these from new
+   *  code; reads are tolerated until the migration ships. */
   s3AccessKey: (provider: string) => `s3:${provider}:access-key`,
   s3SecretKey: (provider: string) => `s3:${provider}:secret-key`,
+  /** Per-project S3 access/secret pair, scoped to that project's
+   *  buckets only. Created by hatchkit at provision-time via
+   *  CloudflareApi.createR2ApiToken (which calls POST /user/tokens
+   *  with bucket-scoped resources, derives access = token id +
+   *  secret = sha256(token value)). The user never pastes these. */
+  s3ProjectAccessKey: (provider: string, project: string) => `s3:${provider}:${project}:access-key`,
+  s3ProjectSecretKey: (provider: string, project: string) => `s3:${provider}:${project}:secret-key`,
+  /** API token id of the per-project R2 token. Stored alongside
+   *  the access/secret pair so `hatchkit destroy <project>` can
+   *  delete the token (DELETE /user/tokens/<id>) instead of
+   *  leaving orphaned tokens in the user's CF account. */
+  s3ProjectTokenId: (provider: string, project: string) => `s3:${provider}:${project}:token-id`,
   /** Cloudflare API token with `Account > Workers R2 Storage > Edit`
    *  permission. Used by `hatchkit provision s3` to create R2 buckets,
    *  enable the managed `r2.dev` URL, and attach custom domains. Kept

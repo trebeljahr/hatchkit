@@ -661,6 +661,58 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
   await migrateSecret(`providers.s3.${provider}.accessKey`, SECRET_KEYS.s3AccessKey(provider));
   await migrateSecret(`providers.s3.${provider}.secretKey`, SECRET_KEYS.s3SecretKey(provider));
   const existing = store.get(`providers.s3.${provider}`) as S3ProviderMeta | undefined;
+
+  // R2 path: no access/secret prompts. The admin Bearer token is
+  // sufficient — `hatchkit provision s3` mints a per-project scoped
+  // S3 credential pair from it at provision-time. Only thing this
+  // ensures is that the metadata (endpoint + admin token) exists.
+  if (provider === "r2") {
+    const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
+    if (existing?.status === "configured" && adminToken) {
+      return {
+        ...existing,
+        accessKey: "",
+        secretKey: "",
+      };
+    }
+    console.log(chalk.yellow("\n  R2 is not configured yet. Let's set it up."));
+    console.log(
+      chalk.dim(
+        "  Your Cloudflare account ID is in the dashboard URL:\n" +
+          "    dash.cloudflare.com/<account-id>/home/overview",
+      ),
+    );
+    const accountId = (
+      await input({
+        message: "Cloudflare account ID:",
+        validate: validateRequired,
+      })
+    ).trim();
+    const endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
+    const region = "auto";
+
+    if (!adminToken) {
+      tokenHint(
+        "https://dash.cloudflare.com/profile/api-tokens → Create Token → Custom token",
+        "Account > Workers R2 Storage > Edit  AND  User > API Tokens > Edit  (and optionally Zone > Zone > Read for custom-domain attach)",
+      );
+      const newToken = await confirmPastedSecret("R2 admin Bearer token");
+      await setSecret(SECRET_KEYS.r2AdminToken, newToken);
+    }
+
+    const meta: S3ProviderMeta = {
+      status: "configured",
+      endpoint,
+      region,
+      lastVerified: new Date().toISOString(),
+    };
+    store.set(`providers.s3.${provider}`, meta);
+    console.log(
+      chalk.green("  ✓ R2 configured (per-project credentials minted at provision-time)"),
+    );
+    return { ...meta, accessKey: "", secretKey: "" };
+  }
+
   const accessKey = await getSecret(SECRET_KEYS.s3AccessKey(provider));
   const secretKey = await getSecret(SECRET_KEYS.s3SecretKey(provider));
   if (existing?.status === "configured" && accessKey && secretKey) {
@@ -671,29 +723,9 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
     chalk.yellow(`\n  ${provider.toUpperCase()} S3 is not configured yet. Let's set it up.`),
   );
 
-  // For R2 we need the account id BEFORE showing the create-token URL, so
-  // we can deep-link to the account-scoped page.
   let endpoint: string | undefined;
   let region: string | undefined;
   let location: string | undefined;
-  let accountId: string | undefined;
-
-  if (provider === "r2") {
-    console.log(
-      chalk.dim(
-        "  Your Cloudflare account ID is in the dashboard URL:\n" +
-          "    dash.cloudflare.com/<account-id>/home/overview",
-      ),
-    );
-    accountId = (
-      await input({
-        message: "Cloudflare account ID:",
-        validate: validateRequired,
-      })
-    ).trim();
-    endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
-    region = "auto";
-  }
 
   const s3Hints = {
     hetzner: {
@@ -704,20 +736,14 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
       url: "https://console.aws.amazon.com/iam → Users → Security credentials → Create access key",
       scope: "s3:PutObject, s3:GetObject, s3:DeleteObject on the target bucket",
     },
-    r2: {
-      url: `https://dash.cloudflare.com/${accountId ?? ""}/r2/api-tokens → Create Token`,
-      scope:
-        "Object Read & Write — then copy from the 'Use the following credentials for S3 clients' section (NOT the 'Token value' at the top)",
-    },
   } as const;
   tokenHint(s3Hints[provider].url, s3Hints[provider].scope);
 
   // Loop on the access/secret pair until both pass validation. Real
   // bug we hit in the wild: the user fast-clicks through the dashboard
-  // and pastes the same value (often the SHA256 secret) into BOTH
-  // prompts. The runtime then fails at S3-API time with a confusing
-  // 400 InvalidArgument. Catch it here while the user still has the
-  // dashboard open.
+  // and pastes the same value into BOTH prompts. The runtime then
+  // fails at S3-API time with a confusing 400 InvalidArgument. Catch
+  // it here while the user still has the dashboard open.
   let promptedAccessKey: string;
   let promptedSecretKey: string;
   for (;;) {
@@ -764,6 +790,18 @@ export async function getS3Config(provider: string): Promise<S3ProviderConfig | 
   await migrateSecret(`providers.s3.${provider}.secretKey`, SECRET_KEYS.s3SecretKey(provider));
   const meta = store.get(`providers.s3.${provider}`) as S3ProviderMeta | undefined;
   if (!meta || meta.status !== "configured") return null;
+
+  // R2 path: account-wide access/secret pair is no longer the source
+  // of truth (per-project pairs live under s3ProjectAccessKey instead).
+  // Treat presence of the admin token as "configured", with empty
+  // access/secret strings on the returned shape so callers that don't
+  // care about per-project context still get a meta-only object.
+  if (provider === "r2") {
+    const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
+    if (!adminToken) return null;
+    return { ...meta, accessKey: "", secretKey: "" };
+  }
+
   const accessKey = await getSecret(SECRET_KEYS.s3AccessKey(provider));
   const secretKey = await getSecret(SECRET_KEYS.s3SecretKey(provider));
   if (!accessKey || !secretKey) return null;

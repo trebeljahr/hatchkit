@@ -37,7 +37,7 @@ import { join } from "node:path";
 import { set as dotenvxSet } from "@dotenvx/dotenvx";
 import chalk from "chalk";
 import ora from "ora";
-import { getDnsConfig, getS3Config } from "../config.js";
+import { getDnsConfig } from "../config.js";
 import {
   MANIFEST_FILENAME,
   type ProjectManifest,
@@ -45,7 +45,7 @@ import {
   writeManifest,
 } from "../scaffold/manifest.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
-import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
+import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
 
 export type EnvPrefix = "R2" | "S3" | "AWS";
 
@@ -209,25 +209,27 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
     throw new Error(`No ${MANIFEST_FILENAME} in ${opts.projectDir}. Run \`hatchkit adopt\` first.`);
   }
 
-  // Provider config + credentials. Both must be present — without
-  // them we'd be writing CHANGE_ME values into the encrypted file,
-  // which is worse than failing fast.
-  const s3 = await getS3Config(provider);
-  if (!s3) {
+  // Provider metadata (endpoint + region). Read from the Conf JSON
+  // store directly so we don't require the legacy account-wide
+  // access/secret pair to exist — the new model issues per-project
+  // creds at provision-time, the global pair is no longer the source
+  // of truth for runtime S3 ops.
+  if (provider !== "r2") {
+    throw new Error(
+      `Bucket auto-provisioning is only implemented for R2 today (got ${provider}). PRs welcome.`,
+    );
+  }
+  const { getStore } = await import("../config.js");
+  const meta = getStore().get(`providers.s3.${provider}`) as
+    | { status?: string; endpoint?: string; region?: string }
+    | undefined;
+  if (!meta || meta.status !== "configured" || !meta.endpoint) {
     throw new Error(
       `S3 provider "${provider}" is not configured. Run \`hatchkit config add s3\` and pick ${provider}.`,
     );
   }
-  if (!s3.endpoint) {
-    throw new Error(`S3 provider "${provider}" has no endpoint set in global config.`);
-  }
-  if (provider !== "r2") {
-    throw new Error(
-      `Bucket auto-provisioning is only implemented for R2 today (got ${provider}). The runtime env wiring still works for any S3 — see \`hatchkit provision s3 --skip-create\` (TODO).`,
-    );
-  }
 
-  const accountId = accountIdFromR2Endpoint(s3.endpoint);
+  const accountId = accountIdFromR2Endpoint(meta.endpoint);
 
   // DNS config — needed only when we're about to attempt a custom
   // domain. Absence is fine; we fall back to the managed r2.dev URL.
@@ -335,7 +337,73 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
     }
   }
 
-  // 3. Seed `.env.production` with the credentials + URLs. Names are
+  // 3. Mint a per-project R2 API token scoped to just these two
+  //    buckets. Returns the S3-style access/secret pair (access =
+  //    token id, secret = sha256(token value)). Re-mint on every
+  //    re-run — keychain holds the canonical copy and idempotency
+  //    on the CF side is good enough that the worst case is a few
+  //    orphaned old tokens (cleaned up by `hatchkit destroy`).
+  //
+  //    If a token already exists in keychain for this project, REUSE
+  //    it instead of re-minting. This keeps `hatchkit provision s3`
+  //    idempotent w/r/t the user's CF account (no token churn) and
+  //    means rotating credentials is an explicit `--rotate` step
+  //    rather than a side effect.
+  const existingProjectAccess = await getSecret(
+    SECRET_KEYS.s3ProjectAccessKey(provider, projectName),
+  );
+  const existingProjectSecret = await getSecret(
+    SECRET_KEYS.s3ProjectSecretKey(provider, projectName),
+  );
+  let projectAccessKey: string;
+  let projectSecretKey: string;
+  let projectTokenId: string | undefined;
+  if (existingProjectAccess && existingProjectSecret) {
+    projectAccessKey = existingProjectAccess;
+    projectSecretKey = existingProjectSecret;
+    projectTokenId =
+      (await getSecret(SECRET_KEYS.s3ProjectTokenId(provider, projectName))) ?? undefined;
+    console.log(
+      chalk.dim(
+        `  · Reusing existing per-project R2 credentials (keychain ${SECRET_KEYS.s3ProjectAccessKey(provider, projectName)})`,
+      ),
+    );
+  } else {
+    const tokenSpinner = ora(
+      `Minting per-project R2 API token (scoped to those 2 buckets)`,
+    ).start();
+    try {
+      const minted = await cf.createR2ApiToken({
+        accountId,
+        name: `hatchkit-${projectName}`,
+        bucketNames: [assetsBucketName, stateBucketName],
+        permissions: "read-write",
+      });
+      projectAccessKey = minted.accessKeyId;
+      projectSecretKey = minted.secretAccessKey;
+      projectTokenId = minted.tokenId;
+      await setSecret(SECRET_KEYS.s3ProjectAccessKey(provider, projectName), minted.accessKeyId);
+      await setSecret(
+        SECRET_KEYS.s3ProjectSecretKey(provider, projectName),
+        minted.secretAccessKey,
+      );
+      await setSecret(SECRET_KEYS.s3ProjectTokenId(provider, projectName), minted.tokenId);
+      tokenSpinner.succeed(
+        `Minted scoped R2 API token (id ${minted.tokenId.slice(0, 8)}…, stored in keychain)`,
+      );
+    } catch (err) {
+      tokenSpinner.fail("Failed to mint per-project R2 API token");
+      const msg = (err as Error).message;
+      if (/9109|10000|403|invalid api token/i.test(msg)) {
+        throw new Error(
+          `${msg}\n\n  → Your admin token (s3:r2:admin-token) needs BOTH:\n    · Account > Workers R2 Storage > Edit\n    · User > API Tokens > Edit  (this is what's missing)\n  → Edit at https://dash.cloudflare.com/profile/api-tokens, save, re-run.`,
+        );
+      }
+      throw err;
+    }
+  }
+
+  // 4. Seed `.env.production` with the credentials + URLs. Names are
   //    chosen by the prefix the project's runtime actually reads —
   //    detected from `.env.example` etc.
   const envPrefix = opts.envPrefix ?? detectEnvPrefix(opts.projectDir);
@@ -352,10 +420,10 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   // user might've rotated keys). REGION is "auto" for R2 — the SDK
   // ignores it anyway when an explicit endpoint is given, but
   // setting it suppresses an `AWS_REGION` warning at runtime.
-  toWrite.push({ key: keys.endpoint, value: s3.endpoint });
-  toWrite.push({ key: keys.accessKey, value: s3.accessKey });
-  toWrite.push({ key: keys.secretKey, value: s3.secretKey });
-  toWrite.push({ key: keys.region, value: s3.region ?? "auto" });
+  toWrite.push({ key: keys.endpoint, value: meta.endpoint });
+  toWrite.push({ key: keys.accessKey, value: projectAccessKey });
+  toWrite.push({ key: keys.secretKey, value: projectSecretKey });
+  toWrite.push({ key: keys.region, value: meta.region ?? "auto" });
 
   // BUCKET name — keys.bucket is "<PREFIX>_STATE_BUCKET" for R2 (the
   // private bucket is the only one a server lib reads through env;
@@ -429,14 +497,16 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   console.log(chalk.dim(`  · Recorded bucket names in ${MANIFEST_FILENAME} (${publicUrlSource}).`));
 
   // 5. rclone snippet (printed by caller, returned here so callers
-  //    can capture it programmatically too). Don't write the snippet
-  //    to disk — the user's existing rclone config has unrelated
-  //    remotes and we don't want to mangle them.
+  //    can capture it programmatically too). Uses the per-project
+  //    scoped credentials we just minted — anyone running rclone
+  //    against this remote can only touch this project's two buckets.
+  //    Don't write the snippet to disk; the user's existing rclone
+  //    config has unrelated remotes and we don't want to mangle them.
   const rcloneSnippet = buildRcloneSnippet({
     remoteName: `r2-${projectName}`,
-    endpoint: s3.endpoint,
-    accessKey: s3.accessKey,
-    secretKey: s3.secretKey,
+    endpoint: meta.endpoint,
+    accessKey: projectAccessKey,
+    secretKey: projectSecretKey,
   });
 
   return {

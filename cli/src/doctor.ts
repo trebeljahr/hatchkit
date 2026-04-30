@@ -183,100 +183,115 @@ async function checkS3(provider: "hetzner" | "aws" | "r2"): Promise<CheckResult>
   const cfg = await getS3Config(provider);
   if (!cfg) return { name, status: "skip" };
 
-  // Shape validation — catches the paste-collision bug (access ===
-  // secret) and the wrong-length-paste bug (R2 access keys must be
-  // 32 hex chars; a 64-char paste is the secret in the wrong slot).
-  // Both produce silent runtime failures otherwise: every S3 SDK
-  // call returns 400 InvalidArgument with a confusing message.
-  const issue = validateS3KeyPair(provider, cfg.accessKey, cfg.secretKey);
-  if (issue) {
-    return {
-      name,
-      status: "fail",
-      detail: issue,
-      hint: [
-        "Re-paste the Access Key ID + Secret Access Key from the dashboard.",
-        provider === "r2"
-          ? "https://dash.cloudflare.com/<account-id>/r2/api-tokens"
-          : "(provider's console)",
-        "Easiest path: `hatchkit provision s3` auto-detects + offers to repair.",
-        "Otherwise: `hatchkit config add s3` for a full re-config.",
-      ],
-    };
-  }
-
-  // R2-specific: verify the dedicated admin Bearer token. Distinct
-  // from the access/secret pair (which is for runtime S3 ops only —
-  // R2's S3 API doesn't implement bucket admin). Without a working
-  // admin token, `hatchkit provision s3` can't create buckets / wire
-  // public URLs / attach custom domains.
-  if (provider === "r2") {
-    const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
-    if (!adminToken) {
-      return {
-        name,
-        status: "ok",
-        detail: "keys valid; R2 admin token not set (bucket provisioning will prompt)",
-        hint: [
-          "Optional unless you want bucket auto-create / public-URL setup.",
-          "When ready: `hatchkit provision s3` will prompt and store it.",
-        ],
-      };
-    }
-    const accountId = cfg.endpoint?.match(
-      /https?:\/\/([0-9a-f]{32})\.r2\.cloudflarestorage\.com/i,
-    )?.[1];
-    if (!accountId) {
+  // Account-wide access/secret pair only applies to non-R2 providers
+  // (Hetzner, AWS). Validate shape there to catch the paste-collision
+  // bug (access === secret) where users dual-paste the same value.
+  // R2's account-wide pair is no longer the source of truth — per-
+  // project pairs live under `s3:r2:<project>:access-key` instead.
+  if (provider !== "r2") {
+    const issue = validateS3KeyPair(provider, cfg.accessKey, cfg.secretKey);
+    if (issue) {
       return {
         name,
         status: "fail",
-        detail: `endpoint ${cfg.endpoint} doesn't look like an R2 endpoint`,
+        detail: issue,
+        hint: [
+          "Re-paste the Access Key ID + Secret Access Key from the dashboard.",
+          "Run: `hatchkit config add s3` for a full re-config.",
+        ],
       };
     }
-    return check(
-      name,
-      async () => {
-        const verifyRes = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
-          headers: { Authorization: `Bearer ${adminToken}` },
-        });
-        if (!verifyRes.ok) throw new Error(`HTTP ${verifyRes.status} (token verify)`);
-        // Privileged read — proves the token has R2 perms, not just any scope.
-        const r2Res = await fetch(
-          `https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets`,
-          { headers: { Authorization: `Bearer ${adminToken}` } },
-        );
-        if (!r2Res.ok) {
-          const body = (await r2Res.json().catch(() => null)) as {
-            errors?: Array<{ code: number; message: string }>;
-          } | null;
-          const code = body?.errors?.[0]?.code;
-          throw new Error(`HTTP ${r2Res.status}${code ? ` (CF code ${code})` : ""}`);
-        }
-        const body = (await r2Res.json()) as { result?: { buckets?: unknown[] } };
-        const n = body.result?.buckets?.length ?? 0;
-        return `keys valid; admin token has R2 perm (${n} bucket(s))`;
-      },
-      (detail) => {
-        const code = httpCode(detail);
-        if (code === 401) {
-          return [
-            "R2 admin Bearer token is invalid or revoked.",
-            "Create a new one: https://dash.cloudflare.com/profile/api-tokens → Custom token",
-            "Permissions:    Account > Workers R2 Storage > Edit",
-            "Then re-run: `hatchkit provision s3` to re-store + retry.",
-          ];
-        }
-        if (code === 403 || /10000|10001/.test(detail)) {
-          return [
-            "Token verifies but lacks `Account > Workers R2 Storage > Edit` (account-level).",
-            "Edit at https://dash.cloudflare.com/profile/api-tokens, add the perm, save.",
-          ];
-        }
-        return undefined;
-      },
-    );
+    return { name, status: "ok", detail: "credentials stored (endpoint set)" };
   }
-  return { name, status: "ok", detail: "credentials stored (endpoint set)" };
+
+  // R2: verify the admin Bearer token can do BOTH jobs it's responsible
+  // for — bucket admin (Workers R2 Storage:Edit) AND minting per-project
+  // child tokens (User > API Tokens:Edit). Either failing tells the
+  // user which perm to add. Per-project access/secret pairs aren't
+  // checked here; that's per-project doctor territory (TODO).
+  const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
+  if (!adminToken) {
+    return {
+      name,
+      status: "ok",
+      detail: "configured; admin token not set (bucket provisioning will prompt)",
+      hint: [
+        "Optional unless you want bucket auto-create / public-URL setup.",
+        "When ready: `hatchkit provision s3` will prompt and store it.",
+      ],
+    };
+  }
+  const accountId = cfg.endpoint?.match(
+    /https?:\/\/([0-9a-f]{32})\.r2\.cloudflarestorage\.com/i,
+  )?.[1];
+  if (!accountId) {
+    return {
+      name,
+      status: "fail",
+      detail: `endpoint ${cfg.endpoint} doesn't look like an R2 endpoint`,
+    };
+  }
+  return check(
+    name,
+    async () => {
+      const verifyRes = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      if (!verifyRes.ok) throw new Error(`HTTP ${verifyRes.status} (token verify)`);
+
+      const r2Res = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets`,
+        { headers: { Authorization: `Bearer ${adminToken}` } },
+      );
+      if (!r2Res.ok) {
+        const body = (await r2Res.json().catch(() => null)) as {
+          errors?: Array<{ code: number; message: string }>;
+        } | null;
+        const code = body?.errors?.[0]?.code;
+        throw new Error(`HTTP ${r2Res.status}${code ? ` (CF code ${code})` : ""} (r2 list)`);
+      }
+      const body = (await r2Res.json()) as { result?: { buckets?: unknown[] } };
+      const n = body.result?.buckets?.length ?? 0;
+
+      // GET /user/tokens lists tokens the caller can manage —
+      // requires User > API Tokens > Read (implied by Edit). Without
+      // it we'd 9109 / 403 here, signalling we can't mint per-project
+      // child tokens.
+      const tokenRes = await fetch("https://api.cloudflare.com/client/v4/user/tokens?per_page=1", {
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      if (!tokenRes.ok) {
+        throw new Error(`HTTP ${tokenRes.status} (api-tokens list — needs API Tokens:Edit)`);
+      }
+      return `R2 perm OK (${n} bucket(s)); API Tokens perm OK (can mint scoped child tokens)`;
+    },
+    (detail) => {
+      const code = httpCode(detail);
+      if (code === 401) {
+        return [
+          "R2 admin Bearer token is invalid or revoked.",
+          "Create a new one: https://dash.cloudflare.com/profile/api-tokens → Custom token",
+          "Permissions:    Account > Workers R2 Storage > Edit",
+          "                User    > API Tokens         > Edit",
+          "Then re-run: `hatchkit provision s3` to re-store + retry.",
+        ];
+      }
+      if (/api-tokens list/i.test(detail)) {
+        return [
+          "Admin token has R2 perm but lacks `User > API Tokens > Edit`.",
+          "Without it, hatchkit can't mint per-project R2 credentials at provision-time.",
+          "Edit at https://dash.cloudflare.com/profile/api-tokens, add the perm, save.",
+        ];
+      }
+      if (code === 403 || /10000|10001|9109/.test(detail)) {
+        return [
+          "Token verifies but lacks `Account > Workers R2 Storage > Edit`.",
+          "Edit at https://dash.cloudflare.com/profile/api-tokens, add the perm, save.",
+        ];
+      }
+      return undefined;
+    },
+  );
 }
 
 async function checkGpu(platform: string): Promise<CheckResult> {

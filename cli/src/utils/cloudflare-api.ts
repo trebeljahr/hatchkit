@@ -351,6 +351,128 @@ export class CloudflareApi {
     return res.domains ?? [];
   }
 
+  /** Mint a per-bucket-scoped R2 API token. Returns the token's S3
+   *  access/secret derivation alongside the raw token id+value (the
+   *  caller can store the access/secret pair as the project's S3
+   *  credentials, or hold the token value to use as a Bearer for R2
+   *  admin calls scoped to those buckets).
+   *
+   *  The token resource scope follows Cloudflare's R2 format:
+   *    `com.cloudflare.edge.r2.bucket.<accountId>_<jurisdiction>_<bucketName>`
+   *  with jurisdiction = "default" for buckets created without an
+   *  explicit jurisdiction (which is what `createR2Bucket` does today).
+   *
+   *  Permission groups are looked up dynamically by name — Cloudflare
+   *  doesn't publish stable IDs, only stable names. We cache the result
+   *  on the instance so subsequent calls in the same process re-use it.
+   *
+   *  Note on the calling token: this hits `POST /user/tokens` which
+   *  requires the calling token to have `User > API Tokens > Edit`.
+   *  An R2-only admin token will 403 here. The caller should surface
+   *  that as a "add API Tokens:Edit to your admin token" hint. */
+  async createR2ApiToken(params: {
+    accountId: string;
+    /** Display name for the token in the CF dashboard. Project name is
+     *  the natural choice. */
+    name: string;
+    /** Bucket names to scope the token to. Token can only access these. */
+    bucketNames: string[];
+    /** Bucket jurisdiction. Defaults to "default" — matches how
+     *  `createR2Bucket` creates buckets without explicit jurisdiction. */
+    jurisdiction?: "default" | "eu" | "fedramp";
+    /** Permissions scope for the resulting S3 keys. Default: read+write. */
+    permissions?: "read" | "read-write";
+  }): Promise<{
+    /** API token id — the same thing as the S3 Access Key ID. */
+    tokenId: string;
+    /** API token value (raw bearer). Sensitive. */
+    tokenValue: string;
+    /** S3 Access Key ID, derived per Cloudflare's docs (same as tokenId). */
+    accessKeyId: string;
+    /** S3 Secret Access Key — sha256(tokenValue), hex. */
+    secretAccessKey: string;
+  }> {
+    const jurisdiction = params.jurisdiction ?? "default";
+    const permissions = params.permissions ?? "read-write";
+
+    // Resolve permission groups by name. Cached on the instance so
+    // multi-bucket runs only pay the lookup once.
+    const wanted: string[] =
+      permissions === "read"
+        ? ["Workers R2 Storage Bucket Item Read"]
+        : ["Workers R2 Storage Bucket Item Read", "Workers R2 Storage Bucket Item Write"];
+    const groups = await this.getR2PermissionGroups();
+    const groupIds: string[] = [];
+    for (const name of wanted) {
+      const found = groups.find((g) => g.name === name);
+      if (!found) {
+        throw new Error(
+          `Permission group "${name}" not found in /user/tokens/permission_groups. The Cloudflare API may have renamed it; verify at https://dash.cloudflare.com/profile/api-tokens.`,
+        );
+      }
+      groupIds.push(found.id);
+    }
+
+    // Build the resources map: one entry per bucket, format per docs.
+    const resources: Record<string, "*"> = {};
+    for (const bucket of params.bucketNames) {
+      const key = `com.cloudflare.edge.r2.bucket.${params.accountId}_${jurisdiction}_${bucket}`;
+      resources[key] = "*";
+    }
+
+    const body = {
+      name: params.name,
+      policies: [
+        {
+          effect: "allow" as const,
+          permission_groups: groupIds.map((id) => ({ id })),
+          resources,
+        },
+      ],
+    };
+    const res = await this.request<{ id: string; value: string }>("POST", "/user/tokens", body);
+    const { createHash } = await import("node:crypto");
+    const secretAccessKey = createHash("sha256").update(res.value).digest("hex");
+    return {
+      tokenId: res.id,
+      tokenValue: res.value,
+      accessKeyId: res.id,
+      secretAccessKey,
+    };
+  }
+
+  /** Cached lookup of /user/tokens/permission_groups filtered to R2
+   *  groups. Returns at minimum the entries hatchkit looks up by name
+   *  in `createR2ApiToken`. */
+  private permissionGroupsCache?: Array<{ id: string; name: string }>;
+  private async getR2PermissionGroups(): Promise<Array<{ id: string; name: string }>> {
+    if (this.permissionGroupsCache) return this.permissionGroupsCache;
+    const all: Array<{ id: string; name: string }> = [];
+    let page = 1;
+    while (page <= 20) {
+      const data = await this.request<Array<{ id: string; name: string }>>(
+        "GET",
+        `/user/tokens/permission_groups?per_page=200&page=${page}`,
+      );
+      all.push(...data);
+      if (data.length < 200) break;
+      page += 1;
+    }
+    this.permissionGroupsCache = all;
+    return all;
+  }
+
+  /** Delete a Cloudflare API token by id. Idempotent: 404 → "not-found". */
+  async deleteApiToken(tokenId: string): Promise<"deleted" | "not-found"> {
+    try {
+      await this.request<unknown>("DELETE", `/user/tokens/${tokenId}`);
+      return "deleted";
+    } catch (err) {
+      if (/404|not\s*found/i.test((err as Error).message)) return "not-found";
+      throw err;
+    }
+  }
+
   /** Attach a custom domain (a hostname on a Cloudflare zone you own)
    *  to an R2 bucket. Idempotent — duplicates short-circuit via list. */
   async addR2CustomDomain(

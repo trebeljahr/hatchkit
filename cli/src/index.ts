@@ -363,79 +363,63 @@ async function handleProvisionS3(): Promise<void> {
       : undefined;
   const generateCronSecret = !args.includes("--no-cron-secret");
 
-  // Admin token check — the R2 admin REST API needs a Bearer token
-  // with `Account > Workers R2 Storage > Edit` perms. Distinct from
-  // both the DNS token (Zone-scoped) and the S3 access/secret keys
-  // (object-level only — Cloudflare R2's S3 API doesn't implement
-  // CreateBucket). Prompt + store on first use, never re-prompt.
+  // Admin token check — `s3:r2:admin-token` is the keys-to-the-kingdom
+  // for hatchkit's R2 setup. It (a) creates buckets, (b) attaches
+  // custom domains, (c) MINTS per-project S3 credentials scoped to
+  // that project's buckets. Per-project access/secret pairs are
+  // generated on the fly and never pasted by the user — see
+  // CloudflareApi.createR2ApiToken.
+  //
+  // Required permissions on this token (BOTH must be set):
+  //   · Account > Workers R2 Storage > Edit  — for bucket admin
+  //   · User    > API Tokens         > Edit  — for child-token issuance
+  // Optional:
+  //   · Zone    > Zone               > Read  — needed only if you
+  //     want custom-domain attach instead of the managed r2.dev URL
   const existingAdmin = await getSecret(SK.r2AdminToken);
   if (!existingAdmin) {
-    console.log(
-      chalk.yellow(
-        "\n  R2 admin token not configured. Bucket creation needs `Account > Workers R2 Storage > Edit`.",
-      ),
-    );
+    console.log(chalk.yellow("\n  R2 admin token not configured."));
     console.log(
       chalk.dim(
-        "  Create one at: https://dash.cloudflare.com/profile/api-tokens → Create Token → Custom token",
+        "  Create at:    https://dash.cloudflare.com/profile/api-tokens → Create Token → Custom token",
       ),
+    );
+    console.log(chalk.dim("  Required:     Account > Workers R2 Storage > Edit"));
+    console.log(
+      chalk.dim("                User    > API Tokens         > Edit  (mints per-project tokens)"),
     );
     console.log(
-      chalk.dim(
-        "  Permissions:    Account > Workers R2 Storage > Edit  (and add Zone > Zone > Read if you want custom-domain attach)",
-      ),
+      chalk.dim("  Optional:     Zone    > Zone               > Read  (custom-domain attach)"),
     );
-    console.log(chalk.dim("  Account scope:  All accounts (or just yours)\n"));
+    console.log(chalk.dim("  Account:      Just yours\n"));
     const token = await confirmPastedSecret("R2 admin Bearer token");
     await setSecret(SK.r2AdminToken, token);
     console.log(chalk.green(`  ✓ Stored under keychain ${SK.r2AdminToken}`));
   }
 
-  // Repair pass on the S3 access/secret pair. Older inits had a
-  // paste-collision bug where the same 64-char value landed in both
-  // slots, leaving every runtime S3 call broken (400 InvalidArgument
-  // — "Credential access key has length 64, should be 32"). Detect
-  // and offer to repair while the user is on the same dashboard
-  // page where they got the Bearer token.
+  // Migrate away from the legacy account-wide S3 access/secret pair.
+  // Old hatchkit stored a single shared pair under `s3:<provider>:access-key`
+  // / `:secret-key` and wrote it into every project's .env.production.
+  // The new model issues per-project scoped credentials, so the
+  // account-wide pair is unused (and was corrupt for some users due to
+  // a paste-collision bug — same value in both slots). Delete it on
+  // first run, surface what happened so the user can confirm.
   const provName = flag("--provider") ?? "r2";
-  const existingAccess = await getSecret(SK.s3AccessKey(provName));
-  const existingSecret = await getSecret(SK.s3SecretKey(provName));
-  if (existingAccess && existingSecret) {
-    const issue = validateS3KeyPair(provName, existingAccess, existingSecret);
-    if (issue) {
-      console.log(chalk.yellow(`\n  Existing ${provName} S3 keys look corrupt: ${issue}`));
-      console.log(
-        chalk.dim(
-          "  These are the Access Key ID + Secret Access Key shown next to your token, NOT the Bearer.",
-        ),
-      );
-      const { confirm } = await import("@inquirer/prompts");
-      const repair = await confirm({
-        message: "Re-paste them now to repair?",
-        default: true,
-      });
-      if (repair) {
-        let newAccess: string;
-        let newSecret: string;
-        for (;;) {
-          newAccess = await confirmPastedSecret(`${provName} S3 Access Key ID`);
-          newSecret = await confirmPastedSecret(`${provName} S3 Secret Access Key`);
-          const stillBroken = validateS3KeyPair(provName, newAccess, newSecret);
-          if (!stillBroken) break;
-          console.log(chalk.yellow(`  ${stillBroken}`));
-          console.log(chalk.dim("  Re-paste both values."));
-        }
-        await setSecret(SK.s3AccessKey(provName), newAccess);
-        await setSecret(SK.s3SecretKey(provName), newSecret);
-        console.log(chalk.green(`  ✓ Repaired ${provName} S3 access/secret keys`));
-      } else {
-        console.log(
-          chalk.dim(
-            "  · Skipping repair. .env.production will get the broken values; runtime S3 calls will 400.",
-          ),
-        );
-      }
-    }
+  const legacyAccess = await getSecret(SK.s3AccessKey(provName));
+  const legacySecret = await getSecret(SK.s3SecretKey(provName));
+  if (legacyAccess || legacySecret) {
+    const issue =
+      legacyAccess && legacySecret
+        ? validateS3KeyPair(provName, legacyAccess, legacySecret)
+        : "incomplete pair";
+    const { deleteSecret } = await import("./utils/secrets.js");
+    await deleteSecret(SK.s3AccessKey(provName));
+    await deleteSecret(SK.s3SecretKey(provName));
+    console.log(
+      chalk.dim(
+        `  · Removed legacy account-wide ${provName} S3 keys (${issue ?? "unused now"}); per-project tokens supersede them.`,
+      ),
+    );
   }
 
   console.log(chalk.bold("\n  hatchkit provision s3"));
