@@ -1403,8 +1403,30 @@ async function executePlan(
     // verifies it) and re-run `hatchkit provision s3` to finish.
     if (plan.features.includes("s3")) {
       try {
-        const { provisionS3ForProject } = await import("./provision/s3-buckets.js");
-        const r = await provisionS3ForProject({ projectDir: state.projectDir });
+        const { provisionS3ForProject, defaultBucketHostname, existingCustomHostname } =
+          await import("./provision/s3-buckets.js");
+        // Prompt for the public assets-bucket custom domain. Defaults to
+        // `s3.<project-domain>` on first run, or whatever the previous
+        // run already attached on re-run. Blank answer → managed r2.dev.
+        let publicHostname: string | null | undefined;
+        if (process.stdin.isTTY) {
+          const existingManifest = readManifest(state.projectDir);
+          const def =
+            (existingManifest ? existingCustomHostname(existingManifest) : null) ??
+            defaultBucketHostname(plan.domain);
+          const answer = (
+            await input({
+              message:
+                "Custom domain for the public assets bucket (leave empty to use the managed r2.dev URL):",
+              default: def,
+            })
+          ).trim();
+          publicHostname = answer === "" ? null : answer;
+        }
+        const r = await provisionS3ForProject({
+          projectDir: state.projectDir,
+          publicHostname,
+        });
         console.log(
           chalk.green(
             `  ✓ S3 buckets ready — assets at ${r.assets.publicUrl}, state ${r.state.name}`,

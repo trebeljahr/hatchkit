@@ -15,10 +15,11 @@
  *
  * Public URL strategy for the assets bucket, in order:
  *   1. Custom domain on a Cloudflare zone the user owns
- *      (`assets.<project-domain>` or a caller-provided override) —
+ *      (`s3.<project-domain>` or a caller-provided override) —
  *      preferred long-term, no `r2.dev` rate limits.
  *   2. Managed `pub-<hash>.r2.dev` domain — fallback when no zone
- *      matches the project's domain.
+ *      matches the project's domain, or when the caller explicitly
+ *      asks to skip the custom-domain attempt (`publicHostname: null`).
  *
  * Env var names are project-specific. Some projects standardised on
  * R2_*; others on the generic S3_* / AWS_* set the starter ships. We
@@ -55,10 +56,16 @@ export interface ProvisionS3Opts {
   provider?: string;
   /** Override auto-detected env-var prefix. */
   envPrefix?: EnvPrefix;
-  /** Override the public hostname for the assets bucket. When unset:
-   *  · if the project's domain has a Cloudflare zone, use `assets.<domain>`
-   *  · else fall back to the managed `pub-<hash>.r2.dev` URL. */
-  publicHostname?: string;
+  /** Override the public hostname for the assets bucket. Semantics:
+   *  · undefined          → derive default from manifest.domain
+   *                         (`s3.<domain>`); fall back to managed
+   *                         r2.dev if no Cloudflare zone matches.
+   *  · `null` or `""`     → skip the custom-domain attempt entirely
+   *                         and use the managed r2.dev URL.
+   *  · `"<host>"`         → attach that exact hostname (still falls
+   *                         back to managed r2.dev if it can't be
+   *                         attached, e.g. zone not on Cloudflare). */
+  publicHostname?: string | null;
   /** Override bucket names. Defaults to <projectName>-assets / -state. */
   assetsBucketName?: string;
   stateBucketName?: string;
@@ -261,42 +268,54 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
 
   // 2. Public URL for the assets bucket. Prefer a custom domain on a
   //    Cloudflare zone we own; fall back to the managed r2.dev URL.
+  //    A caller passing `publicHostname: null` (or "") explicitly opts
+  //    out of the custom-domain step — used by `--no-custom-domain`
+  //    and by the prompt when the user clears the input.
   let publicUrl: string | undefined;
   let publicUrlSource: "custom-domain" | "managed-r2dev" | undefined;
 
-  // Pick the hostname. Default `assets.<domain>`; allow caller override.
-  const customHostname = opts.publicHostname ?? `assets.${domain}`;
+  const skipCustomDomain = opts.publicHostname === null || opts.publicHostname === "";
+  // Pick the hostname. Default `s3.<domain>`; allow caller override.
+  const customHostname = opts.publicHostname || defaultBucketHostname(domain);
   // Find the closest matching zone (the registrable name — last
   // two labels of the host, or the host itself if the user passed a
   // bare apex).
   const zoneName = pickClosestZoneName(customHostname);
 
-  try {
-    const zone = await cfZone.getZoneByName(zoneName);
-    if (zone) {
-      const customSpinner = ora(`Attaching custom domain ${customHostname}`).start();
-      try {
-        const cd = await cf.addR2CustomDomain(accountId, assetsBucketName, {
-          domain: customHostname,
-          zoneId: zone.id,
-          minTLS: "1.2",
-        });
-        publicUrl = `https://${cd.domain}`;
-        publicUrlSource = "custom-domain";
-        customSpinner.succeed(
-          `Custom domain ${cd.existed ? "already attached" : "attached"} — ${publicUrl}`,
-        );
-      } catch (err) {
-        customSpinner.warn(
-          `Custom domain failed (${(err as Error).message.split("\n")[0]}) — falling back to r2.dev managed URL`,
+  if (!skipCustomDomain) {
+    try {
+      const zone = await cfZone.getZoneByName(zoneName);
+      if (zone) {
+        const customSpinner = ora(`Attaching custom domain ${customHostname}`).start();
+        try {
+          const cd = await cf.addR2CustomDomain(accountId, assetsBucketName, {
+            domain: customHostname,
+            zoneId: zone.id,
+            minTLS: "1.2",
+          });
+          publicUrl = `https://${cd.domain}`;
+          publicUrlSource = "custom-domain";
+          customSpinner.succeed(
+            `Custom domain ${cd.existed ? "already attached" : "attached"} — ${publicUrl}`,
+          );
+        } catch (err) {
+          customSpinner.warn(
+            `Custom domain failed (${(err as Error).message.split("\n")[0]}) — falling back to r2.dev managed URL`,
+          );
+        }
+      } else {
+        console.log(
+          chalk.dim(`  · No Cloudflare zone for ${zoneName} — using managed r2.dev URL instead.`),
         );
       }
+    } catch (err) {
+      // Zone lookup is best-effort. Don't fail the whole flow on it.
+      console.log(
+        chalk.dim(
+          `  · Zone lookup for ${zoneName} failed: ${(err as Error).message.split("\n")[0]}`,
+        ),
+      );
     }
-  } catch (err) {
-    // Zone lookup is best-effort. Don't fail the whole flow on it.
-    console.log(
-      chalk.dim(`  · Zone lookup for ${zoneName} failed: ${(err as Error).message.split("\n")[0]}`),
-    );
   }
 
   if (!publicUrl) {
@@ -481,11 +500,36 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
 
 /** Pick the registrable zone name for a hostname. Cloudflare keeps
  *  zones at the registrable level (example.com), so to attach
- *  `assets.foo.example.com` we look up `example.com`. Two-label
+ *  `s3.foo.example.com` we look up `example.com`. Two-label
  *  apex stays as-is. This is the same shape the existing DNS code
  *  uses; see `cli/src/deploy/coolify-app.ts` for parallels. */
 function pickClosestZoneName(hostname: string): string {
   const parts = hostname.split(".");
   if (parts.length <= 2) return hostname;
   return parts.slice(-2).join(".");
+}
+
+/** The default custom-domain hostname for the assets bucket. Sits at
+ *  `s3.<project-domain>` so e.g. a project on `beauty.trebeljahr.com`
+ *  gets `s3.beauty.trebeljahr.com`. Exposed for callers that want to
+ *  show this as the default in an interactive prompt. */
+export function defaultBucketHostname(domain: string): string {
+  return `s3.${domain}`;
+}
+
+/** If a previous run already attached a custom domain to the assets
+ *  bucket, surface that hostname so re-runs can default the prompt
+ *  to it (instead of the freshly-computed `s3.<domain>`). Returns
+ *  null when the manifest only records a managed r2.dev URL. */
+export function existingCustomHostname(manifest: ProjectManifest): string | null {
+  const url = manifest.s3Buckets?.assets?.publicUrl;
+  if (!url) return null;
+  let host: string;
+  try {
+    host = new URL(url).host;
+  } catch {
+    return null;
+  }
+  if (host.endsWith(".r2.dev")) return null;
+  return host;
 }

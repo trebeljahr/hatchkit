@@ -477,7 +477,8 @@ async function handleProvisionS3(): Promise<void> {
   const provider = flag("--provider");
   const assetsBucketName = flag("--assets-bucket");
   const stateBucketName = flag("--state-bucket");
-  const publicHostname = flag("--public-hostname");
+  const publicHostnameFlag = flag("--public-hostname");
+  const skipCustomDomain = args.includes("--no-custom-domain");
   const envPrefixFlag = flag("--env-prefix");
   const envPrefix =
     envPrefixFlag === "R2" || envPrefixFlag === "S3" || envPrefixFlag === "AWS"
@@ -537,6 +538,37 @@ async function handleProvisionS3(): Promise<void> {
         `  · Removed legacy account-wide ${provName} S3 keys (${issue ?? "unused now"}); per-project tokens supersede them.`,
       ),
     );
+  }
+
+  // Resolve the custom-domain choice. Precedence:
+  //   --no-custom-domain                → null (skip, use r2.dev)
+  //   --public-hostname <host>          → <host>
+  //   stdin is a TTY, no flags          → prompt with sensible default
+  //                                       (re-using the existing custom
+  //                                       domain on re-run, otherwise
+  //                                       `s3.<project-domain>`). Empty
+  //                                       answer → null (skip).
+  //   non-TTY, no flags                 → undefined (function falls back
+  //                                       to its built-in default)
+  let publicHostname: string | null | undefined = publicHostnameFlag;
+  if (skipCustomDomain) {
+    publicHostname = null;
+  } else if (publicHostname === undefined && process.stdin.isTTY) {
+    const { defaultBucketHostname, existingCustomHostname } = await import(
+      "./provision/s3-buckets.js"
+    );
+    const { readManifest } = await import("./scaffold/manifest.js");
+    const { input } = await import("@inquirer/prompts");
+    const m = readManifest(projectDir);
+    const def = m ? (existingCustomHostname(m) ?? defaultBucketHostname(m.domain)) : undefined;
+    const answer = (
+      await input({
+        message:
+          "Custom domain for the public assets bucket (leave empty to use the managed r2.dev URL):",
+        default: def,
+      })
+    ).trim();
+    publicHostname = answer === "" ? null : answer;
   }
 
   console.log(chalk.bold("\n  hatchkit provision s3"));
