@@ -1424,16 +1424,22 @@ async function executePlan(
           ).trim();
           publicHostname = answer === "" ? null : answer;
         }
+        // Only create the public assets bucket here. The private "state"
+        // bucket is an explicit opt-in even when the project has a
+        // server — most don't need it, and adding one silently means
+        // an extra R2 bucket + env var the user has to clean up later.
+        // Users who want one re-run `hatchkit provision s3 --with-state-bucket`.
         const r = await provisionS3ForProject({
           projectDir: state.projectDir,
           publicHostname,
         });
+        console.log(chalk.green(`  ✓ S3 assets bucket ready — ${r.assets.publicUrl}`));
         console.log(
-          chalk.green(
-            `  ✓ S3 buckets ready — assets at ${r.assets.publicUrl}, state ${r.state.name}`,
+          chalk.dim(
+            `    Wrote ${r.envWritten.length} encrypted entries. ` +
+              "(Need a private server-side bucket too? Run `hatchkit provision s3 --with-state-bucket`.)",
           ),
         );
-        console.log(chalk.dim(`    Wrote ${r.envWritten.length} encrypted entries.`));
       } catch (err) {
         console.log(
           chalk.yellow(

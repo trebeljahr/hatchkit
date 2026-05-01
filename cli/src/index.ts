@@ -477,6 +477,11 @@ async function handleProvisionS3(): Promise<void> {
   const provider = flag("--provider");
   const assetsBucketName = flag("--assets-bucket");
   const stateBucketName = flag("--state-bucket");
+  // State bucket is opt-in. Default: only the public assets bucket is
+  // created — that's all a typical Next-only frontend needs. Pass
+  // --with-state-bucket (or --state-bucket <name>) when there's a
+  // server reading/writing private state files.
+  const includeStateBucket = args.includes("--with-state-bucket") || stateBucketName !== undefined;
   const publicHostnameFlag = flag("--public-hostname");
   const skipCustomDomain = args.includes("--no-custom-domain");
   const envPrefixFlag = flag("--env-prefix");
@@ -577,17 +582,26 @@ async function handleProvisionS3(): Promise<void> {
     provider,
     assetsBucketName,
     stateBucketName,
+    includeStateBucket,
     publicHostname,
     envPrefix,
     generateCronSecret,
   });
 
   console.log();
-  console.log(chalk.green("  ✓ Buckets ready"));
+  console.log(chalk.green(result.state ? "  ✓ Buckets ready" : "  ✓ Bucket ready"));
   console.log(
     `    assets: ${chalk.cyan(result.assets.name)} → ${chalk.cyan(result.assets.publicUrl)}`,
   );
-  console.log(`    state:  ${chalk.cyan(result.state.name)}  ${chalk.dim("(private)")}`);
+  if (result.state) {
+    console.log(`    state:  ${chalk.cyan(result.state.name)}  ${chalk.dim("(private)")}`);
+  } else {
+    console.log(
+      chalk.dim(
+        "    (no private state bucket — pass --with-state-bucket if you need one for server-side files)",
+      ),
+    );
+  }
   if (result.envWritten.length > 0) {
     console.log(
       chalk.green(`\n  ✓ Wrote ${result.envWritten.length} encrypted entries to .env.production:`),

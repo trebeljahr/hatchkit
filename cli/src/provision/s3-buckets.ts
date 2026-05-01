@@ -3,15 +3,19 @@
  *
  * Closes the gap between `hatchkit config add s3 r2` (which only stores
  * credentials in the global config + keychain) and a project that
- * actually needs working buckets + env wiring at runtime. Splits the
- * provisioning into two clear roles:
+ * actually needs working buckets + env wiring at runtime.
+ *
+ * Two bucket roles, but only "assets" is created by default:
  *
  *   · "assets"  — public, hot path. Fronts large pre-built media
  *                 (AVIF/WebP/originals). Public URL goes into a
  *                 NEXT_PUBLIC_ASSETS_BASE_URL-style env var so the
- *                 client can fetch directly.
+ *                 client can fetch directly. Always created.
  *   · "state"   — private, cold. Used for small server-side files
- *                 (cron state, audit logs). Never publicly reachable.
+ *                 (cron state, audit logs). Opt-in via
+ *                 `includeStateBucket: true` (CLI: `--with-state-bucket`)
+ *                 since most projects (esp. Next-only frontends) don't
+ *                 need it. Never publicly reachable.
  *
  * Public URL strategy for the assets bucket, in order:
  *   1. Custom domain on a Cloudflare zone the user owns
@@ -69,6 +73,13 @@ export interface ProvisionS3Opts {
   /** Override bucket names. Defaults to <projectName>-assets / -state. */
   assetsBucketName?: string;
   stateBucketName?: string;
+  /** Create the private "state" bucket alongside the public assets
+   *  bucket. Default false — most projects (especially Next-only
+   *  frontends) don't need a server-side state bucket and creating
+   *  one just adds clutter, env vars, and CF account noise. Opt in
+   *  when you actually have a server that writes cron state, audit
+   *  logs, or other private files. CLI: `--with-state-bucket`. */
+  includeStateBucket?: boolean;
   /** R2 location hint. Default "weur" (Western Europe — closest to
    *  Hetzner Nuremberg, where the typical hatchkit deploy lives). */
   locationHint?: string;
@@ -79,7 +90,8 @@ export interface ProvisionS3Opts {
 
 export interface ProvisionS3Result {
   assets: { name: string; publicUrl: string; created: boolean };
-  state: { name: string; created: boolean };
+  /** Null when `includeStateBucket` was false (the default). */
+  state: { name: string; created: boolean } | null;
   envWritten: string[];
   /** Existing keys we left alone (already encrypted in the file). */
   envKept: string[];
@@ -245,16 +257,32 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   const stateBucketName = opts.stateBucketName ?? `${projectName}-state`;
   const locationHint = opts.locationHint ?? "weur";
 
-  // 1. Create the two buckets (idempotent).
-  const spinner = ora(`Creating R2 buckets (${assetsBucketName}, ${stateBucketName})`).start();
+  // State bucket is opt-in. Default off so a "simple" Next-only deploy
+  // doesn't end up with a private bucket it never reads from. Caller
+  // sets includeStateBucket=true (CLI: --with-state-bucket) when there's
+  // a server that genuinely needs cron state / audit log storage.
+  const includeStateBucket = opts.includeStateBucket === true;
+
+  // 1. Create the bucket(s) (idempotent).
+  const spinner = ora(
+    includeStateBucket
+      ? `Creating R2 buckets (${assetsBucketName}, ${stateBucketName})`
+      : `Creating R2 bucket (${assetsBucketName})`,
+  ).start();
   let assetsBucket: { existed: boolean };
-  let stateBucket: { existed: boolean };
+  let stateBucket: { existed: boolean } | null = null;
   try {
     assetsBucket = await cf.createR2Bucket(accountId, assetsBucketName, { locationHint });
-    stateBucket = await cf.createR2Bucket(accountId, stateBucketName, { locationHint });
-    spinner.succeed(
-      `R2 buckets ready — ${assetsBucketName} (${assetsBucket.existed ? "exists" : "created"}), ${stateBucketName} (${stateBucket.existed ? "exists" : "created"})`,
-    );
+    if (includeStateBucket) {
+      stateBucket = await cf.createR2Bucket(accountId, stateBucketName, { locationHint });
+      spinner.succeed(
+        `R2 buckets ready — ${assetsBucketName} (${assetsBucket.existed ? "exists" : "created"}), ${stateBucketName} (${stateBucket.existed ? "exists" : "created"})`,
+      );
+    } else {
+      spinner.succeed(
+        `R2 bucket ready — ${assetsBucketName} (${assetsBucket.existed ? "exists" : "created"})`,
+      );
+    }
   } catch (err) {
     spinner.fail("R2 bucket creation failed");
     const msg = (err as Error).message;
@@ -331,12 +359,12 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
     }
   }
 
-  // 3. Mint a per-project R2 API token scoped to just these two
-  //    buckets. Returns the S3-style access/secret pair (access =
-  //    token id, secret = sha256(token value)). Re-mint on every
-  //    re-run — keychain holds the canonical copy and idempotency
-  //    on the CF side is good enough that the worst case is a few
-  //    orphaned old tokens (cleaned up by `hatchkit destroy`).
+  // 3. Mint a per-project R2 API token scoped to whichever buckets we
+  //    just created (one or two). Returns the S3-style access/secret
+  //    pair (access = token id, secret = sha256(token value)). Re-mint
+  //    on every re-run — keychain holds the canonical copy and
+  //    idempotency on the CF side is good enough that the worst case
+  //    is a few orphaned old tokens (cleaned up by `hatchkit destroy`).
   //
   //    If a token already exists in keychain for this project, REUSE
   //    it instead of re-minting. This keeps `hatchkit provision s3`
@@ -370,7 +398,7 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
       const minted = await cf.createR2ApiToken({
         accountId,
         name: `hatchkit-${projectName}`,
-        bucketNames: [assetsBucketName, stateBucketName],
+        bucketNames: includeStateBucket ? [assetsBucketName, stateBucketName] : [assetsBucketName],
         permissions: "read-write",
       });
       projectAccessKey = minted.accessKeyId;
@@ -424,8 +452,14 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   // assets are URL-driven). For S3/AWS prefixes the canonical key is
   // <PREFIX>_BUCKET_NAME pointing at the assets bucket. Match the
   // semantics of each prefix.
+  //
+  // R2 + no state bucket: skip the R2_STATE_BUCKET write entirely —
+  // there is no private bucket to point at, and seeding an empty/dummy
+  // value would just be a footgun later.
   if (envPrefix === "R2") {
-    toWrite.push({ key: keys.bucket, value: stateBucketName });
+    if (includeStateBucket) {
+      toWrite.push({ key: keys.bucket, value: stateBucketName });
+    }
   } else {
     toWrite.push({ key: keys.bucket, value: assetsBucketName });
   }
@@ -479,12 +513,18 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
 
   // 4. Record bucket names + public URL in the manifest so re-runs
   //    don't have to re-derive them and a future `hatchkit destroy`
-  //    knows what to clean up.
+  //    knows what to clean up. Preserve a previously-recorded `state`
+  //    entry when the current run didn't create one — the bucket may
+  //    still exist from an earlier `--with-state-bucket` provision.
   const updated: ProjectManifest = {
     ...manifest,
     s3Buckets: {
       assets: { name: assetsBucketName, publicUrl },
-      state: { name: stateBucketName, publicUrl: null },
+      ...(includeStateBucket
+        ? { state: { name: stateBucketName, publicUrl: null as null } }
+        : manifest.s3Buckets?.state
+          ? { state: manifest.s3Buckets.state }
+          : {}),
     },
   };
   writeManifest(opts.projectDir, updated);
@@ -492,7 +532,10 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
 
   return {
     assets: { name: assetsBucketName, publicUrl, created: !assetsBucket.existed },
-    state: { name: stateBucketName, created: !stateBucket.existed },
+    state:
+      includeStateBucket && stateBucket
+        ? { name: stateBucketName, created: !stateBucket.existed }
+        : null,
     envWritten,
     envKept,
   };
