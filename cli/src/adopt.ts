@@ -1091,6 +1091,15 @@ async function executePlan(
     } else {
       console.log(chalk.dim("  · Skipping dotenvx bootstrap (per stepper choice)."));
     }
+
+    // Step 1b: make sure .env.production is actually committed to git.
+    // This runs regardless of whether bootstrap fired — projects
+    // adopted on an earlier hatchkit release may have an encrypted
+    // file that's been silently shadowed by a global gitignore the
+    // whole time. See ensureEnvProductionCommitted for the gory
+    // details on why a global `~/.config/git/ignore` for .env.production
+    // is the most common culprit.
+    await ensureEnvProductionCommitted(state, plan);
     const importResult = await importKeyToKeychain(state, plan);
     if (importResult.imported && importResult.created) {
       // Same gate: only record a keychain entry adopt itself just put
@@ -1664,6 +1673,103 @@ async function bootstrapDotenvxNow(
   }
 
   return { keysPath, createdKeysFile: !keysExistedBefore };
+}
+
+/** Make sure the dotenvx-encrypted `.env.production` is actually
+ *  committed to git.
+ *
+ *  hatchkit assumes the encrypted file ships with the repo — GH Actions
+ *  checks out exactly what's pushed, and the Dockerfile expects it in
+ *  the build context for `dotenvx run -- pnpm build` to find. The
+ *  trap: many users have a global `~/.config/git/ignore` from a
+ *  pre-dotenvx era that lists `.env.production` (sensible default
+ *  before encrypted env files were a thing). The project's own
+ *  `.gitignore` doesn't override the global one, so the file silently
+ *  stays untracked even though the project intends to commit it.
+ *
+ *  This helper:
+ *    1. Diagnoses whether the file is ignored vs. just untracked, and
+ *       tells the user why if the global ignore is in play.
+ *    2. Force-adds + commits ONLY this path (pathspec on commit so the
+ *       user's WIP doesn't get rolled into the same commit).
+ *    3. If the commit fails (e.g. a husky hook rejects it), leaves the
+ *       file staged + tells the user the manual fallback. We don't
+ *       use --no-verify — bypassing the user's hooks behind their back
+ *       is worse than asking them to commit manually.
+ *
+ *  Idempotent: skips if the file is already tracked and clean.
+ *  No-op when `.env.production` doesn't exist or the project isn't a
+ *  git repo.
+ */
+async function ensureEnvProductionCommitted(state: DetectedState, plan: AdoptPlan): Promise<void> {
+  if (!state.isGitRepo) return;
+  const root = dotenvxRootFor(plan, state.projectDir);
+  const prodPath = join(root, ".env.production");
+  if (!existsSync(prodPath)) return;
+
+  const tracked = await execOk("git", ["ls-files", "--error-unmatch", "--", prodPath], {
+    cwd: state.projectDir,
+  });
+  if (tracked) {
+    // Already tracked; nothing to do unless content drifted from HEAD.
+    // `git diff --quiet HEAD -- <path>` exits 0 when working tree
+    // matches HEAD for that path (covers both "no unstaged change"
+    // and "no staged change" in one shot).
+    const clean = await execOk("git", ["diff", "--quiet", "HEAD", "--", prodPath], {
+      cwd: state.projectDir,
+    });
+    if (clean) return;
+  } else {
+    // Not tracked. Diagnose ignored-vs-untracked so the user knows
+    // *why* their previous commits silently dropped the file.
+    const ignored = await execOk("git", ["check-ignore", "--quiet", "--", prodPath], {
+      cwd: state.projectDir,
+    });
+    if (ignored) {
+      const reason = await exec("git", ["check-ignore", "-v", "--", prodPath], {
+        cwd: state.projectDir,
+        silent: true,
+      });
+      console.log(
+        chalk.yellow(
+          `  ⚠ .env.production is git-ignored — ${reason.stdout.trim() || "global ignore rule"}`,
+        ),
+      );
+      console.log(
+        chalk.dim(
+          `    The encrypted file is safe to commit (encryption is the whole point); force-adding so GH Actions has it in the build context.`,
+        ),
+      );
+    }
+  }
+
+  await exec("git", ["add", "-f", "--", prodPath], {
+    cwd: state.projectDir,
+    silent: true,
+  });
+  // Pathspec on commit limits the commit to ONLY .env.production —
+  // anything else the user has staged stays out of this commit.
+  const commit = await exec(
+    "git",
+    ["commit", "-m", "chore(dotenvx): commit encrypted .env.production", "--", prodPath],
+    { cwd: state.projectDir, silent: true },
+  );
+  if (commit.exitCode === 0) {
+    console.log(chalk.green(`  ✓ Committed ${relativeTo(prodPath)}`));
+  } else {
+    const firstLine =
+      (commit.stderr || commit.stdout)
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .find((l) => l.length > 0) ?? "unknown error";
+    console.log(chalk.yellow(`  ⚠ Couldn't commit .env.production automatically: ${firstLine}`));
+    console.log(
+      chalk.dim(
+        `    File is staged. Commit manually so it ships to GH Actions:\n` +
+          `      git -C ${relativeTo(state.projectDir)} commit -m "chore(dotenvx): commit encrypted .env.production" -- ${relativeTo(prodPath, state.projectDir)}`,
+      ),
+    );
+  }
 }
 
 interface SetupGitHubResult {
