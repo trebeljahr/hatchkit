@@ -58,6 +58,7 @@ import {
 } from "./scaffold/manifest.js";
 import { CoolifyApi } from "./utils/coolify-api.js";
 import { exec, execOk } from "./utils/exec.js";
+import { ensureGitignoreEntries, looksLikeDotenvxPrivateKey } from "./utils/gitignore.js";
 import { multiselect } from "./utils/multiselect.js";
 import { RunLedger } from "./utils/run-ledger.js";
 import { SECRET_KEYS, getSecret, setSecret } from "./utils/secrets.js";
@@ -1578,6 +1579,27 @@ async function bootstrapDotenvxNow(
   // Snapshot existence BEFORE the dotenvx call so we know whether
   // we're about to create the keys file or just reuse the existing one.
   const keysExistedBefore = existsSync(keysPath);
+
+  // Belt-and-braces: ensure `.env.keys` is gitignored at the repo root
+  // BEFORE we ask dotenvx to write it. The user's pre-existing
+  // `.gitignore` may not cover dotenvx-specific files (the starter does,
+  // but adopt runs against arbitrary repos). If we let `dotenvx set`
+  // run first and `.env.keys` lands in a non-ignored path, the next
+  // `git add -A` (in setupGitHubRemote) sweeps the private key into the
+  // index and a public push leaks it forever. The gitignore write is
+  // additive — never touches existing entries — so it's safe to run
+  // even when `.env.keys` is already covered.
+  const ignoreResult = ensureGitignoreEntries(state.projectDir, [".env.keys"]);
+  if (ignoreResult.added.length > 0) {
+    console.log(
+      chalk.dim(
+        ignoreResult.fileCreated
+          ? `  · Created .gitignore at ${relativeTo(ignoreResult.path)} with .env.keys`
+          : `  · Appended .env.keys to ${relativeTo(ignoreResult.path)}`,
+      ),
+    );
+  }
+
   const ora = (await import("ora")).default;
   const label = state.prodEnvIsEncrypted
     ? "Re-encrypting .env.production with dotenvx..."
@@ -1652,6 +1674,28 @@ async function setupGitHubRemote(
   //                                 1 → diff present (commit needed)
   // execOk returns true on exit 0, so the inverse is "something to commit".
   await exec("git", ["add", "-A"], { cwd: state.projectDir });
+
+  // Defensive last-mile check: refuse to commit anything that smells
+  // like a dotenvx private key, regardless of whether `.gitignore` is
+  // up to date. Catches the bug we shipped once where `.env.keys` was
+  // generated into a repo whose pre-existing `.gitignore` didn't cover
+  // it; bootstrapDotenvxNow now appends `.env.keys` to `.gitignore`
+  // BEFORE writing the file, but this guard is the cheap second line
+  // of defence — it would have caught that bug too. See looksLikeDotenvxPrivateKey.
+  const stagedFiles = await listStagedFiles(state.projectDir);
+  const leaks = stagedFiles.filter((rel) =>
+    looksLikeDotenvxPrivateKey(join(state.projectDir, rel)),
+  );
+  if (leaks.length > 0) {
+    throw new Error(
+      `Refusing to commit — staged files look like dotenvx private keys:\n` +
+        leaks.map((p) => `      ${p}`).join("\n") +
+        `\n\n  Add them to .gitignore and unstage:\n` +
+        leaks.map((p) => `      git rm --cached ${p}`).join("\n") +
+        `\n\n  Then re-run \`hatchkit adopt --resume\`.`,
+    );
+  }
+
   const cleanIndex = await execOk("git", ["diff", "--cached", "--quiet"], {
     cwd: state.projectDir,
   });
@@ -1766,6 +1810,15 @@ function writeAdoptManifest(projectDir: string, plan: AdoptPlan): void {
 function relativeTo(p: string, from = process.cwd()): string {
   const rel = relative(from, p);
   return rel === "" ? "." : rel.startsWith("..") ? p : `./${rel}`;
+}
+
+/** Return the relative paths of files currently staged in the index.
+ *  Used by setupGitHubRemote's defensive private-key guard. Quiet
+ *  exit-1 (no diff) returns an empty list rather than throwing. */
+async function listStagedFiles(cwd: string): Promise<string[]> {
+  const res = await exec("git", ["diff", "--cached", "--name-only", "-z"], { cwd, silent: true });
+  if (res.exitCode !== 0) return [];
+  return res.stdout.split("\0").filter((s) => s.length > 0);
 }
 
 // ---------------------------------------------------------------------------
