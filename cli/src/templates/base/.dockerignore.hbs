@@ -2,6 +2,10 @@ node_modules
 dist
 .git
 .gitignore
+# Plaintext envs only — `.env.production` is dotenvx-encrypted and
+# must remain in the build context so `dotenvx run` can decrypt it.
 .env
-.env.*
+.env.local
+.env.*.local
+.env.keys
 *.md

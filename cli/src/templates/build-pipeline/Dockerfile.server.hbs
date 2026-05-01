@@ -2,10 +2,23 @@
 #
 # Server / fullstack image for {{name}}.
 # Built by .github/workflows/deploy.yml, pushed to GHCR, pulled by
-# Coolify via docker-compose.yml. Uses dotenvx at runtime so the
-# committed encrypted .env.production decrypts only inside the
-# container (the private key comes from DOTENV_PRIVATE_KEY_PRODUCTION,
-# set on the Coolify app's env).
+# Coolify via docker-compose.yml. dotenvx decrypts the committed
+# encrypted .env.production at TWO points:
+#
+#   1. Build stage — uses the dotenvx_private_key BuildKit secret
+#      (passed by the workflow from the GH Actions secret
+#      DOTENV_PRIVATE_KEY_PRODUCTION) to decrypt in-memory before
+#      running `pnpm build`. Required for fullstack builds that bake
+#      NEXT_PUBLIC_* / VITE_* values into a static client bundle —
+#      those values are inlined at build time and unreachable from
+#      the runtime CMD. The secret is mounted as tmpfs and never
+#      lands in `docker history` or any image layer.
+#
+#   2. Runtime CMD — `dotenvx run` reads the same .env.production and
+#      decrypts again, this time using DOTENV_PRIVATE_KEY_PRODUCTION
+#      from the container env (forwarded by docker-compose.yml from
+#      Coolify's app env). This covers server-side values the runtime
+#      reads with `process.env.X`.
 ARG NODE_VERSION={{nodeMajor}}
 
 FROM node:${NODE_VERSION}-alpine AS deps
@@ -17,7 +30,18 @@ FROM node:${NODE_VERSION}-alpine AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN corepack enable && pnpm build
+# Build-time decryption — see the header comment for the rationale.
+# `if [ -z "$DOTENV_PRIVATE_KEY_PRODUCTION" ]` fails fast when the
+# workflow forgot to pass the secret; without it dotenvx would
+# silently export zero env vars and the build would bake broken
+# `encrypted:...` strings into the static bundle.
+RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION \
+    if [ -z "$DOTENV_PRIVATE_KEY_PRODUCTION" ]; then \
+      echo "ERROR: dotenvx_private_key build secret not supplied. The workflow at .github/workflows/deploy.yml should pass it via 'secrets:' from the GH Actions secret DOTENV_PRIVATE_KEY_PRODUCTION." >&2; \
+      exit 1; \
+    fi && \
+    corepack enable && \
+    pnpm dlx @dotenvx/dotenvx run -- pnpm build
 
 FROM node:${NODE_VERSION}-alpine AS runner
 WORKDIR /app
@@ -27,5 +51,6 @@ COPY --from=build /app /app
 EXPOSE {{port}}
 # `dotenvx run` reads .env.production (encrypted, committed) and
 # decrypts in-process using DOTENV_PRIVATE_KEY_PRODUCTION before
-# spawning the actual server.
+# spawning the actual server. corepack isn't enabled in this stage,
+# so we fetch dotenvx via npx instead of pnpm dlx.
 CMD ["sh", "-c", "npx --yes @dotenvx/dotenvx run -- node {{entrypoint}}"]

@@ -24,6 +24,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { ensureDockerignoreAllowsEnvProduction } from "../utils/dockerignore.js";
 import { renderTemplate } from "../utils/template.js";
 
 /** Default Node major used when the project doesn't pin one via
@@ -151,6 +152,12 @@ export interface ScaffoldBuildPipelineResult {
   overwritten: string[];
   /** Files we skipped because they already existed. */
   skipped: string[];
+  /** Project-relative path of the `.dockerignore` we appended a
+   *  `!.env.production` line to (if any). `undefined` when nothing was
+   *  changed — either there's no `.dockerignore`, or the negation was
+   *  already present. Adopt prints this in its summary so the user can
+   *  see why their `.dockerignore` grew a line. */
+  dockerignorePatched?: string;
 }
 
 /** Idempotent: only writes files that don't exist. Returns what
@@ -224,7 +231,17 @@ export function scaffoldBuildPipeline(
     skipped.push(DEPLOY_WORKFLOW_PATH);
   }
 
-  return { written, created, overwritten, skipped };
+  // .dockerignore patch — runs unconditionally, idempotently. The
+  // scaffolded Dockerfiles all end with `COPY . .`, so the encrypted
+  // .env.production has to be inside the build context for the build
+  // step's `dotenvx run` to find it. Repos adopted before this fix
+  // existed will already have a `.dockerignore` with `.env*`-style
+  // wildcards excluding it; this re-includes the encrypted file
+  // without disturbing the user's other rules.
+  const dockerignoreResult = ensureDockerignoreAllowsEnvProduction(input.projectDir);
+  const dockerignorePatched = dockerignoreResult.modified ? ".dockerignore" : undefined;
+
+  return { written, created, overwritten, skipped, dockerignorePatched };
 }
 
 function writeProjectFile(projectDir: string, relPath: string, content: string): void {

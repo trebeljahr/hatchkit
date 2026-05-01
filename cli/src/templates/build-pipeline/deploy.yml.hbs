@@ -8,8 +8,19 @@
 # Required repo secrets (hatchkit sets these via `gh secret set`
 # during adopt / create; rotate via the GitHub UI / `gh` whenever
 # needed):
-#   COOLIFY_WEBHOOK_URL — full URL incl. uuid query param
-#   COOLIFY_TOKEN       — bearer token for the deploy endpoint
+#   COOLIFY_WEBHOOK_URL           — full URL incl. uuid query param
+#   COOLIFY_TOKEN                 — bearer token for the deploy endpoint
+#   DOTENV_PRIVATE_KEY_PRODUCTION — dotenvx private key; passed to the
+#                                   docker build as a BuildKit secret
+#                                   (mounted as tmpfs, never written
+#                                   to a layer or `docker history`).
+#                                   The Dockerfile uses it to decrypt
+#                                   .env.production in memory and bake
+#                                   build-time values (NEXT_PUBLIC_*
+#                                   etc.) into the output. Stored in
+#                                   your OS keychain under
+#                                   `dotenvx:<project>:production-private-key`
+#                                   — `hatchkit keys show <project>` to retrieve.
 #
 # GHCR auth uses the workflow's built-in GITHUB_TOKEN. For Coolify
 # to pull a private package, configure GHCR credentials in the
@@ -69,6 +80,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
+          # BuildKit secret for decrypting .env.production at build
+          # time. Mounted as tmpfs inside the Dockerfile's RUN step,
+          # never written to a layer or `docker history`. The Dockerfile
+          # exposes it as the DOTENV_PRIVATE_KEY_PRODUCTION env var for
+          # `dotenvx run -- pnpm build`, which decrypts in memory and
+          # bakes NEXT_PUBLIC_* / VITE_* values into the bundle.
+          secrets: |
+            dotenvx_private_key=${{ secrets.DOTENV_PRIVATE_KEY_PRODUCTION }}
 
       - name: Trigger Coolify deploy
         env:

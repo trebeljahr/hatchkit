@@ -57,6 +57,7 @@ import {
   writeManifest,
 } from "./scaffold/manifest.js";
 import { CoolifyApi } from "./utils/coolify-api.js";
+import { ensureDockerignoreAllowsEnvProduction } from "./utils/dockerignore.js";
 import { exec, execOk } from "./utils/exec.js";
 import { ensureGitignoreEntries, looksLikeDotenvxPrivateKey } from "./utils/gitignore.js";
 import { multiselect } from "./utils/multiselect.js";
@@ -1638,6 +1639,24 @@ async function bootstrapDotenvxNow(
     spinner.fail("Failed to initialize dotenvx");
     throw err;
   }
+
+  // Belt-and-braces #2: many existing repos have a defensive
+  // `.dockerignore` that wildcards out `.env*` (perfectly reasonable
+  // when secrets are plaintext, but wrong now that .env.production is
+  // dotenvx-encrypted and SHOULD ride along into the image). If we
+  // leave it excluded, dotenvx finds no file inside the container,
+  // exports zero env vars, and the build silently bakes broken
+  // NEXT_PUBLIC_* values. Append `!.env.production` to allow it
+  // through. Idempotent / no-op if there's no .dockerignore at all.
+  const dockerIgnoreResult = ensureDockerignoreAllowsEnvProduction(state.projectDir);
+  if (dockerIgnoreResult.modified) {
+    console.log(
+      chalk.dim(
+        `  · Appended !.env.production to ${relativeTo(dockerIgnoreResult.path)} so dotenvx can decrypt inside the build`,
+      ),
+    );
+  }
+
   return { keysPath, createdKeysFile: !keysExistedBefore };
 }
 
@@ -1959,6 +1978,13 @@ async function scaffoldBuildPipelineNow(
   }
   if (result.skipped.length > 0) {
     console.log(chalk.dim(`  · Kept existing: ${result.skipped.join(", ")}`));
+  }
+  if (result.dockerignorePatched) {
+    console.log(
+      chalk.dim(
+        `  · Patched ${result.dockerignorePatched}: appended !.env.production so dotenvx can decrypt inside the build`,
+      ),
+    );
   }
   if (owner === "OWNER") {
     console.log(
