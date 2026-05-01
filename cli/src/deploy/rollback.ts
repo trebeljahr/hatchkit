@@ -30,6 +30,21 @@ interface RollbackOptions {
   yes?: boolean;
 }
 
+/** Thrown by an undo step when the resource can't be auto-deleted because
+ *  the underlying API needs the user to do something first (e.g. Coolify
+ *  refuses to delete a project that still has apps/databases inside it).
+ *  Surfaces as a yellow "skipped" with the hint lines, and the step stays
+ *  in the ledger so a follow-up `hatchkit destroy` can pick it up after
+ *  the user clears the blocker. */
+class RollbackSkip extends Error {
+  hints: string[];
+  constructor(message: string, hints: string[]) {
+    super(message);
+    this.name = "RollbackSkip";
+    this.hints = hints;
+  }
+}
+
 /* ─────────────────────────────────────────────────────────────────────── */
 /*  Failure handler — called from the create-flow try/catch              */
 /* ─────────────────────────────────────────────────────────────────────── */
@@ -186,6 +201,30 @@ export async function runRollback(ledger: RunLedger, opts: RollbackOptions = {})
   for (const step of [...ledger.steps].reverse()) {
     const label = describeStep(step);
 
+    // Pre-confirm warning for the GHCR registry: it's shared per-host
+    // across every Coolify app that pulls from `ghcr.io`. If other apps
+    // still exist on this Coolify install they'll lose pull access. We
+    // only print the warning — the standard destructive confirm below
+    // is what actually gates the delete.
+    if (step.kind === "coolifyPrivateRegistry") {
+      const others = await countOtherCoolifyApps(ledger);
+      if (others && others.count > 0) {
+        const list =
+          others.sample.join(", ") +
+          (others.count > others.sample.length ? `, …+${others.count - others.sample.length}` : "");
+        console.log(
+          chalk.yellow(
+            `  ⚠ ${others.count} other Coolify app(s) currently exist on this install (${list}).`,
+          ),
+        );
+        console.log(
+          chalk.yellow(
+            `    This is a shared ghcr.io credential — deleting it removes pull access for all of them.`,
+          ),
+        );
+      }
+    }
+
     // Per-step confirmation for the irreversible ones unless --yes.
     if (!opts.yes && isDestructive(step)) {
       const ok = await confirm({
@@ -202,7 +241,7 @@ export async function runRollback(ledger: RunLedger, opts: RollbackOptions = {})
 
     process.stdout.write(`  ${label} … `);
     try {
-      const result = await undoStep(step);
+      const result = await undoStep(step, ledger.name);
       if (result === "skipped") {
         console.log(chalk.dim("skipped"));
         skipped += 1;
@@ -215,9 +254,19 @@ export async function runRollback(ledger: RunLedger, opts: RollbackOptions = {})
         undone += 1;
       }
     } catch (err) {
-      console.log(chalk.red(`✗ ${(err as Error).message}`));
-      failed += 1;
-      remaining.push(step);
+      if (err instanceof RollbackSkip) {
+        console.log(chalk.yellow(`needs manual cleanup`));
+        console.log(chalk.dim(`    ${err.message}`));
+        for (const hint of err.hints) {
+          console.log(chalk.dim(`    ${hint}`));
+        }
+        skipped += 1;
+        remaining.push(step);
+      } else {
+        console.log(chalk.red(`✗ ${(err as Error).message}`));
+        failed += 1;
+        remaining.push(step);
+      }
     }
   }
 
@@ -263,8 +312,42 @@ function isDestructive(step: LedgerStep): boolean {
     step.kind === "coolifyApp" ||
     step.kind === "coolifyProject" ||
     step.kind === "coolifyDb" ||
+    step.kind === "coolifyPrivateRegistry" ||
     step.kind === "cloudflareDnsRecord"
   );
+}
+
+/** Probe Coolify for apps that DON'T belong to this run's ledger. Used
+ *  before deleting `coolifyPrivateRegistry`: the GHCR pull-creds entry
+ *  is shared per-host across every app on the Coolify install, so if
+ *  there are other apps still pulling from `ghcr.io` they'll lose their
+ *  pull access when this entry goes away.
+ *
+ *  Best-effort — a probe failure (Coolify unreachable, token expired)
+ *  resolves to `null` and the caller falls through to the standard
+ *  destructive confirm without a count. We never block the rollback on
+ *  this informational check. */
+async function countOtherCoolifyApps(
+  ledger: RunLedger,
+): Promise<{ count: number; sample: string[] } | null> {
+  try {
+    const cfg = await getCoolifyConfig();
+    if (!cfg) return null;
+    const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+    const allApps = await api.listApplications();
+    // Apps THIS rollback is going to delete shouldn't count toward the
+    // "other apps that depend on this registry" warning.
+    const ourAppUuids = new Set(
+      ledger.steps.filter((s) => s.kind === "coolifyApp").map((s) => s.uuid),
+    );
+    const others = allApps.filter((a) => !ourAppUuids.has(a.uuid));
+    return {
+      count: others.length,
+      sample: others.slice(0, 3).map((a) => a.name),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function describeStep(step: LedgerStep): string {
@@ -310,7 +393,10 @@ function describeStep(step: LedgerStep): string {
   }
 }
 
-async function undoStep(step: LedgerStep): Promise<"done" | "skipped" | "not-found"> {
+async function undoStep(
+  step: LedgerStep,
+  ledgerName: string,
+): Promise<"done" | "skipped" | "not-found"> {
   switch (step.kind) {
     case "scaffold": {
       if (!existsSync(step.path)) return "not-found";
@@ -383,8 +469,30 @@ async function undoStep(step: LedgerStep): Promise<"done" | "skipped" | "not-fou
       const cfg = await getCoolifyConfig();
       if (!cfg) throw new Error("Coolify config no longer present");
       const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
-      const result = await api.deleteProject(step.uuid);
-      return result === "not-found" ? "not-found" : "done";
+      try {
+        const result = await api.deleteProject(step.uuid);
+        return result === "not-found" ? "not-found" : "done";
+      } catch (err) {
+        // Coolify rejects project delete when apps/databases/services
+        // still live inside it. The API doesn't return the list of
+        // leftovers (and apps don't expose project_uuid via the public
+        // endpoints either), so we can't auto-cascade safely. Surface
+        // a yellow "needs manual cleanup" with the project URL — the
+        // ledger keeps this step pending so the next `hatchkit destroy`
+        // re-tries it after the user has emptied the project.
+        const msg = (err as Error).message;
+        if (/Project has resources|cannot be deleted/i.test(msg)) {
+          const projectUrl = `${cfg.url.replace(/\/$/, "")}/project/${step.uuid}`;
+          throw new RollbackSkip(
+            "Coolify project still has applications/databases/services inside it.",
+            [
+              `Open ${projectUrl} and delete each remaining resource.`,
+              `Then re-run \`hatchkit destroy ${ledgerName}\` to remove the empty project.`,
+            ],
+          );
+        }
+        throw err;
+      }
     }
     case "coolifyPrivateRegistry": {
       const cfg = await getCoolifyConfig();
