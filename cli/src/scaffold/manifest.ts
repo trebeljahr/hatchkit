@@ -106,10 +106,29 @@ export interface ProjectManifest {
    *  user-tokens stashed in the OS keychain; provision migrates them
    *  on next run). */
   s3Buckets?: {
-    assets?: { name: string; publicUrl: string };
-    state?: { name: string; publicUrl: null };
+    assets?: { name: string; publicUrl: string; tokenId?: string };
+    state?: { name: string; publicUrl: null; tokenId?: string };
+    /** Shared Cloudflare R2 Account API Token id covering the
+     *  built-in `assets`/`state` pair (one token, one resource policy
+     *  listing both buckets). Recorded by `hatchkit provision s3`.
+     *  Per-bucket tokens minted by `hatchkit add s3` for arbitrary
+     *  user-declared buckets live under each bucket entry's own
+     *  `tokenId` field instead. */
     tokenId?: string;
+    /** Account that owns the buckets and the shared token. */
     accountId?: string;
+    /** Arbitrary user-declared bucket entries (beyond the built-in
+     *  `assets`/`state` pair) — `hatchkit add <project> s3` mints a
+     *  per-bucket scoped R2 token for each one. The union value type
+     *  also covers the scalar `tokenId`/`accountId` fields above:
+     *  TS requires the index signature to be no narrower than any
+     *  named property, so `string` (for those scalars) is part of
+     *  the union. Callers narrow on `typeof === "object"` before
+     *  reading `name` / `publicUrl` / `tokenId`. */
+    [key: string]:
+      | { name: string; publicUrl: string | null; tokenId?: string }
+      | string
+      | undefined;
   };
 }
 

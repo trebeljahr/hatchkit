@@ -30,7 +30,13 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
-import { ensureGlitchtip, ensureOpenpanel, ensureResend, getConfigPath } from "../config.js";
+import {
+  ensureGlitchtip,
+  ensureOpenpanel,
+  ensureResend,
+  ensureS3,
+  getConfigPath,
+} from "../config.js";
 import { validateProjectName } from "../utils/validate.js";
 import {
   type GlitchtipClient,
@@ -50,9 +56,15 @@ import {
   normalizeDomainInput,
   provisionResendClient,
 } from "./resend.js";
+import {
+  type ProvisionR2TokensResult,
+  provisionR2BucketTokens,
+  renderR2BucketTokensEnv,
+  unprovisionR2BucketTokens,
+} from "./s3.js";
 import { parseEnvLines, writeDevEnv, writeProdEnv } from "./write-env.js";
 
-export type ProvisionService = "glitchtip" | "openpanel" | "resend";
+export type ProvisionService = "glitchtip" | "openpanel" | "resend" | "s3";
 
 export type SurfaceMode = "shared" | "separate" | "server-only" | "client-only";
 
@@ -67,6 +79,12 @@ export interface Surfaces {
   /** Absolute path for the client bundle's env files. Required unless
    *  `mode` is `"server-only"`. */
   clientEnvDir?: string;
+  /** Absolute path to the project root (where `.hatchkit.json` lives).
+   *  Optional for the legacy services (GlitchTip / OpenPanel / Resend
+   *  don't read the manifest), required for `s3` — the s3 handler
+   *  reads `s3Buckets` from the manifest to decide which buckets to
+   *  mint scoped tokens for. */
+  projectDir?: string;
 }
 
 /** Per-resource event surfaced to the caller as each provider succeeds.
@@ -77,7 +95,8 @@ export interface Surfaces {
 export type ProvisionedEvent =
   | { service: "glitchtip"; project: string }
   | { service: "openpanel"; project: string }
-  | { service: "resend"; client: string };
+  | { service: "resend"; client: string }
+  | { service: "s3"; bucketKey: string; bucketName: string; tokenId: string };
 
 export interface ProvisionOptions {
   baseName: string;
@@ -120,6 +139,10 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   if (opts.services.includes("glitchtip")) await ensureGlitchtip();
   if (opts.services.includes("openpanel")) await ensureOpenpanel();
   if (opts.services.includes("resend")) await ensureResend();
+  // S3 is currently R2-only — `ensureS3("r2")` prompts for the admin
+  // token (Account>R2:Edit + User>API Tokens:Edit) and stores the
+  // endpoint metadata. Same lazy-config-before-spinner contract.
+  if (opts.services.includes("s3")) await ensureS3("r2");
 
   const surfaces = await resolveSurfaces(opts);
   const enableDevObs = opts.enableDevObs ?? false;
@@ -215,6 +238,41 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
       // email real users.
       serverBucket.devLines.push(...renderResendEnv(devRes));
       serverBucket.prodLines.push(...renderResendEnv(prodRes));
+    }
+  }
+
+  // ── S3 / R2 ── (server-side only; per-bucket scoped tokens)
+  if (opts.services.includes("s3")) {
+    const serverBucket = buckets.find((b) => b.label === "server");
+    if (!serverBucket) {
+      console.log(
+        chalk.yellow(
+          `  Skipping S3 — this project has no server surface, so there's nowhere to put R2_*.`,
+        ),
+      );
+    } else if (!surfaces || !surfaces.projectDir) {
+      // surfaces=null happens with --no-write; surfaces.projectDir is
+      // populated by resolveSurfaces. Without it we can't read the
+      // manifest to know which buckets to mint tokens for.
+      console.log(
+        chalk.yellow(
+          `  Skipping S3 — couldn't resolve the project directory (need .hatchkit.json to read s3Buckets).`,
+        ),
+      );
+    } else {
+      const r2Result: ProvisionR2TokensResult = await provisionR2BucketTokens({
+        projectName: opts.baseName,
+        projectDir: surfaces.projectDir,
+      });
+      for (const bt of r2Result.bucketTokens) {
+        opts.onProvisioned?.({
+          service: "s3",
+          bucketKey: bt.bucketKey,
+          bucketName: bt.bucketName,
+          tokenId: bt.tokenId,
+        });
+      }
+      serverBucket.prodLines.push(...renderR2BucketTokensEnv(r2Result));
     }
   }
 
@@ -358,7 +416,7 @@ async function resolveSurfaces(opts: ProvisionOptions): Promise<Surfaces | null>
   // Step 3 — env dirs per surface. Auto-detect common monorepo layouts
   // (packages/server, apps/web, etc.) and offer the first match as the
   // default.
-  const surfaces: Surfaces = { mode };
+  const surfaces: Surfaces = { mode, projectDir };
   if (mode === "server-only" || mode === "shared" || mode === "separate") {
     const def = detectSurfaceDir(projectDir, [
       "packages/server",
@@ -463,6 +521,10 @@ export interface UnprovisionOptions {
   services: ProvisionService[];
   /** Don't hit any API or remove any file — just print what would happen. */
   dryRun?: boolean;
+  /** Project root for `s3` removal — needed to read the manifest's
+   *  s3Buckets list so we can target each per-bucket token. Optional;
+   *  when omitted, the keychain is swept by name pattern instead. */
+  projectDir?: string;
 }
 
 export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
@@ -503,6 +565,34 @@ export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
       await runDelete(`Resend: deleting API key ${name}`, opts.dryRun, () =>
         deleteResendClient(name),
       );
+    }
+  }
+
+  // S3 / R2 — delete the per-bucket scoped tokens (CF API + keychain).
+  if (opts.services.includes("s3")) {
+    if (opts.dryRun) {
+      console.log(chalk.dim(`  would delete per-bucket R2 tokens for ${opts.baseName}`));
+    } else {
+      try {
+        const result = await unprovisionR2BucketTokens({
+          projectName: opts.baseName,
+          projectDir: opts.projectDir,
+        });
+        if (result.buckets.length === 0) {
+          console.log(
+            chalk.dim(`  · No R2 bucket tokens found for ${opts.baseName} — already gone`),
+          );
+        } else {
+          for (const b of result.buckets) {
+            const status = b.outcome === "deleted" ? chalk.green("✓") : chalk.dim("·");
+            console.log(
+              `  ${status} R2: deleted token for bucket ${b.bucketKey} (${b.outcome === "deleted" ? "deleted" : "already gone"})`,
+            );
+          }
+        }
+      } catch (err) {
+        console.log(chalk.red(`  ✗ R2 token teardown: ${(err as Error).message}`));
+      }
     }
   }
 

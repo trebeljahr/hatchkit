@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
 import {
@@ -361,6 +362,25 @@ function opts(result: {
   return { pushedAnywhere: !!result.pushedCoolify || !!result.pushedGh };
 }
 
+/** Walk up from `serverEnvDir` looking for the closest `.hatchkit.json`,
+ *  capped at 4 levels so we never escape a project tree. Used by the
+ *  non-interactive `hatchkit add` path to find the manifest without
+ *  forcing the user to pass `--project-dir` explicitly when the env
+ *  dir already lives inside the project (`packages/server`,
+ *  `apps/web`, etc.). Returns undefined when no manifest is found —
+ *  callers fall back to "skip s3" with a hint. */
+function inferProjectDir(serverEnvDir: string | undefined): string | undefined {
+  if (!serverEnvDir) return undefined;
+  let cur = serverEnvDir;
+  for (let i = 0; i < 4; i++) {
+    if (existsSync(join(cur, ".hatchkit.json"))) return cur;
+    const up = dirname(cur);
+    if (up === cur) break;
+    cur = up;
+  }
+  return undefined;
+}
+
 async function handleAdd(): Promise<void> {
   // Positional args are optional — anything missing is prompted for.
   //   hatchkit add                             (fully interactive)
@@ -371,7 +391,7 @@ async function handleAdd(): Promise<void> {
   let baseName = positional[0];
   const rawService = positional[1];
 
-  const allServices: ProvisionService[] = ["glitchtip", "openpanel", "resend"];
+  const allServices: ProvisionService[] = ["glitchtip", "openpanel", "resend", "s3"];
 
   if (!baseName) {
     const { input } = await import("@inquirer/prompts");
@@ -386,11 +406,16 @@ async function handleAdd(): Promise<void> {
   if (!rawService) {
     const { multiselect } = await import("./utils/multiselect.js");
     services = await multiselect<ProvisionService>({
-      message: "Which services to add (-dev and -prod pair each)?",
+      message: "Which services to add?",
       choices: [
         { name: "GlitchTip (error tracking)", value: "glitchtip", checked: true },
         { name: "OpenPanel (product analytics)", value: "openpanel", checked: true },
         { name: "Resend (transactional email)", value: "resend", checked: true },
+        {
+          name: "S3 / R2 (per-bucket scoped credentials from .hatchkit.json)",
+          value: "s3",
+          checked: false,
+        },
       ],
       required: true,
     });
@@ -419,20 +444,22 @@ async function handleAdd(): Promise<void> {
   const surfaceFlag = args.find((a) => a.startsWith("--surfaces="))?.slice("--surfaces=".length);
   const serverDirIdx = args.indexOf("--server-dir");
   const clientDirIdx = args.indexOf("--client-dir");
+  const projectDirIdx = args.indexOf("--project-dir");
   const serverDirFlag = serverDirIdx >= 0 ? args[serverDirIdx + 1] : undefined;
   const clientDirFlag = clientDirIdx >= 0 ? args[clientDirIdx + 1] : undefined;
+  const projectDirFlag = projectDirIdx >= 0 ? args[projectDirIdx + 1] : undefined;
 
   const { resolve: resolvePath } = await import("node:path");
   const validSurfaceModes = ["shared", "separate", "server-only", "client-only"] as const;
   let surfaces: Parameters<typeof runProvision>[0]["surfaces"] = undefined;
   if (noWrite) {
     surfaces = false;
-  } else if (surfaceFlag || serverDirFlag || clientDirFlag) {
+  } else if (surfaceFlag || serverDirFlag || clientDirFlag || projectDirFlag) {
     // Non-interactive surface config: require every field we need.
     if (!surfaceFlag || !(validSurfaceModes as readonly string[]).includes(surfaceFlag)) {
       console.log(
         chalk.red(
-          `  --surfaces=<mode> is required when --server-dir/--client-dir is passed.\n  Valid: ${validSurfaceModes.join(", ")}`,
+          `  --surfaces=<mode> is required when --server-dir/--client-dir/--project-dir is passed.\n  Valid: ${validSurfaceModes.join(", ")}`,
         ),
       );
       process.exit(1);
@@ -452,6 +479,14 @@ async function handleAdd(): Promise<void> {
       mode,
       serverEnvDir: needsServer ? resolvePath(serverDirFlag as string) : undefined,
       clientEnvDir: needsClient ? resolvePath(clientDirFlag as string) : undefined,
+      // --project-dir is optional in the flag path. When provided, it
+      // points at the directory holding `.hatchkit.json` (needed for
+      // the `s3` service to read s3Buckets). When absent and the
+      // serverEnvDir is a `packages/server` style subdir, we infer it
+      // by walking up two segments.
+      projectDir: projectDirFlag
+        ? resolvePath(projectDirFlag)
+        : inferProjectDir(needsServer ? resolvePath(serverDirFlag as string) : undefined),
     };
   }
 
@@ -677,7 +712,7 @@ async function handleRemove(): Promise<void> {
   let baseName = positional[0];
   const rawService = positional[1];
 
-  const allServices: ProvisionService[] = ["glitchtip", "openpanel", "resend"];
+  const allServices: ProvisionService[] = ["glitchtip", "openpanel", "resend", "s3"];
 
   if (!baseName) {
     const { input } = await import("@inquirer/prompts");
@@ -692,11 +727,12 @@ async function handleRemove(): Promise<void> {
   if (!rawService) {
     const { multiselect } = await import("./utils/multiselect.js");
     services = await multiselect<ProvisionService>({
-      message: "Which services to remove (-dev AND -prod clients each)?",
+      message: "Which services to remove?",
       choices: [
         { name: "GlitchTip (deletes the project)", value: "glitchtip", checked: true },
         { name: "OpenPanel (deletes the project)", value: "openpanel", checked: true },
         { name: "Resend (deletes the API key)", value: "resend", checked: true },
+        { name: "S3 / R2 (deletes per-bucket scoped tokens)", value: "s3", checked: false },
       ],
       required: true,
     });
@@ -717,7 +753,7 @@ async function handleRemove(): Promise<void> {
   if (!skipConfirm && !dryRun) {
     const { confirm } = await import("@inquirer/prompts");
     const ok = await confirm({
-      message: `Delete -dev and -prod clients of "${baseName}" from ${services.join(", ")}? This can't be undone.`,
+      message: `Delete clients of "${baseName}" from ${services.join(", ")}? This can't be undone.`,
       default: false,
     });
     if (!ok) {
@@ -726,7 +762,21 @@ async function handleRemove(): Promise<void> {
     }
   }
 
-  await runUnprovision({ baseName, services, dryRun });
+  // For `s3` removal, hand the orchestrator a projectDir so it can read
+  // the manifest's s3Buckets list. Default: walk up from the named
+  // project directory if it exists; the s3 unprovision falls back to
+  // a keychain sweep when the manifest can't be found.
+  let projectDir: string | undefined;
+  if (services.includes("s3")) {
+    const guess = resolve(baseName);
+    if (existsSync(join(guess, ".hatchkit.json"))) {
+      projectDir = guess;
+    } else if (existsSync(join(process.cwd(), ".hatchkit.json"))) {
+      projectDir = process.cwd();
+    }
+  }
+
+  await runUnprovision({ baseName, services, dryRun, projectDir });
 }
 
 async function handleDns(): Promise<void> {
@@ -1587,6 +1637,11 @@ function printHelp(topic?: HelpTopic): void {
     glitchtip   GLITCHTIP_DSN (server) / PUBLIC_GLITCHTIP_DSN (client)
     openpanel   OPENPANEL_* (server) / PUBLIC_OPENPANEL_* (client)
     resend      RESEND_API_KEY (server only)
+    s3          R2_<BUCKET>_ACCESS_KEY_ID / *_SECRET_ACCESS_KEY / *_BUCKET / R2_ENDPOINT
+                — mints a per-bucket scoped Cloudflare R2 API token for every
+                  bucket declared in .hatchkit.json (s3Buckets). Single-bucket
+                  projects also get unprefixed R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
+                  aliases. Buckets must already exist (s3Provider: "existing").
 
   ${chalk.bold("Flags:")}
     --enable-dev-obs            Also populate .env.development with obs creds.
@@ -1594,6 +1649,8 @@ function printHelp(topic?: HelpTopic): void {
     --surfaces=<mode>           shared | server-only | client-only | separate
     --server-dir <path>         Server env directory (skips prompt when set).
     --client-dir <path>         Client env directory (skips prompt when set).
+    --project-dir <path>        Project root holding .hatchkit.json (s3 only;
+                                inferred from --server-dir if omitted).
 
   ${chalk.bold("Examples:")}
     hatchkit add
@@ -1699,6 +1756,8 @@ function printHelp(topic?: HelpTopic): void {
     glitchtip   Deletes the GlitchTip project
     openpanel   Deletes the OpenPanel project (and clears cached creds)
     resend      Finds API keys by name and deletes them
+    s3          Deletes per-bucket scoped Cloudflare R2 API tokens
+                (clears the keychain entries and DELETEs upstream)
 
   ${chalk.bold("Options:")}
     --dry-run   Print what would be deleted; hit no APIs, remove no files.
