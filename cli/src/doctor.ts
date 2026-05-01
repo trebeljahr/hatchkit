@@ -514,7 +514,119 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   results.push(await checkOpenpanel());
   results.push(await checkResend());
   results.push(await checkStripe());
+  // Project-local checks — only run when doctor was invoked inside a
+  // hatchkit-managed project (manifest at cwd). Globally they're a
+  // no-op, so `hatchkit doctor` from $HOME stays clean.
+  const projectChecks = await checkProjectKeyState(process.cwd());
+  for (const r of projectChecks) results.push(r);
   return results;
+}
+
+/** Project-local key hygiene checks, gated on the presence of
+ *  `.hatchkit.json` in the cwd:
+ *
+ *    1. `.env.keys` is NOT tracked by git. (If it is, the dotenvx
+ *       private key has either already leaked or is one push away.)
+ *    2. The keychain copy of DOTENV_PRIVATE_KEY_PRODUCTION matches
+ *       the value in `.env.keys`. After `dotenvx rotate` the file
+ *       updates but the keychain doesn't — `keys set` fixes that;
+ *       this check surfaces the drift before a deploy goes wrong.
+ *
+ *  Exported so tests can invoke it directly with a fixture dir
+ *  instead of munging `process.cwd()`. */
+export async function checkProjectKeyState(projectDir: string): Promise<CheckResult[]> {
+  const out: CheckResult[] = [];
+  const manifestPath = `${projectDir}/.hatchkit.json`;
+  const { existsSync, readFileSync } = await import("node:fs");
+  if (!existsSync(manifestPath)) return out;
+
+  let projectName: string;
+  try {
+    const m = JSON.parse(readFileSync(manifestPath, "utf-8")) as { name?: string };
+    if (!m.name) return out;
+    projectName = m.name;
+  } catch {
+    return out;
+  }
+
+  const { locateEnvKeysFile, parsePrivateKeyValue } = await import("./deploy/keys.js");
+  const envKeysPath = locateEnvKeysFile(projectDir);
+  if (!envKeysPath) {
+    // No `.env.keys` on disk → nothing to verify against. Common in
+    // CI checkouts where dotenvx setup hasn't run; not a problem.
+    return out;
+  }
+
+  // Check 1: tracked-by-git status. Pass the path relative to
+  // projectDir so `git ls-files --error-unmatch` resolves it inside
+  // the repo regardless of where the user invoked `hatchkit doctor`
+  // from. `--error-unmatch` exits 1 when the path is untracked, 0
+  // when tracked — so execOk's true/false maps directly to "tracked".
+  const { relative } = await import("node:path");
+  const relEnvKeys = relative(projectDir, envKeysPath);
+  const tracked = await execOk("git", ["ls-files", "--error-unmatch", relEnvKeys], {
+    cwd: projectDir,
+  });
+  if (tracked) {
+    out.push({
+      name: `Project ${projectName} (.env.keys leak)`,
+      status: "fail",
+      detail: ".env.keys is tracked by git",
+      hint: [
+        "The dotenvx private key may already be in your git history.",
+        "Treat as a credential leak: rotate immediately.",
+        `  git rm --cached ${envKeysPath}`,
+        `  echo .env.keys >> .gitignore`,
+        `  hatchkit keys rotate ${projectName} --push-coolify`,
+        "Then check the remote (e.g. GitHub) for any commits that include .env.keys and force-purge if necessary.",
+      ],
+    });
+  } else {
+    out.push({
+      name: `Project ${projectName} (.env.keys hygiene)`,
+      status: "ok",
+      detail: ".env.keys present on disk and not tracked by git",
+    });
+  }
+
+  // Check 2: keychain matches `.env.keys`.
+  const fileKey = parsePrivateKeyValue(readFileSync(envKeysPath, "utf-8"));
+  if (!fileKey) {
+    // .env.keys exists but has no DOTENV_PRIVATE_KEY_PRODUCTION line —
+    // unusual but not necessarily wrong (e.g., only dev keys present).
+    return out;
+  }
+  const keychainKey = await getSecret(SECRET_KEYS.dotenvxPrivateKey(projectName));
+  if (!keychainKey) {
+    out.push({
+      name: `Project ${projectName} (keychain drift)`,
+      status: "fail",
+      detail: "DOTENV_PRIVATE_KEY_PRODUCTION is missing from the OS keychain",
+      hint: [
+        "The keychain copy was wiped (e.g. by `config reset`) but `.env.keys` still has the value.",
+        `Restore it from disk: hatchkit keys set ${projectName}`,
+      ],
+    });
+  } else if (keychainKey !== fileKey) {
+    out.push({
+      name: `Project ${projectName} (keychain drift)`,
+      status: "fail",
+      detail: "OS keychain holds a different DOTENV_PRIVATE_KEY_PRODUCTION than .env.keys",
+      hint: [
+        "Likely cause: `dotenvx rotate` ran but the keychain wasn't updated.",
+        `Sync from .env.keys: hatchkit keys set ${projectName}`,
+        `(Or, if you want the OLD key: hatchkit keys show ${projectName} > .env.keys.bak)`,
+      ],
+    });
+  } else {
+    out.push({
+      name: `Project ${projectName} (keychain sync)`,
+      status: "ok",
+      detail: "OS keychain matches .env.keys",
+    });
+  }
+
+  return out;
 }
 
 export async function runDoctor(opts: { json?: boolean } = {}): Promise<void> {

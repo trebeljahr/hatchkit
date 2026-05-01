@@ -41,7 +41,7 @@ const CONFIG_ADD = [
 ] as const;
 
 const CONFIG_SUB = ["add", "reset"] as const;
-const KEYS_SUB = ["show", "push"] as const;
+const KEYS_SUB = ["show", "set", "rotate", "push"] as const;
 const SHELLS = ["zsh", "bash", "fish"] as const;
 
 export function renderCompletion(shell: "zsh" | "bash" | "fish"): string {
