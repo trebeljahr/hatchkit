@@ -45,10 +45,17 @@ export function validateS3KeyPair(
   return null;
 }
 
-/** Pretty-print "where to create this token" hint before a password prompt. */
-function tokenHint(url: string, scope: string): void {
+/** Pretty-print "where to create this token" hint before a password prompt.
+ *  Optional `notes` lines render below the permissions line at the same
+ *  indent — used by the Cloudflare branches to explain why the token has
+ *  to be a User API Token (vs Account-owned) and that DNS + R2 deliberately
+ *  use two separate tokens that both live at /profile/api-tokens. */
+function tokenHint(url: string, scope: string, ...notes: string[]): void {
   console.log(chalk.dim(`  → Create at: ${chalk.cyan(url)}`));
   console.log(chalk.dim(`    Permissions: ${scope}`));
+  for (const note of notes) {
+    console.log(chalk.dim(`    ${note}`));
+  }
 }
 
 /** Verify an R2 admin Bearer token has BOTH perms hatchkit needs:
@@ -627,6 +634,9 @@ export async function ensureDns(): Promise<DnsConfig> {
   tokenHint(
     "https://dash.cloudflare.com/profile/api-tokens → Create Token",
     "Zone:DNS:Edit + Zone:Zone:Read (scope to the zones you'll use)",
+    "Note: User API Token. Lives at /profile/api-tokens alongside the R2 admin token",
+    "      (hatchkit deliberately uses one token per concern — DNS vs R2 — both visible",
+    "      together so you can audit and rotate them in one place).",
   );
   const apiToken = await confirmPastedSecret("Cloudflare API token");
   const accountId = await input({
@@ -776,7 +786,13 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
 
     tokenHint(
       "https://dash.cloudflare.com/profile/api-tokens → Create Token → Custom token",
-      "Account > Workers R2 Storage > Edit  AND  User > API Tokens > Edit  (and optionally Zone > Zone > Read for custom-domain attach)",
+      "Account > Workers R2 Storage > Edit  +  User > API Tokens > Edit  (+ optional Zone > Zone > Read)",
+      "  • R2 Storage:Edit  — create and manage the project buckets.",
+      "  • API Tokens:Edit  — mint per-project bucket-scoped tokens at provision time.",
+      "  • Zone:Read        — optional, only for attaching a custom domain (assets.example.com).",
+      "Note: must be a User API Token. Account API Tokens can't carry API Tokens:Edit",
+      "      (it's a User-scoped permission), so they can't mint per-project credentials.",
+      "      DNS uses a separate User API Token; both live at /profile/api-tokens.",
     );
 
     // Loop on the token until it passes BOTH permission checks
