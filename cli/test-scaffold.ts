@@ -911,6 +911,279 @@ console.log("\n── existing-dir guard ─────────────
   }
 }
 
+// keys set / rotate: round-trip the dotenvx private key through the
+// keychain. Uses the throwaway HATCHKIT_KEYTAR_SERVICE so writes don't
+// bleed into the developer's real keychain.
+console.log("\n── keys set: keychain round-trip ─────────────────────────────");
+{
+  const {
+    setProjectKey,
+    locateEnvKeysFile,
+    locateEnvProductionFile,
+    parsePrivateKeyValue,
+    rotateProjectKey,
+  } = await import("./src/deploy/keys.js");
+  const { getSecret, deleteSecret, SECRET_KEYS } = await import("./src/utils/secrets.js");
+  const { set: dotenvxSet } = await import("@dotenvx/dotenvx");
+
+  const checks: Check[] = [];
+
+  // 1. Direct --key flag → keychain.
+  const directKey = "a".repeat(64);
+  const r1 = await setProjectKey("kt-direct", { key: directKey });
+  const got1 = await getSecret(SECRET_KEYS.dotenvxPrivateKey("kt-direct"));
+  checks.push(["set --key writes to keychain", got1 === directKey]);
+  checks.push(["set --key reports source=flag", r1.source === "flag"]);
+  checks.push(["set --key reports written=true on first write", r1.written]);
+  checks.push(["set --key reports changed=true on first write", r1.changed]);
+
+  // 2. Idempotency — same value, no write, no change.
+  const r2 = await setProjectKey("kt-direct", { key: directKey });
+  checks.push(["set --key idempotent: changed=false on no-op", !r2.changed]);
+  checks.push(["set --key idempotent: written=false on no-op", !r2.written]);
+
+  // 3. Dry-run reports changed=true but written=false.
+  const newKey = "b".repeat(64);
+  const r3 = await setProjectKey("kt-direct", { key: newKey, dryRun: true });
+  const stillOld = await getSecret(SECRET_KEYS.dotenvxPrivateKey("kt-direct"));
+  checks.push(["set --dry-run reports changed=true", r3.changed]);
+  checks.push(["set --dry-run reports written=false", !r3.written]);
+  checks.push(["set --dry-run did NOT write to keychain", stillOld === directKey]);
+
+  // 4. Rejects garbage. Plain text isn't a hex key.
+  let threwGarbage = false;
+  try {
+    await setProjectKey("kt-direct", { key: "not-a-key" });
+  } catch {
+    threwGarbage = true;
+  }
+  checks.push(["set rejects non-hex value", threwGarbage]);
+
+  // 5. From .env.keys autoread (root layout).
+  const projRoot = mkdtempSync(join(tmpdir(), "kt-set-root-"));
+  const rootKey = "c".repeat(64);
+  writeFileSync(join(projRoot, ".env.keys"), `DOTENV_PRIVATE_KEY_PRODUCTION="${rootKey}"\n`);
+  const r5 = await setProjectKey("kt-from-root", { projectDir: projRoot });
+  const got5 = await getSecret(SECRET_KEYS.dotenvxPrivateKey("kt-from-root"));
+  checks.push(["set autoreads .env.keys at project root", got5 === rootKey]);
+  checks.push([
+    "set reports envKeysPath when source=env-keys",
+    r5.envKeysPath === join(projRoot, ".env.keys"),
+  ]);
+  rmSync(projRoot, { recursive: true, force: true });
+
+  // 6. From .env.keys autoread (packages/server layout — same as adopt).
+  const projMono = mkdtempSync(join(tmpdir(), "kt-set-mono-"));
+  const monoKey = "d".repeat(64);
+  const { mkdirSync } = await import("node:fs");
+  mkdirSync(join(projMono, "packages/server"), { recursive: true });
+  writeFileSync(
+    join(projMono, "packages/server/.env.keys"),
+    `DOTENV_PRIVATE_KEY_PRODUCTION="${monoKey}"\n`,
+  );
+  await setProjectKey("kt-from-mono", { projectDir: projMono });
+  const got6 = await getSecret(SECRET_KEYS.dotenvxPrivateKey("kt-from-mono"));
+  checks.push(["set autoreads packages/server/.env.keys", got6 === monoKey]);
+  checks.push([
+    "locateEnvKeysFile prefers packages/server over root",
+    locateEnvKeysFile(projMono) === join(projMono, "packages/server/.env.keys"),
+  ]);
+  rmSync(projMono, { recursive: true, force: true });
+
+  // 7. parsePrivateKeyValue handles quoted + unquoted lines + comments.
+  checks.push([
+    "parsePrivateKeyValue handles quoted",
+    parsePrivateKeyValue('DOTENV_PRIVATE_KEY_PRODUCTION="abc123"') === "abc123",
+  ]);
+  checks.push([
+    "parsePrivateKeyValue handles unquoted",
+    parsePrivateKeyValue("DOTENV_PRIVATE_KEY_PRODUCTION=abc123") === "abc123",
+  ]);
+  checks.push([
+    "parsePrivateKeyValue ignores DOTENV_PRIVATE_KEY (no env suffix)",
+    parsePrivateKeyValue('DOTENV_PRIVATE_KEY="abc123"\n') === undefined,
+  ]);
+  checks.push([
+    "parsePrivateKeyValue picks the production line out of mixed file",
+    parsePrivateKeyValue(
+      `# header comment\nDOTENV_PRIVATE_KEY="aaaa1111"\nDOTENV_PRIVATE_KEY_PRODUCTION="bbbb2222"\n`,
+    ) === "bbbb2222",
+  ]);
+  // After `dotenvx rotate`, the value is `old,new` so the runtime
+  // can decrypt both pre- and post-rotation ciphertext. We must
+  // preserve the full list when mirroring to the deploy target.
+  checks.push([
+    "parsePrivateKeyValue preserves comma-joined post-rotate list",
+    parsePrivateKeyValue(`DOTENV_PRIVATE_KEY_PRODUCTION=${"a".repeat(64)},${"b".repeat(64)}`) ===
+      `${"a".repeat(64)},${"b".repeat(64)}`,
+  ]);
+
+  // 8. End-to-end rotate: seed an encrypted .env.production via the
+  //    real dotenvx call (matching what scaffoldDotenvx does), set the
+  //    keychain to the initial key, then run rotateProjectKey and
+  //    assert the keychain holds the NEW key (different from initial).
+  const rotProj = mkdtempSync(join(tmpdir(), "kt-rotate-"));
+  // Seed an encrypted .env.production at root with one value.
+  const prodPath = join(rotProj, ".env.production");
+  dotenvxSet("FOO", "bar", { path: prodPath, encrypt: true });
+  const initialKeyMatch = parsePrivateKeyValue(
+    readFileSync(join(rotProj, ".env.keys"), "utf-8"),
+  );
+  // Mirror the initial key into the keychain so rotate can verify it
+  // changed afterwards.
+  await setProjectKey("kt-rotate", { projectDir: rotProj });
+  const beforeKey = await getSecret(SECRET_KEYS.dotenvxPrivateKey("kt-rotate"));
+  checks.push([
+    "rotate setup: keychain primed with initial key",
+    beforeKey === initialKeyMatch,
+  ]);
+
+  // dryRun first — no rotation, no keychain change.
+  const dry = await rotateProjectKey("kt-rotate", { projectDir: rotProj, dryRun: true });
+  const afterDryKey = await getSecret(SECRET_KEYS.dotenvxPrivateKey("kt-rotate"));
+  checks.push(["rotate --dry-run: rotated=false", !dry.rotated]);
+  checks.push(["rotate --dry-run: keychain unchanged", afterDryKey === beforeKey]);
+
+  // Real rotate. dotenvx generates a new keypair → keychain must hold
+  // the new value, NOT the old one.
+  const rot = await rotateProjectKey("kt-rotate", { projectDir: rotProj });
+  const newFileKey = parsePrivateKeyValue(readFileSync(join(rotProj, ".env.keys"), "utf-8"));
+  const afterKey = await getSecret(SECRET_KEYS.dotenvxPrivateKey("kt-rotate"));
+  checks.push(["rotate: rotated=true", rot.rotated]);
+  checks.push(["rotate: produced a new key (different from initial)", newFileKey !== beforeKey]);
+  checks.push(["rotate: keychain updated to new key", afterKey === newFileKey]);
+  checks.push(["rotate: set.changed=true (key actually rotated)", rot.set.changed]);
+  checks.push(["rotate: set.written=true", rot.set.written]);
+  checks.push([
+    "rotate: locateEnvProductionFile finds the seeded file",
+    locateEnvProductionFile(rotProj) === prodPath,
+  ]);
+  rmSync(rotProj, { recursive: true, force: true });
+
+  // Cleanup the throwaway keychain entries from this test block.
+  await deleteSecret(SECRET_KEYS.dotenvxPrivateKey("kt-direct"));
+  await deleteSecret(SECRET_KEYS.dotenvxPrivateKey("kt-from-root"));
+  await deleteSecret(SECRET_KEYS.dotenvxPrivateKey("kt-from-mono"));
+  await deleteSecret(SECRET_KEYS.dotenvxPrivateKey("kt-rotate"));
+
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  results.keysSetRotate = ok;
+}
+
+// doctor: project-local key-state checks. Asserts the new tracked-by-git
+// detection AND the keychain-vs-file drift detection, scoped to a
+// fixture project so doctor's global checks don't interfere.
+console.log("\n── doctor: project key-state checks ─────────────────────────────");
+{
+  const { execa } = await import("execa");
+  const { checkProjectKeyState } = await import("./src/doctor.js");
+  const { setSecret, deleteSecret, SECRET_KEYS } = await import("./src/utils/secrets.js");
+
+  const checks: Check[] = [];
+
+  // Scenario 1: no .hatchkit.json → no checks emitted.
+  const tmpA = mkdtempSync(join(tmpdir(), "doctor-no-manifest-"));
+  const noManifest = await checkProjectKeyState(tmpA);
+  checks.push(["no manifest → empty result (skip silently)", noManifest.length === 0]);
+  rmSync(tmpA, { recursive: true, force: true });
+
+  // Scenario 2: manifest + .env.keys + matching keychain → all OK.
+  const tmpB = mkdtempSync(join(tmpdir(), "doctor-healthy-"));
+  await execa("git", ["init", "--initial-branch=main"], { cwd: tmpB });
+  await execa("git", ["config", "user.email", "t@t"], { cwd: tmpB });
+  await execa("git", ["config", "user.name", "t"], { cwd: tmpB });
+  writeFileSync(join(tmpB, ".gitignore"), ".env.keys\n");
+  writeFileSync(join(tmpB, ".hatchkit.json"), JSON.stringify({ name: "doc-healthy" }));
+  const healthyKey = "f".repeat(64);
+  writeFileSync(join(tmpB, ".env.keys"), `DOTENV_PRIVATE_KEY_PRODUCTION="${healthyKey}"\n`);
+  await setSecret(SECRET_KEYS.dotenvxPrivateKey("doc-healthy"), healthyKey);
+
+  const healthy = await checkProjectKeyState(tmpB);
+  checks.push([
+    "healthy: hygiene check status=ok",
+    healthy.find((r) => r.name.includes("hygiene"))?.status === "ok",
+  ]);
+  checks.push([
+    "healthy: keychain sync status=ok",
+    healthy.find((r) => r.name.includes("keychain sync"))?.status === "ok",
+  ]);
+  await deleteSecret(SECRET_KEYS.dotenvxPrivateKey("doc-healthy"));
+  rmSync(tmpB, { recursive: true, force: true });
+
+  // Scenario 3: .env.keys is tracked by git → leak check fails.
+  const tmpC = mkdtempSync(join(tmpdir(), "doctor-leak-"));
+  await execa("git", ["init", "--initial-branch=main"], { cwd: tmpC });
+  await execa("git", ["config", "user.email", "t@t"], { cwd: tmpC });
+  await execa("git", ["config", "user.name", "t"], { cwd: tmpC });
+  writeFileSync(join(tmpC, ".hatchkit.json"), JSON.stringify({ name: "doc-leak" }));
+  const leakKey = "9".repeat(64);
+  writeFileSync(join(tmpC, ".env.keys"), `DOTENV_PRIVATE_KEY_PRODUCTION="${leakKey}"\n`);
+  // Force-add (no .gitignore yet) and commit so it lands in the index.
+  await execa("git", ["add", "-f", ".env.keys"], { cwd: tmpC });
+  await execa("git", ["commit", "-m", "leak"], { cwd: tmpC });
+  await setSecret(SECRET_KEYS.dotenvxPrivateKey("doc-leak"), leakKey);
+
+  const leaked = await checkProjectKeyState(tmpC);
+  const leakResult = leaked.find((r) => r.name.includes("leak"));
+  checks.push(["tracked .env.keys: status=fail", leakResult?.status === "fail"]);
+  checks.push([
+    "tracked .env.keys: hint mentions `keys rotate`",
+    !!leakResult?.hint?.some((h) => h.includes("hatchkit keys rotate")),
+  ]);
+  await deleteSecret(SECRET_KEYS.dotenvxPrivateKey("doc-leak"));
+  rmSync(tmpC, { recursive: true, force: true });
+
+  // Scenario 4: .env.keys differs from keychain (post-rotate, pre-set).
+  const tmpD = mkdtempSync(join(tmpdir(), "doctor-drift-"));
+  await execa("git", ["init", "--initial-branch=main"], { cwd: tmpD });
+  await execa("git", ["config", "user.email", "t@t"], { cwd: tmpD });
+  await execa("git", ["config", "user.name", "t"], { cwd: tmpD });
+  writeFileSync(join(tmpD, ".gitignore"), ".env.keys\n");
+  writeFileSync(join(tmpD, ".hatchkit.json"), JSON.stringify({ name: "doc-drift" }));
+  writeFileSync(join(tmpD, ".env.keys"), `DOTENV_PRIVATE_KEY_PRODUCTION="${"e".repeat(64)}"\n`);
+  await setSecret(SECRET_KEYS.dotenvxPrivateKey("doc-drift"), "1".repeat(64));
+
+  const drift = await checkProjectKeyState(tmpD);
+  // Project name contains "drift" too — match on the suffix label.
+  const driftResult = drift.find((r) => r.name.includes("(keychain drift)"));
+  checks.push(["keychain drift: status=fail", driftResult?.status === "fail"]);
+  checks.push([
+    "keychain drift: hint mentions `keys set`",
+    !!driftResult?.hint?.some((h) => h.includes("hatchkit keys set")),
+  ]);
+  await deleteSecret(SECRET_KEYS.dotenvxPrivateKey("doc-drift"));
+  rmSync(tmpD, { recursive: true, force: true });
+
+  // Scenario 5: .env.keys present, keychain empty (post-`config reset`).
+  const tmpE = mkdtempSync(join(tmpdir(), "doctor-no-keychain-"));
+  await execa("git", ["init", "--initial-branch=main"], { cwd: tmpE });
+  await execa("git", ["config", "user.email", "t@t"], { cwd: tmpE });
+  await execa("git", ["config", "user.name", "t"], { cwd: tmpE });
+  writeFileSync(join(tmpE, ".gitignore"), ".env.keys\n");
+  writeFileSync(join(tmpE, ".hatchkit.json"), JSON.stringify({ name: "doc-empty" }));
+  writeFileSync(join(tmpE, ".env.keys"), `DOTENV_PRIVATE_KEY_PRODUCTION="${"7".repeat(64)}"\n`);
+
+  const noKc = await checkProjectKeyState(tmpE);
+  const noKcResult = noKc.find((r) => r.name.includes("drift"));
+  checks.push(["missing keychain entry: status=fail", noKcResult?.status === "fail"]);
+  checks.push([
+    "missing keychain entry: detail mentions missing",
+    !!noKcResult?.detail?.includes("missing"),
+  ]);
+  rmSync(tmpE, { recursive: true, force: true });
+
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  results.doctorKeyChecks = ok;
+}
+
 // Clean up the isolated config dir + every keychain entry scoped to
 // the throwaway service.
 {

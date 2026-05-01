@@ -19,7 +19,13 @@ import {
 import { runCoolifySetup } from "./deploy/coolify.js";
 import { setupGitHub } from "./deploy/github.js";
 import { deployMlServices } from "./deploy/gpu.js";
-import { pushProjectKeyToCoolify, showProjectKey } from "./deploy/keys.js";
+import {
+  pushProjectKeyToCoolify,
+  pushProjectKeyToGh,
+  rotateProjectKey,
+  setProjectKey,
+  showProjectKey,
+} from "./deploy/keys.js";
 import { handleCreateFailure, runRollback } from "./deploy/rollback.js";
 import { runTerraform } from "./deploy/terraform.js";
 import { type GpuPlatform, collectProjectConfig } from "./prompts.js";
@@ -221,22 +227,138 @@ async function handleKeys(): Promise<void> {
   const sub = args[1];
   const projectName = args[2];
   if (!sub || !projectName) {
-    console.log("Usage: hatchkit keys <show|push> <project-name>");
+    console.log("Usage: hatchkit keys <show|set|rotate|push> <project-name> [flags]");
     process.exit(1);
   }
   const isJson = args.includes("--json");
+  const dryRun = args.includes("--dry-run");
+  const keyFlag = flagValue("--key");
+  // The legacy `keys push` had no `--target` and always meant Coolify
+  // — keep that for back-compat. Anything explicit (`--target=gh|both`)
+  // overrides the default.
+  const target = (flagValue("--target") ?? "coolify") as "coolify" | "gh" | "both";
+  if (!["coolify", "gh", "both"].includes(target)) {
+    console.log(`Invalid --target=${target}. Valid: coolify, gh, both`);
+    process.exit(1);
+  }
+  const pushCoolify = args.includes("--push-coolify");
+  const pushGh = flagValue("--push-gh");
+  const repoArg = flagValue("--repo");
+
   switch (sub) {
     case "show":
       await showProjectKey(projectName, { json: isJson });
       break;
-    case "push":
-      await pushProjectKeyToCoolify(projectName);
+    case "set": {
+      // `--stdin` is explicit. We avoid auto-detecting via
+      // `!process.stdin.isTTY` because npm/pnpm wrappers (and CI
+      // runners) replace stdin even when the user didn't pipe
+      // anything — that would falsely trigger a "stdin is empty" error
+      // and skip the autoread-from-`.env.keys` default.
+      const fromStdin = args.includes("--stdin");
+      const result = await setProjectKey(projectName, {
+        key: keyFlag,
+        fromStdin,
+        dryRun,
+      });
+      if (isJson) {
+        process.stdout.write(`${JSON.stringify({ project: projectName, ...result })}\n`);
+        return;
+      }
+      const verb = result.written ? "Updated" : result.changed ? "Would update" : "No change —";
+      const sourceLabel =
+        result.source === "flag"
+          ? "--key flag"
+          : result.source === "stdin"
+            ? "stdin"
+            : `${result.envKeysPath}`;
+      console.log(chalk.green(`  ${verb} keychain entry ${chalk.cyan(result.account)}`));
+      console.log(chalk.dim(`  source: ${sourceLabel}`));
+      if (!result.changed) {
+        console.log(chalk.dim("  (keychain already held this value)"));
+      }
       break;
+    }
+    case "rotate": {
+      const result = await rotateProjectKey(projectName, {
+        pushCoolify,
+        pushGh,
+        dryRun,
+      });
+      if (isJson) {
+        process.stdout.write(`${JSON.stringify({ project: projectName, ...result })}\n`);
+        return;
+      }
+      if (dryRun) {
+        console.log(chalk.yellow("  --dry-run — nothing was rotated."));
+      } else {
+        console.log(chalk.green(`  Rotated dotenvx keypair for ${result.envProductionPath}`));
+        console.log(chalk.green(`  Updated keychain entry ${chalk.cyan(result.set.account)}`));
+      }
+      if (result.pushedCoolify) {
+        console.log(chalk.green(`  Pushed to Coolify (${result.pushedCoolify.uuid})`));
+      }
+      if (result.pushedGh) {
+        console.log(chalk.green(`  Pushed to GitHub repo ${result.pushedGh.repo}`));
+      }
+      if (!opts(result).pushedAnywhere) {
+        console.log(
+          chalk.dim(
+            "  Tip: pass --push-coolify and/or --push-gh <owner/repo> to fan out the new key.",
+          ),
+        );
+      }
+      break;
+    }
+    case "push": {
+      const repo = repoArg ?? (target === "coolify" ? undefined : await detectRepoSlug());
+      if ((target === "gh" || target === "both") && !repo) {
+        throw new Error("Couldn't infer GitHub repo for --target=gh. Pass --repo <owner/repo>.");
+      }
+      if (target === "coolify" || target === "both") {
+        await pushProjectKeyToCoolify(projectName);
+      }
+      if (target === "gh" || target === "both") {
+        await pushProjectKeyToGh(projectName, repo!);
+      }
+      break;
+    }
     default:
       console.log(`Unknown keys subcommand: ${sub}`);
-      console.log("Valid: show, push");
+      console.log("Valid: show, set, rotate, push");
       process.exit(1);
   }
+}
+
+/** `--flag=value` or `--flag value` lookup. Returns undefined when
+ *  absent. The first form is preferred in user-facing examples (no
+ *  ambiguity with positional args), but both forms parse cleanly. */
+function flagValue(name: string): string | undefined {
+  const eq = args.find((a) => a.startsWith(`${name}=`));
+  if (eq) return eq.slice(name.length + 1);
+  const idx = args.indexOf(name);
+  if (idx >= 0 && idx + 1 < args.length && !args[idx + 1].startsWith("--")) {
+    return args[idx + 1];
+  }
+  return undefined;
+}
+
+/** Resolve the GitHub `owner/repo` slug from the cwd's git origin.
+ *  Returns undefined when no remote is set or it's not a GitHub URL. */
+async function detectRepoSlug(): Promise<string | undefined> {
+  const { repoSlugFromRemote } = await import("./deploy/gh-actions-secrets.js");
+  const res = await exec("git", ["remote", "get-url", "origin"], { silent: true });
+  if (res.exitCode !== 0) return undefined;
+  return repoSlugFromRemote(res.stdout.trim());
+}
+
+/** Helper for the rotate-summary tip — collapses "did we push anywhere"
+ *  to a single boolean so the inline check stays readable. */
+function opts(result: {
+  pushedCoolify?: unknown;
+  pushedGh?: unknown;
+}): { pushedAnywhere: boolean } {
+  return { pushedAnywhere: !!result.pushedCoolify || !!result.pushedGh };
 }
 
 async function handleAdd(): Promise<void> {
@@ -1253,13 +1375,36 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("hatchkit keys")} — manage per-project dotenvx private keys
 
   ${chalk.bold("Subcommands:")}
-    keys show <project>   Print DOTENV_PRIVATE_KEY_PRODUCTION from the
-                          OS keychain. Useful for piping into pbcopy or
-                          pasting into Coolify / CI secret stores.
-    keys push <project>   Upsert the key onto the project's Coolify
-                          app via the Coolify API. Assumes the app
-                          already exists (created by \`create\` with
-                          runDeployment or manually).
+    keys show <project>     Print DOTENV_PRIVATE_KEY_PRODUCTION from the
+                            OS keychain. Useful for piping into pbcopy
+                            or pasting into Coolify / CI secret stores.
+    keys set <project>      Upsert the key into the OS keychain. Source
+                            (in priority order): ${chalk.cyan("--key=…")}, ${chalk.cyan("--stdin")},
+                            or auto-read from ${chalk.cyan("./.env.keys")}'s
+                            DOTENV_PRIVATE_KEY_PRODUCTION line. Idempotent.
+    keys rotate <project>   Run \`dotenvx rotate -f .env.production\` in
+                            the project, then ${chalk.cyan("keys set")}, then
+                            optionally fan out to Coolify and/or GitHub.
+    keys push <project>     Mirror the keychain copy to a deploy target.
+
+  ${chalk.bold("Flags (apply to set / rotate / push):")}
+    --key=<value>           Direct value for ${chalk.cyan("keys set")}.
+    --stdin                 (set) Read the key from stdin (e.g. \`cat key | hatchkit keys set …\`).
+    --target={coolify|gh|both}  Where ${chalk.cyan("keys push")} mirrors to. Default
+                            ${chalk.dim("coolify")} for back-compat.
+    --repo <owner/repo>     GH repo for ${chalk.cyan("keys push --target=gh|both")}.
+                            Inferred from ${chalk.dim("git remote origin")} when omitted.
+    --push-coolify          (rotate) Mirror the new key onto Coolify.
+    --push-gh <owner/repo>  (rotate) Mirror the new key into the named
+                            GH repo's DOTENV_PRIVATE_KEY_PRODUCTION
+                            Actions secret.
+    --dry-run               Print what would change, don't write.
+    --json                  Machine-readable output.
+
+  ${chalk.bold("Examples:")}
+    hatchkit keys rotate raptor-runner --push-coolify --push-gh acme/raptor
+    cat .env.keys | hatchkit keys set raptor-runner --stdin
+    hatchkit keys push raptor-runner --target=both --repo acme/raptor
 
   The key is generated at scaffold time and lives in macOS Keychain /
   libsecret under the "hatchkit" service. Never written to git.
@@ -1662,7 +1807,9 @@ function printHelp(topic?: HelpTopic): void {
     gh-pages        Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
     dns             DNS reconciliation helpers (link-to-cloudflare, …)
     keys show <p>   Print the dotenvx private key for a project
-    keys push <p>   Push the key onto the project's Coolify app
+    keys set <p>    Upsert the key into the OS keychain (after \`dotenvx rotate\`)
+    keys rotate <p> Rotate the dotenvx keypair, mirror to keychain + (optional) deploy targets
+    keys push <p>   Push the key to Coolify (default) and/or GitHub Actions
 
   ${chalk.bold("Config:")}
     config          Show provider status (same as \`status\`)
