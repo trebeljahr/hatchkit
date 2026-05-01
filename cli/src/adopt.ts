@@ -45,7 +45,7 @@ import {
   setCoolifyDeploySecrets,
 } from "./deploy/gh-actions-secrets.js";
 import { pushInitialBranch } from "./deploy/github.js";
-import { pushProjectKeyToCoolify } from "./deploy/keys.js";
+import { pushProjectKeyToCoolify, pushProjectKeyToGh } from "./deploy/keys.js";
 import { handleAdoptFailure } from "./deploy/rollback.js";
 import type { Feature, S3Provider } from "./prompts.js";
 import { type ProvisionService, runProvision } from "./provision/index.js";
@@ -1284,6 +1284,41 @@ async function executePlan(
         console.log(
           chalk.dim(
             "  · Couldn't resolve owner/repo from git remote — set the deploy secrets manually.",
+          ),
+        );
+      }
+    }
+
+    // Step 3c-bis: push DOTENV_PRIVATE_KEY_PRODUCTION as a GH Actions
+    // secret. The scaffolded deploy.yml passes it as a BuildKit secret
+    // to `docker/build-push-action`, which is what the Dockerfile's
+    // `dotenvx run -- pnpm build` reads to decrypt .env.production at
+    // build time. Without it the workflow exits 1 at build-step 6 with
+    // "ERROR: dotenvx_private_key build secret not supplied".
+    //
+    // Independent of Coolify wiring (it's a GH-Actions concern, not
+    // a Coolify one) — gates only on having the build pipeline + a
+    // resolvable repo slug. Best-effort: failure surfaces as a caveat
+    // with a copy-pasteable manual recipe so adopt finishes cleanly.
+    if (plan.scaffoldBuildPipeline) {
+      const slug = repoSlugFromRemote(remoteUrl);
+      if (slug) {
+        try {
+          await pushProjectKeyToGh(plan.name, slug);
+        } catch (err) {
+          caveats.push({
+            title: "DOTENV_PRIVATE_KEY_PRODUCTION not set on GitHub Actions",
+            reason: (err as Error).message,
+            recovery: [
+              `hatchkit keys push ${plan.name} --target gh --repo ${slug}`,
+              `(or copy from \`hatchkit keys show ${plan.name}\` and run \`gh secret set DOTENV_PRIVATE_KEY_PRODUCTION --repo ${slug} --body <key>\`)`,
+            ],
+          });
+        }
+      } else if (remoteUrl) {
+        console.log(
+          chalk.dim(
+            "  · Couldn't resolve owner/repo from git remote — push DOTENV_PRIVATE_KEY_PRODUCTION to Actions manually.",
           ),
         );
       }
