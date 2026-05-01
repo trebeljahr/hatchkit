@@ -997,6 +997,14 @@ async function handleCreate(): Promise<void> {
         serverPort: scaffoldResult?.ports.server,
         clientPort: scaffoldResult?.ports.client,
       });
+      // Order matters: rollback iterates the ledger in REVERSE, so we
+      // record parent-before-child (project before app). Otherwise
+      // reverse iteration tries to delete the project before the app
+      // and Coolify rejects with `Project has resources, so it cannot
+      // be deleted.` Same invariant applied in adopt.ts.
+      if (coolifyResult.projectCreated) {
+        ledger?.record({ kind: "coolifyProject", uuid: coolifyResult.projectUuid });
+      }
       ledger?.record({ kind: "coolifyApp", uuid: coolifyResult.appUuid });
 
       // Provision a per-project MongoDB container on Coolify when the

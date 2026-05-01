@@ -51,10 +51,18 @@ export interface RunCoolifySetupResult {
    *  records this in the run ledger so a partial-create rollback can
    *  delete it via `CoolifyApi.deleteApplication`. */
   appUuid: string;
-  /** Coolify uuid of the project the app lives in. Recorded only for
-   *  diagnostics — projects are NOT auto-deleted on rollback because
-   *  they may already host other apps. */
+  /** Coolify uuid of the project the app lives in. Recorded in the run
+   *  ledger when `projectCreated` is true, so rollback removes the
+   *  empty project after the app/db steps. */
   projectUuid: string;
+  /** True when this call POSTed `/projects` (vs. matched an existing
+   *  Coolify project by name). The caller guards `ledger.record` on
+   *  this so a rollback never deletes a project the user had before. */
+  projectCreated: boolean;
+  /** True when this call POSTed `/applications/...` (vs. matched an
+   *  existing Coolify application by name). Same ledger guard
+   *  reasoning as `projectCreated`. */
+  appCreated: boolean;
 }
 
 /** Create the Coolify project + application for this hatchkit project,
@@ -88,6 +96,7 @@ export async function runCoolifySetup(
   // script always created a new one, which left orphan empty projects
   // behind on every retry.
   let projectUuid: string;
+  let projectCreated = false;
   const existingProject = await api.findProjectByName(config.name);
   if (existingProject) {
     projectUuid = existingProject.uuid;
@@ -95,6 +104,7 @@ export async function runCoolifySetup(
   } else {
     const project = await api.createProject(config.name);
     projectUuid = project.uuid;
+    projectCreated = true;
     console.log(chalk.green(`  ✓ Project created: ${config.name} (${projectUuid})`));
   }
 
@@ -136,6 +146,7 @@ export async function runCoolifySetup(
   // makes when it resolves the project.
   const appName = `${config.name}-web`;
   let appUuid: string;
+  let appCreated = false;
   const existingApp = await api.findApplicationByName(appName);
   if (existingApp) {
     appUuid = existingApp.uuid;
@@ -175,6 +186,7 @@ export async function runCoolifySetup(
         instantDeploy: false,
       });
       appUuid = created.uuid;
+      appCreated = true;
       create.succeed(`Application created: ${appName} (${appUuid})`);
     } catch (err) {
       create.fail();
@@ -201,7 +213,7 @@ export async function runCoolifySetup(
 
   console.log(chalk.green("\n  ✓ Coolify app stack created"));
 
-  return { appUuid, projectUuid };
+  return { appUuid, projectUuid, projectCreated, appCreated };
 }
 
 /** Resolve the Coolify server uuid for this project. The prompt flow

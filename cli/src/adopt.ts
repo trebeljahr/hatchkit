@@ -1188,11 +1188,18 @@ async function executePlan(
         // Record only the bits we actually created. wireProjectIntoCoolify
         // returns explicit `*Created` flags exactly so adopt can guard
         // each ledger entry against the "found by name, reused" branch.
-        if (coolifyResult.appCreated) {
-          ledger.record({ kind: "coolifyApp", uuid: coolifyResult.appUuid });
-        }
+        //
+        // Order matters: rollback iterates the ledger in REVERSE, so
+        // entries must be recorded in chronological (parent-before-child)
+        // order. The project is created first inside Coolify, so it must
+        // be recorded first here — otherwise reverse iteration tries to
+        // delete the project before the app, and Coolify rejects with
+        // `400 — Project has resources, so it cannot be deleted.`
         if (coolifyResult.projectCreated) {
           ledger.record({ kind: "coolifyProject", uuid: coolifyResult.projectUuid });
+        }
+        if (coolifyResult.appCreated) {
+          ledger.record({ kind: "coolifyApp", uuid: coolifyResult.appUuid });
         }
         if (
           coolifyResult.dnsRecordCreatedV4 &&
