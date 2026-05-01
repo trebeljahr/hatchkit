@@ -24,6 +24,7 @@ import { CoolifyApi } from "../utils/coolify-api.js";
 import { exec } from "../utils/exec.js";
 import { type LedgerStep, RunLedger } from "../utils/run-ledger.js";
 import { deleteSecret } from "../utils/secrets.js";
+import { ghSecretDelete } from "./gh-actions-secrets.js";
 
 interface RollbackOptions {
   /** Skip per-step confirmation prompts on destructive operations. */
@@ -174,6 +175,8 @@ function recipeFor(step: LedgerStep): string | null {
       return `rm ${shellEscape(step.path)}`;
     case "gitInit":
       return `rm -rf ${shellEscape(step.path)}`;
+    case "ghActionsSecret":
+      return `gh secret delete ${shellEscape(step.name)} --repo ${shellEscape(step.repo)}`;
     case "cloudflareDnsRecord":
       return chalk.dim(
         `# manual: delete ${step.type} record ${step.name} (id ${step.recordId}) in Cloudflare zone ${step.zoneId}`,
@@ -388,6 +391,8 @@ function describeStep(step: LedgerStep): string {
       return `remove ${chalk.cyan(step.path)}`;
     case "gitInit":
       return `remove .git dir at ${chalk.cyan(step.path)}`;
+    case "ghActionsSecret":
+      return `delete GH Actions secret ${chalk.cyan(step.name)} on ${chalk.cyan(step.repo)}`;
     case "cloudflareDnsRecord":
       return `delete Cloudflare ${step.type} record ${chalk.cyan(step.name)}`;
   }
@@ -528,6 +533,12 @@ async function undoStep(
       if (!existsSync(step.path)) return "not-found";
       rmSync(step.path, { recursive: true, force: true });
       return "done";
+    }
+    case "ghActionsSecret": {
+      // Recorded only when adopt's probe confirmed the secret didn't
+      // pre-exist (see ghSecretExists in gh-actions-secrets.ts), so
+      // we're never deleting a secret the user set themselves.
+      return ghSecretDelete(step.repo, step.name);
     }
     case "cloudflareDnsRecord": {
       const dns = await getDnsConfig();

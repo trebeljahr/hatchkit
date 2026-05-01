@@ -40,6 +40,7 @@ import { Separator, confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { ensureGitHub, getCoolifyConfig, getGhcrConfig } from "./config.js";
 import {
+  ghSecretExists,
   ownerFromRemote,
   repoSlugFromRemote,
   setCoolifyDeploySecrets,
@@ -1303,15 +1304,24 @@ async function executePlan(
     if (plan.scaffoldBuildPipeline) {
       const slug = repoSlugFromRemote(remoteUrl);
       if (slug) {
+        const secretName = "DOTENV_PRIVATE_KEY_PRODUCTION";
+        // Probe BEFORE pushing so we can tell whether this run is the
+        // one creating the secret. Recording in the ledger only when
+        // we're the creator preserves the "destroy never deletes
+        // pre-existing user data" invariant — see LedgerStep doc.
+        const preExisted = await ghSecretExists(state.projectDir, slug, secretName);
         try {
           await pushProjectKeyToGh(plan.name, slug);
+          if (!preExisted) {
+            ledger.record({ kind: "ghActionsSecret", repo: slug, name: secretName });
+          }
         } catch (err) {
           caveats.push({
-            title: "DOTENV_PRIVATE_KEY_PRODUCTION not set on GitHub Actions",
+            title: `${secretName} not set on GitHub Actions`,
             reason: (err as Error).message,
             recovery: [
               `hatchkit keys push ${plan.name} --target gh --repo ${slug}`,
-              `(or copy from \`hatchkit keys show ${plan.name}\` and run \`gh secret set DOTENV_PRIVATE_KEY_PRODUCTION --repo ${slug} --body <key>\`)`,
+              `(or copy from \`hatchkit keys show ${plan.name}\` and run \`gh secret set ${secretName} --repo ${slug} --body <key>\`)`,
             ],
           });
         }

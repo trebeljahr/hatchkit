@@ -57,6 +57,11 @@ export type LedgerStep =
   | { kind: "dotenvxKeysFile"; path: string }
   | { kind: "scaffoldedFile"; path: string }
   | { kind: "gitInit"; path: string }
+  /** A GitHub Actions repo-level secret hatchkit pushed via `gh secret
+   *  set`. Recorded ONLY when the secret didn't already exist before
+   *  this run (probed via `gh secret list`) — so destroy never yanks
+   *  a secret the user had set themselves before adopting. */
+  | { kind: "ghActionsSecret"; repo: string; name: string }
   | {
       kind: "cloudflareDnsRecord";
       zoneId: string;

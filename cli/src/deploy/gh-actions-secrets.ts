@@ -136,6 +136,54 @@ async function ghSecretSet(cwd: string, repo: string, name: string, value: strin
   }
 }
 
+/** Probe whether a repo-level Actions secret with the given name is
+ *  already set on the repo. Used by adopt before recording a fresh
+ *  secret in the ledger — we MUST NOT record (and thus risk rolling
+ *  back) a secret the user set themselves before hatchkit ran.
+ *
+ *  Returns `true` (i.e., assume present, don't record) on probe
+ *  failure too — `gh secret list` requires admin scope on private
+ *  repos and the user's PAT may not have it. Erring toward "exists"
+ *  is the safe direction: at worst destroy leaves the secret behind;
+ *  the wrong direction would delete the user's data.
+ */
+export async function ghSecretExists(
+  cwd: string,
+  repoSlug: string,
+  name: string,
+): Promise<boolean> {
+  const res = await exec(
+    "gh",
+    [
+      "secret",
+      "list",
+      "--repo",
+      repoSlug,
+      "--json",
+      "name",
+      "-q",
+      `.[] | select(.name=="${name}") | .name`,
+    ],
+    { cwd, silent: true },
+  );
+  if (res.exitCode !== 0) return true;
+  return res.stdout.trim().length > 0;
+}
+
+/** Delete a repo-level Actions secret. Used by rollback. Returns
+ *  "not-found" when the secret wasn't there (gh exits non-zero with
+ *  "could not find secret" — treat as already-undone). */
+export async function ghSecretDelete(
+  repoSlug: string,
+  name: string,
+): Promise<"done" | "not-found"> {
+  const res = await exec("gh", ["secret", "delete", name, "--repo", repoSlug], { silent: true });
+  if (res.exitCode === 0) return "done";
+  const msg = `${res.stderr}\n${res.stdout}`;
+  if (/not found|could not find/i.test(msg)) return "not-found";
+  throw new Error(`gh secret delete ${name} exited ${res.exitCode}: ${res.stderr.trim()}`);
+}
+
 /** Extract `owner/repo` from a git remote URL.
  *    git@github.com:owner/repo.git           → owner/repo
  *    https://github.com/owner/repo[.git]     → owner/repo
