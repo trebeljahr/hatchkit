@@ -101,18 +101,45 @@ export async function verifyR2AdminToken(
     const body = (await r2Res.json()) as { result?: { buckets?: unknown[] } };
     const bucketCount = body.result?.buckets?.length ?? 0;
 
-    const tokenRes = await fetch("https://api.cloudflare.com/client/v4/user/tokens?per_page=1", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!tokenRes.ok) {
+    // Account-tokens permission probe. Hatchkit provisions per-project
+    // R2 credentials via `POST /accounts/{id}/tokens` (account-owned
+    // tokens, visible in `R2 → Manage R2 API Tokens`). That endpoint
+    // requires `Account Settings:Edit` on the calling token. The legacy
+    // `User > API Tokens:Edit` perm is no longer sufficient on its own —
+    // doctor checks both so users with one-but-not-the-other see the gap
+    // before provisioning crashes mid-flight (revoking a legacy token
+    // they need without being able to mint its replacement). The probe
+    // hits `/accounts/{id}/tokens/permission_groups`, which is the same
+    // call `createR2AccountToken` makes first; a 9109/403 here tells us
+    // we'd fail there too.
+    const accountTokenRes = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/tokens/permission_groups?per_page=1`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    if (!accountTokenRes.ok) {
+      const body = (await accountTokenRes.json().catch(() => null)) as {
+        errors?: Array<{ code: number; message: string }>;
+      } | null;
+      const code = body?.errors?.[0]?.code;
       return {
         ok: false,
-        detail: `Token has R2 perm but lacks \`User > API Tokens > Edit\` (HTTP ${tokenRes.status}). Without it hatchkit can't mint per-project R2 credentials.`,
+        detail: `Token has R2 perm but lacks \`Account Settings > Edit\` (HTTP ${accountTokenRes.status}${code ? ` / CF code ${code}` : ""}). Without it hatchkit can't mint per-project R2 credentials via account tokens.`,
       };
     }
+
+    // Legacy probe: kept for back-compat with the migration flow that
+    // revokes pre-account-tokens user-tokens. Failing here means the
+    // migration step would silently leave orphans — the user should
+    // know. We don't *require* this perm anymore (account tokens are
+    // the new default), so a failure is downgraded to a non-fatal
+    // mention instead of a hard fail.
+    const legacyRes = await fetch("https://api.cloudflare.com/client/v4/user/tokens?per_page=1", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const legacyPerm = legacyRes.ok ? "(legacy User>API Tokens also OK)" : "";
     return {
       ok: true,
-      detail: `${bucketCount} bucket(s) visible; can mint per-project tokens`,
+      detail: `${bucketCount} bucket(s) visible; can mint account tokens${legacyPerm ? ` ${legacyPerm}` : ""}`,
     };
   } catch (err) {
     return {

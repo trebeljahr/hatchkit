@@ -205,10 +205,15 @@ async function checkS3(provider: "hetzner" | "aws" | "r2"): Promise<CheckResult>
   }
 
   // R2: verify the admin Bearer token can do BOTH jobs it's responsible
-  // for — bucket admin (Workers R2 Storage:Edit) AND minting per-project
-  // child tokens (User > API Tokens:Edit). Either failing tells the
-  // user which perm to add. Per-project access/secret pairs aren't
-  // checked here; that's per-project doctor territory (TODO).
+  // for — bucket admin (Account > Workers R2 Storage > Edit) AND
+  // minting per-project account tokens (Account > Account Settings >
+  // Edit). The legacy `User > API Tokens > Edit` perm is no longer
+  // sufficient on its own (provision switched to account-owned tokens
+  // via POST /accounts/{id}/tokens), but is still useful during
+  // migration of pre-account-tokens projects, so we probe it as a
+  // non-fatal hint. Either of the required perms failing tells the
+  // user exactly which one to add. Per-project access/secret pairs
+  // aren't checked here; that's per-project doctor territory (TODO).
   const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
   if (!adminToken) {
     return {
@@ -253,17 +258,39 @@ async function checkS3(provider: "hetzner" | "aws" | "r2"): Promise<CheckResult>
       const body = (await r2Res.json()) as { result?: { buckets?: unknown[] } };
       const n = body.result?.buckets?.length ?? 0;
 
-      // GET /user/tokens lists tokens the caller can manage —
-      // requires User > API Tokens > Read (implied by Edit). Without
-      // it we'd 9109 / 403 here, signalling we can't mint per-project
-      // child tokens.
-      const tokenRes = await fetch("https://api.cloudflare.com/client/v4/user/tokens?per_page=1", {
+      // Account-tokens permission probe. Hatchkit provisions per-project
+      // R2 credentials via `POST /accounts/{id}/tokens` (visible in
+      // `R2 → Manage R2 API Tokens`); that endpoint needs
+      // `Account Settings:Edit` on the calling token. Hitting the
+      // permission-groups list is the cheapest probe and matches what
+      // `createR2AccountToken` does first — a 9109/403 here means
+      // provision would fail at the same call.
+      const accountTokenRes = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${accountId}/tokens/permission_groups?per_page=1`,
+        { headers: { Authorization: `Bearer ${adminToken}` } },
+      );
+      if (!accountTokenRes.ok) {
+        const aBody = (await accountTokenRes.json().catch(() => null)) as {
+          errors?: Array<{ code: number; message: string }>;
+        } | null;
+        const aCode = aBody?.errors?.[0]?.code;
+        throw new Error(
+          `HTTP ${accountTokenRes.status}${aCode ? ` (CF code ${aCode})` : ""} (account-tokens list — needs Account Settings:Edit)`,
+        );
+      }
+
+      // Legacy probe: best-effort, not fatal. Used during migration to
+      // revoke pre-account-tokens user-tokens. If it fails, surface as
+      // a hint in the OK detail so users know one perm is missing
+      // without flagging the whole check as a fail.
+      const legacyRes = await fetch("https://api.cloudflare.com/client/v4/user/tokens?per_page=1", {
         headers: { Authorization: `Bearer ${adminToken}` },
       });
-      if (!tokenRes.ok) {
-        throw new Error(`HTTP ${tokenRes.status} (api-tokens list — needs API Tokens:Edit)`);
-      }
-      return `R2 perm OK (${n} bucket(s)); API Tokens perm OK (can mint scoped child tokens)`;
+      const legacyNote = legacyRes.ok
+        ? "; legacy User>API Tokens also OK"
+        : "; legacy User>API Tokens missing (migration of pre-account-tokens projects may leave orphans)";
+
+      return `R2 perm OK (${n} bucket(s)); Account Settings:Edit OK (can mint per-project tokens)${legacyNote}`;
     },
     (detail) => {
       const code = httpCode(detail);
@@ -272,14 +299,16 @@ async function checkS3(provider: "hetzner" | "aws" | "r2"): Promise<CheckResult>
           "R2 admin Bearer token is invalid or revoked.",
           "Create a new one: https://dash.cloudflare.com/profile/api-tokens → Custom token",
           "Permissions:    Account > Workers R2 Storage > Edit",
-          "                User    > API Tokens         > Edit",
+          "                Account > Account Settings   > Edit",
           "Then re-run: `hatchkit config add s3 r2` to re-paste + verify globally.",
         ];
       }
-      if (/api-tokens list/i.test(detail)) {
+      if (/account-tokens list/i.test(detail)) {
         return [
-          "Admin token has R2 perm but lacks `User > API Tokens > Edit`.",
-          "Without it, hatchkit can't mint per-project R2 credentials at provision-time.",
+          "Admin token has R2 perm but lacks `Account > Account Settings > Edit`.",
+          "Without it, hatchkit can't mint per-project R2 credentials via account tokens",
+          "(POST /accounts/{id}/tokens). Provision will revoke any legacy token first and",
+          "then fail to mint its replacement, leaving the project without working creds.",
           "Edit at https://dash.cloudflare.com/profile/api-tokens, add the perm, save —",
           "or re-run `hatchkit config add s3 r2` to paste a fresh token.",
         ];
