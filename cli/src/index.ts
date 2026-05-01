@@ -567,16 +567,6 @@ async function handleProvisionS3(): Promise<void> {
       chalk.dim(`  · Kept ${result.envKept.length} existing entries: ${result.envKept.join(", ")}`),
     );
   }
-
-  console.log(chalk.bold("\n  rclone — paste into ~/.config/rclone/rclone.conf:"));
-  console.log();
-  for (const line of result.rcloneSnippet.split("\n")) console.log(`    ${chalk.dim(line)}`);
-  console.log(chalk.dim(`  Then upload with:`));
-  console.log(
-    chalk.dim(
-      `    rclone copy <local-dir>/ r2-${result.assets.name.replace(/-assets$/, "")}:${result.assets.name}/ \\\n      --progress --transfers=16 --checkers=32 --fast-list`,
-    ),
-  );
   console.log();
 }
 

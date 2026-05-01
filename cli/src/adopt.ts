@@ -1410,24 +1410,7 @@ async function executePlan(
             `  ✓ S3 buckets ready — assets at ${r.assets.publicUrl}, state ${r.state.name}`,
           ),
         );
-        console.log(
-          chalk.dim(
-            `    Wrote ${r.envWritten.length} encrypted entries; rclone snippet at the end of this run.`,
-          ),
-        );
-        // Stash the snippet on caveats so the final summary block
-        // can render it underneath the banner. Misuse of `caveats`
-        // for non-failure info, but keeps the bottom of the run
-        // self-contained without inventing a parallel mechanism.
-        caveats.push({
-          title: "S3 — rclone snippet to upload assets",
-          reason: `Add this remote, then upload your local assets dir.`,
-          recovery: [
-            ...r.rcloneSnippet.split("\n").filter((l) => l !== ""),
-            "",
-            `Then: rclone copy <local-dir>/ r2-${plan.name}:${r.assets.name}/ --progress --transfers=16 --checkers=32 --fast-list`,
-          ],
-        });
+        console.log(chalk.dim(`    Wrote ${r.envWritten.length} encrypted entries.`));
       } catch (err) {
         console.log(
           chalk.yellow(

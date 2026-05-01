@@ -76,8 +76,6 @@ export interface ProvisionS3Result {
   envWritten: string[];
   /** Existing keys we left alone (already encrypted in the file). */
   envKept: string[];
-  /** rclone snippet the user should paste into their rclone.conf. */
-  rcloneSnippet: string;
 }
 
 /** Account ID = the subdomain in the S3 endpoint
@@ -174,29 +172,6 @@ function existingEnvKeys(envPath: string): Set<string> {
     if (m) keys.add(m[1]);
   }
   return keys;
-}
-
-/** Build the rclone config snippet the user can paste into
- *  `~/.config/rclone/rclone.conf`. Keeps this OUT of the file system
- *  (the user's existing rclone config has other remotes — we don't
- *  want to mangle them). */
-function buildRcloneSnippet(opts: {
-  remoteName: string;
-  endpoint: string;
-  accessKey: string;
-  secretKey: string;
-}): string {
-  return [
-    `[${opts.remoteName}]`,
-    `type = s3`,
-    `provider = Cloudflare`,
-    `access_key_id = ${opts.accessKey}`,
-    `secret_access_key = ${opts.secretKey}`,
-    `endpoint = ${opts.endpoint}`,
-    `acl = private`,
-    `no_check_bucket = true`,
-    "",
-  ].join("\n");
 }
 
 /** Provision the public+private bucket pair for an adopted project,
@@ -496,25 +471,11 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   writeManifest(opts.projectDir, updated);
   console.log(chalk.dim(`  · Recorded bucket names in ${MANIFEST_FILENAME} (${publicUrlSource}).`));
 
-  // 5. rclone snippet (printed by caller, returned here so callers
-  //    can capture it programmatically too). Uses the per-project
-  //    scoped credentials we just minted — anyone running rclone
-  //    against this remote can only touch this project's two buckets.
-  //    Don't write the snippet to disk; the user's existing rclone
-  //    config has unrelated remotes and we don't want to mangle them.
-  const rcloneSnippet = buildRcloneSnippet({
-    remoteName: `r2-${projectName}`,
-    endpoint: meta.endpoint,
-    accessKey: projectAccessKey,
-    secretKey: projectSecretKey,
-  });
-
   return {
     assets: { name: assetsBucketName, publicUrl, created: !assetsBucket.existed },
     state: { name: stateBucketName, created: !stateBucket.existed },
     envWritten,
     envKept,
-    rcloneSnippet,
   };
 }
 
