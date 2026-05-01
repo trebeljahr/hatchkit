@@ -53,19 +53,6 @@ export const SECRET_KEYS = {
    *  delete the token (DELETE /user/tokens/<id>) instead of
    *  leaving orphaned tokens in the user's CF account. */
   s3ProjectTokenId: (provider: string, project: string) => `s3:${provider}:${project}:token-id`,
-  /** Per-project, per-bucket R2 access/secret/token-id tuple. Used by
-   *  `hatchkit add <project> s3` for projects with declared
-   *  s3Buckets in `.hatchkit.json` — one Cloudflare API token is
-   *  minted per bucket (scoped to that bucket only) so a leaked key
-   *  can't reach unrelated buckets. The per-project trio above is
-   *  the legacy single-token-per-project shape used by
-   *  `hatchkit provision s3`. */
-  s3ProjectBucketAccessKey: (provider: string, project: string, bucket: string) =>
-    `s3:${provider}:${project}:${bucket}:access-key`,
-  s3ProjectBucketSecretKey: (provider: string, project: string, bucket: string) =>
-    `s3:${provider}:${project}:${bucket}:secret-key`,
-  s3ProjectBucketTokenId: (provider: string, project: string, bucket: string) =>
-    `s3:${provider}:${project}:${bucket}:token-id`,
   /** Cloudflare API token with `Account > Workers R2 Storage > Edit`
    *  permission. Used by `hatchkit provision s3` to create R2 buckets,
    *  enable the managed `r2.dev` URL, and attach custom domains. Kept
@@ -112,12 +99,4 @@ export async function deleteSecret(key: string): Promise<boolean> {
 export async function clearAllSecrets(): Promise<void> {
   const entries = await keytar.findCredentials(SERVICE);
   await Promise.all(entries.map((e) => keytar.deletePassword(SERVICE, e.account)));
-}
-
-/** List every keychain account this CLI has stored. Lets specific
- *  callers enumerate sub-keys (e.g. "every per-bucket R2 token id for
- *  project X") without forcing them to know the full set up-front. */
-export async function listSecretAccounts(): Promise<string[]> {
-  const entries = await keytar.findCredentials(SERVICE);
-  return entries.map((e) => e.account);
 }
