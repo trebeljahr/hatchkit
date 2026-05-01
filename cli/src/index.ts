@@ -593,22 +593,33 @@ async function handleProvisionS3(): Promise<void> {
   let publicHostname: string | null | undefined = publicHostnameFlag;
   if (skipCustomDomain) {
     publicHostname = null;
-  } else if (publicHostname === undefined && process.stdin.isTTY) {
+  } else if (publicHostname === undefined) {
+    // Reuse the manifest's recorded custom hostname when present —
+    // re-running provision shouldn't re-prompt for a value the user
+    // already settled on. Pass `--public-hostname=<host>` to change
+    // it explicitly (or `--no-custom-domain` to switch to managed
+    // r2.dev). Only on first run, when nothing's recorded yet, do we
+    // prompt with `s3.<domain>` as the default.
     const { defaultBucketHostname, existingCustomHostname } = await import(
       "./provision/s3-buckets.js"
     );
     const { readManifest } = await import("./scaffold/manifest.js");
-    const { input } = await import("@inquirer/prompts");
     const m = readManifest(projectDir);
-    const def = m ? (existingCustomHostname(m) ?? defaultBucketHostname(m.domain)) : undefined;
-    const answer = (
-      await input({
-        message:
-          "Custom domain for the public assets bucket (leave empty to use the managed r2.dev URL):",
-        default: def,
-      })
-    ).trim();
-    publicHostname = answer === "" ? null : answer;
+    const recorded = m ? existingCustomHostname(m) : null;
+    if (recorded) {
+      publicHostname = recorded;
+    } else if (process.stdin.isTTY) {
+      const { input } = await import("@inquirer/prompts");
+      const def = m ? defaultBucketHostname(m.domain) : undefined;
+      const answer = (
+        await input({
+          message:
+            "Custom domain for the public assets bucket (leave empty to use the managed r2.dev URL):",
+          default: def,
+        })
+      ).trim();
+      publicHostname = answer === "" ? null : answer;
+    }
   }
 
   console.log(chalk.bold("\n  hatchkit provision s3"));

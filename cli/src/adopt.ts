@@ -1460,20 +1460,23 @@ async function executePlan(
       try {
         const { provisionS3ForProject, defaultBucketHostname, existingCustomHostname } =
           await import("./provision/s3-buckets.js");
-        // Prompt for the public assets-bucket custom domain. Defaults to
-        // `s3.<project-domain>` on first run, or whatever the previous
-        // run already attached on re-run. Blank answer → managed r2.dev.
+        // Resolve the public assets-bucket custom domain. If a previous
+        // run already attached one, the manifest records it — reuse
+        // that without re-prompting. Only ask on first adopt (or when
+        // the manifest has no hostname yet, e.g. a previous run picked
+        // the managed r2.dev URL or never got that far). Blank answer →
+        // managed r2.dev.
         let publicHostname: string | null | undefined;
-        if (process.stdin.isTTY) {
-          const existingManifest = readManifest(state.projectDir);
-          const def =
-            (existingManifest ? existingCustomHostname(existingManifest) : null) ??
-            defaultBucketHostname(plan.domain);
+        const existingManifest = readManifest(state.projectDir);
+        const recordedHostname = existingManifest ? existingCustomHostname(existingManifest) : null;
+        if (recordedHostname) {
+          publicHostname = recordedHostname;
+        } else if (process.stdin.isTTY) {
           const answer = (
             await input({
               message:
                 "Custom domain for the public assets bucket (leave empty to use the managed r2.dev URL):",
-              default: def,
+              default: defaultBucketHostname(plan.domain),
             })
           ).trim();
           publicHostname = answer === "" ? null : answer;
