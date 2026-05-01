@@ -911,6 +911,138 @@ console.log("\n── existing-dir guard ─────────────
   }
 }
 
+// Adopt leak regression: against a fresh git repo with NO `.gitignore`
+// (or one that doesn't cover `.env.keys`), generating the dotenvx keypair
+// must NOT result in `.env.keys` being staged or committed. Reproduces
+// the real-world incident where `.env.keys` was pushed to a public repo.
+console.log("\n── adopt: .env.keys is gitignored, never staged ─────────────────────────────");
+{
+  const { execa } = await import("execa");
+  const { ensureGitignoreEntries, looksLikeDotenvxPrivateKey } = await import(
+    "./src/utils/gitignore.js"
+  );
+  const checks: Check[] = [];
+
+  // Scenario A: pre-existing .gitignore that covers .env / .env.local / .env.*.local
+  // (the actual incident shape) but NOT .env.keys.
+  const repoA = mkdtempSync(join(tmpdir(), "adopt-leak-existing-ignore-"));
+  await execa("git", ["init", "--initial-branch=main"], { cwd: repoA });
+  await execa("git", ["config", "user.email", "test@example.com"], { cwd: repoA });
+  await execa("git", ["config", "user.name", "test"], { cwd: repoA });
+  writeFileSync(
+    join(repoA, ".gitignore"),
+    "# pre-existing entries (no trailing newline)\n.env\n.env.local\n.env.*.local",
+  );
+  writeFileSync(join(repoA, "package.json"), JSON.stringify({ name: "leak-test" }));
+
+  // Run the same call adopt's bootstrapDotenvxNow makes BEFORE writing
+  // .env.keys, then drop a realistic .env.keys file.
+  const r = ensureGitignoreEntries(repoA, [".env.keys"]);
+  writeFileSync(
+    join(repoA, ".env.keys"),
+    `#/!!!!!!!!!!!!!!!!!!!.env.keys!!!!!!!!!!!!!!!!!!!!!!/
+#/   DOTENV_PRIVATE_KEYS: DO NOT commit to source control   /
+#/!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!/
+DOTENV_PRIVATE_KEY_PRODUCTION="abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+`,
+  );
+  await execa("git", ["add", "-A"], { cwd: repoA });
+  const stagedA = (await execa("git", ["diff", "--cached", "--name-only"], { cwd: repoA })).stdout
+    .split("\n")
+    .filter(Boolean);
+  await execa("git", ["commit", "-m", "Adopt under hatchkit management"], { cwd: repoA });
+  const commitFiles = (await execa("git", ["show", "--name-only", "--pretty=", "HEAD"], { cwd: repoA })).stdout
+    .split("\n")
+    .filter(Boolean);
+  // Confirm `git check-ignore` sees the file as ignored.
+  const checkIgnore = await execa("git", ["check-ignore", "-v", ".env.keys"], {
+    cwd: repoA,
+    reject: false,
+  });
+
+  checks.push(["A: ensureGitignoreEntries appended .env.keys", r.added.includes(".env.keys")]);
+  checks.push(["A: existing .gitignore preserved (still has .env entry)", readFileSync(join(repoA, ".gitignore"), "utf-8").includes(".env\n")]);
+  checks.push([".env.keys NOT in staged files", !stagedA.includes(".env.keys")]);
+  checks.push([".env.keys NOT in resulting commit", !commitFiles.includes(".env.keys")]);
+  checks.push([".gitignore IS in the commit (carries the new rule)", commitFiles.includes(".gitignore")]);
+  checks.push(["package.json IS in the commit (sanity)", commitFiles.includes("package.json")]);
+  checks.push(["git check-ignore reports .env.keys as ignored", checkIgnore.exitCode === 0]);
+
+  // Scenario B: NO .gitignore at all. ensureGitignoreEntries must create one.
+  const repoB = mkdtempSync(join(tmpdir(), "adopt-leak-no-ignore-"));
+  await execa("git", ["init", "--initial-branch=main"], { cwd: repoB });
+  await execa("git", ["config", "user.email", "test@example.com"], { cwd: repoB });
+  await execa("git", ["config", "user.name", "test"], { cwd: repoB });
+  writeFileSync(join(repoB, "package.json"), JSON.stringify({ name: "leak-test" }));
+  const rB = ensureGitignoreEntries(repoB, [".env.keys"]);
+  writeFileSync(join(repoB, ".env.keys"), `DOTENV_PRIVATE_KEY_PRODUCTION="aabbcc"\n`);
+  await execa("git", ["add", "-A"], { cwd: repoB });
+  const stagedB = (await execa("git", ["diff", "--cached", "--name-only"], { cwd: repoB })).stdout
+    .split("\n")
+    .filter(Boolean);
+
+  checks.push(["B: .gitignore was created from scratch", rB.fileCreated]);
+  checks.push(["B: .env.keys NOT in staged files", !stagedB.includes(".env.keys")]);
+  checks.push(["B: .gitignore IS in staged files", stagedB.includes(".gitignore")]);
+
+  // Scenario C: defensive guard — looksLikeDotenvxPrivateKey identifies
+  // the danger file but NOT a normal encrypted .env.production (which
+  // contains DOTENV_PUBLIC_KEY_PRODUCTION, NOT DOTENV_PRIVATE_KEY).
+  const repoC = mkdtempSync(join(tmpdir(), "adopt-leak-guard-"));
+  writeFileSync(
+    join(repoC, ".env.keys"),
+    `#/   DOTENV_PRIVATE_KEYS: DO NOT commit to source control   /
+DOTENV_PRIVATE_KEY_PRODUCTION="dead"
+`,
+  );
+  writeFileSync(
+    join(repoC, ".env.production"),
+    `#/!!!!!!!!!!!!!!!!!!!.env.production!!!!!!!!!!!!!!!!!!!!!/
+DOTENV_PUBLIC_KEY_PRODUCTION="beef"
+STRIPE_SECRET_KEY="encrypted:abc"
+`,
+  );
+  writeFileSync(join(repoC, "README.md"), "# project\n");
+  checks.push([
+    "C: guard flags .env.keys",
+    looksLikeDotenvxPrivateKey(join(repoC, ".env.keys")),
+  ]);
+  checks.push([
+    "C: guard does NOT flag encrypted .env.production (only public key in header)",
+    !looksLikeDotenvxPrivateKey(join(repoC, ".env.production")),
+  ]);
+  checks.push([
+    "C: guard does NOT flag README",
+    !looksLikeDotenvxPrivateKey(join(repoC, "README.md")),
+  ]);
+  checks.push([
+    "C: guard returns false on missing file",
+    !looksLikeDotenvxPrivateKey(join(repoC, "does-not-exist")),
+  ]);
+
+  // Scenario D: idempotency — running ensureGitignoreEntries twice
+  // doesn't duplicate the line, and detects the entry whether written
+  // bare (`.env.keys`), with leading slash (`/.env.keys`), or as a
+  // comment-stripped match.
+  const repoD = mkdtempSync(join(tmpdir(), "adopt-leak-idempotent-"));
+  writeFileSync(join(repoD, ".gitignore"), "/.env.keys\n");
+  const rD = ensureGitignoreEntries(repoD, [".env.keys"]);
+  checks.push(["D: detects /.env.keys as already-present", rD.alreadyPresent.includes(".env.keys")]);
+  checks.push(["D: did not append duplicate entry", rD.added.length === 0]);
+
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  results.adoptLeakRegression = ok;
+
+  rmSync(repoA, { recursive: true, force: true });
+  rmSync(repoB, { recursive: true, force: true });
+  rmSync(repoC, { recursive: true, force: true });
+  rmSync(repoD, { recursive: true, force: true });
+}
+
 // Clean up the isolated config dir + every keychain entry scoped to
 // the throwaway service.
 {
