@@ -32,16 +32,24 @@ RUN corepack enable && pnpm install --frozen-lockfile
 COPY . .
 # `--mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION`
 # exposes the secret value as the env var the wrapped command reads,
-# only for the duration of this RUN. dotenvx picks it up, decrypts
-# .env.production in memory, and re-exports each KEY=VALUE for
-# `pnpm build`. If the secret isn't supplied, dotenvx silently skips
-# decryption and the build would bake `encrypted:...` strings into
-# asset URLs — fail fast instead.
+# only for the duration of each RUN it's mounted into. dotenvx picks
+# it up, decrypts .env.production in memory, and re-exports each
+# KEY=VALUE for `pnpm build`. If the secret is missing, dotenvx
+# silently skips decryption and the build would bake `encrypted:...`
+# strings into asset URLs — fail fast instead.
+#
+# Two separate RUN steps on purpose: BuildKit dumps the entire RUN
+# command into the build error when ANY step in a chained `&&` fails,
+# echo strings included. Splitting the secret check off means the
+# "secret not supplied" message only shows up when that's actually
+# what failed — a downstream `pnpm build` failure won't drag the
+# misleading echo into its error context.
 RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION \
-    if [ -z "$DOTENV_PRIVATE_KEY_PRODUCTION" ]; then \
+    test -n "$DOTENV_PRIVATE_KEY_PRODUCTION" || { \
       echo "ERROR: dotenvx_private_key build secret not supplied. The workflow at .github/workflows/deploy.yml should pass it via 'secrets:' from the GH Actions secret DOTENV_PRIVATE_KEY_PRODUCTION." >&2; \
       exit 1; \
-    fi && \
+    }
+RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION \
     pnpm dlx @dotenvx/dotenvx run -- pnpm build
 
 FROM nginx:alpine AS runner

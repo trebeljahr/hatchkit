@@ -31,15 +31,18 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # Build-time decryption — see the header comment for the rationale.
-# `if [ -z "$DOTENV_PRIVATE_KEY_PRODUCTION" ]` fails fast when the
-# workflow forgot to pass the secret; without it dotenvx would
-# silently export zero env vars and the build would bake broken
-# `encrypted:...` strings into the static bundle.
+# Two separate RUN steps on purpose: BuildKit dumps the entire RUN
+# command into the build error when ANY step in a chained `&&` fails,
+# echo strings included. Splitting the secret-presence check off means
+# "secret not supplied" only shows up when that's actually what failed —
+# a downstream `pnpm build` failure won't drag the misleading echo
+# into its error context.
 RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION \
-    if [ -z "$DOTENV_PRIVATE_KEY_PRODUCTION" ]; then \
+    test -n "$DOTENV_PRIVATE_KEY_PRODUCTION" || { \
       echo "ERROR: dotenvx_private_key build secret not supplied. The workflow at .github/workflows/deploy.yml should pass it via 'secrets:' from the GH Actions secret DOTENV_PRIVATE_KEY_PRODUCTION." >&2; \
       exit 1; \
-    fi && \
+    }
+RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION \
     corepack enable && \
     pnpm dlx @dotenvx/dotenvx run -- pnpm build
 
