@@ -75,10 +75,10 @@ export interface ProjectManifest {
    *  Optional for back-compat with manifests written before this
    *  field existed; readers should fall back to detection. */
   surfaces?: "server-only" | "client-only" | "both";
-  /** S3 buckets provisioned by `hatchkit provision s3`. Names go in
-   *  the manifest (so re-runs are idempotent and `hatchkit destroy`
-   *  knows what to undo); credentials never do — those live in the
-   *  global config / OS keychain.
+  /** S3 buckets provisioned by `hatchkit provision s3`. Names + the
+   *  shared token id go in the manifest (so re-runs are idempotent and
+   *  `hatchkit destroy` knows what to undo); credentials never do —
+   *  those live encrypted in `.env.production`.
    *
    *  `assets`  is the public bucket fronting NEXT_PUBLIC_ASSETS_BASE_URL
    *           or equivalent. Reachable over HTTPS via either an r2.dev
@@ -88,10 +88,28 @@ export interface ProjectManifest {
    *
    *  `publicUrl` is the canonical no-trailing-slash URL the runtime
    *  should serve assets from. Always present on `assets`; null on
-   *  `state` (private buckets aren't publicly reachable). */
+   *  `state` (private buckets aren't publicly reachable).
+   *
+   *  `tokenId` + `accountId` (top-level) identify the Cloudflare R2
+   *  Account API Token whose resource policy is scoped to whichever
+   *  buckets exist for this project. ONE token covers both buckets —
+   *  the runtime is a single app reading both. Destroy revokes the
+   *  token via `DELETE /accounts/{accountId}/tokens/{tokenId}` after
+   *  the buckets themselves are gone.
+   *
+   *  Neither field is a credential — the token id is an identifier
+   *  (= S3 access key id), and accountId is already public-safe. The
+   *  actual access/secret pair lives encrypted in .env.production.
+   *
+   *  Both are optional for back-compat with manifests written before
+   *  account-token provisioning landed (legacy projects still have
+   *  user-tokens stashed in the OS keychain; provision migrates them
+   *  on next run). */
   s3Buckets?: {
     assets?: { name: string; publicUrl: string };
     state?: { name: string; publicUrl: null };
+    tokenId?: string;
+    accountId?: string;
   };
 }
 

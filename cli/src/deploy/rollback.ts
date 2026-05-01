@@ -23,8 +23,16 @@ import { getCoolifyConfig, getDnsConfig } from "../config.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { exec } from "../utils/exec.js";
 import { type LedgerStep, RunLedger } from "../utils/run-ledger.js";
-import { deleteSecret } from "../utils/secrets.js";
+import { SECRET_KEYS, deleteSecret, getSecret } from "../utils/secrets.js";
 import { ghSecretDelete } from "./gh-actions-secrets.js";
+
+/** Pull the R2 admin token from the OS keychain. Used by rollback
+ *  steps that need to talk to the R2 API (bucket/token destroy).
+ *  Returns undefined when the user has wiped their keychain or never
+ *  configured R2; callers surface that as a "re-add the token" error. */
+async function getR2AdminToken(): Promise<string | undefined> {
+  return (await getSecret(SECRET_KEYS.r2AdminToken)) ?? undefined;
+}
 
 interface RollbackOptions {
   /** Skip per-step confirmation prompts on destructive operations. */
@@ -177,6 +185,16 @@ function recipeFor(step: LedgerStep): string | null {
       return `rm -rf ${shellEscape(step.path)}`;
     case "ghActionsSecret":
       return `gh secret delete ${shellEscape(step.name)} --repo ${shellEscape(step.repo)}`;
+    case "r2Bucket":
+      return chalk.dim(
+        `# manual: delete R2 bucket ${step.bucketName} (account ${step.accountId}) via dashboard or 'wrangler r2 bucket delete'`,
+      );
+    case "r2Token":
+      return chalk.dim(
+        step.audience === "account"
+          ? `# manual: revoke account API token ${step.tokenId} at https://dash.cloudflare.com/${step.accountId}/api-tokens`
+          : `# manual: revoke user API token ${step.tokenId} at https://dash.cloudflare.com/profile/api-tokens`,
+      );
     case "cloudflareDnsRecord":
       return chalk.dim(
         `# manual: delete ${step.type} record ${step.name} (id ${step.recordId}) in Cloudflare zone ${step.zoneId}`,
@@ -316,7 +334,10 @@ function isDestructive(step: LedgerStep): boolean {
     step.kind === "coolifyProject" ||
     step.kind === "coolifyDb" ||
     step.kind === "coolifyPrivateRegistry" ||
-    step.kind === "cloudflareDnsRecord"
+    step.kind === "cloudflareDnsRecord" ||
+    // R2 bucket delete drops every object inside it. Token revocation
+    // is reversible (just re-mint), so it stays out of this list.
+    step.kind === "r2Bucket"
   );
 }
 
@@ -393,6 +414,10 @@ function describeStep(step: LedgerStep): string {
       return `remove .git dir at ${chalk.cyan(step.path)}`;
     case "ghActionsSecret":
       return `delete GH Actions secret ${chalk.cyan(step.name)} on ${chalk.cyan(step.repo)}`;
+    case "r2Bucket":
+      return `delete R2 bucket ${chalk.cyan(step.bucketName)}`;
+    case "r2Token":
+      return `revoke R2 ${step.audience} token ${chalk.cyan(step.tokenId.slice(0, 8) + "…")}`;
     case "cloudflareDnsRecord":
       return `delete Cloudflare ${step.type} record ${chalk.cyan(step.name)}`;
   }
@@ -539,6 +564,49 @@ async function undoStep(
       // pre-exist (see ghSecretExists in gh-actions-secrets.ts), so
       // we're never deleting a secret the user set themselves.
       return ghSecretDelete(step.repo, step.name);
+    }
+    case "r2Bucket": {
+      // Use the R2 admin token (account-level R2 perms) for the delete;
+      // it's the same token provision used to create the bucket. Falls
+      // back to the DNS token only if R2 admin isn't around — the DNS
+      // token rarely has R2:Edit but the error message will be clear.
+      const adminToken = await getR2AdminToken();
+      if (!adminToken) {
+        throw new Error(
+          "R2 admin token not in keychain — re-add via `hatchkit config add s3 r2`, then retry destroy.",
+        );
+      }
+      const { CloudflareApi } = await import("../utils/cloudflare-api.js");
+      const cf = new CloudflareApi({ token: adminToken });
+      const result = await cf.deleteR2Bucket(step.accountId, step.bucketName);
+      if (result === "not-empty") {
+        // Don't auto-empty — destroying user objects without explicit
+        // confirmation is exactly the safety violation we want to avoid.
+        throw new RollbackSkip(`R2 bucket "${step.bucketName}" still contains objects.`, [
+          `Empty the bucket first, e.g.: \`wrangler r2 bucket delete ${step.bucketName} --remote\` (after \`wrangler r2 object delete\` for the contents),`,
+          `or open https://dash.cloudflare.com/${step.accountId}/r2/default/buckets/${step.bucketName} and delete the objects manually.`,
+          `Then re-run \`hatchkit destroy ${ledgerName}\`.`,
+        ]);
+      }
+      return result === "deleted" ? "done" : "not-found";
+    }
+    case "r2Token": {
+      const adminToken = await getR2AdminToken();
+      if (!adminToken) {
+        throw new Error(
+          "R2 admin token not in keychain — re-add via `hatchkit config add s3 r2`, then retry destroy.",
+        );
+      }
+      const { CloudflareApi } = await import("../utils/cloudflare-api.js");
+      const cf = new CloudflareApi({ token: adminToken });
+      // Account-token deletes go through the account endpoint; legacy
+      // user-token entries (recorded for migration safety) go through
+      // the user endpoint — see the LedgerStep doc.
+      const result =
+        step.audience === "account"
+          ? await cf.deleteAccountToken(step.accountId, step.tokenId)
+          : await cf.deleteApiToken(step.tokenId);
+      return result === "not-found" ? "not-found" : "done";
     }
     case "cloudflareDnsRecord": {
       const dns = await getDnsConfig();

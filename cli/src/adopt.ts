@@ -1487,6 +1487,32 @@ async function executePlan(
           projectDir: state.projectDir,
           publicHostname,
         });
+        // Ledger: record any *fresh* bucket creations + a fresh token
+        // mint so destroy can revoke them. Reused buckets/tokens (from
+        // a prior adopt run) stay out — those are already in the
+        // earlier run's ledger or pre-existed before hatchkit ran.
+        if (r.assets.created) {
+          ledger.record({
+            kind: "r2Bucket",
+            bucketName: r.assets.name,
+            accountId: r.accountId,
+          });
+        }
+        if (r.state?.created) {
+          ledger.record({
+            kind: "r2Bucket",
+            bucketName: r.state.name,
+            accountId: r.accountId,
+          });
+        }
+        if (r.tokenCreated) {
+          ledger.record({
+            kind: "r2Token",
+            tokenId: r.tokenCreated.tokenId,
+            accountId: r.accountId,
+            audience: r.tokenCreated.audience,
+          });
+        }
         console.log(chalk.green(`  ✓ S3 assets bucket ready — ${r.assets.publicUrl}`));
         console.log(
           chalk.dim(

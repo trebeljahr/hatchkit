@@ -317,6 +317,30 @@ export class CloudflareApi {
     }
   }
 
+  /** Delete a bucket. Idempotent: 404 → "not-found".
+   *
+   *  Cloudflare refuses to delete a bucket that still has objects in
+   *  it (returns 10039 / "bucket is not empty"); the caller should
+   *  surface that as a `RollbackSkip` with a recipe for the user to
+   *  empty manually rather than silently destroying their data.
+   *  We don't auto-empty here — that's a destructive choice that
+   *  belongs at the rollback layer, not the API client.
+   */
+  async deleteR2Bucket(
+    accountId: string,
+    name: string,
+  ): Promise<"deleted" | "not-found" | "not-empty"> {
+    try {
+      await this.request<unknown>("DELETE", `/accounts/${accountId}/r2/buckets/${name}`);
+      return "deleted";
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (/404|not\s*found|10006/i.test(msg)) return "not-found";
+      if (/10039|not\s*empty|bucket\s*is\s*not\s*empty/i.test(msg)) return "not-empty";
+      throw err;
+    }
+  }
+
   /** Enable (or disable) the managed `pub-<hash>.r2.dev` public URL on
    *  a bucket. Returns the assigned `pub-<hash>.r2.dev` hostname. */
   async enableR2ManagedDomain(
@@ -441,28 +465,156 @@ export class CloudflareApi {
     };
   }
 
-  /** Cached lookup of /user/tokens/permission_groups filtered to R2
-   *  groups. Returns at minimum the entries hatchkit looks up by name
-   *  in `createR2ApiToken`. */
-  private permissionGroupsCache?: Array<{ id: string; name: string }>;
-  private async getR2PermissionGroups(): Promise<Array<{ id: string; name: string }>> {
-    if (this.permissionGroupsCache) return this.permissionGroupsCache;
+  /** Mint a per-bucket-scoped R2 **Account** API token via
+   *  `POST /accounts/{accountId}/tokens`. Same resource policy shape as
+   *  `createR2ApiToken`, but the token is account-scoped (visible in
+   *  `R2 → Manage R2 API Tokens` in the dashboard, and tied to the
+   *  account rather than the user — survives any one user being
+   *  removed from the account).
+   *
+   *  Why this exists alongside `createR2ApiToken`: the user-token
+   *  variant predates this, requires `User > API Tokens > Edit` on
+   *  the calling token, and tucks the result into a list users
+   *  rarely visit (`Profile > API Tokens`). New code paths use this
+   *  one; the user-token flavour stays for legacy migration only
+   *  (revoking old user-tokens during provision).
+   *
+   *  The calling token needs `Account Settings > Edit` (which lets it
+   *  create account tokens). An R2-only admin token won't have that
+   *  by default — the caller surfaces a hint when the 403 comes back.
+   */
+  async createR2AccountToken(params: {
+    accountId: string;
+    name: string;
+    bucketNames: string[];
+    jurisdiction?: "default" | "eu" | "fedramp";
+    permissions?: "read" | "read-write";
+  }): Promise<{
+    tokenId: string;
+    tokenValue: string;
+    accessKeyId: string;
+    secretAccessKey: string;
+  }> {
+    const jurisdiction = params.jurisdiction ?? "default";
+    const permissions = params.permissions ?? "read-write";
+
+    const wanted: string[] =
+      permissions === "read"
+        ? ["Workers R2 Storage Bucket Item Read"]
+        : ["Workers R2 Storage Bucket Item Read", "Workers R2 Storage Bucket Item Write"];
+    const groups = await this.getR2PermissionGroups(params.accountId);
+    const groupIds: string[] = [];
+    for (const name of wanted) {
+      const found = groups.find((g) => g.name === name);
+      if (!found) {
+        throw new Error(
+          `Permission group "${name}" not found in /accounts/${params.accountId}/tokens/permission_groups. The Cloudflare API may have renamed it.`,
+        );
+      }
+      groupIds.push(found.id);
+    }
+
+    const resources: Record<string, "*"> = {};
+    for (const bucket of params.bucketNames) {
+      const key = `com.cloudflare.edge.r2.bucket.${params.accountId}_${jurisdiction}_${bucket}`;
+      resources[key] = "*";
+    }
+
+    const body = {
+      name: params.name,
+      policies: [
+        {
+          effect: "allow" as const,
+          permission_groups: groupIds.map((id) => ({ id })),
+          resources,
+        },
+      ],
+    };
+    const res = await this.request<{ id: string; value: string }>(
+      "POST",
+      `/accounts/${params.accountId}/tokens`,
+      body,
+    );
+    const { createHash } = await import("node:crypto");
+    const secretAccessKey = createHash("sha256").update(res.value).digest("hex");
+    return {
+      tokenId: res.id,
+      tokenValue: res.value,
+      accessKeyId: res.id,
+      secretAccessKey,
+    };
+  }
+
+  /** GET /accounts/{accountId}/tokens/{tokenId} — used to verify a
+   *  recorded token still exists (and isn't disabled/expired) before
+   *  we trust the encrypted credentials in the project's
+   *  .env.production. Returns null on 404. */
+  async getAccountToken(
+    accountId: string,
+    tokenId: string,
+  ): Promise<{ id: string; status: string; name: string } | null> {
+    try {
+      return await this.request<{ id: string; status: string; name: string }>(
+        "GET",
+        `/accounts/${accountId}/tokens/${tokenId}`,
+      );
+    } catch (err) {
+      if (/404|not\s*found/i.test((err as Error).message)) return null;
+      throw err;
+    }
+  }
+
+  /** DELETE /accounts/{accountId}/tokens/{tokenId} — used by the
+   *  destroy / rollback flow to take the per-bucket token down with
+   *  its bucket(s). Idempotent: 404 → "not-found". */
+  async deleteAccountToken(accountId: string, tokenId: string): Promise<"deleted" | "not-found"> {
+    try {
+      await this.request<unknown>("DELETE", `/accounts/${accountId}/tokens/${tokenId}`);
+      return "deleted";
+    } catch (err) {
+      if (/404|not\s*found/i.test((err as Error).message)) return "not-found";
+      throw err;
+    }
+  }
+
+  /** Cached lookup of permission groups. Pass `accountId` to use the
+   *  per-account endpoint (preferred — works with R2 admin tokens that
+   *  don't have `User > API Tokens > Read`). When `accountId` is
+   *  omitted, falls back to `/user/tokens/permission_groups` for the
+   *  legacy `createR2ApiToken` (user-token) path. Both return the same
+   *  permission group catalog.
+   *
+   *  Cache is keyed on `accountId ?? ""` so user-token + account-token
+   *  flows can coexist in one process without crosstalk. */
+  private permissionGroupsCache: Map<string, Array<{ id: string; name: string }>> = new Map();
+  private async getR2PermissionGroups(
+    accountId?: string,
+  ): Promise<Array<{ id: string; name: string }>> {
+    const key = accountId ?? "";
+    const cached = this.permissionGroupsCache.get(key);
+    if (cached) return cached;
+    const base = accountId
+      ? `/accounts/${accountId}/tokens/permission_groups`
+      : "/user/tokens/permission_groups";
     const all: Array<{ id: string; name: string }> = [];
     let page = 1;
     while (page <= 20) {
       const data = await this.request<Array<{ id: string; name: string }>>(
         "GET",
-        `/user/tokens/permission_groups?per_page=200&page=${page}`,
+        `${base}?per_page=200&page=${page}`,
       );
       all.push(...data);
       if (data.length < 200) break;
       page += 1;
     }
-    this.permissionGroupsCache = all;
+    this.permissionGroupsCache.set(key, all);
     return all;
   }
 
-  /** Delete a Cloudflare API token by id. Idempotent: 404 → "not-found". */
+  /** Delete a USER-scoped API token by id (`DELETE /user/tokens/{id}`).
+   *  Distinct from `deleteAccountToken` — this is used during
+   *  migration to clean up the legacy user-tokens hatchkit minted
+   *  before we switched provisioning to account tokens. Idempotent. */
   async deleteApiToken(tokenId: string): Promise<"deleted" | "not-found"> {
     try {
       await this.request<unknown>("DELETE", `/user/tokens/${tokenId}`);

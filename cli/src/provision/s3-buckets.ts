@@ -50,7 +50,7 @@ import {
   writeManifest,
 } from "../scaffold/manifest.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
-import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
+import { SECRET_KEYS, deleteSecret, getSecret } from "../utils/secrets.js";
 
 export type EnvPrefix = "R2" | "S3" | "AWS";
 
@@ -95,6 +95,19 @@ export interface ProvisionS3Result {
   envWritten: string[];
   /** Existing keys we left alone (already encrypted in the file). */
   envKept: string[];
+  /** Cloudflare account that owns the buckets + token. Surfaced so the
+   *  caller can record ledger entries for cleanup-on-destroy. */
+  accountId: string;
+  /** Token information about THIS run's mint, when one happened.
+   *  Used by the caller (e.g. adopt) to write a `r2Token` ledger
+   *  entry for destroy. `null` when we reused an existing token from
+   *  the manifest. `audience` is always "account" for fresh mints —
+   *  the legacy "user" audience is internal-only (migration cleanup). */
+  tokenCreated: { tokenId: string; audience: "account" } | null;
+  /** True iff this run revoked a legacy user-scoped token from the OS
+   *  keychain (migration from the pre-account-tokens era). Diagnostic
+   *  only — the revoke happens before any new mint. */
+  legacyUserTokenMigrated: boolean;
 }
 
 /** Account ID = the subdomain in the S3 endpoint
@@ -359,43 +372,125 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
     }
   }
 
-  // 3. Mint a per-project R2 API token scoped to whichever buckets we
-  //    just created (one or two). Returns the S3-style access/secret
-  //    pair (access = token id, secret = sha256(token value)). Re-mint
-  //    on every re-run — keychain holds the canonical copy and
-  //    idempotency on the CF side is good enough that the worst case
-  //    is a few orphaned old tokens (cleaned up by `hatchkit destroy`).
+  // 3. Mint a per-project R2 **Account** API token scoped to the
+  //    buckets above. Lives in `R2 → Manage R2 API Tokens` in the
+  //    Cloudflare dashboard (account scope, not user) and the manifest
+  //    records its id so `hatchkit destroy` can revoke it alongside
+  //    the buckets.
   //
-  //    If a token already exists in keychain for this project, REUSE
-  //    it instead of re-minting. This keeps `hatchkit provision s3`
-  //    idempotent w/r/t the user's CF account (no token churn) and
-  //    means rotating credentials is an explicit `--rotate` step
-  //    rather than a side effect.
-  const existingProjectAccess = await getSecret(
-    SECRET_KEYS.s3ProjectAccessKey(provider, projectName),
-  );
-  const existingProjectSecret = await getSecret(
-    SECRET_KEYS.s3ProjectSecretKey(provider, projectName),
-  );
-  let projectAccessKey: string;
-  let projectSecretKey: string;
-  let projectTokenId: string | undefined;
-  if (existingProjectAccess && existingProjectSecret) {
-    projectAccessKey = existingProjectAccess;
-    projectSecretKey = existingProjectSecret;
-    projectTokenId =
-      (await getSecret(SECRET_KEYS.s3ProjectTokenId(provider, projectName))) ?? undefined;
-    console.log(
-      chalk.dim(
-        `  · Reusing existing per-project R2 credentials (keychain ${SECRET_KEYS.s3ProjectAccessKey(provider, projectName)})`,
-      ),
-    );
-  } else {
+  //    Idempotency / re-run policy:
+  //      a. Manifest already has an `s3Buckets.tokenId` AND that token
+  //         is alive in CF AND `.env.production` already has the
+  //         encrypted access/secret values → REUSE (skip mint).
+  //         Keeps re-runs of `hatchkit provision s3` no-op when
+  //         nothing's actually changed.
+  //      b. Otherwise → mint a fresh account-token. Revoke the stale
+  //         manifest token first if any (so we don't leave orphans).
+  //      c. Migration: if the OS keychain still has a legacy
+  //         user-token from the pre-account-tokens era, revoke it and
+  //         wipe the keychain entries — manifest is now the source of
+  //         truth, not the keychain.
+  const existingTokenId = manifest.s3Buckets?.tokenId;
+  const existingAccountId = manifest.s3Buckets?.accountId;
+  const envPathForCheck = join(opts.projectDir, ".env.production");
+  const existingEnvKeysSet = existingEnvKeys(envPathForCheck);
+  const envPrefixForCheck = opts.envPrefix ?? detectEnvPrefix(opts.projectDir);
+  const keysForCheck = envKeysForPrefix(envPrefixForCheck);
+  const envHasCreds =
+    existingEnvKeysSet.has(keysForCheck.accessKey) &&
+    existingEnvKeysSet.has(keysForCheck.secretKey);
+
+  let canReuseExisting = false;
+  if (existingTokenId && existingAccountId && envHasCreds) {
+    try {
+      const tok = await cf.getAccountToken(existingAccountId, existingTokenId);
+      if (tok && tok.status === "active") {
+        canReuseExisting = true;
+        console.log(
+          chalk.dim(
+            `  · Reusing R2 account token ${existingTokenId.slice(0, 8)}… (alive in CF; creds in .env.production)`,
+          ),
+        );
+      } else if (tok) {
+        console.log(
+          chalk.yellow(
+            `  · Existing R2 token ${existingTokenId.slice(0, 8)}… is ${tok.status}. Minting a fresh one.`,
+          ),
+        );
+      } else {
+        console.log(
+          chalk.yellow(
+            `  · Existing R2 token ${existingTokenId.slice(0, 8)}… is gone from Cloudflare. Minting a fresh one.`,
+          ),
+        );
+      }
+    } catch (err) {
+      // Probe failure (network / permissions) — fail open + mint
+      // fresh. The orphan (if any) is recoverable manually; better
+      // than continuing with stale creds.
+      console.log(
+        chalk.dim(
+          `  · Couldn't verify R2 token ${existingTokenId.slice(0, 8)}… (${(err as Error).message.split("\n")[0]}). Minting a fresh one.`,
+        ),
+      );
+    }
+  }
+
+  // Migration: revoke + wipe legacy user-token entries from the
+  // keychain. Best-effort — a CF revoke failure logs and continues.
+  let legacyUserTokenMigrated = false;
+  const legacyAccessKey = await getSecret(SECRET_KEYS.s3ProjectAccessKey(provider, projectName));
+  const legacySecretKey = await getSecret(SECRET_KEYS.s3ProjectSecretKey(provider, projectName));
+  const legacyTokenId = await getSecret(SECRET_KEYS.s3ProjectTokenId(provider, projectName));
+  if (legacyAccessKey || legacySecretKey || legacyTokenId) {
+    legacyUserTokenMigrated = true;
+    if (legacyTokenId) {
+      try {
+        const result = await cf.deleteApiToken(legacyTokenId);
+        if (result === "deleted") {
+          console.log(
+            chalk.dim(`  · Revoked legacy user-token ${legacyTokenId.slice(0, 8)}… (migration)`),
+          );
+        }
+      } catch (err) {
+        console.log(
+          chalk.yellow(
+            `  · Couldn't revoke legacy user-token ${legacyTokenId.slice(0, 8)}…: ${(err as Error).message.split("\n")[0]}`,
+          ),
+        );
+        console.log(
+          chalk.dim(
+            `    Revoke manually at https://dash.cloudflare.com/profile/api-tokens (search for "hatchkit-${projectName}").`,
+          ),
+        );
+      }
+    }
+    await deleteSecret(SECRET_KEYS.s3ProjectAccessKey(provider, projectName));
+    await deleteSecret(SECRET_KEYS.s3ProjectSecretKey(provider, projectName));
+    await deleteSecret(SECRET_KEYS.s3ProjectTokenId(provider, projectName));
+  }
+
+  let projectAccessKey: string | undefined;
+  let projectSecretKey: string | undefined;
+  let projectTokenId: string | undefined = canReuseExisting ? existingTokenId : undefined;
+  let tokenCreated: { tokenId: string; audience: "account" } | null = null;
+
+  if (!canReuseExisting) {
+    // Revoke a stale manifest token (status disabled/expired/404)
+    // before minting its replacement so we don't pile up orphans.
+    if (existingTokenId && existingAccountId) {
+      try {
+        await cf.deleteAccountToken(existingAccountId, existingTokenId);
+      } catch {
+        /* best-effort */
+      }
+    }
+
     const tokenSpinner = ora(
-      `Minting per-project R2 API token (scoped to those 2 buckets)`,
+      `Minting R2 account API token (scoped to ${includeStateBucket ? `${assetsBucketName} + ${stateBucketName}` : assetsBucketName})`,
     ).start();
     try {
-      const minted = await cf.createR2ApiToken({
+      const minted = await cf.createR2AccountToken({
         accountId,
         name: `hatchkit-${projectName}`,
         bucketNames: includeStateBucket ? [assetsBucketName, stateBucketName] : [assetsBucketName],
@@ -404,21 +499,16 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
       projectAccessKey = minted.accessKeyId;
       projectSecretKey = minted.secretAccessKey;
       projectTokenId = minted.tokenId;
-      await setSecret(SECRET_KEYS.s3ProjectAccessKey(provider, projectName), minted.accessKeyId);
-      await setSecret(
-        SECRET_KEYS.s3ProjectSecretKey(provider, projectName),
-        minted.secretAccessKey,
-      );
-      await setSecret(SECRET_KEYS.s3ProjectTokenId(provider, projectName), minted.tokenId);
+      tokenCreated = { tokenId: minted.tokenId, audience: "account" };
       tokenSpinner.succeed(
-        `Minted scoped R2 API token (id ${minted.tokenId.slice(0, 8)}…, stored in keychain)`,
+        `Minted R2 account token (id ${minted.tokenId.slice(0, 8)}…, visible in R2 → Manage R2 API Tokens)`,
       );
     } catch (err) {
-      tokenSpinner.fail("Failed to mint per-project R2 API token");
+      tokenSpinner.fail("Failed to mint R2 account API token");
       const msg = (err as Error).message;
-      if (/9109|10000|403|invalid api token/i.test(msg)) {
+      if (/9109|10000|10001|403|invalid api token/i.test(msg)) {
         throw new Error(
-          `${msg}\n\n  → Your admin token (s3:r2:admin-token) needs BOTH:\n    · Account > Workers R2 Storage > Edit\n    · User > API Tokens > Edit  (this is what's missing)\n  → Edit at https://dash.cloudflare.com/profile/api-tokens, save, re-run.`,
+          `${msg}\n\n  → Your admin token (s3:r2:admin-token) needs:\n    · Account > Workers R2 Storage > Edit  (create buckets / list them)\n    · Account Settings > Edit               (mint per-project account tokens — was missing)\n  → Edit at https://dash.cloudflare.com/profile/api-tokens, save, re-run.`,
         );
       }
       throw err;
@@ -437,14 +527,21 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   const toWrite: Array<{ key: string; value: string }> = [];
   const skip = (key: string): boolean => existingKeys.has(key);
 
-  // ENDPOINT, ACCESS_KEY, SECRET_KEY, REGION are credentials that
-  // the runtime always needs. Re-write on every run (cheap, and the
-  // user might've rotated keys). REGION is "auto" for R2 — the SDK
-  // ignores it anyway when an explicit endpoint is given, but
-  // setting it suppresses an `AWS_REGION` warning at runtime.
+  // ENDPOINT and REGION re-write on every run (cheap; values are
+  // stable). REGION is "auto" for R2 — the SDK ignores it anyway when
+  // an explicit endpoint is given, but setting it suppresses an
+  // `AWS_REGION` warning at runtime.
+  //
+  // ACCESS_KEY + SECRET_KEY are the freshly-minted token's S3 derivation
+  // — only present when we actually minted (i.e. !canReuseExisting).
+  // On reuse, we leave the existing encrypted values in .env.production
+  // alone (Cloudflare doesn't expose the secret-access-key after
+  // creation, so the file IS the source of truth for these two).
   toWrite.push({ key: keys.endpoint, value: meta.endpoint });
-  toWrite.push({ key: keys.accessKey, value: projectAccessKey });
-  toWrite.push({ key: keys.secretKey, value: projectSecretKey });
+  if (projectAccessKey && projectSecretKey) {
+    toWrite.push({ key: keys.accessKey, value: projectAccessKey });
+    toWrite.push({ key: keys.secretKey, value: projectSecretKey });
+  }
   toWrite.push({ key: keys.region, value: meta.region ?? "auto" });
 
   // BUCKET name — keys.bucket is "<PREFIX>_STATE_BUCKET" for R2 (the
@@ -511,11 +608,23 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
     throw err;
   }
 
-  // 4. Record bucket names + public URL in the manifest so re-runs
-  //    don't have to re-derive them and a future `hatchkit destroy`
-  //    knows what to clean up. Preserve a previously-recorded `state`
-  //    entry when the current run didn't create one — the bucket may
-  //    still exist from an earlier `--with-state-bucket` provision.
+  // 4. Record bucket names + public URL + token id in the manifest so
+  //    re-runs don't have to re-derive them and a future
+  //    `hatchkit destroy` knows what to clean up. Preserve a
+  //    previously-recorded `state` entry when the current run didn't
+  //    create one — the bucket may still exist from an earlier
+  //    `--with-state-bucket` provision. Always pin the token id +
+  //    accountId so destroy can revoke even after credentials get
+  //    rotated.
+  if (!projectTokenId) {
+    // Defensive: every code path above either reuses a known token
+    // (`canReuseExisting === true`, sets projectTokenId) or mints
+    // (also sets projectTokenId). If we got here without one, we'd
+    // write a manifest with no token id and no clean way to recover.
+    throw new Error(
+      "Internal: provisionS3ForProject ended without a token id. This is a bug — please file an issue.",
+    );
+  }
   const updated: ProjectManifest = {
     ...manifest,
     s3Buckets: {
@@ -525,6 +634,8 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
         : manifest.s3Buckets?.state
           ? { state: manifest.s3Buckets.state }
           : {}),
+      tokenId: projectTokenId,
+      accountId,
     },
   };
   writeManifest(opts.projectDir, updated);
@@ -538,6 +649,9 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
         : null,
     envWritten,
     envKept,
+    accountId,
+    tokenCreated,
+    legacyUserTokenMigrated,
   };
 }
 

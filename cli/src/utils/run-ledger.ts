@@ -62,6 +62,21 @@ export type LedgerStep =
    *  this run (probed via `gh secret list`) — so destroy never yanks
    *  a secret the user had set themselves before adopting. */
   | { kind: "ghActionsSecret"; repo: string; name: string }
+  /** Cloudflare R2 bucket created by `hatchkit provision s3`. Recorded
+   *  only when this run actually created the bucket (createR2Bucket
+   *  reports `existed=false`); a pre-existing bucket belongs to the
+   *  user. Destroy deletes via the R2 API. */
+  | { kind: "r2Bucket"; bucketName: string; accountId: string }
+  /** Cloudflare R2 API Token (account-scoped, account-tokens API).
+   *  `audience` distinguishes the destroy endpoint:
+   *    · "account" → DELETE /accounts/{accountId}/tokens/{tokenId}
+   *      (current default — visible in R2 → Manage R2 API Tokens).
+   *    · "user"    → DELETE /user/tokens/{tokenId}
+   *      (legacy — pre-account-tokens projects we migrate on re-run;
+   *      the migration revokes the user-token, but if migration
+   *      crashed mid-flight the ledger still has the user-token entry
+   *      so destroy can finish the job). */
+  | { kind: "r2Token"; tokenId: string; accountId: string; audience: "account" | "user" }
   | {
       kind: "cloudflareDnsRecord";
       zoneId: string;
