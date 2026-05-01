@@ -51,6 +51,70 @@ function tokenHint(url: string, scope: string): void {
   console.log(chalk.dim(`    Permissions: ${scope}`));
 }
 
+/** Verify an R2 admin Bearer token has BOTH perms hatchkit needs:
+ *
+ *   1. `Account > Workers R2 Storage > Edit` — bucket admin (for
+ *      `hatchkit provision s3` to create/list/configure buckets).
+ *   2. `User > API Tokens > Edit` — child-token issuance (for minting
+ *      per-project scoped S3 credentials at provision-time).
+ *
+ *  This is the same set of calls `hatchkit doctor` makes, kept in sync
+ *  on purpose: the config-time and health-check verdicts must match so
+ *  doctor never fails on a token we just accepted. Returns a structured
+ *  verdict so the caller can render a precise error and decide whether
+ *  to retry. */
+export async function verifyR2AdminToken(
+  token: string,
+  accountId: string,
+): Promise<{ ok: true; detail: string } | { ok: false; detail: string }> {
+  try {
+    const verifyRes = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!verifyRes.ok) {
+      return {
+        ok: false,
+        detail: `Token rejected by Cloudflare (HTTP ${verifyRes.status}). Likely invalid or revoked.`,
+      };
+    }
+    const r2Res = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    if (!r2Res.ok) {
+      const body = (await r2Res.json().catch(() => null)) as {
+        errors?: Array<{ code: number; message: string }>;
+      } | null;
+      const code = body?.errors?.[0]?.code;
+      return {
+        ok: false,
+        detail: `Token lacks \`Account > Workers R2 Storage > Edit\` (HTTP ${r2Res.status}${code ? ` / CF code ${code}` : ""}).`,
+      };
+    }
+    const body = (await r2Res.json()) as { result?: { buckets?: unknown[] } };
+    const bucketCount = body.result?.buckets?.length ?? 0;
+
+    const tokenRes = await fetch("https://api.cloudflare.com/client/v4/user/tokens?per_page=1", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!tokenRes.ok) {
+      return {
+        ok: false,
+        detail: `Token has R2 perm but lacks \`User > API Tokens > Edit\` (HTTP ${tokenRes.status}). Without it hatchkit can't mint per-project R2 credentials.`,
+      };
+    }
+    return {
+      ok: true,
+      detail: `${bucketCount} bucket(s) visible; can mint per-project tokens`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      detail: `Network error verifying token: ${(err as Error).message}`,
+    };
+  }
+}
+
 /** Sanitize pasted secret: strip bracketed-paste escapes + non-printable
  *  ASCII that some terminals inject on paste. Plain `.trim()` misses these. */
 function sanitizePastedSecret(raw: string): string {
@@ -663,9 +727,13 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
   const existing = store.get(`providers.s3.${provider}`) as S3ProviderMeta | undefined;
 
   // R2 path: no access/secret prompts. The admin Bearer token is
-  // sufficient — `hatchkit provision s3` mints a per-project scoped
-  // S3 credential pair from it at provision-time. Only thing this
-  // ensures is that the metadata (endpoint + admin token) exists.
+  // the global "key to the kingdom" — it gates bucket admin AND the
+  // minting of per-project scoped credentials at provision-time.
+  // Once it's stored + verified here, every project-level flow
+  // (`hatchkit create`, `adopt`, `provision s3`) consumes it without
+  // re-prompting. The recovery path when doctor flags it as
+  // invalid/revoked is `hatchkit config add s3 r2` — which clears the
+  // token and re-runs this branch.
   if (provider === "r2") {
     const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
     if (existing?.status === "configured" && adminToken) {
@@ -675,30 +743,66 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
         secretKey: "",
       };
     }
-    console.log(chalk.yellow("\n  R2 is not configured yet. Let's set it up."));
-    console.log(
-      chalk.dim(
-        "  Your Cloudflare account ID is in the dashboard URL:\n" +
-          "    dash.cloudflare.com/<account-id>/home/overview",
-      ),
-    );
+
+    // Pre-fill the account ID prompt from any existing endpoint so
+    // the rotation-only flow (token wiped, meta kept) doesn't make
+    // the user re-type the account ID. Extracted by regex rather than
+    // imported from `provision/s3-buckets.ts` so config.ts stays a
+    // leaf module.
+    const previousAccountId = existing?.endpoint?.match(
+      /^https?:\/\/([0-9a-f]{32})\.r2\.cloudflarestorage\.com/i,
+    )?.[1];
+    const reconfiguring = !!existing && !adminToken;
+    if (reconfiguring) {
+      console.log(chalk.yellow("\n  Rotating R2 admin token."));
+    } else {
+      console.log(chalk.yellow("\n  R2 is not configured yet. Let's set it up."));
+      console.log(
+        chalk.dim(
+          "  Your Cloudflare account ID is in the dashboard URL:\n" +
+            "    dash.cloudflare.com/<account-id>/home/overview",
+        ),
+      );
+    }
     const accountId = (
       await input({
         message: "Cloudflare account ID:",
+        default: previousAccountId,
         validate: validateRequired,
       })
     ).trim();
     const endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
     const region = "auto";
 
-    if (!adminToken) {
-      tokenHint(
-        "https://dash.cloudflare.com/profile/api-tokens → Create Token → Custom token",
-        "Account > Workers R2 Storage > Edit  AND  User > API Tokens > Edit  (and optionally Zone > Zone > Read for custom-domain attach)",
-      );
-      const newToken = await confirmPastedSecret("R2 admin Bearer token");
-      await setSecret(SECRET_KEYS.r2AdminToken, newToken);
+    tokenHint(
+      "https://dash.cloudflare.com/profile/api-tokens → Create Token → Custom token",
+      "Account > Workers R2 Storage > Edit  AND  User > API Tokens > Edit  (and optionally Zone > Zone > Read for custom-domain attach)",
+    );
+
+    // Loop on the token until it passes BOTH permission checks
+    // (the same calls `hatchkit doctor` makes). Pasting a token with
+    // only one of the two perms is the most common misconfiguration —
+    // catch it here while the dashboard is still open instead of
+    // letting it surface during a 5-minute deploy or, worse, a silent
+    // half-provisioned project.
+    let verifiedToken: string;
+    for (;;) {
+      const candidate = await confirmPastedSecret("R2 admin Bearer token");
+      const spinner = ora("Verifying R2 admin token (both perms)...").start();
+      const verdict = await verifyR2AdminToken(candidate, accountId);
+      if (verdict.ok) {
+        spinner.succeed(`R2 admin token verified — ${verdict.detail}`);
+        verifiedToken = candidate;
+        break;
+      }
+      spinner.fail(verdict.detail);
+      console.log(chalk.dim(`  Fix at https://dash.cloudflare.com/profile/api-tokens.`));
+      const retry = await confirm({ message: "Try a different token?", default: true });
+      if (!retry) {
+        throw new Error(`R2 admin token rejected: ${verdict.detail}`);
+      }
     }
+    await setSecret(SECRET_KEYS.r2AdminToken, verifiedToken);
 
     const meta: S3ProviderMeta = {
       status: "configured",
@@ -708,7 +812,9 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
     };
     store.set(`providers.s3.${provider}`, meta);
     console.log(
-      chalk.green("  ✓ R2 configured (per-project credentials minted at provision-time)"),
+      chalk.green(
+        "  ✓ R2 admin configured — `hatchkit create`/`adopt` will mint per-project bucket credentials automatically.",
+      ),
     );
     return { ...meta, accessKey: "", secretKey: "" };
   }
@@ -1376,10 +1482,22 @@ export async function reconfigureProvider(name: ReconfigurableProvider): Promise
     await ensureGhcr();
   } else if (name.startsWith("s3.")) {
     const p = name.slice(3) as "hetzner" | "aws" | "r2";
-    await wipeProvider(`providers.s3.${p}`, [
-      SECRET_KEYS.s3AccessKey(p),
-      SECRET_KEYS.s3SecretKey(p),
-    ]);
+    if (p === "r2") {
+      // R2 reconfigure = "rotate the admin Bearer token". Keep the
+      // meta (so the account ID survives — user re-pastes only the
+      // token) and clear the admin token + any legacy keys. Per-
+      // project minted access/secret pairs are NOT touched here —
+      // they're scoped to bucket-level resources and stay valid even
+      // after the admin token rotates.
+      await deleteSecret(SECRET_KEYS.r2AdminToken);
+      await deleteSecret(SECRET_KEYS.s3AccessKey(p));
+      await deleteSecret(SECRET_KEYS.s3SecretKey(p));
+    } else {
+      await wipeProvider(`providers.s3.${p}`, [
+        SECRET_KEYS.s3AccessKey(p),
+        SECRET_KEYS.s3SecretKey(p),
+      ]);
+    }
     await ensureS3(p);
   } else if (name.startsWith("gpu.")) {
     const p = name.slice(4) as "modal" | "runpod" | "hf" | "replicate";

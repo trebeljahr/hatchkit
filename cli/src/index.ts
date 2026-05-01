@@ -343,8 +343,8 @@ async function handleProvisionS3(): Promise<void> {
   // .hatchkit.json. Idempotent across re-runs.
   const projectDir = resolve(".");
   const { provisionS3ForProject } = await import("./provision/s3-buckets.js");
-  const { getSecret, setSecret, SECRET_KEYS: SK } = await import("./utils/secrets.js");
-  const { confirmPastedSecret, validateS3KeyPair } = await import("./config.js");
+  const { getSecret, SECRET_KEYS: SK } = await import("./utils/secrets.js");
+  const { validateS3KeyPair } = await import("./config.js");
 
   // Optional flags — keep minimal; the function reads everything else
   // from the manifest + global config + keychain.
@@ -376,25 +376,20 @@ async function handleProvisionS3(): Promise<void> {
   // Optional:
   //   · Zone    > Zone               > Read  — needed only if you
   //     want custom-domain attach instead of the managed r2.dev URL
+  //
+  // If it's missing, defer to `ensureS3("r2")` — the same global setup
+  // path `hatchkit config add s3 r2` runs, including token verification
+  // against both required perms. Keeps the global vs. per-project
+  // boundary clean: this command (provision s3) only does per-project
+  // work; the admin token is a global concern.
   const existingAdmin = await getSecret(SK.r2AdminToken);
   if (!existingAdmin) {
-    console.log(chalk.yellow("\n  R2 admin token not configured."));
     console.log(
-      chalk.dim(
-        "  Create at:    https://dash.cloudflare.com/profile/api-tokens → Create Token → Custom token",
+      chalk.yellow(
+        "\n  R2 admin token not configured — running global setup first (same as `hatchkit config add s3 r2`).",
       ),
     );
-    console.log(chalk.dim("  Required:     Account > Workers R2 Storage > Edit"));
-    console.log(
-      chalk.dim("                User    > API Tokens         > Edit  (mints per-project tokens)"),
-    );
-    console.log(
-      chalk.dim("  Optional:     Zone    > Zone               > Read  (custom-domain attach)"),
-    );
-    console.log(chalk.dim("  Account:      Just yours\n"));
-    const token = await confirmPastedSecret("R2 admin Bearer token");
-    await setSecret(SK.r2AdminToken, token);
-    console.log(chalk.green(`  ✓ Stored under keychain ${SK.r2AdminToken}`));
+    await ensureS3("r2");
   }
 
   // Migrate away from the legacy account-wide S3 access/secret pair.
@@ -1107,15 +1102,32 @@ async function handleConfig(): Promise<void> {
           await reconfigureProvider(provider);
           break;
         case "s3": {
-          const { select } = await import("@inquirer/prompts");
-          const p = await select({
-            message: "S3 provider:",
-            choices: [
-              { name: "Hetzner", value: "hetzner" as const },
-              { name: "AWS", value: "aws" as const },
-              { name: "R2", value: "r2" as const },
-            ],
-          });
+          // Accept the sub-provider as a positional arg so doctor's
+          // recovery hint (`hatchkit config add s3 r2`) is a one-line
+          // copy-paste — no interactive picker between the user and
+          // re-pasting the rotated token. Falls back to the picker
+          // when omitted, for parity with the no-arg menu.
+          const sub = args[3];
+          const validSubs = ["hetzner", "aws", "r2"] as const;
+          type S3Sub = (typeof validSubs)[number];
+          let p: S3Sub;
+          if (sub && (validSubs as readonly string[]).includes(sub)) {
+            p = sub as S3Sub;
+          } else if (sub) {
+            console.log(chalk.red(`  Unknown S3 sub-provider: ${sub}`));
+            console.log(chalk.dim(`  Valid: ${validSubs.join(", ")}`));
+            return;
+          } else {
+            const { select } = await import("@inquirer/prompts");
+            p = await select({
+              message: "S3 provider:",
+              choices: [
+                { name: "Hetzner", value: "hetzner" as const },
+                { name: "AWS", value: "aws" as const },
+                { name: "R2 (Cloudflare)", value: "r2" as const },
+              ],
+            });
+          }
           await reconfigureProvider(`s3.${p}`);
           break;
         }

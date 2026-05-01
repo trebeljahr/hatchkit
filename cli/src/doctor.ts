@@ -217,7 +217,7 @@ async function checkS3(provider: "hetzner" | "aws" | "r2"): Promise<CheckResult>
       detail: "configured; admin token not set (bucket provisioning will prompt)",
       hint: [
         "Optional unless you want bucket auto-create / public-URL setup.",
-        "When ready: `hatchkit provision s3` will prompt and store it.",
+        "When ready: `hatchkit config add s3 r2` to store + verify the admin token globally.",
       ],
     };
   }
@@ -273,20 +273,22 @@ async function checkS3(provider: "hetzner" | "aws" | "r2"): Promise<CheckResult>
           "Create a new one: https://dash.cloudflare.com/profile/api-tokens → Custom token",
           "Permissions:    Account > Workers R2 Storage > Edit",
           "                User    > API Tokens         > Edit",
-          "Then re-run: `hatchkit provision s3` to re-store + retry.",
+          "Then re-run: `hatchkit config add s3 r2` to re-paste + verify globally.",
         ];
       }
       if (/api-tokens list/i.test(detail)) {
         return [
           "Admin token has R2 perm but lacks `User > API Tokens > Edit`.",
           "Without it, hatchkit can't mint per-project R2 credentials at provision-time.",
-          "Edit at https://dash.cloudflare.com/profile/api-tokens, add the perm, save.",
+          "Edit at https://dash.cloudflare.com/profile/api-tokens, add the perm, save —",
+          "or re-run `hatchkit config add s3 r2` to paste a fresh token.",
         ];
       }
       if (code === 403 || /10000|10001|9109/.test(detail)) {
         return [
           "Token verifies but lacks `Account > Workers R2 Storage > Edit`.",
-          "Edit at https://dash.cloudflare.com/profile/api-tokens, add the perm, save.",
+          "Edit at https://dash.cloudflare.com/profile/api-tokens, add the perm, save —",
+          "or re-run `hatchkit config add s3 r2` to paste a fresh token.",
         ];
       }
       return undefined;

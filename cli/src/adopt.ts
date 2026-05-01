@@ -1391,7 +1391,8 @@ async function executePlan(
     // is idempotent (409→reuse) and `dotenvxSet` overwrites in place.
     // Soft-fail to a caveat so a missing R2 token permission doesn't
     // sink the rest of the adopt flow — the user can fix the token
-    // and re-run `hatchkit provision s3` to finish.
+    // (globally via `hatchkit config add s3 r2`, which re-pastes +
+    // verifies it) and re-run `hatchkit provision s3` to finish.
     if (plan.features.includes("s3")) {
       try {
         const { provisionS3ForProject } = await import("./provision/s3-buckets.js");
@@ -1425,13 +1426,27 @@ async function executePlan(
             `\n  ✗ S3 bucket provisioning failed: ${(err as Error).message.split("\n")[0]}`,
           ),
         );
+        // Two kinds of recovery — pick based on whether the underlying
+        // error looks like an admin-token problem (global) vs. a
+        // bucket-side problem (per-project). Admin-token failures point
+        // the user at the global config command (which validates the
+        // token); everything else points at the per-project re-runner.
+        const msg = (err as Error).message;
+        const isAdminTokenIssue =
+          /admin token|invalid api token|9109|10000|10001|HTTP 401|HTTP 403/i.test(msg);
         caveats.push({
           title: "S3 buckets not provisioned",
-          reason: (err as Error).message,
-          recovery: [
-            "Once fixed, finish with: hatchkit provision s3",
-            "(safe to re-run — bucket creation and env writes are idempotent)",
-          ],
+          reason: msg,
+          recovery: isAdminTokenIssue
+            ? [
+                "Looks like an R2 admin-token problem.",
+                "Fix globally with: hatchkit config add s3 r2  (re-paste + verify perms)",
+                `Then re-run from the project dir: cd ${plan.name} && hatchkit provision s3`,
+              ]
+            : [
+                "Once fixed, finish with: hatchkit provision s3",
+                "(safe to re-run — bucket creation and env writes are idempotent)",
+              ],
         });
       }
     }

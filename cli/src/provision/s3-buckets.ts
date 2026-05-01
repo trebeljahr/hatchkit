@@ -244,8 +244,8 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
   if (!adminToken) {
     throw new Error(
-      "R2 admin token not configured. Run `hatchkit provision s3` interactively, " +
-        "or pre-set with: hatchkit config add s3 (TODO) — needs Account > Workers R2 Storage > Edit.",
+      "R2 admin token not configured. Run `hatchkit config add s3 r2` to paste + verify it globally, " +
+        "then re-run `hatchkit provision s3` to create this project's buckets.",
     );
   }
 
