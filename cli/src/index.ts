@@ -169,8 +169,29 @@ async function main(): Promise<void> {
         await handleProvisionS3();
         break;
       }
-      console.log("Usage: hatchkit provision s3");
-      console.log("Provisions S3/R2 buckets for the project in the current directory.");
+      console.log("Usage: hatchkit provision s3 [flags]");
+      console.log("Provisions S3/R2 buckets for the project in the current directory.\n");
+      console.log("Flags:");
+      console.log("  --assets-bucket <name>     Override default <project>-assets name");
+      console.log("  --with-state-bucket        Also create the private <project>-state bucket");
+      console.log(
+        "  --state-bucket <name>      Create state bucket with this name (implies --with-state-bucket)",
+      );
+      console.log(
+        "  --public-hostname <host>   Custom domain for the assets bucket (default s3.<domain>)",
+      );
+      console.log(
+        "  --no-custom-domain         Skip custom-domain attempt; use the managed r2.dev URL",
+      );
+      console.log("  --env-prefix R2|S3|AWS     Override auto-detected env-var prefix");
+      console.log("  --no-cron-secret           Skip CRON_SECRET generation");
+      console.log(
+        "  --cors-origin <url>        Add an origin to the assets-bucket CORS rule (repeatable)",
+      );
+      console.log(
+        '  --cors-allow-all           Set CORS origins to ["*"] (mutually exclusive with --cors-origin)',
+      );
+      console.log("  --no-cors                  Skip the CORS reconcile step entirely");
       process.exit(1);
       break;
     }
@@ -526,6 +547,36 @@ async function handleProvisionS3(): Promise<void> {
       : undefined;
   const generateCronSecret = !args.includes("--no-cron-secret");
 
+  // CORS: --cors-origin is repeatable (`--cors-origin a --cors-origin b`),
+  // --cors-allow-all sets the rule to ["*"] (mutually exclusive with the
+  // above), --no-cors skips the reconcile step and pins the manifest's
+  // `cors.skipped` so re-runs respect the choice.
+  const corsExtraOrigins: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--cors-origin" && args[i + 1]) {
+      corsExtraOrigins.push(args[i + 1]);
+      i++;
+    } else if (args[i].startsWith("--cors-origin=")) {
+      corsExtraOrigins.push(args[i].slice("--cors-origin=".length));
+    }
+  }
+  const corsAllowAll = args.includes("--cors-allow-all");
+  const skipCors = args.includes("--no-cors");
+  if (corsAllowAll && corsExtraOrigins.length > 0) {
+    console.error(
+      chalk.red("  --cors-allow-all and --cors-origin are mutually exclusive — pick one."),
+    );
+    process.exit(1);
+  }
+  if (skipCors && (corsAllowAll || corsExtraOrigins.length > 0)) {
+    console.error(
+      chalk.red(
+        "  --no-cors disables the CORS step entirely — drop it if you want --cors-origin or --cors-allow-all to take effect.",
+      ),
+    );
+    process.exit(1);
+  }
+
   // Admin token check — `s3:r2:admin-token` is the keys-to-the-kingdom
   // for hatchkit's R2 setup. It (a) creates buckets, (b) attaches
   // custom domains, (c) MINTS per-project S3 credentials scoped to
@@ -632,6 +683,9 @@ async function handleProvisionS3(): Promise<void> {
     publicHostname,
     envPrefix,
     generateCronSecret,
+    corsExtraOrigins: corsExtraOrigins.length > 0 ? corsExtraOrigins : undefined,
+    corsAllowAll: corsAllowAll || undefined,
+    skipCors: skipCors || undefined,
   });
 
   console.log();
@@ -647,6 +701,18 @@ async function handleProvisionS3(): Promise<void> {
         "    (no private state bucket — pass --with-state-bucket if you need one for server-side files)",
       ),
     );
+  }
+  if (result.assets.cors?.skipped) {
+    console.log(
+      chalk.dim(
+        "    cors:   skipped (--no-cors / manifest opt-out) — browser fetch() against the bucket will be CORS-blocked",
+      ),
+    );
+  } else if (result.assets.cors?.origins?.length) {
+    const list = result.assets.cors.origins;
+    const preview = list.slice(0, 3).join(", ");
+    const tail = list.length > 3 ? `, +${list.length - 3} more` : "";
+    console.log(`    cors:   ${chalk.dim(`${list.length} origin(s) — ${preview}${tail}`)}`);
   }
   if (result.envWritten.length > 0) {
     console.log(

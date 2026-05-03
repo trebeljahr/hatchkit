@@ -106,7 +106,7 @@ export interface ProjectManifest {
    *  user-tokens stashed in the OS keychain; provision migrates them
    *  on next run). */
   s3Buckets?: {
-    assets?: { name: string; publicUrl: string; tokenId?: string };
+    assets?: { name: string; publicUrl: string; tokenId?: string; cors?: BucketCors };
     state?: { name: string; publicUrl: null; tokenId?: string };
     /** Shared Cloudflare R2 Account API Token id covering the
      *  built-in `assets`/`state` pair (one token, one resource policy
@@ -126,10 +126,42 @@ export interface ProjectManifest {
      *  the union. Callers narrow on `typeof === "object"` before
      *  reading `name` / `publicUrl` / `tokenId`. */
     [key: string]:
-      | { name: string; publicUrl: string | null; tokenId?: string }
+      | { name: string; publicUrl: string | null; tokenId?: string; cors?: BucketCors }
       | string
       | undefined;
   };
+}
+
+/** CORS policy applied to the public assets bucket. The single-rule
+ *  shape mirrors Cloudflare's R2 limitation (one rule per bucket, not
+ *  per-prefix). When `skipped` is true the user explicitly opted out
+ *  via `--no-cors` and re-runs of `provision s3` should leave the live
+ *  bucket policy alone — useful for projects that manage CORS
+ *  out-of-band (e.g. via a Cloudflare Worker rewrite or a manually-
+ *  curated dashboard policy).
+ *
+ *  `origins` records the *resolved* set actually applied — the union
+ *  of the manifest defaults (production domain + localhost dev ports)
+ *  and `extraOrigins`. The doctor drift check compares this against
+ *  the live bucket policy. `extraOrigins` records the user-supplied
+ *  inputs separately so a re-run can recompute the resolved list when
+ *  the project domain changes (`hatchkit rename-domain`) without
+ *  losing the user's explicit additions. */
+export interface BucketCors {
+  /** Resolved list of origins applied to the bucket. Sorted +
+   *  deduplicated by `provisionS3ForProject` so re-runs are stable. */
+  origins?: string[];
+  /** Allowed methods. Default ["GET","HEAD"] when omitted. */
+  methods?: string[];
+  /** Preflight cache TTL. Default 86400 (one day) when omitted. */
+  maxAgeSeconds?: number;
+  /** Extra origins the user passed via `--cors-origin <url>` or in the
+   *  manifest. Folded into `origins` on the next run. */
+  extraOrigins?: string[];
+  /** True when the user opted out of CORS provisioning entirely
+   *  (`--no-cors`). `provision s3` skips the CORS step on re-runs;
+   *  `doctor` skips drift detection. */
+  skipped?: boolean;
 }
 
 /** Build a manifest from the internal ProjectConfig, explicitly

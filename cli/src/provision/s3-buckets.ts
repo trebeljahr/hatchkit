@@ -44,12 +44,13 @@ import chalk from "chalk";
 import ora from "ora";
 import { getDnsConfig } from "../config.js";
 import {
+  type BucketCors,
   MANIFEST_FILENAME,
   type ProjectManifest,
   readManifest,
   writeManifest,
 } from "../scaffold/manifest.js";
-import { CloudflareApi } from "../utils/cloudflare-api.js";
+import { CloudflareApi, type R2CorsRule } from "../utils/cloudflare-api.js";
 import { SECRET_KEYS, deleteSecret, getSecret } from "../utils/secrets.js";
 
 export type EnvPrefix = "R2" | "S3" | "AWS";
@@ -86,10 +87,20 @@ export interface ProvisionS3Opts {
   /** When true, generate a fresh CRON_SECRET and write it alongside
    *  the bucket env vars. Default true. */
   generateCronSecret?: boolean;
+  /** Extra origins to add to the assets-bucket CORS rule on top of the
+   *  computed defaults (production domain + dev localhost ports). */
+  corsExtraOrigins?: string[];
+  /** Replace the resolved origin list with `["*"]`. Mutually exclusive
+   *  with `corsExtraOrigins` — caller should reject the combo at the
+   *  CLI layer. Disables hotlinking-by-default; emits a warning. */
+  corsAllowAll?: boolean;
+  /** Skip the CORS reconcile step entirely. Records `cors.skipped: true`
+   *  in the manifest so re-runs respect the user's choice. */
+  skipCors?: boolean;
 }
 
 export interface ProvisionS3Result {
-  assets: { name: string; publicUrl: string; created: boolean };
+  assets: { name: string; publicUrl: string; created: boolean; cors?: BucketCors };
   /** Null when `includeStateBucket` was false (the default). */
   state: { name: string; created: boolean } | null;
   envWritten: string[];
@@ -372,7 +383,51 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
     }
   }
 
-  // 3. Mint a per-project R2 **Account** API token scoped to the
+  // 3. Reconcile bucket CORS so browser fetch()/crossOrigin paths can
+  //    read assets cross-origin without the user fiddling in the
+  //    dashboard. Sits before token minting because CORS doesn't depend
+  //    on the token; putting it early keeps the spinner sequence
+  //    readable. Idempotent: GET first, only PUT when the desired set
+  //    differs from what's live.
+  //
+  //    Skip flag (`--no-cors`) and a previously-recorded `skipped: true`
+  //    in the manifest both opt out — caller stays in control if they're
+  //    managing CORS out-of-band (Worker rewrite, hand-curated dashboard
+  //    policy).
+  const corsSkipFromManifest = manifest.s3Buckets?.assets?.cors?.skipped === true;
+  const skipCors = opts.skipCors === true || (corsSkipFromManifest && opts.skipCors === undefined);
+  let appliedCors: BucketCors | undefined;
+  if (skipCors) {
+    appliedCors = { skipped: true };
+    console.log(
+      chalk.dim(
+        `  · Skipped CORS reconcile (manifest records cors.skipped). Re-run with --cors-origin or --cors-allow-all to opt back in.`,
+      ),
+    );
+  } else {
+    if (opts.corsAllowAll && opts.corsExtraOrigins && opts.corsExtraOrigins.length > 0) {
+      throw new Error(
+        "--cors-allow-all and --cors-origin are mutually exclusive (allow-all already covers every origin).",
+      );
+    }
+    const previousExtras = manifest.s3Buckets?.assets?.cors?.extraOrigins ?? [];
+    const extras = opts.corsExtraOrigins ?? previousExtras;
+    const desired = buildDesiredCors({
+      manifest,
+      extras,
+      allowAll: opts.corsAllowAll === true,
+    });
+    if (opts.corsAllowAll) {
+      console.log(
+        chalk.yellow(
+          `  · --cors-allow-all set: bucket CORS will allow * (any origin). Hotlinking is now possible — narrow the list with --cors-origin when convenient.`,
+        ),
+      );
+    }
+    appliedCors = await reconcileBucketCors(cf, accountId, assetsBucketName, desired, extras);
+  }
+
+  // 4. Mint a per-project R2 **Account** API token scoped to the
   //    buckets above. Lives in `R2 → Manage R2 API Tokens` in the
   //    Cloudflare dashboard (account scope, not user) and the manifest
   //    records its id so `hatchkit destroy` can revoke it alongside
@@ -515,7 +570,7 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
     }
   }
 
-  // 4. Seed `.env.production` with the credentials + URLs. Names are
+  // 5. Seed `.env.production` with the credentials + URLs. Names are
   //    chosen by the prefix the project's runtime actually reads —
   //    detected from `.env.example` etc.
   const envPrefix = opts.envPrefix ?? detectEnvPrefix(opts.projectDir);
@@ -608,7 +663,7 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
     throw err;
   }
 
-  // 4. Record bucket names + public URL + token id in the manifest so
+  // 6. Record bucket names + public URL + token id in the manifest so
   //    re-runs don't have to re-derive them and a future
   //    `hatchkit destroy` knows what to clean up. Preserve a
   //    previously-recorded `state` entry when the current run didn't
@@ -628,7 +683,11 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   const updated: ProjectManifest = {
     ...manifest,
     s3Buckets: {
-      assets: { name: assetsBucketName, publicUrl },
+      assets: {
+        name: assetsBucketName,
+        publicUrl,
+        ...(appliedCors ? { cors: appliedCors } : {}),
+      },
       ...(includeStateBucket
         ? { state: { name: stateBucketName, publicUrl: null as null } }
         : manifest.s3Buckets?.state
@@ -642,7 +701,12 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   console.log(chalk.dim(`  · Recorded bucket names in ${MANIFEST_FILENAME} (${publicUrlSource}).`));
 
   return {
-    assets: { name: assetsBucketName, publicUrl, created: !assetsBucket.existed },
+    assets: {
+      name: assetsBucketName,
+      publicUrl,
+      created: !assetsBucket.existed,
+      cors: appliedCors,
+    },
     state:
       includeStateBucket && stateBucket
         ? { name: stateBucketName, created: !stateBucket.existed }
@@ -672,6 +736,210 @@ function pickClosestZoneName(hostname: string): string {
  *  show this as the default in an interactive prompt. */
 export function defaultBucketHostname(domain: string): string {
   return `s3.${domain}`;
+}
+
+// ---------------------------------------------------------------------------
+// Bucket CORS — desired-state computation + reconcile
+// ---------------------------------------------------------------------------
+//
+// The single rule that lands on the bucket is the union of:
+//   1. https://<manifest.domain>            — production site
+//   2. http://localhost:<server>/<client>   — `pnpm dev` against prod assets
+//   3. extras passed in via --cors-origin   — staging/preview domains, etc.
+//
+// A `www.<domain>` entry is intentionally NOT added by default — hatchkit
+// doesn't ship a www-redirect by default, so most projects don't have a
+// `www.` host that ever issues fetch() against the bucket. Users who do
+// run a www variant should pass `--cors-origin https://www.<domain>`.
+//
+// Methods default to GET + HEAD because the assets bucket is read-only
+// from the browser's perspective (uploads, when added, would happen via
+// signed POSTs through the server, not direct browser PUT). ExposeHeaders
+// covers progress UIs (Content-Length / Content-Type) and ETag-based
+// service-worker / HTTP-cache flows. maxAgeSeconds=86400 means the
+// browser only re-OPTIONS the bucket once a day per origin — without
+// it, every fetched asset triggers a preflight.
+
+/** Build the desired CORS rule for the assets bucket from the manifest
+ *  state + caller-supplied extras. Pure function — no API calls. */
+export function buildDesiredCors(args: {
+  manifest: ProjectManifest;
+  extras?: string[];
+  allowAll?: boolean;
+}): { rule: R2CorsRule; origins: string[]; methods: string[]; maxAgeSeconds: number } {
+  const methods = ["GET", "HEAD"];
+  const maxAgeSeconds = 86400;
+  if (args.allowAll) {
+    return {
+      rule: {
+        allowed: { origins: ["*"], methods, headers: ["*"] },
+        exposeHeaders: ["Content-Length", "Content-Type", "ETag"],
+        maxAgeSeconds,
+      },
+      origins: ["*"],
+      methods,
+      maxAgeSeconds,
+    };
+  }
+
+  const origins = new Set<string>();
+  origins.add(`https://${args.manifest.domain}`);
+
+  // Localhost dev origins — only one of {server,client} is added when
+  // they're equal (e.g. a Next.js project that proxies /api/* through
+  // the same port). Avoids a redundant duplicate in the resolved list.
+  const ports = args.manifest.ports;
+  if (ports?.client) {
+    origins.add(`http://localhost:${ports.client}`);
+  }
+  if (ports?.server && ports.server !== ports.client) {
+    origins.add(`http://localhost:${ports.server}`);
+  }
+
+  for (const e of args.extras ?? []) {
+    const trimmed = e.trim();
+    if (trimmed) origins.add(trimmed);
+  }
+
+  const sorted = [...origins].sort();
+  return {
+    rule: {
+      allowed: { origins: sorted, methods, headers: ["*"] },
+      exposeHeaders: ["Content-Length", "Content-Type", "ETag"],
+      maxAgeSeconds,
+    },
+    origins: sorted,
+    methods,
+    maxAgeSeconds,
+  };
+}
+
+/** GET → diff → PUT. Returns the BucketCors entry to record in the
+ *  manifest. Surfaces progress via ora — the caller has a spinner
+ *  context (provisionS3ForProject) where one extra line slots in
+ *  cleanly between bucket-create and token-mint. */
+export async function reconcileBucketCors(
+  cf: CloudflareApi,
+  accountId: string,
+  bucketName: string,
+  desired: { rule: R2CorsRule; origins: string[]; methods: string[]; maxAgeSeconds: number },
+  extras: string[],
+): Promise<BucketCors> {
+  const spinner = ora(
+    `Reconciling CORS on ${bucketName} (${desired.origins.length} origin(s))`,
+  ).start();
+  try {
+    const live = await cf.getR2BucketCors(accountId, bucketName);
+    if (live && corsRuleMatches(live, desired.rule)) {
+      spinner.succeed(`CORS up to date on ${bucketName} (${desired.origins.length} origin(s))`);
+    } else {
+      await cf.putR2BucketCors(accountId, bucketName, [desired.rule]);
+      spinner.succeed(
+        live
+          ? `CORS updated on ${bucketName} (${desired.origins.length} origin(s))`
+          : `CORS applied to ${bucketName} (${desired.origins.length} origin(s))`,
+      );
+    }
+  } catch (err) {
+    spinner.fail("CORS reconcile failed");
+    const msg = (err as Error).message;
+    if (/403|10001|permission|invalid/i.test(msg)) {
+      throw new Error(
+        `${msg}\n\n  → Cloudflare token is missing the "Workers R2 Storage: Edit" permission for CORS.\n  → Edit it at https://dash.cloudflare.com/profile/api-tokens, then re-run.`,
+      );
+    }
+    throw err;
+  }
+
+  return {
+    origins: desired.origins,
+    methods: desired.methods,
+    maxAgeSeconds: desired.maxAgeSeconds,
+    ...(extras.length > 0 ? { extraOrigins: [...extras].sort() } : {}),
+  };
+}
+
+/** Stable comparison between the live rule list and a single desired
+ *  rule. Cloudflare echoes back exactly what was PUT, but order +
+ *  optional fields can drift, so we normalise both sides. */
+function corsRuleMatches(live: R2CorsRule[], desired: R2CorsRule): boolean {
+  if (live.length !== 1) return false;
+  const a = normalizeCorsRule(live[0]);
+  const b = normalizeCorsRule(desired);
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function normalizeCorsRule(r: R2CorsRule): R2CorsRule {
+  return {
+    allowed: {
+      origins: [...(r.allowed.origins ?? [])].sort(),
+      methods: [...(r.allowed.methods ?? [])].sort(),
+      headers: [...(r.allowed.headers ?? [])].sort(),
+    },
+    exposeHeaders: [...(r.exposeHeaders ?? [])].sort(),
+    maxAgeSeconds: r.maxAgeSeconds ?? 0,
+  };
+}
+
+/** Reconcile bucket CORS using the state already in the manifest +
+ *  global config, without minting tokens or touching .env. Used by
+ *  `hatchkit rename-domain` after the manifest's `domain` has been
+ *  rewritten — the new `https://<domain>` belongs in the bucket's
+ *  origin list before the user redeploys.
+ *
+ *  Best-effort: returns null + logs a hint instead of throwing on
+ *  missing config / missing manifest fields. The rename-domain caller
+ *  only runs as a follow-up bonus to its file rewrites; failing the
+ *  whole rename because the keychain is empty would be over-eager. */
+export async function reconcileAssetsCorsFromManifest(
+  projectDir: string,
+): Promise<BucketCors | null> {
+  const manifest = readManifest(projectDir);
+  if (!manifest?.s3Buckets?.assets?.name) return null;
+  if (manifest.s3Buckets.assets.cors?.skipped === true) return null;
+
+  const accountId =
+    manifest.s3Buckets.accountId ??
+    (await (async () => {
+      const { getStore } = await import("../config.js");
+      const meta = getStore().get("providers.s3.r2") as { endpoint?: string } | undefined;
+      if (!meta?.endpoint) return undefined;
+      try {
+        return accountIdFromR2Endpoint(meta.endpoint);
+      } catch {
+        return undefined;
+      }
+    })());
+  if (!accountId) return null;
+
+  const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
+  if (!adminToken) return null;
+
+  const cf = new CloudflareApi({ token: adminToken });
+  const extras = manifest.s3Buckets.assets.cors?.extraOrigins ?? [];
+  const desired = buildDesiredCors({ manifest, extras });
+  const applied = await reconcileBucketCors(
+    cf,
+    accountId,
+    manifest.s3Buckets.assets.name,
+    desired,
+    extras,
+  );
+
+  // Persist the new resolved origin list into the manifest so a
+  // subsequent `hatchkit doctor` doesn't immediately flag drift.
+  const next: ProjectManifest = {
+    ...manifest,
+    s3Buckets: {
+      ...manifest.s3Buckets,
+      assets: {
+        ...manifest.s3Buckets.assets,
+        cors: applied,
+      },
+    },
+  };
+  writeManifest(projectDir, next);
+  return applied;
 }
 
 /** If a previous run already attached a custom domain to the assets

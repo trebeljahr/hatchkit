@@ -196,6 +196,39 @@ export async function runRenameDomain(opts: RenameDomainOptions): Promise<void> 
     console.log(chalk.green(`  ✓ wrote ${edit.label}`));
   }
 
+  // 7. Reconcile bucket CORS if this project has an assets bucket. The
+  //    old origin (https://<oldDomain>) belongs out of the rule and the
+  //    new one in. Best-effort: only runs when (a) assets bucket exists
+  //    in the manifest, (b) R2 admin token is in the keychain, and
+  //    (c) CORS wasn't opted out via `--no-cors`. Anything else is a
+  //    skip with a one-liner — rename-domain is otherwise non-network
+  //    and shouldn't fail because the keychain is empty.
+  if (manifest.s3Buckets?.assets?.name && !manifest.s3Buckets.assets.cors?.skipped) {
+    const { reconcileAssetsCorsFromManifest } = await import("../provision/s3-buckets.js");
+    try {
+      const applied = await reconcileAssetsCorsFromManifest(projectDir);
+      if (applied?.origins?.length) {
+        console.log(
+          chalk.green(
+            `  ✓ reconciled bucket CORS — ${applied.origins.length} origin(s) including https://${newDomain}`,
+          ),
+        );
+      } else if (applied === null) {
+        console.log(
+          chalk.dim(
+            "  · Skipped CORS reconcile (R2 admin token not in keychain or accountId missing — run `hatchkit provision s3` after the rename to apply).",
+          ),
+        );
+      }
+    } catch (err) {
+      console.log(
+        chalk.yellow(
+          `  ! CORS reconcile failed: ${(err as Error).message.split("\n")[0]}\n    Re-run \`hatchkit provision s3\` after the rename to retry.`,
+        ),
+      );
+    }
+  }
+
   printChecklist(manifest, oldDomain, newDomain, stackDirName);
 }
 

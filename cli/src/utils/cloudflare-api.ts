@@ -19,6 +19,20 @@ export interface CloudflareZone {
   status: string;
 }
 
+/** A single Cloudflare R2 CORS rule. Mirrors the shape Cloudflare's
+ *  PUT/GET `/r2/buckets/<bucket>/cors` endpoint accepts and returns —
+ *  only the fields hatchkit actually sets are listed. The bucket policy
+ *  is single-rule (Cloudflare doesn't support per-prefix rules). */
+export interface R2CorsRule {
+  allowed: {
+    origins: string[];
+    methods: string[];
+    headers?: string[];
+  };
+  exposeHeaders?: string[];
+  maxAgeSeconds?: number;
+}
+
 export interface CloudflareApiOptions {
   token: string;
   /** Optional: filter to one account. Useful if the token spans multiple. */
@@ -621,6 +635,69 @@ export class CloudflareApi {
       return "deleted";
     } catch (err) {
       if (/404|not\s*found/i.test((err as Error).message)) return "not-found";
+      throw err;
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // R2 bucket CORS
+  // ---------------------------------------------------------------------
+  //
+  // CORS is global to the bucket (not per-prefix). Browser code paths
+  // that use fetch() / XHR / `crossOrigin="anonymous"` (WebGL TextureLoader,
+  // createImageBitmap, audio/video tags with crossOrigin, service-worker
+  // ETag flows) require an Access-Control-Allow-Origin header even on
+  // GETs that work fine for plain `<img>`. Without a CORS rule the
+  // browser blocks the response.
+  //
+  // Same `Workers R2 Storage:Edit` perm as bucket create. A token that
+  // got far enough to create the bucket but trips here is missing the
+  // CORS-specific privilege on a token that's been narrowed since —
+  // surface that hint at the call site.
+  //
+  // Idempotency: GET first, only PUT if the rules differ. Cloudflare
+  // doesn't expose a per-rule etag, so the caller compares rule shape.
+
+  /** Read the bucket's CORS rules. Returns null on 404 (no policy set). */
+  async getR2BucketCors(accountId: string, bucket: string): Promise<R2CorsRule[] | null> {
+    try {
+      const res = await this.request<{ rules?: R2CorsRule[] }>(
+        "GET",
+        `/accounts/${accountId}/r2/buckets/${bucket}/cors`,
+      );
+      return res.rules ?? [];
+    } catch (err) {
+      const msg = (err as Error).message;
+      // CF returns either a 404 or a "no CORS configuration found" body
+      // when the bucket has no policy yet — both should resolve to null.
+      if (/404|not\s*found|10059|no\s*cors/i.test(msg)) return null;
+      throw err;
+    }
+  }
+
+  /** Replace the bucket's CORS rules (PUT semantics — overwrites the
+   *  whole policy). */
+  async putR2BucketCors(
+    accountId: string,
+    bucket: string,
+    rules: R2CorsRule[],
+  ): Promise<R2CorsRule[]> {
+    const res = await this.request<{ rules?: R2CorsRule[] }>(
+      "PUT",
+      `/accounts/${accountId}/r2/buckets/${bucket}/cors`,
+      { rules },
+    );
+    return res.rules ?? rules;
+  }
+
+  /** Remove every CORS rule on the bucket. Idempotent: 404 → "not-found". */
+  async deleteR2BucketCors(accountId: string, bucket: string): Promise<"deleted" | "not-found"> {
+    try {
+      await this.request<unknown>("DELETE", `/accounts/${accountId}/r2/buckets/${bucket}/cors`);
+      return "deleted";
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (/404|not\s*found|10059|no\s*cors/i.test(msg)) return "not-found";
       throw err;
     }
   }

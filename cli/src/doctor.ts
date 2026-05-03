@@ -548,6 +548,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   // no-op, so `hatchkit doctor` from $HOME stays clean.
   const projectChecks = await checkProjectKeyState(process.cwd());
   for (const r of projectChecks) results.push(r);
+  const corsChecks = await checkProjectS3CorsState(process.cwd());
+  for (const r of corsChecks) results.push(r);
   return results;
 }
 
@@ -655,6 +657,147 @@ export async function checkProjectKeyState(projectDir: string): Promise<CheckRes
     });
   }
 
+  return out;
+}
+
+/** Compare the manifest's recorded CORS rule for the assets bucket
+ *  against the live policy on Cloudflare. Drifts are common when a
+ *  user hand-edits the bucket CORS in the dashboard or when the project
+ *  domain changed without re-running provision. The fix hint always
+ *  points at `hatchkit provision s3` because that's the single
+ *  reconcile path; we don't try to diff at field granularity.
+ *
+ *  Skipped silently when:
+ *    · no manifest at cwd (running outside a hatchkit project)
+ *    · manifest has no `s3Buckets.assets` (project never provisioned R2)
+ *    · `cors.skipped === true` (user opted out via --no-cors;
+ *      they're managing CORS out-of-band)
+ *    · admin token / accountId not available (config gap is its own
+ *      check above; no need to double-fail) */
+export async function checkProjectS3CorsState(projectDir: string): Promise<CheckResult[]> {
+  const out: CheckResult[] = [];
+  const { existsSync, readFileSync } = await import("node:fs");
+  const manifestPath = `${projectDir}/.hatchkit.json`;
+  if (!existsSync(manifestPath)) return out;
+
+  let manifest: {
+    name?: string;
+    domain?: string;
+    s3Buckets?: {
+      accountId?: string;
+      assets?: {
+        name?: string;
+        cors?: {
+          origins?: string[];
+          methods?: string[];
+          maxAgeSeconds?: number;
+          extraOrigins?: string[];
+          skipped?: boolean;
+        };
+      };
+    };
+  };
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  } catch {
+    return out;
+  }
+  if (!manifest.name || !manifest.s3Buckets?.assets?.name) return out;
+  if (manifest.s3Buckets.assets.cors?.skipped === true) return out;
+
+  const accountId = manifest.s3Buckets.accountId;
+  if (!accountId) {
+    // Pre-CORS-era manifest. Doctor's checkS3("r2") already nags about
+    // global config; here we just point at provision to record state.
+    out.push({
+      name: `Project ${manifest.name} (R2 CORS)`,
+      status: "skip",
+      detail: "manifest has no recorded accountId; provision s3 hasn't run since CORS landed",
+    });
+    return out;
+  }
+
+  const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
+  if (!adminToken) {
+    out.push({
+      name: `Project ${manifest.name} (R2 CORS)`,
+      status: "skip",
+      detail: "R2 admin token not in keychain — can't read bucket CORS",
+    });
+    return out;
+  }
+
+  const { CloudflareApi } = await import("./utils/cloudflare-api.js");
+  const cf = new CloudflareApi({ token: adminToken });
+
+  let live: Awaited<ReturnType<typeof cf.getR2BucketCors>>;
+  try {
+    live = await cf.getR2BucketCors(accountId, manifest.s3Buckets.assets.name);
+  } catch (err) {
+    out.push({
+      name: `Project ${manifest.name} (R2 CORS)`,
+      status: "fail",
+      detail: `couldn't read bucket CORS: ${(err as Error).message.split("\n")[0]}`,
+      hint: [
+        "The R2 admin token may be missing `Workers R2 Storage: Edit`.",
+        "Edit at https://dash.cloudflare.com/profile/api-tokens, then re-run.",
+      ],
+    });
+    return out;
+  }
+
+  const recordedOrigins = manifest.s3Buckets.assets.cors?.origins ?? [];
+  const liveOrigins = live?.[0]?.allowed?.origins ?? [];
+  const liveSorted = [...liveOrigins].sort();
+  const recordedSorted = [...recordedOrigins].sort();
+
+  if (recordedSorted.length === 0) {
+    // Manifest pre-dates the cors field. Only flag if there's actually
+    // a live policy mismatch worth surfacing — otherwise stay quiet
+    // until the user runs provision.
+    if (liveSorted.length === 0) {
+      out.push({
+        name: `Project ${manifest.name} (R2 CORS)`,
+        status: "fail",
+        detail:
+          "no CORS policy on the assets bucket — browser fetch() / crossOrigin will be blocked",
+        hint: [
+          "Apply hatchkit's default policy:",
+          `  hatchkit provision s3       (reconciles CORS using ${manifest.domain ?? "<project domain>"} + localhost)`,
+        ],
+      });
+    } else {
+      out.push({
+        name: `Project ${manifest.name} (R2 CORS)`,
+        status: "skip",
+        detail: `live policy has ${liveSorted.length} origin(s) but manifest has no cors record yet`,
+      });
+    }
+    return out;
+  }
+
+  const same =
+    liveSorted.length === recordedSorted.length &&
+    liveSorted.every((o, i) => o === recordedSorted[i]);
+  if (same) {
+    out.push({
+      name: `Project ${manifest.name} (R2 CORS)`,
+      status: "ok",
+      detail: `bucket CORS matches manifest (${recordedSorted.length} origin(s))`,
+    });
+  } else {
+    out.push({
+      name: `Project ${manifest.name} (R2 CORS)`,
+      status: "fail",
+      detail: `bucket CORS drift — live ${liveSorted.length} origin(s), manifest ${recordedSorted.length}`,
+      hint: [
+        `manifest: ${recordedSorted.join(", ") || "(empty)"}`,
+        `live:     ${liveSorted.join(", ") || "(empty)"}`,
+        "Reconcile by re-running:",
+        "  hatchkit provision s3",
+      ],
+    });
+  }
   return out;
 }
 
