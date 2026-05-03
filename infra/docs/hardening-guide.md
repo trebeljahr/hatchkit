@@ -609,7 +609,7 @@ sysctl -p /etc/sysctl.d/99-hardening.conf
 **What could go wrong:**
 - **TCP timestamps and load balancers:** Some load balancers rely on TCP timestamps for PAWS (Protection Against Wrapped Sequences). On a single VPS with no external load balancer, disabling timestamps is safe.
 - **Disabling IPv6 breaks things:** Docker sometimes relies on IPv6 for container networking. Hetzner DNS resolution can use IPv6. If you disable IPv6, test thoroughly. The safe default is to leave IPv6 enabled but harden it (disable redirects, source routing).
-- **rp_filter and asymmetric routing:** If your server has multiple network interfaces with different routes, strict rp_filter (value 1) can drop legitimate packets. On a single-NIC Hetzner VPS, this isn't an issue.
+- **rp_filter and asymmetric routing:** If your server has multiple network interfaces with different routes, strict rp_filter (value 1) can drop legitimate packets. A bare single-NIC Hetzner VPS is fine — but **once you install Tailscale**, the kernel sees `tailscale0` as a second logical interface, and strict mode can drop tailnet ICMP/TCP because the reverse path resolves through `eth0`. Tailscale 1.40+ auto-corrects to `rp_filter=2` at startup, but a kernel-update auto-reboot from `unattended-upgrades` reapplies `99-hardening.conf` before tailscaled is up, briefly reverting the value. If you run Tailscale on this host, drop a higher-numbered file like `/etc/sysctl.d/99-tailscale-rp-filter.conf` containing `net.ipv4.conf.all.rp_filter = 2` so it always wins on boot.
 
 **Automation:** `ansible/roles/base/` (`templates/99-hardening.conf.j2`).
 
@@ -730,21 +730,38 @@ docker run -p 127.0.0.1:8080:80 nginx  # Only accessible locally
 
 Then use a reverse proxy (Caddy, Traefik, Nginx) on the host to route traffic. Coolify does this automatically with Traefik.
 
-**Option B — DOCKER-USER chain:**
+**Option B — `ufw-docker` (canonical UFW + Docker integration):**
 
-Docker provides the `DOCKER-USER` chain specifically for user rules. It's evaluated before Docker's own rules:
+[chaifeng/ufw-docker](https://github.com/chaifeng/ufw-docker) is the community-standard tool for making UFW and Docker actually cooperate, and it's the integration that [Coolify themselves recommend](https://coolify.io/docs/knowledge-base/server/firewall) for users who want a host-level firewall layer alongside Docker. It modifies `/etc/ufw/after.rules` to add a `DOCKER-USER` block that defaults to deny-forward-from-external, then exposes a `ufw route allow ...` syntax for opening specific ports. UFW's own boot mechanism handles persistence — no `iptables-persistent` package, no separate systemd unit.
+
+> ⚠️ **Do not `apt install iptables-persistent` as a way to persist DOCKER-USER rules.** On Ubuntu, that package conflicts with `ufw` at the apt-resolver level — installing one silently removes the other. You can confirm this on any host with `apt install --simulate ufw` (the resolver will plan a `Remv iptables-persistent` if both are present). The fallout is a host that thinks it has a firewall but doesn't. The Ansible `base` role refuses to run when `iptables-persistent` is installed, exactly to prevent the next `make harden` from silently triggering this drift. See "Recovery from a silent UFW removal" below if you've already hit it.
+
+Install ufw-docker (pin the upstream tag; bump it deliberately):
 
 ```bash
-# Drop all external traffic to Docker containers
-iptables -I DOCKER-USER -i eth0 -j DROP
+UFW_DOCKER_VERSION=251123
+sudo curl -fsSL "https://github.com/chaifeng/ufw-docker/raw/${UFW_DOCKER_VERSION}/ufw-docker" \
+  -o /usr/local/bin/ufw-docker
+sudo chmod +x /usr/local/bin/ufw-docker
 
-# Allow specific ports
-iptables -I DOCKER-USER -i eth0 -p tcp --dport 80 -j ACCEPT
-iptables -I DOCKER-USER -i eth0 -p tcp --dport 443 -j ACCEPT
+# Modifies /etc/ufw/after.rules — backs up the original automatically
+sudo ufw-docker install
+sudo ufw reload
 
-# Save rules to persist across reboots
-apt install iptables-persistent
-netfilter-persistent save
+# Allow forwarded traffic to specific Docker-published ports.
+# Note: this is `ufw route allow`, not `ufw allow` — ufw-docker rules
+# operate on the FORWARD chain, not INPUT.
+sudo ufw route allow proto tcp from any to any port 80
+sudo ufw route allow proto tcp from any to any port 443
+```
+
+After this, anything Docker publishes that you haven't `ufw route allow`d (Coolify dashboard 8000, Traefik dashboard 8080, GlitchTip 8001, etc.) is unreachable from outside, even though Docker still binds them on `0.0.0.0`.
+
+Verify:
+
+```bash
+sudo ufw status verbose                   # should show route allow rules
+sudo grep -A 1 'BEGIN UFW AND DOCKER' /etc/ufw/after.rules | head -5
 ```
 
 **Option C — Disable Docker iptables (risky):**
@@ -760,8 +777,9 @@ This breaks Docker's internal networking. Container-to-container communication s
 **What could go wrong:**
 - **Coolify and Docker ports:** Coolify manages containers and publishes ports automatically. It uses Traefik as a reverse proxy, so application containers should only be exposed through Traefik (ports 80/443). But Coolify's own dashboard runs on port 8000, which Docker publishes. This is why we need the bootstrap → lockdown flow.
 - **Docker Compose and port binding:** If your compose file says `ports: "8080:80"`, that's `0.0.0.0:8080`. You need `ports: "127.0.0.1:8080:80"`. Easy to forget, especially with third-party compose files.
+- **`ufw allow` vs `ufw route allow`:** Easy mistake — `ufw allow 80/tcp` only opens the INPUT chain, which Docker traffic skips. To open a Docker-published port through ufw-docker you need `ufw route allow`, which operates on the FORWARD chain.
 
-**Automation:** The `ansible/roles/ufw/` role sets up DOCKER-USER chain rules. The guide recommends Option A (localhost binding) as the primary approach.
+**Automation:** The `ansible/roles/ufw/` role implements Option B (ufw-docker) when `ufw_docker_mitigation: true`. Coolify's own recommendation is to also rely on your provider firewall (the Hetzner Cloud Firewall, which the `terraform/stacks/hardened-vps` stack already provisions) as the primary external layer.
 
 > **Further reading:**
 > - [Docker and UFW security flaw (GitHub issue #690)](https://github.com/docker/for-linux/issues/690) — the canonical issue thread; hundreds of comments documenting the problem since 2019
@@ -1877,41 +1895,86 @@ When you see `0.0.0.0:<port>`, that port is bound to all network interfaces on t
 
 **Why this happens:** Coolify and the services it deploys configure their Docker port bindings. You don't always control how a third-party Docker image publishes ports. Traefik's `8080` is its dashboard/API port (enabled by Coolify's Traefik config with `--api.insecure=true`). Services like GlitchTip may expose management ports alongside their main application port. The result is `0.0.0.0` bindings you didn't explicitly ask for.
 
-**How to fix — lock down with DOCKER-USER iptables rules:**
+**How to fix — install ufw-docker (section 2.4, Option B):**
 
-The `DOCKER-USER` chain (see section 2.4, Option B) lets you add firewall rules that are evaluated *before* Docker's own rules. This is the only reliable way to firewall Docker-published ports from the host level:
+Once you have ufw-docker installed and `ufw-docker install` has run (see section 2.4), the FORWARD chain default is *deny*: anything Docker publishes is unreachable from outside until you explicitly allow it via `ufw route allow`. So you don't need to enumerate the leaked ports (8080, 8001, etc.) at all — they're blocked by the default. You only need to *opt in* the ports that should be reachable:
 
 ```bash
-# Block external access to Traefik dashboard and any other leaked ports.
-# eth0 is the public interface — this blocks traffic from the internet
-# while still allowing localhost and Docker-internal traffic to work.
-iptables -I DOCKER-USER -i eth0 -p tcp --dport 8080 -j DROP
-iptables -I DOCKER-USER -i eth0 -p tcp --dport 8001 -j DROP
-
-# Add more rules here for any other 0.0.0.0 ports you find in docker ps.
-# The pattern is always: iptables -I DOCKER-USER -i eth0 -p tcp --dport <PORT> -j DROP
+# Allow Traefik on 80/443 (the only ports your apps should be on)
+sudo ufw route allow proto tcp from any to any port 80
+sudo ufw route allow proto tcp from any to any port 443
 ```
 
 Verify it works:
 
 ```bash
-# From the VPS itself — should still respond (traffic comes from lo, not eth0)
+# From the VPS itself — should still respond (traffic doesn't traverse FORWARD)
 curl -s http://localhost:8080
 
-# From your local machine — should now be blocked even without Hetzner firewall
-curl -s http://<your-vps-ip>:8080
+# From your local machine — should be blocked
+curl -s --max-time 3 http://<your-vps-ip>:8080
 ```
 
-Persist the rules across reboots:
+**What this does internally:** ufw-docker adds a block to `/etc/ufw/after.rules` that hooks into the `DOCKER-USER` chain (which Docker evaluates *before* its own `DOCKER` chain). The block default-denies external→container forwarding and integrates with UFW's `ufw-user-forward` chain, so `ufw route allow` rules become FORWARD-chain allows. Persistence is via UFW's normal boot mechanism — no `iptables-persistent`, no separate systemd unit.
+
+**Ongoing maintenance:** Every time you deploy a new service through Coolify, re-check `docker ps` for new `0.0.0.0` bindings. By default they're already unreachable from outside (default-deny). If you *want* one to be reachable, `sudo ufw route allow proto tcp from any to any port <PORT>`. If a Coolify dashboard port (8000, 6001, 6002) was opened during bootstrap and you're closing it now, `sudo ufw route delete allow proto tcp from any to any port <PORT>`.
+
+### Recovery from a silent UFW removal
+
+If you previously ran `apt install iptables-persistent` (or followed an older version of this guide that recommended it), you may be in this exact state:
+
+- `dpkg -l ufw` shows `rc  ufw  …` — package removed, config files retained
+- `/usr/sbin/ufw` does not exist
+- `/etc/ufw/` still has `user.rules`, `before.rules`, etc.
+- `apt history.log` shows `Remove: ufw:amd64` in the same transaction as `Install: iptables-persistent:amd64`
+
+The conflict is bidirectional. You can confirm by running `apt install --simulate ufw` — the resolver will plan to `Remv iptables-persistent` and `Inst ufw`. So the migration to the canonical setup (UFW + ufw-docker) involves losing iptables-persistent on purpose. Plan it, don't drift into it.
+
+On the VPS as root:
 
 ```bash
-apt install iptables-persistent -y
-netfilter-persistent save
+# 1. Audit current state. Snapshot everything before we change anything.
+sudo iptables-save > /root/iptables-pre-migration.v4
+sudo cat /etc/iptables/rules.v4 > /root/rules.v4-pre-migration  # what netfilter-persistent restores at boot
+sudo iptables -L DOCKER-USER -nv --line-numbers                  # what's live right now
+
+# 2. Identify hand-added DOCKER-USER rules in the snapshot above. Anything
+#    beyond the `RELATED,ESTABLISHED ACCEPT` baseline that you (not Docker)
+#    added is what you need to recreate as `ufw route allow` rules later.
+#    Typical case: just :80 and :443 needed. Anything else (e.g., a custom
+#    `docker0 -> eth0 ACCEPT` you added to fix a connectivity bug) noted
+#    separately.
+
+# 3. Install ufw + ufw-docker. This step REMOVES iptables-persistent. Your
+#    in-memory iptables rules survive until reboot, so Docker apps stay up
+#    while we set up the replacement. (apt install --simulate ufw confirms
+#    the resolver's plan before you commit.)
+sudo apt install -y ufw
+
+UFW_DOCKER_VERSION=251123
+sudo curl -fsSL "https://github.com/chaifeng/ufw-docker/raw/${UFW_DOCKER_VERSION}/ufw-docker" \
+  -o /usr/local/bin/ufw-docker
+sudo chmod +x /usr/local/bin/ufw-docker
+sudo ufw-docker install
+sudo ufw reload
+
+# 4. Add a `ufw route allow` for every port that needs forwarding.
+#    Coolify with Traefik typically only needs 80 and 443.
+sudo ufw route allow proto tcp from any to any port 80
+sudo ufw route allow proto tcp from any to any port 443
+
+# 5. Make sure UFW itself is enabled. Pre-existing /etc/ufw/user.rules
+#    (from before the silent removal) will be reused.
+sudo ufw enable
+sudo ufw status verbose
+
+# 6. Reboot to confirm everything comes up cleanly under the new setup.
+#    If something doesn't, /root/iptables-pre-migration.v4 is your rollback:
+#    sudo iptables-restore < /root/iptables-pre-migration.v4
+sudo reboot
 ```
 
-**What this does internally:** The `DOCKER-USER` chain is evaluated in the `FORWARD` chain before Docker's own `DOCKER` chain. The `-i eth0` match means the rule only applies to packets arriving from the external network interface — traffic from `localhost` (loopback) and Docker's internal bridge networks passes through unaffected. So your services still work internally (Traefik can still reach containers, you can still `curl localhost:8080` from the VPS), but the ports are unreachable from outside.
-
-**Ongoing maintenance:** Every time you deploy a new service through Coolify, re-check `docker ps` for new `0.0.0.0` bindings. If a new service publishes a port you didn't expect, add another DOCKER-USER rule and run `netfilter-persistent save` to persist it.
+If you're using the Ansible role with `ufw_docker_mitigation: true`, the base role refuses to run while `iptables-persistent` is installed — do step 3 above (the `apt install ufw` will remove iptables-persistent), then re-run `make harden`. The role's `ufw-docker install` and `ufw route allow` tasks are idempotent and safe to re-run.
 
 ---
 

@@ -1,5 +1,13 @@
 # UFW firewall role — sets default deny incoming, allows specific ports.
 # Order matters: we ALWAYS allow SSH first before enabling UFW.
+#
+# When ufw_docker_mitigation: true, we layer in chaifeng/ufw-docker — the
+# canonical answer for "UFW + Docker actually working together" and what
+# Coolify themselves recommend (https://coolify.io/docs/knowledge-base/server/firewall).
+# The previous approach (apt install iptables-persistent + manual DOCKER-USER
+# rules) is deliberately removed because installing iptables-persistent on
+# Ubuntu has a packaging conflict with ufw — apt removes ufw to install
+# iptables-persistent, leaving the host firewall-less without warning.
 
 - name: Set UFW default deny incoming
   community.general.ufw:
@@ -58,29 +66,48 @@
   community.general.ufw:
     state: enabled
 
-# --- Docker-UFW conflict mitigation ---
+# --- Docker-UFW integration via ufw-docker (canonical) ---
 
-- name: Install iptables-persistent for Docker-UFW mitigation
-  ansible.builtin.apt:
-    name: iptables-persistent
-    state: present
+- name: Install chaifeng/ufw-docker (pinned upstream tag)
+  ansible.builtin.get_url:
+    url: "https://github.com/chaifeng/ufw-docker/raw/{{ ufw_docker_version }}/ufw-docker"
+    dest: /usr/local/bin/ufw-docker
+    mode: "0755"
+    checksum: "sha256:{{ ufw_docker_sha256 }}"
+    owner: root
+    group: root
   when: ufw_docker_mitigation
 
-- name: Drop all external traffic to Docker containers by default
-  ansible.builtin.iptables:
-    chain: DOCKER-USER
-    in_interface: eth0
-    jump: DROP
+- name: Run ufw-docker install (writes block to /etc/ufw/after.rules)
+  ansible.builtin.command: /usr/local/bin/ufw-docker install
+  register: ufw_docker_install
+  changed_when: "'After.rules has been modified' in ufw_docker_install.stdout or 'Backing up' in ufw_docker_install.stdout"
   when: ufw_docker_mitigation
-  notify: Save iptables rules
+  notify: Reload UFW
 
-- name: Allow specified ports through DOCKER-USER chain
-  ansible.builtin.iptables:
-    chain: DOCKER-USER
-    in_interface: eth0
-    protocol: tcp
-    destination_port: "{{ item }}"
-    jump: ACCEPT
+# Force the reload to happen now, before we add route allows below.
+- name: Apply ufw-docker after.rules block immediately
+  ansible.builtin.meta: flush_handlers
+  when: ufw_docker_mitigation
+
+- name: Allow forwarded traffic to Docker-published ports
+  ansible.builtin.command: "ufw route allow proto tcp from any to any port {{ item }}"
+  register: ufw_route_allow
+  changed_when: "'Skipping adding existing rule' not in ufw_route_allow.stdout"
   loop: "{{ ufw_docker_allowed_ports }}"
   when: ufw_docker_mitigation
-  notify: Save iptables rules
+
+# Sanity check: confirm UFW survived. If a future packaging change ever
+# causes silent UFW removal again, this fails the playbook loudly instead
+# of leaving a misleading "ufw enabled but uninstalled" state.
+- name: Verify UFW package is still installed (catch silent removal)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    status=$(dpkg-query -W -f='${db:Status-Abbrev}' ufw 2>/dev/null || echo "missing")
+    if [ "$status" != "ii " ]; then
+      echo "ufw is no longer installed (status: '$status')." >&2
+      echo "Something in this run removed it. See infra/docs/hardening-guide.md ->" >&2
+      echo "'Recovery from a silent UFW removal'." >&2
+      exit 1
+    fi
+  changed_when: false

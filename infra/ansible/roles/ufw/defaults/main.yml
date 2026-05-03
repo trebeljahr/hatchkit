@@ -13,14 +13,25 @@ ufw_extra_tcp_ports: []
 # with a rule allowing 100.64.0.0/10 only.
 ufw_restrict_ssh_to_tailscale: false
 
-# Docker-UFW conflict mitigation: add DOCKER-USER iptables rules
-# to prevent Docker-published ports from bypassing UFW.
-# When enabled, drops ALL external traffic to Docker on eth0,
-# then allows only the ports listed below.
-# Coolify ports like 8080 (Traefik dashboard) and 8001 (GlitchTip)
-# are blocked by the default-drop rule automatically.
+# Docker-UFW integration via chaifeng/ufw-docker.
+# When true, installs the canonical ufw-docker script which modifies
+# /etc/ufw/after.rules to bridge UFW with Docker's FORWARD chain. This is
+# what Coolify themselves recommend for users who want host-level firewall
+# integration alongside Docker.
+# https://github.com/chaifeng/ufw-docker
 ufw_docker_mitigation: false
 
+# Forwarded TCP ports to allow through to Docker containers via
+# `ufw route allow`. Anything not listed is blocked by ufw-docker's
+# default-deny in /etc/ufw/after.rules — Coolify dashboard ports
+# (8000, 8080, 8001) are blocked automatically.
 ufw_docker_allowed_ports:
   - "80"
   - "443"
+
+# Pin chaifeng/ufw-docker to a specific upstream tag for reproducibility.
+# Update both fields together when bumping. Hash is sha256 of the script.
+# To bump:
+#   curl -fsSL https://github.com/chaifeng/ufw-docker/raw/<tag>/ufw-docker | shasum -a 256
+ufw_docker_version: "251123"
+ufw_docker_sha256: "c3e5f0bf6061a3a2e7d7ac06abc80665707d2f4c91e90d76f22e4168863fb472"
