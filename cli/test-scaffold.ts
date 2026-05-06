@@ -86,8 +86,13 @@ results.minimal = await run("minimal (no flags)", "plain-app", [], (d) => {
   const serverEnv = readFileSync(join(d, "packages/server/.env.example"), "utf-8");
   const clientEnv = readFileSync(join(d, "packages/client/.env.example"), "utf-8");
   const serverEnvDev = readFileSync(join(d, "packages/server/.env.development"), "utf-8");
+  const gitignore = existsSync(join(d, ".gitignore"))
+    ? readFileSync(join(d, ".gitignore"), "utf-8")
+    : "";
   return [
     ["package.json renamed", pkg.name === "plain-app"],
+    [".gitignore copied into scaffold", gitignore.length > 0],
+    [".gitignore lists .env.keys (NEVER commit private keys)", /^\.env\.keys$/m.test(gitignore)],
     ["electron/ removed", !existsSync(join(d, "electron"))],
     ["resources/ removed", !existsSync(join(d, "resources"))],
     ["capacitor.config.ts removed", !existsSync(join(d, "capacitor.config.ts"))],
@@ -1314,6 +1319,121 @@ console.log("\n── doctor: project key-state checks ────────�
     if (!c) ok = false;
   }
   results.doctorKeyChecks = ok;
+}
+
+// Adopt's first line of defence against leaking dotenvx private keys.
+// Locks down two helpers in cli/src/utils/gitignore.ts:
+//   · ensureGitignoreEntries — append `.env.keys` before bootstrapDotenvxNow
+//     writes it, so the next `git add -A` doesn't sweep the key into a commit.
+//   · looksLikeDotenvxPrivateKey — last-mile staged-file scan in
+//     setupGitHubRemote that refuses to commit anything that smells like a key.
+console.log("\n── adopt: gitignore + private-key guard ─────────────────────────────");
+{
+  const { ensureGitignoreEntries, looksLikeDotenvxPrivateKey } = await import(
+    "./src/utils/gitignore.js"
+  );
+  const checks: Check[] = [];
+
+  // Case 1: no .gitignore at all → file gets created with the entry.
+  const tmpA = mkdtempSync(join(tmpdir(), "gi-fresh-"));
+  try {
+    const r = ensureGitignoreEntries(tmpA, [".env.keys"]);
+    const written = readFileSync(join(tmpA, ".gitignore"), "utf-8");
+    checks.push(["fresh repo: .gitignore created", r.fileCreated === true]);
+    checks.push(["fresh repo: .env.keys reported as added", r.added.includes(".env.keys")]);
+    checks.push(["fresh repo: file actually contains .env.keys", /^\.env\.keys$/m.test(written)]);
+  } finally {
+    rmSync(tmpA, { recursive: true, force: true });
+  }
+
+  // Case 2: existing .gitignore missing the entry → appended without
+  // disturbing the user's existing lines.
+  const tmpB = mkdtempSync(join(tmpdir(), "gi-append-"));
+  try {
+    const before = "node_modules/\ndist/\n";
+    writeFileSync(join(tmpB, ".gitignore"), before);
+    const r = ensureGitignoreEntries(tmpB, [".env.keys"]);
+    const after = readFileSync(join(tmpB, ".gitignore"), "utf-8");
+    checks.push(["existing file: not re-created", r.fileCreated === false]);
+    checks.push(["existing file: .env.keys appended", r.added.includes(".env.keys")]);
+    checks.push(["existing file: original lines preserved", after.startsWith(before)]);
+    checks.push(["existing file: now contains .env.keys", /^\.env\.keys$/m.test(after)]);
+  } finally {
+    rmSync(tmpB, { recursive: true, force: true });
+  }
+
+  // Case 3: entry already present → no-op (idempotent), file untouched.
+  const tmpC = mkdtempSync(join(tmpdir(), "gi-noop-"));
+  try {
+    const before = "node_modules/\n.env.keys\n";
+    writeFileSync(join(tmpC, ".gitignore"), before);
+    const r = ensureGitignoreEntries(tmpC, [".env.keys"]);
+    const after = readFileSync(join(tmpC, ".gitignore"), "utf-8");
+    checks.push(["idempotent: nothing added", r.added.length === 0]);
+    checks.push(["idempotent: reported as alreadyPresent", r.alreadyPresent.includes(".env.keys")]);
+    checks.push(["idempotent: file content unchanged", after === before]);
+  } finally {
+    rmSync(tmpC, { recursive: true, force: true });
+  }
+
+  // Case 4: leading-slash variant `/.env.keys` is recognized as the same
+  // pattern. Without normalization we'd duplicate the entry on every run.
+  const tmpD = mkdtempSync(join(tmpdir(), "gi-slash-"));
+  try {
+    writeFileSync(join(tmpD, ".gitignore"), "/.env.keys\n");
+    const r = ensureGitignoreEntries(tmpD, [".env.keys"]);
+    checks.push(["leading-slash variant counts as present", r.added.length === 0]);
+    checks.push([
+      "leading-slash variant: alreadyPresent populated",
+      r.alreadyPresent.includes(".env.keys"),
+    ]);
+  } finally {
+    rmSync(tmpD, { recursive: true, force: true });
+  }
+
+  // Case 5: looksLikeDotenvxPrivateKey — flags a real `.env.keys` shape.
+  const tmpE = mkdtempSync(join(tmpdir(), "gi-detect-"));
+  try {
+    const keysFile = join(tmpE, ".env.keys");
+    writeFileSync(
+      keysFile,
+      `#-------------------------dotenvx-keys----------------\nDOTENV_PRIVATE_KEY_PRODUCTION="${"a".repeat(
+        64,
+      )}"\n`,
+    );
+    checks.push([".env.keys content flagged as private key", looksLikeDotenvxPrivateKey(keysFile)]);
+
+    // Encrypted .env.production has DOTENV_PUBLIC_KEY but NOT
+    // DOTENV_PRIVATE_KEY — must NOT be flagged or we'd refuse to
+    // commit the file we explicitly want shipped with the repo.
+    const prodFile = join(tmpE, ".env.production");
+    writeFileSync(
+      prodFile,
+      `#-------------------------dotenvx-keys----------------\nDOTENV_PUBLIC_KEY_PRODUCTION="${"b".repeat(
+        64,
+      )}"\nFOO="encrypted:abc"\n`,
+    );
+    checks.push([
+      ".env.production (public-key only) NOT flagged",
+      looksLikeDotenvxPrivateKey(prodFile) === false,
+    ]);
+
+    // Missing file shouldn't throw — guards in setupGitHubRemote rely
+    // on this being safe to call against deleted/renamed staged paths.
+    checks.push([
+      "missing file: returns false (no throw)",
+      looksLikeDotenvxPrivateKey(join(tmpE, "does-not-exist")) === false,
+    ]);
+  } finally {
+    rmSync(tmpE, { recursive: true, force: true });
+  }
+
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  results.gitignoreGuard = ok;
 }
 
 // Clean up the isolated config dir + every keychain entry scoped to
