@@ -251,10 +251,16 @@ export interface ResendMeta extends ProviderStatus {
 }
 
 export interface StripeMeta extends ProviderStatus {
-  /** "test" → sk_test_… / pk_test_…  vs  "live" → sk_live_… / pk_live_…
-   *  Used as a sanity check before provisioning a webhook on the wrong
-   *  account, and to label per-project webhook descriptions. */
-  mode?: "test" | "live";
+  /** Account id (`acct_…`) derived from the live master key during
+   *  verification. Surfaced in `hatchkit doctor` so a silent
+   *  account-swap (rotated key now points at a *different* Stripe
+   *  account) shows up as a warning instead of a green check. */
+  accountId?: string;
+  /** Whether each master key is configured. Both are independent —
+   *  a user can wire test-only or live-only and we just skip webhook
+   *  provisioning for the missing mode. */
+  hasTestMaster?: boolean;
+  hasLiveMaster?: boolean;
 }
 
 export interface GhcrMeta extends ProviderStatus {
@@ -305,10 +311,14 @@ export interface ResendConfig extends ResendMeta {
   apiKey: string;
 }
 export interface StripeConfig extends StripeMeta {
-  /** Server-side API key — `sk_test_…` or `sk_live_…`. */
-  secretKey: string;
-  /** Public-safe key for the browser bundle — `pk_test_…` / `pk_live_…`. */
-  publishableKey: string;
+  /** Master secret key for test/sandbox-mode operations. Used by
+   *  hatchkit ONLY to mint webhook endpoints in test mode. Never
+   *  written into a project. */
+  testSecretKey?: string;
+  /** Master secret key for live-mode operations. Used by hatchkit
+   *  ONLY to mint webhook endpoints in live mode. Never written into
+   *  a project. */
+  liveSecretKey?: string;
 }
 export interface GhcrConfig extends GhcrMeta {
   /** PAT with `read:packages` (and optionally `write:packages` for the
@@ -1263,92 +1273,204 @@ export async function getResendConfig(): Promise<ResendConfig | null> {
 }
 
 // ---------------------------------------------------------------------------
-// Provider: Stripe (payments — used to auto-provision per-project webhooks)
+// Provider: Stripe (payments)
 // ---------------------------------------------------------------------------
+//
+// Stripe's public API does NOT support programmatically minting restricted
+// API keys (`rk_*`) — that operation is dashboard-only. The only resource
+// hatchkit can auto-create is the webhook endpoint (POST /v1/webhook_endpoints),
+// which returns a signing secret (`whsec_…`) that the project needs at runtime.
+//
+// So the model here is:
+//
+//   1. **Master keys** (set up once, stored in keychain): one secret key per
+//      mode — `sk_test_*` (or `rk_test_*`) for sandbox, `sk_live_*` (or
+//      `rk_live_*`) for live. These are NEVER injected into a project's
+//      env files. Their only job is to call POST /v1/webhook_endpoints
+//      while a project is being created/adopted. The minimum sufficient
+//      scope is therefore `webhook_endpoints:write` — we recommend a
+//      Standard restricted key with exactly that permission per mode so
+//      a leak of the master key alone can't reach customer/charge data.
+//
+//   2. **Per-project keys** (collected at create/adopt time, stored in
+//      keychain keyed by project, written into the project's `.env.*`):
+//      separate sk + pk for each mode. The user pastes these once per
+//      project. Best practice — and what the create/adopt prompts steer
+//      the user toward — is one dedicated Sandbox per project (so test
+//      data is fully isolated) plus a project-scoped restricted key in
+//      live mode.
+//
+// This split is what enables: project-scoped blast radius on leak, sandbox
+// + live envs per run, and Stripe's official "use separate accounts /
+// separate restricted keys per independent project" recommendation
+// (https://docs.stripe.com/get-started/account/multiple-accounts,
+// https://docs.stripe.com/keys-best-practices).
+
+/** Mode + secret key prefix used as a sanity check before storing the
+ *  master key for that mode. Restricted keys (`rk_*`) follow the same
+ *  prefix convention as raw secret keys (`sk_*`). */
+function classifyStripeSecret(value: string): "test" | "live" | null {
+  if (/^(sk|rk)_test_/.test(value)) return "test";
+  if (/^(sk|rk)_live_/.test(value)) return "live";
+  return null;
+}
+
+/** Hit /v1/balance — cheapest authenticated GET — to confirm the master
+ *  key works AND infer the Stripe account it belongs to (`acct_…` is
+ *  surfaced via the Stripe-Account-Id response header so doctor can warn
+ *  on a silent account swap after rotation). Returns the account id, or
+ *  null if Stripe withheld it (some restricted keys do). */
+async function verifyStripeMasterKey(
+  secretKey: string,
+  modeLabel: "test" | "live",
+): Promise<{ accountId: string | null }> {
+  const res = await fetch("https://api.stripe.com/v1/balance", {
+    headers: { Authorization: `Bearer ${secretKey}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Stripe ${modeLabel} key verification failed: HTTP ${res.status} ${text}`);
+  }
+  const accountId = res.headers.get("stripe-account") ?? null;
+  return { accountId };
+}
+
+/** Prompt for + verify ONE master key (test or live). Returns the
+ *  pasted value, or null if the user opts to skip configuring this mode. */
+async function promptForMasterKey(mode: "test" | "live"): Promise<string | null> {
+  const wantConfigure = await confirm({
+    message:
+      mode === "test"
+        ? "Configure Stripe TEST/sandbox master key now? (skip if you only run live)"
+        : "Configure Stripe LIVE master key now? (skip if you only run sandbox)",
+    default: true,
+  });
+  if (!wantConfigure) return null;
+
+  const value = await confirmPastedSecret(
+    mode === "test"
+      ? "Stripe TEST secret key (sk_test_… or rk_test_… with webhook_endpoints:write)"
+      : "Stripe LIVE secret key (sk_live_… or rk_live_… with webhook_endpoints:write)",
+  );
+
+  const classified = classifyStripeSecret(value);
+  if (classified !== mode) {
+    throw new Error(
+      `Pasted key is ${classified ?? "not a recognized Stripe key"}; expected ${mode}. ` +
+        `Re-run \`hatchkit config add stripe\`.`,
+    );
+  }
+
+  const verify = ora(`Verifying Stripe ${mode} master key...`).start();
+  try {
+    const result = await verifyStripeMasterKey(value, mode);
+    verify.succeed(
+      `Stripe ${mode} master key verified${result.accountId ? ` (${result.accountId})` : ""}`,
+    );
+    return value;
+  } catch (err) {
+    verify.fail(`Could not verify Stripe ${mode} master key`);
+    throw err;
+  }
+}
 
 export async function ensureStripe(): Promise<StripeConfig> {
   const existing = store.get("providers.stripe") as StripeMeta | undefined;
-  const existingSecret = await getSecret(SECRET_KEYS.stripeSecretKey);
-  const existingPublishable = await getSecret(SECRET_KEYS.stripePublishableKey);
+  const existingTest = await getSecret(SECRET_KEYS.stripeMasterTestSecretKey);
+  const existingLive = await getSecret(SECRET_KEYS.stripeMasterLiveSecretKey);
 
-  if (existing?.status === "configured" && existingSecret && existingPublishable) {
-    return { ...existing, secretKey: existingSecret, publishableKey: existingPublishable };
+  if (existing?.status === "configured" && (existingTest || existingLive)) {
+    return {
+      ...existing,
+      testSecretKey: existingTest ?? undefined,
+      liveSecretKey: existingLive ?? undefined,
+    };
   }
 
   console.log(chalk.yellow("\n  Stripe is not configured yet. Let's set it up."));
   console.log(
     chalk.dim(
-      "  One-time setup — these keys go in your OS keychain and are reused for\n" +
-        "  every future `hatchkit create`. Per-project, hatchkit only auto-provisions\n" +
-        "  the webhook signing secret. You can re-run anytime via `hatchkit config add stripe`.\n",
+      "  Hatchkit needs ONE secret key per mode (test/sandbox + live) — used\n" +
+        "  ONLY to create webhook endpoints automatically when you scaffold a\n" +
+        "  project. These master keys are NEVER copied into a project's .env.\n" +
+        "  Per-project API keys are collected separately at `hatchkit create` /\n" +
+        "  `hatchkit adopt` time so each project's blast radius stays scoped.\n",
     ),
   );
   tokenHint(
     "https://dashboard.stripe.com/apikeys",
-    "Standard restricted key with `webhook_endpoints:write` (or use the Secret key)",
+    "Restricted key — TEST mode — `Webhook Endpoints: Write` only",
+    "Toggle to test mode in the dashboard before clicking 'Create restricted key'.",
   );
-  console.log(
-    chalk.dim(
-      "  Use the test-mode pair (sk_test_… / pk_test_…) for non-prod work,\n" +
-        "  the live-mode pair for real charges. Hatchkit infers the mode from\n" +
-        "  the `sk_` prefix.\n",
-    ),
+  tokenHint(
+    "https://dashboard.stripe.com/apikeys",
+    "Restricted key — LIVE mode — `Webhook Endpoints: Write` only",
+    "Toggle to live mode in the dashboard before clicking 'Create restricted key'.",
   );
 
-  const secretKey = await confirmPastedSecret("Stripe secret key (sk_test_… or sk_live_…)");
-  if (!/^sk_(test|live)_/.test(secretKey)) {
+  // Migrate from the legacy single-key layout: if the deprecated keychain
+  // entry exists, surface it as a one-time hint and clear it. Don't auto-
+  // promote — the legacy key was account-wide secret-key, not the
+  // narrowly-scoped restricted key we want now.
+  const legacy = await getSecret(SECRET_KEYS.stripeSecretKey);
+  if (legacy) {
+    console.log(
+      chalk.yellow(
+        "  Found a legacy Stripe key from a previous hatchkit version. The new\n" +
+          "  model uses two narrowly-scoped restricted keys (test + live) instead.\n" +
+          "  The legacy entry will be removed.\n",
+      ),
+    );
+    await deleteSecret(SECRET_KEYS.stripeSecretKey);
+    await deleteSecret(SECRET_KEYS.stripePublishableKey);
+  }
+
+  const testKey = await promptForMasterKey("test");
+  const liveKey = await promptForMasterKey("live");
+
+  if (!testKey && !liveKey) {
     throw new Error(
-      "Stripe secret key must start with `sk_test_` or `sk_live_`. Re-run `hatchkit config add stripe`.",
+      "At least one Stripe master key (test or live) must be configured. " +
+        "Re-run `hatchkit config add stripe`.",
     );
   }
-  const mode: "test" | "live" = secretKey.startsWith("sk_live_") ? "live" : "test";
 
-  const publishableKey = (
-    await input({
-      message: "Stripe publishable key (pk_test_… or pk_live_…):",
-      validate: (v) => {
-        const t = v.trim();
-        if (!/^pk_(test|live)_/.test(t)) return "Must start with pk_test_ or pk_live_.";
-        if (t.startsWith("pk_live_") !== (mode === "live"))
-          return "Publishable key mode doesn't match the secret key mode.";
-        return true;
-      },
-    })
-  ).trim();
-
-  // Sanity check: hit /v1/balance — cheapest authenticated GET that
-  // proves the secret key is valid before storing it.
-  const verify = ora("Verifying Stripe secret key...").start();
-  try {
-    const res = await fetch("https://api.stripe.com/v1/balance", {
-      headers: { Authorization: `Bearer ${secretKey}` },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    verify.succeed(`Stripe secret key verified (${mode} mode)`);
-  } catch (err) {
-    verify.fail("Could not verify Stripe secret key");
-    throw err;
-  }
+  // Account id from whichever master key we have — prefer live since
+  // sandbox keys may report a sandbox-scoped acct_id rather than the
+  // owning live account.
+  let accountId: string | null = null;
+  if (liveKey) accountId = (await verifyStripeMasterKey(liveKey, "live")).accountId;
+  else if (testKey) accountId = (await verifyStripeMasterKey(testKey, "test")).accountId;
 
   const meta: StripeMeta = {
     status: "configured",
-    mode,
+    accountId: accountId ?? undefined,
+    hasTestMaster: !!testKey,
+    hasLiveMaster: !!liveKey,
     lastVerified: new Date().toISOString(),
   };
   store.set("providers.stripe", meta);
-  await setSecret(SECRET_KEYS.stripeSecretKey, secretKey);
-  await setSecret(SECRET_KEYS.stripePublishableKey, publishableKey);
-  console.log(chalk.green(`  ✓ Stripe configured (${mode} mode)`));
-  return { ...meta, secretKey, publishableKey };
+  if (testKey) await setSecret(SECRET_KEYS.stripeMasterTestSecretKey, testKey);
+  if (liveKey) await setSecret(SECRET_KEYS.stripeMasterLiveSecretKey, liveKey);
+  console.log(
+    chalk.green(
+      `  ✓ Stripe configured (${[testKey && "test", liveKey && "live"].filter(Boolean).join(" + ")} master)`,
+    ),
+  );
+  return {
+    ...meta,
+    testSecretKey: testKey ?? undefined,
+    liveSecretKey: liveKey ?? undefined,
+  };
 }
 
 export async function getStripeConfig(): Promise<StripeConfig | null> {
   const meta = store.get("providers.stripe") as StripeMeta | undefined;
   if (!meta || meta.status !== "configured") return null;
-  const secretKey = await getSecret(SECRET_KEYS.stripeSecretKey);
-  const publishableKey = await getSecret(SECRET_KEYS.stripePublishableKey);
-  if (!secretKey || !publishableKey) return null;
-  return { ...meta, secretKey, publishableKey };
+  const testSecretKey = (await getSecret(SECRET_KEYS.stripeMasterTestSecretKey)) ?? undefined;
+  const liveSecretKey = (await getSecret(SECRET_KEYS.stripeMasterLiveSecretKey)) ?? undefined;
+  if (!testSecretKey && !liveSecretKey) return null;
+  return { ...meta, testSecretKey, liveSecretKey };
 }
 
 // ---------------------------------------------------------------------------
@@ -1515,7 +1637,16 @@ export async function reconfigureProvider(name: ReconfigurableProvider): Promise
     await wipeProvider("providers.resend", [SECRET_KEYS.resendApiKey]);
     await ensureResend();
   } else if (name === "stripe") {
+    // NB: per-project Stripe entries (`stripe:project:<name>:*`) are
+    // intentionally NOT swept here — those belong to individual scaffolded
+    // projects and are removed by `hatchkit destroy <project>`. Wiping
+    // them on a master-key rotation would orphan the user's webhook IDs
+    // and leave projects unable to verify incoming webhook signatures.
     await wipeProvider("providers.stripe", [
+      SECRET_KEYS.stripeMasterTestSecretKey,
+      SECRET_KEYS.stripeMasterLiveSecretKey,
+      // Legacy entries — remove if present so the next ensureStripe
+      // doesn't re-promote them.
       SECRET_KEYS.stripeSecretKey,
       SECRET_KEYS.stripePublishableKey,
     ]);
@@ -1665,7 +1796,11 @@ function buildSetupGroups(): SetupGroup[] {
           label: "Stripe (payments)",
           status: () => {
             const m = store.get("providers.stripe") as StripeMeta | undefined;
-            return { configured: m?.status === "configured", summary: m?.mode };
+            if (m?.status !== "configured") return { configured: false };
+            const modes = [m.hasTestMaster && "test", m.hasLiveMaster && "live"]
+              .filter(Boolean)
+              .join(" + ");
+            return { configured: true, summary: modes || "configured" };
           },
           run: () => reconfigureProvider("stripe"),
         },

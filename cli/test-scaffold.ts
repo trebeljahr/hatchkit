@@ -414,10 +414,13 @@ console.log("\n── update: manifest round-trip for web-only project ───
   }
 }
 
-// dotenvx: scaffold a project with some real + some missing env values,
-// verify .env.production has a public-key header + one encrypted value
-// + one plaintext CHANGE_ME_<KEY>, and that the private key ends up in
-// the (isolated) keychain.
+// dotenvx: scaffold a project, verify the encrypted/placeholder
+// envelope. STRIPE_* are deliberately NOT in the scaffolder's
+// candidate list — `provisionStripeProject` (run after scaffold) is
+// what writes those values into .env.development + .env.production
+// with per-project keys. So this test asserts the inverse: STRIPE_*
+// is absent from the seeded file, and the auto-minted secrets we DO
+// seed (BETTER_AUTH_SECRET) land encrypted.
 console.log("\n── dotenvx: .env.production is sealed correctly ─────────────────────────────");
 {
   const d = mkdtempSync(join(tmpdir(), "scaffold-dotenvx-"));
@@ -425,8 +428,9 @@ console.log("\n── dotenvx: .env.production is sealed correctly ────�
     const c = cfg("dotenvx-test", ["stripe"]);
     c.envValues = {
       MONGODB_URI: "mongodb+srv://real-host/real-db",
-      STRIPE_SECRET_KEY: "sk_live_REAL_VALUE",
-      // STRIPE_WEBHOOK_SECRET deliberately omitted → CHANGE_ME path.
+      // STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET intentionally omitted —
+      // they're outside the scaffold's contract now (per-project Stripe
+      // provisioning writes them post-scaffold).
     };
     const result = await scaffoldApp(c, d);
 
@@ -438,24 +442,24 @@ console.log("\n── dotenvx: .env.production is sealed correctly ────�
     const checks: Check[] = [
       ["dotenvx result is populated", !!result.dotenvx],
       [
-        "encryptedKeys includes STRIPE_SECRET_KEY",
-        result.dotenvx?.encryptedKeys.includes("STRIPE_SECRET_KEY") ?? false,
+        "encryptedKeys does NOT include STRIPE_SECRET_KEY (provisioned post-scaffold)",
+        !(result.dotenvx?.encryptedKeys.includes("STRIPE_SECRET_KEY") ?? false),
       ],
       [
-        "placeholderKeys includes STRIPE_WEBHOOK_SECRET",
-        result.dotenvx?.placeholderKeys.includes("STRIPE_WEBHOOK_SECRET") ?? false,
+        "placeholderKeys does NOT include STRIPE_WEBHOOK_SECRET (provisioned post-scaffold)",
+        !(result.dotenvx?.placeholderKeys.includes("STRIPE_WEBHOOK_SECRET") ?? false),
       ],
       [
         ".env.production has DOTENV_PUBLIC_KEY_PRODUCTION",
         /DOTENV_PUBLIC_KEY_PRODUCTION=/.test(envProd),
       ],
       [
-        "STRIPE_SECRET_KEY is encrypted (no plaintext sk_live_REAL_VALUE in file)",
-        !envProd.includes("sk_live_REAL_VALUE") && /STRIPE_SECRET_KEY="encrypted:/.test(envProd),
+        ".env.production does not pre-seed STRIPE_SECRET_KEY",
+        !/^STRIPE_SECRET_KEY=/m.test(envProd),
       ],
       [
-        "STRIPE_WEBHOOK_SECRET is plaintext CHANGE_ME",
-        /STRIPE_WEBHOOK_SECRET="?CHANGE_ME_STRIPE_WEBHOOK_SECRET"?/.test(envProd),
+        ".env.production does not pre-seed STRIPE_WEBHOOK_SECRET",
+        !/^STRIPE_WEBHOOK_SECRET=/m.test(envProd),
       ],
       [
         "BETTER_AUTH_SECRET auto-generated + encrypted",
@@ -470,10 +474,7 @@ console.log("\n── dotenvx: .env.production is sealed correctly ────�
         "private key mirrored into (isolated) keychain",
         typeof keychainKey === "string" && keychainKey.length > 0,
       ],
-      [
-        "keychain key matches .env.keys",
-        keychainKey === result.dotenvx?.privateKey,
-      ],
+      ["keychain key matches .env.keys", keychainKey === result.dotenvx?.privateKey],
     ];
     let ok = true;
     for (const [n, c] of checks) {

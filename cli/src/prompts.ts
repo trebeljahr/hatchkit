@@ -546,11 +546,13 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       if (mongodbProvider === "external") {
         await askOptional("MONGODB_URI", "MongoDB URI");
       }
-      // STRIPE_* and GLITCHTIP_DSN / SENTRY_DSN are NOT prompted:
-      //   · Stripe — secret + publishable keys live in the keychain
-      //     (configured once via `hatchkit setup` / `config add stripe`),
-      //     and the webhook signing secret is auto-generated at deploy
-      //     time when hatchkit registers the endpoint.
+      // STRIPE_* and GLITCHTIP_DSN / SENTRY_DSN are NOT prompted here:
+      //   · Stripe — `provisionStripeProject` runs after scaffold, walks
+      //     the user through per-project sandbox + live keys (paste once
+      //     each), auto-mints webhook signing secrets via the master
+      //     keys configured at `hatchkit setup` time, and writes
+      //     sandbox creds to .env.development + live creds to
+      //     .env.production (encrypted).
       //   · GlitchTip — the DSN is minted by `provisionGlitchtipClient`
       //     post-scaffold and written encrypted into .env.production.
       // The pre-flight in index.ts confirms each provider is configured.

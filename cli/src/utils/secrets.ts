@@ -69,8 +69,41 @@ export const SECRET_KEYS = {
   openpanelRootClientSecret: "openpanel:root-client-secret",
   openpanelClientSecret: (name: string) => `openpanel:${name}:client-secret`,
   resendApiKey: "resend:api-key",
+  /** @deprecated Single account-wide Stripe pair. Replaced by the
+   *  master+per-project model below. Kept only so `clearAllSecrets`
+   *  / migration code can detect & remove legacy entries.
+   *
+   *  Old behavior: every project written by hatchkit reused the same
+   *  STRIPE_SECRET_KEY in `.env.production`. A leak in any one project
+   *  exposed every project's Stripe account. Don't WRITE these. */
   stripeSecretKey: "stripe:secret-key",
   stripePublishableKey: "stripe:publishable-key",
+  /** Master Stripe credentials — used SOLELY by hatchkit to programmatically
+   *  create webhook endpoints (POST /v1/webhook_endpoints) per project per
+   *  mode. They are NEVER written into a project's `.env.*`. Stripe's public
+   *  API does not allow minting restricted keys, so per-project app keys
+   *  must still be pasted at create/adopt time — these masters cover only
+   *  the one auto-mintable resource: webhook endpoints + their signing
+   *  secrets. Recommended scope: a single Standard restricted key per mode
+   *  with `webhook_endpoints:write` only. */
+  stripeMasterTestSecretKey: "stripe:master:test:secret-key",
+  stripeMasterLiveSecretKey: "stripe:master:live:secret-key",
+  /** Per-project Stripe credentials. Test/sandbox values land in
+   *  `.env.development`; live values land in `.env.production` (encrypted
+   *  by dotenvx). Stored here so re-runs (rename-domain, regenerate-pipeline,
+   *  …) can rebuild the env files without re-prompting, and so
+   *  `hatchkit destroy` can sweep webhook endpoints. */
+  stripeProjectSecretKey: (project: string, mode: "test" | "live") =>
+    `stripe:project:${project}:${mode}:secret-key`,
+  stripeProjectPublishableKey: (project: string, mode: "test" | "live") =>
+    `stripe:project:${project}:${mode}:publishable-key`,
+  stripeProjectWebhookSecret: (project: string, mode: "test" | "live") =>
+    `stripe:project:${project}:${mode}:webhook-secret`,
+  /** Webhook endpoint id (`we_…`) — kept so destroy/rename-domain can
+   *  delete or update the endpoint instead of leaving orphans on the
+   *  Stripe account. */
+  stripeProjectWebhookId: (project: string, mode: "test" | "live") =>
+    `stripe:project:${project}:${mode}:webhook-id`,
   /** Per-scaffolded-project dotenvx private key for .env.production.
    *  Stored in the OS keychain so the CLI's on-disk state never holds
    *  decryption material for the starter's encrypted env. */

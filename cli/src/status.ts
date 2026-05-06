@@ -103,7 +103,7 @@ export function collectStatus(): StatusSnapshot {
     key: "stripe",
     label: "Stripe (payments)",
     configured: !!config.providers.stripe && config.providers.stripe.status === "configured",
-    detail: config.providers.stripe?.mode,
+    detail: stripeDetail(config.providers.stripe),
     configureCommand: "hatchkit config add stripe",
   });
 
@@ -126,6 +126,24 @@ export function collectStatus(): StatusSnapshot {
     nextStep,
     suggestions,
   };
+}
+
+function stripeDetail(
+  meta:
+    | {
+        status?: string;
+        hasTestMaster?: boolean;
+        hasLiveMaster?: boolean;
+        accountId?: string;
+      }
+    | undefined,
+): string | undefined {
+  if (!meta || meta.status !== "configured") return undefined;
+  const modes = [meta.hasTestMaster && "test", meta.hasLiveMaster && "live"]
+    .filter(Boolean)
+    .join(" + ");
+  if (!modes) return undefined;
+  return meta.accountId ? `${modes} · ${meta.accountId}` : modes;
 }
 
 function computeNextStep(providers: ProviderSnapshot[]): string {

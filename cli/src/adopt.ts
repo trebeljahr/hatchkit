@@ -1633,6 +1633,109 @@ async function executePlan(
       }
     }
 
+    // Step 4c: Stripe — strictly separate from `create`'s Stripe block
+    // but uses the same provisionStripeProject so behavior matches. The
+    // adopt path lets the user steer the per-project keys onto an
+    // existing project's keychain entries (re-runs reuse cached values
+    // by default; see `--reprompt-stripe`-shaped opts inside
+    // provisionStripeProject when we surface a flag for it).
+    if (plan.features.includes("stripe")) {
+      try {
+        const { provisionStripeProject, renderStripeEnv, renderStripeSkipComment } = await import(
+          "./provision/stripe.js"
+        );
+        const { appendCommentBlock, parseEnvLines, writeDevEnv, writeProdEnv } = await import(
+          "./provision/write-env.js"
+        );
+        // Adopt's surface model: serverDir is the canonical env home for
+        // a server-bearing project. If serverDir is missing (client-only
+        // adopt) we have no place to write Stripe creds — surface a
+        // caveat instead of silently skipping.
+        if (!plan.serverDir) {
+          caveats.push({
+            title: "Stripe wiring skipped",
+            reason: "No server directory detected — Stripe needs server-side env files.",
+            recovery: [
+              "If this project actually has a server, re-run `hatchkit adopt --resume` and set the server dir.",
+            ],
+          });
+        } else {
+          const result = await provisionStripeProject({
+            projectName: plan.name,
+            domain: plan.domain,
+          });
+          const devEnvPath = join(plan.serverDir, ".env.development");
+          const prodEnvPath = join(plan.serverDir, ".env.production");
+          const devLabel = relative(state.projectDir, devEnvPath);
+          const prodLabel = relative(state.projectDir, prodEnvPath);
+
+          if (result.test) {
+            if (result.test.kind === "skipped") {
+              appendCommentBlock(devEnvPath, renderStripeSkipComment("test", devLabel));
+            }
+            const pairs = parseEnvLines(renderStripeEnv(result.test));
+            writeDevEnv(devEnvPath, pairs);
+            if (result.test.kind === "configured") {
+              ledger.record({
+                kind: "keychain",
+                account: SECRET_KEYS.stripeProjectWebhookId(plan.name, "test"),
+              });
+            }
+            console.log(
+              chalk.green(
+                result.test.kind === "skipped"
+                  ? `  ✓ Stripe sandbox placeholders → ${devLabel} (fill in later)`
+                  : `  ✓ Stripe sandbox creds → ${devLabel} (${pairs.length} keys)`,
+              ),
+            );
+          }
+          if (result.live) {
+            if (result.live.kind === "skipped") {
+              appendCommentBlock(prodEnvPath, renderStripeSkipComment("live", prodLabel));
+            }
+            const pairs = parseEnvLines(renderStripeEnv(result.live));
+            writeProdEnv(prodEnvPath, pairs);
+            if (result.live.kind === "configured") {
+              ledger.record({
+                kind: "keychain",
+                account: SECRET_KEYS.stripeProjectWebhookId(plan.name, "live"),
+              });
+            }
+            console.log(
+              chalk.green(
+                result.live.kind === "skipped"
+                  ? `  ✓ Stripe live placeholders → ${prodLabel} (encrypted CHANGE_ME values, fill in later)`
+                  : `  ✓ Stripe live creds → ${prodLabel} (encrypted, ${pairs.length} keys)`,
+              ),
+            );
+          }
+          if (!result.test && !result.live) {
+            caveats.push({
+              title: "Stripe wiring skipped",
+              reason:
+                "No Stripe master key configured — neither test nor live mode could be wired.",
+              recovery: [
+                "Run `hatchkit config add stripe` to add at least one master key,",
+                `then re-run \`hatchkit adopt --resume\` from ${state.projectDir}.`,
+              ],
+            });
+          }
+        }
+      } catch (err) {
+        const msg = (err as Error).message;
+        console.log(chalk.yellow(`\n  ✗ Stripe provisioning failed: ${msg.split("\n")[0]}`));
+        caveats.push({
+          title: "Stripe not provisioned",
+          reason: msg,
+          recovery: [
+            "Once the issue is fixed, re-run from the project dir:",
+            `  cd ${plan.name} && hatchkit adopt --resume`,
+            "(safe to re-run — webhook creation reuses the cached endpoint id)",
+          ],
+        });
+      }
+    }
+
     // Step 5: push key to Coolify — but only when wireCoolify didn't
     // already do it. wireCoolify's success path includes a setAppEnv
     // pass that pushes DOTENV_PRIVATE_KEY_PRODUCTION; if it failed,

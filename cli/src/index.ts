@@ -1044,45 +1044,88 @@ async function handleCreate(): Promise<void> {
         }
       }
 
-      // Stripe: register a webhook endpoint at https://<domain>/api/stripe/webhook
-      // and write STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET encrypted
-      // into .env.production. The publishable key is non-secret (it ships
-      // in the browser bundle); we still encrypt-write it so the same env
-      // file is the single source of truth per environment.
+      // Stripe: walk the user through pasting per-project keys (sk + pk
+      // for test + live), auto-mint a webhook endpoint per mode using
+      // the master keys, and persist:
+      //   · sandbox creds  → .env.development (plaintext)
+      //   · live creds     → .env.production  (dotenvx-encrypted)
+      // Webhook endpoint ids are tracked in keychain so destroy can
+      // reach them later.
       if (config.features.includes("stripe")) {
         try {
-          const { provisionStripeWebhook } = await import("./provision/stripe.js");
-          const { getStripeConfig } = await import("./config.js");
-          const { set: dotenvxSet } = await import("@dotenvx/dotenvx");
-          const ora = (await import("ora")).default;
-          const spinner = ora(`Stripe: registering webhook for ${config.domain}`).start();
-          const stripeCfg = await getStripeConfig();
-          const webhook = await provisionStripeWebhook(config.name, config.domain);
-          spinner.succeed(
-            `Stripe webhook ready (${webhook.mode} mode → https://${config.domain}/api/stripe/webhook)`,
+          const { provisionStripeProject, renderStripeEnv, renderStripeSkipComment } = await import(
+            "./provision/stripe.js"
           );
-          const prodEnvPath = join(appDir, "packages/server/.env.production");
-          if (stripeCfg) {
-            dotenvxSet("STRIPE_SECRET_KEY", stripeCfg.secretKey, {
-              path: prodEnvPath,
-              encrypt: true,
-            });
-            dotenvxSet("STRIPE_PUBLISHABLE_KEY", stripeCfg.publishableKey, {
-              path: prodEnvPath,
-              encrypt: true,
-            });
-          }
-          dotenvxSet("STRIPE_WEBHOOK_SECRET", webhook.signingSecret, {
-            path: prodEnvPath,
-            encrypt: true,
+          const { appendCommentBlock, parseEnvLines, writeDevEnv, writeProdEnv } = await import(
+            "./provision/write-env.js"
+          );
+          const result = await provisionStripeProject({
+            projectName: config.name,
+            domain: config.domain,
           });
+
+          const devEnvPath = join(appDir, "packages/server/.env.development");
+          const prodEnvPath = join(appDir, "packages/server/.env.production");
+          const devLabel = "packages/server/.env.development";
+          const prodLabel = "packages/server/.env.production";
+
+          if (result.test) {
+            if (result.test.kind === "skipped") {
+              appendCommentBlock(devEnvPath, renderStripeSkipComment("test", devLabel));
+            }
+            const pairs = parseEnvLines(renderStripeEnv(result.test));
+            writeDevEnv(devEnvPath, pairs);
+            // Only record the webhook ledger entry when we actually
+            // touched Stripe's API — skipped runs leave nothing to undo.
+            if (result.test.kind === "configured") {
+              ledger?.record({
+                kind: "keychain",
+                account: SECRET_KEYS.stripeProjectWebhookId(config.name, "test"),
+              });
+            }
+            console.log(
+              chalk.green(
+                result.test.kind === "skipped"
+                  ? `  ✓ Stripe sandbox placeholders → ${devLabel} (fill in later)`
+                  : `  ✓ Stripe sandbox creds → ${devLabel} (${pairs.length} keys)`,
+              ),
+            );
+          }
+          if (result.live) {
+            if (result.live.kind === "skipped") {
+              appendCommentBlock(prodEnvPath, renderStripeSkipComment("live", prodLabel));
+            }
+            const pairs = parseEnvLines(renderStripeEnv(result.live));
+            writeProdEnv(prodEnvPath, pairs);
+            if (result.live.kind === "configured") {
+              ledger?.record({
+                kind: "keychain",
+                account: SECRET_KEYS.stripeProjectWebhookId(config.name, "live"),
+              });
+            }
+            console.log(
+              chalk.green(
+                result.live.kind === "skipped"
+                  ? `  ✓ Stripe live placeholders → ${prodLabel} (encrypted CHANGE_ME values, fill in later)`
+                  : `  ✓ Stripe live creds → ${prodLabel} (encrypted, ${pairs.length} keys)`,
+              ),
+            );
+          }
+
+          if (!result.test && !result.live) {
+            console.log(
+              chalk.yellow(
+                "  Stripe: no master key configured for either mode — wiring skipped.\n" +
+                  "  Run `hatchkit config add stripe` to add a test and/or live master key,\n" +
+                  "  then re-run from the project dir.",
+              ),
+            );
+          }
         } catch (err) {
-          console.log(
-            chalk.yellow(`  Couldn't auto-provision Stripe webhook: ${(err as Error).message}`),
-          );
+          console.log(chalk.yellow(`  Couldn't auto-provision Stripe: ${(err as Error).message}`));
           console.log(
             chalk.dim(
-              `  Create one manually: dashboard.stripe.com → Developers → Webhooks,\n` +
+              `  Create the webhook manually: dashboard.stripe.com → Developers → Webhooks,\n` +
                 `  point at https://${config.domain}/api/stripe/webhook, then\n` +
                 `  \`dotenvx set STRIPE_WEBHOOK_SECRET <whsec_…> -f packages/server/.env.production\`.`,
             ),

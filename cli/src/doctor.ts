@@ -504,31 +504,46 @@ async function checkResend(): Promise<CheckResult> {
   );
 }
 
-async function checkStripe(): Promise<CheckResult> {
-  const { getStripeConfig } = await import("./config.js");
-  const cfg = await getStripeConfig();
-  if (!cfg) return { name: "Stripe", status: "skip" };
+async function checkStripeMode(mode: "test" | "live", secretKey: string): Promise<CheckResult> {
   return check(
-    `Stripe (${cfg.mode})`,
+    `Stripe (${mode} master)`,
     async () => {
       const res = await fetch("https://api.stripe.com/v1/balance", {
-        headers: { Authorization: `Bearer ${cfg.secretKey}` },
+        headers: { Authorization: `Bearer ${secretKey}` },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return "secret key valid";
+      // The webhook_endpoints:write scope can't be cheaply tested with
+      // a GET, so /balance is the proxy: it proves the key is live and
+      // the account is reachable. A scope-mismatched key still passes
+      // /balance — at provision time, POST /v1/webhook_endpoints will
+      // surface the scope error inline (and `hatchkit create` already
+      // soft-fails to a manual fallback when that happens).
+      return "master key valid";
     },
     (detail) => {
       const code = httpCode(detail);
       if (code === 401) {
         return [
-          "Stripe secret key is invalid or was rotated.",
-          "Find the current pair at https://dashboard.stripe.com/apikeys",
+          `Stripe ${mode} master key is invalid or was rotated.`,
+          `Create a new restricted key (${mode} mode) at https://dashboard.stripe.com/apikeys`,
+          "Required scope: Webhook Endpoints — Write",
           "Then re-run: `hatchkit config add stripe`",
         ];
       }
       return undefined;
     },
   );
+}
+
+async function checkStripe(): Promise<CheckResult[]> {
+  const { getStripeConfig } = await import("./config.js");
+  const cfg = await getStripeConfig();
+  if (!cfg) return [{ name: "Stripe", status: "skip" }];
+  const out: CheckResult[] = [];
+  if (cfg.testSecretKey) out.push(await checkStripeMode("test", cfg.testSecretKey));
+  if (cfg.liveSecretKey) out.push(await checkStripeMode("live", cfg.liveSecretKey));
+  if (out.length === 0) return [{ name: "Stripe", status: "skip" }];
+  return out;
 }
 
 export async function collectDoctorResults(): Promise<CheckResult[]> {
@@ -542,7 +557,7 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   results.push(await checkGlitchtip());
   results.push(await checkOpenpanel());
   results.push(await checkResend());
-  results.push(await checkStripe());
+  for (const r of await checkStripe()) results.push(r);
   // Project-local checks — only run when doctor was invoked inside a
   // hatchkit-managed project (manifest at cwd). Globally they're a
   // no-op, so `hatchkit doctor` from $HOME stays clean.

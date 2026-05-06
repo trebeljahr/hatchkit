@@ -55,7 +55,14 @@ export const env = {
   GOOGLE_CLIENT_SECRET: getOptional("GOOGLE_CLIENT_SECRET"),
 
   // Stripe
+  // Hatchkit provisions one set per environment:
+  //   .env.development → sandbox keys (STRIPE_MODE=test)
+  //   .env.production  → live keys    (STRIPE_MODE=live, dotenvx-encrypted)
+  // Each project gets its own pair (paste once at `hatchkit create` /
+  // `hatchkit adopt`); STRIPE_WEBHOOK_SECRET is auto-minted by hatchkit.
+  STRIPE_MODE: getOptional("STRIPE_MODE"),
   STRIPE_SECRET_KEY: getOptional("STRIPE_SECRET_KEY"),
+  STRIPE_PUBLISHABLE_KEY: getOptional("STRIPE_PUBLISHABLE_KEY"),
   STRIPE_WEBHOOK_SECRET: getOptional("STRIPE_WEBHOOK_SECRET"),
 
   // Email

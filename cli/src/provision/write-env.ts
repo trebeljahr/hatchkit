@@ -98,6 +98,23 @@ export function writeProdEnv(envPath: string, pairs: EnvPair[]): string[] {
   return encrypted;
 }
 
+/** Append a block of comment lines to an env file ONCE. The first line
+ *  acts as a sentinel — if it already appears in the file, the call is
+ *  a no-op. dotenvx-encrypted files preserve comments verbatim, so this
+ *  works the same on `.env.production` (encrypted) and
+ *  `.env.development` (plain). Used by Stripe's "skip" path to drop a
+ *  visible "wire this up later" recipe above the CHANGE_ME placeholders. */
+export function appendCommentBlock(envPath: string, comments: string[]): void {
+  if (comments.length === 0) return;
+  ensureParent(envPath);
+  const sentinel = comments[0];
+  const existing = existsSync(envPath) ? readFileSync(envPath, "utf-8") : "";
+  if (existing.includes(sentinel)) return;
+  const prefix = existing === "" ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
+  const block = `${comments.join("\n")}\n`;
+  writeFileSync(envPath, existing + prefix + block, { mode: 0o600 });
+}
+
 function ensureParent(filePath: string): void {
   const parent = dirname(filePath);
   if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
