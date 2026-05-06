@@ -658,7 +658,7 @@ async function handleProvisionS3(): Promise<void> {
   //   stdin is a TTY, no flags          → prompt with sensible default
   //                                       (re-using the existing custom
   //                                       domain on re-run, otherwise
-  //                                       `s3.<project-domain>`). Empty
+  //                                       `assets.<project-domain>`). Empty
   //                                       answer → null (skip).
   //   non-TTY, no flags                 → undefined (function falls back
   //                                       to its built-in default)
@@ -671,7 +671,7 @@ async function handleProvisionS3(): Promise<void> {
     // already settled on. Pass `--public-hostname=<host>` to change
     // it explicitly (or `--no-custom-domain` to switch to managed
     // r2.dev). Only on first run, when nothing's recorded yet, do we
-    // prompt with `s3.<domain>` as the default.
+    // prompt with `assets.<domain>` as the default.
     const { defaultBucketHostname, existingCustomHostname } = await import(
       "./provision/s3-buckets.js"
     );

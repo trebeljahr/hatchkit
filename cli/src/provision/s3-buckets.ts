@@ -19,7 +19,7 @@
  *
  * Public URL strategy for the assets bucket, in order:
  *   1. Custom domain on a Cloudflare zone the user owns
- *      (`s3.<project-domain>` or a caller-provided override) —
+ *      (`assets.<project-domain>` or a caller-provided override) —
  *      preferred long-term, no `r2.dev` rate limits.
  *   2. Managed `pub-<hash>.r2.dev` domain — fallback when no zone
  *      matches the project's domain, or when the caller explicitly
@@ -63,7 +63,7 @@ export interface ProvisionS3Opts {
   envPrefix?: EnvPrefix;
   /** Override the public hostname for the assets bucket. Semantics:
    *  · undefined          → derive default from manifest.domain
-   *                         (`s3.<domain>`); fall back to managed
+   *                         (`assets.<domain>`); fall back to managed
    *                         r2.dev if no Cloudflare zone matches.
    *  · `null` or `""`     → skip the custom-domain attempt entirely
    *                         and use the managed r2.dev URL.
@@ -327,7 +327,7 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   let publicUrlSource: "custom-domain" | "managed-r2dev" | undefined;
 
   const skipCustomDomain = opts.publicHostname === null || opts.publicHostname === "";
-  // Pick the hostname. Default `s3.<domain>`; allow caller override.
+  // Pick the hostname. Default `assets.<domain>`; allow caller override.
   const customHostname = opts.publicHostname || defaultBucketHostname(domain);
   // Find the closest matching zone (the registrable name — last
   // two labels of the host, or the host itself if the user passed a
@@ -731,11 +731,18 @@ function pickClosestZoneName(hostname: string): string {
 }
 
 /** The default custom-domain hostname for the assets bucket. Sits at
- *  `s3.<project-domain>` so e.g. a project on `beauty.trebeljahr.com`
- *  gets `s3.beauty.trebeljahr.com`. Exposed for callers that want to
- *  show this as the default in an interactive prompt. */
+ *  `assets.<project-domain>` so e.g. a project on `beauty.trebeljahr.com`
+ *  gets `assets.beauty.trebeljahr.com`. Matches the canonical purpose
+ *  of the bucket (NEXT_PUBLIC_ASSETS_BASE_URL) and the existing
+ *  `assets` key in the manifest's `s3Buckets`. Exposed for callers
+ *  that want to show this as the default in an interactive prompt.
+ *
+ *  Existing scaffolds that landed on `s3.<domain>` keep working —
+ *  `existingCustomHostname` reads the recorded `publicUrl` from the
+ *  manifest and re-runs of `hatchkit provision s3` reuse it instead
+ *  of switching the bucket's domain mid-flight. */
 export function defaultBucketHostname(domain: string): string {
-  return `s3.${domain}`;
+  return `assets.${domain}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -944,7 +951,7 @@ export async function reconcileAssetsCorsFromManifest(
 
 /** If a previous run already attached a custom domain to the assets
  *  bucket, surface that hostname so re-runs can default the prompt
- *  to it (instead of the freshly-computed `s3.<domain>`). Returns
+ *  to it (instead of the freshly-computed `assets.<domain>`). Returns
  *  null when the manifest only records a managed r2.dev URL. */
 export function existingCustomHostname(manifest: ProjectManifest): string | null {
   const url = manifest.s3Buckets?.assets?.publicUrl;
