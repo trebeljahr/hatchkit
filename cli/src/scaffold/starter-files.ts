@@ -238,3 +238,47 @@ export function applyPorts(
     );
   }
 }
+
+/** Rewrite the local-infra identifiers that the starter ships with
+ *  literal `starter-*` names so each scaffolded project gets its own
+ *  unique MongoDB database name, MinIO bucket name, and E2E
+ *  isolation. Without this, two scaffolded projects on one dev
+ *  machine would share the same dev MinIO bucket / Mongo DB.
+ *
+ *  Only rewrites the suffixed forms (`starter-dev`, `starter-e2e`,
+ *  `starter-assets`) — those are unambiguous local-infra identifiers
+ *  tied to the starter's name. Bare `starter` and `@starter/*`
+ *  occurrences are left to the package-rename pass in pkg-json.ts and
+ *  to `replaceInFile` on package.json.
+ *
+ *  Targets:
+ *    · docker-compose.dev.yml                 (mc mb / mc anonymous)
+ *    · packages/server/.env.development        (MONGODB_URI, S3_BUCKET_NAME, S3_PUBLIC_URL)
+ *    · packages/server/.env.example            (same three keys)
+ *    · playwright.config.ts                    (E2E DB + bucket + public URL)
+ *    · packages/server/src/config/env.ts       (Zod fallback default for S3_BUCKET_NAME)
+ *
+ *  Idempotent — after the first run the literal `starter-` prefix is
+ *  gone, so re-runs (e.g. through `hatchkit update`) are no-ops. */
+export function applyProjectName(outputDir: string, projectName: string): void {
+  const replacements: Array<[from: string, to: string]> = [
+    ["starter-dev", `${projectName}-dev`],
+    ["starter-e2e", `${projectName}-e2e`],
+    ["starter-assets", `${projectName}-assets`],
+  ];
+  const targets = [
+    "docker-compose.dev.yml",
+    "packages/server/.env.development",
+    "packages/server/.env.example",
+    "playwright.config.ts",
+    "packages/server/src/config/env.ts",
+  ];
+  for (const rel of targets) {
+    const path = join(outputDir, rel);
+    rewriteFile(path, (content) => {
+      let out = content;
+      for (const [from, to] of replacements) out = out.replaceAll(from, to);
+      return out;
+    });
+  }
+}

@@ -18,11 +18,14 @@ const TOP_LEVEL = [
   "adopt",
   "update",
   "add",
+  "assets",
   "keys",
   "config",
   "completion",
   "help",
 ] as const;
+
+const ASSETS_SUB = ["seed", "push", "pull", "migrate", "list"] as const;
 
 const CONFIG_ADD = [
   "coolify",
@@ -81,6 +84,9 @@ ${TOP_LEVEL.map((c) => `    '${c}:${topDesc(c)}'`).join("\n")}
         keys)
           _values 'keys subcommand' ${KEYS_SUB.map((s) => `'${s}'`).join(" ")}
           ;;
+        assets)
+          _values 'assets subcommand' ${ASSETS_SUB.map((s) => `'${s}'`).join(" ")}
+          ;;
         completion)
           _values 'shell' ${SHELLS.map((s) => `'${s}'`).join(" ")}
           ;;
@@ -116,6 +122,7 @@ _hatchkit_complete() {
   local top="${TOP_LEVEL.join(" ")}"
   local config_sub="${CONFIG_SUB.join(" ")}"
   local keys_sub="${KEYS_SUB.join(" ")}"
+  local assets_sub="${ASSETS_SUB.join(" ")}"
   local shells="${SHELLS.join(" ")}"
   local providers="${CONFIG_ADD.join(" ")}"
 
@@ -135,6 +142,11 @@ _hatchkit_complete() {
     keys)
       if [[ $cword -eq 2 ]]; then
         COMPREPLY=( $(compgen -W "$keys_sub" -- "$cur") )
+      fi
+      ;;
+    assets)
+      if [[ $cword -eq 2 ]]; then
+        COMPREPLY=( $(compgen -W "$assets_sub" -- "$cur") )
       fi
       ;;
     completion)
@@ -176,6 +188,9 @@ function fish(): string {
   for (const s of KEYS_SUB) {
     lines.push(`complete -c hatchkit -n "__fish_seen_subcommand_from keys" -a "${s}"`);
   }
+  for (const s of ASSETS_SUB) {
+    lines.push(`complete -c hatchkit -n "__fish_seen_subcommand_from assets" -a "${s}"`);
+  }
   for (const s of SHELLS) {
     lines.push(`complete -c hatchkit -n "__fish_seen_subcommand_from completion" -a "${s}"`);
   }
@@ -205,6 +220,8 @@ function topDesc(cmd: string): string {
       return "Add features to an already-scaffolded project";
     case "add":
       return "Provision GlitchTip / OpenPanel / Resend clients";
+    case "assets":
+      return "Move bytes between local MinIO and prod buckets";
     case "keys":
       return "Manage per-project dotenvx private keys";
     case "config":

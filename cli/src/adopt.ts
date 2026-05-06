@@ -1602,6 +1602,17 @@ async function executePlan(
               "(Need a private server-side bucket too? Run `hatchkit provision s3 --with-state-bucket`.)",
           ),
         );
+        // The fresh bucket is empty. Existing projects almost always
+        // have assets sitting in some other store — surface the one
+        // command that copies them in. Cheap line to print, easy to
+        // miss without it.
+        console.log(
+          chalk.dim(
+            `    Have existing assets to bring over? hatchkit assets migrate \\\n` +
+              `      --from-endpoint=<old-s3-endpoint> --from-bucket=<name> \\\n` +
+              `      --from-key=<access-key> --from-secret=<secret>`,
+          ),
+        );
       } catch (err) {
         console.log(
           chalk.yellow(

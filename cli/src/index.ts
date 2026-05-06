@@ -200,6 +200,16 @@ async function main(): Promise<void> {
       process.exit(1);
       break;
     }
+    case "assets": {
+      if (args.includes("--help") && args.length === 2) {
+        printHelp("assets");
+        break;
+      }
+      const { handleAssets } = await import("./assets/index.js");
+      const code = await handleAssets(args.slice(1));
+      if (code !== 0) process.exit(code);
+      break;
+    }
     case "dns": {
       if (args.includes("--help")) return printHelp("dns");
       await handleDns();
@@ -1563,6 +1573,7 @@ type HelpTopic =
   | "keys"
   | "add"
   | "adopt"
+  | "assets"
   | "remove"
   | "destroy"
   | "rename-domain"
@@ -2024,6 +2035,51 @@ function printHelp(topic?: HelpTopic): void {
 `);
     return;
   }
+  if (topic === "assets") {
+    console.log(`
+  ${chalk.bold("hatchkit assets")} — move bytes between local MinIO and prod buckets
+
+  ${chalk.bold("Subcommands:")}
+    assets seed     [--from <dir>]                Local dir → local MinIO bucket.
+                                                  Defaults to ./seed/assets.
+    assets push     [--bucket assets|state]       Local MinIO → prod bucket.
+    assets pull     [--bucket assets|state]       Prod bucket → local MinIO.
+                                                  Caution: prod data may include PII.
+    assets migrate  --from-endpoint=URL           External S3 → prod bucket.
+                    --from-bucket=NAME            The adoption escape hatch — copy
+                    --from-key=AKIA…              an existing S3-compatible bucket
+                    --from-secret=…               into the project's prod bucket.
+                    [--from-region=us-east-1]
+                    [--from-prefix=path/]
+    assets list     [dev|prod] [--bucket KIND]    Show what's in a bucket.
+
+  ${chalk.bold("Common flags:")}
+    --dir <path>     Project dir (defaults to cwd).
+    --bucket KIND    "assets" (default) or "state".
+    --dry-run        Plan only — list what would be copied, transfer nothing.
+    --json           Machine-readable output.
+
+  ${chalk.bold("Notes:")}
+    Mirror semantics: copy missing + changed objects. Never deletes
+    from the target. Streams Get→Put so cross-provider migrations
+    (e.g. AWS S3 → R2) work without server-side copy.
+
+    Reads dev creds from ${chalk.cyan("packages/server/.env.development")} (plaintext)
+    and prod creds from ${chalk.cyan("packages/server/.env.production")} (decrypted via
+    dotenvx + .env.keys). Bucket names come from .hatchkit.json when
+    the env doesn't carry them (R2's URL-driven assets bucket).
+
+  ${chalk.bold("Examples:")}
+    hatchkit assets seed                                # ./seed/assets/ → local MinIO
+    hatchkit assets push --dry-run                      # see what would ship to prod
+    hatchkit assets push                                # actually ship it
+    hatchkit assets migrate --from-endpoint https://nyc3.digitaloceanspaces.com \\
+      --from-bucket old-app-uploads \\
+      --from-key DOXXXXXXXXX --from-secret <secret>     # one-off adoption migration
+    hatchkit assets list prod                           # sanity-check
+`);
+    return;
+  }
   if (topic === "completion") {
     console.log(`
   ${chalk.bold("hatchkit completion")} — print a shell-completion script
@@ -2052,6 +2108,7 @@ function printHelp(topic?: HelpTopic): void {
     adopt           Bring an existing project under hatchkit management (run in project dir)
     update          Add features to an already-scaffolded project (run in project dir)
     add             Create GlitchTip / OpenPanel / Resend clients for an existing project
+    assets          Move bytes between local MinIO and prod buckets (seed/push/pull/migrate)
     remove          Delete the -dev/-prod clients created by 'add' (inverse of add)
     destroy         Roll back everything ${chalk.cyan("hatchkit create")} did for a project
     rename-domain   Move a scaffolded project to a new domain (rewrites tfvars/env/manifest)

@@ -95,6 +95,12 @@ const MODEL: ExplainModel = {
       when: "After the scaffold is live and you're ready to wire up observability / email.",
     },
     {
+      name: "hatchkit assets <seed|push|pull|migrate|list>",
+      summary:
+        "Move bytes between the project's local MinIO bucket and its production S3 bucket. Streams cross-provider, so `migrate` works against any S3-compatible source for adoption.",
+      when: "After `hatchkit adopt`, to copy existing assets into the new prod bucket; or routinely to seed local dev data (`seed`) and push staged content to prod (`push`).",
+    },
+    {
       name: "hatchkit keys show <project>",
       summary: "Print the project's DOTENV_PRIVATE_KEY_PRODUCTION from the keychain.",
       when: "To hand the key to CI / another machine / manually paste into Coolify.",
