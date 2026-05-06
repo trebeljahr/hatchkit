@@ -414,11 +414,15 @@ function printChecklist(
   );
 
   console.log(chalk.bold("\n  3. Coolify app"));
+  console.log(`     Push the new domain to Coolify so Traefik picks it up:`);
+  console.log(chalk.cyan(`       hatchkit sync`));
   console.log(
-    `     Update the FQDN on the ${chalk.cyan(manifest.name)} app (Coolify dashboard → General),`,
+    chalk.dim(
+      `     (Reads .hatchkit.json and PATCHes the matching app(s)' docker_compose_domains.)`,
+    ),
   );
   console.log(
-    `     and confirm env vars like ${chalk.dim("FRONTEND_URL / BETTER_AUTH_URL / TRUSTED_ORIGINS")}`,
+    `     Then confirm env vars like ${chalk.dim("FRONTEND_URL / BETTER_AUTH_URL / TRUSTED_ORIGINS")}`,
   );
   console.log(`     moved across. Redeploy after updating — new TLS cert takes 1-3 min.`);
 

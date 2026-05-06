@@ -411,8 +411,18 @@ export class CoolifyApi {
    *  "found by name, reconcile config" path so a build_pack mismatch
    *  on an app created by an earlier run (e.g. `static` baked in by
    *  Coolify's New-App wizard, or by an older hatchkit default) gets
-   *  corrected to `dockercompose` on `--resume`. Only fields the caller
-   *  passes are sent — Coolify treats omitted keys as "leave as-is". */
+   *  corrected to `dockercompose` on `--resume`, and by `hatchkit sync`
+   *  to push the manifest's domain onto an app that was created without
+   *  it. Only fields the caller passes are sent — Coolify treats omitted
+   *  keys as "leave as-is".
+   *
+   *  Domain handling mirrors the create path:
+   *    · non-dockercompose → `domains` (comma-joined string)
+   *    · dockercompose     → `docker_compose_domains` (per-service)
+   *  Coolify rejects the flat `domains` field on dockercompose apps with
+   *  422 ("Use docker_compose_domains instead"), so the caller is
+   *  responsible for picking the right field — this method does no
+   *  auto-translation, unlike `buildAppCreateBody`. */
   async updateApplication(
     uuid: string,
     fields: {
@@ -423,6 +433,12 @@ export class CoolifyApi {
       gitRepository?: string;
       githubAppUuid?: string;
       description?: string;
+      /** FQDNs for non-dockercompose build packs. Comma-joined when
+       *  sent. Pass `[]` to clear all domains. */
+      domains?: string[];
+      /** Per-service domains for dockercompose apps. Pass `[]` to clear
+       *  every routing entry. */
+      dockerComposeDomains?: Array<{ name: string; domain: string }>;
     },
   ): Promise<void> {
     const body: Record<string, unknown> = {};
@@ -435,6 +451,10 @@ export class CoolifyApi {
     if (fields.gitRepository !== undefined) body.git_repository = fields.gitRepository;
     if (fields.githubAppUuid !== undefined) body.github_app_uuid = fields.githubAppUuid;
     if (fields.description !== undefined) body.description = fields.description;
+    if (fields.domains !== undefined) body.domains = fields.domains.join(",");
+    if (fields.dockerComposeDomains !== undefined) {
+      body.docker_compose_domains = fields.dockerComposeDomains;
+    }
     if (Object.keys(body).length === 0) return;
     await this.request("PATCH", `/applications/${uuid}`, body);
   }
@@ -451,6 +471,60 @@ export class CoolifyApi {
     if (fields.description !== undefined) body.description = fields.description;
     if (Object.keys(body).length === 0) return;
     await this.request("PATCH", `/projects/${uuid}`, body);
+  }
+
+  /** Read the full state of a Coolify application by uuid. Used by
+   *  `hatchkit sync` to render a before/after diff and skip the PATCH
+   *  when the desired state already matches what Coolify reports.
+   *
+   *  Coolify's response shape varies by version: `fqdn` on older
+   *  builds is a comma-joined string for non-dockercompose apps, or
+   *  null for dockercompose; `docker_compose_domains` on newer builds
+   *  is an array of `{ name, domain }` entries. We accept both and
+   *  return them unchanged for the caller to interpret per build pack. */
+  async getApplication(uuid: string): Promise<CoolifyApplication> {
+    const raw = (await this.request("GET", `/applications/${uuid}`)) as Record<string, unknown>;
+    const buildPack = (raw.build_pack as CoolifyApplication["buildPack"]) ?? undefined;
+    const fqdn = typeof raw.fqdn === "string" ? raw.fqdn : null;
+    // docker_compose_domains arrives as either a JSON-encoded string,
+    // a parsed array, or null depending on the Coolify version. Normalize
+    // to `Array<{ name, domain }>` (or undefined when absent).
+    let dockerComposeDomains: Array<{ name: string; domain: string }> | undefined;
+    const rawDomains = raw.docker_compose_domains;
+    if (Array.isArray(rawDomains)) {
+      dockerComposeDomains = rawDomains
+        .map((entry) => {
+          if (!entry || typeof entry !== "object") return null;
+          const e = entry as Record<string, unknown>;
+          const name = typeof e.name === "string" ? e.name : null;
+          const domain = typeof e.domain === "string" ? e.domain : null;
+          return name && domain ? { name, domain } : null;
+        })
+        .filter((entry): entry is { name: string; domain: string } => entry !== null);
+    } else if (typeof rawDomains === "string" && rawDomains.trim()) {
+      try {
+        const parsed = JSON.parse(rawDomains);
+        if (Array.isArray(parsed)) {
+          dockerComposeDomains = parsed.filter(
+            (e): e is { name: string; domain: string } =>
+              !!e &&
+              typeof e === "object" &&
+              typeof e.name === "string" &&
+              typeof e.domain === "string",
+          );
+        }
+      } catch {
+        // Coolify wrote something we can't parse — surface as undefined.
+      }
+    }
+    return {
+      uuid: typeof raw.uuid === "string" ? raw.uuid : uuid,
+      name: typeof raw.name === "string" ? raw.name : "",
+      buildPack,
+      fqdn,
+      dockerComposeDomains,
+      portsExposes: typeof raw.ports_exposes === "string" ? raw.ports_exposes : undefined,
+    };
   }
 
   /** Trigger a deploy of an existing application. Useful after we've
@@ -474,6 +548,25 @@ export class CoolifyApi {
     if (Array.isArray(raw)) return raw;
     return raw?.data ?? [];
   }
+}
+
+/** Subset of an application's state that hatchkit cares about. Used
+ *  by `hatchkit sync` to diff the desired manifest against what
+ *  Coolify reports. Coolify returns many more fields; we only surface
+ *  the ones a sync/diff would act on. */
+export interface CoolifyApplication {
+  uuid: string;
+  name: string;
+  buildPack?: "nixpacks" | "static" | "dockerfile" | "dockercompose";
+  /** Comma-joined FQDN string Coolify exposes for non-dockercompose
+   *  apps (and as a denormalized cache for dockercompose apps on some
+   *  builds). Null when no domains are attached. */
+  fqdn: string | null;
+  /** Per-service routing for dockercompose apps. Undefined when the
+   *  app isn't dockercompose or no per-service domains are set. */
+  dockerComposeDomains?: Array<{ name: string; domain: string }>;
+  /** `ports_exposes` as Coolify stores it (comma-separated). */
+  portsExposes?: string;
 }
 
 export interface ApplicationCreateInput {

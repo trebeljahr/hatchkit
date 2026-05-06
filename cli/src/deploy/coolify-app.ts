@@ -239,20 +239,39 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
   if (existingApp) {
     console.log(
       chalk.dim(
-        `  · Coolify app "${input.projectName}" already exists (${existingApp.uuid}) — skipping create, will reconcile build pack + env + DNS.`,
+        `  · Coolify app "${input.projectName}" already exists (${existingApp.uuid}) — skipping create, will reconcile build pack + domain + env + DNS.`,
       ),
     );
     appUuid = existingApp.uuid;
-    // Reconcile the build pack + compose location + ports against
-    // what hatchkit's pipeline expects. Catches the case where the
-    // app was created (by Coolify's UI, an older hatchkit, or a
+    // Pick the compose service the public domain should bind to.
+    // Same priority chain as the create branch: explicit caller hint →
+    // compose-file auto-detect → "app" fallback. We compute it here too
+    // because the reconcile PATCH below has to send `docker_compose_domains`
+    // — without it Coolify keeps the previous (or empty) routing and
+    // never generates the per-service traefik labels, which is the
+    // exact symptom that left collection-of-beauty with zero traefik
+    // labels on its container.
+    const dockerComposeServiceName =
+      buildPack === "dockercompose"
+        ? (input.dockerComposeServiceName ??
+          pickComposeServiceForPort(input.projectDir, portsExposes))
+        : undefined;
+    // Reconcile the build pack + compose location + ports + DOMAINS
+    // against what hatchkit's pipeline expects. Catches the case where
+    // the app was created (by Coolify's UI, an older hatchkit, or a
     // first-run that picked the wrong value) with build_pack=static
     // or nixpacks — symptom is "Coolify ignores docker-compose.yml
     // and tries to serve the repo as a static site". A blind PATCH
     // is fine here: every adopted app goes through the same
     // GHCR-pull-via-compose pipeline, so dockercompose is always
     // the right answer once adopt has scaffolded the build files.
-    const reconcile = ora("Coolify: reconciling build pack on existing app").start();
+    //
+    // Domain is included so re-running adopt actually pushes the
+    // manifest's `domain` to Coolify even when the app already exists
+    // — the previous code path skipped this and Coolify kept the
+    // empty (or stale) Domain field, so Traefik never got per-service
+    // routing labels.
+    const reconcile = ora("Coolify: reconciling build pack + domain on existing app").start();
     try {
       await api.updateApplication(existingApp.uuid, {
         buildPack,
@@ -265,13 +284,20 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
         // reasoning as the project-level reconcile above (don't
         // clobber a description the user edited in the dashboard).
         description: userDescription ? userDescription : undefined,
+        ...(buildPack === "dockercompose"
+          ? {
+              dockerComposeDomains: [
+                { name: dockerComposeServiceName ?? "app", domain: appDomain },
+              ],
+            }
+          : { domains: [appDomain] }),
       });
-      reconcile.succeed(`Coolify: build pack set to ${buildPack}`);
+      reconcile.succeed(`Coolify: build pack set to ${buildPack}, domain → ${appDomain}`);
     } catch (err) {
-      reconcile.fail(`Coolify: couldn't reconcile build pack: ${(err as Error).message}`);
+      reconcile.fail(`Coolify: couldn't reconcile build pack/domain: ${(err as Error).message}`);
       console.log(
         chalk.dim(
-          `  Set Build Pack = ${buildPack} manually on the app's Configuration page in Coolify.`,
+          `  Set Build Pack = ${buildPack} and Domain = ${appDomain} manually on the app's Configuration page in Coolify.`,
         ),
       );
     }

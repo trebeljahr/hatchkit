@@ -803,6 +803,140 @@ console.log("\n── coolify api: dockercompose domains payload ─────
   results.coolifyDockerComposeDomains = ok;
 }
 
+// Coolify API: updateApplication must send domains/dockerComposeDomains
+// when those fields are passed. Pre-fix this silently dropped them, which
+// is what left collection-of-beauty's container with zero traefik labels
+// (Coolify only auto-generates labels when the per-service routing is
+// populated). This test locks the regression closed.
+console.log(
+  "\n── coolify api: updateApplication forwards docker_compose_domains ─────────────",
+);
+{
+  const { CoolifyApi } = await import("./src/utils/coolify-api.js");
+  const calls: { url: string; init: RequestInit }[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    // Coolify returns `{}` on a successful PATCH; mirror that so the
+    // CoolifyApi.request body-parser doesn't trip on an empty string.
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+
+  try {
+    const api = new CoolifyApi({ url: "https://coolify.test", token: "test-token" });
+    await api.updateApplication("app-uuid-1", {
+      buildPack: "dockercompose",
+      portsExposes: "3000",
+      dockerComposeDomains: [{ name: "app", domain: "https://beauty.example.com" }],
+    });
+    await api.updateApplication("app-uuid-2", {
+      buildPack: "nixpacks",
+      portsExposes: "8080",
+      domains: ["https://api.example.com", "https://www.example.com"],
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const composeBody = JSON.parse(String(calls[0]?.init.body ?? "{}"));
+  const flatBody = JSON.parse(String(calls[1]?.init.body ?? "{}"));
+  const checks: Check[] = [
+    ["compose update PATCHes /applications/{uuid}", calls[0]?.init.method === "PATCH"],
+    ["compose update sets build_pack", composeBody.build_pack === "dockercompose"],
+    [
+      "compose update sets docker_compose_domains",
+      Array.isArray(composeBody.docker_compose_domains) &&
+        composeBody.docker_compose_domains[0]?.name === "app" &&
+        composeBody.docker_compose_domains[0]?.domain === "https://beauty.example.com",
+    ],
+    ["compose update omits flat domains", composeBody.domains === undefined],
+    [
+      "flat update joins domains with comma",
+      flatBody.domains === "https://api.example.com,https://www.example.com",
+    ],
+    ["flat update omits docker_compose_domains", flatBody.docker_compose_domains === undefined],
+  ];
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  results.coolifyUpdateApplicationDomains = ok;
+}
+
+// Sync plan computation: the manifest → DesiredApp map must produce the
+// per-app payload that runCoolifySetup / wireProjectIntoCoolify create
+// at scaffold time. Anchored on collection-of-beauty's real shape
+// (client-only, port 80, single `app` service) since that's the ground
+// truth case the bug was reported against.
+console.log(
+  "\n── sync: manifest → desired Coolify app states (matches scaffold time) ────────",
+);
+{
+  const { computeDesiredAppStates } = await import("./src/deploy/sync.js");
+  const { MANIFEST_VERSION } = await import("./src/scaffold/manifest.js");
+
+  const clientOnly = computeDesiredAppStates({
+    version: MANIFEST_VERSION,
+    cliVersion: "0.0.0-test",
+    scaffoldedAt: "2026-05-01T00:00:00.000Z",
+    name: "collection-of-beauty",
+    domain: "beauty.trebeljahr.com",
+    features: [],
+    mlServices: [],
+    s3Provider: "none",
+    deployTarget: "existing",
+    ports: { server: 3000, client: 3001 },
+    surfaces: "client-only",
+  });
+  const both = computeDesiredAppStates({
+    version: MANIFEST_VERSION,
+    cliVersion: "0.0.0-test",
+    scaffoldedAt: "2026-05-01T00:00:00.000Z",
+    name: "split-app",
+    domain: "split.example.com",
+    features: [],
+    mlServices: [],
+    s3Provider: "none",
+    deployTarget: "existing",
+    ports: { server: 3000, client: 3001 },
+    surfaces: "both",
+  });
+
+  const singleApp = clientOnly.find((d) => d.appName === "collection-of-beauty");
+  const splitClient = both.find((d) => d.appName === "split-app-client");
+  const splitServer = both.find((d) => d.appName === "split-app-server");
+
+  const checks: Check[] = [
+    ["client-only emits a single-app entry", !!singleApp],
+    [
+      "client-only: domain canonicalizes to https://<bare>",
+      singleApp?.domains[0]?.domain === "https://beauty.trebeljahr.com",
+    ],
+    ["client-only: app service named `app`", singleApp?.domains[0]?.name === "app"],
+    ["client-only: ports_exposes is 80", singleApp?.portsExposes === "80"],
+    ["both: emits split client app", !!splitClient],
+    ["both: emits split server app", !!splitServer],
+    [
+      "both: client gets frontend hostname only",
+      splitClient?.domains.length === 1 &&
+        splitClient?.domains[0]?.domain === "https://split.example.com",
+    ],
+    [
+      "both: server gets api + path-based backend hosts",
+      Array.isArray(splitServer?.domains) &&
+        (splitServer?.domains.length ?? 0) === 4 &&
+        splitServer?.domains.every((d) => d.name === "server"),
+    ],
+  ];
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  results.syncDesiredAppStates = ok;
+}
+
 // Adopt rollback safety: every LedgerStep kind has a recipe + describe
 // + correct destructive flag, and the file-system undos only touch the
 // path they were given. This catches the safety invariant — if I add a

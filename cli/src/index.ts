@@ -162,6 +162,12 @@ async function main(): Promise<void> {
       await runRenameDomainCli(args.slice(1), MONOREPO_ROOT);
       break;
     }
+    case "sync": {
+      if (args.includes("--help")) return printHelp("sync");
+      const { runSyncCli } = await import("./deploy/sync.js");
+      await runSyncCli(args.slice(1));
+      break;
+    }
     case "doctor": {
       if (args.includes("--help")) return printHelp("doctor");
       const { runDoctor } = await import("./doctor.js");
@@ -1577,6 +1583,7 @@ type HelpTopic =
   | "remove"
   | "destroy"
   | "rename-domain"
+  | "sync"
   | "doctor"
   | "status"
   | "explain"
@@ -1996,6 +2003,53 @@ function printHelp(topic?: HelpTopic): void {
 `);
     return;
   }
+  if (topic === "sync") {
+    console.log(`
+  ${chalk.bold("hatchkit sync")} — push the manifest's view of the project onto Coolify
+
+  ${chalk.bold("Usage:")}
+    cd <project-dir> && hatchkit sync [--dry-run] [--json]
+    hatchkit sync --dir <project-dir>
+
+  ${chalk.bold("What it does:")}
+    Reads ${chalk.cyan(".hatchkit.json")} from the project root, finds the matching
+    Coolify application(s) by name, and PATCHes the domain + ports
+    payload onto each one. Idempotent — apps already in sync are
+    reported and skipped.
+
+    For ${chalk.cyan("dockercompose")} apps the domain lands in
+    ${chalk.dim("docker_compose_domains")} (per-service routing); Coolify regenerates
+    its auto-traefik labels on the next deploy. For nixpacks / dockerfile
+    / static apps the domain lands in the flat ${chalk.dim("domains")} field instead.
+
+  ${chalk.bold("When to use:")}
+    · An older hatchkit scaffolded the project with no Domain set in
+      Coolify (the container had zero ${chalk.dim("traefik.*")} labels).
+    · You changed the domain in ${chalk.dim(".hatchkit.json")} and want Coolify to
+      catch up without re-running adopt.
+    · You want a one-shot reconcile after editing the manifest by hand.
+
+  ${chalk.bold("Out of scope (use other commands):")}
+    · DNS records  → ${chalk.cyan("hatchkit adopt")} or rename-domain follow-ups
+    · Env vars     → ${chalk.cyan("hatchkit keys push")}
+    · ML services  → ${chalk.cyan("hatchkit add gpu")}
+    · S3 buckets   → ${chalk.cyan("hatchkit provision s3")}
+
+  ${chalk.bold("Options:")}
+    --dir <path>   Project root (defaults to cwd).
+    --dry-run      Show the diff without PATCHing Coolify.
+    --json         Emit ${chalk.dim("{ ok, apps, dryRun, error? }")} to stdout (suppresses
+                   the human-readable rendering).
+
+  ${chalk.bold("Verifying on the box:")}
+    On the VPS hosting Coolify, after a redeploy:
+      ${chalk.dim("docker inspect <container> --format '{{json .Config.Labels}}' \\\\")}
+      ${chalk.dim("  | jq 'with_entries(select(.key | startswith(\"traefik\")))'")}
+    A correctly-synced container has 10+ traefik labels (HTTP router,
+    HTTPS router with letsencrypt, gzip middleware, redirect-to-https).
+`);
+    return;
+  }
   if (topic === "config") {
     console.log(`
   ${chalk.bold("hatchkit config")} — manage provider credentials
@@ -2112,6 +2166,7 @@ function printHelp(topic?: HelpTopic): void {
     remove          Delete the -dev/-prod clients created by 'add' (inverse of add)
     destroy         Roll back everything ${chalk.cyan("hatchkit create")} did for a project
     rename-domain   Move a scaffolded project to a new domain (rewrites tfvars/env/manifest)
+    sync            Push the manifest's domain/ports onto the matching Coolify app(s)
     gh-pages        Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
     dns             DNS reconciliation helpers (link-to-cloudflare, …)
     keys show <p>   Print the dotenvx private key for a project
