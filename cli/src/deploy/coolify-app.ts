@@ -40,6 +40,12 @@ import { type CoolifyDeployApp, repoSlugFromRemote } from "./gh-actions-secrets.
 export interface WireUpInput {
   projectName: string;
   domain: string;
+  /** Human-readable one-liner shown on the Coolify project + application
+   *  pages. Leave undefined / empty to fall back to the generic
+   *  "Adopted by hatchkit" blurb (only used on first create — reconcile
+   *  leaves an existing description alone unless this is a non-empty
+   *  string). */
+  description?: string;
   /** GitHub repo remote. SSH and HTTPS GitHub remotes are normalized before
    *  they are sent to Coolify so public apps clone over HTTPS and private
    *  GitHub-App apps use the `owner/repo` selector. */
@@ -124,6 +130,14 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
   const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
 
   // ── 1. Resolve / create the Coolify project ─────────────────────────
+  //
+  // Coolify's `description` field is validated against a narrow
+  // character class (letters/numbers/spaces and a small set of
+  // punctuation — see /api/v1 OpenAPI). Notably no `:`, so a URL
+  // won't pass. The stepper validator (validateCoolifyDescription)
+  // mirrors that constraint; we trust the user-supplied value here.
+  const userDescription = input.description?.trim();
+  const createDescription = userDescription || "Adopted by hatchkit";
   const findOrCreateProject = ora(`Coolify: locating project "${input.projectName}"`).start();
   let projectUuid: string;
   let projectCreated = false;
@@ -132,13 +146,20 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     if (existing) {
       projectUuid = existing.uuid;
       findOrCreateProject.succeed(`Coolify project: ${input.projectName} (existing)`);
+      // Reconcile description on re-runs only when the user provided
+      // one. Skipping the PATCH on empty input preserves whatever
+      // description the user may have edited in the Coolify dashboard.
+      if (userDescription) {
+        try {
+          await api.updateProject(existing.uuid, { description: userDescription });
+        } catch (err) {
+          console.log(
+            chalk.dim(`  · Couldn't update Coolify project description: ${(err as Error).message}`),
+          );
+        }
+      }
     } else {
-      // Coolify's `description` field is validated against a narrow
-      // character class (letters/numbers/spaces and a small set of
-      // punctuation — see /api/v1 OpenAPI). Notably no `:`, so a
-      // URL won't pass. Keep the description plain prose; the GitHub
-      // repo URL ends up on the application itself anyway.
-      const created = await api.createProject(input.projectName, "Adopted by hatchkit");
+      const created = await api.createProject(input.projectName, createDescription);
       projectUuid = created.uuid;
       projectCreated = true;
       findOrCreateProject.succeed(`Coolify project: ${input.projectName} (created)`);
@@ -240,6 +261,10 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
         gitBranch: input.gitBranch ?? "main",
         gitRepository: repoRef.gitRepository,
         githubAppUuid: input.isPrivate ? githubAppUuid : undefined,
+        // Only patch description when the user supplied one — same
+        // reasoning as the project-level reconcile above (don't
+        // clobber a description the user edited in the dashboard).
+        description: userDescription ? userDescription : undefined,
       });
       reconcile.succeed(`Coolify: build pack set to ${buildPack}`);
     } catch (err) {
@@ -280,7 +305,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       // through `hatchkit adopt`'s build-pipeline scaffold.
       buildPack,
       name: input.projectName,
-      description: "Adopted by hatchkit",
+      description: createDescription,
       domains: [appDomain],
       dockerComposeDomainServiceName: dockerComposeServiceName,
       instantDeploy: false,

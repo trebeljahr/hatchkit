@@ -51,6 +51,23 @@ export function validateRequired(value: string): boolean | string {
   return true;
 }
 
+/** Validate a Coolify project/application description. Empty is fine
+ *  (callers fall back to a sensible default). Coolify's API rejects
+ *  descriptions containing `:` and a few other glyphs — disallow the
+ *  ones we know break the API and cap length so the dashboard renders
+ *  the row cleanly. */
+export function validateCoolifyDescription(value: string): boolean | string {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  if (trimmed.length > 200) {
+    return "Description must be 200 characters or less";
+  }
+  if (/[:<>]/.test(trimmed)) {
+    return "Description can't contain `:`, `<`, or `>` (Coolify rejects these)";
+  }
+  return true;
+}
+
 /** Extract base domain and subdomain from a full domain. */
 export function parseDomain(domain: string): {
   baseDomain: string;

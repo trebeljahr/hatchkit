@@ -422,6 +422,7 @@ export class CoolifyApi {
       gitBranch?: string;
       gitRepository?: string;
       githubAppUuid?: string;
+      description?: string;
     },
   ): Promise<void> {
     const body: Record<string, unknown> = {};
@@ -433,8 +434,23 @@ export class CoolifyApi {
     if (fields.gitBranch !== undefined) body.git_branch = fields.gitBranch;
     if (fields.gitRepository !== undefined) body.git_repository = fields.gitRepository;
     if (fields.githubAppUuid !== undefined) body.github_app_uuid = fields.githubAppUuid;
+    if (fields.description !== undefined) body.description = fields.description;
     if (Object.keys(body).length === 0) return;
     await this.request("PATCH", `/applications/${uuid}`, body);
+  }
+
+  /** Patch fields on an existing Coolify project. Used by adopt's
+   *  reconcile path so a description change in `--resume` reaches
+   *  the project page in the dashboard. */
+  async updateProject(
+    uuid: string,
+    fields: { name?: string; description?: string },
+  ): Promise<void> {
+    const body: Record<string, unknown> = {};
+    if (fields.name !== undefined) body.name = fields.name;
+    if (fields.description !== undefined) body.description = fields.description;
+    if (Object.keys(body).length === 0) return;
+    await this.request("PATCH", `/projects/${uuid}`, body);
   }
 
   /** Trigger a deploy of an existing application. Useful after we've

@@ -47,6 +47,11 @@ export interface ProjectManifest {
   name: string;
   /** Production domain — already public in DNS + .env.example. */
   domain: string;
+  /** Human-readable one-liner shown on the Coolify project + application
+   *  pages. Optional: when unset, hatchkit falls back to a generic
+   *  "Adopted by hatchkit" blurb on create, and leaves the field alone
+   *  on subsequent updates. */
+  description?: string;
   /** Feature flags selected at scaffold. */
   features: Feature[];
   /** ML services wired into the backend. */

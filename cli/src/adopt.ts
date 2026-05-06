@@ -64,7 +64,11 @@ import { ensureGitignoreEntries, looksLikeDotenvxPrivateKey } from "./utils/giti
 import { multiselect } from "./utils/multiselect.js";
 import { RunLedger } from "./utils/run-ledger.js";
 import { SECRET_KEYS, getSecret, setSecret } from "./utils/secrets.js";
-import { validateDomain, validateProjectName } from "./utils/validate.js";
+import {
+  validateCoolifyDescription,
+  validateDomain,
+  validateProjectName,
+} from "./utils/validate.js";
 import { getCliVersion } from "./utils/version.js";
 
 interface DetectedState {
@@ -72,6 +76,10 @@ interface DetectedState {
   projectDir: string;
   /** package.json `name` if any. */
   packageName?: string;
+  /** package.json `description` if any. Used as the default for the
+   *  Coolify project / app description prompt so a project that
+   *  already has a one-liner doesn't have to type it again. */
+  packageDescription?: string;
   /** Whether `<root>/.hatchkit.json` already exists — adopt refuses
    *  to overwrite; the user should run `hatchkit update` instead. */
   hasManifest: boolean;
@@ -117,6 +125,12 @@ type AdoptSurface = "server-only" | "client-only" | "both";
 interface AdoptPlan {
   name: string;
   domain: string;
+  /** One-liner that ends up on the Coolify project + application
+   *  pages (instead of the generic "Adopted by hatchkit" blurb).
+   *  Empty string means "no override" — wireProjectIntoCoolify will
+   *  use the default on first create and leave any existing
+   *  description untouched on reconcile. */
+  description: string;
   features: Feature[];
   /** What kind of project this is — drives where env files go, which
    *  Coolify build-pack we ask for, and which surfaces `hatchkit add`
@@ -224,6 +238,14 @@ export async function runAdopt(
   let plan: AdoptPlan = {
     name: m?.name ?? state.packageName ?? "",
     domain: m?.domain ?? "",
+    // Description resolution order:
+    //   1. Persisted manifest value (`--resume` recovery — a previous
+    //      run already settled this).
+    //   2. package.json `description` — the obvious source of a
+    //      one-liner the user already wrote for npm.
+    //   3. "" (empty) — wireProjectIntoCoolify falls back to its
+    //      generic blurb on create and leaves Coolify alone on reconcile.
+    description: m?.description ?? state.packageDescription ?? "",
     // Manifest features are the source of truth when present — the user
     // already curated them on the previous run. Detection is only a
     // best-guess fallback for the first-ever adopt.
@@ -280,11 +302,20 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
   const existingManifest = hasManifest ? (readManifest(projectDir) ?? undefined) : undefined;
 
   let packageName: string | undefined;
+  let packageDescription: string | undefined;
   try {
     const pkg = JSON.parse(readFileSync(join(projectDir, "package.json"), "utf-8")) as {
       name?: string;
+      description?: string;
     };
     packageName = pkg.name?.replace(/^@[^/]+\//, ""); // strip scope
+    const descCandidate = pkg.description?.trim();
+    // Skip the description if it would fail Coolify's validator —
+    // better to surface an empty default than to ask the user to
+    // strip a `:` out of their package.json on every adopt run.
+    if (descCandidate && validateCoolifyDescription(descCandidate) === true) {
+      packageDescription = descCandidate;
+    }
   } catch {
     // No package.json at root — that's fine for a non-Node project.
   }
@@ -407,6 +438,7 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
   return {
     projectDir,
     packageName,
+    packageDescription,
     hasManifest,
     serverDir,
     clientDir,
@@ -519,6 +551,9 @@ function printDetected(state: DetectedState): void {
   lines.push(chalk.bold("\n  Detected:\n"));
   lines.push(row("project dir", chalk.cyan(relativeTo(state.projectDir))));
   if (state.packageName) lines.push(row("package.json", chalk.cyan(state.packageName)));
+  if (state.packageDescription) {
+    lines.push(row("description", chalk.dim(`"${truncate(state.packageDescription, 60)}"`)));
+  }
   if (state.serverDir) {
     lines.push(row("server dir", chalk.cyan(relativeTo(state.serverDir))));
   } else {
@@ -650,6 +685,20 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
             ? `${plan.domain}  ${chalk.dim("→")}  https://${plan.domain}`
             : "(unset)",
         },
+        ((): AdoptStep => {
+          // Description is optional — empty is a valid choice that
+          // falls back to the generic "Adopted by hatchkit" blurb.
+          // We always render it as `set: true` so the cursor doesn't
+          // park on it; the user opens it explicitly when they care.
+          const summary = plan.description
+            ? truncate(plan.description, 60)
+            : state.packageDescription
+              ? chalk.dim(
+                  `(empty — defaults from package.json: "${truncate(state.packageDescription, 40)}")`,
+                )
+              : chalk.dim('(empty — defaults to "Adopted by hatchkit")');
+          return { key: "description", label: "Description", set: true, summary };
+        })(),
       ],
     },
     {
@@ -865,6 +914,21 @@ async function editAdoptStep(
       })
     ).trim();
     return { ...plan, domain };
+  }
+  if (step === "description") {
+    // Default order matches the plan-init resolution: existing value
+    // wins, else fall back to the package.json one-liner. Empty input
+    // is a valid choice — it tells wireProjectIntoCoolify to use its
+    // built-in "Adopted by hatchkit" default on create and leave any
+    // existing Coolify description alone on reconcile.
+    const description = (
+      await input({
+        message: 'Description shown on Coolify (leave empty for "Adopted by hatchkit"):',
+        default: plan.description || state.packageDescription || "",
+        validate: validateCoolifyDescription,
+      })
+    ).trim();
+    return { ...plan, description };
   }
   if (step === "surfaces") {
     const next = await select<AdoptSurface>({
@@ -1170,6 +1234,11 @@ async function executePlan(
         coolifyResult = await wireProjectIntoCoolify({
           projectName: plan.name,
           domain: plan.domain,
+          // Empty string → wireProjectIntoCoolify uses its built-in
+          // default on create and leaves an existing description alone
+          // on reconcile. Non-empty → patched onto both the Coolify
+          // project and application records.
+          description: plan.description || undefined,
           gitRepository: remoteUrl,
           // hatchkit's canonical pipeline = GitHub Actions builds image →
           // pushes to GHCR → Coolify pulls via docker-compose.yml. The
@@ -2011,6 +2080,10 @@ function writeAdoptManifest(projectDir: string, plan: AdoptPlan): void {
     scaffoldedAt: new Date().toISOString(),
     name: plan.name,
     domain: plan.domain,
+    // Only persist non-empty descriptions — keeping the field absent
+    // when unset is friendlier to manifest readers that haven't been
+    // taught the new field yet (and to humans diffing the file).
+    ...(plan.description ? { description: plan.description } : {}),
     features: plan.features,
     mlServices: [],
     s3Provider: ((): S3Provider => (plan.features.includes("s3") ? "existing" : "none"))(),
@@ -2027,6 +2100,10 @@ function writeAdoptManifest(projectDir: string, plan: AdoptPlan): void {
 function relativeTo(p: string, from = process.cwd()): string {
   const rel = relative(from, p);
   return rel === "" ? "." : rel.startsWith("..") ? p : `./${rel}`;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
 /** Return the relative paths of files currently staged in the index.
