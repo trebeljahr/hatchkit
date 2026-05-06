@@ -35,6 +35,11 @@ import { scaffoldApp } from "./scaffold/app.js";
 import { scaffoldInfra } from "./scaffold/infra.js";
 import { mlEnvVarName, printMlSummary, resolveMlServices } from "./scaffold/ml-client.js";
 import { runUpdate } from "./scaffold/update.js";
+import {
+  installCancelHandler,
+  isCancelInProgress,
+  uninstallCancelHandler,
+} from "./utils/cancel-handler.js";
 import { exec, execOk } from "./utils/exec.js";
 import { parseCreateFlags } from "./utils/flags.js";
 import { RunLedger } from "./utils/run-ledger.js";
@@ -980,6 +985,11 @@ async function handleCreate(): Promise<void> {
   const useLedger = !config.dryRun && (config.scaffoldRepo || config.runDeployment);
   const ledger = useLedger ? RunLedger.start(config.name) : null;
 
+  // Intercept Ctrl+C so the user gets the recipe + rollback prompt
+  // instead of leaving partial state stranded. Paired with
+  // `uninstallCancelHandler()` in the finally block below.
+  if (ledger) installCancelHandler(ledger, "create");
+
   // Hoisted across the try-block boundary so the success summary below
   // can read them. Declared with let so they can be reassigned inside.
   let scaffoldResult: Awaited<ReturnType<typeof scaffoldApp>> | undefined;
@@ -1298,12 +1308,18 @@ async function handleCreate(): Promise<void> {
     }
     ledger?.complete();
   } catch (err) {
+    // Ctrl+C path: the SIGINT handler is already driving the
+    // recipe/rollback flow and will call process.exit when its prompt
+    // resolves. Don't run a second cleanup or race it to the exit.
+    if (isCancelInProgress()) return;
     if (ledger) {
       await handleCreateFailure(ledger, err);
     } else {
       console.log(chalk.red(`\n  ✗ ${err instanceof Error ? err.message : String(err)}\n`));
     }
     process.exit(1);
+  } finally {
+    uninstallCancelHandler();
   }
 
   // Final summary

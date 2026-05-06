@@ -55,11 +55,25 @@ class RollbackSkip extends Error {
 }
 
 /* ─────────────────────────────────────────────────────────────────────── */
-/*  Failure handler — called from the create-flow try/catch              */
+/*  Failure / cancellation handler — called from the create-flow         */
+/*  try/catch and from the SIGINT handler (cancel-handler.ts).            */
 /* ─────────────────────────────────────────────────────────────────────── */
 
+/** Re-entrancy guard: the SIGINT path and the catch-block path can both
+ *  reach handlePartialRunInterruption in the same tick (inquirer throws
+ *  ExitPromptError on Ctrl+C, AND our SIGINT handler fires). The first
+ *  caller wins; the second is a no-op so the user only sees one prompt. */
+let _interruptionHandled = false;
+
+/** True once an interruption handler has begun. Lets the create/adopt
+ *  catch block stand down and let the SIGINT-driven cleanup finish
+ *  without a duplicate `process.exit`. */
+export function isInterruptionHandled(): boolean {
+  return _interruptionHandled;
+}
+
 export async function handleCreateFailure(ledger: RunLedger, err: unknown): Promise<void> {
-  return handlePartialRunFailure(ledger, err, "create");
+  return handlePartialRunInterruption(ledger, "create", "failed", err);
 }
 
 /** Same machinery as handleCreateFailure, just with adopt's verb in
@@ -67,30 +81,58 @@ export async function handleCreateFailure(ledger: RunLedger, err: unknown): Prom
  *  step kinds (no `scaffold`, no `terraformApplied`) so the recipe
  *  printer + rollback executor are reusable as-is. */
 export async function handleAdoptFailure(ledger: RunLedger, err: unknown): Promise<void> {
-  return handlePartialRunFailure(ledger, err, "adopt");
+  return handlePartialRunInterruption(ledger, "adopt", "failed", err);
 }
 
-async function handlePartialRunFailure(
+/** Cancellation entry points — invoked from the SIGINT handler when the
+ *  user presses Ctrl+C mid-flow. Identical recipe + rollback machinery
+ *  as the failure handlers, but with a "cancelled" header and the prompt
+ *  default tilted to `rollback` (the user just asked to stop, so the
+ *  conservative-by-default "leave it" doesn't fit). */
+export async function handleCreateCancellation(ledger: RunLedger): Promise<void> {
+  return handlePartialRunInterruption(ledger, "create", "cancelled");
+}
+
+export async function handleAdoptCancellation(ledger: RunLedger): Promise<void> {
+  return handlePartialRunInterruption(ledger, "adopt", "cancelled");
+}
+
+async function handlePartialRunInterruption(
   ledger: RunLedger,
-  err: unknown,
   verb: "create" | "adopt",
+  reason: "failed" | "cancelled",
+  err?: unknown,
 ): Promise<void> {
-  const message = err instanceof Error ? err.message : String(err);
-  console.log(chalk.bold.red(`\n  ✗ hatchkit ${verb} failed: ${message}`));
+  if (_interruptionHandled) return;
+  _interruptionHandled = true;
+
+  if (reason === "failed") {
+    const message = err instanceof Error ? err.message : String(err);
+    console.log(chalk.bold.red(`\n  ✗ hatchkit ${verb} failed: ${message}`));
+  } else {
+    console.log(chalk.bold.yellow(`\n  ⚠ hatchkit ${verb} cancelled (Ctrl+C).`));
+  }
 
   if (ledger.steps.length === 0) {
-    console.log(chalk.dim("  No steps completed before failure — nothing to clean up.\n"));
+    const noun = reason === "failed" ? "failure" : "cancellation";
+    console.log(chalk.dim(`  No steps completed before ${noun} — nothing to clean up.\n`));
     ledger.delete();
     return;
   }
 
+  const verbed = reason === "failed" ? "before failing" : "so far";
   console.log(
     chalk.dim(
-      `  Completed ${ledger.steps.length} step${ledger.steps.length === 1 ? "" : "s"} before failing. ` +
+      `  Completed ${ledger.steps.length} step${ledger.steps.length === 1 ? "" : "s"} ${verbed}. ` +
         `Ledger: ${ledger.path}\n`,
     ),
   );
   printRecipe(ledger);
+
+  // Default tilts toward rollback for cancellation (user explicitly
+  // asked to stop) and toward leave for failure (something unexpected
+  // went wrong; let the user inspect before destroying state).
+  const defaultChoice: "rollback" | "leave" = reason === "cancelled" ? "rollback" : "leave";
 
   // Loop the prompt so "show recipe" doesn't drop the user back into
   // an unreviewed default.
@@ -102,7 +144,7 @@ async function handlePartialRunFailure(
         { name: "Show the recipe again", value: "recipe" },
         { name: "Leave it — I'll clean up later", value: "leave" },
       ],
-      default: "leave",
+      default: defaultChoice,
     });
     if (choice === "recipe") {
       printRecipe(ledger);

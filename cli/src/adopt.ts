@@ -57,6 +57,11 @@ import {
   readManifest,
   writeManifest,
 } from "./scaffold/manifest.js";
+import {
+  installCancelHandler,
+  isCancelInProgress,
+  uninstallCancelHandler,
+} from "./utils/cancel-handler.js";
 import { CoolifyApi } from "./utils/coolify-api.js";
 import { ensureDockerignoreAllowsEnvProduction } from "./utils/dockerignore.js";
 import { exec, execOk } from "./utils/exec.js";
@@ -1140,6 +1145,11 @@ async function executePlan(
   // run created (and the second run finds-by-name and reuses) would
   // be invisible to a later destroy.
   const ledger = opts.resume ? RunLedger.resumeOrStart(plan.name) : RunLedger.start(plan.name);
+
+  // Intercept Ctrl+C so partial adopt state gets the same recipe +
+  // rollback prompt as a thrown error. Paired with the finally below.
+  installCancelHandler(ledger, "adopt");
+
   let remoteUrl: string | undefined = state.gitRemoteUrl;
   let coolifyResult:
     | Awaited<ReturnType<typeof import("./deploy/coolify-app.js").wireProjectIntoCoolify>>
@@ -1657,6 +1667,10 @@ async function executePlan(
     }
     ledger.complete();
   } catch (err) {
+    // Ctrl+C path: the SIGINT handler is already running the
+    // recipe/rollback flow and will call process.exit when it
+    // resolves. Stand down so the user only sees one prompt.
+    if (isCancelInProgress()) return;
     // Mid-flight throw — surface the partial state via the same
     // recipe/rollback/leave UX `hatchkit create` uses, then exit.
     // The ledger holds only resources adopt itself created (see the
@@ -1664,6 +1678,8 @@ async function executePlan(
     // roll back" choice is safe to take.
     await handleAdoptFailure(ledger, err);
     process.exit(1);
+  } finally {
+    uninstallCancelHandler();
   }
 
   // Banner reflects partial state — when caveats exist, callers see
