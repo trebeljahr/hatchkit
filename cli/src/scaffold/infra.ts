@@ -29,7 +29,13 @@ export function generateTfvars(config: ProjectConfig): string {
   if (config.surfaces !== "client-only") {
     addSubdomain(config.subdomain ? `api.${config.subdomain}` : "api", "REST API");
   }
-  addSubdomain("admin", "Coolify dashboard");
+  // Only provision admin.<domain> when we're spinning up a fresh Coolify
+  // alongside the project. An existing Coolify already has its own
+  // dashboard hostname (often on an unrelated domain), so pointing
+  // admin.<thisproject> at the same IP just creates a stray record.
+  if (config.deployTarget === "new") {
+    addSubdomain("admin", "Coolify dashboard");
+  }
 
   // The user's CLI DNS config decides which stack we target.
   // "manual" returns "" — caller skips writing tfvars entirely because
