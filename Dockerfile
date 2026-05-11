@@ -1,57 +1,32 @@
 # syntax=docker/dockerfile:1
 #
-# Static-site image for hatchkit-monorepo.
+# Static-site image for hatchkit's docs (Docusaurus at docs/).
 # Built by .github/workflows/deploy.yml, pushed to GHCR, pulled by
-# Coolify via docker-compose.yml. nginx serves the built bundle —
-# no runtime Node, so any sensitive values must be build-time-only
-# (baked into the static bundle) or non-sensitive.
+# Coolify for hatchkit.trebeljahr.com. nginx serves the prebuilt
+# bundle — no runtime Node.
 #
-# .env.production is committed to the repo dotenvx-encrypted. The
-# build stage decrypts it via the dotenvx_private_key BuildKit secret
-# (passed by .github/workflows/deploy.yml from the GH Actions secret
-# DOTENV_PRIVATE_KEY_PRODUCTION) so `pnpm build` sees the plain values
-# when it bakes them into the static output.
+# docs/ is intentionally outside the root pnpm-workspace.yaml (which
+# only covers cli/ + mcp/). docs/.npmrc sets `ignore-workspace=true`
+# and carries its own lockfile so a docs deploy doesn't drag in the
+# CLI's dev deps. We mirror that here: install + build inside docs/
+# as a standalone project.
 #
-# Why BuildKit secrets and not ARG: ARG values land in `docker history`
-# and the image manifest. BuildKit secrets are mounted as tmpfs at
-# build time and never persist — `docker history` won't show them, the
-# final image won't either. Requires BuildKit (default in modern
-# Docker; the GH Actions workflow uses docker/setup-buildx-action
-# which enables it).
-#
-# What ends up in the bundle: NEXT_PUBLIC_* / VITE_* / similar values
-# that the framework explicitly inlines into client JS. What does NOT:
-# any non-public values, since this static site has no runtime to
-# read them.
+# No build-time secrets: the docs site reads nothing from .env, so
+# the workflow's `dotenvx_private_key` BuildKit secret isn't mounted.
 ARG NODE_VERSION=24
 
 FROM node:${NODE_VERSION}-alpine AS build
 WORKDIR /app
-COPY package.json pnpm-lock.yaml* ./
+# Copy lockfile + .npmrc first so `pnpm install` lands in its own
+# layer and caches across source-only changes. .npmrc is the file
+# that flips `ignore-workspace=true`, so it MUST be present before
+# the install step — otherwise pnpm walks up looking for the parent
+# workspace and fails on the missing `cli/`/`mcp/` packages.
+COPY docs/package.json docs/pnpm-lock.yaml docs/.npmrc ./
 RUN corepack enable && pnpm install --frozen-lockfile
-COPY . .
-# `--mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION`
-# exposes the secret value as the env var the wrapped command reads,
-# only for the duration of each RUN it's mounted into. dotenvx picks
-# it up, decrypts .env.production in memory, and re-exports each
-# KEY=VALUE for `pnpm build`. If the secret is missing, dotenvx
-# silently skips decryption and the build would bake `encrypted:...`
-# strings into asset URLs — fail fast instead.
-#
-# Two separate RUN steps on purpose: BuildKit dumps the entire RUN
-# command into the build error when ANY step in a chained `&&` fails,
-# echo strings included. Splitting the secret check off means the
-# "secret not supplied" message only shows up when that's actually
-# what failed — a downstream `pnpm build` failure won't drag the
-# misleading echo into its error context.
-RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION \
-    test -n "$DOTENV_PRIVATE_KEY_PRODUCTION" || { \
-      echo "ERROR: dotenvx_private_key build secret not supplied. The workflow at .github/workflows/deploy.yml should pass it via 'secrets:' from the GH Actions secret DOTENV_PRIVATE_KEY_PRODUCTION." >&2; \
-      exit 1; \
-    }
-RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION \
-    pnpm dlx @dotenvx/dotenvx run -- pnpm build
+COPY docs/ ./
+RUN pnpm build
 
 FROM nginx:alpine AS runner
-COPY --from=build /app/dist /usr/share/nginx/html
+COPY --from=build /app/build /usr/share/nginx/html
 EXPOSE 80

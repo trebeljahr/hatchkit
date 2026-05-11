@@ -7,7 +7,11 @@
 # git sha, semver tag, or whatever your release process uses.
 services:
   app:
-    image: ghcr.io/trebeljahr/hatchkit-monorepo:latest
+    # Image name follows ghcr.io/<owner>/<repo> — what the deploy.yml
+    # workflow's metadata-action emits from ${{ github.repository }}.
+    # The root package.json is named "hatchkit-monorepo" but the GHCR
+    # path uses the GH repo slug ("hatchkit"), not the workspace name.
+    image: ghcr.io/trebeljahr/hatchkit:latest
     restart: unless-stopped
     # Coolify's Traefik reverse-proxy already owns host ports 80/443 and
     # routes to this container via its internal Docker network. Use
@@ -19,9 +23,6 @@ services:
       - "80"
     environment:
       - NODE_ENV=production
-      # Forwarded from Coolify's app env. dotenvx inside the
-      # container uses this to decrypt .env.production at runtime.
-      - DOTENV_PRIVATE_KEY_PRODUCTION
     # Coolify reads this and gates Traefik/Caddy routing on it.
     # Without a healthcheck Coolify shows "No health check configured"
     # and routes blind — traffic can hit the container before it's
