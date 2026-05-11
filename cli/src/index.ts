@@ -1388,7 +1388,12 @@ async function handleCreate(): Promise<void> {
   // Final summary
   console.log(chalk.bold("\n  ── Done! ─────────────────────────────────────────────────\n"));
   console.log(`  App:       ${chalk.cyan(`https://${config.domain}`)}`);
-  console.log(`  API:       ${chalk.cyan(`https://${config.domain}/api`)}`);
+  // Skip the API line for client-only — there's no backend, so showing
+  // a "/api" URL just confuses the user (and falsely implies a service
+  // is listening at that path).
+  if (config.surfaces !== "client-only") {
+    console.log(`  API:       ${chalk.cyan(`https://${config.domain}/api`)}`);
+  }
   console.log(`  App dir:   ${chalk.dim(appDir)}`);
   console.log(`  Config:    ${chalk.dim(getConfigPath())}`);
 

@@ -16,8 +16,19 @@ export function generateTfvars(config: ProjectConfig): string {
     if (subdomains[key]) return;
     subdomains[key] = description;
   };
-  addSubdomain(config.subdomain || "@", "Web app + API paths");
-  addSubdomain(config.subdomain ? `api.${config.subdomain}` : "api", "REST API");
+  // For client-only there's no backend to receive traffic at api.<sub>,
+  // so leave that record out entirely — provisioning it just clutters
+  // DNS with a name that resolves to a server hosting nothing useful.
+  // The "Web app + API paths" label is reused for both `both` and
+  // `server-only` (where the bare domain ALSO serves /api paths) and
+  // for client-only (where it's just the web app).
+  addSubdomain(
+    config.subdomain || "@",
+    config.surfaces === "client-only" ? "Web app" : "Web app + API paths",
+  );
+  if (config.surfaces !== "client-only") {
+    addSubdomain(config.subdomain ? `api.${config.subdomain}` : "api", "REST API");
+  }
   addSubdomain("admin", "Coolify dashboard");
 
   // The user's CLI DNS config decides which stack we target.
@@ -109,8 +120,8 @@ export function generateCoolifyEnv(
     repoUrl: extras.repoUrl ?? "",
     serverPort: extras.serverPort ?? 3000,
     clientPort: extras.clientPort ?? 3000,
-    mongoEnabled: true,
-    redisEnabled: config.features.includes("websocket"),
+    mongoEnabled: config.surfaces !== "client-only",
+    redisEnabled: config.features.includes("websocket") && config.surfaces !== "client-only",
     s3Provider: config.s3Provider === "existing" ? "custom" : config.s3Provider,
     s3Bucket: s3Config?.bucket || "",
     s3Endpoint: s3Config?.endpoint || "",
@@ -295,7 +306,7 @@ SERVER_PORT="{{serverPort}}"
 
 APP_DOMAIN="{{domain}}"
 
-MONGO_ENABLED="yes"
+MONGO_ENABLED="{{#if mongoEnabled}}yes{{else}}no{{/if}}"
 REDIS_ENABLED="{{#if redisEnabled}}yes{{else}}no{{/if}}"
 
 S3_PROVIDER="{{s3Provider}}"
