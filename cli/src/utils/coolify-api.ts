@@ -122,6 +122,28 @@ export class CoolifyApi {
     return this.request("GET", "/applications");
   }
 
+  /** List Coolify databases. Used by `hatchkit overview` for a
+   *  fleet-level summary — the response shape differs by db type
+   *  (postgres, mysql, mongodb, …), so we accept the loose union and
+   *  return just `uuid`, `name`, and `type` (when present). */
+  async listDatabases(): Promise<Array<{ uuid: string; name: string; type?: string }>> {
+    const raw = await this.request<unknown>("GET", "/databases");
+    if (!Array.isArray(raw)) return [];
+    const out: Array<{ uuid: string; name: string; type?: string }> = [];
+    for (const r of raw) {
+      if (!r || typeof r !== "object") continue;
+      const e = r as Record<string, unknown>;
+      const uuid = typeof e.uuid === "string" ? e.uuid : null;
+      const name = typeof e.name === "string" ? e.name : null;
+      if (!uuid || !name) continue;
+      const entry: { uuid: string; name: string; type?: string } = { uuid, name };
+      if (typeof e.type === "string") entry.type = e.type;
+      else if (typeof e.database_type === "string") entry.type = e.database_type;
+      out.push(entry);
+    }
+    return out;
+  }
+
   /** Find an existing application by exact name. Coolify doesn't
    *  enforce name uniqueness across projects, but within a single
    *  hatchkit-managed setup names ARE unique enough — first match

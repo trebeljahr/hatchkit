@@ -180,6 +180,12 @@ async function main(): Promise<void> {
       await runDoctor({ json: isJson });
       break;
     }
+    case "overview": {
+      if (args.includes("--help")) return printHelp("overview");
+      const { runOverview } = await import("./overview.js");
+      await runOverview({ json: isJson, all: args.includes("--all") });
+      break;
+    }
     case "inventory": {
       if (args.includes("--help")) return printHelp("inventory");
       const { runInventory } = await import("./inventory.js");
@@ -193,6 +199,8 @@ async function main(): Promise<void> {
       await runInventory(resolve("."), {
         json: isJson,
         yes: args.includes("--yes") || args.includes("-y"),
+        save: args.includes("--save"),
+        noSave: args.includes("--no-save"),
         input: Object.keys(inputOverride).length > 0 ? inputOverride : undefined,
       });
       break;
@@ -1620,6 +1628,7 @@ type HelpTopic =
   | "regen-infra"
   | "doctor"
   | "inventory"
+  | "overview"
   | "status"
   | "explain"
   | "completion"
@@ -1792,6 +1801,34 @@ function printHelp(topic?: HelpTopic): void {
 `);
     return;
   }
+  if (topic === "overview") {
+    console.log(`
+  ${chalk.bold("hatchkit overview")} — fleet-level view of every configured provider
+
+  Distinct from ${chalk.cyan("status")} (which providers do I have credentials for?),
+  ${chalk.cyan("doctor")} (are those credentials valid?), and ${chalk.cyan("inventory")} (what does THIS
+  project have?). ${chalk.cyan("overview")} answers "what does my whole hatchkit
+  footprint look like, across every configured provider?" — no name or
+  domain filter, just a roll-up of top-level resources.
+
+  ${chalk.bold("What it lists:")}
+    · Coolify              applications, projects, databases
+    · Cloudflare DNS       zones
+    · R2                   buckets (whole account)
+    · Hetzner S3 / AWS S3  credential presence (bucket listing not implemented)
+    · Resend               verified domains
+    · GlitchTip            projects in the configured org
+    · OpenPanel            projects
+    · Stripe               webhook endpoints (test + live)
+
+  ${chalk.bold("Flags:")}
+    --all                Print every resource per provider (default: 6-line preview)
+    --json               Machine-readable OverviewReport (non-interactive)
+
+  Read-only — every call is a GET. Safe to run repeatedly.
+`);
+    return;
+  }
   if (topic === "inventory") {
     console.log(`
   ${chalk.bold("hatchkit inventory")} — survey what already exists for this project
@@ -1835,7 +1872,17 @@ function printHelp(topic?: HelpTopic): void {
     --domain <domain>    Override inferred domain
     --repo <owner/name>  Override inferred GitHub repo
     --yes, -y            Skip confirm-inferred-value prompts
+    --save               Persist inferred identity to .hatchkit/identity.json
+                         without prompting
+    --no-save            Suppress the end-of-run save prompt
     --json               Machine-readable InventoryReport (non-interactive)
+
+  ${chalk.bold("Identity file:")}
+    After an interactive run, hatchkit offers to save the inferred
+    name/domain/repo to ${chalk.cyan(".hatchkit/identity.json")} — a lighter ledger
+    than the full ${chalk.cyan(".hatchkit.json")} manifest written by ${chalk.cyan("create / adopt")}.
+    Subsequent inventory/adopt runs read it as the first identity source
+    so they don't re-prompt.
 `);
     return;
   }
@@ -2272,6 +2319,7 @@ function printHelp(topic?: HelpTopic): void {
     status          Show what's configured and what's next
     doctor          Health-check every provider with contextual fix hints
     inventory       Survey what already exists for this project (and flag drift)
+    overview        Fleet-level survey — every resource across all configured providers
     explain         One-page mental model of the CLI
 
   ${chalk.bold("Projects:")}
@@ -2300,6 +2348,7 @@ function printHelp(topic?: HelpTopic): void {
     status --json     StatusSnapshot as JSON
     doctor --json     Per-provider health with fix hints as JSON
     inventory --json  InventoryReport — resources found per provider + drift
+    overview --json   OverviewReport — fleet-level resource counts + names
     completion <shell>  Print a zsh/bash/fish completion script
 
   ${chalk.bold("Options:")}

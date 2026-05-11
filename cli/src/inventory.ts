@@ -24,7 +24,7 @@
  * Everything is read-only. No mutations. Safe to run anywhere.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { confirm, input } from "@inquirer/prompts";
 import chalk from "chalk";
@@ -76,6 +76,12 @@ export interface InventoryFinding {
   detail?: string;
   /** When status === "drift", a list of "X != Y" lines explaining the gap. */
   drift?: string[];
+  /** True when local state declares this resource should exist (manifest
+   *  entry, package.json dep, env-var reference, workflow file, etc.).
+   *  Only `missing` findings with `expected: true` are surfaced as red ✗
+   *  — without a local declaration, "no Coolify app named foo" is just a
+   *  no-match observation, not an actionable problem. */
+  expected?: boolean;
 }
 
 export interface InventoryLocal {
@@ -105,7 +111,39 @@ export interface InventoryLocal {
   dotenvxEncrypted: boolean;
   /** True when a `.env.keys` file exists somewhere standard. */
   envKeysPresent: boolean;
+  /** Env-var-name prefixes detected in plaintext .env.example /
+   *  .env.development files. Used to mark provider findings as
+   *  expected (e.g. STRIPE_ → stripe is expected). */
+  envSignals: Set<string>;
+  /** Dependency names from any package.json under the project root.
+   *  Used the same way as envSignals to mark expected providers. */
+  packageDeps: Set<string>;
+  /** Parsed `.hatchkit/identity.json` (if present) — the lighter-weight
+   *  identity ledger written by `hatchkit inventory`. Separate from the
+   *  full `.hatchkit.json` manifest so it doesn't block adopt. */
+  identityFile?: IdentityFile;
 }
+
+/** Lightweight identity ledger written by `hatchkit inventory` after
+ *  it figures out a project's identity. Stored at `.hatchkit/identity.json`
+ *  (committed alongside the project). Doesn't replace `.hatchkit.json`
+ *  — adopt continues to own the full manifest. Inventory reads this on
+ *  subsequent runs to skip re-inference and prompts. */
+export interface IdentityFile {
+  version: 1;
+  /** ISO timestamp the file was (re-)written. */
+  writtenAt: string;
+  /** CLI version that produced it (diagnostic). */
+  cliVersion: string;
+  name?: string;
+  domain?: string;
+  /** GitHub repo slug "owner/name". */
+  repo?: string;
+}
+
+export const IDENTITY_DIR = ".hatchkit";
+export const IDENTITY_FILENAME = "identity.json";
+export const IDENTITY_VERSION = 1;
 
 export interface InventoryReport {
   cliVersion: string;
@@ -122,11 +160,20 @@ export interface InventoryReport {
   findings: InventoryFinding[];
   drifts: InventoryFinding[];
   skipped: Array<{ provider: string; reason: string }>;
-  summary: { present: number; drift: number; missing: number; skipped: number };
+  summary: {
+    present: number;
+    drift: number;
+    /** Count of `status: missing` findings — both expected and not. */
+    missing: number;
+    /** Count of `missing && expected` findings — the actionable subset. */
+    expectedMissing: number;
+    skipped: number;
+  };
 }
 
 type InferenceSource =
   | "manifest"
+  | "identity-file"
   | "package.json"
   | "git-remote"
   | "cname-file"
@@ -144,6 +191,10 @@ export interface RunInventoryOptions {
   input?: InventoryInput;
   /** Skip confirmation prompts; auto-accept inferred values. */
   yes?: boolean;
+  /** Force-write the identity file without prompting. */
+  save?: boolean;
+  /** Skip the end-of-run "save identity?" prompt entirely. */
+  noSave?: boolean;
 }
 
 export async function runInventory(cwd: string, opts: RunInventoryOptions = {}): Promise<void> {
@@ -154,11 +205,56 @@ export async function runInventory(cwd: string, opts: RunInventoryOptions = {}):
   });
 
   if (opts.json) {
-    console.log(JSON.stringify(report, null, 2));
+    // Sets serialize as `{}` by default — surface them as arrays so
+    // JSON consumers can actually read the detected signals.
+    console.log(
+      JSON.stringify(report, (_k, v) => (v instanceof Set ? Array.from(v).sort() : v), 2),
+    );
     return;
   }
 
   console.log(renderInventoryHuman(report));
+
+  // Persist the inferred identity unless explicitly suppressed. Skip
+  // entirely when there's nothing useful to save (no name AND no domain
+  // AND no repo) — writing a blank ledger isn't helpful.
+  const hasIdentity = !!(report.inferred.name || report.inferred.domain || report.inferred.repo);
+  if (!hasIdentity || opts.noSave) return;
+
+  const absCwd = resolve(cwd);
+  const existing = readIdentityFile(absCwd);
+  const isSame =
+    existing &&
+    existing.name === report.inferred.name &&
+    existing.domain === report.inferred.domain &&
+    existing.repo === report.inferred.repo;
+  if (isSame) {
+    // Already on disk and matches — nothing to do. Silent so the
+    // prompt doesn't appear on every re-run.
+    return;
+  }
+
+  if (opts.save) {
+    const written = writeIdentityFile(absCwd, report.inferred);
+    console.log(
+      chalk.dim(
+        `  Saved identity to ${IDENTITY_DIR}/${IDENTITY_FILENAME} (writtenAt: ${written.writtenAt}).`,
+      ),
+    );
+    return;
+  }
+
+  // Only ask in interactive mode (TTY + not --yes).
+  if (!process.stdin.isTTY || opts.yes) return;
+  const action = existing ? "update" : "write";
+  const ok = await confirm({
+    message: `${action === "write" ? "Save" : "Update"} inferred identity to ${IDENTITY_DIR}/${IDENTITY_FILENAME}? Future inventory/adopt runs will read this instead of re-inferring.`,
+    default: true,
+  });
+  if (ok) {
+    writeIdentityFile(absCwd, report.inferred);
+    console.log(chalk.dim(`  Saved ${IDENTITY_DIR}/${IDENTITY_FILENAME}.`));
+  }
 }
 
 export interface CollectInventoryOptions {
@@ -199,19 +295,26 @@ export async function collectInventory(
     identity = await promptForGaps(local, inferred, sources, !!opts.autoAccept);
   }
 
+  // Per-provider expectation flags — drives which `missing` findings
+  // surface as red ✗ vs dim ·. A library with no Coolify-deploy signals
+  // gets dim · for "no Coolify app named foo" (expected absence), but a
+  // project whose .env.development declares STRIPE_* gets red ✗ if no
+  // matching webhook exists (genuine missing).
+  const expectations = computeExpectations(local, identity);
+
   // Provider scans — every one is best-effort and returns its own
   // findings + skip reason. Running them in parallel keeps wall-time
   // close to the slowest single round-trip.
   const scanResults = await Promise.all([
-    scanCoolify(identity),
-    scanDns(identity),
-    scanR2(identity, local.manifest),
+    scanCoolify(identity, expectations.coolify),
+    scanDns(identity, expectations.dns),
+    scanR2(identity, local.manifest, expectations.r2),
     scanS3Other(identity),
-    scanGitHub(identity),
-    scanResend(identity),
-    scanGlitchtip(identity),
-    scanOpenpanel(identity),
-    scanStripe(identity),
+    scanGitHub(identity, { github: expectations.github, githubPages: expectations.githubPages }),
+    scanResend(identity, expectations.resend),
+    scanGlitchtip(identity, expectations.glitchtip),
+    scanOpenpanel(identity, expectations.openpanel),
+    scanStripe(identity, expectations.stripe),
   ]);
 
   const findings: InventoryFinding[] = [];
@@ -229,7 +332,8 @@ export async function collectInventory(
 
   const drifts = findings.filter((f) => f.status === "drift");
   const present = findings.filter((f) => f.status === "present").length;
-  const missing = findings.filter((f) => f.status === "missing").length;
+  const missingAll = findings.filter((f) => f.status === "missing");
+  const expectedMissing = missingAll.filter((f) => f.expected).length;
 
   return {
     cliVersion: getCliVersion(),
@@ -240,7 +344,13 @@ export async function collectInventory(
     findings,
     drifts,
     skipped,
-    summary: { present, drift: drifts.length, missing, skipped: skipped.length },
+    summary: {
+      present,
+      drift: drifts.length,
+      missing: missingAll.length,
+      expectedMissing,
+      skipped: skipped.length,
+    },
   };
 }
 
@@ -391,12 +501,24 @@ function inferLocal(cwd: string): InventoryLocal {
   }
   const envKeysPresent = !!locateEnvKeysFile(cwd);
 
+  // Provider expectation signals — read plaintext .env.* files and
+  // every package.json under the project for hints about which
+  // providers this project actually depends on. Used to mark `missing`
+  // findings as `expected: true` so the renderer only shows red ✗ when
+  // local state declares the resource should exist.
+  const envSignals = collectEnvSignals(cwd, serverDir, clientDir);
+  const packageDeps = collectPackageDeps(cwd, serverDir, clientDir);
+
   // `.git` lives at the repo root — in a worktree it's a file pointing
   // at the main repo, in a normal clone it's a directory. Either form
   // is fine for existsSync. Walk up from cwd so running `hatchkit
   // inventory` from a subdir (e.g. `apps/web/`) still picks up the
   // repo root for git lookups.
   const gitRoot = findGitRoot(cwd);
+
+  // Identity file — written by past `hatchkit inventory` runs. Read
+  // unconditionally; if missing or malformed, leave undefined.
+  const identityFile = readIdentityFile(cwd);
 
   return {
     cwd,
@@ -415,7 +537,126 @@ function inferLocal(cwd: string): InventoryLocal {
     cnameFile,
     dotenvxEncrypted,
     envKeysPresent,
+    envSignals,
+    packageDeps,
+    identityFile,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Expectation-signal collectors (used to mark findings as `expected`)
+// ---------------------------------------------------------------------------
+
+/** Walk plaintext .env.example / .env.development files at the project
+ *  root and any detected server/client dirs, returning the set of
+ *  env-var-name prefixes encountered. Encrypted .env.production is
+ *  intentionally NOT decrypted — we read declarative templates only. */
+function collectEnvSignals(
+  cwd: string,
+  serverDir: string | undefined,
+  clientDir: string | undefined,
+): Set<string> {
+  const signals = new Set<string>();
+  const filenames = [".env.example", ".env.development", ".env"];
+  const dirs = [cwd, serverDir, clientDir].filter((d): d is string => !!d);
+  // Patterns we recognize — prefix → signal name. Keep this list
+  // tight; over-broad matches lead to spurious "expected" flags.
+  const patterns: Array<{ re: RegExp; signal: string }> = [
+    { re: /^\s*RESEND_/m, signal: "RESEND" },
+    { re: /^\s*GLITCHTIP_DSN|^\s*PUBLIC_GLITCHTIP_DSN/m, signal: "GLITCHTIP" },
+    { re: /^\s*SENTRY_DSN|^\s*PUBLIC_SENTRY_DSN/m, signal: "SENTRY" },
+    { re: /^\s*OPENPANEL_|^\s*PUBLIC_OPENPANEL_/m, signal: "OPENPANEL" },
+    { re: /^\s*STRIPE_/m, signal: "STRIPE" },
+    { re: /^\s*R2_/m, signal: "R2" },
+    { re: /^\s*S3_|^\s*AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|REGION)/m, signal: "S3" },
+  ];
+  for (const dir of dirs) {
+    for (const name of filenames) {
+      const p = join(dir, name);
+      if (!existsSync(p)) continue;
+      let body: string;
+      try {
+        body = readFileSync(p, "utf-8");
+      } catch {
+        continue;
+      }
+      // Strip commented-out lines — `# RESEND_API_KEY=...` shouldn't
+      // count as a signal that the project uses Resend.
+      const live = body
+        .split("\n")
+        .filter((l) => !/^\s*#/.test(l))
+        .join("\n");
+      for (const { re, signal } of patterns) {
+        if (re.test(live)) signals.add(signal);
+      }
+    }
+  }
+  return signals;
+}
+
+/** Read every package.json under the project (root + server/client
+ *  dirs) and return the union of declared dependency names (deps +
+ *  devDeps + peerDeps). Cheap heuristic — we don't follow workspace
+ *  globs, just probe the conventional monorepo locations. */
+function collectPackageDeps(
+  cwd: string,
+  serverDir: string | undefined,
+  clientDir: string | undefined,
+): Set<string> {
+  const out = new Set<string>();
+  const dirs = [cwd, serverDir, clientDir].filter((d): d is string => !!d);
+  for (const dir of dirs) {
+    const p = join(dir, "package.json");
+    if (!existsSync(p)) continue;
+    try {
+      const pkg = JSON.parse(readFileSync(p, "utf-8")) as {
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+        peerDependencies?: Record<string, string>;
+      };
+      for (const block of [pkg.dependencies, pkg.devDependencies, pkg.peerDependencies]) {
+        if (!block) continue;
+        for (const name of Object.keys(block)) out.add(name);
+      }
+    } catch {
+      // Unparseable package.json — skip.
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Identity file (.hatchkit/identity.json) — read + write
+// ---------------------------------------------------------------------------
+
+export function identityFilePath(cwd: string): string {
+  return join(cwd, IDENTITY_DIR, IDENTITY_FILENAME);
+}
+
+export function readIdentityFile(cwd: string): IdentityFile | undefined {
+  const p = identityFilePath(cwd);
+  if (!existsSync(p)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(p, "utf-8")) as { version?: unknown };
+    if (parsed.version !== IDENTITY_VERSION) return undefined;
+    return parsed as IdentityFile;
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeIdentityFile(cwd: string, identity: InventoryInput): IdentityFile {
+  const file: IdentityFile = {
+    version: IDENTITY_VERSION,
+    writtenAt: new Date().toISOString(),
+    cliVersion: getCliVersion(),
+    name: identity.name,
+    domain: identity.domain,
+    repo: identity.repo,
+  };
+  mkdirSync(join(cwd, IDENTITY_DIR), { recursive: true });
+  writeFileSync(identityFilePath(cwd), `${JSON.stringify(file, null, 2)}\n`, "utf-8");
+  return file;
 }
 
 function findGitRoot(startDir: string): string | undefined {
@@ -461,13 +702,16 @@ function inferIdentity(
   const sources: IdentitySources = {};
   const out: InventoryInput = {};
 
-  // name: flag > manifest > package.json > basename(cwd) as last resort
+  // name: flag > manifest > identity-file > package.json > basename(cwd)
   if (override.name) {
     out.name = override.name;
     sources.name = "flag";
   } else if (local.manifest?.name) {
     out.name = local.manifest.name;
     sources.name = "manifest";
+  } else if (local.identityFile?.name) {
+    out.name = local.identityFile.name;
+    sources.name = "identity-file";
   } else if (local.packageName) {
     out.name = local.packageName;
     sources.name = "package.json";
@@ -482,25 +726,31 @@ function inferIdentity(
     }
   }
 
-  // domain: flag > manifest > CNAME file > package homepage url? (skip;
-  // too noisy). We deliberately don't derive a domain from the project
-  // name — too speculative, and the matching layer already tries common
-  // domain patterns against any zone we list.
+  // domain: flag > manifest > identity-file > CNAME file. We deliberately
+  // don't derive a domain from the project name — too speculative, and
+  // the matching layer already tries common domain patterns against any
+  // zone we list.
   if (override.domain) {
     out.domain = override.domain;
     sources.domain = "flag";
   } else if (local.manifest?.domain) {
     out.domain = local.manifest.domain;
     sources.domain = "manifest";
+  } else if (local.identityFile?.domain) {
+    out.domain = local.identityFile.domain;
+    sources.domain = "identity-file";
   } else if (local.cnameFile?.content) {
     out.domain = local.cnameFile.content;
     sources.domain = "cname-file";
   }
 
-  // repo: flag > git remote
+  // repo: flag > identity-file > git remote (filled in by caller)
   if (override.repo) {
     out.repo = override.repo;
     sources.repo = "flag";
+  } else if (local.identityFile?.repo) {
+    out.repo = local.identityFile.repo;
+    sources.repo = "identity-file";
   } else {
     // git remote is resolved async — leave undefined here; the caller
     // fills it via resolveGitRemote (run before prompting).
@@ -707,7 +957,66 @@ interface ScanResult {
   raw?: Record<string, unknown>;
 }
 
-async function scanCoolify(input: InventoryInput): Promise<ScanResult> {
+/** Per-provider "is a resource here something this project actually
+ *  expects to have?" flags. Computed from local state (manifest, env
+ *  signals, package deps, workflows). Drives whether `missing` findings
+ *  surface as red ✗ (actionable) or dim · (no-match observation). */
+export interface ProviderExpectations {
+  coolify: boolean;
+  dns: boolean;
+  r2: boolean;
+  github: boolean;
+  githubPages: boolean;
+  resend: boolean;
+  glitchtip: boolean;
+  openpanel: boolean;
+  stripe: boolean;
+}
+
+export function computeExpectations(
+  local: InventoryLocal,
+  identity: InventoryInput,
+): ProviderExpectations {
+  const env = local.envSignals;
+  const deps = local.packageDeps;
+  const hasManifestBuckets = (() => {
+    const b = local.manifest?.s3Buckets;
+    if (!b) return false;
+    return Object.values(b).some((v) => v && typeof v === "object");
+  })();
+  return {
+    // Coolify is the project's deploy target whenever there's a manifest
+    // (every hatchkit-scaffolded project deploys there) or a deploy
+    // workflow committed.
+    coolify: !!local.manifest || !!local.deployWorkflowPath,
+    // DNS is always relevant when we know a domain — the user wouldn't
+    // have a domain unless they intended to route something to it.
+    dns: !!identity.domain,
+    r2: hasManifestBuckets || env.has("R2") || env.has("S3") || deps.has("@aws-sdk/client-s3"),
+    github: !!identity.repo,
+    // Pages is expected when a deploy workflow is committed or the
+    // repo has a CNAME file at one of the conventional locations.
+    githubPages: !!local.ghPagesWorkflowPath || !!local.cnameFile,
+    resend: env.has("RESEND") || deps.has("resend"),
+    // The Sentry SDK works against GlitchTip (same wire protocol), so
+    // either signal counts. Same for an explicit GLITCHTIP_DSN.
+    glitchtip:
+      env.has("GLITCHTIP") ||
+      env.has("SENTRY") ||
+      deps.has("glitchtip") ||
+      hasDepMatching(deps, /^@sentry\//),
+    openpanel:
+      env.has("OPENPANEL") || hasDepMatching(deps, /^@openpanel\//) || deps.has("openpanel"),
+    stripe: env.has("STRIPE") || deps.has("stripe") || deps.has("@stripe/stripe-js"),
+  };
+}
+
+function hasDepMatching(deps: Set<string>, re: RegExp): boolean {
+  for (const d of deps) if (re.test(d)) return true;
+  return false;
+}
+
+async function scanCoolify(input: InventoryInput, expected: boolean): Promise<ScanResult> {
   const provider = "coolify";
   const findings: InventoryFinding[] = [];
   const skipped: Array<{ provider: string; reason: string }> = [];
@@ -790,6 +1099,7 @@ async function scanCoolify(input: InventoryInput): Promise<ScanResult> {
       kind: "application",
       identity: input.name,
       status: "missing",
+      expected,
       detail: `no Coolify project or app named ${wantedNames.join(" / ")} (${apps.length} app(s) total)`,
     });
   }
@@ -824,7 +1134,7 @@ function nameAliases(name: string): string[] {
   return [name, `${name}-server`, `${name}-client`, `${name}-web`, `${name}-api`];
 }
 
-async function scanDns(input: InventoryInput): Promise<ScanResult> {
+async function scanDns(input: InventoryInput, expected: boolean): Promise<ScanResult> {
   const provider = "dns";
   const findings: InventoryFinding[] = [];
   const skipped: Array<{ provider: string; reason: string }> = [];
@@ -867,6 +1177,7 @@ async function scanDns(input: InventoryInput): Promise<ScanResult> {
       kind: "zone",
       identity: apex,
       status: "missing",
+      expected,
       detail: "no Cloudflare zone for this apex",
     });
     return { provider, findings, skipped };
@@ -943,6 +1254,7 @@ function relevantRecordProbes(
 async function scanR2(
   input: InventoryInput,
   manifest: ProjectManifest | undefined,
+  expected: boolean,
 ): Promise<ScanResult> {
   const provider = "s3:r2";
   const findings: InventoryFinding[] = [];
@@ -1045,6 +1357,7 @@ async function scanR2(
       kind: "bucket",
       identity: input.name ?? "(candidates)",
       status: "missing",
+      expected,
       detail: `no R2 bucket matches ${Array.from(candidates).join(" / ")} (account ${accountId.slice(0, 6)}…)`,
     });
   }
@@ -1079,7 +1392,10 @@ async function scanS3Other(_input: InventoryInput): Promise<ScanResult> {
   return { provider, findings, skipped };
 }
 
-async function scanGitHub(input: InventoryInput): Promise<ScanResult> {
+async function scanGitHub(
+  input: InventoryInput,
+  expects: { github: boolean; githubPages: boolean },
+): Promise<ScanResult> {
   const provider = "github";
   const findings: InventoryFinding[] = [];
   const skipped: Array<{ provider: string; reason: string }> = [];
@@ -1138,6 +1454,7 @@ async function scanGitHub(input: InventoryInput): Promise<ScanResult> {
         kind: "repository",
         identity: input.repo,
         status: "missing",
+        expected: expects.github,
         detail: res.stderr.trim().split("\n")[0],
       });
       return { provider, findings, skipped, raw: { repoInfo } };
@@ -1184,6 +1501,7 @@ async function scanGitHub(input: InventoryInput): Promise<ScanResult> {
         kind: "page-site",
         identity: input.repo,
         status: "missing",
+        expected: expects.githubPages,
         detail: "Pages is not enabled on this repo",
       });
     } else {
@@ -1248,7 +1566,7 @@ async function scanGitHub(input: InventoryInput): Promise<ScanResult> {
   return { provider, findings, skipped, raw: { repoInfo, pages } };
 }
 
-async function scanResend(input: InventoryInput): Promise<ScanResult> {
+async function scanResend(input: InventoryInput, expected: boolean): Promise<ScanResult> {
   const provider = "resend";
   const findings: InventoryFinding[] = [];
   const skipped: Array<{ provider: string; reason: string }> = [];
@@ -1277,6 +1595,7 @@ async function scanResend(input: InventoryInput): Promise<ScanResult> {
         kind: "verified-domain",
         identity: input.domain,
         status: "missing",
+        expected,
         detail: `no Resend domain entry for ${input.domain} (${(body.data ?? []).length} domain(s) total)`,
       });
     } else {
@@ -1299,7 +1618,7 @@ async function scanResend(input: InventoryInput): Promise<ScanResult> {
   return { provider, findings, skipped };
 }
 
-async function scanGlitchtip(input: InventoryInput): Promise<ScanResult> {
+async function scanGlitchtip(input: InventoryInput, expected: boolean): Promise<ScanResult> {
   const provider = "glitchtip";
   const findings: InventoryFinding[] = [];
   const skipped: Array<{ provider: string; reason: string }> = [];
@@ -1331,6 +1650,7 @@ async function scanGlitchtip(input: InventoryInput): Promise<ScanResult> {
         kind: "project",
         identity: input.name,
         status: "missing",
+        expected,
         detail: `no GlitchTip project matching ${wanted.join(" / ")} (${body.length} total in org)`,
       });
     } else {
@@ -1353,7 +1673,7 @@ async function scanGlitchtip(input: InventoryInput): Promise<ScanResult> {
   return { provider, findings, skipped };
 }
 
-async function scanOpenpanel(input: InventoryInput): Promise<ScanResult> {
+async function scanOpenpanel(input: InventoryInput, expected: boolean): Promise<ScanResult> {
   const provider = "openpanel";
   const findings: InventoryFinding[] = [];
   const skipped: Array<{ provider: string; reason: string }> = [];
@@ -1393,6 +1713,7 @@ async function scanOpenpanel(input: InventoryInput): Promise<ScanResult> {
         kind: "project",
         identity: input.name,
         status: "missing",
+        expected,
         detail: `no OpenPanel project matching ${wanted.join(" / ")} (${projects.length} total)`,
       });
     } else {
@@ -1414,7 +1735,7 @@ async function scanOpenpanel(input: InventoryInput): Promise<ScanResult> {
   return { provider, findings, skipped };
 }
 
-async function scanStripe(input: InventoryInput): Promise<ScanResult> {
+async function scanStripe(input: InventoryInput, expected: boolean): Promise<ScanResult> {
   const provider = "stripe";
   const findings: InventoryFinding[] = [];
   const skipped: Array<{ provider: string; reason: string }> = [];
@@ -1451,6 +1772,7 @@ async function scanStripe(input: InventoryInput): Promise<ScanResult> {
           kind: "webhook-endpoint",
           identity: `${mode} mode`,
           status: "missing",
+          expected,
           detail: `no webhook endpoint with URL containing ${input.domain} (${(body.data ?? []).length} endpoint(s) in ${mode} mode)`,
         });
       } else {
@@ -1762,14 +2084,7 @@ export function renderInventoryHuman(report: InventoryReport): string {
     if (providerKey === "drift") continue;
     lines.push(chalk.bold(`  ${providerKey}`));
     for (const f of findings) {
-      const icon =
-        f.status === "present"
-          ? chalk.green("✓")
-          : f.status === "missing"
-            ? chalk.red("✗")
-            : f.status === "drift"
-              ? chalk.yellow("⚠")
-              : chalk.dim("·");
+      const icon = findingIcon(f);
       const kind = chalk.dim(`(${f.kind})`);
       const detail = f.detail ? chalk.dim(` — ${f.detail}`) : "";
       lines.push(`    ${icon} ${f.identity} ${kind}${detail}`);
@@ -1796,6 +2111,17 @@ export function renderInventoryHuman(report: InventoryReport): string {
 function sourceTag(s: InferenceSource | undefined): string {
   if (!s) return chalk.dim("  (will prompt)");
   return chalk.dim(`  ← ${s}`);
+}
+
+/** Status icon for a single finding. Red ✗ is reserved for `missing`
+ *  findings the project actually expects (declared in manifest, env,
+ *  package deps, workflows). An unexpected absence — e.g. "no Coolify
+ *  app named foo" for a library that doesn't deploy — is dim · instead. */
+function findingIcon(f: InventoryFinding): string {
+  if (f.status === "present") return chalk.green("✓");
+  if (f.status === "drift") return chalk.yellow("⚠");
+  if (f.status === "missing") return f.expected ? chalk.red("✗") : chalk.dim("·");
+  return chalk.dim("·");
 }
 
 // ---------------------------------------------------------------------------
@@ -1852,11 +2178,12 @@ function renderInventorySummary(report: InventoryReport): string {
     lines.push(`    ${r.label.padEnd(labelWidth + 2)} ${r.icon} ${r.text}`);
   }
 
-  // Bottom-line takeaway — three branches: drift + missing, missing
-  // only, or all-clear.
+  // Bottom-line takeaway — counts only `expected` missing (the
+  // actionable subset). Unexpected absences ("no Coolify app named foo"
+  // for a CLI library) are excluded; they're not problems to fix.
   lines.push("");
   const drift = report.summary.drift;
-  const missing = report.summary.missing;
+  const missing = report.summary.expectedMissing;
   const present = report.summary.present;
   if (drift > 0 || missing > 0) {
     const parts: string[] = [];
@@ -1864,7 +2191,7 @@ function renderInventorySummary(report: InventoryReport): string {
       parts.push(chalk.yellow(`⚠ ${drift} drift${drift === 1 ? "" : "s"} to reconcile`));
     }
     if (missing > 0) {
-      parts.push(chalk.red(`✗ ${missing} resource${missing === 1 ? "" : "s"} missing`));
+      parts.push(chalk.red(`✗ ${missing} expected resource${missing === 1 ? "" : "s"} missing`));
     }
     lines.push(`  ${parts.join(chalk.dim("  ·  "))}`);
   } else if (present > 0) {
@@ -1911,10 +2238,16 @@ function rollUpProvider(providerKey: string, findings: InventoryFinding[]): Prov
     };
   }
   if (missing.length > 0) {
+    // Red ✗ only when the project locally declares this resource
+    // should exist. Otherwise dim · with a softer "no match" label —
+    // a CLI library shouldn't get a red mark for "no Coolify app".
+    const anyExpected = missing.some((f) => f.expected);
     return {
       label,
-      icon: chalk.red("✗"),
-      text: chalk.red(summarizeMissing(providerKey)),
+      icon: anyExpected ? chalk.red("✗") : chalk.dim("·"),
+      text: anyExpected
+        ? chalk.red(summarizeMissing(providerKey))
+        : chalk.dim("no match (not declared by this project)"),
     };
   }
   // Only `info`-level findings → no actionable state to surface.

@@ -313,6 +313,26 @@ export class CloudflareApi {
     }
   }
 
+  /** List every R2 bucket on the account. Used by `hatchkit overview`
+   *  to show a fleet-level inventory without iterating naming-convention
+   *  candidates. */
+  async listR2Buckets(
+    accountId: string,
+  ): Promise<
+    Array<{ name: string; location?: string; creation_date?: string; storage_class?: string }>
+  > {
+    type Resp = {
+      buckets?: Array<{
+        name: string;
+        location?: string;
+        creation_date?: string;
+        storage_class?: string;
+      }>;
+    };
+    const res = await this.request<Resp>("GET", `/accounts/${accountId}/r2/buckets`);
+    return res.buckets ?? [];
+  }
+
   /** Get bucket metadata. Returns null on 404. */
   async getR2Bucket(
     accountId: string,
