@@ -78,10 +78,6 @@ export interface ProjectConfig {
    *  is configured. Empty string when absent — the Cloudflare DNS
    *  module skips AAAA records on empty. */
   serverIpv6?: string;
-  /** Set when Coolify's reported public IPv4 disagrees with the
-   *  dashboard's DNS A record. Used to surface a yellow warning in
-   *  the review summary. */
-  serverIpMismatchWarning?: string;
   serverSize?: string;
   serverLocation?: string;
 
@@ -233,7 +229,6 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
   let serverIp: string | undefined;
   let serverIpv4: string | undefined;
   let serverIpv6: string | undefined;
-  let serverIpMismatchWarning: string | undefined;
   let serverSize: string | undefined;
   let serverLocation: string | undefined;
 
@@ -259,7 +254,6 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       serverIp = server.ip;
       serverIpv4 = server.ipv4;
       serverIpv6 = server.ipv6;
-      serverIpMismatchWarning = server.mismatchWarning;
     }
   } else {
     serverSize = await presetOrPrompt(
@@ -628,7 +622,6 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     serverIp,
     serverIpv4,
     serverIpv6,
-    serverIpMismatchWarning,
     serverSize,
     serverLocation,
     features,
@@ -941,7 +934,6 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
         serverIp: server.ip,
         serverIpv4: server.ipv4,
         serverIpv6: server.ipv6,
-        serverIpMismatchWarning: server.mismatchWarning,
         serverSize: undefined,
         serverLocation: undefined,
       };
@@ -964,7 +956,6 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
       serverIp: undefined,
       serverIpv4: undefined,
       serverIpv6: undefined,
-      serverIpMismatchWarning: undefined,
       serverSize,
       serverLocation: cfg.serverLocation ?? "nbg1",
     };
@@ -1084,9 +1075,6 @@ export interface SelectedServer {
   ipv4?: string;
   /** Validated public IPv6 — fed to Terraform's `target_ipv6`. */
   ipv6?: string;
-  /** Set when Coolify's reported public IPv4 disagrees with what
-   *  dashboard DNS resolves to. */
-  mismatchWarning?: string;
 }
 
 async function selectExistingServer(): Promise<SelectedServer> {
@@ -1135,7 +1123,7 @@ async function selectExistingServer(): Promise<SelectedServer> {
   if (!resolved) {
     throw new Error(`Couldn't resolve uuid for server "${chosen.name}" (${chosen.ip}).`);
   }
-  const ips = await discoverPublicIps(api, resolved.uuid, chosen.ip, coolifyConfig.url);
+  const ips = await discoverPublicIps(api, resolved.uuid, chosen.ip);
   if (!ips.v4) {
     console.log(
       chalk.yellow(
@@ -1154,6 +1142,5 @@ async function selectExistingServer(): Promise<SelectedServer> {
     ip: chosen.ip,
     ipv4: ips.v4,
     ipv6: ips.v6,
-    mismatchWarning: ips.mismatchWarning,
   };
 }

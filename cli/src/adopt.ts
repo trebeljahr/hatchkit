@@ -1824,9 +1824,6 @@ async function executePlan(
     console.log(
       `  Coolify:   ${chalk.cyan(coolifyResult.appUuid)}  ${chalk.dim(`@ ${ipDisplay || "?"}`)}`,
     );
-    if (coolifyResult.ipMismatchWarning) {
-      console.log(`  ${chalk.yellow("⚠")}  ${chalk.dim(coolifyResult.ipMismatchWarning)}`);
-    }
     const records: string[] = [];
     if (coolifyResult.dnsRecordId) records.push(`A ${plan.domain} → ${coolifyResult.serverIpv4}`);
     if (coolifyResult.dnsRecordIdV6)

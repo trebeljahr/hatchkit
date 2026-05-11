@@ -84,15 +84,11 @@ export interface WireUpResult {
   projectUuid: string;
   /** Coolify server uuid the app runs on. */
   serverUuid: string;
-  /** Public IPv4 (preferred from Coolify, falling back to DNS). */
+  /** Public IPv4 reported by Coolify. */
   serverIpv4?: string;
   /** Public IPv6 — only set when Coolify exposes one and we wrote
    *  an AAAA record. */
   serverIpv6?: string;
-  /** Whether the IPv4 reported by Coolify and the one resolved via
-   *  DNS for the dashboard hostname disagree. Useful to flag
-   *  misconfigured proxy / floating-IP setups. */
-  ipMismatchWarning?: string;
   /** Cloudflare DNS record id for the A record, if managed. */
   dnsRecordId?: string;
   /** Cloudflare DNS record id for the AAAA record, if managed. */
@@ -383,21 +379,13 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     );
   }
 
-  // ── 6. DNS — discover the box's public IP(s) and upsert records. ─
+  // ── 6. DNS — pull the box's public IP(s) from Coolify and upsert records.
   //
-  // Discovery order:
-  //   1. Coolify's `/servers/{uuid}/domains` exposes the configured
-  //      `public_ipv4` and `public_ipv6` for localhost-Coolify
-  //      installs (where /servers reports "host.docker.internal").
-  //   2. Independently resolve the Coolify dashboard URL's hostname
-  //      via dns.resolve4 + dns.resolve6 — that hostname IS public
-  //      (we're talking to it from the internet) so its A / AAAA
-  //      records are by definition the right pointers for new app
-  //      domains too.
-  // We use Coolify's value as primary, fall back to DNS resolution,
-  // and surface a warning when the two disagree (catches stale or
-  // misconfigured public_ipv4 / proxy setups).
-  const ips = await discoverPublicIps(api, resolveServer.uuid, server.ip, cfg.url);
+  // Coolify is the source of truth: `/servers/{uuid}/domains` exposes
+  // the configured `public_ipv4` and `public_ipv6` for localhost-Coolify
+  // installs (where /servers reports "host.docker.internal"), and
+  // /servers itself returns a real IPv4 on non-Docker installs.
+  const ips = await discoverPublicIps(api, resolveServer.uuid, server.ip);
   const dnsResult = await wireDns(input.domain, ips);
 
   // ── 7. First deploy is owned by GitHub Actions, not us. ─────────────
@@ -429,7 +417,6 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     serverUuid: resolveServer.uuid,
     serverIpv4: ips.v4,
     serverIpv6: ips.v6,
-    ipMismatchWarning: ips.mismatchWarning,
     dnsRecordId: dnsResult.recordIdV4,
     dnsRecordIdV6: dnsResult.recordIdV6,
     dnsZoneId: dnsResult.zoneId,
