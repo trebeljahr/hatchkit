@@ -1,5 +1,5 @@
 # ── Stage 1: Install dependencies ────────────────────────────────────
-FROM node:22-bookworm-slim AS deps
+FROM node:24-bookworm-slim AS deps
 RUN corepack enable
 WORKDIR /app
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
@@ -17,7 +17,7 @@ RUN pnpm --filter @starter/shared run build
 RUN pnpm --filter @starter/server run build
 
 # ── Stage 3: Production runtime ─────────────────────────────────────
-FROM node:22-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime
 WORKDIR /app
 
 ENV NODE_ENV=production

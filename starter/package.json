@@ -2,9 +2,9 @@
   "name": "node-realtime-starter",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "pnpm@9.15.4",
+  "packageManager": "pnpm@11.0.9",
   "engines": {
-    "node": "22.x"
+    "node": ">=24"
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",

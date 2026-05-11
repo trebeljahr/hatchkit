@@ -22,7 +22,7 @@ hatchkit --version
 
 Requirements:
 
-- **Node.js 20+** and **pnpm 9+** on your machine
+- **Node.js 24+** and **pnpm 11+** on your machine
 - **git** and the **GitHub CLI** (`gh`) authenticated (`gh auth login`)
 - A **Coolify** instance reachable over HTTPS — your own server or a friend's
 - Optional for "deploy me a new server from scratch": a **Hetzner Cloud** API token, a **DNS provider** token (INWX or Cloudflare)
