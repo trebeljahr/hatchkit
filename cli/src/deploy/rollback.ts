@@ -34,6 +34,48 @@ async function getR2AdminToken(): Promise<string | undefined> {
   return (await getSecret(SECRET_KEYS.r2AdminToken)) ?? undefined;
 }
 
+const sleep = (ms: number): Promise<void> => new Promise((res) => setTimeout(res, ms));
+
+/** Poll `getter` until it throws a 404-shaped error, signalling the
+ *  resource has actually been removed from Coolify's DB. Coolify's
+ *  DELETE endpoints return 200 the moment the deletion is queued, but
+ *  the Docker teardown + DB row cleanup completes asynchronously — a
+ *  follow-up project delete races against the still-attached child
+ *  resource and 422s with "Project has resources". Polling here closes
+ *  that race.
+ *
+ *  10s ceiling at ~500ms cadence covers every cleanup I've observed
+ *  on a healthy Coolify install; on a sick one the project-delete
+ *  retry below has its own backoff. The `label` is only used for the
+ *  diagnostic thrown on timeout. */
+async function waitForResourceGone(
+  getter: () => Promise<unknown>,
+  label: string,
+  timeoutMs = 10_000,
+  intervalMs = 500,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await getter();
+    } catch (err) {
+      // Coolify's request() throws on any non-2xx; the message contains
+      // the status code. 404 == truly gone; everything else (502 mid-
+      // restart, transient 500) we ride out and retry.
+      if (/\b404\b/.test((err as Error).message)) return;
+    }
+    await sleep(intervalMs);
+  }
+  // Soft-fail: warn but don't throw — the project-delete retry below
+  // handles the rare case where Coolify never reports a 404 (we've
+  // seen this on builds with the "soft delete" flag on; the row stays
+  // discoverable for a while but is no longer counted as a project
+  // resource). Logging just keeps it observable.
+  console.log(
+    chalk.dim(`    (waited ${timeoutMs / 1000}s for ${label} delete to settle; moving on)`),
+  );
+}
+
 interface RollbackOptions {
   /** Skip per-step confirmation prompts on destructive operations. */
   yes?: boolean;
@@ -528,43 +570,63 @@ async function undoStep(
       if (!cfg) throw new Error("Coolify config no longer present");
       const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
       const result = await api.deleteApplication(step.uuid);
-      return result === "not-found" ? "not-found" : "done";
+      if (result === "not-found") return "not-found";
+      // Coolify's DELETE returns 200 as soon as the request is queued —
+      // the actual `docker compose down` + DB row removal completes
+      // asynchronously. If we move on to the project delete too fast,
+      // Coolify still sees the app as a child resource and 422s. Wait
+      // for the application's GET to 404 so the subsequent project
+      // delete has a clean slate.
+      await waitForResourceGone(() => api.getApplication(step.uuid), "application");
+      return "done";
     }
     case "coolifyDb": {
       const cfg = await getCoolifyConfig();
       if (!cfg) throw new Error("Coolify config no longer present");
       const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
       const result = await api.deleteDatabase(step.uuid);
-      return result === "not-found" ? "not-found" : "done";
+      if (result === "not-found") return "not-found";
+      // Same async-cleanup race as the application path — see above.
+      await waitForResourceGone(() => api.getDatabase(step.uuid), "database");
+      return "done";
     }
     case "coolifyProject": {
       const cfg = await getCoolifyConfig();
       if (!cfg) throw new Error("Coolify config no longer present");
       const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
-      try {
-        const result = await api.deleteProject(step.uuid);
-        return result === "not-found" ? "not-found" : "done";
-      } catch (err) {
-        // Coolify rejects project delete when apps/databases/services
-        // still live inside it. The API doesn't return the list of
-        // leftovers (and apps don't expose project_uuid via the public
-        // endpoints either), so we can't auto-cascade safely. Surface
-        // a yellow "needs manual cleanup" with the project URL — the
-        // ledger keeps this step pending so the next `hatchkit destroy`
-        // re-tries it after the user has emptied the project.
-        const msg = (err as Error).message;
-        if (/Project has resources|cannot be deleted/i.test(msg)) {
-          const projectUrl = `${cfg.url.replace(/\/$/, "")}/project/${step.uuid}`;
-          throw new RollbackSkip(
-            "Coolify project still has applications/databases/services inside it.",
-            [
-              `Open ${projectUrl} and delete each remaining resource.`,
-              `Then re-run \`hatchkit destroy ${ledgerName}\` to remove the empty project.`,
-            ],
-          );
+      // Retry the project delete a few times: even with the post-delete
+      // polling above, Coolify occasionally needs another second before
+      // its project-resource link table catches up. Eight attempts at
+      // ~750ms each = ~6s ceiling — well below the user's "is it
+      // hanging?" threshold and enough to ride out the longest cleanup
+      // we've observed on a healthy Coolify install.
+      const maxAttempts = 8;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const result = await api.deleteProject(step.uuid);
+          return result === "not-found" ? "not-found" : "done";
+        } catch (err) {
+          const msg = (err as Error).message;
+          const stillBusy = /Project has resources|cannot be deleted/i.test(msg);
+          if (!stillBusy) throw err;
+          if (attempt === maxAttempts) {
+            // Genuinely stuck — fall back to the prior manual-cleanup
+            // path so the user gets actionable guidance instead of a
+            // raw "still has resources" error.
+            const projectUrl = `${cfg.url.replace(/\/$/, "")}/project/${step.uuid}`;
+            throw new RollbackSkip(
+              "Coolify project still has applications/databases/services inside it after waiting.",
+              [
+                `Open ${projectUrl} and delete each remaining resource.`,
+                `Then re-run \`hatchkit destroy ${ledgerName}\` to remove the empty project.`,
+              ],
+            );
+          }
+          await sleep(750);
         }
-        throw err;
       }
+      // Unreachable — the loop either returns or throws RollbackSkip.
+      return "done";
     }
     case "coolifyPrivateRegistry": {
       const cfg = await getCoolifyConfig();
