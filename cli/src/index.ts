@@ -1031,9 +1031,6 @@ async function handleCreate(): Promise<void> {
     console.log(
       `  Deploy to:  ${config.deployTarget === "existing" ? `existing server (${config.serverIpv4 ?? config.serverIp ?? "?"}${config.serverIpv6 ? ` · ${config.serverIpv6}` : ""})` : `new Hetzner ${config.serverSize}`}`,
     );
-    if (config.serverIpMismatchWarning) {
-      console.log(chalk.yellow(`              ⚠ ${config.serverIpMismatchWarning}`));
-    }
   }
   console.log(`  Features:   ${config.features.length > 0 ? config.features.join(", ") : "none"}`);
   console.log(

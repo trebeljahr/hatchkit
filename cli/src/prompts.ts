@@ -1151,7 +1151,6 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
         serverIp: undefined,
         serverIpv4: undefined,
         serverIpv6: undefined,
-        serverIpMismatchWarning: undefined,
         serverSize: undefined,
         serverLocation: undefined,
         features: [],
