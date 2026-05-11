@@ -231,23 +231,64 @@ results.serverOnly = await run(
   { surfaces: "server-only" },
 );
 
-results.clientOnlyThrows = await (async () => {
-  console.log("\n── surfaces: client-only (expected throw) ─────────────────────────────");
-  const d = mkdtempSync(join(tmpdir(), "scaffold-client-only-"));
-  let threw = false;
-  let msg = "";
-  try {
-    await scaffoldApp(cfg("static-site", [], { surfaces: "client-only" }), d);
-  } catch (err) {
-    threw = true;
-    msg = (err as Error).message;
-  } finally {
-    rmSync(d, { recursive: true, force: true });
-  }
-  const ok = threw && msg.includes("client-only");
-  console.log(`  ${ok ? "✓" : "✗"} threw with a client-only-specific message`);
-  return ok;
-})();
+results.clientOnly = await run(
+  "surfaces: client-only",
+  "static-site",
+  [],
+  (d) => {
+    const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
+    const clientPkg = JSON.parse(
+      readFileSync(join(d, "packages/client/package.json"), "utf-8"),
+    );
+    const compose = existsSync(join(d, "docker-compose.yml"))
+      ? readFileSync(join(d, "docker-compose.yml"), "utf-8")
+      : "";
+    const manifest = JSON.parse(readFileSync(join(d, ".hatchkit.json"), "utf-8"));
+    const layout = readFileSync(
+      join(d, "packages/client/src/app/layout.tsx"),
+      "utf-8",
+    );
+    const landing = readFileSync(join(d, "packages/client/src/app/page.tsx"), "utf-8");
+    const sharedIndex = readFileSync(
+      join(d, "packages/shared/src/index.ts"),
+      "utf-8",
+    );
+    return [
+      ["packages/server/ removed", !existsSync(join(d, "packages/server"))],
+      ["packages/client/ kept", existsSync(join(d, "packages/client"))],
+      ["packages/shared/ml-types.ts removed", !existsSync(join(d, "packages/shared/src/ml-types.ts"))],
+      ["shared barrel no longer re-exports ml-types", !/ml-types/.test(sharedIndex)],
+      ["(protected) route group removed", !existsSync(join(d, "packages/client/src/app/(protected)"))],
+      ["login route removed", !existsSync(join(d, "packages/client/src/app/login"))],
+      ["signup route removed", !existsSync(join(d, "packages/client/src/app/signup"))],
+      ["trpc-provider removed", !existsSync(join(d, "packages/client/src/providers/trpc-provider.tsx"))],
+      ["auth-provider removed", !existsSync(join(d, "packages/client/src/providers/auth-provider.tsx"))],
+      ["lib/trpc.ts removed", !existsSync(join(d, "packages/client/src/lib/trpc.ts"))],
+      ["lib/auth-client.ts removed", !existsSync(join(d, "packages/client/src/lib/auth-client.ts"))],
+      ["hooks/use-auth.ts removed", !existsSync(join(d, "packages/client/src/hooks/use-auth.ts"))],
+      ["components/ml/ removed", !existsSync(join(d, "packages/client/src/components/ml"))],
+      ["layout drops TRPCProvider/AuthProvider", !/TRPCProvider|AuthProvider/.test(layout)],
+      ["landing has no /login or /signup links", !/href="\/(login|signup)"/.test(landing)],
+      ["client pkg dropped @trpc/client", !clientPkg.dependencies?.["@trpc/client"]],
+      ["client pkg dropped @trpc/react-query", !clientPkg.dependencies?.["@trpc/react-query"]],
+      ["client pkg dropped better-auth", !clientPkg.dependencies?.["better-auth"]],
+      ["compose: server service stripped", !/^\s{2}server:/m.test(compose)],
+      ["compose: mongo service stripped", !/^\s{2}mongo:/m.test(compose)],
+      ["compose: redis service stripped", !/^\s{2}redis:/m.test(compose)],
+      ["compose: client service kept", /^\s{2}client:/m.test(compose)],
+      ["compose: mongo-data volume removed", !/mongo-data:/.test(compose)],
+      ["pkg.scripts.dev targets client only", pkg.scripts?.dev === "pnpm --filter @starter/client dev"],
+      ["pkg.scripts has no build:server", !pkg.scripts?.["build:server"]],
+      ["pkg.scripts has no test:unit", !pkg.scripts?.["test:unit"]],
+      ["manifest persists surfaces=client-only", manifest.surfaces === "client-only"],
+      [
+        "no packages/server/.env.production (dotenvx skipped)",
+        !existsSync(join(d, "packages/server/.env.production")),
+      ],
+    ];
+  },
+  { surfaces: "client-only", mongodbProvider: "external" },
+);
 
 results.both = await run("desktop + mobile", "my-cool-app", ["desktop", "mobile"], (d) => {
   const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));

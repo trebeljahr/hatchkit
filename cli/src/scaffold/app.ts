@@ -364,9 +364,7 @@ async function runScaffoldSteps(
   // feature-flag work above (which uses `removeIfExists`) doesn't fight
   // it — anything the prune wipes was either already gone or was a
   // safe no-op write. See scaffold/surfaces.ts for the per-surface
-  // semantics. Client-only currently throws here (the prune isn't
-  // implemented), so the rollback runs and the user gets a clear
-  // message instead of a half-pruned tree.
+  // semantics.
   pruneToSurface(config, outputDir, modifications);
 
   // Write the sanitized manifest so `hatchkit update` can diff
@@ -378,10 +376,20 @@ async function runScaffoldSteps(
   // Seed .env.production via dotenvx: encrypt supplied values, mint a
   // keypair, mirror the private key into the OS keychain. Unsupplied
   // keys land as plaintext CHANGE_ME_<KEY> placeholders.
-  const dotenvx = await seedDotenvxProduction(outputDir, config, config.envValues ?? {});
-  modifications.push(
-    `dotenvx: ${dotenvx.encryptedKeys.length} encrypted, ${dotenvx.placeholderKeys.length} placeholders`,
-  );
+  //
+  // Client-only scaffolds skip this entirely — dotenvx targets
+  // packages/server/.env.production, which doesn't exist post-prune.
+  // Client env vars are NEXT_PUBLIC_* (baked at build time + public by
+  // design) so there's nothing to encrypt anyway.
+  let dotenvx: DotenvxSeedResult | undefined;
+  if (config.surfaces !== "client-only") {
+    dotenvx = await seedDotenvxProduction(outputDir, config, config.envValues ?? {});
+    modifications.push(
+      `dotenvx: ${dotenvx.encryptedKeys.length} encrypted, ${dotenvx.placeholderKeys.length} placeholders`,
+    );
+  } else {
+    modifications.push("client-only: skipped dotenvx seeding (no server-side secrets)");
+  }
 
   return { modifications, ports, dotenvx };
 }
@@ -400,7 +408,7 @@ function scaffoldDryRun(config: ProjectConfig, outputDir: string): string[] {
   if (config.surfaces === "server-only") {
     actions.push("Prune to server-only (remove packages/client, native scaffolds, client compose service)");
   } else if (config.surfaces === "client-only") {
-    actions.push("Prune to client-only (NOT YET SUPPORTED — would throw at scaffold time)");
+    actions.push("Prune to client-only (remove packages/server, auth/tRPC routes, server/mongo/redis compose services)");
   }
 
   if (!config.features.includes("websocket")) actions.push("Remove WebSocket support");

@@ -221,11 +221,18 @@ export async function runCoolifySetup(
   // .env.production and is decrypted at runtime via the dotenvx
   // private key that `hatchkit keys push` puts on Coolify. That keeps
   // prod secrets out of Coolify's UI.
-  const envs: Record<string, string> = {
-    NODE_ENV: "production",
-    PORT: String(options.serverPort ?? 3000),
-    FRONTEND_URL: `https://${config.domain}`,
-  };
+  //
+  // Client-only scaffolds get only NODE_ENV — there's no server to
+  // honour PORT (the Next.js standalone server already binds 3000) and
+  // FRONTEND_URL is meaningless without a CORS-checking backend.
+  const envs: Record<string, string> =
+    surfaces === "client-only"
+      ? { NODE_ENV: "production" }
+      : {
+          NODE_ENV: "production",
+          PORT: String(options.serverPort ?? 3000),
+          FRONTEND_URL: `https://${config.domain}`,
+        };
   await api.setAppEnv(appUuid, envs);
   console.log(
     chalk.green(

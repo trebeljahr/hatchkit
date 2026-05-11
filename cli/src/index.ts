@@ -1037,7 +1037,11 @@ async function handleCreate(): Promise<void> {
       // Auto-provision GlitchTip + write its DSN encrypted into
       // .env.production. The user picked the `analytics` feature; we
       // already verified GlitchTip is configured during pre-flight.
-      if (config.features.includes("analytics")) {
+      // Skipped for client-only — the encrypt target lives in
+      // packages/server/, which doesn't exist post-prune. The client
+      // side of analytics (OpenPanel via NEXT_PUBLIC_*) still works
+      // without any provisioning.
+      if (config.features.includes("analytics") && config.surfaces !== "client-only") {
         try {
           const { provisionGlitchtipClient } = await import("./provision/glitchtip.js");
           const { set: dotenvxSet } = await import("@dotenvx/dotenvx");
@@ -1066,8 +1070,8 @@ async function handleCreate(): Promise<void> {
       //   · sandbox creds  → .env.development (plaintext)
       //   · live creds     → .env.production  (dotenvx-encrypted)
       // Webhook endpoint ids are tracked in keychain so destroy can
-      // reach them later.
-      if (config.features.includes("stripe")) {
+      // reach them later. Skipped for client-only (server-only feature).
+      if (config.features.includes("stripe") && config.surfaces !== "client-only") {
         try {
           const { provisionStripeProject, renderStripeEnv, renderStripeSkipComment } = await import(
             "./provision/stripe.js"
