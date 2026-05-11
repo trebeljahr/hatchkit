@@ -127,6 +127,8 @@ interface DetectedState {
 
 type AdoptSurface = "server-only" | "client-only" | "both";
 
+type AdoptDeploymentMode = "coolify" | "gh-pages" | "scaffold-only";
+
 interface AdoptPlan {
   name: string;
   domain: string;
@@ -141,6 +143,12 @@ interface AdoptPlan {
    *  Coolify build-pack we ask for, and which surfaces `hatchkit add`
    *  provisions clients into. */
   surfaces: AdoptSurface;
+  /** Where this project will run. Coolify is the default for full-
+   *  stack and server-only adopts; gh-pages is only offered when
+   *  surfaces is client-only (Pages can't host a backend). Switches
+   *  the second half of executePlan from Coolify wiring to
+   *  `runPagesSetupProgrammatic`. */
+  deploymentMode: AdoptDeploymentMode;
   /** Required when `surfaces !== "client-only"`. */
   serverDir?: string;
   /** Required when `surfaces !== "server-only"`. */
@@ -240,9 +248,21 @@ export async function runAdopt(
         : state.clientDir
           ? "client-only"
           : "client-only");
+  // Auto-suggest gh-pages when (a) the manifest already recorded it,
+  // or (b) the manifest is silent AND the project looks client-only
+  // AND there's no Coolify app already wired up. Otherwise default
+  // to coolify (the existing behaviour).
+  const inferredDeploymentMode: AdoptDeploymentMode =
+    m?.deploymentMode === "gh-pages"
+      ? "gh-pages"
+      : m?.deploymentMode === "scaffold-only"
+        ? "scaffold-only"
+        : "coolify";
+
   let plan: AdoptPlan = {
     name: m?.name ?? state.packageName ?? "",
     domain: m?.domain ?? "",
+    deploymentMode: inferredDeploymentMode,
     // Description resolution order:
     //   1. Persisted manifest value (`--resume` recovery — a previous
     //      run already settled this).
@@ -290,7 +310,63 @@ export async function runAdopt(
     pushKey: !!state.coolifyAppMatch,
   };
 
+  // When the plan starts in gh-pages mode (from a `--resume` of an
+  // earlier adopt, or a manifest the user committed by hand), run
+  // the heuristics once up front. Block before even entering the
+  // review loop on findings that would make Pages refuse to build —
+  // the user needs to either fix the project or switch back to
+  // coolify. The edit-step handler runs the same check when the
+  // user *switches into* gh-pages from inside the loop, so this
+  // covers the gap where they never edit the deploymentMode row.
+  if (plan.deploymentMode === "gh-pages") {
+    const { detectPagesIncompatibilities, hasBlockingFinding } = await import(
+      "./scaffold/pages-heuristics.js"
+    );
+    const findings = detectPagesIncompatibilities(state.projectDir);
+    if (findings.length > 0) {
+      console.log(chalk.bold("\n  Pages compatibility findings:\n"));
+      for (const f of findings) {
+        const tag =
+          f.level === "block"
+            ? chalk.red("✗ block")
+            : f.level === "warn"
+              ? chalk.yellow("! warn")
+              : chalk.dim("· info");
+        console.log(`  ${tag}  ${chalk.bold(f.title)}`);
+        console.log(chalk.dim(`         ${f.detail}`));
+        for (const ev of f.evidence) {
+          console.log(chalk.dim(`         → ${ev}`));
+        }
+      }
+      console.log();
+      if (hasBlockingFinding(findings)) {
+        console.log(
+          chalk.red(
+            "  Blocking findings — Pages can't host this project as-is. Fix the issues above\n" +
+              "  or pick a different deployment mode in the review screen.",
+          ),
+        );
+      }
+    }
+  }
+
   plan = await reviewLoop(state, plan);
+
+  // Re-check after the review loop in case the user kept (or switched
+  // back to) gh-pages despite blockers being present. The edit handler
+  // refuses the switch into gh-pages over blockers, but it can't catch
+  // the case where blockers exist on entry AND the user stays put.
+  if (plan.deploymentMode === "gh-pages") {
+    const { detectPagesIncompatibilities, hasBlockingFinding } = await import(
+      "./scaffold/pages-heuristics.js"
+    );
+    const findings = detectPagesIncompatibilities(state.projectDir);
+    if (hasBlockingFinding(findings)) {
+      throw new Error(
+        "Pages compatibility blockers still present — refusing to adopt with gh-pages mode. Fix the issues listed above or re-run adopt and pick coolify/scaffold-only.",
+      );
+    }
+  }
 
   await executePlan(state, plan, {
     resume: !!opts.resume,
@@ -805,74 +881,89 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
         },
       ],
     },
-    {
-      title: "Build pipeline",
-      steps: [
-        {
-          key: "scaffoldBuildPipeline",
-          label: "Docker + GH Actions",
-          set: true,
-          summary: renderBuildPipelineSummary(state, plan),
-        },
-      ],
-    },
+    // The Docker + GH Actions pipeline is Coolify-targeted (it
+    // configures the redeploy webhook + builds an image). gh-pages
+    // ships its own workflow that uploads to Pages instead, so we
+    // hide this group when the user picks Pages.
+    ...(plan.deploymentMode === "coolify"
+      ? [
+          {
+            title: "Build pipeline",
+            steps: [
+              {
+                key: "scaffoldBuildPipeline",
+                label: "Docker + GH Actions",
+                set: true,
+                summary: renderBuildPipelineSummary(state, plan),
+              },
+            ],
+          },
+        ]
+      : []),
     {
       title: "Deploy",
       steps: [
-        ((): AdoptStep => {
-          // Visibility row. Picking the wrong path here is the #1
-          // cause of "Permission denied (publickey)" deploy failures
-          // (Coolify tries SSH against a repo whose GitHub App isn't
-          // installed). Mark `set: false` when we couldn't auto-detect
-          // visibility from `gh repo view`, so the cursor parks on it.
-          const detected = state.gitRemoteIsPrivate;
-          const summaryBase = plan.isPrivate
-            ? "private — Coolify clones via GitHub App SSH key"
-            : "public — Coolify clones via HTTPS";
-          const detectedHint =
-            detected === undefined && state.gitRemoteUrl
-              ? chalk.dim(" (couldn't auto-detect — confirm)")
-              : detected !== undefined && detected !== plan.isPrivate
-                ? chalk.yellow(` (gh says ${detected ? "private" : "public"} — overridden)`)
-                : "";
-          return {
-            key: "isPrivate",
-            label: "Repo visibility",
-            // `set: false` when we have a remote but couldn't detect
-            // (forces the user to confirm before Adopt). Otherwise true.
-            set: !(detected === undefined && !!state.gitRemoteUrl),
-            summary: `${summaryBase}${detectedHint}`,
-          };
-        })(),
-        ((): AdoptStep => {
-          // Preflight: when adopt will be wiring a private repo into
-          // Coolify and Coolify has zero GitHub App sources, the wire
-          // step will throw at execute time with "no Coolify GitHub
-          // source configured". Surface that here so the cursor parks
-          // on this row and the user fixes it before hitting Adopt.
-          const missingSource =
-            plan.wireCoolify &&
-            plan.isPrivate &&
-            state.coolifyConfigured &&
-            state.coolifyGithubSourceCount === 0;
-          const baseSummary = plan.wireCoolify
-            ? state.coolifyAppMatch
-              ? chalk.dim(
-                  `existing app "${state.coolifyAppMatch.name}" — will reconcile build pack`,
-                )
-              : `yes — create app + upsert DNS (port ${plan.appPort})`
-            : state.coolifyAppMatch
-              ? chalk.dim(`already exists: ${state.coolifyAppMatch.name}`)
-              : chalk.dim("no");
-          return {
-            key: "wireCoolify",
-            label: "Coolify + DNS",
-            set: !missingSource,
-            summary: missingSource
-              ? `${baseSummary}  ${chalk.yellow("(needs Coolify GitHub App — install one or set visibility to public)")}`
-              : baseSummary,
-          };
-        })(),
+        // Top-line choice: where this project deploys. Hides the
+        // Coolify-specific rows when set to gh-pages.
+        {
+          key: "deploymentMode",
+          label: "Deployment mode",
+          set: true,
+          summary: renderAdoptDeploymentModeSummary(plan.deploymentMode, plan.surfaces),
+        },
+        // Coolify-specific rows — only shown when actually deploying
+        // to Coolify. gh-pages skips this branch entirely.
+        ...(plan.deploymentMode === "coolify"
+          ? ([
+              ((): AdoptStep => {
+                // Visibility row. Picking the wrong path here is the #1
+                // cause of "Permission denied (publickey)" deploy failures
+                // (Coolify tries SSH against a repo whose GitHub App isn't
+                // installed). Mark `set: false` when we couldn't auto-detect
+                // visibility from `gh repo view`, so the cursor parks on it.
+                const detected = state.gitRemoteIsPrivate;
+                const summaryBase = plan.isPrivate
+                  ? "private — Coolify clones via GitHub App SSH key"
+                  : "public — Coolify clones via HTTPS";
+                const detectedHint =
+                  detected === undefined && state.gitRemoteUrl
+                    ? chalk.dim(" (couldn't auto-detect — confirm)")
+                    : detected !== undefined && detected !== plan.isPrivate
+                      ? chalk.yellow(` (gh says ${detected ? "private" : "public"} — overridden)`)
+                      : "";
+                return {
+                  key: "isPrivate",
+                  label: "Repo visibility",
+                  set: !(detected === undefined && !!state.gitRemoteUrl),
+                  summary: `${summaryBase}${detectedHint}`,
+                };
+              })(),
+              ((): AdoptStep => {
+                const missingSource =
+                  plan.wireCoolify &&
+                  plan.isPrivate &&
+                  state.coolifyConfigured &&
+                  state.coolifyGithubSourceCount === 0;
+                const baseSummary = plan.wireCoolify
+                  ? state.coolifyAppMatch
+                    ? chalk.dim(
+                        `existing app "${state.coolifyAppMatch.name}" — will reconcile build pack`,
+                      )
+                    : `yes — create app + upsert DNS (port ${plan.appPort})`
+                  : state.coolifyAppMatch
+                    ? chalk.dim(`already exists: ${state.coolifyAppMatch.name}`)
+                    : chalk.dim("no");
+                return {
+                  key: "wireCoolify",
+                  label: "Coolify + DNS",
+                  set: !missingSource,
+                  summary: missingSource
+                    ? `${baseSummary}  ${chalk.yellow("(needs Coolify GitHub App — install one or set visibility to public)")}`
+                    : baseSummary,
+                };
+              })(),
+            ] satisfies AdoptStep[])
+          : []),
       ],
     },
     {
@@ -885,19 +976,42 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
           summary:
             plan.services.length > 0 ? plan.services.join(", ") : chalk.dim("skip provisioning"),
         },
-        {
-          key: "pushKey",
-          label: "Push key to Coolify",
-          set: true,
-          summary: plan.pushKey
-            ? state.coolifyAppMatch
-              ? `yes (${state.coolifyAppMatch.name})`
-              : "yes — Coolify app must exist by name"
-            : chalk.dim("no"),
-        },
+        // `pushKey` only matters when a Coolify app is the deploy
+        // target — Pages reads no secrets from a Coolify env, so the
+        // row would just be noise on the gh-pages path.
+        ...(plan.deploymentMode === "coolify"
+          ? [
+              {
+                key: "pushKey",
+                label: "Push key to Coolify",
+                set: true,
+                summary: plan.pushKey
+                  ? state.coolifyAppMatch
+                    ? `yes (${state.coolifyAppMatch.name})`
+                    : "yes — Coolify app must exist by name"
+                  : chalk.dim("no"),
+              },
+            ]
+          : []),
       ],
     },
   ];
+}
+
+function renderAdoptDeploymentModeSummary(
+  mode: AdoptDeploymentMode,
+  surfaces: AdoptSurface,
+): string {
+  switch (mode) {
+    case "coolify":
+      return "Coolify (full-stack on Hetzner)";
+    case "gh-pages":
+      return surfaces === "client-only"
+        ? "GitHub Pages (static)"
+        : chalk.yellow("GitHub Pages — needs surfaces=client-only");
+    case "scaffold-only":
+      return "scaffold only (no deploy)";
+  }
 }
 
 async function editAdoptStep(
@@ -953,9 +1067,22 @@ async function editAdoptStep(
     // Adjust the dir fields when the surface changes — dropping
     // server/client dirs that are no longer relevant, and setting
     // sane defaults for newly-relevant ones.
+    // Also: switching away from client-only invalidates gh-pages
+    // (Pages can't host a backend). Snap deploymentMode back to
+    // coolify in that case so the user doesn't keep an invalid combo.
+    const nextDeploymentMode: AdoptDeploymentMode =
+      plan.deploymentMode === "gh-pages" && next !== "client-only" ? "coolify" : plan.deploymentMode;
+    if (plan.deploymentMode === "gh-pages" && next !== "client-only") {
+      console.log(
+        chalk.yellow(
+          "  ⚠ gh-pages requires client-only surfaces — switched deployment mode back to coolify.",
+        ),
+      );
+    }
     return {
       ...plan,
       surfaces: next,
+      deploymentMode: nextDeploymentMode,
       serverDir:
         next === "client-only"
           ? undefined
@@ -965,6 +1092,66 @@ async function editAdoptStep(
           ? undefined
           : (plan.clientDir ?? state.clientDir ?? state.projectDir),
     };
+  }
+  if (step === "deploymentMode") {
+    const choices: Array<{ name: string; value: AdoptDeploymentMode }> = [
+      { name: "Coolify (full-stack on Hetzner)", value: "coolify" },
+    ];
+    if (plan.surfaces === "client-only") {
+      choices.push({ name: "GitHub Pages (static)", value: "gh-pages" });
+    }
+    choices.push({ name: "Scaffold only — don't deploy", value: "scaffold-only" });
+
+    const next = await select<AdoptDeploymentMode>({
+      message: "Where do you want to deploy?",
+      choices,
+      default: plan.deploymentMode,
+    });
+
+    // When switching INTO gh-pages, run the static-site sanity checks
+    // and surface any blockers before letting the user proceed. They
+    // can still pick gh-pages over a "warn" finding, but "block"
+    // (e.g. Next without `output: "export"`) requires they either fix
+    // the project first or step back to coolify.
+    if (next === "gh-pages" && plan.deploymentMode !== "gh-pages") {
+      const { detectPagesIncompatibilities, hasBlockingFinding } = await import(
+        "./scaffold/pages-heuristics.js"
+      );
+      const findings = detectPagesIncompatibilities(state.projectDir);
+      if (findings.length > 0) {
+        console.log(chalk.bold("\n  Pages compatibility findings:\n"));
+        for (const f of findings) {
+          const tag =
+            f.level === "block"
+              ? chalk.red("✗ block")
+              : f.level === "warn"
+                ? chalk.yellow("! warn")
+                : chalk.dim("· info");
+          console.log(`  ${tag}  ${chalk.bold(f.title)}`);
+          console.log(chalk.dim(`         ${f.detail}`));
+          for (const ev of f.evidence) {
+            console.log(chalk.dim(`         → ${ev}`));
+          }
+        }
+        console.log();
+        if (hasBlockingFinding(findings)) {
+          console.log(
+            chalk.red(
+              "  Blocking findings present — Pages won't be able to host this project as-is.",
+            ),
+          );
+          console.log(chalk.dim("  Fix the issues above (or stay on coolify) and re-pick."));
+          // Don't switch — leave plan.deploymentMode unchanged.
+          return plan;
+        }
+        const proceed = await confirm({
+          message: "Proceed with gh-pages despite the warnings?",
+          default: false,
+        });
+        if (!proceed) return plan;
+      }
+    }
+    return { ...plan, deploymentMode: next };
   }
   if (step === "serverDir") {
     const picked = (
@@ -1223,7 +1410,11 @@ async function executePlan(
     // anything that already exists, so this is idempotent across re-runs.
     // Must run BEFORE Coolify wiring so the docker-compose.yml exists
     // by the time Coolify clones the repo for the first deploy.
-    if (plan.scaffoldBuildPipeline) {
+    //
+    // Gated on coolify mode — the Coolify-targeted Dockerfile + deploy
+    // webhook workflow aren't useful for gh-pages, which uses its own
+    // `gh-pages.yml` workflow written later in step 3c-pages.
+    if (plan.scaffoldBuildPipeline && plan.deploymentMode === "coolify") {
       const pipeResult = await scaffoldBuildPipelineNow(state, plan, remoteUrl, {
         force: !!opts.regeneratePipeline,
       });
@@ -1243,7 +1434,9 @@ async function executePlan(
     // DNS-provider REST endpoints with credentials we already have in
     // keychain. Idempotent on the DNS side (upsert); not yet on the
     // app-create side (Coolify accepts duplicate app names).
-    if (plan.wireCoolify && remoteUrl) {
+    //
+    // Skipped for gh-pages — Pages handles its own DNS in step 3c-pages.
+    if (plan.wireCoolify && plan.deploymentMode === "coolify" && remoteUrl) {
       try {
         const { wireProjectIntoCoolify } = await import("./deploy/coolify-app.js");
         coolifyResult = await wireProjectIntoCoolify({
@@ -1356,8 +1549,14 @@ async function executePlan(
     // created" and "app already existed before adopt" branches. Need
     // an app uuid in either case. Run BEFORE the initial git push
     // (below) so the workflow's first run has the secrets in place.
+    //
+    // Skipped for gh-pages — there's no Coolify webhook to hit.
     const appUuidForSecrets = coolifyResult?.appUuid ?? state.coolifyAppMatch?.uuid;
-    if (plan.scaffoldBuildPipeline && appUuidForSecrets) {
+    if (
+      plan.scaffoldBuildPipeline &&
+      plan.deploymentMode === "coolify" &&
+      appUuidForSecrets
+    ) {
       const slug = repoSlugFromRemote(remoteUrl);
       if (slug) {
         await setCoolifyDeploySecrets({
@@ -1385,7 +1584,10 @@ async function executePlan(
     // a Coolify one) — gates only on having the build pipeline + a
     // resolvable repo slug. Best-effort: failure surfaces as a caveat
     // with a copy-pasteable manual recipe so adopt finishes cleanly.
-    if (plan.scaffoldBuildPipeline) {
+    //
+    // gh-pages doesn't need this secret — the Pages workflow builds
+    // the client without consuming server-side env.
+    if (plan.scaffoldBuildPipeline && plan.deploymentMode === "coolify") {
       const slug = repoSlugFromRemote(remoteUrl);
       if (slug) {
         const secretName = "DOTENV_PRIVATE_KEY_PRODUCTION";
@@ -1415,6 +1617,74 @@ async function executePlan(
             "  · Couldn't resolve owner/repo from git remote — push DOTENV_PRIVATE_KEY_PRODUCTION to Actions manually.",
           ),
         );
+      }
+    }
+
+    // Step 3c-pages: GitHub Pages setup (gh-pages mode only).
+    // Writes .github/workflows/gh-pages.yml + CNAME locally and
+    // configures the remote side (enable Pages, register cname,
+    // wire DNS, poll for the Let's Encrypt cert, flip
+    // https_enforced). Must happen BEFORE the push step below so
+    // the new files land in the same push and the workflow runs.
+    //
+    // Auto-detect heuristic: for a client-only project we deploy
+    // the client dir (typically `packages/client/`). The detected
+    // shape mirrors what gh-pages's own pickSite would have chosen
+    // — node-build, pnpm, root-level build script.
+    if (plan.deploymentMode === "gh-pages" && remoteUrl) {
+      try {
+        const { runPagesSetupProgrammatic } = await import("./deploy/pages.js");
+        const { exec: bashExec } = await import("./utils/exec.js");
+        const slug = repoSlugFromRemote(remoteUrl) ?? plan.name;
+        // For adopt we don't know the exact build layout of the
+        // user's project. Best-guess for a client-only Next.js
+        // app: `packages/client/out` (post-`output: export` build).
+        // If the user has a different layout they can re-run
+        // `hatchkit gh-pages` from the project dir to override.
+        const clientDir = plan.clientDir
+          ? relative(state.projectDir, plan.clientDir)
+          : "packages/client";
+        const detected = {
+          kind: "node-build" as const,
+          publishDir: clientDir ? `${clientDir}/out` : "out",
+          packageManager: "pnpm" as const,
+          buildScript: "build",
+          workDir: "",
+        };
+        const { pageUrl } = await runPagesSetupProgrammatic(state.projectDir, {
+          detected,
+          domain: plan.domain || null,
+        });
+        ledger.record({
+          kind: "ghPages",
+          repo: slug,
+          projectDir: state.projectDir,
+          cname: plan.domain || undefined,
+        });
+        // Stage and commit so the next push picks up the workflow
+        // + CNAME file. If nothing changed (idempotent re-run), the
+        // status check skips the commit entirely.
+        await bashExec("git", ["add", "-A"], { cwd: state.projectDir, silent: true });
+        const status = await bashExec("git", ["status", "--porcelain"], {
+          cwd: state.projectDir,
+          silent: true,
+        });
+        if (status.stdout.trim()) {
+          await bashExec("git", ["commit", "-m", "ci: GitHub Pages setup"], {
+            cwd: state.projectDir,
+            silent: true,
+          });
+        }
+        console.log(chalk.green(`  ✓ GitHub Pages will publish at ${pageUrl}`));
+      } catch (err) {
+        caveats.push({
+          title: "GitHub Pages not wired",
+          reason: (err as Error).message,
+          recovery: [
+            `Re-run from the project dir: hatchkit gh-pages`,
+            `(it'll pick up where this left off and is idempotent).`,
+          ],
+        });
       }
     }
 
@@ -2220,6 +2490,10 @@ function writeAdoptManifest(projectDir: string, plan: AdoptPlan): void {
     mlServices: [],
     s3Provider: ((): S3Provider => (plan.features.includes("s3") ? "existing" : "none"))(),
     deployTarget: "existing",
+    // Persist deployment mode so `--resume` recovers the gh-pages
+    // path without re-asking the user. Same back-compat invariant
+    // as `surfaces` — readers without this field fall back to coolify.
+    deploymentMode: plan.deploymentMode,
     ports: { server: 3000, client: 3001 },
     // Persist the surface choice so `--resume` doesn't re-infer
     // "server-only" just because there's no client/ directory in the

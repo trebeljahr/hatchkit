@@ -260,6 +260,14 @@ async function main(): Promise<void> {
           chalk.yellow("  Note: `hatchkit pages` has been renamed to `hatchkit gh-pages`."),
         );
       }
+      if (args.includes("--undo")) {
+        const { runPagesUndo } = await import("./deploy/pages.js");
+        await runPagesUndo(resolve("."), {
+          dryRun: args.includes("--dry-run"),
+          yes: args.includes("--yes") || args.includes("-y"),
+        });
+        break;
+      }
       const { runPagesSetup } = await import("./deploy/pages.js");
       await runPagesSetup(resolve("."));
       break;
@@ -955,17 +963,26 @@ async function handleCreate(): Promise<void> {
   if (forceNoInstall) config.installDeps = false;
 
   // Ensure needed providers are configured (lazy prompting).
-  // Coolify + Hetzner are only needed when actually deploying —
-  // scaffold-only + --no-deploy runs skip their setup prompts.
-  if (config.deployTarget === "existing" || config.runDeployment) {
+  // Coolify + Hetzner only matter for the coolify deployment mode.
+  // gh-pages skips them entirely (no server, no Docker registry).
+  if (
+    config.deploymentMode === "coolify" &&
+    (config.deployTarget === "existing" || config.runDeployment)
+  ) {
     await ensureCoolify();
   }
   // GitHub is checked here so auth failures surface before scaffold
-  // (not deep inside `setupGitHub` after files are on disk).
-  if (config.createGithubRepo) {
+  // (not deep inside `setupGitHub` after files are on disk). Pages
+  // also needs GitHub auth for the API calls that enable Pages and
+  // set the cname — so we require it whenever gh-pages is involved.
+  if (config.createGithubRepo || config.deploymentMode === "gh-pages") {
     await ensureGitHub();
   }
-  if (config.deployTarget === "new" && config.runDeployment) {
+  if (
+    config.deploymentMode === "coolify" &&
+    config.deployTarget === "new" &&
+    config.runDeployment
+  ) {
     await ensureHetzner();
   }
   if (
@@ -1006,9 +1023,18 @@ async function handleCreate(): Promise<void> {
   console.log(chalk.bold("\n  ── Summary ───────────────────────────────────────────────\n"));
   console.log(`  Project:    ${chalk.cyan(config.name)}`);
   console.log(`  Domain:     ${chalk.cyan(config.domain)}`);
-  console.log(
-    `  Deploy to:  ${config.deployTarget === "existing" ? `existing server (${config.serverIpv4 ?? config.serverIp ?? "?"}${config.serverIpv6 ? ` · ${config.serverIpv6}` : ""})` : `new Hetzner ${config.serverSize}`}`,
-  );
+  if (config.deploymentMode === "gh-pages") {
+    console.log(`  Deploy to:  ${chalk.cyan("GitHub Pages (static)")}`);
+  } else if (config.deploymentMode === "scaffold-only") {
+    console.log(`  Deploy to:  ${chalk.dim("scaffold only (no deploy)")}`);
+  } else {
+    console.log(
+      `  Deploy to:  ${config.deployTarget === "existing" ? `existing server (${config.serverIpv4 ?? config.serverIp ?? "?"}${config.serverIpv6 ? ` · ${config.serverIpv6}` : ""})` : `new Hetzner ${config.serverSize}`}`,
+    );
+    if (config.serverIpMismatchWarning) {
+      console.log(chalk.yellow(`              ⚠ ${config.serverIpMismatchWarning}`));
+    }
+  }
   console.log(`  Features:   ${config.features.length > 0 ? config.features.join(", ") : "none"}`);
   console.log(
     `  ML:         ${config.mlServices.length > 0 ? config.mlServices.join(", ") : "none"}`,
@@ -1183,10 +1209,22 @@ async function handleCreate(): Promise<void> {
     }
 
     if (config.dryRun) {
-      scaffoldInfra(config, INFRA_ROOT, {
-        serverPort: scaffoldResult?.ports.server,
-        clientPort: scaffoldResult?.ports.client,
-      });
+      // Coolify mode previews the Terraform tfvars + Coolify env that
+      // would be written. gh-pages and scaffold-only have nothing
+      // equivalent — Pages reads no env, scaffold-only writes no infra.
+      if (config.deploymentMode === "coolify") {
+        scaffoldInfra(config, INFRA_ROOT, {
+          serverPort: scaffoldResult?.ports.server,
+          clientPort: scaffoldResult?.ports.client,
+        });
+      } else if (config.deploymentMode === "gh-pages") {
+        console.log(
+          chalk.dim(
+            "  · gh-pages mode — would write `.github/workflows/gh-pages.yml`, patch `next.config`,\n" +
+              "    write CNAME, enable Pages, configure DNS, and wait for the Let's Encrypt cert.",
+          ),
+        );
+      }
       console.log(chalk.green("\n  ✓ Dry run complete. No changes were made.\n"));
       return;
     }
@@ -1242,8 +1280,10 @@ async function handleCreate(): Promise<void> {
       ledger?.record({ kind: "coolifyEnv", path: infraResult.coolifyEnvPath });
     }
 
-    // Step 5: Terraform (DNS + optionally server)
-    if (config.runDeployment) {
+    // Step 5: Terraform (DNS + optionally server). Coolify-only —
+    // gh-pages handles its own DNS via `runPagesSetupProgrammatic`
+    // a few steps down, and `scaffold-only` skips deploy entirely.
+    if (config.runDeployment && config.deploymentMode === "coolify") {
       const tfResult = await runTerraform(config, INFRA_ROOT);
       if (tfResult.applied) {
         ledger?.record({
@@ -1254,8 +1294,9 @@ async function handleCreate(): Promise<void> {
       }
     }
 
-    // Step 6: Coolify setup
-    if (config.runDeployment) {
+    // Step 6: Coolify setup. Only runs in coolify mode; gh-pages has
+    // no Coolify app to provision (the site lives on GitHub's CDN).
+    if (config.runDeployment && config.deploymentMode === "coolify") {
       const coolifyResult = await runCoolifySetup(config, {
         repoUrl: repoUrl ?? undefined,
         serverPort: scaffoldResult?.ports.server,
@@ -1348,6 +1389,69 @@ async function handleCreate(): Promise<void> {
       }
     }
 
+    // Step 6.25 (gh-pages only): run Pages setup. Writes the
+    // .github/workflows/gh-pages.yml + CNAME file locally and wires
+    // the remote side (enable Pages, register cname, configure DNS,
+    // poll for the Let's Encrypt cert, flip https_enforced). Must
+    // happen BEFORE push so the new files land in the first push and
+    // the workflow runs immediately.
+    if (
+      config.deploymentMode === "gh-pages" &&
+      config.scaffoldRepo &&
+      config.runDeployment &&
+      repoUrl
+    ) {
+      const { runPagesSetupProgrammatic } = await import("./deploy/pages.js");
+      const { exec: bashExec } = await import("./utils/exec.js");
+      // The scaffold's `pruneToClientOnly` rewrites the root build
+      // script to `pnpm --filter @starter/shared run build && pnpm
+      // --filter @starter/client run build` — runs from the repo
+      // root, outputs to `packages/client/out/` (after the Pages-
+      // mode Next config patch sets `output: "export"`).
+      const detected = {
+        kind: "node-build" as const,
+        publishDir: "packages/client/out",
+        packageManager: "pnpm" as const,
+        buildScript: "build",
+        workDir: "",
+      };
+      const slug = repoUrl.replace(/^https?:\/\/github\.com\//, "");
+      try {
+        const { pageUrl } = await runPagesSetupProgrammatic(appDir, {
+          detected,
+          domain: config.domain,
+        });
+        ledger?.record({
+          kind: "ghPages",
+          repo: slug,
+          projectDir: appDir,
+          cname: config.domain,
+        });
+        // Commit the workflow + CNAME file before the push step
+        // below picks up the staged changes. Empty diffs (e.g. re-
+        // running on an idempotent state) just produce a no-op commit.
+        await bashExec("git", ["add", "-A"], { cwd: appDir, silent: true });
+        const status = await bashExec("git", ["status", "--porcelain"], {
+          cwd: appDir,
+          silent: true,
+        });
+        if (status.stdout.trim()) {
+          await bashExec("git", ["commit", "-m", "ci: GitHub Pages setup"], {
+            cwd: appDir,
+            silent: true,
+          });
+        }
+        console.log(chalk.green(`  ✓ GitHub Pages will publish at ${pageUrl}`));
+      } catch (err) {
+        console.log(
+          chalk.yellow(`  Couldn't auto-wire GitHub Pages: ${(err as Error).message}`),
+        );
+        console.log(
+          chalk.dim(`  Run \`hatchkit gh-pages\` from ${appDir} once the issue is resolved.`),
+        );
+      }
+    }
+
     // Step 6.5: push the working branch to origin. Done AFTER Coolify
     // wiring + Actions-secret upserts so the workflow's first run
     // already has the secrets it needs to deploy. setupGitHub above
@@ -1425,6 +1529,13 @@ async function handleCreate(): Promise<void> {
   // is listening at that path).
   if (config.surfaces !== "client-only") {
     console.log(`  API:       ${chalk.cyan(`https://${config.domain}/api`)}`);
+  }
+  if (config.deploymentMode === "gh-pages") {
+    console.log(
+      chalk.dim(
+        `  Hosting:   GitHub Pages — first build kicks off on push, https cert provisions over the next few minutes.`,
+      ),
+    );
   }
   console.log(`  App dir:   ${chalk.dim(appDir)}`);
   console.log(`  Config:    ${chalk.dim(getConfigPath())}`);
@@ -1644,13 +1755,20 @@ function printHelp(topic?: HelpTopic): void {
     hatchkit create [--dry-run]
 
   ${chalk.bold("What it does (interactively):")}
-    1. Prompts for project name, domain, deploy target, features, ML services
+    1. Prompts for project name, domain, surfaces, deployment mode, features, ML
     2. Copies the starter template and strips unselected features
     3. Assigns unique ports per project (server, client, native HMR)
     4. Runs \`pnpm install\` (if pnpm is present and you opt in)
     5. Initializes git, optionally creates a GitHub repo
-    6. Generates Terraform tfvars + Coolify .env
-    7. Optionally deploys: Terraform → Coolify → ML services
+    6. Generates Terraform tfvars + Coolify .env (Coolify mode)
+    7. Deploys: Terraform → Coolify → ML  ${chalk.dim("OR")}  GitHub Pages setup
+
+  ${chalk.bold("Deployment modes:")}
+    ${chalk.cyan("coolify")}        Full-stack on Hetzner — DB, providers, Docker. Default.
+    ${chalk.cyan("gh-pages")}       Static-only on GitHub Pages. Only offered when surfaces
+                   is ${chalk.dim("client-only")}; the scaffold's Next config is patched to
+                   ${chalk.dim('`output: "export"`')} and the gh-pages workflow is written.
+    ${chalk.cyan("scaffold-only")}  Write files, skip deploy. Pick this to defer setup.
 
   ${chalk.bold("Options:")}
     --dry-run       Show the plan without writing anything
@@ -1738,6 +1856,7 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Usage:")}
     cd <project-dir> && hatchkit gh-pages
+    cd <project-dir> && hatchkit gh-pages --undo [--dry-run] [--yes]
 
   ${chalk.bold("What it does:")}
     1. Reads the repo via \`gh repo view\` (must be a GitHub repo you own).
@@ -1758,6 +1877,17 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("After running:")}
     git add -A && git commit -m "ci: deploy to GitHub Pages" && git push
+
+  ${chalk.bold("Undo (--undo):")}
+    Reverses what the command put in place:
+      - Disables Pages via ${chalk.dim("DELETE /repos/<owner>/<repo>/pages")} (clears the cname too).
+      - Deletes Cloudflare records that point at GitHub's Pages IPs / ${chalk.dim("<user>.github.io")}
+        for the registered domain (only when a Cloudflare token is configured + the
+        zone is in this account).
+      - Removes ${chalk.cyan(".github/workflows/gh-pages.yml")} (only the file hatchkit writes
+        — hand-written Pages workflows are left untouched).
+      - Removes any ${chalk.cyan("CNAME")} files whose content matches the registered domain.
+    ${chalk.dim("--dry-run")} prints the plan without changing anything. ${chalk.dim("--yes")} skips the confirm.
 
   ${chalk.bold("Notes:")}
     - Private repos need a paid GitHub plan for Pages. Free-tier repos

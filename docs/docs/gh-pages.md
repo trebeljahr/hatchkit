@@ -125,3 +125,41 @@ Safe. The command is idempotent:
 - Workflow file: refuses to overwrite — delete `.github/workflows/gh-pages.yml` if you want a fresh one.
 - Cloudflare DNS: updates records in place rather than duplicating them.
 - Pages CNAME: `PUT` is an upsert.
+- HTTPS cert: bounces the cname on the API side when GitHub is stuck (cname set but no `https_certificate` field), then waits for the new Let's Encrypt issuance to land before flipping `https_enforced`.
+
+## As a deployment mode in `create` / `adopt`
+
+`gh-pages` is also a deployment option in the broader hatchkit flows:
+
+```bash
+hatchkit create
+# pick surfaces: client-only
+# pick deployment mode: GitHub Pages (static)
+# → scaffold's next.config is patched to output: "export", drop rewrites,
+#   add images.unoptimized; gh-pages.yml + CNAME are written; Pages is
+#   enabled and DNS + HTTPS are wired before the first push.
+```
+
+```bash
+hatchkit adopt
+# select deployment mode: GitHub Pages (static) in the review screen
+# → heuristics scan flags Next-without-export, server packages, DB drivers,
+#   etc. Blockers refuse the switch; warnings ask for explicit confirmation.
+```
+
+The Coolify-specific rows (Repo visibility, Coolify + DNS, Push key to Coolify, Docker + GH Actions pipeline) hide themselves automatically when the mode is `gh-pages`.
+
+## `--undo`
+
+Reverses what the command put in place:
+
+```bash
+hatchkit gh-pages --undo [--dry-run] [--yes]
+```
+
+- **Pages**: `DELETE /repos/<owner>/<repo>/pages` (clears the cname too).
+- **Cloudflare**: only deletes records whose **content** matches what hatchkit could have written — `A` → one of the 4 GitHub apex IPs, or `CNAME` → `<your-user>.github.io` — at the registered cname. Other records at the same name are left alone.
+- **Workflow**: only `.github/workflows/gh-pages.yml`. Hand-written Pages workflows are untouched.
+- **CNAME files**: only files whose content matches the registered cname.
+
+Also triggered automatically by `hatchkit destroy` for projects that recorded a `ghPages` ledger entry during create/adopt.

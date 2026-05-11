@@ -144,6 +144,21 @@ export class CloudflareApi {
     return data[0] ?? null;
   }
 
+  /** List every DNS record at a name (optionally filtered by type).
+   *  Distinct from {@link findRecord} because apex Pages setups create
+   *  four A records sharing the same name — `findRecord` only returns one. */
+  async findRecordsByName(
+    zoneId: string,
+    name: string,
+    type?: "A" | "AAAA" | "CNAME",
+  ): Promise<Array<{ id: string; name: string; type: string; content: string; proxied: boolean }>> {
+    const query = new URLSearchParams({ name });
+    if (type) query.set("type", type);
+    return this.request<
+      Array<{ id: string; name: string; type: string; content: string; proxied: boolean }>
+    >("GET", `/zones/${zoneId}/dns_records?${query.toString()}`);
+  }
+
   /** Upsert a DNS record by name+type. Idempotent — re-runs on the same
    *  inputs return without changes if the record already matches.
    *  `proxied: true` enables the orange-cloud Cloudflare proxy for the

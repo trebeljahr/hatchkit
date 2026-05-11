@@ -283,6 +283,8 @@ function recipeFor(step: LedgerStep): string | null {
       return chalk.dim(
         `# manual: delete ${step.type} record ${step.name} (id ${step.recordId}) in Cloudflare zone ${step.zoneId}`,
       );
+    case "ghPages":
+      return `cd ${shellEscape(step.projectDir)} && hatchkit gh-pages --undo --yes`;
   }
 }
 
@@ -504,6 +506,8 @@ function describeStep(step: LedgerStep): string {
       return `revoke R2 ${step.audience} token ${chalk.cyan(step.tokenId.slice(0, 8) + "…")}`;
     case "cloudflareDnsRecord":
       return `delete Cloudflare ${step.type} record ${chalk.cyan(step.name)}`;
+    case "ghPages":
+      return `tear down GitHub Pages for ${chalk.cyan(step.repo)}`;
   }
 }
 
@@ -726,5 +730,15 @@ async function undoStep(
       // Per-platform delete is platform-specific (Modal/RunPod/HF/Replicate).
       // Surface in the recipe but skip auto-undo for now.
       return "skipped";
+    case "ghPages": {
+      // runPagesUndo no-ops on file-side actions when the project dir
+      // has been deleted (scaffold-delete typically runs after this in
+      // the reverse-order ledger walk, but the user may have wiped the
+      // dir by hand). The remote teardown (Pages API + Cloudflare)
+      // still runs regardless.
+      const { runPagesUndo } = await import("./pages.js");
+      await runPagesUndo(step.projectDir, { yes: true, dryRun: false });
+      return "done";
+    }
   }
 }

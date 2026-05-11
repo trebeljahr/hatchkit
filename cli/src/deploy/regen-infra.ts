@@ -227,6 +227,10 @@ function configFromManifestAndTfvars(
     scaffoldRepo: false,
     createGithubRepo: false,
     installDeps: false,
+    // Default to coolify when the manifest is from before deploymentMode
+    // existed — regen-infra only runs against Coolify projects anyway
+    // (gh-pages has no infra to regenerate).
+    deploymentMode: manifest.deploymentMode ?? "coolify",
     runDeployment: false,
     dryRun: false,
     envValues: {},

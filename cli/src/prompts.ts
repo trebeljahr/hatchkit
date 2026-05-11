@@ -11,6 +11,18 @@ import { parseDomain, validateDomain, validateProjectName } from "./utils/valida
 // ---------------------------------------------------------------------------
 
 export type DeployTarget = "existing" | "new";
+/** Where the project's runtime ultimately lives.
+ *  · `coolify`        — provision (or reuse) a Coolify-managed host. The
+ *                       default for full-stack and server-only projects;
+ *                       drives the rest of the existing pipeline (Hetzner,
+ *                       Mongo, GlitchTip, …).
+ *  · `gh-pages`       — static-only deploy via GitHub Pages. Only offered
+ *                       when `surfaces === "client-only"` — Pages has no
+ *                       runtime, so a server-bearing project can't use it.
+ *                       Skips Coolify/Hetzner/Mongo prompts entirely.
+ *  · `scaffold-only`  — write files + (optionally) push to GitHub, no
+ *                       deploy. Equivalent to today's `runDeployment: false`. */
+export type DeploymentMode = "coolify" | "gh-pages" | "scaffold-only";
 export type DnsProvider = "inwx" | "cloudflare" | "manual";
 export type S3Provider = "hetzner" | "r2" | "aws" | "existing" | "none";
 export type GpuPlatform = "modal" | "runpod" | "hf" | "replicate";
@@ -123,6 +135,16 @@ export interface ProjectConfig {
    *  scaffold) so the whole `hatchkit create` flow is non-blocking once
    *  the user proceeds — they can walk away while it runs. */
   installDeps: boolean;
+  /** Where this project deploys. `coolify` (default) drives the existing
+   *  Hetzner + Mongo + providers pipeline. `gh-pages` is only offered
+   *  alongside `surfaces === "client-only"` and skips the Coolify path
+   *  entirely in favour of `hatchkit gh-pages`. `scaffold-only` writes
+   *  files but doesn't deploy. */
+  deploymentMode: DeploymentMode;
+  /** Derived from {@link deploymentMode} for back-compat with the many
+   *  existing call sites that gate on a boolean: true when the mode
+   *  triggers an actual deploy step (coolify / gh-pages), false when
+   *  scaffold-only. New code should branch on `deploymentMode` directly. */
   runDeployment: boolean;
   dryRun: boolean;
 }
@@ -210,6 +232,39 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       }),
     "both",
   );
+
+  // Deployment mode — where this project ultimately runs. The
+  // `gh-pages` option is *only* offered for `client-only` surfaces.
+  // Pages has no runtime, so server-bearing projects can't deploy
+  // there; we hide the option rather than offering it and then
+  // having to refuse the choice mid-flow.
+  const deploymentMode = await askDeploymentMode(
+    surfaces,
+    presets.deploymentMode,
+    nonInteractive,
+  );
+
+  // gh-pages takes a different path than the Coolify pipeline: no
+  // server provisioning, no Mongo, no features. Collect just the
+  // basics, then fall through to the same review-and-edit loop the
+  // Coolify path uses (with Coolify-specific groups hidden).
+  if (deploymentMode === "gh-pages") {
+    let pagesConfig = await collectPagesProjectConfig({
+      name,
+      domain,
+      baseDomain,
+      subdomain,
+      surfaces,
+      deploymentMode,
+      presets,
+      nonInteractive,
+      dryRun: options.dryRun || false,
+    });
+    if (!nonInteractive) {
+      pagesConfig = await reviewAndEditLoop(pagesConfig);
+    }
+    return pagesConfig;
+  }
 
   // Deploy target. Non-interactive default is "new" rather than
   // "existing": "existing" has no sensible default (it needs a real
@@ -506,18 +561,24 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       )
     : false;
 
-  const runDeployment = options.dryRun
-    ? false
-    : await presetOrPrompt(
-        presets.runDeployment,
-        nonInteractive,
-        () =>
-          confirm({
-            message: "Run deployment now?",
-            default: true,
-          }),
-        true,
-      );
+  // Late-stage "deploy now?" still makes sense for the Coolify path —
+  // it lets a user pick the Coolify mode upfront but defer the actual
+  // provisioning to a later run. For `scaffold-only` it's already
+  // implied false. `gh-pages` exits via the short path above and never
+  // reaches this branch.
+  const runDeployment =
+    deploymentMode === "scaffold-only" || options.dryRun
+      ? false
+      : await presetOrPrompt(
+          presets.runDeployment,
+          nonInteractive,
+          () =>
+            confirm({
+              message: "Run deployment now?",
+              default: true,
+            }),
+          true,
+        );
 
   // MongoDB strategy: provisioned by Coolify (recommended for the
   // self-hosted path) vs. an external URI (Atlas, existing self-hosted
@@ -640,6 +701,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     scaffoldRepo,
     createGithubRepo,
     installDeps,
+    deploymentMode,
     runDeployment,
     envValues,
     dryRun: options.dryRun || false,
@@ -653,6 +715,134 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
   }
 
   return config;
+}
+
+// ---------------------------------------------------------------------------
+// Deployment-mode prompt + gh-pages short path
+// ---------------------------------------------------------------------------
+
+async function askDeploymentMode(
+  surfaces: Surface,
+  preset: DeploymentMode | undefined,
+  nonInteractive: boolean,
+): Promise<DeploymentMode> {
+  // gh-pages requires client-only — Pages has no runtime. Validate
+  // presets the same way so `--deployment-mode gh-pages` paired with
+  // a server-bearing surface fails fast.
+  if (preset === "gh-pages" && surfaces !== "client-only") {
+    throw new Error(
+      `--deployment-mode gh-pages requires --surfaces client-only (got: ${surfaces}). GitHub Pages serves static files only.`,
+    );
+  }
+  if (preset !== undefined) return preset;
+  if (nonInteractive) return "coolify";
+
+  const choices: Array<{ name: string; value: DeploymentMode; description?: string }> = [
+    {
+      name: "Coolify — full-stack on Hetzner (Mongo / providers / Docker)",
+      value: "coolify",
+    },
+  ];
+  if (surfaces === "client-only") {
+    choices.push({
+      name: "GitHub Pages — static-only, served from your repo",
+      value: "gh-pages",
+    });
+  }
+  choices.push({
+    name: "Scaffold only — write files, don't deploy",
+    value: "scaffold-only",
+  });
+
+  return select<DeploymentMode>({
+    message: "Where do you want to deploy?",
+    choices,
+    default: "coolify",
+  });
+}
+
+interface PagesCollectArgs {
+  name: string;
+  domain: string;
+  baseDomain: string;
+  subdomain: string;
+  surfaces: Surface;
+  deploymentMode: DeploymentMode;
+  presets: Partial<ProjectConfig>;
+  nonInteractive: boolean;
+  dryRun: boolean;
+}
+
+/** Minimal config collection for the `gh-pages` deployment mode.
+ *  Skips every Coolify-tied prompt (server target, features, S3, ML,
+ *  Mongo, env values) — Pages is a static-only deploy with no
+ *  runtime, so none of those concepts apply. */
+async function collectPagesProjectConfig(args: PagesCollectArgs): Promise<ProjectConfig> {
+  const { name, domain, baseDomain, subdomain, surfaces, deploymentMode, presets, nonInteractive } =
+    args;
+
+  // gh-pages requires client-only. The check in askDeploymentMode
+  // also catches this for presets, but defend against direct calls.
+  if (surfaces !== "client-only") {
+    throw new Error(
+      `gh-pages deployment mode requires surfaces="client-only" (got: ${surfaces}).`,
+    );
+  }
+
+  const scaffoldRepo = await presetOrPrompt(
+    presets.scaffoldRepo,
+    nonInteractive,
+    () => confirm({ message: "Scaffold the starter into ./<name>/?", default: true }),
+    true,
+  );
+
+  let createGithubRepo = false;
+  if (scaffoldRepo) {
+    createGithubRepo = await presetOrPrompt(
+      presets.createGithubRepo,
+      nonInteractive,
+      () => confirm({ message: "Create GitHub remote repo?", default: true }),
+      true,
+    );
+  }
+
+  const installDeps = scaffoldRepo
+    ? await presetOrPrompt(
+        presets.installDeps,
+        nonInteractive,
+        () => confirm({ message: "Run pnpm install after scaffolding?", default: true }),
+        true,
+      )
+    : false;
+
+  // gh-pages always "deploys" when not in dry-run — there's no
+  // late-stage opt-out the way coolify has. If they wanted to skip
+  // deploy, they'd pick scaffold-only.
+  const runDeployment = !args.dryRun;
+
+  return {
+    name,
+    domain,
+    baseDomain,
+    subdomain,
+    surfaces,
+    // Placeholder — gh-pages doesn't use a Coolify server target.
+    // Set to "new" rather than `undefined` so any incidental reads
+    // (e.g. summary renderers) don't crash. Downstream code MUST
+    // gate Coolify steps on `deploymentMode === "coolify"`.
+    deployTarget: "new",
+    features: [],
+    s3Provider: "none",
+    mlServices: [],
+    forceRedeployMl: [],
+    mongodbProvider: "external",
+    scaffoldRepo,
+    createGithubRepo,
+    installDeps,
+    deploymentMode,
+    runDeployment,
+    dryRun: args.dryRun,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -726,7 +916,8 @@ interface CreateStepGroup {
 }
 
 function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
-  return [
+  const isPages = cfg.deploymentMode === "gh-pages";
+  const groups: CreateStepGroup[] = [
     {
       title: "Project",
       steps: [
@@ -751,68 +942,101 @@ function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
       title: "Deployment",
       steps: [
         {
-          key: "deployTarget",
-          label: "Deploy target",
-          set: cfg.deployTarget === "existing" ? !!cfg.serverIp : !!cfg.serverSize,
-          // Show the validated public IPv4 — that's what Terraform
-          // actually writes into DNS. Fall back to the raw Coolify
-          // value (`host.docker.internal` etc.) only when discovery
-          // hasn't run yet, so the display still reflects state.
-          summary:
-            cfg.deployTarget === "existing"
-              ? `existing server (${cfg.serverIpv4 ?? cfg.serverIp ?? "?"}${cfg.serverIpv6 ? ` · ${cfg.serverIpv6}` : ""})`
-              : `new Hetzner ${cfg.serverSize ?? "?"} (${cfg.serverLocation ?? "nbg1"})`,
+          key: "deploymentMode",
+          label: "Deployment mode",
+          set: !!cfg.deploymentMode,
+          summary: renderDeploymentModeSummary(cfg.deploymentMode),
         },
-      ],
-    },
-    {
-      title: "Stack",
-      steps: [
-        {
-          key: "features",
-          label: "Features",
-          set: true, // an empty selection is a real choice
-          summary: cfg.features.length > 0 ? cfg.features.join(", ") : chalk.dim("none"),
-        },
-        {
-          key: "mongo",
-          label: "MongoDB",
-          set: !!cfg.mongodbProvider,
-          summary:
-            cfg.mongodbProvider === "coolify"
-              ? "Coolify container (auto-provisioned)"
-              : cfg.mongodbProvider === "external"
-                ? "external URI"
-                : "(unset)",
-        },
-      ],
-    },
-    {
-      title: "ML & GPU",
-      steps: [
-        {
-          key: "ml",
-          label: "ML services",
-          set: true,
-          summary:
-            cfg.mlServices.length > 0
-              ? `${cfg.mlServices.join(", ")}  ${chalk.dim(`→ ${(cfg.gpuPlatforms ?? ["modal"]).join(", ")}`)}`
-              : chalk.dim("none"),
-        },
-      ],
-    },
-    {
-      title: "Run",
-      steps: [
-        {
-          key: "scaffoldFlags",
-          label: "Scaffold / GitHub / Install / Deploy",
-          set: true,
-          summary: `scaffold=${cfg.scaffoldRepo ? "yes" : "no"} · github=${cfg.createGithubRepo ? "yes" : "no"} · install=${cfg.installDeps ? "yes" : "no"} · deploy=${cfg.runDeployment ? "yes" : "no"}`,
-        },
+        // The Coolify target picker is only relevant when the mode is
+        // coolify. gh-pages and scaffold-only both skip it.
+        ...(cfg.deploymentMode === "coolify"
+          ? [
+              {
+                key: "deployTarget",
+                label: "Deploy target",
+                set: cfg.deployTarget === "existing" ? !!cfg.serverIp : !!cfg.serverSize,
+                summary:
+                  cfg.deployTarget === "existing"
+                    ? `existing server (${cfg.serverIpv4 ?? cfg.serverIp ?? "?"}${cfg.serverIpv6 ? ` · ${cfg.serverIpv6}` : ""})`
+                    : `new Hetzner ${cfg.serverSize ?? "?"} (${cfg.serverLocation ?? "nbg1"})`,
+              },
+            ]
+          : []),
       ],
     },
   ];
+
+  // The Stack and ML/GPU groups don't apply to a gh-pages deploy —
+  // it's static-only by definition, no features/Mongo/ML to wire.
+  if (!isPages) {
+    groups.push(
+      {
+        title: "Stack",
+        steps: [
+          {
+            key: "features",
+            label: "Features",
+            set: true,
+            summary: cfg.features.length > 0 ? cfg.features.join(", ") : chalk.dim("none"),
+          },
+          {
+            key: "mongo",
+            label: "MongoDB",
+            set: !!cfg.mongodbProvider,
+            summary:
+              cfg.mongodbProvider === "coolify"
+                ? "Coolify container (auto-provisioned)"
+                : cfg.mongodbProvider === "external"
+                  ? "external URI"
+                  : "(unset)",
+          },
+        ],
+      },
+      {
+        title: "ML & GPU",
+        steps: [
+          {
+            key: "ml",
+            label: "ML services",
+            set: true,
+            summary:
+              cfg.mlServices.length > 0
+                ? `${cfg.mlServices.join(", ")}  ${chalk.dim(`→ ${(cfg.gpuPlatforms ?? ["modal"]).join(", ")}`)}`
+                : chalk.dim("none"),
+          },
+        ],
+      },
+    );
+  }
+
+  groups.push({
+    title: "Run",
+    steps: [
+      {
+        key: "scaffoldFlags",
+        label: isPages
+          ? "Scaffold / GitHub / Install"
+          : "Scaffold / GitHub / Install / Deploy",
+        set: true,
+        summary: isPages
+          ? `scaffold=${cfg.scaffoldRepo ? "yes" : "no"} · github=${cfg.createGithubRepo ? "yes" : "no"} · install=${cfg.installDeps ? "yes" : "no"}`
+          : `scaffold=${cfg.scaffoldRepo ? "yes" : "no"} · github=${cfg.createGithubRepo ? "yes" : "no"} · install=${cfg.installDeps ? "yes" : "no"} · deploy=${cfg.runDeployment ? "yes" : "no"}`,
+      },
+    ],
+  });
+
+  return groups;
+}
+
+function renderDeploymentModeSummary(mode: DeploymentMode): string {
+  switch (mode) {
+    case "coolify":
+      return "Coolify (full-stack)";
+    case "gh-pages":
+      return "GitHub Pages (static)";
+    case "scaffold-only":
+      return "Scaffold only (no deploy)";
+  }
 }
 
 function renderSurfaceSummary(surface: Surface): string {
@@ -886,10 +1110,67 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     // server to read MONGODB_URI, so a Coolify-provisioned container
     // would be wasted. Switching away from client-only keeps the prior
     // value (the user can re-pick on the Mongo step if needed).
+    //
+    // Switching away from client-only also invalidates `gh-pages`
+    // deployment mode (Pages requires a static-only project). Snap
+    // it back to coolify in that case.
+    const nextDeploymentMode =
+      cfg.deploymentMode === "gh-pages" && next !== "client-only"
+        ? "coolify"
+        : cfg.deploymentMode;
+    if (cfg.deploymentMode === "gh-pages" && next !== "client-only") {
+      console.log(
+        chalk.yellow(
+          "  ⚠ gh-pages requires client-only surfaces — switched deployment mode back to coolify.",
+        ),
+      );
+    }
     return {
       ...cfg,
       surfaces: next,
       mongodbProvider: next === "client-only" ? "external" : cfg.mongodbProvider,
+      deploymentMode: nextDeploymentMode,
+      runDeployment: nextDeploymentMode === "scaffold-only" ? false : cfg.runDeployment,
+    };
+  }
+  if (section === "deploymentMode") {
+    const next = await askDeploymentMode(cfg.surfaces, undefined, false);
+    if (next === cfg.deploymentMode) return cfg;
+    // Switching INTO gh-pages clears the Coolify-shaped fields so
+    // the review doesn't show stale Hetzner / Mongo / feature
+    // choices that don't apply. The user can still edit them back
+    // if they later switch to coolify mode.
+    if (next === "gh-pages") {
+      return {
+        ...cfg,
+        deploymentMode: next,
+        runDeployment: !cfg.dryRun,
+        deployTarget: "new",
+        serverId: undefined,
+        serverUuid: undefined,
+        serverIp: undefined,
+        serverIpv4: undefined,
+        serverIpv6: undefined,
+        serverIpMismatchWarning: undefined,
+        serverSize: undefined,
+        serverLocation: undefined,
+        features: [],
+        s3Provider: "none",
+        mlServices: [],
+        forceRedeployMl: [],
+        mongodbProvider: "external",
+        gpuPlatforms: undefined,
+        customHfModelId: undefined,
+        customHfGpuType: undefined,
+      };
+    }
+    // Switching to coolify or scaffold-only just updates the mode +
+    // derived `runDeployment`. Existing values (if any) are preserved
+    // so the user can step through them in the review.
+    return {
+      ...cfg,
+      deploymentMode: next,
+      runDeployment: next === "scaffold-only" ? false : cfg.runDeployment,
     };
   }
   if (section === "features") {
@@ -1026,10 +1307,19 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
           default: cfg.installDeps,
         })
       : false;
-    const runDeployment = await confirm({
-      message: "Run deployment now (Terraform + Coolify + ML)?",
-      default: cfg.runDeployment,
-    });
+    // "Deploy now?" is meaningful only for coolify — gh-pages always
+    // runs the pages setup, scaffold-only never deploys.
+    let runDeployment = cfg.runDeployment;
+    if (cfg.deploymentMode === "coolify") {
+      runDeployment = await confirm({
+        message: "Run deployment now (Terraform + Coolify + ML)?",
+        default: cfg.runDeployment,
+      });
+    } else if (cfg.deploymentMode === "gh-pages") {
+      runDeployment = !cfg.dryRun;
+    } else {
+      runDeployment = false;
+    }
     return { ...cfg, scaffoldRepo, createGithubRepo, installDeps, runDeployment };
   }
   return cfg;

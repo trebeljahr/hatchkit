@@ -1,7 +1,17 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { resolve4 } from "node:dns/promises";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
+import ora from "ora";
 import { ensureDns, getDnsConfig } from "../config.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { exec } from "../utils/exec.js";
@@ -12,9 +22,9 @@ import { parseDomain, validateDomain } from "../utils/validate.js";
 // ---------------------------------------------------------------------------
 
 /** What kind of site lives in a folder — determines the build workflow. */
-type SiteKind = "static" | "node-build" | "docusaurus" | "jekyll";
+export type SiteKind = "static" | "node-build" | "docusaurus" | "jekyll";
 
-interface Detected {
+export interface Detected {
   kind: SiteKind;
   /** Folder uploaded to Pages. Relative to repo root. */
   publishDir: string;
@@ -57,14 +67,7 @@ export async function runPagesSetup(cwd: string): Promise<void> {
 
   // 1. Repo — must be a git repo with an `origin` pointing at GitHub.
   const repo = await detectRepo(cwd);
-  console.log(chalk.dim(`  Repo:  ${repo.fullName} (${repo.private ? "private" : "public"})`));
-  if (repo.private) {
-    console.log(
-      chalk.yellow(
-        "  ⚠ Private repos need a paid GitHub plan (Pro/Team/Enterprise) for Pages.\n    Continuing anyway — will fail at API call if unsupported.",
-      ),
-    );
-  }
+  printRepoHeader(repo);
 
   // 2. Pick a site. Auto-confirm when there's one obvious candidate;
   //    ask when zero or many. Also let the user override the detected
@@ -74,6 +77,55 @@ export async function runPagesSetup(cwd: string): Promise<void> {
   // 3. Custom domain (optional).
   const domain = await promptDomain();
 
+  await executePagesSetup(cwd, repo, confirmed, domain);
+}
+
+/** Programmatic entrypoint for the create/adopt flows.
+ *
+ *  Takes already-resolved values (detected site shape, optional
+ *  custom domain) and runs the same enable / workflow / DNS / cert
+ *  pipeline as the interactive flow. Skips the pickSite + promptDomain
+ *  steps so it's safe to call from within a larger non-interactive
+ *  scaffold.
+ *
+ *  Returns the public URL the site will be served from so callers
+ *  can include it in their summary. */
+export async function runPagesSetupProgrammatic(
+  cwd: string,
+  opts: { detected: Detected; domain: string | null },
+): Promise<{ pageUrl: string }> {
+  const repo = await detectRepo(cwd);
+  printRepoHeader(repo);
+  await executePagesSetup(cwd, repo, opts.detected, opts.domain);
+  return {
+    pageUrl: opts.domain
+      ? `https://${opts.domain}`
+      : `https://${repo.owner}.github.io/${repo.repo}/`,
+  };
+}
+
+function printRepoHeader(repo: RepoInfo): void {
+  console.log(chalk.dim(`  Repo:  ${repo.fullName} (${repo.private ? "private" : "public"})`));
+  if (repo.private) {
+    console.log(
+      chalk.yellow(
+        "  ⚠ Private repos need a paid GitHub plan (Pro/Team/Enterprise) for Pages.\n    Continuing anyway — will fail at API call if unsupported.",
+      ),
+    );
+  }
+}
+
+/** The shared execution pipeline used by both the interactive
+ *  `runPagesSetup` and the programmatic `runPagesSetupProgrammatic`.
+ *  Everything from "we know what to deploy and where" onwards lives
+ *  here — anything *before* that (site detection, domain prompt) is
+ *  caller-specific. */
+async function executePagesSetup(
+  cwd: string,
+  repo: RepoInfo,
+  confirmed: Detected,
+  domain: string | null,
+): Promise<void> {
   // 4. Enable Pages via GitHub API.
   await enablePages(repo);
 
@@ -84,10 +136,22 @@ export async function runPagesSetup(cwd: string): Promise<void> {
   // 6. CNAME file — only when a custom domain is chosen.
   if (domain) writeCnameFile(cwd, confirmed, domain);
 
-  // 7. Pages CNAME + DNS wiring.
+  // 7. DNS + Pages CNAME + HTTPS.
+  //
+  // Order matters: GitHub validates the cname by resolving DNS the moment
+  // we PUT it. If DNS isn't in place yet, validation fails silently, cert
+  // provisioning is never kicked off, and GitHub doesn't retry. So:
+  //   a. Wire DNS first.
+  //   b. Wait for DNS to actually resolve (only when we wrote it ourselves).
+  //   c. Then tell GitHub the cname — bouncing it first if a prior run
+  //      left it stuck without a cert.
+  //   d. Wait for the Let's Encrypt cert to be issued, then flip
+  //      `https_enforced` so http:// redirects to https://.
   if (domain) {
+    const { wired } = await configureDns(domain);
+    if (wired) await waitForDnsResolves(domain);
     await setPagesCname(repo, domain);
-    await configureDns(domain);
+    await provisionHttps(repo, wired);
   }
 
   printSummary(repo, confirmed, domain);
@@ -372,19 +436,161 @@ async function enablePages(repo: RepoInfo): Promise<void> {
 }
 
 async function setPagesCname(repo: RepoInfo, domain: string): Promise<void> {
+  // If the cname is already correct but no cert exists, GitHub is stuck
+  // (most often because an earlier run set the cname before DNS was live,
+  // so the validation+cert flow ran against missing DNS and never retried).
+  // Bounce the cname — clear, then re-set — to force a fresh validation
+  // pass now that DNS is in place. Idempotent on the happy path: if a cert
+  // is already issued we skip the bounce entirely.
+  const current = await getPagesInfo(repo);
+  const stuck = current?.cname === domain && !current?.https_certificate;
+  if (stuck) {
+    await exec("gh", ["api", "-X", "PUT", `repos/${repo.fullName}/pages`, "-f", "cname="], {
+      silent: true,
+      spinner: "Resetting Pages CNAME to retry cert provisioning...",
+    });
+    await sleep(2000);
+  }
+
   const res = await exec(
     "gh",
     ["api", "-X", "PUT", `repos/${repo.fullName}/pages`, "-f", `cname=${domain}`],
     { silent: true, spinner: `Registering ${domain} with Pages...` },
   );
   if (res.exitCode !== 0) {
-    // Non-fatal: DNS might not be in place yet.
+    // Non-fatal: DNS might still not be visible to GitHub yet.
     console.log(
       chalk.yellow(
         `  ⚠ Couldn't set Pages CNAME to ${domain} (${res.stderr.trim()}).\n    Set it manually in Settings → Pages once DNS resolves.`,
       ),
     );
   }
+}
+
+interface PagesInfo {
+  cname: string | null;
+  https_enforced: boolean;
+  https_certificate?: { state: string };
+}
+
+async function getPagesInfo(repo: RepoInfo): Promise<PagesInfo | null> {
+  const res = await exec("gh", ["api", `repos/${repo.fullName}/pages`], { silent: true });
+  if (res.exitCode !== 0) return null;
+  try {
+    return JSON.parse(res.stdout) as PagesInfo;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// HTTPS provisioning
+// ---------------------------------------------------------------------------
+
+/**
+ * Wait for `domain` to resolve to one of GitHub's Pages IPs. Important when
+ * we just wrote DNS records via API — GitHub validates the cname by hitting
+ * authoritative DNS, and Cloudflare propagation is usually a few seconds
+ * but can briefly lag. Bounded wait; on timeout we proceed anyway.
+ */
+async function waitForDnsResolves(domain: string, timeoutMs = 60_000): Promise<boolean> {
+  const githubIps = new Set(GITHUB_APEX_A);
+  const spinner = ora(`Waiting for DNS for ${domain} to resolve to GitHub...`).start();
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const ips = await resolve4(domain);
+      if (ips.some((ip) => githubIps.has(ip))) {
+        spinner.succeed(`DNS resolves: ${domain} → ${ips[0]}`);
+        return true;
+      }
+    } catch {
+      // ENOTFOUND / SERVFAIL — keep polling.
+    }
+    await sleep(3000);
+  }
+  spinner.warn(`DNS for ${domain} hasn't propagated yet — continuing anyway`);
+  return false;
+}
+
+/**
+ * Drive GitHub's HTTPS state machine to completion: poll until the Let's
+ * Encrypt cert is `issued`, then flip `https_enforced=true` so http://
+ * redirects to https://. Pre-existing fully-configured sites short-circuit
+ * on the first poll.
+ *
+ * If the user added DNS records manually we don't know when they'll land,
+ * so we skip the wait and print the finishing commands instead of blocking
+ * the CLI for what could be hours.
+ */
+async function provisionHttps(repo: RepoInfo, autoDns: boolean): Promise<void> {
+  if (!autoDns) {
+    console.log(
+      chalk.dim(
+        `\n  Once your DNS records resolve, GitHub will provision an HTTPS cert (usually <5 min).`,
+      ),
+    );
+    console.log(chalk.dim(`  Check:  gh api repos/${repo.fullName}/pages | jq .https_certificate`));
+    console.log(
+      chalk.dim(`  Enforce: gh api -X PUT repos/${repo.fullName}/pages -F https_enforced=true`),
+    );
+    return;
+  }
+
+  const issued = await waitForCertIssued(repo);
+  if (!issued) {
+    console.log(
+      chalk.yellow(
+        `\n  ⚠ HTTPS cert wasn't issued within the wait window — leaving https_enforced off.`,
+      ),
+    );
+    console.log(chalk.dim(`  Check:  gh api repos/${repo.fullName}/pages | jq .https_certificate`));
+    console.log(
+      chalk.dim(`  Enforce: gh api -X PUT repos/${repo.fullName}/pages -F https_enforced=true`),
+    );
+    return;
+  }
+
+  const info = await getPagesInfo(repo);
+  if (info?.https_enforced) {
+    console.log(chalk.dim("  HTTPS already enforced."));
+    return;
+  }
+
+  const res = await exec(
+    "gh",
+    ["api", "-X", "PUT", `repos/${repo.fullName}/pages`, "-F", "https_enforced=true"],
+    { silent: true, spinner: "Enabling Enforce HTTPS..." },
+  );
+  if (res.exitCode !== 0) {
+    console.log(
+      chalk.yellow(
+        `  ⚠ Couldn't enable HTTPS enforcement: ${res.stderr.trim() || res.stdout.trim()}`,
+      ),
+    );
+    console.log(
+      chalk.dim(`    Run later: gh api -X PUT repos/${repo.fullName}/pages -F https_enforced=true`),
+    );
+  }
+}
+
+async function waitForCertIssued(repo: RepoInfo, timeoutMs = 5 * 60_000): Promise<boolean> {
+  const spinner = ora("Waiting for GitHub to provision the HTTPS certificate...").start();
+  const start = Date.now();
+  let lastState = "pending";
+  while (Date.now() - start < timeoutMs) {
+    const info = await getPagesInfo(repo);
+    const state = info?.https_certificate?.state;
+    if (state) lastState = state;
+    if (state === "issued" || state === "approved") {
+      spinner.succeed(`HTTPS certificate ${state}`);
+      return true;
+    }
+    spinner.text = `Waiting for HTTPS certificate (state: ${lastState})...`;
+    await sleep(15_000);
+  }
+  spinner.warn(`HTTPS cert not ready after ${Math.round(timeoutMs / 1000)}s (last: ${lastState})`);
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -581,7 +787,7 @@ function writeCnameFile(cwd: string, d: Detected, domain: string): void {
 // DNS wiring
 // ---------------------------------------------------------------------------
 
-async function configureDns(domain: string): Promise<void> {
+async function configureDns(domain: string): Promise<{ wired: boolean }> {
   const { baseDomain, subdomain } = parseDomain(domain);
   const isApex = subdomain === "";
   const ghUser = await getGitHubUser();
@@ -598,17 +804,16 @@ async function configureDns(domain: string): Promise<void> {
 
   if (!dns || dns.provider === "manual") {
     printManualDnsRecords(baseDomain, subdomain, target, isApex);
-    return;
+    return { wired: false };
   }
 
   if (dns.provider === "cloudflare") {
     if (!dns.apiToken) {
       console.log(chalk.yellow("  ⚠ Cloudflare token missing from keychain."));
       printManualDnsRecords(baseDomain, subdomain, target, isApex);
-      return;
+      return { wired: false };
     }
-    await configureCloudflareDns(dns.apiToken, baseDomain, subdomain, target, isApex);
-    return;
+    return configureCloudflareDns(dns.apiToken, baseDomain, subdomain, target, isApex);
   }
 
   // INWX auto-wiring isn't implemented — XML-RPC + rarely used for Pages.
@@ -616,6 +821,7 @@ async function configureDns(domain: string): Promise<void> {
     chalk.dim("  INWX auto-configure isn't implemented for Pages — showing manual records:"),
   );
   printManualDnsRecords(baseDomain, subdomain, target, isApex);
+  return { wired: false };
 }
 
 async function getGitHubUser(): Promise<string> {
@@ -649,7 +855,7 @@ async function configureCloudflareDns(
   subdomain: string,
   target: string,
   isApex: boolean,
-): Promise<void> {
+): Promise<{ wired: boolean }> {
   const api = new CloudflareApi({ token });
   const zone = await api.getZoneByName(baseDomain);
   if (!zone) {
@@ -659,7 +865,7 @@ async function configureCloudflareDns(
       ),
     );
     printManualDnsRecords(baseDomain, subdomain, target, isApex);
-    return;
+    return { wired: false };
   }
   const recordName = isApex ? baseDomain : `${subdomain}.${baseDomain}`;
 
@@ -684,6 +890,7 @@ async function configureCloudflareDns(
       result.created || result.updated ? chalk.green(`✓ ${line.trimStart()}`) : chalk.dim(line),
     );
   }
+  return { wired: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -712,4 +919,253 @@ function printSummary(repo: RepoInfo, d: Detected, domain: string | null): void 
       `\n  Next: commit & push the new workflow (and CNAME file) to ${repo.defaultBranch}.\n`,
     ),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Undo
+// ---------------------------------------------------------------------------
+
+interface UndoOptions {
+  dryRun: boolean;
+  yes: boolean;
+}
+
+interface UndoPlan {
+  pagesEnabled: boolean;
+  cname: string | null;
+  workflowPath: string | null;
+  cnamePaths: string[];
+  cloudflare: {
+    /** When false we either have no Cloudflare token or no matching zone. */
+    available: boolean;
+    zoneId?: string;
+    baseDomain?: string;
+    records: Array<{ id: string; type: string; name: string; content: string }>;
+  };
+}
+
+/**
+ * Reverse what `hatchkit gh-pages` did: disables Pages, deletes the
+ * Cloudflare records it created, removes the workflow file, removes any
+ * CNAME files matching the registered domain. Idempotent — safe to run
+ * even if some pieces are already gone.
+ */
+export async function runPagesUndo(cwd: string, opts: UndoOptions): Promise<void> {
+  console.log(chalk.bold("\n  ── hatchkit gh-pages --undo ───────────────────────────────\n"));
+
+  const repo = await detectRepo(cwd);
+  console.log(chalk.dim(`  Repo:  ${repo.fullName}`));
+
+  const plan = await buildUndoPlan(cwd, repo);
+  if (!isAnythingToUndo(plan)) {
+    console.log(
+      chalk.dim("\n  Nothing to undo — no Pages config, workflow, or CNAME files found.\n"),
+    );
+    return;
+  }
+
+  printUndoPlan(plan);
+
+  if (opts.dryRun) {
+    console.log(chalk.dim("\n  --dry-run set, nothing changed.\n"));
+    return;
+  }
+
+  if (!opts.yes) {
+    const ok = await confirm({
+      message: "Proceed with the steps above?",
+      default: false,
+    });
+    if (!ok) {
+      console.log(chalk.dim("\n  Aborted — nothing changed.\n"));
+      return;
+    }
+  }
+
+  await executeUndo(repo, plan);
+
+  console.log(chalk.bold("\n  ── Done ───────────────────────────────────────────────────\n"));
+  if (plan.cname) {
+    console.log(
+      chalk.dim(
+        `  DNS at other providers (registrar caches, AAAA records, etc.) may need manual cleanup.\n`,
+      ),
+    );
+  }
+}
+
+async function buildUndoPlan(cwd: string, repo: RepoInfo): Promise<UndoPlan> {
+  const info = await getPagesInfo(repo);
+  const cname = info?.cname ?? null;
+
+  // Workflow: only the one we write. Hand-written Pages workflows
+  // (e.g. docs.yml) belong to the user — don't touch them.
+  const wfPath = join(cwd, ".github", "workflows", WORKFLOW_FILENAME);
+  const workflowPath = existsSync(wfPath) ? wfPath : null;
+
+  // CNAME files: scan the spots `writeCnameFile` could have written.
+  // Only flag files whose content matches the registered cname so we
+  // never delete a CNAME the user wrote for some other purpose.
+  const cnamePaths = cname ? findCnameFiles(cwd, cname) : [];
+
+  // Cloudflare records: present only if a cname was registered AND
+  // we have a Cloudflare token AND the zone is in this account.
+  const cloudflare: UndoPlan["cloudflare"] = { available: false, records: [] };
+  if (cname) {
+    const dns = await getDnsConfig();
+    if (dns?.provider === "cloudflare" && dns.apiToken) {
+      const { baseDomain, subdomain } = parseDomain(cname);
+      const recordName = subdomain === "" ? baseDomain : `${subdomain}.${baseDomain}`;
+      const api = new CloudflareApi({ token: dns.apiToken });
+      const zone = await api.getZoneByName(baseDomain);
+      if (zone) {
+        const ghUser = await getGitHubUser().catch(() => "");
+        const target = ghUser ? `${ghUser}.github.io` : "";
+        const all = await api.findRecordsByName(zone.id, recordName);
+        // Only delete records that match what hatchkit could plausibly
+        // have written: A records pointing at GitHub's Pages IPs, or a
+        // CNAME pointing at <user>.github.io. Anything else stays.
+        const records = all.filter(
+          (r) =>
+            (r.type === "A" && GITHUB_APEX_A.includes(r.content)) ||
+            (r.type === "CNAME" && target && r.content === target),
+        );
+        cloudflare.available = true;
+        cloudflare.zoneId = zone.id;
+        cloudflare.baseDomain = baseDomain;
+        cloudflare.records = records.map((r) => ({
+          id: r.id,
+          type: r.type,
+          name: r.name,
+          content: r.content,
+        }));
+      }
+    }
+  }
+
+  return {
+    pagesEnabled: info !== null,
+    cname,
+    workflowPath,
+    cnamePaths,
+    cloudflare,
+  };
+}
+
+function isAnythingToUndo(plan: UndoPlan): boolean {
+  return (
+    plan.pagesEnabled ||
+    plan.workflowPath !== null ||
+    plan.cnamePaths.length > 0 ||
+    plan.cloudflare.records.length > 0
+  );
+}
+
+function printUndoPlan(plan: UndoPlan): void {
+  console.log(chalk.bold("\n  Will undo:\n"));
+  if (plan.pagesEnabled) {
+    const suffix = plan.cname ? ` (cname: ${plan.cname})` : "";
+    console.log(chalk.yellow(`    • Disable GitHub Pages${suffix}`));
+  }
+  for (const rec of plan.cloudflare.records) {
+    console.log(chalk.yellow(`    • Delete Cloudflare ${rec.type} ${rec.name} → ${rec.content}`));
+  }
+  if (plan.workflowPath) {
+    console.log(chalk.yellow(`    • Delete ${relPath(plan.workflowPath)}`));
+  }
+  for (const p of plan.cnamePaths) {
+    console.log(chalk.yellow(`    • Delete ${relPath(p)}`));
+  }
+  if (plan.cname && !plan.cloudflare.available) {
+    console.log(
+      chalk.dim(
+        `\n  (Cloudflare records for ${plan.cname} can't be auto-deleted — no token / zone not in this account.\n   Remove them manually at your DNS provider.)`,
+      ),
+    );
+  }
+}
+
+async function executeUndo(repo: RepoInfo, plan: UndoPlan): Promise<void> {
+  if (plan.pagesEnabled) {
+    const res = await exec("gh", ["api", "-X", "DELETE", `repos/${repo.fullName}/pages`], {
+      silent: true,
+      spinner: "Disabling GitHub Pages...",
+    });
+    if (res.exitCode !== 0) {
+      console.log(
+        chalk.yellow(`  ⚠ Couldn't disable Pages: ${res.stderr.trim() || res.stdout.trim()}`),
+      );
+    }
+  }
+
+  if (plan.cloudflare.records.length > 0 && plan.cloudflare.zoneId) {
+    const dns = await getDnsConfig();
+    if (dns?.provider === "cloudflare" && dns.apiToken) {
+      const api = new CloudflareApi({ token: dns.apiToken });
+      for (const rec of plan.cloudflare.records) {
+        const result = await api.deleteRecord(plan.cloudflare.zoneId, rec.id);
+        const tag = result === "deleted" ? chalk.green("✓") : chalk.dim("—");
+        console.log(`  ${tag} Cloudflare ${rec.type} ${rec.name} → ${rec.content} (${result})`);
+      }
+    }
+  }
+
+  if (plan.workflowPath) {
+    try {
+      unlinkSync(plan.workflowPath);
+      console.log(chalk.green(`  ✓ Removed ${relPath(plan.workflowPath)}`));
+    } catch (err) {
+      console.log(
+        chalk.yellow(
+          `  ⚠ Couldn't remove ${relPath(plan.workflowPath)}: ${(err as Error).message}`,
+        ),
+      );
+    }
+  }
+
+  for (const p of plan.cnamePaths) {
+    try {
+      unlinkSync(p);
+      console.log(chalk.green(`  ✓ Removed ${relPath(p)}`));
+    } catch (err) {
+      console.log(chalk.yellow(`  ⚠ Couldn't remove ${relPath(p)}: ${(err as Error).message}`));
+    }
+  }
+}
+
+/**
+ * Look for `CNAME` files in the places `writeCnameFile` could have put
+ * one, in the current working dir and each candidate scan dir. Only
+ * returns files whose content matches `expected` (trimmed, case-insensitive)
+ * so we never delete an unrelated CNAME file.
+ */
+function findCnameFiles(cwd: string, expected: string): string[] {
+  const target = expected.trim().toLowerCase();
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  const bases = ["", ...SCAN_DIRS.filter((d) => d !== "")];
+  for (const base of bases) {
+    const baseAbs = base ? join(cwd, base) : cwd;
+    if (base && !existsSync(baseAbs)) continue;
+    for (const sub of ["", "public", "static"]) {
+      const subAbs = sub ? join(baseAbs, sub) : baseAbs;
+      const candidate = join(subAbs, "CNAME");
+      if (seen.has(candidate)) continue;
+      seen.add(candidate);
+      if (!existsSync(candidate)) continue;
+      try {
+        const content = readFileSync(candidate, "utf8").trim().toLowerCase();
+        if (content === target) out.push(candidate);
+      } catch {
+        // unreadable — skip
+      }
+    }
+  }
+  return out;
+}
+
+function relPath(p: string): string {
+  const cwd = process.cwd();
+  return p.startsWith(cwd) ? p.slice(cwd.length + 1) : p;
 }

@@ -38,7 +38,19 @@ export function pruneToSurface(
 ): void {
   if (config.surfaces === "both") return;
   if (config.surfaces === "server-only") pruneToServerOnly(outputDir, modifications);
-  else pruneToClientOnly(outputDir, modifications);
+  else {
+    pruneToClientOnly(outputDir, modifications);
+    // Pages needs additional config tweaks on top of the client-only
+    // prune — the prune leaves `output: "standalone"` + `/api/*`
+    // rewrites in place, both of which assume a running backend.
+    if (config.deploymentMode === "gh-pages") {
+      // Lazy import to avoid pulling node:fs deeper than needed for
+      // the non-pages paths. The dep graph here is already heavy.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { applyPagesMode } = require("./pages-mode.js") as typeof import("./pages-mode.js");
+      applyPagesMode(outputDir, modifications);
+    }
+  }
 }
 
 // ── server-only ────────────────────────────────────────────────────────

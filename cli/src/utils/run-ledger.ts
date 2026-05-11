@@ -83,7 +83,22 @@ export type LedgerStep =
       recordId: string;
       name: string;
       type: "A" | "AAAA" | "CNAME";
-    };
+    }
+  /** GitHub Pages site set up via `hatchkit gh-pages` (or the
+   *  create/adopt flows' gh-pages path). Recorded when Pages was
+   *  enabled — destroy hands this off to `runPagesUndo`, which
+   *  knows how to disable Pages, remove the matching Cloudflare
+   *  records, and delete the workflow + CNAME files.
+   *
+   *  `projectDir` is the absolute path to the project root at
+   *  scaffold time. Used by undo to locate the local workflow
+   *  + CNAME files; safely no-ops if the dir has since moved or
+   *  been deleted (the remote Pages/DNS teardown still runs).
+   *  The cname is recorded for diagnostic display only — undo
+   *  re-reads the live cname from the Pages API so a manifest-
+   *  edited value here can't accidentally nuke a different
+   *  domain's DNS records. */
+  | { kind: "ghPages"; repo: string; projectDir: string; cname?: string };
 
 export interface LedgerData {
   /** Project slug. Also the filename. */
