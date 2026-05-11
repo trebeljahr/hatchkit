@@ -111,7 +111,7 @@ Configure: `hatchkit config add openpanel`.
 
 ## GPU / ML platforms
 
-For deploying ML services. See [ML services](./ml-services) for the end-to-end flow.
+For deploying ML services. See [ML services](./ml-services.md) for the end-to-end flow.
 
 | Platform | Notes |
 |---|---|

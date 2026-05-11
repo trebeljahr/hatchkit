@@ -61,7 +61,7 @@ Each service can deploy to one of four platforms:
 | **Hugging Face** | Hosted HF models with zero infra. |
 | **Replicate** | Already use Replicate or want easy public sharing. |
 
-Configure with `hatchkit config add <modal|runpod|hf|replicate>` — tokens go to the OS keychain. See [Providers](./providers) for full setup.
+Configure with `hatchkit config add <modal|runpod|hf|replicate>` — tokens go to the OS keychain. See [Providers](./providers.md) for full setup.
 
 ---
 

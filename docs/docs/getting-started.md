@@ -88,5 +88,5 @@ Any field missing from the config file falls back to a sane default — no promp
 
 ## Next
 
-- [Commands reference](./commands)
-- [Architecture](./architecture) for what actually happens under the hood
+- [Commands reference](./commands.md)
+- [Architecture](./architecture.md) for what actually happens under the hood

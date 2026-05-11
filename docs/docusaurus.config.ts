@@ -7,10 +7,29 @@ const config: Config = {
   tagline: "Interactive CLI for scaffolding full-stack projects with composable ML services.",
   favicon: "img/favicon.ico",
 
+  headTags: [
+    {
+      tagName: "link",
+      attributes: {
+        rel: "icon",
+        type: "image/svg+xml",
+        href: "/img/favicon.svg",
+      },
+    },
+    {
+      tagName: "link",
+      attributes: {
+        rel: "apple-touch-icon",
+        sizes: "180x180",
+        href: "/img/apple-touch-icon.png",
+      },
+    },
+  ],
+
   // Set the production url of your site here. Combined with baseUrl this is the
   // canonical URL where the site is served.
-  url: "https://trebeljahr.github.io",
-  baseUrl: "/hatchkit/",
+  url: "https://hatchkit.trebeljahr.com",
+  baseUrl: "/",
 
   // GitHub pages deployment config — only used by the `docusaurus deploy`
   // command, but it's also surfaced by the editUrl below.
@@ -31,10 +50,8 @@ const config: Config = {
       "classic",
       {
         docs: {
-          // Treat the docs/ subfolder as the root of the site — `routeBasePath: "/"`
-          // means landing on the index URL renders intro.md / index.md.
           sidebarPath: "./sidebars.ts",
-          routeBasePath: "/",
+          routeBasePath: "/docs",
           editUrl: "https://github.com/trebeljahr/hatchkit/edit/main/docs/",
         },
         blog: false,
@@ -65,6 +82,11 @@ const config: Config = {
           label: "Docs",
         },
         {
+          to: "/docs/getting-started",
+          label: "Get started",
+          position: "left",
+        },
+        {
           href: "https://www.npmjs.com/package/hatchkit",
           label: "npm",
           position: "right",
@@ -82,9 +104,9 @@ const config: Config = {
         {
           title: "Docs",
           items: [
-            { label: "Getting Started", to: "/getting-started" },
-            { label: "Commands", to: "/commands" },
-            { label: "ML services", to: "/ml-services" },
+            { label: "Getting Started", to: "/docs/getting-started" },
+            { label: "Commands", to: "/docs/commands" },
+            { label: "ML services", to: "/docs/ml-services" },
           ],
         },
         {

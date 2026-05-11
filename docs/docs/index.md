@@ -1,14 +1,13 @@
 ---
-slug: /
 sidebar_position: 1
-title: Home
+title: Overview
 ---
 
 # hatchkit
 
 From `npx hatchkit` to a deployed full-stack app on your own infrastructure — including GPU-backed ML services — in minutes.
 
-[**Get started →**](./getting-started) &nbsp;·&nbsp; [GitHub](https://github.com/trebeljahr/hatchkit) &nbsp;·&nbsp; [npm](https://www.npmjs.com/package/hatchkit)
+[**Get started →**](./getting-started.md) &nbsp;·&nbsp; [GitHub](https://github.com/trebeljahr/hatchkit) &nbsp;·&nbsp; [npm](https://www.npmjs.com/package/hatchkit)
 
 ---
 
@@ -39,10 +38,10 @@ Starting a new product is the same toil every time: pick a starter, wire up auth
 
 ## Next steps
 
-- [Getting Started](./getting-started) — install + onboard + create your first project
-- [Commands reference](./commands) — every command, every flag
-- [Providers](./providers) — what hatchkit integrates with and how to configure it
-- [ML services](./ml-services) — GPU workloads as first-class citizens
-- [GitHub Pages (`hatchkit gh-pages`)](./gh-pages) — static / SPA / Jekyll / Docusaurus deploys with a custom domain
-- [Architecture](./architecture) — how scaffold, infra, and deploy fit together
-- [Deploying the docs site](./deployment) — GitHub Pages flow used by this repo
+- [Getting Started](./getting-started.md) — install + onboard + create your first project
+- [Commands reference](./commands.md) — every command, every flag
+- [Providers](./providers.md) — what hatchkit integrates with and how to configure it
+- [ML services](./ml-services.md) — GPU workloads as first-class citizens
+- [GitHub Pages (`hatchkit gh-pages`)](./gh-pages.md) — static / SPA / Jekyll / Docusaurus deploys with a custom domain
+- [Architecture](./architecture.md) — how scaffold, infra, and deploy fit together
+- [Deploying the docs site](./deployment.md) — GitHub Pages flow used by this repo

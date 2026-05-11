@@ -116,4 +116,4 @@ The `baseUrl: "/hatchkit/"` in `docusaurus.config.ts` means local URLs include t
 
 ## Just want this setup for your own repo?
 
-Run `hatchkit gh-pages` from inside any repo with a Docusaurus site. It detects the config, writes the right workflow, optionally wires a custom domain at Cloudflare or INWX, and you're done. See [the `gh-pages` reference](./gh-pages).
+Run `hatchkit gh-pages` from inside any repo with a Docusaurus site. It detects the config, writes the right workflow, optionally wires a custom domain at Cloudflare or INWX, and you're done. See [the `gh-pages` reference](./gh-pages.md).

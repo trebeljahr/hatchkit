@@ -1,0 +1,571 @@
+/* Landing page — dark-first, indigo accent, terminal vibe. */
+
+.main {
+  --hk-fg: #e6e8ee;
+  --hk-fg-muted: #9aa3b2;
+  --hk-fg-dim: #6b7280;
+  --hk-bg: #0b0d12;
+  --hk-bg-alt: #11141c;
+  --hk-surface: #161a24;
+  --hk-border: rgba(255, 255, 255, 0.08);
+  --hk-border-strong: rgba(255, 255, 255, 0.16);
+  --hk-accent: #a5b4fc;
+  --hk-accent-strong: #818cf8;
+  --hk-accent-glow: rgba(99, 102, 241, 0.25);
+  --hk-success: #34d399;
+  --hk-radius-lg: 14px;
+  --hk-radius-md: 10px;
+  --hk-radius-sm: 6px;
+}
+
+[data-theme="light"] .main {
+  --hk-fg: #11141c;
+  --hk-fg-muted: #4b5563;
+  --hk-fg-dim: #6b7280;
+  --hk-bg: #ffffff;
+  --hk-bg-alt: #f6f7fb;
+  --hk-surface: #ffffff;
+  --hk-border: rgba(17, 20, 28, 0.08);
+  --hk-border-strong: rgba(17, 20, 28, 0.16);
+  --hk-accent: #4f46e5;
+  --hk-accent-strong: #4338ca;
+  --hk-accent-glow: rgba(99, 102, 241, 0.18);
+  --hk-success: #047857;
+}
+
+.main {
+  background: var(--hk-bg);
+  color: var(--hk-fg);
+}
+
+/* ───── Hero ───────────────────────────────────────────────── */
+
+.hero {
+  position: relative;
+  padding: 5rem 1.5rem 4rem;
+  overflow: hidden;
+  background:
+    radial-gradient(
+      ellipse 80% 60% at 50% -10%,
+      var(--hk-accent-glow),
+      transparent 60%
+    ),
+    var(--hk-bg);
+  border-bottom: 1px solid var(--hk-border);
+}
+
+.heroInner {
+  max-width: 960px;
+  margin: 0 auto;
+  text-align: center;
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 1.5rem;
+  padding: 0.35rem 0.85rem;
+  font-size: 0.8125rem;
+  font-family: var(--ifm-font-family-monospace);
+  color: var(--hk-fg-muted);
+  background: var(--hk-surface);
+  border: 1px solid var(--hk-border);
+  border-radius: 999px;
+}
+
+.eyebrowDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--hk-success);
+  box-shadow: 0 0 8px var(--hk-success);
+}
+
+.heroTitle {
+  font-size: clamp(2.25rem, 5.5vw, 3.75rem);
+  line-height: 1.05;
+  letter-spacing: -0.025em;
+  font-weight: 700;
+  margin: 0 0 1.25rem;
+  color: var(--hk-fg);
+}
+
+.inlineCode {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.85em;
+  padding: 0.15em 0.4em;
+  background: var(--hk-surface);
+  border: 1px solid var(--hk-border-strong);
+  border-radius: var(--hk-radius-sm);
+  color: var(--hk-accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.heroTagline {
+  font-size: clamp(1rem, 1.5vw, 1.175rem);
+  line-height: 1.55;
+  color: var(--hk-fg-muted);
+  max-width: 660px;
+  margin: 0 auto 2rem;
+}
+
+.heroCtas {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-bottom: 3.5rem;
+}
+
+.ctaPrimary,
+.ctaSecondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem 1.4rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  border-radius: var(--hk-radius-md);
+  text-decoration: none;
+  transition: transform 0.12s ease, box-shadow 0.12s ease,
+    background 0.12s ease, border-color 0.12s ease;
+}
+
+.ctaPrimary {
+  background: var(--hk-accent-strong);
+  color: #0b0d12;
+  border: 1px solid var(--hk-accent-strong);
+  box-shadow: 0 8px 24px -8px var(--hk-accent-glow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.ctaPrimary:hover {
+  background: var(--hk-accent);
+  color: #0b0d12;
+  text-decoration: none;
+  transform: translateY(-1px);
+}
+
+.ctaSecondary {
+  background: transparent;
+  color: var(--hk-fg);
+  border: 1px solid var(--hk-border-strong);
+}
+
+.ctaSecondary:hover {
+  border-color: var(--hk-accent);
+  color: var(--hk-fg);
+  text-decoration: none;
+  background: var(--hk-surface);
+}
+
+/* Terminal */
+
+.terminal {
+  max-width: 760px;
+  margin: 0 auto;
+  text-align: left;
+  background: var(--hk-surface);
+  border: 1px solid var(--hk-border);
+  border-radius: var(--hk-radius-lg);
+  box-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.5),
+    0 0 0 1px var(--hk-border);
+  overflow: hidden;
+}
+
+.terminalBar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.7rem 1rem;
+  background: var(--hk-bg-alt);
+  border-bottom: 1px solid var(--hk-border);
+}
+
+.dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  background: #3b3f4a;
+}
+
+.dot[data-color="red"] {
+  background: #ff5f57;
+}
+
+.dot[data-color="amber"] {
+  background: #febc2e;
+}
+
+.dot[data-color="green"] {
+  background: #28c840;
+}
+
+.terminalTitle {
+  margin-left: 0.75rem;
+  font-size: 0.75rem;
+  font-family: var(--ifm-font-family-monospace);
+  color: var(--hk-fg-dim);
+}
+
+.terminalBody {
+  margin: 0;
+  padding: 1.25rem 1.5rem;
+  background: transparent;
+  font-size: 0.85rem;
+  line-height: 1.65;
+  font-family: var(--ifm-font-family-monospace);
+  color: var(--hk-fg);
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.terminalBody code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+  color: inherit;
+  font-family: inherit;
+}
+
+.prompt {
+  color: var(--hk-accent);
+  user-select: none;
+}
+
+.cmd {
+  color: var(--hk-fg);
+  font-weight: 600;
+}
+
+.muted {
+  color: var(--hk-fg-dim);
+}
+
+.input {
+  color: var(--hk-accent);
+}
+
+.ok {
+  color: var(--hk-success);
+  font-weight: 600;
+}
+
+.success {
+  color: var(--hk-success);
+  font-weight: 600;
+}
+
+/* ───── Generic section ────────────────────────────────────── */
+
+.section {
+  padding: 5rem 1.5rem;
+  background: var(--hk-bg);
+}
+
+.sectionAlt {
+  background: var(--hk-bg-alt);
+  border-top: 1px solid var(--hk-border);
+  border-bottom: 1px solid var(--hk-border);
+}
+
+.sectionInner {
+  max-width: 1120px;
+  margin: 0 auto;
+}
+
+.sectionTitle {
+  font-size: clamp(1.625rem, 3vw, 2.25rem);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+  margin: 0 0 0.75rem;
+  text-align: center;
+}
+
+.sectionLede {
+  font-size: 1.0625rem;
+  color: var(--hk-fg-muted);
+  text-align: center;
+  max-width: 640px;
+  margin: 0 auto 3rem;
+  line-height: 1.55;
+}
+
+/* ───── Pillars ────────────────────────────────────────────── */
+
+.pillarGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.pillarCard {
+  background: var(--hk-surface);
+  border: 1px solid var(--hk-border);
+  border-radius: var(--hk-radius-lg);
+  padding: 1.75rem;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.pillarCard:hover {
+  border-color: var(--hk-border-strong);
+  transform: translateY(-2px);
+}
+
+.pillarTitle {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 0 0 0.5rem;
+  color: var(--hk-accent);
+  letter-spacing: -0.01em;
+}
+
+.pillarBody {
+  margin: 0 0 1rem;
+  color: var(--hk-fg);
+  line-height: 1.55;
+}
+
+.pillarList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pillarList li {
+  position: relative;
+  padding-left: 1.25rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.9375rem;
+  color: var(--hk-fg-muted);
+  line-height: 1.5;
+}
+
+.pillarList li::before {
+  content: "›";
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--hk-accent);
+  font-weight: 700;
+}
+
+/* ───── Workflow steps ─────────────────────────────────────── */
+
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
+.step {
+  position: relative;
+  background: var(--hk-surface);
+  border: 1px solid var(--hk-border);
+  border-radius: var(--hk-radius-lg);
+  padding: 1.75rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.stepNum {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--hk-accent);
+  letter-spacing: 0.1em;
+  margin-bottom: 0.75rem;
+}
+
+.stepCmd {
+  display: inline-block;
+  padding: 0.3rem 0.6rem;
+  background: var(--hk-bg);
+  border: 1px solid var(--hk-border-strong);
+  border-radius: var(--hk-radius-sm);
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.825rem;
+  color: var(--hk-accent);
+  margin-bottom: 0.75rem;
+  align-self: flex-start;
+}
+
+.stepTitle {
+  font-size: 1.125rem;
+  font-weight: 700;
+  margin: 0 0 0.5rem;
+  letter-spacing: -0.01em;
+}
+
+.stepBody p {
+  margin: 0;
+  color: var(--hk-fg-muted);
+  line-height: 1.55;
+  font-size: 0.9375rem;
+}
+
+/* ───── Providers ──────────────────────────────────────────── */
+
+.providers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1.5rem 1rem;
+}
+
+.providerGroup {
+  padding: 1rem 0;
+}
+
+.providerLabel {
+  font-size: 0.7rem;
+  font-family: var(--ifm-font-family-monospace);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--hk-fg-dim);
+  margin-bottom: 0.75rem;
+}
+
+.providerList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.providerChip {
+  display: inline-block;
+  padding: 0.35rem 0.7rem;
+  background: var(--hk-surface);
+  border: 1px solid var(--hk-border);
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  color: var(--hk-fg);
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+
+.providerChip:hover {
+  border-color: var(--hk-accent);
+  color: var(--hk-accent);
+}
+
+/* ───── Philosophy ─────────────────────────────────────────── */
+
+.quote {
+  max-width: 740px;
+  margin: 0 auto 3rem;
+  padding: 0;
+  border: none;
+  text-align: center;
+}
+
+.quote p {
+  margin: 0;
+  font-size: clamp(1.25rem, 2.2vw, 1.5rem);
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--hk-fg);
+  letter-spacing: -0.015em;
+}
+
+.principles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1.5rem 2rem;
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+.principles h4 {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0 0 0.4rem;
+  color: var(--hk-accent);
+  letter-spacing: -0.005em;
+}
+
+.principles p {
+  margin: 0;
+  color: var(--hk-fg-muted);
+  font-size: 0.9375rem;
+  line-height: 1.55;
+}
+
+/* ───── Final CTA ──────────────────────────────────────────── */
+
+.finalCta {
+  padding: 6rem 1.5rem;
+  background:
+    radial-gradient(
+      ellipse 60% 60% at 50% 50%,
+      var(--hk-accent-glow),
+      transparent 70%
+    ),
+    var(--hk-bg);
+  text-align: center;
+}
+
+.finalTitle {
+  font-size: clamp(1.75rem, 3.5vw, 2.5rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.75rem;
+}
+
+.finalLede {
+  color: var(--hk-fg-muted);
+  font-size: 1.0625rem;
+  margin: 0 auto 2rem;
+  max-width: 560px;
+  line-height: 1.55;
+}
+
+.finalCmd {
+  display: inline-block;
+  margin: 0 0 2rem;
+  padding: 0.85rem 1.5rem;
+  background: var(--hk-surface);
+  border: 1px solid var(--hk-border-strong);
+  border-radius: var(--hk-radius-md);
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 1rem;
+  text-align: left;
+}
+
+.finalCmd code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--hk-fg);
+  font-family: inherit;
+}
+
+/* ───── Responsive tweaks ──────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .hero {
+    padding: 3.5rem 1rem 3rem;
+  }
+  .section {
+    padding: 3.5rem 1rem;
+  }
+  .terminalBody {
+    font-size: 0.78rem;
+    padding: 1rem 1.1rem;
+  }
+  .heroCtas {
+    margin-bottom: 2.5rem;
+  }
+  .pillarCard,
+  .step {
+    padding: 1.4rem;
+  }
+}
