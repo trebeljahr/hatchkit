@@ -269,8 +269,13 @@ export async function rotateProjectKey(
 }
 
 /** Push DOTENV_PRIVATE_KEY_PRODUCTION onto a Coolify application.
- *  Resolves the application by name, defaulting to `<project>-web`
- *  which matches scaffoldInfra's naming convention. */
+ *  Resolves the application by name. When `appName` is omitted, walks
+ *  the same candidate list `findCoolifyAppsForProject` understands so
+ *  the key push works across every layout hatchkit can produce —
+ *  the bare project name `<project>` (current convention from both
+ *  `create` and `adopt`), the legacy `<project>-web` suffix, and the
+ *  `<project>-server`/`-client` shape from the (currently unused)
+ *  starter-split layout. */
 export async function pushProjectKeyToCoolify(
   projectName: string,
   options: { appName?: string } = {},
@@ -288,19 +293,34 @@ export async function pushProjectKeyToCoolify(
   }
 
   const api = new CoolifyApi({ url: coolify.url, token: coolify.token });
-  const appName = options.appName ?? `${projectName}-web`;
+  // Candidates in priority order: caller-supplied appName wins; then
+  // the bare project name (current `create`/`adopt` output); then the
+  // legacy `-web` suffix; then the starter-split shape for projects
+  // that landed in that layout. The dotenvx key only lives on the
+  // server-side app, so `-server` outranks `-client`.
+  const candidates = options.appName
+    ? [options.appName]
+    : [projectName, `${projectName}-web`, `${projectName}-server`, `${projectName}-client`];
 
-  const spinner = ora(`Resolving Coolify app "${appName}"`).start();
+  const spinner = ora(`Resolving Coolify app for "${projectName}"`).start();
+  let appName: string;
   let uuid: string;
   try {
     const apps = await api.listApplications();
-    const match = apps.find((a) => a.name === appName);
+    const match = candidates
+      .map((name) => {
+        const app = apps.find((a) => a.name === name);
+        return app ? { name, uuid: app.uuid } : undefined;
+      })
+      .find((m): m is { name: string; uuid: string } => m !== undefined);
     if (!match) {
+      const tried = candidates.join(", ");
       spinner.fail(
-        `No Coolify application named "${appName}". Run \`hatchkit create\` with runDeployment first.`,
+        `No Coolify application found for project "${projectName}" (tried: ${tried}). Run \`hatchkit create\` with runDeployment first.`,
       );
-      throw new Error(`Coolify app not found: ${appName}`);
+      throw new Error(`Coolify app not found for project: ${projectName}`);
     }
+    appName = match.name;
     uuid = match.uuid;
     spinner.succeed(`Found app ${appName} (${uuid})`);
   } catch (err) {

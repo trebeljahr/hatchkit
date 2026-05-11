@@ -385,7 +385,12 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
       ]);
       coolifyGithubSourceCount = sources.length;
       if (packageName) {
-        const wanted = [packageName, `${packageName}-web`, `${packageName}-server`];
+        const wanted = [
+          packageName,
+          `${packageName}-server`,
+          `${packageName}-client`,
+          `${packageName}-web`,
+        ];
         const match = apps.find((a) => wanted.includes(a.name));
         if (match) coolifyAppMatch = { uuid: match.uuid, name: match.name };
       }

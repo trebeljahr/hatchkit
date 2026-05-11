@@ -299,7 +299,7 @@ const COOLIFY_ENV_TEMPLATE = `COOLIFY_URL="{{coolifyUrl}}"
 PROJECT_NAME="{{name}}"
 ENVIRONMENT_NAME="production"
 
-APP_NAME="{{name}}-web"
+APP_NAME="{{name}}"
 GITHUB_REPO_URL="{{repoUrl}}"
 APP_PORT="{{clientPort}}"
 SERVER_PORT="{{serverPort}}"

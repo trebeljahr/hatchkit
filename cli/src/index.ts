@@ -1276,7 +1276,11 @@ async function handleCreate(): Promise<void> {
       // print the manual command instead of failing the whole flow.
       if (scaffoldResult?.dotenvx) {
         try {
-          await pushProjectKeyToCoolify(config.name);
+          // App name matches the project name (the dockercompose
+          // wrapper). The candidate-list fallback in
+          // `pushProjectKeyToCoolify` still catches legacy `-web`
+          // projects.
+          await pushProjectKeyToCoolify(config.name, { appName: config.name });
         } catch (err) {
           console.log(chalk.yellow(`  Couldn't auto-push dotenvx key: ${(err as Error).message}`));
           console.log(

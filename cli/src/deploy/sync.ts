@@ -239,14 +239,17 @@ interface DesiredApp {
  *  shapes we cover (matching the layouts `findCoolifyAppsForProject`
  *  understands):
  *
- *    1. Adopted single-app:        `<name>`
- *    2. Starter split (legacy):    `<name>-server` + `<name>-client`
- *    3. Old single-app fallbacks:  `<name>-web` / `<name>-app` / `<name>-api`
+ *    1. Single-app (current `create` + `adopt` output):  `<name>`
+ *    2. Legacy single-app fallback:                      `<name>-web`
+ *    3. Starter-split (legacy, currently unused):        `<name>-server` + `<name>-client`
  *
- *  We synthesize a candidate list per layout. The actual lookup happens
- *  per-name; misses are skipped. This means a project that scaffolded as
- *  starter-split AND was later adopted as single-app would push twice —
- *  not a problem because each PATCH is independent and idempotent. */
+ *  All current surfaces use shape (1) — the surface affects which
+ *  services live inside the compose file, not the outer Coolify app
+ *  name. We synthesize a candidate list per layout. The actual lookup
+ *  happens per-name; misses are skipped. This means a project that
+ *  scaffolded as starter-split AND was later adopted as single-app
+ *  would push twice — not a problem because each PATCH is independent
+ *  and idempotent. */
 export function computeDesiredAppStates(manifest: ProjectManifest): DesiredApp[] {
   const { name, domain, surfaces, ports } = manifest;
   const portServer = String(ports?.server ?? 3000);
@@ -304,8 +307,9 @@ export function computeDesiredAppStates(manifest: ProjectManifest): DesiredApp[]
     portsExposes: portServer,
   };
 
-  // Old single-app fallbacks. `runCoolifySetup` creates `<name>-web`
-  // for the very-old starter shape; the others are speculative for
+  // Legacy single-app fallbacks. `runCoolifySetup` used to create
+  // `<name>-web` for every surface before settling on the bare `<name>`
+  // matched by `singleApp` above; the others are speculative for
   // hand-written compose layouts that adopt previously matched.
   const fallbackWeb: DesiredApp = {
     ...singleApp,

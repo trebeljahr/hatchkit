@@ -771,10 +771,14 @@ function inferZone(domain: string): string {
 /** Look up the Coolify apps belonging to a project for the
  *  Actions-secrets push. Tries the names hatchkit / the starter
  *  conventions produce, in priority order:
- *    · `<name>-server` + `<name>-client`  → starter split layout
- *    · `<name>`                            → adopt single-app layout
- *    · `<name>-web` / `<name>-app` / `<name>-api` → `runCoolifySetup`
- *      defaults (treated as single-app, no SERVER/CLIENT label).
+ *    · `<name>-server` + `<name>-client`  → legacy starter-split
+ *      layout (currently unused but kept for projects in the wild
+ *      that landed in this shape).
+ *    · `<name>`                            → single-app layout
+ *      (current `create` + `adopt` output, all surfaces).
+ *    · `<name>-web` / `<name>-app` / `<name>-api` → legacy
+ *      `runCoolifySetup` output (treated as single-app, no
+ *      SERVER/CLIENT label).
  *
  *  Returns an empty array when Coolify isn't configured or no app
  *  matches — callers log a manual-recipe hint in that case. */

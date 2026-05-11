@@ -9,7 +9,11 @@
  *   1. Project create-or-reuse (idempotent on project name).
  *   2. Server resolution (prefers `config.serverUuid` from the prompt
  *      flow; falls back to ip-keyed lookup or first server).
- *   3. Application create-or-reuse (`<name>-web`, public-repo flavour).
+ *   3. Application create-or-reuse — one Coolify app named `<name>`
+ *      regardless of surface, public-repo flavour. The compose file
+ *      inside carries the server/client services (or just one of them
+ *      after surface pruning), and Coolify exposes those as the
+ *      per-service routing targets.
  *   4. Multi-domain routing (frontend + api subdomain + path-based API
  *      and websocket — the same five-host strategy the old script used).
  *   5. Minimal env vars on the application (NODE_ENV / PORT /
@@ -166,7 +170,7 @@ export async function runCoolifySetup(
   // hatchkit-managed Coolify install, project names are unique enough
   // that a hit means "the same app" — same assumption coolify-mongo
   // makes when it resolves the project.
-  const appName = `${config.name}-web`;
+  const appName = config.name;
   let appUuid: string;
   let appCreated = false;
   const existingApp = await api.findApplicationByName(appName);
