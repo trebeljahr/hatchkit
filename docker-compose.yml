@@ -1,0 +1,42 @@
+# Coolify reads this file (build pack: dockercompose) to deploy
+# hatchkit-monorepo. The image is built by .github/workflows/deploy.yml and
+# pushed to GHCR; Coolify pulls it and (re)starts the service when
+# the workflow's deploy webhook fires.
+#
+# To pin a specific version, change the tag below from `latest` to a
+# git sha, semver tag, or whatever your release process uses.
+services:
+  app:
+    image: ghcr.io/trebeljahr/hatchkit-monorepo:latest
+    restart: unless-stopped
+    # Coolify's Traefik reverse-proxy already owns host ports 80/443 and
+    # routes to this container via its internal Docker network. Use
+    # `expose` (not `ports`) so we declare the container port without
+    # trying to bind it on the host — binding the host port collides with
+    # Traefik and the deploy fails with
+    # "Bind for 0.0.0.0:80 failed: port is already allocated".
+    expose:
+      - "80"
+    environment:
+      - NODE_ENV=production
+      # Forwarded from Coolify's app env. dotenvx inside the
+      # container uses this to decrypt .env.production at runtime.
+      - DOTENV_PRIVATE_KEY_PRODUCTION
+    # Coolify reads this and gates Traefik/Caddy routing on it.
+    # Without a healthcheck Coolify shows "No health check configured"
+    # and routes blind — traffic can hit the container before it's
+    # ready.
+    #
+    # If your app's `/` legitimately returns a non-2xx (common for
+    # API-only servers that 404 the root), point this at a known-good
+    # path instead — e.g. replace `/` with `/health` or whatever your
+    # framework exposes.
+    # `wget --spider` issues a HEAD-style request and exits non-zero
+    # on any 4xx/5xx. busybox (bundled in nginx:alpine and node:alpine
+    # base images) ships `wget`, so no extra deps are needed.
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://127.0.0.1:80/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s

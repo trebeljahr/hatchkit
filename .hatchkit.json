@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "cliVersion": "0.1.42",
+  "scaffoldedAt": "2026-05-11T22:19:40.881Z",
+  "name": "hatchkit-monorepo",
+  "domain": "hatchkit.trebeljahr.com",
+  "description": "Interactive CLI for scaffolding full-stack projects with composable ML services",
+  "features": [],
+  "mlServices": [],
+  "s3Provider": "none",
+  "deployTarget": "existing",
+  "deploymentMode": "coolify",
+  "ports": {
+    "server": 3000,
+    "client": 3001
+  },
+  "surfaces": "client-only"
+}
