@@ -108,16 +108,23 @@ export async function runCoolifySetup(
     console.log(chalk.green(`  ✓ Project created: ${config.name} (${projectUuid})`));
   }
 
-  // Domain routing: split across the two public services in the starter's
-  // compose file (`server` and `client`). Coolify's dockercompose build
-  // pack rejects a flat `domains` field (422 — "Use docker_compose_domains
-  // instead to set domains for individual services") because routing has
-  // to be per-service. The starter ships:
-  //   · client : Next.js (static or Node) — frontend hostname only
-  //   · server : Express API + WebSocket   — every API/WS host
-  // Traefik routes each domain to the matching service inside the compose
-  // network; the app code itself only needs to handle the path/host
-  // dispatch within `server`.
+  // Domain routing — surface-aware. Coolify's dockercompose build pack
+  // rejects a flat `domains` field (422 — "Use docker_compose_domains
+  // instead …") because routing is per-service.
+  //
+  //  · both        — `client` gets the bare hostname; `server` gets the
+  //                  api subdomain + the path-based API/WS hosts.
+  //  · server-only — no client service in the pruned compose, so the
+  //                  bare hostname AND every API/WS host all point at
+  //                  `server`. Browsers hitting `<domain>` reach the
+  //                  Express app directly (which can still serve a 200
+  //                  health page or redirect to the api host).
+  //  · client-only — only the `client` service exists; nothing public
+  //                  about the API is needed. Currently unreachable
+  //                  from `hatchkit create` (the scaffold step throws
+  //                  before we get here) but the branch is wired so
+  //                  `hatchkit adopt`-driven client-only callers and a
+  //                  future create-side implementation share one path.
   const apiDomain = `api.${config.domain}`;
   const frontendDomain = `https://${config.domain}`;
   const backendDomains = [
@@ -126,18 +133,33 @@ export async function runCoolifySetup(
     `https://${config.domain}/api/ws`,
     `https://${apiDomain}/ws`,
   ];
-  // Coolify's API takes a flat array of `{ name, domain }` entries, one
-  // per (service, hostname) pair. Multi-domain services (the server here)
-  // get one entry per domain rather than a comma-joined string — easier
-  // for Coolify's per-domain routing rules.
-  const dockerComposeDomains: Array<{ name: string; domain: string }> = [
-    { name: "client", domain: frontendDomain },
-    ...backendDomains.map((domain) => ({ name: "server", domain })),
-  ];
+  const surfaces = config.surfaces ?? "both";
+  const dockerComposeDomains: Array<{ name: string; domain: string }> =
+    surfaces === "client-only"
+      ? [{ name: "client", domain: frontendDomain }]
+      : surfaces === "server-only"
+        ? [
+            { name: "server", domain: frontendDomain },
+            ...backendDomains.map((domain) => ({ name: "server", domain })),
+          ]
+        : [
+            { name: "client", domain: frontendDomain },
+            ...backendDomains.map((domain) => ({ name: "server", domain })),
+          ];
 
   console.log(chalk.dim("  Domain routing:"));
-  console.log(chalk.dim(`    Frontend (client): ${frontendDomain}`));
-  console.log(chalk.dim(`    Backend  (server): ${backendDomains.join(", ")}`));
+  if (surfaces === "client-only") {
+    console.log(chalk.dim(`    Frontend (client): ${frontendDomain}`));
+  } else if (surfaces === "server-only") {
+    console.log(
+      chalk.dim(
+        `    All hosts → server: ${[frontendDomain, ...backendDomains].join(", ")}`,
+      ),
+    );
+  } else {
+    console.log(chalk.dim(`    Frontend (client): ${frontendDomain}`));
+    console.log(chalk.dim(`    Backend  (server): ${backendDomains.join(", ")}`));
+  }
 
   // Application: reuse-by-name. `findApplicationByName` matches across
   // every project the user can see; first hit wins. Within a single

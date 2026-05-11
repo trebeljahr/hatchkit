@@ -33,6 +33,7 @@ import { type ProjectPorts, pickProjectPorts } from "../utils/ports.js";
 import { getCliVersion } from "../utils/version.js";
 import { type DotenvxSeedResult, seedDotenvxProduction } from "./dotenvx.js";
 import { MANIFEST_FILENAME, toManifest, writeManifest } from "./manifest.js";
+import { pruneToSurface } from "./surfaces.js";
 import {
   stripPackageJsonBuildBlock,
   stripPackageJsonDeps,
@@ -359,6 +360,15 @@ async function runScaffoldSteps(
     modifications.push("removed: ML playground, ML router, ML types, ML navbar link");
   }
 
+  // Surface-aware prune. Runs LAST among the file-mutation steps so the
+  // feature-flag work above (which uses `removeIfExists`) doesn't fight
+  // it — anything the prune wipes was either already gone or was a
+  // safe no-op write. See scaffold/surfaces.ts for the per-surface
+  // semantics. Client-only currently throws here (the prune isn't
+  // implemented), so the rollback runs and the user gets a clear
+  // message instead of a half-pruned tree.
+  pruneToSurface(config, outputDir, modifications);
+
   // Write the sanitized manifest so `hatchkit update` can diff
   // against this scaffold's choices later. See manifest.ts for the
   // strict list of fields that are safe to persist.
@@ -387,6 +397,11 @@ function scaffoldDryRun(config: ProjectConfig, outputDir: string): string[] {
   actions.push("Copy starter template");
   actions.push(`Rename project to "${config.name}"`);
   actions.push(`Set domain to "${config.domain}"`);
+  if (config.surfaces === "server-only") {
+    actions.push("Prune to server-only (remove packages/client, native scaffolds, client compose service)");
+  } else if (config.surfaces === "client-only") {
+    actions.push("Prune to client-only (NOT YET SUPPORTED — would throw at scaffold time)");
+  }
 
   if (!config.features.includes("websocket")) actions.push("Remove WebSocket support");
   if (!config.features.includes("stripe")) actions.push("Remove Stripe integration");

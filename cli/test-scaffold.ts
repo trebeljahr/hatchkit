@@ -40,12 +40,17 @@ if (!existsSync(join(STARTER, "package.json"))) {
   process.exit(0);
 }
 
-function cfg(name: string, features: Feature[]): ProjectConfig {
+function cfg(
+  name: string,
+  features: Feature[],
+  overrides: Partial<ProjectConfig> = {},
+): ProjectConfig {
   return {
     name,
     domain: `${name}.example.com`,
     baseDomain: "example.com",
     subdomain: name,
+    surfaces: "both",
     deployTarget: "existing",
     serverId: 1,
     serverIp: "1.2.3.4",
@@ -55,18 +60,26 @@ function cfg(name: string, features: Feature[]): ProjectConfig {
     forceRedeployMl: [],
     scaffoldRepo: true,
     createGithubRepo: false,
+    installDeps: false,
     runDeployment: false,
     dryRun: false,
+    ...overrides,
   };
 }
 
 type Check = [string, boolean];
 
-async function run(label: string, name: string, features: Feature[], expect: (d: string) => Check[]): Promise<boolean> {
+async function run(
+  label: string,
+  name: string,
+  features: Feature[],
+  expect: (d: string) => Check[],
+  overrides: Partial<ProjectConfig> = {},
+): Promise<boolean> {
   const d = mkdtempSync(join(tmpdir(), `scaffold-${label}-`));
   try {
     console.log(`\n── ${label} ─────────────────────────────`);
-    await scaffoldApp(cfg(name, features), d);
+    await scaffoldApp(cfg(name, features, overrides), d);
     const checks = expect(d);
     let ok = true;
     for (const [n, c] of checks) {
@@ -188,6 +201,53 @@ results.mobile = await run("mobile only", "my-cool-app", ["mobile"], (d) => {
     ["layout mounts MobileBridgeLoader", layout.includes("MobileBridgeLoader")],
   ];
 });
+
+results.serverOnly = await run(
+  "surfaces: server-only",
+  "api-only",
+  [],
+  (d) => {
+    const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
+    const compose = existsSync(join(d, "docker-compose.yml"))
+      ? readFileSync(join(d, "docker-compose.yml"), "utf-8")
+      : "";
+    const manifest = JSON.parse(readFileSync(join(d, ".hatchkit.json"), "utf-8"));
+    return [
+      ["packages/client/ removed", !existsSync(join(d, "packages/client"))],
+      ["packages/server/ kept", existsSync(join(d, "packages/server"))],
+      ["packages/shared/ kept", existsSync(join(d, "packages/shared"))],
+      ["docs-site/ removed", !existsSync(join(d, "docs-site"))],
+      ["e2e/ removed", !existsSync(join(d, "e2e"))],
+      ["compose: client service stripped", !/^\s{2}client:/m.test(compose)],
+      ["compose: server service kept", /^\s{2}server:/m.test(compose)],
+      ["compose: mongo service kept", /^\s{2}mongo:/m.test(compose)],
+      ["compose: redis service kept", /^\s{2}redis:/m.test(compose)],
+      ["pkg.scripts.dev targets server only", pkg.scripts?.dev === "pnpm --filter @starter/server dev"],
+      ["pkg.scripts has no build:client", !pkg.scripts?.["build:client"]],
+      ["pkg.scripts has no test:e2e", !pkg.scripts?.["test:e2e"]],
+      ["manifest persists surfaces=server-only", manifest.surfaces === "server-only"],
+    ];
+  },
+  { surfaces: "server-only" },
+);
+
+results.clientOnlyThrows = await (async () => {
+  console.log("\n── surfaces: client-only (expected throw) ─────────────────────────────");
+  const d = mkdtempSync(join(tmpdir(), "scaffold-client-only-"));
+  let threw = false;
+  let msg = "";
+  try {
+    await scaffoldApp(cfg("static-site", [], { surfaces: "client-only" }), d);
+  } catch (err) {
+    threw = true;
+    msg = (err as Error).message;
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+  const ok = threw && msg.includes("client-only");
+  console.log(`  ${ok ? "✓" : "✗"} threw with a client-only-specific message`);
+  return ok;
+})();
 
 results.both = await run("desktop + mobile", "my-cool-app", ["desktop", "mobile"], (d) => {
   const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));

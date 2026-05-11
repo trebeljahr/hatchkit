@@ -15,6 +15,21 @@ export type DnsProvider = "inwx" | "cloudflare" | "manual";
 export type S3Provider = "hetzner" | "r2" | "aws" | "existing" | "none";
 export type GpuPlatform = "modal" | "runpod" | "hf" | "replicate";
 
+/** What kind of project is being scaffolded. Mirrors the shape used by
+ *  `hatchkit adopt` so the manifest field is interchangeable across the
+ *  two flows.
+ *
+ *  · `both`       — full-stack monorepo (default; matches the starter
+ *                   layout as-shipped).
+ *  · `server-only`— API / backend; the client package is stripped from
+ *                   the scaffold and Coolify routes only the api host.
+ *  · `client-only`— static site / SPA; the server package is stripped
+ *                   and Coolify deploys a single nginx-static service.
+ *                   No MongoDB or server-side env-seeded providers
+ *                   (Stripe / GlitchTip / Mailgun) — there's no server
+ *                   to consume them. */
+export type Surface = "server-only" | "client-only" | "both";
+
 export type Feature = "websocket" | "stripe" | "analytics" | "s3" | "desktop" | "mobile";
 
 export type MlService =
@@ -33,6 +48,12 @@ export interface ProjectConfig {
   domain: string;
   baseDomain: string;
   subdomain: string;
+
+  /** What kind of project to scaffold. Defaults to `both` (the
+   *  full-stack starter layout). The two narrower surfaces strip the
+   *  unused package half + adjust the docker-compose / Coolify routing
+   *  accordingly. See the `Surface` type for the per-value semantics. */
+  surfaces: Surface;
 
   deployTarget: DeployTarget;
   serverId?: number;
@@ -174,6 +195,25 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
   if (domainErr !== true) throw new Error(`--domain invalid: ${domainErr}`);
 
   const { baseDomain, subdomain } = parseDomain(domain);
+
+  // Surface — what kind of project this is. Same three-way choice that
+  // `hatchkit adopt` exposes. The default is "both" (the full-stack
+  // starter layout); the two narrower modes prune the unused package
+  // and adjust docker-compose / Coolify routing accordingly.
+  const surfaces = await presetOrPrompt<Surface>(
+    presets.surfaces,
+    nonInteractive,
+    () =>
+      select<Surface>({
+        message: "What kind of project is this?",
+        choices: [
+          { name: "Server + client (full-stack monorepo)", value: "both" },
+          { name: "Server only (backend / API)", value: "server-only" },
+          { name: "Client only (static site / SPA — no backend)", value: "client-only" },
+        ],
+      }),
+    "both",
+  );
 
   // Deploy target. Non-interactive default is "new" rather than
   // "existing": "existing" has no sensible default (it needs a real
@@ -490,26 +530,34 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
   // Mongo, etc.). When "coolify", we DON'T ask for MONGODB_URI here —
   // hatchkit provisions the container after the app deploys and writes
   // the encrypted URL into .env.production automatically.
-  const mongodbProvider = await presetOrPrompt<"coolify" | "external">(
-    presets.mongodbProvider,
-    nonInteractive,
-    () =>
-      select<"coolify" | "external">({
-        message: "Prod MongoDB:",
-        choices: [
-          {
-            name: "Provision a dedicated container on Coolify (recommended)",
-            value: "coolify",
-          },
-          {
-            name: "I'll provide a URI (Atlas, self-hosted, …)",
-            value: "external",
-          },
-        ],
-        default: runDeployment ? "coolify" : "external",
-      }),
-    runDeployment ? "coolify" : "external",
-  );
+  //
+  // Client-only surfaces never reach Mongo (there's no server to read
+  // MONGODB_URI), so the prompt is skipped and the field forced to
+  // "external" — downstream provisioning checks gate on
+  // `surfaces === "client-only"` and skip Mongo entirely.
+  const mongodbProvider: "coolify" | "external" =
+    surfaces === "client-only"
+      ? "external"
+      : await presetOrPrompt<"coolify" | "external">(
+          presets.mongodbProvider,
+          nonInteractive,
+          () =>
+            select<"coolify" | "external">({
+              message: "Prod MongoDB:",
+              choices: [
+                {
+                  name: "Provision a dedicated container on Coolify (recommended)",
+                  value: "coolify",
+                },
+                {
+                  name: "I'll provide a URI (Atlas, self-hosted, …)",
+                  value: "external",
+                },
+              ],
+              default: runDeployment ? "coolify" : "external",
+            }),
+          runDeployment ? "coolify" : "external",
+        );
 
   // Production env values. Anything not supplied gets a plaintext
   // CHANGE_ME_<KEY> placeholder the user can encrypt later with
@@ -543,7 +591,10 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       };
       // Only ask for MONGODB_URI when the user opted out of Coolify
       // provisioning — otherwise hatchkit fills it in post-deploy.
-      if (mongodbProvider === "external") {
+      // Client-only scaffolds have no server to consume the URI, so the
+      // prompt is skipped entirely (mongodbProvider is forced to
+      // "external" upstream but the value is never used).
+      if (mongodbProvider === "external" && surfaces !== "client-only") {
         await askOptional("MONGODB_URI", "MongoDB URI");
       }
       // STRIPE_* and GLITCHTIP_DSN / SENTRY_DSN are NOT prompted here:
@@ -570,6 +621,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     domain,
     baseDomain,
     subdomain,
+    surfaces,
     deployTarget,
     serverId,
     serverUuid,
@@ -694,6 +746,12 @@ function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
             ? `${cfg.domain}  ${chalk.dim("→")}  https://${cfg.domain}`
             : "(unset)",
         },
+        {
+          key: "surfaces",
+          label: "Project type",
+          set: !!cfg.surfaces,
+          summary: renderSurfaceSummary(cfg.surfaces),
+        },
       ],
     },
     {
@@ -764,6 +822,17 @@ function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
   ];
 }
 
+function renderSurfaceSummary(surface: Surface): string {
+  switch (surface) {
+    case "both":
+      return "server + client (full-stack)";
+    case "server-only":
+      return "server only (API / backend)";
+    case "client-only":
+      return "client only (static site / SPA)";
+  }
+}
+
 function renderCreateStepLabel(step: CreateStep): string {
   const mark = step.set ? chalk.green("✓") : chalk.dim("·");
   const tail = step.summary ? chalk.dim(` — ${step.summary}`) : "";
@@ -808,6 +877,26 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
         FRONTEND_URL: `https://${raw}`,
         BETTER_AUTH_URL: `https://${raw}`,
       },
+    };
+  }
+  if (section === "surfaces") {
+    const next = await select<Surface>({
+      message: "What kind of project is this?",
+      choices: [
+        { name: "Server + client (full-stack monorepo)", value: "both" },
+        { name: "Server only (backend / API)", value: "server-only" },
+        { name: "Client only (static site / SPA — no backend)", value: "client-only" },
+      ],
+      default: cfg.surfaces,
+    });
+    // Force mongodbProvider to "external" for client-only — there's no
+    // server to read MONGODB_URI, so a Coolify-provisioned container
+    // would be wasted. Switching away from client-only keeps the prior
+    // value (the user can re-pick on the Mongo step if needed).
+    return {
+      ...cfg,
+      surfaces: next,
+      mongodbProvider: next === "client-only" ? "external" : cfg.mongodbProvider,
     };
   }
   if (section === "features") {

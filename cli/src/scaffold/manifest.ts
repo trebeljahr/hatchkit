@@ -187,6 +187,7 @@ export function toManifest(
     mlServices: [...config.mlServices],
     s3Provider: config.s3Provider,
     deployTarget: config.deployTarget,
+    surfaces: config.surfaces,
     gpuPlatforms: config.gpuPlatforms,
     customHfModelId: config.customHfModelId,
     customHfGpuType: config.customHfGpuType,
