@@ -1106,6 +1106,23 @@ export class CloudflareApi {
     }
   }
 
+  /** Read the catch-all rule for a zone. Returns null if Email Routing
+   *  isn't enabled (404). The catch-all is a singleton; the GET always
+   *  returns the same record (matchers `[{type:"all"}]`), but the action
+   *  forward list and `enabled` flag reflect whether it's actually
+   *  forwarding mail. */
+  async getEmailCatchAll(zoneId: string): Promise<CfEmailRoutingRule | null> {
+    try {
+      return await this.request<CfEmailRoutingRule>(
+        "GET",
+        `/zones/${zoneId}/email/routing/rules/catch_all`,
+      );
+    } catch (err) {
+      if (/404|not\s*found/i.test((err as Error).message)) return null;
+      throw err;
+    }
+  }
+
   /** Set the catch-all rule for a zone. CF allows exactly one catch-all
    *  per zone (PUT semantics). Pass `enabled: false` to disable without
    *  removing it. */

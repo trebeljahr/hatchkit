@@ -199,10 +199,9 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
   }
   const spfContent = buildSpfRecord({ includes: [...mergedIncludes] });
   // Delete any *other* SPF TXT records first — exactly one SPF record
-  // per zone is the rule. Our upsert below creates the merged one.
-  if (existingSpf && existingSpf.content !== spfContent) {
-    // The upsert will PATCH this record in place; no separate delete needed.
-  }
+  // per zone per RFC 7208. The upsert below patches `existingSpf` in
+  // place; stale duplicates (zone moved between providers, etc.) get
+  // removed here.
   await deleteStaleSpfRecords(cf, zone.id, opts.domain, existingSpf?.id);
   const spfRes = await cf.upsertRecord(zone.id, {
     type: "TXT",
@@ -250,16 +249,21 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
     rules.push({ address, id: res.id, created: res.created, updated: res.updated });
   }
 
-  // Step 7 — catch-all (zone-level singleton).
+  // Step 7 — catch-all (zone-level singleton). `changed` reflects the
+  // catch-all rule itself — its `enabled` flag and forward destination —
+  // not the zone-level Email Routing toggle (that's `routingEnabledThisRun`).
   let catchAll: EmailSetupResult["catchAll"];
   if (opts.catchAll) {
-    const before = await cf.getEmailRouting(zone.id);
+    const beforeRule = await cf.getEmailCatchAll(zone.id);
+    const beforeEnabled = beforeRule?.enabled ?? false;
+    const beforeForward = (beforeRule?.actions?.[0]?.value ?? []).join(",");
+    const wantForward = [opts.destination].join(",");
     await cf.setEmailCatchAll(zone.id, {
       forwardTo: [opts.destination],
       enabled: true,
       name: "Catch-all",
     });
-    catchAll = { enabled: true, changed: !before?.enabled };
+    catchAll = { enabled: true, changed: !beforeEnabled || beforeForward !== wantForward };
   }
 
   return {
