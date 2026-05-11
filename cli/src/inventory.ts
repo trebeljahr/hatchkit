@@ -645,11 +645,7 @@ export function writeMinimalManifest(
 }
 
 function writeManifestFile(cwd: string, manifest: ProjectManifest): void {
-  writeFileSync(
-    join(cwd, MANIFEST_FILENAME),
-    `${JSON.stringify(manifest, null, 2)}\n`,
-    "utf-8",
-  );
+  writeFileSync(join(cwd, MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`, "utf-8");
 }
 
 function findGitRoot(startDir: string): string | undefined {

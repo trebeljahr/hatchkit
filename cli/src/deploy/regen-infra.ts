@@ -22,7 +22,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import chalk from "chalk";
-import { getConfig } from "../config.js";
 import type { ProjectConfig, Surface } from "../prompts.js";
 import { generateCoolifyEnv, generateTfvars, resolveStackDir } from "../scaffold/infra.js";
 import { type ProjectManifest, readManifest } from "../scaffold/manifest.js";
@@ -67,7 +66,6 @@ export async function runRegenInfra(opts: RegenArgs): Promise<void> {
       "dns-only-cloudflare",
       `${manifest.name}.tfvars`,
     ),
-    join(monorepoRoot, "infra", "terraform", "stacks", "dns-only-inwx", `${manifest.name}.tfvars`),
   ];
   const existingTfvarsPath = candidatePaths.find((p) => existsSync(p));
 
@@ -95,11 +93,10 @@ export async function runRegenInfra(opts: RegenArgs): Promise<void> {
   // join the prefix ourselves.
   let tfvarsTargetPath = existingTfvarsPath;
   if (!tfvarsTargetPath && newTfvars) {
-    const cfgDnsProvider = inferDnsProviderFromConfig();
     const stackDir = resolveStackDir(
       join(monorepoRoot, "infra"),
       config.deployTarget,
-      cfgDnsProvider,
+      "cloudflare",
     );
     if (stackDir) tfvarsTargetPath = join(stackDir, `${manifest.name}.tfvars`);
   }
@@ -244,12 +241,4 @@ function extractHcl(content: string, key: string): string {
   if (!content) return "";
   const m = content.match(new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"`, "m"));
   return m ? m[1] : "";
-}
-
-/** The DNS provider drives which dns-only stack dir we'd fall back to
- *  for a brand-new regen (when there's no existing tfvars to anchor
- *  on). Defaults to inwx, which matches `generateTfvars`'s own
- *  fallback. */
-function inferDnsProviderFromConfig(): "inwx" | "cloudflare" | "manual" {
-  return (getConfig().providers.dns?.provider ?? "inwx") as "inwx" | "cloudflare" | "manual";
 }

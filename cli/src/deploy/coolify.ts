@@ -120,9 +120,7 @@ export async function runCoolifySetup(
         await api.updateProject(existingProject.uuid, { description });
       } catch (err) {
         console.log(
-          chalk.dim(
-            `  · Couldn't update Coolify project description: ${(err as Error).message}`,
-          ),
+          chalk.dim(`  · Couldn't update Coolify project description: ${(err as Error).message}`),
         );
       }
     }

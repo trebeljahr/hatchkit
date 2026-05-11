@@ -35,9 +35,7 @@ export function applyPagesMode(outputDir: string, modifications: string[]): void
 function patchNextConfig(outputDir: string, modifications: string[]): void {
   const candidates = ["next.config.ts", "next.config.js", "next.config.mjs", "next.config.cjs"];
   const clientDir = join(outputDir, "packages/client");
-  const found = candidates
-    .map((c) => join(clientDir, c))
-    .find((p) => existsSync(p));
+  const found = candidates.map((c) => join(clientDir, c)).find((p) => existsSync(p));
   if (!found) return;
 
   rewriteFile(found, (raw) => {
@@ -68,7 +66,7 @@ function patchNextConfig(outputDir: string, modifications: string[]): void {
       if (!/images\s*:\s*\{/.test(out)) {
         out = out.replace(
           /(output\s*:\s*['"]export['"]\s*,)/,
-          '$1\n  images: { unoptimized: true },',
+          "$1\n  images: { unoptimized: true },",
         );
       } else {
         // images block exists but missing the flag. Add unoptimized.
@@ -78,7 +76,9 @@ function patchNextConfig(outputDir: string, modifications: string[]): void {
 
     return out;
   });
-  modifications.push("gh-pages: patched next.config (output=export, dropped rewrites, images.unoptimized=true)");
+  modifications.push(
+    "gh-pages: patched next.config (output=export, dropped rewrites, images.unoptimized=true)",
+  );
 }
 
 /** Make sure the publish folder hatchkit's gh-pages flow writes

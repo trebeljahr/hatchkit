@@ -502,17 +502,6 @@ async function wireDns(domain: string, ips: PublicIps): Promise<DnsWireResult> {
     );
     return empty;
   }
-  if (dns.provider !== "cloudflare") {
-    console.log(
-      chalk.yellow(
-        `  DNS provider is ${dns.provider} — automatic record management isn't wired\n` +
-          "  up for that provider yet. Add records manually:\n" +
-          (ips.v4 ? `    A    ${domain}  →  ${ips.v4}\n` : "") +
-          (ips.v6 ? `    AAAA ${domain}  →  ${ips.v6}\n` : ""),
-      ),
-    );
-    return empty;
-  }
   if (!dns.apiToken) {
     console.log(
       chalk.yellow(

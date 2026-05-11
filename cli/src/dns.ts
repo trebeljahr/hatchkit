@@ -26,14 +26,7 @@ export async function runDnsLinkToCloudflare(options: DnsLinkOptions): Promise<v
   const dns = await getDnsConfig();
 
   if (!dns) {
-    throw new Error(
-      "No DNS config found. Run `hatchkit config add dns` and choose Cloudflare first.",
-    );
-  }
-  if (dns.provider !== "cloudflare") {
-    throw new Error(
-      `DNS provider is set to "${dns.provider}", not "cloudflare". This command only makes sense when hosting DNS on Cloudflare.`,
-    );
+    throw new Error("No DNS config found. Run `hatchkit config add dns` first (Cloudflare-only).");
   }
   if (!dns.apiToken) {
     throw new Error("Cloudflare API token is missing from the keychain.");

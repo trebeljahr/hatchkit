@@ -208,15 +208,20 @@ export interface CoolifyMeta extends ProviderStatus {
 export interface HetznerMeta extends ProviderStatus {}
 
 export interface DnsMeta extends ProviderStatus {
-  provider: "inwx" | "cloudflare" | "manual";
-  /** INWX username when provider === "inwx". */
-  username?: string;
+  /** DNS hosting is Cloudflare-only as of v2. The field is retained
+   *  (instead of being dropped) so the on-disk schema stays stable for
+   *  readers that inspect `providers.dns.provider`. Legacy values
+   *  ("inwx" | "manual") are coerced to "cloudflare" on read in
+   *  `ensureDns` / `getDnsConfig` (with a warning). */
+  provider: "cloudflare";
   /** Optional Cloudflare account id — scopes API calls to one account
-   *  when the token spans multiple. Non-sensitive; lives in metadata. */
+   *  when the token spans multiple. Required for Email Routing (the
+   *  destinations API is account-scoped); auto-discovered from the
+   *  first zone when missing. Non-sensitive; lives in metadata. */
   accountId?: string;
-  /** INWX username for the *registrar* case: provider is Cloudflare but
-   *  the domain is still registered at INWX, so we need creds to flip the
-   *  delegated NS after deploys. Non-sensitive. */
+  /** INWX username for the *registrar* case: the DNS zone lives on
+   *  Cloudflare, but the domain itself is still registered at INWX, so
+   *  we need creds to flip the delegated NS after deploys. Non-sensitive. */
   registrarUsername?: string;
 }
 
@@ -291,11 +296,9 @@ export interface HetznerConfig extends HetznerMeta {
   token: string;
 }
 export interface DnsConfig extends DnsMeta {
-  password?: string;
   apiToken?: string;
   /** Paired with `registrarUsername` — from the keychain. Present only
-   *  when provider === "cloudflare" AND the user told us INWX is their
-   *  registrar during onboarding. */
+   *  when the user told us INWX is their registrar during onboarding. */
   registrarPassword?: string;
 }
 export interface S3ProviderConfig extends S3ProviderMeta {
@@ -361,6 +364,15 @@ export interface CliConfig {
   /** Ports that are already assigned to scaffolded projects so the
    *  picker avoids collisions across `hatchkit create` invocations. */
   usedPorts: number[];
+  /** User-level defaults reused across projects. Captured once during
+   *  `hatchkit setup` (or lazy-prompted on first use) so per-project
+   *  flows don't keep asking for the same value. */
+  defaults?: {
+    /** Default destination for email forwarding rules (Cloudflare Email
+     *  Routing). Used as the `--default-to` for `hatchkit email setup`
+     *  unless the user overrides on the prompt. */
+    forwardingEmail?: string;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -631,49 +643,45 @@ export async function getHetznerConfig(): Promise<HetznerConfig | null> {
 // ---------------------------------------------------------------------------
 
 export async function ensureDns(): Promise<DnsConfig> {
-  await migrateSecret("providers.dns.password", SECRET_KEYS.dnsInwxPassword);
   await migrateSecret("providers.dns.apiToken", SECRET_KEYS.dnsCloudflareToken);
-  const existing = store.get("providers.dns") as DnsMeta | undefined;
+  const existingRaw = store.get("providers.dns") as (DnsMeta & { provider?: string }) | undefined;
+  // Coerce legacy non-cloudflare configs. v2 of hatchkit dropped INWX-DNS
+  // and manual-DNS modes — the user owns the cloudflare-only invariant
+  // (DNS is always managed in Cloudflare). Legacy stored metadata is
+  // forced through a re-prompt rather than silently re-mapped.
+  const legacyProvider =
+    existingRaw?.provider && existingRaw.provider !== "cloudflare"
+      ? (existingRaw.provider as string)
+      : null;
+  if (legacyProvider) {
+    console.log(
+      chalk.yellow(
+        `  ! Legacy DNS provider "${legacyProvider}" detected — hatchkit now manages DNS via Cloudflare only.`,
+      ),
+    );
+    console.log(chalk.dim("    Re-prompting for Cloudflare API token below."));
+    await wipeProvider("providers.dns", [
+      SECRET_KEYS.dnsInwxPassword,
+      SECRET_KEYS.dnsCloudflareToken,
+    ]);
+  }
+  const existing = legacyProvider ? undefined : (existingRaw as DnsMeta | undefined);
   if (existing?.status === "configured") {
-    const password = await getSecret(SECRET_KEYS.dnsInwxPassword);
     const apiToken = await getSecret(SECRET_KEYS.dnsCloudflareToken);
     const registrarPassword = await getSecret(SECRET_KEYS.dnsInwxRegistrarPassword);
     return {
       ...existing,
-      password: password ?? undefined,
+      provider: "cloudflare",
       apiToken: apiToken ?? undefined,
       registrarPassword: registrarPassword ?? undefined,
     };
   }
 
-  const provider = await select({
-    message: "DNS provider:",
-    choices: [
-      { name: "INWX (auto-configure DNS)", value: "inwx" as const },
-      { name: "Cloudflare DNS", value: "cloudflare" as const },
-      { name: "Manual (I'll set DNS records myself)", value: "manual" as const },
-    ],
-  });
-
-  if (provider === "manual") {
-    const meta: DnsMeta = { status: "configured", provider: "manual" };
-    store.set("providers.dns", meta);
-    return { ...meta };
-  }
-
-  if (provider === "inwx") {
-    const username = await input({ message: "INWX username:", validate: validateRequired });
-    const pwd = await confirmPastedSecret("INWX password");
-    const meta: DnsMeta = {
-      status: "configured",
-      provider: "inwx",
-      username,
-    };
-    store.set("providers.dns", meta);
-    await setSecret(SECRET_KEYS.dnsInwxPassword, pwd);
-    console.log(chalk.green("  ✓ INWX DNS configured"));
-    return { ...meta, password: pwd };
-  }
+  console.log(
+    chalk.dim(
+      "  DNS is managed in Cloudflare (the only supported provider). The domain itself can still be registered at INWX — hatchkit will flip its delegated NS automatically.",
+    ),
+  );
 
   // Cloudflare
   tokenHint(
@@ -726,6 +734,48 @@ export async function ensureDns(): Promise<DnsConfig> {
   return { ...meta, apiToken, registrarPassword };
 }
 
+// ---------------------------------------------------------------------------
+// User defaults (forwarding email, etc.)
+// ---------------------------------------------------------------------------
+
+/** Read the default forwarding email saved during `hatchkit setup`. Null
+ *  when the user hasn't set one yet — callers should lazy-prompt via
+ *  {@link ensureDefaultForwardingEmail}. */
+export function getDefaultForwardingEmail(): string | null {
+  const defaults = store.get("defaults") as CliConfig["defaults"] | undefined;
+  return defaults?.forwardingEmail ?? null;
+}
+
+/** Persist the default forwarding email. */
+export function setDefaultForwardingEmail(email: string): void {
+  const defaults = (store.get("defaults") ?? {}) as NonNullable<CliConfig["defaults"]>;
+  store.set("defaults", { ...defaults, forwardingEmail: email });
+}
+
+/** Lazy-prompt for the default forwarding email when it's missing. Used
+ *  by `hatchkit email setup` and the create/adopt email-setup hook so
+ *  the user only types their address once across every project. */
+export async function ensureDefaultForwardingEmail(): Promise<string> {
+  const existing = getDefaultForwardingEmail();
+  if (existing) return existing;
+  console.log(chalk.dim("\n  Email forwarding needs a default destination (your real inbox)."));
+  console.log(
+    chalk.dim("  Saved globally — every project's forwarding rules will use it by default."),
+  );
+  const answer = await input({
+    message: "Default forwarding email:",
+    validate: (raw) => {
+      const v = raw.trim();
+      if (!v) return "Required.";
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return "Looks malformed.";
+      return true;
+    },
+  });
+  setDefaultForwardingEmail(answer.trim());
+  console.log(chalk.green(`  ✓ Saved default forwarding email: ${answer.trim()}`));
+  return answer.trim();
+}
+
 /**
  * Prompt for INWX *registrar* credentials and persist them. Used when the
  * primary DNS provider is Cloudflare but the domain is still registered
@@ -757,16 +807,18 @@ export async function promptAndSaveInwxRegistrarCreds(): Promise<{
 }
 
 export async function getDnsConfig(): Promise<DnsConfig | null> {
-  await migrateSecret("providers.dns.password", SECRET_KEYS.dnsInwxPassword);
   await migrateSecret("providers.dns.apiToken", SECRET_KEYS.dnsCloudflareToken);
-  const meta = store.get("providers.dns") as DnsMeta | undefined;
+  const meta = store.get("providers.dns") as (DnsMeta & { provider?: string }) | undefined;
   if (!meta || meta.status !== "configured") return null;
-  const password = await getSecret(SECRET_KEYS.dnsInwxPassword);
+  // Coerce legacy non-cloudflare provider strings — the runtime invariant
+  // is that DNS is on Cloudflare. Callers should treat a non-cloudflare
+  // value as "needs reconfigure" (ensureDns handles that explicitly).
+  if (meta.provider !== "cloudflare") return null;
   const apiToken = await getSecret(SECRET_KEYS.dnsCloudflareToken);
   const registrarPassword = await getSecret(SECRET_KEYS.dnsInwxRegistrarPassword);
   return {
     ...meta,
-    password: password ?? undefined,
+    provider: "cloudflare",
     apiToken: apiToken ?? undefined,
     registrarPassword: registrarPassword ?? undefined,
   };
@@ -1749,7 +1801,7 @@ function buildSetupGroups(): SetupGroup[] {
             const m = store.get("providers.dns") as DnsMeta | undefined;
             return {
               configured: m?.status === "configured",
-              summary: m?.provider && m.provider !== "manual" ? m.provider : undefined,
+              summary: m?.provider,
             };
           },
           run: () => reconfigureProvider("dns"),
@@ -1798,6 +1850,22 @@ function buildSetupGroups(): SetupGroup[] {
             return { configured: m?.status === "configured" };
           },
           run: () => reconfigureProvider("resend"),
+        },
+        {
+          key: "defaultForwardingEmail",
+          label: "Default forwarding email",
+          status: () => {
+            const v = getDefaultForwardingEmail();
+            return { configured: !!v, summary: v ?? undefined };
+          },
+          run: async () => {
+            // Wipe-then-prompt mirrors the contract every other step
+            // follows — Setup's "click this row again" should always
+            // re-ask, not silently skip on a stored value.
+            const defaults = (store.get("defaults") ?? {}) as NonNullable<CliConfig["defaults"]>;
+            store.set("defaults", { ...defaults, forwardingEmail: undefined });
+            await ensureDefaultForwardingEmail();
+          },
         },
         {
           key: "stripe",

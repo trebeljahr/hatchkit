@@ -22,8 +22,8 @@ import {
   getS3Config,
   getStripeConfig,
 } from "./config.js";
-import { type CloudflareZone, CloudflareApi } from "./utils/cloudflare-api.js";
-import { type CoolifyApplication, CoolifyApi } from "./utils/coolify-api.js";
+import { CloudflareApi, type CloudflareZone } from "./utils/cloudflare-api.js";
+import { CoolifyApi, type CoolifyApplication } from "./utils/coolify-api.js";
 import { execOk } from "./utils/exec.js";
 import { SECRET_KEYS, getSecret } from "./utils/secrets.js";
 import { getCliVersion } from "./utils/version.js";
@@ -868,7 +868,10 @@ function collectFqdns(app: CoolifyApplication): string[] {
   const fqdns: string[] = [];
   if (app.fqdn) {
     for (const part of app.fqdn.split(",")) {
-      const trimmed = part.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+      const trimmed = part
+        .trim()
+        .replace(/^https?:\/\//, "")
+        .replace(/\/.*$/, "");
       if (trimmed) fqdns.push(trimmed);
     }
   }
@@ -971,9 +974,7 @@ export function renderOverviewHuman(
       const findings = byKind.get(k.kind) ?? [];
       const icon = k.severity === "warn" ? chalk.yellow("⚠") : chalk.dim("·");
       lines.push("");
-      lines.push(
-        `    ${icon} ${chalk.bold(k.headline)} ${chalk.dim(`(${findings.length})`)}`,
-      );
+      lines.push(`    ${icon} ${chalk.bold(k.headline)} ${chalk.dim(`(${findings.length})`)}`);
       for (const line of k.description) {
         lines.push(chalk.dim(`        ${line}`));
       }
@@ -993,7 +994,9 @@ export function renderOverviewHuman(
     chalk.dim(`${s.skipped} not configured`),
     chalk.dim(`${s.totalResources} total resource${s.totalResources === 1 ? "" : "s"}`),
     s.crossRefWarnings > 0
-      ? chalk.yellow(`${s.crossRefWarnings} cross-ref warning${s.crossRefWarnings === 1 ? "" : "s"}`)
+      ? chalk.yellow(
+          `${s.crossRefWarnings} cross-ref warning${s.crossRefWarnings === 1 ? "" : "s"}`,
+        )
       : null,
   ].filter(Boolean);
   lines.push(`  ${parts.join("  ·  ")}`);

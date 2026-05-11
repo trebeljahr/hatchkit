@@ -802,26 +802,17 @@ async function configureDns(domain: string): Promise<{ wired: boolean }> {
     if (wantConfigure) dns = await ensureDns();
   }
 
-  if (!dns || dns.provider === "manual") {
+  if (!dns) {
     printManualDnsRecords(baseDomain, subdomain, target, isApex);
     return { wired: false };
   }
 
-  if (dns.provider === "cloudflare") {
-    if (!dns.apiToken) {
-      console.log(chalk.yellow("  ⚠ Cloudflare token missing from keychain."));
-      printManualDnsRecords(baseDomain, subdomain, target, isApex);
-      return { wired: false };
-    }
-    return configureCloudflareDns(dns.apiToken, baseDomain, subdomain, target, isApex);
+  if (!dns.apiToken) {
+    console.log(chalk.yellow("  ⚠ Cloudflare token missing from keychain."));
+    printManualDnsRecords(baseDomain, subdomain, target, isApex);
+    return { wired: false };
   }
-
-  // INWX auto-wiring isn't implemented — XML-RPC + rarely used for Pages.
-  console.log(
-    chalk.dim("  INWX auto-configure isn't implemented for Pages — showing manual records:"),
-  );
-  printManualDnsRecords(baseDomain, subdomain, target, isApex);
-  return { wired: false };
+  return configureCloudflareDns(dns.apiToken, baseDomain, subdomain, target, isApex);
 }
 
 async function getGitHubUser(): Promise<string> {
@@ -1013,7 +1004,7 @@ async function buildUndoPlan(cwd: string, repo: RepoInfo): Promise<UndoPlan> {
   const cloudflare: UndoPlan["cloudflare"] = { available: false, records: [] };
   if (cname) {
     const dns = await getDnsConfig();
-    if (dns?.provider === "cloudflare" && dns.apiToken) {
+    if (dns?.apiToken) {
       const { baseDomain, subdomain } = parseDomain(cname);
       const recordName = subdomain === "" ? baseDomain : `${subdomain}.${baseDomain}`;
       const api = new CloudflareApi({ token: dns.apiToken });
@@ -1100,7 +1091,7 @@ async function executeUndo(repo: RepoInfo, plan: UndoPlan): Promise<void> {
 
   if (plan.cloudflare.records.length > 0 && plan.cloudflare.zoneId) {
     const dns = await getDnsConfig();
-    if (dns?.provider === "cloudflare" && dns.apiToken) {
+    if (dns?.apiToken) {
       const api = new CloudflareApi({ token: dns.apiToken });
       for (const rec of plan.cloudflare.records) {
         const result = await api.deleteRecord(plan.cloudflare.zoneId, rec.id);

@@ -67,12 +67,7 @@ function scan(projectDir: string): ScanFiles {
   const packageJsons: ScanFiles["packageJsons"] = [];
   const matches = new Map<string, string[]>();
 
-  const probeDirNames = new Set([
-    "packages",
-    "apps",
-    "services",
-    "api",
-  ]);
+  const probeDirNames = new Set(["packages", "apps", "services", "api"]);
   // File names + suffixes we want to record sightings of.
   const fileProbes: Array<{ key: string; match: (filename: string) => boolean }> = [
     { key: "nextConfig", match: (n) => /^next\.config\.(?:ts|js|mjs|cjs)$/.test(n) },
@@ -180,9 +175,9 @@ function checkNextStaticExport(files: ScanFiles, projectDir: string): PagesWarni
 
   return {
     level: "block",
-    title: "Next.js without `output: \"export\"`",
+    title: 'Next.js without `output: "export"`',
     detail:
-      "GitHub Pages serves static files only. Without `output: \"export\"` in your next.config, Next builds a Node server bundle that Pages can't host. Either set `output: \"export\"` (and remove any server-only features) or deploy somewhere with a runtime (Vercel / Coolify).",
+      'GitHub Pages serves static files only. Without `output: "export"` in your next.config, Next builds a Node server bundle that Pages can\'t host. Either set `output: "export"` (and remove any server-only features) or deploy somewhere with a runtime (Vercel / Coolify).',
     evidence: bad,
   };
 }
@@ -235,20 +230,31 @@ function checkServerPackages(files: ScanFiles): PagesWarning | null {
   for (const pkg of files.packageJsons) {
     const dirName = basename(pkg.path.replace(/\/package\.json$/, ""));
     if (/^(server|api|backend|worker)$/i.test(dirName)) {
-      evidence.push(pkg.path.replace(/^.*\/packages\//, "packages/").replace(/^.*\/apps\//, "apps/"));
+      evidence.push(
+        pkg.path.replace(/^.*\/packages\//, "packages/").replace(/^.*\/apps\//, "apps/"),
+      );
     }
   }
 
   // services/<thing>/Dockerfile typically signals a deployable service.
   const dockerfiles = files.matches.get("dockerfile") ?? [];
   for (const df of dockerfiles) {
-    if (df.startsWith("services/") || df.startsWith("apps/server/") || df.startsWith("packages/server/")) {
+    if (
+      df.startsWith("services/") ||
+      df.startsWith("apps/server/") ||
+      df.startsWith("packages/server/")
+    ) {
       evidence.push(df);
     }
   }
 
   // Dedup against signal noise from packagesDirs / appsDirs / servicesDirs.
-  if (evidence.length === 0 && servicesDirs.length === 0 && packagesDirs.length === 0 && appsDirs.length === 0) {
+  if (
+    evidence.length === 0 &&
+    servicesDirs.length === 0 &&
+    packagesDirs.length === 0 &&
+    appsDirs.length === 0
+  ) {
     return null;
   }
   if (evidence.length === 0) return null;

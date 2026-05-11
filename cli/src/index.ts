@@ -252,6 +252,12 @@ async function main(): Promise<void> {
       await handleDns();
       break;
     }
+    case "email": {
+      if (args.includes("--help") && args.length === 2) return printHelp("email");
+      const { handleEmailCommand } = await import("./email/index.js");
+      await handleEmailCommand(args.slice(1));
+      break;
+    }
     case "gh-pages":
     case "pages": {
       if (args.includes("--help")) return printHelp("gh-pages");
@@ -472,7 +478,7 @@ async function handleAdd(): Promise<void> {
   let baseName = positional[0];
   const rawService = positional[1];
 
-  const allServices: ProvisionService[] = ["glitchtip", "openpanel", "resend", "s3"];
+  const allServices: ProvisionService[] = ["glitchtip", "openpanel", "resend", "s3", "email"];
 
   if (!baseName) {
     const { input } = await import("@inquirer/prompts");
@@ -495,6 +501,11 @@ async function handleAdd(): Promise<void> {
         {
           name: "S3 / R2 (per-bucket scoped credentials from .hatchkit.json)",
           value: "s3",
+          checked: false,
+        },
+        {
+          name: "Email forwarding (Cloudflare Email Routing — MX/SPF/DMARC + rules)",
+          value: "email",
           checked: false,
         },
       ],
@@ -849,7 +860,7 @@ async function handleRemove(): Promise<void> {
   let baseName = positional[0];
   const rawService = positional[1];
 
-  const allServices: ProvisionService[] = ["glitchtip", "openpanel", "resend", "s3"];
+  const allServices: ProvisionService[] = ["glitchtip", "openpanel", "resend", "s3", "email"];
 
   if (!baseName) {
     const { input } = await import("@inquirer/prompts");
@@ -870,6 +881,11 @@ async function handleRemove(): Promise<void> {
         { name: "OpenPanel (deletes the project)", value: "openpanel", checked: true },
         { name: "Resend (deletes the API key)", value: "resend", checked: true },
         { name: "S3 / R2 (deletes per-bucket scoped tokens)", value: "s3", checked: false },
+        {
+          name: "Email forwarding (deletes routing rules + DNS records; keeps destination)",
+          value: "email",
+          checked: false,
+        },
       ],
       required: true,
     });
@@ -1443,9 +1459,7 @@ async function handleCreate(): Promise<void> {
         }
         console.log(chalk.green(`  ✓ GitHub Pages will publish at ${pageUrl}`));
       } catch (err) {
-        console.log(
-          chalk.yellow(`  Couldn't auto-wire GitHub Pages: ${(err as Error).message}`),
-        );
+        console.log(chalk.yellow(`  Couldn't auto-wire GitHub Pages: ${(err as Error).message}`));
         console.log(
           chalk.dim(`  Run \`hatchkit gh-pages\` from ${appDir} once the issue is resolved.`),
         );
@@ -1459,6 +1473,61 @@ async function handleCreate(): Promise<void> {
     if (config.scaffoldRepo && config.createGithubRepo && repoUrl) {
       const { pushInitialBranch } = await import("./deploy/github.js");
       await pushInitialBranch(appDir);
+    }
+
+    // Step 6.6: optional email forwarding setup (Cloudflare Email
+    // Routing). Opt-in prompt — most projects want it but a scripted
+    // / non-interactive create shouldn't pay the latency cost or sink
+    // on a missing accountId without explicit consent.
+    if (config.scaffoldRepo && !config.dryRun && !nonInteractive && process.stdin.isTTY) {
+      try {
+        const wantsEmail = await confirm({
+          message: `Set up email forwarding for ${chalk.cyan(config.domain)} (Cloudflare Email Routing)?`,
+          default: true,
+        });
+        if (wantsEmail) {
+          const { runEmailSetupForDomain } = await import("./email/index.js");
+          const result = await runEmailSetupForDomain({ domain: config.domain }, appDir);
+          // Mirror adopt's ledger plumbing so `hatchkit destroy <project>`
+          // can roll back the email-routing state we just created.
+          if (ledger && result.destination.createdThisRun) {
+            ledger.record({
+              kind: "cloudflareEmailDestination",
+              accountId: result.accountId,
+              destinationId: result.destination.record.id,
+              email: result.destination.record.email,
+            });
+          }
+          for (const dns of result.dnsRecords) {
+            if (!dns.created) continue;
+            ledger?.record({
+              kind: "cloudflareDnsRecord",
+              zoneId: result.zoneId,
+              recordId: dns.id,
+              name: dns.name,
+              type: dns.type,
+            });
+          }
+          for (const rule of result.rules) {
+            if (!rule.created) continue;
+            ledger?.record({
+              kind: "cloudflareEmailRoutingRule",
+              zoneId: result.zoneId,
+              ruleId: rule.id,
+              address: rule.address,
+            });
+          }
+        }
+      } catch (err) {
+        // Soft-fail: email forwarding is a follow-up convenience, not a
+        // gating step for the rest of `create`. The user can re-run
+        // `hatchkit email setup` once any underlying issue (e.g. zone
+        // not yet in Cloudflare) is fixed.
+        console.log(chalk.yellow(`  ⚠ Email forwarding setup skipped: ${(err as Error).message}`));
+        console.log(
+          chalk.dim(`    Re-run with \`hatchkit email setup --domain ${config.domain}\`.`),
+        );
+      }
     }
 
     // Step 7: Deploy ML services
@@ -1744,7 +1813,8 @@ type HelpTopic =
   | "explain"
   | "completion"
   | "gh-pages"
-  | "dns";
+  | "dns"
+  | "email";
 
 function printHelp(topic?: HelpTopic): void {
   if (topic === "create") {
@@ -1915,8 +1985,41 @@ function printHelp(topic?: HelpTopic): void {
         ${chalk.dim("INWX_SANDBOX=1")} → use the OTE sandbox instead of production.
 
   ${chalk.bold("Prerequisites:")}
-    Run ${chalk.cyan("hatchkit config add dns")} and choose Cloudflare, then answer
+    Run ${chalk.cyan("hatchkit config add dns")} (Cloudflare-only), then answer
     ${chalk.cyan("yes")} to "Is INWX your domain registrar?" when prompted.
+`);
+    return;
+  }
+  if (topic === "email") {
+    console.log(`
+  ${chalk.bold("hatchkit email")} — Cloudflare Email Routing setup
+
+  ${chalk.bold("Subcommands:")}
+    setup    Configure Email Routing + DNS (MX, SPF, DMARC) for a domain
+    status   Print current routing state (read-only)
+
+  ${chalk.bold("Flags (setup):")}
+    --domain <fqdn>           Override the project domain
+    --to <email>              Forwarding destination (saved globally on first use)
+    --addresses <list>        Comma-separated local parts (skips picker)
+    --all-defaults            Use every default preset; skip picker
+    --no-catch-all            Don't set the *@domain catch-all rule
+    --dmarc <none|quarantine|reject>  DMARC policy (default: quarantine)
+    --no-resend-spf           Skip auto-merging _spf.resend.com
+
+  ${chalk.bold("What it sets:")}
+    · Email Routing enabled on the zone
+    · Destination address verified at Cloudflare (verification email sent)
+    · MX records → route1/route2/route3.mx.cloudflare.net
+    · SPF TXT (single record, merged with Resend if detected)
+    · DMARC TXT at _dmarc.<domain> (default p=quarantine sp=none)
+    · One forwarding rule per picked address
+    · Optional catch-all rule (*@<domain>)
+
+  ${chalk.bold("Prerequisites:")}
+    DNS must be on Cloudflare (${chalk.cyan("hatchkit config add dns")}). The token
+    needs Zone:DNS:Edit + Zone:Email Routing Rules:Edit +
+    Account:Email Routing Addresses:Edit.
 `);
     return;
   }
@@ -2478,6 +2581,7 @@ function printHelp(topic?: HelpTopic): void {
     sync            Push the manifest's domain/ports onto the matching Coolify app(s)
     gh-pages        Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
     dns             DNS reconciliation helpers (link-to-cloudflare, …)
+    email           Set up Cloudflare Email Routing + MX/SPF/DMARC (setup/status)
     keys show <p>   Print the dotenvx private key for a project
     keys set <p>    Upsert the key into the OS keychain (after \`dotenvx rotate\`)
     keys rotate <p> Rotate the dotenvx keypair, mirror to keychain + (optional) deploy targets

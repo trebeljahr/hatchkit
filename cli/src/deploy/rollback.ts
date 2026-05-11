@@ -283,6 +283,14 @@ function recipeFor(step: LedgerStep): string | null {
       return chalk.dim(
         `# manual: delete ${step.type} record ${step.name} (id ${step.recordId}) in Cloudflare zone ${step.zoneId}`,
       );
+    case "cloudflareEmailDestination":
+      return chalk.dim(
+        `# manual: revoke Email Routing destination ${step.email} at https://dash.cloudflare.com/${step.accountId}/email/routing/destinations`,
+      );
+    case "cloudflareEmailRoutingRule":
+      return chalk.dim(
+        `# manual: delete Email Routing rule for ${step.address} in zone ${step.zoneId}`,
+      );
     case "ghPages":
       return `cd ${shellEscape(step.projectDir)} && hatchkit gh-pages --undo --yes`;
   }
@@ -506,6 +514,10 @@ function describeStep(step: LedgerStep): string {
       return `revoke R2 ${step.audience} token ${chalk.cyan(step.tokenId.slice(0, 8) + "…")}`;
     case "cloudflareDnsRecord":
       return `delete Cloudflare ${step.type} record ${chalk.cyan(step.name)}`;
+    case "cloudflareEmailDestination":
+      return `revoke Email Routing destination ${chalk.cyan(step.email)}`;
+    case "cloudflareEmailRoutingRule":
+      return `delete Email Routing rule for ${chalk.cyan(step.address)}`;
     case "ghPages":
       return `tear down GitHub Pages for ${chalk.cyan(step.repo)}`;
   }
@@ -551,11 +563,8 @@ async function undoStep(
       // the destroy won't work and we say so.
       const dns = await getDnsConfig();
       const env: Record<string, string> = {};
-      if (dns?.provider === "cloudflare" && dns.apiToken) {
+      if (dns?.apiToken) {
         env.TF_VAR_cloudflare_api_token = dns.apiToken;
-      } else if (dns?.provider === "inwx" && dns.username && dns.password) {
-        env.TF_VAR_inwx_username = dns.username;
-        env.TF_VAR_inwx_password = dns.password;
       } else {
         throw new Error("DNS credentials no longer in keychain — re-add them, then retry");
       }
@@ -718,12 +727,32 @@ async function undoStep(
     }
     case "cloudflareDnsRecord": {
       const dns = await getDnsConfig();
-      if (!dns || dns.provider !== "cloudflare" || !dns.apiToken) {
+      if (!dns || !dns.apiToken) {
         throw new Error("Cloudflare credentials no longer in keychain — re-add them, then retry");
       }
       const { CloudflareApi } = await import("../utils/cloudflare-api.js");
       const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
       const result = await cf.deleteRecord(step.zoneId, step.recordId);
+      return result === "not-found" ? "not-found" : "done";
+    }
+    case "cloudflareEmailDestination": {
+      const dns = await getDnsConfig();
+      if (!dns || !dns.apiToken) {
+        throw new Error("Cloudflare credentials no longer in keychain — re-add them, then retry");
+      }
+      const { CloudflareApi } = await import("../utils/cloudflare-api.js");
+      const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
+      const result = await cf.deleteEmailDestination(step.accountId, step.destinationId);
+      return result === "not-found" ? "not-found" : "done";
+    }
+    case "cloudflareEmailRoutingRule": {
+      const dns = await getDnsConfig();
+      if (!dns || !dns.apiToken) {
+        throw new Error("Cloudflare credentials no longer in keychain — re-add them, then retry");
+      }
+      const { CloudflareApi } = await import("../utils/cloudflare-api.js");
+      const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
+      const result = await cf.deleteEmailRoutingRule(step.zoneId, step.ruleId);
       return result === "not-found" ? "not-found" : "done";
     }
     case "mlService":

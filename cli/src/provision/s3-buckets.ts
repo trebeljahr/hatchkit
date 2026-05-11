@@ -271,7 +271,7 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   // Zone:Zone:Read; the admin token may or may not have it. Use whichever
   // we have available, preferring the DNS token because that's the one
   // that's been verified for zone reads in `hatchkit doctor`.
-  const zoneToken = dns?.provider === "cloudflare" ? (dns.apiToken ?? adminToken) : adminToken;
+  const zoneToken = dns?.apiToken ?? adminToken;
   const cf = new CloudflareApi({ token: adminToken });
   const cfZone = new CloudflareApi({ token: zoneToken });
 

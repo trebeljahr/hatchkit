@@ -1071,7 +1071,9 @@ async function editAdoptStep(
     // (Pages can't host a backend). Snap deploymentMode back to
     // coolify in that case so the user doesn't keep an invalid combo.
     const nextDeploymentMode: AdoptDeploymentMode =
-      plan.deploymentMode === "gh-pages" && next !== "client-only" ? "coolify" : plan.deploymentMode;
+      plan.deploymentMode === "gh-pages" && next !== "client-only"
+        ? "coolify"
+        : plan.deploymentMode;
     if (plan.deploymentMode === "gh-pages" && next !== "client-only") {
       console.log(
         chalk.yellow(
@@ -1213,9 +1215,14 @@ async function editAdoptStep(
           checked: plan.services.includes("openpanel"),
         },
         {
-          name: "Resend (email)",
+          name: "Resend (transactional email)",
           value: "resend",
           checked: plan.services.includes("resend"),
+        },
+        {
+          name: "Email forwarding (Cloudflare Email Routing → your inbox)",
+          value: "email",
+          checked: plan.services.includes("email"),
         },
       ],
     });
@@ -1556,11 +1563,7 @@ async function executePlan(
     //
     // Skipped for gh-pages — there's no Coolify webhook to hit.
     const appUuidForSecrets = coolifyResult?.appUuid ?? state.coolifyAppMatch?.uuid;
-    if (
-      plan.scaffoldBuildPipeline &&
-      plan.deploymentMode === "coolify" &&
-      appUuidForSecrets
-    ) {
+    if (plan.scaffoldBuildPipeline && plan.deploymentMode === "coolify" && appUuidForSecrets) {
       const slug = repoSlugFromRemote(remoteUrl);
       if (slug) {
         await setCoolifyDeploySecrets({
@@ -1840,6 +1843,42 @@ async function executePlan(
             ledger.record({ kind: "openpanel", project: event.project });
           } else if (event.service === "resend") {
             ledger.record({ kind: "resend", client: event.client });
+          } else if (event.service === "email") {
+            // Email setup creates three kinds of mutable state on
+            // Cloudflare: the destination address (account-scoped), the
+            // forwarding rules (zone-scoped), and the apex MX/SPF/DMARC
+            // records (also zone-scoped). We only record what THIS run
+            // created — `destinationCreatedThisRun` and `r.created` /
+            // `dnsRecords` (which the provision orchestrator already
+            // pre-filtered to `created: true` entries). MX/SPF/DMARC
+            // upserts on a zone that already had them stay out of the
+            // ledger so destroy never yanks pre-existing records.
+            if (event.destinationCreatedThisRun) {
+              ledger.record({
+                kind: "cloudflareEmailDestination",
+                accountId: event.accountId,
+                destinationId: event.destinationId,
+                email: event.destinationEmail,
+              });
+            }
+            for (const dns of event.dnsRecords) {
+              ledger.record({
+                kind: "cloudflareDnsRecord",
+                zoneId: event.zoneId,
+                recordId: dns.id,
+                name: dns.name,
+                type: dns.type,
+              });
+            }
+            for (const rule of event.rules) {
+              if (!rule.created) continue;
+              ledger.record({
+                kind: "cloudflareEmailRoutingRule",
+                zoneId: event.zoneId,
+                ruleId: rule.id,
+                address: rule.address,
+              });
+            }
           }
         },
       });
@@ -2510,8 +2549,7 @@ async function commitAndPushScaffold(
   }
   if (wip.kind === "user-changes") {
     const preview = wip.files.slice(0, 8).map((f) => `    ${f.status} ${f.path}`);
-    const extra =
-      wip.files.length > 8 ? [`    ... and ${wip.files.length - 8} more`] : [];
+    const extra = wip.files.length > 8 ? [`    ... and ${wip.files.length - 8} more`] : [];
     return {
       pushed: false,
       caveat: {
@@ -2557,16 +2595,12 @@ async function commitAndPushScaffold(
   // side effect — they should see exactly what's happening before it
   // lands on origin.
   console.log();
-  console.log(
-    chalk.bold.yellow("  ⚠ hatchkit is about to commit + push to origin:"),
-  );
+  console.log(chalk.bold.yellow("  ⚠ hatchkit is about to commit + push to origin:"));
   for (const p of all) {
     console.log(chalk.yellow(`      + ${relativeTo(p, state.projectDir)}`));
   }
   console.log(
-    chalk.dim(
-      "    (working tree verified clean of unrelated changes — auto-commit is safe)",
-    ),
+    chalk.dim("    (working tree verified clean of unrelated changes — auto-commit is safe)"),
   );
   console.log();
 

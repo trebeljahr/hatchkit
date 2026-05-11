@@ -82,7 +82,28 @@ export type LedgerStep =
       zoneId: string;
       recordId: string;
       name: string;
-      type: "A" | "AAAA" | "CNAME";
+      type: "A" | "AAAA" | "CNAME" | "MX" | "TXT";
+    }
+  /** Cloudflare Email Routing destination address — verification email
+   *  goes out to the user's inbox; this entry is recorded only when
+   *  hatchkit *created* the destination this run (an existing one
+   *  belongs to the user). Destroy revokes via
+   *  `DELETE /accounts/{accountId}/email/routing/addresses/{destinationId}`. */
+  | {
+      kind: "cloudflareEmailDestination";
+      accountId: string;
+      destinationId: string;
+      email: string;
+    }
+  /** Cloudflare Email Routing forwarding rule (custom rule, NOT the
+   *  catch-all — catch-all has its own endpoint and lives on the zone,
+   *  so it's not deletable, only togglable). Recorded with the rule's
+   *  id + matching address so destroy can `DELETE /zones/{zoneId}/email/routing/rules/{ruleId}`. */
+  | {
+      kind: "cloudflareEmailRoutingRule";
+      zoneId: string;
+      ruleId: string;
+      address: string;
     }
   /** GitHub Pages site set up via `hatchkit gh-pages` (or the
    *  create/adopt flows' gh-pages path). Recorded when Pages was

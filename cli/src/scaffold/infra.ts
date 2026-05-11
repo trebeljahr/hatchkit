@@ -37,23 +37,15 @@ export function generateTfvars(config: ProjectConfig): string {
     addSubdomain("admin", "Coolify dashboard");
   }
 
-  // The user's CLI DNS config decides which stack we target.
-  // "manual" returns "" — caller skips writing tfvars entirely because
-  // neither dns-only stack runs in that case.
-  const cfgProvider = getConfig().providers.dns?.provider ?? "inwx";
-
+  // DNS is Cloudflare-only as of v2.
   if (config.deployTarget === "new") {
-    // node-realtime still uses the dual-provider stack (count-gated
-    // modules). The same INWX-eager-auth footgun exists there — split
-    // is deferred to a follow-up.
-    const stackDnsProvider = cfgProvider === "cloudflare" ? "cloudflare" : "inwx";
     return renderString(TFVARS_TEMPLATE, {
       name: config.name,
       serverType: config.serverSize || "cpx21",
       serverLocation: config.serverLocation || "nbg1",
       domain: config.baseDomain,
       subdomains,
-      dnsProvider: stackDnsProvider,
+      dnsProvider: "cloudflare",
       cloudflareProxied: true,
       s3Enabled: config.features.includes("s3") && config.s3Provider !== "existing",
       s3BucketName: `${config.name}-assets`,
@@ -61,29 +53,10 @@ export function generateTfvars(config: ProjectConfig): string {
     });
   }
 
-  // For existing server: DNS-only tfvars, per-provider template.
-  // `serverIpv4` is the validated public IPv4 we discovered up front
-  // (via /servers/{uuid}/domains or DNS resolution of the dashboard
-  // hostname). Falling back to the raw `serverIp` is only correct
-  // when it happens to already be a routable IPv4 — but the same
-  // validation Terraform performs would reject anything else, so the
-  // empty-string fallback is harmless: tfvars renders `target_ipv4 = ""`,
-  // terraform plan fails fast with a clear message, and the user
-  // re-runs after the discovery issue is resolved (e.g. by setting
-  // public_ipv4 in the Coolify dashboard).
-  if (cfgProvider === "manual") return "";
-  if (cfgProvider === "cloudflare") {
-    return renderString(DNS_ONLY_CLOUDFLARE_TFVARS_TEMPLATE, {
-      domain: config.baseDomain,
-      subdomains,
-      cloudflareProxied: true,
-      targetIpv4: config.serverIpv4 || "",
-      targetIpv6: config.serverIpv6 || "",
-    });
-  }
-  return renderString(DNS_ONLY_INWX_TFVARS_TEMPLATE, {
+  return renderString(DNS_ONLY_CLOUDFLARE_TFVARS_TEMPLATE, {
     domain: config.baseDomain,
     subdomains,
+    cloudflareProxied: true,
     targetIpv4: config.serverIpv4 || "",
     targetIpv6: config.serverIpv6 || "",
   });
@@ -93,22 +66,19 @@ export function generateTfvars(config: ProjectConfig): string {
  * Resolve the terraform stack directory for a project. Mirrored by
  * `runTerraform` in deploy/terraform.ts and by `rename-domain.ts`.
  *
- * For deployTarget === "existing" the dns-only stack is split per
- * provider (dns-only-cloudflare / dns-only-inwx) so each only configures
- * the one provider it actually needs. Returns null for manual DNS — no
- * Terraform stack runs.
+ * DNS is Cloudflare-only as of v2 (the legacy INWX-DNS stack has been
+ * removed). `dnsProvider` is retained as an argument so existing call
+ * sites compile, but it has only one valid value.
  */
 export function resolveStackDir(
   repoRoot: string,
   deployTarget: "new" | "existing",
-  dnsProvider: "inwx" | "cloudflare" | "manual",
+  _dnsProvider: "cloudflare",
 ): string | null {
   if (deployTarget === "new") {
     return join(repoRoot, "terraform", "stacks", "node-realtime");
   }
-  if (dnsProvider === "manual") return null;
-  const name = dnsProvider === "cloudflare" ? "dns-only-cloudflare" : "dns-only-inwx";
-  return join(repoRoot, "terraform", "stacks", name);
+  return join(repoRoot, "terraform", "stacks", "dns-only-cloudflare");
 }
 
 /** Generate Coolify stack .env for the project. */
@@ -190,12 +160,8 @@ export function scaffoldInfra(
 
   const result: ScaffoldInfraResult = {};
 
-  // Write Terraform tfvars (skipped for manual DNS — no stack runs).
-  const cfgProvider = (getConfig().providers.dns?.provider ?? "inwx") as
-    | "inwx"
-    | "cloudflare"
-    | "manual";
-  const tfDir = resolveStackDir(repoRoot, config.deployTarget, cfgProvider);
+  // Write Terraform tfvars. DNS is Cloudflare-only.
+  const tfDir = resolveStackDir(repoRoot, config.deployTarget, "cloudflare");
 
   if (tfDir && tfvars && existsSync(tfDir)) {
     const tfvarsPath = join(tfDir, `${config.name}.tfvars`);
@@ -203,10 +169,6 @@ export function scaffoldInfra(
     console.log(chalk.green(`  ✓ Terraform config: ${tfDir}/${config.name}.tfvars`));
     result.tfvarsPath = tfvarsPath;
     result.stackDir = tfDir;
-  } else if (cfgProvider === "manual") {
-    console.log(
-      chalk.dim("  (manual DNS — no Terraform stack to write; set DNS records yourself)"),
-    );
   }
 
   // Write Coolify .env
@@ -279,17 +241,6 @@ s3_enabled     = false
 const DNS_ONLY_CLOUDFLARE_TFVARS_TEMPLATE = `cloudflare_proxied = {{cloudflareProxied}}
 
 domain = "{{domain}}"
-subdomains = {
-{{#each subdomains}}
-  "{{@key}}" = "{{this}}"
-{{/each}}
-}
-target_ipv4 = "{{targetIpv4}}"
-target_ipv6 = "{{targetIpv6}}"
-dns_ttl = 300
-`;
-
-const DNS_ONLY_INWX_TFVARS_TEMPLATE = `domain = "{{domain}}"
 subdomains = {
 {{#each subdomains}}
   "{{@key}}" = "{{this}}"

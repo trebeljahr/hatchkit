@@ -64,7 +64,7 @@ import {
 } from "./s3.js";
 import { parseEnvLines, writeDevEnv, writeProdEnv } from "./write-env.js";
 
-export type ProvisionService = "glitchtip" | "openpanel" | "resend" | "s3";
+export type ProvisionService = "glitchtip" | "openpanel" | "resend" | "s3" | "email";
 
 export type SurfaceMode = "shared" | "separate" | "server-only" | "client-only";
 
@@ -96,7 +96,19 @@ export type ProvisionedEvent =
   | { service: "glitchtip"; project: string }
   | { service: "openpanel"; project: string }
   | { service: "resend"; client: string }
-  | { service: "s3"; bucketKey: string; bucketName: string; tokenId: string };
+  | { service: "s3"; bucketKey: string; bucketName: string; tokenId: string }
+  | {
+      service: "email";
+      domain: string;
+      zoneId: string;
+      accountId: string;
+      destinationId: string;
+      destinationEmail: string;
+      destinationCreatedThisRun: boolean;
+      routingEnabledThisRun: boolean;
+      dnsRecords: Array<{ id: string; name: string; type: "MX" | "TXT" }>;
+      rules: Array<{ id: string; address: string; created: boolean }>;
+    };
 
 export interface ProvisionOptions {
   baseName: string;
@@ -143,6 +155,11 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   // token (Account>R2:Edit + User>API Tokens:Edit) and stores the
   // endpoint metadata. Same lazy-config-before-spinner contract.
   if (opts.services.includes("s3")) await ensureS3("r2");
+  if (opts.services.includes("email")) {
+    const { ensureDns, ensureDefaultForwardingEmail } = await import("../config.js");
+    await ensureDns();
+    await ensureDefaultForwardingEmail();
+  }
 
   const surfaces = await resolveSurfaces(opts);
   const enableDevObs = opts.enableDevObs ?? false;
@@ -238,6 +255,51 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
       // email real users.
       serverBucket.devLines.push(...renderResendEnv(devRes));
       serverBucket.prodLines.push(...renderResendEnv(prodRes));
+    }
+  }
+
+  // ── Email (Cloudflare Email Routing) ── (zone-level, not env-bucketed)
+  //
+  // Reads the domain from the project's `.hatchkit.json` (via
+  // `surfaces.projectDir`), prompts for forwarding addresses + the
+  // destination inbox the first time, and applies MX/SPF/DMARC +
+  // forwarding rules. Doesn't write into .env.{production,development}
+  // — email forwarding is a DNS-only concern; no app-runtime secret.
+  if (opts.services.includes("email")) {
+    const projectDir = surfaces?.projectDir;
+    if (!projectDir) {
+      console.log(
+        chalk.yellow(
+          "  Skipping Email — need a project dir (.hatchkit.json) to read the domain. Pass --project-dir, or run `hatchkit email setup --domain <fqdn>` directly.",
+        ),
+      );
+    } else {
+      const { readManifest } = await import("../scaffold/manifest.js");
+      const manifest = readManifest(projectDir);
+      if (!manifest?.domain) {
+        console.log(chalk.yellow("  Skipping Email — manifest has no `domain` field."));
+      } else {
+        const { runEmailSetupForDomain } = await import("../email/index.js");
+        const result = await runEmailSetupForDomain({ domain: manifest.domain }, projectDir);
+        opts.onProvisioned?.({
+          service: "email",
+          domain: result.domain,
+          zoneId: result.zoneId,
+          accountId: result.accountId,
+          destinationId: result.destination.record.id,
+          destinationEmail: result.destination.record.email,
+          destinationCreatedThisRun: result.destination.createdThisRun,
+          routingEnabledThisRun: result.routingEnabledThisRun,
+          dnsRecords: result.dnsRecords
+            .filter((r) => r.created)
+            .map((r) => ({ id: r.id, name: r.name, type: r.type })),
+          rules: result.rules.map((r) => ({
+            id: r.id,
+            address: r.address,
+            created: r.created,
+          })),
+        });
+      }
     }
   }
 
@@ -568,6 +630,23 @@ export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
     }
   }
 
+  // Email — delete every Email Routing rule on the project's zone that
+  // matches an address on `<project-domain>`. MX/SPF/DMARC records and
+  // the destination address are intentionally left in place: multiple
+  // projects can share one zone, and the destination is a per-user
+  // resource (CF revokes it via the dashboard, not per-project).
+  if (opts.services.includes("email")) {
+    if (opts.dryRun) {
+      console.log(chalk.dim(`  would delete Email Routing rules for ${opts.baseName}'s domain`));
+    } else {
+      try {
+        await unprovisionEmailForProject({ projectDir: opts.projectDir });
+      } catch (err) {
+        console.log(chalk.red(`  ✗ Email teardown: ${(err as Error).message}`));
+      }
+    }
+  }
+
   // S3 / R2 — delete the per-bucket scoped tokens (CF API + keychain).
   if (opts.services.includes("s3")) {
     if (opts.dryRun) {
@@ -625,6 +704,67 @@ export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
  *  single `hatchkit remove` cleans up either. */
 function observabilityNames(baseName: string): string[] {
   return [baseName, `${baseName}-server`, `${baseName}-client`];
+}
+
+/** Tear down Email Routing rules for the project's zone. Reads the
+ *  domain from `.hatchkit.json`. Best-effort: walks every rule on the
+ *  zone and deletes those whose literal `to` matcher ends with
+ *  `@<projectDomain>`. The catch-all, MX/SPF/DMARC, and the destination
+ *  address are left intact — they're zone-level / account-level state
+ *  that may belong to other projects on the same zone. */
+async function unprovisionEmailForProject(args: { projectDir?: string }): Promise<void> {
+  const { getDnsConfig } = await import("../config.js");
+  const { readManifest } = await import("../scaffold/manifest.js");
+  const { CloudflareApi } = await import("../utils/cloudflare-api.js");
+  if (!args.projectDir) {
+    console.log(chalk.dim("  · Skipping Email teardown — need a project dir to read the domain."));
+    return;
+  }
+  const manifest = readManifest(args.projectDir);
+  if (!manifest?.domain) {
+    console.log(chalk.dim("  · Skipping Email teardown — manifest has no domain."));
+    return;
+  }
+  const dns = await getDnsConfig();
+  if (!dns?.apiToken) {
+    console.log(
+      chalk.yellow("  · Skipping Email teardown — DNS config / Cloudflare token missing."),
+    );
+    return;
+  }
+  const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
+  const zone = await cf.getZoneByName(manifest.domain);
+  if (!zone) {
+    console.log(chalk.dim(`  · No zone for ${manifest.domain} — nothing to tear down.`));
+    return;
+  }
+  const rules = await cf.listEmailRoutingRules(zone.id);
+  const suffix = `@${manifest.domain}`;
+  const matching = rules.filter((r) =>
+    r.matchers?.some(
+      (m) =>
+        m.type === "literal" &&
+        m.field === "to" &&
+        m.value?.toLowerCase().endsWith(suffix.toLowerCase()),
+    ),
+  );
+  if (matching.length === 0) {
+    console.log(chalk.dim(`  · No Email Routing rules to remove on ${manifest.domain}.`));
+    return;
+  }
+  for (const rule of matching) {
+    const id = rule.id ?? rule.tag;
+    if (!id) continue;
+    const address = rule.matchers?.find((m) => m.field === "to")?.value ?? "?";
+    const result = await cf.deleteEmailRoutingRule(zone.id, id);
+    const tag = result === "deleted" ? chalk.green("✓") : chalk.dim("·");
+    console.log(`  ${tag} Email: deleted rule ${address}`);
+  }
+  console.log(
+    chalk.dim(
+      "  · MX / SPF / DMARC records and the destination address were left intact — they're zone-level / account-level state.",
+    ),
+  );
 }
 
 /** Run a delete via spinner, mapping "not-found" to a dim "already gone"

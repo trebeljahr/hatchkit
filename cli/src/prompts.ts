@@ -265,11 +265,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
   // Pages has no runtime, so server-bearing projects can't deploy
   // there; we hide the option rather than offering it and then
   // having to refuse the choice mid-flow.
-  const deploymentMode = await askDeploymentMode(
-    surfaces,
-    presets.deploymentMode,
-    nonInteractive,
-  );
+  const deploymentMode = await askDeploymentMode(surfaces, presets.deploymentMode, nonInteractive);
 
   // gh-pages takes a different path than the Coolify pipeline: no
   // server provisioning, no Mongo, no features. Collect just the
@@ -812,9 +808,7 @@ async function collectPagesProjectConfig(args: PagesCollectArgs): Promise<Projec
   // gh-pages requires client-only. The check in askDeploymentMode
   // also catches this for presets, but defend against direct calls.
   if (surfaces !== "client-only") {
-    throw new Error(
-      `gh-pages deployment mode requires surfaces="client-only" (got: ${surfaces}).`,
-    );
+    throw new Error(`gh-pages deployment mode requires surfaces="client-only" (got: ${surfaces}).`);
   }
 
   const scaffoldRepo = await presetOrPrompt(
@@ -1051,9 +1045,7 @@ function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
     steps: [
       {
         key: "scaffoldFlags",
-        label: isPages
-          ? "Scaffold / GitHub / Install"
-          : "Scaffold / GitHub / Install / Deploy",
+        label: isPages ? "Scaffold / GitHub / Install" : "Scaffold / GitHub / Install / Deploy",
         set: true,
         summary: isPages
           ? `scaffold=${cfg.scaffoldRepo ? "yes" : "no"} · github=${cfg.createGithubRepo ? "yes" : "no"} · install=${cfg.installDeps ? "yes" : "no"}`
@@ -1162,9 +1154,7 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     // deployment mode (Pages requires a static-only project). Snap
     // it back to coolify in that case.
     const nextDeploymentMode =
-      cfg.deploymentMode === "gh-pages" && next !== "client-only"
-        ? "coolify"
-        : cfg.deploymentMode;
+      cfg.deploymentMode === "gh-pages" && next !== "client-only" ? "coolify" : cfg.deploymentMode;
     if (cfg.deploymentMode === "gh-pages" && next !== "client-only") {
       console.log(
         chalk.yellow(

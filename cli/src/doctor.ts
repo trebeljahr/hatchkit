@@ -138,44 +138,36 @@ async function checkHetzner(): Promise<CheckResult> {
 
 async function checkDns(): Promise<CheckResult> {
   const cfg = await getDnsConfig();
-  if (!cfg || cfg.provider === "manual") return { name: "DNS", status: "skip" };
-  if (cfg.provider === "cloudflare") {
-    return check(
-      "DNS (Cloudflare)",
-      async () => {
-        const res = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
-          headers: { Authorization: `Bearer ${cfg.apiToken}` },
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const body = (await res.json()) as { result?: { status?: string } };
-        return body.result?.status ?? "active";
-      },
-      (detail) => {
-        const code = httpCode(detail);
-        if (code === 401) {
-          return [
-            "Cloudflare API token is invalid, expired, or revoked.",
-            "Create a new one: https://dash.cloudflare.com/profile/api-tokens",
-            "Required permissions: Zone:DNS:Edit + Zone:Zone:Read (scope to the zones you'll use).",
-            "Then re-run: `hatchkit config add dns`",
-          ];
-        }
-        if (code === 403) {
-          return [
-            "Token authenticates but lacks Zone:DNS:Edit + Zone:Zone:Read on the target zones.",
-            "Edit the token at https://dash.cloudflare.com/profile/api-tokens or create a new one, then `hatchkit config add dns`.",
-          ];
-        }
-        return undefined;
-      },
-    );
-  }
-  // INWX uses XML-RPC login — skip active-verify (cheap check would require a login call).
-  return {
-    name: "DNS (INWX)",
-    status: "ok",
-    detail: "credentials stored (not test-authenticated)",
-  };
+  if (!cfg) return { name: "DNS", status: "skip" };
+  return check(
+    "DNS (Cloudflare)",
+    async () => {
+      const res = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
+        headers: { Authorization: `Bearer ${cfg.apiToken}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { result?: { status?: string } };
+      return body.result?.status ?? "active";
+    },
+    (detail) => {
+      const code = httpCode(detail);
+      if (code === 401) {
+        return [
+          "Cloudflare API token is invalid, expired, or revoked.",
+          "Create a new one: https://dash.cloudflare.com/profile/api-tokens",
+          "Required permissions: Zone:DNS:Edit + Zone:Zone:Read (scope to the zones you'll use).",
+          "Then re-run: `hatchkit config add dns`",
+        ];
+      }
+      if (code === 403) {
+        return [
+          "Token authenticates but lacks Zone:DNS:Edit + Zone:Zone:Read on the target zones.",
+          "Edit the token at https://dash.cloudflare.com/profile/api-tokens or create a new one, then `hatchkit config add dns`.",
+        ];
+      }
+      return undefined;
+    },
+  );
 }
 
 async function checkS3(provider: "hetzner" | "aws" | "r2"): Promise<CheckResult> {

@@ -39,15 +39,11 @@ export async function runTerraform(
 ): Promise<RunTerraformResult> {
   const hetznerToken = await getHetznerToken();
   const dnsConfig = await getDnsConfig();
-  const dnsProvider = (dnsConfig?.provider ?? "inwx") as "inwx" | "cloudflare" | "manual";
+  // DNS is Cloudflare-only as of v2. Older stacks (`dns-only-inwx`) are
+  // gone — `resolveStackDir` always returns the cloudflare-flavour path.
+  const dnsProvider = "cloudflare" as const;
 
   console.log(chalk.bold("\n  ── Terraform ──────────────────────────────────────────────\n"));
-
-  // Manual DNS on an existing server: nothing for Terraform to do.
-  if (config.deployTarget === "existing" && dnsProvider === "manual") {
-    console.log(chalk.dim("  Manual DNS — no Terraform stack to apply. Set DNS records yourself."));
-    return {};
-  }
 
   const stackDir = resolveStackDir(repoRoot, config.deployTarget, dnsProvider);
   if (!stackDir) {
@@ -63,43 +59,28 @@ export async function runTerraform(
     env.TF_VAR_hcloud_token = hetznerToken;
   }
 
-  // Preflight + DNS creds. The dns-only-* stacks each only declare one
-  // DNS provider, so we pass only that provider's creds. The legacy
-  // node-realtime stack still bundles both providers (count-gated
-  // modules) and inherits the older "INWX creds required even for CF"
-  // footgun — fixing that is a follow-up.
+  // Preflight + DNS creds. Cloudflare-only path; INWX creds flow through
+  // only when the user told us their domain is *registered* at INWX
+  // (registrarUsername present), and only for the post-apply NS flip.
   let registrarPlan: RegistrarPlan | null = null;
-  if (dnsProvider === "inwx") {
-    if (!dnsConfig?.username || !dnsConfig.password) {
-      throw new Error(
-        "INWX is configured as the DNS provider but credentials are missing. Re-run `hatchkit config add dns`.",
-      );
-    }
-    env.TF_VAR_inwx_username = dnsConfig.username;
-    env.TF_VAR_inwx_password = dnsConfig.password;
-  } else if (dnsProvider === "cloudflare") {
-    if (!dnsConfig?.apiToken) {
-      throw new Error(
-        "Cloudflare is configured as the DNS provider but the API token is missing from the keychain.",
-      );
-    }
-    env.TF_VAR_cloudflare_api_token = dnsConfig.apiToken;
+  if (!dnsConfig?.apiToken) {
+    throw new Error(
+      "Cloudflare API token is missing from the keychain. Re-run `hatchkit config add dns`.",
+    );
+  }
+  env.TF_VAR_cloudflare_api_token = dnsConfig.apiToken;
 
-    // dns-only-cloudflare doesn't ask for INWX creds at all. The
-    // node-realtime path still does (legacy footgun) — we mirror the
-    // old behavior there until that stack is split too.
-    if (config.deployTarget === "new") {
-      if (dnsConfig.registrarUsername && dnsConfig.registrarPassword) {
-        env.TF_VAR_inwx_username = dnsConfig.registrarUsername;
-        env.TF_VAR_inwx_password = dnsConfig.registrarPassword;
-      }
-    } else {
-      // dns-only-cloudflare: figure out whether a registrar NS-flip is
-      // even needed *before* terraform runs, and prompt for INWX creds
-      // inline if it is. We only block on a working answer here so that
-      // the post-apply step has what it needs (or knows to skip).
-      registrarPlan = await preflightRegistrarFlip(config.baseDomain, dnsConfig);
+  if (config.deployTarget === "new") {
+    if (dnsConfig.registrarUsername && dnsConfig.registrarPassword) {
+      env.TF_VAR_inwx_username = dnsConfig.registrarUsername;
+      env.TF_VAR_inwx_password = dnsConfig.registrarPassword;
     }
+  } else {
+    // dns-only-cloudflare: figure out whether a registrar NS-flip is
+    // even needed *before* terraform runs, and prompt for INWX creds
+    // inline if it is. We only block on a working answer here so that
+    // the post-apply step has what it needs (or knows to skip).
+    registrarPlan = await preflightRegistrarFlip(config.baseDomain, dnsConfig);
   }
 
   if (
