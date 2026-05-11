@@ -168,6 +168,12 @@ async function main(): Promise<void> {
       await runSyncCli(args.slice(1));
       break;
     }
+    case "regen-infra": {
+      if (args.includes("--help")) return printHelp("regen-infra");
+      const { runRegenInfraCli } = await import("./deploy/regen-infra.js");
+      await runRegenInfraCli(args.slice(1), MONOREPO_ROOT);
+      break;
+    }
     case "doctor": {
       if (args.includes("--help")) return printHelp("doctor");
       const { runDoctor } = await import("./doctor.js");
@@ -1593,6 +1599,7 @@ type HelpTopic =
   | "destroy"
   | "rename-domain"
   | "sync"
+  | "regen-infra"
   | "doctor"
   | "status"
   | "explain"
@@ -2056,6 +2063,40 @@ function printHelp(topic?: HelpTopic): void {
       ${chalk.dim("  | jq 'with_entries(select(.key | startswith(\"traefik\")))'")}
     A correctly-synced container has 10+ traefik labels (HTTP router,
     HTTPS router with letsencrypt, gzip middleware, redirect-to-https).
+`);
+    return;
+  }
+  if (topic === "regen-infra") {
+    console.log(`
+  ${chalk.bold("hatchkit regen-infra")} — rewrite tfvars + Coolify .env from the manifest
+
+  ${chalk.bold("Usage:")}
+    cd <project-dir> && hatchkit regen-infra [--dry-run]
+    hatchkit regen-infra --dir <project-dir> [--dry-run]
+
+  ${chalk.bold("What it does:")}
+    Reads ${chalk.cyan(".hatchkit.json")}, re-runs the same generators ${chalk.cyan("hatchkit create")}
+    uses (${chalk.dim("generateTfvars")} + ${chalk.dim("generateCoolifyEnv")}), and writes the result
+    back to the existing tfvars + Coolify stack .env paths under
+    ${chalk.dim("infra/")}. Infra-only fields the manifest doesn't carry (server IPs,
+    Hetzner type/location) are preserved from the existing tfvars on
+    disk, so a regen never silently blows away discovered values.
+
+  ${chalk.bold("When to use:")}
+    · You upgraded the CLI and want existing projects to pick up the
+      new tfvars logic (e.g. dropping the ${chalk.dim("api.<sub>")} subdomain for
+      client-only surfaces).
+    · You edited ${chalk.cyan(".hatchkit.json")} by hand (changed surfaces, added a
+      feature) and want the infra files re-rendered to match.
+
+  ${chalk.bold("Out of scope:")}
+    · Does NOT run terraform — review the diff, then
+      ${chalk.dim("terraform -chdir=<stack> apply -var-file=<name>.tfvars")} yourself.
+    · Does NOT touch Coolify live state — use ${chalk.cyan("hatchkit sync")} for that.
+
+  ${chalk.bold("Options:")}
+    --dir <path>   Project root (defaults to cwd).
+    --dry-run      Print the unified diff without writing.
 `);
     return;
   }
