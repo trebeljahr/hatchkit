@@ -798,10 +798,14 @@ console.log("\n── build pipeline: engines.node detection + created/overwritt
     "Dockerfile does NOT contain NODE_VERSION=22",
     !/NODE_VERSION=22\b/.test(dockerfile),
   ]);
-  checks.push(["client-only compose maps nginx port 80", compose.includes('"80:80"')]);
+  checks.push(["client-only compose exposes nginx port 80", /expose:\s*\n\s*-\s*"80"/.test(compose)]);
   checks.push([
-    "client-only compose does NOT map default app port 3000",
-    !compose.includes('"3000:3000"'),
+    "client-only compose does NOT publish host:80 (Coolify Traefik owns it)",
+    !compose.includes('"80:80"'),
+  ]);
+  checks.push([
+    "client-only compose does NOT expose default app port 3000",
+    !/expose:\s*\n\s*-\s*"3000"/.test(compose),
   ]);
   checks.push(["created list includes Dockerfile", r1.created.includes("Dockerfile")]);
   checks.push(["overwritten list is empty on first run", r1.overwritten.length === 0]);
@@ -938,12 +942,16 @@ console.log("\n── build pipeline: framework detection (Next.js) ────
       !/COPY --from=build \/app\/dist/.test(dockerfile),
     ]);
     checks.push([
-      "Next.js compose maps app port (not nginx :80) despite client-only",
-      compose.includes('"3000:3000"'),
+      "Next.js compose exposes app port (not nginx :80) despite client-only",
+      /expose:\s*\n\s*-\s*"3000"/.test(compose),
     ]);
     checks.push([
-      "Next.js compose does NOT map nginx :80",
-      !compose.includes('"80:80"'),
+      "Next.js compose does NOT expose nginx :80",
+      !/expose:\s*\n\s*-\s*"80"/.test(compose),
+    ]);
+    checks.push([
+      "Next.js compose does NOT publish host ports (Coolify Traefik routes)",
+      !/^\s*ports:/m.test(compose),
     ]);
     checks.push([
       "Next.js compose healthcheck command is node-based, not wget",
@@ -976,7 +984,10 @@ console.log("\n── build pipeline: framework detection (Next.js) ────
     const dockerfile = readFileSync(join(dir, "Dockerfile"), "utf-8");
     const compose = readFileSync(join(dir, "docker-compose.yml"), "utf-8");
     checks.push(["generic client-only still uses nginx", /nginx/.test(dockerfile)]);
-    checks.push(["generic client-only compose still maps :80", compose.includes('"80:80"')]);
+    checks.push([
+      "generic client-only compose still exposes :80",
+      /expose:\s*\n\s*-\s*"80"/.test(compose),
+    ]);
     rmSync(dir, { recursive: true, force: true });
   }
 
