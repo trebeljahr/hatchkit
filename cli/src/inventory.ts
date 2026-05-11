@@ -24,7 +24,7 @@
  * Everything is read-only. No mutations. Safe to run anywhere.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { confirm, input } from "@inquirer/prompts";
 import chalk from "chalk";
@@ -38,7 +38,12 @@ import {
   getStripeConfig,
 } from "./config.js";
 import { locateEnvKeysFile, locateEnvProductionFile } from "./deploy/keys.js";
-import { MANIFEST_FILENAME, type ProjectManifest, readManifest } from "./scaffold/manifest.js";
+import {
+  MANIFEST_FILENAME,
+  MANIFEST_VERSION,
+  type ProjectManifest,
+  readManifest,
+} from "./scaffold/manifest.js";
 import { CloudflareApi } from "./utils/cloudflare-api.js";
 import { CoolifyApi, type CoolifyApplication } from "./utils/coolify-api.js";
 import { exec, execOk } from "./utils/exec.js";
@@ -118,32 +123,7 @@ export interface InventoryLocal {
   /** Dependency names from any package.json under the project root.
    *  Used the same way as envSignals to mark expected providers. */
   packageDeps: Set<string>;
-  /** Parsed `.hatchkit/identity.json` (if present) — the lighter-weight
-   *  identity ledger written by `hatchkit inventory`. Separate from the
-   *  full `.hatchkit.json` manifest so it doesn't block adopt. */
-  identityFile?: IdentityFile;
 }
-
-/** Lightweight identity ledger written by `hatchkit inventory` after
- *  it figures out a project's identity. Stored at `.hatchkit/identity.json`
- *  (committed alongside the project). Doesn't replace `.hatchkit.json`
- *  — adopt continues to own the full manifest. Inventory reads this on
- *  subsequent runs to skip re-inference and prompts. */
-export interface IdentityFile {
-  version: 1;
-  /** ISO timestamp the file was (re-)written. */
-  writtenAt: string;
-  /** CLI version that produced it (diagnostic). */
-  cliVersion: string;
-  name?: string;
-  domain?: string;
-  /** GitHub repo slug "owner/name". */
-  repo?: string;
-}
-
-export const IDENTITY_DIR = ".hatchkit";
-export const IDENTITY_FILENAME = "identity.json";
-export const IDENTITY_VERSION = 1;
 
 export interface InventoryReport {
   cliVersion: string;
@@ -173,7 +153,6 @@ export interface InventoryReport {
 
 type InferenceSource =
   | "manifest"
-  | "identity-file"
   | "package.json"
   | "git-remote"
   | "cname-file"
@@ -215,46 +194,37 @@ export async function runInventory(cwd: string, opts: RunInventoryOptions = {}):
 
   console.log(renderInventoryHuman(report));
 
-  // Persist the inferred identity unless explicitly suppressed. Skip
-  // entirely when there's nothing useful to save (no name AND no domain
-  // AND no repo) — writing a blank ledger isn't helpful.
-  const hasIdentity = !!(report.inferred.name || report.inferred.domain || report.inferred.repo);
-  if (!hasIdentity || opts.noSave) return;
+  // Persist inferred identity as a minimal `.hatchkit.json` unless
+  // suppressed. Skip when there's already a manifest (adopt owns it
+  // — we don't overwrite), when the inputs aren't sufficient (name +
+  // domain are required by the schema), or when `--no-save` was passed.
+  if (opts.noSave) return;
+  if (report.local.manifestPresent) return;
+  if (!report.inferred.name || !report.inferred.domain) return;
 
   const absCwd = resolve(cwd);
-  const existing = readIdentityFile(absCwd);
-  const isSame =
-    existing &&
-    existing.name === report.inferred.name &&
-    existing.domain === report.inferred.domain &&
-    existing.repo === report.inferred.repo;
-  if (isSame) {
-    // Already on disk and matches — nothing to do. Silent so the
-    // prompt doesn't appear on every re-run.
-    return;
-  }
 
-  if (opts.save) {
-    const written = writeIdentityFile(absCwd, report.inferred);
+  const writeIt = () => {
+    writeMinimalManifest(absCwd, report.inferred, report.local);
     console.log(
       chalk.dim(
-        `  Saved identity to ${IDENTITY_DIR}/${IDENTITY_FILENAME} (writtenAt: ${written.writtenAt}).`,
+        `  Wrote minimal ${MANIFEST_FILENAME}. Run \`hatchkit adopt --resume\` to wire features + deploy config.`,
       ),
     );
+  };
+
+  if (opts.save) {
+    writeIt();
     return;
   }
 
   // Only ask in interactive mode (TTY + not --yes).
   if (!process.stdin.isTTY || opts.yes) return;
-  const action = existing ? "update" : "write";
   const ok = await confirm({
-    message: `${action === "write" ? "Save" : "Update"} inferred identity to ${IDENTITY_DIR}/${IDENTITY_FILENAME}? Future inventory/adopt runs will read this instead of re-inferring.`,
+    message: `Save inferred identity as a minimal ${MANIFEST_FILENAME}? (Run \`hatchkit adopt --resume\` afterwards to flesh out features + deploy config.)`,
     default: true,
   });
-  if (ok) {
-    writeIdentityFile(absCwd, report.inferred);
-    console.log(chalk.dim(`  Saved ${IDENTITY_DIR}/${IDENTITY_FILENAME}.`));
-  }
+  if (ok) writeIt();
 }
 
 export interface CollectInventoryOptions {
@@ -516,10 +486,6 @@ function inferLocal(cwd: string): InventoryLocal {
   // repo root for git lookups.
   const gitRoot = findGitRoot(cwd);
 
-  // Identity file — written by past `hatchkit inventory` runs. Read
-  // unconditionally; if missing or malformed, leave undefined.
-  const identityFile = readIdentityFile(cwd);
-
   return {
     cwd,
     isGitRepo: !!gitRoot,
@@ -539,7 +505,6 @@ function inferLocal(cwd: string): InventoryLocal {
     envKeysPresent,
     envSignals,
     packageDeps,
-    identityFile,
   };
 }
 
@@ -626,37 +591,65 @@ function collectPackageDeps(
 }
 
 // ---------------------------------------------------------------------------
-// Identity file (.hatchkit/identity.json) — read + write
+// Minimal `.hatchkit.json` writer
 // ---------------------------------------------------------------------------
+//
+// When inventory saves inferred identity it writes a minimal manifest
+// that follows the full schema (so every other hatchkit command — adopt,
+// update, sync, keys — can read it) but with conservative defaults for
+// fields inventory can't reliably infer. Run `hatchkit adopt --resume`
+// afterwards to flesh out features, surfaces, ports, etc. — adopt's
+// stepper reads this manifest as its starting state.
 
-export function identityFilePath(cwd: string): string {
-  return join(cwd, IDENTITY_DIR, IDENTITY_FILENAME);
-}
-
-export function readIdentityFile(cwd: string): IdentityFile | undefined {
-  const p = identityFilePath(cwd);
-  if (!existsSync(p)) return undefined;
-  try {
-    const parsed = JSON.parse(readFileSync(p, "utf-8")) as { version?: unknown };
-    if (parsed.version !== IDENTITY_VERSION) return undefined;
-    return parsed as IdentityFile;
-  } catch {
-    return undefined;
+export function writeMinimalManifest(
+  cwd: string,
+  identity: InventoryInput,
+  local: InventoryLocal,
+): ProjectManifest {
+  if (!identity.name || !identity.domain) {
+    throw new Error(
+      "Can't write .hatchkit.json without an inferred name and domain. " +
+        "Pass --name / --domain or run inventory interactively to provide them.",
+    );
   }
-}
-
-export function writeIdentityFile(cwd: string, identity: InventoryInput): IdentityFile {
-  const file: IdentityFile = {
-    version: IDENTITY_VERSION,
-    writtenAt: new Date().toISOString(),
+  // Surfaces from local layout — both dirs → "both", just one → that
+  // one, neither → fall back to "both" (most common scaffold shape).
+  const surfaces: ProjectManifest["surfaces"] =
+    local.serverDir && local.clientDir
+      ? "both"
+      : local.serverDir
+        ? "server-only"
+        : local.clientDir
+          ? "client-only"
+          : "both";
+  const manifest: ProjectManifest = {
+    version: MANIFEST_VERSION,
     cliVersion: getCliVersion(),
+    scaffoldedAt: new Date().toISOString(),
     name: identity.name,
     domain: identity.domain,
-    repo: identity.repo,
+    features: [],
+    mlServices: [],
+    // "none" is the conservative default — even if local deps signal R2
+    // usage, we don't claim ownership of buckets we haven't provisioned.
+    // `hatchkit adopt --resume` will prompt for the real value.
+    s3Provider: "none",
+    deployTarget: "existing",
+    surfaces,
+    // Conventional defaults — `hatchkit adopt --resume` lets the user
+    // override if the project actually uses different ports.
+    ports: { server: 3000, client: 5173 },
   };
-  mkdirSync(join(cwd, IDENTITY_DIR), { recursive: true });
-  writeFileSync(identityFilePath(cwd), `${JSON.stringify(file, null, 2)}\n`, "utf-8");
-  return file;
+  writeManifestFile(cwd, manifest);
+  return manifest;
+}
+
+function writeManifestFile(cwd: string, manifest: ProjectManifest): void {
+  writeFileSync(
+    join(cwd, MANIFEST_FILENAME),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    "utf-8",
+  );
 }
 
 function findGitRoot(startDir: string): string | undefined {
@@ -703,15 +696,13 @@ function inferIdentity(
   const out: InventoryInput = {};
 
   // name: flag > manifest > identity-file > package.json > basename(cwd)
+  // name: flag > manifest > package.json > basename(cwd)
   if (override.name) {
     out.name = override.name;
     sources.name = "flag";
   } else if (local.manifest?.name) {
     out.name = local.manifest.name;
     sources.name = "manifest";
-  } else if (local.identityFile?.name) {
-    out.name = local.identityFile.name;
-    sources.name = "identity-file";
   } else if (local.packageName) {
     out.name = local.packageName;
     sources.name = "package.json";
@@ -726,34 +717,24 @@ function inferIdentity(
     }
   }
 
-  // domain: flag > manifest > identity-file > CNAME file. We deliberately
-  // don't derive a domain from the project name — too speculative, and
-  // the matching layer already tries common domain patterns against any
-  // zone we list.
+  // domain: flag > manifest > CNAME file. We deliberately don't derive
+  // a domain from the project name — too speculative, and the matching
+  // layer already tries common domain patterns against any zone we list.
   if (override.domain) {
     out.domain = override.domain;
     sources.domain = "flag";
   } else if (local.manifest?.domain) {
     out.domain = local.manifest.domain;
     sources.domain = "manifest";
-  } else if (local.identityFile?.domain) {
-    out.domain = local.identityFile.domain;
-    sources.domain = "identity-file";
   } else if (local.cnameFile?.content) {
     out.domain = local.cnameFile.content;
     sources.domain = "cname-file";
   }
 
-  // repo: flag > identity-file > git remote (filled in by caller)
+  // repo: flag (else filled in by caller from git remote)
   if (override.repo) {
     out.repo = override.repo;
     sources.repo = "flag";
-  } else if (local.identityFile?.repo) {
-    out.repo = local.identityFile.repo;
-    sources.repo = "identity-file";
-  } else {
-    // git remote is resolved async — leave undefined here; the caller
-    // fills it via resolveGitRemote (run before prompting).
   }
 
   return { input: out, sources };

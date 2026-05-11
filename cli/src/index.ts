@@ -1948,6 +1948,18 @@ function printHelp(topic?: HelpTopic): void {
     · OpenPanel            projects
     · Stripe               webhook endpoints (test + live)
 
+  ${chalk.bold("Cross-references:")}
+    After listing every provider, ${chalk.cyan("overview")} cross-references the
+    raw data to flag fleet-level inconsistencies — the kind of bitrot
+    that a single-provider lens can't see:
+
+      · Coolify app deploys from a repo \`gh\` can't find (deleted/renamed)
+      · App fqdn references an apex with no Cloudflare zone
+      · R2 bucket follows the \`<project>-<role>\` convention but has no
+        matching Coolify app (orphan from a destroyed project)
+      · GlitchTip / OpenPanel project with no Coolify app counterpart
+      · Cloudflare zone with no Coolify app pointing into it
+
   ${chalk.bold("Flags:")}
     --all                Print every resource per provider (default: 6-line preview)
     --json               Machine-readable OverviewReport (non-interactive)
@@ -1999,17 +2011,19 @@ function printHelp(topic?: HelpTopic): void {
     --domain <domain>    Override inferred domain
     --repo <owner/name>  Override inferred GitHub repo
     --yes, -y            Skip confirm-inferred-value prompts
-    --save               Persist inferred identity to .hatchkit/identity.json
-                         without prompting
+    --save               Write a minimal .hatchkit.json without prompting
     --no-save            Suppress the end-of-run save prompt
     --json               Machine-readable InventoryReport (non-interactive)
 
-  ${chalk.bold("Identity file:")}
-    After an interactive run, hatchkit offers to save the inferred
-    name/domain/repo to ${chalk.cyan(".hatchkit/identity.json")} — a lighter ledger
-    than the full ${chalk.cyan(".hatchkit.json")} manifest written by ${chalk.cyan("create / adopt")}.
-    Subsequent inventory/adopt runs read it as the first identity source
-    so they don't re-prompt.
+  ${chalk.bold("Persisting identity:")}
+    After an interactive run, when ${chalk.cyan(".hatchkit.json")} doesn't yet exist
+    and both name + domain are inferred, hatchkit offers to write a
+    minimal manifest. The manifest carries the right schema for every
+    other command (adopt, update, sync, keys), with conservative defaults
+    for fields inventory can't infer (features=[], s3Provider="none",
+    deployTarget="existing", ports={server:3000,client:5173}). Run
+    ${chalk.cyan("hatchkit adopt --resume")} afterwards to flesh out the rest via
+    the adopt stepper.
 `);
     return;
   }
