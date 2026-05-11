@@ -204,8 +204,9 @@ async function checkS3(provider: "hetzner" | "aws" | "r2"): Promise<CheckResult>
   // via POST /accounts/{id}/tokens), but is still useful during
   // migration of pre-account-tokens projects, so we probe it as a
   // non-fatal hint. Either of the required perms failing tells the
-  // user exactly which one to add. Per-project access/secret pairs
-  // aren't checked here; that's per-project doctor territory (TODO).
+  // user exactly which one to add. Per-project access/secret pairs are
+  // checked separately by `checkProjectR2CredsState`, which runs from
+  // `collectDoctorResults` when invoked inside a hatchkit project.
   const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
   if (!adminToken) {
     return {
@@ -557,6 +558,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of projectChecks) results.push(r);
   const corsChecks = await checkProjectS3CorsState(process.cwd());
   for (const r of corsChecks) results.push(r);
+  const credChecks = await checkProjectR2CredsState(process.cwd());
+  for (const r of credChecks) results.push(r);
   return results;
 }
 
@@ -804,6 +807,92 @@ export async function checkProjectS3CorsState(projectDir: string): Promise<Check
         "  hatchkit provision s3",
       ],
     });
+  }
+  return out;
+}
+
+/** Verify the per-project R2 access/secret pair (minted by `provision s3`)
+ *  still has the perms it claims. We do a HeadBucket against each bucket
+ *  recorded in the manifest — cheapest GET on the S3 protocol, returns
+ *  200 when the token is valid AND scoped to that bucket, 403/404/etc
+ *  otherwise. The admin token check above doesn't catch this: a user can
+ *  revoke a per-project token from the dashboard without touching the
+ *  global admin token, leaving CORS / deploys broken at runtime.
+ *
+ *  Skipped silently when:
+ *    · no manifest at cwd
+ *    · manifest has no `s3Buckets.assets` (project never provisioned R2)
+ *    · per-project access/secret aren't in the keychain (legacy project
+ *      still on the deprecated account-wide pair — checkS3('r2') above
+ *      already covers that case) */
+export async function checkProjectR2CredsState(projectDir: string): Promise<CheckResult[]> {
+  const out: CheckResult[] = [];
+  const { existsSync, readFileSync } = await import("node:fs");
+  const manifestPath = `${projectDir}/.hatchkit.json`;
+  if (!existsSync(manifestPath)) return out;
+
+  let manifest: {
+    name?: string;
+    s3Buckets?: {
+      accountId?: string;
+      assets?: { name?: string };
+      state?: { name?: string };
+    };
+  };
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  } catch {
+    return out;
+  }
+  if (!manifest.name || !manifest.s3Buckets?.accountId) return out;
+
+  const buckets = [manifest.s3Buckets.assets?.name, manifest.s3Buckets.state?.name].filter(
+    (n): n is string => typeof n === "string" && n.length > 0,
+  );
+  if (buckets.length === 0) return out;
+
+  const accessKey = await getSecret(SECRET_KEYS.s3ProjectAccessKey("r2", manifest.name));
+  const secretKey = await getSecret(SECRET_KEYS.s3ProjectSecretKey("r2", manifest.name));
+  if (!accessKey || !secretKey) {
+    out.push({
+      name: `Project ${manifest.name} (R2 per-project creds)`,
+      status: "skip",
+      detail: "no per-project R2 access/secret in keychain — legacy project on account-wide pair",
+    });
+    return out;
+  }
+
+  const { HeadBucketCommand, S3Client } = await import("@aws-sdk/client-s3");
+  const client = new S3Client({
+    region: "auto",
+    endpoint: `https://${manifest.s3Buckets.accountId}.r2.cloudflarestorage.com`,
+    forcePathStyle: true,
+    credentials: { accessKeyId: accessKey, secretAccessKey: secretKey },
+  });
+  try {
+    for (const name of buckets) {
+      try {
+        await client.send(new HeadBucketCommand({ Bucket: name }));
+        out.push({
+          name: `Project ${manifest.name} (R2 ${name})`,
+          status: "ok",
+          detail: "per-project token reaches bucket",
+        });
+      } catch (err) {
+        const msg = (err as Error).message.split("\n")[0];
+        out.push({
+          name: `Project ${manifest.name} (R2 ${name})`,
+          status: "fail",
+          detail: `per-project token can't reach bucket: ${msg}`,
+          hint: [
+            "Token was likely revoked in the Cloudflare dashboard.",
+            `Re-mint: hatchkit provision s3   (reuses ${manifest.name}'s manifest)`,
+          ],
+        });
+      }
+    }
+  } finally {
+    client.destroy();
   }
   return out;
 }
