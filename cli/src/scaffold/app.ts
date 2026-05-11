@@ -33,7 +33,6 @@ import { type ProjectPorts, pickProjectPorts } from "../utils/ports.js";
 import { getCliVersion } from "../utils/version.js";
 import { type DotenvxSeedResult, seedDotenvxProduction } from "./dotenvx.js";
 import { MANIFEST_FILENAME, toManifest, writeManifest } from "./manifest.js";
-import { pruneToSurface } from "./surfaces.js";
 import {
   stripPackageJsonBuildBlock,
   stripPackageJsonDeps,
@@ -49,6 +48,7 @@ import {
   stripMobileBridgeFromLayout,
   updateEnvExample,
 } from "./starter-files.js";
+import { pruneToSurface } from "./surfaces.js";
 
 // Monorepo root → starter submodule
 const MONOREPO_ROOT = resolve(join(import.meta.dirname, "..", "..", ".."));
@@ -406,9 +406,13 @@ function scaffoldDryRun(config: ProjectConfig, outputDir: string): string[] {
   actions.push(`Rename project to "${config.name}"`);
   actions.push(`Set domain to "${config.domain}"`);
   if (config.surfaces === "server-only") {
-    actions.push("Prune to server-only (remove packages/client, native scaffolds, client compose service)");
+    actions.push(
+      "Prune to server-only (remove packages/client, native scaffolds, client compose service)",
+    );
   } else if (config.surfaces === "client-only") {
-    actions.push("Prune to client-only (remove packages/server, auth/tRPC routes, server/mongo/redis compose services)");
+    actions.push(
+      "Prune to client-only (remove packages/server, auth/tRPC routes, server/mongo/redis compose services)",
+    );
   }
 
   if (!config.features.includes("websocket")) actions.push("Remove WebSocket support");

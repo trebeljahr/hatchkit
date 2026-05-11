@@ -23,7 +23,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import chalk from "chalk";
 import { getConfig } from "../config.js";
-import { type ProjectConfig, type Surface } from "../prompts.js";
+import type { ProjectConfig, Surface } from "../prompts.js";
 import { generateCoolifyEnv, generateTfvars, resolveStackDir } from "../scaffold/infra.js";
 import { type ProjectManifest, readManifest } from "../scaffold/manifest.js";
 import { parseDomain } from "../utils/validate.js";

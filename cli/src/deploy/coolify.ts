@@ -156,9 +156,7 @@ export async function runCoolifySetup(
     console.log(chalk.dim(`    Frontend (client): ${frontendDomain}`));
   } else if (surfaces === "server-only") {
     console.log(
-      chalk.dim(
-        `    All hosts → server: ${[frontendDomain, ...backendDomains].join(", ")}`,
-      ),
+      chalk.dim(`    All hosts → server: ${[frontendDomain, ...backendDomains].join(", ")}`),
     );
   } else {
     console.log(chalk.dim(`    Frontend (client): ${frontendDomain}`));
