@@ -188,6 +188,7 @@ export function toManifest(
     cliVersion,
     scaffoldedAt: new Date().toISOString(),
     name: config.name,
+    description: config.description?.trim() || undefined,
     domain: config.domain,
     features: [...config.features],
     mlServices: [...config.mlServices],

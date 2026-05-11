@@ -99,14 +99,35 @@ export async function runCoolifySetup(
   // Project: reuse one with the same name when present. The old bash
   // script always created a new one, which left orphan empty projects
   // behind on every retry.
+  //
+  // Description: prefer the user-supplied one (collected by the create
+  // prompt + survives the review-edit loop). Empty falls through to
+  // Coolify's default — undefined is also fine; the API treats absent
+  // and empty alike.
+  const description = config.description?.trim() || undefined;
   let projectUuid: string;
   let projectCreated = false;
   const existingProject = await api.findProjectByName(config.name);
   if (existingProject) {
     projectUuid = existingProject.uuid;
     console.log(chalk.dim(`  Using existing Coolify project ${config.name} (${projectUuid})`));
+    // Reconcile description on re-runs when the user supplied one,
+    // matching the adopt-side semantics: don't clobber a description
+    // edited in the Coolify dashboard, but do push the user's value
+    // when they took the trouble to fill the prompt.
+    if (description) {
+      try {
+        await api.updateProject(existingProject.uuid, { description });
+      } catch (err) {
+        console.log(
+          chalk.dim(
+            `  · Couldn't update Coolify project description: ${(err as Error).message}`,
+          ),
+        );
+      }
+    }
   } else {
-    const project = await api.createProject(config.name);
+    const project = await api.createProject(config.name, description);
     projectUuid = project.uuid;
     projectCreated = true;
     console.log(chalk.green(`  ✓ Project created: ${config.name} (${projectUuid})`));
@@ -201,6 +222,7 @@ export async function runCoolifySetup(
         // pick.
         portsExposes: String(options.serverPort ?? 3000),
         name: appName,
+        description,
         // Per-service routing (see comment above). Bypasses the
         // `domains`-flat translation in coolify-api.ts because the
         // starter's compose has more than one public service.

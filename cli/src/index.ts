@@ -1022,6 +1022,9 @@ async function handleCreate(): Promise<void> {
   // Summary before execution
   console.log(chalk.bold("\n  ── Summary ───────────────────────────────────────────────\n"));
   console.log(`  Project:    ${chalk.cyan(config.name)}`);
+  if (config.description) {
+    console.log(`  Descr.:     ${chalk.cyan(config.description)}`);
+  }
   console.log(`  Domain:     ${chalk.cyan(config.domain)}`);
   if (config.deploymentMode === "gh-pages") {
     console.log(`  Deploy to:  ${chalk.cyan("GitHub Pages (static)")}`);

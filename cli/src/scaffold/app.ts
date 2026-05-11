@@ -34,6 +34,7 @@ import { getCliVersion } from "../utils/version.js";
 import { type DotenvxSeedResult, seedDotenvxProduction } from "./dotenvx.js";
 import { MANIFEST_FILENAME, toManifest, writeManifest } from "./manifest.js";
 import {
+  setPackageJsonDescription,
   stripPackageJsonBuildBlock,
   stripPackageJsonDeps,
   stripPackageJsonScripts,
@@ -180,6 +181,17 @@ async function runScaffoldSteps(
   // Rename the project in package.json
   replaceInFile(join(outputDir, "package.json"), "node-realtime-starter", config.name);
   modifications.push("package.json (renamed project)");
+
+  // Stamp the user-supplied description onto package.json. Empty/unset
+  // input deletes the field (the starter's package.json doesn't have
+  // one to begin with) so we don't ship an empty string through to
+  // any future `npm publish`.
+  if (config.description !== undefined) {
+    setPackageJsonDescription(outputDir, config.description);
+    if (config.description.trim()) {
+      modifications.push("package.json (set description)");
+    }
+  }
 
   // Project-name substitution for local-infra identifiers — gives each
   // scaffolded project its own dev Mongo DB / MinIO bucket / E2E
@@ -404,6 +416,9 @@ function scaffoldDryRun(config: ProjectConfig, outputDir: string): string[] {
   const actions: string[] = [];
   actions.push("Copy starter template");
   actions.push(`Rename project to "${config.name}"`);
+  if (config.description?.trim()) {
+    actions.push(`Set package.json description to "${config.description.trim()}"`);
+  }
   actions.push(`Set domain to "${config.domain}"`);
   if (config.surfaces === "server-only") {
     actions.push(

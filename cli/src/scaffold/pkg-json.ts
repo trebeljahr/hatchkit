@@ -66,6 +66,22 @@ export function unchainTypecheckScript(outputDir: string): void {
   writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
 }
 
+/** Set (or clear) the `description` field on the root `package.json`.
+ *  Passing an empty string deletes the field so we don't ship an empty
+ *  description through to npm metadata. */
+export function setPackageJsonDescription(outputDir: string, description: string): void {
+  const path = join(outputDir, "package.json");
+  if (!existsSync(path)) return;
+  const pkg = JSON.parse(readFileSync(path, "utf-8"));
+  const trimmed = description.trim();
+  if (trimmed) {
+    pkg.description = trimmed;
+  } else {
+    delete pkg.description;
+  }
+  writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
+}
+
 /** Set a specific script entry in the root `package.json`. Creates
  *  `scripts` if missing. */
 export function setPackageJsonScript(outputDir: string, name: string, value: string): void {

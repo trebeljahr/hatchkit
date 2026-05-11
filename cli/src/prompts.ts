@@ -4,7 +4,12 @@ import { getCoolifyConfig, getMlServices } from "./config.js";
 import { CoolifyApi, type CoolifyServer } from "./utils/coolify-api.js";
 import { discoverPublicIps } from "./utils/coolify-server-ips.js";
 import { multiselect } from "./utils/multiselect.js";
-import { parseDomain, validateDomain, validateProjectName } from "./utils/validate.js";
+import {
+  parseDomain,
+  validateCoolifyDescription,
+  validateDomain,
+  validateProjectName,
+} from "./utils/validate.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,6 +62,11 @@ export type MlService =
 
 export interface ProjectConfig {
   name: string;
+  /** Human-readable one-liner. Written to the root `package.json` and
+   *  used as the Coolify project + application description. Empty falls
+   *  back to Coolify's built-in default ("Adopted by hatchkit") and
+   *  leaves package.json without a description field. */
+  description?: string;
   domain: string;
   baseDomain: string;
   subdomain: string;
@@ -197,6 +207,23 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
   // Validate preset name since we skipped the prompt's built-in check.
   const nameErr = validateProjectName(name);
   if (nameErr !== true) throw new Error(`--name invalid: ${nameErr}`);
+
+  // One-line description. Written to package.json and used as the
+  // Coolify project + application description. Empty is a valid choice
+  // — Coolify falls back to its built-in blurb and we leave package.json
+  // without a description field.
+  const description = (
+    await presetOrPrompt(
+      presets.description,
+      nonInteractive,
+      () =>
+        input({
+          message: "Description (one-liner for package.json + Coolify, optional):",
+          validate: validateCoolifyDescription,
+        }),
+      "",
+    )
+  ).trim();
 
   const domain = await presetOrPrompt(
     presets.domain,
@@ -673,6 +700,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
 
   let config: ProjectConfig = {
     name,
+    description: description || undefined,
     domain,
     baseDomain,
     subdomain,
@@ -923,6 +951,15 @@ function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
       steps: [
         { key: "name", label: "Project name", set: !!cfg.name, summary: cfg.name },
         {
+          key: "description",
+          label: "Description",
+          // Empty description is a deliberate choice (Coolify will use
+          // its default blurb), so this step is always considered "set"
+          // once the user has been past the initial prompt.
+          set: true,
+          summary: cfg.description ? cfg.description : chalk.dim("(none)"),
+        },
+        {
           key: "domain",
           label: "Domain",
           set: !!cfg.domain,
@@ -1073,6 +1110,16 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
       })
     ).trim();
     return { ...cfg, name };
+  }
+  if (section === "description") {
+    const description = (
+      await input({
+        message: "Description (one-liner for package.json + Coolify, optional):",
+        default: cfg.description ?? "",
+        validate: validateCoolifyDescription,
+      })
+    ).trim();
+    return { ...cfg, description: description || undefined };
   }
   if (section === "domain") {
     const raw = (
