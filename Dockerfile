@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1
 #
-# Static-site image for hatchkit's docs (Docusaurus at docs/).
+# Static-site image for hatchkit's docs (Next.js + fumadocs at docs/).
 # Built by .github/workflows/deploy.yml, pushed to GHCR, pulled by
 # Coolify for hatchkit.trebeljahr.com. nginx serves the prebuilt
-# bundle — no runtime Node.
+# bundle — no runtime Node. `next build` with `output: "export"`
+# emits a fully static site to /app/out.
 #
 # docs/ is intentionally outside the root pnpm-workspace.yaml (which
 # only covers cli/ + mcp/). docs/.npmrc sets `ignore-workspace=true`
@@ -28,5 +29,5 @@ COPY docs/ ./
 RUN pnpm build
 
 FROM nginx:alpine AS runner
-COPY --from=build /app/build /usr/share/nginx/html
+COPY --from=build /app/out /usr/share/nginx/html
 EXPOSE 80
