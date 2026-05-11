@@ -34,6 +34,43 @@ import { renderTemplate } from "../utils/template.js";
  *  for projects that had quietly added `>=24` to engines.node. */
 const DEFAULT_NODE_MAJOR = "24";
 
+/** Web frameworks the scaffold knows how to specialise for. `generic`
+ *  is the historical default — picks the nginx-vs-Node Dockerfile by
+ *  surfaces alone. `nextjs` overrides that path because Next.js
+ *  fundamentally needs a Node runtime (`next start`) regardless of
+ *  whether the app exposes a backend API: Server Actions, route
+ *  handlers, and non-`NEXT_PUBLIC_*` env vars all require the runtime
+ *  even when the surfaces look "client-only". */
+export type DetectedFramework = "nextjs" | "generic";
+
+/** Detect whether the project is a Next.js app. We accept either a
+ *  `next.config.*` file at the project root OR a `next` entry in
+ *  package.json's dependencies/devDependencies. The two-check approach
+ *  catches both the conventional layout (config file at root) AND
+ *  monorepo packages that pull Next in transitively without owning
+ *  a config file. Anything else falls back to `"generic"`, which keeps
+ *  the surfaces-driven nginx-vs-Node split working for Vite/Astro/etc. */
+export function detectFramework(projectDir: string): DetectedFramework {
+  const configNames = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
+  if (configNames.some((name) => existsSync(join(projectDir, name)))) {
+    return "nextjs";
+  }
+  const pkgPath = join(projectDir, "package.json");
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
+      if (pkg.dependencies?.next || pkg.devDependencies?.next) return "nextjs";
+    } catch {
+      // Fall through to generic — a malformed package.json isn't our
+      // problem to solve here.
+    }
+  }
+  return "generic";
+}
+
 /** Pull the minimum major Node version out of `package.json#engines.node`.
  *  Handles the common range syntaxes — `>=24`, `^24.0.0`, `24.x`, `22 || 24`,
  *  `>=20.0.0 <24.0.0` — by grabbing the first integer that appears.
@@ -187,11 +224,20 @@ export function scaffoldBuildPipeline(
   // sniff `engines.node` from the project's package.json so the
   // image matches what the user's dependencies actually require.
   const nodeMajor = input.nodeMajor ?? detectNodeMajorVersion(input.projectDir);
+  // Framework detection: Next.js gets its own Dockerfile regardless of
+  // surfaces — `next start` is the only sane production runtime even
+  // for apps that look "client-only" on the surface, because Server
+  // Actions / route handlers / non-NEXT_PUBLIC_* env vars all need it.
+  // Everything else falls back to the surfaces-driven nginx-vs-Node
+  // split that's been the default since this scaffolder was born.
+  const framework = detectFramework(input.projectDir);
   if (input.force || !state.hasDockerfile) {
     const tpl =
-      input.surfaces === "client-only"
-        ? "build-pipeline/Dockerfile.client.hbs"
-        : "build-pipeline/Dockerfile.server.hbs";
+      framework === "nextjs"
+        ? "build-pipeline/Dockerfile.nextjs.hbs"
+        : input.surfaces === "client-only"
+          ? "build-pipeline/Dockerfile.client.hbs"
+          : "build-pipeline/Dockerfile.server.hbs";
     const out = renderTemplate(tpl, {
       name: input.projectName,
       port: input.port,
@@ -206,12 +252,21 @@ export function scaffoldBuildPipeline(
   // docker-compose.yml — only scaffold when no compose file (any of
   // the recognised names) is present. Always write to
   // `docker-compose.yml` since that's what Coolify expects by default.
+  //
+  // Port resolution: the nginx-static template fixes itself at 80;
+  // Node-runtime templates (server.hbs, nextjs.hbs) bind to whatever
+  // {{port}} we plug in. Next.js is Node-runtime even when surfaces
+  // looks "client-only", so it follows the same input.port path as
+  // the server template — otherwise compose would map :80 to a
+  // container that's actually listening on :3000.
   if (input.force || !state.hasCompose) {
-    const servicePort = input.surfaces === "client-only" ? 80 : input.port;
+    const servicePort =
+      framework === "nextjs" ? input.port : input.surfaces === "client-only" ? 80 : input.port;
     const out = renderTemplate("build-pipeline/docker-compose.yml.hbs", {
       name: input.projectName,
       owner: input.ghOwner,
       port: servicePort,
+      isNextjs: framework === "nextjs",
     });
     write("docker-compose.yml", out, state.hasCompose);
   } else {

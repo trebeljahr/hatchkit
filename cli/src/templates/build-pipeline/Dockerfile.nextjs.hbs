@@ -1,0 +1,103 @@
+# syntax=docker/dockerfile:1
+#
+# Next.js + Coolify image for {{name}}.
+# Built by .github/workflows/deploy.yml, pushed to GHCR, pulled by
+# Coolify via docker-compose.yml.
+#
+# Runtime: node + `next start`. NOT nginx + static export — Next.js
+# apps with any of the following features won't compile under
+# `output: "export"` and need a Node runtime:
+#
+#   - Server Actions ("use server")
+#   - Route handlers that read Request / cookies / use non-GET verbs
+#   - Dynamic routes without generateStaticParams
+#   - Server-side env vars without NEXT_PUBLIC_* prefixes
+#
+# dotenvx decrypts the committed encrypted .env.production at TWO points:
+#
+#   1. Build stage — uses the dotenvx_private_key BuildKit secret
+#      (passed by the workflow from the GH Actions secret
+#      DOTENV_PRIVATE_KEY_PRODUCTION) to decrypt in-memory before
+#      running `pnpm build`. Required so NEXT_PUBLIC_* values get
+#      inlined into the static client bundle. The secret is mounted
+#      as tmpfs and never lands in `docker history` or any image layer.
+#
+#   2. Runtime CMD — `dotenvx run` reads the same .env.production and
+#      decrypts again, this time using DOTENV_PRIVATE_KEY_PRODUCTION
+#      from the container env (forwarded by docker-compose.yml from
+#      Coolify's app env). This covers server-side values the runtime
+#      reads with `process.env.X` — Server Action handlers, route
+#      handlers, etc.
+#
+# Image base is bookworm-slim (not alpine) because Next's optional
+# native deps (sharp for image optimisation) ship glibc binaries that
+# don't run on Alpine's musl without a rebuild — avoiding the rebuild
+# is faster and one less moving part.
+ARG NODE_VERSION={{nodeMajor}}
+
+# ---------------------------------------------------------------------------
+# Build
+# ---------------------------------------------------------------------------
+FROM node:${NODE_VERSION}-bookworm-slim AS build
+WORKDIR /app
+
+RUN corepack enable
+
+# Install deps first (layer cache) before copying source.
+COPY package.json pnpm-lock.yaml* ./
+RUN pnpm install --frozen-lockfile
+
+COPY . .
+
+# Two separate RUN steps on purpose: BuildKit echoes the entire RUN
+# body into any failure log, so splitting the secret-presence check
+# off means the "secret not supplied" message only surfaces when
+# that's actually what failed — a downstream `next build` error
+# won't drag the misleading echo into its context.
+RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION \
+    test -n "$DOTENV_PRIVATE_KEY_PRODUCTION" || { \
+      echo "ERROR: dotenvx_private_key build secret not supplied. The workflow at .github/workflows/deploy.yml should pass it via 'secrets:' from the GH Actions secret DOTENV_PRIVATE_KEY_PRODUCTION." >&2; \
+      exit 1; \
+    }
+
+# dotenvx decrypts .env.production in memory and re-exports each
+# KEY=VALUE for `pnpm build`. next build sees the plain values and
+# bakes NEXT_PUBLIC_* into the static client bundle.
+RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION \
+    pnpm dlx @dotenvx/dotenvx run -- pnpm build
+
+# ---------------------------------------------------------------------------
+# Runtime — `next start` on PORT={{port}}.
+# ---------------------------------------------------------------------------
+FROM node:${NODE_VERSION}-bookworm-slim AS runtime
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PORT={{port}}
+
+# Bring across everything `next start` needs to serve the app. The
+# encrypted .env.production travels with the image so dotenvx can
+# decrypt at startup; the matching private key arrives via the
+# container env (set by Coolify, see docker-compose.yml).
+#
+# Glob-matches both `next.config.ts` and `next.config.{js,mjs,cjs}`.
+# The build leaves `.env.production` in /app because the build context
+# copied it in at `COPY . .` above.
+COPY --from=build /app/.next ./.next
+COPY --from=build /app/public ./public
+COPY --from=build /app/package.json ./
+COPY --from=build /app/pnpm-lock.yaml ./
+COPY --from=build /app/next.config.* ./
+COPY --from=build /app/.env.production ./
+COPY --from=build /app/node_modules ./node_modules
+
+EXPOSE {{port}}
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
+  CMD node -e "require('http').get('http://127.0.0.1:{{port}}/',r=>{process.exit(r.statusCode<400?0:1)}).on('error',()=>process.exit(1))"
+
+# dotenvx decrypts .env.production at startup using
+# DOTENV_PRIVATE_KEY_PRODUCTION from the container env (forwarded by
+# Coolify via docker-compose.yml). next start then sees XAI_API_KEY,
+# NEXT_PUBLIC_*, etc. and binds to PORT={{port}} from the ENV above.
+CMD ["./node_modules/.bin/dotenvx", "run", "--", "./node_modules/.bin/next", "start"]

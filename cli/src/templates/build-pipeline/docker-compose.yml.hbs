@@ -19,17 +19,34 @@ services:
     # Coolify reads this and gates Traefik/Caddy routing on it.
     # Without a healthcheck Coolify shows "No health check configured"
     # and routes blind — traffic can hit the container before it's
-    # ready. busybox (bundled in both nginx:alpine and node:alpine
-    # base images) ships `wget`, so no extra deps are needed.
+    # ready.
     #
+    # If your app's `/` legitimately returns a non-2xx (common for
+    # API-only servers that 404 the root), point this at a known-good
+    # path instead — e.g. replace `/` with `/health` or whatever your
+    # framework exposes.
+{{#if isNextjs}}
+    # node-based probe: the Next.js runtime image is node:slim, which
+    # ships neither wget nor curl. `node -e` is the universal fallback
+    # — exits 0 on <400 responses, 1 otherwise.
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "require('http').get('http://127.0.0.1:{{port}}/',r=>{process.exit(r.statusCode<400?0:1)}).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+{{else}}
     # `wget --spider` issues a HEAD-style request and exits non-zero
-    # on any 4xx/5xx. If your app's `/` legitimately returns a non-2xx
-    # (common for API-only servers that 404 the root), point this at a
-    # known-good path instead — e.g. replace `/` with `/health` or
-    # whatever your framework exposes.
+    # on any 4xx/5xx. busybox (bundled in nginx:alpine and node:alpine
+    # base images) ships `wget`, so no extra deps are needed.
     healthcheck:
       test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://127.0.0.1:{{port}}/ || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 60s
+{{/if}}

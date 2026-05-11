@@ -843,6 +843,151 @@ console.log("\n── build pipeline: engines.node detection + created/overwritt
   rmSync(tmp, { recursive: true, force: true });
 }
 
+// Build pipeline: framework detection picks the right Dockerfile.
+// A Next.js project needs a Node runtime even when surfaces look
+// "client-only" — Server Actions and route handlers don't compile
+// under `output: "export"`. Bug we're guarding against: hatchkit
+// scaffolded an nginx-static Dockerfile copying /app/dist for a
+// Next.js project, and the build failed at runtime (no dist/) and
+// at compile time (Server Actions refuse static export).
+console.log("\n── build pipeline: framework detection (Next.js) ───────────────────────────");
+{
+  const { detectFramework, scaffoldBuildPipeline } = await import(
+    "./src/scaffold/build-pipeline.js"
+  );
+  const checks: Check[] = [];
+
+  // 1. detectFramework via next.config.* file.
+  for (const ext of ["ts", "mjs", "js", "cjs"]) {
+    const dir = mkdtempSync(join(tmpdir(), `next-config-${ext}-`));
+    writeFileSync(join(dir, `next.config.${ext}`), "export default {};");
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
+    checks.push([`detects next.config.${ext}`, detectFramework(dir) === "nextjs"]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // 2. detectFramework via package.json deps (no config file).
+  {
+    const dir = mkdtempSync(join(tmpdir(), "next-deps-"));
+    writeFileSync(
+      join(dir, "package.json"),
+      JSON.stringify({ name: "x", dependencies: { next: "^16" } }),
+    );
+    checks.push(["detects `next` in dependencies", detectFramework(dir) === "nextjs"]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+  {
+    const dir = mkdtempSync(join(tmpdir(), "next-devdeps-"));
+    writeFileSync(
+      join(dir, "package.json"),
+      JSON.stringify({ name: "x", devDependencies: { next: "^16" } }),
+    );
+    checks.push(["detects `next` in devDependencies", detectFramework(dir) === "nextjs"]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // 3. Generic fallback (no signals).
+  {
+    const dir = mkdtempSync(join(tmpdir(), "no-next-"));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
+    checks.push(["empty package.json → generic", detectFramework(dir) === "generic"]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+  {
+    const dir = mkdtempSync(join(tmpdir(), "vite-only-"));
+    writeFileSync(
+      join(dir, "package.json"),
+      JSON.stringify({ name: "x", dependencies: { vite: "^5" } }),
+    );
+    checks.push(["vite-only project → generic", detectFramework(dir) === "generic"]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // 4. Scaffold with Next.js + client-only surfaces — the foot-gun the
+  //    sprite-tools deploy tripped over. Must produce a Node-runtime
+  //    Dockerfile (not nginx) and a compose that maps the real app
+  //    port (not nginx's :80). Healthcheck must be node-based, not
+  //    wget-based — node:slim ships neither wget nor busybox.
+  {
+    const dir = mkdtempSync(join(tmpdir(), "scaffold-next-client-"));
+    writeFileSync(join(dir, "next.config.ts"), "export default {};");
+    writeFileSync(
+      join(dir, "package.json"),
+      JSON.stringify({ name: "x", devDependencies: { next: "^16" } }),
+    );
+    scaffoldBuildPipeline({
+      projectDir: dir,
+      projectName: "next-app",
+      ghOwner: "owner",
+      entrypoint: "",
+      port: 3000,
+      surfaces: "client-only",
+      defaultBranch: "main",
+    });
+    const dockerfile = readFileSync(join(dir, "Dockerfile"), "utf-8");
+    const compose = readFileSync(join(dir, "docker-compose.yml"), "utf-8");
+
+    checks.push(["Next.js Dockerfile runs next start", /node_modules\/.bin\/next/.test(dockerfile)]);
+    checks.push(["Next.js Dockerfile uses bookworm-slim", /bookworm-slim/.test(dockerfile)]);
+    checks.push([
+      "Next.js Dockerfile does NOT serve via nginx (no FROM nginx)",
+      !/^FROM\s+nginx[:\s]/m.test(dockerfile),
+    ]);
+    checks.push([
+      "Next.js Dockerfile does NOT COPY /app/dist",
+      !/COPY --from=build \/app\/dist/.test(dockerfile),
+    ]);
+    checks.push([
+      "Next.js compose maps app port (not nginx :80) despite client-only",
+      compose.includes('"3000:3000"'),
+    ]);
+    checks.push([
+      "Next.js compose does NOT map nginx :80",
+      !compose.includes('"80:80"'),
+    ]);
+    checks.push([
+      "Next.js compose healthcheck command is node-based, not wget",
+      /wget --(spider|quiet)/.test(compose) === false &&
+        /- "node"/.test(compose) &&
+        /- "-e"/.test(compose),
+    ]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // 5. Non-Next.js (generic) keeps the historical surfaces-driven
+  //    nginx-for-client / Node-for-server split. Regression guard:
+  //    don't accidentally route Vite/Astro projects through the
+  //    Next.js template.
+  {
+    const dir = mkdtempSync(join(tmpdir(), "scaffold-vite-client-"));
+    writeFileSync(
+      join(dir, "package.json"),
+      JSON.stringify({ name: "x", devDependencies: { vite: "^5" } }),
+    );
+    scaffoldBuildPipeline({
+      projectDir: dir,
+      projectName: "vite-app",
+      ghOwner: "owner",
+      entrypoint: "",
+      port: 3000,
+      surfaces: "client-only",
+      defaultBranch: "main",
+    });
+    const dockerfile = readFileSync(join(dir, "Dockerfile"), "utf-8");
+    const compose = readFileSync(join(dir, "docker-compose.yml"), "utf-8");
+    checks.push(["generic client-only still uses nginx", /nginx/.test(dockerfile)]);
+    checks.push(["generic client-only compose still maps :80", compose.includes('"80:80"')]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  results.buildPipelineFrameworkDetection = ok;
+}
+
 // Coolify API: dockercompose app creation must use per-service domains,
 // not the top-level `domains` field that Coolify now rejects.
 console.log("\n── coolify api: dockercompose domains payload ─────────────────────────────");
