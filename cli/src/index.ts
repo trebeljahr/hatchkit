@@ -180,6 +180,23 @@ async function main(): Promise<void> {
       await runDoctor({ json: isJson });
       break;
     }
+    case "inventory": {
+      if (args.includes("--help")) return printHelp("inventory");
+      const { runInventory } = await import("./inventory.js");
+      const nameFlag = flagValue("--name");
+      const domainFlag = flagValue("--domain");
+      const repoFlag = flagValue("--repo");
+      const inputOverride: { name?: string; domain?: string; repo?: string } = {};
+      if (nameFlag) inputOverride.name = nameFlag;
+      if (domainFlag) inputOverride.domain = domainFlag;
+      if (repoFlag) inputOverride.repo = repoFlag;
+      await runInventory(resolve("."), {
+        json: isJson,
+        yes: args.includes("--yes") || args.includes("-y"),
+        input: Object.keys(inputOverride).length > 0 ? inputOverride : undefined,
+      });
+      break;
+    }
     case "provision": {
       const sub = args[1];
       if (sub === "s3") {
@@ -1605,6 +1622,7 @@ type HelpTopic =
   | "sync"
   | "regen-infra"
   | "doctor"
+  | "inventory"
   | "status"
   | "explain"
   | "completion"
@@ -1774,6 +1792,53 @@ function printHelp(topic?: HelpTopic): void {
   stored (Coolify /version, Hetzner /servers, Cloudflare /tokens/verify,
   Resend /domains, …). Reports ok / fail / not-configured per provider
   and exits non-zero if any check fails. Safe to run repeatedly.
+`);
+    return;
+  }
+  if (topic === "inventory") {
+    console.log(`
+  ${chalk.bold("hatchkit inventory")} — survey what already exists for this project
+
+  Inverse of ${chalk.cyan("doctor")}: instead of "are my credentials valid?", asks
+  "given THIS project (cwd / name / domain / repo), what resources
+  already exist across every configured provider — and is anything
+  out of sync?"
+
+  ${chalk.bold("Inference (cwd → identity):")}
+    · .hatchkit.json            — name, domain
+    · package.json              — name, description
+    · git remote                — GitHub owner/repo
+    · CNAME file                — gh-pages custom domain
+    · .env.production dotenvx   — encryption state
+    · .github/workflows/        — gh-pages / Coolify deploy workflows
+
+  Asks interactively for anything that couldn't be inferred. Confirms
+  inferred values unless ${chalk.cyan("--yes")} is passed.
+
+  ${chalk.bold("Scans (parallel, read-only):")}
+    · Coolify    — projects, applications (with fqdn + git source)
+    · DNS        — Cloudflare zone + relevant records (apex/www/api/s3/…)
+    · R2         — buckets (manifest + naming-convention candidates) + CORS
+    · GitHub     — repo visibility, Pages status, relevant repo secrets
+    · Resend     — verified-domain match
+    · GlitchTip  — projects in the configured org
+    · OpenPanel  — projects
+    · Stripe     — webhook endpoints whose URL contains the project domain
+
+  ${chalk.bold("Drift detection (cross-references):")}
+    · Coolify app fqdn vs DNS A record (and the linked server's public IP)
+    · Coolify app git source vs local git remote (renamed repo gotcha)
+    · Manifest s3Buckets entries vs live R2 buckets
+    · Bucket CORS — manifest origins vs live policy
+    · gh-pages workflow on disk vs Pages enabled on repo (and CNAME ↔ Pages cname)
+    · dotenvx encrypted locally but no DOTENV_PRIVATE_KEY_PRODUCTION secret in GH
+
+  ${chalk.bold("Flags:")}
+    --name <project>     Override inferred project name
+    --domain <domain>    Override inferred domain
+    --repo <owner/name>  Override inferred GitHub repo
+    --yes, -y            Skip confirm-inferred-value prompts
+    --json               Machine-readable InventoryReport (non-interactive)
 `);
     return;
   }
@@ -2209,6 +2274,7 @@ function printHelp(topic?: HelpTopic): void {
     setup           One-time onboarding — wires up all credentials (alias: init)
     status          Show what's configured and what's next
     doctor          Health-check every provider with contextual fix hints
+    inventory       Survey what already exists for this project (and flag drift)
     explain         One-page mental model of the CLI
 
   ${chalk.bold("Projects:")}
@@ -2234,8 +2300,9 @@ function printHelp(topic?: HelpTopic): void {
     config reset    Clear ALL CLI config (providers, tokens, ML registry, ports)
 
   ${chalk.bold("For agents / scripts:")}
-    status --json   StatusSnapshot as JSON
-    doctor --json   Per-provider health with fix hints as JSON
+    status --json     StatusSnapshot as JSON
+    doctor --json     Per-provider health with fix hints as JSON
+    inventory --json  InventoryReport — resources found per provider + drift
     completion <shell>  Print a zsh/bash/fish completion script
 
   ${chalk.bold("Options:")}

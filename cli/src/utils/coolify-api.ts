@@ -524,6 +524,9 @@ export class CoolifyApi {
       fqdn,
       dockerComposeDomains,
       portsExposes: typeof raw.ports_exposes === "string" ? raw.ports_exposes : undefined,
+      gitRepository: typeof raw.git_repository === "string" ? raw.git_repository : undefined,
+      gitBranch: typeof raw.git_branch === "string" ? raw.git_branch : undefined,
+      serverUuid: extractServerUuid(raw),
     };
   }
 
@@ -567,6 +570,17 @@ export interface CoolifyApplication {
   dockerComposeDomains?: Array<{ name: string; domain: string }>;
   /** `ports_exposes` as Coolify stores it (comma-separated). */
   portsExposes?: string;
+  /** Linked git source — surfaced for read-only inventory/drift checks
+   *  that need to compare what Coolify thinks the app deploys from
+   *  against the local `git remote`. Both fields are best-effort; old
+   *  Coolify builds may not set them, and self-hosted setups may store
+   *  the URL in a non-standard shape. */
+  gitRepository?: string;
+  gitBranch?: string;
+  /** UUID of the linked Coolify server (the box this app deploys to).
+   *  Lets inventory resolve the server's IP via `getServerDomains` and
+   *  compare against the DNS A record for `fqdn`. */
+  serverUuid?: string;
 }
 
 export interface ApplicationCreateInput {
@@ -602,6 +616,27 @@ export interface ApplicationCreateInput {
   /** Repo-relative path to the compose file when buildPack is
    *  `dockercompose`. Defaults to `/docker-compose.yml`. */
   dockerComposeLocation?: string;
+}
+
+/** Pull the linked server UUID out of an /applications/{uuid} raw
+ *  response. Coolify versions differ on where it lands — older builds
+ *  nest it under `destination.server`, newer ones under `server`. Both
+ *  forms are shallow JSON objects with a `uuid` string. */
+function extractServerUuid(raw: Record<string, unknown>): string | undefined {
+  const dest = raw.destination;
+  if (dest && typeof dest === "object") {
+    const server = (dest as { server?: unknown }).server;
+    if (server && typeof server === "object") {
+      const uuid = (server as { uuid?: unknown }).uuid;
+      if (typeof uuid === "string") return uuid;
+    }
+  }
+  const server = raw.server;
+  if (server && typeof server === "object") {
+    const uuid = (server as { uuid?: unknown }).uuid;
+    if (typeof uuid === "string") return uuid;
+  }
+  return undefined;
 }
 
 /** Normalize a registry URL for equality matching. Different Coolify
