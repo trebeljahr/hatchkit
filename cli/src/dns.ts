@@ -110,8 +110,9 @@ export async function runDnsLinkToCloudflare(options: DnsLinkOptions): Promise<v
         // Skip if INWX already has the right NS — saves a write and
         // avoids logging a misleading "updated" message.
         const current = await inwx.getDomainInfo(zone.name);
-        const same =
-          current.ns.length === ns.length && current.ns.every((n) => ns.includes(n.toLowerCase()));
+        const wantNs = ns.map((n) => n.toLowerCase());
+        const haveNs = current.ns.map((n) => n.toLowerCase());
+        const same = haveNs.length === wantNs.length && haveNs.every((n) => wantNs.includes(n));
         if (same) {
           console.log(chalk.dim("    already matches — no change"));
           skipped += 1;
