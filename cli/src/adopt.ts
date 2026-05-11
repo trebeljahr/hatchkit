@@ -1414,10 +1414,14 @@ async function executePlan(
     // Gated on coolify mode — the Coolify-targeted Dockerfile + deploy
     // webhook workflow aren't useful for gh-pages, which uses its own
     // `gh-pages.yml` workflow written later in step 3c-pages.
+    let scaffoldedAbsPaths: string[] = [];
+    let overwrittenAbsPaths: string[] = [];
     if (plan.scaffoldBuildPipeline && plan.deploymentMode === "coolify") {
       const pipeResult = await scaffoldBuildPipelineNow(state, plan, remoteUrl, {
         force: !!opts.regeneratePipeline,
       });
+      scaffoldedAbsPaths = pipeResult.createdAbsPaths;
+      overwrittenAbsPaths = pipeResult.overwrittenAbsPaths;
       // Record only files we *created*. The `overwritten` list is
       // deliberately not recorded — those files existed before this
       // run (the user's), and a later `hatchkit destroy` must never
@@ -1688,13 +1692,34 @@ async function executePlan(
       }
     }
 
-    // Step 3d: push the working branch to origin. Done AFTER secrets
-    // are set so the workflow's first run can hit the Coolify webhook
-    // without falling through to the "secret not set" branch. Skipped
-    // when there's no remote yet (e.g. user opted out of GitHub) or
-    // when origin already had history before adopt.
-    if (plan.setupGitHub && remoteUrl && !state.gitRemoteUrl) {
-      await pushInitialBranch(state.projectDir);
+    // Step 3d: push to origin so GitHub Actions builds + pushes the
+    // GHCR image. Done AFTER Coolify wiring + secrets so the workflow's
+    // first run can hit the redeploy webhook on its own.
+    //
+    // Two paths:
+    //   · Brand-new remote (this run just ran `gh repo create`) →
+    //     pushInitialBranch pushes the whole tree.
+    //   · Pre-existing remote → commitAndPushScaffold makes a
+    //     pathspec-scoped commit of just the files hatchkit wrote
+    //     (manifest + build-pipeline scaffold) and pushes it. Without
+    //     this push the workflow file lives only in the working tree,
+    //     Actions never fires, and the GHCR-wait below times out.
+    //
+    // `pushedThisRun` gates the GHCR step below — we only wait for a
+    // new image when a push actually went out.
+    let pushedThisRun = false;
+    if (remoteUrl) {
+      if (plan.setupGitHub && !state.gitRemoteUrl) {
+        pushedThisRun = await pushInitialBranch(state.projectDir);
+      } else if (state.gitRemoteUrl) {
+        const result = await commitAndPushScaffold(state, {
+          scaffoldedAbsPaths,
+          overwrittenAbsPaths,
+          manifestPath,
+        });
+        pushedThisRun = result.pushed;
+        if (result.caveat) caveats.push(result.caveat);
+      }
     }
 
     // Step 3e: GHCR setup. Two paths, gated on the user's earlier
@@ -1720,7 +1745,25 @@ async function executePlan(
       coolifyResult !== undefined
     ) {
       const slug = repoSlugFromRemote(remoteUrl);
-      if (slug) {
+      if (slug && !pushedThisRun && !plan.isPrivate) {
+        // No push went out (either nothing changed on disk this run,
+        // or the auto-commit-push failed). Without a push the
+        // build-and-deploy workflow doesn't run, so polling GHCR for
+        // a brand-new image would just time out. Defer the visibility
+        // PATCH to the next `--resume` once the user has pushed.
+        caveats.push({
+          title: "GHCR visibility not set — no push triggered",
+          reason:
+            "Adopt didn't push to origin this run, so the build-and-deploy workflow hasn't been triggered to publish the GHCR image.",
+          recovery: [
+            "Commit + push so the workflow runs:",
+            `  cd ${state.projectDir}`,
+            `  git add . && git commit -m "chore: adopt hatchkit"`,
+            `  git push`,
+            "Then re-run: hatchkit adopt --resume",
+          ],
+        });
+      } else if (slug) {
         const { makeGhcrPackagePublic, registerGhcrCredsWithCoolify } = await import(
           "./deploy/ghcr.js"
         );
@@ -2315,6 +2358,301 @@ async function ensureEnvProductionCommitted(state: DetectedState, plan: AdoptPla
       ),
     );
   }
+}
+
+type UserWipState =
+  | { kind: "ok" }
+  | { kind: "in-progress"; op: string }
+  | { kind: "user-changes"; files: { status: string; path: string }[] }
+  | { kind: "error"; reason: string };
+
+/**
+ * Sniff the working tree for state that would make auto-commit + push
+ * surprising or destructive. We refuse to touch git when:
+ *
+ *   · A merge / rebase / cherry-pick / revert / bisect is in progress
+ *     — adopt isn't allowed to add commits on top of half-resolved
+ *     conflicts.
+ *   · Any tracked file *outside* hatchkit's path list has unstaged or
+ *     staged changes. Even though the commit itself is pathspec-scoped
+ *     (so the user's modifications wouldn't be swept in), the push
+ *     would still land hatchkit's commit on top of the user's WIP on
+ *     the same branch — entangling their unpushed work with the
+ *     hatchkit commit on origin. Make them park or commit it first.
+ *
+ * Untracked files (status `??`) are deliberately ignored — they're
+ * common debris (editor swaps, build artifacts not in gitignore, etc.)
+ * and never end up in our pathspec commit anyway.
+ */
+async function detectUserWip(
+  projectDir: string,
+  hatchkitAbsPaths: string[],
+): Promise<UserWipState> {
+  // In-progress operations: probe the .git dir for marker files. We
+  // resolve --git-dir via git itself so this works in worktrees (where
+  // .git is a file, not a directory) and submodules.
+  const gitDirRes = await exec("git", ["rev-parse", "--git-dir"], {
+    cwd: projectDir,
+    silent: true,
+  });
+  if (gitDirRes.exitCode === 0) {
+    const raw = gitDirRes.stdout.trim();
+    const gitDir = raw.startsWith("/") ? raw : join(projectDir, raw);
+    const markers: Array<[string, string]> = [
+      ["MERGE_HEAD", "merge"],
+      ["CHERRY_PICK_HEAD", "cherry-pick"],
+      ["REVERT_HEAD", "revert"],
+      ["rebase-merge", "rebase"],
+      ["rebase-apply", "rebase"],
+      ["BISECT_LOG", "bisect"],
+    ];
+    for (const [marker, op] of markers) {
+      if (existsSync(join(gitDir, marker))) return { kind: "in-progress", op };
+    }
+  }
+
+  // Repo-root-relative path matching. `git status --porcelain` emits
+  // paths relative to the repo root, not necessarily our cwd, so we
+  // normalize hatchkit's absolute paths the same way before comparing.
+  const rootRes = await exec("git", ["rev-parse", "--show-toplevel"], {
+    cwd: projectDir,
+    silent: true,
+  });
+  if (rootRes.exitCode !== 0) {
+    return { kind: "error", reason: "git rev-parse --show-toplevel failed" };
+  }
+  const repoRoot = rootRes.stdout.trim();
+  const hatchkitRelToRoot = new Set(hatchkitAbsPaths.map((p) => relative(repoRoot, p)));
+
+  const status = await exec("git", ["status", "--porcelain", "--untracked-files=no"], {
+    cwd: projectDir,
+    silent: true,
+  });
+  if (status.exitCode !== 0) {
+    return { kind: "error", reason: "git status failed" };
+  }
+
+  const userFiles: { status: string; path: string }[] = [];
+  for (const line of status.stdout.split("\n")) {
+    if (line.length < 4) continue;
+    const code = line.slice(0, 2);
+    let rest = line.slice(3);
+    // Renames/copies show up as "OLD -> NEW". We want the new path.
+    if (rest.includes(" -> ")) rest = rest.split(" -> ").pop() ?? rest;
+    // Git quotes paths with special chars in C-style. If a path is
+    // quoted we conservatively treat it as user WIP rather than try
+    // to unquote and risk a false negative.
+    const path = rest.startsWith('"') && rest.endsWith('"') ? rest.slice(1, -1) : rest;
+    if (!hatchkitRelToRoot.has(path)) {
+      userFiles.push({ status: code, path });
+    }
+  }
+
+  if (userFiles.length > 0) return { kind: "user-changes", files: userFiles };
+  return { kind: "ok" };
+}
+
+/**
+ * Commit + push the files hatchkit wrote this run (manifest +
+ * scaffolded build pipeline) to a pre-existing remote so the
+ * build-and-deploy workflow fires.
+ *
+ * Pathspec-scoped on purpose: a plain `git add -A` would sweep up
+ * whatever WIP the user happened to have in the working tree —
+ * surprising behavior for an adopt. By listing only the paths
+ * hatchkit just wrote, the resulting commit is exactly "the adopt
+ * step", and anything else stays staged in the user's hands.
+ *
+ * Hard-stops with a caveat when `detectUserWip` finds unrelated user
+ * changes or an in-progress git operation. The push would otherwise
+ * land hatchkit's commit on top of WIP that isn't part of adopt — a
+ * surprise we explicitly refuse to do.
+ *
+ * Returns `{ pushed: false }` (no caveat) for the idempotent case —
+ * everything hatchkit wrote was already byte-identical to HEAD, so
+ * there was nothing to push. Failures during commit/push surface as
+ * a caveat with a copy-pasteable manual recipe.
+ */
+async function commitAndPushScaffold(
+  state: DetectedState,
+  paths: {
+    scaffoldedAbsPaths: string[];
+    overwrittenAbsPaths: string[];
+    manifestPath: string;
+  },
+): Promise<{ pushed: boolean; caveat?: AdoptCaveat }> {
+  const all = [
+    ...paths.scaffoldedAbsPaths,
+    ...paths.overwrittenAbsPaths,
+    paths.manifestPath,
+  ].filter((p, i, arr) => arr.indexOf(p) === i && existsSync(p));
+  if (all.length === 0) return { pushed: false };
+
+  // Hard stop: refuse to auto-commit on top of in-progress git ops
+  // or unrelated user changes. See detectUserWip docstring for the
+  // exact policy.
+  const wip = await detectUserWip(state.projectDir, all);
+  if (wip.kind === "in-progress") {
+    return {
+      pushed: false,
+      caveat: {
+        title: `Refusing to auto-commit — git ${wip.op} in progress`,
+        reason: `A ${wip.op} is in progress in ${state.projectDir}. Adopt won't stack commits on top of half-resolved git state.`,
+        recovery: [
+          `Finish or abort the ${wip.op}, then re-run adopt:`,
+          wip.op === "rebase"
+            ? `  git rebase --continue   # or: git rebase --abort`
+            : `  git ${wip.op} --abort   # or finish it manually and commit`,
+          "Then: hatchkit adopt --resume",
+        ],
+      },
+    };
+  }
+  if (wip.kind === "user-changes") {
+    const preview = wip.files.slice(0, 8).map((f) => `    ${f.status} ${f.path}`);
+    const extra =
+      wip.files.length > 8 ? [`    ... and ${wip.files.length - 8} more`] : [];
+    return {
+      pushed: false,
+      caveat: {
+        title: "Refusing to auto-commit — working tree has unrelated changes",
+        reason: `Found ${wip.files.length} modified file(s) outside the hatchkit scaffold. Auto-committing + pushing now would land the adopt commit on top of WIP that isn't part of the adopt step.`,
+        recovery: [
+          "Hatchkit wanted to commit + push these files:",
+          ...all.map((p) => `    + ${relativeTo(p, state.projectDir)}`),
+          "",
+          "Your working tree also has changes to:",
+          ...preview,
+          ...extra,
+          "",
+          "Park, commit, or discard your WIP first — whichever fits:",
+          `  git stash push -u -m "pre-hatchkit-adopt"   # park on the side`,
+          `  # or: git add . && git commit -m "..."        # keep in history`,
+          `  # or: git checkout -- <file>                 # discard a file`,
+          "Then re-run: hatchkit adopt --resume",
+        ],
+      },
+    };
+  }
+  if (wip.kind === "error") {
+    return {
+      pushed: false,
+      caveat: {
+        title: "Refusing to auto-commit — couldn't verify a clean working tree",
+        reason: `Working-tree detection failed: ${wip.reason}. Adopt won't auto-commit without knowing what else is in the tree.`,
+        recovery: [
+          "Commit + push the scaffold manually:",
+          `  cd ${state.projectDir}`,
+          `  git add ${all.map((p) => relativeTo(p, state.projectDir)).join(" ")}`,
+          `  git commit -m "chore(hatchkit): adopt scaffold + manifest"`,
+          `  git push`,
+          "Then re-run: hatchkit adopt --resume",
+        ],
+      },
+    };
+  }
+
+  // Definitive pre-commit notice. The user opted into adopt, but an
+  // auto-commit-and-push on a pre-existing remote is a meaningful
+  // side effect — they should see exactly what's happening before it
+  // lands on origin.
+  console.log();
+  console.log(
+    chalk.bold.yellow("  ⚠ hatchkit is about to commit + push to origin:"),
+  );
+  for (const p of all) {
+    console.log(chalk.yellow(`      + ${relativeTo(p, state.projectDir)}`));
+  }
+  console.log(
+    chalk.dim(
+      "    (working tree verified clean of unrelated changes — auto-commit is safe)",
+    ),
+  );
+  console.log();
+
+  // Pathspec stage: only the hatchkit-owned files. `--` separates
+  // pathspecs from refs so a file named "main" doesn't get confused
+  // for a branch.
+  const stage = await exec("git", ["add", "--", ...all], {
+    cwd: state.projectDir,
+    silent: true,
+  });
+  if (stage.exitCode !== 0) {
+    return {
+      pushed: false,
+      caveat: {
+        title: "Couldn't stage hatchkit scaffold for commit",
+        reason: (stage.stderr || stage.stdout).split(/\r?\n/)[0] || "git add failed",
+        recovery: [
+          "Stage + commit + push manually so the workflow runs:",
+          `  cd ${state.projectDir}`,
+          `  git add ${all.map((p) => relativeTo(p, state.projectDir)).join(" ")}`,
+          `  git commit -m "chore(hatchkit): adopt scaffold + manifest"`,
+          `  git push`,
+          "Then re-run: hatchkit adopt --resume",
+        ],
+      },
+    };
+  }
+
+  // Nothing in the staged index means every file was byte-identical
+  // to HEAD — this is the idempotent re-run case. No push needed.
+  const cleanStaged = await execOk("git", ["diff", "--cached", "--quiet"], {
+    cwd: state.projectDir,
+  });
+  if (cleanStaged) return { pushed: false };
+
+  // Pathspec on the commit too — anything else the user happened to
+  // stage themselves before running adopt stays out of this commit.
+  const commit = await exec(
+    "git",
+    ["commit", "-m", "chore(hatchkit): adopt scaffold + manifest", "--", ...all],
+    { cwd: state.projectDir, silent: true },
+  );
+  if (commit.exitCode !== 0) {
+    return {
+      pushed: false,
+      caveat: {
+        title: "Couldn't commit hatchkit scaffold automatically",
+        reason: (commit.stderr || commit.stdout).split(/\r?\n/)[0] || "git commit failed",
+        recovery: [
+          "Commit + push the scaffold manually:",
+          `  cd ${state.projectDir}`,
+          `  git commit -m "chore(hatchkit): adopt scaffold + manifest" -- ${all.map((p) => relativeTo(p, state.projectDir)).join(" ")}`,
+          `  git push`,
+          "Then re-run: hatchkit adopt --resume",
+        ],
+      },
+    };
+  }
+  console.log(chalk.green(`  ✓ Committed hatchkit scaffold (${all.length} files)`));
+
+  const headRes = await exec("git", ["symbolic-ref", "--short", "HEAD"], {
+    cwd: state.projectDir,
+    silent: true,
+  });
+  const branch = headRes.exitCode === 0 ? headRes.stdout.trim() : "main";
+  const push = await exec("git", ["push", "origin", branch], {
+    cwd: state.projectDir,
+    spinner: `Pushing ${branch} to origin...`,
+  });
+  if (push.exitCode !== 0) {
+    return {
+      pushed: false,
+      caveat: {
+        title: `Couldn't push ${branch} to origin`,
+        reason:
+          (push.stderr || push.stdout).split(/\r?\n/)[0] || `git push exited ${push.exitCode}`,
+        recovery: [
+          "Push the new commit so Actions can build the image:",
+          `  cd ${state.projectDir}`,
+          `  git push origin ${branch}`,
+          "Then re-run: hatchkit adopt --resume",
+        ],
+      },
+    };
+  }
+  return { pushed: true };
 }
 
 interface SetupGitHubResult {

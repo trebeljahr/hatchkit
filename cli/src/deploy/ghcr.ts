@@ -39,8 +39,10 @@ export interface GhcrSetupOptions {
   /** Owner/repo slug, e.g. `trebeljahr/extinction-protocol`. */
   repoSlug: string;
   /** Maximum time to wait for the first Actions push to create the
-   *  package in GHCR. Default 5 minutes — enough headroom for cold
-   *  builds without keeping the user staring at a spinner forever. */
+   *  package in GHCR. Default 10 minutes — the starter's verify + e2e
+   *  + build-server/client pipeline routinely takes 5–8 min on a cold
+   *  GHA runner, so 5 was right at the boundary and timed out
+   *  intermittently. */
   waitTimeoutMs?: number;
   /** How often to recheck whether the package exists. Default 8s —
    *  matches GHCR's typical sync delay after a push. */
@@ -67,7 +69,7 @@ export type GhcrSetupResult =
  * the user isn't stuck if Actions failed for an unrelated reason.
  */
 export async function makeGhcrPackagePublic(options: GhcrSetupOptions): Promise<GhcrSetupResult> {
-  const { repoSlug, waitTimeoutMs = 5 * 60_000, pollIntervalMs = 8_000 } = options;
+  const { repoSlug, waitTimeoutMs = 10 * 60_000, pollIntervalMs = 8_000 } = options;
   const [owner, name] = splitSlug(repoSlug);
 
   // Cheap upfront check — bail before the wait if `gh` can't possibly

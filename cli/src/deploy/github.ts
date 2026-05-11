@@ -62,9 +62,10 @@ export async function setupGitHub(config: ProjectConfig, appDir: string): Promis
 
 /** Push the working branch to `origin`. Run AFTER Coolify wiring +
  *  GH Actions secrets are in place so the workflow's first run can
- *  hit the redeploy webhook successfully. Best-effort — failures
- *  print a copy-pasteable manual command rather than throwing. */
-export async function pushInitialBranch(projectDir: string): Promise<void> {
+ *  hit the redeploy webhook successfully. Returns true on a clean
+ *  push, false otherwise — the caller uses this to gate the GHCR
+ *  visibility flip (no push = no Actions run = no image to wait for). */
+export async function pushInitialBranch(projectDir: string): Promise<boolean> {
   // `git symbolic-ref --short HEAD` is more reliable than rev-parse
   // for the brand-new `git init` case where HEAD points at an unborn
   // ref (no commits yet would error on rev-parse).
@@ -85,5 +86,7 @@ export async function pushInitialBranch(projectDir: string): Promise<void> {
           `    git push -u origin ${branch}`,
       ),
     );
+    return false;
   }
+  return true;
 }
