@@ -1,8 +1,8 @@
 {
   "version": 1,
   "cliVersion": "0.1.42",
-  "scaffoldedAt": "2026-05-11T22:19:40.881Z",
-  "name": "hatchkit-monorepo",
+  "scaffoldedAt": "2026-05-11T22:21:13.609Z",
+  "name": "hatchkit",
   "domain": "hatchkit.trebeljahr.com",
   "description": "Interactive CLI for scaffolding full-stack projects with composable ML services",
   "features": [],
