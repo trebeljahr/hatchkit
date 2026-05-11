@@ -1785,22 +1785,267 @@ export function renderInventoryHuman(report: InventoryReport): string {
     lines.push("");
   }
 
-  lines.push(
-    `  ${chalk.green(`${report.summary.present} present`)}  ${
-      report.summary.drift > 0
-        ? chalk.yellow(`${report.summary.drift} drift`)
-        : chalk.dim("0 drift")
-    }  ${
-      report.summary.missing > 0
-        ? chalk.red(`${report.summary.missing} missing`)
-        : chalk.dim("0 missing")
-    }  ${chalk.dim(`${report.summary.skipped} skipped`)}`,
-  );
-  lines.push("");
+  // Final one-page summary — compact per-provider roll-up, no detail
+  // fluff. The reader can scroll up for specifics; this block answers
+  // "what does this project have, and what needs attention?" at a glance.
+  lines.push(renderInventorySummary(report));
+
   return lines.join("\n");
 }
 
 function sourceTag(s: InferenceSource | undefined): string {
   if (!s) return chalk.dim("  (will prompt)");
   return chalk.dim(`  ← ${s}`);
+}
+
+// ---------------------------------------------------------------------------
+// One-page summary
+// ---------------------------------------------------------------------------
+
+interface ProviderRoll {
+  /** Display label, e.g. "Coolify", "Pages". */
+  label: string;
+  /** Coloured one-char status icon. */
+  icon: string;
+  /** Short summary text — no leading icon, no command suggestions. */
+  text: string;
+}
+
+function renderInventorySummary(report: InventoryReport): string {
+  const lines: string[] = [];
+  lines.push(chalk.dim(`  ${"─".repeat(58)}`));
+  lines.push(chalk.bold("  Summary"));
+  lines.push("");
+
+  // Group findings by *effective* provider — drift findings get
+  // re-attributed to the provider they're about, so each provider's
+  // summary line reflects all its state (including drift).
+  const grouped = new Map<string, InventoryFinding[]>();
+  for (const f of report.findings) {
+    const effective = f.provider === "drift" ? driftToProvider(f.kind) : f.provider;
+    const list = grouped.get(effective);
+    if (list) list.push(f);
+    else grouped.set(effective, [f]);
+  }
+
+  const rolls: ProviderRoll[] = [];
+  for (const [providerKey, findings] of grouped) {
+    rolls.push(rollUpProvider(providerKey, findings));
+  }
+
+  // Append skipped providers (not in grouped) as dim rows so the
+  // summary lists every provider hatchkit knows about, not just the
+  // ones that returned findings.
+  const seen = new Set(grouped.keys());
+  for (const s of report.skipped) {
+    if (seen.has(s.provider)) continue;
+    seen.add(s.provider);
+    rolls.push({
+      label: providerLabel(s.provider),
+      icon: chalk.dim("·"),
+      text: chalk.dim(s.reason),
+    });
+  }
+
+  const labelWidth = Math.max(...rolls.map((r) => r.label.length), 10);
+  for (const r of rolls) {
+    lines.push(`    ${r.label.padEnd(labelWidth + 2)} ${r.icon} ${r.text}`);
+  }
+
+  // Bottom-line takeaway — three branches: drift + missing, missing
+  // only, or all-clear.
+  lines.push("");
+  const drift = report.summary.drift;
+  const missing = report.summary.missing;
+  const present = report.summary.present;
+  if (drift > 0 || missing > 0) {
+    const parts: string[] = [];
+    if (drift > 0) {
+      parts.push(chalk.yellow(`⚠ ${drift} drift${drift === 1 ? "" : "s"} to reconcile`));
+    }
+    if (missing > 0) {
+      parts.push(chalk.red(`✗ ${missing} resource${missing === 1 ? "" : "s"} missing`));
+    }
+    lines.push(`  ${parts.join(chalk.dim("  ·  "))}`);
+  } else if (present > 0) {
+    lines.push(
+      `  ${chalk.green("✓ All clear")} — ${present} resource${present === 1 ? "" : "s"} tracked, nothing out of sync.`,
+    );
+  } else {
+    lines.push(chalk.dim("  Nothing matched — try `--name`, `--domain`, or `--repo` to narrow."));
+  }
+  lines.push("");
+
+  return lines.join("\n");
+}
+
+/** Drift findings live under provider "drift" in `report.findings`,
+ *  but conceptually they belong to the provider they describe. Pin
+ *  each drift `kind` to its source provider for the summary roll-up. */
+function driftToProvider(driftKind: string): string {
+  if (driftKind.startsWith("coolify")) return "coolify";
+  if (driftKind === "bucket" || driftKind === "bucket-cors") return "s3:r2";
+  if (driftKind.startsWith("github-pages")) return "github-pages";
+  if (driftKind === "missing-secret") return "github";
+  return "drift";
+}
+
+function rollUpProvider(providerKey: string, findings: InventoryFinding[]): ProviderRoll {
+  const drifts = findings.filter((f) => f.status === "drift");
+  const present = findings.filter((f) => f.status === "present");
+  const missing = findings.filter((f) => f.status === "missing");
+  const label = providerLabel(providerKey);
+
+  if (drifts.length > 0) {
+    return {
+      label,
+      icon: chalk.yellow("⚠"),
+      text: chalk.yellow(`${drifts.length} drift${drifts.length === 1 ? "" : "s"} — see above`),
+    };
+  }
+  if (present.length > 0) {
+    return {
+      label,
+      icon: chalk.green("✓"),
+      text: summarizePresent(providerKey, present, missing),
+    };
+  }
+  if (missing.length > 0) {
+    return {
+      label,
+      icon: chalk.red("✗"),
+      text: chalk.red(summarizeMissing(providerKey)),
+    };
+  }
+  // Only `info`-level findings → no actionable state to surface.
+  return {
+    label,
+    icon: chalk.dim("·"),
+    text: chalk.dim(findings[0]?.identity ?? ""),
+  };
+}
+
+/** Compact "what's here" string for a provider that has at least one
+ *  present finding. Per-provider tuned to keep the line short. */
+function summarizePresent(
+  providerKey: string,
+  present: InventoryFinding[],
+  missing: InventoryFinding[],
+): string {
+  const partial = missing.length > 0 ? chalk.dim(` (${missing.length} missing)`) : "";
+  switch (providerKey) {
+    case "coolify": {
+      const apps = present.filter((f) => f.kind === "application").map((f) => f.identity);
+      const projects = present.filter((f) => f.kind === "project");
+      const parts: string[] = [];
+      if (apps.length) parts.push(`${apps.length} app: ${apps.join(", ")}`);
+      if (projects.length)
+        parts.push(`${projects.length} project${projects.length === 1 ? "" : "s"}`);
+      return (parts.join(", ") || present[0].identity) + partial;
+    }
+    case "dns": {
+      const zone = present.find((f) => f.kind === "zone");
+      const records = present.filter((f) => f.kind === "dns-record");
+      const base = zone
+        ? `${zone.identity} (${records.length} record${records.length === 1 ? "" : "s"})`
+        : `${records.length} record${records.length === 1 ? "" : "s"}`;
+      return base + partial;
+    }
+    case "s3:r2": {
+      const buckets = present.filter((f) => f.kind === "bucket").map((f) => f.identity);
+      return (
+        `${buckets.length} bucket${buckets.length === 1 ? "" : "s"}: ${buckets.join(", ")}` +
+        partial
+      );
+    }
+    case "github": {
+      const repo = present.find((f) => f.kind === "repository");
+      if (repo) {
+        // Detail is "private · default: main · …" — pull just the
+        // visibility (first segment) to keep the line short.
+        const visibility = repo.detail?.split(" · ")[0];
+        return `${repo.identity}${visibility ? chalk.dim(` (${visibility})`) : ""}`;
+      }
+      return present[0].identity;
+    }
+    case "github-pages": {
+      const site = present.find((f) => f.kind === "page-site");
+      if (site) {
+        const cname = site.detail?.match(/cname:\s*([^\s·]+)/)?.[1];
+        return cname ? `live at ${cname}` : "enabled";
+      }
+      return "enabled";
+    }
+    case "resend": {
+      const domains = present.filter((f) => f.kind === "verified-domain").map((f) => f.identity);
+      return domains.join(", ") + partial;
+    }
+    case "glitchtip":
+    case "openpanel": {
+      const projects = present.filter((f) => f.kind === "project").map((f) => f.identity);
+      return projects.join(", ") + partial;
+    }
+    case "stripe": {
+      const hooks = present.filter((f) => f.kind === "webhook-endpoint");
+      return `${hooks.length} webhook${hooks.length === 1 ? "" : "s"}` + partial;
+    }
+    default:
+      return present[0].identity + partial;
+  }
+}
+
+/** Compact "what's not here" string for a provider where every
+ *  finding is `missing`. The detailed reason is in the per-provider
+ *  block above — this is just the headline. */
+function summarizeMissing(providerKey: string): string {
+  switch (providerKey) {
+    case "coolify":
+      return "no matching app";
+    case "dns":
+      return "no zone for this domain";
+    case "s3:r2":
+      return "no matching buckets";
+    case "github":
+      return "repo not found";
+    case "github-pages":
+      return "Pages not enabled";
+    case "resend":
+      return "domain not verified";
+    case "glitchtip":
+    case "openpanel":
+      return "no matching project";
+    case "stripe":
+      return "no webhook for this domain";
+    default:
+      return "not found";
+  }
+}
+
+function providerLabel(key: string): string {
+  switch (key) {
+    case "coolify":
+      return "Coolify";
+    case "dns":
+      return "DNS";
+    case "s3:r2":
+      return "R2";
+    case "s3:hetzner":
+      return "Hetzner S3";
+    case "s3:aws":
+      return "AWS S3";
+    case "github":
+      return "GitHub";
+    case "github-pages":
+      return "Pages";
+    case "resend":
+      return "Resend";
+    case "glitchtip":
+      return "GlitchTip";
+    case "openpanel":
+      return "OpenPanel";
+    case "stripe":
+      return "Stripe";
+    default:
+      return key;
+  }
 }
