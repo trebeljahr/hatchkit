@@ -23,7 +23,13 @@ WORKDIR /app
 # that flips `ignore-workspace=true`, so it MUST be present before
 # the install step — otherwise pnpm walks up looking for the parent
 # workspace and fails on the missing `cli/`/`mcp/` packages.
-COPY docs/package.json docs/pnpm-lock.yaml docs/.npmrc ./
+# next.config.mjs + source.config.ts must also be present pre-install:
+# fumadocs-mdx's postinstall bin probes for `next.config.*` to choose
+# between its Next.js and Vite codepaths. Without next.config.mjs the
+# bin imports the Vite loader and crashes with ERR_MODULE_NOT_FOUND on
+# the missing peer; without source.config.ts the Next codepath then
+# fails esbuild because it can't externalise the missing entry.
+COPY docs/package.json docs/pnpm-lock.yaml docs/.npmrc docs/next.config.mjs docs/source.config.ts ./
 RUN corepack enable && pnpm install --frozen-lockfile
 COPY docs/ ./
 RUN pnpm build
