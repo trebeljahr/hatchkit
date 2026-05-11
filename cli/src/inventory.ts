@@ -47,6 +47,7 @@ import {
 import { CloudflareApi } from "./utils/cloudflare-api.js";
 import { CoolifyApi, type CoolifyApplication } from "./utils/coolify-api.js";
 import { exec, execOk } from "./utils/exec.js";
+import { listS3Buckets } from "./utils/s3-admin.js";
 import { SECRET_KEYS, getSecret } from "./utils/secrets.js";
 import { getCliVersion } from "./utils/version.js";
 
@@ -1342,28 +1343,51 @@ async function scanR2(
   return { provider, findings, skipped, raw: { accountId, live, manifestBuckets } };
 }
 
-async function scanS3Other(_input: InventoryInput): Promise<ScanResult> {
-  // Hetzner Object Storage + AWS S3 don't have a "list all buckets for
-  // this access key" call exposed in the existing client. We surface
-  // presence only, so the user knows where else to look. A full impl
-  // would need an `@aws-sdk/client-s3` `ListBuckets` call, which is
-  // already a dep — but adding that here doubles the surface area;
-  // ship without for now and revisit if anyone asks.
+async function scanS3Other(input: InventoryInput): Promise<ScanResult> {
+  // Account-wide `ListBuckets` over Hetzner Object Storage + AWS S3 via
+  // the AWS SDK (already a dep — assets/mirror.ts uses it for the
+  // streaming copy path). Emits one `present` finding per live bucket
+  // plus a credentials-level info line so the user can spot a misrouted
+  // endpoint without scrolling to drift.
   const provider = "s3";
   const findings: InventoryFinding[] = [];
   const skipped: Array<{ provider: string; reason: string }> = [];
+  const nameMatch = input.name?.toLowerCase();
   for (const p of ["hetzner", "aws"] as const) {
     const cfg = await getS3Config(p);
-    if (cfg) {
+    if (!cfg) {
+      skipped.push({ provider: `s3:${p}`, reason: "not configured" });
+      continue;
+    }
+    try {
+      const buckets = await listS3Buckets(cfg);
       findings.push({
         provider: `s3:${p}`,
         kind: "credentials",
         identity: p,
         status: "info",
-        detail: `endpoint: ${cfg.endpoint} — bucket inventory not implemented for ${p}`,
+        detail: `endpoint: ${cfg.endpoint} · ${buckets.length} bucket${buckets.length === 1 ? "" : "s"}`,
       });
-    } else {
-      skipped.push({ provider: `s3:${p}`, reason: "not configured" });
+      for (const b of buckets) {
+        const matchesProject =
+          nameMatch !== undefined &&
+          (b.name.toLowerCase() === nameMatch || b.name.toLowerCase().startsWith(`${nameMatch}-`));
+        findings.push({
+          provider: `s3:${p}`,
+          kind: "bucket",
+          identity: b.name,
+          status: "present",
+          detail: b.creationDate
+            ? `created ${b.creationDate.toISOString().slice(0, 10)}`
+            : undefined,
+          expected: matchesProject || undefined,
+        });
+      }
+    } catch (err) {
+      skipped.push({
+        provider: `s3:${p}`,
+        reason: `ListBuckets failed: ${(err as Error).message.split("\n")[0]}`,
+      });
     }
   }
   return { provider, findings, skipped };

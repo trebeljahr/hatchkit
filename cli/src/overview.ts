@@ -25,6 +25,7 @@ import {
 import { CloudflareApi, type CloudflareZone } from "./utils/cloudflare-api.js";
 import { CoolifyApi, type CoolifyApplication } from "./utils/coolify-api.js";
 import { execOk } from "./utils/exec.js";
+import { listS3Buckets } from "./utils/s3-admin.js";
 import { SECRET_KEYS, getSecret } from "./utils/secrets.js";
 import { getCliVersion } from "./utils/version.js";
 
@@ -418,20 +419,43 @@ async function probeS3Other(provider: "hetzner" | "aws"): Promise<ProbeOutput> {
   const label = provider === "hetzner" ? "Hetzner S3" : "AWS S3";
   const cfg = await getS3Config(provider);
   if (!cfg) return { provider: { key, label, status: "skip", detail: "not configured" } };
-  // Bucket listing for AWS-compatible providers requires the AWS SDK
-  // signature flow — out of scope for a quick fetch-based probe. We
-  // surface "configured" without a list so the user knows where else
-  // to look.
-  return {
-    provider: {
-      key,
-      label,
-      status: "present",
-      summary: `credentials present  ${chalk.dim(`@ ${cfg.endpoint}`)}`,
-      detail: "bucket listing not implemented for this provider",
-      resources: [],
-    },
-  };
+  try {
+    const buckets = await listS3Buckets(cfg);
+    if (buckets.length === 0) {
+      return {
+        provider: {
+          key,
+          label,
+          status: "empty",
+          detail: `endpoint ${cfg.endpoint}`,
+          resources: [],
+        },
+      };
+    }
+    return {
+      provider: {
+        key,
+        label,
+        status: "present",
+        summary: `${buckets.length} bucket${buckets.length === 1 ? "" : "s"}  ${chalk.dim(`@ ${cfg.endpoint}`)}`,
+        preview: buckets.map((b) => b.name).slice(0, 6),
+        resources: buckets.map((b) => ({
+          kind: "bucket",
+          identity: b.name,
+          detail: b.creationDate ? b.creationDate.toISOString().slice(0, 10) : undefined,
+        })),
+      },
+    };
+  } catch (err) {
+    return {
+      provider: {
+        key,
+        label,
+        status: "error",
+        detail: `ListBuckets failed: ${(err as Error).message.split("\n")[0]}`,
+      },
+    };
+  }
 }
 
 async function probeResend(): Promise<ProbeOutput> {
