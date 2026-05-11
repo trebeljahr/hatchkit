@@ -1627,7 +1627,7 @@ async function handleCreate(): Promise<void> {
     console.log(
       chalk.yellow("\n  Next (desktop): replace build/icon.png with a 512×512 logo, then:"),
     );
-    console.log(chalk.dim("    pnpm icons:desktop     # cross-platform (electron-icon-builder)"));
+    console.log(chalk.dim("    pnpm icons:desktop     # cross-platform (icon-gen)"));
   }
 
   if (config.features.includes("desktop") || config.features.includes("mobile")) {

@@ -162,7 +162,7 @@ results.desktop = await run("desktop only", "my-cool-app", ["desktop"], (d) => {
     ["mobile workflow removed", !existsSync(join(d, ".github/workflows/mobile-release.yml"))],
     ["resources/ removed", !existsSync(join(d, "resources"))],
     ["electron dep present", !!pkg.devDependencies?.electron],
-    ["electron-icon-builder dep present", !!pkg.devDependencies?.["electron-icon-builder"]],
+    ["icon-gen dep present", !!pkg.devDependencies?.["icon-gen"]],
     ["no capacitor deps", !pkg.dependencies?.["@capacitor/core"]],
     ["bundleId sanitized (no hyphens)", pkg.build?.appId === "com.example.mycoolapp"],
     ["productName has display name", pkg.build?.productName === "my-cool-app"],

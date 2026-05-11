@@ -180,7 +180,7 @@ async function addDesktop(
     "itch:push:win",
     "itch:push:linux",
   ];
-  const DESKTOP_DEPS = ["electron", "electron-builder", "electron-icon-builder", "wait-on"];
+  const DESKTOP_DEPS = ["electron", "electron-builder", "icon-gen", "wait-on"];
 
   projectPkg.scripts = projectPkg.scripts ?? {};
   for (const name of DESKTOP_SCRIPTS) {

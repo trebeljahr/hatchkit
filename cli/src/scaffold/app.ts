@@ -257,12 +257,7 @@ async function runScaffoldSteps(
     ]);
     unchainTypecheckScript(outputDir);
     stripPackageJsonBuildBlock(outputDir);
-    stripPackageJsonDeps(outputDir, [
-      "electron",
-      "electron-builder",
-      "electron-icon-builder",
-      "wait-on",
-    ]);
+    stripPackageJsonDeps(outputDir, ["electron", "electron-builder", "icon-gen", "wait-on"]);
     modifications.push("removed: desktop (Electron) scaffolding");
   } else {
     replaceInFile(join(outputDir, "package.json"), "{{projectName}}", config.name);
