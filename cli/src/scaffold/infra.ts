@@ -16,8 +16,8 @@ export function generateTfvars(config: ProjectConfig): string {
     if (subdomains[key]) return;
     subdomains[key] = description;
   };
-  addSubdomain(config.subdomain, "Web app + API paths");
-  addSubdomain(`api.${config.subdomain}`, "REST API");
+  addSubdomain(config.subdomain || "@", "Web app + API paths");
+  addSubdomain(config.subdomain ? `api.${config.subdomain}` : "api", "REST API");
   addSubdomain("admin", "Coolify dashboard");
 
   // The user's CLI DNS config decides which stack we target.
