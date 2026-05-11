@@ -50,6 +50,7 @@ import { pushProjectKeyToCoolify, pushProjectKeyToGh } from "./deploy/keys.js";
 import { handleAdoptFailure } from "./deploy/rollback.js";
 import type { Feature, S3Provider } from "./prompts.js";
 import { type ProvisionService, runProvision } from "./provision/index.js";
+import { readEnvKeys } from "./provision/write-env.js";
 import { detectBuildPipeline, scaffoldBuildPipeline } from "./scaffold/build-pipeline.js";
 import {
   MANIFEST_FILENAME,
@@ -1460,6 +1461,55 @@ interface AdoptCaveat {
   recovery: string[];
 }
 
+/** Canonical env key per service — used by `filterServicesForResume`
+ *  to decide whether a service's credentials are already wired into
+ *  the project's env files. If the key is present, re-minting on a
+ *  resume would orphan whatever's there (Resend mints a fresh API
+ *  key each call; OpenPanel mints a fresh project; Stripe re-creates
+ *  the webhook endpoint). `email` is intentionally absent — Email
+ *  Routing is zone-state with no env footprint, and its provisioner
+ *  is already 409-idempotent. */
+const RESUME_SERVICE_ENV_KEY: Record<ProvisionService, { server?: string; client?: string }> = {
+  glitchtip: { server: "GLITCHTIP_DSN", client: "PUBLIC_GLITCHTIP_DSN" },
+  openpanel: { server: "OPENPANEL_CLIENT_ID", client: "PUBLIC_OPENPANEL_CLIENT_ID" },
+  resend: { server: "RESEND_API_KEY" },
+  s3: { server: "R2_ENDPOINT" },
+  email: {},
+};
+
+/** Filter the services list for `runProvision` on `--resume`: drop
+ *  every service whose canonical env keys are already in the target
+ *  env files. A non-resume run returns the list unchanged. */
+function filterServicesForResume(args: {
+  services: ProvisionService[];
+  resume: boolean;
+  serverEnvPath: string | null;
+  clientEnvPath: string | null;
+}): ProvisionService[] {
+  if (!args.resume) return args.services;
+  const serverKeys = args.serverEnvPath ? readEnvKeys(args.serverEnvPath) : new Set<string>();
+  const clientKeys = args.clientEnvPath ? readEnvKeys(args.clientEnvPath) : new Set<string>();
+  const kept: ProvisionService[] = [];
+  for (const svc of args.services) {
+    const want = RESUME_SERVICE_ENV_KEY[svc];
+    if (!want || (!want.server && !want.client)) {
+      kept.push(svc);
+      continue;
+    }
+    const serverOk = !want.server || serverKeys.has(want.server);
+    const clientOk = !want.client || clientKeys.has(want.client);
+    if (serverOk && clientOk) {
+      const which = [want.server, want.client].filter(Boolean).join(" + ");
+      console.log(
+        chalk.dim(`  · Skipping ${svc} on --resume — ${which} already in .env.production.`),
+      );
+      continue;
+    }
+    kept.push(svc);
+  }
+  return kept;
+}
+
 async function executePlan(
   state: DetectedState,
   plan: AdoptPlan,
@@ -1702,11 +1752,41 @@ async function executePlan(
     if (plan.scaffoldBuildPipeline && plan.deploymentMode === "coolify" && appUuidForSecrets) {
       const slug = repoSlugFromRemote(remoteUrl);
       if (slug) {
-        await setCoolifyDeploySecrets({
-          projectDir: state.projectDir,
-          repoSlug: slug,
-          apps: [{ uuid: appUuidForSecrets }],
-        });
+        // --resume gate: if every secret this step would push is
+        // already present on the repo, skip the push. The values
+        // themselves aren't readable through `gh secret list` (write-
+        // only), so we trust name-presence as the signal — same
+        // contract `ghSecretExists` uses for the ledger-record gate
+        // below. The user's recourse for a rotated Coolify token is
+        // re-running adopt *without* --resume.
+        const coolifySecretNames = [
+          "COOLIFY_BASE_URL",
+          "COOLIFY_API_TOKEN",
+          "COOLIFY_TOKEN",
+          "COOLIFY_WEBHOOK_URL",
+          "COOLIFY_RESOURCE_UUID",
+        ];
+        let skipCoolifySecrets = false;
+        if (opts.resume) {
+          const checks = await Promise.all(
+            coolifySecretNames.map((n) => ghSecretExists(state.projectDir, slug, n)),
+          );
+          if (checks.every(Boolean)) {
+            skipCoolifySecrets = true;
+            console.log(
+              chalk.dim(
+                `  · Skipping Coolify GH Actions secrets on --resume — all ${coolifySecretNames.length} already on ${slug}.`,
+              ),
+            );
+          }
+        }
+        if (!skipCoolifySecrets) {
+          await setCoolifyDeploySecrets({
+            projectDir: state.projectDir,
+            repoSlug: slug,
+            apps: [{ uuid: appUuidForSecrets }],
+          });
+        }
       } else {
         console.log(
           chalk.dim(
@@ -1739,20 +1819,26 @@ async function executePlan(
         // we're the creator preserves the "destroy never deletes
         // pre-existing user data" invariant — see LedgerStep doc.
         const preExisted = await ghSecretExists(state.projectDir, slug, secretName);
-        try {
-          await pushProjectKeyToGh(plan.name, slug);
-          if (!preExisted) {
-            ledger.record({ kind: "ghActionsSecret", repo: slug, name: secretName });
+        if (opts.resume && preExisted) {
+          console.log(
+            chalk.dim(`  · Skipping ${secretName} push on --resume — secret already on ${slug}.`),
+          );
+        } else {
+          try {
+            await pushProjectKeyToGh(plan.name, slug);
+            if (!preExisted) {
+              ledger.record({ kind: "ghActionsSecret", repo: slug, name: secretName });
+            }
+          } catch (err) {
+            caveats.push({
+              title: `${secretName} not set on GitHub Actions`,
+              reason: (err as Error).message,
+              recovery: [
+                `hatchkit keys push ${plan.name} --target gh --repo ${slug}`,
+                `(or copy from \`hatchkit keys show ${plan.name}\` and run \`gh secret set ${secretName} --repo ${slug} --body <key>\`)`,
+              ],
+            });
           }
-        } catch (err) {
-          caveats.push({
-            title: `${secretName} not set on GitHub Actions`,
-            reason: (err as Error).message,
-            recovery: [
-              `hatchkit keys push ${plan.name} --target gh --repo ${slug}`,
-              `(or copy from \`hatchkit keys show ${plan.name}\` and run \`gh secret set ${secretName} --repo ${slug} --body <key>\`)`,
-            ],
-          });
         }
       } else if (remoteUrl) {
         console.log(
@@ -1952,7 +2038,23 @@ async function executePlan(
     // to a normal `hatchkit add`. Forward the surface choice — runProvision
     // uses the same vocabulary, so a client-only adopt produces a
     // client-only `add`.
-    if (plan.services.length > 0) {
+    //
+    // --resume contract: filter out services whose canonical env keys
+    // are already present in the target env files. Re-minting Resend
+    // keys / OpenPanel projects / Stripe webhooks on every resume
+    // orphans live credentials and rotates secrets the user didn't
+    // ask to rotate. The keychain caches some of these per-service,
+    // but those caches don't survive a fresh machine — the env file
+    // is the durable signal, so we trust it. A service is re-included
+    // if it's newly in `plan.services` (added since the last attempt)
+    // or its canonical env key is missing.
+    const resumeServices = filterServicesForResume({
+      services: plan.services,
+      resume: opts.resume === true,
+      serverEnvPath: plan.serverDir ? join(plan.serverDir, ".env.production") : null,
+      clientEnvPath: plan.clientDir ? join(plan.clientDir, ".env.production") : null,
+    });
+    if (resumeServices.length > 0) {
       console.log();
       const provisionMode =
         plan.surfaces === "both"
@@ -1962,7 +2064,7 @@ async function executePlan(
             : "client-only";
       await runProvision({
         baseName: plan.name,
-        services: plan.services,
+        services: resumeServices,
         surfaces: {
           mode: provisionMode,
           serverEnvDir: plan.serverDir,
@@ -2029,111 +2131,136 @@ async function executePlan(
     // (globally via `hatchkit config add s3 r2`, which re-pastes +
     // verifies it) and re-run `hatchkit provision s3` to finish.
     if (plan.features.includes("s3")) {
-      try {
-        const { provisionS3ForProject, defaultBucketHostname, existingCustomHostname } =
-          await import("./provision/s3-buckets.js");
-        // Resolve the public assets-bucket custom domain. If a previous
-        // run already attached one, the manifest records it — reuse
-        // that without re-prompting. Only ask on first adopt (or when
-        // the manifest has no hostname yet, e.g. a previous run picked
-        // the managed r2.dev URL or never got that far). Blank answer →
-        // managed r2.dev.
-        let publicHostname: string | null | undefined;
-        const existingManifest = readManifest(state.projectDir);
-        const recordedHostname = existingManifest ? existingCustomHostname(existingManifest) : null;
-        if (recordedHostname) {
-          publicHostname = recordedHostname;
-        } else if (process.stdin.isTTY) {
-          const answer = (
-            await input({
-              message:
-                "Custom domain for the public assets bucket (leave empty to use the managed r2.dev URL):",
-              default: defaultBucketHostname(plan.domain),
-            })
-          ).trim();
-          publicHostname = answer === "" ? null : answer;
-        }
-        // Only create the public assets bucket here. The private "state"
-        // bucket is an explicit opt-in even when the project has a
-        // server — most don't need it, and adding one silently means
-        // an extra R2 bucket + env var the user has to clean up later.
-        // Users who want one re-run `hatchkit provision s3 --with-state-bucket`.
-        const r = await provisionS3ForProject({
-          projectDir: state.projectDir,
-          publicHostname,
-        });
-        // Ledger: record any *fresh* bucket creations + a fresh token
-        // mint so destroy can revoke them. Reused buckets/tokens (from
-        // a prior adopt run) stay out — those are already in the
-        // earlier run's ledger or pre-existed before hatchkit ran.
-        if (r.assets.created) {
-          ledger.record({
-            kind: "r2Bucket",
-            bucketName: r.assets.name,
-            accountId: r.accountId,
-          });
-        }
-        if (r.state?.created) {
-          ledger.record({
-            kind: "r2Bucket",
-            bucketName: r.state.name,
-            accountId: r.accountId,
-          });
-        }
-        if (r.tokenCreated) {
-          ledger.record({
-            kind: "r2Token",
-            tokenId: r.tokenCreated.tokenId,
-            accountId: r.accountId,
-            audience: r.tokenCreated.audience,
-          });
-        }
-        console.log(chalk.green(`  ✓ S3 assets bucket ready — ${r.assets.publicUrl}`));
+      // --resume gate: when the manifest already records the assets
+      // bucket AND .env.production has a working access/secret pair,
+      // there's nothing to provision. Skip the whole step rather than
+      // re-attaching custom domains / re-reconciling CORS / re-probing
+      // tokens, all of which are network round-trips with no payoff
+      // when nothing has changed since the last attempt.
+      const s3ManifestSnapshot = readManifest(state.projectDir);
+      const s3EnvPath = join(state.projectDir, ".env.production");
+      const s3EnvKeys = readEnvKeys(s3EnvPath);
+      const s3HasEnvCreds =
+        (s3EnvKeys.has("R2_ACCESS_KEY_ID") && s3EnvKeys.has("R2_SECRET_ACCESS_KEY")) ||
+        (s3EnvKeys.has("S3_ACCESS_KEY_ID") && s3EnvKeys.has("S3_SECRET_ACCESS_KEY")) ||
+        (s3EnvKeys.has("AWS_ACCESS_KEY_ID") && s3EnvKeys.has("AWS_SECRET_ACCESS_KEY"));
+      const s3ManifestComplete = !!s3ManifestSnapshot?.s3Buckets?.assets?.name;
+      const s3AlreadyWired = opts.resume && s3HasEnvCreds && s3ManifestComplete;
+      if (s3AlreadyWired) {
         console.log(
           chalk.dim(
-            `    Wrote ${r.envWritten.length} encrypted entries. ` +
-              "(Need a private server-side bucket too? Run `hatchkit provision s3 --with-state-bucket`.)",
+            `  · Skipping S3 on --resume — manifest records ${s3ManifestSnapshot?.s3Buckets?.assets?.name} and .env.production has access/secret keys.`,
           ),
         );
-        // The fresh bucket is empty. Existing projects almost always
-        // have assets sitting in some other store — surface the one
-        // command that copies them in. Cheap line to print, easy to
-        // miss without it.
-        console.log(
-          chalk.dim(
-            `    Have existing assets to bring over? hatchkit assets migrate \\\n` +
-              `      --from-endpoint=<old-s3-endpoint> --from-bucket=<name> \\\n` +
-              `      --from-key=<access-key> --from-secret=<secret>`,
-          ),
-        );
-      } catch (err) {
-        console.log(
-          chalk.yellow(
-            `\n  ✗ S3 bucket provisioning failed: ${(err as Error).message.split("\n")[0]}`,
-          ),
-        );
-        // Two kinds of recovery — pick based on whether the underlying
-        // error looks like an admin-token problem (global) vs. a
-        // bucket-side problem (per-project). Admin-token failures point
-        // the user at the global config command (which validates the
-        // token); everything else points at the per-project re-runner.
-        const msg = (err as Error).message;
-        const isAdminTokenIssue =
-          /admin token|invalid api token|9109|10000|10001|HTTP 401|HTTP 403/i.test(msg);
-        caveats.push({
-          title: "S3 buckets not provisioned",
-          reason: msg,
-          recovery: isAdminTokenIssue
-            ? [
-                "Looks like an R2 admin-token problem.",
-                "Fix globally with: hatchkit config add s3 r2  (re-paste + verify perms)",
-                `Then re-run from the project dir: cd ${plan.name} && hatchkit provision s3`,
-              ]
-            : [
-                "Once fixed, finish with: hatchkit provision s3",
-                "(safe to re-run — bucket creation and env writes are idempotent)",
-              ],
-        });
+      } else {
+        try {
+          const { provisionS3ForProject, defaultBucketHostname, existingCustomHostname } =
+            await import("./provision/s3-buckets.js");
+          // Resolve the public assets-bucket custom domain. If a previous
+          // run already attached one, the manifest records it — reuse
+          // that without re-prompting. Only ask on first adopt (or when
+          // the manifest has no hostname yet, e.g. a previous run picked
+          // the managed r2.dev URL or never got that far). Blank answer →
+          // managed r2.dev.
+          let publicHostname: string | null | undefined;
+          const existingManifest = readManifest(state.projectDir);
+          const recordedHostname = existingManifest
+            ? existingCustomHostname(existingManifest)
+            : null;
+          if (recordedHostname) {
+            publicHostname = recordedHostname;
+          } else if (process.stdin.isTTY) {
+            const answer = (
+              await input({
+                message:
+                  "Custom domain for the public assets bucket (leave empty to use the managed r2.dev URL):",
+                default: defaultBucketHostname(plan.domain),
+              })
+            ).trim();
+            publicHostname = answer === "" ? null : answer;
+          }
+          // Only create the public assets bucket here. The private "state"
+          // bucket is an explicit opt-in even when the project has a
+          // server — most don't need it, and adding one silently means
+          // an extra R2 bucket + env var the user has to clean up later.
+          // Users who want one re-run `hatchkit provision s3 --with-state-bucket`.
+          const r = await provisionS3ForProject({
+            projectDir: state.projectDir,
+            publicHostname,
+          });
+          // Ledger: record any *fresh* bucket creations + a fresh token
+          // mint so destroy can revoke them. Reused buckets/tokens (from
+          // a prior adopt run) stay out — those are already in the
+          // earlier run's ledger or pre-existed before hatchkit ran.
+          if (r.assets.created) {
+            ledger.record({
+              kind: "r2Bucket",
+              bucketName: r.assets.name,
+              accountId: r.accountId,
+            });
+          }
+          if (r.state?.created) {
+            ledger.record({
+              kind: "r2Bucket",
+              bucketName: r.state.name,
+              accountId: r.accountId,
+            });
+          }
+          if (r.tokenCreated) {
+            ledger.record({
+              kind: "r2Token",
+              tokenId: r.tokenCreated.tokenId,
+              accountId: r.accountId,
+              audience: r.tokenCreated.audience,
+            });
+          }
+          console.log(chalk.green(`  ✓ S3 assets bucket ready — ${r.assets.publicUrl}`));
+          console.log(
+            chalk.dim(
+              `    Wrote ${r.envWritten.length} encrypted entries. ` +
+                "(Need a private server-side bucket too? Run `hatchkit provision s3 --with-state-bucket`.)",
+            ),
+          );
+          // The fresh bucket is empty. Existing projects almost always
+          // have assets sitting in some other store — surface the one
+          // command that copies them in. Cheap line to print, easy to
+          // miss without it.
+          console.log(
+            chalk.dim(
+              `    Have existing assets to bring over? hatchkit assets migrate \\\n` +
+                `      --from-endpoint=<old-s3-endpoint> --from-bucket=<name> \\\n` +
+                `      --from-key=<access-key> --from-secret=<secret>`,
+            ),
+          );
+        } catch (err) {
+          console.log(
+            chalk.yellow(
+              `\n  ✗ S3 bucket provisioning failed: ${(err as Error).message.split("\n")[0]}`,
+            ),
+          );
+          // Two kinds of recovery — pick based on whether the underlying
+          // error looks like an admin-token problem (global) vs. a
+          // bucket-side problem (per-project). Admin-token failures point
+          // the user at the global config command (which validates the
+          // token); everything else points at the per-project re-runner.
+          const msg = (err as Error).message;
+          const isAdminTokenIssue =
+            /admin token|invalid api token|9109|10000|10001|HTTP 401|HTTP 403/i.test(msg);
+          caveats.push({
+            title: "S3 buckets not provisioned",
+            reason: msg,
+            recovery: isAdminTokenIssue
+              ? [
+                  "Looks like an R2 admin-token problem.",
+                  "Fix globally with: hatchkit config add s3 r2  (re-paste + verify perms)",
+                  `Then re-run from the project dir: cd ${plan.name} && hatchkit provision s3`,
+                ]
+              : [
+                  "Once fixed, finish with: hatchkit provision s3",
+                  "(safe to re-run — bucket creation and env writes are idempotent)",
+                ],
+          });
+        }
       }
     }
 
@@ -2164,65 +2291,83 @@ async function executePlan(
             ],
           });
         } else {
-          const result = await provisionStripeProject({
-            projectName: plan.name,
-            domain: plan.domain,
-          });
+          // --resume gate: if Stripe keys are already encrypted in
+          // .env.production AND set in .env.development, the env is
+          // wired — skip the provisioner entirely. Re-running it on
+          // a cache miss (e.g. fresh machine) would reprompt for the
+          // sk/pk and re-create the webhook endpoint, leaving the
+          // old endpoint orphaned in the user's Stripe dashboard.
           const devEnvPath = join(plan.serverDir, ".env.development");
           const prodEnvPath = join(plan.serverDir, ".env.production");
-          const devLabel = relative(state.projectDir, devEnvPath);
-          const prodLabel = relative(state.projectDir, prodEnvPath);
-
-          if (result.test) {
-            if (result.test.kind === "skipped") {
-              appendCommentBlock(devEnvPath, renderStripeSkipComment("test", devLabel));
-            }
-            const pairs = parseEnvLines(renderStripeEnv(result.test));
-            writeDevEnv(devEnvPath, pairs);
-            if (result.test.kind === "configured") {
-              ledger.record({
-                kind: "keychain",
-                account: SECRET_KEYS.stripeProjectWebhookId(plan.name, "test"),
-              });
-            }
+          const stripeAlreadyWired =
+            opts.resume &&
+            readEnvKeys(prodEnvPath).has("STRIPE_SECRET_KEY") &&
+            readEnvKeys(devEnvPath).has("STRIPE_SECRET_KEY");
+          if (stripeAlreadyWired) {
             console.log(
-              chalk.green(
-                result.test.kind === "skipped"
-                  ? `  ✓ Stripe sandbox placeholders → ${devLabel} (fill in later)`
-                  : `  ✓ Stripe sandbox creds → ${devLabel} (${pairs.length} keys)`,
+              chalk.dim(
+                `  · Skipping Stripe on --resume — STRIPE_SECRET_KEY present in both .env.production and .env.development.`,
               ),
             );
-          }
-          if (result.live) {
-            if (result.live.kind === "skipped") {
-              appendCommentBlock(prodEnvPath, renderStripeSkipComment("live", prodLabel));
-            }
-            const pairs = parseEnvLines(renderStripeEnv(result.live));
-            writeProdEnv(prodEnvPath, pairs);
-            if (result.live.kind === "configured") {
-              ledger.record({
-                kind: "keychain",
-                account: SECRET_KEYS.stripeProjectWebhookId(plan.name, "live"),
-              });
-            }
-            console.log(
-              chalk.green(
-                result.live.kind === "skipped"
-                  ? `  ✓ Stripe live placeholders → ${prodLabel} (encrypted CHANGE_ME values, fill in later)`
-                  : `  ✓ Stripe live creds → ${prodLabel} (encrypted, ${pairs.length} keys)`,
-              ),
-            );
-          }
-          if (!result.test && !result.live) {
-            caveats.push({
-              title: "Stripe wiring skipped",
-              reason:
-                "No Stripe master key configured — neither test nor live mode could be wired.",
-              recovery: [
-                "Run `hatchkit config add stripe` to add at least one master key,",
-                `then re-run \`hatchkit adopt --resume\` from ${state.projectDir}.`,
-              ],
+          } else {
+            const result = await provisionStripeProject({
+              projectName: plan.name,
+              domain: plan.domain,
             });
+            const devLabel = relative(state.projectDir, devEnvPath);
+            const prodLabel = relative(state.projectDir, prodEnvPath);
+
+            if (result.test) {
+              if (result.test.kind === "skipped") {
+                appendCommentBlock(devEnvPath, renderStripeSkipComment("test", devLabel));
+              }
+              const pairs = parseEnvLines(renderStripeEnv(result.test));
+              writeDevEnv(devEnvPath, pairs);
+              if (result.test.kind === "configured") {
+                ledger.record({
+                  kind: "keychain",
+                  account: SECRET_KEYS.stripeProjectWebhookId(plan.name, "test"),
+                });
+              }
+              console.log(
+                chalk.green(
+                  result.test.kind === "skipped"
+                    ? `  ✓ Stripe sandbox placeholders → ${devLabel} (fill in later)`
+                    : `  ✓ Stripe sandbox creds → ${devLabel} (${pairs.length} keys)`,
+                ),
+              );
+            }
+            if (result.live) {
+              if (result.live.kind === "skipped") {
+                appendCommentBlock(prodEnvPath, renderStripeSkipComment("live", prodLabel));
+              }
+              const pairs = parseEnvLines(renderStripeEnv(result.live));
+              writeProdEnv(prodEnvPath, pairs);
+              if (result.live.kind === "configured") {
+                ledger.record({
+                  kind: "keychain",
+                  account: SECRET_KEYS.stripeProjectWebhookId(plan.name, "live"),
+                });
+              }
+              console.log(
+                chalk.green(
+                  result.live.kind === "skipped"
+                    ? `  ✓ Stripe live placeholders → ${prodLabel} (encrypted CHANGE_ME values, fill in later)`
+                    : `  ✓ Stripe live creds → ${prodLabel} (encrypted, ${pairs.length} keys)`,
+                ),
+              );
+            }
+            if (!result.test && !result.live) {
+              caveats.push({
+                title: "Stripe wiring skipped",
+                reason:
+                  "No Stripe master key configured — neither test nor live mode could be wired.",
+                recovery: [
+                  "Run `hatchkit config add stripe` to add at least one master key,",
+                  `then re-run \`hatchkit adopt --resume\` from ${state.projectDir}.`,
+                ],
+              });
+            }
           }
         }
       } catch (err) {

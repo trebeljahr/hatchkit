@@ -30,6 +30,22 @@ export interface WriteResult {
   prodEncryptedKeys: string[];
 }
 
+/** Read the set of KEY names already present in an env file, regardless
+ *  of whether the values are plaintext or dotenvx-encrypted. Used by
+ *  `adopt --resume` to decide whether a given service's credentials are
+ *  already wired up (so re-runs don't mint duplicates). Returns an empty
+ *  set when the file doesn't exist. */
+export function readEnvKeys(envPath: string): Set<string> {
+  if (!existsSync(envPath)) return new Set();
+  const text = readFileSync(envPath, "utf-8");
+  const keys = new Set<string>();
+  for (const line of text.split("\n")) {
+    const m = line.match(/^([A-Z][A-Z0-9_]*)=/);
+    if (m) keys.add(m[1]);
+  }
+  return keys;
+}
+
 /** Parse a list of `KEY=VALUE` lines into structured pairs. Blank
  *  lines and comments are ignored, which matches the format the
  *  provision orchestrator emits today. */

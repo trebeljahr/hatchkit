@@ -52,6 +52,7 @@ import {
 } from "../scaffold/manifest.js";
 import { CloudflareApi, type R2CorsRule } from "../utils/cloudflare-api.js";
 import { SECRET_KEYS, deleteSecret, getSecret } from "../utils/secrets.js";
+import { readEnvKeys } from "./write-env.js";
 
 export type EnvPrefix = "R2" | "S3" | "AWS";
 
@@ -206,16 +207,7 @@ export function envKeysForPrefix(prefix: EnvPrefix): {
  *  value the user has since edited. Returns the set of plain or
  *  encrypted KEYs present (we don't try to decrypt — encrypted values
  *  always have a `KEY="encrypted:..."` shape). */
-function existingEnvKeys(envPath: string): Set<string> {
-  if (!existsSync(envPath)) return new Set();
-  const text = readFileSync(envPath, "utf-8");
-  const keys = new Set<string>();
-  for (const line of text.split("\n")) {
-    const m = line.match(/^([A-Z][A-Z0-9_]*)=/);
-    if (m) keys.add(m[1]);
-  }
-  return keys;
-}
+const existingEnvKeys = readEnvKeys;
 
 /** Provision the public+private bucket pair for an adopted project,
  *  wire the resulting credentials/URLs into its `.env.production`, and
@@ -439,12 +431,23 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   //         encrypted access/secret values → REUSE (skip mint).
   //         Keeps re-runs of `hatchkit provision s3` no-op when
   //         nothing's actually changed.
-  //      b. Otherwise → mint a fresh account-token. Revoke the stale
+  //      b. `.env.production` already has access/secret values but the
+  //         manifest has NO tokenId (first adopt over a project that
+  //         already had S3 wired up, or a manifest written before
+  //         account-token tracking) → REUSE the env creds as-is. We
+  //         don't know the CF token id behind them so destroy can't
+  //         auto-revoke, but silently re-minting and overwriting a
+  //         working pair is worse: the live token keeps orphaning and
+  //         the runtime now points at fresh creds the user didn't ask
+  //         for. Warn loudly + record what we couldn't track.
+  //      c. Otherwise → mint a fresh account-token. Revoke the stale
   //         manifest token first if any (so we don't leave orphans).
-  //      c. Migration: if the OS keychain still has a legacy
+  //      d. Migration: if the OS keychain still has a legacy
   //         user-token from the pre-account-tokens era, revoke it and
   //         wipe the keychain entries — manifest is now the source of
-  //         truth, not the keychain.
+  //         truth, not the keychain. Skipped when (b) applies, since
+  //         the keychain creds might be the same pair the env is
+  //         currently using and revoking them would break runtime.
   const existingTokenId = manifest.s3Buckets?.tokenId;
   const existingAccountId = manifest.s3Buckets?.accountId;
   const envPathForCheck = join(opts.projectDir, ".env.production");
@@ -491,12 +494,38 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
     }
   }
 
+  // Case (b) from the policy above: env has creds, manifest doesn't
+  // know which CF token they belong to. Reuse them in place.
+  const reusingExternalCreds = !canReuseExisting && envHasCreds && !existingTokenId;
+  if (reusingExternalCreds) {
+    console.log(
+      chalk.yellow(
+        `  · Existing ${keysForCheck.accessKey} / ${keysForCheck.secretKey} found in .env.production — reusing as-is (no re-mint).`,
+      ),
+    );
+    console.log(
+      chalk.dim(
+        `    Manifest has no recorded R2 token id for these creds, so \`hatchkit destroy\` won't auto-revoke the token.\n` +
+          `    To rotate or re-mint a tracked token: remove both keys from .env.production and re-run \`hatchkit provision s3\`.`,
+      ),
+    );
+  }
+
   // Migration: revoke + wipe legacy user-token entries from the
   // keychain. Best-effort — a CF revoke failure logs and continues.
+  // Skipped when reusing external creds: the keychain entries may be
+  // the same pair currently wired into .env.production, and revoking
+  // them would break runtime.
   let legacyUserTokenMigrated = false;
-  const legacyAccessKey = await getSecret(SECRET_KEYS.s3ProjectAccessKey(provider, projectName));
-  const legacySecretKey = await getSecret(SECRET_KEYS.s3ProjectSecretKey(provider, projectName));
-  const legacyTokenId = await getSecret(SECRET_KEYS.s3ProjectTokenId(provider, projectName));
+  const legacyAccessKey = reusingExternalCreds
+    ? null
+    : await getSecret(SECRET_KEYS.s3ProjectAccessKey(provider, projectName));
+  const legacySecretKey = reusingExternalCreds
+    ? null
+    : await getSecret(SECRET_KEYS.s3ProjectSecretKey(provider, projectName));
+  const legacyTokenId = reusingExternalCreds
+    ? null
+    : await getSecret(SECRET_KEYS.s3ProjectTokenId(provider, projectName));
   if (legacyAccessKey || legacySecretKey || legacyTokenId) {
     legacyUserTokenMigrated = true;
     if (legacyTokenId) {
@@ -530,7 +559,7 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   let projectTokenId: string | undefined = canReuseExisting ? existingTokenId : undefined;
   let tokenCreated: { tokenId: string; audience: "account" } | null = null;
 
-  if (!canReuseExisting) {
+  if (!canReuseExisting && !reusingExternalCreds) {
     // Revoke a stale manifest token (status disabled/expired/404)
     // before minting its replacement so we don't pile up orphans.
     if (existingTokenId && existingAccountId) {
@@ -671,11 +700,13 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   //    `--with-state-bucket` provision. Always pin the token id +
   //    accountId so destroy can revoke even after credentials get
   //    rotated.
-  if (!projectTokenId) {
+  if (!projectTokenId && !reusingExternalCreds) {
     // Defensive: every code path above either reuses a known token
-    // (`canReuseExisting === true`, sets projectTokenId) or mints
-    // (also sets projectTokenId). If we got here without one, we'd
-    // write a manifest with no token id and no clean way to recover.
+    // (`canReuseExisting === true`, sets projectTokenId), mints (also
+    // sets projectTokenId), or reuses untracked env creds
+    // (reusingExternalCreds → no tokenId is acceptable). If we got
+    // here without one, we'd write a manifest with no token id and
+    // no clean way to recover.
     throw new Error(
       "Internal: provisionS3ForProject ended without a token id. This is a bug — please file an issue.",
     );
@@ -693,7 +724,7 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
         : manifest.s3Buckets?.state
           ? { state: manifest.s3Buckets.state }
           : {}),
-      tokenId: projectTokenId,
+      ...(projectTokenId ? { tokenId: projectTokenId } : {}),
       accountId,
     },
   };
