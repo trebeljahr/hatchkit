@@ -150,12 +150,20 @@ export async function verifyR2AdminToken(
 }
 
 /** Sanitize pasted secret: strip bracketed-paste escapes + non-printable
- *  ASCII that some terminals inject on paste. Plain `.trim()` misses these. */
+ *  ASCII that some terminals inject on paste. Plain `.trim()` misses these.
+ *
+ *  Both regexes contain control-character literals on purpose: the first
+ *  matches the ANSI bracketed-paste prefix (ESC `[2NN~`), the second strips
+ *  anything outside printable-ASCII. Biome's rule is suppressed inline —
+ *  there is no equivalent way to write either pattern. */
 function sanitizePastedSecret(raw: string): string {
-  return raw
-    .replace(/\x1b\[2\d\d~/g, "")
-    .replace(/[^\x20-\x7e]/g, "")
-    .trim();
+  return (
+    raw
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: ESC is the literal byte we need to strip
+      .replace(/\u001b\[2\d\d~/g, "")
+      .replace(/[^\x20-\x7e]/g, "")
+      .trim()
+  );
 }
 
 /** Prompt for a secret, show a masked preview (`abcd…wxyz, 50 chars`),
