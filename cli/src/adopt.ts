@@ -34,7 +34,7 @@
  * exits early with a "use `hatchkit update` instead" hint.
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { Separator, confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
@@ -76,7 +76,7 @@ import {
 } from "./utils/validate.js";
 import { getCliVersion } from "./utils/version.js";
 
-interface DetectedState {
+export interface DetectedState {
   /** Absolute path to the project root. */
   projectDir: string;
   /** package.json `name` if any. */
@@ -92,6 +92,26 @@ interface DetectedState {
   serverDir?: string;
   /** Where the client's env files live, if detectable. */
   clientDir?: string;
+  /** True when the project root looks like a workspace / monorepo (a
+   *  `pnpm-workspace.yaml`, a root `package.json#workspaces` field, or
+   *  one of the popular orchestrator manifests — turbo.json, lerna.json,
+   *  rush.json) BUT none of the conventional server/client dirs matched.
+   *
+   *  This is the layout that breaks the scaffolded build pipeline: the
+   *  Dockerfile templates assume a single-package project rooted at /,
+   *  so for an unrecognised workspace they'd `pnpm install` an empty
+   *  surface and `pnpm build` whatever the root script does — almost
+   *  never the user's intent. When this is true, adopt defaults the
+   *  pipeline scaffold OFF and parks the cursor on the row so the user
+   *  has to opt-in explicitly. */
+  unknownWorkspaceLayout: boolean;
+  /** When `unknownWorkspaceLayout` is true, plausible standalone build
+   *  directories found inside the project — first-level subdirs that
+   *  carry their own `package.json` + lockfile, optionally with
+   *  `.npmrc:ignore-workspace=true` (the docs/marketing-site pattern).
+   *  Surfaced as a hint in the detection summary so the user knows
+   *  where to point a hand-authored Dockerfile. */
+  standaloneBuildCandidates: Array<{ dir: string; hasIgnoreWorkspace: boolean }>;
   /** Detected feature flags (best-guess from package deps + .env keys). */
   features: Feature[];
   /** True if `<serverDir>/.env.production` opens with a DOTENV_PUBLIC_KEY
@@ -295,7 +315,13 @@ export async function runAdopt(
     //      private one and produces "permission denied" on deploy.
     isPrivate: state.gitRemoteIsPrivate ?? true,
     appPort: "3000",
-    scaffoldBuildPipeline: true,
+    // Pipeline scaffold defaults OFF when the layout is unrecognised.
+    // The Dockerfile templates assume a single-package project rooted
+    // at /; for a workspace with no standard server/client dirs the
+    // generated files build the wrong thing (or nothing). User can
+    // still flip this on in the review loop — buildAdoptGroups parks
+    // the cursor on the row in this case so the choice is explicit.
+    scaffoldBuildPipeline: !state.unknownWorkspaceLayout,
     // Provisioning is opt-in. Each service mints real resources on a
     // third-party (GlitchTip project, OpenPanel project, Resend API
     // key) and cleaning those up after the fact is a chore — better
@@ -378,7 +404,7 @@ export async function runAdopt(
 // Detection
 // ---------------------------------------------------------------------------
 
-async function detectProject(projectDir: string): Promise<DetectedState> {
+export async function detectProject(projectDir: string): Promise<DetectedState> {
   const hasManifest = existsSync(join(projectDir, MANIFEST_FILENAME));
   const existingManifest = hasManifest ? (readManifest(projectDir) ?? undefined) : undefined;
 
@@ -399,6 +425,32 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
     }
   } catch {
     // No package.json at root — that's fine for a non-Node project.
+  }
+
+  // Workspace markers — pnpm, yarn/npm, turbo, lerna, rush. When a
+  // marker is present but the standard server/client dir scan below
+  // turns up nothing, we're looking at a layout the scaffolder's
+  // surface-based Dockerfile templates can't handle. Flagged below as
+  // `unknownWorkspaceLayout`.
+  const workspaceMarkers = [
+    "pnpm-workspace.yaml",
+    "pnpm-workspace.yml",
+    "turbo.json",
+    "lerna.json",
+    "rush.json",
+  ];
+  let hasWorkspaceMarker = workspaceMarkers.some((f) => existsSync(join(projectDir, f)));
+  if (!hasWorkspaceMarker) {
+    // npm/yarn workspaces live as a `workspaces` field inside the root
+    // package.json (string array or { packages: [...] } object).
+    try {
+      const rootPkg = JSON.parse(readFileSync(join(projectDir, "package.json"), "utf-8")) as {
+        workspaces?: unknown;
+      };
+      if (rootPkg.workspaces) hasWorkspaceMarker = true;
+    } catch {
+      // No / unreadable root package.json — leave hasWorkspaceMarker false.
+    }
   }
 
   // Walk a generous set of common monorepo layouts.
@@ -521,6 +573,11 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
     }
   }
 
+  const unknownWorkspaceLayout = hasWorkspaceMarker && !serverDir && !clientDir;
+  const standaloneBuildCandidates = unknownWorkspaceLayout
+    ? findStandaloneBuildCandidates(projectDir)
+    : [];
+
   return {
     projectDir,
     packageName,
@@ -528,6 +585,8 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
     hasManifest,
     serverDir,
     clientDir,
+    unknownWorkspaceLayout,
+    standaloneBuildCandidates,
     features,
     prodEnvIsEncrypted,
     hasEnvKeys,
@@ -539,6 +598,54 @@ async function detectProject(projectDir: string): Promise<DetectedState> {
     gitRemoteIsPrivate,
     existingManifest,
   };
+}
+
+/** Scan first-level subdirs for a standalone-buildable project — own
+ *  `package.json` AND its own lockfile (the marker that pnpm/npm/yarn
+ *  would install it independently of the parent workspace). `.npmrc`
+ *  with `ignore-workspace=true` is a stronger signal: that's the
+ *  explicit "treat me as standalone" toggle Docusaurus / marketing
+ *  sites use when they live next to a CLI workspace.
+ *
+ *  Returns first-level matches only; we don't recurse because the
+ *  intent is "show the user a starting point", not enumerate every
+ *  buildable subtree. */
+function findStandaloneBuildCandidates(
+  projectDir: string,
+): Array<{ dir: string; hasIgnoreWorkspace: boolean }> {
+  const out: Array<{ dir: string; hasIgnoreWorkspace: boolean }> = [];
+  let entries: string[];
+  try {
+    entries = readdirSync(projectDir);
+  } catch {
+    return out;
+  }
+  for (const name of entries) {
+    if (name.startsWith(".") || name === "node_modules") continue;
+    const dir = join(projectDir, name);
+    let isDir = false;
+    try {
+      isDir = statSync(dir).isDirectory();
+    } catch {
+      continue;
+    }
+    if (!isDir) continue;
+    if (!existsSync(join(dir, "package.json"))) continue;
+    const hasOwnLockfile =
+      existsSync(join(dir, "pnpm-lock.yaml")) ||
+      existsSync(join(dir, "package-lock.json")) ||
+      existsSync(join(dir, "yarn.lock"));
+    if (!hasOwnLockfile) continue;
+    let hasIgnoreWorkspace = false;
+    try {
+      const npmrc = readFileSync(join(dir, ".npmrc"), "utf-8");
+      hasIgnoreWorkspace = /^\s*ignore-workspace\s*=\s*true\s*$/m.test(npmrc);
+    } catch {
+      // No .npmrc — still a candidate (own lockfile is the main signal).
+    }
+    out.push({ dir, hasIgnoreWorkspace });
+  }
+  return out;
 }
 
 function firstExisting(root: string, candidates: string[]): string | undefined {
@@ -692,6 +799,32 @@ function printDetected(state: DetectedState): void {
       state.features.length > 0 ? state.features.join(", ") : chalk.dim("none detected"),
     ),
   );
+  if (state.unknownWorkspaceLayout) {
+    lines.push("");
+    lines.push(
+      chalk.yellow(
+        "  ! Workspace marker detected (pnpm-workspace.yaml / workspaces / turbo / lerna)",
+      ),
+    );
+    lines.push(
+      chalk.yellow("    but no standard server/client dir matched. Adopt will skip the Docker"),
+    );
+    lines.push(
+      chalk.yellow("    + GH Actions pipeline scaffold — the templates assume a single-package"),
+    );
+    lines.push(chalk.yellow("    project and would build the wrong thing here."));
+    if (state.standaloneBuildCandidates.length > 0) {
+      lines.push("");
+      lines.push(chalk.dim("    Standalone-buildable subdirs (own lockfile):"));
+      for (const c of state.standaloneBuildCandidates) {
+        const tag = c.hasIgnoreWorkspace ? chalk.green("  ignore-workspace=true") : "";
+        lines.push(chalk.dim(`      · ${relativeTo(c.dir)}${tag}`));
+      }
+      lines.push(
+        chalk.dim("    Point a hand-authored Dockerfile at one of those and re-run adopt."),
+      );
+    }
+  }
   for (const l of lines) console.log(l);
   console.log();
 }
@@ -893,7 +1026,10 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
               {
                 key: "scaffoldBuildPipeline",
                 label: "Docker + GH Actions",
-                set: true,
+                // Park cursor here when the layout is unrecognised — the
+                // user should make an explicit yes/no rather than walk
+                // past a defaulted-off row without seeing it.
+                set: !state.unknownWorkspaceLayout,
                 summary: renderBuildPipelineSummary(state, plan),
               },
             ],
@@ -2902,7 +3038,11 @@ async function listStagedFiles(cwd: string): Promise<string[]> {
  *  noting which files already exist (will be left alone) vs which
  *  will be scaffolded. */
 function renderBuildPipelineSummary(state: DetectedState, plan: AdoptPlan): string {
-  if (!plan.scaffoldBuildPipeline) return chalk.dim("no — leave files as-is");
+  if (!plan.scaffoldBuildPipeline) {
+    return state.unknownWorkspaceLayout
+      ? chalk.dim("no — unrecognised workspace layout, hand-author your own")
+      : chalk.dim("no — leave files as-is");
+  }
   const pipe = detectBuildPipeline(state.projectDir);
   const willWrite: string[] = [];
   const kept: string[] = [];
@@ -2915,7 +3055,13 @@ function renderBuildPipelineSummary(state: DetectedState, plan: AdoptPlan): stri
   if (willWrite.length === 0) return chalk.dim("all files already present — nothing to write");
   const writePart = `write ${willWrite.join(", ")}`;
   const keepPart = kept.length > 0 ? chalk.dim(` · keep ${kept.join(", ")}`) : "";
-  return `${writePart}${keepPart}`;
+  // Strong warning when the user has overridden the unknown-layout
+  // default. We still write the files (their call), but flag that the
+  // templates' single-package assumption probably doesn't fit this repo.
+  const layoutWarn = state.unknownWorkspaceLayout
+    ? `  ${chalk.yellow("(unrecognised workspace — templates may build the wrong thing)")}`
+    : "";
+  return `${writePart}${keepPart}${layoutWarn}`;
 }
 
 function detectDockerComposeDomainServiceName(projectDir: string, surfaces: AdoptSurface): string {

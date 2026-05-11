@@ -1828,6 +1828,98 @@ console.log("\n── adopt: gitignore + private-key guard ───────
   results.gitignoreGuard = ok;
 }
 
+// adopt: unrecognised workspace layout detection — guards against the
+// regression where adopt-on-self scaffolded a single-package Dockerfile
+// for a pnpm workspace and the GH Actions build broke with "tsc: not
+// found" because the root `pnpm install` had no workspace packages to
+// install against. The fix: flag layouts with a workspace marker but
+// no conventional server/client dir as `unknownWorkspaceLayout` and
+// default `scaffoldBuildPipeline: false`.
+{
+  console.log("\n── adopt: unrecognised workspace layout ─────────────────────────────");
+  const { detectProject } = await import("./src/adopt.js");
+  const checks: Array<[string, boolean]> = [];
+
+  // Scenario A: pnpm-workspace.yaml at root + no server/client dirs.
+  // Two custom dirs (cli, docs) that aren't on the recognised lists.
+  // docs has its own lockfile + .npmrc:ignore-workspace=true — the
+  // standalone-buildable marker.
+  const repoA = mkdtempSync(join(tmpdir(), "adopt-unknown-layout-"));
+  writeFileSync(join(repoA, "package.json"), JSON.stringify({ name: "x" }));
+  writeFileSync(join(repoA, "pnpm-workspace.yaml"), 'packages:\n  - "cli"\n');
+  const { mkdirSync } = await import("node:fs");
+  mkdirSync(join(repoA, "cli"));
+  writeFileSync(join(repoA, "cli/package.json"), JSON.stringify({ name: "x-cli" }));
+  mkdirSync(join(repoA, "docs"));
+  writeFileSync(join(repoA, "docs/package.json"), JSON.stringify({ name: "x-docs" }));
+  writeFileSync(join(repoA, "docs/pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+  writeFileSync(join(repoA, "docs/.npmrc"), "ignore-workspace=true\n");
+  const stateA = await detectProject(repoA);
+  checks.push(["A: unknownWorkspaceLayout flagged", stateA.unknownWorkspaceLayout === true]);
+  checks.push(["A: no serverDir matched", stateA.serverDir === undefined]);
+  checks.push(["A: no clientDir matched", stateA.clientDir === undefined]);
+  checks.push([
+    "A: docs/ surfaced as standalone candidate",
+    stateA.standaloneBuildCandidates.some((c) => c.dir.endsWith("/docs")),
+  ]);
+  checks.push([
+    "A: ignore-workspace flag captured",
+    stateA.standaloneBuildCandidates.find((c) => c.dir.endsWith("/docs"))?.hasIgnoreWorkspace ===
+      true,
+  ]);
+
+  // Scenario B: standard layout — `apps/web` exists, so detection
+  // resolves a clientDir and the unknown-layout flag stays off even
+  // with a workspace marker present.
+  const repoB = mkdtempSync(join(tmpdir(), "adopt-standard-layout-"));
+  writeFileSync(join(repoB, "package.json"), JSON.stringify({ name: "y" }));
+  writeFileSync(join(repoB, "pnpm-workspace.yaml"), 'packages:\n  - "apps/*"\n');
+  mkdirSync(join(repoB, "apps"));
+  mkdirSync(join(repoB, "apps/web"));
+  writeFileSync(join(repoB, "apps/web/package.json"), JSON.stringify({ name: "y-web" }));
+  const stateB = await detectProject(repoB);
+  checks.push([
+    "B: standard layout → unknownWorkspaceLayout false",
+    stateB.unknownWorkspaceLayout === false,
+  ]);
+  checks.push(["B: clientDir resolved to apps/web", stateB.clientDir?.endsWith("/apps/web") === true]);
+
+  // Scenario C: no workspace marker — single-package layout stays
+  // unflagged even when the standard dirs don't match.
+  const repoC = mkdtempSync(join(tmpdir(), "adopt-single-package-"));
+  writeFileSync(join(repoC, "package.json"), JSON.stringify({ name: "z" }));
+  const stateC = await detectProject(repoC);
+  checks.push([
+    "C: single-package layout → unknownWorkspaceLayout false",
+    stateC.unknownWorkspaceLayout === false,
+  ]);
+
+  // Scenario D: npm/yarn-style workspaces (workspaces field in root
+  // package.json) — same as pnpm-workspace.yaml, should flag.
+  const repoD = mkdtempSync(join(tmpdir(), "adopt-npm-workspaces-"));
+  writeFileSync(
+    join(repoD, "package.json"),
+    JSON.stringify({ name: "w", workspaces: ["packages/*"] }),
+  );
+  const stateD = await detectProject(repoD);
+  checks.push([
+    "D: npm workspaces field → unknownWorkspaceLayout flagged",
+    stateD.unknownWorkspaceLayout === true,
+  ]);
+
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  results.adoptUnknownLayout = ok;
+
+  rmSync(repoA, { recursive: true, force: true });
+  rmSync(repoB, { recursive: true, force: true });
+  rmSync(repoC, { recursive: true, force: true });
+  rmSync(repoD, { recursive: true, force: true });
+}
+
 // Clean up the isolated config dir + every keychain entry scoped to
 // the throwaway service.
 {
