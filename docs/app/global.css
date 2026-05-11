@@ -1,0 +1,30 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+
+/* hatchkit — indigo accent on top of the neutral preset.
+   Token names mirror Fumadocs' design tokens so doc pages pick them up. */
+:root {
+  --color-fd-primary: oklch(58% 0.18 270);
+  --color-fd-ring: oklch(58% 0.18 270);
+}
+
+.dark {
+  --color-fd-primary: oklch(78% 0.13 270);
+  --color-fd-ring: oklch(78% 0.13 270);
+}
+
+html {
+  scrollbar-gutter: stable;
+}
+
+/* react-remove-scroll (pulled in by fumadocs/radix dialogs) sets inline
+   margin-right + scroll-bar-size on body when a modal opens. We rely on
+   `scrollbar-gutter: stable` instead, so neutralize the lib's inline values.
+   !important is required to win against inline styles. */
+html > body[data-scroll-locked] {
+  /* biome-ignore lint/complexity/noImportantStyles: override inline style from react-remove-scroll */
+  margin-right: 0px !important;
+  /* biome-ignore lint/complexity/noImportantStyles: override inline style from react-remove-scroll */
+  --removed-body-scroll-bar-size: 0px !important;
+}

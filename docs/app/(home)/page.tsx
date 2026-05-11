@@ -1,8 +1,6 @@
+import Link from "next/link";
 import type { ReactNode } from "react";
-import Link from "@docusaurus/Link";
-import useDocusaurusContext from "@docusaurus/useDocusaurusContext";
-import Layout from "@theme/Layout";
-import styles from "./index.module.css";
+import styles from "./page.module.css";
 
 function Hero() {
   return (
@@ -10,12 +8,12 @@ function Hero() {
       <div className={styles.heroInner}>
         <p className={styles.eyebrow}>
           <span className={styles.eyebrowDot} aria-hidden /> npm i -g hatchkit
-          &nbsp;·&nbsp; v0.1.38
+          &nbsp;·&nbsp; v0.1.42
         </p>
         <h1 className={styles.heroTitle}>
           From <code className={styles.inlineCode}>npx hatchkit</code>
           <br />
-          to a deployed full-stack app.
+          to a <span className={styles.heroAccent}>deployed full-stack app</span>.
         </h1>
         <p className={styles.heroTagline}>
           Interactive CLI that scaffolds, provisions, and deploys
@@ -23,10 +21,7 @@ function Hero() {
           services — onto infrastructure you own. No vendor lock-in.
         </p>
         <div className={styles.heroCtas}>
-          <Link
-            className={styles.ctaPrimary}
-            to="/docs/getting-started"
-          >
+          <Link className={styles.ctaPrimary} href="/docs/getting-started">
             Get started →
           </Link>
           <Link
@@ -49,25 +44,17 @@ function Hero() {
               <span className={styles.prompt}>$</span>{" "}
               <span className={styles.cmd}>npx hatchkit create</span>
               {"\n"}
-              <span className={styles.muted}>
-                ? Project name ›
-              </span>{" "}
+              <span className={styles.muted}>? Project name ›</span>{" "}
               <span className={styles.input}>nimbus</span>
               {"\n"}
               <span className={styles.muted}>? Domain ›</span>{" "}
               <span className={styles.input}>nimbus.dev</span>
               {"\n"}
-              <span className={styles.muted}>
-                ? Deploy target ›
-              </span>{" "}
-              <span className={styles.input}>
-                New Hetzner VPS (cpx21)
-              </span>
+              <span className={styles.muted}>? Deploy target ›</span>{" "}
+              <span className={styles.input}>New Hetzner VPS (cpx21)</span>
               {"\n"}
               <span className={styles.muted}>? Features ›</span>{" "}
-              <span className={styles.input}>
-                websocket, stripe, analytics
-              </span>
+              <span className={styles.input}>websocket, stripe, analytics</span>
               {"\n"}
               <span className={styles.muted}>? ML services ›</span>{" "}
               <span className={styles.input}>
@@ -170,22 +157,19 @@ function Workflow() {
       num: "01",
       cmd: "hatchkit setup",
       title: "Onboard once",
-      body:
-        "Walks through every credential — GitHub, Coolify, Hetzner, DNS, GlitchTip, OpenPanel, Resend, GPU providers. Tokens go to your OS keychain, never to git.",
+      body: "Walks through every credential — GitHub, Coolify, Hetzner, DNS, GlitchTip, OpenPanel, Resend, GPU providers. Tokens go to your OS keychain, never to git.",
     },
     {
       num: "02",
       cmd: "hatchkit create",
       title: "Scaffold + deploy",
-      body:
-        "Pick name, domain, features, ML services, deploy target. Hatchkit scaffolds the repo, creates GitHub, provisions infra, deploys the app and your GPU endpoints.",
+      body: "Pick name, domain, features, ML services, deploy target. Hatchkit scaffolds the repo, creates GitHub, provisions infra, deploys the app and your GPU endpoints.",
     },
     {
       num: "03",
       cmd: "hatchkit doctor",
       title: "Stay healthy",
-      body:
-        "Read-only health check across every provider with contextual fix hints. Re-configure any single provider with `hatchkit config add <name>`.",
+      body: "Read-only health check across every provider with contextual fix hints. Re-configure any single provider with `hatchkit config add <name>`.",
     },
   ];
 
@@ -312,11 +296,11 @@ function FinalCta() {
         </p>
         <pre className={styles.finalCmd}>
           <code>
-            <span className={styles.prompt}>$</span> npx hatchkit setup
+            <span className={styles.finalPrompt}>$</span> npx hatchkit setup
           </code>
         </pre>
         <div className={styles.heroCtas}>
-          <Link className={styles.ctaPrimary} to="/docs/getting-started">
+          <Link className={styles.ctaPrimary} href="/docs/getting-started">
             Read the docs →
           </Link>
           <Link
@@ -332,20 +316,14 @@ function FinalCta() {
 }
 
 export default function Home(): ReactNode {
-  const { siteConfig } = useDocusaurusContext();
   return (
-    <Layout
-      title={siteConfig.title}
-      description="Interactive CLI for scaffolding full-stack TypeScript projects with composable GPU-backed ML services — on infrastructure you own."
-    >
-      <main className={styles.main}>
-        <Hero />
-        <Pillars />
-        <Workflow />
-        <Providers />
-        <Philosophy />
-        <FinalCta />
-      </main>
-    </Layout>
+    <main className={styles.main}>
+      <Hero />
+      <Pillars />
+      <Workflow />
+      <Providers />
+      <Philosophy />
+      <FinalCta />
+    </main>
   );
 }

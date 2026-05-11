@@ -1,24 +1,7 @@
-/* Landing page — dark-first, indigo accent, terminal vibe. */
+/* hatchkit landing — indigo accent, terminal vibe.
+   Light defaults; .dark class (set by fumadocs theme provider) flips them. */
 
 .main {
-  --hk-fg: #e6e8ee;
-  --hk-fg-muted: #9aa3b2;
-  --hk-fg-dim: #6b7280;
-  --hk-bg: #0b0d12;
-  --hk-bg-alt: #11141c;
-  --hk-surface: #161a24;
-  --hk-border: rgba(255, 255, 255, 0.08);
-  --hk-border-strong: rgba(255, 255, 255, 0.16);
-  --hk-accent: #a5b4fc;
-  --hk-accent-strong: #818cf8;
-  --hk-accent-glow: rgba(99, 102, 241, 0.25);
-  --hk-success: #34d399;
-  --hk-radius-lg: 14px;
-  --hk-radius-md: 10px;
-  --hk-radius-sm: 6px;
-}
-
-[data-theme="light"] .main {
   --hk-fg: #11141c;
   --hk-fg-muted: #4b5563;
   --hk-fg-dim: #6b7280;
@@ -31,11 +14,29 @@
   --hk-accent-strong: #4338ca;
   --hk-accent-glow: rgba(99, 102, 241, 0.18);
   --hk-success: #047857;
-}
+  --hk-radius-lg: 14px;
+  --hk-radius-md: 10px;
+  --hk-radius-sm: 6px;
+  --hk-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
 
-.main {
   background: var(--hk-bg);
   color: var(--hk-fg);
+}
+
+:global(.dark) .main {
+  --hk-fg: #e6e8ee;
+  --hk-fg-muted: #9aa3b2;
+  --hk-fg-dim: #6b7280;
+  --hk-bg: #0b0d12;
+  --hk-bg-alt: #11141c;
+  --hk-surface: #161a24;
+  --hk-border: rgba(255, 255, 255, 0.08);
+  --hk-border-strong: rgba(255, 255, 255, 0.16);
+  --hk-accent: #a5b4fc;
+  --hk-accent-strong: #818cf8;
+  --hk-accent-glow: rgba(99, 102, 241, 0.25);
+  --hk-success: #34d399;
 }
 
 /* ───── Hero ───────────────────────────────────────────────── */
@@ -67,7 +68,7 @@
   margin: 0 0 1.5rem;
   padding: 0.35rem 0.85rem;
   font-size: 0.8125rem;
-  font-family: var(--ifm-font-family-monospace);
+  font-family: var(--hk-font-mono);
   color: var(--hk-fg-muted);
   background: var(--hk-surface);
   border: 1px solid var(--hk-border);
@@ -91,8 +92,19 @@
   color: var(--hk-fg);
 }
 
+.heroAccent {
+  background: linear-gradient(
+    90deg,
+    var(--hk-accent-strong),
+    var(--hk-accent)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
 .inlineCode {
-  font-family: var(--ifm-font-family-monospace);
+  font-family: var(--hk-font-mono);
   font-size: 0.85em;
   padding: 0.15em 0.4em;
   background: var(--hk-surface);
@@ -129,21 +141,24 @@
   font-weight: 600;
   border-radius: var(--hk-radius-md);
   text-decoration: none;
-  transition: transform 0.12s ease, box-shadow 0.12s ease,
-    background 0.12s ease, border-color 0.12s ease;
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.12s ease,
+    background 0.12s ease,
+    border-color 0.12s ease;
 }
 
 .ctaPrimary {
   background: var(--hk-accent-strong);
-  color: #0b0d12;
+  color: #ffffff;
   border: 1px solid var(--hk-accent-strong);
-  box-shadow: 0 8px 24px -8px var(--hk-accent-glow),
+  box-shadow:
+    0 8px 24px -8px var(--hk-accent-glow),
     inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
 .ctaPrimary:hover {
   background: var(--hk-accent);
-  color: #0b0d12;
   text-decoration: none;
   transform: translateY(-1px);
 }
@@ -156,22 +171,23 @@
 
 .ctaSecondary:hover {
   border-color: var(--hk-accent);
-  color: var(--hk-fg);
+  color: var(--hk-accent);
   text-decoration: none;
-  background: var(--hk-surface);
+  background: var(--hk-bg-alt);
 }
 
-/* Terminal */
+/* Terminal — always dark, regardless of theme */
 
 .terminal {
   max-width: 760px;
   margin: 0 auto;
   text-align: left;
-  background: var(--hk-surface);
-  border: 1px solid var(--hk-border);
+  background: #161a24;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: var(--hk-radius-lg);
-  box-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.5),
-    0 0 0 1px var(--hk-border);
+  box-shadow:
+    0 24px 60px -24px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.04);
   overflow: hidden;
 }
 
@@ -180,8 +196,8 @@
   align-items: center;
   gap: 0.4rem;
   padding: 0.7rem 1rem;
-  background: var(--hk-bg-alt);
-  border-bottom: 1px solid var(--hk-border);
+  background: #11141c;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .dot {
@@ -206,8 +222,8 @@
 .terminalTitle {
   margin-left: 0.75rem;
   font-size: 0.75rem;
-  font-family: var(--ifm-font-family-monospace);
-  color: var(--hk-fg-dim);
+  font-family: var(--hk-font-mono);
+  color: #6b7280;
 }
 
 .terminalBody {
@@ -216,8 +232,8 @@
   background: transparent;
   font-size: 0.85rem;
   line-height: 1.65;
-  font-family: var(--ifm-font-family-monospace);
-  color: var(--hk-fg);
+  font-family: var(--hk-font-mono);
+  color: #e6e8ee;
   white-space: pre-wrap;
   overflow-x: auto;
 }
@@ -232,30 +248,30 @@
 }
 
 .prompt {
-  color: var(--hk-accent);
+  color: #a5b4fc;
   user-select: none;
 }
 
 .cmd {
-  color: var(--hk-fg);
+  color: #e6e8ee;
   font-weight: 600;
 }
 
 .muted {
-  color: var(--hk-fg-dim);
+  color: #6b7280;
 }
 
 .input {
-  color: var(--hk-accent);
+  color: #a5b4fc;
 }
 
 .ok {
-  color: var(--hk-success);
+  color: #34d399;
   font-weight: 600;
 }
 
 .success {
-  color: var(--hk-success);
+  color: #34d399;
   font-weight: 600;
 }
 
@@ -284,6 +300,7 @@
   font-weight: 700;
   margin: 0 0 0.75rem;
   text-align: center;
+  color: var(--hk-fg);
 }
 
 .sectionLede {
@@ -308,7 +325,9 @@
   border: 1px solid var(--hk-border);
   border-radius: var(--hk-radius-lg);
   padding: 1.75rem;
-  transition: border-color 0.15s ease, transform 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    transform 0.15s ease;
 }
 
 .pillarCard:hover {
@@ -376,7 +395,7 @@
 }
 
 .stepNum {
-  font-family: var(--ifm-font-family-monospace);
+  font-family: var(--hk-font-mono);
   font-size: 0.75rem;
   font-weight: 700;
   color: var(--hk-accent);
@@ -387,10 +406,10 @@
 .stepCmd {
   display: inline-block;
   padding: 0.3rem 0.6rem;
-  background: var(--hk-bg);
+  background: var(--hk-bg-alt);
   border: 1px solid var(--hk-border-strong);
   border-radius: var(--hk-radius-sm);
-  font-family: var(--ifm-font-family-monospace);
+  font-family: var(--hk-font-mono);
   font-size: 0.825rem;
   color: var(--hk-accent);
   margin-bottom: 0.75rem;
@@ -402,6 +421,7 @@
   font-weight: 700;
   margin: 0 0 0.5rem;
   letter-spacing: -0.01em;
+  color: var(--hk-fg);
 }
 
 .stepBody p {
@@ -425,7 +445,7 @@
 
 .providerLabel {
   font-size: 0.7rem;
-  font-family: var(--ifm-font-family-monospace);
+  font-family: var(--hk-font-mono);
   text-transform: uppercase;
   letter-spacing: 0.12em;
   color: var(--hk-fg-dim);
@@ -449,7 +469,9 @@
   border-radius: 999px;
   font-size: 0.8125rem;
   color: var(--hk-fg);
-  transition: border-color 0.12s ease, color 0.12s ease;
+  transition:
+    border-color 0.12s ease,
+    color 0.12s ease;
 }
 
 .providerChip:hover {
@@ -518,6 +540,7 @@
   font-weight: 700;
   letter-spacing: -0.02em;
   margin: 0 0 0.75rem;
+  color: var(--hk-fg);
 }
 
 .finalLede {
@@ -535,7 +558,7 @@
   background: var(--hk-surface);
   border: 1px solid var(--hk-border-strong);
   border-radius: var(--hk-radius-md);
-  font-family: var(--ifm-font-family-monospace);
+  font-family: var(--hk-font-mono);
   font-size: 1rem;
   text-align: left;
 }
@@ -546,6 +569,12 @@
   padding: 0;
   color: var(--hk-fg);
   font-family: inherit;
+}
+
+.finalPrompt {
+  color: var(--hk-accent);
+  user-select: none;
+  margin-right: 0.4em;
 }
 
 /* ───── Responsive tweaks ──────────────────────────────────── */

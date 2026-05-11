@@ -1,8 +1,8 @@
 name: Deploy docs to GitHub Pages
 
-# Builds the Docusaurus site in `docs/` and publishes it to GitHub Pages.
-# Triggers only when docs (or this workflow) actually change, so normal
-# CLI work doesn't rebuild the site needlessly.
+# Builds the Next.js + fumadocs site in `docs/` (output: "export") and
+# publishes it to GitHub Pages. Triggers only when docs (or this workflow)
+# actually change, so normal CLI work doesn't rebuild the site needlessly.
 
 on:
   push:
@@ -38,7 +38,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "22"
           cache: pnpm
           cache-dependency-path: docs/pnpm-lock.yaml
 
@@ -49,16 +49,17 @@ jobs:
         id: pages
         uses: actions/configure-pages@v5
 
-      - name: Build with Docusaurus
-        # `baseUrl` in docusaurus.config.ts is the source of truth.
-        # The pages action exposes `base_path` purely for diagnostics.
+      - name: Build with Next.js
+        # `output: "export"` in next.config.mjs writes a fully static
+        # site to `docs/out/`. The custom domain (CNAME at the apex)
+        # means no `basePath` is needed.
         run: pnpm build
         env:
           NODE_ENV: production
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/build
+          path: docs/out
 
   deploy:
     needs: build

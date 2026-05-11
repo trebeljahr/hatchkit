@@ -1,11 +1,9 @@
 ---
-sidebar_position: 6
 title: GitHub Pages
+description: Wire a GitHub Pages deployment for the current repo — static / SPA / Jekyll / Docusaurus — with custom domain + DNS, in one command.
 ---
 
-# `hatchkit gh-pages`
-
-Wire a GitHub Pages deployment for the **current repo** — including custom domain + DNS — in one command.
+`hatchkit gh-pages` wires a GitHub Pages deployment for the **current repo** — including custom domain + DNS — in one command.
 
 Built for the kind of project where `hatchkit create` is overkill: a sprite editor, a color-picker demo, a landing page, a palette tool, a SPA that talks to someone else's API, a `docs/` folder that you want live on the web.
 
@@ -45,11 +43,11 @@ Docusaurus is detected before `node-build` because the build dir is fixed (`buil
 
 ## Monorepos / hybrid layouts
 
-If the same repo has both a root build **and** a `docs/` site (this repo, for example — a CLI at the root, a Docusaurus site under `docs/`), you'll get a picker:
+If the same repo has both a root build **and** a `docs/` site (this repo, for example — a CLI at the root, a docs site under `docs/`), you'll get a picker:
 
 ```
 Found 2 possible sites — pick one:
-  ❯ docusaurus at docs/ → docs/build/
+  ❯ node-build at docs/ → docs/out/
     node-build at repo root (pnpm run build → dist/)
 ```
 
@@ -69,7 +67,7 @@ When you say yes:
    - Docusaurus → `static/CNAME` (Docusaurus copies `static/*` verbatim into `build/`).
    - Jekyll → the source dir (Jekyll copies it into `_site`).
    - Static → repo root.
-   - Node build → `public/` if it exists (Vite/CRA/Astro all copy that verbatim into the build). Otherwise repo root with a warning to wire it into your build.
+   - Node build → `public/` if it exists (Vite/CRA/Astro/Next all copy that verbatim into the build). Otherwise repo root with a warning to wire it into your build.
 3. **DNS:**
    - **Cloudflare** — uses the token in your keychain to create the right records automatically. Apex domain → 4 × `A` to GitHub's Pages IPs. Subdomain → `CNAME` to `<your-user>.github.io`. Re-running is idempotent.
    - **INWX / manual** — prints the exact records you need to add yourself.
@@ -98,19 +96,18 @@ git add -A && git commit -m "ci: pages" && git push
 # → https://sprites.example.com
 ```
 
-## Docusaurus-size projects
+## Docs-site-size projects
 
-If you're building a docs site with Docusaurus, `gh-pages` knows what to do:
+If you're publishing a docs site (Next.js + fumadocs, Docusaurus, Astro Starlight, etc.), `gh-pages` knows what to do:
 
 ```bash
-npx create-docusaurus@latest my-docs classic --typescript
 cd my-docs
 git init && gh repo create my-docs --public --source=.
 git add -A && git commit -m "init"
-hatchkit gh-pages              # detects Docusaurus, writes the right workflow
+hatchkit gh-pages              # detects framework, writes the right workflow
 ```
 
-The generated workflow uses your lockfile's package manager and runs `docusaurus build` with the Pages base path, then uploads `build/`.
+The generated workflow uses your lockfile's package manager and runs the correct build command, then uploads the build output.
 
 ## Not a good fit for…
 

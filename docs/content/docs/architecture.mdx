@@ -1,9 +1,7 @@
 ---
-sidebar_position: 8
 title: Architecture
+description: A tour of what happens when you run `hatchkit create`, and how the CLI / starter / infra / docs / ML services fit together.
 ---
-
-# Architecture
 
 A tour of what happens when you run `hatchkit create`, and how the pieces fit together.
 
@@ -23,7 +21,7 @@ hatchkit/
 │     └─ utils/           # flags, exec, validation, version
 ├─ starter/          # full-stack template (in-tree; subtree-merged)
 ├─ infra/            # Terraform + Coolify scripts (in-tree; subtree-merged)
-├─ docs/             # this Docusaurus site
+├─ docs/             # this Next.js + fumadocs site
 └─ services/ml/      # pre-built ML service templates
 ```
 

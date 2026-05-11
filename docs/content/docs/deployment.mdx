@@ -1,0 +1,127 @@
+---
+title: Deploying the docs site
+description: How this Next.js + fumadocs documentation site is built and published to GitHub Pages.
+---
+
+This page documents exactly how **this documentation site** is published. If you fork hatchkit or want a similar flow for your own project, copy the files referenced below and change the URLs.
+
+The site is built with [Next.js 16](https://nextjs.org) + [fumadocs](https://fumadocs.dev) (App Router, `output: "export"` for static export). The CI pipeline runs Node, builds the static site, and uploads it to GitHub Pages via the official actions.
+
+## What's in the repo
+
+| File | Role |
+|---|---|
+| [`docs/next.config.mjs`](https://github.com/trebeljahr/hatchkit/blob/main/docs/next.config.mjs) | Next config — `output: "export"`, MDX wrapper, image config. |
+| [`docs/source.config.ts`](https://github.com/trebeljahr/hatchkit/blob/main/docs/source.config.ts) | fumadocs MDX collection config. |
+| [`docs/lib/source.ts`](https://github.com/trebeljahr/hatchkit/blob/main/docs/lib/source.ts) | Loader that turns MDX files into a fumadocs source tree. |
+| [`docs/lib/layout.shared.tsx`](https://github.com/trebeljahr/hatchkit/blob/main/docs/lib/layout.shared.tsx) | Nav links + GitHub URL shared between home + docs layouts. |
+| [`docs/app/`](https://github.com/trebeljahr/hatchkit/tree/main/docs/app) | App Router routes — root layout, home group, docs slug route. |
+| [`docs/content/docs/*.mdx`](https://github.com/trebeljahr/hatchkit/tree/main/docs/content/docs) | The actual content. MDX with `title` + `description` frontmatter. |
+| [`docs/content/docs/meta.json`](https://github.com/trebeljahr/hatchkit/blob/main/docs/content/docs/meta.json) | Sidebar order. |
+| [`docs/app/global.css`](https://github.com/trebeljahr/hatchkit/blob/main/docs/app/global.css) | Tailwind + fumadocs neutral preset + accent overrides. |
+| [`.github/workflows/docs.yml`](https://github.com/trebeljahr/hatchkit/blob/main/.github/workflows/docs.yml) | The GitHub Actions workflow that builds + deploys Pages. |
+
+## The deployment flow, end-to-end
+
+```
+┌──────────────────────┐     push to main     ┌──────────────────────┐
+│ edit docs/content/   │ ───────────────────> │ GitHub Actions:      │
+│ *.mdx + commit       │  (docs/** changed)    │ docs.yml workflow   │
+└──────────────────────┘                       └──────────┬───────────┘
+                                                          │
+                                      ┌───────────────────┴───────────────────┐
+                                      ▼                                       ▼
+                              ┌──────────────┐                         ┌──────────────┐
+                              │ build job    │                         │ deploy job   │
+                              │ Node 22 +    │   artifact upload       │ deploy-pages │
+                              │ pnpm + cache │ ──────────────────────> │ → github.io  │
+                              │ next build   │                         │              │
+                              │ → docs/out   │                         │              │
+                              └──────────────┘                         └──────────────┘
+```
+
+The workflow has two jobs:
+
+1. **build** — checks out the repo, sets up Node + pnpm, installs deps inside `docs/`, runs `pnpm build` (which calls `next build` with `output: "export"`), and uploads `docs/out` as a Pages artifact.
+2. **deploy** — calls `actions/deploy-pages@v4`. Publishes the artifact to the `github-pages` environment and returns the final URL.
+
+### Path filters
+
+The workflow only runs when something that affects the site actually changed:
+
+```yaml
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+```
+
+Keeps the CLI build pipeline fast and avoids rebuilding the site for every CLI commit.
+
+### Permissions + concurrency
+
+```yaml
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+```
+
+- The three permissions are the exact minimum `actions/deploy-pages` needs.
+- `cancel-in-progress: false` matters: if two commits land within seconds, we let the in-flight deploy finish before starting the next one — canceling would leave Pages in a half-updated state.
+
+## Custom domain
+
+Hatchkit's docs serve at [hatchkit.trebeljahr.com](https://hatchkit.trebeljahr.com). The wiring:
+
+- **`docs/public/CNAME`** — single-line file containing the apex/subdomain. Next copies `public/*` verbatim into the export, so the file lands at the root of the deployed site, where Pages picks it up.
+- **GitHub Pages cname** — set once via `PUT /repos/<owner>/<repo>/pages -f cname=<domain>` (the `hatchkit gh-pages` command does this for you).
+- **DNS** — `CNAME` record pointing the subdomain at `<user>.github.io`.
+
+## Enabling it on a fresh repo
+
+One-time setup in the GitHub UI:
+
+1. **Settings → Pages → Build and deployment → Source: GitHub Actions.**
+   Don't pick a branch — we're publishing via the workflow, not from a branch's `/docs` folder or a `gh-pages` branch.
+2. Push a commit that touches anything under `docs/` (or dispatch the workflow manually from the Actions tab).
+3. The first successful deploy will print the URL in the `deploy` job's summary.
+
+## Local preview
+
+```bash
+cd docs
+pnpm install                       # docs/ has its own lockfile (not part of the monorepo workspace)
+pnpm dev                           # dev server with hot reload at http://localhost:3737
+
+# Or build + serve the production export exactly as Pages will:
+pnpm build && npx serve out
+```
+
+Because the site uses `output: "export"`, the build produces a fully static `docs/out/` directory ready to be served by anything — Pages, S3, nginx, you name it.
+
+## Why this setup?
+
+- **Next.js + fumadocs** — App Router, MDX with frontmatter, automatic TOC + sidebar from `meta.json`, dark mode out of the box, Tailwind v4. Same toolchain used across the rest of trebeljahr's projects (conv3d, ricos-labs, sprite-tools).
+- **Path-filtered workflow** — editing the CLI doesn't trigger a docs build, and editing docs doesn't trigger the CLI test matrix.
+- **Actions-based deploy**, not the legacy "branch source" mode — cleaner permissions model, works on private repos too.
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| 404 on every page after first deploy | Pages source not set to **GitHub Actions** in repo settings. |
+| CSS / JS 404s | If serving from a sub-path (no custom domain), set `basePath` in `next.config.mjs`. With a CNAME at the apex, no `basePath` is needed. |
+| `Module not found` in build log | `pnpm install` step missing or lockfile out of sync. |
+| Workflow never runs | Your commit didn't touch a path in the filter, or Actions are disabled on the fork. |
+
+## Just want this setup for your own repo?
+
+Run `hatchkit gh-pages` from inside any repo with a Next.js site. It detects the config, writes the right workflow, optionally wires a custom domain at Cloudflare or INWX, and you're done. See [the `gh-pages` reference](./gh-pages).
