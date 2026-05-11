@@ -15,5 +15,12 @@
     "release:patch": "pnpm --filter hatchkit run release:patch",
     "release:minor": "pnpm --filter hatchkit run release:minor",
     "release:major": "pnpm --filter hatchkit run release:major"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@biomejs/biome",
+      "esbuild",
+      "keytar"
+    ]
   }
 }
