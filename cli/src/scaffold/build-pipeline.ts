@@ -22,7 +22,14 @@
  * but those templates land in a follow-up commit.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  type Dirent,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { ensureDockerignoreAllowsEnvProduction } from "../utils/dockerignore.js";
 import { renderTemplate } from "../utils/template.js";
@@ -43,16 +50,26 @@ const DEFAULT_NODE_MAJOR = "24";
  *  even when the surfaces look "client-only". */
 export type DetectedFramework = "nextjs" | "generic";
 
+const NEXT_CONFIG_NAMES = [
+  "next.config.ts",
+  "next.config.mjs",
+  "next.config.js",
+  "next.config.cjs",
+] as const;
+
 /** Detect whether the project is a Next.js app. We accept either a
  *  `next.config.*` file at the project root OR a `next` entry in
  *  package.json's dependencies/devDependencies. The two-check approach
  *  catches both the conventional layout (config file at root) AND
  *  monorepo packages that pull Next in transitively without owning
- *  a config file. Anything else falls back to `"generic"`, which keeps
- *  the surfaces-driven nginx-vs-Node split working for Vite/Astro/etc. */
+ *  a config file. When neither root signal hits, we walk pnpm /
+ *  yarn / npm workspace globs and check sub-packages — a Next app at
+ *  `apps/web` or `showcase/` should still produce a Node-runtime
+ *  Dockerfile, not the nginx-static fallback. Anything else falls back
+ *  to `"generic"`, which keeps the surfaces-driven nginx-vs-Node split
+ *  working for Vite/Astro/etc. */
 export function detectFramework(projectDir: string): DetectedFramework {
-  const configNames = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
-  if (configNames.some((name) => existsSync(join(projectDir, name)))) {
+  if (NEXT_CONFIG_NAMES.some((name) => existsSync(join(projectDir, name)))) {
     return "nextjs";
   }
   const pkgPath = join(projectDir, "package.json");
@@ -68,7 +85,149 @@ export function detectFramework(projectDir: string): DetectedFramework {
       // problem to solve here.
     }
   }
+  if (detectNextjsMonorepoPackage(projectDir)) return "nextjs";
   return "generic";
+}
+
+export interface MonorepoNextjsPackage {
+  /** Workspace package directory, relative to `projectDir` (e.g. `"showcase"`,
+   *  `"apps/web"`). Used as `WORKDIR` and as the COPY source prefix in the
+   *  monorepo Dockerfile template. */
+  packageDir: string;
+  /** The `name` field from the sub-package's `package.json` (e.g.
+   *  `"3d-assets-showcase"`). Passed to `pnpm --filter <name> build`,
+   *  which keys off the package name and not its directory. */
+  packageName: string;
+}
+
+/** Locate a workspace sub-package that looks like a Next.js app. Scans
+ *  `pnpm-workspace.yaml`'s `packages:` globs and root `package.json`'s
+ *  `workspaces` field (array or `{packages: []}` shape), expands each
+ *  glob against the filesystem, and returns the first match that has
+ *  either a `next.config.*` file or `next` in its deps/devDeps.
+ *  Returns `undefined` for non-monorepo projects or when no sub-package
+ *  uses Next. Order matters: pnpm-workspace.yaml entries are checked
+ *  first because that's the dominant flavour in the projects hatchkit
+ *  targets. */
+export function detectNextjsMonorepoPackage(projectDir: string): MonorepoNextjsPackage | undefined {
+  const globs: string[] = [];
+
+  const wsPath = join(projectDir, "pnpm-workspace.yaml");
+  if (existsSync(wsPath)) {
+    try {
+      globs.push(...parsePnpmWorkspacePackages(readFileSync(wsPath, "utf-8")));
+    } catch {
+      // Malformed YAML — ignore and fall through to package.json workspaces.
+    }
+  }
+
+  const pkgPath = join(projectDir, "package.json");
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
+        workspaces?: string[] | { packages?: string[] };
+      };
+      if (Array.isArray(pkg.workspaces)) {
+        globs.push(...pkg.workspaces);
+      } else if (pkg.workspaces && Array.isArray(pkg.workspaces.packages)) {
+        globs.push(...pkg.workspaces.packages);
+      }
+    } catch {
+      // Same policy as detectFramework: malformed JSON isn't our problem.
+    }
+  }
+
+  if (globs.length === 0) return undefined;
+
+  for (const glob of globs) {
+    for (const dir of expandWorkspaceGlob(projectDir, glob)) {
+      const subPkgPath = join(projectDir, dir, "package.json");
+      if (!existsSync(subPkgPath)) continue;
+      let sub: {
+        name?: string;
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
+      try {
+        sub = JSON.parse(readFileSync(subPkgPath, "utf-8"));
+      } catch {
+        continue;
+      }
+      const hasNextDep = Boolean(sub.dependencies?.next || sub.devDependencies?.next);
+      const hasNextConfig = NEXT_CONFIG_NAMES.some((n) => existsSync(join(projectDir, dir, n)));
+      if (hasNextDep || hasNextConfig) {
+        return { packageDir: dir, packageName: sub.name ?? dir };
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Minimal pnpm-workspace.yaml parser — pulls the `packages:` list
+ *  without adding a YAML dependency. The format we care about is
+ *  uniformly a top-level `packages:` key followed by a `- "glob"` list,
+ *  so a regex-driven scan is enough and avoids the 200kB+ install cost
+ *  of a real YAML parser for one config file. */
+function parsePnpmWorkspacePackages(yaml: string): string[] {
+  const lines = yaml.split(/\r?\n/);
+  const out: string[] = [];
+  let inPackages = false;
+  for (const line of lines) {
+    if (/^packages\s*:\s*$/.test(line)) {
+      inPackages = true;
+      continue;
+    }
+    if (!inPackages) continue;
+    // Empty / comment-only lines don't end the block.
+    if (/^\s*(#.*)?$/.test(line)) continue;
+    const item = line.match(/^\s*-\s*["']?([^"'#\s][^"'#]*?)["']?\s*(#.*)?$/);
+    if (item) {
+      out.push(item[1].trim());
+      continue;
+    }
+    // Any other non-list line ends the packages block.
+    break;
+  }
+  return out;
+}
+
+/** Expand a workspace glob (e.g. `"apps/*"`, `"packages/**"`, or a
+ *  literal directory like `"showcase"`) against `projectDir`. We
+ *  support the two segment kinds workspaces actually use — `*` and
+ *  `**` — and treat both as "one level of subdirectories"; deeper
+ *  matching isn't needed for any real-world workspace layout we've
+ *  seen and would just slow scans on big repos. */
+function expandWorkspaceGlob(projectDir: string, glob: string): string[] {
+  const parts = glob.split("/").filter(Boolean);
+  let candidates: string[] = [""];
+  for (const part of parts) {
+    const next: string[] = [];
+    if (part === "*" || part === "**") {
+      for (const c of candidates) {
+        const base = c ? join(projectDir, c) : projectDir;
+        if (!existsSync(base)) continue;
+        let entries: Dirent[];
+        try {
+          entries = readdirSync(base, { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        for (const e of entries) {
+          if (!e.isDirectory()) continue;
+          if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+          next.push(c ? `${c}/${e.name}` : e.name);
+        }
+      }
+    } else {
+      for (const c of candidates) {
+        const sub = c ? `${c}/${part}` : part;
+        if (existsSync(join(projectDir, sub))) next.push(sub);
+      }
+    }
+    candidates = next;
+    if (candidates.length === 0) break;
+  }
+  return candidates;
 }
 
 /** Pull the minimum major Node version out of `package.json#engines.node`.
@@ -231,10 +390,19 @@ export function scaffoldBuildPipeline(
   // Everything else falls back to the surfaces-driven nginx-vs-Node
   // split that's been the default since this scaffolder was born.
   const framework = detectFramework(input.projectDir);
+  // Monorepo lookup is gated on the Next.js branch — the generic
+  // nginx/Node templates don't carry a sub-package WORKDIR concept,
+  // so there's nothing to do there. When this returns a hit, the
+  // monorepo Dockerfile variant takes over and runs the build at the
+  // workspace root with `pnpm --filter <packageName>`.
+  const monorepoNextjs =
+    framework === "nextjs" ? detectNextjsMonorepoPackage(input.projectDir) : undefined;
   if (input.force || !state.hasDockerfile) {
     const tpl =
       framework === "nextjs"
-        ? "build-pipeline/Dockerfile.nextjs.hbs"
+        ? monorepoNextjs
+          ? "build-pipeline/Dockerfile.nextjs-monorepo.hbs"
+          : "build-pipeline/Dockerfile.nextjs.hbs"
         : input.surfaces === "client-only"
           ? "build-pipeline/Dockerfile.client.hbs"
           : "build-pipeline/Dockerfile.server.hbs";
@@ -243,6 +411,8 @@ export function scaffoldBuildPipeline(
       port: input.port,
       entrypoint: input.entrypoint,
       nodeMajor,
+      monorepoPackage: monorepoNextjs?.packageDir,
+      packageName: monorepoNextjs?.packageName,
     });
     write("Dockerfile", out, state.hasDockerfile);
   } else {

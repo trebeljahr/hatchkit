@@ -8,6 +8,12 @@
 services:
   app:
     image: ghcr.io/{{owner}}/{{name}}:latest
+    # Force a registry pull on every `docker compose up`. Without this,
+    # Compose happily reuses whichever digest the local engine cached the
+    # last time it saw the `:latest` tag, so Coolify's redeploy webhook
+    # fires after each CI build but the running container keeps serving
+    # stale code. `always` makes the floating tag actually float.
+    pull_policy: always
     restart: unless-stopped
     # Coolify's Traefik reverse-proxy already owns host ports 80/443 and
     # routes to this container via its internal Docker network. Use

@@ -13,7 +13,15 @@
  *
  * Run: pnpm test
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -959,6 +967,76 @@ console.log("\n── build pipeline: framework detection (Next.js) ────
         /- "node"/.test(compose) &&
         /- "-e"/.test(compose),
     ]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // 4b. pnpm workspace monorepo with Next in a sub-package. The
+  //     foot-gun: detectFramework only checked the root, so projects
+  //     like gamedev (Next 15 in showcase/, deploys to Coolify+GHCR)
+  //     fell through to the nginx-static client Dockerfile. Must
+  //     return "nextjs" AND surface the sub-package so the monorepo
+  //     Dockerfile variant can run the workspace build correctly.
+  {
+    const { detectNextjsMonorepoPackage } = await import("./src/scaffold/build-pipeline.js");
+    const dir = mkdtempSync(join(tmpdir(), "scaffold-next-monorepo-"));
+    writeFileSync(
+      join(dir, "package.json"),
+      JSON.stringify({ name: "monorepo-root", private: true }),
+    );
+    writeFileSync(join(dir, "pnpm-workspace.yaml"), 'packages:\n  - "showcase"\n');
+    writeFileSync(join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    const subDir = join(dir, "showcase");
+    mkdirSync(subDir, { recursive: true });
+    writeFileSync(join(subDir, "next.config.ts"), "export default {};");
+    writeFileSync(
+      join(subDir, "package.json"),
+      JSON.stringify({
+        name: "3d-assets-showcase",
+        dependencies: { next: "^15" },
+      }),
+    );
+
+    checks.push(["monorepo Next detected as nextjs", detectFramework(dir) === "nextjs"]);
+    const hit = detectNextjsMonorepoPackage(dir);
+    checks.push(["monorepo packageDir is showcase", hit?.packageDir === "showcase"]);
+    checks.push([
+      "monorepo packageName is sub-package name",
+      hit?.packageName === "3d-assets-showcase",
+    ]);
+
+    scaffoldBuildPipeline({
+      projectDir: dir,
+      projectName: "monorepo-app",
+      ghOwner: "owner",
+      entrypoint: "",
+      port: 3000,
+      surfaces: "client-only",
+      defaultBranch: "main",
+    });
+    const dockerfile = readFileSync(join(dir, "Dockerfile"), "utf-8");
+    checks.push([
+      "monorepo Dockerfile uses workspace-aware build (pnpm --filter)",
+      /pnpm --filter 3d-assets-showcase build/.test(dockerfile),
+    ]);
+    checks.push([
+      "monorepo Dockerfile WORKDIRs into the sub-package",
+      /WORKDIR \/app\/showcase/.test(dockerfile),
+    ]);
+    checks.push([
+      "monorepo Dockerfile is NOT the nginx client variant",
+      !/^FROM\s+nginx[:\s]/m.test(dockerfile),
+    ]);
+    checks.push([
+      "monorepo Dockerfile is NOT the single-package Next variant",
+      /pnpm-workspace\.yaml/.test(dockerfile),
+    ]);
+
+    const compose = readFileSync(join(dir, "docker-compose.yml"), "utf-8");
+    checks.push([
+      "scaffolded compose pins pull_policy: always",
+      /pull_policy:\s*always/.test(compose),
+    ]);
+
     rmSync(dir, { recursive: true, force: true });
   }
 
