@@ -6,7 +6,9 @@
   "description": "Interactive CLI for scaffolding full-stack projects with composable ML services",
   "scripts": {
     "build": "pnpm --filter hatchkit run build",
-    "dev": "pnpm -C docs run dev",
+    "predev": "pnpm --filter @hatchkit/dev-shared run build",
+    "dev": "concurrently -n shared,docs,cli,mcp -c blue,cyan,magenta,yellow \"pnpm --filter @hatchkit/dev-shared run dev\" \"pnpm -C docs run dev\" \"pnpm -C cli run dev:typecheck\" \"pnpm -C mcp run dev:typecheck\"",
+    "dev:docs": "pnpm -C docs run dev",
     "dev:cli": "pnpm --filter hatchkit run dev",
     "start": "pnpm --filter hatchkit run start",
     "create": "pnpm --filter hatchkit run start",
@@ -23,5 +25,8 @@
       "esbuild",
       "keytar"
     ]
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
   }
 }

@@ -18,6 +18,7 @@
     "start": "node dist/index.js",
     "test": "tsx test-scaffold.ts",
     "typecheck": "tsc --noEmit",
+    "dev:typecheck": "tsc --noEmit --watch --preserveWatchOutput",
     "lint": "biome check src",
     "lint:fix": "biome check --write src",
     "format": "biome format --write src",
