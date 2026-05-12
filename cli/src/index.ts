@@ -388,9 +388,15 @@ async function handleKeys(): Promise<void> {
       break;
     }
     case "rotate": {
+      // Default is propagate-everywhere — the prior bug pattern (rotate
+      // locally, forget Coolify + GHA, runtime decrypt fails silently)
+      // is too easy to hit if push is opt-in. `--no-push` exists for
+      // the rare "I want to rotate but not propagate yet" case.
+      // Legacy `--push-coolify` is accepted as a no-op (still default).
+      const noPush = args.includes("--no-push");
       const result = await rotateProjectKey(projectName, {
-        pushCoolify,
-        pushGh,
+        noPush,
+        ghRepo: pushGh,
         dryRun,
       });
       if (isJson) {
@@ -401,21 +407,28 @@ async function handleKeys(): Promise<void> {
         console.log(chalk.yellow("  --dry-run — nothing was rotated."));
       } else {
         console.log(chalk.green(`  Rotated dotenvx keypair for ${result.envProductionPath}`));
+        if (result.prunedStaleKeys > 0) {
+          console.log(
+            chalk.dim(
+              `  Pruned ${result.prunedStaleKeys} stale key${result.prunedStaleKeys === 1 ? "" : "s"} from .env.keys`,
+            ),
+          );
+        }
         console.log(chalk.green(`  Updated keychain entry ${chalk.cyan(result.set.account)}`));
       }
       if (result.pushedCoolify) {
         console.log(chalk.green(`  Pushed to Coolify (${result.pushedCoolify.uuid})`));
+      } else if (result.skippedCoolify) {
+        console.log(chalk.dim(`  Coolify push skipped (${result.skippedCoolify})`));
       }
       if (result.pushedGh) {
         console.log(chalk.green(`  Pushed to GitHub repo ${result.pushedGh.repo}`));
+      } else if (result.skippedGh) {
+        console.log(chalk.dim(`  GitHub push skipped (${result.skippedGh})`));
       }
-      if (!opts(result).pushedAnywhere) {
-        console.log(
-          chalk.dim(
-            "  Tip: pass --push-coolify and/or --push-gh <owner/repo> to fan out the new key.",
-          ),
-        );
-      }
+      // Silence the `pushCoolify` / `pushGh` reads so unused-var lint
+      // stays quiet — they're parsed for back-compat but no longer act.
+      void pushCoolify;
       break;
     }
     case "push": {
@@ -464,15 +477,6 @@ async function detectRepoSlug(): Promise<string | undefined> {
   const res = await exec("git", ["remote", "get-url", "origin"], { silent: true });
   if (res.exitCode !== 0) return undefined;
   return repoSlugFromRemote(res.stdout.trim());
-}
-
-/** Helper for the rotate-summary tip — collapses "did we push anywhere"
- *  to a single boolean so the inline check stays readable. */
-function opts(result: {
-  pushedCoolify?: unknown;
-  pushedGh?: unknown;
-}): { pushedAnywhere: boolean } {
-  return { pushedAnywhere: !!result.pushedCoolify || !!result.pushedGh };
 }
 
 /** Walk up from `serverEnvDir` looking for the closest `.hatchkit.json`,
@@ -2425,9 +2429,11 @@ function printHelp(topic?: HelpTopic): void {
                             (in priority order): ${chalk.cyan("--key=…")}, ${chalk.cyan("--stdin")},
                             or auto-read from ${chalk.cyan("./.env.keys")}'s
                             DOTENV_PRIVATE_KEY_PRODUCTION line. Idempotent.
-    keys rotate <project>   Run \`dotenvx rotate -f .env.production\` in
-                            the project, then ${chalk.cyan("keys set")}, then
-                            optionally fan out to Coolify and/or GitHub.
+    keys rotate <project>   Run \`dotenvx rotate -f .env.production\`,
+                            prune ${chalk.cyan(".env.keys")} back to the new key,
+                            update the keychain, AND ${chalk.bold("by default")} push
+                            to Coolify + the detected GitHub repo. Pass
+                            ${chalk.cyan("--no-push")} to skip propagation.
     keys push <project>     Mirror the keychain copy to a deploy target.
 
   ${chalk.bold("Flags (apply to set / rotate / push):")}
@@ -2437,15 +2443,21 @@ function printHelp(topic?: HelpTopic): void {
                             ${chalk.dim("coolify")} for back-compat.
     --repo <owner/repo>     GH repo for ${chalk.cyan("keys push --target=gh|both")}.
                             Inferred from ${chalk.dim("git remote origin")} when omitted.
-    --push-coolify          (rotate) Mirror the new key onto Coolify.
-    --push-gh <owner/repo>  (rotate) Mirror the new key into the named
-                            GH repo's DOTENV_PRIVATE_KEY_PRODUCTION
-                            Actions secret.
+    --no-push               (rotate) Skip Coolify + GitHub propagation.
+                            Use only when you intend to handle the
+                            fan-out yourself (rare — the default is
+                            ${chalk.bold("push everywhere previously configured")}).
+    --push-gh <owner/repo>  (rotate) Override the auto-detected GitHub
+                            repo for the DOTENV_PRIVATE_KEY_PRODUCTION
+                            Actions secret push.
+    --push-coolify          (rotate) Accepted for back-compat — Coolify
+                            is now pushed to by default. No-op.
     --dry-run               Print what would change, don't write.
     --json                  Machine-readable output.
 
   ${chalk.bold("Examples:")}
-    hatchkit keys rotate raptor-runner --push-coolify --push-gh acme/raptor
+    hatchkit keys rotate raptor-runner
+    hatchkit keys rotate raptor-runner --no-push
     cat .env.keys | hatchkit keys set raptor-runner --stdin
     hatchkit keys push raptor-runner --target=both --repo acme/raptor
 
@@ -3250,7 +3262,7 @@ function printHelp(topic?: HelpTopic): void {
     email           Set up Cloudflare Email Routing + MX/SPF/DMARC (setup/status)
     keys show <p>   Print the dotenvx private key for a project
     keys set <p>    Upsert the key into the OS keychain (after \`dotenvx rotate\`)
-    keys rotate <p> Rotate the dotenvx keypair, mirror to keychain + (optional) deploy targets
+    keys rotate <p> Rotate the dotenvx keypair, mirror to keychain + (default) deploy targets
     keys push <p>   Push the key to Coolify (default) and/or GitHub Actions
 
   ${chalk.bold("Config:")}

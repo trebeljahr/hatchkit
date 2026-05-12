@@ -1745,6 +1745,8 @@ console.log("\n── keys set: keychain round-trip ─────────�
     locateEnvKeysFile,
     locateEnvProductionFile,
     parsePrivateKeyValue,
+    parseEnvKeysEntries,
+    readPublicKey,
     rotateProjectKey,
   } = await import("./src/deploy/keys.js");
   const { getSecret, deleteSecret, SECRET_KEYS } = await import("./src/utils/secrets.js");
@@ -1833,13 +1835,15 @@ console.log("\n── keys set: keychain round-trip ─────────�
       `# header comment\nDOTENV_PRIVATE_KEY="aaaa1111"\nDOTENV_PRIVATE_KEY_PRODUCTION="bbbb2222"\n`,
     ) === "bbbb2222",
   ]);
-  // After `dotenvx rotate`, the value is `old,new` so the runtime
-  // can decrypt both pre- and post-rotation ciphertext. We must
-  // preserve the full list when mirroring to the deploy target.
+  // dotenvx itself appends new keys to the end of a comma list on
+  // each rotate, so historical .env.keys files can carry stale
+  // entries. `parsePrivateKeyValue` returns the LAST entry (the
+  // current key) — `keys rotate` then prunes the on-disk list back
+  // to one. Older single-entry files are unaffected.
   checks.push([
-    "parsePrivateKeyValue preserves comma-joined post-rotate list",
+    "parsePrivateKeyValue returns last entry of comma-joined list",
     parsePrivateKeyValue(`DOTENV_PRIVATE_KEY_PRODUCTION=${"a".repeat(64)},${"b".repeat(64)}`) ===
-      `${"a".repeat(64)},${"b".repeat(64)}`,
+      "b".repeat(64),
   ]);
 
   // 8. End-to-end rotate: seed an encrypted .env.production via the
@@ -1869,8 +1873,10 @@ console.log("\n── keys set: keychain round-trip ─────────�
   checks.push(["rotate --dry-run: keychain unchanged", afterDryKey === beforeKey]);
 
   // Real rotate. dotenvx generates a new keypair → keychain must hold
-  // the new value, NOT the old one.
-  const rot = await rotateProjectKey("kt-rotate", { projectDir: rotProj });
+  // the new value, NOT the old one. `noPush: true` keeps the test
+  // offline; the propagation paths are covered by test-keys-rotate.ts
+  // with injected stubs.
+  const rot = await rotateProjectKey("kt-rotate", { projectDir: rotProj, noPush: true });
   const newFileKey = parsePrivateKeyValue(readFileSync(join(rotProj, ".env.keys"), "utf-8"));
   const afterKey = await getSecret(SECRET_KEYS.dotenvxPrivateKey("kt-rotate"));
   checks.push(["rotate: rotated=true", rot.rotated]);
@@ -1881,6 +1887,14 @@ console.log("\n── keys set: keychain round-trip ─────────�
   checks.push([
     "rotate: locateEnvProductionFile finds the seeded file",
     locateEnvProductionFile(rotProj) === prodPath,
+  ]);
+  checks.push([
+    "rotate: .env.keys pruned to a single entry",
+    (parseEnvKeysEntries(readFileSync(join(rotProj, ".env.keys"), "utf-8")) ?? []).length === 1,
+  ]);
+  checks.push([
+    "rotate: result.newPublicKey matches .env.production",
+    rot.newPublicKey === readPublicKey(prodPath),
   ]);
   rmSync(rotProj, { recursive: true, force: true });
 

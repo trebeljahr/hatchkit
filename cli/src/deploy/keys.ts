@@ -8,33 +8,38 @@
  *   · Deploy target (Coolify env var or GH Actions secret —
  *                    DOTENV_PRIVATE_KEY_PRODUCTION at runtime)
  *
- * After `dotenvx rotate`, only `.env.keys` updates. The keychain copy
- * and the deploy target keep the OLD key. `keys set` and `keys rotate`
- * fix that asymmetry.
+ * After `dotenvx rotate`, the .env.keys file's private-key line gets
+ * APPENDED to (`old,new,newer…`). dotenvx itself can decrypt against
+ * any comma-listed key, but every downstream consumer here forwards a
+ * single value, so a piled-up list silently strands deploy targets on
+ * a stale key. `rotate` therefore prunes .env.keys back to ONE entry
+ * (the freshly-minted current key) and propagates that single key to
+ * keychain + Coolify + GitHub Actions in the same transaction.
  *
  *   keys show <project>             Print DOTENV_PRIVATE_KEY_PRODUCTION
  *                                   from the keychain.
  *   keys set <project> [--key=…]    Upsert the key into the keychain.
  *                                   Source priority: --key flag, stdin,
  *                                   `./.env.keys` autoread.
- *   keys rotate <project>           Run `dotenvx rotate -f <prodEnv>`
- *                                   in the project, then `keys set`,
- *                                   then optionally fan out.
+ *   keys rotate <project>           Run `dotenvx rotate -f <prodEnv>`,
+ *                                   prune .env.keys to the new key,
+ *                                   update keychain, and (by default)
+ *                                   push to Coolify + the detected GH
+ *                                   repo. `--no-push` disables fan-out.
  *   keys push <project> [--target=] Mirror the keychain copy to one or
  *                                   both deploy targets (coolify/gh).
- *
- * The fan-out flags (--push-coolify, --push-gh, --target) are uniform
- * across the subcommands so muscle memory transfers.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import chalk from "chalk";
+import { PrivateKey } from "eciesjs";
 import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { exec } from "../utils/exec.js";
 import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
+import { repoSlugFromRemote } from "./gh-actions-secrets.js";
 
 export type KeysTarget = "coolify" | "gh" | "both";
 
@@ -72,9 +77,6 @@ export async function showProjectKey(
     process.stdout.write(`${JSON.stringify({ project: projectName, found: true, key })}\n`);
     return;
   }
-  // Print plainly so it's easy to pipe into pbcopy etc. No chalk
-  // around the value — chalk adds ANSI codes that corrupt the key
-  // when redirected.
   process.stdout.write(`${key}\n`);
 }
 
@@ -126,8 +128,6 @@ export async function setProjectKey(
         "Stdin was empty — pipe the private key, e.g. `cat key.txt | hatchkit keys set …`.",
       );
     }
-    // Allow a `DOTENV_PRIVATE_KEY_PRODUCTION="abc…"` line on stdin too
-    // — handy when the user just copies a chunk of `.env.keys`.
     value = parsePrivateKeyValue(raw) ?? raw.trim();
     source = "stdin";
   } else {
@@ -164,32 +164,73 @@ export async function setProjectKey(
   return { source, envKeysPath, account, changed, written: changed };
 }
 
+/** Hook signatures exposed for tests. Production code uses the
+ *  defaults — internal underscore prefix marks them as not part of the
+ *  user-facing CLI contract. */
+export type RunDotenvxRotateFn = (params: {
+  projectDir: string;
+  envProductionPath: string;
+}) => Promise<void>;
+export type CoolifyPushFn = (projectName: string) => Promise<{ uuid: string }>;
+export type GhPushFn = (projectName: string, repoSlug: string) => Promise<void>;
+export type DetectRepoSlugFn = () => Promise<string | undefined>;
+
 export interface RotateProjectKeyOptions {
   /** Project directory — defaults to cwd. dotenvx writes the new key
-   *  into `<projectDir>/<env>/.env.keys`, where <env> follows the same
-   *  detection adopt uses (root → packages/server → apps/server). */
+   *  next to `.env.production` (server, then client, then root —
+   *  matches adopt's `dotenvxRootFor`). */
   projectDir?: string;
-  /** Mirror the new key onto Coolify's app env. */
-  pushCoolify?: boolean;
-  /** Mirror the new key into the named GH repo's Actions secret. */
-  pushGh?: string;
+  /** Skip propagation to Coolify + GitHub Actions. Default is to push. */
+  noPush?: boolean;
+  /** Override the GH repo slug for the Actions secret push. When
+   *  omitted, the slug is auto-detected from `git remote origin`. */
+  ghRepo?: string;
   /** Print what would change, don't actually rotate. */
   dryRun?: boolean;
+  /** Test hook: replace the `npx dotenvx rotate` subprocess. */
+  _runDotenvxRotate?: RunDotenvxRotateFn;
+  /** Test hook: replace the Coolify push call. */
+  _coolifyPush?: CoolifyPushFn;
+  /** Test hook: replace the GitHub Actions secret push call. */
+  _ghPush?: GhPushFn;
+  /** Test hook: replace the git-remote auto-detection. */
+  _detectRepoSlug?: DetectRepoSlugFn;
 }
+
+export type SkipReason =
+  | "no-coolify-config"
+  | "coolify-app-not-found"
+  | "no-git-remote"
+  | "no-push-flag";
 
 export interface RotateProjectKeyResult {
   envProductionPath: string;
   envKeysPath: string;
   rotated: boolean;
+  /** Newly-minted public key (mirrors .env.production after rotate). */
+  newPublicKey: string;
+  /** Number of stale comma-list entries removed from .env.keys (0 on
+   *  the happy single-key path). */
+  prunedStaleKeys: number;
   set: SetProjectKeyResult;
   pushedCoolify?: { uuid: string };
   pushedGh?: { repo: string };
+  skippedCoolify?: SkipReason;
+  skippedGh?: SkipReason;
 }
 
 /** Rotate the dotenvx keypair end-to-end:
  *    1. `dotenvx rotate -f <env-production>` in the project.
- *    2. Mirror the new private key into the OS keychain.
- *    3. Optionally push to Coolify and/or a GH Actions secret. */
+ *    2. Verify the freshly-written private key derives the new public
+ *       key embedded in .env.production — catches stale-file / wrong-
+ *       cwd cases that previously produced a false "no .env.keys"
+ *       error after a successful rotate.
+ *    3. Prune .env.keys back to a SINGLE current key (dotenvx appends
+ *       on each rotate; if we leave the comma-list alone, downstream
+ *       consumers forwarding a single value end up on a stale entry).
+ *    4. Mirror the new private key into the OS keychain.
+ *    5. Push to Coolify + GitHub Actions by default. `--no-push`
+ *       opts out; explicit `ghRepo` overrides remote auto-detect. */
 export async function rotateProjectKey(
   projectName: string,
   opts: RotateProjectKeyOptions = {},
@@ -204,11 +245,13 @@ export async function rotateProjectKey(
 
   if (opts.dryRun) {
     const envKeysPath =
-      locateEnvKeysFile(projectDir) ?? envProductionPath.replace(/production$/, "keys");
+      locateEnvKeysFile(projectDir) ?? join(dirname(envProductionPath), ".env.keys");
     return {
       envProductionPath,
       envKeysPath,
       rotated: false,
+      newPublicKey: "",
+      prunedStaleKeys: 0,
       set: {
         source: "env-keys",
         envKeysPath,
@@ -216,17 +259,137 @@ export async function rotateProjectKey(
         changed: true,
         written: false,
       },
-      pushedCoolify: opts.pushCoolify ? { uuid: "<would-resolve>" } : undefined,
-      pushedGh: opts.pushGh ? { repo: opts.pushGh } : undefined,
+      skippedCoolify: opts.noPush ? "no-push-flag" : undefined,
+      skippedGh: opts.noPush ? "no-push-flag" : undefined,
     };
   }
 
-  // Run dotenvx rotate inline. The `dotenvx` JS API doesn't expose a
-  // rotate helper today; shell out to the CLI we already depend on.
-  // We use `npx --yes @dotenvx/dotenvx rotate -f <path>` so the user's
-  // PATH doesn't have to be set up — the package is already in the
-  // monorepo's node_modules at dev time, and `npx --yes` covers the
-  // installed-globally case too.
+  await runDotenvxRotate(projectDir, envProductionPath, opts._runDotenvxRotate);
+
+  // dotenvx writes .env.keys next to the env file it was given. Use
+  // the env.production parent directly — `locateEnvKeysFile` re-scans
+  // the canonical layout list, which can disagree with where dotenvx
+  // actually wrote (e.g. a top-level `.env.production` while a
+  // `packages/server` dir exists but holds no env files). That
+  // disagreement was the root cause of the "no .env.keys produced"
+  // false negative.
+  const envKeysPath = join(dirname(envProductionPath), ".env.keys");
+  if (!existsSync(envKeysPath)) {
+    throw new Error(
+      `dotenvx rotate completed but ${envKeysPath} was not written. The rotate subprocess may have failed silently — check the .env.production parent directory.`,
+    );
+  }
+
+  const newPublicKey = readPublicKey(envProductionPath);
+  if (!newPublicKey) {
+    throw new Error(
+      `${envProductionPath} has no DOTENV_PUBLIC_KEY_PRODUCTION line after rotate. The env file may be malformed.`,
+    );
+  }
+
+  const entries = parseEnvKeysEntries(readFileSync(envKeysPath, "utf-8"));
+  if (!entries || entries.length === 0) {
+    throw new Error(
+      `${envKeysPath} has no DOTENV_PRIVATE_KEY_PRODUCTION entry after rotate. The env.keys file may be malformed.`,
+    );
+  }
+
+  // dotenvx appends new keys to the end of the comma list, so the
+  // *last* entry is the one that pairs with the freshly-written
+  // public key. Verify before we trust it.
+  const current = entries[entries.length - 1];
+  if (!keypairMatches(current, newPublicKey)) {
+    // Fall back: maybe a different position matches (some dotenvx
+    // versions or partial-failure states could reorder). Probe each.
+    const match = entries.find((p) => keypairMatches(p, newPublicKey));
+    if (!match) {
+      throw new Error(
+        `dotenvx rotate completed but no private key in ${envKeysPath} derives the new DOTENV_PUBLIC_KEY_PRODUCTION in ${envProductionPath}. Leaving keychain untouched.`,
+      );
+    }
+    // Pin the matching entry as the kept key.
+    entries.length = 0;
+    entries.push(match);
+  }
+
+  // Bug 1 fix: prune to single-key form. Keeping a grace key is not
+  // a hatchkit guarantee — the on-disk file format dotenvx itself
+  // reads is still `KEY="..."`, just with one hex string now.
+  const kept = entries[entries.length - 1];
+  const pruneRes = pruneEnvKeysFile(envKeysPath, kept);
+
+  // Bug 2 fix: keychain must reflect the new key. `setProjectKey`
+  // reads .env.keys and writes whatever parsePrivateKeyValue returns
+  // — after the prune above that's the single new key.
+  const set = await setProjectKey(projectName, { projectDir });
+
+  let pushedCoolify: { uuid: string } | undefined;
+  let pushedGh: { repo: string } | undefined;
+  let skippedCoolify: SkipReason | undefined;
+  let skippedGh: SkipReason | undefined;
+
+  if (opts.noPush) {
+    skippedCoolify = "no-push-flag";
+    skippedGh = "no-push-flag";
+  } else {
+    // Bug 3 fix: opportunistically propagate to every deploy target
+    // that was previously configured. Skip silently when a target
+    // wasn't set up — the default is "push everywhere I can find",
+    // not "push to Coolify or error out".
+    const coolifyPush = opts._coolifyPush ?? pushProjectKeyToCoolify;
+    const coolify = await getCoolifyConfig();
+    if (!coolify && !opts._coolifyPush) {
+      skippedCoolify = "no-coolify-config";
+    } else {
+      try {
+        pushedCoolify = await coolifyPush(projectName);
+      } catch (err) {
+        if (err instanceof Error && /not found/i.test(err.message)) {
+          skippedCoolify = "coolify-app-not-found";
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    const ghPush = opts._ghPush ?? pushProjectKeyToGh;
+    const detect = opts._detectRepoSlug ?? defaultDetectRepoSlug;
+    const repo = opts.ghRepo ?? (await detect());
+    if (!repo) {
+      skippedGh = "no-git-remote";
+    } else {
+      await ghPush(projectName, repo);
+      pushedGh = { repo };
+    }
+  }
+
+  return {
+    envProductionPath,
+    envKeysPath,
+    rotated: true,
+    newPublicKey,
+    prunedStaleKeys: pruneRes.pruned,
+    set,
+    pushedCoolify,
+    pushedGh,
+    skippedCoolify,
+    skippedGh,
+  };
+}
+
+/** Shell out to `npx --yes @dotenvx/dotenvx rotate -f <relProd>`. The
+ *  dotenvx JS API doesn't expose a rotate helper, and we don't want
+ *  to import the package's internal `Rotate` class. Overridable for
+ *  tests (we can't bring up a working `npx` in the sandbox). */
+async function runDotenvxRotate(
+  projectDir: string,
+  envProductionPath: string,
+  override?: RunDotenvxRotateFn,
+): Promise<void> {
+  if (override) {
+    await override({ projectDir, envProductionPath });
+    return;
+  }
   const relProd = envProductionPath.startsWith(projectDir)
     ? envProductionPath.slice(projectDir.length + 1)
     : envProductionPath;
@@ -246,26 +409,6 @@ export async function rotateProjectKey(
     if (spinner.isSpinning) spinner.fail();
     throw err;
   }
-
-  const envKeysPath = locateEnvKeysFile(projectDir);
-  if (!envKeysPath) {
-    throw new Error(`dotenvx rotate completed but no .env.keys was produced under ${projectDir}.`);
-  }
-
-  const set = await setProjectKey(projectName, { projectDir });
-
-  let pushedCoolify: { uuid: string } | undefined;
-  if (opts.pushCoolify) {
-    pushedCoolify = await pushProjectKeyToCoolify(projectName);
-  }
-
-  let pushedGh: { repo: string } | undefined;
-  if (opts.pushGh) {
-    await pushProjectKeyToGh(projectName, opts.pushGh);
-    pushedGh = { repo: opts.pushGh };
-  }
-
-  return { envProductionPath, envKeysPath, rotated: true, set, pushedCoolify, pushedGh };
 }
 
 /** Push DOTENV_PRIVATE_KEY_PRODUCTION onto a Coolify application.
@@ -293,11 +436,6 @@ export async function pushProjectKeyToCoolify(
   }
 
   const api = new CoolifyApi({ url: coolify.url, token: coolify.token });
-  // Candidates in priority order: caller-supplied appName wins; then
-  // the bare project name (current `create`/`adopt` output); then the
-  // legacy `-web` suffix; then the starter-split shape for projects
-  // that landed in that layout. The dotenvx key only lives on the
-  // server-side app, so `-server` outranks `-client`.
   const candidates = options.appName
     ? [options.appName]
     : [projectName, `${projectName}-web`, `${projectName}-server`, `${projectName}-client`];
@@ -364,6 +502,12 @@ export async function pushProjectKeyToGh(projectName: string, repoSlug: string):
     if (spinner.isSpinning) spinner.fail();
     throw err;
   }
+}
+
+async function defaultDetectRepoSlug(): Promise<string | undefined> {
+  const res = await exec("git", ["remote", "get-url", "origin"], { silent: true });
+  if (res.exitCode !== 0) return undefined;
+  return repoSlugFromRemote(res.stdout.trim());
 }
 
 /** Locate `.env.keys` for a hatchkit project. Mirrors the precedence
@@ -435,17 +579,85 @@ function locateDotenvxFile(projectDir: string, name: string): string | undefined
   return candidates.find((p) => existsSync(p));
 }
 
-/** Pull the value out of a `DOTENV_PRIVATE_KEY_PRODUCTION="…"` line
- *  (or unquoted variant). Returns undefined if not present.
+/** Pull the CURRENT private key out of a `DOTENV_PRIVATE_KEY_PRODUCTION="…"`
+ *  line. Returns undefined when the line is absent.
  *
- *  After `dotenvx rotate`, the value is a comma-joined list of hex
- *  keys (`old,new`) so the runtime can decrypt both pre- and
- *  post-rotation ciphertext during the cutover. The full list is
- *  what we want to mirror to the deploy target, so we capture all
- *  hex+comma characters until the closing quote / EOL. */
+ *  dotenvx writes the latest-rotated key at the END of any comma list
+ *  (see `lib/services/rotate.js` → `append()`). Older versions of
+ *  hatchkit captured the whole list and forwarded it verbatim to the
+ *  keychain + deploy targets; downstream consumers that split-on-comma
+ *  and took the first entry then ended up on a stale key. After the
+ *  Bug 1 fix `rotate` prunes .env.keys back to one entry, but this
+ *  function still tolerates a comma list — it returns just the last
+ *  entry so any stale on-disk state from an older rotate self-heals
+ *  the next time someone calls `keys set`. */
 export function parsePrivateKeyValue(content: string): string | undefined {
-  const m = content.match(/^DOTENV_PRIVATE_KEY_PRODUCTION\s*=\s*"?([0-9a-fA-F,]+)"?\s*$/m);
+  const entries = parseEnvKeysEntries(content);
+  return entries && entries.length > 0 ? entries[entries.length - 1] : undefined;
+}
+
+/** Parse the comma-separated entries of the DOTENV_PRIVATE_KEY_PRODUCTION
+ *  line. Returns undefined when the line is missing entirely, an
+ *  empty array when the value is empty. */
+export function parseEnvKeysEntries(content: string): string[] | undefined {
+  const m = content.match(
+    /^\s*(?:export\s+)?DOTENV_PRIVATE_KEY_PRODUCTION\s*=\s*["']?([^"'\n]*)["']?\s*$/m,
+  );
+  if (!m) return undefined;
+  return m[1]
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/** Read DOTENV_PUBLIC_KEY_PRODUCTION from a .env.production file. */
+export function readPublicKey(envProductionPath: string): string | undefined {
+  if (!existsSync(envProductionPath)) return undefined;
+  const content = readFileSync(envProductionPath, "utf-8");
+  const m = content.match(
+    /^\s*(?:export\s+)?DOTENV_PUBLIC_KEY_PRODUCTION\s*=\s*["']?([0-9a-fA-F]+)["']?\s*$/m,
+  );
   return m ? m[1] : undefined;
+}
+
+/** Derive the compressed-hex secp256k1 public key for a dotenvx
+ *  private-key hex string. Matches the format dotenvx itself writes
+ *  to `DOTENV_PUBLIC_KEY_PRODUCTION` (see eciesjs `PublicKey.toHex()`,
+ *  default `compressed = true`). */
+export function derivePublicKey(privateHex: string): string {
+  const sk = new PrivateKey(Buffer.from(privateHex, "hex"));
+  return sk.publicKey.toHex();
+}
+
+/** True when `privateHex` derives the supplied public key. Case-insensitive
+ *  hex comparison. */
+export function keypairMatches(privateHex: string, publicHex: string): boolean {
+  try {
+    return derivePublicKey(privateHex).toLowerCase() === publicHex.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+/** Rewrite `.env.keys` so the DOTENV_PRIVATE_KEY_PRODUCTION line holds
+ *  a single hex value. Returns the count of stale entries dropped (0
+ *  if the line already had exactly one key). */
+export function pruneEnvKeysFile(
+  envKeysPath: string,
+  keepValue: string,
+): { kept: string; pruned: number } {
+  const content = readFileSync(envKeysPath, "utf-8");
+  const entries = parseEnvKeysEntries(content) ?? [];
+  const pruned = Math.max(0, entries.length - 1);
+  if (entries.length <= 1 && entries[0] === keepValue) {
+    return { kept: keepValue, pruned: 0 };
+  }
+  const rewritten = content.replace(
+    /^(\s*)((?:export\s+)?)DOTENV_PRIVATE_KEY_PRODUCTION\s*=\s*["']?[^"'\n]*["']?\s*$/m,
+    `$1$2DOTENV_PRIVATE_KEY_PRODUCTION="${keepValue}"`,
+  );
+  writeFileSync(envKeysPath, rewritten);
+  return { kept: keepValue, pruned };
 }
 
 /** Cheap sanity check — dotenvx ECIES private keys are 64-char hex

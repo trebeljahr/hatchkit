@@ -38,6 +38,9 @@ importers:
       conf:
         specifier: ^13.0.0
         version: 13.1.0
+      eciesjs:
+        specifier: ^0.4.18
+        version: 0.4.18
       execa:
         specifier: ^9.0.0
         version: 9.6.1
