@@ -412,6 +412,15 @@ export async function checkLocalDevHost(): Promise<CheckResult[]> {
     });
   }
 
+  if (tsId) {
+    // DNS A record probe. Skipped silently when no Cloudflare token is
+    // reachable (manual DNS setups) — that's a separate failure mode
+    // that the user already knows about, not a regression we should
+    // re-surface every doctor run.
+    const dnsCheck = await checkLocalDevDnsRecord(tsId.ip);
+    if (dnsCheck) out.push(dnsCheck);
+  }
+
   if (!caddyPort) {
     out.push({
       name: "Local-dev / Tailscale serve bridge",
@@ -486,6 +495,11 @@ export interface DevSetupInitResult {
   wroteWrapper: boolean;
   loadedLaunchd: boolean;
   registeredServe: boolean;
+  /** State of the `*.local.ricoslabs.com` DNS A record that points at
+   *  the laptop's tailnet IP. `null` when no Cloudflare token is
+   *  reachable (manual DNS setup expected); a status string when
+   *  hatchkit managed the record itself. */
+  dnsRecord: "created" | "updated" | "unchanged" | "skipped-no-token" | "failed" | null;
   notes: string[];
 }
 
@@ -626,6 +640,16 @@ export async function runDevSetupInit(
     }
   }
 
+  // DNS: ensure *.local.ricoslabs.com → laptop's tailnet IP (A record,
+  // DNS-only). Without this every project URL hits whatever the parent
+  // zone's wildcard says (typically the Coolify host IP, proxied — which
+  // doesn't reach the tailnet) and phone requests die at the TLS
+  // handshake. CNAMEing to the .ts.net MagicDNS name would also work,
+  // but only when each peer has Tailscale's resolver in front of its
+  // public DNS — fragile on iOS, where stub resolvers cache the
+  // intermediate NXDOMAIN. Direct A record is the bulletproof shape.
+  const dnsRecord = await ensureLocalDevDnsRecord(opts, notes);
+
   return {
     caddyPort,
     wroteCaddyfile,
@@ -633,8 +657,174 @@ export async function runDevSetupInit(
     wroteWrapper,
     loadedLaunchd,
     registeredServe,
+    dnsRecord,
     notes,
   };
+}
+
+/** Upsert the `*.local.ricoslabs.com` A record to the laptop's current
+ *  tailnet IP. Idempotent. Returns the action taken (or a reason it
+ *  was skipped). All failures are non-fatal — they only nudge the
+ *  user toward the manual command. */
+async function ensureLocalDevDnsRecord(
+  opts: DevSetupInitOptions,
+  notes: string[],
+): Promise<DevSetupInitResult["dnsRecord"]> {
+  const identity = await tailscaleIdentity();
+  if (!identity) {
+    notes.push("DNS record skipped: tailscale daemon offline (no IP to point the record at).");
+    return null;
+  }
+
+  // Token resolution order:
+  //   1. Explicit (opts.cloudflareToken) — same field plist embedding uses.
+  //   2. hatchkit's DNS config (`hatchkit config add dns`).
+  //   3. The Caddy ACME keychain entry the wrapper script reads — same
+  //      Zone:DNS:Edit scope, no need for a second token in keychain.
+  let token: string | null;
+  if (opts.cloudflareToken !== undefined) {
+    token = opts.cloudflareToken;
+  } else {
+    token = (await readCloudflareTokenFromConfig()) ?? (await readCloudflareTokenFromKeychain());
+  }
+  if (!token) {
+    notes.push(
+      "DNS record skipped: no Cloudflare token reachable. Configure via `hatchkit config add dns` or set keychain entry caddy-dev/cloudflare-acme.",
+    );
+    return "skipped-no-token";
+  }
+
+  try {
+    const { CloudflareApi } = await import("./utils/cloudflare-api.js");
+    const cf = new CloudflareApi({ token });
+    const zone = await resolveZoneForName(cf, `${LOCAL_DEV_DOMAIN_WILDCARD}`);
+    if (!zone) {
+      notes.push(
+        `DNS record skipped: no Cloudflare zone found for ${LOCAL_DEV_DOMAIN}. The token may lack Zone:Zone:Read scope.`,
+      );
+      return "failed";
+    }
+    const upsert = await cf.upsertRecord(zone.id, {
+      type: "A",
+      name: LOCAL_DEV_DOMAIN_WILDCARD,
+      content: identity.ip,
+      proxied: false,
+      ttl: 60,
+    });
+    if (upsert.created) return "created";
+    if (upsert.updated) return "updated";
+    return "unchanged";
+  } catch (err) {
+    notes.push(`DNS record failed: ${(err as Error).message}`);
+    return "failed";
+  }
+}
+
+/** Walk the candidate label chain looking for a Cloudflare zone we can
+ *  manage. For `*.local.ricoslabs.com` this tries `local.ricoslabs.com`
+ *  first (in case the user has it delegated as its own zone), then
+ *  `ricoslabs.com`, then `com` (which won't be ours but completes the
+ *  chain symmetrically). Returns the first hit. */
+async function resolveZoneForName(
+  cf: import("./utils/cloudflare-api.js").CloudflareApi,
+  name: string,
+): Promise<{ id: string; name: string } | null> {
+  const labels = name.replace(/^\*\./, "").split(".");
+  for (let i = 0; i < labels.length - 1; i++) {
+    const candidate = labels.slice(i).join(".");
+    const zone = await cf.getZoneByName(candidate);
+    if (zone) return { id: zone.id, name: zone.name };
+  }
+  return null;
+}
+
+/** Probe the live `*.local.ricoslabs.com` Cloudflare record. Returns
+ *  null when there's no token to check with — that's a configuration
+ *  state, not a failure. Otherwise reports drift between the record
+ *  and the laptop's current tailnet IP. */
+async function checkLocalDevDnsRecord(currentIp: string): Promise<CheckResult | null> {
+  const token =
+    (await readCloudflareTokenFromConfig()) ?? (await readCloudflareTokenFromKeychain());
+  if (!token) return null;
+  try {
+    const { CloudflareApi } = await import("./utils/cloudflare-api.js");
+    const cf = new CloudflareApi({ token });
+    const zone = await resolveZoneForName(cf, LOCAL_DEV_DOMAIN_WILDCARD);
+    if (!zone) {
+      return {
+        name: `Local-dev / DNS A record`,
+        status: "fail",
+        detail: `no Cloudflare zone found for ${LOCAL_DEV_DOMAIN}`,
+        hint: [
+          "Token may lack Zone:Zone:Read on the parent zone, or the zone isn't on Cloudflare.",
+          "Add the record manually if you're using a different DNS provider:",
+          `  *.local.ricoslabs.com  A  ${currentIp}  (DNS-only / unproxied, TTL 60)`,
+        ],
+      };
+    }
+    const record = await cf.findRecord(zone.id, LOCAL_DEV_DOMAIN_WILDCARD, "A");
+    if (!record) {
+      return {
+        name: "Local-dev / DNS A record",
+        status: "fail",
+        detail: `no A record for ${LOCAL_DEV_DOMAIN_WILDCARD} in zone ${zone.name}`,
+        hint: [
+          "Run `hatchkit dev-setup init` to create it automatically.",
+        ],
+      };
+    }
+    if (record.content !== currentIp) {
+      return {
+        name: "Local-dev / DNS A record",
+        status: "fail",
+        detail: `record points at ${record.content} but tailnet IP is ${currentIp}`,
+        hint: [
+          "Tailnet IP changed (new node, reinstall). Re-run `hatchkit dev-setup init` to update.",
+        ],
+      };
+    }
+    if (record.proxied) {
+      return {
+        name: "Local-dev / DNS A record",
+        status: "fail",
+        detail: "record is Cloudflare-proxied (orange-cloud) — must be DNS-only",
+        hint: [
+          "Proxied records terminate TLS at Cloudflare and can't reach the tailnet.",
+          "Turn off the orange cloud on this record, or re-run `hatchkit dev-setup init` (it'll recreate as DNS-only).",
+        ],
+      };
+    }
+    return {
+      name: "Local-dev / DNS A record",
+      status: "ok",
+      detail: `${LOCAL_DEV_DOMAIN_WILDCARD} → ${currentIp} (DNS-only)`,
+    };
+  } catch (err) {
+    return {
+      name: "Local-dev / DNS A record",
+      status: "fail",
+      detail: (err as Error).message.split("\n")[0],
+      hint: ["Cloudflare API call failed — token may be invalid or revoked."],
+    };
+  }
+}
+
+async function readCloudflareTokenFromKeychain(): Promise<string | null> {
+  const res = await exec(
+    "security",
+    [
+      "find-generic-password",
+      "-s",
+      DEFAULT_CADDY_KEYCHAIN_SERVICE,
+      "-a",
+      DEFAULT_CADDY_KEYCHAIN_ACCOUNT,
+      "-w",
+    ],
+    { silent: true },
+  );
+  if (res.exitCode !== 0) return null;
+  const out = res.stdout.trim();
+  return out.length > 0 ? out : null;
 }
 
 async function keychainEntryExists(service: string, account: string): Promise<boolean> {
@@ -987,16 +1177,31 @@ framework \`base\` / \`basePath\` config.
 Do this **once per machine**, not per project. After it's wired,
 every hatchkit project that opts in just works.
 
-### 1. Cloudflare DNS — wildcard CNAME
+### 1. Cloudflare DNS — auto-managed
 
-Add this record to the \`ricoslabs.com\` zone in Cloudflare:
+\`hatchkit dev-setup init\` creates a DNS-only A record:
 
 \`\`\`
-*.local.ricoslabs.com   CNAME   ${tailnetHostname}.
+*.local.ricoslabs.com   A   <your-tailnet-ip>   (DNS-only, TTL 60)
 \`\`\`
 
-The record is **DNS only** (not proxied — orange-cloud OFF). Proxying
-would terminate TLS at Cloudflare and break the SNI chain.
+It uses your hatchkit DNS token (or the \`caddy-dev/cloudflare-acme\`
+keychain entry as a fallback) — the same token Caddy already needs for
+DNS-01 ACME. \`Zone:DNS:Edit\` + \`Zone:Zone:Read\` on the parent zone.
+
+**Why a direct A record instead of a CNAME to ${tailnetHostname}?**
+A CNAME to a \`.ts.net\` name only resolves when each peer has
+Tailscale's MagicDNS resolver in front of its public DNS. iOS's stub
+resolver caches NXDOMAIN for the intermediate lookup, so phone requests
+silently fail. Pointing the wildcard at the laptop's tailnet IP makes
+the resolution a single hop — tailnet peers reach the laptop, anyone
+else gets a useless 100.x address (intended).
+
+If you're using a non-Cloudflare DNS provider, add the record yourself:
+
+\`\`\`
+*.local.ricoslabs.com   A   <your-tailnet-ip>   (DNS-only)
+\`\`\`
 
 ### 2. Cloudflare API token
 
@@ -1145,6 +1350,17 @@ export async function runDevSetupCli(args: string[]): Promise<void> {
     console.log(
       `  tailscale serve TCP:  ${result.registeredServe ? chalk.green(`tcp:443 → localhost:${result.caddyPort}`) : chalk.yellow("not registered")}`,
     );
+    if (result.dnsRecord !== null) {
+      const dnsLabel =
+        result.dnsRecord === "created" || result.dnsRecord === "updated"
+          ? chalk.green(result.dnsRecord)
+          : result.dnsRecord === "unchanged"
+            ? chalk.dim("unchanged")
+            : result.dnsRecord === "failed"
+              ? chalk.red("failed")
+              : chalk.dim("skipped (no CF token)");
+      console.log(`  DNS A record:         ${dnsLabel}  ${chalk.dim(`*.${LOCAL_DEV_DOMAIN}`)}`);
+    }
     if (result.notes.length > 0) {
       console.log(chalk.bold("\n  Notes:"));
       for (const n of result.notes) console.log(`    ${chalk.yellow("·")} ${n}`);
