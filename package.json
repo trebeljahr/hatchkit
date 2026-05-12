@@ -6,7 +6,8 @@
   "description": "Interactive CLI for scaffolding full-stack projects with composable ML services",
   "scripts": {
     "build": "pnpm --filter hatchkit run build",
-    "dev": "pnpm --filter hatchkit run dev",
+    "dev": "pnpm -C docs run dev",
+    "dev:cli": "pnpm --filter hatchkit run dev",
     "start": "pnpm --filter hatchkit run start",
     "create": "pnpm --filter hatchkit run start",
     "typecheck": "pnpm --filter hatchkit run typecheck",
