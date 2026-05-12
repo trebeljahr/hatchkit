@@ -64,6 +64,7 @@ export type { TailscaleIdentity };
 
 export const CADDY_LOG_PATH = join(DEV_CONFIG_DIR, "caddy.log");
 export const CADDY_ERR_LOG_PATH = join(DEV_CONFIG_DIR, "caddy.err.log");
+export const CADDY_WRAPPER_PATH = join(DEV_CONFIG_DIR, "caddy-wrapper.sh");
 export const LAUNCHD_LABEL = "com.hatchkit.dev-caddy";
 export const LAUNCHD_PLIST_PATH = join(
   homedir(),
@@ -71,6 +72,15 @@ export const LAUNCHD_PLIST_PATH = join(
   "LaunchAgents",
   `${LAUNCHD_LABEL}.plist`,
 );
+
+/** Default keychain pair used when the Caddy ACME token lives outside
+ *  the launchd plist. When this entry exists, `dev-setup init` writes a
+ *  wrapper-style plist that exec's a small shell script which pulls the
+ *  token from keychain on demand — no plaintext secret in
+ *  `~/Library/LaunchAgents/`. Override via
+ *  `DevSetupInitOptions.caddyTokenKeychain`. */
+export const DEFAULT_CADDY_KEYCHAIN_SERVICE = "caddy-dev";
+export const DEFAULT_CADDY_KEYCHAIN_ACCOUNT = "cloudflare-acme";
 
 const DEFAULT_CADDY_PORT = 9443;
 const CADDY_PORT_BUMP_LIMIT = 50;
@@ -95,11 +105,21 @@ export function caddyfileContents(caddyPort: number): string {
 {
   acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
   https_port ${caddyPort}
+  # Disable the automatic HTTP→HTTPS redirect listener: it tries to bind
+  # privileged port 80, which a launchd user-session daemon can't open
+  # without root or a port-grant entitlement. DNS-01 ACME doesn't need
+  # port 80 either, so the redirect server has nothing to do here.
+  auto_https disable_redirects
 }
 
 https://${LOCAL_DEV_DOMAIN_WILDCARD}:${caddyPort} {
   bind 127.0.0.1
-  tls ${LOCAL_DEV_DOMAIN_WILDCARD}
+  # No explicit \`tls\` directive: the site address already names the
+  # wildcard subject, and the global \`acme_dns cloudflare\` block
+  # drives DNS-01 issuance. Adding \`tls *.local.ricoslabs.com\` here
+  # would be parsed as the email-or-keyword form and Caddy 2 rejects
+  # it ("single argument must either be 'internal', 'force_automate',
+  # or an email address").
   import ${PROJECTS_DIR}/*.caddy
 }
 `;
@@ -139,6 +159,70 @@ function launchdPlistContents(caddyBinPath: string, cloudflareToken: string | nu
 ${env}</dict>
 </plist>
 `;
+}
+
+/** Wrapper-style plist: launchd runs a tiny shell script that pulls
+ *  CLOUDFLARE_API_TOKEN from keychain on each Caddy start and then
+ *  exec's the real caddy binary. Keeps the token out of the plist
+ *  (and therefore out of Time Machine backups, etc.). */
+function launchdPlistContentsWrapped(wrapperPath: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${LAUNCHD_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${wrapperPath}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${CADDY_LOG_PATH}</string>
+  <key>StandardErrorPath</key>
+  <string>${CADDY_ERR_LOG_PATH}</string>
+</dict>
+</plist>
+`;
+}
+
+function caddyWrapperContents(
+  caddyBinPath: string,
+  keychainService: string,
+  keychainAccount: string,
+): string {
+  return `#!/bin/zsh
+# Managed by hatchkit dev-setup. Edit at your own risk — re-running
+# \`hatchkit dev-setup init\` rewrites this file.
+#
+# Fetches the Cloudflare ACME token from the macOS Keychain at startup
+# so the launchd plist doesn't have to embed a plaintext secret. launchd
+# re-exec's this script every time Caddy restarts, so token rotation in
+# keychain is picked up on the next reload.
+
+set -euo pipefail
+token=$(/usr/bin/security find-generic-password -s ${shellQuote(keychainService)} -a ${shellQuote(keychainAccount)} -w 2>/dev/null || true)
+if [ -z "$token" ]; then
+  echo "caddy-wrapper: missing keychain entry ${keychainService}/${keychainAccount}." >&2
+  echo "  Store the Cloudflare ACME token with:" >&2
+  echo "    security add-generic-password -s ${keychainService} -a ${keychainAccount} -w '<token>' -U" >&2
+  exit 78
+fi
+export CLOUDFLARE_API_TOKEN="$token"
+exec ${shellQuote(caddyBinPath)} run --watch --config ${shellQuote(CADDYFILE_PATH)}
+`;
+}
+
+function shellQuote(s: string): string {
+  // POSIX single-quote escape: a single literal apostrophe inside
+  // single-quoted text is impossible, so we close-quote, insert an
+  // escaped apostrophe, and re-open. Inputs here (paths, keychain
+  // service/account) shouldn't contain quotes in practice, but the
+  // round-trip stays safe if they ever do.
+  return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
 function escapeXml(s: string): string {
@@ -247,20 +331,64 @@ export async function checkLocalDevHost(): Promise<CheckResult[]> {
       hint: ["Run `hatchkit dev-setup init` to write the launchd plist."],
     });
   } else {
+    // Two valid plist shapes:
+    //   1. Inline env: `EnvironmentVariables` dict contains CLOUDFLARE_API_TOKEN.
+    //   2. Wrapper:    ProgramArguments points at CADDY_WRAPPER_PATH; token
+    //                  lives in keychain.
+    // Probe accordingly so doctor doesn't false-flag the wrapper path.
     const plist = readFileSync(LAUNCHD_PLIST_PATH, "utf-8");
-    const hasToken = /<key>CLOUDFLARE_API_TOKEN<\/key>\s*<string>[^<]+<\/string>/.test(plist);
-    if (!hasToken) {
-      out.push({
-        name: "Local-dev / Cloudflare API token in plist",
-        status: "fail",
-        detail: "launchd plist has no CLOUDFLARE_API_TOKEN entry",
-        hint: [
-          "Configure DNS first: `hatchkit config add dns` (Cloudflare token with Zone:DNS:Edit).",
-          "Then re-run: `hatchkit dev-setup init` to refresh the plist.",
-        ],
-      });
+    const usesWrapper = plist.includes(CADDY_WRAPPER_PATH);
+    if (usesWrapper) {
+      if (!existsSync(CADDY_WRAPPER_PATH)) {
+        out.push({
+          name: "Local-dev / Caddy wrapper script",
+          status: "fail",
+          detail: `${CADDY_WRAPPER_PATH} referenced by plist but missing on disk`,
+          hint: ["Re-run `hatchkit dev-setup init` to regenerate the wrapper."],
+        });
+      } else {
+        const wrapper = readFileSync(CADDY_WRAPPER_PATH, "utf-8");
+        const m = wrapper.match(/security find-generic-password -s '([^']+)' -a '([^']+)'/);
+        const service = m?.[1] ?? DEFAULT_CADDY_KEYCHAIN_SERVICE;
+        const account = m?.[2] ?? DEFAULT_CADDY_KEYCHAIN_ACCOUNT;
+        if (!(await keychainEntryExists(service, account))) {
+          out.push({
+            name: "Local-dev / Cloudflare ACME token in keychain",
+            status: "fail",
+            detail: `keychain entry ${service}/${account} not found`,
+            hint: [
+              "Store the Cloudflare ACME token in the keychain:",
+              `  security add-generic-password -s ${service} -a ${account} -w '<token>' -U`,
+              "Then reload Caddy:",
+              `  launchctl unload ${LAUNCHD_PLIST_PATH} && launchctl load -w ${LAUNCHD_PLIST_PATH}`,
+            ],
+          });
+        } else {
+          out.push({
+            name: "Local-dev / Cloudflare ACME token in keychain",
+            status: "ok",
+            detail: `${service}/${account}`,
+          });
+        }
+      }
     } else {
-      out.push({ name: "Local-dev / Cloudflare API token in plist", status: "ok" });
+      const hasToken = /<key>CLOUDFLARE_API_TOKEN<\/key>\s*<string>[^<]+<\/string>/.test(plist);
+      if (!hasToken) {
+        out.push({
+          name: "Local-dev / Cloudflare API token in plist",
+          status: "fail",
+          detail: "launchd plist has no CLOUDFLARE_API_TOKEN entry",
+          hint: [
+            "Configure DNS first: `hatchkit config add dns` (Cloudflare token with Zone:DNS:Edit).",
+            "Then re-run: `hatchkit dev-setup init` to refresh the plist.",
+            "Or switch to keychain-backed storage:",
+            `  security add-generic-password -s ${DEFAULT_CADDY_KEYCHAIN_SERVICE} -a ${DEFAULT_CADDY_KEYCHAIN_ACCOUNT} -w '<token>' -U`,
+            "then re-run `dev-setup init` (it'll generate a wrapper-style plist).",
+          ],
+        });
+      } else {
+        out.push({ name: "Local-dev / Cloudflare API token in plist", status: "ok" });
+      }
     }
   }
 
@@ -340,12 +468,22 @@ export interface DevSetupInitOptions {
   skipServe?: boolean;
   caddyBinPath?: string;
   cloudflareToken?: string | null;
+  /** Pull the Cloudflare ACME token from a macOS Keychain entry at
+   *  Caddy start time instead of embedding it in the launchd plist.
+   *  When set (or when the `caddy-dev/cloudflare-acme` default entry
+   *  exists), `init` writes a wrapper script and a plist that exec's
+   *  the wrapper — the secret never lands on disk in plaintext. Pass
+   *  `false` to force inline-env mode even if the default entry exists. */
+  caddyTokenKeychain?: { service: string; account: string } | false;
 }
 
 export interface DevSetupInitResult {
   caddyPort: number;
   wroteCaddyfile: boolean;
   wrotePlist: boolean;
+  /** True when the wrapper script at CADDY_WRAPPER_PATH was created or
+   *  rewritten. Only set in wrapper-mode runs. */
+  wroteWrapper: boolean;
   loadedLaunchd: boolean;
   registeredServe: boolean;
   notes: string[];
@@ -392,22 +530,74 @@ export async function runDevSetupInit(
   }
 
   let wrotePlist = false;
+  let wroteWrapper = false;
   const caddyBinPath = opts.caddyBinPath ?? (await resolveCaddyBin());
-  const token =
-    opts.cloudflareToken === undefined ? await readCloudflareTokenFromConfig() : opts.cloudflareToken;
-  if (!token) {
-    notes.push(
-      "No Cloudflare API token found in hatchkit's DNS config — plist will lack CLOUDFLARE_API_TOKEN.",
+
+  // Wrapper-mode resolution. Explicit `false` opts out. Explicit pair
+  // opts in. Undefined falls back to auto-detect: if the default
+  // keychain pair is reachable via `security`, prefer wrapper mode so
+  // the secret stays off the launchd plist.
+  let keychainPair: { service: string; account: string } | null = null;
+  if (opts.caddyTokenKeychain === false) {
+    keychainPair = null;
+  } else if (opts.caddyTokenKeychain) {
+    keychainPair = opts.caddyTokenKeychain;
+  } else {
+    const exists = await keychainEntryExists(
+      DEFAULT_CADDY_KEYCHAIN_SERVICE,
+      DEFAULT_CADDY_KEYCHAIN_ACCOUNT,
     );
+    if (exists) {
+      keychainPair = {
+        service: DEFAULT_CADDY_KEYCHAIN_SERVICE,
+        account: DEFAULT_CADDY_KEYCHAIN_ACCOUNT,
+      };
+    }
   }
-  if (caddyBinPath) {
+
+  if (!caddyBinPath) {
+    notes.push("caddy CLI not on PATH — skipping plist write. Install caddy then re-run.");
+  } else if (keychainPair) {
+    // Wrapper-style plist + helper script. Token stays in keychain.
+    const nextWrapper = caddyWrapperContents(caddyBinPath, keychainPair.service, keychainPair.account);
+    if (
+      !existsSync(CADDY_WRAPPER_PATH) ||
+      readFileSync(CADDY_WRAPPER_PATH, "utf-8") !== nextWrapper
+    ) {
+      writeFileSync(CADDY_WRAPPER_PATH, nextWrapper);
+      const { chmodSync } = await import("node:fs");
+      chmodSync(CADDY_WRAPPER_PATH, 0o700);
+      wroteWrapper = true;
+    }
+    const nextPlist = launchdPlistContentsWrapped(CADDY_WRAPPER_PATH);
+    if (!existsSync(LAUNCHD_PLIST_PATH) || readFileSync(LAUNCHD_PLIST_PATH, "utf-8") !== nextPlist) {
+      writeFileSync(LAUNCHD_PLIST_PATH, nextPlist);
+      wrotePlist = true;
+    }
+    notes.push(
+      `Cloudflare ACME token will be read from keychain ${keychainPair.service}/${keychainPair.account} at Caddy startup.`,
+    );
+  } else {
+    // Legacy inline-env path: read token from hatchkit's DNS config and
+    // embed in the plist's EnvironmentVariables. Preserved for users who
+    // haven't set up the keychain entry yet.
+    const token =
+      opts.cloudflareToken === undefined
+        ? await readCloudflareTokenFromConfig()
+        : opts.cloudflareToken;
+    if (!token) {
+      notes.push(
+        "No Cloudflare API token in hatchkit's DNS config — plist will lack CLOUDFLARE_API_TOKEN.",
+      );
+      notes.push(
+        `For keychain-backed storage: \`security add-generic-password -s ${DEFAULT_CADDY_KEYCHAIN_SERVICE} -a ${DEFAULT_CADDY_KEYCHAIN_ACCOUNT} -w '<token>' -U\` then re-run \`dev-setup init\`.`,
+      );
+    }
     const nextPlist = launchdPlistContents(caddyBinPath, token ?? null);
     if (!existsSync(LAUNCHD_PLIST_PATH) || readFileSync(LAUNCHD_PLIST_PATH, "utf-8") !== nextPlist) {
       writeFileSync(LAUNCHD_PLIST_PATH, nextPlist);
       wrotePlist = true;
     }
-  } else {
-    notes.push("caddy CLI not on PATH — skipping plist write. Install caddy then re-run.");
   }
 
   let loadedLaunchd = false;
@@ -436,7 +626,25 @@ export async function runDevSetupInit(
     }
   }
 
-  return { caddyPort, wroteCaddyfile, wrotePlist, loadedLaunchd, registeredServe, notes };
+  return {
+    caddyPort,
+    wroteCaddyfile,
+    wrotePlist,
+    wroteWrapper,
+    loadedLaunchd,
+    registeredServe,
+    notes,
+  };
+}
+
+async function keychainEntryExists(service: string, account: string): Promise<boolean> {
+  // `security find-generic-password` exits 0 when the entry exists. We
+  // don't ask for the value (`-w`) — existence is enough. Suppress
+  // stderr so the "not found" line doesn't show up in normal runs.
+  const res = await exec("security", ["find-generic-password", "-s", service, "-a", account], {
+    silent: true,
+  });
+  return res.exitCode === 0;
 }
 
 async function resolveCaddyBin(): Promise<string | null> {
@@ -797,13 +1005,40 @@ export async function runDevSetupCli(args: string[]): Promise<void> {
   }
   if (sub === "init") {
     const force = args.includes("--force");
-    const result = await runDevSetupInit({ force });
+    // --caddy-token-keychain <service>:<account>   → wrapper mode with custom pair
+    // --no-caddy-token-keychain                    → force inline-env mode
+    // (default)                                     → auto-detect default pair
+    let caddyTokenKeychain: DevSetupInitOptions["caddyTokenKeychain"];
+    if (args.includes("--no-caddy-token-keychain")) {
+      caddyTokenKeychain = false;
+    } else {
+      const flagIdx = args.findIndex(
+        (a) => a === "--caddy-token-keychain" || a.startsWith("--caddy-token-keychain="),
+      );
+      if (flagIdx !== -1) {
+        const raw = args[flagIdx].includes("=")
+          ? args[flagIdx].slice("--caddy-token-keychain=".length)
+          : args[flagIdx + 1];
+        const [service, account] = (raw ?? "").split(":");
+        if (!service || !account) {
+          console.log("Usage: --caddy-token-keychain <service>:<account>");
+          process.exit(1);
+        }
+        caddyTokenKeychain = { service, account };
+      }
+    }
+    const result = await runDevSetupInit({ force, caddyTokenKeychain });
     const chalk = (await import("chalk")).default;
     console.log(chalk.bold("\n  hatchkit dev-setup init\n"));
     console.log(`  Caddy port:           ${chalk.cyan(result.caddyPort)}`);
     console.log(
       `  Caddyfile:            ${result.wroteCaddyfile ? chalk.green("wrote") : chalk.dim("unchanged")} ${chalk.dim(CADDYFILE_PATH)}`,
     );
+    if (result.wroteWrapper) {
+      console.log(
+        `  caddy wrapper:        ${chalk.green("wrote")} ${chalk.dim(CADDY_WRAPPER_PATH)}`,
+      );
+    }
     console.log(
       `  launchd plist:        ${result.wrotePlist ? chalk.green("wrote") : chalk.dim("unchanged")} ${chalk.dim(LAUNCHD_PLIST_PATH)}`,
     );
