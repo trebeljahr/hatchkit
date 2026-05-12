@@ -673,13 +673,13 @@ async function readCloudflareTokenFromConfig(): Promise<string | null> {
 export { projectFragmentPath, removeProjectFragment, writeProjectFragment };
 
 /** Version range we write into scaffolded `package.json` for the dev
- *  plugin. Locks to the CLI's own version (the release pipeline bumps
+ *  plugins. Locks to the CLI's own version (the release pipeline bumps
  *  every `@hatchkit/dev-*` package in lockstep with the CLI), so a
  *  user who installed `hatchkit@x.y.z` gets a scaffold that pulls
- *  `@hatchkit/dev-plugin-next@^x.y.z` — guaranteed to exist on npm.
- *  Local-workspace development inside this monorepo bypasses the
+ *  `@hatchkit/dev-plugin-{next,vite}@^x.y.z` — guaranteed to exist on
+ *  npm. Local-workspace development inside this monorepo bypasses the
  *  range via pnpm's workspace resolution. */
-async function devPluginNextVersionRange(): Promise<string> {
+async function pluginVersionRange(): Promise<string> {
   const { getCliVersion } = await import("./utils/version.js");
   return `^${getCliVersion()}`;
 }
@@ -705,7 +705,17 @@ export interface EnableProjectLocalDevInput {
 export interface EnableProjectLocalDevResult {
   wroteFragment: "created" | "updated" | "unchanged";
   wroteDocs: boolean;
-  patchedNextConfig: "added" | "already-wrapped" | "no-file" | "unsupported-shape" | "skipped";
+  /** Which framework the patcher detected (or `none` when neither a
+   *  Next nor a Vite config is reachable from the project). Drives
+   *  which plugin package is injected. */
+  framework: "next" | "vite" | "none";
+  patchedConfig:
+    | "added"
+    | "already-wrapped"
+    | "no-file"
+    | "unsupported-shape"
+    | "manual-wire-required"
+    | "skipped";
   patchedPackageJson: "added" | "already-present" | "no-file" | "skipped";
 }
 
@@ -730,16 +740,47 @@ export async function enableProjectLocalDev(
     wroteDocs = true;
   }
 
-  const patchedNextConfig = input.patchNextConfig === false
-    ? "skipped"
-    : patchNextConfigWithLocalDev(input.projectDir, input.slug);
+  // Framework detection: prefer Next when a next.config is reachable —
+  // the patcher handles ESM `export default` shapes automatically.
+  // Otherwise fall back to Vite. Vite configs come in too many shapes
+  // (defineConfig fn, plugin arrays in different positions, env-gated
+  // builds) for safe automated patching, so we inject the dep and
+  // surface a `manual-wire-required` flag for the caller to print
+  // instructions. Projects that are neither (server-only, exotic) get
+  // `none` and we skip the patch step entirely.
+  const framework: EnableProjectLocalDevResult["framework"] = findNextConfig(input.projectDir)
+    ? "next"
+    : findViteConfig(input.projectDir)
+      ? "vite"
+      : "none";
 
-  const versionRange = await devPluginNextVersionRange();
-  const patchedPackageJson = input.patchPackageJson === false
-    ? "skipped"
-    : patchClientPackageJsonDep(input.projectDir, versionRange);
+  let patchedConfig: EnableProjectLocalDevResult["patchedConfig"];
+  let patchedPackageJson: EnableProjectLocalDevResult["patchedPackageJson"];
 
-  return { wroteFragment, wroteDocs, patchedNextConfig, patchedPackageJson };
+  if (input.patchNextConfig === false) {
+    patchedConfig = "skipped";
+  } else if (framework === "next") {
+    patchedConfig = patchNextConfigWithLocalDev(input.projectDir, input.slug);
+  } else if (framework === "vite") {
+    patchedConfig = "manual-wire-required";
+  } else {
+    patchedConfig = "no-file";
+  }
+
+  if (input.patchPackageJson === false) {
+    patchedPackageJson = "skipped";
+  } else {
+    const versionRange = await pluginVersionRange();
+    if (framework === "next") {
+      patchedPackageJson = patchPluginPackageJsonDep(input.projectDir, versionRange, "next");
+    } else if (framework === "vite") {
+      patchedPackageJson = patchPluginPackageJsonDep(input.projectDir, versionRange, "vite");
+    } else {
+      patchedPackageJson = "no-file";
+    }
+  }
+
+  return { wroteFragment, wroteDocs, framework, patchedConfig, patchedPackageJson };
 }
 
 /** Remove the project's Caddy fragment + the docs file. Leaves the
@@ -766,7 +807,7 @@ export function disableProjectLocalDev(projectDir: string, slug: string): {
  *  the next-bearing package (`showcase`, `web`, `site`, `app`, `docs`,
  *  `apps/web`). Caller can short-circuit by passing the exact path
  *  via the patcher's caller — this scan is the fallback. */
-const NEXT_CONFIG_SUBDIRS = [
+const FRAMEWORK_CONFIG_SUBDIRS = [
   "packages/client",
   "",
   "showcase",
@@ -778,14 +819,26 @@ const NEXT_CONFIG_SUBDIRS = [
   "apps/site",
 ];
 const NEXT_CONFIG_FILENAMES = ["next.config.ts", "next.config.mjs", "next.config.js"];
+const VITE_CONFIG_FILENAMES = ["vite.config.ts", "vite.config.mjs", "vite.config.js"];
 
 /** Locate the project's Next config file. Returns the absolute path of
- *  the first hit found by walking `NEXT_CONFIG_SUBDIRS × NEXT_CONFIG_FILENAMES`,
+ *  the first hit found by walking `FRAMEWORK_CONFIG_SUBDIRS × NEXT_CONFIG_FILENAMES`,
  *  or null when nothing matches. Exposed so the package.json patcher
  *  can target the sibling `package.json` rather than a different layout. */
 function findNextConfig(projectDir: string): string | null {
-  for (const sub of NEXT_CONFIG_SUBDIRS) {
+  for (const sub of FRAMEWORK_CONFIG_SUBDIRS) {
     for (const name of NEXT_CONFIG_FILENAMES) {
+      const candidate = join(projectDir, sub, name);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+/** Locate the project's Vite config file. Mirrors `findNextConfig`. */
+function findViteConfig(projectDir: string): string | null {
+  for (const sub of FRAMEWORK_CONFIG_SUBDIRS) {
+    for (const name of VITE_CONFIG_FILENAMES) {
       const candidate = join(projectDir, sub, name);
       if (existsSync(candidate)) return candidate;
     }
@@ -848,52 +901,53 @@ function patchNextConfigWithLocalDev(
   return "added";
 }
 
-/** Inject `@hatchkit/dev-plugin-next` into the client package.json's
- *  dependencies (or devDependencies, matching where `next` already lives).
- *  Returns `"no-file"` if no client package.json depending on Next exists
- *  (server-only surfaces, exotic layouts). Idempotent.
- *
- *  Targets the package.json sibling of the next.config we found. This
- *  matches the patcher's behaviour for monorepos where Next lives in a
- *  subdir (e.g. gamedev's `showcase/`, conv3d's `docs/`). */
-function patchClientPackageJsonDep(
+/** Inject the right `@hatchkit/dev-plugin-{next,vite}` package into the
+ *  client package.json's dependencies (or devDependencies, matching where
+ *  the framework's own dep already lives). Targets the package.json
+ *  sibling of the framework config we found, so monorepo subdirs
+ *  (gamedev's `showcase/`, conv3d's `docs/`) get patched correctly.
+ *  Idempotent. */
+function patchPluginPackageJsonDep(
   projectDir: string,
   versionRange: string,
+  framework: "next" | "vite",
 ): "added" | "already-present" | "no-file" {
-  const nextConfigPath = findNextConfig(projectDir);
-  const path = nextConfigPath ? join(nextConfigPath, "..", "package.json") : null;
+  const configPath = framework === "next" ? findNextConfig(projectDir) : findViteConfig(projectDir);
+  const path = configPath ? join(configPath, "..", "package.json") : null;
   if (!path || !existsSync(path)) return "no-file";
-  try {
-    const pkg = JSON.parse(readFileSync(path, "utf-8")) as {
-      dependencies?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-    };
-    if (!pkg.dependencies?.next && !pkg.devDependencies?.next) return "no-file";
-  } catch {
+
+  const frameworkDep = framework;
+  const pluginPackage = `@hatchkit/dev-plugin-${framework}`;
+  const pkg = (() => {
+    try {
+      return JSON.parse(readFileSync(path, "utf-8")) as {
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+        [key: string]: unknown;
+      };
+    } catch {
+      return null;
+    }
+  })();
+  if (!pkg) return "no-file";
+  if (!pkg.dependencies?.[frameworkDep] && !pkg.devDependencies?.[frameworkDep]) {
     return "no-file";
   }
 
-  const pkg = JSON.parse(readFileSync(path, "utf-8")) as {
-    dependencies?: Record<string, string>;
-    devDependencies?: Record<string, string>;
-    [key: string]: unknown;
-  };
-  const alreadyIn =
-    pkg.dependencies?.["@hatchkit/dev-plugin-next"] ??
-    pkg.devDependencies?.["@hatchkit/dev-plugin-next"];
+  const alreadyIn = pkg.dependencies?.[pluginPackage] ?? pkg.devDependencies?.[pluginPackage];
   if (alreadyIn) return "already-present";
 
-  // Mirror Next's bucket. Projects that keep tooling in devDependencies
-  // (e.g. scaffolds generated by `create-next-app --use-pnpm`) shouldn't
-  // get their dev plugin shoved into runtime deps just because we have
-  // a default. Falls back to dependencies if next isn't in devDeps but
-  // somehow appears in deps, or if neither (defensive — patch shouldn't
-  // run for that case but reads cleanly).
-  const bucket: "dependencies" | "devDependencies" = pkg.devDependencies?.next
+  // Mirror the framework's own bucket. Projects that keep tooling in
+  // devDependencies (e.g. scaffolds generated by `create-next-app
+  // --use-pnpm`, or Vite's `npm create vite@latest`) shouldn't get
+  // their dev plugin shoved into runtime deps just because we have a
+  // default. Falls back to dependencies if the framework dep isn't in
+  // devDeps but appears in deps.
+  const bucket: "dependencies" | "devDependencies" = pkg.devDependencies?.[frameworkDep]
     ? "devDependencies"
     : "dependencies";
   pkg[bucket] = pkg[bucket] ?? {};
-  (pkg[bucket] as Record<string, string>)["@hatchkit/dev-plugin-next"] = versionRange;
+  (pkg[bucket] as Record<string, string>)[pluginPackage] = versionRange;
   pkg[bucket] = Object.fromEntries(
     Object.entries(pkg[bucket] as Record<string, string>).sort(([a], [b]) => a.localeCompare(b)),
   );
@@ -1217,14 +1271,40 @@ async function runDevSetupEnableCli(args: string[]): Promise<void> {
     writeManifest(projectDir, updated);
   }
 
-  console.log(`\n  Caddy fragment:  ${chalk.green(result.wroteFragment)}`);
+  console.log(`\n  Framework:       ${chalk.cyan(result.framework)}`);
+  console.log(`  Caddy fragment:  ${chalk.green(result.wroteFragment)}`);
   console.log(`  docs/dev-setup.md: ${result.wroteDocs ? chalk.green("wrote") : chalk.dim("unchanged")}`);
-  console.log(`  next.config:     ${formatPatch(result.patchedNextConfig)}`);
+  const configLabel = result.framework === "vite" ? "vite.config:   " : "next.config:   ";
+  console.log(`  ${configLabel}  ${formatPatch(result.patchedConfig)}`);
   console.log(`  package.json:    ${formatPatch(result.patchedPackageJson)}`);
   if (result.patchedPackageJson === "added") {
     console.log(
       chalk.dim(`\n  Don't forget: run \`pnpm install\` in ${projectDir} to pull the plugin in.`),
     );
+  }
+  if (result.patchedConfig === "manual-wire-required") {
+    // Vite path: too much shape variance for safe auto-patching. Tell
+    // the user exactly what to paste so they don't have to read the
+    // generated `docs/dev-setup.md` to figure it out.
+    console.log(chalk.bold("\n  Vite config wiring (paste into your vite.config):"));
+    console.log(
+      chalk.dim('    import { localDev } from "@hatchkit/dev-plugin-vite";'),
+    );
+    console.log(chalk.dim("    // …"));
+    console.log(chalk.dim("    plugins: ["));
+    console.log(chalk.dim("      // …your existing plugins"));
+    console.log(chalk.dim(`      localDev({ slug: "${slug}" }),`));
+    console.log(chalk.dim("    ],"));
+    console.log(
+      chalk.dim(
+        '    server: { allowedHosts: [".local.ricoslabs.com", ".ts.net", ".local"] },',
+      ),
+    );
+  }
+  if (result.patchedConfig === "unsupported-shape") {
+    console.log(chalk.bold("\n  Next config wiring (CJS / non-standard shape):"));
+    console.log(chalk.dim('    const { withLocalDev } = require("@hatchkit/dev-plugin-next");'));
+    console.log(chalk.dim(`    module.exports = withLocalDev(nextConfig, { slug: "${slug}" });`));
   }
   console.log(
     chalk.dim(`\n  Verify with: \`hatchkit doctor\` (or \`hatchkit dev-setup status\`).`),
@@ -1286,6 +1366,7 @@ function formatPatch(
     | "already-present"
     | "no-file"
     | "unsupported-shape"
+    | "manual-wire-required"
     | "skipped",
 ): string {
   // chalk import is async on this path; defer to ANSI codes to keep this
@@ -1303,6 +1384,8 @@ function formatPatch(
       return dim("no file to patch");
     case "unsupported-shape":
       return yellow("unsupported shape — wrap manually");
+    case "manual-wire-required":
+      return yellow("manual wire required — see instructions below");
     case "skipped":
       return dim("skipped");
   }

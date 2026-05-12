@@ -420,7 +420,7 @@ async function runScaffoldSteps(
     });
     localDev = { slug: config.localDev.slug };
     modifications.push(
-      `local-dev: fragment ${result.wroteFragment}, docs ${result.wroteDocs ? "wrote" : "unchanged"}, next.config ${result.patchedNextConfig}, package.json ${result.patchedPackageJson}`,
+      `local-dev: framework ${result.framework}, fragment ${result.wroteFragment}, docs ${result.wroteDocs ? "wrote" : "unchanged"}, config ${result.patchedConfig}, package.json ${result.patchedPackageJson}`,
     );
   }
 

@@ -2131,7 +2131,7 @@ console.log("\n── adopt: gitignore + private-key guard ───────
 
       const checks: Check[] = [
         ["second enable reports fragment unchanged", second.wroteFragment === "unchanged"],
-        ["second enable reports next.config already-wrapped", second.patchedNextConfig === "already-wrapped"],
+        ["second enable reports next.config already-wrapped", second.patchedConfig === "already-wrapped"],
         ["second enable reports package.json already-present", second.patchedPackageJson === "already-present"],
         // Two textual hits: the import line + the wrapped export.
         // Three or more = duplicated wrapping.
@@ -2228,13 +2228,13 @@ console.log("\n── adopt: gitignore + private-key guard ───────
       const guardedConfig = readFileSync(nextPath, "utf-8");
 
       const checks: Check[] = [
-        ["inline-export shape patched", inlineResult.patchedNextConfig === "added"],
+        ["inline-export shape patched", inlineResult.patchedConfig === "added"],
         [
           "hoisted into a const before wrapping",
           inlineConfig.includes("__hatchkitLocalDevConfig") &&
             inlineConfig.includes(`withLocalDev(__hatchkitLocalDevConfig, { slug: "${slug}" })`),
         ],
-        ["second enable detects existing wrap", guardResult.patchedNextConfig === "already-wrapped"],
+        ["second enable detects existing wrap", guardResult.patchedConfig === "already-wrapped"],
         ["second enable left the file alone", inlineConfig === guardedConfig],
       ];
       let ok = true;
