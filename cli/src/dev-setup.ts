@@ -705,7 +705,7 @@ export interface EnableProjectLocalDevInput {
 export interface EnableProjectLocalDevResult {
   wroteFragment: "created" | "updated" | "unchanged";
   wroteDocs: boolean;
-  patchedNextConfig: "added" | "already-wrapped" | "no-file" | "skipped";
+  patchedNextConfig: "added" | "already-wrapped" | "no-file" | "unsupported-shape" | "skipped";
   patchedPackageJson: "added" | "already-present" | "no-file" | "skipped";
 }
 
@@ -760,40 +760,72 @@ export function disableProjectLocalDev(projectDir: string, slug: string): {
   return { removedFragment, removedDocs };
 }
 
-/** Wrap the project's `packages/client/next.config.ts` with
- *  `withLocalDev` from @hatchkit/dev-plugin-next. Idempotent: detects
- *  an existing import and bails before touching the file.
+/** Subdirectories scanned for a Next config (in order). The first
+ *  match wins. Covers standard hatchkit layout (`packages/client`),
+ *  flat layout (project root), and common monorepo conventions for
+ *  the next-bearing package (`showcase`, `web`, `site`, `app`, `docs`,
+ *  `apps/web`). Caller can short-circuit by passing the exact path
+ *  via the patcher's caller — this scan is the fallback. */
+const NEXT_CONFIG_SUBDIRS = [
+  "packages/client",
+  "",
+  "showcase",
+  "web",
+  "site",
+  "app",
+  "docs",
+  "apps/web",
+  "apps/site",
+];
+const NEXT_CONFIG_FILENAMES = ["next.config.ts", "next.config.mjs", "next.config.js"];
+
+/** Locate the project's Next config file. Returns the absolute path of
+ *  the first hit found by walking `NEXT_CONFIG_SUBDIRS × NEXT_CONFIG_FILENAMES`,
+ *  or null when nothing matches. Exposed so the package.json patcher
+ *  can target the sibling `package.json` rather than a different layout. */
+function findNextConfig(projectDir: string): string | null {
+  for (const sub of NEXT_CONFIG_SUBDIRS) {
+    for (const name of NEXT_CONFIG_FILENAMES) {
+      const candidate = join(projectDir, sub, name);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+/** Wrap the project's Next config with `withLocalDev` from
+ *  @hatchkit/dev-plugin-next. Idempotent: detects an existing import
+ *  and bails before touching the file.
  *
  *  Strategy is intentionally surgical — replace the
  *  `export default nextConfig;` line with the wrap + add a top-of-file
  *  import. We do NOT try to handle exotic config shapes
  *  (functional configs, conditional defaults). Returns `"no-file"`
- *  when the next.config doesn't exist (e.g. server-only surfaces). */
+ *  when no next.config can be located (server-only surfaces, unusual
+ *  layouts) and `"unsupported-shape"` when the file exists but doesn't
+ *  match an ESM `export default` pattern — most commonly CJS
+ *  `module.exports = …`. */
 function patchNextConfigWithLocalDev(
   projectDir: string,
   slug: string,
-): "added" | "already-wrapped" | "no-file" {
-  const candidates = [
-    join(projectDir, "packages", "client", "next.config.ts"),
-    join(projectDir, "packages", "client", "next.config.js"),
-    join(projectDir, "packages", "client", "next.config.mjs"),
-    // Single-package projects (client-only flat layout).
-    join(projectDir, "next.config.ts"),
-    join(projectDir, "next.config.js"),
-    join(projectDir, "next.config.mjs"),
-  ];
-  const path = candidates.find((p) => existsSync(p));
+): "added" | "already-wrapped" | "no-file" | "unsupported-shape" {
+  const path = findNextConfig(projectDir);
   if (!path) return "no-file";
 
   const content = readFileSync(path, "utf-8");
   if (content.includes("@hatchkit/dev-plugin-next")) return "already-wrapped";
+
+  // CJS configs use `module.exports = …`; we can't add a top-of-file
+  // ESM `import` to those. Caller surfaces the gap so the user can
+  // either migrate to ESM or wrap by hand.
+  if (/^\s*module\.exports\s*=/m.test(content)) return "unsupported-shape";
 
   // Find the last `export default …;` and wrap whatever identifier it
   // exports. The common shape is `export default nextConfig;` but some
   // configs do `export default { … };` inline — we handle both by
   // hoisting the expression into a const first when needed.
   const exportMatch = content.match(/^\s*export\s+default\s+([^;]+);?\s*$/m);
-  if (!exportMatch) return "already-wrapped"; // Conservative no-op — don't mangle exotic shapes.
+  if (!exportMatch) return "unsupported-shape";
 
   const expression = exportMatch[1].trim();
   const isIdentifier = /^[a-zA-Z_$][\w$]*$/.test(expression);
@@ -817,42 +849,53 @@ function patchNextConfigWithLocalDev(
 }
 
 /** Inject `@hatchkit/dev-plugin-next` into the client package.json's
- *  dependencies. Returns `"no-file"` if no client package.json exists
- *  (server-only surfaces, exotic layouts). Idempotent. */
+ *  dependencies (or devDependencies, matching where `next` already lives).
+ *  Returns `"no-file"` if no client package.json depending on Next exists
+ *  (server-only surfaces, exotic layouts). Idempotent.
+ *
+ *  Targets the package.json sibling of the next.config we found. This
+ *  matches the patcher's behaviour for monorepos where Next lives in a
+ *  subdir (e.g. gamedev's `showcase/`, conv3d's `docs/`). */
 function patchClientPackageJsonDep(
   projectDir: string,
   versionRange: string,
 ): "added" | "already-present" | "no-file" {
-  const candidates = [
-    join(projectDir, "packages", "client", "package.json"),
-    join(projectDir, "package.json"),
-  ];
-  const path = candidates.find((p) => {
-    if (!existsSync(p)) return false;
-    // For the root package.json fallback, only patch when it actually
-    // depends on `next` — otherwise we'd add the plugin to e.g. a
-    // server-only repo's root manifest, which doesn't make sense.
-    try {
-      const pkg = JSON.parse(readFileSync(p, "utf-8")) as {
-        dependencies?: Record<string, string>;
-      };
-      return p.endsWith("packages/client/package.json") || !!pkg.dependencies?.next;
-    } catch {
-      return false;
-    }
-  });
-  if (!path) return "no-file";
+  const nextConfigPath = findNextConfig(projectDir);
+  const path = nextConfigPath ? join(nextConfigPath, "..", "package.json") : null;
+  if (!path || !existsSync(path)) return "no-file";
+  try {
+    const pkg = JSON.parse(readFileSync(path, "utf-8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    if (!pkg.dependencies?.next && !pkg.devDependencies?.next) return "no-file";
+  } catch {
+    return "no-file";
+  }
 
   const pkg = JSON.parse(readFileSync(path, "utf-8")) as {
     dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
     [key: string]: unknown;
   };
-  pkg.dependencies = pkg.dependencies ?? {};
-  if (pkg.dependencies["@hatchkit/dev-plugin-next"]) return "already-present";
-  pkg.dependencies["@hatchkit/dev-plugin-next"] = versionRange;
-  // Re-sort deps to keep the file stable across re-runs.
-  pkg.dependencies = Object.fromEntries(
-    Object.entries(pkg.dependencies).sort(([a], [b]) => a.localeCompare(b)),
+  const alreadyIn =
+    pkg.dependencies?.["@hatchkit/dev-plugin-next"] ??
+    pkg.devDependencies?.["@hatchkit/dev-plugin-next"];
+  if (alreadyIn) return "already-present";
+
+  // Mirror Next's bucket. Projects that keep tooling in devDependencies
+  // (e.g. scaffolds generated by `create-next-app --use-pnpm`) shouldn't
+  // get their dev plugin shoved into runtime deps just because we have
+  // a default. Falls back to dependencies if next isn't in devDeps but
+  // somehow appears in deps, or if neither (defensive — patch shouldn't
+  // run for that case but reads cleanly).
+  const bucket: "dependencies" | "devDependencies" = pkg.devDependencies?.next
+    ? "devDependencies"
+    : "dependencies";
+  pkg[bucket] = pkg[bucket] ?? {};
+  (pkg[bucket] as Record<string, string>)["@hatchkit/dev-plugin-next"] = versionRange;
+  pkg[bucket] = Object.fromEntries(
+    Object.entries(pkg[bucket] as Record<string, string>).sort(([a], [b]) => a.localeCompare(b)),
   );
   writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`);
   return "added";
@@ -1156,10 +1199,13 @@ async function runDevSetupEnableCli(args: string[]): Promise<void> {
   console.log(`  Slug:      ${chalk.cyan(slug)}`);
   console.log(`  Dev port:  ${chalk.cyan(devPort)}`);
   console.log(`  URL:       ${chalk.cyan(`https://${slug}.${LOCAL_DEV_DOMAIN}/`)}`);
-  const ok = await askConfirm({ message: "Proceed?", default: true });
-  if (!ok) {
-    console.log(chalk.dim("  Aborted."));
-    return;
+  const skipConfirm = args.includes("--yes") || args.includes("-y");
+  if (!skipConfirm) {
+    const ok = await askConfirm({ message: "Proceed?", default: true });
+    if (!ok) {
+      console.log(chalk.dim("  Aborted."));
+      return;
+    }
   }
 
   const result = await enableProjectLocalDev({ projectDir, slug, devPort });
@@ -1233,10 +1279,19 @@ async function runDevSetupDisableCli(args: string[]): Promise<void> {
   console.log(chalk.dim("  remove by hand if you don't expect to re-enable later.\n"));
 }
 
-function formatPatch(state: "added" | "already-wrapped" | "already-present" | "no-file" | "skipped"): string {
+function formatPatch(
+  state:
+    | "added"
+    | "already-wrapped"
+    | "already-present"
+    | "no-file"
+    | "unsupported-shape"
+    | "skipped",
+): string {
   // chalk import is async on this path; defer to ANSI codes to keep this
   // helper sync. Inputs are bounded so this stays readable.
   const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
+  const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
   const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
   switch (state) {
     case "added":
@@ -1246,6 +1301,8 @@ function formatPatch(state: "added" | "already-wrapped" | "already-present" | "n
       return dim("already present");
     case "no-file":
       return dim("no file to patch");
+    case "unsupported-shape":
+      return yellow("unsupported shape — wrap manually");
     case "skipped":
       return dim("skipped");
   }

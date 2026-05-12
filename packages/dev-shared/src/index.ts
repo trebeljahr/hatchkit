@@ -84,8 +84,15 @@ export function projectFragmentPath(slug: string): string {
 
 export function projectFragmentContents(slug: string, devPort: number): string {
   const host = `${slug}.${LOCAL_DEV_DOMAIN}`;
+  // Multi-line block. Caddy's parser rejects the inline form
+  // `handle @x { reverse_proxy ... }` with "Unexpected next token
+  // after '{' on same line" when the fragment is loaded via `import`
+  // from the parent Caddyfile. Split the block across lines so the
+  // import resolves cleanly.
   return `@${slug} host ${host}
-handle @${slug} { reverse_proxy 127.0.0.1:${devPort} }
+handle @${slug} {
+  reverse_proxy 127.0.0.1:${devPort}
+}
 `;
 }
 
