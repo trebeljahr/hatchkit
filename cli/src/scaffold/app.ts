@@ -61,6 +61,10 @@ export interface ScaffoldResult {
   /** Populated by seedDotenvxProduction on real (non-dry-run) scaffolds.
    *  The private key is also mirrored into the OS keychain. */
   dotenvx?: DotenvxSeedResult;
+  /** Populated when the project opted into Tailscale-served local-dev
+   *  (config.localDev was set). The caller uses `slug` to record the
+   *  ledger step so `hatchkit destroy` cleans up the Caddy fragment. */
+  localDev?: { slug: string };
 }
 
 /** Scaffold a new app by copying the starter template and customizing it. */
@@ -398,7 +402,29 @@ async function runScaffoldSteps(
     modifications.push("client-only: skipped dotenvx seeding (no server-side secrets)");
   }
 
-  return { modifications, ports, dotenvx };
+  // Tailscale-served local-dev opt-in. The host plumbing is the user's
+  // own one-time setup (`hatchkit dev-setup init`); here we just write
+  // the per-project pieces: the Caddy fragment at the client dev port
+  // (or server port for server-only surfaces), docs/dev-setup.md, the
+  // next.config wrapper, and the @hatchkit/dev-plugin-next dep. None of
+  // this is required for the project to function — the dev plugin
+  // gracefully no-ops when the host bridge isn't active.
+  let localDev: { slug: string } | undefined;
+  if (config.localDev) {
+    const devPort = config.surfaces === "server-only" ? ports.server : ports.client;
+    const { enableProjectLocalDev } = await import("../dev-setup.js");
+    const result = await enableProjectLocalDev({
+      projectDir: outputDir,
+      slug: config.localDev.slug,
+      devPort,
+    });
+    localDev = { slug: config.localDev.slug };
+    modifications.push(
+      `local-dev: fragment ${result.wroteFragment}, docs ${result.wroteDocs ? "wrote" : "unchanged"}, next.config ${result.patchedNextConfig}, package.json ${result.patchedPackageJson}`,
+    );
+  }
+
+  return { modifications, ports, dotenvx, localDev };
 }
 
 /** Dry run — list what would happen without touching disk. */

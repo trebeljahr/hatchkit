@@ -156,6 +156,16 @@ export interface ProjectConfig {
    *  triggers an actual deploy step (coolify / gh-pages), false when
    *  scaffold-only. New code should branch on `deploymentMode` directly. */
   runDeployment: boolean;
+  /** Tailscale-served dev URL opt-in. When set, scaffold:
+   *    · writes ~/.config/dev/projects/<slug>.caddy at the project's
+   *      client dev port,
+   *    · drops docs/dev-setup.md into the project explaining the host
+   *      plumbing,
+   *    · wraps next.config with `withLocalDev` from
+   *      @hatchkit/dev-plugin-next and adds it as a dep.
+   *  Absent → feature disabled for this project (no fragment, no
+   *  plugin wiring, no docs). */
+  localDev?: { slug: string };
   dryRun: boolean;
 }
 
@@ -584,6 +594,44 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       )
     : false;
 
+  // Tailscale-served local-dev URL opt-in. Default true: the integration
+  // wires this project up to `https://<slug>.local.ricoslabs.com/` so
+  // phones / tablets on the tailnet can reach the dev server with no
+  // per-project DNS or port wrangling. The host-wide plumbing (Caddy,
+  // tailscale serve, plist) is a one-time setup the user runs via
+  // `hatchkit dev-setup init` — disabling the per-project opt-in here
+  // skips writing the Caddy fragment and the plugin wiring, leaving the
+  // project untouched by the integration.
+  let localDev: { slug: string } | undefined;
+  if (presets.localDev !== undefined) {
+    const { sanitiseSlug } = await import("@hatchkit/dev-shared");
+    const slugSource = presets.localDev.slug || name;
+    localDev = { slug: sanitiseSlug(slugSource) };
+  } else if (!nonInteractive) {
+    const enableLocalDev = await confirm({
+      message: "Enable Tailscale dev URL (https://<slug>.local.ricoslabs.com/)?",
+      default: true,
+    });
+    if (enableLocalDev) {
+      const { sanitiseSlug } = await import("@hatchkit/dev-shared");
+      const defaultSlug = sanitiseSlug(name);
+      const slug = await input({
+        message: "Slug (subdomain) for this project:",
+        default: defaultSlug,
+        validate: (v) => {
+          const sanitised = sanitiseSlug(v);
+          if (sanitised.length === 0) return "Slug must contain at least one [a-z0-9-] character.";
+          if (sanitised !== v) return `Use only [a-z0-9-]. Did you mean "${sanitised}"?`;
+          return true;
+        },
+      });
+      localDev = { slug: sanitiseSlug(slug) };
+    }
+  } else {
+    const { sanitiseSlug } = await import("@hatchkit/dev-shared");
+    localDev = { slug: sanitiseSlug(name) };
+  }
+
   // Late-stage "deploy now?" still makes sense for the Coolify path —
   // it lets a user pick the Coolify mode upfront but defer the actual
   // provisioning to a later run. For `scaffold-only` it's already
@@ -728,6 +776,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     deploymentMode,
     runDeployment,
     envValues,
+    localDev,
     dryRun: options.dryRun || false,
   };
 

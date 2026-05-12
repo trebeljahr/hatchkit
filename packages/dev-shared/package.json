@@ -1,0 +1,23 @@
+{
+  "name": "@hatchkit/dev-shared",
+  "version": "0.1.0",
+  "description": "Shared runtime utilities for hatchkit's local-dev integration — Caddy fragment writer, Tailscale probes, paths. Consumed by the CLI and the @hatchkit/dev-plugin-{vite,next} packages.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

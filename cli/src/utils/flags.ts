@@ -29,6 +29,11 @@ export interface ParsedCreateFlags {
   forceNoGithub: boolean;
   forceNoDeploy: boolean;
   forceNoInstall: boolean;
+  /** --no-local-dev hard-disables the Tailscale dev URL opt-in even when
+   *  `--local-dev` / a preset would have enabled it. Distinct from the
+   *  absence of `--local-dev`: a fresh `hatchkit create` without flags
+   *  still defaults to enabling the integration. */
+  forceNoLocalDev: boolean;
 }
 
 const KNOWN_FEATURES: readonly Feature[] = [
@@ -70,6 +75,7 @@ export function parseCreateFlags(argv: string[]): ParsedCreateFlags {
   const forceNoGithub = argv.includes("--no-github");
   const forceNoDeploy = argv.includes("--no-deploy");
   const forceNoInstall = argv.includes("--no-install");
+  const forceNoLocalDev = argv.includes("--no-local-dev");
 
   // Start from --config <path> if present, then layer individual flags on top.
   const presets: Partial<ProjectConfig> = {};
@@ -137,6 +143,17 @@ export function parseCreateFlags(argv: string[]): ParsedCreateFlags {
   if (forceNoGithub) presets.createGithubRepo = false;
   if (forceNoDeploy) presets.runDeployment = false;
   if (forceNoInstall) presets.installDeps = false;
+  if (forceNoLocalDev) presets.localDev = undefined;
+
+  // --local-dev=<slug> sets an explicit slug; --local-dev with no value
+  // signals "yes, enable, derive slug from project name". The latter
+  // arrives as an empty string from `get()` when the flag has no `=`,
+  // which we treat the same as "derive". Conflicts with --no-local-dev
+  // resolve in favour of --no-local-dev (it's the safer choice).
+  const localDevSlug = get("local-dev");
+  if (localDevSlug !== undefined && !forceNoLocalDev) {
+    presets.localDev = { slug: localDevSlug };
+  }
 
   // Validate that presets-provided values look right before we pass
   // them on (the prompt layer would also catch these, but failing
@@ -145,5 +162,5 @@ export function parseCreateFlags(argv: string[]): ParsedCreateFlags {
     // fine — may still come from --name flag or default
   }
 
-  return { yes, dryRun, presets, forceNoGithub, forceNoDeploy, forceNoInstall };
+  return { yes, dryRun, presets, forceNoGithub, forceNoDeploy, forceNoInstall, forceNoLocalDev };
 }

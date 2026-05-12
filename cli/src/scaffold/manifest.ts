@@ -79,6 +79,16 @@ export interface ProjectManifest {
   /** Ports assigned to this project. They're already public in the
    *  scaffolded .env.development files and docker-compose.yml. */
   ports: { server: number; client: number; nativeHmr?: number };
+  /** Tailscale-served local-dev integration. Present when the project
+   *  opted in at scaffold time (or later via `hatchkit dev-setup enable`).
+   *  `slug` is the subdomain the project is reachable at:
+   *    https://<slug>.local.ricoslabs.com/
+   *  The host-wide Caddy bridge (set up once via `hatchkit dev-setup
+   *  init`) routes by Host header to the dev port. Removing this field
+   *  is enough to disable the feature for this project; the Caddy
+   *  fragment cleanup happens via `hatchkit dev-setup disable` or
+   *  destroy. */
+  localDev?: { slug: string };
   /** What kind of project this is — server-only / client-only /
    *  both. Captured by `hatchkit adopt` so subsequent re-runs (and
    *  any future tooling that needs to know whether to look for a
@@ -204,6 +214,7 @@ export function toManifest(
       client: ports.client,
       nativeHmr: ports.nativeHmr,
     },
+    localDev: config.localDev ? { slug: config.localDev.slug } : undefined,
   };
 }
 

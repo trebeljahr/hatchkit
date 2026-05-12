@@ -36,6 +36,12 @@ process.env.HATCHKIT_CONF_DIR = mkdtempSync(join(tmpdir(), "scaffold-conf-"));
 // the test suite to a throwaway service so we don't pollute the real
 // user's keychain. clearAllSecrets() at the end wipes it.
 process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-${process.pid}`;
+// The Tailscale local-dev integration writes Caddy fragments to
+// ~/.config/dev/projects/ on the host. The test suite redirects that
+// root to a throwaway dir so localDev-opt-in scaffolds never touch
+// the real user's Caddy setup. Cleaned up at the end of the run
+// alongside HATCHKIT_CONF_DIR.
+process.env.HATCHKIT_DEV_CONFIG_DIR = mkdtempSync(join(tmpdir(), "scaffold-devdir-"));
 
 const { scaffoldApp } = await import("./src/scaffold/app.js");
 type Feature = import("./src/prompts.js").Feature;
@@ -1998,6 +2004,306 @@ console.log("\n── adopt: gitignore + private-key guard ───────
   rmSync(repoD, { recursive: true, force: true });
 }
 
+// ---------------------------------------------------------------------------
+// Tailscale local-dev integration tests.
+//
+// All exercised via the same scaffoldApp / enableProjectLocalDev /
+// disableProjectLocalDev surface real users hit. The throwaway
+// HATCHKIT_DEV_CONFIG_DIR set at the top of this file isolates every
+// fragment write from `~/.config/dev/projects/`, so re-runs don't
+// accumulate stale state on the host.
+// ---------------------------------------------------------------------------
+{
+  const devDir = process.env.HATCHKIT_DEV_CONFIG_DIR!;
+  const fragmentDir = join(devDir, "projects");
+  const { enableProjectLocalDev, disableProjectLocalDev } = await import("./src/dev-setup.js");
+  // The `portsBusyAvoid` test upstream reserves almost the entire
+  // server range (1000 ports minus 2) to exercise the busy-port skip.
+  // Subsequent scaffolds inherit that registry and run out of free
+  // server ports almost immediately. Clear the registry here so the
+  // localDev cases — which exercise scaffoldApp — start with a clean
+  // port pool. We're already isolated from the real user config via
+  // HATCHKIT_CONF_DIR, so this only resets the throwaway store.
+  const { removeUsedPorts, getUsedPorts } = await import("./src/config.js");
+  removeUsedPorts(getUsedPorts());
+
+  // Case 1: scaffold with localDev set writes a fragment at the client
+  // dev port + drops docs/dev-setup.md + wraps next.config + adds the
+  // plugin dep.
+  results.localDevScaffold = await (async () => {
+    const d = mkdtempSync(join(tmpdir(), "scaffold-localdev-"));
+    const slug = `ld-${process.pid}`;
+    try {
+      console.log("\n── localDev: scaffold opt-in ──────────────────────");
+      const result = await scaffoldApp(cfg(slug, [], { localDev: { slug } }), d);
+      const fragmentPath = join(fragmentDir, `${slug}.caddy`);
+      const fragment = existsSync(fragmentPath) ? readFileSync(fragmentPath, "utf-8") : "";
+      const nextConfig = readFileSync(join(d, "packages/client/next.config.ts"), "utf-8");
+      const clientPkg = JSON.parse(
+        readFileSync(join(d, "packages/client/package.json"), "utf-8"),
+      );
+      const checks: Check[] = [
+        ["scaffold returns localDev info", result.localDev?.slug === slug],
+        ["fragment exists at projects/<slug>.caddy", existsSync(fragmentPath)],
+        [
+          `fragment proxies the client dev port (${result.ports.client})`,
+          fragment.includes(`reverse_proxy 127.0.0.1:${result.ports.client}`),
+        ],
+        [
+          "fragment uses the slug for both matcher and host",
+          fragment.includes(`@${slug} host ${slug}.local.ricoslabs.com`),
+        ],
+        ["docs/dev-setup.md generated", existsSync(join(d, "docs/dev-setup.md"))],
+        [
+          "next.config wrapped with withLocalDev",
+          nextConfig.includes("import { withLocalDev }") &&
+            nextConfig.includes(`withLocalDev(nextConfig, { slug: "${slug}" })`),
+        ],
+        [
+          "@hatchkit/dev-plugin-next added to client deps",
+          typeof clientPkg.dependencies?.["@hatchkit/dev-plugin-next"] === "string",
+        ],
+      ];
+      let ok = true;
+      for (const [n, c] of checks) {
+        console.log(`  ${c ? "✓" : "✗"} ${n}`);
+        if (!c) ok = false;
+      }
+      return ok;
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+      rmSync(join(fragmentDir, `${slug}.caddy`), { force: true });
+    }
+  })();
+
+  // Case 2: server-only surface points the fragment at the server port.
+  results.localDevServerOnly = await (async () => {
+    const d = mkdtempSync(join(tmpdir(), "scaffold-localdev-srv-"));
+    const slug = `ld-srv-${process.pid}`;
+    try {
+      console.log("\n── localDev: server-only points at server port ────");
+      const result = await scaffoldApp(
+        cfg(slug, [], { surfaces: "server-only", localDev: { slug } }),
+        d,
+      );
+      const fragmentPath = join(fragmentDir, `${slug}.caddy`);
+      const fragment = existsSync(fragmentPath) ? readFileSync(fragmentPath, "utf-8") : "";
+      const checks: Check[] = [
+        ["fragment exists", existsSync(fragmentPath)],
+        [
+          `fragment proxies the server port (${result.ports.server}), not the client one`,
+          fragment.includes(`reverse_proxy 127.0.0.1:${result.ports.server}`),
+        ],
+        // The server-only surface prunes packages/client, so there's no
+        // next.config to wrap. enableProjectLocalDev should silently
+        // skip the patch rather than throwing.
+        [
+          "no next.config to patch — silent skip",
+          !existsSync(join(d, "packages/client/next.config.ts")),
+        ],
+      ];
+      let ok = true;
+      for (const [n, c] of checks) {
+        console.log(`  ${c ? "✓" : "✗"} ${n}`);
+        if (!c) ok = false;
+      }
+      return ok;
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+      rmSync(join(fragmentDir, `${slug}.caddy`), { force: true });
+    }
+  })();
+
+  // Case 3: enable is idempotent — running it again on an already-wired
+  // project shouldn't duplicate the import or re-add the dep.
+  results.localDevReenableIdempotent = await (async () => {
+    const d = mkdtempSync(join(tmpdir(), "scaffold-localdev-idem-"));
+    const slug = `ld-idem-${process.pid}`;
+    try {
+      console.log("\n── localDev: idempotent re-enable ─────────────────");
+      const first = await scaffoldApp(cfg(slug, [], { localDev: { slug } }), d);
+      const devPort = first.ports.client;
+      const second = await enableProjectLocalDev({ projectDir: d, slug, devPort });
+
+      const nextConfig = readFileSync(join(d, "packages/client/next.config.ts"), "utf-8");
+      const withLocalDevCount = (nextConfig.match(/withLocalDev/g) ?? []).length;
+      const importCount = (nextConfig.match(/from "@hatchkit\/dev-plugin-next"/g) ?? []).length;
+
+      const checks: Check[] = [
+        ["second enable reports fragment unchanged", second.wroteFragment === "unchanged"],
+        ["second enable reports next.config already-wrapped", second.patchedNextConfig === "already-wrapped"],
+        ["second enable reports package.json already-present", second.patchedPackageJson === "already-present"],
+        // Two textual hits: the import line + the wrapped export.
+        // Three or more = duplicated wrapping.
+        ["next.config has exactly one wrap site", withLocalDevCount === 2],
+        ["next.config has exactly one plugin import", importCount === 1],
+      ];
+      let ok = true;
+      for (const [n, c] of checks) {
+        console.log(`  ${c ? "✓" : "✗"} ${n}`);
+        if (!c) ok = false;
+      }
+      return ok;
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+      rmSync(join(fragmentDir, `${slug}.caddy`), { force: true });
+    }
+  })();
+
+  // Case 4: disable removes the fragment + docs but leaves the
+  // next.config wrapper + package.json dep in place.
+  results.localDevDisableCleanup = await (async () => {
+    const d = mkdtempSync(join(tmpdir(), "scaffold-localdev-dis-"));
+    const slug = `ld-dis-${process.pid}`;
+    try {
+      console.log("\n── localDev: disable cleanup ──────────────────────");
+      await scaffoldApp(cfg(slug, [], { localDev: { slug } }), d);
+      const fragmentPath = join(fragmentDir, `${slug}.caddy`);
+      const beforeFragment = existsSync(fragmentPath);
+      const beforeDocs = existsSync(join(d, "docs/dev-setup.md"));
+
+      const result = disableProjectLocalDev(d, slug);
+      const nextConfig = readFileSync(join(d, "packages/client/next.config.ts"), "utf-8");
+      const clientPkg = JSON.parse(
+        readFileSync(join(d, "packages/client/package.json"), "utf-8"),
+      );
+
+      const checks: Check[] = [
+        ["fragment existed before disable", beforeFragment],
+        ["docs existed before disable", beforeDocs],
+        ["disable reports fragment removed", result.removedFragment],
+        ["disable reports docs removed", result.removedDocs],
+        ["fragment gone after disable", !existsSync(fragmentPath)],
+        ["docs gone after disable", !existsSync(join(d, "docs/dev-setup.md"))],
+        // Wrapper + dep stay — they're inert without a fragment and we
+        // don't want to fight user edits on either file.
+        ["next.config wrapper retained", nextConfig.includes("withLocalDev")],
+        [
+          "plugin dep retained in package.json",
+          typeof clientPkg.dependencies?.["@hatchkit/dev-plugin-next"] === "string",
+        ],
+      ];
+      let ok = true;
+      for (const [n, c] of checks) {
+        console.log(`  ${c ? "✓" : "✗"} ${n}`);
+        if (!c) ok = false;
+      }
+      return ok;
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  })();
+
+  // Case 5: next.config patcher copes with hand-edited shapes.
+  //   (a) inline `export default { … }` — must hoist into a const and wrap.
+  //   (b) already imports something from @hatchkit/dev-plugin-next — leave alone.
+  results.localDevNextConfigPatchShapes = await (async () => {
+    const d = mkdtempSync(join(tmpdir(), "scaffold-localdev-shape-"));
+    const slug = `ld-shape-${process.pid}`;
+    try {
+      console.log("\n── localDev: next.config patch handles hand-edits ──");
+      // Build a real scaffold and replace the next.config with an inline
+      // export expression — covers the hoist branch. Re-enable should
+      // wrap cleanly without leaving the inline expression dangling.
+      await scaffoldApp(cfg(slug, []), d);
+      const nextPath = join(d, "packages/client/next.config.ts");
+      writeFileSync(
+        nextPath,
+        `import type { NextConfig } from "next";\n\nexport default { reactStrictMode: true } satisfies NextConfig;\n`,
+      );
+      const inlineResult = await enableProjectLocalDev({
+        projectDir: d,
+        slug,
+        devPort: 4321,
+      });
+      const inlineConfig = readFileSync(nextPath, "utf-8");
+
+      // Now run enable AGAIN on the result — guard branch must keep
+      // its hands off the file the second time around.
+      const guardResult = await enableProjectLocalDev({
+        projectDir: d,
+        slug,
+        devPort: 4321,
+      });
+      const guardedConfig = readFileSync(nextPath, "utf-8");
+
+      const checks: Check[] = [
+        ["inline-export shape patched", inlineResult.patchedNextConfig === "added"],
+        [
+          "hoisted into a const before wrapping",
+          inlineConfig.includes("__hatchkitLocalDevConfig") &&
+            inlineConfig.includes(`withLocalDev(__hatchkitLocalDevConfig, { slug: "${slug}" })`),
+        ],
+        ["second enable detects existing wrap", guardResult.patchedNextConfig === "already-wrapped"],
+        ["second enable left the file alone", inlineConfig === guardedConfig],
+      ];
+      let ok = true;
+      for (const [n, c] of checks) {
+        console.log(`  ${c ? "✓" : "✗"} ${n}`);
+        if (!c) ok = false;
+      }
+      return ok;
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+      rmSync(join(fragmentDir, `${slug}.caddy`), { force: true });
+    }
+  })();
+
+  // Case 6: `hatchkit update` retrofits an existing project that was
+  // scaffolded before the local-dev integration landed. Stubs the
+  // inquirer prompts so the test runs non-interactively, then verifies
+  // the post-update manifest carries the localDev field and the
+  // on-disk artifacts (fragment, docs, next.config wrapper) match the
+  // scaffold-time shape.
+  results.localDevUpdateRetrofit = await (async () => {
+    const d = mkdtempSync(join(tmpdir(), "scaffold-localdev-upd-"));
+    const slug = `ld-upd-${process.pid}`;
+    try {
+      console.log("\n── localDev: `hatchkit update` retrofit path ──────");
+
+      // 1. Scaffold WITHOUT localDev to simulate a pre-integration project.
+      await scaffoldApp(cfg(slug, []), d);
+      const fragmentPath = join(fragmentDir, `${slug}.caddy`);
+      if (existsSync(fragmentPath)) rmSync(fragmentPath);
+
+      // 2. Run update headless via the presets path. ESM modules forbid
+      //    monkey-patching @inquirer/prompts at runtime, so update.ts
+      //    exposes UpdateOptions.presets specifically for this test
+      //    surface. Real CLI invocations leave presets undefined and
+      //    hit the interactive path.
+      const { runUpdate } = await import("./src/scaffold/update.js");
+      const updateResult = await runUpdate(d, {
+        presets: {
+          desiredFeatures: [],
+          enableLocalDev: true,
+          localDevSlug: slug,
+        },
+      });
+
+      const { readManifest } = await import("./src/scaffold/manifest.js");
+      const updatedManifest = readManifest(d);
+      const nextConfig = readFileSync(join(d, "packages/client/next.config.ts"), "utf-8");
+
+      const checks: Check[] = [
+        ["update reports localDev enabled", updateResult.localDevEnabled?.slug === slug],
+        ["manifest now carries localDev.slug", updatedManifest?.localDev?.slug === slug],
+        ["Caddy fragment landed", existsSync(fragmentPath)],
+        ["docs/dev-setup.md generated", existsSync(join(d, "docs/dev-setup.md"))],
+        ["next.config wrapped with withLocalDev", nextConfig.includes("withLocalDev")],
+      ];
+      let ok = true;
+      for (const [n, c] of checks) {
+        console.log(`  ${c ? "✓" : "✗"} ${n}`);
+        if (!c) ok = false;
+      }
+      return ok;
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+      rmSync(join(fragmentDir, `${slug}.caddy`), { force: true });
+    }
+  })();
+}
+
 // Clean up the isolated config dir + every keychain entry scoped to
 // the throwaway service.
 {
@@ -2005,6 +2311,7 @@ console.log("\n── adopt: gitignore + private-key guard ───────
   await clearAllSecrets();
 }
 rmSync(process.env.HATCHKIT_CONF_DIR!, { recursive: true, force: true });
+rmSync(process.env.HATCHKIT_DEV_CONFIG_DIR!, { recursive: true, force: true });
 
 console.log("\n=== SUMMARY ===");
 let allOk = true;

@@ -119,7 +119,13 @@ export type LedgerStep =
    *  re-reads the live cname from the Pages API so a manifest-
    *  edited value here can't accidentally nuke a different
    *  domain's DNS records. */
-  | { kind: "ghPages"; repo: string; projectDir: string; cname?: string };
+  | { kind: "ghPages"; repo: string; projectDir: string; cname?: string }
+  /** Tailscale-served local-dev Caddy fragment dropped at
+   *  `~/.config/dev/projects/<slug>.caddy`. Recorded only when the
+   *  project opted into the local-dev integration. Destroy removes the
+   *  fragment file — host-wide Caddy + tailscale serve stay put (they
+   *  belong to the user, not this project). */
+  | { kind: "localDevFragment"; slug: string };
 
 export interface LedgerData {
   /** Project slug. Also the filename. */

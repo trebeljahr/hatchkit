@@ -180,6 +180,12 @@ async function main(): Promise<void> {
       await runDoctor({ json: isJson });
       break;
     }
+    case "dev-setup": {
+      if (args.includes("--help")) return printHelp("dev-setup");
+      const { runDevSetupCli } = await import("./dev-setup.js");
+      await runDevSetupCli(args.slice(1));
+      break;
+    }
     case "overview": {
       if (args.includes("--help")) return printHelp("overview");
       const { runOverview } = await import("./overview.js");
@@ -1092,6 +1098,9 @@ async function handleCreate(): Promise<void> {
           account: SECRET_KEYS.dotenvxPrivateKey(config.name),
         });
       }
+      if (scaffoldResult.localDev) {
+        ledger?.record({ kind: "localDevFragment", slug: scaffoldResult.localDev.slug });
+      }
       const { ports } = scaffoldResult;
       console.log(
         chalk.dim(
@@ -1658,6 +1667,13 @@ async function handleUpdate(): Promise<void> {
   if (result.removed.length > 0) {
     console.log(chalk.yellow(`  ⚠ Removal requested but skipped: ${result.removed.join(", ")}`));
   }
+  if (result.localDevEnabled) {
+    console.log(
+      chalk.yellow(
+        "  Run `pnpm install` to pick up @hatchkit/dev-plugin-next, then `hatchkit doctor` to confirm host plumbing.",
+      ),
+    );
+  }
 }
 
 async function handleConfig(): Promise<void> {
@@ -1807,6 +1823,7 @@ type HelpTopic =
   | "sync"
   | "regen-infra"
   | "doctor"
+  | "dev-setup"
   | "inventory"
   | "overview"
   | "status"
@@ -2031,6 +2048,51 @@ function printHelp(topic?: HelpTopic): void {
   stored (Coolify /version, Hetzner /servers, Cloudflare /tokens/verify,
   Resend /domains, …). Reports ok / fail / not-configured per provider
   and exits non-zero if any check fails. Safe to run repeatedly.
+`);
+    return;
+  }
+  if (topic === "dev-setup") {
+    console.log(`
+  ${chalk.bold("hatchkit dev-setup")} — opt-in Tailscale-served dev URLs
+
+  Wires up the host-wide plumbing that makes every scaffolded project
+  reachable from any Tailscale peer at:
+
+    ${chalk.cyan("https://<slug>.local.ricoslabs.com/")}
+
+  …without per-project DNS, port juggling, or framework basePath config.
+
+  ${chalk.bold("Host-wide subcommands (run once per machine):")}
+    dev-setup init [--force]   Auto-write ~/.config/dev/Caddyfile, register
+                               a launchd job to run Caddy on a free port
+                               (default 9443, auto-bumps on collision), and
+                               register a tailscale serve TCP=443 bridge.
+                               Idempotent — safe to re-run.
+    dev-setup status           Print the same Local-dev rows that
+                               ${chalk.cyan("hatchkit doctor")} would show.
+
+  ${chalk.bold("Per-project subcommands (retrofit existing projects):")}
+    dev-setup enable [--slug <s>] [--port <p>] [--project-dir <path>]
+                               Wire the project at cwd (or --project-dir)
+                               for Tailscale dev URLs: writes Caddy fragment,
+                               docs/dev-setup.md, patches next.config to
+                               wrap with ${chalk.cyan("withLocalDev")}, adds
+                               ${chalk.cyan("@hatchkit/dev-plugin-next")} to
+                               package.json. Persists slug in .hatchkit.json.
+                               New scaffolds auto-enable this — only needed
+                               for projects created before the integration
+                               landed.
+    dev-setup disable          Remove the Caddy fragment + docs file. Leaves
+                               next.config + dep in place (they're inert
+                               without the fragment).
+
+  ${chalk.bold("One-time DNS bit you do yourself (per machine, not per project):")}
+    *.local.ricoslabs.com  CNAME  <your-machine>.<tailnet>.ts.net.
+
+  This feature is fully optional: until you run ${chalk.cyan("dev-setup init")},
+  ${chalk.cyan("hatchkit doctor")} surfaces zero Local-dev rows. Within a project,
+  set ${chalk.cyan("HATCHKIT_LOCAL_DEV=0")} in env to suppress the plugin entirely
+  on a single dev run.
 `);
     return;
   }

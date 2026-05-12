@@ -293,6 +293,8 @@ function recipeFor(step: LedgerStep): string | null {
       );
     case "ghPages":
       return `cd ${shellEscape(step.projectDir)} && hatchkit gh-pages --undo --yes`;
+    case "localDevFragment":
+      return `rm -f ~/.config/dev/projects/${shellEscape(step.slug)}.caddy`;
   }
 }
 
@@ -520,6 +522,8 @@ function describeStep(step: LedgerStep): string {
       return `delete Email Routing rule for ${chalk.cyan(step.address)}`;
     case "ghPages":
       return `tear down GitHub Pages for ${chalk.cyan(step.repo)}`;
+    case "localDevFragment":
+      return `remove local-dev Caddy fragment ${chalk.cyan(`${step.slug}.caddy`)}`;
   }
 }
 
@@ -768,6 +772,11 @@ async function undoStep(
       const { runPagesUndo } = await import("./pages.js");
       await runPagesUndo(step.projectDir, { yes: true, dryRun: false });
       return "done";
+    }
+    case "localDevFragment": {
+      const { removeProjectFragment } = await import("@hatchkit/dev-shared");
+      const removed = removeProjectFragment(step.slug);
+      return removed ? "done" : "not-found";
     }
   }
 }

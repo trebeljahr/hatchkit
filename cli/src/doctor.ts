@@ -551,6 +551,11 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   results.push(await checkOpenpanel());
   results.push(await checkResend());
   for (const r of await checkStripe()) results.push(r);
+  // Local-dev (Tailscale-served per-project URLs). Returns [] when the
+  // user hasn't run `hatchkit dev-setup init`, so doctor stays quiet for
+  // anyone not opted in.
+  const { checkLocalDevHost } = await import("./dev-setup.js");
+  for (const r of await checkLocalDevHost()) results.push(r);
   // Project-local checks — only run when doctor was invoked inside a
   // hatchkit-managed project (manifest at cwd). Globally they're a
   // no-op, so `hatchkit doctor` from $HOME stays clean.
