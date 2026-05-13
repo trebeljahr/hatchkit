@@ -2,9 +2,14 @@ import "./global.css";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
+import Script from "next/script";
 import type { ReactNode } from "react";
 
 const inter = Inter({ subsets: ["latin"] });
+const plausibleDomain = "hatchkit.trebeljahr.com";
+const plausibleScriptUrl =
+  "https://plausible.trebeljahr.com/js/script.file-downloads.hash.outbound-links.pageview-props.revenue.tagged-events.js";
+const shouldLoadPlausible = process.env.NODE_ENV === "production";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://hatchkit.trebeljahr.com"),
@@ -42,6 +47,24 @@ export default function Layout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className={inter.className} suppressHydrationWarning>
       <body className="flex flex-col min-h-screen">
+        {shouldLoadPlausible ? (
+          <Script id="plausible-loader" strategy="afterInteractive">
+            {`
+              (function () {
+                var domain = ${JSON.stringify(plausibleDomain)};
+                if (location.hostname !== domain) return;
+                window.plausible = window.plausible || function() {
+                  (window.plausible.q = window.plausible.q || []).push(arguments);
+                };
+                var script = document.createElement("script");
+                script.defer = true;
+                script.dataset.domain = domain;
+                script.src = ${JSON.stringify(plausibleScriptUrl)};
+                document.head.appendChild(script);
+              })();
+            `}
+          </Script>
+        ) : null}
         <RootProvider search={{ enabled: false }}>{children}</RootProvider>
       </body>
     </html>
