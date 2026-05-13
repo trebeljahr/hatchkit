@@ -8,7 +8,7 @@ sidebar_position: 2
 
 - **Node.js 22** (see `.nvmrc`)
 - **pnpm** (corepack enabled: `corepack enable`)
-- **Docker** (for local MongoDB, Redis, MinIO)
+- **Docker** (for local MongoDB, Redis, S3-compatible storage)
 
 ## Setup
 

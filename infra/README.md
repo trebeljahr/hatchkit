@@ -34,7 +34,7 @@ Opinionated, reusable infrastructure for deploying small SaaS apps on dedicated 
 ├── templates/
 │   ├── apps/node-express-websocket/
 │   ├── apps/gpu-inference-api/   # FastAPI + Modal/RunPod GPU dispatch
-│   └── services/{minio,uptime-kuma}/
+│   └── services/uptime-kuma/
 ├── docs/                         # Runbooks and decision records
 └── Makefile                      # Orchestrates everything
 ```
@@ -148,7 +148,7 @@ Traefik (via Coolify) routes all listed domains to the same container. Path-base
 | Error tracking | GlitchTip (self-hosted) | — | Deploy on shared services VPS from day one. Uses Sentry SDKs, no vendor lock-in |
 | Analytics | Plausible $9/mo | Plausible CE (~1.5 GB RAM, needs ClickHouse) | When you have 3+ projects and a shared services VPS |
 | Uptime monitoring | Free tiers exist | Uptime Kuma (~100 MB RAM) | Immediately — it's lightweight, deploy as a Coolify Service |
-| Object storage | Hetzner Object Storage 4.99 EUR/mo | MinIO (~300 MB RAM) | Never for production. MinIO is for dev/testing only |
+| Object storage | Hetzner Object Storage 4.99 EUR/mo | — | Keep it managed; object storage is cheaper and safer than self-hosting |
 
 When you have 2-3 projects and the hosted costs add up, spin up a **shared services VPS** (cpx11, ~4 EUR/mo) running GlitchTip + Plausible CE + Uptime Kuma. All your app servers point at this one box.
 
@@ -159,7 +159,7 @@ When you have 2-3 projects and the hosted costs add up, spin up a **shared servi
 - Billing is per-account (4.99 EUR/mo for 1 TB across all buckets), not per-bucket
 - Separate buckets = clean isolation (credentials, lifecycle policies, easy deletion)
 - Same S3 credentials work for all buckets in the same Hetzner project
-- Terraform creates the bucket via the MinIO provider (S3-compatible)
+- Terraform creates the bucket via an S3-compatible Terraform provider
 
 The Coolify setup script auto-reads bucket info from Terraform output, and picks up S3 credentials from your `TF_VAR_s3_access_key` / `TF_VAR_s3_secret_key` environment variables.
 
@@ -259,7 +259,7 @@ For end-to-end project creation (Terraform + Coolify app + MongoDB + GitHub secr
 |----------|--------|---------|
 | hcloud | `hetznercloud/hcloud` | Servers, firewalls, SSH keys |
 | inwx | `inwx/inwx` | DNS records (A, AAAA) |
-| minio | `aminueza/minio` | S3 bucket creation on Hetzner Object Storage |
+| minio | `aminueza/minio` | S3-compatible bucket creation on Hetzner Object Storage |
 
 **Why no Coolify Terraform provider?** The community provider ([SierraJC/coolify](https://github.com/SierraJC/terraform-provider-coolify)) is 0.x with partial application/database support. The Coolify REST API is complete and stable, so we use it directly from the CLI (see `cli/src/utils/coolify-api.ts` and `cli/src/deploy/coolify.ts`). When the provider matures, the migration is straightforward — the concepts map 1:1.
 
@@ -270,7 +270,7 @@ For end-to-end project creation (Terraform + Coolify app + MongoDB + GitHub secr
 - [Hetzner Cloud docs](https://docs.hetzner.com/cloud/)
 - [Hetzner Object Storage](https://docs.hetzner.com/storage/object-storage/overview/)
 - [INWX Terraform provider](https://registry.terraform.io/providers/inwx/inwx/latest/docs)
-- [MinIO Terraform provider](https://github.com/aminueza/terraform-provider-minio) (used for Hetzner S3 buckets)
+- [Terraform provider for S3-compatible buckets](https://github.com/aminueza/terraform-provider-minio) (used for Hetzner Object Storage buckets)
 - [Tailscale Linux install](https://tailscale.com/docs/install/linux)
 - [Plausible CE](https://github.com/plausible/community-edition)
 - [GlitchTip](https://glitchtip.com) (self-hosted error tracking, Sentry SDK-compatible)

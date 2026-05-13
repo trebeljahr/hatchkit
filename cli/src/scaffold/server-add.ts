@@ -280,7 +280,9 @@ function restoreComposeIfClearlyClientOnly(
 
   const looksLikeHatchkitClientCompose =
     /^\s*services:\s*$/m.test(existing) &&
-    (/^\s{2}client:\s*$/m.test(existing) || /^\s{2}minio:\s*$/m.test(existing));
+    (/^\s{2}client:\s*$/m.test(existing) ||
+      /^\s{2}minio:\s*$/m.test(existing) ||
+      /^\s{2}seaweedfs:\s*$/m.test(existing));
   if (!looksLikeHatchkitClientCompose) {
     result.warnings.push(
       `${relPath} exists and does not look like Hatchkit client-only compose; left unchanged`,

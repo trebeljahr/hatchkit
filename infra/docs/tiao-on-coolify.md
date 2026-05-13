@@ -18,7 +18,7 @@ Current app requirements are:
 - `CLOUDFRONT_URL` or another public asset base URL
 - AWS/S3 credentials
 
-If you add a generic S3 endpoint to the app, MinIO, R2, and Hetzner Object Storage become much easier options.
+If you add a generic S3 endpoint to the app, R2, Hetzner Object Storage, and other managed S3-compatible buckets become much easier options.
 
 ## Scaling note
 Tiao's multiplayer WebSocket state is currently process-local, so treat it as a single-replica realtime app for now.

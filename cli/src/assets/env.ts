@@ -31,13 +31,13 @@ export interface ResolvedS3Config {
   /** The mode this config was loaded for. */
   mode: AssetsMode;
   /** S3 endpoint URL. Always set — for AWS prod we synthesise the
-   *  default region URL, for R2/MinIO it's explicit in env. */
+   *  default region URL, for R2/local S3 it's explicit in env. */
   endpoint: string;
   /** Region. Falls back to "auto" for R2, "us-east-1" elsewhere. */
   region: string;
   accessKeyId: string;
   secretAccessKey: string;
-  /** Path-style addressing — needed for MinIO + most non-AWS S3s. */
+  /** Path-style addressing — needed for local + most non-AWS S3s. */
   forcePathStyle: boolean;
   /** Resolved bucket names. `state` is undefined when the project
    *  didn't provision one (the default for client-only projects). */

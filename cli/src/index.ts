@@ -3015,13 +3015,13 @@ function printHelp(topic?: HelpTopic): void {
   }
   if (topic === "assets") {
     console.log(`
-  ${chalk.bold("hatchkit assets")} — move bytes between local MinIO and prod buckets
+  ${chalk.bold("hatchkit assets")} — move bytes between local S3 and prod buckets
 
   ${chalk.bold("Subcommands:")}
-    assets seed     [--from <dir>]                Local dir → local MinIO bucket.
+    assets seed     [--from <dir>]                Local dir → local S3 bucket.
                                                   Defaults to ./seed/assets.
-    assets push     [--bucket assets|state]       Local MinIO → prod bucket.
-    assets pull     [--bucket assets|state]       Prod bucket → local MinIO.
+    assets push     [--bucket assets|state]       Local S3 → prod bucket.
+    assets pull     [--bucket assets|state]       Prod bucket → local S3.
                                                   Caution: prod data may include PII.
     assets migrate  --from-endpoint=URL           External S3 → prod bucket.
                     --from-bucket=NAME            The adoption escape hatch — copy
@@ -3048,7 +3048,7 @@ function printHelp(topic?: HelpTopic): void {
     the env doesn't carry them (R2's URL-driven assets bucket).
 
   ${chalk.bold("Examples:")}
-    hatchkit assets seed                                # ./seed/assets/ → local MinIO
+    hatchkit assets seed                                # ./seed/assets/ → local S3
     hatchkit assets push --dry-run                      # see what would ship to prod
     hatchkit assets push                                # actually ship it
     hatchkit assets migrate --from-endpoint https://nyc3.digitaloceanspaces.com \\
@@ -3089,7 +3089,7 @@ function printHelp(topic?: HelpTopic): void {
     update          Add features to an already-scaffolded project (run in project dir)
     server add      Retrofit a server into a client-only project
     add             Create GlitchTip / OpenPanel / Plausible / Resend clients for an existing project
-    assets          Move bytes between local MinIO and prod buckets (seed/push/pull/migrate)
+    assets          Move bytes between local S3 and prod buckets (seed/push/pull/migrate)
     remove          Delete the -dev/-prod clients created by 'add' (inverse of add)
     destroy         Roll back everything ${chalk.cyan("hatchkit create")} did for a project
     rename-domain   Move a scaffolded project to a new domain (rewrites tfvars/env/manifest)

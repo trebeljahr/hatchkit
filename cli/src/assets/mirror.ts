@@ -14,7 +14,7 @@
  *     a mismatch always re-copies (false positives are wasted work,
  *     not data loss).
  *   · Bounded concurrency. Default 8 — chosen to saturate residential
- *     uplinks without overwhelming MinIO running on the same box.
+ *     uplinks without overwhelming local S3 running on the same box.
  *   · `--delete` is intentionally not exposed here. Mirror semantics
  *     are "copy missing + changed"; pruning the target is a separate
  *     destructive operation we don't want behind a casual flag.

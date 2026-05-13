@@ -239,7 +239,7 @@ function topDesc(cmd: string): string {
     case "add":
       return "Provision GlitchTip / OpenPanel / Plausible / Resend clients";
     case "assets":
-      return "Move bytes between local MinIO and prod buckets";
+      return "Move bytes between local S3 and prod buckets";
     case "keys":
       return "Manage per-project dotenvx private keys";
     case "config":

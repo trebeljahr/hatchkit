@@ -198,11 +198,11 @@ async function runScaffoldSteps(
   }
 
   // Project-name substitution for local-infra identifiers — gives each
-  // scaffolded project its own dev Mongo DB / MinIO bucket / E2E
+  // scaffolded project its own dev Mongo DB / local S3 bucket / E2E
   // isolation. Without this, two projects on one machine collide on
   // the same `starter-dev` bucket and `starter-dev` Mongo database.
   applyProjectName(outputDir, config.name);
-  modifications.push("renamed local-infra identifiers (Mongo DB / MinIO bucket / E2E names)");
+  modifications.push("renamed local-infra identifiers (Mongo DB / local S3 bucket / E2E names)");
 
   // .env.example files: production URLs for this project's domain.
   // .env.development is left alone (local dev defaults should stay pointing at localhost).

@@ -7,7 +7,7 @@ export default async function globalTeardown() {
   const containers = [
     "starter-e2e-mongo",
     "starter-e2e-redis",
-    "starter-e2e-minio",
+    "starter-e2e-seaweedfs",
   ];
 
   for (const name of containers) {

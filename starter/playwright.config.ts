@@ -35,8 +35,8 @@ export default defineConfig({
         S3_PUBLIC_URL:
           process.env.S3_PUBLIC_URL ??
           "http://127.0.0.1:9002/starter-e2e",
-        AWS_ACCESS_KEY_ID: "minioadmin",
-        AWS_SECRET_ACCESS_KEY: "minioadmin",
+        AWS_ACCESS_KEY_ID: "hatchkit-dev",
+        AWS_SECRET_ACCESS_KEY: "hatchkit-dev",
         AWS_REGION: "us-east-1",
       },
     },

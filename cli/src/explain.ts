@@ -97,7 +97,7 @@ const MODEL: ExplainModel = {
     {
       name: "hatchkit assets <seed|push|pull|migrate|list>",
       summary:
-        "Move bytes between the project's local MinIO bucket and its production S3 bucket. Streams cross-provider, so `migrate` works against any S3-compatible source for adoption.",
+        "Move bytes between the project's local S3-compatible bucket and its production S3 bucket. Streams cross-provider, so `migrate` works against any S3-compatible source for adoption.",
       when: "After `hatchkit adopt`, to copy existing assets into the new prod bucket; or routinely to seed local dev data (`seed`) and push staged content to prod (`push`).",
     },
     {

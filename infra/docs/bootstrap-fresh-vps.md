@@ -2,7 +2,7 @@
 
 ## Starting size
 - `2 vCPU / 4 GB RAM / 40-80 GB SSD`: good if Mongo/object storage/email stay managed.
-- `4 vCPU / 8 GB RAM / 80-160 GB SSD`: better if you will self-host Mongo, MinIO, build images on the same box, or add observability tooling.
+- `4 vCPU / 8 GB RAM / 80-160 GB SSD`: better if you will self-host Mongo, build images on the same box, or add observability tooling.
 
 ## Provisioning flow
 1. Create the server with Ubuntu 24.04 and your SSH key.

@@ -50,8 +50,8 @@ such as `hatchkit destroy <project> --recipe`, `hatchkit gh-pages --undo
 
 ```bash
 pnpm install                          # install all dependencies
-pnpm run dev:infra                    # start MongoDB, Redis, MinIO (Docker, one-time)
-pnpm run seed:assets                  # populate local MinIO from seed/assets/ (idempotent)
+pnpm run dev:infra                    # start MongoDB, Redis, local S3 (Docker, one-time)
+pnpm run seed:assets                  # populate local S3 from seed/assets/ (idempotent)
 pnpm run dev                          # start server + client (random ports)
 pnpm run dev:fixed                    # start on fixed ports (client=3000, server=5000)
 ```

@@ -1,12 +1,12 @@
 /*
  * `hatchkit assets <subcommand>` — move bytes between the local
- * MinIO bucket and the production bucket (or any S3-compatible
+ * S3-compatible bucket and the production bucket (or any S3-compatible
  * source, for adoption).
  *
  * Subcommands:
- *   seed     ./seed/assets/  → local MinIO
- *   push     local MinIO     → prod bucket
- *   pull     prod bucket     → local MinIO
+ *   seed     ./seed/assets/  → local S3
+ *   push     local S3        → prod bucket
+ *   pull     prod bucket     → local S3
  *   migrate  external bucket → prod bucket (--from-endpoint=… --from-bucket=…)
  *   list     dev|prod          List objects in a bucket
  *
@@ -73,7 +73,7 @@ export async function handleAssets(args: string[]): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
-// seed — populate the local MinIO bucket from ./seed/assets/
+// seed — populate the local S3 bucket from ./seed/assets/
 // ---------------------------------------------------------------------------
 
 async function handleSeed(rawArgs: string[], flags: CommonFlags): Promise<number> {
@@ -104,7 +104,7 @@ async function handleSeed(rawArgs: string[], flags: CommonFlags): Promise<number
 }
 
 // ---------------------------------------------------------------------------
-// push — local MinIO → prod
+// push — local S3 → prod
 // ---------------------------------------------------------------------------
 
 async function handlePush(flags: CommonFlags): Promise<number> {
@@ -128,7 +128,7 @@ async function handlePush(flags: CommonFlags): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
-// pull — prod → local MinIO (be careful: realistic data may include PII)
+// pull — prod → local S3 (be careful: realistic data may include PII)
 // ---------------------------------------------------------------------------
 
 async function handlePull(flags: CommonFlags): Promise<number> {
@@ -351,14 +351,14 @@ function takeFlag(rest: string[], name: string): string | undefined {
 
 function printHelp(): void {
   console.log(`
-${chalk.bold("hatchkit assets")} — move bytes between local MinIO and prod buckets.
+${chalk.bold("hatchkit assets")} — move bytes between local S3 and prod buckets.
 
 ${chalk.bold("Subcommands")}
 
-  ${chalk.cyan("seed")}     [--from <dir>]                Local dir → local MinIO bucket.
+  ${chalk.cyan("seed")}     [--from <dir>]                Local dir → local S3 bucket.
                                             Defaults to ./seed/assets.
-  ${chalk.cyan("push")}     [--bucket assets|state]       Local MinIO → prod bucket.
-  ${chalk.cyan("pull")}     [--bucket assets|state]       Prod bucket → local MinIO.
+  ${chalk.cyan("push")}     [--bucket assets|state]       Local S3 → prod bucket.
+  ${chalk.cyan("pull")}     [--bucket assets|state]       Prod bucket → local S3.
                                             Caution: prod data may include PII.
   ${chalk.cyan("migrate")}  --from-endpoint=URL           External S3 → prod bucket.
            --from-bucket=NAME                The adoption escape hatch.

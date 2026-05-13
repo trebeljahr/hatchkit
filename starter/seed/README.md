@@ -7,7 +7,7 @@ project grows.
 
 ## `seed/assets/`
 
-Static files that should appear in the local MinIO bucket. Anything
+Static files that should appear in the local S3 bucket. Anything
 under this directory (recursively) is uploaded by:
 
 ```bash
@@ -30,7 +30,7 @@ Putting fixtures in version control keeps "spin up a fresh dev
 machine" to one command (`pnpm dev:infra && pnpm seed:assets`) and
 keeps the app code free of seed-only branches. PII and large blobs
 do **not** belong here — use `hatchkit assets pull` to mirror real
-prod data into local MinIO when you need it (and remember it's a
+prod data into local S3 when you need it (and remember it's a
 copy of production, treat it accordingly).
 
 ## Future siblings

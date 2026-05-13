@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# In CI, GitHub Actions services provide MongoDB/Redis/MinIO.
+# In CI, GitHub Actions services provide MongoDB/Redis/local S3.
 # Locally, spin up Docker containers for E2E testing.
 
 if [ -z "${CI:-}" ]; then
@@ -19,24 +19,19 @@ if [ -z "${CI:-}" ]; then
     echo "[e2e] Started Redis on port 6380"
   fi
 
-  # MinIO on port 9002
-  if ! docker ps --format '{{.Names}}' | grep -q starter-e2e-minio; then
-    docker run -d --name starter-e2e-minio -p 9002:9000 \
-      -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-      --tmpfs /data minio/minio:latest server /data
-    echo "[e2e] Started MinIO on port 9002"
+  # SeaweedFS S3 on port 9002
+  if ! docker ps --format '{{.Names}}' | grep -q starter-e2e-seaweedfs; then
+    docker run -d --name starter-e2e-seaweedfs -p 9002:8333 \
+      -e S3_BUCKET=starter-e2e \
+      --tmpfs /data chrislusf/seaweedfs:latest
+    echo "[e2e] Started SeaweedFS S3 on port 9002"
 
-    # Wait for MinIO and create bucket
+    # Wait for SeaweedFS. The image creates S3_BUCKET on startup.
     for i in $(seq 1 30); do
-      curl -sf http://127.0.0.1:9002/minio/health/live && break
+      curl -s http://127.0.0.1:9002/ >/dev/null && break
       sleep 1
     done
-    docker run --rm --network host \
-      --entrypoint sh minio/mc:latest -c \
-      "mc alias set local http://127.0.0.1:9002 minioadmin minioadmin && \
-       mc mb --ignore-existing local/starter-e2e && \
-       mc anonymous set download local/starter-e2e"
-    echo "[e2e] MinIO bucket created"
+    echo "[e2e] SeaweedFS bucket ready"
   fi
 
   # Wait for MongoDB

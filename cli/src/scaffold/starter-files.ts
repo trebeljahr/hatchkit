@@ -241,9 +241,9 @@ export function applyPorts(
 
 /** Rewrite the local-infra identifiers that the starter ships with
  *  literal `starter-*` names so each scaffolded project gets its own
- *  unique MongoDB database name, MinIO bucket name, and E2E
+ *  unique MongoDB database name, local S3 bucket name, and E2E
  *  isolation. Without this, two scaffolded projects on one dev
- *  machine would share the same dev MinIO bucket / Mongo DB.
+ *  machine would share the same dev S3 bucket / Mongo DB.
  *
  *  Only rewrites the suffixed forms (`starter-dev`, `starter-e2e`,
  *  `starter-assets`) — those are unambiguous local-infra identifiers
@@ -252,7 +252,7 @@ export function applyPorts(
  *  to `replaceInFile` on package.json.
  *
  *  Targets:
- *    · docker-compose.dev.yml                 (mc mb / mc anonymous)
+ *    · docker-compose.dev.yml                 (S3_BUCKET)
  *    · packages/server/.env.development        (MONGODB_URI, S3_BUCKET_NAME, S3_PUBLIC_URL)
  *    · packages/server/.env.example            (same three keys)
  *    · playwright.config.ts                    (E2E DB + bucket + public URL)
