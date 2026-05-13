@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest a Hatchkit feature, provider, command, or workflow improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow is painful or missing?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should Hatchkit do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: What have you tried instead?
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CLI
+        - Starter
+        - Docs
+        - MCP
+        - Coolify/deploy
+        - DNS/Terraform
+        - Provider provisioning
+        - ML services
+        - GitHub Pages
+        - Other
+    validations:
+      required: true

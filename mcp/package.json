@@ -2,6 +2,23 @@
   "name": "@hatchkit/mcp",
   "version": "0.1.0",
   "description": "Model Context Protocol server for hatchkit — exposes status, doctor, explain, and keys show as MCP tools.",
+  "license": "MIT",
+  "homepage": "https://trebeljahr.github.io/hatchkit/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/trebeljahr/hatchkit.git",
+    "directory": "mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/trebeljahr/hatchkit/issues"
+  },
+  "keywords": [
+    "hatchkit",
+    "mcp",
+    "model-context-protocol",
+    "agents",
+    "cli"
+  ],
   "type": "module",
   "bin": {
     "hatchkit-mcp": "dist/index.js"

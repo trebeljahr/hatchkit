@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a reproducible Hatchkit bug.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Do not paste secrets, dotenvx private keys, provider tokens, or Coolify webhook URLs.
+  - type: input
+    id: version
+    attributes:
+      label: Hatchkit version
+      description: Output from `hatchkit --version` or package version.
+      placeholder: "0.1.47"
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: Exact command you ran.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Relevant terminal output with secrets removed.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: state
+    attributes:
+      label: State checks
+      description: Paste relevant sanitized output from `hatchkit status --json` and `hatchkit doctor --json`.
+      render: json
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node.js version, pnpm version, shell, and provider involved.
+    validations:
+      required: false

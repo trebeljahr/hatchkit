@@ -4,6 +4,26 @@
   "packageManager": "pnpm@10.33.2",
   "private": true,
   "description": "Interactive CLI for scaffolding full-stack projects with composable ML services",
+  "license": "MIT",
+  "homepage": "https://trebeljahr.github.io/hatchkit/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/trebeljahr/hatchkit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/trebeljahr/hatchkit/issues"
+  },
+  "keywords": [
+    "cli",
+    "scaffold",
+    "typescript",
+    "coolify",
+    "hetzner",
+    "terraform",
+    "dotenvx",
+    "mcp",
+    "mlops"
+  ],
   "scripts": {
     "build": "pnpm --filter hatchkit run build",
     "predev": "pnpm --filter @hatchkit/dev-shared run build",

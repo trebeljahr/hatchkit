@@ -57,7 +57,7 @@ New to the CLI? Run `hatchkit explain` for a one-page mental model covering ever
 | `hatchkit config [add/reset]` | Inspect or modify stored provider credentials. |
 | `hatchkit completion <shell>` | Print a zsh / bash / fish completion script. |
 
-Full reference: **[docs/commands.md](docs/commands.md)**, or `hatchkit help <command>`.
+Full reference: **[Commands](https://trebeljahr.github.io/hatchkit/docs/commands)**, or `hatchkit help <command>`.
 
 ---
 
@@ -83,7 +83,7 @@ Full reference: **[docs/commands.md](docs/commands.md)**, or `hatchkit help <com
                      https://your-domain.example
 ```
 
-See **[docs/architecture.md](docs/architecture.md)** for the deeper tour.
+See **[Architecture](https://trebeljahr.github.io/hatchkit/docs/architecture)** for the deeper tour.
 
 ---
 
@@ -96,7 +96,7 @@ Agents (Claude Code, Cursor, Claude Desktop) can drive hatchkit without scraping
 - `hatchkit explain --json` → full mental model (concepts, commands, workflows, state locations).
 - `hatchkit keys show <project> --json` → `{ project, found, key }`.
 
-`SKILL.md` at the repo root (and `.claude/skills/hatchkit/SKILL.md` for Claude Code) tells agents when and how to reach for hatchkit.
+`SKILL.md` at the repo root (plus `.agents/skills/hatchkit/SKILL.md` and `.claude/skills/hatchkit/SKILL.md`) tells agents when and how to reach for hatchkit.
 
 An MCP server (`@hatchkit/mcp`) exposes the JSON commands as MCP tools. See **[mcp/README.md](mcp/README.md)**.
 
@@ -129,13 +129,25 @@ hatchkit completion fish > ~/.config/fish/completions/hatchkit.fish
 
 Full docs live under [`docs/`](docs/) and are published to **GitHub Pages** at [https://trebeljahr.github.io/hatchkit/](https://trebeljahr.github.io/hatchkit/).
 
-- [Getting Started](docs/getting-started.md) — install, onboard, create your first project
-- [Commands reference](docs/commands.md) — every command + every flag
-- [Providers](docs/providers.md) — GitHub, Coolify, Hetzner, DNS, S3, GPU platforms
-- [ML services](docs/ml-services.md) — deploy GPU-backed models the CLI understands
-- [GitHub Pages](docs/gh-pages.md) — `hatchkit gh-pages` for static sites, SPAs, sprite tools, Jekyll docs
-- [Architecture](docs/architecture.md) — how scaffold / infra / deploy fit together
-- [Deploying the docs site](docs/deployment.md) — the GitHub Pages flow used by this repo
+- [Getting Started](https://trebeljahr.github.io/hatchkit/docs/getting-started) — install, onboard, create your first project
+- [Commands reference](https://trebeljahr.github.io/hatchkit/docs/commands) — every command + every flag
+- [Providers](https://trebeljahr.github.io/hatchkit/docs/providers) — GitHub, Coolify, Hetzner, DNS, S3, GPU platforms
+- [ML services](https://trebeljahr.github.io/hatchkit/docs/ml-services) — deploy GPU-backed models the CLI understands
+- [GitHub Pages](https://trebeljahr.github.io/hatchkit/docs/gh-pages) — `hatchkit gh-pages` for static sites, SPAs, Jekyll docs, and Docusaurus docs
+- [Architecture](https://trebeljahr.github.io/hatchkit/docs/architecture) — how scaffold / infra / deploy fit together
+- [Deploying the docs site](https://trebeljahr.github.io/hatchkit/docs/deployment) — the GitHub Pages flow used by this repo
+
+Source for those pages lives in [`docs/content/docs/`](docs/content/docs/).
+
+---
+
+## Community and support
+
+- [Contributing](CONTRIBUTING.md) — local setup, validation, and PR expectations
+- [Security](SECURITY.md) — how to report vulnerabilities or leaked secret issues privately
+- [Support](SUPPORT.md) — where to ask questions and what diagnostics help
+- [Code of Conduct](CODE_OF_CONDUCT.md) — project participation expectations
+- [Changelog](CHANGELOG.md) — user-visible release notes
 
 ---
 
@@ -152,11 +164,11 @@ hatchkit/
 │  ├─ subtitles/
 │  ├─ 3d-extraction/
 │  └─ background-removal/
-├─ docs/             # Jekyll docs site — deployed to GitHub Pages
+├─ docs/             # Next.js/Fumadocs docs site — deployed to GitHub Pages
 └─ .github/workflows/
    ├─ ci.yml         # typecheck + lint + scaffold matrix
    ├─ gitleaks.yml   # secret scanning
-   └─ docs.yml       # GitHub Pages deploy
+   └─ deploy.yml     # container build + deploy
 ```
 
 ---

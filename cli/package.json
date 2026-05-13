@@ -3,6 +3,27 @@
   "version": "0.1.47",
   "packageManager": "pnpm@10.33.2",
   "description": "Interactive CLI for scaffolding full-stack projects and provisioning observability/email clients",
+  "license": "MIT",
+  "homepage": "https://trebeljahr.github.io/hatchkit/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/trebeljahr/hatchkit.git",
+    "directory": "cli"
+  },
+  "bugs": {
+    "url": "https://github.com/trebeljahr/hatchkit/issues"
+  },
+  "keywords": [
+    "cli",
+    "scaffold",
+    "typescript",
+    "coolify",
+    "hetzner",
+    "terraform",
+    "dotenvx",
+    "full-stack",
+    "mlops"
+  ],
   "type": "module",
   "bin": {
     "hatchkit": "dist/index.js"
