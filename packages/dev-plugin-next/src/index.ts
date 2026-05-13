@@ -38,10 +38,13 @@
  *
  * The plugin does NOT touch Next's `basePath` / `assetPrefix` /
  * routing. Caddy proxies verbatim and Next serves at `/` — HMR/WS
- * paths stay unchanged, no app-side config needed.
+ * paths stay unchanged. During `next dev`, the wrapper adds the
+ * project's `*.local.ricoslabs.com` host to `allowedDevOrigins` so
+ * Next's dev-resource origin guard allows font and HMR requests.
  */
 
 import {
+  LOCAL_DEV_DOMAIN,
   isLocalDevActive,
   localDevUrl,
   projectFragmentPath,
@@ -73,10 +76,12 @@ export function withLocalDev<TConfig>(nextConfig: TConfig, options: LocalDevOpti
   // Only fire side effects in `next dev`. Production builds + `next start`
   // get the bare config back; same behaviour as if the plugin weren't there.
   if (isDevCommand() && process.env.HATCHKIT_LOCAL_DEV !== "0") {
+    const resolved = resolveSlug({ explicit: options.slug });
     // Schedule async so we don't block Next's config loader. The Promise
     // resolves into stdout — Next's logger has already cleared by the
     // time we print, so our banner shows up below Next's "Ready" line.
-    void initLocalDev(options);
+    void initLocalDev(options, resolved);
+    if (resolved) return withAllowedDevOrigin(nextConfig, localDevHost(resolved.slug));
   }
   return nextConfig;
 }
@@ -90,7 +95,7 @@ function isDevCommand(): boolean {
   return argv.includes("dev") || argv.includes("--dev");
 }
 
-async function initLocalDev(options: LocalDevOptions): Promise<void> {
+async function initLocalDev(options: LocalDevOptions, resolved: ResolvedSlug | null): Promise<void> {
   // Wait one tick so Next's own banner ("▲ Next.js …", "Ready in …ms")
   // has flushed before we tack our line on. Picking a fixed delay is
   // unavoidable here — Next 14/15 don't expose a "server-listening"
@@ -100,7 +105,6 @@ async function initLocalDev(options: LocalDevOptions): Promise<void> {
   // mixed in with later HMR logs (harmless).
   await sleep(1500);
 
-  const resolved = resolveSlug({ explicit: options.slug });
   if (!resolved) {
     log("[hatchkit] local-dev disabled: no slug found (set { slug } in withLocalDev or add a name to package.json).");
     return;
@@ -171,6 +175,47 @@ async function initLocalDev(options: LocalDevOptions): Promise<void> {
   }
 }
 
+function localDevHost(slug: string): string {
+  return `${slug}.${LOCAL_DEV_DOMAIN}`;
+}
+
+function withAllowedDevOrigin<TConfig>(nextConfig: TConfig, host: string): TConfig {
+  if (typeof nextConfig === "function") {
+    const original = nextConfig as (this: unknown, ...args: unknown[]) => unknown;
+    const wrapped = function (this: unknown, ...args: unknown[]) {
+      const result = original.apply(this, args);
+      if (isPromiseLike(result)) {
+        return result.then((config) => appendAllowedDevOrigin(config, host));
+      }
+      return appendAllowedDevOrigin(result, host);
+    };
+    return wrapped as TConfig;
+  }
+  return appendAllowedDevOrigin(nextConfig, host);
+}
+
+function appendAllowedDevOrigin<TConfig>(nextConfig: TConfig, host: string): TConfig {
+  if (!isConfigObject(nextConfig)) return nextConfig;
+
+  const current = nextConfig.allowedDevOrigins;
+  if (current === undefined) {
+    return { ...nextConfig, allowedDevOrigins: [host] };
+  }
+  if (Array.isArray(current)) {
+    if (current.includes(host)) return nextConfig;
+    return { ...nextConfig, allowedDevOrigins: [...current, host] };
+  }
+  return nextConfig;
+}
+
+function isConfigObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return isConfigObject(value) && typeof value.then === "function";
+}
+
 function detectDevPort(fallback?: number): number | null {
   // Order matches Next's own resolution: explicit env var, then -p / --port
   // argv, then the framework's default.
@@ -212,6 +257,7 @@ function describeSource(resolved: ResolvedSlug): string {
     case "package-json":
       return "package.json";
   }
+  return "unknown";
 }
 
 function sleep(ms: number): Promise<void> {
