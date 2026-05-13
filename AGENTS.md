@@ -47,6 +47,31 @@ If `@hatchkit/mcp` is configured, prefer its read-only tools:
 - Never print secrets unless the user explicitly requested them.
 - `hatchkit config reset` clears provider metadata and keychain entries. Confirm
   before running or recommending it.
+- For any command that could affect an existing setup, report first and give the
+  user the command to run. Prefer `--dry-run`, `--json`, or `--recipe` modes.
+- Know the undo path before executing mutations. `hatchkit destroy <project>
+  --recipe` prints rollback commands without running them; `hatchkit gh-pages
+  --undo --dry-run` previews Pages cleanup; create/adopt ledgers let
+  `hatchkit destroy <project>` undo resources Hatchkit created.
+- Ask before running rollback, cleanup, Terraform, DNS, Coolify, keychain, or
+  provider API mutations.
+
+## Break/Fix Workflow
+
+If Hatchkit is breaking, agents should report the issue and can write a repair
+prompt for another agent or a follow-up session.
+
+Capture:
+
+- Failing command, cwd, Hatchkit version, and output.
+- Safe state checks: `hatchkit status --json`, `hatchkit doctor --json`, and
+  relevant `hatchkit help <command>`.
+- Suspected source files, expected behavior, risk/blast radius, rollback path,
+  and validation commands.
+
+Repair prompts must say: preserve existing user setups, use dry-run or isolated
+`HATCHKIT_CONF_DIR` where possible, do not touch real provider/DNS/Coolify/
+Terraform/keychain state without user approval.
 
 ## Useful Repo Commands
 
@@ -61,6 +86,14 @@ pnpm --filter hatchkit install-local
 Source layout:
 
 - `cli/`: published `hatchkit` CLI.
+- `cli/src/index.ts`: command router and help text.
+- `cli/src/config.ts`: provider config and keychain metadata.
+- `cli/src/status.ts`: `hatchkit status --json`.
+- `cli/src/doctor.ts`: provider health checks and fix hints.
+- `cli/src/explain.ts`: mental model output.
+- `cli/src/scaffold/`: project scaffolding.
+- `cli/src/deploy/`: Coolify, Terraform, GitHub, keys, pages, rollback.
+- `cli/src/provision/`: GlitchTip/OpenPanel/Resend/S3/email/Stripe provisioning.
 - `starter/`: scaffold template used by `hatchkit create`.
 - `infra/`: Terraform/Coolify automation.
 - `services/`: ML service templates.

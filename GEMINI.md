@@ -58,6 +58,30 @@ Check `hatchkit help <command>` before using flags you have not verified.
   provider APIs. Make sure the user asked for that action.
 - Never print secrets unless specifically requested.
 - Treat `hatchkit config reset` as destructive.
+- For commands that could break an existing setup, report first and give the
+  command to the user. Prefer `--dry-run`, `--json`, or `--recipe`.
+- Know the undo path before executing mutations. `hatchkit destroy <project>
+  --recipe` prints rollback commands without executing; `hatchkit gh-pages
+  --undo --dry-run` previews Pages cleanup; create/adopt ledgers let
+  `hatchkit destroy <project>` undo resources Hatchkit created.
+- Ask before running rollback, cleanup, Terraform, DNS, Coolify, keychain, or
+  provider API mutations.
+
+## Break/Fix Workflow
+
+If Hatchkit is breaking, diagnose and report first. Then, if useful, write a
+repair prompt for another agent or a follow-up session.
+
+Include in the repair prompt:
+
+- Failing command, cwd, Hatchkit version, and output.
+- Safe checks run: `hatchkit status --json`, `hatchkit doctor --json`, and
+  relevant `hatchkit help <command>`.
+- Suspected files, expected behavior, risk/blast radius, rollback path, and
+  validation commands.
+- Safety instruction: preserve existing user setups, use dry-run or isolated
+  `HATCHKIT_CONF_DIR` where possible, and ask before provider/DNS/Coolify/
+  Terraform/keychain mutations.
 
 ## Development
 
@@ -69,4 +93,18 @@ pnpm --filter hatchkit run check
 pnpm --filter hatchkit install-local
 ```
 
-Key paths: `cli/`, `starter/`, `infra/`, `services/`, `mcp/`, `docs/`.
+Key paths:
+
+- `cli/src/index.ts`: command router and help text.
+- `cli/src/config.ts`: provider config and keychain metadata.
+- `cli/src/status.ts`: status JSON.
+- `cli/src/doctor.ts`: health checks and hints.
+- `cli/src/explain.ts`: mental model.
+- `cli/src/scaffold/`: scaffolding.
+- `cli/src/deploy/`: Coolify, Terraform, GitHub, keys, pages, rollback.
+- `cli/src/provision/`: provider/client provisioning.
+- `starter/`: scaffold template.
+- `infra/`: Terraform/Coolify automation.
+- `services/`: ML templates.
+- `mcp/src/index.ts`: read-only MCP server.
+- `docs/content/docs/`: docs source.

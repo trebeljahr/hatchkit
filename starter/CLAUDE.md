@@ -27,6 +27,17 @@ read `providers[]`, `nextStep`, and `suggestions[]`. For provider failures,
 run `hatchkit doctor --json` and surface the failing `checks[].hint[]`
 lines. Never print dotenvx private keys unless the user specifically asks.
 
+If a Hatchkit command breaks in this project, report the failing command,
+cwd, Hatchkit version, output, suspected source area, and safe undo path.
+When asking another agent to fix it, include a repair prompt with those details
+and tell it to preserve existing user setups, use `--dry-run` where possible,
+and ask before provider/DNS/Coolify/Terraform/keychain mutations.
+
+Do not run commands that may alter existing infrastructure unless the user
+explicitly asks. Prefer giving the command to the user, or using preview modes
+such as `hatchkit destroy <project> --recipe`, `hatchkit gh-pages --undo
+--dry-run`, and other command-specific `--dry-run` options.
+
 ## Tech Stack
 
 - **Backend:** Express + TypeScript, tRPC for typed API, better-auth for authentication, Stripe for payments

@@ -139,6 +139,34 @@ Treat these as Hatchkit context:
   clearly before suggesting or running it.
 - Prefer `HATCHKIT_CONF_DIR` for isolated test state instead of touching the
   user's real config during automated checks.
+- For commands that could break an existing setup, default to reporting and
+  handing the user commands instead of executing. Prefer `--dry-run`, `--json`,
+  or `--recipe` modes where supported.
+- Before running a mutating command, know its rollback path and tell the user.
+  Examples: `hatchkit destroy <project> --recipe` prints the rollback recipe
+  without executing; `hatchkit gh-pages --undo --dry-run` previews Pages undo;
+  create/adopt write a run ledger so `hatchkit destroy <project>` can undo
+  resources Hatchkit created. Do not run rollback/destructive cleanup without
+  explicit user approval.
+- Never assume Hatchkit owns pre-existing resources. Rollback ledgers are meant
+  to avoid deleting user-owned state; preserve that model when fixing code.
+
+## When something breaks
+
+If Hatchkit itself is breaking, diagnose and report before changing anything:
+
+1. Capture the command, working directory, Hatchkit version, and relevant output.
+2. Run safe checks first: `hatchkit status --json`, `hatchkit doctor --json`,
+   and the relevant `hatchkit help <command>`.
+3. Inspect the source files for the command path listed below.
+4. Explain likely cause, blast radius, and rollback/undo options.
+5. If the user wants another agent or a follow-up session to fix it, write a
+   concrete repair prompt. Include the failing command/output, suspected files,
+   expected behavior, safety constraints, and validation commands.
+
+Repair prompts should tell the fixing agent to preserve existing user setups,
+use `--dry-run`/isolated `HATCHKIT_CONF_DIR` where possible, and ask before any
+real provider/DNS/Coolify/Terraform/keychain mutation.
 
 ## State locations
 
@@ -150,6 +178,25 @@ Treat these as Hatchkit context:
 - Provider metadata: path from `hatchkit status --json` (`configPath`).
 - Secrets: OS keychain/libsecret, service `hatchkit`.
 - Provisioned env blocks: `<config-dir>/provisioned/<project>.{dev,prod}.env`.
+
+## Code map
+
+- CLI router/help: `cli/src/index.ts`.
+- Config, providers, keychain metadata: `cli/src/config.ts`.
+- Status snapshots: `cli/src/status.ts`.
+- Provider health checks and hints: `cli/src/doctor.ts`.
+- Mental model output: `cli/src/explain.ts`.
+- Project overview/inventory: `cli/src/overview.ts`, `cli/src/inventory.ts`.
+- Scaffold flow: `cli/src/scaffold/`.
+- Starter template copied into projects: `starter/`.
+- Deploy/Coolify/Terraform/GitHub/GHCR/keys/pages: `cli/src/deploy/`.
+- Rollback, destroy, run ledgers: `cli/src/deploy/rollback.ts`,
+  `cli/src/utils/run-ledger.ts`.
+- Provider provisioning: `cli/src/provision/`.
+- DNS helpers: `cli/src/dns.ts`, `cli/src/utils/cloudflare-api.ts`.
+- Assets mirror/sync: `cli/src/assets/`.
+- MCP server for agents: `mcp/src/index.ts`.
+- Docs source: `docs/content/docs/`.
 
 ## MCP
 
