@@ -1323,6 +1323,67 @@ console.log(
   results.coolifyUpdateApplicationDomains = ok;
 }
 
+// Plausible CE/self-hosted does not ship the Sites API. Its 404 should
+// explain the product/API gap instead of looking like a generic bad URL.
+console.log("\n── plausible api: CE 404 explains Sites API gap ─────────────────────────────");
+{
+  const { getStore } = await import("./src/config.js");
+  const { SECRET_KEYS, deleteSecret, setSecret } = await import("./src/utils/secrets.js");
+  const { PlausibleSitesApiUnavailableError, provisionPlausibleSite } = await import(
+    "./src/provision/plausible.js"
+  );
+
+  const store = getStore();
+  store.set("providers.plausible", {
+    status: "configured",
+    url: "https://plausible.test",
+    timezone: "Etc/UTC",
+  });
+  await setSecret(SECRET_KEYS.plausibleApiKey, "test-plausible-key");
+
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    return new Response(JSON.stringify({ message: "Not Found", status: 404 }), {
+      status: 404,
+      statusText: "Not Found",
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  let dedicatedError = false;
+  let message = "";
+  try {
+    await provisionPlausibleSite("plausible-ce-test", "realmhatch.com");
+  } catch (err) {
+    dedicatedError = err instanceof PlausibleSitesApiUnavailableError;
+    message = err instanceof Error ? err.message : String(err);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await deleteSecret(SECRET_KEYS.plausibleApiKey);
+    await deleteSecret(SECRET_KEYS.plausibleSiteDomain("plausible-ce-test"));
+    (store as unknown as { delete(key: string): void }).delete("providers.plausible");
+  }
+
+  const checks: Check[] = [
+    [
+      "provision tries Plausible Sites API",
+      calls[0]?.url === "https://plausible.test/api/v1/sites" &&
+        calls[0]?.init.method === "POST",
+    ],
+    ["throws dedicated unavailable error", dedicatedError],
+    ["message names Plausible CE", /Community Edition/.test(message)],
+    ["message suggests manual site/config path", /Create the site manually/.test(message)],
+  ];
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  results.plausibleCeSitesApi404 = ok;
+}
+
 // Sync plan computation: the manifest → DesiredApp map must produce the
 // per-app payload that runCoolifySetup / wireProjectIntoCoolify create
 // at scaffold time. Anchored on collection-of-beauty's real shape

@@ -492,8 +492,9 @@ async function checkPlausible(): Promise<CheckResult> {
       }
       if (code === 404) {
         return [
-          `Plausible API URL looks wrong: ${base}`,
-          "Re-run `hatchkit config add plausible` and set the base URL explicitly.",
+          `Plausible Sites API is not available at ${base}.`,
+          "If this is Plausible Community Edition/self-hosted, auto-provisioning sites is not supported there.",
+          "Use a Plausible Cloud/Enterprise account with Sites API access, or create the site manually and set NEXT_PUBLIC_PLAUSIBLE_DOMAIN + NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL yourself.",
         ];
       }
       return undefined;

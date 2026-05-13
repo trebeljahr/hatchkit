@@ -19,6 +19,23 @@ export interface PlausibleSite {
 
 export type DeleteResult = "deleted" | "not-found";
 
+export class PlausibleSitesApiUnavailableError extends Error {
+  constructor(
+    readonly baseUrl: string,
+    readonly status: number,
+    detail?: string,
+  ) {
+    super(
+      `Plausible Sites API is not available at ${baseUrl}. ` +
+        "Plausible Community Edition/self-hosted does not include the Sites API, " +
+        "and Plausible Cloud requires Sites API access. " +
+        "Create the site manually in Plausible, or configure Hatchkit with a Sites API-capable Plausible account." +
+        (detail ? ` Response: ${detail}` : ""),
+    );
+    this.name = "PlausibleSitesApiUnavailableError";
+  }
+}
+
 function siteDomainKey(projectName: string): string {
   return SECRET_KEYS.plausibleSiteDomain(projectName);
 }
@@ -35,11 +52,15 @@ function siteUrl(baseUrl: string, domain: string): string {
   return `${baseUrl.replace(/\/$/, "")}/api/v1/sites/${encodeURIComponent(domain)}`;
 }
 
+async function responseText(res: Response): Promise<string> {
+  return res.text().catch(() => "");
+}
+
 async function getSite(baseUrl: string, apiKey: string, domain: string): Promise<boolean> {
   const res = await fetch(siteUrl(baseUrl, domain), { headers: authHeaders(apiKey) });
   if (res.status === 404) return false;
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
+    const text = await responseText(res);
     throw new Error(
       `Plausible get site failed: ${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`,
     );
@@ -92,7 +113,10 @@ export async function provisionPlausibleSite(
   });
 
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
+    const text = await responseText(res);
+    if (res.status === 404) {
+      throw new PlausibleSitesApiUnavailableError(baseUrl, res.status, text);
+    }
     const alreadyExists =
       res.status === 409 ||
       (res.status === 422 && /already|taken|exists/i.test(text)) ||
