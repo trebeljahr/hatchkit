@@ -1,95 +1,178 @@
 ---
 name: hatchkit
-description: Scaffold, deploy, and provision full-stack projects on your own infra. Use when a user wants to create a new full-stack app, wire it to their Hetzner/Coolify setup, add observability/email providers, or debug why a provider call is failing.
+description: Use when the user mentions Hatchkit, the hatchkit CLI, scaffolding a new full-stack app, deploying to Coolify/Hetzner/DNS, provisioning GlitchTip/OpenPanel/Resend/S3/email/Stripe, pushing dotenvx keys, wiring GitHub Pages, or debugging provider credentials. Start with `hatchkit status --json` before recommending next commands.
 ---
 
-# hatchkit — agent skill
+# hatchkit
 
-This is a CLI that owns the end-to-end lifecycle for a full-stack project on
-self-hosted infra: scaffold → deploy → provision → maintain. When a user
-mentions **hatchkit**, **scaffolding a new project**, **provisioning
-GlitchTip/OpenPanel/Resend**, **pushing a dotenvx key**, or **debugging a
-provider credential**, this is the tool.
+`hatchkit` is the CLI in this monorepo (`cli/`) for taking a product from idea to
+running app on user-owned infra:
 
-## When to use this skill
+scaffold -> deploy -> provision -> maintain.
 
-- **Setup help**: "I just installed hatchkit — what do I do?"
-  → `hatchkit setup` (interactive, prompts for every credential).
-- **Orient yourself before acting**: `hatchkit status --json` returns a
-  `StatusSnapshot` with `providers[]`, `nextStep`, and `suggestions[]`.
-  Always run this before recommending a next command.
-- **Something's broken**: `hatchkit doctor --json` returns per-provider
-  health with `hint[]` (contextual fix steps). Parse the first failing
-  `hint[]` and surface it verbatim to the user — the hints already know
-  the exact `hatchkit config add <x>` to re-run and the URL to rotate
-  the credential at.
-- **Create a new project**: `hatchkit create` (interactive only — don't
-  run non-interactively unless the user provides a `--config` JSON or
-  asks for `--yes`).
-- **Add per-project clients** (GlitchTip/OpenPanel/Resend): `hatchkit add
-  <project-name>` — creates `-dev` and `-prod` pairs and writes the env
-  block to `~/<conf-dir>/provisioned/<project>.{dev,prod}.env`.
-- **Dotenvx keys**: `hatchkit keys show <project> --json` → `{ project,
-  found, key }`. `hatchkit keys push <project>` upserts to Coolify.
+It creates full-stack TypeScript apps from `starter/`, can wire DNS/VPS/Coolify
+via Terraform, provisions per-project clients for external services, manages
+dotenvx encryption keys, and exposes JSON/MCP surfaces so agents can reason
+about state without scraping human output.
 
-## Key principles
+## First principle: orient before acting
 
-1. **Never invent command flags.** Check `hatchkit help <topic>` (or
-   `hatchkit <topic> --help`) first. Both forms work.
-2. **Prefer JSON for parsing.** `--json` is supported on `status`,
-   `doctor`, `explain`, and `keys show`. Don't scrape the human output.
-3. **Don't run `hatchkit create` blindly.** It prompts interactively and
-   will stall a non-TTY session. If the user is in an agent context,
-   surface the command but let them run it themselves, or ask for a
-   `--config` file.
-4. **Secrets live in the OS keychain** (service `hatchkit`). Never log
-   them. `hatchkit keys show --json` is the only sanctioned way to
-   surface the dotenvx key, and only to the user who asked.
-5. **`hatchkit doctor` is safe to run repeatedly** — every check is a
-   read-only GET. Use it liberally.
+Before recommending a next Hatchkit command, run:
 
-## Mental model
-
-- **Provider** — an external service (one-time config).
-- **Project** — a scaffolded repo with `.hatchkit.json` manifest.
-- **Client** — a per-project credential inside a provider (Resend key,
-  GlitchTip DSN, OpenPanel client id/secret).
-- **dotenvx key** — per-project decryption key in the OS keychain.
-
-For a deeper mental model, run `hatchkit explain` (or `--json`).
-
-## Canonical workflows
-
-### "User has never used hatchkit before"
-```
-hatchkit setup          # interactive onboarding
-hatchkit status         # confirm everything green
-hatchkit create         # scaffold first project
+```bash
+hatchkit status --json
 ```
 
-### "Something is failing"
+Read:
+
+- `providers[]` for configured providers and the exact `configureCommand`.
+- `nextStep` for what the CLI thinks the user should do next.
+- `suggestions[]` for safe follow-up commands.
+
+These reflect the user's current machine state. Do not guess from memory.
+
+If the user has `@hatchkit/mcp` configured, prefer the MCP status tool over a
+shell command.
+
+## Second principle: use machine output
+
+Use JSON where available:
+
+| Command | Purpose | JSON? |
+|---|---|---|
+| `hatchkit status` | Provider state and next step | yes: `--json` |
+| `hatchkit doctor` | Live provider health checks | yes: `--json` |
+| `hatchkit explain` | Mental model, commands, workflows, state | yes: `--json` |
+| `hatchkit overview` | Project overview, optionally `--all` | yes: `--json` |
+| `hatchkit keys show <project>` | Dotenvx private key lookup | yes: `--json` |
+
+When a provider fails, run:
+
+```bash
+hatchkit doctor --json
 ```
-hatchkit doctor --json  # parse .checks[] for status: "fail"
-# Then surface the .hint[] lines from the first failing check.
+
+Surface the failing `checks[].hint[]` lines. They already contain the credential
+rotation URL, required scopes, and exact `hatchkit config add <provider>` command.
+
+## Common commands
+
+| Command | Use |
+|---|---|
+| `hatchkit setup` / `init` | One-time interactive onboarding for credentials |
+| `hatchkit config` | Show configured provider status |
+| `hatchkit config add <provider>` | Reconfigure one provider |
+| `hatchkit create` | Interactive scaffold/deploy flow for a new app |
+| `hatchkit update` | Add supported features to an existing Hatchkit project |
+| `hatchkit add <project> [services]` | Provision per-project clients/env blocks |
+| `hatchkit remove <project> [services]` | Unprovision selected project clients |
+| `hatchkit keys show <project>` | Print stored dotenvx private key |
+| `hatchkit keys push <project>` | Push dotenvx key to Coolify/GitHub Actions |
+| `hatchkit keys rotate <project>` | Rotate dotenvx keypair |
+| `hatchkit doctor` | Read-only live health check of configured providers |
+| `hatchkit explain` | One-page mental model |
+| `hatchkit gh-pages` | Wire GitHub Pages for the current repo |
+| `hatchkit adopt` | Adopt an existing repo into Hatchkit conventions |
+| `hatchkit sync` | Sync/deploy state for an existing Hatchkit project |
+| `hatchkit rename-domain` | Rename project domain and related deploy config |
+| `hatchkit regen-infra` | Regenerate project infra files |
+| `hatchkit provision s3` | Create project S3/R2 buckets and env entries |
+| `hatchkit assets pull` | Mirror remote object storage assets locally |
+| `hatchkit inventory` | Infer/write `.hatchkit.json` metadata |
+| `hatchkit completion <shell>` | Print shell completion |
+
+Check `hatchkit help <command>` or `hatchkit <command> --help` before using flags
+you have not verified.
+
+## Providers and services
+
+Provider config commands include:
+
+```bash
+hatchkit config add coolify
+hatchkit config add ghcr
+hatchkit config add hetzner
+hatchkit config add dns
+hatchkit config add s3
+hatchkit config add modal
+hatchkit config add runpod
+hatchkit config add hf
+hatchkit config add replicate
+hatchkit config add glitchtip
+hatchkit config add openpanel
+hatchkit config add resend
+hatchkit config add stripe
 ```
 
-### "User wants to add a new project to existing infra"
+`hatchkit add <project> [services]` provisions project-scoped resources. Current
+service names include `glitchtip`, `openpanel`, `resend`, `s3`, and `email`.
+`all` selects every supported service.
+
+## How users refer to Hatchkit
+
+Treat these as Hatchkit context:
+
+- "make/scaffold/start a new app/project"
+- "wire this to Coolify/Hetzner/Cloudflare/R2/Resend"
+- "push the dotenvx key"
+- "why is provider setup failing?"
+- "rotate my token/key"
+- "add error tracking/analytics/email/S3"
+- "deploy this on my own infra"
+- "GitHub Pages for this static tool"
+- "adopt this repo"
+
+## Guard rails
+
+- `hatchkit doctor` is safe and read-only. Use it freely for diagnosis.
+- `hatchkit create`, `setup`, and `config add` are interactive. Do not run them
+  non-interactively unless the user gave flags/config for automation.
+- `hatchkit create` can write files, initialize git, create GitHub repos,
+  run Terraform, configure DNS, create Coolify apps, and deploy. Be explicit
+  before starting it.
+- `hatchkit add`, `remove`, `keys push`, `keys rotate`, `gh-pages`, `sync`,
+  `rename-domain`, `regen-infra`, `provision s3`, and `destroy` can mutate local
+  files and/or remote systems. Make sure the user's request authorizes that action.
+- Never log secrets. `hatchkit keys show <project> --json` returns a live
+  dotenvx private key. Only surface it when the user specifically asked.
+- `hatchkit config reset` clears provider metadata and keychain entries. Confirm
+  clearly before suggesting or running it.
+- Prefer `HATCHKIT_CONF_DIR` for isolated test state instead of touching the
+  user's real config during automated checks.
+
+## State locations
+
+- CLI source: `cli/src/` (`cli/src/index.ts` entrypoint).
+- Starter template: `starter/`.
+- Infra templates/automation: `infra/`.
+- MCP server: `mcp/`.
+- Project manifest: `<project>/.hatchkit.json`.
+- Provider metadata: path from `hatchkit status --json` (`configPath`).
+- Secrets: OS keychain/libsecret, service `hatchkit`.
+- Provisioned env blocks: `<config-dir>/provisioned/<project>.{dev,prod}.env`.
+
+## MCP
+
+If `@hatchkit/mcp` is configured, use the read-only tools before shelling out:
+
+- `hatchkit_status` -> `StatusSnapshot`
+- `hatchkit_doctor` -> `{ summary, checks[] }`
+- `hatchkit_explain` -> mental model payload
+- `hatchkit_keys_show({ project })` -> `{ project, found, key }`
+
+The MCP server intentionally does not expose mutating commands.
+
+## Repo development
+
+For this monorepo:
+
+```bash
+pnpm install
+pnpm --filter hatchkit run dev
+pnpm --filter hatchkit run typecheck
+pnpm --filter hatchkit run check
+pnpm --filter hatchkit install-local
 ```
-hatchkit create                  # scaffold
-hatchkit add <project>           # GlitchTip/OpenPanel/Resend clients
-hatchkit keys push <project>     # ship dotenvx key to Coolify
-```
 
-## MCP server
-
-If the user has `@hatchkit/mcp` installed, prefer MCP tool calls over
-shelling out. The tools mirror the JSON commands: `hatchkit.status()`,
-`hatchkit.doctor()`, `hatchkit.explain()`, `hatchkit.keys_show({ project })`.
-
-## Reference
-
-- Source: `cli/src/` (entry: `cli/src/index.ts`).
-- Config: `~/<conf-dir>/config.json` (see `hatchkit status --json` for
-  the resolved path).
-- Secrets: OS keychain, service `hatchkit`.
-- Provisioned env blocks: `~/<conf-dir>/provisioned/<project>.{dev,prod}.env`.
+Use `pnpm --filter hatchkit run dev` to run the CLI from source. Use the published
+or installed `hatchkit` binary for user-level state checks.

@@ -2,6 +2,31 @@
 
 A stampable starter repo for multiplayer web games and SaaS apps. Express backend, Next.js frontend, MongoDB, tRPC, better-auth, Stripe, WebSocket support.
 
+## Hatchkit Context
+
+This starter is normally generated and maintained by `hatchkit`.
+If `.hatchkit.json` exists at the project root, treat the repo as a
+Hatchkit-managed project.
+
+Useful Hatchkit commands from inside a generated project:
+
+```bash
+hatchkit overview --json                 # inspect manifest/project state
+hatchkit update                          # add supported features additively
+hatchkit add <project> [services]        # provision GlitchTip/OpenPanel/Resend/S3/email
+hatchkit keys push <project>             # push dotenvx private key to Coolify/GitHub Actions
+hatchkit sync                            # sync/deploy existing project state
+hatchkit rename-domain                   # update domain-related deploy config
+hatchkit regen-infra                     # regenerate infra/deploy files
+hatchkit provision s3                    # create project buckets + env entries
+hatchkit assets pull                     # mirror remote object storage assets locally
+```
+
+Before giving Hatchkit setup advice, run `hatchkit status --json` and
+read `providers[]`, `nextStep`, and `suggestions[]`. For provider failures,
+run `hatchkit doctor --json` and surface the failing `checks[].hint[]`
+lines. Never print dotenvx private keys unless the user specifically asks.
+
 ## Tech Stack
 
 - **Backend:** Express + TypeScript, tRPC for typed API, better-auth for authentication, Stripe for payments
