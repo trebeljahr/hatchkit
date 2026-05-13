@@ -47,6 +47,12 @@ async function getSite(baseUrl: string, apiKey: string, domain: string): Promise
   return true;
 }
 
+export async function plausibleSiteExists(domain: string): Promise<boolean> {
+  const cfg = await ensurePlausible();
+  const baseUrl = cfg.url.replace(/\/$/, "");
+  return getSite(baseUrl, cfg.apiKey, domain.trim().toLowerCase());
+}
+
 export async function provisionPlausibleSite(
   projectName: string,
   domain: string,

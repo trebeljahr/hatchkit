@@ -45,6 +45,16 @@ export async function provisionResendClient(
   return { keyName: clientName, apiKey: data.token, domainId, raw: data.token };
 }
 
+export async function listResendApiKeys(): Promise<Array<{ id: string; name: string }>> {
+  const cfg = await ensureResend();
+  const res = await fetch("https://api.resend.com/api-keys", {
+    headers: { Authorization: `Bearer ${cfg.apiKey}` },
+  });
+  if (!res.ok) throw new Error(`Resend list keys failed: HTTP ${res.status}`);
+  const body = (await res.json()) as { data?: Array<{ id: string; name: string }> };
+  return body.data ?? [];
+}
+
 /** List Resend domains so the caller can pick one. */
 export async function listResendDomains(): Promise<
   Array<{ id: string; name: string; status: string }>
@@ -95,13 +105,7 @@ export type DeleteResult = "deleted" | "not-found";
 export async function deleteResendClient(clientName: string): Promise<DeleteResult> {
   const cfg = await ensureResend();
   const auth = { Authorization: `Bearer ${cfg.apiKey}` };
-
-  const listRes = await fetch("https://api.resend.com/api-keys", { headers: auth });
-  if (!listRes.ok) {
-    throw new Error(`Resend list keys failed: HTTP ${listRes.status}`);
-  }
-  const body = (await listRes.json()) as { data?: Array<{ id: string; name: string }> };
-  const matches = (body.data ?? []).filter((k) => k.name === clientName);
+  const matches = (await listResendApiKeys()).filter((k) => k.name === clientName);
   if (matches.length === 0) return "not-found";
 
   for (const key of matches) {

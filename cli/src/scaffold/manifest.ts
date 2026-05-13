@@ -91,6 +91,12 @@ export interface ProjectManifest {
    *  fragment cleanup happens via `hatchkit dev-setup disable` or
    *  destroy. */
   localDev?: { slug: string; domain?: string };
+  /** Provider integrations that don't write runtime env, but should
+   *  still be treated as already added for project-level menus. */
+  integrations?: {
+    email?: { domain: string; configuredAt: string; destinationEmail?: string };
+    searchConsole?: { domain: string; siteUrl: string; verifiedAt: string };
+  };
   /** What kind of project this is — server-only / client-only /
    *  both. Captured by `hatchkit adopt` so subsequent re-runs (and
    *  any future tooling that needs to know whether to look for a

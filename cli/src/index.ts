@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
@@ -32,10 +32,15 @@ import {
 import { handleCreateFailure, runRollback } from "./deploy/rollback.js";
 import { runTerraform } from "./deploy/terraform.js";
 import { type GpuPlatform, type ProjectConfig, collectProjectConfig } from "./prompts.js";
-import { type ProvisionService, runProvision, runUnprovision } from "./provision/index.js";
+import {
+  type ProvisionService,
+  type ProvisionedEvent,
+  runProvision,
+  runUnprovision,
+} from "./provision/index.js";
 import { scaffoldApp } from "./scaffold/app.js";
 import { scaffoldInfra } from "./scaffold/infra.js";
-import { readManifest } from "./scaffold/manifest.js";
+import { type ProjectManifest, readManifest } from "./scaffold/manifest.js";
 import { mlEnvVarName, printMlSummary, resolveMlServices } from "./scaffold/ml-client.js";
 import { runUpdate } from "./scaffold/update.js";
 import {
@@ -481,6 +486,150 @@ function inferProjectDir(startDir: string | undefined): string | undefined {
   return undefined;
 }
 
+function manifestBucketEntries(
+  manifest: ProjectManifest | null,
+): Array<{ name: string; tokenId?: string }> {
+  const buckets = manifest?.s3Buckets;
+  if (!buckets) return [];
+  const out: Array<{ name: string; tokenId?: string }> = [];
+  for (const [key, value] of Object.entries(buckets)) {
+    if (key === "tokenId" || key === "accountId") continue;
+    if (value && typeof value === "object" && "name" in value) {
+      out.push(value as { name: string; tokenId?: string });
+    }
+  }
+  return out;
+}
+
+function readIfExists(path: string): string {
+  if (!existsSync(path)) return "";
+  try {
+    return readFileSync(path, "utf-8");
+  } catch {
+    return "";
+  }
+}
+
+function readProjectEnvText(projectDir: string | undefined, baseName: string | undefined): string {
+  const chunks: string[] = [];
+  if (projectDir) {
+    for (const dir of [
+      ".",
+      "packages/server",
+      "packages/client",
+      "packages/web",
+      "apps/server",
+      "apps/api",
+      "apps/web",
+      "apps/client",
+      "server",
+      "client",
+      "web",
+    ]) {
+      const abs = resolve(projectDir, dir);
+      chunks.push(readIfExists(join(abs, ".env.production")));
+      chunks.push(readIfExists(join(abs, ".env.development")));
+    }
+  }
+  if (baseName) {
+    const provisionedDir = join(dirname(getConfigPath()), "provisioned");
+    if (existsSync(provisionedDir)) {
+      for (const file of readdirSync(provisionedDir)) {
+        if (file.startsWith(`${baseName}.`) && file.endsWith(".env")) {
+          chunks.push(readIfExists(join(provisionedDir, file)));
+        }
+      }
+    }
+  }
+  return chunks.join("\n");
+}
+
+function servicesAlreadyAdded(args: {
+  baseName?: string;
+  projectDir?: string;
+  manifest: ProjectManifest | null;
+}): Set<ProvisionService> {
+  const text = readProjectEnvText(args.projectDir, args.baseName);
+  const added = new Set<ProvisionService>();
+  if (/(^|\n)(PUBLIC_)?GLITCHTIP_DSN=/m.test(text)) added.add("glitchtip");
+  if (/(^|\n)(PUBLIC_)?OPENPANEL_CLIENT_ID=/m.test(text)) added.add("openpanel");
+  if (/(^|\n)(NEXT_PUBLIC_|PUBLIC_)?PLAUSIBLE_DOMAIN=/m.test(text)) added.add("plausible");
+  if (/(^|\n)RESEND_API_KEY=/m.test(text)) added.add("resend");
+  if (/(^|\n)R2(_[A-Z0-9]+)?_ACCESS_KEY_ID=/m.test(text)) added.add("s3");
+  if (manifestBucketEntries(args.manifest).some((bucket) => bucket.tokenId)) added.add("s3");
+  if (args.manifest?.integrations?.email) added.add("email");
+  if (args.manifest?.integrations?.searchConsole) added.add("search-console");
+  return added;
+}
+
+function servicesImpossibleForProject(manifest: ProjectManifest | null): Set<ProvisionService> {
+  const blocked = new Set<ProvisionService>();
+  if (!manifest) return blocked;
+  if (!manifest.domain) {
+    blocked.add("email");
+    blocked.add("search-console");
+  }
+  if (manifest.surfaces === "server-only") blocked.add("plausible");
+  if (manifest.surfaces === "client-only") {
+    blocked.add("resend");
+    blocked.add("s3");
+  }
+  if (manifestBucketEntries(manifest).length === 0) blocked.add("s3");
+  return blocked;
+}
+
+function recordProvisionedEvent(ledger: RunLedger, event: ProvisionedEvent): void {
+  if (event.service === "glitchtip") ledger.record({ kind: "glitchtip", project: event.project });
+  if (event.service === "openpanel") ledger.record({ kind: "openpanel", project: event.project });
+  if (event.service === "plausible") ledger.record({ kind: "plausible", project: event.project });
+  if (event.service === "resend") ledger.record({ kind: "resend", client: event.client });
+  if (event.service === "s3" && event.minted) {
+    ledger.record({
+      kind: "r2Token",
+      tokenId: event.tokenId,
+      accountId: event.accountId,
+      audience: "account",
+    });
+  }
+  if (event.service === "search-console" && event.dnsRecord?.created) {
+    ledger.record({
+      kind: "cloudflareDnsRecord",
+      zoneId: event.dnsRecord.zoneId,
+      recordId: event.dnsRecord.id,
+      name: event.dnsRecord.name,
+      type: event.dnsRecord.type,
+    });
+  }
+  if (event.service === "email") {
+    if (event.destinationCreatedThisRun) {
+      ledger.record({
+        kind: "cloudflareEmailDestination",
+        accountId: event.accountId,
+        destinationId: event.destinationId,
+        email: event.destinationEmail,
+      });
+    }
+    for (const dns of event.dnsRecords) {
+      ledger.record({
+        kind: "cloudflareDnsRecord",
+        zoneId: event.zoneId,
+        recordId: dns.id,
+        name: dns.name,
+        type: dns.type,
+      });
+    }
+    for (const rule of event.rules) {
+      if (!rule.created) continue;
+      ledger.record({
+        kind: "cloudflareEmailRoutingRule",
+        zoneId: event.zoneId,
+        ruleId: rule.id,
+        address: rule.address,
+      });
+    }
+  }
+}
+
 async function handleAdd(): Promise<void> {
   // Positional args are optional — anything missing is prompted for.
   //   hatchkit add                             (fully interactive)
@@ -523,36 +672,58 @@ async function handleAdd(): Promise<void> {
     });
   }
 
+  const alreadyAdded = servicesAlreadyAdded({
+    baseName,
+    projectDir: inferredProjectDir,
+    manifest: inferredManifest,
+  });
+  const impossible = servicesImpossibleForProject(inferredManifest);
+  const hiddenServices = new Set<ProvisionService>([...alreadyAdded, ...impossible]);
+  const addableServices = allServices.filter((service) => !hiddenServices.has(service));
+
   let services: ProvisionService[];
   if (!rawService) {
+    if (addableServices.length === 0) {
+      console.log(
+        chalk.green(`  Nothing to add — ${baseName} already has every supported service.`),
+      );
+      return;
+    }
     const { multiselect } = await import("./utils/multiselect.js");
+    const serviceChoices: Array<{ name: string; value: ProvisionService; checked: boolean }> = [
+      { name: "GlitchTip (error tracking)", value: "glitchtip", checked: false },
+      { name: "OpenPanel (product analytics)", value: "openpanel", checked: false },
+      { name: "Plausible (web analytics)", value: "plausible", checked: false },
+      { name: "Resend (transactional email)", value: "resend", checked: false },
+      {
+        name: "S3 / R2 (per-bucket scoped credentials from .hatchkit.json)",
+        value: "s3",
+        checked: false,
+      },
+      {
+        name: "Email forwarding (Cloudflare Email Routing — MX/SPF/DMARC + rules)",
+        value: "email",
+        checked: false,
+      },
+      {
+        name: "Google Search Console (DNS verification + domain property)",
+        value: "search-console",
+        checked: false,
+      },
+    ];
     services = await multiselect<ProvisionService>({
       message: "Which services to add?",
-      choices: [
-        { name: "GlitchTip (error tracking)", value: "glitchtip", checked: true },
-        { name: "OpenPanel (product analytics)", value: "openpanel", checked: true },
-        { name: "Plausible (web analytics)", value: "plausible", checked: false },
-        { name: "Resend (transactional email)", value: "resend", checked: true },
-        {
-          name: "S3 / R2 (per-bucket scoped credentials from .hatchkit.json)",
-          value: "s3",
-          checked: false,
-        },
-        {
-          name: "Email forwarding (Cloudflare Email Routing — MX/SPF/DMARC + rules)",
-          value: "email",
-          checked: false,
-        },
-        {
-          name: "Google Search Console (DNS verification + domain property)",
-          value: "search-console",
-          checked: false,
-        },
-      ],
+      choices: serviceChoices.filter((choice) => addableServices.includes(choice.value)),
       required: true,
     });
   } else if (rawService === "all") {
-    services = allServices;
+    services = addableServices;
+    if (services.length === 0) {
+      console.log(
+        chalk.green(`  Nothing to add — ${baseName} already has every supported service.`),
+      );
+      return;
+    }
   } else {
     const requested = rawService.split(",").map((s) => s.trim().toLowerCase());
     const invalid = requested.filter((s) => !(allServices as readonly string[]).includes(s));
@@ -561,7 +732,27 @@ async function handleAdd(): Promise<void> {
       console.log(chalk.dim(`  Valid: ${allServices.join(", ")}, or 'all'`));
       process.exit(1);
     }
-    services = requested as ProvisionService[];
+    const skipped = requested.filter((service) => hiddenServices.has(service as ProvisionService));
+    if (skipped.length > 0) {
+      console.log(
+        chalk.red(
+          `  Refusing to add already-present/unavailable service(s): ${skipped.join(", ")}`,
+        ),
+      );
+      console.log(
+        chalk.dim("  Run `hatchkit remove` first if you want Hatchkit to recreate them."),
+      );
+      process.exit(1);
+    }
+    services = requested.filter(
+      (service) => !hiddenServices.has(service as ProvisionService),
+    ) as ProvisionService[];
+    if (services.length === 0) {
+      console.log(
+        chalk.green(`  Nothing to add — requested service(s) are already present or unavailable.`),
+      );
+      return;
+    }
   }
 
   // Flag parsing:
@@ -622,7 +813,16 @@ async function handleAdd(): Promise<void> {
     };
   }
 
-  await runProvision({ baseName, services, surfaces, enableDevObs });
+  const ledger = RunLedger.resumeOrStart(baseName);
+  await runProvision({
+    baseName,
+    services,
+    surfaces,
+    enableDevObs,
+    failIfExists: true,
+    onProvisioned: (event) => recordProvisionedEvent(ledger, event),
+  });
+  ledger.complete();
 }
 
 async function handleProvisionS3(): Promise<void> {
@@ -2451,6 +2651,11 @@ function printHelp(topic?: HelpTopic): void {
     · A 0600 cache of every value is saved under
       ${chalk.dim("<config-dir>/provisioned/<project>.*.env")} for recoverability.
       ${chalk.dim("Secret values never hit stdout.")}
+    · The interactive menu only shows services not already present for the
+      current project, starts with nothing selected, and refuses explicit
+      requests that would recreate known resources.
+    · Before creating provider resources, add runs read-only existence probes
+      for the selected services and stops on conflicts so cleanup stays safe.
 
   ${chalk.bold("Surfaces:")}
     hatchkit asks which surfaces your project has. Options:

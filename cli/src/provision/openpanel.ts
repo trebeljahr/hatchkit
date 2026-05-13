@@ -45,6 +45,30 @@ function resolveManageBase(url: string, apiUrl: string | undefined): string {
   return `${(apiUrl ?? url).replace(/\/$/, "")}/manage`;
 }
 
+export async function openpanelProjectExists(clientName: string): Promise<boolean> {
+  const cfg = await ensureOpenpanel();
+  const { url, apiUrl, rootClientId, rootClientSecret } = cfg;
+  const cachedSecret = await getSecret(SECRET_KEYS.openpanelClientSecret(clientName));
+  const cachedId = await getSecret(clientIdKey(clientName));
+  if (cachedSecret && cachedId) return true;
+
+  const manageBase = resolveManageBase(url, apiUrl);
+  const res = await fetch(`${manageBase}/projects`, {
+    headers: buildHeaders(rootClientId, rootClientSecret),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `OpenPanel preflight failed: ${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`,
+    );
+  }
+  const raw = (await res.json()) as unknown;
+  const projects: Array<{ name?: string; id?: string }> = Array.isArray(raw)
+    ? (raw as Array<{ name?: string; id?: string }>)
+    : ((raw as { data?: Array<{ name?: string; id?: string }> }).data ?? []);
+  return projects.some((project) => project.name === clientName || project.id === clientName);
+}
+
 export async function provisionOpenpanelClient(clientName: string): Promise<OpenpanelClient> {
   const cfg = await ensureOpenpanel();
   const { url, apiUrl, rootClientId, rootClientSecret } = cfg;

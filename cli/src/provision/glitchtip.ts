@@ -16,6 +16,25 @@ export interface GlitchtipClient {
   dsn: string;
 }
 
+export async function glitchtipProjectExists(clientName: string): Promise<boolean> {
+  const cfg = await ensureGlitchtip();
+  const { url, organizationSlug, token } = cfg;
+  if (!organizationSlug) {
+    throw new Error(
+      "GlitchTip config is missing organization slug. Re-run `hatchkit config add glitchtip`.",
+    );
+  }
+
+  const res = await fetch(`${url}/api/0/projects/${organizationSlug}/${clientName}/keys/`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (res.status === 404) return false;
+  if (!res.ok) {
+    throw new Error(`GlitchTip preflight failed: HTTP ${res.status} ${await res.text()}`);
+  }
+  return true;
+}
+
 export async function provisionGlitchtipClient(clientName: string): Promise<GlitchtipClient> {
   const cfg = await ensureGlitchtip();
   const { url, organizationSlug, teamSlug, token } = cfg;

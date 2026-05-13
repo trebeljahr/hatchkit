@@ -39,23 +39,31 @@ import {
   ensureS3,
   getConfigPath,
 } from "../config.js";
-import { MANIFEST_FILENAME, readManifest } from "../scaffold/manifest.js";
+import { MANIFEST_FILENAME, readManifest, writeManifest } from "../scaffold/manifest.js";
 import { validateDomain, validateProjectName } from "../utils/validate.js";
 import {
   type GlitchtipClient,
   deleteGlitchtipClient,
+  glitchtipProjectExists,
   provisionGlitchtipClient,
 } from "./glitchtip.js";
 import {
   type OpenpanelClient,
   deleteOpenpanelClient,
+  openpanelProjectExists,
   provisionOpenpanelClient,
 } from "./openpanel.js";
-import { type PlausibleSite, deletePlausibleSite, provisionPlausibleSite } from "./plausible.js";
+import {
+  type PlausibleSite,
+  deletePlausibleSite,
+  plausibleSiteExists,
+  provisionPlausibleSite,
+} from "./plausible.js";
 import {
   type ResendClient,
   createResendDomain,
   deleteResendClient,
+  listResendApiKeys,
   listResendDomains,
   normalizeDomainInput,
   provisionResendClient,
@@ -112,7 +120,14 @@ export type ProvisionedEvent =
   | { service: "openpanel"; project: string }
   | { service: "plausible"; project: string; domain: string }
   | { service: "resend"; client: string }
-  | { service: "s3"; bucketKey: string; bucketName: string; tokenId: string }
+  | {
+      service: "s3";
+      bucketKey: string;
+      bucketName: string;
+      tokenId: string;
+      accountId: string;
+      minted: boolean;
+    }
   | {
       service: "email";
       domain: string;
@@ -157,6 +172,9 @@ export interface ProvisionOptions {
    *  and the next provider, so it can append to a ledger / log
    *  without racing the next API call. */
   onProvisioned?: (event: ProvisionedEvent) => void;
+  /** When true, run read-only existence probes before creating remote
+   *  resources and abort if anything selected already exists. */
+  failIfExists?: boolean;
 }
 
 interface WriteBucket {
@@ -170,6 +188,60 @@ interface WriteBucket {
    *  enableDevObs or when values are genuinely dev-scoped, e.g.
    *  Resend's dev key). */
   devLines: string[];
+}
+
+async function assertNoExistingProviderResources(args: {
+  baseName: string;
+  services: ProvisionService[];
+  surfaces: Surfaces | null;
+  plausibleDomain?: string;
+}): Promise<void> {
+  const conflicts: string[] = [];
+
+  if (args.services.includes("glitchtip")) {
+    const names =
+      args.surfaces && args.surfaces.mode === "separate"
+        ? [`${args.baseName}-server`, `${args.baseName}-client`]
+        : [args.baseName];
+    for (const name of names) {
+      if (await glitchtipProjectExists(name)) conflicts.push(`GlitchTip project ${name}`);
+    }
+  }
+
+  if (args.services.includes("openpanel")) {
+    const names =
+      args.surfaces && args.surfaces.mode === "separate"
+        ? [`${args.baseName}-server`, `${args.baseName}-client`]
+        : [args.baseName];
+    for (const name of names) {
+      if (await openpanelProjectExists(name)) conflicts.push(`OpenPanel project ${name}`);
+    }
+  }
+
+  if (args.services.includes("plausible") && args.plausibleDomain) {
+    if (await plausibleSiteExists(args.plausibleDomain)) {
+      conflicts.push(`Plausible site ${args.plausibleDomain}`);
+    }
+  }
+
+  if (args.services.includes("resend")) {
+    const keys = await listResendApiKeys();
+    const names = new Set(keys.map((key) => key.name));
+    for (const name of [`${args.baseName}-dev`, `${args.baseName}-prod`]) {
+      if (names.has(name)) conflicts.push(`Resend API key ${name}`);
+    }
+  }
+
+  if (conflicts.length > 0) {
+    throw new Error(
+      [
+        "Refusing to add services because these resources already exist:",
+        ...conflicts.map((conflict) => `  - ${conflict}`),
+        "",
+        "Remove or rename the existing resources, or run `hatchkit remove` if Hatchkit created them before.",
+      ].join("\n"),
+    );
+  }
 }
 
 export async function runProvision(opts: ProvisionOptions): Promise<void> {
@@ -211,6 +283,15 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   const plausibleDomain = opts.services.includes("plausible")
     ? await resolvePlausibleDomain(opts, surfaces)
     : undefined;
+
+  if (opts.failIfExists) {
+    await assertNoExistingProviderResources({
+      baseName: opts.baseName,
+      services: opts.services,
+      surfaces,
+      plausibleDomain,
+    });
+  }
 
   console.log(chalk.bold(`\n  ── Provisioning ${opts.baseName} ──────────────────────────\n`));
 
@@ -363,6 +444,17 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
             created: r.created,
           })),
         });
+        writeManifest(projectDir, {
+          ...manifest,
+          integrations: {
+            ...manifest.integrations,
+            email: {
+              domain: result.domain,
+              configuredAt: new Date().toISOString(),
+              destinationEmail: result.destination.record.email,
+            },
+          },
+        });
       }
     }
   }
@@ -394,6 +486,17 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
           domain: result.domain,
           siteUrl: result.siteUrl,
           dnsRecord: result.dnsRecord,
+        });
+        writeManifest(projectDir, {
+          ...manifest,
+          integrations: {
+            ...manifest.integrations,
+            searchConsole: {
+              domain: result.domain,
+              siteUrl: result.siteUrl,
+              verifiedAt: new Date().toISOString(),
+            },
+          },
         });
       }
     }
@@ -428,6 +531,8 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
           bucketKey: bt.bucketKey,
           bucketName: bt.bucketName,
           tokenId: bt.tokenId,
+          accountId: bt.accountId,
+          minted: bt.minted,
         });
       }
       serverBucket.prodLines.push(...renderR2BucketTokensEnv(r2Result));
