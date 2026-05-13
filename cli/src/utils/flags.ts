@@ -140,6 +140,24 @@ export function parseCreateFlags(argv: string[]): ParsedCreateFlags {
     throw new Error(`--deploy-target must be 'existing' or 'new' (got '${deployTarget}')`);
   }
 
+  const githubVisibility = get("github-visibility");
+  if (githubVisibility === "private" || githubVisibility === "public") {
+    presets.githubRepoVisibility = githubVisibility;
+    presets.createGithubRepo = true;
+  } else if (githubVisibility !== undefined) {
+    throw new Error(
+      `--github-visibility must be 'private' or 'public' (got '${githubVisibility}')`,
+    );
+  }
+  if (argv.includes("--public")) {
+    presets.githubRepoVisibility = "public";
+    presets.createGithubRepo = true;
+  }
+  if (argv.includes("--private")) {
+    presets.githubRepoVisibility = "private";
+    presets.createGithubRepo = true;
+  }
+
   if (forceNoGithub) presets.createGithubRepo = false;
   if (forceNoDeploy) presets.runDeployment = false;
   if (forceNoInstall) presets.installDeps = false;

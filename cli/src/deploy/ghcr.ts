@@ -55,7 +55,7 @@ export interface GhcrSetupOptions {
  *  they need it. */
 export type GhcrSetupResult =
   | { kind: "public-set"; visibility: "public" }
-  | { kind: "private-registered"; registryUuid: string }
+  | { kind: "private-registered"; registryUuid: string; created: boolean }
   | { kind: "skipped"; reason: string; recovery: string[] }
   | { kind: "failed"; reason: string; recovery: string[] };
 
@@ -183,7 +183,7 @@ export async function registerGhcrCredsWithCoolify(
     const existing = await api.findPrivateRegistry({ url: "ghcr.io" });
     if (existing) {
       spin.succeed(`Coolify: GHCR registry already configured (${existing.uuid})`);
-      return { kind: "private-registered", registryUuid: existing.uuid };
+      return { kind: "private-registered", registryUuid: existing.uuid, created: false };
     }
     const created = await api.addPrivateRegistry({
       name: "GHCR (hatchkit)",
@@ -192,7 +192,7 @@ export async function registerGhcrCredsWithCoolify(
       password: pullToken,
     });
     spin.succeed(`Coolify: GHCR registry created (${created.uuid})`);
-    return { kind: "private-registered", registryUuid: created.uuid };
+    return { kind: "private-registered", registryUuid: created.uuid, created: true };
   } catch (err) {
     spin.fail("Coolify: couldn't register GHCR creds");
     return {

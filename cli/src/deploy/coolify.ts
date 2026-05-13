@@ -33,7 +33,8 @@ import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
-import { CoolifyApi } from "../utils/coolify-api.js";
+import { type ApplicationCreateInput, CoolifyApi } from "../utils/coolify-api.js";
+import { repoSlugFromRemote } from "./gh-actions-secrets.js";
 
 export interface RunCoolifySetupOptions {
   /** GitHub repository URL — required when creating a new application
@@ -48,6 +49,11 @@ export interface RunCoolifySetupOptions {
    *  in production). Accepted for symmetry with `scaffoldInfra` and so
    *  future build-time / preview deploys have it. */
   clientPort?: number;
+  /** The default `hatchkit create` path creates `gh repo create
+   *  --private`. Private GitHub repos must be wired through a Coolify
+   *  GitHub App source, not the public-repo endpoint, or Coolify accepts
+   *  the app but later cannot clone/pull it. */
+  isPrivateRepo?: boolean;
 }
 
 export interface RunCoolifySetupResult {
@@ -95,6 +101,17 @@ export async function runCoolifySetup(
   }
 
   const serverUuid = await resolveServerUuid(api, config);
+  const isPrivateRepo = options.isPrivateRepo ?? false;
+  const repoRef = options.repoUrl
+    ? normalizeCoolifyGitRepository(options.repoUrl, isPrivateRepo)
+    : null;
+  let githubAppUuid: string | undefined;
+  if (isPrivateRepo) {
+    githubAppUuid = await resolveGithubAppUuid(api, cfg.url);
+    if (repoRef && repoRef.gitRepository !== options.repoUrl) {
+      console.log(chalk.dim(`  Git source: ${repoRef.gitRepository} (Coolify GitHub App)`));
+    }
+  }
 
   // Project: reuse one with the same name when present. The old bash
   // script always created a new one, which left orphan empty projects
@@ -194,19 +211,40 @@ export async function runCoolifySetup(
   if (existingApp) {
     appUuid = existingApp.uuid;
     console.log(chalk.dim(`  Using existing Coolify application ${appName} (${appUuid})`));
+    const reconcile = ora("Reconciling Coolify app git source + routing").start();
+    try {
+      await api.updateApplication(appUuid, {
+        buildPack: "dockercompose",
+        portsExposes: String(options.serverPort ?? 3000),
+        dockerComposeLocation: "/docker-compose.yml",
+        gitBranch: "main",
+        gitRepository: repoRef?.gitRepository,
+        githubAppUuid: isPrivateRepo ? githubAppUuid : undefined,
+        description,
+        dockerComposeDomains,
+      });
+      reconcile.succeed("Coolify app source/routing reconciled");
+    } catch (err) {
+      reconcile.fail(`Coolify app reconcile failed: ${(err as Error).message}`);
+      console.log(
+        chalk.dim(
+          "  Existing app kept. In Coolify, verify Build Pack = Docker Compose, Git source is the GitHub App source, and domains are attached to the right compose services.",
+        ),
+      );
+    }
   } else {
-    if (!options.repoUrl) {
+    if (!repoRef) {
       throw new Error(
         "No GitHub repo URL — can't create the Coolify application. Did the GitHub step run?",
       );
     }
     const create = ora(`Creating application ${appName}`).start();
     try {
-      const created = await api.createApplicationFromPublicRepo({
+      const createInput: ApplicationCreateInput = {
         projectUuid,
         serverUuid,
         environmentName: "production",
-        gitRepository: options.repoUrl,
+        gitRepository: repoRef.gitRepository,
         gitBranch: "main",
         // Canonical pipeline: GitHub Actions builds → pushes to GHCR →
         // Coolify pulls via docker-compose.yml (scaffolded at the repo
@@ -228,7 +266,13 @@ export async function runCoolifySetup(
         // First deploy lands via GitHub Actions on first push, so we
         // don't need Coolify to start the (empty) container right now.
         instantDeploy: false,
-      });
+      };
+      const created = isPrivateRepo
+        ? await api.createApplicationFromPrivateGithubApp({
+            ...createInput,
+            githubAppUuid: githubAppUuid as string,
+          })
+        : await api.createApplicationFromPublicRepo(createInput);
       appUuid = created.uuid;
       appCreated = true;
       create.succeed(`Application created: ${appName} (${appUuid})`);
@@ -265,6 +309,39 @@ export async function runCoolifySetup(
   console.log(chalk.green("\n  ✓ Coolify app stack created"));
 
   return { appUuid, projectUuid, projectCreated, appCreated };
+}
+
+async function resolveGithubAppUuid(api: CoolifyApi, coolifyUrl: string): Promise<string> {
+  const sources = await api.listGithubSources();
+  if (sources.length === 1) {
+    console.log(chalk.dim(`  Using Coolify GitHub source "${sources[0].name}".`));
+    return sources[0].uuid;
+  }
+  if (sources.length === 0) {
+    const sourcesUrl = `${coolifyUrl.replace(/\/$/, "")}/sources`;
+    throw new Error(
+      `GitHub repo is private but no Coolify GitHub App source is configured.\n` +
+        `  Install one at ${sourcesUrl}, grant it access to the repo, then re-run \`hatchkit create\`.`,
+    );
+  }
+  const { select } = await import("@inquirer/prompts");
+  return select({
+    message: "Pick the Coolify GitHub source for this private repo:",
+    choices: sources.map((s) => ({
+      name: `${s.name}${s.html_url ? `  ${chalk.dim(s.html_url)}` : ""}`,
+      value: s.uuid,
+    })),
+  });
+}
+
+function normalizeCoolifyGitRepository(
+  remoteUrl: string,
+  isPrivate: boolean,
+): { gitRepository: string; webUrl?: string } {
+  const slug = repoSlugFromRemote(remoteUrl);
+  if (!slug) return { gitRepository: remoteUrl };
+  const webUrl = `https://github.com/${slug}`;
+  return { gitRepository: isPrivate ? slug : webUrl, webUrl };
 }
 
 /** Resolve the Coolify server uuid for this project. The prompt flow

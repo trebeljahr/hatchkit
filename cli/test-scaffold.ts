@@ -1151,10 +1151,10 @@ console.log("\n── coolify api: dockercompose domains payload ─────
 {
   const { CoolifyApi } = await import("./src/utils/coolify-api.js");
   const { normalizeCoolifyGitRepository } = await import("./src/deploy/coolify-app.js");
-  const calls: RequestInit[] = [];
+  const calls: Array<{ url: string; init: RequestInit }> = [];
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
-    calls.push(init ?? {});
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} });
     return new Response(JSON.stringify({ uuid: "app-uuid" }), {
       status: 201,
       headers: { "content-type": "application/json" },
@@ -1178,15 +1178,29 @@ console.log("\n── coolify api: dockercompose domains payload ─────
       buildPack: "nixpacks",
       domains: ["https://app.example.com"],
     });
+    await api.createApplicationFromPrivateGithubApp({
+      projectUuid: "project-uuid",
+      serverUuid: "server-uuid",
+      gitRepository: "acme/private-app",
+      githubAppUuid: "github-app-uuid",
+      buildPack: "dockercompose",
+      domains: ["https://private.example.com:3000"],
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }
 
-  const dockerComposeBody = JSON.parse(String(calls[0]?.body ?? "{}"));
-  const nixpacksBody = JSON.parse(String(calls[1]?.body ?? "{}"));
+  const dockerComposeBody = JSON.parse(String(calls[0]?.init.body ?? "{}"));
+  const nixpacksBody = JSON.parse(String(calls[1]?.init.body ?? "{}"));
+  const privateBody = JSON.parse(String(calls[2]?.init.body ?? "{}"));
   const publicRepo = normalizeCoolifyGitRepository("git@github.com:acme/app.git", false);
   const privateRepo = normalizeCoolifyGitRepository("git@github.com:acme/app.git", true);
   const checks: Check[] = [
+    ["public create uses /applications/public", calls[0]?.url.endsWith("/applications/public")],
+    [
+      "private create uses /applications/private-github-app",
+      calls[2]?.url.endsWith("/applications/private-github-app"),
+    ],
     ["dockercompose omits top-level domains", dockerComposeBody.domains === undefined],
     [
       "dockercompose sets service domain",
@@ -1195,6 +1209,8 @@ console.log("\n── coolify api: dockercompose domains payload ─────
         dockerComposeBody.docker_compose_domains[0]?.domain === "https://app.example.com:3000",
     ],
     ["nixpacks still uses top-level domains", nixpacksBody.domains === "https://app.example.com"],
+    ["private create sends github_app_uuid", privateBody.github_app_uuid === "github-app-uuid"],
+    ["private create sends owner/repo selector", privateBody.git_repository === "acme/private-app"],
     ["public SSH remote normalizes to HTTPS", publicRepo.gitRepository === "https://github.com/acme/app"],
     ["private SSH remote normalizes to owner/repo", privateRepo.gitRepository === "acme/app"],
   ];
@@ -1204,6 +1220,46 @@ console.log("\n── coolify api: dockercompose domains payload ─────
     if (!c) ok = false;
   }
   results.coolifyDockerComposeDomains = ok;
+}
+
+console.log("\n── coolify api: github app source discovery ─────────────");
+{
+  const { CoolifyApi } = await import("./src/utils/coolify-api.js");
+  const calls: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    calls.push(String(url));
+    return new Response(
+      JSON.stringify([
+        {
+          uuid: "gh-app-uuid",
+          name: "Personal GitHub App",
+          html_url: "https://github.com/apps/coolify-personal",
+        },
+      ]),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  let sources: Array<{ uuid: string; name: string; html_url?: string }> = [];
+  try {
+    const api = new CoolifyApi({ url: "https://coolify.test", token: "test-token" });
+    sources = await api.listGithubSources();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const checks: Check[] = [
+    ["source discovery uses /github-apps", calls[0]?.endsWith("/github-apps")],
+    ["source uuid returned", sources[0]?.uuid === "gh-app-uuid"],
+    ["source name returned", sources[0]?.name === "Personal GitHub App"],
+  ];
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  results.coolifyGithubAppSources = ok;
 }
 
 // Coolify API: updateApplication must send domains/dockerComposeDomains

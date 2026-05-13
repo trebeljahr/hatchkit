@@ -28,6 +28,7 @@ export type DeployTarget = "existing" | "new";
  *  · `scaffold-only`  — write files + (optionally) push to GitHub, no
  *                       deploy. Equivalent to today's `runDeployment: false`. */
 export type DeploymentMode = "coolify" | "gh-pages" | "scaffold-only";
+export type GitHubRepoVisibility = "private" | "public";
 export type DnsProvider = "inwx" | "cloudflare" | "manual";
 export type S3Provider = "hetzner" | "r2" | "aws" | "existing" | "none";
 export type GpuPlatform = "modal" | "runpod" | "hf" | "replicate";
@@ -145,6 +146,9 @@ export interface ProjectConfig {
 
   scaffoldRepo: boolean;
   createGithubRepo: boolean;
+  /** Visibility for repos created by `hatchkit create`. Defaults to
+   *  private for backwards compatibility and safer first deploys. */
+  githubRepoVisibility?: GitHubRepoVisibility;
   /** Whether to run `pnpm install` in the scaffolded repo right after
    *  files are written. Asked upfront in the stepper (rather than mid-
    *  scaffold) so the whole `hatchkit create` flow is non-blocking once
@@ -594,6 +598,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
   );
 
   let createGithubRepo = false;
+  let githubRepoVisibility: GitHubRepoVisibility | undefined;
   if (scaffoldRepo) {
     createGithubRepo = await presetOrPrompt(
       presets.createGithubRepo,
@@ -605,6 +610,14 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
         }),
       true,
     );
+    if (createGithubRepo) {
+      githubRepoVisibility = await presetOrPrompt(
+        presets.githubRepoVisibility,
+        nonInteractive,
+        () => promptGithubRepoVisibility("GitHub repo visibility:"),
+        "private",
+      );
+    }
   }
 
   // Ask about pnpm install BEFORE we proceed — we used to ask this
@@ -805,6 +818,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     customHfGpuType,
     scaffoldRepo,
     createGithubRepo,
+    githubRepoVisibility,
     installDeps,
     deploymentMode,
     runDeployment,
@@ -901,6 +915,7 @@ async function collectPagesProjectConfig(args: PagesCollectArgs): Promise<Projec
   );
 
   let createGithubRepo = false;
+  let githubRepoVisibility: GitHubRepoVisibility | undefined;
   if (scaffoldRepo) {
     createGithubRepo = await presetOrPrompt(
       presets.createGithubRepo,
@@ -908,6 +923,14 @@ async function collectPagesProjectConfig(args: PagesCollectArgs): Promise<Projec
       () => confirm({ message: "Create GitHub remote repo?", default: true }),
       true,
     );
+    if (createGithubRepo) {
+      githubRepoVisibility = await presetOrPrompt(
+        presets.githubRepoVisibility,
+        nonInteractive,
+        () => promptGithubRepoVisibility("GitHub repo visibility:"),
+        "private",
+      );
+    }
   }
 
   const installDeps = scaffoldRepo
@@ -942,6 +965,7 @@ async function collectPagesProjectConfig(args: PagesCollectArgs): Promise<Projec
     mongodbProvider: "external",
     scaffoldRepo,
     createGithubRepo,
+    githubRepoVisibility,
     installDeps,
     deploymentMode,
     runDeployment,
@@ -1130,8 +1154,8 @@ function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
         label: isPages ? "Scaffold / GitHub / Install" : "Scaffold / GitHub / Install / Deploy",
         set: true,
         summary: isPages
-          ? `scaffold=${cfg.scaffoldRepo ? "yes" : "no"} · github=${cfg.createGithubRepo ? "yes" : "no"} · install=${cfg.installDeps ? "yes" : "no"}`
-          : `scaffold=${cfg.scaffoldRepo ? "yes" : "no"} · github=${cfg.createGithubRepo ? "yes" : "no"} · install=${cfg.installDeps ? "yes" : "no"} · deploy=${cfg.runDeployment ? "yes" : "no"}`,
+          ? `scaffold=${cfg.scaffoldRepo ? "yes" : "no"} · github=${renderGithubCreateSummary(cfg)} · install=${cfg.installDeps ? "yes" : "no"}`
+          : `scaffold=${cfg.scaffoldRepo ? "yes" : "no"} · github=${renderGithubCreateSummary(cfg)} · install=${cfg.installDeps ? "yes" : "no"} · deploy=${cfg.runDeployment ? "yes" : "no"}`,
       },
     ],
   });
@@ -1148,6 +1172,11 @@ function renderDeploymentModeSummary(mode: DeploymentMode): string {
     case "scaffold-only":
       return "Scaffold only (no deploy)";
   }
+}
+
+function renderGithubCreateSummary(cfg: ProjectConfig): string {
+  if (!cfg.createGithubRepo) return "no";
+  return cfg.githubRepoVisibility ?? "private";
 }
 
 function renderSurfaceSummary(surface: Surface): string {
@@ -1419,6 +1448,9 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     const createGithubRepo = scaffoldRepo
       ? await confirm({ message: "Create a GitHub repo?", default: cfg.createGithubRepo })
       : false;
+    const githubRepoVisibility = createGithubRepo
+      ? await promptGithubRepoVisibility("GitHub repo visibility:", cfg.githubRepoVisibility)
+      : undefined;
     const installDeps = scaffoldRepo
       ? await confirm({
           message: "Run pnpm install after scaffolding?",
@@ -1438,7 +1470,14 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     } else {
       runDeployment = false;
     }
-    return { ...cfg, scaffoldRepo, createGithubRepo, installDeps, runDeployment };
+    return {
+      ...cfg,
+      scaffoldRepo,
+      createGithubRepo,
+      githubRepoVisibility,
+      installDeps,
+      runDeployment,
+    };
   }
   return cfg;
 }
@@ -1446,6 +1485,28 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function promptGithubRepoVisibility(
+  message: string,
+  current: GitHubRepoVisibility | undefined = "private",
+): Promise<GitHubRepoVisibility> {
+  return select<GitHubRepoVisibility>({
+    message,
+    choices: [
+      {
+        name: "Private (recommended for account repos)",
+        value: "private",
+        description: "Coolify uses a GitHub App source and GHCR pull credentials.",
+      },
+      {
+        name: "Public",
+        value: "public",
+        description: "Coolify clones over HTTPS; GHCR is made public after first push.",
+      },
+    ],
+    default: current ?? "private",
+  });
+}
 
 async function selectDeployTarget(): Promise<DeployTarget> {
   return select({

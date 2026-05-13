@@ -2022,11 +2022,13 @@ async function executePlan(
               username: ghcrConfig?.username,
             });
             if (r.kind === "private-registered") {
-              ledger.record({
-                kind: "coolifyPrivateRegistry",
-                uuid: r.registryUuid,
-              });
-            } else if (r.kind !== "public-set") {
+              if (r.created) {
+                ledger.record({
+                  kind: "coolifyPrivateRegistry",
+                  uuid: r.registryUuid,
+                });
+              }
+            } else if (r.kind === "skipped" || r.kind === "failed") {
               caveats.push({
                 title: "GHCR pull credentials not configured",
                 reason: r.reason,

@@ -356,10 +356,32 @@ export class CoolifyApi {
   // out of scope for the current `hatchkit adopt` flow.
 
   /** GitHub source connections registered in Coolify. Used to resolve
-   *  a `github_app_uuid` for private-repo application creation. The
-   *  endpoint is plural-ish across Coolify versions — try both shapes. */
+   *  a `github_app_uuid` for private-repo application creation. Coolify
+   *  currently exposes these at `/github-apps`; older builds exposed a
+   *  broader `/sources` list, so we try both shapes. */
   async listGithubSources(): Promise<Array<{ uuid: string; name: string; html_url?: string }>> {
-    // Newer Coolify exposes /sources with a `type` discriminator.
+    try {
+      const apps = (await this.request("GET", "/github-apps")) as Array<{
+        uuid?: string;
+        name?: string;
+        html_url?: string;
+        api_url?: string;
+        organization?: string;
+        is_public?: boolean;
+        type?: string;
+      }>;
+      return apps
+        .filter((app) => typeof app.uuid === "string")
+        .map((app) => ({
+          uuid: app.uuid as string,
+          name: app.name || (app.organization ? `GitHub App (${app.organization})` : "GitHub App"),
+          html_url: app.html_url || app.api_url,
+        }));
+    } catch {
+      // Fall through to the legacy source endpoint.
+    }
+
+    // Legacy Coolify builds exposed /sources with a `type` discriminator.
     try {
       const sources = (await this.request("GET", "/sources")) as Array<{
         uuid: string;
@@ -369,8 +391,8 @@ export class CoolifyApi {
       }>;
       return sources.filter((s) => !s.type || s.type === "github_app");
     } catch {
-      // Older builds had /security/github-app or similar. Return [] so
-      // the caller can fall back to "ask the user for the uuid".
+      // Unknown/older builds: return [] so callers can raise a clear
+      // "install a GitHub App source" error before app creation.
       return [];
     }
   }

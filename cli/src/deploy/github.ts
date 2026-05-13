@@ -31,17 +31,18 @@ export async function setupGitHub(config: ProjectConfig, appDir: string): Promis
   // Create GitHub repo + register `origin`, but DO NOT push yet.
   // pushInitialBranch is called by the caller after Coolify wiring
   // and Actions-secret upserts have completed.
+  const visibility = config.githubRepoVisibility ?? "private";
   const createResult = await exec(
     "gh",
-    ["repo", "create", config.name, "--private", "--source=."],
-    { cwd: appDir, spinner: `Creating GitHub repo: ${config.name}...` },
+    ["repo", "create", config.name, `--${visibility}`, "--source=."],
+    { cwd: appDir, spinner: `Creating ${visibility} GitHub repo: ${config.name}...` },
   );
 
   if (createResult.exitCode !== 0) {
     console.log(chalk.yellow("  Could not create GitHub repo. Your local git repo is ready;"));
     console.log(chalk.yellow(`  push it manually once the remote exists:`));
     console.log(chalk.dim(`    cd ${appDir}`));
-    console.log(chalk.dim(`    gh repo create ${config.name} --private --source=. --push`));
+    console.log(chalk.dim(`    gh repo create ${config.name} --${visibility} --source=. --push`));
     console.log(
       chalk.yellow(
         '  Note: the Coolify env will have GITHUB_REPO_URL="" — update it after pushing.',

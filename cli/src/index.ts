@@ -11,6 +11,8 @@ import {
   ensureS3,
   getConfig,
   getConfigPath,
+  getCoolifyConfig,
+  getGhcrConfig,
   getMlServices,
   isFirstRun,
   reconfigureProvider,
@@ -29,7 +31,7 @@ import {
 } from "./deploy/keys.js";
 import { handleCreateFailure, runRollback } from "./deploy/rollback.js";
 import { runTerraform } from "./deploy/terraform.js";
-import { type GpuPlatform, collectProjectConfig } from "./prompts.js";
+import { type GpuPlatform, type ProjectConfig, collectProjectConfig } from "./prompts.js";
 import { type ProvisionService, runProvision, runUnprovision } from "./provision/index.js";
 import { scaffoldApp } from "./scaffold/app.js";
 import { scaffoldInfra } from "./scaffold/infra.js";
@@ -986,6 +988,64 @@ async function handleDns(): Promise<void> {
   }
 }
 
+async function configureGhcrForCreate(
+  repoUrl: string,
+  isPrivateRepo: boolean,
+  ledger: RunLedger | null,
+): Promise<void> {
+  const { repoSlugFromRemote } = await import("./deploy/gh-actions-secrets.js");
+  const slug = repoSlugFromRemote(repoUrl);
+  if (!slug) {
+    console.log(
+      chalk.dim("  · Couldn't resolve owner/repo from GitHub URL — skipping GHCR pull setup."),
+    );
+    return;
+  }
+
+  const coolify = await getCoolifyConfig();
+  if (!coolify) {
+    console.log(chalk.dim("  · Coolify not configured — skipping GHCR pull setup."));
+    return;
+  }
+
+  const { CoolifyApi } = await import("./utils/coolify-api.js");
+  const { makeGhcrPackagePublic, registerGhcrCredsWithCoolify } = await import("./deploy/ghcr.js");
+  if (!isPrivateRepo) {
+    const result = await makeGhcrPackagePublic({ repoSlug: slug });
+    if (result.kind === "public-set") return;
+    if (result.kind === "skipped" || result.kind === "failed") {
+      console.log(chalk.yellow(`  GHCR public-image setup skipped: ${result.reason}`));
+      console.log(chalk.dim(result.recovery.map((line: string) => `  ${line}`).join("\n")));
+    }
+    return;
+  }
+
+  const ghcrConfig = await getGhcrConfig();
+  const api = new CoolifyApi({ url: coolify.url, token: coolify.token });
+  const result = await registerGhcrCredsWithCoolify({
+    api,
+    repoSlug: slug,
+    pullToken: ghcrConfig?.pullToken,
+    username: ghcrConfig?.username,
+  });
+
+  if (result.kind === "private-registered") {
+    if (result.created) {
+      ledger?.record({ kind: "coolifyPrivateRegistry", uuid: result.registryUuid });
+    }
+    return;
+  }
+
+  if (result.kind === "skipped" || result.kind === "failed") {
+    console.log(chalk.yellow(`  GHCR private-image pull setup skipped: ${result.reason}`));
+    console.log(chalk.dim(result.recovery.map((line: string) => `  ${line}`).join("\n")));
+  }
+}
+
+function isCreatedGithubRepoPrivate(config: ProjectConfig): boolean {
+  return config.createGithubRepo && (config.githubRepoVisibility ?? "private") === "private";
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -1099,7 +1159,9 @@ async function handleCreate(): Promise<void> {
     `  ML:         ${config.mlServices.length > 0 ? config.mlServices.join(", ") : "none"}`,
   );
   console.log(`  Scaffold:   ${config.scaffoldRepo ? "yes" : "no"}`);
-  console.log(`  GitHub:     ${config.createGithubRepo ? "yes" : "no"}`);
+  console.log(
+    `  GitHub:     ${config.createGithubRepo ? `yes (${config.githubRepoVisibility ?? "private"})` : "no"}`,
+  );
   console.log(`  Install:    ${config.installDeps ? "yes (pnpm install)" : "no"}`);
   console.log(`  Deploy now: ${config.runDeployment ? "yes" : "no"}`);
 
@@ -1383,6 +1445,7 @@ async function handleCreate(): Promise<void> {
         repoUrl: repoUrl ?? undefined,
         serverPort: scaffoldResult?.ports.server,
         clientPort: scaffoldResult?.ports.client,
+        isPrivateRepo: isCreatedGithubRepoPrivate(config),
       });
       // Order matters: rollback iterates the ledger in REVERSE, so we
       // record parent-before-child (project before app). Otherwise
@@ -1445,23 +1508,31 @@ async function handleCreate(): Promise<void> {
       if (repoUrl && config.scaffoldRepo) {
         try {
           const { findCoolifyAppsForProject } = await import("./deploy/coolify-app.js");
-          const { repoSlugFromRemote, setCoolifyDeploySecrets } = await import(
+          const { ghSecretExists, repoSlugFromRemote, setCoolifyDeploySecrets } = await import(
             "./deploy/gh-actions-secrets.js"
           );
           const slug = repoSlugFromRemote(repoUrl);
           const apps = await findCoolifyAppsForProject(config.name);
-          if (slug && apps.length > 0) {
-            await setCoolifyDeploySecrets({
-              projectDir: appDir,
-              repoSlug: slug,
-              apps,
-            });
-          } else if (apps.length === 0) {
-            console.log(
-              chalk.dim(
-                `  · No Coolify app named "${config.name}" / "${config.name}-server" / "${config.name}-client" / "${config.name}-web" found — skipping Actions secret push.`,
-              ),
-            );
+          if (slug) {
+            if (apps.length > 0) {
+              await setCoolifyDeploySecrets({
+                projectDir: appDir,
+                repoSlug: slug,
+                apps,
+              });
+            } else {
+              console.log(
+                chalk.dim(
+                  `  · No Coolify app named "${config.name}" / "${config.name}-server" / "${config.name}-client" / "${config.name}-web" found — skipping Coolify deploy secret push.`,
+                ),
+              );
+            }
+            const secretName = "DOTENV_PRIVATE_KEY_PRODUCTION";
+            const preExisted = await ghSecretExists(appDir, slug, secretName);
+            await pushProjectKeyToGh(config.name, slug);
+            if (!preExisted) {
+              ledger?.record({ kind: "ghActionsSecret", repo: slug, name: secretName });
+            }
           }
         } catch (err) {
           console.log(
@@ -1538,7 +1609,10 @@ async function handleCreate(): Promise<void> {
     // created the repo + `origin` but deliberately skipped the push.
     if (config.scaffoldRepo && config.createGithubRepo && repoUrl) {
       const { pushInitialBranch } = await import("./deploy/github.js");
-      await pushInitialBranch(appDir);
+      const pushed = await pushInitialBranch(appDir);
+      if (pushed && config.deploymentMode === "coolify") {
+        await configureGhcrForCreate(repoUrl, isCreatedGithubRepoPrivate(config), ledger);
+      }
     }
 
     // Step 6.6: optional email forwarding setup (Cloudflare Email
@@ -2424,8 +2498,10 @@ function printHelp(topic?: HelpTopic): void {
       · Writes \`.hatchkit.json\` so \`update\`, \`add\`, \`keys\` recognise
         the project.
       · ${chalk.cyan("GitHub remote")} — \`git init\` (if needed),
-        commit, \`gh repo create --private --source=. --push\`. Skipped
-        when an \`origin\` is already set.
+        commit, \`gh repo create --private|--public --source=. --push\`.
+        Visibility is prompted (default private) or set with
+        \`--github-visibility private|public\`. Skipped when an \`origin\`
+        is already set.
       · ${chalk.cyan("Coolify + DNS")} — direct REST-API calls into the
         Coolify and Cloudflare you already configured (no Terraform,
         no submodule). Finds or creates the Coolify project, picks
@@ -2824,6 +2900,9 @@ function printHelp(topic?: HelpTopic): void {
     --local-dev[=<slug>] (with \`create\`) enable Tailscale dev URL, optionally with slug
     --no-local-dev  (with \`create\`) skip local-dev wiring
     --no-github     (with \`create\`) skip GitHub repo creation
+    --github-visibility {private|public}
+                    (with \`create\`) visibility for a newly-created GitHub repo.
+                    Default: private. Shorthands: \`--private\`, \`--public\`.
     --no-deploy     (with \`create\`) skip Terraform/Coolify/ML deployment
 
   ${chalk.bold("Environment:")}
