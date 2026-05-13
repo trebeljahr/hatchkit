@@ -112,8 +112,17 @@ export function collectStatus(): StatusSnapshot {
     configured:
       !!config.providers.googleSearchConsole &&
       config.providers.googleSearchConsole.status === "configured",
-    detail: config.providers.googleSearchConsole?.scopes?.length
-      ? `${config.providers.googleSearchConsole.scopes.length} scopes`
+    detail: config.providers.googleSearchConsole
+      ? [
+          config.providers.googleSearchConsole.oauthMode === "hatchkit-pkce"
+            ? "Hatchkit OAuth"
+            : "BYO OAuth",
+          config.providers.googleSearchConsole.scopes?.length
+            ? `${config.providers.googleSearchConsole.scopes.length} scopes`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(", ")
       : undefined,
     configureCommand: "hatchkit config add search-console",
   });

@@ -117,6 +117,26 @@ OAuth refresh token in the OS keychain. Hatchkit requests Search Console
 read/write plus Site Verification verify-only access; the token stays local to
 the user's machine.
 
+When Hatchkit is built with a packaged Google OAuth client id, users only need
+to approve the browser consent flow. The CLI uses the Desktop/installed-app
+OAuth flow with PKCE and does not need a client secret. Google still displays a
+client secret for Desktop clients in the Cloud Console, but shipped CLIs cannot
+keep that value confidential, so Hatchkit ignores it for the packaged-client
+path.
+
+Maintainer setup for the packaged flow:
+
+1. Create a Hatchkit-owned Google Cloud project.
+2. Enable **Google Search Console API** and **Google Site Verification API**.
+3. Configure Google Auth Platform branding/audience/data access.
+4. Add scopes `https://www.googleapis.com/auth/webmasters` and
+   `https://www.googleapis.com/auth/siteverification.verify_only`.
+5. Create an OAuth client with application type **Desktop app**.
+6. Put that client id in Hatchkit's packaged Google Search Console client-id
+   constant before release. Dev builds can use
+   `HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID` to test the same path. Ignore the
+   displayed client secret for the packaged PKCE flow.
+
 Configure: `hatchkit config add search-console`.
 
 ---

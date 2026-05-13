@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { Separator, confirm, input, password, select } from "@inquirer/prompts";
 import chalk from "chalk";
@@ -279,6 +279,9 @@ export interface GoogleSearchConsoleMeta extends ProviderStatus {
   /** Scopes granted to the stored refresh token. Non-sensitive; useful
    *  in status/doctor output when a user authorized only one API. */
   scopes?: string[];
+  /** `hatchkit-pkce` uses Hatchkit's shipped public desktop OAuth client.
+   *  `byo-client` is the legacy/user-owned Google Cloud OAuth client path. */
+  oauthMode?: "hatchkit-pkce" | "byo-client";
 }
 
 export interface StripeMeta extends ProviderStatus {
@@ -344,7 +347,7 @@ export interface ResendConfig extends ResendMeta {
 }
 export interface GoogleSearchConsoleConfig extends GoogleSearchConsoleMeta {
   clientId: string;
-  clientSecret: string;
+  clientSecret?: string;
   refreshToken: string;
 }
 export interface StripeConfig extends StripeMeta {
@@ -1431,6 +1434,19 @@ const GOOGLE_SEARCH_CONSOLE_SCOPES = [
   "https://www.googleapis.com/auth/siteverification.verify_only",
 ];
 
+// Public Desktop OAuth client id for Hatchkit's own Google Cloud project.
+// Desktop/installed clients are public clients, so this value is safe to ship.
+// Until the Hatchkit project is verified, dev builds can set
+// HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID to exercise the packaged PKCE path.
+const PACKAGED_GOOGLE_SEARCH_CONSOLE_CLIENT_ID = "";
+
+function hatchkitGoogleSearchConsoleClientId(): string | null {
+  const configured =
+    process.env.HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID?.trim() ||
+    PACKAGED_GOOGLE_SEARCH_CONSOLE_CLIENT_ID.trim();
+  return configured || null;
+}
+
 const GOOGLE_SEARCH_CONSOLE_SCOPE_REQUIREMENTS = [
   {
     label: "Search Console read/write",
@@ -1458,19 +1474,31 @@ function assertGoogleSearchConsoleScopes(scopes: string[]): void {
   );
 }
 
+function base64Url(input: Buffer): string {
+  return input.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function createPkcePair(): { verifier: string; challenge: string } {
+  const verifier = base64Url(randomBytes(64));
+  const challenge = base64Url(createHash("sha256").update(verifier).digest());
+  return { verifier, challenge };
+}
+
 async function exchangeGoogleCode(args: {
   clientId: string;
-  clientSecret: string;
+  clientSecret?: string;
   code: string;
   redirectUri: string;
+  codeVerifier?: string;
 }): Promise<{ access_token: string; refresh_token?: string; scope?: string }> {
   const body = new URLSearchParams({
     client_id: args.clientId,
-    client_secret: args.clientSecret,
     code: args.code,
     grant_type: "authorization_code",
     redirect_uri: args.redirectUri,
   });
+  if (args.clientSecret) body.set("client_secret", args.clientSecret);
+  if (args.codeVerifier) body.set("code_verifier", args.codeVerifier);
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -1496,10 +1524,11 @@ async function exchangeGoogleCode(args: {
 
 async function runGoogleOAuthLoopback(args: {
   clientId: string;
-  clientSecret: string;
+  clientSecret?: string;
 }): Promise<{ refreshToken: string; scopes: string[] }> {
   const port = await pickPort(49152, 65535, new Set());
   const state = randomBytes(18).toString("hex");
+  const pkce = args.clientSecret ? null : createPkcePair();
   const redirectUri = `http://127.0.0.1:${port}/oauth/google/callback`;
 
   let settled = false;
@@ -1559,6 +1588,10 @@ async function runGoogleOAuthLoopback(args: {
   authUrl.searchParams.set("access_type", "offline");
   authUrl.searchParams.set("prompt", "consent");
   authUrl.searchParams.set("state", state);
+  if (pkce) {
+    authUrl.searchParams.set("code_challenge", pkce.challenge);
+    authUrl.searchParams.set("code_challenge_method", "S256");
+  }
 
   console.log(chalk.dim("\n  Open this URL in your browser, approve access, then return here:"));
   console.log(chalk.cyan(`  ${authUrl.toString()}\n`));
@@ -1570,6 +1603,7 @@ async function runGoogleOAuthLoopback(args: {
       clientSecret: args.clientSecret,
       code,
       redirectUri,
+      codeVerifier: pkce?.verifier,
     });
     if (!token.refresh_token) {
       throw new Error(
@@ -1592,10 +1626,10 @@ export async function refreshGoogleSearchConsoleAccessToken(
 ): Promise<string> {
   const body = new URLSearchParams({
     client_id: cfg.clientId,
-    client_secret: cfg.clientSecret,
     refresh_token: cfg.refreshToken,
     grant_type: "refresh_token",
   });
+  if (cfg.clientSecret) body.set("client_secret", cfg.clientSecret);
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -1620,55 +1654,88 @@ export async function ensureGoogleSearchConsole(): Promise<GoogleSearchConsoleCo
   const existingClientId = await getSecret(SECRET_KEYS.googleSearchConsoleClientId);
   const existingClientSecret = await getSecret(SECRET_KEYS.googleSearchConsoleClientSecret);
   const existingRefreshToken = await getSecret(SECRET_KEYS.googleSearchConsoleRefreshToken);
+  const hatchkitClientId = hatchkitGoogleSearchConsoleClientId();
+  const existingMode =
+    existing?.oauthMode ?? (existingClientSecret ? "byo-client" : "hatchkit-pkce");
 
-  if (
-    existing?.status === "configured" &&
-    existingClientId &&
-    existingClientSecret &&
-    existingRefreshToken
-  ) {
-    return {
-      ...existing,
-      clientId: existingClientId,
-      clientSecret: existingClientSecret,
-      refreshToken: existingRefreshToken,
-    };
+  if (existing?.status === "configured" && existingRefreshToken) {
+    if (existingMode === "hatchkit-pkce" && hatchkitClientId) {
+      return {
+        ...existing,
+        oauthMode: "hatchkit-pkce",
+        clientId: hatchkitClientId,
+        refreshToken: existingRefreshToken,
+      };
+    }
+    if (existingClientId && existingClientSecret) {
+      return {
+        ...existing,
+        oauthMode: "byo-client",
+        clientId: existingClientId,
+        clientSecret: existingClientSecret,
+        refreshToken: existingRefreshToken,
+      };
+    }
   }
 
   console.log(chalk.yellow("\n  Google Search Console is not configured yet. Let's set it up."));
   console.log(
     chalk.dim(
-      "  Google requires OAuth 2.0 for Search Console and Site Verification.\n" +
-        "  Create an OAuth client once in Google Cloud, enable the Search Console API\n" +
-        "  and Site Verification API, then paste its client id/secret here.\n" +
-        "  Hatchkit stores the refresh token in your OS keychain and uses it only\n" +
-        "  on this machine to verify domain ownership and add Search Console properties.\n",
+      "  Hatchkit uses Google OAuth for Search Console and Site Verification.\n" +
+        "  You sign in with your own Google account; Hatchkit stores only that\n" +
+        "  account's refresh token in your OS keychain on this machine.\n",
     ),
   );
-  tokenHint(
-    "https://console.cloud.google.com/apis/credentials",
-    "OAuth client (Desktop app) with Search Console API + Site Verification API enabled",
-    `Scopes: ${GOOGLE_SEARCH_CONSOLE_SCOPES.join(", ")}`,
-  );
 
-  const clientId = (
-    await input({
-      message: "Google OAuth client ID:",
-      default: existingClientId ?? undefined,
-      validate: validateRequired,
-    })
-  ).trim();
-  const clientSecret = await confirmPastedSecret("Google OAuth client secret");
+  let clientId: string;
+  let clientSecret: string | undefined;
+  let oauthMode: GoogleSearchConsoleMeta["oauthMode"];
+  if (hatchkitClientId) {
+    clientId = hatchkitClientId;
+    oauthMode = "hatchkit-pkce";
+    console.log(
+      chalk.dim(
+        "  Using Hatchkit's shipped Google OAuth client with PKCE. No Google Cloud setup or client secret is needed.",
+      ),
+    );
+  } else {
+    oauthMode = "byo-client";
+    console.log(
+      chalk.dim(
+        "  No packaged Hatchkit Google OAuth client id is configured in this build.\n" +
+          "  Falling back to the legacy BYO Google Cloud OAuth client setup.\n",
+      ),
+    );
+    tokenHint(
+      "https://console.cloud.google.com/apis/credentials",
+      "OAuth client (Desktop app) with Search Console API + Site Verification API enabled",
+      `Scopes: ${GOOGLE_SEARCH_CONSOLE_SCOPES.join(", ")}`,
+    );
+    clientId = (
+      await input({
+        message: "Google OAuth client ID:",
+        default: existingClientId ?? undefined,
+        validate: validateRequired,
+      })
+    ).trim();
+    clientSecret = await confirmPastedSecret("Google OAuth client secret");
+  }
   const oauth = await runGoogleOAuthLoopback({ clientId, clientSecret });
 
   const meta: GoogleSearchConsoleMeta = {
     status: "configured",
     scopes: oauth.scopes,
+    oauthMode,
     lastVerified: new Date().toISOString(),
   };
   store.set("providers.googleSearchConsole", meta);
-  await setSecret(SECRET_KEYS.googleSearchConsoleClientId, clientId);
-  await setSecret(SECRET_KEYS.googleSearchConsoleClientSecret, clientSecret);
+  if (oauthMode === "byo-client") {
+    await setSecret(SECRET_KEYS.googleSearchConsoleClientId, clientId);
+    if (clientSecret) await setSecret(SECRET_KEYS.googleSearchConsoleClientSecret, clientSecret);
+  } else {
+    await deleteSecret(SECRET_KEYS.googleSearchConsoleClientId);
+    await deleteSecret(SECRET_KEYS.googleSearchConsoleClientSecret);
+  }
   await setSecret(SECRET_KEYS.googleSearchConsoleRefreshToken, oauth.refreshToken);
   console.log(chalk.green("  ✓ Google Search Console configured"));
   return { ...meta, clientId, clientSecret, refreshToken: oauth.refreshToken };
@@ -1677,11 +1744,18 @@ export async function ensureGoogleSearchConsole(): Promise<GoogleSearchConsoleCo
 export async function getGoogleSearchConsoleConfig(): Promise<GoogleSearchConsoleConfig | null> {
   const meta = store.get("providers.googleSearchConsole") as GoogleSearchConsoleMeta | undefined;
   if (!meta || meta.status !== "configured") return null;
+  const oauthMode = meta.oauthMode ?? "byo-client";
   const clientId = await getSecret(SECRET_KEYS.googleSearchConsoleClientId);
   const clientSecret = await getSecret(SECRET_KEYS.googleSearchConsoleClientSecret);
   const refreshToken = await getSecret(SECRET_KEYS.googleSearchConsoleRefreshToken);
-  if (!clientId || !clientSecret || !refreshToken) return null;
-  return { ...meta, clientId, clientSecret, refreshToken };
+  if (!refreshToken) return null;
+  if (oauthMode === "hatchkit-pkce") {
+    const hatchkitClientId = hatchkitGoogleSearchConsoleClientId();
+    if (!hatchkitClientId) return null;
+    return { ...meta, oauthMode, clientId: hatchkitClientId, refreshToken };
+  }
+  if (!clientId || !clientSecret) return null;
+  return { ...meta, oauthMode: "byo-client", clientId, clientSecret, refreshToken };
 }
 
 // ---------------------------------------------------------------------------
@@ -2233,7 +2307,12 @@ function buildSetupGroups(): SetupGroup[] {
               | undefined;
             return {
               configured: m?.status === "configured",
-              summary: m?.scopes?.length ? `${m.scopes.length} scopes` : undefined,
+              summary: [
+                m?.oauthMode === "hatchkit-pkce" ? "Hatchkit OAuth" : m ? "BYO OAuth" : null,
+                m?.scopes?.length ? `${m.scopes.length} scopes` : null,
+              ]
+                .filter(Boolean)
+                .join(", "),
             };
           },
           run: () => reconfigureProvider("search-console"),
