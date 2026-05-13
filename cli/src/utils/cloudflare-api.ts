@@ -200,6 +200,25 @@ export class CloudflareApi {
     return data[0] ?? null;
   }
 
+  /** Find the closest Cloudflare zone that can manage a hostname.
+   *  Tries the hostname itself first, then parent suffixes. For
+   *  `connection.example.com`, this returns `connection.example.com`
+   *  when delegated as its own zone, otherwise `example.com`. */
+  async resolveZoneForName(name: string): Promise<CloudflareZone | null> {
+    const labels = name
+      .trim()
+      .toLowerCase()
+      .replace(/^\*\./, "")
+      .replace(/\.$/, "")
+      .split(".")
+      .filter(Boolean);
+    for (let i = 0; i < labels.length - 1; i++) {
+      const zone = await this.getZoneByName(labels.slice(i).join("."));
+      if (zone) return zone;
+    }
+    return null;
+  }
+
   /** Find an exact name+type DNS record in a zone, or null. MX/TXT
    *  records are uniquely identified by (name, type, content) — multiple
    *  TXT records can coexist at the same name (e.g. SPF + DMARC siblings)

@@ -159,13 +159,13 @@ export async function runEmailSetupForDomain(
   const { addresses, catchAll } = await resolveAddresses(flags, domain);
 
   // We need the zone id to detect resend SPF before the main setup runs.
-  // The setup orchestrator will look the zone up again — cheap; one API
-  // call. Keeping the two lookups separate keeps the orchestrator
-  // dependency-free of flag-parsing concerns.
+  // The setup orchestrator will resolve the zone again. Keeping the two
+  // lookups separate keeps the orchestrator dependency-free of
+  // flag-parsing concerns.
   let extraSpf: string[] = [];
   if (!flags.noResendSpf) {
     const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
-    const zone = await cf.getZoneByName(domain);
+    const zone = await cf.resolveZoneForName(domain);
     if (zone) {
       extraSpf = await detectExtraSpfIncludes(dns.apiToken, zone.id, domain);
     }
@@ -214,7 +214,7 @@ export async function runEmailStatus(
   }
   const domain = await resolveDomain(flags.domain, cwd);
   const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
-  const zone = await cf.getZoneByName(domain);
+  const zone = await cf.resolveZoneForName(domain);
   if (!zone) {
     console.log(chalk.yellow(`  No zone for ${domain} in this Cloudflare account.`));
     return;

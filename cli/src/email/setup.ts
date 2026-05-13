@@ -54,7 +54,7 @@ export interface EmailSetupOptions {
    *  absent (since the destinations API is account-scoped, we always
    *  need one before the call). */
   accountId?: string;
-  /** Apex domain — must match a zone the token can access. */
+  /** Mail domain. Can be a Cloudflare zone apex or a hostname below one. */
   domain: string;
   /** Email address that will receive forwarded mail. CF sends a
    *  verification email here on first add. */
@@ -121,10 +121,10 @@ export interface EmailSetupResult {
 
 export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetupResult> {
   const cf = new CloudflareApi({ token: opts.token, accountId: opts.accountId });
-  const zone = await cf.getZoneByName(opts.domain);
+  const zone = await cf.resolveZoneForName(opts.domain);
   if (!zone) {
     throw new Error(
-      `No Cloudflare zone for "${opts.domain}". Add the zone to your CF account and re-run.`,
+      `No Cloudflare zone for "${opts.domain}" or its parent domains. Add the zone to your CF account and re-run.`,
     );
   }
   const accountId = opts.accountId ?? zone.account?.id;
@@ -160,7 +160,7 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
     const mx = recommended.filter((r) => r.type === "MX");
     if (mx.length > 0) {
       mxRecords = mx.map((r) => ({
-        name: r.name,
+        name: opts.domain,
         content: r.content,
         priority: r.priority ?? 10,
       }));

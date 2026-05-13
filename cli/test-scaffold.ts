@@ -2425,6 +2425,55 @@ console.log("\n── adopt: gitignore + private-key guard ───────
   })();
 }
 
+results.cloudflareZoneResolver = await (async () => {
+  console.log("\n── cloudflare: closest zone resolver ───────────────");
+  const { CloudflareApi } = await import("./src/utils/cloudflare-api.js");
+  const api = new CloudflareApi({ token: "test" });
+  const calls: string[] = [];
+  const zones = new Map([
+    [
+      "trebeljahr.com",
+      {
+        id: "zone-parent",
+        name: "trebeljahr.com",
+        name_servers: [],
+        status: "active",
+      },
+    ],
+  ]);
+  api.getZoneByName = async (name: string) => {
+    calls.push(name);
+    return zones.get(name) ?? null;
+  };
+
+  const parent = await api.resolveZoneForName("connection.trebeljahr.com");
+  const parentCalls = calls.splice(0);
+  zones.set("connection.trebeljahr.com", {
+    id: "zone-sub",
+    name: "connection.trebeljahr.com",
+    name_servers: [],
+    status: "active",
+  });
+  const exact = await api.resolveZoneForName("connection.trebeljahr.com.");
+  const wildcard = await api.resolveZoneForName("*.mail.trebeljahr.com");
+
+  const checks: Check[] = [
+    ["subdomain falls back to parent zone", parent?.name === "trebeljahr.com"],
+    [
+      "lookup tries exact hostname before parent",
+      parentCalls.join(",") === "connection.trebeljahr.com,trebeljahr.com",
+    ],
+    ["delegated subdomain zone wins when present", exact?.name === "connection.trebeljahr.com"],
+    ["wildcard hostname strips leading star", wildcard?.name === "trebeljahr.com"],
+  ];
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  return ok;
+})();
+
 // Clean up the isolated config dir + every keychain entry scoped to
 // the throwaway service.
 {

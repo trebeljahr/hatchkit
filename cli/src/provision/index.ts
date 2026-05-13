@@ -884,7 +884,7 @@ async function unprovisionEmailForProject(args: { projectDir?: string }): Promis
     return;
   }
   const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
-  const zone = await cf.getZoneByName(manifest.domain);
+  const zone = await cf.resolveZoneForName(manifest.domain);
   if (!zone) {
     console.log(chalk.dim(`  · No zone for ${manifest.domain} — nothing to tear down.`));
     return;
