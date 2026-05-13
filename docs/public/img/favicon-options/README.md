@@ -2,7 +2,7 @@
 
 Candidate egg-themed SVG favicons for the docs site.
 
-- `hatch-egg-01-badge.svg`: classic indigo tile with white hatching egg.
+- `hatch-egg-01-badge.svg`: selected favicon; classic indigo tile with white hatching egg.
 - `hatch-egg-02-shell.svg`: darker terminal-like tile with cracked shell.
 - `hatch-egg-03-crack.svg`: high-contrast egg silhouette.
 - `hatch-egg-04-sprout.svg`: hatching/new-growth metaphor.
