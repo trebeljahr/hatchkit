@@ -509,8 +509,40 @@ export interface DevSetupInitResult {
    *  the laptop's tailnet IP. `null` when no Cloudflare token is
    *  reachable (manual DNS setup expected); a status string when
    *  hatchkit managed the record itself. */
-  dnsRecord: "created" | "updated" | "unchanged" | "skipped-no-token" | "failed" | null;
+  dnsRecord:
+    | "created"
+    | "updated"
+    | "unchanged"
+    | "skipped-no-token"
+    | "skipped-existing"
+    | "failed"
+    | null;
   notes: string[];
+}
+
+export function localDevDomainSafetyIssue(input: string | undefined): string | null {
+  const domain = normaliseLocalDevDomain(input);
+  if (!domain) return "Local-dev domain is invalid. Use a domain like local.example.com.";
+  const labels = domain.split(".");
+  if (labels.length < 3 || labels[0] !== "local") {
+    const suggested = domain.startsWith("local.") ? domain : `local.${domain}`;
+    return (
+      `Unsafe local-dev domain "${domain}". Use a dedicated local-dev subdomain, ` +
+      `for example "${suggested}", so Hatchkit manages "*.local..." DNS instead ` +
+      "of a production wildcard."
+    );
+  }
+  return null;
+}
+
+export function isTailscaleIpv4(ip: string): boolean {
+  const parts = ip.split(".").map((p) => Number(p));
+  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) {
+    return false;
+  }
+  const n = ((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3];
+  // Tailscale IPv4s live in CGNAT space 100.64.0.0/10.
+  return n >= 0x64400000 && n <= 0x647fffff;
 }
 
 export async function runDevSetupInit(opts: DevSetupInitOptions = {}): Promise<DevSetupInitResult> {
@@ -518,6 +550,8 @@ export async function runDevSetupInit(opts: DevSetupInitOptions = {}): Promise<D
   const localDevDomain =
     normaliseLocalDevDomain(opts.localDevDomain) ??
     (isLocalDevActive() ? readCaddyLocalDevDomain() : LOCAL_DEV_DOMAIN);
+  const domainSafetyIssue = localDevDomainSafetyIssue(localDevDomain);
+  if (domainSafetyIssue) throw new Error(domainSafetyIssue);
 
   let caddyPort = opts.force ? null : readCaddyPort();
   if (caddyPort === null) {
@@ -728,6 +762,24 @@ async function ensureLocalDevDnsRecord(
       );
       return "failed";
     }
+    const existing = await findLocalDevWildcardRecords(cf, zone.id, wildcard);
+    const conflict = existing.find((r) => r.type !== "A" || !isTailscaleIpv4(r.content));
+    if (conflict) {
+      notes.push(
+        `DNS record skipped: ${formatRecord(conflict)} already exists. Hatchkit will not overwrite non-Tailscale wildcard DNS; choose --domain local.<your-domain> or change the record manually.`,
+      );
+      return "skipped-existing";
+    }
+    if (existing.length > 1) {
+      notes.push(
+        `DNS record skipped: ${wildcard} has multiple local-dev-looking records. Clean them up manually before re-running.`,
+      );
+      return "skipped-existing";
+    }
+
+    const current = existing[0];
+    if (current && current.content === identity.ip && !current.proxied) return "unchanged";
+
     const upsert = await cf.upsertRecord(zone.id, {
       type: "A",
       name: wildcard,
@@ -742,6 +794,23 @@ async function ensureLocalDevDnsRecord(
     notes.push(`DNS record failed: ${(err as Error).message}`);
     return "failed";
   }
+}
+
+async function findLocalDevWildcardRecords(
+  cf: import("./utils/cloudflare-api.js").CloudflareApi,
+  zoneId: string,
+  wildcard: string,
+): Promise<Array<{ type: string; name: string; content: string; proxied: boolean }>> {
+  const [a, aaaa, cname] = await Promise.all([
+    cf.findRecordsByName(zoneId, wildcard, "A"),
+    cf.findRecordsByName(zoneId, wildcard, "AAAA"),
+    cf.findRecordsByName(zoneId, wildcard, "CNAME"),
+  ]);
+  return [...a, ...aaaa, ...cname];
+}
+
+function formatRecord(record: { type: string; name: string; content: string; proxied: boolean }) {
+  return `${record.type} ${record.name} -> ${record.content}${record.proxied ? " (proxied)" : ""}`;
 }
 
 /** Walk the candidate label chain looking for a Cloudflare zone we can
@@ -768,6 +837,18 @@ async function resolveZoneForName(
  *  and the laptop's current tailnet IP. */
 async function checkLocalDevDnsRecord(currentIp: string): Promise<CheckResult | null> {
   const localDevDomain = readCaddyLocalDevDomain();
+  const domainSafetyIssue = localDevDomainSafetyIssue(localDevDomain);
+  if (domainSafetyIssue) {
+    return {
+      name: "Local-dev / DNS domain",
+      status: "fail",
+      detail: domainSafetyIssue,
+      hint: [
+        "Re-run `hatchkit dev-setup init --domain local.<your-domain>`.",
+        "This prevents Hatchkit from managing a production wildcard such as *.example.com.",
+      ],
+    };
+  }
   const wildcard = `*.${localDevDomain}`;
   const token =
     (await readCloudflareTokenFromConfig()) ?? (await readCloudflareTokenFromKeychain());
@@ -788,7 +869,30 @@ async function checkLocalDevDnsRecord(currentIp: string): Promise<CheckResult | 
         ],
       };
     }
-    const record = await cf.findRecord(zone.id, wildcard, "A");
+    const existing = await findLocalDevWildcardRecords(cf, zone.id, wildcard);
+    const conflict = existing.find((r) => r.type !== "A" || !isTailscaleIpv4(r.content));
+    if (conflict) {
+      return {
+        name: "Local-dev / DNS A record",
+        status: "fail",
+        detail: `existing non-local-dev wildcard record: ${formatRecord(conflict)}`,
+        hint: [
+          "Hatchkit will not overwrite this record automatically.",
+          "Use a dedicated local-dev suffix such as local.<your-domain>, or change DNS manually.",
+        ],
+      };
+    }
+    if (existing.length > 1) {
+      return {
+        name: "Local-dev / DNS A record",
+        status: "fail",
+        detail: `${wildcard} has multiple A/AAAA/CNAME records`,
+        hint: [
+          "Clean up duplicate wildcard records manually, then re-run `hatchkit dev-setup init`.",
+        ],
+      };
+    }
+    const record = existing[0];
     if (!record) {
       return {
         name: "Local-dev / DNS A record",
@@ -954,6 +1058,8 @@ export async function enableProjectLocalDev(
     normaliseLocalDevDomain(manifest?.localDev?.domain) ??
     localDevDomainFromProjectDomain(manifest?.domain) ??
     LOCAL_DEV_DOMAIN;
+  const domainSafetyIssue = localDevDomainSafetyIssue(localDevDomain);
+  if (domainSafetyIssue) throw new Error(domainSafetyIssue);
   const wroteFragment = writeProjectFragment(input.slug, input.devPort, localDevDomain);
 
   const docsPath = join(input.projectDir, "docs", "dev-setup.md");
@@ -1418,6 +1524,12 @@ export async function runDevSetupCli(args: string[]): Promise<void> {
         localDevDomainFromProjectDomain(manifest?.domain) ??
         undefined;
     }
+    const domainSafetyIssue = localDevDomainSafetyIssue(localDevDomain ?? LOCAL_DEV_DOMAIN);
+    if (domainSafetyIssue) {
+      const chalk = (await import("chalk")).default;
+      console.log(chalk.red(`  ${domainSafetyIssue}`));
+      process.exit(1);
+    }
     // --caddy-token-keychain <service>:<account>   → wrapper mode with custom pair
     // --no-caddy-token-keychain                    → force inline-env mode
     // (default)                                     → auto-detect default pair
@@ -1468,9 +1580,11 @@ export async function runDevSetupCli(args: string[]): Promise<void> {
           ? chalk.green(result.dnsRecord)
           : result.dnsRecord === "unchanged"
             ? chalk.dim("unchanged")
-            : result.dnsRecord === "failed"
-              ? chalk.red("failed")
-              : chalk.dim("skipped (no CF token)");
+            : result.dnsRecord === "skipped-existing"
+              ? chalk.yellow("skipped (existing wildcard)")
+              : result.dnsRecord === "failed"
+                ? chalk.red("failed")
+                : chalk.dim("skipped (no CF token)");
       console.log(
         `  DNS A record:         ${dnsLabel}  ${chalk.dim(`*.${result.localDevDomain}`)}`,
       );
@@ -1571,6 +1685,11 @@ async function runDevSetupEnableCli(args: string[]): Promise<void> {
     LOCAL_DEV_DOMAIN;
   if (rawLocalDevDomain && !normaliseLocalDevDomain(rawLocalDevDomain)) {
     console.log(chalk.red(`  --domain ${rawLocalDevDomain} is not a valid local-dev domain.`));
+    process.exit(1);
+  }
+  const domainSafetyIssue = localDevDomainSafetyIssue(localDevDomain);
+  if (domainSafetyIssue) {
+    console.log(chalk.red(`  ${domainSafetyIssue}`));
     process.exit(1);
   }
 

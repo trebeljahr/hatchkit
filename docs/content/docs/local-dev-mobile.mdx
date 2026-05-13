@@ -11,7 +11,7 @@ https://<slug>.local.<your-domain>/
 
 That URL is meant for mobile-first local testing: open the live app from a phone, tablet, another laptop, or a Capacitor WebView without guessing LAN IPs or changing per-project DNS.
 
-By default, hatchkit derives the wildcard from the project domain: `app.example.com` becomes `*.local.example.com`. Override it with `hatchkit dev-setup init --domain local.example.com` when needed.
+By default, hatchkit derives the wildcard from the project domain: `app.example.com` becomes `*.local.example.com`. Override it with `hatchkit dev-setup init --domain local.example.com` when needed. The domain must use the dedicated `local.` prefix so Hatchkit never manages a production wildcard like `*.example.com`.
 
 ## Auto mode
 

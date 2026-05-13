@@ -95,7 +95,7 @@ hatchkit dev-setup disable
 
 | Command | Effect |
 |---|---|
-| `dev-setup init` | Writes `~/.config/dev/Caddyfile`, writes/loads the launchd Caddy job, registers `tailscale serve --tcp=443`, and upserts `*.local.<your-domain> A <tailnet-ip>` when Cloudflare credentials are available. |
+| `dev-setup init` | Writes `~/.config/dev/Caddyfile`, writes/loads the launchd Caddy job, registers `tailscale serve --tcp=443`, and upserts `*.local.<your-domain> A <tailnet-ip>` when Cloudflare credentials are available. Custom `--domain` values must use the dedicated `local.` prefix. |
 | `dev-setup status` | Prints the Local-dev checks from `hatchkit doctor`. |
 | `dev-setup enable [--slug <s>] [--port <p>] [--project-dir <path>]` | Retrofit an existing project: writes the Caddy fragment, generates `docs/dev-setup.md`, patches supported framework config, adds the dev plugin package, and persists `localDev.slug`. |
 | `dev-setup disable` | Removes the project Caddy fragment and generated docs file. Host-wide Caddy/Tailscale setup remains for other projects. |

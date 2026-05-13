@@ -2298,8 +2298,12 @@ function printHelp(topic?: HelpTopic): void {
                                without the fragment).
 
   ${chalk.bold("DNS:")}
-    ${chalk.cyan("dev-setup init")} auto-upserts a DNS-only A record:
+    ${chalk.cyan("dev-setup init")} auto-upserts a DNS-only A record on a
+    dedicated ${chalk.cyan("local.")} subdomain:
     *.local.<your-domain>  A  <your-tailnet-ip>  (DNS-only)
+
+    Custom ${chalk.cyan("--domain")} values must use that ${chalk.cyan("local.")} prefix so
+    Hatchkit never overwrites a production wildcard such as *.example.com.
 
     If Cloudflare credentials are unavailable, add that record manually.
 
