@@ -553,7 +553,7 @@ async function checkGoogleSearchConsole(): Promise<CheckResult> {
         return [
           "Google OAuth refresh token is invalid, revoked, or missing required scopes.",
           "Re-run: `hatchkit config add search-console`",
-          "Required scopes: Search Console `webmasters` + Site Verification.",
+          "Required scopes: Search Console `webmasters` + Site Verification `verify_only`.",
         ];
       }
       if (code === 403) {

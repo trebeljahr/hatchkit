@@ -113,7 +113,9 @@ Hatchkit uses Google OAuth once, then `hatchkit add <project> search-console`
 requests a Site Verification DNS TXT token, writes it through Cloudflare DNS,
 verifies ownership, and adds the `sc-domain:<domain>` Search Console property.
 Google does not support API-key auth for this flow; the stored credential is an
-OAuth refresh token in the OS keychain.
+OAuth refresh token in the OS keychain. Hatchkit requests Search Console
+read/write plus Site Verification verify-only access; the token stays local to
+the user's machine.
 
 Configure: `hatchkit config add search-console`.
 

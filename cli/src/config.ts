@@ -1428,8 +1428,35 @@ export async function getResendConfig(): Promise<ResendConfig | null> {
 
 const GOOGLE_SEARCH_CONSOLE_SCOPES = [
   "https://www.googleapis.com/auth/webmasters",
-  "https://www.googleapis.com/auth/siteverification",
+  "https://www.googleapis.com/auth/siteverification.verify_only",
 ];
+
+const GOOGLE_SEARCH_CONSOLE_SCOPE_REQUIREMENTS = [
+  {
+    label: "Search Console read/write",
+    scopes: ["https://www.googleapis.com/auth/webmasters"],
+  },
+  {
+    label: "Site Verification verify-only",
+    scopes: [
+      "https://www.googleapis.com/auth/siteverification.verify_only",
+      "https://www.googleapis.com/auth/siteverification",
+    ],
+  },
+];
+
+function assertGoogleSearchConsoleScopes(scopes: string[]): void {
+  const granted = new Set(scopes);
+  const missing = GOOGLE_SEARCH_CONSOLE_SCOPE_REQUIREMENTS.filter(
+    (req) => !req.scopes.some((scope) => granted.has(scope)),
+  );
+  if (missing.length === 0) return;
+  throw new Error(
+    "Google OAuth did not grant every scope Hatchkit needs. " +
+      `Missing: ${missing.map((m) => m.label).join(", ")}. ` +
+      "Re-run setup and approve both Search Console and Site Verification access.",
+  );
+}
 
 async function exchangeGoogleCode(args: {
   clientId: string;
@@ -1549,9 +1576,11 @@ async function runGoogleOAuthLoopback(args: {
         "Google did not return a refresh token. Re-run setup and keep `prompt=consent`, or revoke the app at https://myaccount.google.com/permissions and try again.",
       );
     }
+    const scopes = token.scope?.split(/\s+/).filter(Boolean) ?? GOOGLE_SEARCH_CONSOLE_SCOPES;
+    assertGoogleSearchConsoleScopes(scopes);
     return {
       refreshToken: token.refresh_token,
-      scopes: token.scope?.split(/\s+/).filter(Boolean) ?? GOOGLE_SEARCH_CONSOLE_SCOPES,
+      scopes,
     };
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -1613,7 +1642,7 @@ export async function ensureGoogleSearchConsole(): Promise<GoogleSearchConsoleCo
         "  Create an OAuth client once in Google Cloud, enable the Search Console API\n" +
         "  and Site Verification API, then paste its client id/secret here.\n" +
         "  Hatchkit stores the refresh token in your OS keychain and uses it only\n" +
-        "  to verify domain ownership and add Search Console properties.\n",
+        "  on this machine to verify domain ownership and add Search Console properties.\n",
     ),
   );
   tokenHint(
