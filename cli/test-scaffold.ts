@@ -190,6 +190,8 @@ results.desktop = await run("desktop only", "my-cool-app", ["desktop"], (d) => {
 results.mobile = await run("mobile only", "my-cool-app", ["mobile"], (d) => {
   const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
   const capCfg = readFileSync(join(d, "capacitor.config.ts"), "utf-8");
+  const androidDev = readFileSync(join(d, "scripts/android-dev.sh"), "utf-8");
+  const iosDev = readFileSync(join(d, "scripts/ios-dev.sh"), "utf-8");
   const layout = readFileSync(join(d, "packages/client/src/app/layout.tsx"), "utf-8");
   const serverEnv = readFileSync(join(d, "packages/server/.env.example"), "utf-8");
   return [
@@ -205,6 +207,9 @@ results.mobile = await run("mobile only", "my-cool-app", ["mobile"], (d) => {
     ["mobile bridge kept", existsSync(join(d, "packages/client/src/mobile/bridge.ts"))],
     ["resources/icon.png kept", statSync(join(d, "resources/icon.png")).size > 1000],
     ["android-dev.sh kept", existsSync(join(d, "scripts/android-dev.sh"))],
+    ["android-dev.sh honors CAP_DEV_URL override", androidDev.includes('CAP_DEV_URL="${CAP_DEV_URL:-http://$DEV_HOST:$NEXT_PORT}"')],
+    ["android-dev.sh can derive Tailscale URL", androidDev.includes("localDev") && androidDev.includes("localDevDomain")],
+    ["ios-dev.sh honors CAP_DEV_URL override", iosDev.includes('CAP_DEV_URL="${CAP_DEV_URL:-http://$DEV_HOST:$NEXT_PORT}"')],
     ["mobile workflow kept", existsSync(join(d, ".github/workflows/mobile-release.yml"))],
     ["desktop workflow removed", !existsSync(join(d, ".github/workflows/desktop-release.yml"))],
     ["electron/ removed", !existsSync(join(d, "electron"))],
@@ -467,22 +472,28 @@ console.log("\n── manifest: sanitized fields only, no leaks ─────�
 console.log("\n── non-interactive: presets bypass prompts ─────────────────────────────");
 {
   const { collectProjectConfig } = await import("./src/prompts.js");
+  const presets: Parameters<typeof collectProjectConfig>[0]["presets"] = {
+    name: "ni-app",
+    domain: "ni-app.example.com",
+    baseDomain: "example.com",
+    subdomain: "ni-app",
+    deployTarget: "new",
+    features: ["websocket"],
+    mlServices: [],
+    forceRedeployMl: [],
+    s3Provider: "none",
+    scaffoldRepo: true,
+    createGithubRepo: false,
+    runDeployment: false,
+  };
   const result = await collectProjectConfig({
     nonInteractive: true,
-    presets: {
-      name: "ni-app",
-      domain: "ni-app.example.com",
-      baseDomain: "example.com",
-      subdomain: "ni-app",
-      deployTarget: "new",
-      features: ["websocket"],
-      mlServices: [],
-      forceRedeployMl: [],
-      s3Provider: "none",
-      scaffoldRepo: true,
-      createGithubRepo: false,
-      runDeployment: false,
-    },
+    presets,
+  });
+  const noLocalDev = await collectProjectConfig({
+    nonInteractive: true,
+    presets,
+    forceNoLocalDev: true,
   });
   const checks: Check[] = [
     ["name preserved", result.name === "ni-app"],
@@ -492,6 +503,8 @@ console.log("\n── non-interactive: presets bypass prompts ──────
     ["serverLocation defaulted to nbg1", result.serverLocation === "nbg1"],
     ["createGithubRepo false", result.createGithubRepo === false],
     ["runDeployment false", result.runDeployment === false],
+    ["non-interactive localDev defaults on", result.localDev?.slug === "ni-app"],
+    ["forceNoLocalDev disables localDev", noLocalDev.localDev === undefined],
   ];
   let ok = true;
   for (const [n, c] of checks) {

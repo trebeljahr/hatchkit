@@ -9,6 +9,8 @@
 #   NEXT_PORT=<n>       Next.js port (default: 3000)
 #   LAN_IP=<ip>         override host (default: localhost — simulators
 #                       share the Mac's network namespace)
+#   CAP_DEV_URL=<url>   full WebView dev URL override, e.g.
+#                       https://<slug>.local.<your-domain>/
 
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -69,7 +71,7 @@ if [ ! -d "$REPO/packages/client/out" ] || [ ! -d "$REPO/ios/App/App/public" ]; 
 fi
 
 # ── Next.js dev server ────────────────────────────────────
-CAP_DEV_URL="http://$DEV_HOST:$NEXT_PORT"
+CAP_DEV_URL="${CAP_DEV_URL:-http://$DEV_HOST:$NEXT_PORT}"
 echo "Starting Next.js dev server at $CAP_DEV_URL"
 (cd "$REPO/packages/client" && npx next dev --hostname 0.0.0.0 --port "$NEXT_PORT") &
 NEXT_PID=$!

@@ -200,6 +200,9 @@ export interface CollectOptions {
   /** Non-interactive mode: any missing value falls back to its
    *  default if one exists, else throws. */
   nonInteractive?: boolean;
+  /** Hard-disable local-dev wiring, even though new projects default
+   *  to enabling it. Used by `hatchkit create --no-local-dev`. */
+  forceNoLocalDev?: boolean;
 }
 
 export async function collectProjectConfig(options: CollectOptions): Promise<ProjectConfig> {
@@ -607,7 +610,9 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
   );
   const localDevDomain = localDevDomainFromProjectDomain(domain) ?? undefined;
   let localDev: { slug: string; domain?: string } | undefined;
-  if (presets.localDev !== undefined) {
+  if (options.forceNoLocalDev) {
+    localDev = undefined;
+  } else if (presets.localDev !== undefined) {
     const slugSource = presets.localDev.slug || name;
     localDev = {
       slug: sanitiseSlug(slugSource),

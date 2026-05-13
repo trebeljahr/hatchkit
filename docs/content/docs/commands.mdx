@@ -48,6 +48,8 @@ hatchkit create [options]
 | `--yes`, `-y` | Skip prompts; use defaults + `--config` values. Non-interactive. |
 | `--config <path>` | Load a JSON file with `ProjectConfig` overrides. |
 | `--name <name>` | Set the project name without prompting. |
+| `--local-dev[=<slug>]` | Enable the Tailscale/Caddy dev URL and optionally set its slug. Defaults on for new projects. |
+| `--no-local-dev` | Skip local-dev wiring for this project. |
 | `--no-github` | Skip GitHub repo creation. |
 | `--no-deploy` | Skip Terraform / Coolify / ML deployment. |
 
@@ -55,12 +57,13 @@ hatchkit create [options]
 
 1. Prompts for name, domain, deploy target, features, ML services.
 2. Scaffolds the starter, strips unselected features, assigns unique ports.
-3. Installs deps (if `pnpm` is available and you opt in).
-4. `git init` + first commit + GitHub repo.
-5. Generates Terraform tfvars + Coolify `.env`.
-6. Runs Terraform (DNS + optionally server).
-7. Runs Coolify app setup and pushes the dotenvx private key.
-8. Deploys ML services and prints env endpoints to set.
+3. Auto-wires local-dev unless disabled: `.hatchkit.json` gets `localDev.slug`, `docs/dev-setup.md` is generated, and the Next/Vite dev plugin plus Caddy fragment are added.
+4. Installs deps (if `pnpm` is available and you opt in).
+5. `git init` + first commit + GitHub repo.
+6. Generates Terraform tfvars + Coolify `.env`.
+7. Runs Terraform (DNS + optionally server).
+8. Runs Coolify app setup and pushes the dotenvx private key.
+9. Deploys ML services and prints env endpoints to set.
 
 ---
 
@@ -74,6 +77,32 @@ hatchkit update
 ```
 
 Reads `.hatchkit.json`, lets you pick a new feature set, copies additive pieces from the starter. **Supported additions today:** `desktop`, `mobile`. Removal is not supported — removing a feature could delete user code. Remove manually and update the manifest.
+
+---
+
+## `hatchkit dev-setup`
+
+Host-wide and per-project setup for stable HTTPS dev URLs over Tailscale:
+
+```bash
+hatchkit dev-setup init
+hatchkit dev-setup status
+hatchkit dev-setup enable
+hatchkit dev-setup disable
+```
+
+### What it automates
+
+| Command | Effect |
+|---|---|
+| `dev-setup init` | Writes `~/.config/dev/Caddyfile`, writes/loads the launchd Caddy job, registers `tailscale serve --tcp=443`, and upserts `*.local.<your-domain> A <tailnet-ip>` when Cloudflare credentials are available. |
+| `dev-setup status` | Prints the Local-dev checks from `hatchkit doctor`. |
+| `dev-setup enable [--slug <s>] [--port <p>] [--project-dir <path>]` | Retrofit an existing project: writes the Caddy fragment, generates `docs/dev-setup.md`, patches supported framework config, adds the dev plugin package, and persists `localDev.slug`. |
+| `dev-setup disable` | Removes the project Caddy fragment and generated docs file. Host-wide Caddy/Tailscale setup remains for other projects. |
+
+`dev-setup init` is one-time per machine and idempotent. New projects already run the per-project wiring during `hatchkit create`, so `dev-setup enable` is mainly for older projects.
+
+See [Local Dev On Mobile](./local-dev-mobile) for the Tailscale + Caddy + Capacitor flow.
 
 ---
 

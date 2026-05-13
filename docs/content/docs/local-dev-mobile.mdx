@@ -1,0 +1,185 @@
+---
+title: Local Dev On Mobile
+description: Tailscale + Caddy dev URLs for phone, tablet, simulator, and Capacitor testing.
+---
+
+Hatchkit can expose each local dev server at a stable HTTPS URL:
+
+```txt
+https://<slug>.local.<your-domain>/
+```
+
+That URL is meant for mobile-first local testing: open the live app from a phone, tablet, another laptop, or a Capacitor WebView without guessing LAN IPs or changing per-project DNS.
+
+By default, hatchkit derives the wildcard from the project domain: `app.example.com` becomes `*.local.example.com`. Override it with `hatchkit dev-setup init --domain local.example.com` when needed.
+
+## Auto mode
+
+New projects opt into local-dev by default.
+
+```bash
+hatchkit create
+```
+
+During create, hatchkit records `localDev.slug` in `.hatchkit.json`, writes `docs/dev-setup.md`, adds the Next/Vite local-dev plugin, and creates the per-project Caddy fragment. In non-interactive mode, `hatchkit create --yes` derives the slug from the project name.
+
+Use these only when you need to override the default:
+
+```bash
+hatchkit create --local-dev=my-demo
+hatchkit create --no-local-dev
+```
+
+For older projects, retrofit once:
+
+```bash
+cd my-app
+hatchkit dev-setup enable
+```
+
+## One-time host setup
+
+Run this once per machine:
+
+```bash
+hatchkit dev-setup init
+# or pick the wildcard domain explicitly
+hatchkit dev-setup init --domain local.example.com
+```
+
+It does the host-wide wiring:
+
+| Piece | What hatchkit does |
+|---|---|
+| Caddyfile | Writes `~/.config/dev/Caddyfile` with a wildcard TLS site for `*.local.<your-domain>`. |
+| Caddy runtime | Writes and loads a launchd job, using a free local HTTPS port starting at `9443`. |
+| Tailscale bridge | Registers `tailscale serve --bg --tcp=443 tcp://localhost:<caddy-port>`. |
+| DNS | Upserts `*.local.<your-domain> A <your-tailnet-ip>`, DNS-only, TTL 60, when Cloudflare credentials are available. |
+| Per-project routing | Imports `~/.config/dev/projects/*.caddy`; each project plugin keeps its fragment pointed at the live dev port. |
+
+`dev-setup init` is idempotent. Re-run it after reinstalling Tailscale, changing Caddy, rotating the Cloudflare token, or getting a new tailnet IP.
+
+## Prerequisites
+
+Install and sign into Tailscale on the dev machine and the mobile device:
+
+```bash
+tailscale status
+```
+
+Install Caddy with the Cloudflare DNS plugin:
+
+```bash
+brew install caddy
+caddy list-modules | grep dns.providers.cloudflare
+```
+
+If the module is missing:
+
+```bash
+go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+xcaddy build --with github.com/caddy-dns/cloudflare
+```
+
+Configure Cloudflare DNS credentials through hatchkit:
+
+```bash
+hatchkit config add dns
+```
+
+The token needs `Zone:DNS:Edit` and `Zone:Zone:Read` on the parent zone. For the cleanest Caddy setup, also store the token in Keychain so launchd never stores it in plaintext:
+
+```bash
+security add-generic-password -s caddy-dev -a cloudflare-acme -w '<token>' -U
+hatchkit dev-setup init
+```
+
+If Cloudflare credentials are unavailable, add the wildcard manually:
+
+```txt
+*.local.<your-domain>   A   <your-tailnet-ip>   DNS-only
+```
+
+Use an A record to the machine's Tailscale `100.x` address, not a CNAME to a `.ts.net` name. The direct A record avoids MagicDNS resolver edge cases on mobile OSes.
+
+## Daily use
+
+Start the project:
+
+```bash
+pnpm dev
+```
+
+The dev plugin writes or refreshes:
+
+```txt
+~/.config/dev/projects/<slug>.caddy
+```
+
+Caddy watches the directory and picks up the route without a restart. The dev banner includes:
+
+```txt
+Tailscale: https://<slug>.local.<your-domain>/
+```
+
+Open that URL from any device signed into the same tailnet.
+
+## Capacitor
+
+For simulator/emulator work, use the scaffolded scripts:
+
+```bash
+pnpm dev:ios
+pnpm dev:android
+```
+
+Defaults:
+
+| Target | Default dev URL |
+|---|---|
+| iOS Simulator | `http://localhost:<NEXT_PORT>` |
+| Android Emulator | `http://10.0.2.2:<NEXT_PORT>` |
+| Physical Android phone on Wi-Fi | `LAN_IP=<your-lan-ip> pnpm dev:android` |
+| Physical Android phone on Tailscale | `pnpm dev:android` auto-picks `https://<slug>.local.<your-domain>/` when `.hatchkit.json` has `localDev.slug`. |
+| Physical iPhone on Tailscale | `CAP_DEV_URL=https://<slug>.local.<your-domain>/ npx cap sync ios`, then `npx cap open ios` and launch from Xcode. |
+
+The scripts start Next on `0.0.0.0`, wait for `localhost:<NEXT_PORT>`, export `CAP_DEV_URL`, run `cap sync`, then install and launch the app. The Tailscale URL path gives physical devices a real HTTPS origin with a valid wildcard cert.
+
+## Verify
+
+```bash
+hatchkit doctor
+hatchkit dev-setup status
+```
+
+Look for green Local-dev rows:
+
+- Tailscale daemon
+- Caddy installed
+- Caddy Cloudflare plugin
+- Cloudflare ACME token in keychain, or Cloudflare API token in plist
+- Caddy launchd job
+- DNS A record
+- Tailscale serve bridge
+
+When a row fails, the hint is the repair command. Most drift fixes are just:
+
+```bash
+hatchkit dev-setup init
+```
+
+## Escape hatches
+
+Disable the plugin for one run:
+
+```bash
+HATCHKIT_LOCAL_DEV=0 pnpm dev
+```
+
+Disable local-dev for a project:
+
+```bash
+hatchkit dev-setup disable
+```
+
+That removes the Caddy fragment and generated `docs/dev-setup.md`. The host-wide Caddy/Tailscale setup remains for other projects.

@@ -970,6 +970,7 @@ async function handleCreate(): Promise<void> {
     forceNoGithub,
     forceNoDeploy,
     forceNoInstall,
+    forceNoLocalDev,
   } = flags;
 
   // Check if first run (skip onboarding when non-interactive — the
@@ -979,10 +980,11 @@ async function handleCreate(): Promise<void> {
   }
 
   // Collect project config via interactive prompts (or presets).
-  const config = await collectProjectConfig({ dryRun, presets, nonInteractive });
+  const config = await collectProjectConfig({ dryRun, presets, nonInteractive, forceNoLocalDev });
   if (forceNoGithub) config.createGithubRepo = false;
   if (forceNoDeploy) config.runDeployment = false;
   if (forceNoInstall) config.installDeps = false;
+  if (forceNoLocalDev) config.localDev = undefined;
 
   // Ensure needed providers are configured (lazy prompting).
   // Coolify + Hetzner only matter for the coolify deployment mode.
@@ -2053,7 +2055,7 @@ function printHelp(topic?: HelpTopic): void {
   }
   if (topic === "dev-setup") {
     console.log(`
-  ${chalk.bold("hatchkit dev-setup")} — opt-in Tailscale-served dev URLs
+  ${chalk.bold("hatchkit dev-setup")} — Tailscale-served dev URLs
 
   Wires up the host-wide plumbing that makes every scaffolded project
   reachable from any Tailscale peer at:
@@ -2065,8 +2067,10 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Host-wide subcommands (run once per machine):")}
     dev-setup init [--force]   Auto-write ~/.config/dev/Caddyfile, register
                                a launchd job to run Caddy on a free port
-                               (default 9443, auto-bumps on collision), and
-                               register a tailscale serve TCP=443 bridge.
+                               (default 9443, auto-bumps on collision),
+                               register a tailscale serve TCP=443 bridge,
+                               and auto-upsert the wildcard DNS A record
+                               when Cloudflare credentials are available.
                                Idempotent — safe to re-run.
     dev-setup status           Print the same Local-dev rows that
                                ${chalk.cyan("hatchkit doctor")} would show.
@@ -2086,8 +2090,11 @@ function printHelp(topic?: HelpTopic): void {
                                next.config + dep in place (they're inert
                                without the fragment).
 
-  ${chalk.bold("One-time DNS bit you do yourself (per machine, not per project):")}
+  ${chalk.bold("DNS:")}
+    ${chalk.cyan("dev-setup init")} auto-upserts a DNS-only A record:
     *.local.<your-domain>  A  <your-tailnet-ip>  (DNS-only)
+
+    If Cloudflare credentials are unavailable, add that record manually.
 
   This feature is fully optional: until you run ${chalk.cyan("dev-setup init")},
   ${chalk.cyan("hatchkit doctor")} surfaces zero Local-dev rows. Within a project,
@@ -2669,6 +2676,8 @@ function printHelp(topic?: HelpTopic): void {
     --yes, -y       (with \`create\`) skip prompts, use defaults / --config values
     --config <path> (with \`create\`) load JSON overrides for ProjectConfig fields
     --name <name>   (with \`create\`) set project name without prompting
+    --local-dev[=<slug>] (with \`create\`) enable Tailscale dev URL, optionally with slug
+    --no-local-dev  (with \`create\`) skip local-dev wiring
     --no-github     (with \`create\`) skip GitHub repo creation
     --no-deploy     (with \`create\`) skip Terraform/Coolify/ML deployment
 

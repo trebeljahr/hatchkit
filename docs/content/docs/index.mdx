@@ -12,6 +12,7 @@ Hatchkit is an interactive CLI that scaffolds, provisions, and deploys full-stac
 One command takes you from empty folder to:
 
 - a fresh repo based on a production-ready starter (websockets, Stripe, auth, analytics, S3, desktop/mobile — opt-in),
+- stable HTTPS local-dev URLs for phone/tablet testing over Tailscale + Caddy,
 - a GitHub repository,
 - DNS + a Hetzner VPS + a Coolify app (via Terraform) — or a push to an existing server you already operate,
 - paired `-dev` / `-prod` clients for GlitchTip (errors), OpenPanel (analytics), and Resend (email),
@@ -33,6 +34,7 @@ Starting a new product is the same toil every time: pick a starter, wire up auth
 ## Next steps
 
 - [Getting Started](./getting-started) — install + onboard + create your first project
+- [Local Dev On Mobile](./local-dev-mobile) — Tailscale + Caddy setup for phone, tablet, and Capacitor testing
 - [Commands reference](./commands) — every command, every flag
 - [Providers](./providers) — what hatchkit integrates with and how to configure it
 - [ML services](./ml-services) — GPU workloads as first-class citizens

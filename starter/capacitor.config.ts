@@ -11,7 +11,8 @@ import type { CapacitorConfig } from "@capacitor/cli";
  *
  * Live reload in dev: scripts/android-dev.sh / scripts/ios-dev.sh
  * set CAP_DEV_URL so the WebView loads from the Next dev server
- * on your LAN instead of the bundled export.
+ * on localhost, your LAN, or the hatchkit Tailscale dev URL instead
+ * of the bundled export.
  */
 const config: CapacitorConfig = {
   appId: "com.example.{{bundleId}}",

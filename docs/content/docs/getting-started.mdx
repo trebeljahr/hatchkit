@@ -24,6 +24,7 @@ Requirements:
 - **git** and the **GitHub CLI** (`gh`) authenticated (`gh auth login`)
 - A **Coolify** instance reachable over HTTPS — your own server or a friend's
 - Optional for "deploy me a new server from scratch": a **Hetzner Cloud** API token, a **DNS provider** token (INWX or Cloudflare)
+- Optional for mobile/browser local dev from real devices: **Tailscale** signed in on your dev machine + device, and **Caddy** with the Cloudflare DNS plugin
 
 ## 2. One-time onboarding
 
@@ -44,6 +45,14 @@ hatchkit doctor          # run a read-only API call against each one
 hatchkit config add coolify   # re-configure a single provider
 ```
 
+For stable HTTPS dev URLs on phones/tablets, run the host setup once after DNS is configured:
+
+```bash
+hatchkit dev-setup init
+```
+
+That writes the local Caddy config, launchd job, Tailscale serve bridge, and Cloudflare wildcard A record when credentials are available. New projects opt in automatically; see [Local Dev On Mobile](./local-dev-mobile).
+
 ## 3. Scaffold a project
 
 ```bash
@@ -62,10 +71,11 @@ You'll be asked for:
 Hatchkit then:
 
 1. Copies the starter, strips unselected features, assigns unique ports (so you can run multiple projects locally).
-2. Runs `pnpm install` (if pnpm is on PATH and you opt in).
-3. `git init`, first commit, creates the GitHub repo (if you opted in).
-4. Writes Terraform tfvars + Coolify `.env` into `infra/`.
-5. If you opted into deployment: runs Terraform (DNS + optionally server), runs the Coolify setup script, pushes the dotenvx private key to Coolify, deploys any ML services, and prints the env block.
+2. Enables the local-dev URL by default: `.hatchkit.json` gets `localDev.slug`, `docs/dev-setup.md` is generated, and the dev plugin/Caddy fragment are wired.
+3. Runs `pnpm install` (if pnpm is on PATH and you opt in).
+4. `git init`, first commit, creates the GitHub repo (if you opted in).
+5. Writes Terraform tfvars + Coolify `.env` into `infra/`.
+6. If you opted into deployment: runs Terraform (DNS + optionally server), runs the Coolify setup script, pushes the dotenvx private key to Coolify, deploys any ML services, and prints the env block.
 
 ## 4. Run it locally
 
@@ -75,6 +85,14 @@ pnpm dev
 ```
 
 The starter runs server + client on the ports hatchkit assigned (collision-free across projects). Mobile / desktop targets have their own `pnpm` scripts printed at the end of `create`.
+
+If you ran `hatchkit dev-setup init`, the dev banner also prints:
+
+```txt
+Tailscale: https://<slug>.local.<your-domain>/
+```
+
+Open that URL from any device on your tailnet. For native mobile live reload, use `pnpm dev:ios` for the iOS Simulator and `pnpm dev:android` for Android; Android physical devices auto-pick the Tailscale URL when `localDev.slug` exists. Real iPhones can use `CAP_DEV_URL=https://<slug>.local.<your-domain>/` before `npx cap sync ios` / Xcode launch once the local-dev checks are green.
 
 ## 5. Non-interactive / CI
 

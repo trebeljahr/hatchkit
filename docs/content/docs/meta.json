@@ -3,6 +3,7 @@
   "pages": [
     "index",
     "getting-started",
+    "local-dev-mobile",
     "commands",
     "providers",
     "ml-services",

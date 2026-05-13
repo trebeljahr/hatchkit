@@ -9,7 +9,7 @@
  * Architecture (host-wide one-time setup):
  *
  *   phone ──HTTPS──▶ <slug>.local.<project-domain>:443
- *                          │ DNS CNAME → laptop.<tailnet>.ts.net
+ *                          │ DNS A → laptop's 100.x tailnet IP
  *                          ▼
  *                  tailscale serve --tcp=443 (raw TCP passthrough)
  *                          ▼
@@ -1220,8 +1220,8 @@ framework \`base\` / \`basePath\` config.
 
 ## One-time host setup
 
-Do this **once per machine**, not per project. After it's wired,
-every hatchkit project that opts in just works.
+Do this **once per machine**, not per project. New hatchkit projects opt in by
+default, so after the host is wired they just work.
 
 \`\`\`
 hatchkit dev-setup init --domain ${localDevDomain}
@@ -1237,7 +1237,8 @@ ${wildcard}   A   <your-tailnet-ip>   (DNS-only, TTL 60)
 
 It uses your hatchkit DNS token (or the \`caddy-dev/cloudflare-acme\`
 keychain entry as a fallback) — the same token Caddy already needs for
-DNS-01 ACME. \`Zone:DNS:Edit\` + \`Zone:Zone:Read\` on the parent zone.
+DNS-01 ACME. Required permissions: \`Zone:DNS:Edit\` + \`Zone:Zone:Read\`
+on the parent zone.
 
 **Why a direct A record instead of a CNAME to ${tailnetHostname}?**
 A CNAME to a \`.ts.net\` name only resolves when each peer has
@@ -1264,8 +1265,16 @@ hatchkit config add dns
 \`\`\`
 
 Permissions: \`Zone:DNS:Edit\` + \`Zone:Zone:Read\` scoped to
-\`${localDevDomain}\`. The token gets embedded in the launchd plist
-during \`dev-setup init\`.
+\`${localDevDomain}\`. For the cleanest setup, keep the token in Keychain:
+
+\`\`\`
+security add-generic-password -s caddy-dev -a cloudflare-acme -w '<token>' -U
+\`\`\`
+
+When that keychain entry exists, \`dev-setup init\` writes a tiny Caddy
+wrapper that reads the token at startup, so the launchd plist never stores
+the token in plaintext. Without the keychain entry, hatchkit falls back to
+embedding the DNS token from \`hatchkit config add dns\` in the plist.
 
 ### 3. Caddy with the Cloudflare DNS plugin
 
@@ -1288,10 +1297,11 @@ xcaddy build --with github.com/caddy-dns/cloudflare
 hatchkit dev-setup init
 \`\`\`
 
-This writes \`~/.config/dev/Caddyfile\`, a launchd plist that runs Caddy
-on a free port (default 9443, auto-bumps if taken), loads the launchd
-job, and registers \`tailscale serve --tcp=443 → localhost:<caddyPort>\`.
-Idempotent — safe to re-run.
+This writes \`~/.config/dev/Caddyfile\`, writes/loads a launchd job that runs
+Caddy on a free port (default 9443, auto-bumps if taken), registers
+\`tailscale serve --tcp=443 → localhost:<caddyPort>\`, and upserts the
+\`${wildcard}\` DNS-only A record when Cloudflare credentials are
+available. Idempotent — safe to re-run.
 
 ### 5. Verify
 
@@ -1299,13 +1309,14 @@ Idempotent — safe to re-run.
 hatchkit doctor
 \`\`\`
 
-Look for the **Local-dev** rows. All six should be green:
+Look for the **Local-dev** rows. They should be green:
 
 - Tailscale daemon
 - Caddy installed
 - Caddy cloudflare plugin
-- Cloudflare API token in plist
+- Cloudflare ACME token in keychain, or Cloudflare API token in plist
 - Caddy launchd job
+- DNS A record
 - Tailscale serve bridge
 
 ## Per-project bits
@@ -1327,6 +1338,35 @@ hatchkit dev plugin:
 
 \`HATCHKIT_LOCAL_DEV=0\` in the environment disables the plugin entirely;
 the dev server falls back to its default banner.
+
+## Mobile/devices
+
+For browser testing on a phone or tablet, install Tailscale on the device,
+sign in to the same tailnet, and open:
+
+\`\`\`
+${url}
+\`\`\`
+
+For the native Capacitor loop, the scaffolded \`pnpm dev:ios\` and
+\`pnpm dev:android\` scripts run the WebView against \`CAP_DEV_URL\`.
+The iOS script targets the Simulator; the Android script targets an emulator
+or attached device. Simulators/emulators use local host routes automatically.
+Android physical devices auto-pick this Tailscale URL when \`.hatchkit.json\`
+has \`localDev.slug\`; otherwise Android devices can use either:
+
+\`\`\`
+LAN_IP=<your-lan-ip> pnpm dev:android
+\`\`\`
+
+or, when the device is on Tailscale and this host setup is green:
+
+\`\`\`
+CAP_DEV_URL=${url} pnpm dev:android
+\`\`\`
+
+For a real iPhone, set \`CAP_DEV_URL=${url}\`, run \`npx cap sync ios\`,
+then launch from Xcode via \`npx cap open ios\`.
 
 ## Cleanup
 
