@@ -1,6 +1,6 @@
 {
   "name": "@hatchkit/dev-plugin-next",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Next.js plugin for hatchkit's local-dev integration. Writes the project's Caddy fragment on `next dev` startup and prints a Tailscale-URL banner alongside Next's own startup output.",
   "type": "module",
   "main": "./dist/index.js",
