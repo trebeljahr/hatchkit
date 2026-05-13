@@ -491,6 +491,7 @@ async function handleAdd(): Promise<void> {
   const allServices: ProvisionService[] = [
     "glitchtip",
     "openpanel",
+    "plausible",
     "resend",
     "s3",
     "email",
@@ -514,6 +515,7 @@ async function handleAdd(): Promise<void> {
       choices: [
         { name: "GlitchTip (error tracking)", value: "glitchtip", checked: true },
         { name: "OpenPanel (product analytics)", value: "openpanel", checked: true },
+        { name: "Plausible (web analytics)", value: "plausible", checked: false },
         { name: "Resend (transactional email)", value: "resend", checked: true },
         {
           name: "S3 / R2 (per-bucket scoped credentials from .hatchkit.json)",
@@ -548,7 +550,7 @@ async function handleAdd(): Promise<void> {
 
   // Flag parsing:
   //   --no-write                      → never write; print a cache summary only
-  //   --enable-dev-obs                → also populate .env.development with GlitchTip/OpenPanel creds
+  //   --enable-dev-obs                → also populate .env.development with observability creds
   //   --surfaces=<shared|separate|server-only|client-only>
   //   --server-dir <path>             → absolute or project-relative env dir for the server
   //   --client-dir <path>             → same for the client
@@ -885,6 +887,7 @@ async function handleRemove(): Promise<void> {
   const allServices: ProvisionService[] = [
     "glitchtip",
     "openpanel",
+    "plausible",
     "resend",
     "s3",
     "email",
@@ -908,6 +911,7 @@ async function handleRemove(): Promise<void> {
       choices: [
         { name: "GlitchTip (deletes the project)", value: "glitchtip", checked: true },
         { name: "OpenPanel (deletes the project)", value: "openpanel", checked: true },
+        { name: "Plausible (deletes the site)", value: "plausible", checked: false },
         { name: "Resend (deletes the API key)", value: "resend", checked: true },
         { name: "S3 / R2 (deletes per-bucket scoped tokens)", value: "s3", checked: false },
         {
@@ -1050,13 +1054,16 @@ async function handleCreate(): Promise<void> {
       await ensureS3(config.s3Provider);
     }
   }
-  // Pre-flight observability + email + Stripe providers used by `hatchkit
-  // create` directly (not just `add`): if the user picked the analytics
-  // feature, GlitchTip needs to be configured before we can mint a DSN
-  // for them. Same for Stripe webhook auto-provisioning.
+  // Pre-flight observability + Stripe providers used by `hatchkit
+  // create` directly (not just `add`): if the user picked analytics
+  // providers, make sure they are configured before we can mint
+  // project-scoped resources. Same for Stripe webhook auto-provisioning.
   if (config.features.includes("analytics")) {
-    const { ensureGlitchtip } = await import("./config.js");
-    await ensureGlitchtip();
+    const providers = config.analyticsProviders ?? ["glitchtip"];
+    const { ensureGlitchtip, ensureOpenpanel, ensurePlausible } = await import("./config.js");
+    if (providers.includes("glitchtip")) await ensureGlitchtip();
+    if (providers.includes("openpanel")) await ensureOpenpanel();
+    if (providers.includes("plausible")) await ensurePlausible();
   }
   if (config.features.includes("stripe")) {
     const { ensureStripe } = await import("./config.js");
@@ -1143,31 +1150,51 @@ async function handleCreate(): Promise<void> {
         printDotenvxSummary(scaffoldResult.dotenvx, config.name);
       }
 
-      // Auto-provision GlitchTip + write its DSN encrypted into
-      // .env.production. The user picked the `analytics` feature; we
-      // already verified GlitchTip is configured during pre-flight.
-      // Skipped for client-only — the encrypt target lives in
-      // packages/server/, which doesn't exist post-prune. The client
-      // side of analytics (OpenPanel via NEXT_PUBLIC_*) still works
-      // without any provisioning.
-      if (config.features.includes("analytics") && config.surfaces !== "client-only") {
+      // Auto-provision selected observability/analytics providers
+      // through the same machinery used by `hatchkit add`, so create,
+      // adopt, and existing-project provisioning stay aligned.
+      if (config.features.includes("analytics")) {
+        const analyticsServices: ProvisionService[] = [
+          ...(config.analyticsProviders ?? ["glitchtip"]),
+        ];
         try {
-          const { provisionGlitchtipClient } = await import("./provision/glitchtip.js");
-          const { set: dotenvxSet } = await import("@dotenvx/dotenvx");
-          const ora = (await import("ora")).default;
-          const spinner = ora(`GlitchTip: creating project ${config.name}`).start();
-          const res = await provisionGlitchtipClient(config.name);
-          ledger?.record({ kind: "glitchtip", project: config.name });
-          spinner.succeed(`GlitchTip project ready (DSN encrypted into .env.production)`);
-          const prodEnvPath = join(appDir, "packages/server/.env.production");
-          dotenvxSet("GLITCHTIP_DSN", res.dsn, { path: prodEnvPath, encrypt: true });
+          if (analyticsServices.length > 0) {
+            const provisionMode =
+              config.surfaces === "both"
+                ? "shared"
+                : config.surfaces === "server-only"
+                  ? "server-only"
+                  : "client-only";
+            await runProvision({
+              baseName: config.name,
+              services: analyticsServices,
+              domain: config.domain,
+              surfaces: {
+                mode: provisionMode,
+                projectDir: appDir,
+                serverEnvDir:
+                  config.surfaces === "client-only" ? undefined : join(appDir, "packages/server"),
+                clientEnvDir:
+                  config.surfaces === "server-only" ? undefined : join(appDir, "packages/client"),
+              },
+              onProvisioned: (event) => {
+                if (event.service === "glitchtip") {
+                  ledger?.record({ kind: "glitchtip", project: event.project });
+                } else if (event.service === "openpanel") {
+                  ledger?.record({ kind: "openpanel", project: event.project });
+                } else if (event.service === "plausible") {
+                  ledger?.record({ kind: "plausible", project: event.project });
+                }
+              },
+            });
+          }
         } catch (err) {
           console.log(
-            chalk.yellow(`  Couldn't auto-provision GlitchTip: ${(err as Error).message}`),
+            chalk.yellow(`  Couldn't auto-provision analytics: ${(err as Error).message}`),
           );
           console.log(
             chalk.dim(
-              `  Run \`hatchkit add ${config.name} glitchtip\` once GlitchTip is reachable.`,
+              `  Run \`hatchkit add ${config.name} ${analyticsServices.join(",")}\` once providers are reachable.`,
             ),
           );
         }
@@ -1759,7 +1786,7 @@ async function handleConfig(): Promise<void> {
       if (!provider) {
         console.log("Usage: hatchkit config add <provider>");
         console.log(
-          "Providers: coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, resend, search-console, stripe",
+          "Providers: coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, plausible, resend, search-console, stripe",
         );
         return;
       }
@@ -1775,6 +1802,7 @@ async function handleConfig(): Promise<void> {
         case "dns":
         case "glitchtip":
         case "openpanel":
+        case "plausible":
         case "resend":
         case "search-console":
         case "stripe":
@@ -1816,7 +1844,7 @@ async function handleConfig(): Promise<void> {
             console.log(chalk.red(`  Unknown provider: ${provider}`));
             console.log(
               chalk.dim(
-                "  Valid: coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, resend, search-console, stripe",
+                "  Valid: coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, plausible, resend, search-console, stripe",
               ),
             );
             return;
@@ -2237,7 +2265,7 @@ function printHelp(topic?: HelpTopic): void {
       · App fqdn references an apex with no Cloudflare zone
       · R2 bucket follows the \`<project>-<role>\` convention but has no
         matching Coolify app (orphan from a destroyed project)
-      · GlitchTip / OpenPanel project with no Coolify app counterpart
+      · GlitchTip / OpenPanel / Plausible project/site with no Coolify app counterpart
       · Cloudflare zone with no Coolify app pointing into it
 
   ${chalk.bold("Flags:")}
@@ -2317,7 +2345,8 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("What it does:")}
     · GlitchTip / OpenPanel: ${chalk.bold("one project per product")}, events tagged by
       \`environment\` so dev / staging / prod share the same dashboard.
-      Written to ${chalk.cyan(".env.production")} only — dev noise pollutes real metrics.
+    · Plausible: one site for the public project domain, with browser tracker env.
+      Observability values are written to ${chalk.cyan(".env.production")} only — dev noise pollutes real metrics.
       Pass ${chalk.cyan("--enable-dev-obs")} to populate ${chalk.cyan(".env.development")} too.
     · Resend: separate ${chalk.cyan("-dev")} and ${chalk.cyan("-prod")} API keys (audience
       safety). Written to the server's dev + prod env respectively.
@@ -2343,6 +2372,7 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Services:")}
     glitchtip   GLITCHTIP_DSN (server) / PUBLIC_GLITCHTIP_DSN (client)
     openpanel   OPENPANEL_* (server) / PUBLIC_OPENPANEL_* (client)
+    plausible   NEXT_PUBLIC_PLAUSIBLE_DOMAIN / *_SCRIPT_URL (client only)
     resend      RESEND_API_KEY (server only)
     search-console
                 Google Search Console domain property (DNS verification; no env)
@@ -2405,7 +2435,7 @@ function printHelp(topic?: HelpTopic): void {
         (DOTENV_PRIVATE_KEY_PRODUCTION + GITHUB_REPO_URL), upserts an
         A record \`<domain> → <server-ip>\` on Cloudflare, and triggers
         the first deploy. Defaults ON when no matching app exists.
-      · Optionally provisions GlitchTip / OpenPanel / Resend clients
+      · Optionally provisions GlitchTip / OpenPanel / Plausible / Resend clients
         (same machinery as \`hatchkit add\`).
       · Optionally pushes the dotenvx private key to Coolify
         (redundant when the Coolify+DNS step ran — it already does).
@@ -2464,6 +2494,7 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Services:")}
     glitchtip   Deletes the GlitchTip project
     openpanel   Deletes the OpenPanel project (and clears cached creds)
+    plausible   Deletes the Plausible site cached for this project
     resend      Finds API keys by name and deletes them
     search-console
                 Removes the Search Console property from your Google account
@@ -2505,7 +2536,7 @@ function printHelp(topic?: HelpTopic): void {
     create + adopt:
     - GitHub repo                              ${chalk.dim("gh repo delete")}
     - dotenvx private key in keychain          ${chalk.dim("keytar deletePassword")}
-    - GlitchTip / OpenPanel / Resend           ${chalk.dim("DELETE")} per-vendor
+    - GlitchTip / OpenPanel / Plausible / Resend ${chalk.dim("DELETE")} per-vendor
     - Coolify app / project / database         ${chalk.dim("DELETE /api/v1/...")}
 
     adopt-only (fine-grained, never wider than what adopt itself wrote):
@@ -2650,7 +2681,7 @@ function printHelp(topic?: HelpTopic): void {
     config              Show status of every configured provider (alias: \`status\`)
     config add <p>      Configure a provider
                         (coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate,
-                         glitchtip, openpanel, resend, search-console, stripe)
+                         glitchtip, openpanel, plausible, resend, search-console, stripe)
     config reset        Clear ALL CLI config (providers, tokens, ML registry, ports)
 `);
     return;
@@ -2756,7 +2787,7 @@ function printHelp(topic?: HelpTopic): void {
     adopt           Bring an existing project under hatchkit management (run in project dir)
     update          Add features to an already-scaffolded project (run in project dir)
     server add      Retrofit a server into a client-only project
-    add             Create GlitchTip / OpenPanel / Resend clients for an existing project
+    add             Create GlitchTip / OpenPanel / Plausible / Resend clients for an existing project
     assets          Move bytes between local MinIO and prod buckets (seed/push/pull/migrate)
     remove          Delete the -dev/-prod clients created by 'add' (inverse of add)
     destroy         Roll back everything ${chalk.cyan("hatchkit create")} did for a project

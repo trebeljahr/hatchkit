@@ -532,6 +532,7 @@ function collectEnvSignals(
     { re: /^\s*GLITCHTIP_DSN|^\s*PUBLIC_GLITCHTIP_DSN/m, signal: "GLITCHTIP" },
     { re: /^\s*SENTRY_DSN|^\s*PUBLIC_SENTRY_DSN/m, signal: "SENTRY" },
     { re: /^\s*OPENPANEL_|^\s*PUBLIC_OPENPANEL_/m, signal: "OPENPANEL" },
+    { re: /^\s*(NEXT_PUBLIC_)?PLAUSIBLE_|^\s*PUBLIC_PLAUSIBLE_/m, signal: "PLAUSIBLE" },
     { re: /^\s*STRIPE_/m, signal: "STRIPE" },
     { re: /^\s*R2_/m, signal: "R2" },
     { re: /^\s*S3_|^\s*AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|REGION)/m, signal: "S3" },
@@ -948,6 +949,7 @@ export interface ProviderExpectations {
   resend: boolean;
   glitchtip: boolean;
   openpanel: boolean;
+  plausible: boolean;
   stripe: boolean;
 }
 
@@ -985,6 +987,7 @@ export function computeExpectations(
       hasDepMatching(deps, /^@sentry\//),
     openpanel:
       env.has("OPENPANEL") || hasDepMatching(deps, /^@openpanel\//) || deps.has("openpanel"),
+    plausible: env.has("PLAUSIBLE") || deps.has("plausible-tracker") || deps.has("next-plausible"),
     stripe: env.has("STRIPE") || deps.has("stripe") || deps.has("@stripe/stripe-js"),
   };
 }

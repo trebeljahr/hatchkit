@@ -261,6 +261,15 @@ export interface OpenpanelMeta extends ProviderStatus {
   organizationSlug?: string;
 }
 
+export interface PlausibleMeta extends ProviderStatus {
+  /** Dashboard/API base URL. Cloud default is https://plausible.io. */
+  url: string;
+  /** Optional team id used when creating sites on multi-team accounts. */
+  teamId?: string;
+  /** IANA timezone sent for newly-created sites. */
+  timezone?: string;
+}
+
 export interface ResendMeta extends ProviderStatus {
   /** Optional default region for new sending domains ("us-east-1", "eu-west-1"…). */
   defaultRegion?: string;
@@ -327,6 +336,9 @@ export interface OpenpanelConfig extends OpenpanelMeta {
   rootClientId: string;
   rootClientSecret: string;
 }
+export interface PlausibleConfig extends PlausibleMeta {
+  apiKey: string;
+}
 export interface ResendConfig extends ResendMeta {
   apiKey: string;
 }
@@ -370,6 +382,7 @@ export interface CliConfig {
     gpu: Record<string, GpuProviderMeta>;
     glitchtip?: GlitchtipMeta;
     openpanel?: OpenpanelMeta;
+    plausible?: PlausibleMeta;
     resend?: ResendMeta;
     googleSearchConsole?: GoogleSearchConsoleMeta;
     stripe?: StripeMeta;
@@ -1302,6 +1315,68 @@ export async function getOpenpanelConfig(): Promise<OpenpanelConfig | null> {
 }
 
 // ---------------------------------------------------------------------------
+// Provider: Plausible (privacy-friendly web analytics)
+// ---------------------------------------------------------------------------
+
+export async function ensurePlausible(): Promise<PlausibleConfig> {
+  const existing = store.get("providers.plausible") as PlausibleMeta | undefined;
+  const existingKey = await getSecret(SECRET_KEYS.plausibleApiKey);
+
+  if (existing?.status === "configured" && existingKey) {
+    return { ...existing, apiKey: existingKey };
+  }
+
+  console.log(chalk.yellow("\n  Plausible is not configured yet. Let's set it up."));
+  const url = (
+    await input({
+      message: "Plausible base URL:",
+      default: existing?.url ?? "https://plausible.io",
+      validate: (v) => validateUrl(v.trim()),
+    })
+  )
+    .trim()
+    .replace(/\/$/, "");
+  tokenHint(
+    `${url}/settings`,
+    "Sites API key (can list/create/delete sites; Plausible Cloud requires a Sites API-enabled plan)",
+  );
+  const apiKey = await confirmPastedSecret("Plausible Sites API key");
+  const teamId = (
+    await input({
+      message: "Plausible team id (optional):",
+      default: existing?.teamId ?? "",
+    })
+  ).trim();
+  const timezone = (
+    await input({
+      message: "Default site timezone:",
+      default: existing?.timezone ?? "Etc/UTC",
+      validate: validateRequired,
+    })
+  ).trim();
+
+  const meta: PlausibleMeta = {
+    status: "configured",
+    url,
+    teamId: teamId || undefined,
+    timezone,
+    lastVerified: new Date().toISOString(),
+  };
+  store.set("providers.plausible", meta);
+  await setSecret(SECRET_KEYS.plausibleApiKey, apiKey);
+  console.log(chalk.green("  ✓ Plausible configured"));
+  return { ...meta, apiKey };
+}
+
+export async function getPlausibleConfig(): Promise<PlausibleConfig | null> {
+  const meta = store.get("providers.plausible") as PlausibleMeta | undefined;
+  if (!meta || meta.status !== "configured") return null;
+  const apiKey = await getSecret(SECRET_KEYS.plausibleApiKey);
+  if (!apiKey) return null;
+  return { ...meta, apiKey };
+}
+
+// ---------------------------------------------------------------------------
 // Provider: Resend (transactional email SaaS)
 // ---------------------------------------------------------------------------
 
@@ -1910,6 +1985,7 @@ type ReconfigurableProvider =
   | "dns"
   | "glitchtip"
   | "openpanel"
+  | "plausible"
   | "resend"
   | "search-console"
   | "stripe"
@@ -1942,6 +2018,9 @@ export async function reconfigureProvider(name: ReconfigurableProvider): Promise
       SECRET_KEYS.openpanelRootClientSecret,
     ]);
     await ensureOpenpanel();
+  } else if (name === "plausible") {
+    await wipeProvider("providers.plausible", [SECRET_KEYS.plausibleApiKey]);
+    await ensurePlausible();
   } else if (name === "resend") {
     await wipeProvider("providers.resend", [SECRET_KEYS.resendApiKey]);
     await ensureResend();
@@ -2099,6 +2178,15 @@ function buildSetupGroups(): SetupGroup[] {
           run: () => reconfigureProvider("openpanel"),
         },
         {
+          key: "plausible",
+          label: "Plausible (web analytics)",
+          status: () => {
+            const m = store.get("providers.plausible") as PlausibleMeta | undefined;
+            return { configured: m?.status === "configured", summary: m?.url };
+          },
+          run: () => reconfigureProvider("plausible"),
+        },
+        {
           key: "resend",
           label: "Resend (transactional email)",
           status: () => {
@@ -2240,7 +2328,7 @@ export async function runOnboarding(): Promise<void> {
   }
 
   // Summary — show both what's configured and what's still missing so
-  // the user notices optional-but-important steps (GlitchTip / OpenPanel
+  // the user notices optional-but-important steps (GlitchTip / OpenPanel / Plausible
   // / Resend) they may have skipped.
   const configured = allSteps.filter((s) => s.status().configured);
   const unconfigured = allSteps.filter((s) => !s.status().configured);

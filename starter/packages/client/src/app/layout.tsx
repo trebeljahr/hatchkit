@@ -30,6 +30,16 @@ export default function RootLayout({
             data-track-screenviews="true"
           />
         )}
+        {process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN && (
+          <script
+            defer
+            data-domain={process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN}
+            src={
+              process.env.NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL ||
+              "https://plausible.io/js/script.js"
+            }
+          />
+        )}
       </head>
       <body className="min-h-screen bg-background font-sans antialiased">
         <MobileBridgeLoader />

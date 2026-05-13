@@ -1381,6 +1381,7 @@ console.log("\n── adopt ledger: every kind has recipe/describe + safe file u
   });
   ledger.record({ kind: "glitchtip", project: "test-glitch" });
   ledger.record({ kind: "openpanel", project: "test-op" });
+  ledger.record({ kind: "plausible", project: "test-plausible" });
   ledger.record({ kind: "resend", client: "test-resend-prod" });
 
   const checks: Check[] = [];

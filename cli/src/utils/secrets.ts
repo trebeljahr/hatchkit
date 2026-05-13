@@ -68,6 +68,8 @@ export const SECRET_KEYS = {
   openpanelRootClientId: "openpanel:root-client-id",
   openpanelRootClientSecret: "openpanel:root-client-secret",
   openpanelClientSecret: (name: string) => `openpanel:${name}:client-secret`,
+  plausibleApiKey: "plausible:api-key",
+  plausibleSiteDomain: (name: string) => `plausible:${name}:site-domain`,
   resendApiKey: "resend:api-key",
   googleSearchConsoleClientId: "google-search-console:client-id",
   googleSearchConsoleClientSecret: "google-search-console:client-secret",

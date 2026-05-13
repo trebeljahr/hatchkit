@@ -157,6 +157,7 @@ hatchkit add raptor-runner search-console        # verify domain + add Search Co
 |---|---|---|
 | `glitchtip` | GlitchTip project | `GLITCHTIP_DSN` |
 | `openpanel` | OpenPanel client | `OPENPANEL_CLIENT_ID`, `OPENPANEL_CLIENT_SECRET` |
+| `plausible` | Plausible site | `NEXT_PUBLIC_PLAUSIBLE_DOMAIN`, `NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL` |
 | `resend` | Restricted Resend API key | `RESEND_API_KEY` |
 | `search-console` | Google Search Console domain property | no env; DNS TXT verification |
 
@@ -236,4 +237,4 @@ hatchkit config add <provider>       # (re-)configure a provider
 hatchkit config reset                # clear ALL CLI config (confirmed)
 ```
 
-Valid providers: `coolify`, `hetzner`, `dns`, `s3`, `glitchtip`, `openpanel`, `resend`, `search-console`, `modal`, `runpod`, `hf`, `replicate`.
+Valid providers: `coolify`, `hetzner`, `dns`, `s3`, `glitchtip`, `openpanel`, `plausible`, `resend`, `search-console`, `modal`, `runpod`, `hf`, `replicate`.

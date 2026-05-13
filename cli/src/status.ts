@@ -94,6 +94,13 @@ export function collectStatus(): StatusSnapshot {
     configureCommand: "hatchkit config add openpanel",
   });
   providers.push({
+    key: "plausible",
+    label: "Plausible (analytics)",
+    configured: !!config.providers.plausible && config.providers.plausible.status === "configured",
+    detail: config.providers.plausible?.url,
+    configureCommand: "hatchkit config add plausible",
+  });
+  providers.push({
     key: "resend",
     label: "Resend (email)",
     configured: !!config.providers.resend && config.providers.resend.status === "configured",
@@ -187,7 +194,7 @@ function computeSuggestions(
   });
   out.push({
     command: "hatchkit add <project>",
-    why: "add per-project GlitchTip / OpenPanel / Resend / Search Console services",
+    why: "add per-project GlitchTip / OpenPanel / Plausible / Resend / Search Console services",
   });
   out.push({
     command: "hatchkit explain",

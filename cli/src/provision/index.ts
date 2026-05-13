@@ -34,11 +34,12 @@ import {
   ensureGlitchtip,
   ensureGoogleSearchConsole,
   ensureOpenpanel,
+  ensurePlausible,
   ensureResend,
   ensureS3,
   getConfigPath,
 } from "../config.js";
-import { validateProjectName } from "../utils/validate.js";
+import { validateDomain, validateProjectName } from "../utils/validate.js";
 import {
   type GlitchtipClient,
   deleteGlitchtipClient,
@@ -49,6 +50,7 @@ import {
   deleteOpenpanelClient,
   provisionOpenpanelClient,
 } from "./openpanel.js";
+import { type PlausibleSite, deletePlausibleSite, provisionPlausibleSite } from "./plausible.js";
 import {
   type ResendClient,
   createResendDomain,
@@ -72,6 +74,7 @@ import { parseEnvLines, writeDevEnv, writeProdEnv } from "./write-env.js";
 export type ProvisionService =
   | "glitchtip"
   | "openpanel"
+  | "plausible"
   | "resend"
   | "s3"
   | "email"
@@ -91,8 +94,8 @@ export interface Surfaces {
    *  `mode` is `"server-only"`. */
   clientEnvDir?: string;
   /** Absolute path to the project root (where `.hatchkit.json` lives).
-   *  Optional for the legacy services (GlitchTip / OpenPanel / Resend
-   *  don't read the manifest), required for `s3` — the s3 handler
+   *  Optional for most services, useful for Plausible to infer the
+   *  project domain, and required for `s3` — the s3 handler
    *  reads `s3Buckets` from the manifest to decide which buckets to
    *  mint scoped tokens for. */
   projectDir?: string;
@@ -106,6 +109,7 @@ export interface Surfaces {
 export type ProvisionedEvent =
   | { service: "glitchtip"; project: string }
   | { service: "openpanel"; project: string }
+  | { service: "plausible"; project: string; domain: string }
   | { service: "resend"; client: string }
   | { service: "s3"; bucketKey: string; bucketName: string; tokenId: string }
   | {
@@ -145,6 +149,8 @@ export interface ProvisionOptions {
   /** Also write observability values to `.env.development`. Off by
    *  default — see the file header. */
   enableDevObs?: boolean;
+  /** Domain for services that are site/domain-scoped, e.g. Plausible. */
+  domain?: string;
   /** Fired after each provider successfully creates a resource. The
    *  callback runs synchronously between the `withSpinner` succeed
    *  and the next provider, so it can append to a ledger / log
@@ -174,6 +180,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   // spinner and inquirer waits forever for invisible input.
   if (opts.services.includes("glitchtip")) await ensureGlitchtip();
   if (opts.services.includes("openpanel")) await ensureOpenpanel();
+  if (opts.services.includes("plausible")) await ensurePlausible();
   if (opts.services.includes("resend")) await ensureResend();
   if (opts.services.includes("search-console")) await ensureGoogleSearchConsole();
   // S3 is currently R2-only — `ensureS3("r2")` prompts for the admin
@@ -200,6 +207,9 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   }
 
   const buckets = initBuckets(surfaces);
+  const plausibleDomain = opts.services.includes("plausible")
+    ? await resolvePlausibleDomain(opts, surfaces)
+    : undefined;
 
   console.log(chalk.bold(`\n  ── Provisioning ${opts.baseName} ──────────────────────────\n`));
 
@@ -256,6 +266,30 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
       if (surfaces && (surfaces.mode === "shared" || surfaces.mode === "client-only")) {
         pushObsLines(buckets, "client", renderOpenpanelEnv(res, true), enableDevObs);
       }
+    }
+  }
+
+  // ── Plausible ── (site-scoped browser analytics)
+  if (opts.services.includes("plausible")) {
+    const clientBucket = buckets.find((b) => b.label === "client");
+    if (!clientBucket) {
+      console.log(
+        chalk.yellow(
+          `  Skipping Plausible — this project has no client surface, so there's nowhere to put NEXT_PUBLIC_PLAUSIBLE_*.`,
+        ),
+      );
+    } else if (!plausibleDomain) {
+      console.log(
+        chalk.yellow(
+          `  Skipping Plausible — couldn't resolve the public site domain for ${opts.baseName}.`,
+        ),
+      );
+    } else {
+      const res = await withSpinner(`Plausible: creating site ${plausibleDomain}`, () =>
+        provisionPlausibleSite(opts.baseName, plausibleDomain),
+      );
+      opts.onProvisioned?.({ service: "plausible", project: opts.baseName, domain: res.domain });
+      pushObsLines(buckets, "client", renderPlausibleEnv(res), enableDevObs);
     }
   }
 
@@ -470,11 +504,13 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   console.log();
   if (
     !enableDevObs &&
-    (opts.services.includes("glitchtip") || opts.services.includes("openpanel"))
+    (opts.services.includes("glitchtip") ||
+      opts.services.includes("openpanel") ||
+      opts.services.includes("plausible"))
   ) {
     console.log(
       chalk.dim(
-        "  Note: observability (GlitchTip/OpenPanel) values went to prod only.\n" +
+        "  Note: observability (GlitchTip/OpenPanel/Plausible) values went to prod only.\n" +
           "  Dev errors/events would pollute real metrics — pass --enable-dev-obs to\n" +
           "  also populate .env.development when you need to debug SDK wiring.",
       ),
@@ -589,6 +625,32 @@ async function resolveSurfaces(opts: ProvisionOptions): Promise<Surfaces | null>
   return surfaces;
 }
 
+async function resolvePlausibleDomain(
+  opts: ProvisionOptions,
+  surfaces: Surfaces | null,
+): Promise<string | undefined> {
+  if (opts.domain) return opts.domain.trim().toLowerCase();
+
+  if (surfaces?.projectDir) {
+    try {
+      const { readManifest } = await import("../scaffold/manifest.js");
+      const manifest = readManifest(surfaces.projectDir);
+      if (manifest?.domain) return manifest.domain.trim().toLowerCase();
+    } catch {
+      // Fall through to prompt below.
+    }
+  }
+
+  const picked = (
+    await input({
+      message: "Plausible site domain:",
+      default: `${opts.baseName}.com`,
+      validate: (v) => validateDomain(v.trim()),
+    })
+  ).trim();
+  return picked ? picked.toLowerCase() : undefined;
+}
+
 function detectSurfaceDir(projectDir: string, candidates: string[]): string {
   for (const c of candidates) {
     if (existsSync(join(projectDir, c))) return c || ".";
@@ -657,6 +719,7 @@ export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
   // Configure providers before any spinner — same reasoning as runProvision.
   if (opts.services.includes("glitchtip")) await ensureGlitchtip();
   if (opts.services.includes("openpanel")) await ensureOpenpanel();
+  if (opts.services.includes("plausible")) await ensurePlausible();
   if (opts.services.includes("resend")) await ensureResend();
 
   if (opts.dryRun) {
@@ -680,6 +743,11 @@ export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
         deleteOpenpanelClient(name),
       );
     }
+  }
+  if (opts.services.includes("plausible")) {
+    await runDelete(`Plausible: deleting site for ${opts.baseName}`, opts.dryRun, () =>
+      deletePlausibleSite(opts.baseName),
+    );
   }
   // Resend keeps the -dev/-prod pair.
   if (opts.services.includes("resend")) {
@@ -965,6 +1033,15 @@ function renderOpenpanelEnv(c: OpenpanelClient, forClient: boolean): string[] {
     `OPENPANEL_API_URL=${c.apiUrl}`,
     `OPENPANEL_CLIENT_ID=${c.clientId}`,
     `OPENPANEL_CLIENT_SECRET=${c.clientSecret}`,
+  ];
+}
+
+function renderPlausibleEnv(c: PlausibleSite): string[] {
+  return [
+    `PUBLIC_PLAUSIBLE_DOMAIN=${c.domain}`,
+    `PUBLIC_PLAUSIBLE_SCRIPT_URL=${c.scriptUrl}`,
+    `NEXT_PUBLIC_PLAUSIBLE_DOMAIN=${c.domain}`,
+    `NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL=${c.scriptUrl}`,
   ];
 }
 

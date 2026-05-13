@@ -36,6 +36,7 @@ export type LedgerStep =
   | { kind: "github"; repo: string }
   | { kind: "glitchtip"; project: string }
   | { kind: "openpanel"; project: string }
+  | { kind: "plausible"; project: string }
   | { kind: "resend"; client: string }
   | { kind: "tfvars"; path: string }
   | { kind: "coolifyEnv"; path: string }

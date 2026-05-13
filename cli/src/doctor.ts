@@ -13,6 +13,7 @@ import {
   getGoogleSearchConsoleConfig,
   getHetznerConfig,
   getOpenpanelConfig,
+  getPlausibleConfig,
   getResendConfig,
   getS3Config,
   getStore,
@@ -467,6 +468,39 @@ async function checkOpenpanel(): Promise<CheckResult> {
   );
 }
 
+async function checkPlausible(): Promise<CheckResult> {
+  const cfg = await getPlausibleConfig();
+  if (!cfg) return { name: "Plausible", status: "skip" };
+  const base = cfg.url.replace(/\/$/, "");
+  return check(
+    "Plausible",
+    async () => {
+      const res = await fetch(`${base}/api/v1/sites?limit=1`, {
+        headers: { Authorization: `Bearer ${cfg.apiKey}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return cfg.teamId ? `team: ${cfg.teamId}` : "Sites API key valid";
+    },
+    (detail) => {
+      const code = httpCode(detail);
+      if (code === 401 || code === 403) {
+        return [
+          "Plausible Sites API key is invalid, expired, or lacks Sites API access.",
+          `Create a Sites API key from ${base}/settings`,
+          "Then re-run: `hatchkit config add plausible`",
+        ];
+      }
+      if (code === 404) {
+        return [
+          `Plausible API URL looks wrong: ${base}`,
+          "Re-run `hatchkit config add plausible` and set the base URL explicitly.",
+        ];
+      }
+      return undefined;
+    },
+  );
+}
+
 async function checkResend(): Promise<CheckResult> {
   const cfg = await getResendConfig();
   if (!cfg) return { name: "Resend", status: "skip" };
@@ -586,6 +620,7 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const p of ["modal", "runpod", "hf", "replicate"]) results.push(await checkGpu(p));
   results.push(await checkGlitchtip());
   results.push(await checkOpenpanel());
+  results.push(await checkPlausible());
   results.push(await checkResend());
   results.push(await checkGoogleSearchConsole());
   for (const r of await checkStripe()) results.push(r);

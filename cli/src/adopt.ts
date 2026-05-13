@@ -324,7 +324,7 @@ export async function runAdopt(
     // the cursor on the row in this case so the choice is explicit.
     scaffoldBuildPipeline: !state.unknownWorkspaceLayout,
     // Provisioning is opt-in. Each service mints real resources on a
-    // third-party (GlitchTip project, OpenPanel project, Resend API
+    // third-party (GlitchTip project, OpenPanel project, Plausible site, Resend API
     // key) and cleaning those up after the fact is a chore — better
     // to require an explicit tick than to surprise the user with three
     // new clients they didn't ask for. The user opens the "Provision
@@ -711,7 +711,9 @@ function detectFeatures(projectDir: string, serverDir: string | undefined): Feat
       "@sentry/nextjs" in deps ||
       "@openpanel/web" in deps ||
       "@openpanel/sdk" in deps ||
-      "@openpanel/nextjs" in deps
+      "@openpanel/nextjs" in deps ||
+      "plausible-tracker" in deps ||
+      "next-plausible" in deps
     ) {
       found.add("analytics");
     }
@@ -731,7 +733,7 @@ function detectFeatures(projectDir: string, serverDir: string | undefined): Feat
     const text = readFileSync(p, "utf-8");
     if (/STRIPE_SECRET_KEY/.test(text)) found.add("stripe");
     if (/REDIS_URL/.test(text)) found.add("websocket");
-    if (/GLITCHTIP_DSN|SENTRY_DSN|OPENPANEL_/.test(text)) found.add("analytics");
+    if (/GLITCHTIP_DSN|SENTRY_DSN|OPENPANEL_|PLAUSIBLE_/.test(text)) found.add("analytics");
     if (/S3_BUCKET|S3_ENDPOINT/.test(text)) found.add("s3");
   }
 
@@ -1352,6 +1354,11 @@ async function editAdoptStep(
           checked: plan.services.includes("openpanel"),
         },
         {
+          name: "Plausible (web analytics)",
+          value: "plausible",
+          checked: plan.services.includes("plausible"),
+        },
+        {
           name: "Resend (transactional email)",
           value: "resend",
           checked: plan.services.includes("resend"),
@@ -1477,6 +1484,7 @@ interface AdoptCaveat {
 const RESUME_SERVICE_ENV_KEY: Record<ProvisionService, { server?: string; client?: string }> = {
   glitchtip: { server: "GLITCHTIP_DSN", client: "PUBLIC_GLITCHTIP_DSN" },
   openpanel: { server: "OPENPANEL_CLIENT_ID", client: "PUBLIC_OPENPANEL_CLIENT_ID" },
+  plausible: { client: "NEXT_PUBLIC_PLAUSIBLE_DOMAIN" },
   resend: { server: "RESEND_API_KEY" },
   s3: { server: "R2_ENDPOINT" },
   email: {},
@@ -2073,10 +2081,11 @@ async function executePlan(
         services: resumeServices,
         surfaces: {
           mode: provisionMode,
+          projectDir: state.projectDir,
           serverEnvDir: plan.serverDir,
           clientEnvDir: plan.clientDir,
-          projectDir: state.projectDir,
         },
+        domain: plan.domain,
         // Record per-resource as runProvision creates them. Done via
         // callback so a mid-loop failure (e.g. Resend after GlitchTip
         // already succeeded) still leaves a complete trail of what
@@ -2086,6 +2095,8 @@ async function executePlan(
             ledger.record({ kind: "glitchtip", project: event.project });
           } else if (event.service === "openpanel") {
             ledger.record({ kind: "openpanel", project: event.project });
+          } else if (event.service === "plausible") {
+            ledger.record({ kind: "plausible", project: event.project });
           } else if (event.service === "resend") {
             ledger.record({ kind: "resend", client: event.client });
           } else if (event.service === "search-console") {

@@ -48,6 +48,7 @@ export type GpuPlatform = "modal" | "runpod" | "hf" | "replicate";
 export type Surface = "server-only" | "client-only" | "both";
 
 export type Feature = "websocket" | "stripe" | "analytics" | "s3" | "desktop" | "mobile";
+export type AnalyticsProvider = "glitchtip" | "openpanel" | "plausible";
 
 export type MlService =
   | "3d-sam-objects"
@@ -104,6 +105,10 @@ export interface ProjectConfig {
   serverLocation?: string;
 
   features: Feature[];
+  /** Project-scoped observability providers to provision during create
+   *  when the `analytics` feature is selected. Defaults to the legacy
+   *  create behavior (`glitchtip` only) unless the user opts into more. */
+  analyticsProviders?: AnalyticsProvider[];
   s3Provider: S3Provider;
   s3ExistingEndpoint?: string;
   s3ExistingBucket?: string;
@@ -388,13 +393,31 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
           { name: "WebSocket/realtime (includes Redis)", value: "websocket" },
           { name: "Stripe billing", value: "stripe" },
           { name: "S3 file storage", value: "s3" },
-          { name: "Analytics (OpenPanel) + Error tracking (GlitchTip)", value: "analytics" },
+          { name: "Analytics / observability providers", value: "analytics" },
           { name: "Desktop app (Electron + itch.io release)", value: "desktop" },
           { name: "Mobile app (Capacitor / iOS + Android)", value: "mobile" },
         ],
       }),
     [],
   );
+
+  let analyticsProviders: AnalyticsProvider[] | undefined;
+  if (features.includes("analytics")) {
+    analyticsProviders = await presetOrPrompt(
+      presets.analyticsProviders,
+      nonInteractive,
+      () =>
+        multiselect<AnalyticsProvider>({
+          message: "Analytics / observability providers to provision now:",
+          choices: [
+            { name: "GlitchTip (error tracking)", value: "glitchtip", checked: true },
+            { name: "OpenPanel (product analytics)", value: "openpanel", checked: false },
+            { name: "Plausible (web analytics)", value: "plausible", checked: false },
+          ],
+        }),
+      ["glitchtip"],
+    );
+  }
 
   // S3 provider (if selected)
   let s3Provider: S3Provider = "none";
@@ -767,6 +790,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     serverSize,
     serverLocation,
     features,
+    analyticsProviders,
     s3Provider,
     s3ExistingEndpoint,
     s3ExistingBucket,

@@ -251,6 +251,8 @@ function recipeFor(step: LedgerStep): string | null {
       return `hatchkit remove ${shellEscape(step.project)} glitchtip --yes`;
     case "openpanel":
       return `hatchkit remove ${shellEscape(step.project)} openpanel --yes`;
+    case "plausible":
+      return `hatchkit remove ${shellEscape(step.project)} plausible --yes`;
     case "resend":
       return `hatchkit remove ${shellEscape(step.client)} resend --yes`;
     case "github":
@@ -480,6 +482,8 @@ function describeStep(step: LedgerStep): string {
       return `delete GlitchTip project ${chalk.cyan(step.project)}`;
     case "openpanel":
       return `delete OpenPanel project ${chalk.cyan(step.project)}`;
+    case "plausible":
+      return `delete Plausible site for ${chalk.cyan(step.project)}`;
     case "resend":
       return `delete Resend API key ${chalk.cyan(step.client)}`;
     case "tfvars":
@@ -655,6 +659,11 @@ async function undoStep(
     case "openpanel": {
       const { deleteOpenpanelClient } = await import("../provision/openpanel.js");
       const result = await deleteOpenpanelClient(step.project);
+      return result === "not-found" ? "not-found" : "done";
+    }
+    case "plausible": {
+      const { deletePlausibleSite } = await import("../provision/plausible.js");
+      const result = await deletePlausibleSite(step.project);
       return result === "not-found" ? "not-found" : "done";
     }
     case "resend": {

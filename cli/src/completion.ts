@@ -40,6 +40,7 @@ const CONFIG_ADD = [
   "replicate",
   "glitchtip",
   "openpanel",
+  "plausible",
   "resend",
   "search-console",
   "stripe",
@@ -236,7 +237,7 @@ function topDesc(cmd: string): string {
     case "server":
       return "Retrofit a server into a client-only project";
     case "add":
-      return "Provision GlitchTip / OpenPanel / Resend clients";
+      return "Provision GlitchTip / OpenPanel / Plausible / Resend clients";
     case "assets":
       return "Move bytes between local MinIO and prod buckets";
     case "keys":
