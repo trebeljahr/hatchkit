@@ -582,7 +582,9 @@ function servicesImpossibleForProject(manifest: ProjectManifest | null): Set<Pro
 function recordProvisionedEvent(ledger: RunLedger, event: ProvisionedEvent): void {
   if (event.service === "glitchtip") ledger.record({ kind: "glitchtip", project: event.project });
   if (event.service === "openpanel") ledger.record({ kind: "openpanel", project: event.project });
-  if (event.service === "plausible") ledger.record({ kind: "plausible", project: event.project });
+  if (event.service === "plausible" && event.created) {
+    ledger.record({ kind: "plausible", project: event.project });
+  }
   if (event.service === "resend") ledger.record({ kind: "resend", client: event.client });
   if (event.service === "s3" && event.minted) {
     ledger.record({
@@ -1467,7 +1469,7 @@ async function handleCreate(): Promise<void> {
                   ledger?.record({ kind: "glitchtip", project: event.project });
                 } else if (event.service === "openpanel") {
                   ledger?.record({ kind: "openpanel", project: event.project });
-                } else if (event.service === "plausible") {
+                } else if (event.service === "plausible" && event.created) {
                   ledger?.record({ kind: "plausible", project: event.project });
                 }
               },

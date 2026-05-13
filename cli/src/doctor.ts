@@ -490,7 +490,7 @@ async function checkPlausible(): Promise<CheckResult> {
           "Then re-run: `hatchkit config add plausible`",
         ];
       }
-      if (code === 404) {
+      if (code === 404 || code === 406) {
         return [
           `Plausible Sites API is not available at ${base}.`,
           "If this is Plausible Community Edition/self-hosted, auto-provisioning sites is not supported there.",

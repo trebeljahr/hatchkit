@@ -146,7 +146,7 @@ Configure: `hatchkit config add search-console`.
 
 Uses the **Plausible Sites API** to create a project site for the app domain and wire the browser tracker env (`NEXT_PUBLIC_PLAUSIBLE_DOMAIN` + script URL).
 
-Plausible Community Edition/self-hosted does not include the Sites API. For CE, create the site manually in Plausible and set `NEXT_PUBLIC_PLAUSIBLE_DOMAIN` + `NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL` in the project env instead of selecting Plausible auto-provisioning.
+Plausible Community Edition/self-hosted does not include the Sites API. For CE, create the site manually in Plausible; `hatchkit add <project> plausible` can still write `NEXT_PUBLIC_PLAUSIBLE_DOMAIN` + `NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL`, but it cannot create or verify the Plausible site for you.
 
 Configure: `hatchkit config add plausible`.
 

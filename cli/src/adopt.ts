@@ -2071,7 +2071,7 @@ async function executePlan(
             ledger.record({ kind: "glitchtip", project: event.project });
           } else if (event.service === "openpanel") {
             ledger.record({ kind: "openpanel", project: event.project });
-          } else if (event.service === "plausible") {
+          } else if (event.service === "plausible" && event.created) {
             ledger.record({ kind: "plausible", project: event.project });
           } else if (event.service === "resend") {
             ledger.record({ kind: "resend", client: event.client });

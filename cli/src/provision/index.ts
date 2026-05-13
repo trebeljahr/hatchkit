@@ -118,7 +118,7 @@ export interface Surfaces {
 export type ProvisionedEvent =
   | { service: "glitchtip"; project: string }
   | { service: "openpanel"; project: string }
-  | { service: "plausible"; project: string; domain: string }
+  | { service: "plausible"; project: string; domain: string; created: boolean }
   | { service: "resend"; client: string }
   | {
       service: "s3";
@@ -367,10 +367,22 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
         ),
       );
     } else {
-      const res = await withSpinner(`Plausible: creating site ${plausibleDomain}`, () =>
+      const res = await withSpinner(`Plausible: wiring site ${plausibleDomain}`, () =>
         provisionPlausibleSite(opts.baseName, plausibleDomain),
       );
-      opts.onProvisioned?.({ service: "plausible", project: opts.baseName, domain: res.domain });
+      if (res.manual) {
+        console.log(
+          chalk.yellow(
+            `  Plausible Sites API unavailable at ${res.baseUrl}; wrote tracker env for ${res.domain}. Create/confirm that site manually in Plausible.`,
+          ),
+        );
+      }
+      opts.onProvisioned?.({
+        service: "plausible",
+        project: opts.baseName,
+        domain: res.domain,
+        created: res.created,
+      });
       pushObsLines(buckets, "client", renderPlausibleEnv(res), enableDevObs);
     }
   }

@@ -1323,15 +1323,14 @@ console.log(
   results.coolifyUpdateApplicationDomains = ok;
 }
 
-// Plausible CE/self-hosted does not ship the Sites API. Its 404 should
-// explain the product/API gap instead of looking like a generic bad URL.
-console.log("\n── plausible api: CE 404 explains Sites API gap ─────────────────────────────");
+// Plausible CE/self-hosted does not ship the Sites API. Its GET path can
+// answer 406 during add's conflict preflight, and create can answer 404/406.
+// Hatchkit should still write browser tracker env for a manually-created site.
+console.log("\n── plausible api: CE fallback writes manual tracker env ─────────────────────");
 {
   const { getStore } = await import("./src/config.js");
   const { SECRET_KEYS, deleteSecret, setSecret } = await import("./src/utils/secrets.js");
-  const { PlausibleSitesApiUnavailableError, provisionPlausibleSite } = await import(
-    "./src/provision/plausible.js"
-  );
+  const { runProvision } = await import("./src/provision/index.js");
 
   const store = getStore();
   store.set("providers.plausible", {
@@ -1340,48 +1339,79 @@ console.log("\n── plausible api: CE 404 explains Sites API gap ────�
     timezone: "Etc/UTC",
   });
   await setSecret(SECRET_KEYS.plausibleApiKey, "test-plausible-key");
+  const tmp = mkdtempSync(join(tmpdir(), "plausible-ce-env-"));
 
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     calls.push({ url: String(url), init: init ?? {} });
-    return new Response(JSON.stringify({ message: "Not Found", status: 404 }), {
-      status: 404,
-      statusText: "Not Found",
-      headers: { "content-type": "application/json" },
-    });
+    const status = String(url).includes("/api/v1/sites/") ? 406 : 404;
+    return new Response(
+      JSON.stringify({ message: status === 406 ? "Not Acceptable" : "Not Found", status }),
+      {
+        status,
+        statusText: status === 406 ? "Not Acceptable" : "Not Found",
+        headers: { "content-type": "application/json" },
+      },
+    );
   }) as typeof fetch;
 
-  let dedicatedError = false;
-  let message = "";
+  let threw = false;
+  let prodEnv = "";
+  let eventCreated: boolean | undefined;
   try {
-    await provisionPlausibleSite("plausible-ce-test", "realmhatch.com");
+    await runProvision({
+      baseName: "plausible-ce-test",
+      services: ["plausible"],
+      domain: "fractal.garden",
+      surfaces: {
+        mode: "client-only",
+        projectDir: tmp,
+        clientEnvDir: tmp,
+      },
+      failIfExists: true,
+      onProvisioned: (event) => {
+        if (event.service === "plausible") eventCreated = event.created;
+      },
+    });
+    prodEnv = readFileSync(join(tmp, ".env.production"), "utf-8");
   } catch (err) {
-    dedicatedError = err instanceof PlausibleSitesApiUnavailableError;
-    message = err instanceof Error ? err.message : String(err);
+    threw = true;
+    console.log(`    runProvision threw: ${(err as Error).message}`);
   } finally {
     globalThis.fetch = originalFetch;
     await deleteSecret(SECRET_KEYS.plausibleApiKey);
     await deleteSecret(SECRET_KEYS.plausibleSiteDomain("plausible-ce-test"));
     (store as unknown as { delete(key: string): void }).delete("providers.plausible");
+    rmSync(tmp, { recursive: true, force: true });
   }
 
   const checks: Check[] = [
+    ["runProvision does not throw on CE Sites API responses", !threw],
     [
-      "provision tries Plausible Sites API",
-      calls[0]?.url === "https://plausible.test/api/v1/sites" &&
-        calls[0]?.init.method === "POST",
+      "preflight probes Plausible site endpoint",
+      calls.some((c) => c.url === "https://plausible.test/api/v1/sites/fractal.garden"),
     ],
-    ["throws dedicated unavailable error", dedicatedError],
-    ["message names Plausible CE", /Community Edition/.test(message)],
-    ["message suggests manual site/config path", /Create the site manually/.test(message)],
+    [
+      "provision tries Plausible create endpoint",
+      calls.some(
+        (c) => c.url === "https://plausible.test/api/v1/sites" && c.init.method === "POST",
+      ),
+    ],
+    ["provision event reports no remote site created", eventCreated === false],
+    ["prod env contains Plausible domain key", /PUBLIC_PLAUSIBLE_DOMAIN=/.test(prodEnv)],
+    [
+      "prod env contains Next.js Plausible domain key",
+      /NEXT_PUBLIC_PLAUSIBLE_DOMAIN=/.test(prodEnv),
+    ],
+    ["prod env contains Plausible script key", /PUBLIC_PLAUSIBLE_SCRIPT_URL=/.test(prodEnv)],
   ];
   let ok = true;
   for (const [n, c] of checks) {
     console.log(`  ${c ? "✓" : "✗"} ${n}`);
     if (!c) ok = false;
   }
-  results.plausibleCeSitesApi404 = ok;
+  results.plausibleCeManualFallback = ok;
 }
 
 // Sync plan computation: the manifest → DesiredApp map must produce the
