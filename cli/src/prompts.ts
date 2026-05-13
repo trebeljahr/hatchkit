@@ -1,6 +1,16 @@
-import { Separator, confirm, input, select } from "@inquirer/prompts";
+import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { getCoolifyConfig, getMlServices } from "./config.js";
+import {
+  type ProjectOnboardingPlan,
+  onboardingPlanToProjectConfig,
+  projectConfigToOnboardingPlan,
+  renderOnboardingDeploymentModeSummary,
+  renderOnboardingSurfaceSummary,
+  summarizeOnboardingDomain,
+  summarizeOnboardingFeatures,
+} from "./onboarding/plan.js";
+import { type OnboardingStepGroup, runProjectOnboardingReview } from "./onboarding/review.js";
 import { CoolifyApi, type CoolifyServer } from "./utils/coolify-api.js";
 import { discoverPublicIps } from "./utils/coolify-server-ips.js";
 import { multiselect } from "./utils/multiselect.js";
@@ -986,70 +996,37 @@ async function collectPagesProjectConfig(args: PagesCollectArgs): Promise<Projec
  *  Loops until the user picks "Proceed" (or aborts via Ctrl-C, which
  *  inquirer turns into an exception caught by the outer handler).  */
 async function reviewAndEditLoop(initial: ProjectConfig): Promise<ProjectConfig> {
-  let cfg = initial;
-
   console.log(chalk.bold("\n  hatchkit create — review"));
-  console.log(chalk.dim("  Pick any step to change a choice. Choose 'Proceed' to scaffold.\n"));
-
-  for (;;) {
-    const groups = buildCreateStepGroups(cfg);
-    const allSteps = groups.flatMap((g) => g.steps);
-
-    // Default the cursor to the first not-yet-set step so a fresh user
-    // can press Enter through the review without thinking. After every
-    // field has a real value, "Proceed" becomes the default.
-    const firstUnset = allSteps.find((s) => !s.set);
-    const defaultKey = firstUnset?.key ?? "__proceed__";
-
-    const choices: Array<Separator | { name: string; value: string }> = [];
-    for (const group of groups) {
-      choices.push(new Separator(renderCreateGroupHeader(group)));
-      for (const step of group.steps) {
-        choices.push({ name: renderCreateStepLabel(step), value: step.key });
-      }
-    }
-    choices.push(new Separator(" "));
-    choices.push({
-      name: chalk.bold(chalk.green("✓  Proceed — scaffold now")),
-      value: "__proceed__",
-    });
-
-    const picked = await select<string>({
-      message: "Next step:",
-      default: defaultKey,
-      pageSize: Math.min(30, choices.length),
-      choices,
-    });
-
-    if (picked === "__proceed__") return cfg;
-    cfg = await editSection(cfg, picked);
-  }
+  let latestConfig = initial;
+  const reviewedPlan = await runProjectOnboardingReview({
+    initial: projectConfigToOnboardingPlan(initial),
+    intro: chalk.dim("  Pick any step to change a choice. Choose 'Proceed' to scaffold.\n"),
+    proceedLabel: "Proceed — scaffold now",
+    buildGroups: (plan) =>
+      buildCreateStepGroups(plan, onboardingPlanToProjectConfig(plan, latestConfig)),
+    editStep: async (plan, picked) => {
+      const currentConfig = onboardingPlanToProjectConfig(plan, latestConfig);
+      latestConfig = await editSection(currentConfig, picked);
+      return projectConfigToOnboardingPlan(latestConfig);
+    },
+  });
+  return onboardingPlanToProjectConfig(reviewedPlan, latestConfig);
 }
 
-interface CreateStep {
-  /** Stable id used as the select value. */
-  key: string;
-  /** Display label (left of the summary tail). */
-  label: string;
-  /** Has the user given this step an explicit value (vs. an unset
-   *  default we'd want to nudge them to confirm)? */
-  set: boolean;
-  /** Right-side tail showing the current value. */
-  summary: string;
-}
+type CreateStepGroup = OnboardingStepGroup;
 
-interface CreateStepGroup {
-  title: string;
-  steps: CreateStep[];
-}
-
-function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
-  const isPages = cfg.deploymentMode === "gh-pages";
+function buildCreateStepGroups(plan: ProjectOnboardingPlan, cfg: ProjectConfig): CreateStepGroup[] {
+  const isPages = plan.deployment.mode === "gh-pages";
   const groups: CreateStepGroup[] = [
     {
       title: "Project",
       steps: [
-        { key: "name", label: "Project name", set: !!cfg.name, summary: cfg.name },
+        {
+          key: "name",
+          label: "Project name",
+          set: !!plan.identity.name,
+          summary: plan.identity.name,
+        },
         {
           key: "description",
           label: "Description",
@@ -1057,21 +1034,19 @@ function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
           // its default blurb), so this step is always considered "set"
           // once the user has been past the initial prompt.
           set: true,
-          summary: cfg.description ? cfg.description : chalk.dim("(none)"),
+          summary: plan.identity.description ? plan.identity.description : chalk.dim("(none)"),
         },
         {
           key: "domain",
           label: "Domain",
-          set: !!cfg.domain,
-          summary: cfg.domain
-            ? `${cfg.domain}  ${chalk.dim("→")}  https://${cfg.domain}`
-            : "(unset)",
+          set: !!plan.identity.domain,
+          summary: summarizeOnboardingDomain(plan),
         },
         {
           key: "surfaces",
           label: "Project type",
-          set: !!cfg.surfaces,
-          summary: renderSurfaceSummary(cfg.surfaces),
+          set: !!plan.layout.surfaces,
+          summary: renderOnboardingSurfaceSummary(plan.layout.surfaces),
         },
       ],
     },
@@ -1081,19 +1056,19 @@ function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
         {
           key: "deploymentMode",
           label: "Deployment mode",
-          set: !!cfg.deploymentMode,
-          summary: renderDeploymentModeSummary(cfg.deploymentMode),
+          set: !!plan.deployment.mode,
+          summary: renderOnboardingDeploymentModeSummary(plan.deployment.mode),
         },
         // The Coolify target picker is only relevant when the mode is
         // coolify. gh-pages and scaffold-only both skip it.
-        ...(cfg.deploymentMode === "coolify"
+        ...(plan.deployment.mode === "coolify"
           ? [
               {
                 key: "deployTarget",
                 label: "Deploy target",
-                set: cfg.deployTarget === "existing" ? !!cfg.serverIp : !!cfg.serverSize,
+                set: plan.deployment.target === "existing" ? !!cfg.serverIp : !!cfg.serverSize,
                 summary:
-                  cfg.deployTarget === "existing"
+                  plan.deployment.target === "existing"
                     ? `existing server (${cfg.serverIpv4 ?? cfg.serverIp ?? "?"}${cfg.serverIpv6 ? ` · ${cfg.serverIpv6}` : ""})`
                     : `new Hetzner ${cfg.serverSize ?? "?"} (${cfg.serverLocation ?? "nbg1"})`,
               },
@@ -1114,7 +1089,7 @@ function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
             key: "features",
             label: "Features",
             set: true,
-            summary: cfg.features.length > 0 ? cfg.features.join(", ") : chalk.dim("none"),
+            summary: summarizeOnboardingFeatures(plan.provisioning.features),
           },
           {
             key: "mongo",
@@ -1154,8 +1129,8 @@ function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
         label: isPages ? "Scaffold / GitHub / Install" : "Scaffold / GitHub / Install / Deploy",
         set: true,
         summary: isPages
-          ? `scaffold=${cfg.scaffoldRepo ? "yes" : "no"} · github=${renderGithubCreateSummary(cfg)} · install=${cfg.installDeps ? "yes" : "no"}`
-          : `scaffold=${cfg.scaffoldRepo ? "yes" : "no"} · github=${renderGithubCreateSummary(cfg)} · install=${cfg.installDeps ? "yes" : "no"} · deploy=${cfg.runDeployment ? "yes" : "no"}`,
+          ? `scaffold=${plan.repo.writeProject ? "yes" : "no"} · github=${renderGithubCreateSummary(plan)} · install=${plan.repo.installDeps ? "yes" : "no"}`
+          : `scaffold=${plan.repo.writeProject ? "yes" : "no"} · github=${renderGithubCreateSummary(plan)} · install=${plan.repo.installDeps ? "yes" : "no"} · deploy=${plan.deployment.runNow ? "yes" : "no"}`,
       },
     ],
   });
@@ -1163,41 +1138,9 @@ function buildCreateStepGroups(cfg: ProjectConfig): CreateStepGroup[] {
   return groups;
 }
 
-function renderDeploymentModeSummary(mode: DeploymentMode): string {
-  switch (mode) {
-    case "coolify":
-      return "Coolify (full-stack)";
-    case "gh-pages":
-      return "GitHub Pages (static)";
-    case "scaffold-only":
-      return "Scaffold only (no deploy)";
-  }
-}
-
-function renderGithubCreateSummary(cfg: ProjectConfig): string {
-  if (!cfg.createGithubRepo) return "no";
-  return cfg.githubRepoVisibility ?? "private";
-}
-
-function renderSurfaceSummary(surface: Surface): string {
-  switch (surface) {
-    case "both":
-      return "server + client (full-stack)";
-    case "server-only":
-      return "server only (API / backend)";
-    case "client-only":
-      return "client only (static site / SPA)";
-  }
-}
-
-function renderCreateStepLabel(step: CreateStep): string {
-  const mark = step.set ? chalk.green("✓") : chalk.dim("·");
-  const tail = step.summary ? chalk.dim(` — ${step.summary}`) : "";
-  return `${mark}  ${step.label.padEnd(18)}${tail}`;
-}
-
-function renderCreateGroupHeader(group: CreateStepGroup): string {
-  return chalk.bold(`── ${group.title} ──`);
+function renderGithubCreateSummary(plan: ProjectOnboardingPlan): string {
+  if (!plan.repo.createGithubRepo) return "no";
+  return plan.repo.githubRepoVisibility ?? "private";
 }
 
 /** Per-section editors — re-run the relevant prompt(s) and return an

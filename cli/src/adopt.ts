@@ -36,7 +36,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { Separator, confirm, input, select } from "@inquirer/prompts";
+import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { ensureGitHub, getCoolifyConfig, getGhcrConfig } from "./config.js";
 import {
@@ -48,7 +48,21 @@ import {
 import { pushInitialBranch } from "./deploy/github.js";
 import { pushProjectKeyToCoolify, pushProjectKeyToGh } from "./deploy/keys.js";
 import { handleAdoptFailure } from "./deploy/rollback.js";
-import type { Feature, S3Provider } from "./prompts.js";
+import {
+  type ProjectOnboardingPlan,
+  adoptPlanToOnboardingPlan,
+  onboardingPlanToAdoptPlan,
+  renderOnboardingDeploymentModeSummary,
+  renderOnboardingSurfaceSummary,
+  summarizeOnboardingDomain,
+  summarizeOnboardingFeatures,
+} from "./onboarding/plan.js";
+import {
+  type OnboardingStep,
+  type OnboardingStepGroup,
+  runProjectOnboardingReview,
+} from "./onboarding/review.js";
+import type { DeploymentMode, Feature, S3Provider, Surface } from "./prompts.js";
 import { type ProvisionService, runProvision } from "./provision/index.js";
 import { readEnvKeys } from "./provision/write-env.js";
 import { detectBuildPipeline, scaffoldBuildPipeline } from "./scaffold/build-pipeline.js";
@@ -146,11 +160,11 @@ export interface DetectedState {
   existingManifest?: ProjectManifest;
 }
 
-type AdoptSurface = "server-only" | "client-only" | "both";
+type AdoptSurface = Surface;
 
-type AdoptDeploymentMode = "coolify" | "gh-pages" | "scaffold-only";
+type AdoptDeploymentMode = DeploymentMode;
 
-interface AdoptPlan {
+export interface AdoptPlan {
   name: string;
   domain: string;
   /** One-liner that ends up on the Coolify project + application
@@ -836,84 +850,56 @@ function printDetected(state: DetectedState): void {
 // Review stepper — same shape as runOnboarding's setup stepper
 // ---------------------------------------------------------------------------
 
-interface AdoptStep {
-  key: string;
-  label: string;
-  set: boolean;
-  summary: string;
-}
-interface AdoptStepGroup {
-  title: string;
-  steps: AdoptStep[];
-}
+type AdoptStep = OnboardingStep;
+type AdoptStepGroup = OnboardingStepGroup;
 
 async function reviewLoop(state: DetectedState, initial: AdoptPlan): Promise<AdoptPlan> {
-  let plan = initial;
-  console.log(
-    chalk.dim("  Step through each row to confirm or change. Choose 'Adopt' when ready.\n"),
-  );
-  for (;;) {
-    const groups = buildAdoptGroups(state, plan);
-    const allSteps = groups.flatMap((g) => g.steps);
-
-    const firstUnset = allSteps.find((s) => !s.set);
-    const defaultKey = firstUnset?.key ?? "__adopt__";
-
-    const choices: Array<Separator | { name: string; value: string }> = [];
-    for (const group of groups) {
-      choices.push(new Separator(chalk.bold(`── ${group.title} ──`)));
-      for (const step of group.steps) {
-        const mark = step.set ? chalk.green("✓") : chalk.dim("·");
-        choices.push({
-          name: `${mark}  ${step.label.padEnd(18)}${chalk.dim(` — ${step.summary}`)}`,
-          value: step.key,
-        });
-      }
-    }
-    choices.push(new Separator(" "));
-    choices.push({
-      name: chalk.bold(chalk.green("✓  Adopt — apply changes")),
-      value: "__adopt__",
-    });
-    choices.push({ name: chalk.dim("✗  Cancel"), value: "__cancel__" });
-
-    const picked = await select<string>({
-      message: "Next step:",
-      default: defaultKey,
-      pageSize: Math.min(30, choices.length),
-      choices,
-    });
-
-    if (picked === "__adopt__") return plan;
-    if (picked === "__cancel__") {
-      console.log(chalk.dim("\n  Cancelled. Nothing was changed.\n"));
-      throw new Error("Adopt cancelled by user");
-    }
-    plan = await editAdoptStep(state, plan, picked);
-  }
+  let latestPlan = initial;
+  const reviewedPlan = await runProjectOnboardingReview({
+    initial: adoptPlanToOnboardingPlan(initial, state),
+    intro: chalk.dim("  Step through each row to confirm or change. Choose 'Adopt' when ready.\n"),
+    proceedLabel: "Adopt — apply changes",
+    cancelLabel: "Cancel",
+    cancelMessage: chalk.dim("\n  Cancelled. Nothing was changed.\n"),
+    buildGroups: (plan) =>
+      buildAdoptGroups(state, plan, onboardingPlanToAdoptPlan(plan, latestPlan, state)),
+    editStep: async (plan, picked) => {
+      const currentPlan = onboardingPlanToAdoptPlan(plan, latestPlan, state);
+      latestPlan = await editAdoptStep(state, currentPlan, picked);
+      return adoptPlanToOnboardingPlan(latestPlan, state);
+    },
+  });
+  return onboardingPlanToAdoptPlan(reviewedPlan, latestPlan, state);
 }
 
-function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup[] {
+function buildAdoptGroups(
+  state: DetectedState,
+  onboarding: ProjectOnboardingPlan,
+  plan: AdoptPlan,
+): AdoptStepGroup[] {
   return [
     {
       title: "Project",
       steps: [
-        { key: "name", label: "Project name", set: !!plan.name, summary: plan.name || "(unset)" },
+        {
+          key: "name",
+          label: "Project name",
+          set: !!onboarding.identity.name,
+          summary: onboarding.identity.name || "(unset)",
+        },
         {
           key: "domain",
           label: "Domain",
-          set: !!plan.domain,
-          summary: plan.domain
-            ? `${plan.domain}  ${chalk.dim("→")}  https://${plan.domain}`
-            : "(unset)",
+          set: !!onboarding.identity.domain,
+          summary: summarizeOnboardingDomain(onboarding),
         },
         ((): AdoptStep => {
           // Description is optional — empty is a valid choice that
           // falls back to the generic "Adopted by hatchkit" blurb.
           // We always render it as `set: true` so the cursor doesn't
           // park on it; the user opens it explicitly when they care.
-          const summary = plan.description
-            ? truncate(plan.description, 60)
+          const summary = onboarding.identity.description
+            ? truncate(onboarding.identity.description, 60)
             : state.packageDescription
               ? chalk.dim(
                   `(empty — defaults from package.json: "${truncate(state.packageDescription, 40)}")`,
@@ -940,12 +926,7 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
           const hasManifestSurfaces = !!state.existingManifest?.surfaces;
           const detectionWasDefinitive = !!(state.serverDir || state.clientDir);
           const inferred = !hasManifestSurfaces && !detectionWasDefinitive;
-          const baseSummary =
-            plan.surfaces === "server-only"
-              ? "server only (backend / API)"
-              : plan.surfaces === "client-only"
-                ? "client only (static / SPA — no backend)"
-                : "server + client";
+          const baseSummary = renderOnboardingSurfaceSummary(onboarding.layout.surfaces);
           return {
             key: "surfaces",
             label: "Surfaces",
@@ -957,23 +938,27 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
         // the chosen surface. Hiding instead of greying-out keeps the
         // stepper consistent with the surfaces choice and avoids the
         // "checkmark on a thing I can't unset" UX trap.
-        ...(plan.surfaces !== "client-only"
+        ...(onboarding.layout.surfaces !== "client-only"
           ? [
               {
                 key: "serverDir",
                 label: "Server env dir",
-                set: !!plan.serverDir,
-                summary: plan.serverDir ? relativeTo(plan.serverDir) : "(unset)",
+                set: !!onboarding.layout.serverDir,
+                summary: onboarding.layout.serverDir
+                  ? relativeTo(onboarding.layout.serverDir)
+                  : "(unset)",
               },
             ]
           : []),
-        ...(plan.surfaces !== "server-only"
+        ...(onboarding.layout.surfaces !== "server-only"
           ? [
               {
                 key: "clientDir",
                 label: "Client env dir",
-                set: !!plan.clientDir,
-                summary: plan.clientDir ? relativeTo(plan.clientDir) : "(unset)",
+                set: !!onboarding.layout.clientDir,
+                summary: onboarding.layout.clientDir
+                  ? relativeTo(onboarding.layout.clientDir)
+                  : "(unset)",
               },
             ]
           : []),
@@ -986,7 +971,7 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
           key: "features",
           label: "Features",
           set: true,
-          summary: plan.features.length > 0 ? plan.features.join(", ") : chalk.dim("none"),
+          summary: summarizeOnboardingFeatures(onboarding.provisioning.features),
         },
       ],
     },
@@ -997,7 +982,7 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
           key: "bootstrapDotenvx",
           label: "Initialize dotenvx",
           set: true,
-          summary: plan.bootstrapDotenvx
+          summary: onboarding.env.bootstrapDotenvx
             ? state.prodEnvIsEncrypted
               ? chalk.dim("already encrypted — will skip")
               : "yes — generate keypair + encrypt .env.production"
@@ -1007,7 +992,7 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
           key: "setupGitHub",
           label: "GitHub remote",
           set: true,
-          summary: plan.setupGitHub
+          summary: onboarding.repo.setupGitHub
             ? state.gitRemoteUrl
               ? chalk.dim("already set — will skip")
               : "yes — `gh repo create` + push"
@@ -1021,7 +1006,7 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
     // configures the redeploy webhook + builds an image). gh-pages
     // ships its own workflow that uploads to Pages instead, so we
     // hide this group when the user picks Pages.
-    ...(plan.deploymentMode === "coolify"
+    ...(onboarding.deployment.mode === "coolify"
       ? [
           {
             title: "Build pipeline",
@@ -1048,11 +1033,14 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
           key: "deploymentMode",
           label: "Deployment mode",
           set: true,
-          summary: renderAdoptDeploymentModeSummary(plan.deploymentMode, plan.surfaces),
+          summary: renderOnboardingDeploymentModeSummary(
+            onboarding.deployment.mode,
+            onboarding.layout.surfaces,
+          ),
         },
         // Coolify-specific rows — only shown when actually deploying
         // to Coolify. gh-pages skips this branch entirely.
-        ...(plan.deploymentMode === "coolify"
+        ...(onboarding.deployment.mode === "coolify"
           ? ([
               ((): AdoptStep => {
                 // Visibility row. Picking the wrong path here is the #1
@@ -1113,12 +1101,14 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
           label: "Provision clients",
           set: true,
           summary:
-            plan.services.length > 0 ? plan.services.join(", ") : chalk.dim("skip provisioning"),
+            onboarding.provisioning.services.length > 0
+              ? onboarding.provisioning.services.join(", ")
+              : chalk.dim("skip provisioning"),
         },
         // `pushKey` only matters when a Coolify app is the deploy
         // target — Pages reads no secrets from a Coolify env, so the
         // row would just be noise on the gh-pages path.
-        ...(plan.deploymentMode === "coolify"
+        ...(onboarding.deployment.mode === "coolify"
           ? [
               {
                 key: "pushKey",
@@ -1135,22 +1125,6 @@ function buildAdoptGroups(state: DetectedState, plan: AdoptPlan): AdoptStepGroup
       ],
     },
   ];
-}
-
-function renderAdoptDeploymentModeSummary(
-  mode: AdoptDeploymentMode,
-  surfaces: AdoptSurface,
-): string {
-  switch (mode) {
-    case "coolify":
-      return "Coolify (full-stack on Hetzner)";
-    case "gh-pages":
-      return surfaces === "client-only"
-        ? "GitHub Pages (static)"
-        : chalk.yellow("GitHub Pages — needs surfaces=client-only");
-    case "scaffold-only":
-      return "scaffold only (no deploy)";
-  }
 }
 
 async function editAdoptStep(
