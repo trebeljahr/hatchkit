@@ -10,7 +10,7 @@ import {
 } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
 import { resolveStackDir } from "../scaffold/infra.js";
-import { CloudflareApi } from "../utils/cloudflare-api.js";
+import { CloudflareApi, type CloudflareZone } from "../utils/cloudflare-api.js";
 import { exec, execStream } from "../utils/exec.js";
 import { InwxApi } from "../utils/inwx-api.js";
 
@@ -24,6 +24,64 @@ import { InwxApi } from "../utils/inwx-api.js";
 type RegistrarPlan =
   | { action: "flip"; registrarUsername: string; registrarPassword: string }
   | { action: "skip"; reason: string };
+
+type ZoneLookup = (name: string) => Promise<CloudflareZone | null>;
+
+export class MissingCloudflareZoneError extends Error {
+  readonly domain: string;
+
+  constructor(domain: string) {
+    super(formatMissingCloudflareZoneMessage(domain));
+    this.name = "MissingCloudflareZoneError";
+    this.domain = domain;
+  }
+}
+
+export function formatMissingCloudflareZoneMessage(domain: string): string {
+  return [
+    `No Cloudflare zone found for ${domain}.`,
+    "",
+    "Hatchkit can write DNS records and flip INWX nameservers after Cloudflare has created the zone, but `hatchkit create` does not create Cloudflare zones during deploy.",
+    "",
+    "Do this once, then retry:",
+    `  1. Add ${domain} as a site in Cloudflare.`,
+    "  2. Make sure the Cloudflare DNS token saved by `hatchkit config add dns` can read/edit that zone.",
+    "  3. If INWX is the registrar, keep INWX registrar creds in Hatchkit with `hatchkit config add dns` and answer yes for INWX.",
+    "  4. Re-run `hatchkit create` after the Cloudflare zone exists.",
+  ].join("\n");
+}
+
+export async function requireCloudflareZoneForTerraform(
+  domain: string,
+  dnsConfig: DnsConfig,
+  options: { lookupZone?: ZoneLookup } = {},
+): Promise<CloudflareZone> {
+  const apex = apexDomain(domain);
+  const lookupZone =
+    options.lookupZone ??
+    (async (name: string) => {
+      if (!dnsConfig.apiToken) {
+        throw new Error(
+          "Cloudflare API token is missing from the keychain. Re-run `hatchkit config add dns`.",
+        );
+      }
+      const cf = new CloudflareApi({ token: dnsConfig.apiToken, accountId: dnsConfig.accountId });
+      return cf.getZoneByName(name);
+    });
+
+  let zone: CloudflareZone | null;
+  try {
+    zone = await lookupZone(apex);
+  } catch (err) {
+    throw new Error(
+      `Cloudflare zone lookup failed for ${apex}: ${(err as Error).message}\n\n` +
+        "Check that the DNS token has Zone:Zone:Read on this zone, then re-run `hatchkit config add dns` if you rotated it.",
+    );
+  }
+
+  if (!zone) throw new MissingCloudflareZoneError(apex);
+  return zone;
+}
 
 /** Result of `runTerraform`. Returns metadata the caller can record in
  *  the run ledger so a later rollback knows which stack to destroy. */
@@ -69,6 +127,7 @@ export async function runTerraform(
     );
   }
   env.TF_VAR_cloudflare_api_token = dnsConfig.apiToken;
+  const zone = await requireCloudflareZoneForTerraform(config.baseDomain, dnsConfig);
 
   if (config.deployTarget === "new") {
     if (dnsConfig.registrarUsername && dnsConfig.registrarPassword) {
@@ -80,7 +139,7 @@ export async function runTerraform(
     // even needed *before* terraform runs, and prompt for INWX creds
     // inline if it is. We only block on a working answer here so that
     // the post-apply step has what it needs (or knows to skip).
-    registrarPlan = await preflightRegistrarFlip(config.baseDomain, dnsConfig);
+    registrarPlan = await preflightRegistrarFlip(config.baseDomain, dnsConfig, zone);
   }
 
   if (
@@ -169,6 +228,7 @@ export async function runTerraform(
 async function preflightRegistrarFlip(
   domain: string,
   dnsConfig: DnsConfig,
+  existingZone?: CloudflareZone,
 ): Promise<RegistrarPlan> {
   console.log(chalk.dim("\n  Checking whether the registrar NS-flip is needed..."));
 
@@ -180,8 +240,12 @@ async function preflightRegistrarFlip(
     if (!dnsConfig.apiToken) {
       return { action: "skip", reason: "no Cloudflare token to look up zone" };
     }
-    const cf = new CloudflareApi({ token: dnsConfig.apiToken, accountId: dnsConfig.accountId });
-    const zone = await cf.getZoneByName(apex);
+    const zone =
+      existingZone ??
+      (await new CloudflareApi({
+        token: dnsConfig.apiToken,
+        accountId: dnsConfig.accountId,
+      }).getZoneByName(apex));
     if (!zone) {
       return {
         action: "skip",
@@ -258,7 +322,7 @@ async function preflightRegistrarFlip(
  *  the apex anyway, so we just take the last two labels. Good enough
  *  for >99% of cases; users with country-code 2LDs can pre-configure
  *  registrar creds. */
-function apexDomain(domain: string): string {
+export function apexDomain(domain: string): string {
   const parts = domain.split(".");
   if (parts.length <= 2) return domain;
   return parts.slice(-2).join(".");

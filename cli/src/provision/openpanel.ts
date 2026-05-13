@@ -32,13 +32,18 @@ const projectIdKey = (clientName: string) =>
   SECRET_KEYS.openpanelClientSecret(`${clientName}:project-id`);
 const clientIdKey = (clientName: string) => SECRET_KEYS.openpanelClientSecret(`${clientName}:id`);
 
-function buildHeaders(rootClientId: string, rootClientSecret: string): Record<string, string> {
-  return {
+function buildHeaders(
+  rootClientId: string,
+  rootClientSecret: string,
+  options: { jsonBody?: boolean } = {},
+): Record<string, string> {
+  const headers: Record<string, string> = {
     "openpanel-client-id": rootClientId,
     "openpanel-client-secret": rootClientSecret,
-    "Content-Type": "application/json",
     Accept: "application/json",
   };
+  if (options.jsonBody) headers["Content-Type"] = "application/json";
+  return headers;
 }
 
 function resolveManageBase(url: string, apiUrl: string | undefined): string {
@@ -86,7 +91,7 @@ export async function provisionOpenpanelClient(clientName: string): Promise<Open
     };
   }
 
-  const headers = buildHeaders(rootClientId, rootClientSecret);
+  const headers = buildHeaders(rootClientId, rootClientSecret, { jsonBody: true });
 
   // Step 1: create the project. The API authenticates the organization
   // from the root client's auth — don't send organizationSlug.

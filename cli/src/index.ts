@@ -6,6 +6,7 @@ import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
 import {
   ensureCoolify,
+  ensureDns,
   ensureGitHub,
   ensureHetzner,
   ensureS3,
@@ -30,7 +31,7 @@ import {
   showProjectKey,
 } from "./deploy/keys.js";
 import { handleCreateFailure, runRollback } from "./deploy/rollback.js";
-import { runTerraform } from "./deploy/terraform.js";
+import { requireCloudflareZoneForTerraform, runTerraform } from "./deploy/terraform.js";
 import { type GpuPlatform, type ProjectConfig, collectProjectConfig } from "./prompts.js";
 import {
   type ProvisionService,
@@ -1291,6 +1292,14 @@ async function handleCreate(): Promise<void> {
   if (forceNoDeploy) config.runDeployment = false;
   if (forceNoInstall) config.installDeps = false;
   if (forceNoLocalDev) config.localDev = undefined;
+
+  // Terraform's Cloudflare stacks can only write records into an
+  // existing zone. Check that before project-specific mutations such as
+  // scaffolding, provider clients, GitHub repos, or infra files.
+  if (config.deploymentMode === "coolify" && config.runDeployment && !config.dryRun) {
+    const dns = await ensureDns();
+    await requireCloudflareZoneForTerraform(config.baseDomain, dns);
+  }
 
   // Ensure needed providers are configured (lazy prompting).
   // Coolify + Hetzner only matter for the coolify deployment mode.
