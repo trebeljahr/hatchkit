@@ -35,6 +35,7 @@ import { type GpuPlatform, type ProjectConfig, collectProjectConfig } from "./pr
 import { type ProvisionService, runProvision, runUnprovision } from "./provision/index.js";
 import { scaffoldApp } from "./scaffold/app.js";
 import { scaffoldInfra } from "./scaffold/infra.js";
+import { readManifest } from "./scaffold/manifest.js";
 import { mlEnvVarName, printMlSummary, resolveMlServices } from "./scaffold/ml-client.js";
 import { runUpdate } from "./scaffold/update.js";
 import {
@@ -468,9 +469,9 @@ function opts(result: {
  *  dir already lives inside the project (`packages/server`,
  *  `apps/web`, etc.). Returns undefined when no manifest is found —
  *  callers fall back to "skip s3" with a hint. */
-function inferProjectDir(serverEnvDir: string | undefined): string | undefined {
-  if (!serverEnvDir) return undefined;
-  let cur = serverEnvDir;
+function inferProjectDir(startDir: string | undefined): string | undefined {
+  if (!startDir) return undefined;
+  let cur = startDir;
   for (let i = 0; i < 4; i++) {
     if (existsSync(join(cur, ".hatchkit.json"))) return cur;
     const up = dirname(cur);
@@ -486,10 +487,6 @@ async function handleAdd(): Promise<void> {
   //   hatchkit add raptor-runner               (prompts for services)
   //   hatchkit add raptor-runner all
   //   hatchkit add raptor-runner glitchtip,resend
-  const positional = args.slice(1).filter((a) => !a.startsWith("--"));
-  let baseName = positional[0];
-  const rawService = positional[1];
-
   const allServices: ProvisionService[] = [
     "glitchtip",
     "openpanel",
@@ -499,6 +496,23 @@ async function handleAdd(): Promise<void> {
     "email",
     "search-console",
   ];
+  const isServiceExpr = (value: string | undefined): boolean => {
+    if (!value) return false;
+    if (value === "all") return true;
+    return value
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .every((s) => (allServices as readonly string[]).includes(s));
+  };
+
+  const positional = args.slice(1).filter((a) => !a.startsWith("--"));
+  const inferredProjectDir = inferProjectDir(process.cwd());
+  const inferredManifest = inferredProjectDir ? readManifest(inferredProjectDir) : null;
+  const firstArgIsService = isServiceExpr(positional[0]);
+  let baseName = firstArgIsService
+    ? inferredManifest?.name
+    : (positional[0] ?? inferredManifest?.name);
+  const rawService = firstArgIsService ? positional[0] : positional[1];
 
   if (!baseName) {
     const { input } = await import("@inquirer/prompts");
@@ -2419,6 +2433,7 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Usage:")}
     hatchkit add [<project-name>] [<services>] [flags]
+    hatchkit add [<services>] [flags]   ${chalk.dim("(inside a project with .hatchkit.json)")}
 
   ${chalk.bold("What it does:")}
     · GlitchTip / OpenPanel: ${chalk.bold("one project per product")}, events tagged by
@@ -2471,6 +2486,7 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Examples:")}
     hatchkit add
+    hatchkit add search-console
     hatchkit add raptor-runner
     hatchkit add raptor-runner all --enable-dev-obs
     hatchkit add raptor-runner glitchtip,resend --no-write

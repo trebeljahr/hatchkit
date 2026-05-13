@@ -39,6 +39,7 @@ import {
   ensureS3,
   getConfigPath,
 } from "../config.js";
+import { MANIFEST_FILENAME, readManifest } from "../scaffold/manifest.js";
 import { validateDomain, validateProjectName } from "../utils/validate.js";
 import {
   type GlitchtipClient,
@@ -530,8 +531,10 @@ async function resolveSurfaces(opts: ProvisionOptions): Promise<Surfaces | null>
   if (opts.surfaces === false) return null;
   if (opts.surfaces) return opts.surfaces;
 
-  // Step 1 — project dir. Default to `./<baseName>` if it exists.
-  const guess = resolve(opts.baseName);
+  // Step 1 — project dir. Prefer the current Hatchkit project when cwd
+  // is inside one; otherwise default to `./<baseName>` if it exists.
+  const manifestGuess = inferProjectDir(process.cwd());
+  const guess = manifestGuess ?? resolve(opts.baseName);
   const guessExists = existsSync(guess);
   const wantWrite = await confirm({
     message: guessExists
@@ -553,6 +556,13 @@ async function resolveSurfaces(opts: ProvisionOptions): Promise<Surfaces | null>
       })
     ).trim(),
   );
+  const manifest = readManifest(projectDir);
+  const defaultMode: SurfaceMode =
+    manifest?.surfaces === "server-only"
+      ? "server-only"
+      : manifest?.surfaces === "client-only"
+        ? "client-only"
+        : "shared";
 
   // Step 2 — surfaces.
   const mode = (await select<SurfaceMode>({
@@ -569,7 +579,7 @@ async function resolveSurfaces(opts: ProvisionOptions): Promise<Surfaces | null>
         value: "separate",
       },
     ],
-    default: "shared",
+    default: defaultMode,
   })) as SurfaceMode;
 
   // Step 3 — env dirs per surface. Auto-detect common monorepo layouts
@@ -656,6 +666,18 @@ function detectSurfaceDir(projectDir: string, candidates: string[]): string {
     if (existsSync(join(projectDir, c))) return c || ".";
   }
   return ".";
+}
+
+function inferProjectDir(startDir: string | undefined): string | undefined {
+  if (!startDir) return undefined;
+  let cur = startDir;
+  for (let i = 0; i < 4; i++) {
+    if (existsSync(join(cur, MANIFEST_FILENAME))) return cur;
+    const up = dirname(cur);
+    if (up === cur) break;
+    cur = up;
+  }
+  return undefined;
 }
 
 function relativeTo(p: string, from = process.cwd()): string {
