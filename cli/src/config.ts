@@ -1438,7 +1438,8 @@ const GOOGLE_SEARCH_CONSOLE_SCOPES = [
 // Desktop/installed clients are public clients, so this value is safe to ship.
 // Until the Hatchkit project is verified, dev builds can set
 // HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID to exercise the packaged PKCE path.
-const PACKAGED_GOOGLE_SEARCH_CONSOLE_CLIENT_ID = "";
+const PACKAGED_GOOGLE_SEARCH_CONSOLE_CLIENT_ID =
+  "932614455438-s0ih891al5pkeo4aeafekf01t6pbqd21.apps.googleusercontent.com";
 
 function hatchkitGoogleSearchConsoleClientId(): string | null {
   const configured =

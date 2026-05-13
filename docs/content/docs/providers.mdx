@@ -133,9 +133,10 @@ Maintainer setup for the packaged flow:
    `https://www.googleapis.com/auth/siteverification.verify_only`.
 5. Create an OAuth client with application type **Desktop app**.
 6. Put that client id in Hatchkit's packaged Google Search Console client-id
-   constant before release. Dev builds can use
-   `HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID` to test the same path. Ignore the
-   displayed client secret for the packaged PKCE flow.
+   constant before release. The client id is public and belongs in source, not
+   in user `.env` files. Dev builds can use
+   `HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID` to override/test the same path.
+   Ignore the displayed client secret for the packaged PKCE flow.
 
 Configure: `hatchkit config add search-console`.
 
