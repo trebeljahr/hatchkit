@@ -5,7 +5,7 @@
   "private": true,
   "description": "Interactive CLI for scaffolding full-stack projects with composable ML services",
   "license": "MIT",
-  "homepage": "https://trebeljahr.github.io/hatchkit/",
+  "homepage": "https://hatchkit.trebeljahr.com/",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/trebeljahr/hatchkit.git"

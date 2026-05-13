@@ -57,7 +57,7 @@ New to the CLI? Run `hatchkit explain` for a one-page mental model covering ever
 | `hatchkit config [add/reset]` | Inspect or modify stored provider credentials. |
 | `hatchkit completion <shell>` | Print a zsh / bash / fish completion script. |
 
-Full reference: **[Commands](https://trebeljahr.github.io/hatchkit/docs/commands)**, or `hatchkit help <command>`.
+Full reference: **[Commands](https://hatchkit.trebeljahr.com/docs/commands)**, or `hatchkit help <command>`.
 
 ---
 
@@ -83,7 +83,7 @@ Full reference: **[Commands](https://trebeljahr.github.io/hatchkit/docs/commands
                      https://your-domain.example
 ```
 
-See **[Architecture](https://trebeljahr.github.io/hatchkit/docs/architecture)** for the deeper tour.
+See **[Architecture](https://hatchkit.trebeljahr.com/docs/architecture)** for the deeper tour.
 
 ---
 
@@ -127,15 +127,15 @@ hatchkit completion fish > ~/.config/fish/completions/hatchkit.fish
 
 ## Documentation
 
-Full docs live under [`docs/`](docs/) and are published to **GitHub Pages** at [https://trebeljahr.github.io/hatchkit/](https://trebeljahr.github.io/hatchkit/).
+Full docs live under [`docs/`](docs/) and are published at [https://hatchkit.trebeljahr.com/](https://hatchkit.trebeljahr.com/).
 
-- [Getting Started](https://trebeljahr.github.io/hatchkit/docs/getting-started) — install, onboard, create your first project
-- [Commands reference](https://trebeljahr.github.io/hatchkit/docs/commands) — every command + every flag
-- [Providers](https://trebeljahr.github.io/hatchkit/docs/providers) — GitHub, Coolify, Hetzner, DNS, S3, GPU platforms
-- [ML services](https://trebeljahr.github.io/hatchkit/docs/ml-services) — deploy GPU-backed models the CLI understands
-- [GitHub Pages](https://trebeljahr.github.io/hatchkit/docs/gh-pages) — `hatchkit gh-pages` for static sites, SPAs, Jekyll docs, and Docusaurus docs
-- [Architecture](https://trebeljahr.github.io/hatchkit/docs/architecture) — how scaffold / infra / deploy fit together
-- [Deploying the docs site](https://trebeljahr.github.io/hatchkit/docs/deployment) — the GitHub Pages flow used by this repo
+- [Getting Started](https://hatchkit.trebeljahr.com/docs/getting-started) — install, onboard, create your first project
+- [Commands reference](https://hatchkit.trebeljahr.com/docs/commands) — every command + every flag
+- [Providers](https://hatchkit.trebeljahr.com/docs/providers) — GitHub, Coolify, Hetzner, DNS, S3, GPU platforms
+- [ML services](https://hatchkit.trebeljahr.com/docs/ml-services) — deploy GPU-backed models the CLI understands
+- [GitHub Pages](https://hatchkit.trebeljahr.com/docs/gh-pages) — `hatchkit gh-pages` for static sites, SPAs, Jekyll docs, and Docusaurus docs
+- [Architecture](https://hatchkit.trebeljahr.com/docs/architecture) — how scaffold / infra / deploy fit together
+- [Deploying the docs site](https://hatchkit.trebeljahr.com/docs/deployment) — the deployment flow used by this repo
 
 Source for those pages lives in [`docs/content/docs/`](docs/content/docs/).
 

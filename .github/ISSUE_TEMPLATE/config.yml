@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: Documentation
-    url: https://trebeljahr.github.io/hatchkit/
+    url: https://hatchkit.trebeljahr.com/
     about: Read the Hatchkit docs before opening an issue.
   - name: Security reports
     url: https://github.com/trebeljahr/hatchkit/security

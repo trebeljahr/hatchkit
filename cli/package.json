@@ -4,7 +4,7 @@
   "packageManager": "pnpm@10.33.2",
   "description": "Interactive CLI for scaffolding full-stack projects and provisioning observability/email clients",
   "license": "MIT",
-  "homepage": "https://trebeljahr.github.io/hatchkit/",
+  "homepage": "https://hatchkit.trebeljahr.com/",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/trebeljahr/hatchkit.git",

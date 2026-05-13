@@ -2,7 +2,7 @@
 
 ## Documentation
 
-- Docs site: https://trebeljahr.github.io/hatchkit/
+- Docs site: https://hatchkit.trebeljahr.com/
 - npm package: https://www.npmjs.com/package/hatchkit
 - MCP package docs: [mcp/README.md](mcp/README.md)
 
