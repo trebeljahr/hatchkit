@@ -64,7 +64,7 @@ export interface ScaffoldResult {
   /** Populated when the project opted into Tailscale-served local-dev
    *  (config.localDev was set). The caller uses `slug` to record the
    *  ledger step so `hatchkit destroy` cleans up the Caddy fragment. */
-  localDev?: { slug: string };
+  localDev?: { slug: string; domain?: string };
 }
 
 /** Scaffold a new app by copying the starter template and customizing it. */
@@ -409,16 +409,20 @@ async function runScaffoldSteps(
   // next.config wrapper, and the @hatchkit/dev-plugin-next dep. None of
   // this is required for the project to function — the dev plugin
   // gracefully no-ops when the host bridge isn't active.
-  let localDev: { slug: string } | undefined;
+  let localDev: { slug: string; domain?: string } | undefined;
   if (config.localDev) {
     const devPort = config.surfaces === "server-only" ? ports.server : ports.client;
     const { enableProjectLocalDev } = await import("../dev-setup.js");
+    const { localDevDomainFromProjectDomain } = await import("@hatchkit/dev-shared");
+    const localDevDomain =
+      config.localDev.domain ?? localDevDomainFromProjectDomain(config.domain) ?? undefined;
     const result = await enableProjectLocalDev({
       projectDir: outputDir,
       slug: config.localDev.slug,
+      localDevDomain,
       devPort,
     });
-    localDev = { slug: config.localDev.slug };
+    localDev = { slug: config.localDev.slug, domain: localDevDomain };
     modifications.push(
       `local-dev: framework ${result.framework}, fragment ${result.wroteFragment}, docs ${result.wroteDocs ? "wrote" : "unchanged"}, config ${result.patchedConfig}, package.json ${result.patchedPackageJson}`,
     );

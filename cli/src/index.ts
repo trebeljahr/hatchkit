@@ -2058,7 +2058,7 @@ function printHelp(topic?: HelpTopic): void {
   Wires up the host-wide plumbing that makes every scaffolded project
   reachable from any Tailscale peer at:
 
-    ${chalk.cyan("https://<slug>.local.ricoslabs.com/")}
+    ${chalk.cyan("https://<slug>.local.<your-domain>/")}
 
   …without per-project DNS, port juggling, or framework basePath config.
 
@@ -2087,7 +2087,7 @@ function printHelp(topic?: HelpTopic): void {
                                without the fragment).
 
   ${chalk.bold("One-time DNS bit you do yourself (per machine, not per project):")}
-    *.local.ricoslabs.com  CNAME  <your-machine>.<tailnet>.ts.net.
+    *.local.<your-domain>  A  <your-tailnet-ip>  (DNS-only)
 
   This feature is fully optional: until you run ${chalk.cyan("dev-setup init")},
   ${chalk.cyan("hatchkit doctor")} surfaces zero Local-dev rows. Within a project,

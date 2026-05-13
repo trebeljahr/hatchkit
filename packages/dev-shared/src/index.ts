@@ -5,11 +5,11 @@
  * tailscale probes, and path constants in lockstep across processes.
  *
  * Architecture: a host-wide Caddy instance terminates TLS for
- * `*.local.ricoslabs.com` (real Cloudflare DNS-01 wildcard cert).
+ * `*.local.<project-domain>` (real Cloudflare DNS-01 wildcard cert).
  * Each project drops a fragment in `~/.config/dev/projects/<slug>.caddy`
  * pointing Caddy at the project's dev port. Tailscale serve passes
  * raw TCP=443 traffic from the tailnet to Caddy. Phones get
- * `https://<slug>.local.ricoslabs.com/` with no per-project config.
+ * `https://<slug>.local.<project-domain>/` with no per-project config.
  *
  * This package holds only the bits the runtime (dev server plugin)
  * needs at startup. The init/orchestration logic (writing the
@@ -74,6 +74,17 @@ export function readCaddyPort(): number | null {
   }
 }
 
+export function readCaddyLocalDevDomain(): string {
+  if (!existsSync(CADDYFILE_PATH)) return LOCAL_DEV_DOMAIN;
+  try {
+    const text = readFileSync(CADDYFILE_PATH, "utf-8");
+    const m = text.match(/https:\/\/\*\.([^:\s{]+):\d+/);
+    return normaliseLocalDevDomain(m?.[1]) ?? LOCAL_DEV_DOMAIN;
+  } catch {
+    return LOCAL_DEV_DOMAIN;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Per-project Caddy fragment
 // ---------------------------------------------------------------------------
@@ -82,8 +93,12 @@ export function projectFragmentPath(slug: string): string {
   return join(PROJECTS_DIR, `${slug}.caddy`);
 }
 
-export function projectFragmentContents(slug: string, devPort: number): string {
-  const host = `${slug}.${LOCAL_DEV_DOMAIN}`;
+export function projectFragmentContents(
+  slug: string,
+  devPort: number,
+  localDevDomain = LOCAL_DEV_DOMAIN,
+): string {
+  const host = `${slug}.${normaliseLocalDevDomain(localDevDomain) ?? LOCAL_DEV_DOMAIN}`;
   // Multi-line block. Caddy's parser rejects the inline form
   // `handle @x { reverse_proxy ... }` with "Unexpected next token
   // after '{' on same line" when the fragment is loaded via `import`
@@ -101,10 +116,11 @@ handle @${slug} {
 export function writeProjectFragment(
   slug: string,
   devPort: number,
+  localDevDomain = LOCAL_DEV_DOMAIN,
 ): "created" | "updated" | "unchanged" {
   ensureProjectsDir();
   const path = projectFragmentPath(slug);
-  const next = projectFragmentContents(slug, devPort);
+  const next = projectFragmentContents(slug, devPort, localDevDomain);
   if (!existsSync(path)) {
     writeFileSync(path, next);
     return "created";
@@ -186,6 +202,8 @@ export async function tailscaleServeTcpTarget(): Promise<number | null> {
 export interface SlugResolveOptions {
   /** Caller-supplied slug, takes precedence over manifest + package.json. */
   explicit?: string;
+  /** Caller-supplied local-dev domain, e.g. `local.example.com`. */
+  localDevDomain?: string;
   /** Directory to walk up from when looking for `.hatchkit.json`. Defaults
    *  to `process.cwd()`. */
   fromDir?: string;
@@ -196,13 +214,24 @@ export interface SlugResolveOptions {
 export interface ResolvedSlug {
   slug: string;
   source: "explicit" | "manifest" | "package-json";
+  /** Host suffix for local-dev URLs, e.g. `local.example.com`. */
+  localDevDomain: string;
+  /** Where `localDevDomain` came from. */
+  localDevDomainSource: "explicit" | "manifest" | "project-domain" | "default";
 }
 
 /** Resolve the slug for a project at runtime. Returns null when every
  *  candidate source comes up empty. */
 export function resolveSlug(opts: SlugResolveOptions = {}): ResolvedSlug | null {
+  const manifest = readLocalDevManifest(opts.fromDir ?? process.cwd(), opts.maxDepth ?? 8);
+  const domain = resolveLocalDevDomain(opts.localDevDomain, manifest);
   if (opts.explicit) {
-    return { slug: sanitiseSlug(opts.explicit), source: "explicit" };
+    return {
+      slug: sanitiseSlug(opts.explicit),
+      source: "explicit",
+      localDevDomain: domain.domain,
+      localDevDomainSource: domain.source,
+    };
   }
   const start = opts.fromDir ?? process.cwd();
   const max = opts.maxDepth ?? 8;
@@ -212,7 +241,8 @@ export function resolveSlug(opts: SlugResolveOptions = {}): ResolvedSlug | null 
     if (existsSync(manifest)) {
       try {
         const m = JSON.parse(readFileSync(manifest, "utf-8")) as {
-          localDev?: { slug?: string };
+          localDev?: { slug?: string; domain?: string };
+          domain?: string;
           name?: string;
         };
         // Prefer the dedicated localDev.slug field; fall back to the
@@ -220,7 +250,14 @@ export function resolveSlug(opts: SlugResolveOptions = {}): ResolvedSlug | null 
         // populates localDev.slug at scaffold time; older manifests
         // won't have it.)
         const candidate = m.localDev?.slug ?? m.name;
-        if (candidate) return { slug: sanitiseSlug(candidate), source: "manifest" };
+        if (candidate) {
+          return {
+            slug: sanitiseSlug(candidate),
+            source: "manifest",
+            localDevDomain: domain.domain,
+            localDevDomainSource: domain.source,
+          };
+        }
       } catch {
         // Corrupt manifest — keep walking, fall through to package.json.
       }
@@ -238,7 +275,12 @@ export function resolveSlug(opts: SlugResolveOptions = {}): ResolvedSlug | null 
         if (j.name) {
           // Strip scoped-package prefix: `@scope/raptor-runner` → `raptor-runner`.
           const bare = j.name.replace(/^@[^/]+\//, "");
-          return { slug: sanitiseSlug(bare), source: "package-json" };
+          return {
+            slug: sanitiseSlug(bare),
+            source: "package-json",
+            localDevDomain: domain.domain,
+            localDevDomainSource: domain.source,
+          };
         }
       } catch {
         // Walk up.
@@ -249,6 +291,43 @@ export function resolveSlug(opts: SlugResolveOptions = {}): ResolvedSlug | null 
     dir = parent;
   }
   return null;
+}
+
+interface LocalDevManifest {
+  localDev?: { slug?: string; domain?: string };
+  domain?: string;
+  name?: string;
+}
+
+function readLocalDevManifest(fromDir: string, maxDepth: number): LocalDevManifest | null {
+  let dir = fromDir;
+  for (let i = 0; i < maxDepth; i++) {
+    const manifest = join(dir, ".hatchkit.json");
+    if (existsSync(manifest)) {
+      try {
+        return JSON.parse(readFileSync(manifest, "utf-8")) as LocalDevManifest;
+      } catch {
+        return null;
+      }
+    }
+    const parent = join(dir, "..");
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+function resolveLocalDevDomain(
+  explicit: string | undefined,
+  manifest: LocalDevManifest | null,
+): { domain: string; source: ResolvedSlug["localDevDomainSource"] } {
+  const fromExplicit = normaliseLocalDevDomain(explicit);
+  if (fromExplicit) return { domain: fromExplicit, source: "explicit" };
+  const fromManifest = normaliseLocalDevDomain(manifest?.localDev?.domain);
+  if (fromManifest) return { domain: fromManifest, source: "manifest" };
+  const fromProjectDomain = localDevDomainFromProjectDomain(manifest?.domain);
+  if (fromProjectDomain) return { domain: fromProjectDomain, source: "project-domain" };
+  return { domain: LOCAL_DEV_DOMAIN, source: "default" };
 }
 
 /** Constrain a slug to a Caddy + DNS-safe shape. We don't try to be
@@ -262,6 +341,33 @@ export function sanitiseSlug(input: string): string {
 }
 
 /** Compose the public dev URL for a slug. */
-export function localDevUrl(slug: string): string {
-  return `https://${slug}.${LOCAL_DEV_DOMAIN}/`;
+export function localDevUrl(slug: string, localDevDomain = LOCAL_DEV_DOMAIN): string {
+  return `https://${slug}.${normaliseLocalDevDomain(localDevDomain) ?? LOCAL_DEV_DOMAIN}/`;
+}
+
+/** Derive the local-dev wildcard suffix from a project's public domain.
+ *  `app.example.com` -> `local.example.com`; `example.com` ->
+ *  `local.example.com`. This mirrors Hatchkit's existing domain parser
+ *  convention of treating the final two labels as the base domain. */
+export function localDevDomainFromProjectDomain(projectDomain: string | undefined): string | null {
+  const domain = normaliseLocalDevDomain(projectDomain);
+  if (!domain) return null;
+  const labels = domain.split(".");
+  const baseDomain = labels.length > 2 ? labels.slice(-2).join(".") : domain;
+  return `local.${baseDomain}`;
+}
+
+export function normaliseLocalDevDomain(input: string | undefined): string | null {
+  if (!input) return null;
+  const trimmed = input
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "")
+    .replace(/^\*\./, "")
+    .replace(/^\.+|\.+$/g, "");
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
 }

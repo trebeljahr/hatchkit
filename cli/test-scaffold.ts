@@ -2044,6 +2044,7 @@ console.log("\n── adopt: gitignore + private-key guard ───────
       );
       const checks: Check[] = [
         ["scaffold returns localDev info", result.localDev?.slug === slug],
+        ["scaffold returns derived localDev domain", result.localDev?.domain === "local.example.com"],
         ["fragment exists at projects/<slug>.caddy", existsSync(fragmentPath)],
         [
           `fragment proxies the client dev port (${result.ports.client})`,
@@ -2051,7 +2052,7 @@ console.log("\n── adopt: gitignore + private-key guard ───────
         ],
         [
           "fragment uses the slug for both matcher and host",
-          fragment.includes(`@${slug} host ${slug}.local.ricoslabs.com`),
+          fragment.includes(`@${slug} host ${slug}.local.example.com`),
         ],
         ["docs/dev-setup.md generated", existsSync(join(d, "docs/dev-setup.md"))],
         [
@@ -2287,6 +2288,7 @@ console.log("\n── adopt: gitignore + private-key guard ───────
       const checks: Check[] = [
         ["update reports localDev enabled", updateResult.localDevEnabled?.slug === slug],
         ["manifest now carries localDev.slug", updatedManifest?.localDev?.slug === slug],
+        ["manifest now carries localDev.domain", updatedManifest?.localDev?.domain === "local.example.com"],
         ["Caddy fragment landed", existsSync(fragmentPath)],
         ["docs/dev-setup.md generated", existsSync(join(d, "docs/dev-setup.md"))],
         ["next.config wrapped with withLocalDev", nextConfig.includes("withLocalDev")],

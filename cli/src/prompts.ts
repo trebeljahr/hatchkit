@@ -165,7 +165,7 @@ export interface ProjectConfig {
    *      @hatchkit/dev-plugin-next and adds it as a dep.
    *  Absent → feature disabled for this project (no fragment, no
    *  plugin wiring, no docs). */
-  localDev?: { slug: string };
+  localDev?: { slug: string; domain?: string };
   dryRun: boolean;
 }
 
@@ -595,25 +595,30 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     : false;
 
   // Tailscale-served local-dev URL opt-in. Default true: the integration
-  // wires this project up to `https://<slug>.local.ricoslabs.com/` so
+  // wires this project up to `https://<slug>.local.<project-base-domain>/` so
   // phones / tablets on the tailnet can reach the dev server with no
   // per-project DNS or port wrangling. The host-wide plumbing (Caddy,
   // tailscale serve, plist) is a one-time setup the user runs via
   // `hatchkit dev-setup init` — disabling the per-project opt-in here
   // skips writing the Caddy fragment and the plugin wiring, leaving the
   // project untouched by the integration.
-  let localDev: { slug: string } | undefined;
+  const { localDevDomainFromProjectDomain, localDevUrl, sanitiseSlug } = await import(
+    "@hatchkit/dev-shared"
+  );
+  const localDevDomain = localDevDomainFromProjectDomain(domain) ?? undefined;
+  let localDev: { slug: string; domain?: string } | undefined;
   if (presets.localDev !== undefined) {
-    const { sanitiseSlug } = await import("@hatchkit/dev-shared");
     const slugSource = presets.localDev.slug || name;
-    localDev = { slug: sanitiseSlug(slugSource) };
+    localDev = {
+      slug: sanitiseSlug(slugSource),
+      domain: presets.localDev.domain ?? localDevDomain,
+    };
   } else if (!nonInteractive) {
     const enableLocalDev = await confirm({
-      message: "Enable Tailscale dev URL (https://<slug>.local.ricoslabs.com/)?",
+      message: `Enable Tailscale dev URL (${localDevUrl("<slug>", localDevDomain)})?`,
       default: true,
     });
     if (enableLocalDev) {
-      const { sanitiseSlug } = await import("@hatchkit/dev-shared");
       const defaultSlug = sanitiseSlug(name);
       const slug = await input({
         message: "Slug (subdomain) for this project:",
@@ -625,11 +630,10 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
           return true;
         },
       });
-      localDev = { slug: sanitiseSlug(slug) };
+      localDev = { slug: sanitiseSlug(slug), domain: localDevDomain };
     }
   } else {
-    const { sanitiseSlug } = await import("@hatchkit/dev-shared");
-    localDev = { slug: sanitiseSlug(name) };
+    localDev = { slug: sanitiseSlug(name), domain: localDevDomain };
   }
 
   // Late-stage "deploy now?" still makes sense for the Coolify path —

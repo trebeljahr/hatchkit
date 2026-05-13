@@ -2,13 +2,13 @@
  * `hatchkit dev-setup` — opt-in Tailscale-served dev URLs.
  *
  * Goal: every scaffolded project reachable from any Tailscale peer at
- * https://<slug>.local.ricoslabs.com/ with no per-project DNS work,
+ * https://<slug>.local.<project-domain>/ with no per-project DNS work,
  * no port juggling, no app-side base/basePath config, and zero
  * collisions between projects.
  *
  * Architecture (host-wide one-time setup):
  *
- *   phone ──HTTPS──▶ <slug>.local.ricoslabs.com:443
+ *   phone ──HTTPS──▶ <slug>.local.<project-domain>:443
  *                          │ DNS CNAME → laptop.<tailnet>.ts.net
  *                          ▼
  *                  tailscale serve --tcp=443 (raw TCP passthrough)
@@ -33,15 +33,19 @@ import { join } from "node:path";
 import {
   CADDYFILE_PATH,
   DEV_CONFIG_DIR,
-  isLocalDevActive,
   LOCAL_DEV_DOMAIN,
   LOCAL_DEV_DOMAIN_WILDCARD,
   MANAGED_MARKER,
-  projectFragmentPath,
   PROJECTS_DIR,
+  type TailscaleIdentity,
+  isLocalDevActive,
+  localDevDomainFromProjectDomain,
+  localDevUrl,
+  normaliseLocalDevDomain,
+  projectFragmentPath,
+  readCaddyLocalDevDomain,
   readCaddyPort,
   removeProjectFragment,
-  type TailscaleIdentity,
   tailscaleIdentity,
   tailscaleServeTcpTarget,
   writeProjectFragment,
@@ -56,6 +60,7 @@ export {
   MANAGED_MARKER,
   PROJECTS_DIR,
   isLocalDevActive,
+  readCaddyLocalDevDomain,
   readCaddyPort,
   tailscaleIdentity,
   tailscaleServeTcpTarget,
@@ -96,7 +101,9 @@ export interface CheckResult {
 // Caddyfile + launchd plist contents
 // ---------------------------------------------------------------------------
 
-export function caddyfileContents(caddyPort: number): string {
+export function caddyfileContents(caddyPort: number, localDevDomain = LOCAL_DEV_DOMAIN): string {
+  const domain = normaliseLocalDevDomain(localDevDomain) ?? LOCAL_DEV_DOMAIN;
+  const wildcard = `*.${domain}`;
   return `${MANAGED_MARKER}. Edit at your own risk — re-running
 # \`hatchkit dev-setup init\` will overwrite this file (delete the marker
 # line above to keep your edits across re-runs; doctor will then skip
@@ -112,11 +119,11 @@ export function caddyfileContents(caddyPort: number): string {
   auto_https disable_redirects
 }
 
-https://${LOCAL_DEV_DOMAIN_WILDCARD}:${caddyPort} {
+https://${wildcard}:${caddyPort} {
   bind 127.0.0.1
   # No explicit \`tls\` directive: the site address already names the
   # wildcard subject, and the global \`acme_dns cloudflare\` block
-  # drives DNS-01 issuance. Adding \`tls *.local.ricoslabs.com\` here
+  # drives DNS-01 issuance. Adding an explicit wildcard \`tls\` arg here
   # would be parsed as the email-or-keyword form and Caddy 2 rejects
   # it ("single argument must either be 'internal', 'force_automate',
   # or an email address").
@@ -473,6 +480,8 @@ export async function checkLocalDevHost(): Promise<CheckResult[]> {
 
 export interface DevSetupInitOptions {
   force?: boolean;
+  /** Local-dev host suffix, e.g. `local.example.com`. */
+  localDevDomain?: string;
   skipLaunchd?: boolean;
   skipServe?: boolean;
   caddyBinPath?: string;
@@ -487,6 +496,7 @@ export interface DevSetupInitOptions {
 }
 
 export interface DevSetupInitResult {
+  localDevDomain: string;
   caddyPort: number;
   wroteCaddyfile: boolean;
   wrotePlist: boolean;
@@ -495,7 +505,7 @@ export interface DevSetupInitResult {
   wroteWrapper: boolean;
   loadedLaunchd: boolean;
   registeredServe: boolean;
-  /** State of the `*.local.ricoslabs.com` DNS A record that points at
+  /** State of the local-dev wildcard DNS A record that points at
    *  the laptop's tailnet IP. `null` when no Cloudflare token is
    *  reachable (manual DNS setup expected); a status string when
    *  hatchkit managed the record itself. */
@@ -503,10 +513,11 @@ export interface DevSetupInitResult {
   notes: string[];
 }
 
-export async function runDevSetupInit(
-  opts: DevSetupInitOptions = {},
-): Promise<DevSetupInitResult> {
+export async function runDevSetupInit(opts: DevSetupInitOptions = {}): Promise<DevSetupInitResult> {
   if (!existsSync(PROJECTS_DIR)) mkdirSync(PROJECTS_DIR, { recursive: true });
+  const localDevDomain =
+    normaliseLocalDevDomain(opts.localDevDomain) ??
+    (isLocalDevActive() ? readCaddyLocalDevDomain() : LOCAL_DEV_DOMAIN);
 
   let caddyPort = opts.force ? null : readCaddyPort();
   if (caddyPort === null) {
@@ -524,7 +535,7 @@ export async function runDevSetupInit(
   // unless --force is set; the user may be running their own dev domain
   // setup we shouldn't trample on first encounter.
   let wroteCaddyfile = false;
-  const nextCaddyfile = caddyfileContents(caddyPort);
+  const nextCaddyfile = caddyfileContents(caddyPort, localDevDomain);
   if (existsSync(CADDYFILE_PATH)) {
     const existing = readFileSync(CADDYFILE_PATH, "utf-8");
     if (!existing.includes(MANAGED_MARKER) && !opts.force) {
@@ -573,7 +584,11 @@ export async function runDevSetupInit(
     notes.push("caddy CLI not on PATH — skipping plist write. Install caddy then re-run.");
   } else if (keychainPair) {
     // Wrapper-style plist + helper script. Token stays in keychain.
-    const nextWrapper = caddyWrapperContents(caddyBinPath, keychainPair.service, keychainPair.account);
+    const nextWrapper = caddyWrapperContents(
+      caddyBinPath,
+      keychainPair.service,
+      keychainPair.account,
+    );
     if (
       !existsSync(CADDY_WRAPPER_PATH) ||
       readFileSync(CADDY_WRAPPER_PATH, "utf-8") !== nextWrapper
@@ -584,7 +599,10 @@ export async function runDevSetupInit(
       wroteWrapper = true;
     }
     const nextPlist = launchdPlistContentsWrapped(CADDY_WRAPPER_PATH);
-    if (!existsSync(LAUNCHD_PLIST_PATH) || readFileSync(LAUNCHD_PLIST_PATH, "utf-8") !== nextPlist) {
+    if (
+      !existsSync(LAUNCHD_PLIST_PATH) ||
+      readFileSync(LAUNCHD_PLIST_PATH, "utf-8") !== nextPlist
+    ) {
       writeFileSync(LAUNCHD_PLIST_PATH, nextPlist);
       wrotePlist = true;
     }
@@ -608,7 +626,10 @@ export async function runDevSetupInit(
       );
     }
     const nextPlist = launchdPlistContents(caddyBinPath, token ?? null);
-    if (!existsSync(LAUNCHD_PLIST_PATH) || readFileSync(LAUNCHD_PLIST_PATH, "utf-8") !== nextPlist) {
+    if (
+      !existsSync(LAUNCHD_PLIST_PATH) ||
+      readFileSync(LAUNCHD_PLIST_PATH, "utf-8") !== nextPlist
+    ) {
       writeFileSync(LAUNCHD_PLIST_PATH, nextPlist);
       wrotePlist = true;
     }
@@ -640,7 +661,7 @@ export async function runDevSetupInit(
     }
   }
 
-  // DNS: ensure *.local.ricoslabs.com → laptop's tailnet IP (A record,
+  // DNS: ensure the local-dev wildcard → laptop's tailnet IP (A record,
   // DNS-only). Without this every project URL hits whatever the parent
   // zone's wildcard says (typically the Coolify host IP, proxied — which
   // doesn't reach the tailnet) and phone requests die at the TLS
@@ -648,9 +669,10 @@ export async function runDevSetupInit(
   // but only when each peer has Tailscale's resolver in front of its
   // public DNS — fragile on iOS, where stub resolvers cache the
   // intermediate NXDOMAIN. Direct A record is the bulletproof shape.
-  const dnsRecord = await ensureLocalDevDnsRecord(opts, notes);
+  const dnsRecord = await ensureLocalDevDnsRecord({ ...opts, localDevDomain }, notes);
 
   return {
+    localDevDomain,
     caddyPort,
     wroteCaddyfile,
     wrotePlist,
@@ -662,7 +684,7 @@ export async function runDevSetupInit(
   };
 }
 
-/** Upsert the `*.local.ricoslabs.com` A record to the laptop's current
+/** Upsert the local-dev wildcard A record to the laptop's current
  *  tailnet IP. Idempotent. Returns the action taken (or a reason it
  *  was skipped). All failures are non-fatal — they only nudge the
  *  user toward the manual command. */
@@ -670,6 +692,8 @@ async function ensureLocalDevDnsRecord(
   opts: DevSetupInitOptions,
   notes: string[],
 ): Promise<DevSetupInitResult["dnsRecord"]> {
+  const localDevDomain = normaliseLocalDevDomain(opts.localDevDomain) ?? LOCAL_DEV_DOMAIN;
+  const wildcard = `*.${localDevDomain}`;
   const identity = await tailscaleIdentity();
   if (!identity) {
     notes.push("DNS record skipped: tailscale daemon offline (no IP to point the record at).");
@@ -697,16 +721,16 @@ async function ensureLocalDevDnsRecord(
   try {
     const { CloudflareApi } = await import("./utils/cloudflare-api.js");
     const cf = new CloudflareApi({ token });
-    const zone = await resolveZoneForName(cf, `${LOCAL_DEV_DOMAIN_WILDCARD}`);
+    const zone = await resolveZoneForName(cf, wildcard);
     if (!zone) {
       notes.push(
-        `DNS record skipped: no Cloudflare zone found for ${LOCAL_DEV_DOMAIN}. The token may lack Zone:Zone:Read scope.`,
+        `DNS record skipped: no Cloudflare zone found for ${localDevDomain}. The token may lack Zone:Zone:Read scope.`,
       );
       return "failed";
     }
     const upsert = await cf.upsertRecord(zone.id, {
       type: "A",
-      name: LOCAL_DEV_DOMAIN_WILDCARD,
+      name: wildcard,
       content: identity.ip,
       proxied: false,
       ttl: 60,
@@ -721,9 +745,9 @@ async function ensureLocalDevDnsRecord(
 }
 
 /** Walk the candidate label chain looking for a Cloudflare zone we can
- *  manage. For `*.local.ricoslabs.com` this tries `local.ricoslabs.com`
+ *  manage. For `*.local.example.com` this tries `local.example.com`
  *  first (in case the user has it delegated as its own zone), then
- *  `ricoslabs.com`, then `com` (which won't be ours but completes the
+ *  `example.com`, then `com` (which won't be ours but completes the
  *  chain symmetrically). Returns the first hit. */
 async function resolveZoneForName(
   cf: import("./utils/cloudflare-api.js").CloudflareApi,
@@ -738,39 +762,39 @@ async function resolveZoneForName(
   return null;
 }
 
-/** Probe the live `*.local.ricoslabs.com` Cloudflare record. Returns
+/** Probe the live local-dev wildcard Cloudflare record. Returns
  *  null when there's no token to check with — that's a configuration
  *  state, not a failure. Otherwise reports drift between the record
  *  and the laptop's current tailnet IP. */
 async function checkLocalDevDnsRecord(currentIp: string): Promise<CheckResult | null> {
+  const localDevDomain = readCaddyLocalDevDomain();
+  const wildcard = `*.${localDevDomain}`;
   const token =
     (await readCloudflareTokenFromConfig()) ?? (await readCloudflareTokenFromKeychain());
   if (!token) return null;
   try {
     const { CloudflareApi } = await import("./utils/cloudflare-api.js");
     const cf = new CloudflareApi({ token });
-    const zone = await resolveZoneForName(cf, LOCAL_DEV_DOMAIN_WILDCARD);
+    const zone = await resolveZoneForName(cf, wildcard);
     if (!zone) {
       return {
         name: `Local-dev / DNS A record`,
         status: "fail",
-        detail: `no Cloudflare zone found for ${LOCAL_DEV_DOMAIN}`,
+        detail: `no Cloudflare zone found for ${localDevDomain}`,
         hint: [
           "Token may lack Zone:Zone:Read on the parent zone, or the zone isn't on Cloudflare.",
           "Add the record manually if you're using a different DNS provider:",
-          `  *.local.ricoslabs.com  A  ${currentIp}  (DNS-only / unproxied, TTL 60)`,
+          `  ${wildcard}  A  ${currentIp}  (DNS-only / unproxied, TTL 60)`,
         ],
       };
     }
-    const record = await cf.findRecord(zone.id, LOCAL_DEV_DOMAIN_WILDCARD, "A");
+    const record = await cf.findRecord(zone.id, wildcard, "A");
     if (!record) {
       return {
         name: "Local-dev / DNS A record",
         status: "fail",
-        detail: `no A record for ${LOCAL_DEV_DOMAIN_WILDCARD} in zone ${zone.name}`,
-        hint: [
-          "Run `hatchkit dev-setup init` to create it automatically.",
-        ],
+        detail: `no A record for ${wildcard} in zone ${zone.name}`,
+        hint: ["Run `hatchkit dev-setup init` to create it automatically."],
       };
     }
     if (record.content !== currentIp) {
@@ -797,7 +821,7 @@ async function checkLocalDevDnsRecord(currentIp: string): Promise<CheckResult | 
     return {
       name: "Local-dev / DNS A record",
       status: "ok",
-      detail: `${LOCAL_DEV_DOMAIN_WILDCARD} → ${currentIp} (DNS-only)`,
+      detail: `${wildcard} → ${currentIp} (DNS-only)`,
     };
   } catch (err) {
     return {
@@ -878,6 +902,8 @@ export interface EnableProjectLocalDevInput {
   /** Absolute path to the project root (contains `.hatchkit.json`). */
   projectDir: string;
   slug: string;
+  /** Local-dev host suffix, e.g. `local.example.com`. */
+  localDevDomain?: string;
   /** Dev port the Caddy fragment should reverse-proxy to. For client-
    *  bearing projects this is the client port; for server-only, the
    *  server port. The dev plugin will overwrite the fragment with the
@@ -915,11 +941,25 @@ export interface EnableProjectLocalDevResult {
 export async function enableProjectLocalDev(
   input: EnableProjectLocalDevInput,
 ): Promise<EnableProjectLocalDevResult> {
-  const wroteFragment = writeProjectFragment(input.slug, input.devPort);
+  const manifest = await (async () => {
+    try {
+      const { readManifest } = await import("./scaffold/manifest.js");
+      return readManifest(input.projectDir);
+    } catch {
+      return null;
+    }
+  })();
+  const localDevDomain =
+    normaliseLocalDevDomain(input.localDevDomain) ??
+    normaliseLocalDevDomain(manifest?.localDev?.domain) ??
+    localDevDomainFromProjectDomain(manifest?.domain) ??
+    LOCAL_DEV_DOMAIN;
+  const wroteFragment = writeProjectFragment(input.slug, input.devPort, localDevDomain);
 
   const docsPath = join(input.projectDir, "docs", "dev-setup.md");
   const docsContent = renderDevSetupDocs({
     slug: input.slug,
+    localDevDomain,
     tailscale: await tailscaleIdentity(),
   });
   let wroteDocs = false;
@@ -977,7 +1017,10 @@ export async function enableProjectLocalDev(
  *  next.config wrapper + the plugin dep in place — they're inert when
  *  `~/.config/dev/projects/<slug>.caddy` is gone, and ripping them
  *  back out risks colliding with user edits to either file. */
-export function disableProjectLocalDev(projectDir: string, slug: string): {
+export function disableProjectLocalDev(
+  projectDir: string,
+  slug: string,
+): {
   removedFragment: boolean;
   removedDocs: boolean;
 } {
@@ -1151,12 +1194,15 @@ function patchPluginPackageJsonDep(
 
 export interface DevSetupDocsInput {
   slug: string;
+  localDevDomain?: string;
   tailscale?: TailscaleIdentity | null;
 }
 
 export function renderDevSetupDocs(input: DevSetupDocsInput): string {
+  const localDevDomain = normaliseLocalDevDomain(input.localDevDomain) ?? LOCAL_DEV_DOMAIN;
+  const wildcard = `*.${localDevDomain}`;
   const tailnetHostname = input.tailscale?.fullName ?? "<your-machine>.<tailnet>.ts.net";
-  const url = `https://${input.slug}.${LOCAL_DEV_DOMAIN}/`;
+  const url = localDevUrl(input.slug, localDevDomain);
   return `# Dev URL setup (\`${url}\`)
 
 This project ships with the **hatchkit local-dev** integration: when you run
@@ -1177,12 +1223,16 @@ framework \`base\` / \`basePath\` config.
 Do this **once per machine**, not per project. After it's wired,
 every hatchkit project that opts in just works.
 
+\`\`\`
+hatchkit dev-setup init --domain ${localDevDomain}
+\`\`\`
+
 ### 1. Cloudflare DNS — auto-managed
 
 \`hatchkit dev-setup init\` creates a DNS-only A record:
 
 \`\`\`
-*.local.ricoslabs.com   A   <your-tailnet-ip>   (DNS-only, TTL 60)
+${wildcard}   A   <your-tailnet-ip>   (DNS-only, TTL 60)
 \`\`\`
 
 It uses your hatchkit DNS token (or the \`caddy-dev/cloudflare-acme\`
@@ -1200,7 +1250,7 @@ else gets a useless 100.x address (intended).
 If you're using a non-Cloudflare DNS provider, add the record yourself:
 
 \`\`\`
-*.local.ricoslabs.com   A   <your-tailnet-ip>   (DNS-only)
+${wildcard}   A   <your-tailnet-ip>   (DNS-only)
 \`\`\`
 
 ### 2. Cloudflare API token
@@ -1214,7 +1264,7 @@ hatchkit config add dns
 \`\`\`
 
 Permissions: \`Zone:DNS:Edit\` + \`Zone:Zone:Read\` scoped to
-\`ricoslabs.com\`. The token gets embedded in the launchd plist
+\`${localDevDomain}\`. The token gets embedded in the launchd plist
 during \`dev-setup init\`.
 
 ### 3. Caddy with the Cloudflare DNS plugin
@@ -1307,6 +1357,27 @@ export async function runDevSetupCli(args: string[]): Promise<void> {
   }
   if (sub === "init") {
     const force = args.includes("--force");
+    const domainFlagIdx = args.findIndex((a) => a === "--domain" || a.startsWith("--domain="));
+    const rawDomain =
+      domainFlagIdx === -1
+        ? undefined
+        : args[domainFlagIdx].includes("=")
+          ? args[domainFlagIdx].slice("--domain=".length)
+          : args[domainFlagIdx + 1];
+    let localDevDomain = rawDomain ? normaliseLocalDevDomain(rawDomain) : undefined;
+    if (rawDomain && !localDevDomain) {
+      console.log("Usage: --domain <local-dev-domain> (for example: local.example.com)");
+      process.exit(1);
+    }
+    if (!localDevDomain) {
+      const { resolve } = await import("node:path");
+      const { readManifest } = await import("./scaffold/manifest.js");
+      const manifest = readManifest(resolve("."));
+      localDevDomain =
+        normaliseLocalDevDomain(manifest?.localDev?.domain) ??
+        localDevDomainFromProjectDomain(manifest?.domain) ??
+        undefined;
+    }
     // --caddy-token-keychain <service>:<account>   → wrapper mode with custom pair
     // --no-caddy-token-keychain                    → force inline-env mode
     // (default)                                     → auto-detect default pair
@@ -1329,9 +1400,10 @@ export async function runDevSetupCli(args: string[]): Promise<void> {
         caddyTokenKeychain = { service, account };
       }
     }
-    const result = await runDevSetupInit({ force, caddyTokenKeychain });
+    const result = await runDevSetupInit({ force, caddyTokenKeychain, localDevDomain });
     const chalk = (await import("chalk")).default;
     console.log(chalk.bold("\n  hatchkit dev-setup init\n"));
+    console.log(`  Local-dev domain:     ${chalk.cyan(result.localDevDomain)}`);
     console.log(`  Caddy port:           ${chalk.cyan(result.caddyPort)}`);
     console.log(
       `  Caddyfile:            ${result.wroteCaddyfile ? chalk.green("wrote") : chalk.dim("unchanged")} ${chalk.dim(CADDYFILE_PATH)}`,
@@ -1359,7 +1431,9 @@ export async function runDevSetupCli(args: string[]): Promise<void> {
             : result.dnsRecord === "failed"
               ? chalk.red("failed")
               : chalk.dim("skipped (no CF token)");
-      console.log(`  DNS A record:         ${dnsLabel}  ${chalk.dim(`*.${LOCAL_DEV_DOMAIN}`)}`);
+      console.log(
+        `  DNS A record:         ${dnsLabel}  ${chalk.dim(`*.${result.localDevDomain}`)}`,
+      );
     }
     if (result.notes.length > 0) {
       console.log(chalk.bold("\n  Notes:"));
@@ -1379,22 +1453,32 @@ export async function runDevSetupCli(args: string[]): Promise<void> {
     const chalk = (await import("chalk")).default;
     for (const r of checks) {
       const icon =
-        r.status === "ok" ? chalk.green("✓") : r.status === "fail" ? chalk.red("✗") : chalk.dim("·");
+        r.status === "ok"
+          ? chalk.green("✓")
+          : r.status === "fail"
+            ? chalk.red("✗")
+            : chalk.dim("·");
       console.log(`  ${icon} ${r.name}${r.detail ? chalk.dim(` — ${r.detail}`) : ""}`);
     }
     return;
   }
   console.log("Usage: hatchkit dev-setup <init|status|enable|disable> [flags]");
-  console.log("\n  init             Auto-write ~/.config/dev/Caddyfile, launchd plist, register tailscale TCP bridge.");
+  console.log(
+    "\n  init [--domain]  Auto-write ~/.config/dev/Caddyfile, launchd plist, register tailscale TCP bridge.",
+  );
   console.log("  status           Run the same checks doctor runs, but only the Local-dev rows.");
-  console.log("  enable [--slug]  Wire the project in cwd for Tailscale dev URLs (writes Caddy fragment,");
+  console.log(
+    "  enable [--slug]  Wire the project in cwd for Tailscale dev URLs (writes Caddy fragment,",
+  );
   console.log("                   docs/dev-setup.md, patches next.config, adds plugin dep).");
-  console.log("  disable          Reverse `enable` for the project in cwd. Leaves next.config + dep in place.");
+  console.log(
+    "  disable          Reverse `enable` for the project in cwd. Leaves next.config + dep in place.",
+  );
 }
 
 async function runDevSetupEnableCli(args: string[]): Promise<void> {
   const chalk = (await import("chalk")).default;
-  const { resolve, join: joinPath } = await import("node:path");
+  const { resolve } = await import("node:path");
   const { readManifest, writeManifest } = await import("./scaffold/manifest.js");
   const { sanitiseSlug } = await import("@hatchkit/dev-shared");
   const { input, confirm: askConfirm } = await import("@inquirer/prompts");
@@ -1422,17 +1506,31 @@ async function runDevSetupEnableCli(args: string[]): Promise<void> {
       : args[projectDirFlagIdx].includes("=")
         ? args[projectDirFlagIdx].slice("--project-dir=".length)
         : args[projectDirFlagIdx + 1];
+  const domainFlagIdx = args.findIndex((a) => a === "--domain" || a.startsWith("--domain="));
+  const rawLocalDevDomain =
+    domainFlagIdx === -1
+      ? undefined
+      : args[domainFlagIdx].includes("=")
+        ? args[domainFlagIdx].slice("--domain=".length)
+        : args[domainFlagIdx + 1];
 
   const projectDir = projectDirFlag ? resolve(projectDirFlag) : resolve(".");
 
   const manifest = readManifest(projectDir);
   if (!manifest) {
-    console.log(
-      chalk.red(`  No .hatchkit.json found at ${projectDir}.`),
-    );
+    console.log(chalk.red(`  No .hatchkit.json found at ${projectDir}.`));
     console.log(
       chalk.dim(`  Run from a hatchkit-managed project root, or pass --project-dir <path>.`),
     );
+    process.exit(1);
+  }
+  const localDevDomain =
+    normaliseLocalDevDomain(rawLocalDevDomain) ??
+    normaliseLocalDevDomain(manifest.localDev?.domain) ??
+    localDevDomainFromProjectDomain(manifest.domain) ??
+    LOCAL_DEV_DOMAIN;
+  if (rawLocalDevDomain && !normaliseLocalDevDomain(rawLocalDevDomain)) {
+    console.log(chalk.red(`  --domain ${rawLocalDevDomain} is not a valid local-dev domain.`));
     process.exit(1);
   }
 
@@ -1441,7 +1539,7 @@ async function runDevSetupEnableCli(args: string[]): Promise<void> {
   if (!slug) {
     const defaultSlug = sanitiseSlug(manifest.name);
     slug = await input({
-      message: "Slug for this project (https://<slug>.local.ricoslabs.com/):",
+      message: `Slug for this project (${localDevUrl("<slug>", localDevDomain)}):`,
       default: defaultSlug,
       validate: (v) => {
         const s = sanitiseSlug(v);
@@ -1467,8 +1565,9 @@ async function runDevSetupEnableCli(args: string[]): Promise<void> {
 
   console.log(chalk.bold(`\n  Enabling local-dev for ${chalk.cyan(manifest.name)}\n`));
   console.log(`  Slug:      ${chalk.cyan(slug)}`);
+  console.log(`  Domain:    ${chalk.cyan(localDevDomain)}`);
   console.log(`  Dev port:  ${chalk.cyan(devPort)}`);
-  console.log(`  URL:       ${chalk.cyan(`https://${slug}.${LOCAL_DEV_DOMAIN}/`)}`);
+  console.log(`  URL:       ${chalk.cyan(localDevUrl(slug, localDevDomain))}`);
   const skipConfirm = args.includes("--yes") || args.includes("-y");
   if (!skipConfirm) {
     const ok = await askConfirm({ message: "Proceed?", default: true });
@@ -1478,18 +1577,20 @@ async function runDevSetupEnableCli(args: string[]): Promise<void> {
     }
   }
 
-  const result = await enableProjectLocalDev({ projectDir, slug, devPort });
+  const result = await enableProjectLocalDev({ projectDir, slug, localDevDomain, devPort });
 
   // Persist the slug in the manifest so subsequent runs (plugin, doctor,
   // future `dev-setup disable`) all converge on the same identity.
-  if (manifest.localDev?.slug !== slug) {
-    const updated = { ...manifest, localDev: { slug } };
+  if (manifest.localDev?.slug !== slug || manifest.localDev?.domain !== localDevDomain) {
+    const updated = { ...manifest, localDev: { slug, domain: localDevDomain } };
     writeManifest(projectDir, updated);
   }
 
   console.log(`\n  Framework:       ${chalk.cyan(result.framework)}`);
   console.log(`  Caddy fragment:  ${chalk.green(result.wroteFragment)}`);
-  console.log(`  docs/dev-setup.md: ${result.wroteDocs ? chalk.green("wrote") : chalk.dim("unchanged")}`);
+  console.log(
+    `  docs/dev-setup.md: ${result.wroteDocs ? chalk.green("wrote") : chalk.dim("unchanged")}`,
+  );
   const configLabel = result.framework === "vite" ? "vite.config:   " : "next.config:   ";
   console.log(`  ${configLabel}  ${formatPatch(result.patchedConfig)}`);
   console.log(`  package.json:    ${formatPatch(result.patchedPackageJson)}`);
@@ -1503,24 +1604,26 @@ async function runDevSetupEnableCli(args: string[]): Promise<void> {
     // the user exactly what to paste so they don't have to read the
     // generated `docs/dev-setup.md` to figure it out.
     console.log(chalk.bold("\n  Vite config wiring (paste into your vite.config):"));
-    console.log(
-      chalk.dim('    import { localDev } from "@hatchkit/dev-plugin-vite";'),
-    );
+    console.log(chalk.dim('    import { localDev } from "@hatchkit/dev-plugin-vite";'));
     console.log(chalk.dim("    // …"));
     console.log(chalk.dim("    plugins: ["));
     console.log(chalk.dim("      // …your existing plugins"));
-    console.log(chalk.dim(`      localDev({ slug: "${slug}" }),`));
+    console.log(
+      chalk.dim(`      localDev({ slug: "${slug}", localDevDomain: "${localDevDomain}" }),`),
+    );
     console.log(chalk.dim("    ],"));
     console.log(
-      chalk.dim(
-        '    server: { allowedHosts: [".local.ricoslabs.com", ".ts.net", ".local"] },',
-      ),
+      chalk.dim(`    server: { allowedHosts: [".${localDevDomain}", ".ts.net", ".local"] },`),
     );
   }
   if (result.patchedConfig === "unsupported-shape") {
     console.log(chalk.bold("\n  Next config wiring (CJS / non-standard shape):"));
     console.log(chalk.dim('    const { withLocalDev } = require("@hatchkit/dev-plugin-next");'));
-    console.log(chalk.dim(`    module.exports = withLocalDev(nextConfig, { slug: "${slug}" });`));
+    console.log(
+      chalk.dim(
+        `    module.exports = withLocalDev(nextConfig, { slug: "${slug}", localDevDomain: "${localDevDomain}" });`,
+      ),
+    );
   }
   console.log(
     chalk.dim(`\n  Verify with: \`hatchkit doctor\` (or \`hatchkit dev-setup status\`).`),
@@ -1550,7 +1653,9 @@ async function runDevSetupDisableCli(args: string[]): Promise<void> {
   }
   const slug = manifest.localDev?.slug;
   if (!slug) {
-    console.log(chalk.dim(`  ${manifest.name} has no local-dev integration recorded. Nothing to disable.`));
+    console.log(
+      chalk.dim(`  ${manifest.name} has no local-dev integration recorded. Nothing to disable.`),
+    );
     return;
   }
 

@@ -27,7 +27,7 @@
  *      picks the change up without a restart.
  *   4. Probes `tailscale serve status` for the TCP=443 bridge that
  *      `hatchkit dev-setup init` registers once per machine.
- *   5. Prints a one-line `Tailscale: https://<slug>.local.ricoslabs.com/`
+ *   5. Prints a one-line `Tailscale: https://<slug>.<local-dev-domain>/`
  *      banner alongside Next's own startup output.
  *
  * Failure modes (no caddy fragment, no TCP bridge, tailscale offline)
@@ -39,12 +39,11 @@
  * The plugin does NOT touch Next's `basePath` / `assetPrefix` /
  * routing. Caddy proxies verbatim and Next serves at `/` — HMR/WS
  * paths stay unchanged. During `next dev`, the wrapper adds the
- * project's `*.local.ricoslabs.com` host to `allowedDevOrigins` so
+ * project's local-dev host to `allowedDevOrigins` so
  * Next's dev-resource origin guard allows font and HMR requests.
  */
 
 import {
-  LOCAL_DEV_DOMAIN,
   isLocalDevActive,
   localDevUrl,
   projectFragmentPath,
@@ -62,6 +61,10 @@ export interface LocalDevOptions {
    *  workspaces). When unset, the plugin walks up from cwd looking for
    *  `.hatchkit.json` (preferred) then package.json. */
   slug?: string;
+  /** Override local-dev host suffix. Defaults to `local.<project base domain>`
+   *  when `.hatchkit.json` has a domain, else Hatchkit's legacy shared
+   *  domain. */
+  localDevDomain?: string;
   /** Default port to assume when the dev server hasn't told us yet.
    *  Next.js defaults to 3000; hatchkit's scaffold pins a random 3xxx
    *  per project, so callers usually override this. */
@@ -76,12 +79,12 @@ export function withLocalDev<TConfig>(nextConfig: TConfig, options: LocalDevOpti
   // Only fire side effects in `next dev`. Production builds + `next start`
   // get the bare config back; same behaviour as if the plugin weren't there.
   if (isDevCommand() && process.env.HATCHKIT_LOCAL_DEV !== "0") {
-    const resolved = resolveSlug({ explicit: options.slug });
+    const resolved = resolveSlug({ explicit: options.slug, localDevDomain: options.localDevDomain });
     // Schedule async so we don't block Next's config loader. The Promise
     // resolves into stdout — Next's logger has already cleared by the
     // time we print, so our banner shows up below Next's "Ready" line.
     void initLocalDev(options, resolved);
-    if (resolved) return withAllowedDevOrigin(nextConfig, localDevHost(resolved.slug));
+    if (resolved) return withAllowedDevOrigin(nextConfig, localDevHost(resolved));
   }
   return nextConfig;
 }
@@ -121,7 +124,7 @@ async function initLocalDev(options: LocalDevOptions, resolved: ResolvedSlug | n
   // port changed.
   let fragmentResult: "created" | "updated" | "unchanged" | "error" = "unchanged";
   try {
-    fragmentResult = writeProjectFragment(resolved.slug, port);
+    fragmentResult = writeProjectFragment(resolved.slug, port, resolved.localDevDomain);
   } catch (err) {
     log(
       `[hatchkit] local-dev: failed to write Caddy fragment (${(err as Error).message}). Banner suppressed.`,
@@ -171,12 +174,14 @@ async function initLocalDev(options: LocalDevOptions, resolved: ResolvedSlug | n
   }
 
   if (!options.silent) {
-    log(`[hatchkit] Tailscale: ${localDevUrl(resolved.slug)}  (slug from ${describeSource(resolved)})`);
+    log(
+      `[hatchkit] Tailscale: ${localDevUrl(resolved.slug, resolved.localDevDomain)}  (slug from ${describeSource(resolved)})`,
+    );
   }
 }
 
-function localDevHost(slug: string): string {
-  return `${slug}.${LOCAL_DEV_DOMAIN}`;
+function localDevHost(resolved: ResolvedSlug): string {
+  return `${resolved.slug}.${resolved.localDevDomain}`;
 }
 
 function withAllowedDevOrigin<TConfig>(nextConfig: TConfig, host: string): TConfig {

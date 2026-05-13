@@ -51,6 +51,10 @@ import type { Plugin } from "vite";
 
 export interface LocalDevOptions {
   slug?: string;
+  /** Override local-dev host suffix. Defaults to `local.<project base domain>`
+   *  when `.hatchkit.json` has a domain, else Hatchkit's legacy shared
+   *  domain. */
+  localDevDomain?: string;
   /** Suppress all stdout output (Caddy fragment + tailscale probe
    *  still run, just no banner). */
   silent?: boolean;
@@ -102,7 +106,7 @@ async function appendTailscaleBanner({ port, options, info }: AppendBannerInput)
   const yellowArrow = "\x1b[33m➜\x1b[0m";
   const dimArrow = "\x1b[2m➜\x1b[0m";
 
-  const resolved = resolveSlug({ explicit: options.slug });
+  const resolved = resolveSlug({ explicit: options.slug, localDevDomain: options.localDevDomain });
   if (!resolved) {
     info(
       `  ${yellowArrow}  ${label("local-dev disabled (no slug — set { slug } or add a package.json name).")}`,
@@ -112,7 +116,7 @@ async function appendTailscaleBanner({ port, options, info }: AppendBannerInput)
 
   let fragmentResult: "created" | "updated" | "unchanged" | "error" = "unchanged";
   try {
-    fragmentResult = writeProjectFragment(resolved.slug, port);
+    fragmentResult = writeProjectFragment(resolved.slug, port, resolved.localDevDomain);
   } catch (err) {
     info(
       `  ${yellowArrow}  ${label(`Caddy fragment write failed: ${(err as Error).message}`)}`,
@@ -160,7 +164,7 @@ async function appendTailscaleBanner({ port, options, info }: AppendBannerInput)
   }
 
   if (options.silent) return;
-  const url = localDevUrl(resolved.slug);
+  const url = localDevUrl(resolved.slug, resolved.localDevDomain);
   const where = describeSource(resolved);
   info(`  ${greenArrow}  ${label(`\x1b[36m${url}\x1b[0m  \x1b[2m(slug: ${where})\x1b[0m`)}`);
 }

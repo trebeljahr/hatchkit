@@ -52,7 +52,7 @@ export interface UpdateResult {
    *  Tailscale-served local-dev integration. Distinct from a project
    *  that was already opted in — the latter shows up as `undefined`
    *  here. */
-  localDevEnabled?: { slug: string };
+  localDevEnabled?: { slug: string; domain?: string };
 }
 
 export interface UpdateOptions {
@@ -112,13 +112,16 @@ export async function runUpdate(
   // `hatchkit dev-setup enable`) just declines once and never sees the
   // prompt again — the next update run skips it because manifest.localDev
   // is now set.
-  let localDevEnabled: { slug: string } | undefined;
+  let localDevEnabled: { slug: string; domain?: string } | undefined;
   if (!manifest.localDev) {
-    const { sanitiseSlug } = await import("@hatchkit/dev-shared");
+    const { localDevDomainFromProjectDomain, localDevUrl, sanitiseSlug } = await import(
+      "@hatchkit/dev-shared"
+    );
+    const localDevDomain = localDevDomainFromProjectDomain(manifest.domain) ?? undefined;
     const offerLocalDev =
       options.presets?.enableLocalDev ??
       (await confirm({
-        message: "Enable Tailscale dev URL for this project (https://<slug>.local.ricoslabs.com/)?",
+        message: `Enable Tailscale dev URL for this project (${localDevUrl("<slug>", localDevDomain)})?`,
         default: true,
       }));
     if (offerLocalDev) {
@@ -139,7 +142,7 @@ export async function runUpdate(
           },
         });
       }
-      localDevEnabled = { slug: sanitiseSlug(slugInput) };
+      localDevEnabled = { slug: sanitiseSlug(slugInput), domain: localDevDomain };
     }
   }
 
@@ -163,7 +166,7 @@ export async function runUpdate(
   // the declined-add list so the result still reports it.
   let actuallyAdded: Feature[] = [];
   let skippedAdditions: Feature[] = [];
-  let updatedFeatures = new Set(manifest.features);
+  const updatedFeatures = new Set(manifest.features);
   let updatedPorts = manifest.ports;
 
   if (added.length > 0) {
@@ -214,14 +217,16 @@ export async function runUpdate(
     const devPort =
       manifest.surfaces === "server-only" ? manifest.ports.server : manifest.ports.client;
     const { enableProjectLocalDev } = await import("../dev-setup.js");
+    const { localDevUrl } = await import("@hatchkit/dev-shared");
     await enableProjectLocalDev({
       projectDir,
       slug: localDevEnabled.slug,
+      localDevDomain: localDevEnabled.domain,
       devPort,
     });
     console.log(
       chalk.green(
-        `\n  ✓ Tailscale dev URL enabled: https://${localDevEnabled.slug}.local.ricoslabs.com/`,
+        `\n  ✓ Tailscale dev URL enabled: ${localDevUrl(localDevEnabled.slug, localDevEnabled.domain)}`,
       ),
     );
   }
