@@ -100,6 +100,17 @@ export function collectStatus(): StatusSnapshot {
     configureCommand: "hatchkit config add resend",
   });
   providers.push({
+    key: "search-console",
+    label: "Google Search Console",
+    configured:
+      !!config.providers.googleSearchConsole &&
+      config.providers.googleSearchConsole.status === "configured",
+    detail: config.providers.googleSearchConsole?.scopes?.length
+      ? `${config.providers.googleSearchConsole.scopes.length} scopes`
+      : undefined,
+    configureCommand: "hatchkit config add search-console",
+  });
+  providers.push({
     key: "stripe",
     label: "Stripe (payments)",
     configured: !!config.providers.stripe && config.providers.stripe.status === "configured",
@@ -176,7 +187,7 @@ function computeSuggestions(
   });
   out.push({
     command: "hatchkit add <project>",
-    why: "add per-project GlitchTip / OpenPanel / Resend clients",
+    why: "add per-project GlitchTip / OpenPanel / Resend / Search Console services",
   });
   out.push({
     command: "hatchkit explain",

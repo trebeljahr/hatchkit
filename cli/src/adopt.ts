@@ -1361,6 +1361,11 @@ async function editAdoptStep(
           value: "email",
           checked: plan.services.includes("email"),
         },
+        {
+          name: "Google Search Console (DNS verification + domain property)",
+          value: "search-console",
+          checked: plan.services.includes("search-console"),
+        },
       ],
     });
     return { ...plan, services };
@@ -1475,6 +1480,7 @@ const RESUME_SERVICE_ENV_KEY: Record<ProvisionService, { server?: string; client
   resend: { server: "RESEND_API_KEY" },
   s3: { server: "R2_ENDPOINT" },
   email: {},
+  "search-console": {},
 };
 
 /** Filter the services list for `runProvision` on `--resume`: drop
@@ -2069,6 +2075,7 @@ async function executePlan(
           mode: provisionMode,
           serverEnvDir: plan.serverDir,
           clientEnvDir: plan.clientDir,
+          projectDir: state.projectDir,
         },
         // Record per-resource as runProvision creates them. Done via
         // callback so a mid-loop failure (e.g. Resend after GlitchTip
@@ -2081,6 +2088,16 @@ async function executePlan(
             ledger.record({ kind: "openpanel", project: event.project });
           } else if (event.service === "resend") {
             ledger.record({ kind: "resend", client: event.client });
+          } else if (event.service === "search-console") {
+            if (event.dnsRecord?.created) {
+              ledger.record({
+                kind: "cloudflareDnsRecord",
+                zoneId: event.dnsRecord.zoneId,
+                recordId: event.dnsRecord.id,
+                name: event.dnsRecord.name,
+                type: event.dnsRecord.type,
+              });
+            }
           } else if (event.service === "email") {
             // Email setup creates three kinds of mutable state on
             // Cloudflare: the destination address (account-scoped), the

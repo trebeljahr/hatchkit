@@ -488,7 +488,14 @@ async function handleAdd(): Promise<void> {
   let baseName = positional[0];
   const rawService = positional[1];
 
-  const allServices: ProvisionService[] = ["glitchtip", "openpanel", "resend", "s3", "email"];
+  const allServices: ProvisionService[] = [
+    "glitchtip",
+    "openpanel",
+    "resend",
+    "s3",
+    "email",
+    "search-console",
+  ];
 
   if (!baseName) {
     const { input } = await import("@inquirer/prompts");
@@ -516,6 +523,11 @@ async function handleAdd(): Promise<void> {
         {
           name: "Email forwarding (Cloudflare Email Routing — MX/SPF/DMARC + rules)",
           value: "email",
+          checked: false,
+        },
+        {
+          name: "Google Search Console (DNS verification + domain property)",
+          value: "search-console",
           checked: false,
         },
       ],
@@ -870,7 +882,14 @@ async function handleRemove(): Promise<void> {
   let baseName = positional[0];
   const rawService = positional[1];
 
-  const allServices: ProvisionService[] = ["glitchtip", "openpanel", "resend", "s3", "email"];
+  const allServices: ProvisionService[] = [
+    "glitchtip",
+    "openpanel",
+    "resend",
+    "s3",
+    "email",
+    "search-console",
+  ];
 
   if (!baseName) {
     const { input } = await import("@inquirer/prompts");
@@ -894,6 +913,11 @@ async function handleRemove(): Promise<void> {
         {
           name: "Email forwarding (deletes routing rules + DNS records; keeps destination)",
           value: "email",
+          checked: false,
+        },
+        {
+          name: "Google Search Console (removes property; keeps verification token)",
+          value: "search-console",
           checked: false,
         },
       ],
@@ -930,7 +954,7 @@ async function handleRemove(): Promise<void> {
   // project directory if it exists; the s3 unprovision falls back to
   // a keychain sweep when the manifest can't be found.
   let projectDir: string | undefined;
-  if (services.includes("s3")) {
+  if (services.includes("s3") || services.includes("search-console")) {
     const guess = resolve(baseName);
     if (existsSync(join(guess, ".hatchkit.json"))) {
       projectDir = guess;
@@ -1735,7 +1759,7 @@ async function handleConfig(): Promise<void> {
       if (!provider) {
         console.log("Usage: hatchkit config add <provider>");
         console.log(
-          "Providers: coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, resend, stripe",
+          "Providers: coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, resend, search-console, stripe",
         );
         return;
       }
@@ -1752,6 +1776,7 @@ async function handleConfig(): Promise<void> {
         case "glitchtip":
         case "openpanel":
         case "resend":
+        case "search-console":
         case "stripe":
         case "ghcr":
           await reconfigureProvider(provider);
@@ -1791,7 +1816,7 @@ async function handleConfig(): Promise<void> {
             console.log(chalk.red(`  Unknown provider: ${provider}`));
             console.log(
               chalk.dim(
-                "  Valid: coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, resend, stripe",
+                "  Valid: coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, resend, search-console, stripe",
               ),
             );
             return;
@@ -2296,6 +2321,9 @@ function printHelp(topic?: HelpTopic): void {
       Pass ${chalk.cyan("--enable-dev-obs")} to populate ${chalk.cyan(".env.development")} too.
     · Resend: separate ${chalk.cyan("-dev")} and ${chalk.cyan("-prod")} API keys (audience
       safety). Written to the server's dev + prod env respectively.
+    · Search Console: verifies the project domain via Cloudflare DNS TXT,
+      then adds the ${chalk.cyan("sc-domain:<domain>")} property to your Google account.
+      No runtime env is written.
     · ${chalk.cyan(".env.production")} is dotenvx-encrypted — commit-safe.
       ${chalk.cyan(".env.development")} is plaintext — gitignored, not encrypted.
     · A 0600 cache of every value is saved under
@@ -2316,6 +2344,8 @@ function printHelp(topic?: HelpTopic): void {
     glitchtip   GLITCHTIP_DSN (server) / PUBLIC_GLITCHTIP_DSN (client)
     openpanel   OPENPANEL_* (server) / PUBLIC_OPENPANEL_* (client)
     resend      RESEND_API_KEY (server only)
+    search-console
+                Google Search Console domain property (DNS verification; no env)
     s3          R2_<BUCKET>_ACCESS_KEY_ID / *_SECRET_ACCESS_KEY / *_BUCKET / R2_ENDPOINT
                 — mints a per-bucket scoped Cloudflare R2 API token for every
                   bucket declared in .hatchkit.json (s3Buckets). Single-bucket
@@ -2435,6 +2465,9 @@ function printHelp(topic?: HelpTopic): void {
     glitchtip   Deletes the GlitchTip project
     openpanel   Deletes the OpenPanel project (and clears cached creds)
     resend      Finds API keys by name and deletes them
+    search-console
+                Removes the Search Console property from your Google account
+                (keeps DNS verification token / ownership state)
     s3          Deletes per-bucket scoped Cloudflare R2 API tokens
                 (clears the keychain entries and DELETEs upstream)
 
@@ -2617,7 +2650,7 @@ function printHelp(topic?: HelpTopic): void {
     config              Show status of every configured provider (alias: \`status\`)
     config add <p>      Configure a provider
                         (coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate,
-                         glitchtip, openpanel, resend, stripe)
+                         glitchtip, openpanel, resend, search-console, stripe)
     config reset        Clear ALL CLI config (providers, tokens, ML registry, ports)
 `);
     return;

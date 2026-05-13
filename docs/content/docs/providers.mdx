@@ -107,6 +107,18 @@ Configure: `hatchkit config add openpanel`.
 
 ---
 
+## Search — Google Search Console
+
+Hatchkit uses Google OAuth once, then `hatchkit add <project> search-console`
+requests a Site Verification DNS TXT token, writes it through Cloudflare DNS,
+verifies ownership, and adds the `sc-domain:<domain>` Search Console property.
+Google does not support API-key auth for this flow; the stored credential is an
+OAuth refresh token in the OS keychain.
+
+Configure: `hatchkit config add search-console`.
+
+---
+
 ## GPU / ML platforms
 
 For deploying ML services. See [ML services](./ml-services) for the end-to-end flow.

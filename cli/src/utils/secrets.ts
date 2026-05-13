@@ -69,6 +69,9 @@ export const SECRET_KEYS = {
   openpanelRootClientSecret: "openpanel:root-client-secret",
   openpanelClientSecret: (name: string) => `openpanel:${name}:client-secret`,
   resendApiKey: "resend:api-key",
+  googleSearchConsoleClientId: "google-search-console:client-id",
+  googleSearchConsoleClientSecret: "google-search-console:client-secret",
+  googleSearchConsoleRefreshToken: "google-search-console:refresh-token",
   /** @deprecated Single account-wide Stripe pair. Replaced by the
    *  master+per-project model below. Kept only so `clearAllSecrets`
    *  / migration code can detect & remove legacy entries.

@@ -32,6 +32,7 @@ import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import {
   ensureGlitchtip,
+  ensureGoogleSearchConsole,
   ensureOpenpanel,
   ensureResend,
   ensureS3,
@@ -62,9 +63,19 @@ import {
   renderR2BucketTokensEnv,
   unprovisionR2BucketTokens,
 } from "./s3.js";
+import {
+  provisionSearchConsoleForDomain,
+  unprovisionSearchConsoleForDomain,
+} from "./search-console.js";
 import { parseEnvLines, writeDevEnv, writeProdEnv } from "./write-env.js";
 
-export type ProvisionService = "glitchtip" | "openpanel" | "resend" | "s3" | "email";
+export type ProvisionService =
+  | "glitchtip"
+  | "openpanel"
+  | "resend"
+  | "s3"
+  | "email"
+  | "search-console";
 
 export type SurfaceMode = "shared" | "separate" | "server-only" | "client-only";
 
@@ -108,6 +119,19 @@ export type ProvisionedEvent =
       routingEnabledThisRun: boolean;
       dnsRecords: Array<{ id: string; name: string; type: "MX" | "TXT" }>;
       rules: Array<{ id: string; address: string; created: boolean }>;
+    }
+  | {
+      service: "search-console";
+      domain: string;
+      siteUrl: string;
+      dnsRecord?: {
+        id: string;
+        zoneId: string;
+        name: string;
+        type: "TXT";
+        created: boolean;
+        updated: boolean;
+      };
     };
 
 export interface ProvisionOptions {
@@ -151,6 +175,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   if (opts.services.includes("glitchtip")) await ensureGlitchtip();
   if (opts.services.includes("openpanel")) await ensureOpenpanel();
   if (opts.services.includes("resend")) await ensureResend();
+  if (opts.services.includes("search-console")) await ensureGoogleSearchConsole();
   // S3 is currently R2-only — `ensureS3("r2")` prompts for the admin
   // token (Account>R2:Edit + User>API Tokens:Edit) and stores the
   // endpoint metadata. Same lazy-config-before-spinner contract.
@@ -159,6 +184,10 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
     const { ensureDns, ensureDefaultForwardingEmail } = await import("../config.js");
     await ensureDns();
     await ensureDefaultForwardingEmail();
+  }
+  if (opts.services.includes("search-console")) {
+    const { ensureDns } = await import("../config.js");
+    await ensureDns();
   }
 
   const surfaces = await resolveSurfaces(opts);
@@ -298,6 +327,38 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
             address: r.address,
             created: r.created,
           })),
+        });
+      }
+    }
+  }
+
+  // ── Google Search Console ── (domain verification + property add)
+  //
+  // Uses Google OAuth stored once during setup, then proves ownership
+  // with a Cloudflare DNS TXT record. It writes no runtime env because
+  // Search Console is account state, not app config.
+  if (opts.services.includes("search-console")) {
+    const projectDir = surfaces?.projectDir;
+    if (!projectDir) {
+      console.log(
+        chalk.yellow(
+          "  Skipping Search Console — need a project dir (.hatchkit.json) to read the domain. Pass --project-dir.",
+        ),
+      );
+    } else {
+      const { readManifest } = await import("../scaffold/manifest.js");
+      const manifest = readManifest(projectDir);
+      if (!manifest?.domain) {
+        console.log(chalk.yellow("  Skipping Search Console — manifest has no `domain` field."));
+      } else {
+        const result = await withSpinner(`Search Console: verifying ${manifest.domain}`, () =>
+          provisionSearchConsoleForDomain(manifest.domain),
+        );
+        opts.onProvisioned?.({
+          service: "search-console",
+          domain: result.domain,
+          siteUrl: result.siteUrl,
+          dnsRecord: result.dnsRecord,
         });
       }
     }
@@ -626,6 +687,28 @@ export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
       const name = `${opts.baseName}-${env}`;
       await runDelete(`Resend: deleting API key ${name}`, opts.dryRun, () =>
         deleteResendClient(name),
+      );
+    }
+  }
+
+  // Search Console: remove the property from the configured Google
+  // account. Ownership verification is left alone; Google may share it
+  // with other services/properties for the same domain.
+  if (opts.services.includes("search-console")) {
+    let domain: string | undefined;
+    if (opts.projectDir) {
+      const { readManifest } = await import("../scaffold/manifest.js");
+      domain = readManifest(opts.projectDir)?.domain;
+    }
+    if (!domain) {
+      console.log(
+        chalk.yellow(
+          "  Skipping Search Console — need --project-dir with .hatchkit.json to read the domain.",
+        ),
+      );
+    } else {
+      await runDelete(`Search Console: removing property for ${domain}`, opts.dryRun, () =>
+        unprovisionSearchConsoleForDomain(domain),
       );
     }
   }

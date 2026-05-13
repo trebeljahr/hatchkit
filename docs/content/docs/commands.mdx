@@ -141,13 +141,14 @@ Options:
 
 ## `hatchkit add`
 
-Provision observability / email clients for an **existing** project. Creates a `-dev` and a `-prod` client for each selected service.
+Provision observability / email / search services for an **existing** project. Creates project-scoped resources for each selected service.
 
 ```bash
 hatchkit add                                     # fully interactive
 hatchkit add raptor-runner                       # prompts for services
 hatchkit add raptor-runner all                   # all services
 hatchkit add raptor-runner glitchtip,resend      # explicit list
+hatchkit add raptor-runner search-console        # verify domain + add Search Console property
 ```
 
 ### Services
@@ -157,6 +158,7 @@ hatchkit add raptor-runner glitchtip,resend      # explicit list
 | `glitchtip` | GlitchTip project | `GLITCHTIP_DSN` |
 | `openpanel` | OpenPanel client | `OPENPANEL_CLIENT_ID`, `OPENPANEL_CLIENT_SECRET` |
 | `resend` | Restricted Resend API key | `RESEND_API_KEY` |
+| `search-console` | Google Search Console domain property | no env; DNS TXT verification |
 
 The resulting env blocks are printed **and** saved under `<config-dir>/provisioned/<project>.{dev,prod}.env` for safe keeping.
 
@@ -234,4 +236,4 @@ hatchkit config add <provider>       # (re-)configure a provider
 hatchkit config reset                # clear ALL CLI config (confirmed)
 ```
 
-Valid providers: `coolify`, `hetzner`, `dns`, `s3`, `glitchtip`, `openpanel`, `resend`, `modal`, `runpod`, `hf`, `replicate`.
+Valid providers: `coolify`, `hetzner`, `dns`, `s3`, `glitchtip`, `openpanel`, `resend`, `search-console`, `modal`, `runpod`, `hf`, `replicate`.

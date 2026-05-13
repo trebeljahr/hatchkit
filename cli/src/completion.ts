@@ -41,6 +41,7 @@ const CONFIG_ADD = [
   "glitchtip",
   "openpanel",
   "resend",
+  "search-console",
   "stripe",
 ] as const;
 

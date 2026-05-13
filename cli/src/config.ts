@@ -1,9 +1,12 @@
+import { randomBytes } from "node:crypto";
+import { createServer } from "node:http";
 import { Separator, confirm, input, password, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import Conf from "conf";
 import ora from "ora";
 import { verifyCoolify } from "./utils/coolify-api.js";
 import { execOk } from "./utils/exec.js";
+import { pickPort } from "./utils/ports.js";
 import {
   SECRET_KEYS,
   clearAllSecrets,
@@ -263,6 +266,12 @@ export interface ResendMeta extends ProviderStatus {
   defaultRegion?: string;
 }
 
+export interface GoogleSearchConsoleMeta extends ProviderStatus {
+  /** Scopes granted to the stored refresh token. Non-sensitive; useful
+   *  in status/doctor output when a user authorized only one API. */
+  scopes?: string[];
+}
+
 export interface StripeMeta extends ProviderStatus {
   /** Account id (`acct_…`) derived from the live master key during
    *  verification. Surfaced in `hatchkit doctor` so a silent
@@ -321,6 +330,11 @@ export interface OpenpanelConfig extends OpenpanelMeta {
 export interface ResendConfig extends ResendMeta {
   apiKey: string;
 }
+export interface GoogleSearchConsoleConfig extends GoogleSearchConsoleMeta {
+  clientId: string;
+  clientSecret: string;
+  refreshToken: string;
+}
 export interface StripeConfig extends StripeMeta {
   /** Master secret key for test/sandbox-mode operations. Used by
    *  hatchkit ONLY to mint webhook endpoints in test mode. Never
@@ -357,6 +371,7 @@ export interface CliConfig {
     glitchtip?: GlitchtipMeta;
     openpanel?: OpenpanelMeta;
     resend?: ResendMeta;
+    googleSearchConsole?: GoogleSearchConsoleMeta;
     stripe?: StripeMeta;
     ghcr?: GhcrMeta;
   };
@@ -1333,6 +1348,239 @@ export async function getResendConfig(): Promise<ResendConfig | null> {
 }
 
 // ---------------------------------------------------------------------------
+// Provider: Google Search Console
+// ---------------------------------------------------------------------------
+
+const GOOGLE_SEARCH_CONSOLE_SCOPES = [
+  "https://www.googleapis.com/auth/webmasters",
+  "https://www.googleapis.com/auth/siteverification",
+];
+
+async function exchangeGoogleCode(args: {
+  clientId: string;
+  clientSecret: string;
+  code: string;
+  redirectUri: string;
+}): Promise<{ access_token: string; refresh_token?: string; scope?: string }> {
+  const body = new URLSearchParams({
+    client_id: args.clientId,
+    client_secret: args.clientSecret,
+    code: args.code,
+    grant_type: "authorization_code",
+    redirect_uri: args.redirectUri,
+  });
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const json = (await res.json().catch(() => null)) as {
+    access_token?: string;
+    refresh_token?: string;
+    scope?: string;
+    error?: string;
+    error_description?: string;
+  } | null;
+  if (!res.ok || !json?.access_token) {
+    const msg = json?.error_description ?? json?.error ?? `HTTP ${res.status}`;
+    throw new Error(`Google OAuth token exchange failed: ${msg}`);
+  }
+  return {
+    access_token: json.access_token,
+    refresh_token: json.refresh_token,
+    scope: json.scope,
+  };
+}
+
+async function runGoogleOAuthLoopback(args: {
+  clientId: string;
+  clientSecret: string;
+}): Promise<{ refreshToken: string; scopes: string[] }> {
+  const port = await pickPort(49152, 65535, new Set());
+  const state = randomBytes(18).toString("hex");
+  const redirectUri = `http://127.0.0.1:${port}/oauth/google/callback`;
+
+  let settled = false;
+  let resolveCode: (code: string) => void = () => {};
+  let rejectCode: (err: Error) => void = () => {};
+  const codePromise = new Promise<string>((resolve, reject) => {
+    resolveCode = resolve;
+    rejectCode = reject;
+  });
+
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? "/", redirectUri);
+    if (url.pathname !== "/oauth/google/callback") {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      res.end("Not found");
+      return;
+    }
+    const gotState = url.searchParams.get("state");
+    const code = url.searchParams.get("code");
+    const error = url.searchParams.get("error");
+    if (gotState !== state) {
+      res.writeHead(400, { "Content-Type": "text/plain" });
+      res.end("State mismatch. Return to the terminal and retry setup.");
+      if (!settled) {
+        settled = true;
+        rejectCode(new Error("Google OAuth state mismatch."));
+      }
+      return;
+    }
+    if (error || !code) {
+      res.writeHead(400, { "Content-Type": "text/plain" });
+      res.end("Google authorization failed. Return to the terminal and retry setup.");
+      if (!settled) {
+        settled = true;
+        rejectCode(new Error(`Google OAuth failed: ${error ?? "missing code"}`));
+      }
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("Google Search Console authorization complete. You can close this tab.");
+    if (!settled) {
+      settled = true;
+      resolveCode(code);
+    }
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => resolve());
+  });
+
+  const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  authUrl.searchParams.set("client_id", args.clientId);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("scope", GOOGLE_SEARCH_CONSOLE_SCOPES.join(" "));
+  authUrl.searchParams.set("access_type", "offline");
+  authUrl.searchParams.set("prompt", "consent");
+  authUrl.searchParams.set("state", state);
+
+  console.log(chalk.dim("\n  Open this URL in your browser, approve access, then return here:"));
+  console.log(chalk.cyan(`  ${authUrl.toString()}\n`));
+
+  try {
+    const code = await codePromise;
+    const token = await exchangeGoogleCode({
+      clientId: args.clientId,
+      clientSecret: args.clientSecret,
+      code,
+      redirectUri,
+    });
+    if (!token.refresh_token) {
+      throw new Error(
+        "Google did not return a refresh token. Re-run setup and keep `prompt=consent`, or revoke the app at https://myaccount.google.com/permissions and try again.",
+      );
+    }
+    return {
+      refreshToken: token.refresh_token,
+      scopes: token.scope?.split(/\s+/).filter(Boolean) ?? GOOGLE_SEARCH_CONSOLE_SCOPES,
+    };
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+export async function refreshGoogleSearchConsoleAccessToken(
+  cfg: GoogleSearchConsoleConfig,
+): Promise<string> {
+  const body = new URLSearchParams({
+    client_id: cfg.clientId,
+    client_secret: cfg.clientSecret,
+    refresh_token: cfg.refreshToken,
+    grant_type: "refresh_token",
+  });
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const json = (await res.json().catch(() => null)) as {
+    access_token?: string;
+    error?: string;
+    error_description?: string;
+  } | null;
+  if (!res.ok || !json?.access_token) {
+    const msg = json?.error_description ?? json?.error ?? `HTTP ${res.status}`;
+    throw new Error(`Google refresh token failed: ${msg}`);
+  }
+  return json.access_token;
+}
+
+export async function ensureGoogleSearchConsole(): Promise<GoogleSearchConsoleConfig> {
+  const existing = store.get("providers.googleSearchConsole") as
+    | GoogleSearchConsoleMeta
+    | undefined;
+  const existingClientId = await getSecret(SECRET_KEYS.googleSearchConsoleClientId);
+  const existingClientSecret = await getSecret(SECRET_KEYS.googleSearchConsoleClientSecret);
+  const existingRefreshToken = await getSecret(SECRET_KEYS.googleSearchConsoleRefreshToken);
+
+  if (
+    existing?.status === "configured" &&
+    existingClientId &&
+    existingClientSecret &&
+    existingRefreshToken
+  ) {
+    return {
+      ...existing,
+      clientId: existingClientId,
+      clientSecret: existingClientSecret,
+      refreshToken: existingRefreshToken,
+    };
+  }
+
+  console.log(chalk.yellow("\n  Google Search Console is not configured yet. Let's set it up."));
+  console.log(
+    chalk.dim(
+      "  Google requires OAuth 2.0 for Search Console and Site Verification.\n" +
+        "  Create an OAuth client once in Google Cloud, enable the Search Console API\n" +
+        "  and Site Verification API, then paste its client id/secret here.\n" +
+        "  Hatchkit stores the refresh token in your OS keychain and uses it only\n" +
+        "  to verify domain ownership and add Search Console properties.\n",
+    ),
+  );
+  tokenHint(
+    "https://console.cloud.google.com/apis/credentials",
+    "OAuth client (Desktop app) with Search Console API + Site Verification API enabled",
+    `Scopes: ${GOOGLE_SEARCH_CONSOLE_SCOPES.join(", ")}`,
+  );
+
+  const clientId = (
+    await input({
+      message: "Google OAuth client ID:",
+      default: existingClientId ?? undefined,
+      validate: validateRequired,
+    })
+  ).trim();
+  const clientSecret = await confirmPastedSecret("Google OAuth client secret");
+  const oauth = await runGoogleOAuthLoopback({ clientId, clientSecret });
+
+  const meta: GoogleSearchConsoleMeta = {
+    status: "configured",
+    scopes: oauth.scopes,
+    lastVerified: new Date().toISOString(),
+  };
+  store.set("providers.googleSearchConsole", meta);
+  await setSecret(SECRET_KEYS.googleSearchConsoleClientId, clientId);
+  await setSecret(SECRET_KEYS.googleSearchConsoleClientSecret, clientSecret);
+  await setSecret(SECRET_KEYS.googleSearchConsoleRefreshToken, oauth.refreshToken);
+  console.log(chalk.green("  ✓ Google Search Console configured"));
+  return { ...meta, clientId, clientSecret, refreshToken: oauth.refreshToken };
+}
+
+export async function getGoogleSearchConsoleConfig(): Promise<GoogleSearchConsoleConfig | null> {
+  const meta = store.get("providers.googleSearchConsole") as GoogleSearchConsoleMeta | undefined;
+  if (!meta || meta.status !== "configured") return null;
+  const clientId = await getSecret(SECRET_KEYS.googleSearchConsoleClientId);
+  const clientSecret = await getSecret(SECRET_KEYS.googleSearchConsoleClientSecret);
+  const refreshToken = await getSecret(SECRET_KEYS.googleSearchConsoleRefreshToken);
+  if (!clientId || !clientSecret || !refreshToken) return null;
+  return { ...meta, clientId, clientSecret, refreshToken };
+}
+
+// ---------------------------------------------------------------------------
 // Provider: Stripe (payments)
 // ---------------------------------------------------------------------------
 //
@@ -1663,6 +1911,7 @@ type ReconfigurableProvider =
   | "glitchtip"
   | "openpanel"
   | "resend"
+  | "search-console"
   | "stripe"
   | "ghcr"
   | `s3.${"hetzner" | "aws" | "r2"}`
@@ -1696,6 +1945,13 @@ export async function reconfigureProvider(name: ReconfigurableProvider): Promise
   } else if (name === "resend") {
     await wipeProvider("providers.resend", [SECRET_KEYS.resendApiKey]);
     await ensureResend();
+  } else if (name === "search-console") {
+    await wipeProvider("providers.googleSearchConsole", [
+      SECRET_KEYS.googleSearchConsoleClientId,
+      SECRET_KEYS.googleSearchConsoleClientSecret,
+      SECRET_KEYS.googleSearchConsoleRefreshToken,
+    ]);
+    await ensureGoogleSearchConsole();
   } else if (name === "stripe") {
     // NB: per-project Stripe entries (`stripe:project:<name>:*`) are
     // intentionally NOT swept here — those belong to individual scaffolded
@@ -1850,6 +2106,20 @@ function buildSetupGroups(): SetupGroup[] {
             return { configured: m?.status === "configured" };
           },
           run: () => reconfigureProvider("resend"),
+        },
+        {
+          key: "search-console",
+          label: "Google Search Console",
+          status: () => {
+            const m = store.get("providers.googleSearchConsole") as
+              | GoogleSearchConsoleMeta
+              | undefined;
+            return {
+              configured: m?.status === "configured",
+              summary: m?.scopes?.length ? `${m.scopes.length} scopes` : undefined,
+            };
+          },
+          run: () => reconfigureProvider("search-console"),
         },
         {
           key: "defaultForwardingEmail",

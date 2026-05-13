@@ -10,11 +10,13 @@ import {
   getCoolifyConfig,
   getDnsConfig,
   getGlitchtipConfig,
+  getGoogleSearchConsoleConfig,
   getHetznerConfig,
   getOpenpanelConfig,
   getResendConfig,
   getS3Config,
   getStore,
+  refreshGoogleSearchConsoleAccessToken,
   validateS3KeyPair,
 } from "./config.js";
 import { verifyCoolify } from "./utils/coolify-api.js";
@@ -497,6 +499,41 @@ async function checkResend(): Promise<CheckResult> {
   );
 }
 
+async function checkGoogleSearchConsole(): Promise<CheckResult> {
+  const cfg = await getGoogleSearchConsoleConfig();
+  if (!cfg) return { name: "Google Search Console", status: "skip" };
+  return check(
+    "Google Search Console",
+    async () => {
+      const accessToken = await refreshGoogleSearchConsoleAccessToken(cfg);
+      const res = await fetch("https://www.googleapis.com/webmasters/v3/sites", {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { siteEntry?: unknown[] };
+      return `${body.siteEntry?.length ?? 0} propert${body.siteEntry?.length === 1 ? "y" : "ies"}`;
+    },
+    (detail) => {
+      const code = httpCode(detail);
+      if (code === 400 || code === 401) {
+        return [
+          "Google OAuth refresh token is invalid, revoked, or missing required scopes.",
+          "Re-run: `hatchkit config add search-console`",
+          "Required scopes: Search Console `webmasters` + Site Verification.",
+        ];
+      }
+      if (code === 403) {
+        return [
+          "Google credentials work but the API or scopes are blocked.",
+          "Enable Search Console API and Site Verification API in Google Cloud,",
+          "then re-run: `hatchkit config add search-console`.",
+        ];
+      }
+      return undefined;
+    },
+  );
+}
+
 async function checkStripeMode(mode: "test" | "live", secretKey: string): Promise<CheckResult> {
   return check(
     `Stripe (${mode} master)`,
@@ -550,6 +587,7 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   results.push(await checkGlitchtip());
   results.push(await checkOpenpanel());
   results.push(await checkResend());
+  results.push(await checkGoogleSearchConsole());
   for (const r of await checkStripe()) results.push(r);
   // Local-dev (Tailscale-served per-project URLs). Returns [] when the
   // user hasn't run `hatchkit dev-setup init`, so doctor stays quiet for
