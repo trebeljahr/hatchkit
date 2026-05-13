@@ -131,6 +131,10 @@ async function main(): Promise<void> {
       if (args.includes("--help")) return printHelp("update");
       await handleUpdate();
       break;
+    case "server":
+      if (args.includes("--help") && args.length === 2) return printHelp("server");
+      await handleServer();
+      break;
     case "keys":
       if (args.includes("--help") && args.length === 2) return printHelp("keys");
       await handleKeys();
@@ -1678,6 +1682,50 @@ async function handleUpdate(): Promise<void> {
   }
 }
 
+async function handleServer(): Promise<void> {
+  const sub = args[1];
+  if (sub !== "add") {
+    console.log("Usage: hatchkit server add [--yes] [--dry-run] [--server-dir <path>]");
+    console.log("Run `hatchkit help server` for details.");
+    process.exit(1);
+  }
+  const { runServerAdd } = await import("./scaffold/server-add.js");
+  const result = await runServerAdd(resolve("."), {
+    yes: args.includes("--yes") || args.includes("-y"),
+    dryRun: args.includes("--dry-run"),
+    serverDir: flagValue("--server-dir"),
+    sharedDir: flagValue("--shared-dir"),
+  });
+
+  if (args.includes("--json")) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (result.dryRun) {
+    console.log(chalk.yellow("  --dry-run — no files were changed."));
+  }
+  if (result.created.length > 0) {
+    console.log(chalk.green(`  ✓ Created: ${result.created.join(", ")}`));
+  }
+  if (result.updated.length > 0) {
+    console.log(chalk.green(`  ✓ Updated: ${result.updated.join(", ")}`));
+  }
+  if (result.reused.length > 0) {
+    console.log(chalk.dim(`  · Reused existing: ${result.reused.join(", ")}`));
+  }
+  for (const warning of result.warnings) {
+    console.log(chalk.yellow(`  ! ${warning}`));
+  }
+  if (result.skipped.length > 0 && !result.changed) {
+    console.log(chalk.dim(`  · ${result.skipped.join(", ")}`));
+  }
+  if (result.nextSteps.length > 0) {
+    console.log(chalk.bold("\n  Next:"));
+    for (const step of result.nextSteps) console.log(`    ${step}`);
+  }
+}
+
 async function handleConfig(): Promise<void> {
   const subcommand = args[1];
 
@@ -1815,6 +1863,7 @@ type HelpTopic =
   | "setup"
   | "config"
   | "update"
+  | "server"
   | "keys"
   | "add"
   | "adopt"
@@ -1936,6 +1985,37 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Removal is not supported.")} Removing features could delete
     user code — remove manually + edit the manifest.
+`);
+    return;
+  }
+  if (topic === "server") {
+    console.log(`
+  ${chalk.bold("hatchkit server add")} — retrofit a server into a client-only project
+
+  ${chalk.bold("Usage:")}
+    cd <project-dir> && hatchkit server add
+    cd <project-dir> && hatchkit server add --yes
+
+  ${chalk.bold("What it does:")}
+    Reads .hatchkit.json, copies the Hatchkit server package from the
+    starter, restores shared server types, updates root scripts/workspace
+    files, flips manifest surfaces from ${chalk.cyan("client-only")} to
+    ${chalk.cyan("both")}, and switches gh-pages projects back to coolify.
+
+  ${chalk.bold("What it does not do:")}
+    No provider calls. No Coolify, DNS, GitHub, keychain, or Terraform
+    mutation. To wire deploy infra after the local scaffold:
+
+      hatchkit adopt --resume --regenerate-pipeline
+
+  ${chalk.bold("Options:")}
+    --server-dir <path>   Destination for the server package. Default:
+                          ${chalk.dim("packages/server")}.
+    --shared-dir <path>   Destination for the shared package. Default:
+                          ${chalk.dim("packages/shared")}.
+    --yes, -y             Skip confirmation.
+    --dry-run             Show planned local changes without writing.
+    --json                Machine-readable result.
 `);
     return;
   }
@@ -2642,6 +2722,7 @@ function printHelp(topic?: HelpTopic): void {
     create          Scaffold a new project (interactive)
     adopt           Bring an existing project under hatchkit management (run in project dir)
     update          Add features to an already-scaffolded project (run in project dir)
+    server add      Retrofit a server into a client-only project
     add             Create GlitchTip / OpenPanel / Resend clients for an existing project
     assets          Move bytes between local MinIO and prod buckets (seed/push/pull/migrate)
     remove          Delete the -dev/-prod clients created by 'add' (inverse of add)

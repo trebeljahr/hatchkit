@@ -542,6 +542,55 @@ console.log("\n── update: manifest round-trip for web-only project ───
   }
 }
 
+// Server add: retrofit a client-only scaffold back to full-stack
+// without touching providers. This is the local half of the
+// client-only → server+client adoption path; deploy wiring remains in
+// `hatchkit adopt --resume`.
+console.log("\n── server add: retrofit client-only project ─────────────────────────────");
+{
+  const { runServerAdd } = await import("./src/scaffold/server-add.js");
+  const { readManifest, writeManifest } = await import("./src/scaffold/manifest.js");
+  const d = mkdtempSync(join(tmpdir(), "scaffold-server-add-"));
+  try {
+    await scaffoldApp(
+      cfg("server-add-test", [], {
+        surfaces: "client-only",
+      }),
+      d,
+    );
+    const before = readManifest(d);
+    if (before) writeManifest(d, { ...before, deploymentMode: "gh-pages" });
+    const result = await runServerAdd(d, {
+      yes: true,
+      presets: { confirmAdd: true },
+    });
+    const after = readManifest(d);
+    const rootPkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
+    const sharedIndex = readFileSync(join(d, "packages/shared/src/index.ts"), "utf-8");
+    const serverEnv = readFileSync(join(d, "packages/server/.env.example"), "utf-8");
+    const checks: Check[] = [
+      ["initial scaffold was client-only", before?.surfaces === "client-only"],
+      ["server package created", existsSync(join(d, "packages/server/package.json"))],
+      ["shared ml-types restored", existsSync(join(d, "packages/shared/src/ml-types.ts"))],
+      ["shared barrel exports ml-types", sharedIndex.includes("./ml-types.js")],
+      ["manifest surfaces now both", after?.surfaces === "both"],
+      ["gh-pages switched to coolify", after?.deploymentMode === "coolify"],
+      ["root dev script restored", rootPkg.scripts?.dev === "node scripts/dev.mjs"],
+      ["root build script includes server", rootPkg.scripts?.build?.includes("@starter/server")],
+      ["server env domain rewritten", /FRONTEND_URL=https:\/\/server-add-test\.example\.com/m.test(serverEnv)],
+      ["result reports changes", result.changed],
+    ];
+    let ok = true;
+    for (const [n, c] of checks) {
+      console.log(`  ${c ? "✓" : "✗"} ${n}`);
+      if (!c) ok = false;
+    }
+    results.serverAdd = ok;
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+}
+
 // dotenvx: scaffold a project, verify the encrypted/placeholder
 // envelope. STRIPE_* are deliberately NOT in the scaffolder's
 // candidate list — `provisionStripeProject` (run after scaffold) is

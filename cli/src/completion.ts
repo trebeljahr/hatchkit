@@ -17,6 +17,7 @@ const TOP_LEVEL = [
   "create",
   "adopt",
   "update",
+  "server",
   "add",
   "assets",
   "keys",
@@ -45,6 +46,7 @@ const CONFIG_ADD = [
 
 const CONFIG_SUB = ["add", "reset"] as const;
 const KEYS_SUB = ["show", "set", "rotate", "push"] as const;
+const SERVER_SUB = ["add"] as const;
 const SHELLS = ["zsh", "bash", "fish"] as const;
 
 export function renderCompletion(shell: "zsh" | "bash" | "fish"): string {
@@ -84,6 +86,9 @@ ${TOP_LEVEL.map((c) => `    '${c}:${topDesc(c)}'`).join("\n")}
         keys)
           _values 'keys subcommand' ${KEYS_SUB.map((s) => `'${s}'`).join(" ")}
           ;;
+        server)
+          _values 'server subcommand' ${SERVER_SUB.map((s) => `'${s}'`).join(" ")}
+          ;;
         assets)
           _values 'assets subcommand' ${ASSETS_SUB.map((s) => `'${s}'`).join(" ")}
           ;;
@@ -122,6 +127,7 @@ _hatchkit_complete() {
   local top="${TOP_LEVEL.join(" ")}"
   local config_sub="${CONFIG_SUB.join(" ")}"
   local keys_sub="${KEYS_SUB.join(" ")}"
+  local server_sub="${SERVER_SUB.join(" ")}"
   local assets_sub="${ASSETS_SUB.join(" ")}"
   local shells="${SHELLS.join(" ")}"
   local providers="${CONFIG_ADD.join(" ")}"
@@ -142,6 +148,11 @@ _hatchkit_complete() {
     keys)
       if [[ $cword -eq 2 ]]; then
         COMPREPLY=( $(compgen -W "$keys_sub" -- "$cur") )
+      fi
+      ;;
+    server)
+      if [[ $cword -eq 2 ]]; then
+        COMPREPLY=( $(compgen -W "$server_sub" -- "$cur") )
       fi
       ;;
     assets)
@@ -188,6 +199,9 @@ function fish(): string {
   for (const s of KEYS_SUB) {
     lines.push(`complete -c hatchkit -n "__fish_seen_subcommand_from keys" -a "${s}"`);
   }
+  for (const s of SERVER_SUB) {
+    lines.push(`complete -c hatchkit -n "__fish_seen_subcommand_from server" -a "${s}"`);
+  }
   for (const s of ASSETS_SUB) {
     lines.push(`complete -c hatchkit -n "__fish_seen_subcommand_from assets" -a "${s}"`);
   }
@@ -218,6 +232,8 @@ function topDesc(cmd: string): string {
       return "Adopt an existing project (run in project dir)";
     case "update":
       return "Add features to an already-scaffolded project";
+    case "server":
+      return "Retrofit a server into a client-only project";
     case "add":
       return "Provision GlitchTip / OpenPanel / Resend clients";
     case "assets":

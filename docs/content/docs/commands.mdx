@@ -1,6 +1,6 @@
 ---
 title: Commands
-description: Every hatchkit command, every flag — setup, create, update, add, gh-pages, doctor, keys, config.
+description: Every hatchkit command, every flag — setup, create, update, server add, add, gh-pages, doctor, keys, config.
 ---
 
 Every hatchkit command supports `--help` for detail. Global flags:
@@ -103,6 +103,39 @@ hatchkit dev-setup disable
 `dev-setup init` is one-time per machine and idempotent. New projects already run the per-project wiring during `hatchkit create`, so `dev-setup enable` is mainly for older projects.
 
 See [Local Dev On Mobile](./local-dev-mobile) for the Tailscale + Caddy + Capacitor flow.
+
+---
+
+## `hatchkit server add`
+
+Retrofit the Hatchkit server surface into a client-only project.
+
+```bash
+cd my-app
+hatchkit server add
+```
+
+This is a local scaffold step only. It copies `packages/server`, restores shared server types, updates workspace/root scripts, flips `.hatchkit.json` from `client-only` to `both`, and moves `gh-pages` manifests back to `coolify` because Pages cannot host a backend.
+
+After reviewing the diff:
+
+```bash
+pnpm install
+pnpm run typecheck
+hatchkit adopt --resume --regenerate-pipeline
+```
+
+`adopt --resume` is the deploy wiring step: Coolify, DNS, GitHub Actions secrets, dotenvx key push, and provider provisioning stay there so existing rollback and provider guard rails apply.
+
+Options:
+
+| Flag | Effect |
+|---|---|
+| `--server-dir <path>` | Destination for the server package. Default: `packages/server`. |
+| `--shared-dir <path>` | Destination for the shared package. Default: `packages/shared`. |
+| `--yes`, `-y` | Skip confirmation. |
+| `--dry-run` | Show planned local changes without writing. |
+| `--json` | Machine-readable result. |
 
 ---
 
