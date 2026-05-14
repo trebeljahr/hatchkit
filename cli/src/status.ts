@@ -35,6 +35,13 @@ export interface StatusSnapshot {
 export function collectStatus(): StatusSnapshot {
   const config = getConfig();
   const providers: ProviderSnapshot[] = [];
+  const googleSearchConsole = config.providers.googleSearchConsole;
+  const googleSearchConsoleConfigured =
+    !!googleSearchConsole &&
+    googleSearchConsole.status === "configured" &&
+    (googleSearchConsole.oauthMode !== "hatchkit-pkce" ||
+      (!!process.env.HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID &&
+        !!process.env.HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET));
 
   providers.push({
     key: "github",
@@ -109,17 +116,11 @@ export function collectStatus(): StatusSnapshot {
   providers.push({
     key: "search-console",
     label: "Google Search Console",
-    configured:
-      !!config.providers.googleSearchConsole &&
-      config.providers.googleSearchConsole.status === "configured",
-    detail: config.providers.googleSearchConsole
+    configured: googleSearchConsoleConfigured,
+    detail: googleSearchConsole
       ? [
-          config.providers.googleSearchConsole.oauthMode === "hatchkit-pkce"
-            ? "Hatchkit OAuth"
-            : "BYO OAuth",
-          config.providers.googleSearchConsole.scopes?.length
-            ? `${config.providers.googleSearchConsole.scopes.length} scopes`
-            : null,
+          googleSearchConsole.oauthMode === "hatchkit-pkce" ? "Hatchkit OAuth" : "BYO OAuth",
+          googleSearchConsole.scopes?.length ? `${googleSearchConsole.scopes.length} scopes` : null,
         ]
           .filter(Boolean)
           .join(", ")
