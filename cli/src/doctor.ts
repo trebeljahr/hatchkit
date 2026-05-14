@@ -549,6 +549,13 @@ async function checkGoogleSearchConsole(): Promise<CheckResult> {
       return `${body.siteEntry?.length ?? 0} propert${body.siteEntry?.length === 1 ? "y" : "ies"}`;
     },
     (detail) => {
+      if (/client_secret is missing/i.test(detail)) {
+        return [
+          "The stored Google refresh token is tied to an OAuth client that now requires its Desktop client secret.",
+          "Run: `hatchkit config add search-console`",
+          "Paste the generated Desktop client secret when prompted; Hatchkit stores it in the OS keychain.",
+        ];
+      }
       const code = httpCode(detail);
       if (code === 400 || code === 401) {
         return [
