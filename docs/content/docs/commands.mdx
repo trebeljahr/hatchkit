@@ -25,7 +25,7 @@ One-time onboarding. Walks through every provider hatchkit knows about:
 - GitHub (via `gh` CLI)
 - Coolify (URL + token)
 - Hetzner Cloud, DNS provider (INWX / Cloudflare), S3 (Hetzner / AWS / R2)
-- GlitchTip, OpenPanel, Resend
+- GlitchTip, OpenPanel, Resend, Google Search Console
 - GPU platforms — Modal, RunPod, Hugging Face, Replicate
 
 Everything is optional; you'll be prompted again the first time a command actually needs that provider.
@@ -55,15 +55,16 @@ hatchkit create [options]
 
 ### Flow
 
-1. Prompts for name, domain, deploy target, features, ML services.
+1. Prompts for name, domain, deploy target, features, services, ML services.
 2. Scaffolds the starter, strips unselected features, assigns unique ports.
 3. Auto-wires local-dev unless disabled: `.hatchkit.json` gets `localDev.slug`, `docs/dev-setup.md` is generated, and the Next/Vite dev plugin plus Caddy fragment are added.
 4. Installs deps (if `pnpm` is available and you opt in).
 5. `git init` + first commit + GitHub repo.
-6. Generates Terraform tfvars + Coolify `.env`.
-7. Runs Terraform (DNS + optionally server).
-8. Runs Coolify app setup and pushes the dotenvx private key.
-9. Deploys ML services and prints env endpoints to set.
+6. Optionally provisions GlitchTip/OpenPanel/Plausible, Resend, Email Routing, and Search Console via the same path as `hatchkit add`.
+7. Generates Terraform tfvars + Coolify `.env`.
+8. Runs Terraform (DNS + optionally server).
+9. Runs Coolify app setup and pushes the dotenvx private key.
+10. Deploys ML services and prints env endpoints to set.
 
 ---
 
@@ -158,7 +159,8 @@ hatchkit add raptor-runner search-console        # verify domain + add Search Co
 | `glitchtip` | GlitchTip project | `GLITCHTIP_DSN` |
 | `openpanel` | OpenPanel client | `OPENPANEL_CLIENT_ID`, `OPENPANEL_CLIENT_SECRET` |
 | `plausible` | Plausible site | `NEXT_PUBLIC_PLAUSIBLE_DOMAIN`, `NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL` |
-| `resend` | Restricted Resend API key | `RESEND_API_KEY` |
+| `resend` | Restricted Resend API key | `RESEND_API_KEY`, `RESEND_FROM_EMAIL` |
+| `email` | Cloudflare Email Routing rules | no env; DNS MX/SPF/DMARC + forwarding rules |
 | `search-console` | Google Search Console domain property | no env; DNS TXT verification |
 
 The resulting env blocks are printed **and** saved under `<config-dir>/provisioned/<project>.{dev,prod}.env` for safe keeping.

@@ -25,14 +25,14 @@ const MODEL: ExplainModel = {
   what_it_does: [
     "Scaffolds opinionated full-stack projects (web + optional desktop/mobile + optional ML) from a starter template.",
     "Wires them up to your own infra: Hetzner (server), DNS (Cloudflare/INWX), Coolify (deploys), GitHub (repo).",
-    "Provisions per-project clients/sites in third-party services (GlitchTip errors, OpenPanel/Plausible analytics, Resend email).",
+    "Provisions per-project clients/sites in third-party services (GlitchTip errors, OpenPanel/Plausible analytics, Resend email, Email Routing, Search Console).",
     "Manages per-project dotenvx private keys in your OS keychain.",
   ],
   concepts: [
     {
       name: "Provider",
       description:
-        "An external service (GitHub, Hetzner, Coolify, DNS, S3, GPU, GlitchTip, OpenPanel, Plausible, Resend). Each is configured once; credentials go to the OS keychain, metadata to ~/<conf-dir>/config.json.",
+        "An external service (GitHub, Hetzner, Coolify, DNS, S3, GPU, GlitchTip, OpenPanel, Plausible, Resend, Search Console). Each is configured once; credentials go to the OS keychain, metadata to ~/<conf-dir>/config.json.",
     },
     {
       name: "Project",
@@ -80,7 +80,7 @@ const MODEL: ExplainModel = {
     {
       name: "hatchkit adopt",
       summary:
-        "Bring an existing (non-hatchkit) project under management — detects layout / .env / dotenvx, writes a manifest, imports the dotenvx private key into the keychain, optionally provisions GlitchTip / OpenPanel / Plausible / Resend.",
+        "Bring an existing (non-hatchkit) project under management — detects layout / .env / dotenvx, writes a manifest, imports the dotenvx private key into the keychain, optionally provisions GlitchTip / OpenPanel / Plausible / Resend / Email Routing / Search Console.",
       when: "`cd <project-dir>` first; the project wasn't created by hatchkit.",
     },
     {
@@ -91,7 +91,7 @@ const MODEL: ExplainModel = {
     {
       name: "hatchkit add <project>",
       summary:
-        "Provision GlitchTip / OpenPanel / Plausible / Resend clients/sites for an existing project.",
+        "Provision GlitchTip / OpenPanel / Plausible / Resend / Email Routing / Search Console for an existing project.",
       when: "After the scaffold is live and you're ready to wire up observability / email.",
     },
     {
@@ -126,7 +126,7 @@ const MODEL: ExplainModel = {
     "1. `hatchkit setup` — configure credentials once (per machine).",
     "2. `hatchkit status` — confirm everything's green.",
     "3. `hatchkit create` — scaffold a new project; pick features, deploy target, ML services.",
-    "4. `hatchkit add <project>` — provision per-project clients/sites (GlitchTip, OpenPanel, Plausible, Resend).",
+    "4. `hatchkit add <project>` — provision per-project clients/sites (GlitchTip, OpenPanel, Plausible, Resend, Email Routing, Search Console).",
     "5. `hatchkit keys push <project>` — ship the dotenvx key to Coolify so prod can decrypt.",
     "6. `hatchkit doctor` — sanity-check before/after anything risky.",
     "7. `hatchkit update` (from project dir) — extend an existing project with new features.",

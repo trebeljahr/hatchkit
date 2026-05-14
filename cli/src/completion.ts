@@ -237,7 +237,7 @@ function topDesc(cmd: string): string {
     case "server":
       return "Retrofit a server into a client-only project";
     case "add":
-      return "Provision GlitchTip / OpenPanel / Plausible / Resend clients";
+      return "Provision GlitchTip / OpenPanel / Plausible / Resend / email / search services";
     case "assets":
       return "Move bytes between local S3 and prod buckets";
     case "keys":

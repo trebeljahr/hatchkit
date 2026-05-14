@@ -22,6 +22,7 @@ function projectConfig(overrides: Partial<ProjectConfig> = {}): ProjectConfig {
     serverIpv4: "192.0.2.10",
     features: ["analytics"],
     analyticsProviders: ["glitchtip", "plausible"],
+    provisionServices: ["glitchtip", "plausible", "resend"],
     s3Provider: "none",
     mlServices: [],
     forceRedeployMl: [],
@@ -92,6 +93,7 @@ function adoptPlan(overrides: Partial<AdoptPlan> = {}): AdoptPlan {
   assert.equal(plan.repo.githubRepoVisibility, "public");
   assert.deepEqual(plan.provisioning.features, ["analytics"]);
   assert.deepEqual(plan.provisioning.analyticsProviders, ["glitchtip", "plausible"]);
+  assert.deepEqual(plan.provisioning.services, ["glitchtip", "plausible", "resend"]);
 
   const edited = onboardingPlanToProjectConfig(
     {
@@ -105,7 +107,12 @@ function adoptPlan(overrides: Partial<AdoptPlan> = {}): AdoptPlan {
         githubRepoVisibility: "private",
         installDeps: false,
       },
-      provisioning: { ...plan.provisioning, features: [], analyticsProviders: ["openpanel"] },
+      provisioning: {
+        ...plan.provisioning,
+        features: [],
+        analyticsProviders: ["openpanel"],
+        services: ["openpanel", "search-console"],
+      },
     },
     cfg,
   );
@@ -121,6 +128,7 @@ function adoptPlan(overrides: Partial<AdoptPlan> = {}): AdoptPlan {
   assert.equal(edited.installDeps, false);
   assert.deepEqual(edited.features, []);
   assert.deepEqual(edited.analyticsProviders, ["openpanel"]);
+  assert.deepEqual(edited.provisionServices, ["openpanel", "search-console"]);
 }
 
 {

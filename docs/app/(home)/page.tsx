@@ -107,7 +107,7 @@ const pillars: Pillar[] = [
     bullets: [
       "Hetzner + INWX / Cloudflare wired end-to-end",
       "Coolify env block, private key, deploy hooks set up",
-      "GlitchTip, OpenPanel, Plausible, Resend paired per environment",
+      "GlitchTip, OpenPanel, Plausible, Resend, Email Routing, Search Console",
     ],
   },
   {
@@ -157,7 +157,7 @@ function Workflow() {
       num: "01",
       cmd: "hatchkit setup",
       title: "Onboard once",
-      body: "Walks through every credential — GitHub, Coolify, Hetzner, DNS, GlitchTip, OpenPanel, Plausible, Resend, GPU providers. Tokens go to your OS keychain, never to git.",
+      body: "Walks through every credential — GitHub, Coolify, Hetzner, DNS, GlitchTip, OpenPanel, Plausible, Resend, Search Console, GPU providers. Tokens go to your OS keychain, never to git.",
     },
     {
       num: "02",
@@ -202,7 +202,7 @@ const providerGroups: { label: string; items: string[] }[] = [
   { label: "Hosting", items: ["Hetzner Cloud", "Coolify", "Your own VPS"] },
   { label: "DNS", items: ["Cloudflare", "INWX"] },
   { label: "Observability", items: ["GlitchTip", "OpenPanel", "Plausible"] },
-  { label: "Email", items: ["Resend"] },
+  { label: "Email", items: ["Resend", "Email Routing"] },
   { label: "GPU", items: ["Modal", "RunPod", "Hugging Face", "Replicate"] },
   { label: "Storage", items: ["S3-compatible"] },
   { label: "Source", items: ["GitHub"] },

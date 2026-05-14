@@ -69,6 +69,7 @@ function cfg(
     serverId: 1,
     serverIp: "1.2.3.4",
     features,
+    provisionServices: [],
     s3Provider: "none",
     mlServices: [],
     forceRedeployMl: [],

@@ -13,6 +13,7 @@ export interface ResendClient {
   keyName: string;
   apiKey: string;
   domainId?: string;
+  domainName?: string;
   /** The full API key is only returned by Resend once; we print it
    *  inline and also return it so the caller can persist. */
   raw: string;
@@ -21,6 +22,7 @@ export interface ResendClient {
 export async function provisionResendClient(
   clientName: string,
   domainId?: string,
+  domainName?: string,
 ): Promise<ResendClient> {
   const cfg = await ensureResend();
 
@@ -42,7 +44,7 @@ export async function provisionResendClient(
     throw new Error(`Resend create key failed: HTTP ${res.status} ${await res.text()}`);
   }
   const data = (await res.json()) as { id: string; token: string };
-  return { keyName: clientName, apiKey: data.token, domainId, raw: data.token };
+  return { keyName: clientName, apiKey: data.token, domainId, domainName, raw: data.token };
 }
 
 export async function listResendApiKeys(): Promise<Array<{ id: string; name: string }>> {

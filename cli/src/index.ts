@@ -1373,6 +1373,40 @@ function isCreatedGithubRepoPrivate(config: ProjectConfig): boolean {
   return config.createGithubRepo && (config.githubRepoVisibility ?? "private") === "private";
 }
 
+function createProvisionServices(config: ProjectConfig): ProvisionService[] {
+  const services = (config as ProjectConfig & { provisionServices?: ProvisionService[] })
+    .provisionServices;
+  if (services !== undefined) return services;
+  if (config.features.includes("analytics")) return config.analyticsProviders ?? ["glitchtip"];
+  return [];
+}
+
+async function ensureCreateProvisionProviders(services: ProvisionService[]): Promise<void> {
+  if (services.length === 0) return;
+  const unique = new Set(services);
+  const {
+    ensureDefaultForwardingEmail,
+    ensureGlitchtip,
+    ensureGoogleSearchConsole,
+    ensureOpenpanel,
+    ensurePlausible,
+    ensureResend,
+  } = await import("./config.js");
+
+  if (unique.has("glitchtip")) await ensureGlitchtip();
+  if (unique.has("openpanel")) await ensureOpenpanel();
+  if (unique.has("plausible")) await ensurePlausible();
+  if (unique.has("resend")) await ensureResend();
+  if (unique.has("email")) {
+    await ensureDns();
+    await ensureDefaultForwardingEmail();
+  }
+  if (unique.has("search-console")) {
+    await ensureGoogleSearchConsole();
+    await ensureDns();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -1449,17 +1483,8 @@ async function handleCreate(): Promise<void> {
       await ensureS3(config.s3Provider);
     }
   }
-  // Pre-flight observability + Stripe providers used by `hatchkit
-  // create` directly (not just `add`): if the user picked analytics
-  // providers, make sure they are configured before we can mint
-  // project-scoped resources. Same for Stripe webhook auto-provisioning.
-  if (config.features.includes("analytics")) {
-    const providers = config.analyticsProviders ?? ["glitchtip"];
-    const { ensureGlitchtip, ensureOpenpanel, ensurePlausible } = await import("./config.js");
-    if (providers.includes("glitchtip")) await ensureGlitchtip();
-    if (providers.includes("openpanel")) await ensureOpenpanel();
-    if (providers.includes("plausible")) await ensurePlausible();
-  }
+  const provisionServices = createProvisionServices(config);
+  if (!config.dryRun) await ensureCreateProvisionProviders(provisionServices);
   if (config.features.includes("stripe")) {
     const { ensureStripe } = await import("./config.js");
     await ensureStripe();
@@ -1490,6 +1515,9 @@ async function handleCreate(): Promise<void> {
     );
   }
   console.log(`  Features:   ${config.features.length > 0 ? config.features.join(", ") : "none"}`);
+  console.log(
+    `  Services:   ${provisionServices.length > 0 ? provisionServices.join(", ") : "none"}`,
+  );
   console.log(
     `  ML:         ${config.mlServices.length > 0 ? config.mlServices.join(", ") : "none"}`,
   );
@@ -1547,51 +1575,40 @@ async function handleCreate(): Promise<void> {
         printDotenvxSummary(scaffoldResult.dotenvx, config.name);
       }
 
-      // Auto-provision selected observability/analytics providers
+      // Auto-provision selected project-scoped services
       // through the same machinery used by `hatchkit add`, so create,
       // adopt, and existing-project provisioning stay aligned.
-      if (config.features.includes("analytics")) {
-        const analyticsServices: ProvisionService[] = [
-          ...(config.analyticsProviders ?? ["glitchtip"]),
-        ];
+      if (provisionServices.length > 0 && !config.dryRun) {
         try {
-          if (analyticsServices.length > 0) {
-            const provisionMode =
-              config.surfaces === "both"
-                ? "shared"
-                : config.surfaces === "server-only"
-                  ? "server-only"
-                  : "client-only";
-            await runProvision({
-              baseName: config.name,
-              services: analyticsServices,
-              domain: config.domain,
-              surfaces: {
-                mode: provisionMode,
-                projectDir: appDir,
-                serverEnvDir:
-                  config.surfaces === "client-only" ? undefined : join(appDir, "packages/server"),
-                clientEnvDir:
-                  config.surfaces === "server-only" ? undefined : join(appDir, "packages/client"),
-              },
-              onProvisioned: (event) => {
-                if (event.service === "glitchtip") {
-                  ledger?.record({ kind: "glitchtip", project: event.project });
-                } else if (event.service === "openpanel") {
-                  ledger?.record({ kind: "openpanel", project: event.project });
-                } else if (event.service === "plausible" && event.created) {
-                  ledger?.record({ kind: "plausible", project: event.project });
-                }
-              },
-            });
-          }
+          const provisionMode =
+            config.surfaces === "both"
+              ? "shared"
+              : config.surfaces === "server-only"
+                ? "server-only"
+                : "client-only";
+          await runProvision({
+            baseName: config.name,
+            services: provisionServices,
+            domain: config.domain,
+            surfaces: {
+              mode: provisionMode,
+              projectDir: appDir,
+              serverEnvDir:
+                config.surfaces === "client-only" ? undefined : join(appDir, "packages/server"),
+              clientEnvDir:
+                config.surfaces === "server-only" ? undefined : join(appDir, "packages/client"),
+            },
+            onProvisioned: (event) => {
+              if (ledger) recordProvisionedEvent(ledger, event);
+            },
+          });
         } catch (err) {
           console.log(
-            chalk.yellow(`  Couldn't auto-provision analytics: ${(err as Error).message}`),
+            chalk.yellow(`  Couldn't auto-provision services: ${(err as Error).message}`),
           );
           console.log(
             chalk.dim(
-              `  Run \`hatchkit add ${config.name} ${analyticsServices.join(",")}\` once providers are reachable.`,
+              `  Run \`hatchkit add ${config.name} ${provisionServices.join(",")}\` once providers are reachable.`,
             ),
           );
         }
@@ -2355,13 +2372,14 @@ function printHelp(topic?: HelpTopic): void {
     hatchkit create [--dry-run]
 
   ${chalk.bold("What it does (interactively):")}
-    1. Prompts for project name, domain, surfaces, deployment mode, features, ML
+    1. Prompts for project name, domain, surfaces, deployment mode, features, services, ML
     2. Copies the starter template and strips unselected features
     3. Assigns unique ports per project (server, client, native HMR)
     4. Runs \`pnpm install\` (if pnpm is present and you opt in)
     5. Initializes git, optionally creates a GitHub repo
-    6. Generates Terraform tfvars + Coolify .env (Coolify mode)
-    7. Deploys: Terraform → Coolify → ML  ${chalk.dim("OR")}  GitHub Pages setup
+    6. Optionally provisions GlitchTip/OpenPanel/Plausible, Resend, Email Routing, Search Console
+    7. Generates Terraform tfvars + Coolify .env (Coolify mode)
+    8. Deploys: Terraform → Coolify → ML  ${chalk.dim("OR")}  GitHub Pages setup
 
   ${chalk.bold("Deployment modes:")}
     ${chalk.cyan("coolify")}        Full-stack on Hetzner — DB, providers, Docker. Default.
@@ -2384,7 +2402,7 @@ function printHelp(topic?: HelpTopic): void {
     - GitHub (via gh CLI)
     - Coolify (URL + token)
     - Hetzner Cloud, DNS provider, S3 (optional)
-    - GlitchTip, OpenPanel, Resend (optional)
+    - GlitchTip, OpenPanel, Resend, Search Console (optional)
 
   Tokens go to the OS keychain; metadata to
   ${chalk.dim(getConfigPath())}.
@@ -2793,7 +2811,7 @@ function printHelp(topic?: HelpTopic): void {
     glitchtip   GLITCHTIP_DSN (server) / PUBLIC_GLITCHTIP_DSN (client)
     openpanel   OPENPANEL_* (server) / PUBLIC_OPENPANEL_* (client)
     plausible   NEXT_PUBLIC_PLAUSIBLE_DOMAIN / *_SCRIPT_URL (client only)
-    resend      RESEND_API_KEY (server only)
+    resend      RESEND_API_KEY + RESEND_FROM_EMAIL (server only)
     search-console
                 Google Search Console domain property (DNS verification; no env)
     s3          R2_<BUCKET>_ACCESS_KEY_ID / *_SECRET_ACCESS_KEY / *_BUCKET / R2_ENDPOINT
@@ -2866,8 +2884,8 @@ function printHelp(topic?: HelpTopic): void {
         (DOTENV_PRIVATE_KEY_PRODUCTION + GITHUB_REPO_URL), upserts an
         A record \`<domain> → <server-ip>\` on Cloudflare, and triggers
         the first deploy. Defaults ON when no matching app exists.
-      · Optionally provisions GlitchTip / OpenPanel / Plausible / Resend clients
-        (same machinery as \`hatchkit add\`).
+      · Optionally provisions GlitchTip / OpenPanel / Plausible / Resend,
+        Email Routing, and Search Console (same machinery as \`hatchkit add\`).
       · Optionally pushes the dotenvx private key to Coolify
         (redundant when the Coolify+DNS step ran — it already does).
 
@@ -3218,7 +3236,7 @@ function printHelp(topic?: HelpTopic): void {
     adopt           Bring an existing project under hatchkit management (run in project dir)
     update          Add features to an already-scaffolded project (run in project dir)
     server add      Retrofit a server into a client-only project
-    add             Create GlitchTip / OpenPanel / Plausible / Resend clients for an existing project
+    add             Create GlitchTip / OpenPanel / Plausible / Resend / email / search clients for an existing project
     assets          Move bytes between local S3 and prod buckets (seed/push/pull/migrate)
     remove          Delete the -dev/-prod clients created by 'add' (inverse of add)
     destroy         Roll back everything ${chalk.cyan("hatchkit create")} did for a project

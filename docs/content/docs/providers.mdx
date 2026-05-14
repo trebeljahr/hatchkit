@@ -85,7 +85,7 @@ Configure: `hatchkit config add s3`.
 
 ## Email — Resend
 
-Hatchkit can create a **restricted** Resend API key per environment (dev/prod) tied to a sending domain you own. Returned `RESEND_API_KEY` is the only secret you need on the app side.
+Hatchkit can create a **restricted** Resend API key per environment (dev/prod) tied to a sending domain you own. It writes `RESEND_API_KEY` and, when the sending domain is known, `RESEND_FROM_EMAIL` for the starter email runtime.
 
 Configure: `hatchkit config add resend`.
 

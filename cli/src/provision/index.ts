@@ -168,6 +168,9 @@ export interface ProvisionOptions {
   services: ProvisionService[];
   /** Optional pre-selected Resend domain id, skipping the picker. */
   resendDomainId?: string;
+  /** Optional Resend domain name paired with `resendDomainId`; used
+   *  to seed a useful RESEND_FROM_EMAIL for scaffolded apps. */
+  resendDomainName?: string;
   /** If set, resolves the write destinations without prompting.
    *  Pass `false` to force cache-only mode (no writes). */
   surfaces?: Surfaces | false;
@@ -194,6 +197,11 @@ export interface SearchConsoleDomainGuess {
 interface SearchConsoleTarget {
   projectDir?: string;
   domain: string;
+}
+
+interface ResendDomainSelection {
+  id?: string;
+  name?: string;
 }
 
 interface WriteBucket {
@@ -299,9 +307,11 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   }
 
   // Resend domain: pick once, reused across dev + prod.
-  let resendDomainId = opts.resendDomainId;
-  if (opts.services.includes("resend") && !resendDomainId) {
-    resendDomainId = await pickResendDomain();
+  let resendDomain: ResendDomainSelection | undefined = opts.resendDomainId
+    ? { id: opts.resendDomainId, name: opts.resendDomainName }
+    : undefined;
+  if (opts.services.includes("resend") && !resendDomain) {
+    resendDomain = await pickResendDomain();
   }
 
   const buckets = initBuckets(surfaces);
@@ -421,12 +431,12 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
     } else {
       const devRes = await withSpinner(
         `Resend: creating restricted API key ${opts.baseName}-dev`,
-        () => provisionResendClient(`${opts.baseName}-dev`, resendDomainId),
+        () => provisionResendClient(`${opts.baseName}-dev`, resendDomain?.id, resendDomain?.name),
       );
       opts.onProvisioned?.({ service: "resend", client: `${opts.baseName}-dev` });
       const prodRes = await withSpinner(
         `Resend: creating restricted API key ${opts.baseName}-prod`,
-        () => provisionResendClient(`${opts.baseName}-prod`, resendDomainId),
+        () => provisionResendClient(`${opts.baseName}-prod`, resendDomain?.id, resendDomain?.name),
       );
       opts.onProvisioned?.({ service: "resend", client: `${opts.baseName}-prod` });
       // Resend is the one case where dev gets its OWN value, not the
@@ -1427,7 +1437,7 @@ async function withSpinner<T>(label: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-async function pickResendDomain(): Promise<string | undefined> {
+async function pickResendDomain(): Promise<ResendDomainSelection> {
   const domains = await listResendDomains();
   const sorted = [...domains].sort((a, b) => {
     const av = a.status === "verified" ? 0 : 1;
@@ -1452,8 +1462,11 @@ async function pickResendDomain(): Promise<string | undefined> {
     choices,
   });
 
-  if (picked === NONE) return undefined;
-  if (picked !== ADD_NEW) return picked;
+  if (picked === NONE) return {};
+  if (picked !== ADD_NEW) {
+    const domain = sorted.find((d) => d.id === picked);
+    return { id: picked, name: domain?.name };
+  }
 
   // Add-new flow.
   const raw = await input({
@@ -1476,7 +1489,7 @@ async function pickResendDomain(): Promise<string | undefined> {
       `  ${created.name} created (status: ${created.status}). Add the DNS records in the Resend dashboard before sending — https://resend.com/domains/${created.id}`,
     ),
   );
-  return created.id;
+  return { id: created.id, name: created.name };
 }
 
 /** Server env uses the plain names; browser env uses a `PUBLIC_`
@@ -1510,5 +1523,8 @@ function renderPlausibleEnv(c: PlausibleSite): string[] {
 }
 
 function renderResendEnv(c: ResendClient): string[] {
-  return [`RESEND_API_KEY=${c.apiKey}`];
+  return [
+    `RESEND_API_KEY=${c.apiKey}`,
+    ...(c.domainName ? [`RESEND_FROM_EMAIL=noreply@${c.domainName}`] : []),
+  ];
 }

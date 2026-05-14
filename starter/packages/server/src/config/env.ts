@@ -66,8 +66,8 @@ export const env = {
   STRIPE_WEBHOOK_SECRET: getOptional("STRIPE_WEBHOOK_SECRET"),
 
   // Email
-  MAILGUN_API_KEY: getOptional("MAILGUN_API_KEY"),
-  MAILGUN_DOMAIN: getOptional("MAILGUN_DOMAIN"),
+  RESEND_API_KEY: getOptional("RESEND_API_KEY"),
+  RESEND_FROM_EMAIL: getOptional("RESEND_FROM_EMAIL"),
 
   // S3
   S3_ENDPOINT: getOptional("S3_ENDPOINT"),

@@ -12,6 +12,16 @@ import type {
 import type { ProvisionService } from "../provision/index.js";
 import { parseDomain } from "../utils/validate.js";
 
+const ANALYTICS_PROVISION_SERVICES: readonly AnalyticsProvider[] = [
+  "glitchtip",
+  "openpanel",
+  "plausible",
+];
+
+function isAnalyticsProvisionService(service: ProvisionService): service is AnalyticsProvider {
+  return (ANALYTICS_PROVISION_SERVICES as readonly ProvisionService[]).includes(service);
+}
+
 export type OnboardingSource =
   | { kind: "starter"; outputDir: string }
   | { kind: "existing"; projectDir: string };
@@ -83,7 +93,7 @@ export function projectConfigToOnboardingPlan(config: ProjectConfig): ProjectOnb
     provisioning: {
       features: config.features,
       analyticsProviders: config.analyticsProviders,
-      services: [],
+      services: config.provisionServices,
     },
   };
 }
@@ -109,7 +119,10 @@ export function onboardingPlanToProjectConfig(
     githubRepoVisibility: plan.repo.githubRepoVisibility ?? previousConfig.githubRepoVisibility,
     installDeps: plan.repo.installDeps ?? previousConfig.installDeps,
     features: plan.provisioning.features,
-    analyticsProviders: plan.provisioning.analyticsProviders ?? previousConfig.analyticsProviders,
+    analyticsProviders:
+      plan.provisioning.analyticsProviders ??
+      plan.provisioning.services.filter(isAnalyticsProvisionService),
+    provisionServices: plan.provisioning.services,
   };
 }
 

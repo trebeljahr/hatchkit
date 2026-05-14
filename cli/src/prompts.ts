@@ -11,6 +11,7 @@ import {
   summarizeOnboardingFeatures,
 } from "./onboarding/plan.js";
 import { type OnboardingStepGroup, runProjectOnboardingReview } from "./onboarding/review.js";
+import type { ProvisionService } from "./provision/index.js";
 import { CoolifyApi, type CoolifyServer } from "./utils/coolify-api.js";
 import { discoverPublicIps } from "./utils/coolify-server-ips.js";
 import { multiselect } from "./utils/multiselect.js";
@@ -54,7 +55,7 @@ export type GpuPlatform = "modal" | "runpod" | "hf" | "replicate";
  *  · `client-only`— static site / SPA; the server package is stripped
  *                   and Coolify deploys a single nginx-static service.
  *                   No MongoDB or server-side env-seeded providers
- *                   (Stripe / GlitchTip / Mailgun) — there's no server
+ *                   (Stripe / GlitchTip / Resend) — there's no server
  *                   to consume them. */
 export type Surface = "server-only" | "client-only" | "both";
 
@@ -120,6 +121,11 @@ export interface ProjectConfig {
    *  when the `analytics` feature is selected. Defaults to the legacy
    *  create behavior (`glitchtip` only) unless the user opts into more. */
   analyticsProviders?: AnalyticsProvider[];
+  /** Project-scoped third-party services to provision during create.
+   *  Includes observability, transactional email, Cloudflare Email
+   *  Routing, and Search Console. Uses the same service names as
+   *  `hatchkit add` so create/adopt/add stay aligned. */
+  provisionServices: ProvisionService[];
   s3Provider: S3Provider;
   s3ExistingEndpoint?: string;
   s3ExistingBucket?: string;
@@ -209,6 +215,108 @@ async function presetOrPrompt<T>(
     );
   }
   return prompt();
+}
+
+const ANALYTICS_PROVISION_SERVICES: readonly AnalyticsProvider[] = [
+  "glitchtip",
+  "openpanel",
+  "plausible",
+];
+
+function isAnalyticsProvisionService(service: ProvisionService): service is AnalyticsProvider {
+  return (ANALYTICS_PROVISION_SERVICES as readonly ProvisionService[]).includes(service);
+}
+
+function uniqueProvisionServices(services: ProvisionService[]): ProvisionService[] {
+  return [...new Set(services)];
+}
+
+function analyticsProvidersFromServices(services: ProvisionService[]): AnalyticsProvider[] {
+  return services.filter(isAnalyticsProvisionService);
+}
+
+async function collectExtraProvisionServices(args: {
+  preset: ProvisionService[] | undefined;
+  nonInteractive: boolean;
+  surfaces: Surface;
+  analyticsProviders: AnalyticsProvider[] | undefined;
+}): Promise<ProvisionService[]> {
+  if (args.preset !== undefined) return uniqueProvisionServices(args.preset);
+
+  const baseServices: ProvisionService[] = args.analyticsProviders
+    ? [...args.analyticsProviders]
+    : [];
+  if (args.nonInteractive) return uniqueProvisionServices(baseServices);
+
+  const extra = await multiselect<ProvisionService>({
+    message: "Email / launch services to provision now:",
+    choices: [
+      {
+        name: "Resend (transactional email API keys)",
+        value: "resend",
+        checked: false,
+        disabled:
+          args.surfaces === "client-only" ? "server surface required for RESEND_API_KEY" : false,
+      },
+      {
+        name: "Email forwarding (Cloudflare Email Routing → your inbox)",
+        value: "email",
+        checked: false,
+      },
+      {
+        name: "Google Search Console (DNS verification + domain property)",
+        value: "search-console",
+        checked: false,
+      },
+    ],
+  });
+
+  return uniqueProvisionServices([...baseServices, ...extra]);
+}
+
+async function promptProvisionServicesEditor(cfg: ProjectConfig): Promise<ProvisionService[]> {
+  return multiselect<ProvisionService>({
+    message: "Services to provision now:",
+    choices: [
+      {
+        name: "GlitchTip (error tracking)",
+        value: "glitchtip",
+        checked: cfg.provisionServices.includes("glitchtip"),
+      },
+      {
+        name: "OpenPanel (product analytics)",
+        value: "openpanel",
+        checked: cfg.provisionServices.includes("openpanel"),
+      },
+      {
+        name: "Plausible (web analytics)",
+        value: "plausible",
+        checked: cfg.provisionServices.includes("plausible"),
+        disabled: cfg.surfaces === "server-only" ? "client surface required" : false,
+      },
+      {
+        name: "Resend (transactional email API keys)",
+        value: "resend",
+        checked: cfg.provisionServices.includes("resend"),
+        disabled:
+          cfg.surfaces === "client-only" ? "server surface required for RESEND_API_KEY" : false,
+      },
+      {
+        name: "Email forwarding (Cloudflare Email Routing → your inbox)",
+        value: "email",
+        checked: cfg.provisionServices.includes("email"),
+      },
+      {
+        name: "Google Search Console (DNS verification + domain property)",
+        value: "search-console",
+        checked: cfg.provisionServices.includes("search-console"),
+      },
+    ],
+  });
+}
+
+function summarizeProvisionServices(services: ProvisionService[]): string {
+  return services.length > 0 ? services.join(", ") : chalk.dim("none");
 }
 
 export interface CollectOptions {
@@ -431,6 +539,17 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
         }),
       ["glitchtip"],
     );
+  }
+
+  const provisionServices = await collectExtraProvisionServices({
+    preset: presets.provisionServices,
+    nonInteractive,
+    surfaces,
+    analyticsProviders,
+  });
+  if (!analyticsProviders) {
+    const fromServices = analyticsProvidersFromServices(provisionServices);
+    analyticsProviders = fromServices.length > 0 ? fromServices : undefined;
   }
 
   // S3 provider (if selected)
@@ -814,6 +933,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     serverLocation,
     features,
     analyticsProviders,
+    provisionServices,
     s3Provider,
     s3ExistingEndpoint,
     s3ExistingBucket,
@@ -952,6 +1072,13 @@ async function collectPagesProjectConfig(args: PagesCollectArgs): Promise<Projec
       )
     : false;
 
+  const provisionServices = await collectExtraProvisionServices({
+    preset: presets.provisionServices,
+    nonInteractive,
+    surfaces,
+    analyticsProviders: undefined,
+  });
+
   // gh-pages always "deploys" when not in dry-run — there's no
   // late-stage opt-out the way coolify has. If they wanted to skip
   // deploy, they'd pick scaffold-only.
@@ -969,6 +1096,7 @@ async function collectPagesProjectConfig(args: PagesCollectArgs): Promise<Projec
     // gate Coolify steps on `deploymentMode === "coolify"`.
     deployTarget: "new",
     features: [],
+    provisionServices,
     s3Provider: "none",
     mlServices: [],
     forceRedeployMl: [],
@@ -1092,6 +1220,12 @@ function buildCreateStepGroups(plan: ProjectOnboardingPlan, cfg: ProjectConfig):
             summary: summarizeOnboardingFeatures(plan.provisioning.features),
           },
           {
+            key: "services",
+            label: "Services",
+            set: true,
+            summary: summarizeProvisionServices(cfg.provisionServices),
+          },
+          {
             key: "mongo",
             label: "MongoDB",
             set: !!cfg.mongodbProvider,
@@ -1119,6 +1253,20 @@ function buildCreateStepGroups(plan: ProjectOnboardingPlan, cfg: ProjectConfig):
         ],
       },
     );
+  }
+
+  if (isPages) {
+    groups.push({
+      title: "Services",
+      steps: [
+        {
+          key: "services",
+          label: "Services",
+          set: true,
+          summary: summarizeProvisionServices(cfg.provisionServices),
+        },
+      ],
+    });
   }
 
   groups.push({
@@ -1222,6 +1370,11 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
       mongodbProvider: next === "client-only" ? "external" : cfg.mongodbProvider,
       deploymentMode: nextDeploymentMode,
       runDeployment: nextDeploymentMode === "scaffold-only" ? false : cfg.runDeployment,
+      provisionServices: cfg.provisionServices.filter(
+        (service) =>
+          !(next === "client-only" && service === "resend") &&
+          !(next === "server-only" && service === "plausible"),
+      ),
     };
   }
   if (section === "deploymentMode") {
@@ -1245,6 +1398,10 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
         serverSize: undefined,
         serverLocation: undefined,
         features: [],
+        analyticsProviders: undefined,
+        provisionServices: cfg.provisionServices.filter(
+          (service) => service === "email" || service === "search-console",
+        ),
         s3Provider: "none",
         mlServices: [],
         forceRedeployMl: [],
@@ -1291,7 +1448,41 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
         },
       ],
     });
-    return { ...cfg, features: next };
+    let analyticsProviders = cfg.analyticsProviders;
+    let provisionServices = cfg.provisionServices;
+    if (!next.includes("analytics")) {
+      analyticsProviders = undefined;
+      provisionServices = provisionServices.filter(
+        (service) => !isAnalyticsProvisionService(service),
+      );
+    } else if (!cfg.features.includes("analytics")) {
+      analyticsProviders = await multiselect<AnalyticsProvider>({
+        message: "Analytics / observability providers to provision now:",
+        choices: [
+          { name: "GlitchTip (error tracking)", value: "glitchtip", checked: true },
+          { name: "OpenPanel (product analytics)", value: "openpanel", checked: false },
+          { name: "Plausible (web analytics)", value: "plausible", checked: false },
+        ],
+      });
+      provisionServices = uniqueProvisionServices([
+        ...provisionServices.filter((service) => !isAnalyticsProvisionService(service)),
+        ...analyticsProviders,
+      ]);
+    }
+    return { ...cfg, features: next, analyticsProviders, provisionServices };
+  }
+  if (section === "services") {
+    const provisionServices = await promptProvisionServicesEditor(cfg);
+    const analyticsProviders = analyticsProvidersFromServices(provisionServices);
+    return {
+      ...cfg,
+      provisionServices,
+      analyticsProviders: analyticsProviders.length > 0 ? analyticsProviders : undefined,
+      features:
+        analyticsProviders.length > 0 && !cfg.features.includes("analytics")
+          ? [...cfg.features, "analytics"]
+          : cfg.features,
+    };
   }
   if (section === "deployTarget") {
     const target = await selectDeployTarget();

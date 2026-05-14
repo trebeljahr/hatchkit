@@ -215,6 +215,7 @@ function configFromManifestAndTfvars(
     serverSize: extractHcl(tfvars, "server_type") || undefined,
     serverLocation: extractHcl(tfvars, "server_location") || undefined,
     features: [...manifest.features],
+    provisionServices: [],
     s3Provider: manifest.s3Provider,
     mlServices: [...manifest.mlServices],
     forceRedeployMl: [],
