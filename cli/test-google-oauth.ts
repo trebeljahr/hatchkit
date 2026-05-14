@@ -5,6 +5,8 @@ import { join } from "node:path";
 
 process.env.HATCHKIT_CONF_DIR = mkdtempSync(join(tmpdir(), "google-oauth-conf-"));
 process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-${process.pid}`;
+delete process.env.HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID;
+delete process.env.HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET;
 
 const {
   extractGoogleOAuthCodeFromCallbackUrl,
@@ -94,6 +96,25 @@ assert.throws(
   const cfg = await getGoogleSearchConsoleConfig();
   assert.equal(cfg?.oauthMode, "byo-client");
   assert.equal(cfg?.clientId, "desktop-client-id");
+  assert.equal(cfg?.clientSecret, undefined);
+  assert.equal(cfg?.refreshToken, "refresh-token");
+}
+
+{
+  getStore().set("providers.googleSearchConsole", {
+    status: "configured",
+    oauthMode: "hatchkit-pkce",
+    scopes: [],
+  });
+  await deleteSecret(SECRET_KEYS.googleSearchConsoleClientId);
+  await deleteSecret(SECRET_KEYS.googleSearchConsoleClientSecret);
+  await setSecret(SECRET_KEYS.googleSearchConsoleRefreshToken, "refresh-token");
+  const cfg = await getGoogleSearchConsoleConfig();
+  assert.equal(cfg?.oauthMode, "hatchkit-pkce");
+  assert.equal(
+    cfg?.clientId,
+    "932614455438-s0ih891al5pkeo4aeafekf01t6pbqd21.apps.googleusercontent.com",
+  );
   assert.equal(cfg?.clientSecret, undefined);
   assert.equal(cfg?.refreshToken, "refresh-token");
 }

@@ -117,22 +117,20 @@ OAuth refresh token in the OS keychain. Hatchkit requests Search Console
 read/write plus Site Verification verify-only access; the token stays local to
 the user's machine.
 
-The public CLI does not commit or package a Hatchkit-owned Google OAuth client.
-By default, users bring their own Google Cloud Desktop OAuth client and paste its
-client ID during `hatchkit config add search-console`; Hatchkit stores it in the
-OS keychain. The client secret prompt is optional. For Desktop app clients using
-PKCE, Google's current installed-app flow does not require a client secret in
-the authorization-code exchange or refresh-token request. If Google rejects a
-specific legacy client without a secret, paste the Desktop client secret as a
-fallback; Hatchkit stores it in the OS keychain too.
+The public CLI includes Hatchkit's Google Desktop OAuth client ID, so normal
+Search Console setup should not ask for a Google OAuth client ID. The OAuth
+client ID is public metadata; Hatchkit does not ship a client secret. For Desktop
+app clients using PKCE, Google's current installed-app flow does not require a
+client secret in the authorization-code exchange or refresh-token request. If
+Google rejects a specific legacy client without a secret, set
+`HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET` as a local fallback for that
+shell; Hatchkit still stores only the Google refresh token in the OS keychain.
 
-Maintainer/dev builds can exercise the Hatchkit-owned OAuth path by exporting
-`HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID` before running setup. Only export
-`HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET` if you need the legacy fallback.
-Keep both values in a local shell secret manager or private env file, not in git
-history or release tarballs. A checked-in dotenvx file would only move the
-problem: public CLI users still could not decrypt it without a private key, and
-the released package would not have a usable OAuth client.
+Maintainer/dev builds can override the packaged Hatchkit-owned OAuth client by
+exporting `HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID` before running setup. Only
+export `HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET` if you need the legacy
+fallback. Keep secrets in a local shell secret manager or private env file, not
+in git history or release tarballs.
 
 Maintainer setup for the packaged flow:
 
@@ -148,10 +146,10 @@ Maintainer setup for the packaged flow:
    refresh tokens expire after seven days.
 7. For a broad/public Hatchkit release, publish the app to production and submit
    the Search Console + Site Verification scopes for verification.
-8. For local maintainer testing, export
+8. For local maintainer testing with a non-default client, export
    `HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID`. Leave
    `HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET` unset unless a legacy client
-   explicitly requires it. Do not add either value to source, docs, generated
+   explicitly requires it. Do not add secrets to source, docs, generated
    `dist/`, npm package contents, or committed dotenvx files. If Google no
    longer reveals an existing fallback secret, add or rotate a client secret and
    update only your local secret source.

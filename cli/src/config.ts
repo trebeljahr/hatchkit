@@ -296,8 +296,9 @@ export interface GoogleSearchConsoleMeta extends ProviderStatus {
   /** Scopes granted to the stored refresh token. Non-sensitive; useful
    *  in status/doctor output when a user authorized only one API. */
   scopes?: string[];
-  /** `hatchkit-pkce` uses a Hatchkit OAuth client supplied through env vars.
-   *  `byo-client` is the user-owned Google Cloud OAuth client path. */
+  /** `hatchkit-pkce` uses Hatchkit's packaged OAuth desktop client, with an
+   *  env var override for maintainer/dev builds. `byo-client` is the
+   *  user-owned Google Cloud OAuth client path. */
   oauthMode?: "hatchkit-pkce" | "byo-client";
 }
 
@@ -1457,10 +1458,12 @@ const GOOGLE_OAUTH_TOKEN_TIMEOUT_MS = 30_000;
 const HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID_ENV = "HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID";
 const HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET_ENV =
   "HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET";
+const DEFAULT_HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID =
+  "932614455438-s0ih891al5pkeo4aeafekf01t6pbqd21.apps.googleusercontent.com";
 
 function hatchkitGoogleSearchConsoleClientId(): string | null {
   const configured = process.env[HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID_ENV]?.trim();
-  return configured || null;
+  return configured || DEFAULT_HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID;
 }
 
 function hatchkitGoogleSearchConsoleClientSecret(): string | undefined {
