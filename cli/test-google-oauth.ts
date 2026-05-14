@@ -9,9 +9,11 @@ delete process.env.HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID;
 delete process.env.HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET;
 
 const {
+  exchangeGoogleCode,
   extractGoogleOAuthCodeFromCallbackUrl,
   getGoogleSearchConsoleConfig,
   getStore,
+  GoogleOAuthClientSecretMissingError,
   refreshGoogleSearchConsoleAccessToken,
 } = await import("./src/config.js");
 const { inferSearchConsoleDomainDefault, writeSearchConsoleManifest } = await import(
@@ -56,6 +58,105 @@ assert.throws(
     ),
   /Expected a Google redirect URL/,
 );
+
+{
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url, init) => {
+    const body = new URLSearchParams(String(init?.body));
+    assert.equal(body.get("client_id"), "desktop-client-id");
+    assert.equal(body.get("code"), "auth-code");
+    assert.equal(body.get("redirect_uri"), "http://127.0.0.1:51716/oauth/google/callback");
+    assert.equal(body.get("grant_type"), "authorization_code");
+    assert.equal(body.get("code_verifier"), "pkce-verifier");
+    assert.equal(body.has("client_secret"), false);
+    return new Response(
+      JSON.stringify({
+        access_token: "access-token",
+        refresh_token: "refresh-token",
+        scope: "https://www.googleapis.com/auth/webmasters",
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }) as typeof fetch;
+  try {
+    const token = await exchangeGoogleCode({
+      clientId: "desktop-client-id",
+      code: "auth-code",
+      redirectUri: "http://127.0.0.1:51716/oauth/google/callback",
+      codeVerifier: "pkce-verifier",
+    });
+    assert.equal(token.refresh_token, "refresh-token");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+{
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url, init) => {
+    const body = new URLSearchParams(String(init?.body));
+    assert.equal(body.get("code_verifier"), "pkce-verifier");
+    assert.equal(body.has("client_secret"), false);
+    return new Response(
+      JSON.stringify({
+        error: "invalid_request",
+        error_description: "client_secret is missing.",
+      }),
+      {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      () =>
+        exchangeGoogleCode({
+          clientId: "desktop-client-id",
+          code: "auth-code",
+          redirectUri: "http://127.0.0.1:51716/oauth/google/callback",
+          codeVerifier: "pkce-verifier",
+        }),
+      GoogleOAuthClientSecretMissingError,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+{
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url, init) => {
+    const body = new URLSearchParams(String(init?.body));
+    assert.equal(body.get("client_secret"), "desktop-client-secret");
+    assert.equal(body.get("code_verifier"), "pkce-verifier");
+    return new Response(
+      JSON.stringify({
+        access_token: "access-token",
+        refresh_token: "refresh-token",
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }) as typeof fetch;
+  try {
+    const token = await exchangeGoogleCode({
+      clientId: "desktop-client-id",
+      clientSecret: "desktop-client-secret",
+      code: "auth-code",
+      redirectUri: "http://127.0.0.1:51716/oauth/google/callback",
+      codeVerifier: "pkce-verifier",
+    });
+    assert.equal(token.access_token, "access-token");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
 
 {
   const originalFetch = globalThis.fetch;

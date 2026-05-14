@@ -119,12 +119,13 @@ the user's machine.
 
 The public CLI includes Hatchkit's Google Desktop OAuth client ID, so normal
 Search Console setup should not ask for a Google OAuth client ID. The OAuth
-client ID is public metadata; Hatchkit does not ship a client secret. For Desktop
-app clients using PKCE, Google's current installed-app flow does not require a
-client secret in the authorization-code exchange or refresh-token request. If
-Google rejects a specific legacy client without a secret, set
-`HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET` as a local fallback for that
-shell; Hatchkit still stores only the Google refresh token in the OS keychain.
+client ID is public metadata; Hatchkit does not ship a client secret. Hatchkit
+first attempts the authorization-code exchange with PKCE and no secret. Google
+documents `client_secret` as optional for installed/Desktop apps, but some
+Google Desktop OAuth clients still return `client_secret is missing` at the
+token endpoint. When that happens, Hatchkit asks for the generated Desktop
+client secret, retries the token exchange, and stores the secret in the OS
+keychain for future refreshes.
 
 Maintainer/dev builds can override the packaged Hatchkit-owned OAuth client by
 exporting `HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID` before running setup. Only
@@ -148,11 +149,11 @@ Maintainer setup for the packaged flow:
    the Search Console + Site Verification scopes for verification.
 8. For local maintainer testing with a non-default client, export
    `HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID`. Leave
-   `HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET` unset unless a legacy client
-   explicitly requires it. Do not add secrets to source, docs, generated
-   `dist/`, npm package contents, or committed dotenvx files. If Google no
-   longer reveals an existing fallback secret, add or rotate a client secret and
-   update only your local secret source.
+   `HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET` unset unless Google returns
+   `client_secret is missing` for that Desktop client. Do not add secrets to
+   source, docs, generated `dist/`, npm package contents, or committed dotenvx
+   files. If Google no longer reveals an existing fallback secret, add or rotate
+   a client secret and update only your local secret source.
 
 Configure: `hatchkit config add search-console`.
 
