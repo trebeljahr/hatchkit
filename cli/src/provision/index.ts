@@ -273,7 +273,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
     ? await resolvePlausibleDomain(opts, surfaces)
     : undefined;
   const searchConsoleTarget = opts.services.includes("search-console")
-    ? resolveSearchConsoleTarget(opts, surfaces)
+    ? await resolveSearchConsoleTarget(opts, surfaces)
     : undefined;
 
   // Ensure every selected provider is configured *before* any spinner
@@ -981,16 +981,33 @@ export async function inferSearchConsoleDomainDefault(
   return null;
 }
 
-function resolveSearchConsoleDomain(
+async function resolveSearchConsoleDomain(
   opts: ProvisionOptions,
   manifest: ReturnType<typeof readManifest>,
-): string {
+  projectDir: string | undefined,
+): Promise<string> {
   const explicit = normalizeSearchConsoleDomainCandidate(opts.domain);
   if (explicit) return explicit;
   if (opts.domain) throw new Error(`Invalid Search Console domain: ${opts.domain}`);
   const fromManifest = normalizeSearchConsoleDomainCandidate(manifest?.domain);
   if (fromManifest) return fromManifest;
   if (manifest?.domain) throw new Error(`Invalid Search Console domain: ${manifest.domain}`);
+  if (process.stdin.isTTY) {
+    const guess = projectDir
+      ? await inferSearchConsoleDomainDefault(projectDir, opts.baseName)
+      : null;
+    const fallback = domainCandidatesFromSlug(opts.baseName)[0] ?? `${opts.baseName}.com`;
+    const answer = await input({
+      message: guess ? `Search Console domain (${guess.source}):` : "Search Console domain:",
+      default: guess?.domain ?? fallback,
+      validate: (value) =>
+        normalizeSearchConsoleDomainCandidate(value)
+          ? true
+          : "Enter a valid domain, for example example.com.",
+    });
+    const resolved = normalizeSearchConsoleDomainCandidate(answer);
+    if (resolved) return resolved;
+  }
   throw new Error(
     "Search Console domain is required. Pass --domain <domain>, or add `domain` to .hatchkit.json.",
   );
@@ -1071,10 +1088,10 @@ export function writeSearchConsoleManifest(
   );
 }
 
-function resolveSearchConsoleTarget(
+async function resolveSearchConsoleTarget(
   opts: ProvisionOptions,
   surfaces: Surfaces | null,
-): SearchConsoleTarget {
+): Promise<SearchConsoleTarget> {
   const projectDir = surfaces?.projectDir;
   if (projectDir && !existsSync(projectDir)) {
     throw new Error(`Search Console project dir does not exist: ${projectDir}`);
@@ -1082,7 +1099,7 @@ function resolveSearchConsoleTarget(
   const manifest = projectDir ? readManifest(projectDir) : null;
   return {
     projectDir,
-    domain: resolveSearchConsoleDomain(opts, manifest),
+    domain: await resolveSearchConsoleDomain(opts, manifest, projectDir),
   };
 }
 

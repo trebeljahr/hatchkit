@@ -494,6 +494,39 @@ function inferProjectDir(startDir: string | undefined): string | undefined {
   return undefined;
 }
 
+function looksLikeProjectDir(dir: string): boolean {
+  return [
+    "package.json",
+    ".git",
+    "CNAME",
+    "public/CNAME",
+    "static/CNAME",
+    "docs/CNAME",
+    "site/CNAME",
+  ].some((relPath) => existsSync(join(dir, relPath)));
+}
+
+async function promptForProjectDir(baseName: string): Promise<string> {
+  const { input } = await import("@inquirer/prompts");
+  const namedProjectDir = resolve(baseName);
+  const defaultDir = existsSync(namedProjectDir)
+    ? `./${baseName}`
+    : looksLikeProjectDir(process.cwd())
+      ? "."
+      : `./${baseName}`;
+  const answer = await input({
+    message: "Project directory (relative to cwd):",
+    default: defaultDir,
+    validate: (value) => {
+      const trimmed = value.trim();
+      if (!trimmed) return "Enter a project directory.";
+      const abs = resolve(trimmed);
+      return existsSync(abs) ? true : `No such directory: ${abs}`;
+    },
+  });
+  return resolve(answer.trim());
+}
+
 function manifestBucketEntries(
   manifest: ProjectManifest | null,
 ): Array<{ name: string; tokenId?: string }> {
@@ -838,14 +871,19 @@ async function handleAdd(): Promise<void> {
   if (noWrite) {
     surfaces = false;
   } else if (onlyNoEnvServices) {
-    const projectDir = inferredProjectDir;
+    let projectDir = inferredProjectDir;
     if (!projectDir) {
-      console.log(
-        chalk.red(
-          "  A project directory is required for no-env services. Pass --project-dir <path>.",
-        ),
-      );
-      process.exit(1);
+      if (!process.stdin.isTTY) {
+        console.log(
+          chalk.red(
+            "  A project directory is required for no-env services. Pass --project-dir <path>.",
+          ),
+        );
+        process.exit(1);
+      }
+      projectDir = await promptForProjectDir(baseName);
+      inferredProjectDir = projectDir;
+      inferredManifest = readManifest(projectDir);
     }
     surfaces = {
       mode: provisionSurfaceModeFromManifest(inferredManifest),
@@ -2772,9 +2810,10 @@ function printHelp(topic?: HelpTopic): void {
     --client-dir <path>         Client env directory (skips prompt when set).
     --project-dir <path>        Project root for manifest/package/CNAME inference
                                 (needed for s3 and non-Hatchkit Search Console onboarding;
-                                inferred from --server-dir if omitted).
+                                inferred from --server-dir or prompted if omitted).
     --name <name>               Project name when no positional or manifest name exists.
-    --domain <domain>           Site/domain-scoped services (Plausible, Search Console).
+    --domain <domain>           Site/domain-scoped services (Plausible, Search Console);
+                                prompted for Search Console when omitted.
 
   ${chalk.bold("Examples:")}
     hatchkit add
