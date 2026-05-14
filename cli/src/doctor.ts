@@ -551,7 +551,7 @@ async function checkGoogleSearchConsole(): Promise<CheckResult> {
     (detail) => {
       if (/client_secret is missing/i.test(detail)) {
         return [
-          "The stored Google refresh token is tied to an OAuth client that now requires its Desktop client secret.",
+          "The stored Google refresh token is tied to a Desktop OAuth client, but Hatchkit does not have that client's generated secret.",
           "Run: `hatchkit config add search-console`",
           "Paste the generated Desktop client secret when prompted; Hatchkit stores it in the OS keychain.",
         ];

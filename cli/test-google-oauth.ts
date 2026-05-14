@@ -245,13 +245,27 @@ assert.throws(
   await deleteSecret(SECRET_KEYS.googleSearchConsoleClientSecret);
   await setSecret(SECRET_KEYS.googleSearchConsoleRefreshToken, "refresh-token");
   const cfg = await getGoogleSearchConsoleConfig();
+  assert.equal(cfg, null);
+}
+
+{
+  getStore().set("providers.googleSearchConsole", {
+    status: "configured",
+    oauthMode: "hatchkit-pkce",
+    scopes: [],
+  });
+  process.env.HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID = "env-client-id";
+  process.env.HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET = "env-client-secret";
+  await deleteSecret(SECRET_KEYS.googleSearchConsoleClientId);
+  await deleteSecret(SECRET_KEYS.googleSearchConsoleClientSecret);
+  await setSecret(SECRET_KEYS.googleSearchConsoleRefreshToken, "refresh-token");
+  const cfg = await getGoogleSearchConsoleConfig();
   assert.equal(cfg?.oauthMode, "hatchkit-pkce");
-  assert.equal(
-    cfg?.clientId,
-    "932614455438-s0ih891al5pkeo4aeafekf01t6pbqd21.apps.googleusercontent.com",
-  );
-  assert.equal(cfg?.clientSecret, undefined);
+  assert.equal(cfg?.clientId, "env-client-id");
+  assert.equal(cfg?.clientSecret, "env-client-secret");
   assert.equal(cfg?.refreshToken, "refresh-token");
+  delete process.env.HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID;
+  delete process.env.HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET;
 }
 
 {
