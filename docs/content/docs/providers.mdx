@@ -128,6 +128,8 @@ client secret when it is using a user-owned client. If the packaged Hatchkit
 client is rejected this way, setup falls back to the legacy BYO Desktop client
 flow so the matching client ID/secret can be stored locally. Hatchkit stores
 these values in the OS keychain for future refreshes.
+If an older stored Search Console token hits this error during `hatchkit add`,
+Hatchkit re-runs Search Console setup before continuing.
 
 Maintainer/dev builds can override the packaged Hatchkit-owned OAuth client by
 exporting `HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID` before running setup. Only

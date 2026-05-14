@@ -1,7 +1,9 @@
 import chalk from "chalk";
 import {
+  GoogleOAuthClientSecretMissingError,
   ensureDns,
   ensureGoogleSearchConsole,
+  reconfigureProvider,
   refreshGoogleSearchConsoleAccessToken,
 } from "../config.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
@@ -148,19 +150,37 @@ async function findCloudflareZone(
   return { id: zone.id, name: zone.name };
 }
 
+async function getSearchConsoleAccessToken(): Promise<string> {
+  const googleCfg = await ensureGoogleSearchConsole();
+  try {
+    return await refreshGoogleSearchConsoleAccessToken(googleCfg);
+  } catch (err) {
+    if (err instanceof GoogleOAuthClientSecretMissingError && process.stdin.isTTY) {
+      console.log(
+        chalk.yellow(
+          "\n  Stored Google Search Console auth needs the Desktop client secret. Re-running setup.",
+        ),
+      );
+      await reconfigureProvider("search-console");
+      const updatedCfg = await ensureGoogleSearchConsole();
+      return refreshGoogleSearchConsoleAccessToken(updatedCfg);
+    }
+    throw err;
+  }
+}
+
 export async function provisionSearchConsoleForDomain(
   domainInput: string,
   opts: { onDnsRecord?: (record: SearchConsoleDnsRecord) => void } = {},
 ): Promise<SearchConsoleProvisionResult> {
   const domain = normalizeSearchConsoleDomain(domainInput);
   const siteUrl = searchConsoleSiteUrl(domain);
-  const googleCfg = await ensureGoogleSearchConsole();
   const dnsCfg = await ensureDns();
   if (!dnsCfg.apiToken) {
     throw new Error("Cloudflare API token not configured. Run `hatchkit config add dns`.");
   }
 
-  const accessToken = await refreshGoogleSearchConsoleAccessToken(googleCfg);
+  const accessToken = await getSearchConsoleAccessToken();
   const token = await getVerificationToken(accessToken, domain);
   if (token.method !== "DNS_TXT" || !token.token) {
     throw new Error("Google did not return a DNS_TXT verification token.");
@@ -224,8 +244,7 @@ export async function unprovisionSearchConsoleForDomain(
 ): Promise<"deleted" | "not-found"> {
   const domain = normalizeSearchConsoleDomain(domainInput);
   const siteUrl = searchConsoleSiteUrl(domain);
-  const googleCfg = await ensureGoogleSearchConsole();
-  const accessToken = await refreshGoogleSearchConsoleAccessToken(googleCfg);
+  const accessToken = await getSearchConsoleAccessToken();
   const result = await deleteSearchConsoleProperty(accessToken, siteUrl);
   if (result === "deleted") {
     console.log(chalk.green(`  ✓ Search Console: removed ${chalk.cyan(siteUrl)} from the account`));
