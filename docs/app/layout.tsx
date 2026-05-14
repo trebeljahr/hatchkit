@@ -18,6 +18,9 @@ export const metadata: Metadata = {
   },
   description:
     "Interactive CLI for scaffolding full-stack TypeScript projects with composable GPU-backed ML services — on infrastructure you own.",
+  alternates: {
+    canonical: "/",
+  },
   openGraph: {
     type: "website",
     url: "https://hatchkit.trebeljahr.com",

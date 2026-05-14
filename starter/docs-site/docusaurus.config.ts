@@ -1,10 +1,14 @@
 import type { Config } from "@docusaurus/types";
 
+const docsUrl = process.env.DOCS_SITE_URL ?? "https://docs.example.com";
+const usesPlaceholderUrl = docsUrl === "https://docs.example.com";
+
 const config: Config = {
   title: "Node Realtime Starter",
   tagline: "A stampable starter for multiplayer web games and SaaS apps",
-  url: "https://docs.example.com",
+  url: docsUrl,
   baseUrl: "/",
+  noIndex: usesPlaceholderUrl,
   onBrokenLinks: "throw",
   onBrokenMarkdownLinks: "warn",
   favicon: "img/favicon.ico",
