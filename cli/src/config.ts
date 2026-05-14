@@ -192,6 +192,23 @@ export async function confirmPastedSecret(label: string): Promise<string> {
   }
 }
 
+async function confirmOptionalPastedSecret(label: string): Promise<string | undefined> {
+  for (;;) {
+    const raw = await password({ message: `${label} (optional, leave blank to skip):` });
+    const value = sanitizePastedSecret(raw);
+    if (!value) return undefined;
+    const preview =
+      value.length <= 8
+        ? `${"*".repeat(value.length)} (${value.length} chars — looks short?)`
+        : `${value.slice(0, 4)}…${value.slice(-4)} (${value.length} chars)`;
+    const ok = await confirm({
+      message: `Looks like: ${chalk.cyan(preview)} — use this?`,
+      default: true,
+    });
+    if (ok) return value;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -279,8 +296,8 @@ export interface GoogleSearchConsoleMeta extends ProviderStatus {
   /** Scopes granted to the stored refresh token. Non-sensitive; useful
    *  in status/doctor output when a user authorized only one API. */
   scopes?: string[];
-  /** `hatchkit-pkce` uses Hatchkit's shipped public desktop OAuth client.
-   *  `byo-client` is the legacy/user-owned Google Cloud OAuth client path. */
+  /** `hatchkit-pkce` uses a Hatchkit OAuth client supplied through env vars.
+   *  `byo-client` is the user-owned Google Cloud OAuth client path. */
   oauthMode?: "hatchkit-pkce" | "byo-client";
 }
 
@@ -1433,19 +1450,21 @@ const GOOGLE_SEARCH_CONSOLE_SCOPES = [
   "https://www.googleapis.com/auth/webmasters",
   "https://www.googleapis.com/auth/siteverification.verify_only",
 ];
+const GOOGLE_OAUTH_CALLBACK_PATH = "/oauth/google/callback";
+const GOOGLE_OAUTH_CALLBACK_WAIT_MS = 120_000;
+const GOOGLE_OAUTH_TOKEN_TIMEOUT_MS = 30_000;
 
-// Public Desktop OAuth client id for Hatchkit's own Google Cloud project.
-// Desktop/installed clients are public clients, so this value is safe to ship.
-// Until the Hatchkit project is verified, dev builds can set
-// HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID to exercise the packaged PKCE path.
-const PACKAGED_GOOGLE_SEARCH_CONSOLE_CLIENT_ID =
-  "932614455438-s0ih891al5pkeo4aeafekf01t6pbqd21.apps.googleusercontent.com";
+const HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID_ENV = "HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID";
+const HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET_ENV =
+  "HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET";
 
 function hatchkitGoogleSearchConsoleClientId(): string | null {
-  const configured =
-    process.env.HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID?.trim() ||
-    PACKAGED_GOOGLE_SEARCH_CONSOLE_CLIENT_ID.trim();
+  const configured = process.env[HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID_ENV]?.trim();
   return configured || null;
+}
+
+function hatchkitGoogleSearchConsoleClientSecret(): string | undefined {
+  return process.env[HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET_ENV]?.trim() || undefined;
 }
 
 const GOOGLE_SEARCH_CONSOLE_SCOPE_REQUIREMENTS = [
@@ -1485,6 +1504,92 @@ function createPkcePair(): { verifier: string; challenge: string } {
   return { verifier, challenge };
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function extractGoogleOAuthCodeFromCallbackUrl(
+  rawUrl: string,
+  expectedState: string,
+): string {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) throw new Error("Redirect URL is empty.");
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error("Could not parse the pasted Google redirect URL.");
+  }
+  if (url.pathname !== GOOGLE_OAUTH_CALLBACK_PATH) {
+    throw new Error(
+      `Expected a Google redirect URL ending in ${GOOGLE_OAUTH_CALLBACK_PATH}, got ${url.pathname}.`,
+    );
+  }
+  const gotState = url.searchParams.get("state");
+  const code = url.searchParams.get("code");
+  const error = url.searchParams.get("error");
+  if (gotState !== expectedState) throw new Error("Google OAuth state mismatch.");
+  if (error || !code) throw new Error(`Google OAuth failed: ${error ?? "missing code"}.`);
+  return code;
+}
+
+async function waitForGoogleOAuthCode(args: {
+  codePromise: Promise<string>;
+  redirectUri: string;
+  state: string;
+}): Promise<string> {
+  const callbackResult = args.codePromise.then(
+    (code) => ({ kind: "code" as const, code }),
+    (error) => ({ kind: "error" as const, error: error as Error }),
+  );
+
+  while (true) {
+    const result = await Promise.race([
+      callbackResult,
+      sleep(GOOGLE_OAUTH_CALLBACK_WAIT_MS).then(() => ({ kind: "timeout" as const })),
+    ]);
+    if (result.kind === "code") return result.code;
+    if (result.kind === "error") throw result.error;
+
+    console.log(
+      chalk.yellow(
+        "\n  Still waiting for Google to redirect your browser back to the local callback server.",
+      ),
+    );
+    console.log(chalk.dim(`  Expected callback: ${chalk.cyan(args.redirectUri)}`));
+    console.log(
+      chalk.dim(
+        '  If your browser ended on a localhost URL, a blank page, or a "site can\'t be reached" page, paste the full address below.',
+      ),
+    );
+
+    if (!process.stdin.isTTY) {
+      throw new Error(
+        "Timed out waiting for the Google OAuth callback. Re-run in an interactive terminal, or copy the final localhost redirect URL from your browser when prompted.",
+      );
+    }
+
+    const pasted = (
+      await input({
+        message: "Google redirect URL (leave blank to keep waiting):",
+      })
+    ).trim();
+    if (!pasted) {
+      console.log(chalk.dim("  Keeping the callback server open. Finish the browser flow."));
+      continue;
+    }
+
+    try {
+      return extractGoogleOAuthCodeFromCallbackUrl(pasted, args.state);
+    } catch (err) {
+      console.log(chalk.yellow(`  ${(err as Error).message}`));
+      console.log(
+        chalk.dim("  Try pasting the final localhost callback URL, including the code and state."),
+      );
+    }
+  }
+}
+
 async function exchangeGoogleCode(args: {
   clientId: string;
   clientSecret?: string;
@@ -1500,11 +1605,17 @@ async function exchangeGoogleCode(args: {
   });
   if (args.clientSecret) body.set("client_secret", args.clientSecret);
   if (args.codeVerifier) body.set("code_verifier", args.codeVerifier);
-  const res = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
+  let res: Response;
+  try {
+    res = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+      signal: AbortSignal.timeout(GOOGLE_OAUTH_TOKEN_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new Error(`Google OAuth token exchange failed: ${(err as Error).message}`);
+  }
   const json = (await res.json().catch(() => null)) as {
     access_token?: string;
     refresh_token?: string;
@@ -1514,6 +1625,13 @@ async function exchangeGoogleCode(args: {
   } | null;
   if (!res.ok || !json?.access_token) {
     const msg = json?.error_description ?? json?.error ?? `HTTP ${res.status}`;
+    if (/client_secret is missing/i.test(msg) && !args.clientSecret) {
+      throw new Error(
+        "Google OAuth token exchange failed: client_secret is missing. " +
+          "Desktop OAuth clients using PKCE normally do not require one. " +
+          `Verify the OAuth client type is Desktop app, or set ${HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET_ENV} / re-run setup with the optional secret as a fallback.`,
+      );
+    }
     throw new Error(`Google OAuth token exchange failed: ${msg}`);
   }
   return {
@@ -1529,7 +1647,7 @@ async function runGoogleOAuthLoopback(args: {
 }): Promise<{ refreshToken: string; scopes: string[] }> {
   const port = await pickPort(49152, 65535, new Set());
   const state = randomBytes(18).toString("hex");
-  const pkce = args.clientSecret ? null : createPkcePair();
+  const pkce = createPkcePair();
   const redirectUri = `http://127.0.0.1:${port}/oauth/google/callback`;
 
   let settled = false;
@@ -1542,7 +1660,7 @@ async function runGoogleOAuthLoopback(args: {
 
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", redirectUri);
-    if (url.pathname !== "/oauth/google/callback") {
+    if (url.pathname !== GOOGLE_OAUTH_CALLBACK_PATH) {
       res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("Not found");
       return;
@@ -1564,7 +1682,13 @@ async function runGoogleOAuthLoopback(args: {
       res.end("Google authorization failed. Return to the terminal and retry setup.");
       if (!settled) {
         settled = true;
-        rejectCode(new Error(`Google OAuth failed: ${error ?? "missing code"}`));
+        rejectCode(
+          new Error(
+            `Google OAuth failed: ${error ?? "missing code"}. ` +
+              "If the Google OAuth app is in Testing mode, add this Google account as a test user under Google Auth Platform > Audience, then retry. " +
+              "Verification Center review is not required for Testing apps; production/broad-use apps should publish and complete verification.",
+          ),
+        );
       }
       return;
     }
@@ -1596,9 +1720,17 @@ async function runGoogleOAuthLoopback(args: {
 
   console.log(chalk.dim("\n  Open this URL in your browser, approve access, then return here:"));
   console.log(chalk.cyan(`  ${authUrl.toString()}\n`));
+  console.log(
+    chalk.dim(
+      `  Waiting for Google to redirect your browser to ${chalk.cyan(redirectUri)}. ` +
+        "If the browser cannot reach localhost, Hatchkit will ask you to paste the final redirect URL.",
+    ),
+  );
 
   try {
-    const code = await codePromise;
+    const code = await waitForGoogleOAuthCode({ codePromise, redirectUri, state });
+    console.log(chalk.green("  ✓ Google OAuth callback received"));
+    console.log(chalk.dim("  Exchanging authorization code for a refresh token..."));
     const token = await exchangeGoogleCode({
       clientId: args.clientId,
       clientSecret: args.clientSecret,
@@ -1613,6 +1745,7 @@ async function runGoogleOAuthLoopback(args: {
     }
     const scopes = token.scope?.split(/\s+/).filter(Boolean) ?? GOOGLE_SEARCH_CONSOLE_SCOPES;
     assertGoogleSearchConsoleScopes(scopes);
+    console.log(chalk.green("  ✓ Google granted Search Console + Site Verification access"));
     return {
       refreshToken: token.refresh_token,
       scopes,
@@ -1631,11 +1764,17 @@ export async function refreshGoogleSearchConsoleAccessToken(
     grant_type: "refresh_token",
   });
   if (cfg.clientSecret) body.set("client_secret", cfg.clientSecret);
-  const res = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  });
+  let res: Response;
+  try {
+    res = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+      signal: AbortSignal.timeout(GOOGLE_OAUTH_TOKEN_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new Error(`Google refresh token failed: ${(err as Error).message}`);
+  }
   const json = (await res.json().catch(() => null)) as {
     access_token?: string;
     error?: string;
@@ -1643,6 +1782,13 @@ export async function refreshGoogleSearchConsoleAccessToken(
   } | null;
   if (!res.ok || !json?.access_token) {
     const msg = json?.error_description ?? json?.error ?? `HTTP ${res.status}`;
+    if (/client_secret is missing/i.test(msg) && !cfg.clientSecret) {
+      throw new Error(
+        "Google refresh token failed: client_secret is missing. " +
+          "Desktop OAuth clients using PKCE normally do not require one. " +
+          `Verify the OAuth client type is Desktop app, or set ${HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET_ENV} / re-run setup with the optional secret as a fallback.`,
+      );
+    }
     throw new Error(`Google refresh token failed: ${msg}`);
   }
   return json.access_token;
@@ -1656,8 +1802,7 @@ export async function ensureGoogleSearchConsole(): Promise<GoogleSearchConsoleCo
   const existingClientSecret = await getSecret(SECRET_KEYS.googleSearchConsoleClientSecret);
   const existingRefreshToken = await getSecret(SECRET_KEYS.googleSearchConsoleRefreshToken);
   const hatchkitClientId = hatchkitGoogleSearchConsoleClientId();
-  const existingMode =
-    existing?.oauthMode ?? (existingClientSecret ? "byo-client" : "hatchkit-pkce");
+  const existingMode = existing?.oauthMode ?? (existingClientId ? "byo-client" : "hatchkit-pkce");
 
   if (existing?.status === "configured" && existingRefreshToken) {
     if (existingMode === "hatchkit-pkce" && hatchkitClientId) {
@@ -1665,15 +1810,16 @@ export async function ensureGoogleSearchConsole(): Promise<GoogleSearchConsoleCo
         ...existing,
         oauthMode: "hatchkit-pkce",
         clientId: hatchkitClientId,
+        clientSecret: hatchkitGoogleSearchConsoleClientSecret(),
         refreshToken: existingRefreshToken,
       };
     }
-    if (existingClientId && existingClientSecret) {
+    if (existingClientId) {
       return {
         ...existing,
         oauthMode: "byo-client",
         clientId: existingClientId,
-        clientSecret: existingClientSecret,
+        clientSecret: existingClientSecret ?? undefined,
         refreshToken: existingRefreshToken,
       };
     }
@@ -1693,24 +1839,32 @@ export async function ensureGoogleSearchConsole(): Promise<GoogleSearchConsoleCo
   let oauthMode: GoogleSearchConsoleMeta["oauthMode"];
   if (hatchkitClientId) {
     clientId = hatchkitClientId;
+    clientSecret = hatchkitGoogleSearchConsoleClientSecret();
     oauthMode = "hatchkit-pkce";
     console.log(
       chalk.dim(
-        "  Using Hatchkit's shipped Google OAuth client with PKCE. No Google Cloud setup or client secret is needed.",
+        `  Using the Google OAuth desktop client from ${HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID_ENV} with PKCE.`,
       ),
     );
+    if (!clientSecret) {
+      console.log(
+        chalk.yellow(
+          `  If Google rejects the token exchange with \`client_secret is missing\`, set ${HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET_ENV} and retry.`,
+        ),
+      );
+    }
   } else {
     oauthMode = "byo-client";
     console.log(
       chalk.dim(
-        "  No packaged Hatchkit Google OAuth client id is configured in this build.\n" +
+        "  No Hatchkit Google OAuth client id is configured in this environment.\n" +
           "  Falling back to the legacy BYO Google Cloud OAuth client setup.\n",
       ),
     );
     tokenHint(
       "https://console.cloud.google.com/apis/credentials",
       "OAuth client (Desktop app) with Search Console API + Site Verification API enabled",
-      `Scopes: ${GOOGLE_SEARCH_CONSOLE_SCOPES.join(", ")}`,
+      `Scopes: ${GOOGLE_SEARCH_CONSOLE_SCOPES.join(", ")}; client secret is optional for Desktop app + PKCE`,
     );
     clientId = (
       await input({
@@ -1719,7 +1873,7 @@ export async function ensureGoogleSearchConsole(): Promise<GoogleSearchConsoleCo
         validate: validateRequired,
       })
     ).trim();
-    clientSecret = await confirmPastedSecret("Google OAuth client secret");
+    clientSecret = await confirmOptionalPastedSecret("Google OAuth client secret");
   }
   const oauth = await runGoogleOAuthLoopback({ clientId, clientSecret });
 
@@ -1733,6 +1887,7 @@ export async function ensureGoogleSearchConsole(): Promise<GoogleSearchConsoleCo
   if (oauthMode === "byo-client") {
     await setSecret(SECRET_KEYS.googleSearchConsoleClientId, clientId);
     if (clientSecret) await setSecret(SECRET_KEYS.googleSearchConsoleClientSecret, clientSecret);
+    else await deleteSecret(SECRET_KEYS.googleSearchConsoleClientSecret);
   } else {
     await deleteSecret(SECRET_KEYS.googleSearchConsoleClientId);
     await deleteSecret(SECRET_KEYS.googleSearchConsoleClientSecret);
@@ -1753,10 +1908,22 @@ export async function getGoogleSearchConsoleConfig(): Promise<GoogleSearchConsol
   if (oauthMode === "hatchkit-pkce") {
     const hatchkitClientId = hatchkitGoogleSearchConsoleClientId();
     if (!hatchkitClientId) return null;
-    return { ...meta, oauthMode, clientId: hatchkitClientId, refreshToken };
+    return {
+      ...meta,
+      oauthMode,
+      clientId: hatchkitClientId,
+      clientSecret: hatchkitGoogleSearchConsoleClientSecret(),
+      refreshToken,
+    };
   }
-  if (!clientId || !clientSecret) return null;
-  return { ...meta, oauthMode: "byo-client", clientId, clientSecret, refreshToken };
+  if (!clientId) return null;
+  return {
+    ...meta,
+    oauthMode: "byo-client",
+    clientId,
+    clientSecret: clientSecret ?? undefined,
+    refreshToken,
+  };
 }
 
 // ---------------------------------------------------------------------------

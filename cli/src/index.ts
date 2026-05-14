@@ -36,6 +36,7 @@ import { type GpuPlatform, type ProjectConfig, collectProjectConfig } from "./pr
 import {
   type ProvisionService,
   type ProvisionedEvent,
+  type SurfaceMode,
   runProvision,
   runUnprovision,
 } from "./provision/index.js";
@@ -450,6 +451,12 @@ function flagValue(name: string): string | undefined {
   return undefined;
 }
 
+function provisionSurfaceModeFromManifest(manifest: ProjectManifest | null): SurfaceMode {
+  if (manifest?.surfaces === "server-only") return "server-only";
+  if (manifest?.surfaces === "client-only") return "client-only";
+  return "shared";
+}
+
 /** Resolve the GitHub `owner/repo` slug from the cwd's git origin.
  *  Returns undefined when no remote is set or it's not a GitHub URL. */
 async function detectRepoSlug(): Promise<string | undefined> {
@@ -568,7 +575,6 @@ function servicesImpossibleForProject(manifest: ProjectManifest | null): Set<Pro
   if (!manifest) return blocked;
   if (!manifest.domain) {
     blocked.add("email");
-    blocked.add("search-console");
   }
   if (manifest.surfaces === "server-only") blocked.add("plausible");
   if (manifest.surfaces === "client-only") {
@@ -577,6 +583,28 @@ function servicesImpossibleForProject(manifest: ProjectManifest | null): Set<Pro
   }
   if (manifestBucketEntries(manifest).length === 0) blocked.add("s3");
   return blocked;
+}
+
+function addPositionals(rawArgs: string[]): string[] {
+  const valueFlags = new Set([
+    "--server-dir",
+    "--client-dir",
+    "--project-dir",
+    "--domain",
+    "--name",
+    "--surfaces",
+  ]);
+  const positional: string[] = [];
+  for (let i = 0; i < rawArgs.length; i++) {
+    const arg = rawArgs[i];
+    if (valueFlags.has(arg)) {
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--")) continue;
+    positional.push(arg);
+  }
+  return positional;
 }
 
 function recordProvisionedEvent(ledger: RunLedger, event: ProvisionedEvent): void {
@@ -657,16 +685,35 @@ async function handleAdd(): Promise<void> {
       .every((s) => (allServices as readonly string[]).includes(s));
   };
 
-  const positional = args.slice(1).filter((a) => !a.startsWith("--"));
-  const inferredProjectDir = inferProjectDir(process.cwd());
-  const inferredManifest = inferredProjectDir ? readManifest(inferredProjectDir) : null;
+  const nameFlag = flagValue("--name");
+  const domainFlag = flagValue("--domain");
+  const serverDirFlag = flagValue("--server-dir");
+  const clientDirFlag = flagValue("--client-dir");
+  const projectDirFlag = flagValue("--project-dir");
+  const surfaceFlag = flagValue("--surfaces");
+  const projectDirFromFlag = projectDirFlag ? resolve(projectDirFlag) : undefined;
+  if (projectDirFromFlag && !existsSync(projectDirFromFlag)) {
+    console.log(chalk.red(`  --project-dir does not exist: ${projectDirFromFlag}`));
+    process.exit(1);
+  }
+
+  const positional = addPositionals(args.slice(1));
   const firstArgIsService = isServiceExpr(positional[0]);
-  let baseName = firstArgIsService
-    ? inferredManifest?.name
-    : (positional[0] ?? inferredManifest?.name);
+  const positionalProjectName = firstArgIsService ? undefined : positional[0];
+  let inferredProjectDir =
+    projectDirFromFlag ??
+    (positionalProjectName && existsSync(resolve(positionalProjectName))
+      ? resolve(positionalProjectName)
+      : inferProjectDir(process.cwd()));
+  let inferredManifest = inferredProjectDir ? readManifest(inferredProjectDir) : null;
+  let baseName = positionalProjectName ?? nameFlag ?? inferredManifest?.name;
   const rawService = firstArgIsService ? positional[0] : positional[1];
 
   if (!baseName) {
+    if (!process.stdin.isTTY) {
+      console.log(chalk.red("  Project name is required. Pass <project-name> or --name <name>."));
+      process.exit(1);
+    }
     const { input } = await import("@inquirer/prompts");
     const { validateProjectName } = await import("./utils/validate.js");
     baseName = await input({
@@ -675,14 +722,24 @@ async function handleAdd(): Promise<void> {
     });
   }
 
+  if (!inferredProjectDir) {
+    const namedProjectDir = resolve(baseName);
+    if (existsSync(namedProjectDir)) {
+      inferredProjectDir = namedProjectDir;
+      inferredManifest = readManifest(namedProjectDir);
+    }
+  }
+
   const alreadyAdded = servicesAlreadyAdded({
     baseName,
     projectDir: inferredProjectDir,
     manifest: inferredManifest,
   });
   const impossible = servicesImpossibleForProject(inferredManifest);
-  const hiddenServices = new Set<ProvisionService>([...alreadyAdded, ...impossible]);
-  const addableServices = allServices.filter((service) => !hiddenServices.has(service));
+  const rerunnableServices = new Set<ProvisionService>(["search-console"]);
+  const addableServices = allServices.filter(
+    (service) => !alreadyAdded.has(service) && !impossible.has(service),
+  );
 
   let services: ProvisionService[];
   if (!rawService) {
@@ -735,7 +792,10 @@ async function handleAdd(): Promise<void> {
       console.log(chalk.dim(`  Valid: ${allServices.join(", ")}, or 'all'`));
       process.exit(1);
     }
-    const skipped = requested.filter((service) => hiddenServices.has(service as ProvisionService));
+    const skipped = requested.filter((service) => {
+      const svc = service as ProvisionService;
+      return impossible.has(svc) || (alreadyAdded.has(svc) && !rerunnableServices.has(svc));
+    });
     if (skipped.length > 0) {
       console.log(
         chalk.red(
@@ -747,9 +807,10 @@ async function handleAdd(): Promise<void> {
       );
       process.exit(1);
     }
-    services = requested.filter(
-      (service) => !hiddenServices.has(service as ProvisionService),
-    ) as ProvisionService[];
+    services = requested.filter((service) => {
+      const svc = service as ProvisionService;
+      return !impossible.has(svc) && (!alreadyAdded.has(svc) || rerunnableServices.has(svc));
+    }) as ProvisionService[];
     if (services.length === 0) {
       console.log(
         chalk.green(`  Nothing to add — requested service(s) are already present or unavailable.`),
@@ -764,22 +825,32 @@ async function handleAdd(): Promise<void> {
   //   --surfaces=<shared|separate|server-only|client-only>
   //   --server-dir <path>             → absolute or project-relative env dir for the server
   //   --client-dir <path>             → same for the client
+  //   --domain <domain>               → site/domain-scoped services (Plausible/Search Console)
+  //   --name <name>                   → project name when no positional/manifest name exists
   //   (no surface flags)              → prompt interactively
   const noWrite = args.includes("--no-write");
   const enableDevObs = args.includes("--enable-dev-obs");
-  const surfaceFlag = args.find((a) => a.startsWith("--surfaces="))?.slice("--surfaces=".length);
-  const serverDirIdx = args.indexOf("--server-dir");
-  const clientDirIdx = args.indexOf("--client-dir");
-  const projectDirIdx = args.indexOf("--project-dir");
-  const serverDirFlag = serverDirIdx >= 0 ? args[serverDirIdx + 1] : undefined;
-  const clientDirFlag = clientDirIdx >= 0 ? args[clientDirIdx + 1] : undefined;
-  const projectDirFlag = projectDirIdx >= 0 ? args[projectDirIdx + 1] : undefined;
 
-  const { resolve: resolvePath } = await import("node:path");
   const validSurfaceModes = ["shared", "separate", "server-only", "client-only"] as const;
+  const noEnvServices = new Set<ProvisionService>(["email", "search-console"]);
+  const onlyNoEnvServices = services.every((service) => noEnvServices.has(service));
   let surfaces: Parameters<typeof runProvision>[0]["surfaces"] = undefined;
   if (noWrite) {
     surfaces = false;
+  } else if (onlyNoEnvServices) {
+    const projectDir = inferredProjectDir;
+    if (!projectDir) {
+      console.log(
+        chalk.red(
+          "  A project directory is required for no-env services. Pass --project-dir <path>.",
+        ),
+      );
+      process.exit(1);
+    }
+    surfaces = {
+      mode: provisionSurfaceModeFromManifest(inferredManifest),
+      projectDir,
+    };
   } else if (surfaceFlag || serverDirFlag || clientDirFlag || projectDirFlag) {
     // Non-interactive surface config: require every field we need.
     if (!surfaceFlag || !(validSurfaceModes as readonly string[]).includes(surfaceFlag)) {
@@ -803,16 +874,16 @@ async function handleAdd(): Promise<void> {
     }
     surfaces = {
       mode,
-      serverEnvDir: needsServer ? resolvePath(serverDirFlag as string) : undefined,
-      clientEnvDir: needsClient ? resolvePath(clientDirFlag as string) : undefined,
-      // --project-dir is optional in the flag path. When provided, it
-      // points at the directory holding `.hatchkit.json` (needed for
-      // the `s3` service to read s3Buckets). When absent and the
-      // serverEnvDir is a `packages/server` style subdir, we infer it
-      // by walking up two segments.
+      serverEnvDir: needsServer ? resolve(serverDirFlag as string) : undefined,
+      clientEnvDir: needsClient ? resolve(clientDirFlag as string) : undefined,
+      // --project-dir is optional in the flag path. It points at the
+      // project root used for manifest/package/CNAME inference (and for
+      // s3Buckets). When absent and the serverEnvDir is a
+      // `packages/server` style subdir, we infer it by walking up two
+      // segments.
       projectDir: projectDirFlag
-        ? resolvePath(projectDirFlag)
-        : inferProjectDir(needsServer ? resolvePath(serverDirFlag as string) : undefined),
+        ? resolve(projectDirFlag)
+        : inferProjectDir(needsServer ? resolve(serverDirFlag as string) : undefined),
     };
   }
 
@@ -822,6 +893,7 @@ async function handleAdd(): Promise<void> {
     services,
     surfaces,
     enableDevObs,
+    domain: domainFlag,
     failIfExists: true,
     onProvisioned: (event) => recordProvisionedEvent(ledger, event),
   });
@@ -2644,6 +2716,7 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Usage:")}
     hatchkit add [<project-name>] [<services>] [flags]
+    hatchkit add [<services>] --name <project-name> [flags]
     hatchkit add [<services>] [flags]   ${chalk.dim("(inside a project with .hatchkit.json)")}
 
   ${chalk.bold("What it does:")}
@@ -2697,14 +2770,21 @@ function printHelp(topic?: HelpTopic): void {
     --surfaces=<mode>           shared | server-only | client-only | separate
     --server-dir <path>         Server env directory (skips prompt when set).
     --client-dir <path>         Client env directory (skips prompt when set).
-    --project-dir <path>        Project root holding .hatchkit.json (s3 only;
+    --project-dir <path>        Project root for manifest/package/CNAME inference
+                                (needed for s3 and non-Hatchkit Search Console onboarding;
                                 inferred from --server-dir if omitted).
+    --name <name>               Project name when no positional or manifest name exists.
+    --domain <domain>           Site/domain-scoped services (Plausible, Search Console).
 
   ${chalk.bold("Examples:")}
     hatchkit add
     hatchkit add search-console
     hatchkit add raptor-runner
     hatchkit add raptor-runner all --enable-dev-obs
+    hatchkit add search-console --name asteroids --domain asteroids.trebeljahr.com \\
+        --project-dir /Users/rico/projects/asteroid-game
+    hatchkit add my-app search-console --domain app.example.com --project-dir ./my-app
+    hatchkit add fractal-garden search-console --domain fractal.garden
     hatchkit add raptor-runner glitchtip,resend --no-write
     hatchkit add raptor-runner all --surfaces=shared \\
         --server-dir ./raptor-runner/packages/server \\

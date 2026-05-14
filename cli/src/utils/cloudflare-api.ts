@@ -122,6 +122,7 @@ interface CfResponse<T> {
 }
 
 const API_BASE = "https://api.cloudflare.com/client/v4";
+const CF_API_TIMEOUT_MS = 30_000;
 
 /** Cloudflare REST API client. */
 export class CloudflareApi {
@@ -134,15 +135,21 @@ export class CloudflareApi {
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const res = await fetch(`${API_BASE}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(CF_API_TIMEOUT_MS),
+      });
+    } catch (err) {
+      throw new Error(`Cloudflare ${method} ${path} failed: ${(err as Error).message}`);
+    }
 
     const json = (await res.json().catch(() => null)) as CfResponse<T> | null;
     if (!res.ok || !json || !json.success) {
@@ -172,14 +179,20 @@ export class CloudflareApi {
       const query = new URLSearchParams({ per_page: "50", page: String(page) });
       if (this.accountId) query.set("account.id", this.accountId);
       const path = `/zones?${query.toString()}`;
-      const res = await fetch(`${API_BASE}${path}`, {
-        headers: {
-          Authorization: `Bearer ${this.token}`,
-          Accept: "application/json",
-        },
-      });
-      const json = (await res.json()) as CfResponse<CloudflareZone[]>;
-      if (!res.ok || !json.success) {
+      let res: Response;
+      try {
+        res = await fetch(`${API_BASE}${path}`, {
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            Accept: "application/json",
+          },
+          signal: AbortSignal.timeout(CF_API_TIMEOUT_MS),
+        });
+      } catch (err) {
+        throw new Error(`Cloudflare GET /zones failed: ${(err as Error).message}`);
+      }
+      const json = (await res.json().catch(() => null)) as CfResponse<CloudflareZone[]> | null;
+      if (!res.ok || !json || !json.success) {
         const errMsg =
           json?.errors?.map((e) => `${e.code}: ${e.message}`).join("; ") ?? res.statusText;
         throw new Error(`Cloudflare GET /zones failed: ${errMsg}`);

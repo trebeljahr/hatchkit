@@ -26,7 +26,7 @@
  * touch stdout.
  */
 
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
@@ -39,8 +39,16 @@ import {
   ensureS3,
   getConfigPath,
 } from "../config.js";
-import { MANIFEST_FILENAME, readManifest, writeManifest } from "../scaffold/manifest.js";
+import {
+  MANIFEST_FILENAME,
+  MANIFEST_VERSION,
+  type ProjectManifest,
+  readManifest,
+  writeManifest,
+} from "../scaffold/manifest.js";
+import { exec } from "../utils/exec.js";
 import { validateDomain, validateProjectName } from "../utils/validate.js";
+import { getCliVersion } from "../utils/version.js";
 import {
   type GlitchtipClient,
   deleteGlitchtipClient,
@@ -75,6 +83,7 @@ import {
   unprovisionR2BucketTokens,
 } from "./s3.js";
 import {
+  type SearchConsoleProvisionResult,
   provisionSearchConsoleForDomain,
   unprovisionSearchConsoleForDomain,
 } from "./search-console.js";
@@ -177,6 +186,16 @@ export interface ProvisionOptions {
   failIfExists?: boolean;
 }
 
+export interface SearchConsoleDomainGuess {
+  domain: string;
+  source: string;
+}
+
+interface SearchConsoleTarget {
+  projectDir?: string;
+  domain: string;
+}
+
 interface WriteBucket {
   /** Display label like "server" or "client". */
   label: string;
@@ -248,6 +267,15 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   const nameCheck = validateProjectName(opts.baseName);
   if (nameCheck !== true) throw new Error(`Invalid base name: ${nameCheck}`);
 
+  const surfaces = await resolveSurfaces(opts);
+  const enableDevObs = opts.enableDevObs ?? false;
+  const plausibleDomain = opts.services.includes("plausible")
+    ? await resolvePlausibleDomain(opts, surfaces)
+    : undefined;
+  const searchConsoleTarget = opts.services.includes("search-console")
+    ? resolveSearchConsoleTarget(opts, surfaces)
+    : undefined;
+
   // Ensure every selected provider is configured *before* any spinner
   // starts. Otherwise a lazy `ensure*` prompt fires underneath the ora
   // spinner and inquirer waits forever for invisible input.
@@ -255,7 +283,6 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   if (opts.services.includes("openpanel")) await ensureOpenpanel();
   if (opts.services.includes("plausible")) await ensurePlausible();
   if (opts.services.includes("resend")) await ensureResend();
-  if (opts.services.includes("search-console")) await ensureGoogleSearchConsole();
   // S3 is currently R2-only — `ensureS3("r2")` prompts for the admin
   // token (Account>R2:Edit + User>API Tokens:Edit) and stores the
   // endpoint metadata. Same lazy-config-before-spinner contract.
@@ -265,13 +292,11 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
     await ensureDns();
     await ensureDefaultForwardingEmail();
   }
-  if (opts.services.includes("search-console")) {
+  if (searchConsoleTarget?.domain) {
     const { ensureDns } = await import("../config.js");
+    await ensureGoogleSearchConsole();
     await ensureDns();
   }
-
-  const surfaces = await resolveSurfaces(opts);
-  const enableDevObs = opts.enableDevObs ?? false;
 
   // Resend domain: pick once, reused across dev + prod.
   let resendDomainId = opts.resendDomainId;
@@ -280,9 +305,6 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   }
 
   const buckets = initBuckets(surfaces);
-  const plausibleDomain = opts.services.includes("plausible")
-    ? await resolvePlausibleDomain(opts, surfaces)
-    : undefined;
 
   if (opts.failIfExists) {
     await assertNoExistingProviderResources({
@@ -477,40 +499,37 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   // with a Cloudflare DNS TXT record. It writes no runtime env because
   // Search Console is account state, not app config.
   if (opts.services.includes("search-console")) {
-    const projectDir = surfaces?.projectDir;
-    if (!projectDir) {
+    if (!searchConsoleTarget) throw new Error("Search Console target was not resolved.");
+    const projectDir = searchConsoleTarget.projectDir;
+    const domain = searchConsoleTarget.domain;
+    const result = await withSpinner(`Search Console: verifying ${domain}`, () =>
+      provisionSearchConsoleForDomain(domain, {
+        onDnsRecord: (dnsRecord) => {
+          if (!dnsRecord.created) return;
+          opts.onProvisioned?.({
+            service: "search-console",
+            domain,
+            siteUrl: `sc-domain:${domain}`,
+            dnsRecord,
+          });
+        },
+      }),
+    );
+    opts.onProvisioned?.({
+      service: "search-console",
+      domain: result.domain,
+      siteUrl: result.siteUrl,
+    });
+
+    if (projectDir) {
+      const latestManifest = readManifest(projectDir);
+      writeSearchConsoleManifest(projectDir, latestManifest, opts.baseName, result);
+    } else {
       console.log(
-        chalk.yellow(
-          "  Skipping Search Console — need a project dir (.hatchkit.json) to read the domain. Pass --project-dir.",
+        chalk.dim(
+          "  Search Console was added in Google. No project dir was provided, so Hatchkit did not record local integration metadata.",
         ),
       );
-    } else {
-      const { readManifest } = await import("../scaffold/manifest.js");
-      const manifest = readManifest(projectDir);
-      if (!manifest?.domain) {
-        console.log(chalk.yellow("  Skipping Search Console — manifest has no `domain` field."));
-      } else {
-        const result = await withSpinner(`Search Console: verifying ${manifest.domain}`, () =>
-          provisionSearchConsoleForDomain(manifest.domain),
-        );
-        opts.onProvisioned?.({
-          service: "search-console",
-          domain: result.domain,
-          siteUrl: result.siteUrl,
-          dnsRecord: result.dnsRecord,
-        });
-        writeManifest(projectDir, {
-          ...manifest,
-          integrations: {
-            ...manifest.integrations,
-            searchConsole: {
-              domain: result.domain,
-              siteUrl: result.siteUrl,
-              verifiedAt: new Date().toISOString(),
-            },
-          },
-        });
-      }
     }
   }
 
@@ -551,16 +570,20 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
     }
   }
 
+  const hasEnvLines = buckets.some((b) => b.devLines.length > 0 || b.prodLines.length > 0);
+
   // Persist 0600 cache copies keyed by surface label.
   const outDir = join(dirname(getConfigPath()), "provisioned");
-  if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
-  for (const b of buckets) {
-    for (const phase of ["dev", "prod"] as const) {
-      const lines = phase === "dev" ? b.devLines : b.prodLines;
-      if (lines.length === 0) continue;
-      const path = join(outDir, `${opts.baseName}.${b.label}.${phase}.env`);
-      const banner = `# --- ${opts.baseName} / ${b.label} / ${phase} ---`;
-      writeFileSync(path, `${banner}\n${lines.join("\n")}\n`, { mode: 0o600 });
+  if (hasEnvLines) {
+    if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
+    for (const b of buckets) {
+      for (const phase of ["dev", "prod"] as const) {
+        const lines = phase === "dev" ? b.devLines : b.prodLines;
+        if (lines.length === 0) continue;
+        const path = join(outDir, `${opts.baseName}.${b.label}.${phase}.env`);
+        const banner = `# --- ${opts.baseName} / ${b.label} / ${phase} ---`;
+        writeFileSync(path, `${banner}\n${lines.join("\n")}\n`, { mode: 0o600 });
+      }
     }
   }
 
@@ -568,6 +591,10 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   // summarize + point at cache files.
   if (surfaces === null) {
     console.log(chalk.bold("\n  ── Provisioned ────────────────────────────────────────────\n"));
+    if (!hasEnvLines) {
+      console.log(chalk.dim("  No environment values were produced for the selected services.\n"));
+      return;
+    }
     for (const b of buckets) {
       const prodKeys = parseEnvLines(b.prodLines).map((p) => p.key);
       const devKeys = parseEnvLines(b.devLines).map((p) => p.key);
@@ -591,6 +618,11 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
           `  Read them with \`cat\` or re-run with a project directory to write directly.\n`,
       ),
     );
+    return;
+  }
+
+  if (!hasEnvLines) {
+    console.log(chalk.dim("\n  No environment values to write for the selected services.\n"));
     return;
   }
 
@@ -647,16 +679,24 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
 async function resolveSurfaces(opts: ProvisionOptions): Promise<Surfaces | null> {
   if (opts.surfaces === false) return null;
   if (opts.surfaces) return opts.surfaces;
+  const needsEnvSurfaces = servicesNeedEnvSurfaces(opts.services);
 
   // Step 1 — project dir. Prefer the current Hatchkit project when cwd
   // is inside one; otherwise default to `./<baseName>` if it exists.
   const manifestGuess = inferProjectDir(process.cwd());
-  const guess = manifestGuess ?? resolve(opts.baseName);
+  const baseDirGuess = resolve(opts.baseName);
+  const cwdGuess = looksLikeProjectDir(process.cwd()) ? process.cwd() : undefined;
+  const guess =
+    manifestGuess ?? (existsSync(baseDirGuess) ? baseDirGuess : (cwdGuess ?? baseDirGuess));
   const guessExists = existsSync(guess);
   const wantWrite = await confirm({
-    message: guessExists
-      ? `Write values into ${chalk.cyan(relativeTo(guess))} (prod → encrypted .env.production)?`
-      : `Write values into a project directory?`,
+    message: needsEnvSurfaces
+      ? guessExists
+        ? `Write values into ${chalk.cyan(relativeTo(guess))} (prod → encrypted .env.production)?`
+        : "Write values into a project directory?"
+      : guessExists
+        ? `Use ${chalk.cyan(relativeTo(guess))} as the project directory?`
+        : "Use a project directory?",
     default: true,
   });
   if (!wantWrite) return null;
@@ -673,6 +713,8 @@ async function resolveSurfaces(opts: ProvisionOptions): Promise<Surfaces | null>
       })
     ).trim(),
   );
+  if (!needsEnvSurfaces) return { mode: "client-only", projectDir };
+
   const manifest = readManifest(projectDir);
   const defaultMode: SurfaceMode =
     manifest?.surfaces === "server-only"
@@ -776,6 +818,272 @@ async function resolvePlausibleDomain(
     })
   ).trim();
   return picked ? picked.toLowerCase() : undefined;
+}
+
+function servicesNeedEnvSurfaces(services: ProvisionService[]): boolean {
+  return services.some((service) =>
+    ["glitchtip", "openpanel", "plausible", "resend", "s3"].includes(service),
+  );
+}
+
+function looksLikeProjectDir(dir: string): boolean {
+  return [
+    "package.json",
+    ".git",
+    "CNAME",
+    "public/CNAME",
+    "static/CNAME",
+    "docs/CNAME",
+    "site/CNAME",
+  ].some((relPath) => existsSync(join(dir, relPath)));
+}
+
+function normalizeSearchConsoleDomainCandidate(value: string | undefined): string | undefined {
+  const raw = value?.trim();
+  if (!raw) return undefined;
+  let candidate = raw;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) {
+    try {
+      candidate = new URL(candidate).hostname;
+    } catch {
+      return undefined;
+    }
+  } else {
+    candidate = candidate.split(/[/?#]/)[0] ?? candidate;
+  }
+  candidate = candidate.replace(/^\*\./, "").replace(/\.$/, "").toLowerCase();
+  return validateDomain(candidate) === true ? candidate : undefined;
+}
+
+function readSearchConsoleDomainCandidatesFromPackage(
+  projectDir: string,
+): SearchConsoleDomainGuess[] {
+  const path = join(projectDir, "package.json");
+  if (!existsSync(path)) return [];
+  try {
+    const pkg = JSON.parse(readFileSync(path, "utf-8")) as {
+      name?: string;
+      homepage?: string;
+    };
+    const out: SearchConsoleDomainGuess[] = [];
+    const homepage = normalizeSearchConsoleDomainCandidate(pkg.homepage);
+    if (homepage) out.push({ domain: homepage, source: "package.json homepage" });
+    if (pkg.name) {
+      for (const domain of domainCandidatesFromSlug(pkg.name.replace(/^@[^/]+\//, ""))) {
+        out.push({ domain, source: "package.json name" });
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function readSearchConsoleDomainCandidatesFromCname(
+  projectDir: string,
+): SearchConsoleDomainGuess[] {
+  const paths = [
+    "CNAME",
+    "public/CNAME",
+    "static/CNAME",
+    "docs/CNAME",
+    "docs/static/CNAME",
+    "docs/public/CNAME",
+    "site/CNAME",
+    "www/CNAME",
+  ];
+  const out: SearchConsoleDomainGuess[] = [];
+  for (const relPath of paths) {
+    const path = join(projectDir, relPath);
+    if (!existsSync(path)) continue;
+    const domain = normalizeSearchConsoleDomainCandidate(
+      readFileSync(path, "utf-8").split(/\r?\n/)[0],
+    );
+    if (domain) out.push({ domain, source: relPath });
+  }
+  return out;
+}
+
+function domainCandidatesFromSlug(value: string): string[] {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/^@[^/]+\//, "")
+    .replace(/[^a-z0-9.-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!slug) return [];
+  const out: string[] = [];
+  const direct = normalizeSearchConsoleDomainCandidate(slug);
+  if (direct) out.push(direct);
+  const parts = slug.split("-").filter(Boolean);
+  if (parts.length >= 2) {
+    const tldGuess = `${parts.slice(0, -1).join("-")}.${parts.at(-1)}`;
+    const domain = normalizeSearchConsoleDomainCandidate(tldGuess);
+    if (domain) out.push(domain);
+  }
+  const dotCom = normalizeSearchConsoleDomainCandidate(`${slug}.com`);
+  if (dotCom) out.push(dotCom);
+  return [...new Set(out)];
+}
+
+async function readGitRemoteOrigin(projectDir: string): Promise<string | undefined> {
+  try {
+    const result = await exec("git", ["remote", "get-url", "origin"], {
+      cwd: projectDir,
+      silent: true,
+    });
+    return result.exitCode === 0 ? result.stdout.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function repoNameFromRemote(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  const ssh = url.match(/^git@github\.com:[^/]+\/([^/]+?)(?:\.git)?$/);
+  if (ssh) return ssh[1];
+  const https = url.match(/^https?:\/\/github\.com\/[^/]+\/([^/]+?)(?:\.git)?(?:\/.*)?$/);
+  return https?.[1];
+}
+
+export async function inferSearchConsoleDomainDefault(
+  projectDir: string,
+  baseName: string,
+): Promise<SearchConsoleDomainGuess | null> {
+  const candidates: SearchConsoleDomainGuess[] = [
+    ...readSearchConsoleDomainCandidatesFromCname(projectDir),
+    ...readSearchConsoleDomainCandidatesFromPackage(projectDir),
+  ];
+
+  const remoteName = repoNameFromRemote(await readGitRemoteOrigin(projectDir));
+  if (remoteName) {
+    candidates.push(
+      ...domainCandidatesFromSlug(remoteName).map((domain) => ({
+        domain,
+        source: "git remote",
+      })),
+    );
+  }
+
+  candidates.push(
+    ...domainCandidatesFromSlug(baseName).map((domain) => ({
+      domain,
+      source: "project name",
+    })),
+  );
+
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate.domain)) continue;
+    seen.add(candidate.domain);
+    return candidate;
+  }
+  return null;
+}
+
+function resolveSearchConsoleDomain(
+  opts: ProvisionOptions,
+  manifest: ReturnType<typeof readManifest>,
+): string {
+  const explicit = normalizeSearchConsoleDomainCandidate(opts.domain);
+  if (explicit) return explicit;
+  if (opts.domain) throw new Error(`Invalid Search Console domain: ${opts.domain}`);
+  const fromManifest = normalizeSearchConsoleDomainCandidate(manifest?.domain);
+  if (fromManifest) return fromManifest;
+  if (manifest?.domain) throw new Error(`Invalid Search Console domain: ${manifest.domain}`);
+  throw new Error(
+    "Search Console domain is required. Pass --domain <domain>, or add `domain` to .hatchkit.json.",
+  );
+}
+
+function detectMinimalManifestSurfaces(projectDir: string): ProjectManifest["surfaces"] {
+  const hasServer = ["packages/server", "apps/server", "apps/api", "server"].some((dir) =>
+    existsSync(join(projectDir, dir)),
+  );
+  const hasClient = [
+    "packages/client",
+    "packages/web",
+    "apps/web",
+    "apps/client",
+    "client",
+    "web",
+  ].some((dir) => existsSync(join(projectDir, dir)));
+  if (hasServer && hasClient) return "both";
+  if (hasServer) return "server-only";
+  if (hasClient) return "client-only";
+  return "both";
+}
+
+function minimalSearchConsoleManifest(args: {
+  projectDir: string;
+  baseName: string;
+  result: SearchConsoleProvisionResult;
+  verifiedAt: string;
+}): ProjectManifest {
+  return {
+    version: MANIFEST_VERSION,
+    cliVersion: getCliVersion(),
+    scaffoldedAt: new Date().toISOString(),
+    name: args.baseName,
+    domain: args.result.domain,
+    features: [],
+    mlServices: [],
+    s3Provider: "none",
+    deployTarget: "existing",
+    surfaces: detectMinimalManifestSurfaces(args.projectDir),
+    ports: { server: 3000, client: 5173 },
+    integrations: {
+      searchConsole: {
+        domain: args.result.domain,
+        siteUrl: args.result.siteUrl,
+        verifiedAt: args.verifiedAt,
+      },
+    },
+  };
+}
+
+export function writeSearchConsoleManifest(
+  projectDir: string,
+  manifest: ProjectManifest | null,
+  baseName: string,
+  result: SearchConsoleProvisionResult,
+): void {
+  const verifiedAt = new Date().toISOString();
+  const searchConsole = {
+    domain: result.domain,
+    siteUrl: result.siteUrl,
+    verifiedAt,
+  };
+  if (manifest) {
+    writeManifest(projectDir, {
+      ...manifest,
+      domain: manifest.domain || result.domain,
+      integrations: {
+        ...manifest.integrations,
+        searchConsole,
+      },
+    });
+    return;
+  }
+  writeManifest(
+    projectDir,
+    minimalSearchConsoleManifest({ projectDir, baseName, result, verifiedAt }),
+  );
+}
+
+function resolveSearchConsoleTarget(
+  opts: ProvisionOptions,
+  surfaces: Surfaces | null,
+): SearchConsoleTarget {
+  const projectDir = surfaces?.projectDir;
+  if (projectDir && !existsSync(projectDir)) {
+    throw new Error(`Search Console project dir does not exist: ${projectDir}`);
+  }
+  const manifest = projectDir ? readManifest(projectDir) : null;
+  return {
+    projectDir,
+    domain: resolveSearchConsoleDomain(opts, manifest),
+  };
 }
 
 function detectSurfaceDir(projectDir: string, candidates: string[]): string {

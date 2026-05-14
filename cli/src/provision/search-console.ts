@@ -14,19 +14,23 @@ interface GoogleApiError {
   };
 }
 
+export interface SearchConsoleDnsRecord {
+  id: string;
+  zoneId: string;
+  name: string;
+  type: "TXT";
+  created: boolean;
+  updated: boolean;
+}
+
 export interface SearchConsoleProvisionResult {
   domain: string;
   siteUrl: string;
   webResourceId?: string;
-  dnsRecord?: {
-    id: string;
-    zoneId: string;
-    name: string;
-    type: "TXT";
-    created: boolean;
-    updated: boolean;
-  };
+  dnsRecord?: SearchConsoleDnsRecord;
 }
+
+const GOOGLE_API_TIMEOUT_MS = 30_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -51,18 +55,29 @@ async function googleJson<T>(
   accessToken: string,
   body?: unknown,
 ): Promise<T> {
-  const res = await fetch(url, {
-    method,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-      ...(body ? { "Content-Type": "application/json" } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(GOOGLE_API_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new Error(`Google API ${method} ${url} failed: ${(err as Error).message}`);
+  }
   if (res.status === 204) return undefined as T;
   const text = await res.text();
-  const json = text ? (JSON.parse(text) as GoogleApiError & T) : (undefined as T);
+  let json: (GoogleApiError & T) | undefined;
+  try {
+    json = text ? (JSON.parse(text) as GoogleApiError & T) : undefined;
+  } catch {
+    throw new Error(`Google API HTTP ${res.status}: response was not JSON (${text.slice(0, 120)})`);
+  }
   if (!res.ok) {
     const msg =
       (json as GoogleApiError | undefined)?.error?.message ??
@@ -135,6 +150,7 @@ async function findCloudflareZone(
 
 export async function provisionSearchConsoleForDomain(
   domainInput: string,
+  opts: { onDnsRecord?: (record: SearchConsoleDnsRecord) => void } = {},
 ): Promise<SearchConsoleProvisionResult> {
   const domain = normalizeSearchConsoleDomain(domainInput);
   const siteUrl = searchConsoleSiteUrl(domain);
@@ -152,12 +168,21 @@ export async function provisionSearchConsoleForDomain(
 
   const cf = new CloudflareApi({ token: dnsCfg.apiToken, accountId: dnsCfg.accountId });
   const zone = await findCloudflareZone(cf, domain);
-  const dnsRecord = await cf.upsertRecord(zone.id, {
+  const upserted = await cf.upsertRecord(zone.id, {
     type: "TXT",
     name: domain,
     content: token.token,
     ttl: 1,
   });
+  const dnsRecord: SearchConsoleDnsRecord = {
+    id: upserted.id,
+    zoneId: zone.id,
+    name: domain,
+    type: "TXT",
+    created: upserted.created,
+    updated: upserted.updated,
+  };
+  opts.onDnsRecord?.(dnsRecord);
 
   let verified: { id?: string } | null = null;
   let lastError: Error | null = null;
@@ -190,14 +215,7 @@ export async function provisionSearchConsoleForDomain(
     domain,
     siteUrl,
     webResourceId: verified?.id,
-    dnsRecord: {
-      id: dnsRecord.id,
-      zoneId: zone.id,
-      name: domain,
-      type: "TXT",
-      created: dnsRecord.created,
-      updated: dnsRecord.updated,
-    },
+    dnsRecord,
   };
 }
 

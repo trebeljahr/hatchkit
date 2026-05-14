@@ -9,7 +9,6 @@ const inter = Inter({ subsets: ["latin"] });
 const plausibleDomain = "hatchkit.trebeljahr.com";
 const plausibleScriptUrl =
   "https://plausible.trebeljahr.com/js/script.file-downloads.hash.outbound-links.pageview-props.revenue.tagged-events.js";
-const shouldLoadPlausible = process.env.NODE_ENV === "production";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://hatchkit.trebeljahr.com"),
@@ -47,9 +46,8 @@ export default function Layout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className={inter.className} suppressHydrationWarning>
       <body className="flex flex-col min-h-screen">
-        {shouldLoadPlausible ? (
-          <Script id="plausible-loader" strategy="afterInteractive">
-            {`
+        <Script id="plausible-loader" strategy="afterInteractive">
+          {`
               (function () {
                 var domain = ${JSON.stringify(plausibleDomain)};
                 if (location.hostname !== domain) return;
@@ -63,8 +61,7 @@ export default function Layout({ children }: { children: ReactNode }) {
                 document.head.appendChild(script);
               })();
             `}
-          </Script>
-        ) : null}
+        </Script>
         <RootProvider search={{ enabled: false }}>{children}</RootProvider>
       </body>
     </html>

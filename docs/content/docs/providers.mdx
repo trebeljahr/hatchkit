@@ -117,12 +117,22 @@ OAuth refresh token in the OS keychain. Hatchkit requests Search Console
 read/write plus Site Verification verify-only access; the token stays local to
 the user's machine.
 
-When Hatchkit is built with a packaged Google OAuth client id, users only need
-to approve the browser consent flow. The CLI uses the Desktop/installed-app
-OAuth flow with PKCE and does not need a client secret. Google still displays a
-client secret for Desktop clients in the Cloud Console, but shipped CLIs cannot
-keep that value confidential, so Hatchkit ignores it for the packaged-client
-path.
+The public CLI does not commit or package a Hatchkit-owned Google OAuth client.
+By default, users bring their own Google Cloud Desktop OAuth client and paste its
+client ID during `hatchkit config add search-console`; Hatchkit stores it in the
+OS keychain. The client secret prompt is optional. For Desktop app clients using
+PKCE, Google's current installed-app flow does not require a client secret in
+the authorization-code exchange or refresh-token request. If Google rejects a
+specific legacy client without a secret, paste the Desktop client secret as a
+fallback; Hatchkit stores it in the OS keychain too.
+
+Maintainer/dev builds can exercise the Hatchkit-owned OAuth path by exporting
+`HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID` before running setup. Only export
+`HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET` if you need the legacy fallback.
+Keep both values in a local shell secret manager or private env file, not in git
+history or release tarballs. A checked-in dotenvx file would only move the
+problem: public CLI users still could not decrypt it without a private key, and
+the released package would not have a usable OAuth client.
 
 Maintainer setup for the packaged flow:
 
@@ -132,11 +142,19 @@ Maintainer setup for the packaged flow:
 4. Add scopes `https://www.googleapis.com/auth/webmasters` and
    `https://www.googleapis.com/auth/siteverification.verify_only`.
 5. Create an OAuth client with application type **Desktop app**.
-6. Put that client id in Hatchkit's packaged Google Search Console client-id
-   constant before release. The client id is public and belongs in source, not
-   in user `.env` files. Dev builds can use
-   `HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID` to override/test the same path.
-   Ignore the displayed client secret for the packaged PKCE flow.
+6. For local maintainer testing, keep the app in **Testing** and add your Google
+   account under **Audience → Test users**. The Verification Center will say
+   verification is not required in this mode; that is expected. Testing-mode
+   refresh tokens expire after seven days.
+7. For a broad/public Hatchkit release, publish the app to production and submit
+   the Search Console + Site Verification scopes for verification.
+8. For local maintainer testing, export
+   `HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID`. Leave
+   `HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET` unset unless a legacy client
+   explicitly requires it. Do not add either value to source, docs, generated
+   `dist/`, npm package contents, or committed dotenvx files. If Google no
+   longer reveals an existing fallback secret, add or rotate a client secret and
+   update only your local secret source.
 
 Configure: `hatchkit config add search-console`.
 
