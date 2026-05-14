@@ -124,8 +124,10 @@ first attempts the authorization-code exchange with PKCE and no secret. Google
 documents `client_secret` as optional for installed/Desktop apps, but some
 Google Desktop OAuth clients still return `client_secret is missing` at the
 token endpoint. When that happens, Hatchkit asks for the generated Desktop
-client secret, retries the token exchange, and stores the secret in the OS
-keychain for future refreshes.
+client secret when it is using a user-owned client. If the packaged Hatchkit
+client is rejected this way, setup falls back to the legacy BYO Desktop client
+flow so the matching client ID/secret can be stored locally. Hatchkit stores
+these values in the OS keychain for future refreshes.
 
 Maintainer/dev builds can override the packaged Hatchkit-owned OAuth client by
 exporting `HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID` before running setup. Only

@@ -1478,6 +1478,14 @@ function hatchkitGoogleSearchConsoleClientId(): string | null {
   return configured || DEFAULT_HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID;
 }
 
+function hatchkitGoogleSearchConsoleClientIdSource(): "env" | "default" | null {
+  return process.env[HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID_ENV]?.trim()
+    ? "env"
+    : DEFAULT_HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID
+      ? "default"
+      : null;
+}
+
 function hatchkitGoogleSearchConsoleClientSecret(): string | undefined {
   return process.env[HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET_ENV]?.trim() || undefined;
 }
@@ -1836,6 +1844,25 @@ export async function refreshGoogleSearchConsoleAccessToken(
   return json.access_token;
 }
 
+async function promptByoGoogleSearchConsoleOAuthClient(
+  existingClientId?: string,
+): Promise<{ clientId: string; clientSecret?: string }> {
+  tokenHint(
+    "https://console.cloud.google.com/apis/credentials",
+    "OAuth client (Desktop app) with Search Console API + Site Verification API enabled",
+    `Scopes: ${GOOGLE_SEARCH_CONSOLE_SCOPES.join(", ")}; Hatchkit tries PKCE without a secret first, but Google may still require the generated Desktop client secret`,
+  );
+  const clientId = (
+    await input({
+      message: "Google OAuth client ID:",
+      default: existingClientId ?? undefined,
+      validate: validateRequired,
+    })
+  ).trim();
+  const clientSecret = await confirmOptionalPastedSecret("Google OAuth client secret");
+  return { clientId, clientSecret };
+}
+
 export async function ensureGoogleSearchConsole(): Promise<GoogleSearchConsoleConfig> {
   const existing = store.get("providers.googleSearchConsole") as
     | GoogleSearchConsoleMeta
@@ -1844,6 +1871,7 @@ export async function ensureGoogleSearchConsole(): Promise<GoogleSearchConsoleCo
   const existingClientSecret = await getSecret(SECRET_KEYS.googleSearchConsoleClientSecret);
   const existingRefreshToken = await getSecret(SECRET_KEYS.googleSearchConsoleRefreshToken);
   const hatchkitClientId = hatchkitGoogleSearchConsoleClientId();
+  const hatchkitClientIdSource = hatchkitGoogleSearchConsoleClientIdSource();
   const existingMode = existing?.oauthMode ?? (existingClientId ? "byo-client" : "hatchkit-pkce");
 
   if (existing?.status === "configured" && existingRefreshToken) {
@@ -1885,10 +1913,12 @@ export async function ensureGoogleSearchConsole(): Promise<GoogleSearchConsoleCo
     oauthMode = "hatchkit-pkce";
     console.log(
       chalk.dim(
-        `  Using the Google OAuth desktop client from ${HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID_ENV} with PKCE.`,
+        hatchkitClientIdSource === "env"
+          ? `  Using the Google OAuth desktop client from ${HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_ID_ENV} with PKCE.`
+          : "  Using Hatchkit's packaged Google OAuth desktop client with PKCE.",
       ),
     );
-    if (!clientSecret) {
+    if (!clientSecret && hatchkitClientIdSource === "env") {
       console.log(
         chalk.yellow(
           `  If Google rejects the token exchange with \`client_secret is missing\`, set ${HATCHKIT_GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET_ENV} and retry.`,
@@ -1903,25 +1933,44 @@ export async function ensureGoogleSearchConsole(): Promise<GoogleSearchConsoleCo
           "  Falling back to the legacy BYO Google Cloud OAuth client setup.\n",
       ),
     );
-    tokenHint(
-      "https://console.cloud.google.com/apis/credentials",
-      "OAuth client (Desktop app) with Search Console API + Site Verification API enabled",
-      `Scopes: ${GOOGLE_SEARCH_CONSOLE_SCOPES.join(", ")}; Hatchkit tries PKCE without a secret first, but Google may still require the generated Desktop client secret`,
-    );
-    clientId = (
-      await input({
-        message: "Google OAuth client ID:",
-        default: existingClientId ?? undefined,
-        validate: validateRequired,
-      })
-    ).trim();
-    clientSecret = await confirmOptionalPastedSecret("Google OAuth client secret");
+    const byo = await promptByoGoogleSearchConsoleOAuthClient(existingClientId ?? undefined);
+    clientId = byo.clientId;
+    clientSecret = byo.clientSecret;
   }
-  const oauth = await runGoogleOAuthLoopback({
-    clientId,
-    clientSecret,
-    allowClientSecretFallback: oauthMode === "byo-client",
-  });
+  let oauth: { refreshToken: string; scopes: string[]; clientSecret?: string };
+  try {
+    oauth = await runGoogleOAuthLoopback({
+      clientId,
+      clientSecret,
+      allowClientSecretFallback: oauthMode === "byo-client",
+    });
+  } catch (err) {
+    if (
+      err instanceof GoogleOAuthClientSecretMissingError &&
+      oauthMode === "hatchkit-pkce" &&
+      hatchkitClientIdSource === "default" &&
+      !clientSecret &&
+      process.stdin.isTTY
+    ) {
+      console.log(chalk.yellow("\n  Hatchkit's packaged Google OAuth client needs a secret."));
+      console.log(
+        chalk.dim(
+          "  Falling back to your own Google Cloud Desktop OAuth client so Hatchkit can store the matching client ID/secret locally.",
+        ),
+      );
+      oauthMode = "byo-client";
+      const byo = await promptByoGoogleSearchConsoleOAuthClient(existingClientId ?? undefined);
+      clientId = byo.clientId;
+      clientSecret = byo.clientSecret;
+      oauth = await runGoogleOAuthLoopback({
+        clientId,
+        clientSecret,
+        allowClientSecretFallback: true,
+      });
+    } else {
+      throw err;
+    }
+  }
   if (!clientSecret && oauth.clientSecret) clientSecret = oauth.clientSecret;
 
   const meta: GoogleSearchConsoleMeta = {

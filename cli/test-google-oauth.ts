@@ -186,6 +186,40 @@ assert.throws(
 }
 
 {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url, init) => {
+    const body = new URLSearchParams(String(init?.body));
+    assert.equal(body.get("client_id"), "desktop-client-id");
+    assert.equal(body.has("client_secret"), false);
+    return new Response(
+      JSON.stringify({
+        error: "invalid_request",
+        error_description: "client_secret is missing.",
+      }),
+      {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      () =>
+        refreshGoogleSearchConsoleAccessToken({
+          status: "configured",
+          oauthMode: "byo-client",
+          scopes: [],
+          clientId: "desktop-client-id",
+          refreshToken: "refresh-token",
+        }),
+      GoogleOAuthClientSecretMissingError,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+{
   getStore().set("providers.googleSearchConsole", {
     status: "configured",
     oauthMode: "byo-client",
