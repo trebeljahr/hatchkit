@@ -4,6 +4,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import Script from "next/script";
 import type { ReactNode } from "react";
+import { DEFAULT_SOCIAL_IMAGE, DEFAULT_TWITTER_IMAGE, SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/seo";
 
 const inter = Inter({ subsets: ["latin"] });
 const plausibleDomain = "hatchkit.trebeljahr.com";
@@ -11,30 +12,35 @@ const plausibleScriptUrl =
   "https://plausible.trebeljahr.com/js/script.file-downloads.hash.outbound-links.pageview-props.revenue.tagged-events.js";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://hatchkit.trebeljahr.com"),
+  metadataBase: new URL(SITE_URL),
   title: {
-    default: "hatchkit",
-    template: "%s · hatchkit",
+    default: SITE_NAME,
+    template: `%s · ${SITE_NAME}`,
   },
-  description:
-    "Interactive CLI for scaffolding full-stack TypeScript projects with composable GPU-backed ML services — on infrastructure you own.",
+  description: SITE_DESCRIPTION,
   alternates: {
     canonical: "/",
   },
   openGraph: {
     type: "website",
-    url: "https://hatchkit.trebeljahr.com",
-    title: "hatchkit",
-    description:
-      "From `npx hatchkit` to a deployed full-stack app on infrastructure you own — including GPU-backed ML services.",
-    images: ["/img/social-card.png"],
+    url: "/",
+    title: SITE_NAME,
+    description: SITE_DESCRIPTION,
+    siteName: SITE_NAME,
+    images: [
+      {
+        url: DEFAULT_SOCIAL_IMAGE,
+        width: 1200,
+        height: 630,
+        alt: "hatchkit documentation",
+      },
+    ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "hatchkit",
-    description:
-      "From `npx hatchkit` to a deployed full-stack app on infrastructure you own — including GPU-backed ML services.",
-    images: ["/img/social-card.png"],
+    title: SITE_NAME,
+    description: SITE_DESCRIPTION,
+    images: [DEFAULT_TWITTER_IMAGE],
   },
   icons: {
     icon: [

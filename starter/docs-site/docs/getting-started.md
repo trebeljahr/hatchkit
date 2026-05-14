@@ -1,5 +1,6 @@
 ---
 sidebar_position: 2
+description: Install dependencies, configure local services, run development servers, and execute tests for the Node realtime starter.
 ---
 
 # Getting Started

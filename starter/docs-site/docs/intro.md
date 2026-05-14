@@ -1,6 +1,7 @@
 ---
 slug: /
 sidebar_position: 1
+description: Overview of the Node realtime starter, including the backend, frontend, auth, payments, data stores, realtime features, and deployment setup.
 ---
 
 # Introduction

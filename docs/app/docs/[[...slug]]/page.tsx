@@ -9,9 +9,9 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { getMDXComponents } from "@/components/mdx";
 import { source } from "@/lib/source";
+import { DEFAULT_SOCIAL_IMAGE, DEFAULT_TWITTER_IMAGE, docDescription } from "@/lib/seo";
 
 type PageParams = { slug?: string[] };
-const SOCIAL_IMAGE = "/img/social-card.png";
 
 export default async function Page(props: { params: Promise<PageParams> }) {
   const params = await props.params;
@@ -45,10 +45,11 @@ export async function generateMetadata(props: {
   const params = await props.params;
   const page = source.getPage(params.slug);
   if (!page) notFound();
+  const description = docDescription(page.data.description, page.data.title);
 
   return {
     title: page.data.title,
-    description: page.data.description,
+    description,
     alternates: {
       canonical: page.url,
     },
@@ -56,14 +57,14 @@ export async function generateMetadata(props: {
       type: "article",
       url: page.url,
       title: page.data.title,
-      description: page.data.description,
-      images: [SOCIAL_IMAGE],
+      description,
+      images: [DEFAULT_SOCIAL_IMAGE],
     },
     twitter: {
       card: "summary_large_image",
       title: page.data.title,
-      description: page.data.description,
-      images: [SOCIAL_IMAGE],
+      description,
+      images: [DEFAULT_TWITTER_IMAGE],
     },
   };
 }

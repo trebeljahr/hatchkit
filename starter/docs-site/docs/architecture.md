@@ -1,5 +1,6 @@
 ---
 sidebar_position: 3
+description: Architecture notes for the Node realtime starter monorepo, server middleware, WebSocket flow, data stores, and production deployment stack.
 ---
 
 # Architecture
