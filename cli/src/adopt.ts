@@ -321,14 +321,11 @@ export async function runAdopt(
     // isPrivate resolution order:
     //   1. Detected remote visibility (`gh repo view`) — authoritative
     //      when an origin is set on a GitHub repo.
-    //   2. Fallback: true. Reasoning: if adopt is creating a fresh
-    //      repo we're using `--private`; if an existing repo's
-    //      visibility couldn't be probed (gh not authed / not on
-    //      GitHub), assuming private is safer because Coolify's
-    //      private path with a configured GitHub App also clones
-    //      public repos fine, but the public path can't pull a
-    //      private one and produces "permission denied" on deploy.
-    isPrivate: state.gitRemoteIsPrivate ?? true,
+    //   2. Fallback: false (public). Fresh `gh repo create` defaults to
+    //      `--public` so no Coolify GitHub App is required for the
+    //      first deploy; the user can flip the stepper row to private
+    //      explicitly when they need it.
+    isPrivate: state.gitRemoteIsPrivate ?? false,
     appPort: "3000",
     // Pipeline scaffold defaults OFF when the layout is unrecognised.
     // The Dockerfile templates assume a single-package project rooted
@@ -1417,12 +1414,12 @@ async function editAdoptStep(
       message: `Coolify clone path for this repo${detectedSuffix}:`,
       choices: [
         {
-          name: "Private — Coolify uses a configured GitHub App's SSH deploy key",
-          value: true,
-        },
-        {
           name: "Public — Coolify clones over HTTPS (no auth)",
           value: false,
+        },
+        {
+          name: "Private — Coolify uses a configured GitHub App's SSH deploy key",
+          value: true,
         },
       ],
       default: plan.isPrivate,
@@ -3057,14 +3054,15 @@ async function setupGitHubRemote(
   // otherwise the workflow's first run hits the "secret not set"
   // branch and skips the redeploy. Push happens at the end of
   // executePlan, once setCoolifyDeploySecrets has run.
-  const create = await exec("gh", ["repo", "create", plan.name, "--private", "--source=."], {
+  const visibilityFlag = plan.isPrivate ? "--private" : "--public";
+  const create = await exec("gh", ["repo", "create", plan.name, visibilityFlag, "--source=."], {
     cwd: state.projectDir,
-    spinner: `Creating GitHub repo: ${plan.name}...`,
+    spinner: `Creating GitHub repo: ${plan.name} (${plan.isPrivate ? "private" : "public"})...`,
   });
   if (create.exitCode !== 0) {
     console.log(chalk.yellow("  Could not create GitHub repo. Push manually once it exists:"));
     console.log(chalk.dim(`    cd ${state.projectDir}`));
-    console.log(chalk.dim(`    gh repo create ${plan.name} --private --source=. --push`));
+    console.log(chalk.dim(`    gh repo create ${plan.name} ${visibilityFlag} --source=. --push`));
     return { gitInitialized };
   }
   const urlRes = await exec("gh", ["repo", "view", "--json", "url", "-q", ".url"], {
