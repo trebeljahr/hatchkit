@@ -388,10 +388,13 @@ async function runScaffoldSteps(
   // keypair, mirror the private key into the OS keychain. Unsupplied
   // keys land as plaintext CHANGE_ME_<KEY> placeholders.
   //
-  // Client-only scaffolds skip this entirely — dotenvx targets
-  // packages/server/.env.production, which doesn't exist post-prune.
-  // Client env vars are NEXT_PUBLIC_* (baked at build time + public by
-  // design) so there's nothing to encrypt anyway.
+  // Client-only scaffolds skip this step — dotenvx targets
+  // packages/server/.env.production, which doesn't exist post-prune,
+  // and the server-only auth/Mongo keys don't apply. A keypair may
+  // still get minted later if the user provisions a service that
+  // writes encrypted vars into packages/client/.env.production (e.g.
+  // Plausible's NEXT_PUBLIC_* tracker config); `runProvision` then
+  // mirrors that key into the keychain via `mirrorEnvKeysIfAbsent`.
   let dotenvx: DotenvxSeedResult | undefined;
   if (config.surfaces !== "client-only") {
     dotenvx = await seedDotenvxProduction(outputDir, config, config.envValues ?? {});
@@ -399,7 +402,9 @@ async function runScaffoldSteps(
       `dotenvx: ${dotenvx.encryptedKeys.length} encrypted, ${dotenvx.placeholderKeys.length} placeholders`,
     );
   } else {
-    modifications.push("client-only: skipped dotenvx seeding (no server-side secrets)");
+    modifications.push(
+      "client-only: skipped server-side dotenvx seed (provisioners may mint later)",
+    );
   }
 
   // Tailscale-served local-dev opt-in. The host plumbing is the user's

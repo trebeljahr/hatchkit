@@ -39,6 +39,7 @@ import {
   ensureS3,
   getConfigPath,
 } from "../config.js";
+import { mirrorEnvKeysIfAbsent } from "../deploy/keys.js";
 import {
   MANIFEST_FILENAME,
   MANIFEST_VERSION,
@@ -161,7 +162,14 @@ export type ProvisionedEvent =
         created: boolean;
         updated: boolean;
       };
-    };
+    }
+  /** Emitted when `runProvision` mirrors a freshly-minted dotenvx
+   *  private key from `.env.keys` into the OS keychain. Only fires
+   *  when the keychain was empty before this run, i.e. the provision
+   *  was responsible for introducing dotenvx to the project — typical
+   *  of a client-only scaffold whose first provisioner (Plausible,
+   *  GlitchTip, etc.) triggered the keypair generation. */
+  | { service: "dotenvxKey"; project: string; account: string };
 
 export interface ProvisionOptions {
   baseName: string;
@@ -657,6 +665,40 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
       const keys = writeDevEnv(devPath, devPairs);
       console.log(
         `    ${chalk.green("✓")} .env.development ${chalk.dim("(plaintext, gitignored)")}  ${chalk.dim(keys.join(", "))}`,
+      );
+    }
+  }
+
+  // Mirror DOTENV_PRIVATE_KEY_PRODUCTION into the OS keychain when one
+  // of the writes above minted a brand-new keypair on disk and the
+  // keychain has no entry for this project yet. Without this, a
+  // client-only scaffold that adds Plausible (which is the first
+  // dotenvx-touching code path for that surface mode) leaves the key
+  // on disk only — and the subsequent `pushProjectKeyToGh` step in
+  // `hatchkit create` fails with "No dotenvx key in keychain". Refuses
+  // to overwrite an existing keychain entry; that path is `hatchkit
+  // keys set`.
+  if (surfaces?.projectDir) {
+    try {
+      const mirror = await mirrorEnvKeysIfAbsent(opts.baseName, surfaces.projectDir);
+      if (mirror.mirrored && mirror.envKeysPath) {
+        console.log(
+          chalk.dim(
+            `  ${chalk.green("✓")} dotenvx key mirrored from ${relativeTo(mirror.envKeysPath)} into the OS keychain`,
+          ),
+        );
+        opts.onProvisioned?.({
+          service: "dotenvxKey",
+          project: opts.baseName,
+          account: mirror.account,
+        });
+      }
+    } catch (err) {
+      console.log(
+        chalk.yellow(
+          `  Couldn't mirror dotenvx key into the keychain: ${(err as Error).message}\n` +
+            `  Run \`hatchkit keys set ${opts.baseName}\` from the project directory to fix.`,
+        ),
       );
     }
   }

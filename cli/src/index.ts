@@ -664,6 +664,9 @@ function recordProvisionedEvent(ledger: RunLedger, event: ProvisionedEvent): voi
       type: event.dnsRecord.type,
     });
   }
+  if (event.service === "dotenvxKey") {
+    ledger.record({ kind: "keychain", account: event.account });
+  }
   if (event.service === "email") {
     if (event.destinationCreatedThisRun) {
       ledger.record({

@@ -377,6 +377,53 @@ export function locateEnvProductionFile(projectDir: string): string | undefined 
   return locateDotenvxFile(projectDir, ".env.production");
 }
 
+export interface MirrorEnvKeysResult {
+  /** True iff this call wrote a new value into the keychain. */
+  mirrored: boolean;
+  /** Why we didn't mirror, when `mirrored` is false. */
+  reason?: "already-set" | "no-env-keys" | "invalid-key";
+  /** `.env.keys` we read from, when one was found. */
+  envKeysPath?: string;
+  /** Keychain account name (always populated). */
+  account: string;
+}
+
+/** Idempotently copy `DOTENV_PRIVATE_KEY_PRODUCTION` from the project's
+ *  on-disk `.env.keys` into the OS keychain — but only when the
+ *  keychain currently has no entry for this project.
+ *
+ *  Used by `runProvision`: a provisioner that encrypts values into
+ *  `.env.production` (e.g. Plausible on a client-only project) mints
+ *  the keypair on disk as a side effect, but never touches the
+ *  keychain. Without this mirror, the subsequent `pushProjectKeyToGh`
+ *  / Coolify env push fails with "No dotenvx key in keychain" even
+ *  though the key sits in `.env.keys`.
+ *
+ *  Refuses to overwrite an existing keychain entry — the keychain copy
+ *  is canonical (see file header) and may be deliberately ahead of a
+ *  stale disk file after `dotenvx rotate`. `hatchkit keys set` is the
+ *  explicit path for that case. */
+export async function mirrorEnvKeysIfAbsent(
+  projectName: string,
+  projectDir: string,
+): Promise<MirrorEnvKeysResult> {
+  const account = SECRET_KEYS.dotenvxPrivateKey(projectName);
+  const existing = await getSecret(account);
+  if (existing) {
+    return { mirrored: false, reason: "already-set", account };
+  }
+  const envKeysPath = locateEnvKeysFile(projectDir);
+  if (!envKeysPath) {
+    return { mirrored: false, reason: "no-env-keys", account };
+  }
+  const value = parsePrivateKeyValue(readFileSync(envKeysPath, "utf-8"));
+  if (!value || !isPlausiblePrivateKey(value)) {
+    return { mirrored: false, reason: "invalid-key", envKeysPath, account };
+  }
+  await setSecret(account, value);
+  return { mirrored: true, envKeysPath, account };
+}
+
 function locateDotenvxFile(projectDir: string, name: string): string | undefined {
   const candidates = [
     join(projectDir, "packages/server", name),
