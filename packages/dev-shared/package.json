@@ -1,6 +1,6 @@
 {
   "name": "@hatchkit/dev-shared",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Shared runtime utilities for hatchkit's local-dev integration — Caddy fragment writer, Tailscale probes, paths. Consumed by the CLI and the @hatchkit/dev-plugin-{vite,next} packages.",
   "type": "module",
   "main": "./dist/index.js",
