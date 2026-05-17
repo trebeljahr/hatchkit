@@ -71,6 +71,15 @@ export const SECRET_KEYS = {
   plausibleApiKey: "plausible:api-key",
   plausibleSiteDomain: (name: string) => `plausible:${name}:site-domain`,
   resendApiKey: "resend:api-key",
+  /** Listmonk API user token. The API user *name* lives in meta JSON
+   *  alongside the URL; only the bearer token belongs in the keychain.
+   *  Auth header format is `Authorization: token <api_user>:<token>`. */
+  listmonkApiToken: "listmonk:api-token",
+  /** AWS access key id + secret for the IAM user hatchkit uses to
+   *  drive SES (CreateEmailIdentity + Send*) and derive SMTP relay
+   *  credentials. Region lives in meta JSON. */
+  sesAccessKeyId: "ses:access-key-id",
+  sesSecretAccessKey: "ses:secret-access-key",
   googleSearchConsoleClientId: "google-search-console:client-id",
   googleSearchConsoleClientSecret: "google-search-console:client-secret",
   googleSearchConsoleRefreshToken: "google-search-console:refresh-token",

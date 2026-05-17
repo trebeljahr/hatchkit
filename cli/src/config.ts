@@ -275,6 +275,24 @@ export interface ResendMeta extends ProviderStatus {
   defaultRegion?: string;
 }
 
+export interface ListmonkMeta extends ProviderStatus {
+  /** Listmonk instance base URL — e.g. `https://newsletter.example.com`.
+   *  Stored without a trailing slash. */
+  url: string;
+  /** API user *name* — created via the admin UI under Admin → Users.
+   *  Not a secret on its own; the matching token is what goes in the
+   *  keychain (`listmonk:api-token`). */
+  apiUser: string;
+}
+
+export interface SesMeta extends ProviderStatus {
+  /** AWS region the SES verified identities live in. Picked at config
+   *  time and reused across every project — moving regions means
+   *  re-verifying every sending identity, so this is intentionally
+   *  global, not per-project. */
+  region: string;
+}
+
 export interface GoogleSearchConsoleMeta extends ProviderStatus {
   /** Scopes granted to the stored refresh token. Non-sensitive; useful
    *  in status/doctor output when a user authorized only one API. */
@@ -347,6 +365,15 @@ export interface PlausibleConfig extends PlausibleMeta {
 export interface ResendConfig extends ResendMeta {
   apiKey: string;
 }
+export interface ListmonkConfig extends ListmonkMeta {
+  /** Bearer token paired with `apiUser` for the Listmonk Authorization
+   *  header: `Authorization: token <apiUser>:<apiToken>`. */
+  apiToken: string;
+}
+export interface SesConfig extends SesMeta {
+  accessKeyId: string;
+  secretAccessKey: string;
+}
 export interface GoogleSearchConsoleConfig extends GoogleSearchConsoleMeta {
   clientId: string;
   clientSecret?: string;
@@ -389,6 +416,8 @@ export interface CliConfig {
     openpanel?: OpenpanelMeta;
     plausible?: PlausibleMeta;
     resend?: ResendMeta;
+    listmonk?: ListmonkMeta;
+    ses?: SesMeta;
     googleSearchConsole?: GoogleSearchConsoleMeta;
     stripe?: StripeMeta;
     ghcr?: GhcrMeta;
@@ -1522,6 +1551,96 @@ export async function getResendConfig(): Promise<ResendConfig | null> {
 }
 
 // ---------------------------------------------------------------------------
+// Provider: Listmonk (self-hosted mailing-list manager)
+//
+// Two-piece auth: an API *user name* (created manually via Admin → Users
+// in the Listmonk UI) plus that user's token. Only the token is secret.
+// The first admin account + the first API user are NOT API-creatable —
+// they must be set up in the admin UI before this flow runs. We surface
+// that limitation inline in the prompt copy.
+// ---------------------------------------------------------------------------
+
+export async function ensureListmonk(): Promise<ListmonkConfig> {
+  const existing = store.get("providers.listmonk") as ListmonkMeta | undefined;
+  const existingToken = await getSecret(SECRET_KEYS.listmonkApiToken);
+
+  if (existing?.status === "configured" && existingToken && existing.apiUser && existing.url) {
+    return { ...existing, apiToken: existingToken };
+  }
+
+  console.log(chalk.yellow("\n  Listmonk is not configured yet. Let's set it up."));
+  console.log(
+    chalk.dim(
+      "  Listmonk requires a one-time human step: open the admin UI, complete the\n" +
+        "  onboarding wizard, then go to Admin → Users → ‘New API user’. Paste the\n" +
+        "  API user name + the generated token below.",
+    ),
+  );
+
+  const url = normalizeListmonkUrlInput(
+    await input({
+      message: "Listmonk URL (e.g. https://newsletter.example.com):",
+      default: existing?.url,
+      validate: (v) => validateUrl(v.trim()),
+    }),
+  );
+
+  const apiUser = (
+    await input({
+      message: "Listmonk API user name (created in Admin → Users):",
+      default: existing?.apiUser,
+      validate: validateRequired,
+    })
+  ).trim();
+
+  // Loop on the token until GET /api/lists answers 200 — wrong tokens
+  // are easy to paste and re-running the whole `config add` to retry is
+  // rude. Same pattern as `ensureCoolify`.
+  const { probeListmonk } = await import("./provision/listmonk.js");
+  let apiToken = "";
+  for (;;) {
+    apiToken = await confirmPastedSecret("Listmonk API user token");
+    const spinner = ora("Verifying Listmonk credentials...").start();
+    try {
+      const { listCount } = await probeListmonk({ url, apiUser, apiToken });
+      spinner.succeed(`Listmonk reachable (${listCount} list(s) visible)`);
+      break;
+    } catch (err) {
+      spinner.fail("Could not authenticate against Listmonk");
+      console.log(chalk.dim(`  ${err instanceof Error ? err.message : String(err)}`));
+      const retry = await confirm({
+        message: "Try a different API user / token?",
+        default: true,
+      });
+      if (!retry) throw err;
+    }
+  }
+
+  const meta: ListmonkMeta = {
+    status: "configured",
+    url,
+    apiUser,
+    lastVerified: new Date().toISOString(),
+  };
+  store.set("providers.listmonk", meta);
+  await setSecret(SECRET_KEYS.listmonkApiToken, apiToken);
+  console.log(chalk.green("  ✓ Listmonk configured"));
+  return { ...meta, apiToken };
+}
+
+export async function getListmonkConfig(): Promise<ListmonkConfig | null> {
+  const meta = store.get("providers.listmonk") as ListmonkMeta | undefined;
+  if (!meta || meta.status !== "configured") return null;
+  const apiToken = await getSecret(SECRET_KEYS.listmonkApiToken);
+  if (!apiToken) return null;
+  return { ...meta, apiToken };
+}
+
+function normalizeListmonkUrlInput(raw: string): string {
+  return raw.trim().replace(/\/+$/, "");
+}
+
+// ---------------------------------------------------------------------------
 // Provider: Google Search Console
 // ---------------------------------------------------------------------------
 
@@ -2429,6 +2548,7 @@ type ReconfigurableProvider =
   | "openpanel"
   | "plausible"
   | "resend"
+  | "listmonk"
   | "search-console"
   | "stripe"
   | "ghcr"
@@ -2472,6 +2592,9 @@ export async function reconfigureProvider(name: ReconfigurableProvider): Promise
   } else if (name === "resend") {
     await wipeProvider("providers.resend", [SECRET_KEYS.resendApiKey]);
     await ensureResend();
+  } else if (name === "listmonk") {
+    await wipeProvider("providers.listmonk", [SECRET_KEYS.listmonkApiToken]);
+    await ensureListmonk();
   } else if (name === "search-console") {
     await wipeProvider("providers.googleSearchConsole", [
       SECRET_KEYS.googleSearchConsoleClientId,
