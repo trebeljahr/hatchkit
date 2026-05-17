@@ -20,6 +20,7 @@ import type { ProvisionService } from "./provision/index.js";
 import { CoolifyApi, type CoolifyServer } from "./utils/coolify-api.js";
 import { discoverPublicIps } from "./utils/coolify-server-ips.js";
 import { multiselect } from "./utils/multiselect.js";
+import { type Step, runSteps } from "./utils/step-runner.js";
 import {
   parseDomain,
   validateCoolifyDescription,
@@ -245,25 +246,6 @@ export interface ProjectConfig {
 // ---------------------------------------------------------------------------
 // Main prompt flow
 // ---------------------------------------------------------------------------
-
-/** If a preset value is provided, use it. In non-interactive mode,
- *  fall back to the provided default (or throw if none). Otherwise
- *  run the interactive prompt. */
-async function presetOrPrompt<T>(
-  preset: T | undefined,
-  nonInteractive: boolean,
-  prompt: () => Promise<T>,
-  fallback?: T,
-): Promise<T> {
-  if (preset !== undefined) return preset;
-  if (nonInteractive) {
-    if (fallback !== undefined) return fallback;
-    throw new Error(
-      "Required value missing in --config / flags and no default is available. Re-run without --yes to be prompted.",
-    );
-  }
-  return prompt();
-}
 
 const ANALYTICS_PROVISION_SERVICES: readonly AnalyticsProvider[] = [
   "glitchtip",
@@ -510,598 +492,642 @@ export interface CollectOptions {
 export async function collectProjectConfig(options: CollectOptions): Promise<ProjectConfig> {
   const presets = options.presets ?? {};
   const nonInteractive = options.nonInteractive ?? false;
+  const dryRun = options.dryRun || false;
 
   if (!nonInteractive) {
     console.log(chalk.bold("\n  ── New Project ─────────────────────────────────────────────\n"));
   }
 
-  // Project basics
-  const name = await presetOrPrompt(presets.name, nonInteractive, () =>
-    input({ message: "Project name:", validate: (v) => validateProjectName(v) }),
-  );
-  // Validate preset name since we skipped the prompt's built-in check.
-  const nameErr = validateProjectName(name);
-  if (nameErr !== true) throw new Error(`--name invalid: ${nameErr}`);
-
-  // One-line description. Written to package.json and used as the
-  // Coolify project + application description. Empty is a valid choice
-  // — Coolify falls back to its built-in blurb and we leave package.json
-  // without a description field.
-  const description = (
-    await presetOrPrompt(
-      presets.description,
-      nonInteractive,
-      () =>
-        input({
-          message: "Description (one-liner for package.json + Coolify, optional):",
-          validate: validateCoolifyDescription,
-        }),
-      "",
-    )
-  ).trim();
-
-  // Suggest `<name>.<root-domain>`. The root domain is captured once in
-  // `hatchkit setup` so subsequent projects don't keep re-typing it.
-  // Interactive flow lazy-prompts when missing; non-interactive reads
-  // whatever's already stored and falls back to a generic placeholder.
-  let rootDomain: string | null = null;
-  if (!presets.domain) {
-    rootDomain = nonInteractive ? getDefaultRootDomain() : await ensureDefaultRootDomain();
-  }
-  const suggestedDomain = rootDomain ? `${name}.${rootDomain}` : `${name}.example.com`;
-  const domain = await presetOrPrompt(
-    presets.domain,
-    nonInteractive,
-    () =>
-      input({
-        message: "Domain:",
-        default: suggestedDomain,
-        validate: (v) => validateDomain(v),
-      }),
-    suggestedDomain,
-  );
-  const domainErr = validateDomain(domain);
-  if (domainErr !== true) throw new Error(`--domain invalid: ${domainErr}`);
-
-  const { baseDomain, subdomain } = parseDomain(domain);
-
-  // Surface — what kind of project this is. Same four-way choice that
-  // `hatchkit adopt` exposes. The default is "fullstack" (the
-  // full-stack starter layout); the narrower modes prune the unused
-  // package and adjust docker-compose / Coolify routing accordingly.
-  const surfaces = await presetOrPrompt<Surface>(
-    presets.surfaces,
-    nonInteractive,
-    () =>
-      select<Surface>({
-        message: "What kind of project is this?",
-        choices: [
-          { name: "Full-stack (single package, server runtime)", value: "fullstack" },
-          { name: "Split server + client packages (server runtime)", value: "split" },
-          { name: "Backend only (API / worker, no UI bundle)", value: "backend" },
-          { name: "Static (gh-pages / SPA — no server runtime)", value: "static" },
-        ],
-      }),
-    "fullstack",
-  );
-
-  // Deployment mode — where this project ultimately runs. The
-  // `gh-pages` option is *only* offered for `static` surfaces.
-  // Pages has no runtime, so server-bearing projects can't deploy
-  // there; we hide the option rather than offering it and then
-  // having to refuse the choice mid-flow.
-  const deploymentMode = await askDeploymentMode(surfaces, presets.deploymentMode, nonInteractive);
-
-  // gh-pages takes a different path than the Coolify pipeline: no
-  // server provisioning, no Mongo, no features. Collect just the
-  // basics, then fall through to the same review-and-edit loop the
-  // Coolify path uses (with Coolify-specific groups hidden).
-  if (deploymentMode === "gh-pages") {
-    let pagesConfig = await collectPagesProjectConfig({
-      name,
-      domain,
-      baseDomain,
-      subdomain,
-      surfaces,
-      deploymentMode,
-      presets,
-      nonInteractive,
-      dryRun: options.dryRun || false,
-    });
-    if (!nonInteractive) {
-      pagesConfig = await reviewAndEditLoop(pagesConfig);
-    }
-    return pagesConfig;
+  // ── Non-interactive path: presets + defaults, no prompts ───────────
+  if (nonInteractive) {
+    return collectProjectConfigNonInteractive(options);
   }
 
-  // Deploy target. Non-interactive default is "new" rather than
-  // "existing": "existing" has no sensible default (it needs a real
-  // serverId + serverIp that only make sense with a configured
-  // Coolify), while "new" provisions a Hetzner server with defaults
-  // (cpx21, nbg1). Users who want existing pass `--deploy-target
-  // existing` + serverId/serverIp via --config.
-  const deployTarget = await presetOrPrompt(
-    presets.deployTarget,
-    nonInteractive,
-    selectDeployTarget,
-    "new",
-  );
+  // ── Interactive path: sequential steps with undo ───────────────────
+  // Each step prompts the user and returns updated config. Ctrl+C
+  // inside any step goes back to the previous step. After all steps,
+  // the existing review-and-edit loop lets the user tweak anything.
 
-  let serverId: number | undefined;
-  let serverUuid: string | undefined;
-  let serverIp: string | undefined;
-  let serverIpv4: string | undefined;
-  let serverIpv6: string | undefined;
-  let serverSize: string | undefined;
-  let serverLocation: string | undefined;
+  const initial: ProjectConfig = {
+    name: presets.name ?? "",
+    description: presets.description,
+    domain: presets.domain ?? "",
+    baseDomain: "",
+    subdomain: "",
+    surfaces: presets.surfaces ?? "fullstack",
+    deployTarget: presets.deployTarget ?? "new",
+    serverId: presets.serverId,
+    serverUuid: presets.serverUuid,
+    serverIp: presets.serverIp,
+    serverIpv4: presets.serverIpv4,
+    serverIpv6: presets.serverIpv6,
+    serverSize: presets.serverSize ?? "cpx21",
+    serverLocation: presets.serverLocation ?? "nbg1",
+    features: presets.features ?? [],
+    analyticsProviders: presets.analyticsProviders,
+    provisionServices: presets.provisionServices ?? [],
+    s3Provider: presets.s3Provider ?? "none",
+    s3ExistingEndpoint: presets.s3ExistingEndpoint,
+    s3ExistingBucket: presets.s3ExistingBucket,
+    s3ExistingAccessKey: presets.s3ExistingAccessKey,
+    s3ExistingSecretKey: presets.s3ExistingSecretKey,
+    s3ExistingRegion: presets.s3ExistingRegion,
+    mlServices: presets.mlServices ?? [],
+    forceRedeployMl: presets.forceRedeployMl ?? [],
+    mongodbProvider: presets.mongodbProvider ?? "coolify",
+    gpuPlatforms: presets.gpuPlatforms,
+    customHfModelId: presets.customHfModelId,
+    customHfGpuType: presets.customHfGpuType,
+    scaffoldRepo: presets.scaffoldRepo ?? true,
+    createGithubRepo: presets.createGithubRepo ?? true,
+    githubRepoVisibility: presets.githubRepoVisibility ?? "public",
+    installDeps: presets.installDeps ?? true,
+    deploymentMode: presets.deploymentMode ?? "coolify",
+    runDeployment: presets.runDeployment ?? !dryRun,
+    envValues: presets.envValues,
+    localDev: options.forceNoLocalDev ? undefined : presets.localDev,
+    dryRun,
+  };
 
-  if (deployTarget === "existing") {
-    if (presets.serverId !== undefined && presets.serverIp !== undefined) {
-      serverId = presets.serverId;
-      serverIp = presets.serverIp;
-      // Trust presets when supplied: if the operator passes
-      // serverIp via --config, treat it as the validated public
-      // IPv4 (it has to be — they're driving Terraform with it).
-      // Optional preset overrides keep the IPv6 / uuid path open.
-      serverUuid = presets.serverUuid;
-      serverIpv4 = presets.serverIpv4 ?? presets.serverIp;
-      serverIpv6 = presets.serverIpv6;
-    } else if (nonInteractive) {
-      throw new Error(
-        "--deploy-target existing requires serverId + serverIp in --config (or remove --yes to pick interactively).",
-      );
-    } else {
-      const server = await selectExistingServer();
-      serverId = server.id;
-      serverUuid = server.uuid;
-      serverIp = server.ip;
-      serverIpv4 = server.ipv4;
-      serverIpv6 = server.ipv6;
-    }
-  } else {
-    serverSize = await presetOrPrompt(
-      presets.serverSize,
-      nonInteractive,
-      () =>
-        select({
+  const steps: Step<ProjectConfig>[] = [
+    {
+      name: "Project name",
+      skip: () => !!presets.name,
+      run: async (c) => {
+        const name = (
+          await input({
+            message: "Project name:",
+            default: c.name || undefined,
+            validate: validateProjectName,
+          })
+        ).trim();
+        const rootDomain = getDefaultRootDomain();
+        const domain =
+          !c.domain || (rootDomain && c.domain === `${c.name}.${rootDomain}`)
+            ? rootDomain ? `${name}.${rootDomain}` : c.domain
+            : c.domain;
+        const parsed = parseDomain(domain);
+        return { ...c, name, domain, baseDomain: parsed.baseDomain, subdomain: parsed.subdomain };
+      },
+    },
+    {
+      name: "Description",
+      skip: () => presets.description !== undefined,
+      run: async (c) => {
+        const description = (
+          await input({
+            message: "Description (one-liner for package.json + Coolify, optional):",
+            default: c.description ?? "",
+            validate: validateCoolifyDescription,
+          })
+        ).trim();
+        return { ...c, description: description || undefined };
+      },
+    },
+    {
+      name: "Domain",
+      skip: () => presets.domain !== undefined,
+      run: async (c) => {
+        const domain = await input({
+          message: "Domain:",
+          default: c.domain || (getDefaultRootDomain() ? `${c.name}.${getDefaultRootDomain()}` : undefined),
+          validate: (v) => validateDomain(v),
+        });
+        const parsed = parseDomain(domain);
+        return {
+          ...c,
+          domain,
+          baseDomain: parsed.baseDomain,
+          subdomain: parsed.subdomain,
+          envValues: {
+            ...c.envValues,
+            FRONTEND_URL: `https://${domain}`,
+            BETTER_AUTH_URL: `https://${domain}`,
+          },
+        };
+      },
+    },
+    {
+      name: "Project type",
+      skip: () => presets.surfaces !== undefined,
+      run: async (c) => {
+        const surfaces = await select<Surface>({
+          message: "What kind of project is this?",
+          default: c.surfaces,
+          choices: [
+            { name: "Full-stack (single package, server runtime)", value: "fullstack" },
+            { name: "Split server + client packages (server runtime)", value: "split" },
+            { name: "Backend only (API / worker, no UI bundle)", value: "backend" },
+            { name: "Static (gh-pages / SPA — no server runtime)", value: "static" },
+          ],
+        });
+        return { ...c, surfaces };
+      },
+    },
+    {
+      name: "Deployment mode",
+      skip: () => presets.deploymentMode !== undefined,
+      run: async (c) => {
+        const mode = await askDeploymentMode(c.surfaces, undefined, false);
+        if (mode === "gh-pages") {
+          return {
+            ...c,
+            deploymentMode: mode,
+            runDeployment: !dryRun,
+            features: [],
+            s3Provider: "none" as const,
+            mlServices: [],
+            forceRedeployMl: [],
+            mongodbProvider: "external" as const,
+          };
+        }
+        return {
+          ...c,
+          deploymentMode: mode,
+          runDeployment: mode === "scaffold-only" ? false : c.runDeployment,
+        };
+      },
+    },
+    {
+      name: "Deploy target",
+      skip: (c) => c.deploymentMode !== "coolify" || presets.deployTarget !== undefined,
+      run: async (c) => {
+        const target = await selectDeployTarget();
+        if (target === "existing") {
+          const server = await selectExistingServer();
+          return {
+            ...c,
+            deployTarget: "existing" as const,
+            serverId: server.id,
+            serverUuid: server.uuid,
+            serverIp: server.ip,
+            serverIpv4: server.ipv4,
+            serverIpv6: server.ipv6,
+            serverSize: undefined,
+            serverLocation: undefined,
+          };
+        }
+        return { ...c, deployTarget: "new" as const };
+      },
+    },
+    {
+      name: "Server size",
+      skip: (c) =>
+        c.deploymentMode !== "coolify" ||
+        c.deployTarget !== "new" ||
+        presets.serverSize !== undefined,
+      run: async (c) => {
+        const serverSize = await select({
           message: "Server size:",
+          default: c.serverSize ?? "cpx21",
           choices: [
             { name: "cpx21 — 3 vCPU / 4 GB (€4.35/mo)", value: "cpx21" },
             { name: "cpx31 — 4 vCPU / 8 GB (€8.10/mo)", value: "cpx31" },
             { name: "cpx41 — 8 vCPU / 16 GB (€15.90/mo)", value: "cpx41" },
           ],
-        }),
-      "cpx21",
-    );
-    serverLocation = await presetOrPrompt(
-      presets.serverLocation,
-      nonInteractive,
-      () =>
-        select({
+        });
+        return { ...c, serverSize };
+      },
+    },
+    {
+      name: "Server location",
+      skip: (c) =>
+        c.deploymentMode !== "coolify" ||
+        c.deployTarget !== "new" ||
+        presets.serverLocation !== undefined,
+      run: async (c) => {
+        const serverLocation = await select({
           message: "Server location:",
+          default: c.serverLocation ?? "nbg1",
           choices: [
             { name: "Nuremberg (nbg1) — Central Europe", value: "nbg1" },
             { name: "Falkenstein (fsn1) — Eastern Germany", value: "fsn1" },
             { name: "Helsinki (hel1) — Northern Europe", value: "hel1" },
           ],
-        }),
-      "nbg1",
-    );
-  }
-
-  // Features
-  const features = await presetOrPrompt(
-    presets.features,
-    nonInteractive,
-    () =>
-      multiselect<Feature>({
-        message: "Features:",
-        choices: [
-          { name: "WebSocket/realtime (includes Redis)", value: "websocket" },
-          { name: "Stripe billing", value: "stripe" },
-          { name: "S3 file storage", value: "s3" },
-          { name: "Analytics / observability providers", value: "analytics" },
-          { name: "Desktop app (Electron + itch.io release)", value: "desktop" },
-          { name: "Mobile app (Capacitor / iOS + Android)", value: "mobile" },
-        ],
-      }),
-    [],
-  );
-
-  let analyticsProviders: AnalyticsProvider[] | undefined;
-  if (features.includes("analytics")) {
-    analyticsProviders = await presetOrPrompt(
-      presets.analyticsProviders,
-      nonInteractive,
-      () =>
-        multiselect<AnalyticsProvider>({
+        });
+        return { ...c, serverLocation };
+      },
+    },
+    {
+      name: "Features",
+      skip: (c) => c.deploymentMode === "gh-pages" || presets.features !== undefined,
+      run: async (c) => {
+        const features = await multiselect<Feature>({
+          message: "Features:",
+          choices: [
+            {
+              name: "WebSocket/realtime (includes Redis)",
+              value: "websocket",
+              checked: c.features.includes("websocket"),
+            },
+            { name: "Stripe billing", value: "stripe", checked: c.features.includes("stripe") },
+            { name: "S3 file storage", value: "s3", checked: c.features.includes("s3") },
+            {
+              name: "Analytics / observability providers",
+              value: "analytics",
+              checked: c.features.includes("analytics"),
+            },
+            {
+              name: "Desktop app (Electron + itch.io release)",
+              value: "desktop",
+              checked: c.features.includes("desktop"),
+            },
+            {
+              name: "Mobile app (Capacitor / iOS + Android)",
+              value: "mobile",
+              checked: c.features.includes("mobile"),
+            },
+          ],
+        });
+        return { ...c, features };
+      },
+    },
+    {
+      name: "Analytics providers",
+      skip: (c) => !c.features.includes("analytics") || presets.analyticsProviders !== undefined,
+      run: async (c) => {
+        const analyticsProviders = await multiselect<AnalyticsProvider>({
           message: "Analytics / observability providers to provision now:",
           choices: [
-            { name: "GlitchTip (error tracking)", value: "glitchtip", checked: true },
-            { name: "OpenPanel (product analytics)", value: "openpanel", checked: false },
-            { name: "Plausible (web analytics)", value: "plausible", checked: false },
+            {
+              name: "GlitchTip (error tracking)",
+              value: "glitchtip",
+              checked: c.analyticsProviders?.includes("glitchtip") ?? true,
+            },
+            {
+              name: "OpenPanel (product analytics)",
+              value: "openpanel",
+              checked: c.analyticsProviders?.includes("openpanel") ?? false,
+            },
+            {
+              name: "Plausible (web analytics)",
+              value: "plausible",
+              checked: c.analyticsProviders?.includes("plausible") ?? false,
+            },
           ],
-        }),
-      ["glitchtip"],
-    );
-  }
-
-  const provisionServices = await collectExtraProvisionServices({
-    preset: presets.provisionServices,
-    nonInteractive,
-    surfaces,
-    analyticsProviders,
-  });
-  if (!analyticsProviders) {
-    const fromServices = analyticsProvidersFromServices(provisionServices);
-    analyticsProviders = fromServices.length > 0 ? fromServices : undefined;
-  }
-
-  // S3 provider (if selected)
-  let s3Provider: S3Provider = "none";
-  let s3ExistingEndpoint: string | undefined;
-  let s3ExistingBucket: string | undefined;
-  let s3ExistingAccessKey: string | undefined;
-  let s3ExistingSecretKey: string | undefined;
-  let s3ExistingRegion: string | undefined;
-
-  if (features.includes("s3")) {
-    s3Provider = await presetOrPrompt(
-      presets.s3Provider,
-      nonInteractive,
-      () =>
-        select<S3Provider>({
+        });
+        const provisionServices = uniqueProvisionServices([
+          ...c.provisionServices.filter((s) => !isAnalyticsProvisionService(s)),
+          ...analyticsProviders,
+        ]);
+        return { ...c, analyticsProviders, provisionServices };
+      },
+    },
+    {
+      name: "Extra services",
+      skip: () => presets.provisionServices !== undefined,
+      run: async (c) => {
+        const extra = await collectExtraProvisionServices({
+          preset: undefined,
+          nonInteractive: false,
+          surfaces: c.surfaces,
+          analyticsProviders: c.analyticsProviders,
+        });
+        const merged = uniqueProvisionServices([...(c.analyticsProviders ?? []), ...extra]);
+        return { ...c, provisionServices: merged };
+      },
+    },
+    {
+      name: "S3 provider",
+      skip: (c) => !c.features.includes("s3") || presets.s3Provider !== undefined,
+      run: async (c) => {
+        const s3Provider = await select<S3Provider>({
           message: "S3 storage provider:",
+          default: c.s3Provider !== "none" ? c.s3Provider : undefined,
           choices: [
             { name: "Hetzner Object Storage", value: "hetzner" },
             { name: "Cloudflare R2 (zero egress)", value: "r2" },
             { name: "AWS S3", value: "aws" },
             { name: "Use existing bucket", value: "existing" },
           ],
-        }),
-      "hetzner",
-    );
-
-    if (s3Provider === "existing") {
-      // Existing-bucket credentials are never defaulted — these are
-      // secrets and infrastructure coords that must be explicit.
-      if (nonInteractive && (!presets.s3ExistingEndpoint || !presets.s3ExistingBucket)) {
-        throw new Error(
-          "--s3-provider existing requires s3ExistingEndpoint/Bucket/AccessKey/SecretKey/Region in --config.",
+        });
+        return { ...c, s3Provider };
+      },
+    },
+    {
+      name: "S3 bucket details",
+      skip: (c) => c.s3Provider !== "existing",
+      run: async (c) => {
+        const s3ExistingEndpoint = await input({
+          message: "S3 endpoint URL:",
+          default: c.s3ExistingEndpoint,
+        });
+        const s3ExistingBucket = await input({
+          message: "S3 bucket name:",
+          default: c.s3ExistingBucket,
+        });
+        const s3ExistingAccessKey = await input({
+          message: "S3 access key:",
+          default: c.s3ExistingAccessKey,
+        });
+        const s3ExistingSecretKey = await input({
+          message: "S3 secret key:",
+          default: c.s3ExistingSecretKey,
+        });
+        const s3ExistingRegion = await input({
+          message: "S3 region:",
+          default: c.s3ExistingRegion ?? "us-east-1",
+        });
+        return {
+          ...c,
+          s3ExistingEndpoint,
+          s3ExistingBucket,
+          s3ExistingAccessKey,
+          s3ExistingSecretKey,
+          s3ExistingRegion,
+        };
+      },
+    },
+    {
+      name: "ML services",
+      skip: (c) => c.deploymentMode === "gh-pages" || presets.mlServices !== undefined,
+      run: async (c) => {
+        const mlServices = await multiselect<MlService>({
+          message: "ML services:",
+          choices: [
+            {
+              name: "3D — SAM 3D Objects (Meta, single image → mesh; SOTA real-image textures)",
+              value: "3d-sam-objects",
+              checked: c.mlServices.includes("3d-sam-objects"),
+            },
+            {
+              name: "3D — SAM 3D Body (Meta, single image → posed human body; apparel/try-on)",
+              value: "3d-sam-body",
+              checked: c.mlServices.includes("3d-sam-body"),
+            },
+            {
+              name: "3D — Hunyuan3D 3.0 (Tencent, 8K PBR textures, open weights)",
+              value: "3d-hunyuan",
+              checked: c.mlServices.includes("3d-hunyuan"),
+            },
+            {
+              name: "3D — TRELLIS 2 (Microsoft, sparse-voxel geometry, strong topology)",
+              value: "3d-trellis",
+              checked: c.mlServices.includes("3d-trellis"),
+            },
+            {
+              name: "3D — TripoSR (legacy, fast but lower quality)",
+              value: "3d-extraction",
+              checked: c.mlServices.includes("3d-extraction"),
+            },
+            {
+              name: "Subtitle generation (audio/video → SRT)",
+              value: "subtitles",
+              checked: c.mlServices.includes("subtitles"),
+            },
+            {
+              name: "Image recognition",
+              value: "image-recognition",
+              checked: c.mlServices.includes("image-recognition"),
+            },
+            {
+              name: "Background removal",
+              value: "background-removal",
+              checked: c.mlServices.includes("background-removal"),
+            },
+            {
+              name: "Custom HuggingFace model",
+              value: "custom-hf",
+              checked: c.mlServices.includes("custom-hf"),
+            },
+          ],
+        });
+        return { ...c, mlServices };
+      },
+    },
+    {
+      name: "GPU platforms",
+      skip: (c) => {
+        if (c.mlServices.length === 0) return true;
+        const registry = getMlServices();
+        const needsDeploy = c.mlServices.filter(
+          (s) => !registry[s] || c.forceRedeployMl.includes(s),
         );
-      }
-      s3ExistingEndpoint = await presetOrPrompt(presets.s3ExistingEndpoint, nonInteractive, () =>
-        input({ message: "S3 endpoint URL:" }),
-      );
-      s3ExistingBucket = await presetOrPrompt(presets.s3ExistingBucket, nonInteractive, () =>
-        input({ message: "S3 bucket name:" }),
-      );
-      s3ExistingAccessKey = await presetOrPrompt(presets.s3ExistingAccessKey, nonInteractive, () =>
-        input({ message: "S3 access key:" }),
-      );
-      s3ExistingSecretKey = await presetOrPrompt(presets.s3ExistingSecretKey, nonInteractive, () =>
-        input({ message: "S3 secret key:" }),
-      );
-      s3ExistingRegion = await presetOrPrompt(
-        presets.s3ExistingRegion,
-        nonInteractive,
-        () => input({ message: "S3 region:", default: "us-east-1" }),
-        "us-east-1",
-      );
-    }
-  }
-
-  // ML services
-  const mlServices = await presetOrPrompt(
-    presets.mlServices,
-    nonInteractive,
-    () =>
-      multiselect<MlService>({
-        message: "ML services:",
-        choices: [
-          {
-            name: "3D — SAM 3D Objects (Meta, single image → mesh; SOTA real-image textures)",
-            value: "3d-sam-objects",
-          },
-          {
-            name: "3D — SAM 3D Body (Meta, single image → posed human body; apparel/try-on)",
-            value: "3d-sam-body",
-          },
-          {
-            name: "3D — Hunyuan3D 3.0 (Tencent, 8K PBR textures, open weights)",
-            value: "3d-hunyuan",
-          },
-          {
-            name: "3D — TRELLIS 2 (Microsoft, sparse-voxel geometry, strong topology)",
-            value: "3d-trellis",
-          },
-          {
-            name: "3D — TripoSR (legacy, fast but lower quality)",
-            value: "3d-extraction",
-          },
-          { name: "Subtitle generation (audio/video → SRT)", value: "subtitles" },
-          { name: "Image recognition", value: "image-recognition" },
-          { name: "Background removal", value: "background-removal" },
-          { name: "Custom HuggingFace model", value: "custom-hf" },
-        ],
-      }),
-    [],
-  );
-
-  let gpuPlatforms: GpuPlatform[] | undefined;
-  let customHfModelId: string | undefined;
-  let customHfGpuType: string | undefined;
-
-  const forceRedeploy = new Set<MlService>();
-  if (mlServices.length > 0) {
-    // Check for existing services in registry
-    const registry = getMlServices();
-    const reusable = mlServices.filter((s) => registry[s]);
-    if (reusable.length > 0) {
-      console.log(chalk.dim(`\n  Found existing ML services in registry:`));
-      for (const svc of reusable) {
-        const entry = registry[svc];
-        console.log(
-          chalk.dim(
-            `    ${svc}: ${entry.endpoint} (${entry.platform}, deployed ${entry.deployedAt})`,
-          ),
+        return needsDeploy.length === 0;
+      },
+      run: async (c) => {
+        const gpuPlatforms = await multiselect<GpuPlatform>({
+          message: "GPU platforms to deploy to (multi-select — first becomes default ML_BACKEND):",
+          choices: [
+            {
+              name: "Modal (recommended — best DX, $30/mo free, 2-4s cold starts)",
+              value: "modal",
+              checked: c.gpuPlatforms?.includes("modal") ?? true,
+            },
+            {
+              name: "RunPod Serverless (cheapest, Docker-native)",
+              value: "runpod",
+              checked: c.gpuPlatforms?.includes("runpod") ?? false,
+            },
+            {
+              name: "HuggingFace Inference Endpoints (simplest for HF models)",
+              value: "hf",
+              checked: c.gpuPlatforms?.includes("hf") ?? false,
+            },
+            {
+              name: "Replicate (via Cog, good for sharing)",
+              value: "replicate",
+              checked: c.gpuPlatforms?.includes("replicate") ?? false,
+            },
+          ],
+          required: true,
+        });
+        return { ...c, gpuPlatforms };
+      },
+    },
+    {
+      name: "Scaffold / GitHub / install",
+      run: async (c) => {
+        const scaffoldRepo = await confirm({
+          message: "Scaffold app repo?",
+          default: c.scaffoldRepo,
+        });
+        let createGithubRepo = false;
+        let githubRepoVisibility: GitHubRepoVisibility | undefined;
+        let installDeps = false;
+        if (scaffoldRepo) {
+          createGithubRepo = await confirm({
+            message: "Create GitHub remote repo?",
+            default: c.createGithubRepo,
+          });
+          if (createGithubRepo) {
+            githubRepoVisibility = await promptGithubRepoVisibility(
+              "GitHub repo visibility:",
+              c.githubRepoVisibility,
+            );
+          }
+          installDeps = await confirm({
+            message: "Run pnpm install after scaffolding?",
+            default: c.installDeps,
+          });
+        }
+        return { ...c, scaffoldRepo, createGithubRepo, githubRepoVisibility, installDeps };
+      },
+    },
+    {
+      name: "Local dev URL",
+      skip: () => !!options.forceNoLocalDev || presets.localDev !== undefined,
+      run: async (c) => {
+        const { localDevDomainFromProjectDomain, localDevUrl, sanitiseSlug } = await import(
+          "@hatchkit/dev-shared"
         );
-      }
-      // Let the user force re-deploy — covers stale entries (service
-      // was deleted upstream) or platform changes.
-      const toRedeploy = await multiselect<MlService>({
-        message: "Redeploy any of these (leave empty to reuse all)?",
-        choices: reusable.map((s) => ({ name: s, value: s })),
-      });
-      for (const s of toRedeploy) forceRedeploy.add(s);
-    }
+        const localDevDomain = localDevDomainFromProjectDomain(c.domain) ?? undefined;
+        const enabled = await confirm({
+          message: `Enable Tailscale dev URL (${localDevUrl("<slug>", localDevDomain)})?`,
+          default: !!c.localDev,
+        });
+        if (!enabled) return { ...c, localDev: undefined };
+        const defaultSlug = c.localDev?.slug || sanitiseSlug(c.name);
+        const slug = await input({
+          message: "Slug (subdomain) for this project:",
+          default: defaultSlug,
+          validate: (v: string) => {
+            const sanitised = sanitiseSlug(v);
+            if (sanitised.length === 0)
+              return "Slug must contain at least one [a-z0-9-] character.";
+            if (sanitised !== v) return `Use only [a-z0-9-]. Did you mean "${sanitised}"?`;
+            return true;
+          },
+        });
+        return { ...c, localDev: { slug: sanitiseSlug(slug), domain: localDevDomain } };
+      },
+    },
+    {
+      name: "Deploy now",
+      skip: (c) =>
+        c.deploymentMode === "scaffold-only" || c.deploymentMode === "gh-pages" || dryRun,
+      run: async (c) => {
+        const runDeployment = await confirm({
+          message: "Run deployment now?",
+          default: c.runDeployment,
+        });
+        return { ...c, runDeployment };
+      },
+    },
+    {
+      name: "MongoDB provider",
+      skip: (c) => c.surfaces === "static" || c.deploymentMode === "gh-pages",
+      run: async (c) => {
+        const mongodbProvider = await select<"coolify" | "external">({
+          message: "Prod MongoDB:",
+          default: c.mongodbProvider ?? (c.runDeployment ? "coolify" : "external"),
+          choices: [
+            { name: "Provision a dedicated container on Coolify (recommended)", value: "coolify" },
+            { name: "I'll provide a URI (Atlas, self-hosted, …)", value: "external" },
+          ],
+        });
+        return { ...c, mongodbProvider };
+      },
+    },
+  ];
 
-    const needsDeploy = mlServices.filter((s) => !registry[s] || forceRedeploy.has(s));
-    if (needsDeploy.length > 0) {
-      gpuPlatforms = await presetOrPrompt(
-        presets.gpuPlatforms,
-        nonInteractive,
-        () =>
-          multiselect<GpuPlatform>({
-            message:
-              "GPU platforms to deploy to (multi-select — first becomes default ML_BACKEND):",
-            choices: [
-              {
-                name: "Modal (recommended — best DX, $30/mo free, 2-4s cold starts)",
-                value: "modal",
-                checked: true,
-              },
-              { name: "RunPod Serverless (cheapest, Docker-native)", value: "runpod" },
-              { name: "HuggingFace Inference Endpoints (simplest for HF models)", value: "hf" },
-              { name: "Replicate (via Cog, good for sharing)", value: "replicate" },
-            ],
-            required: true,
-          }),
-        ["modal"],
-      );
-    }
-
-    if (mlServices.includes("custom-hf")) {
-      customHfModelId = await presetOrPrompt(presets.customHfModelId, nonInteractive, () =>
-        input({ message: "HuggingFace model ID (e.g. meta-llama/Llama-3-8B):" }),
-      );
-      customHfGpuType = await presetOrPrompt(
-        presets.customHfGpuType,
-        nonInteractive,
-        () =>
-          select({
-            message: "GPU type for custom model:",
-            choices: [
-              { name: "T4 (16GB VRAM, cheapest)", value: "T4" },
-              { name: "A10G (24GB VRAM, good balance)", value: "A10G" },
-              { name: "A100 (40/80GB VRAM, large models)", value: "A100" },
-              { name: "H100 (80GB VRAM, fastest)", value: "H100" },
-            ],
-          }),
-        "A10G",
-      );
-    }
+  // Derive localDev default if not preset and not force-disabled
+  if (!options.forceNoLocalDev && !presets.localDev && initial.name) {
+    const { localDevDomainFromProjectDomain, sanitiseSlug } = await import("@hatchkit/dev-shared");
+    const localDevDomain = localDevDomainFromProjectDomain(initial.domain) ?? undefined;
+    initial.localDev = { slug: sanitiseSlug(initial.name), domain: localDevDomain };
   }
 
-  // Scaffold options
-  const scaffoldRepo = await presetOrPrompt(
-    presets.scaffoldRepo,
-    nonInteractive,
-    () => confirm({ message: "Scaffold app repo?", default: true }),
-    true,
-  );
+  let config = await runSteps(steps, initial);
 
-  let createGithubRepo = false;
-  let githubRepoVisibility: GitHubRepoVisibility | undefined;
-  if (scaffoldRepo) {
-    createGithubRepo = await presetOrPrompt(
-      presets.createGithubRepo,
-      nonInteractive,
-      () =>
-        confirm({
-          message: "Create GitHub remote repo?",
-          default: true,
-        }),
-      true,
+  // Derive env values from final domain
+  config.envValues = {
+    ...config.envValues,
+    FRONTEND_URL: `https://${config.domain}`,
+    BETTER_AUTH_URL: `https://${config.domain}`,
+  };
+
+  // Fill in parsed domain fields
+  if (config.domain) {
+    const parsed = parseDomain(config.domain);
+    config.baseDomain = parsed.baseDomain;
+    config.subdomain = parsed.subdomain;
+  }
+
+  // Pre-flight (credential checks, etc.) before entering the review loop
+  if (options.beforeReview) await options.beforeReview(config);
+
+  // Review-and-edit loop at the end
+  config = await reviewAndEditLoop(config, options.beforeReview);
+
+  return config;
+}
+
+/** Non-interactive config collection. Presets + defaults, no prompts. */
+async function collectProjectConfigNonInteractive(options: CollectOptions): Promise<ProjectConfig> {
+  const presets = options.presets ?? {};
+  const dryRun = options.dryRun ?? false;
+
+  const name = presets.name;
+  if (!name) throw new Error("--name is required in non-interactive mode (--yes).");
+  const nameErr = validateProjectName(name);
+  if (nameErr !== true) throw new Error(`--name invalid: ${nameErr}`);
+
+  const description = (presets.description ?? "").trim();
+  const rootDomain = getDefaultRootDomain();
+  const domain = presets.domain ?? (rootDomain ? `${name}.${rootDomain}` : name);
+  const domainErr = validateDomain(domain);
+  if (domainErr !== true) throw new Error(`--domain invalid: ${domainErr}`);
+  const { baseDomain, subdomain } = parseDomain(domain);
+
+  const surfaces = presets.surfaces ?? "fullstack";
+  const deploymentMode = presets.deploymentMode ?? "coolify";
+  if (deploymentMode === "gh-pages" && surfaces !== "static") {
+    throw new Error(
+      `--deployment-mode gh-pages requires --surfaces static (got: ${surfaces}).`,
     );
-    if (createGithubRepo) {
-      githubRepoVisibility = await presetOrPrompt(
-        presets.githubRepoVisibility,
-        nonInteractive,
-        () => promptGithubRepoVisibility("GitHub repo visibility:"),
-        "public",
-      );
-    }
   }
 
-  // Ask about pnpm install BEFORE we proceed — we used to ask this
-  // mid-scaffold, which broke "kick off create and walk away" flows.
-  // The actual install runs later in handleCreate; we just capture the
-  // user's preference here so the rest of the flow is uninterrupted.
-  const installDeps = scaffoldRepo
-    ? await presetOrPrompt(
-        presets.installDeps,
-        nonInteractive,
-        () => confirm({ message: "Run pnpm install after scaffolding?", default: true }),
-        true,
-      )
-    : false;
-
-  // Tailscale-served local-dev URL opt-in. Default true: the integration
-  // wires this project up to `https://<slug>.local.<project-base-domain>/` so
-  // phones / tablets on the tailnet can reach the dev server with no
-  // per-project DNS or port wrangling. The host-wide plumbing (Caddy,
-  // tailscale serve, plist) is a one-time setup the user runs via
-  // `hatchkit dev-setup init` — disabling the per-project opt-in here
-  // skips writing the Caddy fragment and the plugin wiring, leaving the
-  // project untouched by the integration.
-  const { localDevDomainFromProjectDomain, localDevUrl, sanitiseSlug } = await import(
-    "@hatchkit/dev-shared"
-  );
-  const localDevDomain = localDevDomainFromProjectDomain(domain) ?? undefined;
-  let localDev: { slug: string; domain?: string } | undefined;
-  if (options.forceNoLocalDev) {
-    localDev = undefined;
-  } else if (presets.localDev !== undefined) {
-    const slugSource = presets.localDev.slug || name;
-    localDev = {
-      slug: sanitiseSlug(slugSource),
-      domain: presets.localDev.domain ?? localDevDomain,
-    };
-  } else if (!nonInteractive) {
-    const enableLocalDev = await confirm({
-      message: `Enable Tailscale dev URL (${localDevUrl("<slug>", localDevDomain)})?`,
-      default: true,
-    });
-    if (enableLocalDev) {
-      const defaultSlug = sanitiseSlug(name);
-      const slug = await input({
-        message: "Slug (subdomain) for this project:",
-        default: defaultSlug,
-        validate: (v) => {
-          const sanitised = sanitiseSlug(v);
-          if (sanitised.length === 0) return "Slug must contain at least one [a-z0-9-] character.";
-          if (sanitised !== v) return `Use only [a-z0-9-]. Did you mean "${sanitised}"?`;
-          return true;
-        },
-      });
-      localDev = { slug: sanitiseSlug(slug), domain: localDevDomain };
-    }
-  } else {
-    localDev = { slug: sanitiseSlug(name), domain: localDevDomain };
+  const deployTarget = presets.deployTarget ?? "new";
+  if (
+    deployTarget === "existing" &&
+    (presets.serverId === undefined || presets.serverIp === undefined)
+  ) {
+    throw new Error("--deploy-target existing requires serverId + serverIp in --config.");
   }
 
-  // Late-stage "deploy now?" still makes sense for the Coolify path —
-  // it lets a user pick the Coolify mode upfront but defer the actual
-  // provisioning to a later run. For `scaffold-only` it's already
-  // implied false. `gh-pages` exits via the short path above and never
-  // reaches this branch.
+  const features = presets.features ?? [];
+  const analyticsProviders =
+    presets.analyticsProviders ??
+    (features.includes("analytics") ? ["glitchtip" as const] : undefined);
+  const provisionServices = presets.provisionServices
+    ? uniqueProvisionServices(presets.provisionServices)
+    : uniqueProvisionServices(analyticsProviders ? [...analyticsProviders] : []);
+
+  const s3Provider: S3Provider =
+    presets.s3Provider ?? (features.includes("s3") ? "hetzner" : "none");
+  const mlServices = presets.mlServices ?? [];
+  const gpuPlatforms =
+    presets.gpuPlatforms ?? (mlServices.length > 0 ? ["modal" as const] : undefined);
+  const scaffoldRepo = presets.scaffoldRepo ?? true;
+  const createGithubRepo = scaffoldRepo ? (presets.createGithubRepo ?? true) : false;
+  const githubRepoVisibility = createGithubRepo
+    ? (presets.githubRepoVisibility ?? "public")
+    : undefined;
+  const installDeps = scaffoldRepo ? (presets.installDeps ?? true) : false;
   const runDeployment =
-    deploymentMode === "scaffold-only" || options.dryRun
-      ? false
-      : await presetOrPrompt(
-          presets.runDeployment,
-          nonInteractive,
-          () =>
-            confirm({
-              message: "Run deployment now?",
-              default: true,
-            }),
-          true,
-        );
-
-  // MongoDB strategy: provisioned by Coolify (recommended for the
-  // self-hosted path) vs. an external URI (Atlas, existing self-hosted
-  // Mongo, etc.). When "coolify", we DON'T ask for MONGODB_URI here —
-  // hatchkit provisions the container after the app deploys and writes
-  // the encrypted URL into .env.production automatically.
-  //
-  // Static surfaces never reach Mongo (there's no server to read
-  // MONGODB_URI), so the prompt is skipped and the field forced to
-  // "external" — downstream provisioning checks gate on
-  // `surfaces === "static"` and skip Mongo entirely.
+    deploymentMode === "scaffold-only" || dryRun ? false : (presets.runDeployment ?? true);
   const mongodbProvider: "coolify" | "external" =
     surfaces === "static"
       ? "external"
-      : await presetOrPrompt<"coolify" | "external">(
-          presets.mongodbProvider,
-          nonInteractive,
-          () =>
-            select<"coolify" | "external">({
-              message: "Prod MongoDB:",
-              choices: [
-                {
-                  name: "Provision a dedicated container on Coolify (recommended)",
-                  value: "coolify",
-                },
-                {
-                  name: "I'll provide a URI (Atlas, self-hosted, …)",
-                  value: "external",
-                },
-              ],
-              default: runDeployment ? "coolify" : "external",
-            }),
-          runDeployment ? "coolify" : "external",
-        );
+      : (presets.mongodbProvider ?? (runDeployment ? "coolify" : "external"));
 
-  // Production env values. Anything not supplied gets a plaintext
-  // CHANGE_ME_<KEY> placeholder the user can encrypt later with
-  // `dotenvx set`. In non-interactive mode we only take presets —
-  // don't prompt. BETTER_AUTH_SECRET is auto-generated by the
-  // dotenvx seed helper, not prompted.
-  //
-  // URLs are auto-derived from the chosen domain: the frontend lives
-  // at the bare domain, the API at `/api` on the same domain. No
-  // separate `api.<domain>` subdomain is required for Better Auth or
-  // the SPA; the starter's server mounts at `/api/*` and the auth
-  // library uses the bare URL as its base.
   const envValues: Record<string, string> = { ...(presets.envValues ?? {}) };
   envValues.FRONTEND_URL ??= `https://${domain}`;
   envValues.BETTER_AUTH_URL ??= `https://${domain}`;
-  if (!nonInteractive) {
-    if (scaffoldRepo) {
-      console.log(chalk.bold("\n  ── Production env (press enter to leave as CHANGE_ME) ──────"));
-      console.log(
-        chalk.dim(
-          `  FRONTEND_URL    https://${domain}\n  BETTER_AUTH_URL https://${domain}\n  ${chalk.italic("(auto-derived — both use the bare domain; the API is mounted at /api)")}`,
-        ),
-      );
-      const askOptional = async (key: string, label: string): Promise<void> => {
-        if (envValues[key]) return;
-        const v = await input({
-          message: `${label} [${key}]:`,
-          default: "",
-        });
-        if (v.trim()) envValues[key] = v.trim();
-      };
-      // Only ask for MONGODB_URI when the user opted out of Coolify
-      // provisioning — otherwise hatchkit fills it in post-deploy.
-      // Static scaffolds have no server to consume the URI, so the
-      // prompt is skipped entirely (mongodbProvider is forced to
-      // "external" upstream but the value is never used).
-      if (mongodbProvider === "external" && surfaces !== "static") {
-        await askOptional("MONGODB_URI", "MongoDB URI");
-      }
-      // STRIPE_* and GLITCHTIP_DSN / SENTRY_DSN are NOT prompted here:
-      //   · Stripe — `provisionStripeProject` runs after scaffold, walks
-      //     the user through per-project sandbox + live keys (paste once
-      //     each), auto-mints webhook signing secrets via the master
-      //     keys configured at `hatchkit setup` time, and writes
-      //     sandbox creds to .env.development + live creds to
-      //     .env.production (encrypted).
-      //   · GlitchTip — the DSN is minted by `provisionGlitchtipClient`
-      //     post-scaffold and written encrypted into .env.production.
-      // The pre-flight in index.ts confirms each provider is configured.
-      if (features.includes("s3") && s3Provider === "existing") {
-        await askOptional("S3_ENDPOINT", "S3 endpoint");
-        await askOptional("S3_BUCKET_NAME", "S3 bucket");
-        await askOptional("AWS_ACCESS_KEY_ID", "AWS access key id");
-        await askOptional("AWS_SECRET_ACCESS_KEY", "AWS secret access key");
-      }
-    }
+  let localDev: { slug: string; domain?: string } | undefined;
+  if (!options.forceNoLocalDev) {
+    const { localDevDomainFromProjectDomain, sanitiseSlug } = await import("@hatchkit/dev-shared");
+    const localDevDomain = localDevDomainFromProjectDomain(domain) ?? undefined;
+    localDev = presets.localDev
+      ? {
+          slug: sanitiseSlug(presets.localDev.slug || name),
+          domain: presets.localDev.domain ?? localDevDomain,
+        }
+      : { slug: sanitiseSlug(name), domain: localDevDomain };
   }
 
-  let config: ProjectConfig = {
+  return {
     name,
     description: description || undefined,
     domain,
@@ -1109,28 +1135,28 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     subdomain,
     surfaces,
     deployTarget,
-    serverId,
-    serverUuid,
-    serverIp,
-    serverIpv4,
-    serverIpv6,
-    serverSize,
-    serverLocation,
+    serverId: presets.serverId,
+    serverUuid: presets.serverUuid,
+    serverIp: presets.serverIp,
+    serverIpv4: presets.serverIpv4 ?? presets.serverIp,
+    serverIpv6: presets.serverIpv6,
+    serverSize: deployTarget === "new" ? (presets.serverSize ?? "cpx21") : undefined,
+    serverLocation: deployTarget === "new" ? (presets.serverLocation ?? "nbg1") : undefined,
     features,
     analyticsProviders,
     provisionServices,
     s3Provider,
-    s3ExistingEndpoint,
-    s3ExistingBucket,
-    s3ExistingAccessKey,
-    s3ExistingSecretKey,
-    s3ExistingRegion,
+    s3ExistingEndpoint: presets.s3ExistingEndpoint,
+    s3ExistingBucket: presets.s3ExistingBucket,
+    s3ExistingAccessKey: presets.s3ExistingAccessKey,
+    s3ExistingSecretKey: presets.s3ExistingSecretKey,
+    s3ExistingRegion: presets.s3ExistingRegion,
     mlServices,
-    forceRedeployMl: [...forceRedeploy],
+    forceRedeployMl: presets.forceRedeployMl ?? [],
     mongodbProvider,
     gpuPlatforms,
-    customHfModelId,
-    customHfGpuType,
+    customHfModelId: presets.customHfModelId,
+    customHfGpuType: presets.customHfGpuType,
     scaffoldRepo,
     createGithubRepo,
     githubRepoVisibility,
@@ -1139,21 +1165,8 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     runDeployment,
     envValues,
     localDev,
-    dryRun: options.dryRun || false,
+    dryRun,
   };
-
-  // Provider pre-flights: ensure credentials are configured before
-  // the review loop so "Proceed" means fully non-interactive execution.
-  if (options.beforeReview) await options.beforeReview(config);
-
-  // Final review-and-edit loop. Lets the user step BACK and tweak any
-  // headline choice before scaffold begins — mirrors the structure of
-  // `hatchkit setup`'s stepper. Skipped in non-interactive mode.
-  if (!nonInteractive) {
-    config = await reviewAndEditLoop(config, options.beforeReview);
-  }
-
-  return config;
 }
 
 // ---------------------------------------------------------------------------
@@ -1198,106 +1211,6 @@ async function askDeploymentMode(
     choices,
     default: "coolify",
   });
-}
-
-interface PagesCollectArgs {
-  name: string;
-  domain: string;
-  baseDomain: string;
-  subdomain: string;
-  surfaces: Surface;
-  deploymentMode: DeploymentMode;
-  presets: Partial<ProjectConfig>;
-  nonInteractive: boolean;
-  dryRun: boolean;
-}
-
-/** Minimal config collection for the `gh-pages` deployment mode.
- *  Skips every Coolify-tied prompt (server target, features, S3, ML,
- *  Mongo, env values) — Pages is a static-only deploy with no
- *  runtime, so none of those concepts apply. */
-async function collectPagesProjectConfig(args: PagesCollectArgs): Promise<ProjectConfig> {
-  const { name, domain, baseDomain, subdomain, surfaces, deploymentMode, presets, nonInteractive } =
-    args;
-
-  // gh-pages requires static. The check in askDeploymentMode
-  // also catches this for presets, but defend against direct calls.
-  if (surfaces !== "static") {
-    throw new Error(`gh-pages deployment mode requires surfaces="static" (got: ${surfaces}).`);
-  }
-
-  const scaffoldRepo = await presetOrPrompt(
-    presets.scaffoldRepo,
-    nonInteractive,
-    () => confirm({ message: "Scaffold the starter into ./<name>/?", default: true }),
-    true,
-  );
-
-  let createGithubRepo = false;
-  let githubRepoVisibility: GitHubRepoVisibility | undefined;
-  if (scaffoldRepo) {
-    createGithubRepo = await presetOrPrompt(
-      presets.createGithubRepo,
-      nonInteractive,
-      () => confirm({ message: "Create GitHub remote repo?", default: true }),
-      true,
-    );
-    if (createGithubRepo) {
-      githubRepoVisibility = await presetOrPrompt(
-        presets.githubRepoVisibility,
-        nonInteractive,
-        () => promptGithubRepoVisibility("GitHub repo visibility:"),
-        "public",
-      );
-    }
-  }
-
-  const installDeps = scaffoldRepo
-    ? await presetOrPrompt(
-        presets.installDeps,
-        nonInteractive,
-        () => confirm({ message: "Run pnpm install after scaffolding?", default: true }),
-        true,
-      )
-    : false;
-
-  const provisionServices = await collectExtraProvisionServices({
-    preset: presets.provisionServices,
-    nonInteractive,
-    surfaces,
-    analyticsProviders: undefined,
-  });
-
-  // gh-pages always "deploys" when not in dry-run — there's no
-  // late-stage opt-out the way coolify has. If they wanted to skip
-  // deploy, they'd pick scaffold-only.
-  const runDeployment = !args.dryRun;
-
-  return {
-    name,
-    domain,
-    baseDomain,
-    subdomain,
-    surfaces,
-    // Placeholder — gh-pages doesn't use a Coolify server target.
-    // Set to "new" rather than `undefined` so any incidental reads
-    // (e.g. summary renderers) don't crash. Downstream code MUST
-    // gate Coolify steps on `deploymentMode === "coolify"`.
-    deployTarget: "new",
-    features: [],
-    provisionServices,
-    s3Provider: "none",
-    mlServices: [],
-    forceRedeployMl: [],
-    mongodbProvider: "external",
-    scaffoldRepo,
-    createGithubRepo,
-    githubRepoVisibility,
-    installDeps,
-    deploymentMode,
-    runDeployment,
-    dryRun: args.dryRun,
-  };
 }
 
 // ---------------------------------------------------------------------------
