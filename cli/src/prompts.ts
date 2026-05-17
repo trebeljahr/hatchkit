@@ -415,6 +415,13 @@ async function collectExtraProvisionServices(args: {
           args.surfaces === "static" ? "server surface required for RESEND_API_KEY" : false,
       },
       {
+        name: "Listmonk + SES (self-hosted mailing list + SMTP delivery)",
+        value: "listmonk-ses",
+        checked: false,
+        disabled:
+          args.surfaces === "static" ? "server surface required for LISTMONK_/SES_*" : false,
+      },
+      {
         name: "Email forwarding (Cloudflare Email Routing → your inbox)",
         value: "email",
         checked: false,
@@ -456,6 +463,13 @@ async function promptProvisionServicesEditor(cfg: ProjectConfig): Promise<Provis
         checked: cfg.provisionServices.includes("resend"),
         disabled:
           cfg.surfaces === "static" ? "server surface required for RESEND_API_KEY" : false,
+      },
+      {
+        name: "Listmonk + SES (self-hosted mailing list + SMTP delivery)",
+        value: "listmonk-ses",
+        checked: cfg.provisionServices.includes("listmonk-ses"),
+        disabled:
+          cfg.surfaces === "static" ? "server surface required for LISTMONK_/SES_*" : false,
       },
       {
         name: "Email forwarding (Cloudflare Email Routing → your inbox)",

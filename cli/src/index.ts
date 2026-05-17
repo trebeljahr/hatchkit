@@ -613,6 +613,9 @@ function servicesAlreadyAdded(args: {
   if (/(^|\n)(PUBLIC_)?OPENPANEL_CLIENT_ID=/m.test(text)) added.add("openpanel");
   if (/(^|\n)(NEXT_PUBLIC_|PUBLIC_)?PLAUSIBLE_DOMAIN=/m.test(text)) added.add("plausible");
   if (/(^|\n)RESEND_API_KEY=/m.test(text)) added.add("resend");
+  if (/(^|\n)LISTMONK_URL=/m.test(text) && /(^|\n)SES_SMTP_HOST=/m.test(text)) {
+    added.add("listmonk-ses");
+  }
   if (/(^|\n)R2(_[A-Z0-9]+)?_ACCESS_KEY_ID=/m.test(text)) added.add("s3");
   if (manifestBucketEntries(args.manifest).some((bucket) => bucket.tokenId)) added.add("s3");
   if (args.manifest?.integrations?.email) added.add("email");
@@ -629,6 +632,7 @@ function servicesImpossibleForProject(manifest: ProjectManifest | null): Set<Pro
   if (manifest.surfaces === "backend") blocked.add("plausible");
   if (manifest.surfaces === "static") {
     blocked.add("resend");
+    blocked.add("listmonk-ses");
     blocked.add("s3");
   }
   if (manifestBucketEntries(manifest).length === 0) blocked.add("s3");
@@ -683,6 +687,30 @@ function recordProvisionedEvent(ledger: RunLedger, event: ProvisionedEvent): voi
       zoneName: event.zoneName,
       records: event.createdRecords,
       mergedSpf: event.mergedSpf,
+    });
+  }
+  if (event.service === "sesDomain") {
+    ledger.record({ kind: "sesDomain", domain: event.domain });
+  }
+  if (
+    event.service === "sesDns" &&
+    (event.createdRecords.length > 0 || event.mergedSpf.length > 0)
+  ) {
+    ledger.record({
+      kind: "sesDns",
+      domainName: event.domainName,
+      zoneId: event.zoneId,
+      zoneName: event.zoneName,
+      records: event.createdRecords,
+      mergedSpf: event.mergedSpf,
+    });
+  }
+  if (event.service === "listmonkList" && event.createdThisRun) {
+    ledger.record({
+      kind: "listmonkList",
+      listmonkUrl: event.listmonkUrl,
+      listName: event.listName,
+      listId: event.listId,
     });
   }
   if (event.service === "s3" && event.minted) {
@@ -746,6 +774,7 @@ async function handleAdd(): Promise<void> {
     "openpanel",
     "plausible",
     "resend",
+    "listmonk-ses",
     "s3",
     "email",
     "search-console",
@@ -830,6 +859,11 @@ async function handleAdd(): Promise<void> {
       { name: "OpenPanel (product analytics)", value: "openpanel", checked: false },
       { name: "Plausible (web analytics)", value: "plausible", checked: false },
       { name: "Resend (transactional email)", value: "resend", checked: false },
+      {
+        name: "Listmonk + SES (self-hosted mailing list + SMTP delivery)",
+        value: "listmonk-ses",
+        checked: false,
+      },
       {
         name: "S3 / R2 (per-bucket scoped credentials from .hatchkit.json)",
         value: "s3",
@@ -1317,6 +1351,7 @@ async function handleRemove(): Promise<void> {
     "openpanel",
     "plausible",
     "resend",
+    "listmonk-ses",
     "s3",
     "email",
     "search-console",
@@ -1341,6 +1376,11 @@ async function handleRemove(): Promise<void> {
         { name: "OpenPanel (deletes the project)", value: "openpanel", checked: true },
         { name: "Plausible (deletes the site)", value: "plausible", checked: false },
         { name: "Resend (deletes the API key)", value: "resend", checked: true },
+        {
+          name: "Listmonk + SES (deletes the per-project Listmonk lists; keeps the SES identity)",
+          value: "listmonk-ses",
+          checked: false,
+        },
         { name: "S3 / R2 (deletes per-bucket scoped tokens)", value: "s3", checked: false },
         {
           name: "Email forwarding (deletes routing rules + DNS records; keeps destination)",

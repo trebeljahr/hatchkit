@@ -102,6 +102,7 @@ export type ProvisionService =
   | "openpanel"
   | "plausible"
   | "resend"
+  | "listmonk-ses"
   | "s3"
   | "email"
   | "search-console";
@@ -156,6 +157,38 @@ export type ProvisionedEvent =
        *  skips these to avoid yanking includes the user added by hand. */
       mergedSpf: Array<{ name: string }>;
       finalStatus: string;
+    }
+  /** SES verified-identity event. Emitted once per project provision
+   *  when the `mail.<projectDomain>` identity is freshly created (or
+   *  fetched intact on a re-run). Records on the ledger so destroy can
+   *  call `sesv2:DeleteEmailIdentity` later. */
+  | {
+      service: "sesDomain";
+      domain: string;
+      dkimRecords: Array<{ type: "CNAME"; name: string; value: string }>;
+    }
+  /** SES → Cloudflare DKIM publish. Parallel of `resendDns`; same
+   *  per-record-id tracking so auto-rollback can DELETE only what this
+   *  run created. */
+  | {
+      service: "sesDns";
+      domainName: string;
+      zoneId: string;
+      zoneName: string;
+      createdRecords: Array<{ id: string; name: string; type: "TXT" | "MX" | "CNAME" }>;
+      mergedSpf: Array<{ name: string }>;
+    }
+  /** Listmonk list created (or adopted) for this project. Two such
+   *  events fire per provision — `kind: "live"` (`<project>`) and
+   *  `kind: "test"` (`<project>-test`). The ledger drops `kind`; only
+   *  the URL + name + id matter for the destroy `DELETE /api/lists/{id}`. */
+  | {
+      service: "listmonkList";
+      listmonkUrl: string;
+      listName: string;
+      listId: number;
+      kind: "live" | "test";
+      createdThisRun: boolean;
     }
   | {
       service: "s3";
@@ -347,6 +380,17 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   if (opts.services.includes("openpanel")) await ensureOpenpanel();
   if (opts.services.includes("plausible")) await ensurePlausible();
   if (opts.services.includes("resend")) await ensureResend();
+  if (opts.services.includes("listmonk-ses")) {
+    // Two global providers gate the combo: a Listmonk instance + an
+    // SES IAM key. Both prompt up front (interactively) so the user
+    // doesn't discover a missing credential mid-provision. DNS auto-
+    // publish needs Cloudflare configured too, but it's optional —
+    // ensureDns is called in the dispatch block only when the user
+    // hasn't opted out of DNS publish.
+    const { ensureListmonk, ensureSes } = await import("../config.js");
+    await ensureSes();
+    await ensureListmonk();
+  }
   // S3 is currently R2-only — `ensureS3("r2")` prompts for the admin
   // token (Account>R2:Edit + User>API Tokens:Edit) and stores the
   // endpoint metadata. Same lazy-config-before-spinner contract.
@@ -588,6 +632,144 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
             ),
           );
         }
+      }
+    }
+  }
+
+  // ── Listmonk + SES ── (server-side: SMTP relay creds + Listmonk API)
+  if (opts.services.includes("listmonk-ses")) {
+    if (!hasServerRuntime) {
+      console.log(
+        chalk.yellow(
+          `  Skipping listmonk-ses — surface mode is "static" (no server runtime), so there's nowhere to put LISTMONK_/SES_* env.`,
+        ),
+      );
+    } else {
+      const projectDir = surfaces?.projectDir;
+      const manifest = projectDir ? readManifest(projectDir) : null;
+      const projectDomain = manifest?.domain ?? opts.domain;
+      if (!projectDomain) {
+        console.log(
+          chalk.yellow(
+            `  Skipping listmonk-ses — need a project dir (.hatchkit.json) with a domain, or --domain, to derive mail.<projectDomain>.`,
+          ),
+        );
+      } else {
+        const { provisionListmonkSesForProject, renderListmonkSesEnv } = await import(
+          "./listmonk-ses.js"
+        );
+        const { getDnsConfig, getListmonkConfig, getSesConfig } = await import("../config.js");
+
+        const sesCfg = await getSesConfig();
+        const listmonkCfg = await getListmonkConfig();
+        if (!sesCfg || !listmonkCfg) {
+          throw new Error(
+            "SES or Listmonk credentials disappeared between ensure and dispatch — re-run `hatchkit config add ses` / `hatchkit config add listmonk`.",
+          );
+        }
+
+        // Optional CF token: only needed for DKIM auto-publish.
+        const dnsCfg = await getDnsConfig();
+        let cf: import("../utils/cloudflare-api.js").CloudflareApi | undefined;
+        if (dnsCfg?.apiToken) {
+          const { CloudflareApi } = await import("../utils/cloudflare-api.js");
+          cf = new CloudflareApi({ token: dnsCfg.apiToken, accountId: dnsCfg.accountId });
+        }
+
+        const result = await withSpinner(
+          `Listmonk + SES: provisioning mail.${projectDomain}`,
+          () =>
+            provisionListmonkSesForProject(
+              {
+                projectName: opts.baseName,
+                projectDomain,
+                publishDns: !!cf,
+                cf,
+                sesAuth: {
+                  region: sesCfg.region,
+                  accessKeyId: sesCfg.accessKeyId,
+                  secretAccessKey: sesCfg.secretAccessKey,
+                },
+                listmonkAuth: {
+                  url: listmonkCfg.url,
+                  apiUser: listmonkCfg.apiUser,
+                  apiToken: listmonkCfg.apiToken,
+                },
+              },
+              {
+                onSesDomain: (e) => {
+                  opts.onProvisioned?.({
+                    service: "sesDomain",
+                    domain: e.domain,
+                    dkimRecords: e.dkimRecords,
+                  });
+                },
+                onSesDns: (e) => {
+                  opts.onProvisioned?.({
+                    service: "sesDns",
+                    domainName: e.domainName,
+                    zoneId: e.zoneId,
+                    zoneName: e.zoneName,
+                    createdRecords: e.createdRecords,
+                    mergedSpf: e.mergedSpf,
+                  });
+                },
+                onListmonkList: (e) => {
+                  // Override the orchestrator's placeholder URL with
+                  // the one we actually configured. (The orchestrator
+                  // can't reach the global config without an
+                  // injected dep.)
+                  opts.onProvisioned?.({
+                    service: "listmonkList",
+                    listmonkUrl: listmonkCfg.url,
+                    listName: e.listName,
+                    listId: e.listId,
+                    kind: e.kind,
+                    createdThisRun: e.createdThisRun,
+                  });
+                },
+              },
+            ),
+        );
+
+        if (result.dnsPublish) {
+          console.log(
+            chalk.dim(
+              `  SES DNS: ${result.dnsPublish.createdRecords.length} created in zone ${result.dnsPublish.zoneName}. Identity ${result.ses.name} status: ${result.ses.verifiedForSendingStatus ? "Verified" : "Pending"}.`,
+            ),
+          );
+          for (const m of result.dnsPublish.mergedSpf) {
+            console.log(
+              chalk.dim(
+                `  SES DNS: merged SPF include into pre-existing record at ${m.name} — auto-rollback will not touch it.`,
+              ),
+            );
+          }
+        }
+        if (!result.ses.verifiedForSendingStatus) {
+          console.log(
+            chalk.yellow(
+              "  SES identity is not yet Verified — DKIM publish lands; AWS verification flips automatically once DNS propagates (usually < 30 min).",
+            ),
+          );
+        }
+
+        const env = renderListmonkSesEnv({
+          listmonkUrl: listmonkCfg.url,
+          listmonkApiUser: listmonkCfg.apiUser,
+          listmonkApiToken: listmonkCfg.apiToken,
+          liveListId: result.liveList.id,
+          testListId: result.testList.id,
+          smtpHost: result.smtp.host,
+          smtpPort: result.smtp.port,
+          smtpUsername: result.smtp.username,
+          smtpPassword: result.smtp.password,
+          fromEmail: result.fromEmail,
+          region: sesCfg.region,
+        });
+        const serverBucket = buckets.find((b) => b.label === "server")!;
+        serverBucket.prodLines.push(...env.prod);
+        serverBucket.devLines.push(...env.dev);
       }
     }
   }
@@ -1382,6 +1564,10 @@ export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
   if (opts.services.includes("openpanel")) await ensureOpenpanel();
   if (opts.services.includes("plausible")) await ensurePlausible();
   if (opts.services.includes("resend")) await ensureResend();
+  if (opts.services.includes("listmonk-ses")) {
+    const { ensureListmonk } = await import("../config.js");
+    await ensureListmonk();
+  }
 
   if (opts.dryRun) {
     console.log(chalk.yellow("\n  [dry-run] No clients will be deleted.\n"));
@@ -1421,6 +1607,23 @@ export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
     for (const name of [opts.baseName, `${opts.baseName}-test`]) {
       await runDelete(`Resend: deleting audience ${name} (if present)`, opts.dryRun, () =>
         deleteResendAudience(name),
+      );
+    }
+  }
+
+  // Listmonk + SES — delete the per-project Listmonk lists. The SES
+  // verified identity is intentionally LEFT IN PLACE because the
+  // sending subdomain (`mail.<projectDomain>`) is project-scoped but
+  // unverifying it requires re-publishing DKIM, which is a slow round-
+  // trip the user should opt into via `hatchkit destroy <project>`
+  // (the ledger-driven destroy honors a sesDomain step). The SMTP
+  // relay credentials are stateless — there's nothing to revoke
+  // beyond the IAM access key in global config.
+  if (opts.services.includes("listmonk-ses")) {
+    const { deleteListmonkList } = await import("./listmonk.js");
+    for (const name of [opts.baseName, `${opts.baseName}-test`]) {
+      await runDelete(`Listmonk: deleting list ${name} (if present)`, opts.dryRun, () =>
+        deleteListmonkList(name),
       );
     }
   }

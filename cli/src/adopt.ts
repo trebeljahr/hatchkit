@@ -1465,6 +1465,7 @@ const RESUME_SERVICE_ENV_KEY: Record<ProvisionService, { server?: string; client
   openpanel: { server: "OPENPANEL_CLIENT_ID", client: "PUBLIC_OPENPANEL_CLIENT_ID" },
   plausible: { client: "NEXT_PUBLIC_PLAUSIBLE_DOMAIN" },
   resend: { server: "RESEND_API_KEY" },
+  "listmonk-ses": { server: "LISTMONK_URL" },
   s3: { server: "R2_ENDPOINT" },
   email: {},
   "search-console": {},
@@ -2092,6 +2093,30 @@ async function executePlan(
               zoneName: event.zoneName,
               records: event.createdRecords,
               mergedSpf: event.mergedSpf,
+            });
+          } else if (event.service === "sesDomain") {
+            ledger.record({ kind: "sesDomain", domain: event.domain });
+          } else if (
+            event.service === "sesDns" &&
+            (event.createdRecords.length > 0 || event.mergedSpf.length > 0)
+          ) {
+            ledger.record({
+              kind: "sesDns",
+              domainName: event.domainName,
+              zoneId: event.zoneId,
+              zoneName: event.zoneName,
+              records: event.createdRecords,
+              mergedSpf: event.mergedSpf,
+            });
+          } else if (event.service === "listmonkList" && event.createdThisRun) {
+            // Only record lists hatchkit *created* — an adopted list
+            // (already in Listmonk before this run) belongs to the
+            // user, and destroy must not yank it.
+            ledger.record({
+              kind: "listmonkList",
+              listmonkUrl: event.listmonkUrl,
+              listName: event.listName,
+              listId: event.listId,
             });
           } else if (event.service === "search-console") {
             if (event.dnsRecord?.created) {

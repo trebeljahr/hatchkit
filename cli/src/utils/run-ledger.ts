@@ -55,6 +55,28 @@ export type LedgerStep =
       records: Array<{ id: string; name: string; type: "TXT" | "MX" | "CNAME" }>;
       mergedSpf: Array<{ name: string }>;
     }
+  /** SES verified identity hatchkit created. Destroy issues
+   *  sesv2:DeleteEmailIdentity, 404-tolerant — re-runs after a partial
+   *  rollback won't fail just because the identity is already gone. */
+  | { kind: "sesDomain"; domain: string }
+  /** SES DKIM CNAMEs hatchkit published into Cloudflare. Parallel of
+   *  resendDns — `records` is the exhaustive list of records THIS run
+   *  created; auto-rollback DELETEs each by id. `mergedSpf` (empty in
+   *  practice for the SES flow, since SES doesn't ship an SPF record,
+   *  but kept for shape parity) flags SPF rows we touched. */
+  | {
+      kind: "sesDns";
+      domainName: string;
+      zoneId: string;
+      zoneName: string;
+      records: Array<{ id: string; name: string; type: "TXT" | "MX" | "CNAME" }>;
+      mergedSpf: Array<{ name: string }>;
+    }
+  /** Listmonk list hatchkit created via POST /api/lists. Recorded only
+   *  when the list was created *this* run (a list adopted from a
+   *  pre-existing Listmonk install belongs to the user). Destroy hits
+   *  DELETE /api/lists/{id}, 404-tolerant. */
+  | { kind: "listmonkList"; listmonkUrl: string; listName: string; listId: number }
   | { kind: "tfvars"; path: string }
   | { kind: "coolifyEnv"; path: string }
   | { kind: "keychain"; account: string }
