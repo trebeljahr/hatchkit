@@ -14,7 +14,7 @@ export const updateItemSchema = z.object({
 
 export const updateProfileSchema = z.object({
   bio: z.string().max(500).optional(),
-  avatarUrl: z.string().url().optional(),
+  avatarUrl: z.url().optional(),
   preferences: z
     .object({
       theme: z.enum(["light", "dark", "system"]).optional(),
