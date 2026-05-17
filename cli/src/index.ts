@@ -2364,13 +2364,22 @@ async function handleConfig(): Promise<void> {
         case "openpanel":
         case "plausible":
         case "resend":
-        case "listmonk":
         case "ses":
         case "search-console":
         case "stripe":
         case "ghcr":
           await reconfigureProvider(provider);
           break;
+        case "listmonk": {
+          // `hatchkit config add listmonk --deploy` walks the user
+          // through deploying Listmonk on Coolify before the regular
+          // URL/api-user/token prompts. Plumbed via the opts arg on
+          // reconfigureProvider rather than a parallel path so the
+          // wipe-then-ensure invariant stays in one place.
+          const deploy = args.includes("--deploy");
+          await reconfigureProvider("listmonk", { deploy });
+          break;
+        }
         case "s3": {
           // Accept the sub-provider as a positional arg so doctor's
           // recovery hint (`hatchkit config add s3 r2`) is a one-line

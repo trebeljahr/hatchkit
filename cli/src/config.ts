@@ -1560,7 +1560,7 @@ export async function getResendConfig(): Promise<ResendConfig | null> {
 // that limitation inline in the prompt copy.
 // ---------------------------------------------------------------------------
 
-export async function ensureListmonk(): Promise<ListmonkConfig> {
+export async function ensureListmonk(opts: { deploy?: boolean } = {}): Promise<ListmonkConfig> {
   const existing = store.get("providers.listmonk") as ListmonkMeta | undefined;
   const existingToken = await getSecret(SECRET_KEYS.listmonkApiToken);
 
@@ -1569,6 +1569,18 @@ export async function ensureListmonk(): Promise<ListmonkConfig> {
   }
 
   console.log(chalk.yellow("\n  Listmonk is not configured yet. Let's set it up."));
+
+  // --deploy convenience: walk the user through deploying Listmonk on
+  // their already-configured Coolify install before the URL/API-user
+  // prompts. Coolify's services-from-template API varies across versions
+  // and the Listmonk first-boot wizard is unavoidably manual either way
+  // (admin user + API user are NOT API-creatable), so this is a guided-
+  // manual flow rather than an API-driven deploy. Cuts onboarding
+  // friction without pretending to bypass Listmonk's two human steps.
+  if (opts.deploy) {
+    await guideCoolifyListmonkDeploy();
+  }
+
   console.log(
     chalk.dim(
       "  Listmonk requires a one-time human step: open the admin UI, complete the\n" +
@@ -1638,6 +1650,51 @@ export async function getListmonkConfig(): Promise<ListmonkConfig | null> {
 
 function normalizeListmonkUrlInput(raw: string): string {
   return raw.trim().replace(/\/+$/, "");
+}
+
+/** Guided-manual walkthrough for `hatchkit config add listmonk --deploy`.
+ *
+ *  Coolify v4 ships a one-click Listmonk template (templates/compose/
+ *  listmonk.yaml) — opening + deploying it from the dashboard is two
+ *  clicks. The Coolify Services API would let us POST that in one call,
+ *  but the endpoint shape drifted across v4.x minor versions and the
+ *  Listmonk onboarding wizard + Admin → Users → New API user step is
+ *  manual anyway. Pure API automation would mean a fragile call AND
+ *  three human steps remaining; the guided form means zero fragile
+ *  calls and three human steps remaining. Same net friction, no future
+ *  Coolify-version regression liability. */
+async function guideCoolifyListmonkDeploy(): Promise<void> {
+  const coolify = await getCoolifyConfig();
+  if (!coolify) {
+    console.log(
+      chalk.yellow(
+        "  --deploy needs a configured Coolify instance. Run `hatchkit config add coolify` first.",
+      ),
+    );
+    return;
+  }
+  const base = coolify.url.replace(/\/$/, "");
+  console.log(
+    chalk.bold("\n  ── Deploy Listmonk on Coolify ────────────────────────────\n"),
+  );
+  console.log(
+    [
+      `  1. Open ${chalk.cyan(`${base}/`)}`,
+      `  2. Pick (or create) a Project, then ${chalk.cyan("+ New → Service")}`,
+      `  3. Search for ${chalk.cyan("listmonk")} in the template list, deploy it`,
+      `  4. Wait for the container health check to flip green (~30s)`,
+      `  5. Click the auto-assigned ${chalk.cyan("Domains")} URL — Listmonk's onboarding wizard opens`,
+      `  6. Complete the wizard: create the superadmin account`,
+      `  7. ${chalk.bold("Admin → Users → New API user")}: name it ${chalk.cyan("hatchkit")}`,
+      `     and grant ${chalk.cyan("Lists: All")} + ${chalk.cyan("Subscribers: All")} + ${chalk.cyan("TX: All")}`,
+      `  8. Copy the generated token — paste it on the next prompt`,
+      "",
+    ].join("\n"),
+  );
+  await confirm({
+    message: "Ready to paste the Listmonk URL + API user + token?",
+    default: true,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2659,8 +2716,15 @@ type ReconfigurableProvider =
 
 /** Wipe + re-prompt for a single provider. Shared by the stepper and by
  *  `hatchkit config add <provider>` so both paths always re-prompt rather
- *  than silently no-op on already-configured providers. */
-export async function reconfigureProvider(name: ReconfigurableProvider): Promise<void> {
+ *  than silently no-op on already-configured providers.
+ *
+ *  `opts` is provider-specific: only the `listmonk` branch consults it
+ *  today (`deploy` flips on the guided Coolify-deploy walkthrough). Other
+ *  branches ignore it. */
+export async function reconfigureProvider(
+  name: ReconfigurableProvider,
+  opts: { deploy?: boolean } = {},
+): Promise<void> {
   if (name === "coolify") {
     await wipeProvider("providers.coolify", [SECRET_KEYS.coolifyToken]);
     await ensureCoolify();
@@ -2696,7 +2760,7 @@ export async function reconfigureProvider(name: ReconfigurableProvider): Promise
     await ensureResend();
   } else if (name === "listmonk") {
     await wipeProvider("providers.listmonk", [SECRET_KEYS.listmonkApiToken]);
-    await ensureListmonk();
+    await ensureListmonk({ deploy: opts.deploy });
   } else if (name === "ses") {
     await wipeProvider("providers.ses", [
       SECRET_KEYS.sesAccessKeyId,
