@@ -1195,7 +1195,7 @@ async function resolvePlausibleDomain(
 
 function servicesNeedEnvSurfaces(services: ProvisionService[]): boolean {
   return services.some((service) =>
-    ["glitchtip", "openpanel", "plausible", "resend", "s3"].includes(service),
+    ["glitchtip", "openpanel", "plausible", "resend", "listmonk-ses", "s3"].includes(service),
   );
 }
 
