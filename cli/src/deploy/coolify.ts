@@ -34,6 +34,11 @@ import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
 import { type ApplicationCreateInput, CoolifyApi } from "../utils/coolify-api.js";
+import {
+  appSlugFromHtmlUrl,
+  ensureCoolifyAppHasRepoAccess,
+  installUrlForSlug,
+} from "./github-app-access.js";
 import { repoSlugFromRemote } from "./gh-actions-secrets.js";
 
 export interface RunCoolifySetupOptions {
@@ -106,10 +111,25 @@ export async function runCoolifySetup(
     ? normalizeCoolifyGitRepository(options.repoUrl, isPrivateRepo)
     : null;
   let githubAppUuid: string | undefined;
+  let githubAppHtmlUrl: string | undefined;
   if (isPrivateRepo) {
-    githubAppUuid = await resolveGithubAppUuid(api, cfg.url);
+    const source = await resolveGithubAppSource(api, cfg.url);
+    githubAppUuid = source.uuid;
+    githubAppHtmlUrl = source.htmlUrl;
     if (repoRef && repoRef.gitRepository !== options.repoUrl) {
       console.log(chalk.dim(`  Git source: ${repoRef.gitRepository} (Coolify GitHub App)`));
+    }
+    // Proactively add the (possibly freshly-created) repo to the
+    // GitHub App's selected-repos list. Without this, Coolify's
+    // /applications/private-github-app POST 404s with "Repository not
+    // found or not accessible by the GitHub App." The grant helper is
+    // best-effort — if it fails, the create call's retry/abort loop
+    // below surfaces a manual remediation prompt.
+    if (repoRef) {
+      await ensureRepoVisibleToCoolifyApp({
+        appHtmlUrl: githubAppHtmlUrl,
+        repoSlug: repoRef.gitRepository,
+      });
     }
   }
 
@@ -268,16 +288,23 @@ export async function runCoolifySetup(
         instantDeploy: false,
       };
       const created = isPrivateRepo
-        ? await api.createApplicationFromPrivateGithubApp({
-            ...createInput,
+        ? await createPrivateAppWithRetry({
+            api,
+            createInput,
             githubAppUuid: githubAppUuid as string,
+            githubAppHtmlUrl,
+            repoSlug: repoRef.gitRepository,
+            spinner: create,
+            appName,
           })
         : await api.createApplicationFromPublicRepo(createInput);
       appUuid = created.uuid;
       appCreated = true;
       create.succeed(`Application created: ${appName} (${appUuid})`);
     } catch (err) {
-      create.fail();
+      // The private-repo path may have stopped the spinner itself with
+      // a tailored message. Don't overwrite that with a generic fail.
+      if (create.isSpinning) create.fail();
       throw err;
     }
   }
@@ -311,11 +338,19 @@ export async function runCoolifySetup(
   return { appUuid, projectUuid, projectCreated, appCreated };
 }
 
-async function resolveGithubAppUuid(api: CoolifyApi, coolifyUrl: string): Promise<string> {
+interface ResolvedGithubAppSource {
+  uuid: string;
+  htmlUrl?: string;
+}
+
+async function resolveGithubAppSource(
+  api: CoolifyApi,
+  coolifyUrl: string,
+): Promise<ResolvedGithubAppSource> {
   const sources = await api.listGithubSources();
   if (sources.length === 1) {
     console.log(chalk.dim(`  Using Coolify GitHub source "${sources[0].name}".`));
-    return sources[0].uuid;
+    return { uuid: sources[0].uuid, htmlUrl: sources[0].html_url };
   }
   if (sources.length === 0) {
     const sourcesUrl = `${coolifyUrl.replace(/\/$/, "")}/sources`;
@@ -325,14 +360,158 @@ async function resolveGithubAppUuid(api: CoolifyApi, coolifyUrl: string): Promis
     );
   }
   const { select } = await import("@inquirer/prompts");
-  return select({
+  const picked = await select<ResolvedGithubAppSource>({
     message: "Pick the Coolify GitHub source for this private repo:",
     choices: sources.map((s) => ({
       name: `${s.name}${s.html_url ? `  ${chalk.dim(s.html_url)}` : ""}`,
-      value: s.uuid,
+      value: { uuid: s.uuid, htmlUrl: s.html_url },
     })),
   });
+  return picked;
 }
+
+/** Best-effort: ensure the Coolify GitHub App can clone `repoSlug`.
+ *  Logs the outcome but never throws — the retry/abort loop on app
+ *  create is the authoritative gate. */
+async function ensureRepoVisibleToCoolifyApp(input: {
+  appHtmlUrl: string | undefined;
+  repoSlug: string;
+}): Promise<void> {
+  const grant = await ensureCoolifyAppHasRepoAccess(input);
+  switch (grant.kind) {
+    case "granted":
+      console.log(
+        chalk.green(
+          `  ✓ Granted Coolify GitHub App "${grant.appSlug}" access to ${input.repoSlug}`,
+        ),
+      );
+      return;
+    case "already-all-repos":
+      console.log(
+        chalk.dim(
+          `  · Coolify GitHub App "${grant.appSlug}" already has access to all repos in ${grant.account}.`,
+        ),
+      );
+      return;
+    case "already-selected":
+      console.log(
+        chalk.dim(
+          `  · Coolify GitHub App "${grant.appSlug}" already includes ${input.repoSlug}.`,
+        ),
+      );
+      return;
+    case "failed":
+      console.log(
+        chalk.yellow(
+          `  · Couldn't auto-grant GitHub App access (${grant.reason}). ` +
+            `If the next step 404s, grant access at ${grant.installSettingsUrl ?? grant.installUrl} and retry.`,
+        ),
+      );
+      return;
+  }
+}
+
+interface CreatePrivateAppArgs {
+  api: CoolifyApi;
+  createInput: ApplicationCreateInput;
+  githubAppUuid: string;
+  githubAppHtmlUrl: string | undefined;
+  repoSlug: string;
+  spinner: ReturnType<typeof ora>;
+  appName: string;
+}
+
+/** Wrap `createApplicationFromPrivateGithubApp` in a retry loop. On a
+ *  GitHub-App-access 404 the user gets a manual remediation prompt
+ *  with the install URL; choosing "abort" throws so the create flow's
+ *  existing rollback recipe + per-step confirmation runs.
+ *
+ *  Why a loop instead of one-shot: the proactive grant above succeeds
+ *  in the common case, but org installs with branch-protection rules,
+ *  installs the user can't admin from the CLI, and the half-second
+ *  GitHub→Coolify propagation gap all show up here. Letting the user
+ *  click + retry is much cheaper than a full create rerun. */
+async function createPrivateAppWithRetry(
+  args: CreatePrivateAppArgs,
+): Promise<{ uuid: string; fqdn?: string }> {
+  const { api, createInput, githubAppUuid, githubAppHtmlUrl, repoSlug, spinner, appName } = args;
+  let attempt = 0;
+  while (true) {
+    attempt += 1;
+    try {
+      return await api.createApplicationFromPrivateGithubApp({
+        ...createInput,
+        githubAppUuid,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!isGithubAppAccessError(message)) throw err;
+
+      spinner.fail(`Coolify can't see ${repoSlug} through the GitHub App.`);
+
+      const { select } = await import("@inquirer/prompts");
+      const appSlug = appSlugFromHtmlUrl(githubAppHtmlUrl);
+      const fallbackInstallUrl = appSlug
+        ? installUrlForSlug(appSlug)
+        : "https://github.com/settings/installations";
+      const grant = await ensureCoolifyAppHasRepoAccess({
+        appHtmlUrl: githubAppHtmlUrl,
+        repoSlug,
+      });
+      const remediationUrl =
+        (grant.kind === "failed" && (grant.installSettingsUrl ?? grant.installUrl)) ||
+        fallbackInstallUrl;
+
+      console.log(
+        chalk.yellow(
+          `\n  Grant the Coolify GitHub App access to ${chalk.bold(repoSlug)}, then retry.\n` +
+            `    Open: ${remediationUrl}\n` +
+            `    On the installation page → "Repository access" → "Only select repositories" → add ${repoSlug}.\n`,
+        ),
+      );
+
+      const choice = await select<"retry" | "abort">({
+        message: `Coolify app create failed (attempt ${attempt}). What now?`,
+        choices: [
+          {
+            name: "Retry — I've granted access in the GitHub UI",
+            value: "retry",
+            description: "Re-attempts the proactive grant + Coolify app create.",
+          },
+          {
+            name: "Abort — roll back the partial create",
+            value: "abort",
+            description:
+              "Stops the create. The existing rollback recipe + per-step confirmation will run.",
+          },
+        ],
+        default: "retry",
+      });
+
+      if (choice === "abort") {
+        throw new Error(
+          `Aborted by user: Coolify GitHub App could not access ${repoSlug}. ` +
+            `Grant access at ${remediationUrl} and re-run \`hatchkit create\` to resume.`,
+        );
+      }
+
+      // Restart the spinner so the next attempt's success/fail line
+      // looks like the first one.
+      spinner.start(`Creating application ${appName} (attempt ${attempt + 1})`);
+      // Loop body re-runs the create call.
+    }
+  }
+}
+
+function isGithubAppAccessError(message: string): boolean {
+  // Coolify returns 404 with this exact body when the GitHub App can't
+  // see the repo. Match defensively — older Coolify builds may phrase
+  // it differently but always include "not accessible" or "not found".
+  if (/Repository not found or not accessible by the GitHub App/i.test(message)) return true;
+  if (/private-github-app failed:\s*404/i.test(message)) return true;
+  return false;
+}
+
 
 function normalizeCoolifyGitRepository(
   remoteUrl: string,
