@@ -38,7 +38,7 @@ export type DeployTarget = "existing" | "new";
  *                       drives the rest of the existing pipeline (Hetzner,
  *                       Mongo, GlitchTip, …).
  *  · `gh-pages`       — static-only deploy via GitHub Pages. Only offered
- *                       when `surfaces === "client-only"` — Pages has no
+ *                       when `surfaces === "static"` — Pages has no
  *                       runtime, so a server-bearing project can't use it.
  *                       Skips Coolify/Hetzner/Mongo prompts entirely.
  *  · `scaffold-only`  — write files + (optionally) push to GitHub, no
@@ -53,16 +53,27 @@ export type GpuPlatform = "modal" | "runpod" | "hf" | "replicate";
  *  `hatchkit adopt` so the manifest field is interchangeable across the
  *  two flows.
  *
- *  · `both`       — full-stack monorepo (default; matches the starter
- *                   layout as-shipped).
- *  · `server-only`— API / backend; the client package is stripped from
- *                   the scaffold and Coolify routes only the api host.
- *  · `client-only`— static site / SPA; the server package is stripped
- *                   and Coolify deploys a single nginx-static service.
- *                   No MongoDB or server-side env-seeded providers
- *                   (Stripe / GlitchTip / Resend) — there's no server
- *                   to consume them. */
-export type Surface = "server-only" | "client-only" | "both";
+ *  The four values disambiguate code topology (one package vs. split
+ *  packages vs. single surface) from runtime shape (has a server
+ *  runtime vs. pure static). The provisioner uses the latter to decide
+ *  whether to mint server-side env (Resend keys, server-side
+ *  observability DSNs, S3 tokens).
+ *
+ *  · `fullstack` — single repo with a server runtime: Next App Router,
+ *                  SvelteKit, Nuxt. One package, server + client share
+ *                  the bundle, observability is one project.
+ *  · `split`     — distinct `/server` + `/client` packages, both with a
+ *                  server runtime. Observability is split per surface
+ *                  (strict isolation).
+ *  · `backend`   — API / worker, no UI bundle. The client package is
+ *                  stripped from the scaffold and Coolify routes only
+ *                  the api host.
+ *  · `static`    — gh-pages / S3+CDN / pure SPA. NO server runtime,
+ *                  even if the framework supports one. Server-side
+ *                  env-seeded providers (Resend, server-side GlitchTip,
+ *                  S3 tokens) are skipped — there is no server to
+ *                  consume them. */
+export type Surface = "fullstack" | "split" | "backend" | "static";
 
 export type Feature = "websocket" | "stripe" | "analytics" | "s3" | "desktop" | "mobile";
 export type AnalyticsProvider = "glitchtip" | "openpanel" | "plausible";
@@ -89,8 +100,8 @@ export interface ProjectConfig {
   baseDomain: string;
   subdomain: string;
 
-  /** What kind of project to scaffold. Defaults to `both` (the
-   *  full-stack starter layout). The two narrower surfaces strip the
+  /** What kind of project to scaffold. Defaults to `fullstack` (the
+   *  full-stack starter layout). The narrower surfaces strip the
    *  unused package half + adjust the docker-compose / Coolify routing
    *  accordingly. See the `Surface` type for the per-value semantics. */
   surfaces: Surface;
@@ -177,7 +188,7 @@ export interface ProjectConfig {
   installDeps: boolean;
   /** Where this project deploys. `coolify` (default) drives the existing
    *  Hetzner + Mongo + providers pipeline. `gh-pages` is only offered
-   *  alongside `surfaces === "client-only"` and skips the Coolify path
+   *  alongside `surfaces === "static"` and skips the Coolify path
    *  entirely in favour of `hatchkit gh-pages`. `scaffold-only` writes
    *  files but doesn't deploy. */
   deploymentMode: DeploymentMode;
@@ -261,7 +272,7 @@ async function collectExtraProvisionServices(args: {
         value: "resend",
         checked: false,
         disabled:
-          args.surfaces === "client-only" ? "server surface required for RESEND_API_KEY" : false,
+          args.surfaces === "static" ? "server surface required for RESEND_API_KEY" : false,
       },
       {
         name: "Email forwarding (Cloudflare Email Routing → your inbox)",
@@ -297,14 +308,14 @@ async function promptProvisionServicesEditor(cfg: ProjectConfig): Promise<Provis
         name: "Plausible (web analytics)",
         value: "plausible",
         checked: cfg.provisionServices.includes("plausible"),
-        disabled: cfg.surfaces === "server-only" ? "client surface required" : false,
+        disabled: cfg.surfaces === "backend" ? "client surface required" : false,
       },
       {
         name: "Resend (transactional email API keys)",
         value: "resend",
         checked: cfg.provisionServices.includes("resend"),
         disabled:
-          cfg.surfaces === "client-only" ? "server surface required for RESEND_API_KEY" : false,
+          cfg.surfaces === "static" ? "server surface required for RESEND_API_KEY" : false,
       },
       {
         name: "Email forwarding (Cloudflare Email Routing → your inbox)",
@@ -395,10 +406,10 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
 
   const { baseDomain, subdomain } = parseDomain(domain);
 
-  // Surface — what kind of project this is. Same three-way choice that
-  // `hatchkit adopt` exposes. The default is "both" (the full-stack
-  // starter layout); the two narrower modes prune the unused package
-  // and adjust docker-compose / Coolify routing accordingly.
+  // Surface — what kind of project this is. Same four-way choice that
+  // `hatchkit adopt` exposes. The default is "fullstack" (the
+  // full-stack starter layout); the narrower modes prune the unused
+  // package and adjust docker-compose / Coolify routing accordingly.
   const surfaces = await presetOrPrompt<Surface>(
     presets.surfaces,
     nonInteractive,
@@ -406,16 +417,17 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       select<Surface>({
         message: "What kind of project is this?",
         choices: [
-          { name: "Server + client (full-stack monorepo)", value: "both" },
-          { name: "Server only (backend / API)", value: "server-only" },
-          { name: "Client only (static site / SPA — no backend)", value: "client-only" },
+          { name: "Full-stack (single package, server runtime)", value: "fullstack" },
+          { name: "Split server + client packages (server runtime)", value: "split" },
+          { name: "Backend only (API / worker, no UI bundle)", value: "backend" },
+          { name: "Static (gh-pages / SPA — no server runtime)", value: "static" },
         ],
       }),
-    "both",
+    "fullstack",
   );
 
   // Deployment mode — where this project ultimately runs. The
-  // `gh-pages` option is *only* offered for `client-only` surfaces.
+  // `gh-pages` option is *only* offered for `static` surfaces.
   // Pages has no runtime, so server-bearing projects can't deploy
   // there; we hide the option rather than offering it and then
   // having to refuse the choice mid-flow.
@@ -845,12 +857,12 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
   // hatchkit provisions the container after the app deploys and writes
   // the encrypted URL into .env.production automatically.
   //
-  // Client-only surfaces never reach Mongo (there's no server to read
+  // Static surfaces never reach Mongo (there's no server to read
   // MONGODB_URI), so the prompt is skipped and the field forced to
   // "external" — downstream provisioning checks gate on
-  // `surfaces === "client-only"` and skip Mongo entirely.
+  // `surfaces === "static"` and skip Mongo entirely.
   const mongodbProvider: "coolify" | "external" =
-    surfaces === "client-only"
+    surfaces === "static"
       ? "external"
       : await presetOrPrompt<"coolify" | "external">(
           presets.mongodbProvider,
@@ -905,10 +917,10 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       };
       // Only ask for MONGODB_URI when the user opted out of Coolify
       // provisioning — otherwise hatchkit fills it in post-deploy.
-      // Client-only scaffolds have no server to consume the URI, so the
+      // Static scaffolds have no server to consume the URI, so the
       // prompt is skipped entirely (mongodbProvider is forced to
       // "external" upstream but the value is never used).
-      if (mongodbProvider === "external" && surfaces !== "client-only") {
+      if (mongodbProvider === "external" && surfaces !== "static") {
         await askOptional("MONGODB_URI", "MongoDB URI");
       }
       // STRIPE_* and GLITCHTIP_DSN / SENTRY_DSN are NOT prompted here:
@@ -990,12 +1002,12 @@ async function askDeploymentMode(
   preset: DeploymentMode | undefined,
   nonInteractive: boolean,
 ): Promise<DeploymentMode> {
-  // gh-pages requires client-only — Pages has no runtime. Validate
+  // gh-pages requires static — Pages has no runtime. Validate
   // presets the same way so `--deployment-mode gh-pages` paired with
   // a server-bearing surface fails fast.
-  if (preset === "gh-pages" && surfaces !== "client-only") {
+  if (preset === "gh-pages" && surfaces !== "static") {
     throw new Error(
-      `--deployment-mode gh-pages requires --surfaces client-only (got: ${surfaces}). GitHub Pages serves static files only.`,
+      `--deployment-mode gh-pages requires --surfaces static (got: ${surfaces}). GitHub Pages serves static files only.`,
     );
   }
   if (preset !== undefined) return preset;
@@ -1007,7 +1019,7 @@ async function askDeploymentMode(
       value: "coolify",
     },
   ];
-  if (surfaces === "client-only") {
+  if (surfaces === "static") {
     choices.push({
       name: "GitHub Pages — static-only, served from your repo",
       value: "gh-pages",
@@ -1045,10 +1057,10 @@ async function collectPagesProjectConfig(args: PagesCollectArgs): Promise<Projec
   const { name, domain, baseDomain, subdomain, surfaces, deploymentMode, presets, nonInteractive } =
     args;
 
-  // gh-pages requires client-only. The check in askDeploymentMode
+  // gh-pages requires static. The check in askDeploymentMode
   // also catches this for presets, but defend against direct calls.
-  if (surfaces !== "client-only") {
-    throw new Error(`gh-pages deployment mode requires surfaces="client-only" (got: ${surfaces}).`);
+  if (surfaces !== "static") {
+    throw new Error(`gh-pages deployment mode requires surfaces="static" (got: ${surfaces}).`);
   }
 
   const scaffoldRepo = await presetOrPrompt(
@@ -1359,39 +1371,40 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     const next = await select<Surface>({
       message: "What kind of project is this?",
       choices: [
-        { name: "Server + client (full-stack monorepo)", value: "both" },
-        { name: "Server only (backend / API)", value: "server-only" },
-        { name: "Client only (static site / SPA — no backend)", value: "client-only" },
+        { name: "Full-stack (single package, server runtime)", value: "fullstack" },
+        { name: "Split server + client packages (server runtime)", value: "split" },
+        { name: "Backend only (API / worker, no UI bundle)", value: "backend" },
+        { name: "Static (gh-pages / SPA — no server runtime)", value: "static" },
       ],
       default: cfg.surfaces,
     });
-    // Force mongodbProvider to "external" for client-only — there's no
+    // Force mongodbProvider to "external" for static — there's no
     // server to read MONGODB_URI, so a Coolify-provisioned container
-    // would be wasted. Switching away from client-only keeps the prior
+    // would be wasted. Switching away from static keeps the prior
     // value (the user can re-pick on the Mongo step if needed).
     //
-    // Switching away from client-only also invalidates `gh-pages`
+    // Switching away from static also invalidates `gh-pages`
     // deployment mode (Pages requires a static-only project). Snap
     // it back to coolify in that case.
     const nextDeploymentMode =
-      cfg.deploymentMode === "gh-pages" && next !== "client-only" ? "coolify" : cfg.deploymentMode;
-    if (cfg.deploymentMode === "gh-pages" && next !== "client-only") {
+      cfg.deploymentMode === "gh-pages" && next !== "static" ? "coolify" : cfg.deploymentMode;
+    if (cfg.deploymentMode === "gh-pages" && next !== "static") {
       console.log(
         chalk.yellow(
-          "  ⚠ gh-pages requires client-only surfaces — switched deployment mode back to coolify.",
+          "  ⚠ gh-pages requires static surfaces — switched deployment mode back to coolify.",
         ),
       );
     }
     return {
       ...cfg,
       surfaces: next,
-      mongodbProvider: next === "client-only" ? "external" : cfg.mongodbProvider,
+      mongodbProvider: next === "static" ? "external" : cfg.mongodbProvider,
       deploymentMode: nextDeploymentMode,
       runDeployment: nextDeploymentMode === "scaffold-only" ? false : cfg.runDeployment,
       provisionServices: cfg.provisionServices.filter(
         (service) =>
-          !(next === "client-only" && service === "resend") &&
-          !(next === "server-only" && service === "plausible"),
+          !(next === "static" && service === "resend") &&
+          !(next === "backend" && service === "plausible"),
       ),
     };
   }

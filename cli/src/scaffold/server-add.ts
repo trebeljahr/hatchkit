@@ -87,9 +87,11 @@ export async function runServerAdd(
     ],
   };
 
-  const surfaces = manifest.surfaces ?? "client-only";
-  if (surfaces === "both" || surfaces === "server-only") {
-    result.skipped.push(`manifest surfaces already ${surfaces}; no client-only retrofit needed`);
+  const surfaces = manifest.surfaces ?? "static";
+  if (surfaces === "fullstack" || surfaces === "split" || surfaces === "backend") {
+    result.skipped.push(
+      `manifest surfaces already ${surfaces}; no server retrofit needed`,
+    );
     result.nextSteps = ["hatchkit adopt --resume --regenerate-pipeline"];
     return result;
   }
@@ -163,12 +165,12 @@ export async function runServerAdd(
     rewriteRootScripts(root, { serverDir, sharedDir });
     writeManifest(root, {
       ...manifest,
-      surfaces: "both",
+      surfaces: "fullstack",
       deploymentMode: manifest.deploymentMode === "gh-pages" ? "coolify" : manifest.deploymentMode,
     });
   }
 
-  markUpdated(result, `${MANIFEST_FILENAME} surfaces=both`);
+  markUpdated(result, `${MANIFEST_FILENAME} surfaces=fullstack`);
   markUpdated(result, "root package.json scripts");
   markUpdated(result, "server env/dev ports");
   if (manifest.deploymentMode === "gh-pages") {
@@ -285,7 +287,7 @@ function restoreComposeIfClearlyClientOnly(
       /^\s{2}seaweedfs:\s*$/m.test(existing));
   if (!looksLikeHatchkitClientCompose) {
     result.warnings.push(
-      `${relPath} exists and does not look like Hatchkit client-only compose; left unchanged`,
+      `${relPath} exists and does not look like Hatchkit static-only compose; left unchanged`,
     );
     return;
   }
@@ -346,7 +348,7 @@ function manifestAsProjectConfig(manifest: ProjectManifest): ProjectConfig {
     domain: manifest.domain,
     baseDomain: "",
     subdomain: "",
-    surfaces: "both",
+    surfaces: "fullstack",
     deployTarget: "existing",
     features: manifest.features,
     s3Provider: manifest.s3Provider,

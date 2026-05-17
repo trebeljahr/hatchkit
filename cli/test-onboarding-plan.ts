@@ -15,7 +15,7 @@ function projectConfig(overrides: Partial<ProjectConfig> = {}): ProjectConfig {
     domain: "launch.example.com",
     baseDomain: "example.com",
     subdomain: "launch",
-    surfaces: "both",
+    surfaces: "fullstack",
     deployTarget: "existing",
     serverId: 1,
     serverIp: "192.0.2.10",
@@ -65,7 +65,7 @@ function adoptPlan(overrides: Partial<AdoptPlan> = {}): AdoptPlan {
     domain: "existing.example.com",
     description: "Already here",
     features: ["websocket"],
-    surfaces: "both",
+    surfaces: "fullstack",
     deploymentMode: "coolify",
     serverDir: "/tmp/existing-app/packages/server",
     clientDir: "/tmp/existing-app/packages/client",
@@ -86,7 +86,7 @@ function adoptPlan(overrides: Partial<AdoptPlan> = {}): AdoptPlan {
   const plan = projectConfigToOnboardingPlan(cfg);
   assert.deepEqual(plan.source, { kind: "starter", outputDir: "launch-pad" });
   assert.equal(plan.identity.name, cfg.name);
-  assert.equal(plan.layout.surfaces, "both");
+  assert.equal(plan.layout.surfaces, "fullstack");
   assert.equal(plan.deployment.mode, "coolify");
   assert.equal(plan.deployment.target, "existing");
   assert.equal(plan.repo.writeProject, true);
@@ -99,7 +99,7 @@ function adoptPlan(overrides: Partial<AdoptPlan> = {}): AdoptPlan {
     {
       ...plan,
       identity: { ...plan.identity, name: "renamed", domain: "renamed.example.com" },
-      layout: { ...plan.layout, surfaces: "client-only" },
+      layout: { ...plan.layout, surfaces: "static" },
       deployment: { ...plan.deployment, mode: "gh-pages", target: "new", runNow: true },
       repo: {
         ...plan.repo,
@@ -120,7 +120,7 @@ function adoptPlan(overrides: Partial<AdoptPlan> = {}): AdoptPlan {
   assert.equal(edited.domain, "renamed.example.com");
   assert.equal(edited.baseDomain, "example.com");
   assert.equal(edited.subdomain, "renamed");
-  assert.equal(edited.surfaces, "client-only");
+  assert.equal(edited.surfaces, "static");
   assert.equal(edited.deploymentMode, "gh-pages");
   assert.equal(edited.runDeployment, true);
   assert.equal(edited.createGithubRepo, false);
@@ -146,7 +146,7 @@ function adoptPlan(overrides: Partial<AdoptPlan> = {}): AdoptPlan {
     {
       ...plan,
       identity: { ...plan.identity, domain: "new.example.com", description: undefined },
-      layout: { ...plan.layout, surfaces: "server-only", clientDir: "/tmp/should-drop" },
+      layout: { ...plan.layout, surfaces: "backend", clientDir: "/tmp/should-drop" },
       deployment: { ...plan.deployment, mode: "scaffold-only", isPrivate: false },
       repo: { ...plan.repo, setupGitHub: true },
       env: { bootstrapDotenvx: false },
@@ -157,7 +157,7 @@ function adoptPlan(overrides: Partial<AdoptPlan> = {}): AdoptPlan {
   );
   assert.equal(roundTripped.domain, "new.example.com");
   assert.equal(roundTripped.description, "");
-  assert.equal(roundTripped.surfaces, "server-only");
+  assert.equal(roundTripped.surfaces, "backend");
   assert.equal(roundTripped.clientDir, undefined);
   assert.equal(roundTripped.deploymentMode, "scaffold-only");
   assert.equal(roundTripped.setupGitHub, true);

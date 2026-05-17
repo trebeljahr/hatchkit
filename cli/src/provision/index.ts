@@ -15,11 +15,12 @@
  *     so a bug in dev can't email real users. We still mint two keys
  *     (`<name>-dev` / `<name>-prod`) and write them into the server's
  *     dev/prod env respectively.
- *   · Surfaces: a project can have a server, a client, or both. When
- *     both, the common case is a single shared GlitchTip/OpenPanel
- *     project (same DSN on both SDKs, each tagged automatically by
- *     `sdk.name`). Strict-isolation setups can opt into two projects
- *     via `Surfaces.mode = "separate"`.
+ *   · Surfaces: a project can be fullstack, split into two packages,
+ *     backend-only, or pure static. When the project has both a server
+ *     and a client surface, the common case is a single shared
+ *     GlitchTip/OpenPanel project (same DSN on both SDKs, each tagged
+ *     automatically by `sdk.name`). Strict-isolation setups can opt
+ *     into two projects via `Surfaces.mode = "split"`.
  *
  * A 0600-permission cache copy of every written env is kept under
  * ~/<conf-dir>/provisioned/ for recoverability. Secret values never
@@ -40,6 +41,7 @@ import {
   getConfigPath,
 } from "../config.js";
 import { mirrorEnvKeysIfAbsent } from "../deploy/keys.js";
+import type { Surface } from "../prompts.js";
 import {
   MANIFEST_FILENAME,
   MANIFEST_VERSION,
@@ -104,7 +106,12 @@ export type ProvisionService =
   | "email"
   | "search-console";
 
-export type SurfaceMode = "shared" | "separate" | "server-only" | "client-only";
+/** Re-export of the canonical `Surface` from prompts so provisioner
+ *  call-sites can keep referring to a local name. The four values
+ *  encode both code topology (one package vs. split packages vs.
+ *  single surface) and runtime shape (has a server runtime vs. pure
+ *  static). See `Surface` in prompts.ts for the per-value semantics. */
+export type SurfaceMode = Surface;
 
 export interface Surfaces {
   /** Which SDK surfaces the project has. Drives where env values land
@@ -112,10 +119,10 @@ export interface Surfaces {
   mode: SurfaceMode;
   /** Absolute path to the directory that owns `.env.{development,
    *  production}` for the server bundle. Required unless `mode` is
-   *  `"client-only"`. */
+   *  `"static"` (no server runtime). */
   serverEnvDir?: string;
   /** Absolute path for the client bundle's env files. Required unless
-   *  `mode` is `"server-only"`. */
+   *  `mode` is `"backend"`. */
   clientEnvDir?: string;
   /** Absolute path to the project root (where `.hatchkit.json` lives).
    *  Optional for most services, useful for Plausible to infer the
@@ -269,7 +276,7 @@ async function assertNoExistingProviderResources(args: {
 
   if (args.services.includes("glitchtip")) {
     const names =
-      args.surfaces && args.surfaces.mode === "separate"
+      args.surfaces && args.surfaces.mode === "split"
         ? [`${args.baseName}-server`, `${args.baseName}-client`]
         : [args.baseName];
     for (const name of names) {
@@ -279,7 +286,7 @@ async function assertNoExistingProviderResources(args: {
 
   if (args.services.includes("openpanel")) {
     const names =
-      args.surfaces && args.surfaces.mode === "separate"
+      args.surfaces && args.surfaces.mode === "split"
         ? [`${args.baseName}-server`, `${args.baseName}-client`]
         : [args.baseName];
     for (const name of names) {
@@ -377,9 +384,19 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
 
   console.log(chalk.bold(`\n  ── Provisioning ${opts.baseName} ──────────────────────────\n`));
 
+  // Runtime-shape gate. `static` is the ONLY surface mode without a
+  // server runtime; everything else (fullstack, split, backend) does
+  // have one and therefore has somewhere to put server-side env. Used
+  // by Resend, S3, and the server-side half of GlitchTip/OpenPanel.
+  // The `surfaces === null` branch is cache-only mode (--no-write):
+  // env lines still get cached on disk, so treat it as having both
+  // surfaces available.
+  const hasServerRuntime = !surfaces || surfaces.mode !== "static";
+  const hasClientSurface = !surfaces || surfaces.mode !== "backend";
+
   // ── GlitchTip ──
   if (opts.services.includes("glitchtip")) {
-    if (surfaces?.mode === "separate") {
+    if (surfaces?.mode === "split") {
       for (const side of ["server", "client"] as const) {
         const projectName = `${opts.baseName}-${side}`;
         const res = await withSpinner(`GlitchTip: creating project ${projectName}`, () =>
@@ -398,10 +415,10 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
       // SDK reads GLITCHTIP_DSN_CLIENT (same value). Both SDKs tag
       // events with `sdk.name`, so filtering by surface in the UI is
       // automatic.
-      if (surfaces && (surfaces.mode === "shared" || surfaces.mode === "server-only")) {
+      if (hasServerRuntime) {
         pushObsLines(buckets, "server", renderGlitchtipEnv(res, false), enableDevObs);
       }
-      if (surfaces && (surfaces.mode === "shared" || surfaces.mode === "client-only")) {
+      if (hasClientSurface) {
         pushObsLines(buckets, "client", renderGlitchtipEnv(res, true), enableDevObs);
       }
     }
@@ -409,7 +426,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
 
   // ── OpenPanel ──
   if (opts.services.includes("openpanel")) {
-    if (surfaces?.mode === "separate") {
+    if (surfaces?.mode === "split") {
       for (const side of ["server", "client"] as const) {
         const projectName = `${opts.baseName}-${side}`;
         const res = await withSpinner(`OpenPanel: creating project ${projectName}`, () =>
@@ -424,10 +441,10 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
         provisionOpenpanelClient(projectName),
       );
       opts.onProvisioned?.({ service: "openpanel", project: projectName });
-      if (surfaces && (surfaces.mode === "shared" || surfaces.mode === "server-only")) {
+      if (hasServerRuntime) {
         pushObsLines(buckets, "server", renderOpenpanelEnv(res, false), enableDevObs);
       }
-      if (surfaces && (surfaces.mode === "shared" || surfaces.mode === "client-only")) {
+      if (hasClientSurface) {
         pushObsLines(buckets, "client", renderOpenpanelEnv(res, true), enableDevObs);
       }
     }
@@ -435,11 +452,10 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
 
   // ── Plausible ── (site-scoped browser analytics)
   if (opts.services.includes("plausible")) {
-    const clientBucket = buckets.find((b) => b.label === "client");
-    if (!clientBucket) {
+    if (!hasClientSurface) {
       console.log(
         chalk.yellow(
-          `  Skipping Plausible — this project has no client surface, so there's nowhere to put NEXT_PUBLIC_PLAUSIBLE_*.`,
+          `  Skipping Plausible — surface mode is "backend" (no client surface), so there's nowhere to put NEXT_PUBLIC_PLAUSIBLE_*.`,
         ),
       );
     } else if (!plausibleDomain) {
@@ -471,14 +487,19 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
 
   // ── Resend ── (always server-side; dev/prod keys are not observability)
   if (opts.services.includes("resend")) {
-    const serverBucket = buckets.find((b) => b.label === "server");
-    if (!serverBucket) {
+    if (!hasServerRuntime) {
       console.log(
         chalk.yellow(
-          `  Skipping Resend — this project has no server surface, so there's nowhere to put RESEND_API_KEY.`,
+          `  Skipping Resend — surface mode is "static" (no server runtime), so there's nowhere to put RESEND_API_KEY.`,
         ),
       );
     } else {
+      // `buckets.find` is non-null here: hasServerRuntime is true iff
+      // `surfaces?.mode !== "static"`, and every non-static mode causes
+      // initBuckets to push a "server" entry (including the
+      // surfaces === null cache-only path). The non-null assertion
+      // keeps the TS types tight without restructuring the bucket model.
+      const serverBucket = buckets.find((b) => b.label === "server")!;
       const devRes = await withSpinner(
         `Resend: creating restricted API key ${opts.baseName}-dev`,
         () => provisionResendClient(`${opts.baseName}-dev`, resendDomain?.id, resendDomain?.name),
@@ -669,11 +690,10 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
 
   // ── S3 / R2 ── (server-side only; per-bucket scoped tokens)
   if (opts.services.includes("s3")) {
-    const serverBucket = buckets.find((b) => b.label === "server");
-    if (!serverBucket) {
+    if (!hasServerRuntime) {
       console.log(
         chalk.yellow(
-          `  Skipping S3 — this project has no server surface, so there's nowhere to put R2_*.`,
+          `  Skipping S3 — surface mode is "static" (no server runtime), so there's nowhere to put R2_*.`,
         ),
       );
     } else if (!surfaces || !surfaces.projectDir) {
@@ -700,6 +720,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
           minted: bt.minted,
         });
       }
+      const serverBucket = buckets.find((b) => b.label === "server")!;
       serverBucket.prodLines.push(...renderR2BucketTokensEnv(r2Result));
     }
   }
@@ -881,30 +902,32 @@ async function resolveSurfaces(opts: ProvisionOptions): Promise<Surfaces | null>
       })
     ).trim(),
   );
-  if (!needsEnvSurfaces) return { mode: "client-only", projectDir };
+  if (!needsEnvSurfaces) return { mode: "static", projectDir };
 
   const manifest = readManifest(projectDir);
   const defaultMode: SurfaceMode =
-    manifest?.surfaces === "server-only"
-      ? "server-only"
-      : manifest?.surfaces === "client-only"
-        ? "client-only"
-        : "shared";
+    manifest?.surfaces === "backend"
+      ? "backend"
+      : manifest?.surfaces === "static"
+        ? "static"
+        : manifest?.surfaces === "split"
+          ? "split"
+          : "fullstack";
 
   // Step 2 — surfaces.
   const mode = (await select<SurfaceMode>({
-    message: "What surfaces does this project have?",
+    message: "What kind of project is this?",
     choices: [
       {
-        name: "Server + client — shared observability project (recommended)",
-        value: "shared",
+        name: "Full-stack — single package, server runtime (recommended)",
+        value: "fullstack",
       },
-      { name: "Server only", value: "server-only" },
-      { name: "Client only", value: "client-only" },
       {
-        name: "Server + client — separate projects per surface (strict isolation)",
-        value: "separate",
+        name: "Split server + client — separate observability projects (strict isolation)",
+        value: "split",
       },
+      { name: "Backend only (API / worker, no UI bundle)", value: "backend" },
+      { name: "Static (gh-pages / SPA — no server runtime)", value: "static" },
     ],
     default: defaultMode,
   })) as SurfaceMode;
@@ -913,7 +936,7 @@ async function resolveSurfaces(opts: ProvisionOptions): Promise<Surfaces | null>
   // (packages/server, apps/web, etc.) and offer the first match as the
   // default.
   const surfaces: Surfaces = { mode, projectDir };
-  if (mode === "server-only" || mode === "shared" || mode === "separate") {
+  if (mode !== "static") {
     const def = detectSurfaceDir(projectDir, [
       "packages/server",
       "apps/server",
@@ -935,7 +958,7 @@ async function resolveSurfaces(opts: ProvisionOptions): Promise<Surfaces | null>
       ).trim(),
     );
   }
-  if (mode === "client-only" || mode === "shared" || mode === "separate") {
+  if (mode !== "backend") {
     const def = detectSurfaceDir(projectDir, [
       "packages/client",
       "packages/web",
@@ -1193,10 +1216,16 @@ function detectMinimalManifestSurfaces(projectDir: string): ProjectManifest["sur
     "client",
     "web",
   ].some((dir) => existsSync(join(projectDir, dir)));
-  if (hasServer && hasClient) return "both";
-  if (hasServer) return "server-only";
-  if (hasClient) return "client-only";
-  return "both";
+  // Heuristic only — used when minting a brand-new manifest from a
+  // Search Console verification flow. Distinguishes split (separate
+  // server + client dirs) from fullstack (single package) by disk
+  // layout; can't tell fullstack from static without more signals, so
+  // defaults to fullstack (the safer choice — leaves the door open
+  // for server-side env if the user later wires it up).
+  if (hasServer && hasClient) return "split";
+  if (hasServer) return "backend";
+  if (hasClient) return "fullstack";
+  return "fullstack";
 }
 
 function minimalSearchConsoleManifest(args: {

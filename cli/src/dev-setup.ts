@@ -1193,7 +1193,7 @@ function findViteConfig(projectDir: string): string | null {
  *  `export default nextConfig;` line with the wrap + add a top-of-file
  *  import. We do NOT try to handle exotic config shapes
  *  (functional configs, conditional defaults). Returns `"no-file"`
- *  when no next.config can be located (server-only surfaces, unusual
+ *  when no next.config can be located (backend surfaces, unusual
  *  layouts) and `"unsupported-shape"` when the file exists but doesn't
  *  match an ESM `export default` pattern — most commonly CJS
  *  `module.exports = …`. */
@@ -1719,7 +1719,7 @@ async function runDevSetupEnableCli(args: string[]): Promise<void> {
       process.exit(1);
     }
   } else {
-    devPort = manifest.surfaces === "server-only" ? manifest.ports.server : manifest.ports.client;
+    devPort = manifest.surfaces === "backend" ? manifest.ports.server : manifest.ports.client;
   }
 
   console.log(chalk.bold(`\n  Enabling local-dev for ${chalk.cyan(manifest.name)}\n`));

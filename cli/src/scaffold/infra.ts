@@ -16,17 +16,17 @@ export function generateTfvars(config: ProjectConfig): string {
     if (subdomains[key]) return;
     subdomains[key] = description;
   };
-  // For client-only there's no backend to receive traffic at api.<sub>,
-  // so leave that record out entirely — provisioning it just clutters
-  // DNS with a name that resolves to a server hosting nothing useful.
-  // The "Web app + API paths" label is reused for both `both` and
-  // `server-only` (where the bare domain ALSO serves /api paths) and
-  // for client-only (where it's just the web app).
+  // For static there's no backend to receive traffic at api.<sub>, so
+  // leave that record out entirely — provisioning it just clutters DNS
+  // with a name that resolves to a server hosting nothing useful. The
+  // "Web app + API paths" label is reused for fullstack/split/backend
+  // (where the bare domain ALSO serves /api paths) and "Web app" for
+  // static (just the web app).
   addSubdomain(
     config.subdomain || "@",
-    config.surfaces === "client-only" ? "Web app" : "Web app + API paths",
+    config.surfaces === "static" ? "Web app" : "Web app + API paths",
   );
-  if (config.surfaces !== "client-only") {
+  if (config.surfaces !== "static") {
     addSubdomain(config.subdomain ? `api.${config.subdomain}` : "api", "REST API");
   }
   // Only provision admin.<domain> when we're spinning up a fresh Coolify
@@ -96,8 +96,8 @@ export function generateCoolifyEnv(
     repoUrl: extras.repoUrl ?? "",
     serverPort: extras.serverPort ?? 3000,
     clientPort: extras.clientPort ?? 3000,
-    mongoEnabled: config.surfaces !== "client-only",
-    redisEnabled: config.features.includes("websocket") && config.surfaces !== "client-only",
+    mongoEnabled: config.surfaces !== "static",
+    redisEnabled: config.features.includes("websocket") && config.surfaces !== "static",
     s3Provider: config.s3Provider === "existing" ? "custom" : config.s3Provider,
     s3Bucket: s3Config?.bucket || "",
     s3Endpoint: s3Config?.endpoint || "",

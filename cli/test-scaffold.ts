@@ -64,7 +64,7 @@ function cfg(
     domain: `${name}.example.com`,
     baseDomain: "example.com",
     subdomain: name,
-    surfaces: "both",
+    surfaces: "fullstack",
     deployTarget: "existing",
     serverId: 1,
     serverIp: "1.2.3.4",
@@ -245,10 +245,10 @@ results.serverOnly = await run(
       ["pkg.scripts.dev targets server only", pkg.scripts?.dev === "pnpm --filter @starter/server dev"],
       ["pkg.scripts has no build:client", !pkg.scripts?.["build:client"]],
       ["pkg.scripts has no test:e2e", !pkg.scripts?.["test:e2e"]],
-      ["manifest persists surfaces=server-only", manifest.surfaces === "server-only"],
+      ["manifest persists surfaces=server-only", manifest.surfaces === "backend"],
     ];
   },
-  { surfaces: "server-only" },
+  { surfaces: "backend" },
 );
 
 results.clientOnly = await run(
@@ -300,14 +300,14 @@ results.clientOnly = await run(
       ["pkg.scripts.dev targets client only", pkg.scripts?.dev === "pnpm --filter @starter/client dev"],
       ["pkg.scripts has no build:server", !pkg.scripts?.["build:server"]],
       ["pkg.scripts has no test:unit", !pkg.scripts?.["test:unit"]],
-      ["manifest persists surfaces=client-only", manifest.surfaces === "client-only"],
+      ["manifest persists surfaces=client-only", manifest.surfaces === "static"],
       [
         "no packages/server/.env.production (dotenvx skipped)",
         !existsSync(join(d, "packages/server/.env.production")),
       ],
     ];
   },
-  { surfaces: "client-only", mongodbProvider: "external" },
+  { surfaces: "static", mongodbProvider: "external" },
 );
 
 results.both = await run("desktop + mobile", "my-cool-app", ["desktop", "mobile"], (d) => {
@@ -443,7 +443,7 @@ console.log("\n── manifest: sanitized fields only, no leaks ─────�
     const json = JSON.stringify(manifest);
     const checks: Check[] = [
       ["manifest exists", typeof manifest === "object"],
-      ["has version = 1", manifest.version === 1],
+      ["has version = 2", manifest.version === 2],
       ["has cliVersion", typeof manifest.cliVersion === "string"],
       ["has scaffoldedAt (ISO)", typeof manifest.scaffoldedAt === "string"],
       ["contains name", manifest.name === "manifest-test"],
@@ -555,7 +555,7 @@ console.log("\n── server add: retrofit client-only project ─────�
   try {
     await scaffoldApp(
       cfg("server-add-test", [], {
-        surfaces: "client-only",
+        surfaces: "static",
       }),
       d,
     );
@@ -570,11 +570,11 @@ console.log("\n── server add: retrofit client-only project ─────�
     const sharedIndex = readFileSync(join(d, "packages/shared/src/index.ts"), "utf-8");
     const serverEnv = readFileSync(join(d, "packages/server/.env.example"), "utf-8");
     const checks: Check[] = [
-      ["initial scaffold was client-only", before?.surfaces === "client-only"],
+      ["initial scaffold was static", before?.surfaces === "static"],
       ["server package created", existsSync(join(d, "packages/server/package.json"))],
       ["shared ml-types restored", existsSync(join(d, "packages/shared/src/ml-types.ts"))],
       ["shared barrel exports ml-types", sharedIndex.includes("./ml-types.js")],
-      ["manifest surfaces now both", after?.surfaces === "both"],
+      ["manifest surfaces now fullstack", after?.surfaces === "fullstack"],
       ["gh-pages switched to coolify", after?.deploymentMode === "coolify"],
       ["root dev script restored", rootPkg.scripts?.dev === "node scripts/dev.mjs"],
       ["root build script includes server", rootPkg.scripts?.build?.includes("@starter/server")],
@@ -865,7 +865,7 @@ console.log("\n── build pipeline: engines.node detection + created/overwritt
     ghOwner: "owner",
     entrypoint: "dist/index.js",
     port: 3000,
-    surfaces: "client-only",
+    surfaces: "static",
     defaultBranch: "main",
   });
   const dockerfile = readFileSync(join(tmp, "Dockerfile"), "utf-8");
@@ -896,7 +896,7 @@ console.log("\n── build pipeline: engines.node detection + created/overwritt
     ghOwner: "owner",
     entrypoint: "dist/index.js",
     port: 3000,
-    surfaces: "client-only",
+    surfaces: "static",
     defaultBranch: "main",
     force: true,
   });
@@ -1002,7 +1002,7 @@ console.log("\n── build pipeline: framework detection (Next.js) ────
       ghOwner: "owner",
       entrypoint: "",
       port: 3000,
-      surfaces: "client-only",
+      surfaces: "static",
       defaultBranch: "main",
     });
     const dockerfile = readFileSync(join(dir, "Dockerfile"), "utf-8");
@@ -1079,7 +1079,7 @@ console.log("\n── build pipeline: framework detection (Next.js) ────
       ghOwner: "owner",
       entrypoint: "",
       port: 3000,
-      surfaces: "client-only",
+      surfaces: "static",
       defaultBranch: "main",
     });
     const dockerfile = readFileSync(join(dir, "Dockerfile"), "utf-8");
@@ -1125,7 +1125,7 @@ console.log("\n── build pipeline: framework detection (Next.js) ────
       ghOwner: "owner",
       entrypoint: "",
       port: 3000,
-      surfaces: "client-only",
+      surfaces: "static",
       defaultBranch: "main",
     });
     const dockerfile = readFileSync(join(dir, "Dockerfile"), "utf-8");
@@ -1366,7 +1366,7 @@ console.log("\n── plausible api: CE fallback writes manual tracker env ─�
       services: ["plausible"],
       domain: "fractal.garden",
       surfaces: {
-        mode: "client-only",
+        mode: "static",
         projectDir: tmp,
         clientEnvDir: tmp,
       },
@@ -1438,7 +1438,7 @@ console.log(
     s3Provider: "none",
     deployTarget: "existing",
     ports: { server: 3000, client: 3001 },
-    surfaces: "client-only",
+    surfaces: "static",
   });
   const both = computeDesiredAppStates({
     version: MANIFEST_VERSION,
@@ -1451,7 +1451,7 @@ console.log(
     s3Provider: "none",
     deployTarget: "existing",
     ports: { server: 3000, client: 3001 },
-    surfaces: "both",
+    surfaces: "fullstack",
   });
 
   const singleApp = clientOnly.find((d) => d.appName === "collection-of-beauty");
@@ -2309,7 +2309,7 @@ console.log("\n── adopt: gitignore + private-key guard ───────
     try {
       console.log("\n── localDev: server-only points at server port ────");
       const result = await scaffoldApp(
-        cfg(slug, [], { surfaces: "server-only", localDev: { slug } }),
+        cfg(slug, [], { surfaces: "backend", localDev: { slug } }),
         d,
       );
       const fragmentPath = join(fragmentDir, `${slug}.caddy`);

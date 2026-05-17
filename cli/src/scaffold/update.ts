@@ -215,7 +215,7 @@ export async function runUpdate(
   // whether the project picked it up at scaffold or via this retrofit.
   if (localDevEnabled) {
     const devPort =
-      manifest.surfaces === "server-only" ? manifest.ports.server : manifest.ports.client;
+      manifest.surfaces === "backend" ? manifest.ports.server : manifest.ports.client;
     const { enableProjectLocalDev } = await import("../dev-setup.js");
     const { localDevUrl } = await import("@hatchkit/dev-shared");
     await enableProjectLocalDev({

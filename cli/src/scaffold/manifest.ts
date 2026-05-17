@@ -35,7 +35,14 @@ import type { Feature, GpuPlatform, MlService, ProjectConfig, S3Provider } from 
 import type { ProjectPorts } from "../utils/ports.js";
 
 export const MANIFEST_FILENAME = ".hatchkit.json";
-export const MANIFEST_VERSION = 1;
+export const MANIFEST_VERSION = 2;
+/** Every schema version readManifest knows how to migrate FROM. The
+ *  reader transparently upgrades v1 manifests (3-value surfaces enum:
+ *  server-only / client-only / both, plus the unstable
+ *  shared/separate values that leaked from the provisioner) on read,
+ *  and the next write bumps the file's version field to {@link
+ *  MANIFEST_VERSION}. */
+const MIGRATABLE_VERSIONS = new Set<number>([1, 2]);
 
 export interface ProjectManifest {
   /** Schema version. Increment when the shape changes incompatibly. */
@@ -97,13 +104,17 @@ export interface ProjectManifest {
     email?: { domain: string; configuredAt: string; destinationEmail?: string };
     searchConsole?: { domain: string; siteUrl: string; verifiedAt: string };
   };
-  /** What kind of project this is — server-only / client-only /
-   *  both. Captured by `hatchkit adopt` so subsequent re-runs (and
+  /** What kind of project this is — fullstack / split / backend /
+   *  static. Captured by `hatchkit adopt` so subsequent re-runs (and
    *  any future tooling that needs to know whether to look for a
-   *  server bundle) don't have to re-infer from disk layout.
+   *  server runtime) don't have to re-infer from disk layout. The
+   *  four values disambiguate code topology (one package vs. split
+   *  packages vs. single surface) from runtime shape (has a server
+   *  runtime vs. pure static).
+   *
    *  Optional for back-compat with manifests written before this
    *  field existed; readers should fall back to detection. */
-  surfaces?: "server-only" | "client-only" | "both";
+  surfaces?: "fullstack" | "split" | "backend" | "static";
   /** S3 buckets provisioned by `hatchkit provision s3`. Names + the
    *  shared token id go in the manifest (so re-runs are idempotent and
    *  `hatchkit destroy` knows what to undo); credentials never do —
@@ -237,11 +248,66 @@ export function writeManifest(outputDir: string, manifest: ProjectManifest): voi
   writeFileSync(path, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
 }
 
+/** Old → new surface rename map. Applied in {@link readManifest} so
+ *  v1 manifests (and any v2 file that was hand-edited with a v1
+ *  literal — happened during the rollout) keep working transparently.
+ *
+ *  The four named entries are the canonical v1 → v2 rename:
+ *
+ *    shared      → fullstack
+ *    separate    → split
+ *    server-only → backend
+ *    client-only → static
+ *
+ *  Plus one historical alias: v1 also let users write `surfaces:
+ *  "both"` (the only value that didn't have a 1:1 4-value successor).
+ *  Migrate to `fullstack` — the safer choice; users with a split
+ *  /server + /client monorepo can hand-flip to `split` after the
+ *  upgrade. */
+const SURFACE_RENAME: Record<string, ProjectManifest["surfaces"]> = {
+  shared: "fullstack",
+  separate: "split",
+  "server-only": "backend",
+  "client-only": "static",
+  both: "fullstack",
+};
+
+interface ReadManifestResult {
+  manifest: ProjectManifest;
+  /** True when the in-memory manifest differs from the on-disk file
+   *  because the reader applied a migration. Callers that intend to
+   *  write the manifest back should observe this so the next write
+   *  bumps the file's `version` field. */
+  migrated: boolean;
+  /** Human-readable notes describing what migrated. Empty when
+   *  `migrated` is false. */
+  migrationNotes: string[];
+}
+
 /** Read + validate a manifest from a scaffolded project directory.
  *  Returns null if the file doesn't exist. Throws on malformed JSON
  *  or an unknown schema version so downstream code doesn't silently
- *  operate on a wrong shape. */
+ *  operate on a wrong shape.
+ *
+ *  Transparently migrates v1 manifests (and the rename-map aliases)
+ *  to v2 in memory. The on-disk file isn't touched here — the next
+ *  call to {@link writeManifest} re-emits the file at the current
+ *  schema version, which is the natural moment to upgrade. */
 export function readManifest(projectDir: string): ProjectManifest | null {
+  const result = readManifestWithMigrationInfo(projectDir);
+  if (!result) return null;
+  if (result.migrated) {
+    for (const note of result.migrationNotes) {
+      console.log(`  ${note}`);
+    }
+  }
+  return result.manifest;
+}
+
+/** Internal variant of {@link readManifest} that also returns whether
+ *  a migration happened. Exposed for the test suite + any caller that
+ *  wants to suppress the console log (tests do). */
+export function readManifestWithMigrationInfo(projectDir: string): ReadManifestResult | null {
   const path = join(projectDir, MANIFEST_FILENAME);
   if (!existsSync(path)) return null;
   let parsed: unknown;
@@ -250,12 +316,41 @@ export function readManifest(projectDir: string): ProjectManifest | null {
   } catch (err) {
     throw new Error(`Manifest at ${path} is not valid JSON: ${(err as Error).message}`);
   }
-  if (
-    !parsed ||
-    typeof parsed !== "object" ||
-    (parsed as { version?: unknown }).version !== MANIFEST_VERSION
-  ) {
-    throw new Error(`Manifest at ${path} has unknown version. Expected ${MANIFEST_VERSION}.`);
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error(`Manifest at ${path} is not an object.`);
   }
-  return parsed as ProjectManifest;
+  const obj = parsed as Record<string, unknown> & { version?: unknown; surfaces?: unknown };
+  const fileVersion = typeof obj.version === "number" ? obj.version : undefined;
+  if (fileVersion === undefined || !MIGRATABLE_VERSIONS.has(fileVersion)) {
+    throw new Error(
+      `Manifest at ${path} has unknown version (${String(obj.version)}). Expected ${MANIFEST_VERSION} or older migratable.`,
+    );
+  }
+
+  const migrationNotes: string[] = [];
+
+  // surfaces rename — applies regardless of file version: a v2 file
+  // that was hand-edited with a v1 literal still gets migrated, so
+  // the manifest in memory is always canonical 4-value.
+  if (typeof obj.surfaces === "string" && obj.surfaces in SURFACE_RENAME) {
+    const before = obj.surfaces;
+    const after = SURFACE_RENAME[before];
+    if (after && before !== after) {
+      obj.surfaces = after;
+      migrationNotes.push(`Renamed surface mode: ${before} → ${after}`);
+    }
+  }
+
+  // Schema-version bump (in memory only — the file is rewritten on
+  // the next writeManifest call).
+  if (fileVersion !== MANIFEST_VERSION) {
+    obj.version = MANIFEST_VERSION;
+    migrationNotes.push(`Migrated manifest schema v${fileVersion} → v${MANIFEST_VERSION}`);
+  }
+
+  return {
+    manifest: obj as unknown as ProjectManifest,
+    migrated: migrationNotes.length > 0,
+    migrationNotes,
+  };
 }

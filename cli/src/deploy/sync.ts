@@ -272,11 +272,11 @@ export function computeDesiredAppStates(manifest: ProjectManifest): DesiredApp[]
 
   // Single-app layout: one Coolify app named `<name>` with one compose
   // service `app`. ports_exposes is surface-aware:
-  //   server-only / both → server port (the public listener)
-  //   client-only        → 80 (matches adopt.ts's static-site default)
-  const singleAppPort = surfaces === "client-only" ? "80" : portServer;
+  //   fullstack / split / backend → server port (the public listener)
+  //   static                       → 80 (matches adopt.ts's static-site default)
+  const singleAppPort = surfaces === "static" ? "80" : portServer;
   const singleAppDomain =
-    surfaces === "client-only" && (singleAppPort === "80" || singleAppPort === "443")
+    surfaces === "static" && (singleAppPort === "80" || singleAppPort === "443")
       ? `https://${domain}`
       : `https://${domain}:${singleAppPort}`;
   // Use bare `https://<domain>` when the listener is on the conventional
@@ -319,14 +319,15 @@ export function computeDesiredAppStates(manifest: ProjectManifest): DesiredApp[]
   // Filter by surfaces so we don't ship a non-existent split shape
   // in JSON output. The actual Coolify lookup will skip non-existent
   // names anyway, but keeping the candidate list tight reduces noise.
-  if (surfaces === "client-only") {
+  if (surfaces === "static") {
     return [singleApp, fallbackWeb, splitClient];
   }
-  if (surfaces === "server-only") {
+  if (surfaces === "backend") {
     return [singleApp, fallbackWeb, splitServer];
   }
-  // both / undefined → server-of-truth is the split layout, but adopt
-  // collapses to single-app for projects without a separate frontend.
+  // fullstack / split / undefined → source-of-truth is the split layout,
+  // but adopt collapses to single-app for projects without a separate
+  // frontend.
   return [singleApp, fallbackWeb, splitServer, splitClient];
 }
 

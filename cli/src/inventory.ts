@@ -614,16 +614,18 @@ export function writeMinimalManifest(
         "Pass --name / --domain or run inventory interactively to provide them.",
     );
   }
-  // Surfaces from local layout — both dirs → "both", just one → that
-  // one, neither → fall back to "both" (most common scaffold shape).
+  // Surfaces from local layout — both dirs → "split" (separate
+  // packages), just server → "backend", just client → "static" (no
+  // server runtime present), neither → fall back to "fullstack" (the
+  // most common scaffold shape, single-package server-bearing app).
   const surfaces: ProjectManifest["surfaces"] =
     local.serverDir && local.clientDir
-      ? "both"
+      ? "split"
       : local.serverDir
-        ? "server-only"
+        ? "backend"
         : local.clientDir
-          ? "client-only"
-          : "both";
+          ? "static"
+          : "fullstack";
   const manifest: ProjectManifest = {
     version: MANIFEST_VERSION,
     cliVersion: getCliVersion(),

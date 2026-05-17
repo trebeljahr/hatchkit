@@ -3,16 +3,19 @@
  *
  * The full-stack starter ships with packages/{server,client,shared} plus
  * a multi-service docker-compose. When the user picks a narrower surface
- * (server-only / client-only) we strip the unused half AFTER the copy.
+ * (backend / static) we strip the unused half AFTER the copy. The
+ * `fullstack` and `split` modes keep both packages — split only differs
+ * at provisioner time (two observability projects per vendor instead of
+ * one), the on-disk layout is identical.
  *
- *   · server-only — remove packages/client + client-side top-level
+ *   · backend — remove packages/client + client-side top-level
  *     scaffolding (Next.js / Electron / Capacitor / e2e), strip the
  *     `client` service from docker-compose.yml, rewrite the root
  *     package.json scripts to drop client/test/e2e/native targets.
  *     Clean by construction: the server has zero `@starter/client`
  *     imports.
  *
- *   · client-only — remove packages/server + every client-side route /
+ *   · static — remove packages/server + every client-side route /
  *     provider / hook / lib that talks to the server (the (protected)
  *     route group, auth pages, tRPC wiring, Better Auth client),
  *     strip the server/mongo/redis services from docker-compose,
@@ -36,11 +39,11 @@ export function pruneToSurface(
   outputDir: string,
   modifications: string[],
 ): void {
-  if (config.surfaces === "both") return;
-  if (config.surfaces === "server-only") pruneToServerOnly(outputDir, modifications);
+  if (config.surfaces === "fullstack" || config.surfaces === "split") return;
+  if (config.surfaces === "backend") pruneToServerOnly(outputDir, modifications);
   else {
     pruneToClientOnly(outputDir, modifications);
-    // Pages needs additional config tweaks on top of the client-only
+    // Pages needs additional config tweaks on top of the static
     // prune — the prune leaves `output: "standalone"` + `/api/*`
     // rewrites in place, both of which assume a running backend.
     if (config.deploymentMode === "gh-pages") {
@@ -53,21 +56,21 @@ export function pruneToSurface(
   }
 }
 
-// ── server-only ────────────────────────────────────────────────────────
+// ── backend ────────────────────────────────────────────────────────────
 
 function pruneToServerOnly(outputDir: string, modifications: string[]): void {
   // Drop the client package outright. The server has no `@starter/client`
   // imports (verified by the test suite), so this is safe.
   removeIfExists(join(outputDir, "packages/client"));
-  modifications.push("server-only: removed packages/client/");
+  modifications.push("backend: removed packages/client/");
 
   // Top-level dirs/files that only make sense alongside a client. Mobile
   // and desktop are already feature-gated so they're usually gone by
   // this point — these calls are belt-and-braces for the case where the
-  // user picks server-only + desktop/mobile (a contradiction we don't
+  // user picks backend + desktop/mobile (a contradiction we don't
   // bother validating; the strip just wins).
   for (const rel of CLIENT_SIDE_TOP_LEVEL) removeIfExists(join(outputDir, rel));
-  modifications.push("server-only: removed client-side top-level scaffolding");
+  modifications.push("backend: removed client-side top-level scaffolding");
 
   // Strip the `client` service from compose. Keep `server`, `mongo`,
   // `redis`, and the `mongo-data` volume — the server still needs all
@@ -76,7 +79,7 @@ function pruneToServerOnly(outputDir: string, modifications: string[]): void {
     const p = join(outputDir, rel);
     if (existsSync(p)) rewriteFile(p, (c) => stripComposeServices(c, ["client"]));
   }
-  modifications.push("server-only: removed client service from docker-compose");
+  modifications.push("backend: removed client service from docker-compose");
 
   dropWorkspaceEntry(outputDir, "docs-site");
 
@@ -100,10 +103,10 @@ function pruneToServerOnly(outputDir: string, modifications: string[]): void {
   );
   setPackageJsonScript(outputDir, "test", "pnpm run test:unit");
   setPackageJsonScript(outputDir, "typecheck", "pnpm -r run typecheck");
-  modifications.push("server-only: rewrote root package.json scripts");
+  modifications.push("backend: rewrote root package.json scripts");
 }
 
-// ── client-only ────────────────────────────────────────────────────────
+// ── static ─────────────────────────────────────────────────────────────
 
 function pruneToClientOnly(outputDir: string, modifications: string[]): void {
   // The full server package and any shared types only the server router
@@ -111,7 +114,7 @@ function pruneToClientOnly(outputDir: string, modifications: string[]): void {
   // so we patch the barrel after this.
   removeIfExists(join(outputDir, "packages/server"));
   removeIfExists(join(outputDir, "packages/shared/src/ml-types.ts"));
-  modifications.push("client-only: removed packages/server/ and packages/shared/src/ml-types.ts");
+  modifications.push("static: removed packages/server/ and packages/shared/src/ml-types.ts");
 
   // Shared barrel re-exports ml-types — drop the line so the package
   // still builds after the file goes.
@@ -140,7 +143,7 @@ function pruneToClientOnly(outputDir: string, modifications: string[]): void {
   ]) {
     removeIfExists(join(outputDir, "packages/client", rel));
   }
-  modifications.push("client-only: removed auth/tRPC routes, providers, libs, hooks");
+  modifications.push("static: removed auth/tRPC routes, providers, libs, hooks");
 
   // app/layout.tsx still imports the providers we just deleted and
   // wraps children in them. Rewrite to a minimal layout that just
@@ -162,11 +165,11 @@ function pruneToClientOnly(outputDir: string, modifications: string[]): void {
     "@tanstack/react-query",
     "better-auth",
   ]);
-  modifications.push("client-only: pruned @trpc/* + better-auth from packages/client/package.json");
+  modifications.push("static: pruned @trpc/* + better-auth from packages/client/package.json");
 
   // Strip server-oriented services from compose. The starter's compose
   // has `server`, `client`, `mongo`, `redis` plus a `mongo-data`
-  // volume. For client-only we keep just `client`.
+  // volume. For static we keep just `client`.
   for (const rel of ["docker-compose.yml", "docker-compose.dev.yml"]) {
     const p = join(outputDir, rel);
     if (existsSync(p)) {
@@ -174,10 +177,10 @@ function pruneToClientOnly(outputDir: string, modifications: string[]): void {
       rewriteFile(p, removeMongoDataVolume);
     }
   }
-  modifications.push("client-only: removed server/mongo/redis from docker-compose");
+  modifications.push("static: removed server/mongo/redis from docker-compose");
 
   // docs-site doubles as the starter's marketing docs. It's a separate
-  // app and not particularly useful in a client-only scaffold; drop it
+  // app and not particularly useful in a static scaffold; drop it
   // so the workspace stays minimal.
   removeIfExists(join(outputDir, "docs-site"));
   removeIfExists(join(outputDir, "e2e"));
@@ -209,7 +212,7 @@ function pruneToClientOnly(outputDir: string, modifications: string[]): void {
   // handles the electron variant for native scaffolds, and the bare
   // `pnpm -r run typecheck` works for everything else.
   setPackageJsonScript(outputDir, "typecheck", "pnpm -r run typecheck");
-  modifications.push("client-only: rewrote root package.json scripts");
+  modifications.push("static: rewrote root package.json scripts");
 }
 
 function rewriteClientLayoutForClientOnly(outputDir: string): void {
@@ -367,12 +370,14 @@ const NATIVE_SCRIPTS = [
 ];
 
 /** Tiny export so callers (tests, future surface kinds) can ask "does
- *  this surface keep a server?" without duplicating the string check. */
+ *  this surface keep a server?" without duplicating the string check.
+ *  Only `static` has no server runtime — fullstack, split, and backend
+ *  all do. */
 export function surfaceHasServer(surface: Surface): boolean {
-  return surface !== "client-only";
+  return surface !== "static";
 }
 
-/** Same for the client half. */
+/** Same for the client half. Only `backend` has no client surface. */
 export function surfaceHasClient(surface: Surface): boolean {
-  return surface !== "server-only";
+  return surface !== "backend";
 }

@@ -72,8 +72,8 @@ export function projectConfigToOnboardingPlan(config: ProjectConfig): ProjectOnb
     },
     layout: {
       surfaces: config.surfaces,
-      serverDir: config.surfaces === "client-only" ? undefined : "packages/server",
-      clientDir: config.surfaces === "server-only" ? undefined : "packages/client",
+      serverDir: config.surfaces === "static" ? undefined : "packages/server",
+      clientDir: config.surfaces === "backend" ? undefined : "packages/client",
     },
     deployment: {
       mode: config.deploymentMode,
@@ -176,8 +176,8 @@ export function onboardingPlanToAdoptPlan(
     description: plan.identity.description ?? "",
     features: plan.provisioning.features,
     surfaces: plan.layout.surfaces,
-    serverDir: plan.layout.surfaces === "client-only" ? undefined : plan.layout.serverDir,
-    clientDir: plan.layout.surfaces === "server-only" ? undefined : plan.layout.clientDir,
+    serverDir: plan.layout.surfaces === "static" ? undefined : plan.layout.serverDir,
+    clientDir: plan.layout.surfaces === "backend" ? undefined : plan.layout.clientDir,
     deploymentMode: plan.deployment.mode,
     setupGitHub: plan.repo.setupGitHub,
     isPrivate: plan.deployment.isPrivate ?? previousPlan.isPrivate,
@@ -207,8 +207,8 @@ export function renderOnboardingDeploymentModeSummary(
     case "coolify":
       return "Coolify (full-stack)";
     case "gh-pages":
-      return surfaces && surfaces !== "client-only"
-        ? chalk.yellow("GitHub Pages — needs client-only")
+      return surfaces && surfaces !== "static"
+        ? chalk.yellow("GitHub Pages — needs static")
         : "GitHub Pages (static)";
     case "scaffold-only":
       return "Scaffold only (no deploy)";
@@ -217,11 +217,13 @@ export function renderOnboardingDeploymentModeSummary(
 
 export function renderOnboardingSurfaceSummary(surface: Surface): string {
   switch (surface) {
-    case "both":
-      return "server + client (full-stack)";
-    case "server-only":
-      return "server only (API / backend)";
-    case "client-only":
-      return "client only (static site / SPA)";
+    case "fullstack":
+      return "full-stack (single package, server runtime)";
+    case "split":
+      return "split server + client packages (server runtime)";
+    case "backend":
+      return "backend only (API / worker, no UI bundle)";
+    case "static":
+      return "static (gh-pages / SPA — no server runtime)";
   }
 }

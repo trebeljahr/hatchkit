@@ -193,11 +193,11 @@ export async function runCoolifySetup(
     `https://${config.domain}/api/ws`,
     `https://${apiDomain}/ws`,
   ];
-  const surfaces = config.surfaces ?? "both";
+  const surfaces = config.surfaces ?? "fullstack";
   const dockerComposeDomains: Array<{ name: string; domain: string }> =
-    surfaces === "client-only"
+    surfaces === "static"
       ? [{ name: "client", domain: frontendDomain }]
-      : surfaces === "server-only"
+      : surfaces === "backend"
         ? [
             { name: "server", domain: frontendDomain },
             ...backendDomains.map((domain) => ({ name: "server", domain })),
@@ -208,9 +208,9 @@ export async function runCoolifySetup(
           ];
 
   console.log(chalk.dim("  Domain routing:"));
-  if (surfaces === "client-only") {
+  if (surfaces === "static") {
     console.log(chalk.dim(`    Frontend (client): ${frontendDomain}`));
-  } else if (surfaces === "server-only") {
+  } else if (surfaces === "backend") {
     console.log(
       chalk.dim(`    All hosts → server: ${[frontendDomain, ...backendDomains].join(", ")}`),
     );
@@ -315,11 +315,11 @@ export async function runCoolifySetup(
   // private key that `hatchkit keys push` puts on Coolify. That keeps
   // prod secrets out of Coolify's UI.
   //
-  // Client-only scaffolds get only NODE_ENV — there's no server to
-  // honour PORT (the Next.js standalone server already binds 3000) and
+  // Static scaffolds get only NODE_ENV — there's no server to honour
+  // PORT (the Next.js standalone server already binds 3000) and
   // FRONTEND_URL is meaningless without a CORS-checking backend.
   const envs: Record<string, string> =
-    surfaces === "client-only"
+    surfaces === "static"
       ? { NODE_ENV: "production" }
       : {
           NODE_ENV: "production",

@@ -477,9 +477,10 @@ function flagValue(name: string): string | undefined {
 }
 
 function provisionSurfaceModeFromManifest(manifest: ProjectManifest | null): SurfaceMode {
-  if (manifest?.surfaces === "server-only") return "server-only";
-  if (manifest?.surfaces === "client-only") return "client-only";
-  return "shared";
+  if (manifest?.surfaces === "backend") return "backend";
+  if (manifest?.surfaces === "static") return "static";
+  if (manifest?.surfaces === "split") return "split";
+  return "fullstack";
 }
 
 /** Resolve the GitHub `owner/repo` slug from the cwd's git origin.
@@ -625,8 +626,8 @@ function servicesImpossibleForProject(manifest: ProjectManifest | null): Set<Pro
   if (!manifest.domain) {
     blocked.add("email");
   }
-  if (manifest.surfaces === "server-only") blocked.add("plausible");
-  if (manifest.surfaces === "client-only") {
+  if (manifest.surfaces === "backend") blocked.add("plausible");
+  if (manifest.surfaces === "static") {
     blocked.add("resend");
     blocked.add("s3");
   }
@@ -896,7 +897,7 @@ async function handleAdd(): Promise<void> {
   // Flag parsing:
   //   --no-write                      → never write; print a cache summary only
   //   --enable-dev-obs                → also populate .env.development with observability creds
-  //   --surfaces=<shared|separate|server-only|client-only>
+  //   --surfaces=<fullstack|split|backend|static>
   //   --server-dir <path>             → absolute or project-relative env dir for the server
   //   --client-dir <path>             → same for the client
   //   --domain <domain>               → site/domain-scoped services (Plausible/Search Console)
@@ -958,7 +959,7 @@ async function handleAdd(): Promise<void> {
     }
   }
 
-  const validSurfaceModes = ["shared", "separate", "server-only", "client-only"] as const;
+  const validSurfaceModes = ["fullstack", "split", "backend", "static"] as const;
   const noEnvServices = new Set<ProvisionService>(["email", "search-console"]);
   const onlyNoEnvServices = services.every((service) => noEnvServices.has(service));
   let surfaces: Parameters<typeof runProvision>[0]["surfaces"] = undefined;
@@ -994,8 +995,8 @@ async function handleAdd(): Promise<void> {
       process.exit(1);
     }
     const mode = surfaceFlag as (typeof validSurfaceModes)[number];
-    const needsServer = mode === "shared" || mode === "separate" || mode === "server-only";
-    const needsClient = mode === "shared" || mode === "separate" || mode === "client-only";
+    const needsServer = mode !== "static";
+    const needsClient = mode !== "backend";
     if (needsServer && !serverDirFlag) {
       console.log(chalk.red("  --server-dir <path> is required for this --surfaces mode."));
       process.exit(1);
@@ -1678,23 +1679,17 @@ async function handleCreate(): Promise<void> {
       // adopt, and existing-project provisioning stay aligned.
       if (provisionServices.length > 0 && !config.dryRun) {
         try {
-          const provisionMode =
-            config.surfaces === "both"
-              ? "shared"
-              : config.surfaces === "server-only"
-                ? "server-only"
-                : "client-only";
           await runProvision({
             baseName: config.name,
             services: provisionServices,
             domain: config.domain,
             surfaces: {
-              mode: provisionMode,
+              mode: config.surfaces,
               projectDir: appDir,
               serverEnvDir:
-                config.surfaces === "client-only" ? undefined : join(appDir, "packages/server"),
+                config.surfaces === "static" ? undefined : join(appDir, "packages/server"),
               clientEnvDir:
-                config.surfaces === "server-only" ? undefined : join(appDir, "packages/client"),
+                config.surfaces === "backend" ? undefined : join(appDir, "packages/client"),
             },
             onProvisioned: (event) => {
               if (ledger) recordProvisionedEvent(ledger, event);
@@ -1718,8 +1713,8 @@ async function handleCreate(): Promise<void> {
       //   · sandbox creds  → .env.development (plaintext)
       //   · live creds     → .env.production  (dotenvx-encrypted)
       // Webhook endpoint ids are tracked in keychain so destroy can
-      // reach them later. Skipped for client-only (server-only feature).
-      if (config.features.includes("stripe") && config.surfaces !== "client-only") {
+      // reach them later. Skipped for static (no server runtime).
+      if (config.features.includes("stripe") && config.surfaces !== "static") {
         try {
           const { provisionStripeProject, renderStripeEnv, renderStripeSkipComment } = await import(
             "./provision/stripe.js"
@@ -2183,10 +2178,10 @@ async function handleCreate(): Promise<void> {
   // Final summary
   console.log(chalk.bold("\n  ── Done! ─────────────────────────────────────────────────\n"));
   console.log(`  App:       ${chalk.cyan(`https://${config.domain}`)}`);
-  // Skip the API line for client-only — there's no backend, so showing
-  // a "/api" URL just confuses the user (and falsely implies a service
+  // Skip the API line for static — there's no backend, so showing a
+  // "/api" URL just confuses the user (and falsely implies a service
   // is listening at that path).
-  if (config.surfaces !== "client-only") {
+  if (config.surfaces !== "static") {
     console.log(`  API:       ${chalk.cyan(`https://${config.domain}/api`)}`);
   }
   if (config.deploymentMode === "gh-pages") {
@@ -2485,7 +2480,7 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Deployment modes:")}
     ${chalk.cyan("coolify")}        Full-stack on Hetzner — DB, providers, Docker. Default.
     ${chalk.cyan("gh-pages")}       Static-only on GitHub Pages. Only offered when surfaces
-                   is ${chalk.dim("client-only")}; the scaffold's Next config is patched to
+                   is ${chalk.dim("static")}; the scaffold's Next config is patched to
                    ${chalk.dim('`output: "export"`')} and the gh-pages workflow is written.
     ${chalk.cyan("scaffold-only")}  Write files, skip deploy. Pick this to defer setup.
 
@@ -2579,7 +2574,7 @@ function printHelp(topic?: HelpTopic): void {
   }
   if (topic === "server") {
     console.log(`
-  ${chalk.bold("hatchkit server add")} — retrofit a server into a client-only project
+  ${chalk.bold("hatchkit server add")} — retrofit a server into a static project
 
   ${chalk.bold("Usage:")}
     cd <project-dir> && hatchkit server add
@@ -2588,8 +2583,8 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("What it does:")}
     Reads .hatchkit.json, copies the Hatchkit server package from the
     starter, restores shared server types, updates root scripts/workspace
-    files, flips manifest surfaces from ${chalk.cyan("client-only")} to
-    ${chalk.cyan("both")}, and switches gh-pages projects back to coolify.
+    files, flips manifest surfaces from ${chalk.cyan("static")} to
+    ${chalk.cyan("fullstack")}, and switches gh-pages projects back to coolify.
 
   ${chalk.bold("What it does not do:")}
     No provider calls. No Coolify, DNS, GitHub, keychain, or Terraform
@@ -2908,10 +2903,10 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Surfaces:")}
     hatchkit asks which surfaces your project has. Options:
-      · ${chalk.cyan("shared")}       — server + client, one obs project (recommended)
-      · ${chalk.cyan("server-only")}  — no browser bundle (API, CLI, worker)
-      · ${chalk.cyan("client-only")}  — static site / SPA with no backend
-      · ${chalk.cyan("separate")}     — server + client, one obs project per surface
+      · ${chalk.cyan("fullstack")}  — single package, server runtime, one obs project (recommended)
+      · ${chalk.cyan("split")}      — separate server + client packages, one obs project per surface
+      · ${chalk.cyan("backend")}    — API / CLI / worker, no UI bundle
+      · ${chalk.cyan("static")}     — gh-pages / S3+CDN / SPA, no server runtime
 
     Env for each surface is written to its own directory (e.g.
     ${chalk.dim("packages/server/.env.production")}, ${chalk.dim("packages/client/.env.production")}).

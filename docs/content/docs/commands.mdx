@@ -109,14 +109,14 @@ See [Local Dev On Mobile](./local-dev-mobile) for the Tailscale + Caddy + Capaci
 
 ## `hatchkit server add`
 
-Retrofit the Hatchkit server surface into a client-only project.
+Retrofit the Hatchkit server surface into a static project.
 
 ```bash
 cd my-app
 hatchkit server add
 ```
 
-This is a local scaffold step only. It copies `packages/server`, restores shared server types, updates workspace/root scripts, flips `.hatchkit.json` from `client-only` to `both`, and moves `gh-pages` manifests back to `coolify` because Pages cannot host a backend.
+This is a local scaffold step only. It copies `packages/server`, restores shared server types, updates workspace/root scripts, flips `.hatchkit.json` from `static` to `fullstack`, and moves `gh-pages` manifests back to `coolify` because Pages cannot host a backend.
 
 After reviewing the diff:
 

@@ -6,7 +6,7 @@
  * and bakes the project's choices into static files under
  * `infra/terraform/stacks/.../<name>.tfvars` and `infra/stacks/<name>.env`.
  * When the CLI's tfvars-generation logic changes (e.g. dropping the
- * `api.<sub>` subdomain for client-only surfaces, or flipping
+ * `api.<sub>` subdomain for static surfaces, or flipping
  * `MONGO_ENABLED` based on the surface), existing projects keep their
  * old files until someone re-runs scaffoldInfra. This command does
  * exactly that — re-render from the manifest, preserve the infra-only
@@ -104,7 +104,7 @@ export async function runRegenInfra(opts: RegenArgs): Promise<void> {
   console.log(chalk.bold(`\n  ── regen-infra: ${manifest.name} ─────────────────────────`));
   console.log(
     chalk.dim(
-      `  domain=${manifest.domain}  surfaces=${manifest.surfaces ?? "both"}  deploy=${manifest.deployTarget}`,
+      `  domain=${manifest.domain}  surfaces=${manifest.surfaces ?? "fullstack"}  deploy=${manifest.deployTarget}`,
     ),
   );
 
@@ -206,7 +206,7 @@ function configFromManifestAndTfvars(
     domain: manifest.domain,
     baseDomain,
     subdomain,
-    surfaces: (manifest.surfaces ?? "both") as Surface,
+    surfaces: (manifest.surfaces ?? "fullstack") as Surface,
     deployTarget: manifest.deployTarget,
     // Infra-only fields — preserved from the existing tfvars so we
     // don't blow away discovered IPs / sizes.

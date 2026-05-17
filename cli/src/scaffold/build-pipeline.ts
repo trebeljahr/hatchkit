@@ -47,7 +47,7 @@ const DEFAULT_NODE_MAJOR = "24";
  *  fundamentally needs a Node runtime (`next start`) regardless of
  *  whether the app exposes a backend API: Server Actions, route
  *  handlers, and non-`NEXT_PUBLIC_*` env vars all require the runtime
- *  even when the surfaces look "client-only". */
+ *  even when the surfaces look "static". */
 export type DetectedFramework = "nextjs" | "generic";
 
 const NEXT_CONFIG_NAMES = [
@@ -304,16 +304,16 @@ export interface ScaffoldBuildPipelineInput {
    *  `git@github.com:owner/repo.git` or `https://github.com/owner/repo`
    *  remote URL by the caller. */
   ghOwner: string;
-  /** Project-relative entrypoint script for the runtime CMD. Server /
-   *  both layouts default to `dist/index.js`; client-only is
-   *  irrelevant (nginx serves static files). */
+  /** Project-relative entrypoint script for the runtime CMD. Server-
+   *  bearing layouts default to `dist/index.js`; static is irrelevant
+   *  (nginx serves static files). */
   entrypoint: string;
   /** Container port the server listens on. Compose maps
-   *  `<port>:<port>`. Ignored for client-only (nginx fixed at 80). */
+   *  `<port>:<port>`. Ignored for static (nginx fixed at 80). */
   port: number;
   /** Surface from the AdoptPlan — picks the right Dockerfile flavour
-   *  (server-only/both → Node runner; client-only → nginx). */
-  surfaces: "server-only" | "client-only" | "both";
+   *  (fullstack/split/backend → Node runner; static → nginx). */
+  surfaces: "fullstack" | "split" | "backend" | "static";
   /** Default branch used by the Actions workflow's `on: push: branches:`
    *  trigger. Detected from `git symbolic-ref refs/remotes/origin/HEAD`
    *  by the caller, with a `main` fallback. */
@@ -385,8 +385,8 @@ export function scaffoldBuildPipeline(
   const nodeMajor = input.nodeMajor ?? detectNodeMajorVersion(input.projectDir);
   // Framework detection: Next.js gets its own Dockerfile regardless of
   // surfaces — `next start` is the only sane production runtime even
-  // for apps that look "client-only" on the surface, because Server
-  // Actions / route handlers / non-NEXT_PUBLIC_* env vars all need it.
+  // for apps that look "static" on the surface, because Server Actions
+  // / route handlers / non-NEXT_PUBLIC_* env vars all need it.
   // Everything else falls back to the surfaces-driven nginx-vs-Node
   // split that's been the default since this scaffolder was born.
   const framework = detectFramework(input.projectDir);
@@ -403,7 +403,7 @@ export function scaffoldBuildPipeline(
         ? monorepoNextjs
           ? "build-pipeline/Dockerfile.nextjs-monorepo.hbs"
           : "build-pipeline/Dockerfile.nextjs.hbs"
-        : input.surfaces === "client-only"
+        : input.surfaces === "static"
           ? "build-pipeline/Dockerfile.client.hbs"
           : "build-pipeline/Dockerfile.server.hbs";
     const out = renderTemplate(tpl, {
@@ -426,12 +426,12 @@ export function scaffoldBuildPipeline(
   // Port resolution: the nginx-static template fixes itself at 80;
   // Node-runtime templates (server.hbs, nextjs.hbs) bind to whatever
   // {{port}} we plug in. Next.js is Node-runtime even when surfaces
-  // looks "client-only", so it follows the same input.port path as
-  // the server template — otherwise compose would map :80 to a
-  // container that's actually listening on :3000.
+  // looks "static", so it follows the same input.port path as the
+  // server template — otherwise compose would map :80 to a container
+  // that's actually listening on :3000.
   if (input.force || !state.hasCompose) {
     const servicePort =
-      framework === "nextjs" ? input.port : input.surfaces === "client-only" ? 80 : input.port;
+      framework === "nextjs" ? input.port : input.surfaces === "static" ? 80 : input.port;
     const out = renderTemplate("build-pipeline/docker-compose.yml.hbs", {
       name: input.projectName,
       owner: input.ghOwner,

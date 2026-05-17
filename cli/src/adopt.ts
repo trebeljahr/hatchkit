@@ -68,6 +68,7 @@ import { readEnvKeys } from "./provision/write-env.js";
 import { detectBuildPipeline, scaffoldBuildPipeline } from "./scaffold/build-pipeline.js";
 import {
   MANIFEST_FILENAME,
+  MANIFEST_VERSION,
   type ProjectManifest,
   readManifest,
   writeManifest,
@@ -179,14 +180,14 @@ export interface AdoptPlan {
    *  provisions clients into. */
   surfaces: AdoptSurface;
   /** Where this project will run. Coolify is the default for full-
-   *  stack and server-only adopts; gh-pages is only offered when
-   *  surfaces is client-only (Pages can't host a backend). Switches
-   *  the second half of executePlan from Coolify wiring to
+   *  stack and backend adopts; gh-pages is only offered when surfaces
+   *  is static (Pages can't host a backend). Switches the second half
+   *  of executePlan from Coolify wiring to
    *  `runPagesSetupProgrammatic`. */
   deploymentMode: AdoptDeploymentMode;
-  /** Required when `surfaces !== "client-only"`. */
+  /** Required when `surfaces !== "static"`. */
   serverDir?: string;
-  /** Required when `surfaces !== "server-only"`. */
+  /** Required when `surfaces !== "backend"`. */
   clientDir?: string;
   /** Always-on side effect — initialize dotenvx encryption if the
    *  server dir doesn't already have an encrypted .env.production. */
@@ -267,26 +268,28 @@ export async function runAdopt(
   //   1. Whatever was persisted in the manifest (`--resume` recovery —
   //      detection wouldn't see a client/ dir for an in-place static
   //      site so re-inferring would always be wrong).
-  //   2. Detection: both dirs → "both"; single dir → matching surface.
-  //   3. Fallback "client-only" — non-monorepo modern projects (Vite
-  //      SPAs, plain static sites, Next.js) are vastly more often
-  //      client-only than headless backends. The stepper marks this
-  //      step as `set: false` (see buildAdoptGroups) when we land
-  //      here without a strong signal, so the cursor parks on it and
-  //      the user is nudged to confirm before hitting Adopt.
+  //   2. Detection: both dirs → "split"; just server → "backend"; just
+  //      client → "fullstack" (the safer choice — modern Next/SvelteKit
+  //      SPAs that LOOK client-only usually have a server runtime; the
+  //      old "client-only" default mis-flagged them as having no server).
+  //   3. Fallback "fullstack" — when there's no strong signal either
+  //      way. The stepper marks this step as `set: false` (see
+  //      buildAdoptGroups) when we land here without a strong signal,
+  //      so the cursor parks on it and the user is nudged to confirm
+  //      before hitting Adopt.
   const inferredSurfaces: AdoptSurface =
     m?.surfaces ??
     (state.serverDir && state.clientDir
-      ? "both"
+      ? "split"
       : state.serverDir
-        ? "server-only"
+        ? "backend"
         : state.clientDir
-          ? "client-only"
-          : "client-only");
+          ? "fullstack"
+          : "fullstack");
   // Auto-suggest gh-pages when (a) the manifest already recorded it,
-  // or (b) the manifest is silent AND the project looks client-only
-  // AND there's no Coolify app already wired up. Otherwise default
-  // to coolify (the existing behaviour).
+  // or (b) the manifest is silent AND the project looks static AND
+  // there's no Coolify app already wired up. Otherwise default to
+  // coolify (the existing behaviour).
   const inferredDeploymentMode: AdoptDeploymentMode =
     m?.deploymentMode === "gh-pages"
       ? "gh-pages"
@@ -312,9 +315,9 @@ export async function runAdopt(
     features: m?.features ?? state.features,
     surfaces: inferredSurfaces,
     serverDir:
-      inferredSurfaces === "client-only" ? undefined : (state.serverDir ?? state.projectDir),
+      inferredSurfaces === "static" ? undefined : (state.serverDir ?? state.projectDir),
     clientDir:
-      inferredSurfaces === "server-only" ? undefined : (state.clientDir ?? state.projectDir),
+      inferredSurfaces === "backend" ? undefined : (state.clientDir ?? state.projectDir),
     bootstrapDotenvx: !state.prodEnvIsEncrypted,
     setupGitHub: !state.gitRemoteUrl,
     wireCoolify: !state.coolifyAppMatch,
@@ -935,7 +938,7 @@ function buildAdoptGroups(
         // the chosen surface. Hiding instead of greying-out keeps the
         // stepper consistent with the surfaces choice and avoids the
         // "checkmark on a thing I can't unset" UX trap.
-        ...(onboarding.layout.surfaces !== "client-only"
+        ...(onboarding.layout.surfaces !== "static"
           ? [
               {
                 key: "serverDir",
@@ -947,7 +950,7 @@ function buildAdoptGroups(
               },
             ]
           : []),
-        ...(onboarding.layout.surfaces !== "server-only"
+        ...(onboarding.layout.surfaces !== "backend"
           ? [
               {
                 key: "clientDir",
@@ -1172,26 +1175,27 @@ async function editAdoptStep(
     const next = await select<AdoptSurface>({
       message: "What kind of project is this?",
       choices: [
-        { name: "Server only (backend / API)", value: "server-only" },
-        { name: "Client only (static site / SPA — no backend)", value: "client-only" },
-        { name: "Server + client (both)", value: "both" },
+        { name: "Full-stack (single package, server runtime)", value: "fullstack" },
+        { name: "Split server + client packages (server runtime)", value: "split" },
+        { name: "Backend only (API / worker, no UI bundle)", value: "backend" },
+        { name: "Static (gh-pages / SPA — no server runtime)", value: "static" },
       ],
       default: plan.surfaces,
     });
     // Adjust the dir fields when the surface changes — dropping
     // server/client dirs that are no longer relevant, and setting
     // sane defaults for newly-relevant ones.
-    // Also: switching away from client-only invalidates gh-pages
-    // (Pages can't host a backend). Snap deploymentMode back to
-    // coolify in that case so the user doesn't keep an invalid combo.
+    // Also: switching away from static invalidates gh-pages (Pages
+    // can't host a backend). Snap deploymentMode back to coolify in
+    // that case so the user doesn't keep an invalid combo.
     const nextDeploymentMode: AdoptDeploymentMode =
-      plan.deploymentMode === "gh-pages" && next !== "client-only"
+      plan.deploymentMode === "gh-pages" && next !== "static"
         ? "coolify"
         : plan.deploymentMode;
-    if (plan.deploymentMode === "gh-pages" && next !== "client-only") {
+    if (plan.deploymentMode === "gh-pages" && next !== "static") {
       console.log(
         chalk.yellow(
-          "  ⚠ gh-pages requires client-only surfaces — switched deployment mode back to coolify.",
+          "  ⚠ gh-pages requires static surfaces — switched deployment mode back to coolify.",
         ),
       );
     }
@@ -1200,11 +1204,11 @@ async function editAdoptStep(
       surfaces: next,
       deploymentMode: nextDeploymentMode,
       serverDir:
-        next === "client-only"
+        next === "static"
           ? undefined
           : (plan.serverDir ?? state.serverDir ?? state.projectDir),
       clientDir:
-        next === "server-only"
+        next === "backend"
           ? undefined
           : (plan.clientDir ?? state.clientDir ?? state.projectDir),
     };
@@ -1213,7 +1217,7 @@ async function editAdoptStep(
     const choices: Array<{ name: string; value: AdoptDeploymentMode }> = [
       { name: "Coolify (full-stack on Hetzner)", value: "coolify" },
     ];
-    if (plan.surfaces === "client-only") {
+    if (plan.surfaces === "static") {
       choices.push({ name: "GitHub Pages (static)", value: "gh-pages" });
     }
     choices.push({ name: "Scaffold only — don't deploy", value: "scaffold-only" });
@@ -1283,7 +1287,7 @@ async function editAdoptStep(
     return { ...plan, serverDir: join(state.projectDir, picked) };
   }
   if (step === "clientDir") {
-    // For client-only / both surfaces this row IS the env dir prompt.
+    // For fullstack / split surfaces this row IS the env dir prompt.
     // No extra "do you have a client?" yes/no — the surfaces step is
     // where that decision lives now.
     const picked = (
@@ -1644,7 +1648,7 @@ async function executePlan(
           // ports_exposes is still required by the Coolify API even for
           // dockercompose; it's purely metadata once the compose file
           // takes over.
-          portsExposes: plan.surfaces === "client-only" ? "80" : plan.appPort,
+          portsExposes: plan.surfaces === "static" ? "80" : plan.appPort,
           dockerComposeServiceName: detectDockerComposeDomainServiceName(
             state.projectDir,
             plan.surfaces,
@@ -2047,17 +2051,11 @@ async function executePlan(
     });
     if (resumeServices.length > 0) {
       console.log();
-      const provisionMode =
-        plan.surfaces === "both"
-          ? "shared"
-          : plan.surfaces === "server-only"
-            ? "server-only"
-            : "client-only";
       await runProvision({
         baseName: plan.name,
         services: resumeServices,
         surfaces: {
-          mode: provisionMode,
+          mode: plan.surfaces,
           projectDir: state.projectDir,
           serverEnvDir: plan.serverDir,
           clientEnvDir: plan.clientDir,
@@ -2515,7 +2513,7 @@ async function executePlan(
  *  layouts use the client dir. Both fall back to the project root if
  *  detection / the user picked nothing more specific. */
 function dotenvxRootFor(plan: AdoptPlan, projectDir: string): string {
-  if (plan.surfaces === "client-only") return plan.clientDir ?? projectDir;
+  if (plan.surfaces === "static") return plan.clientDir ?? projectDir;
   return plan.serverDir ?? projectDir;
 }
 
@@ -3155,7 +3153,7 @@ function writeAdoptManifest(projectDir: string, plan: AdoptPlan): void {
   // defaults — adopt's role is to take inventory, not to make
   // infra decisions. The user can edit the manifest later.
   const manifest: ProjectManifest = {
-    version: 1,
+    version: MANIFEST_VERSION,
     cliVersion: getCliVersion(),
     scaffoldedAt: new Date().toISOString(),
     name: plan.name,
@@ -3174,7 +3172,7 @@ function writeAdoptManifest(projectDir: string, plan: AdoptPlan): void {
     deploymentMode: plan.deploymentMode,
     ports: { server: 3000, client: 3001 },
     // Persist the surface choice so `--resume` doesn't re-infer
-    // "server-only" just because there's no client/ directory in the
+    // "backend" just because there's no client/ directory in the
     // current layout.
     surfaces: plan.surfaces,
   };
@@ -3241,7 +3239,7 @@ function detectDockerComposeDomainServiceName(projectDir: string, surfaces: Adop
   if (services.length === 0) return "app";
 
   const preferred =
-    surfaces === "client-only"
+    surfaces === "static"
       ? ["app", "web", "client", "frontend", "site"]
       : ["app", "server", "api", "backend", "web", "client", "frontend"];
   for (const name of preferred) {
@@ -3321,7 +3319,7 @@ async function scaffoldBuildPipelineNow(
     projectDir: state.projectDir,
     projectName: plan.name,
     ghOwner: owner,
-    entrypoint: plan.surfaces === "client-only" ? "" : "dist/index.js",
+    entrypoint: plan.surfaces === "static" ? "" : "dist/index.js",
     port: Number(plan.appPort) || 3000,
     surfaces: plan.surfaces,
     defaultBranch,

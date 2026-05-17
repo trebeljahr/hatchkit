@@ -388,35 +388,35 @@ async function runScaffoldSteps(
   // keypair, mirror the private key into the OS keychain. Unsupplied
   // keys land as plaintext CHANGE_ME_<KEY> placeholders.
   //
-  // Client-only scaffolds skip this step — dotenvx targets
+  // Static scaffolds skip this step — dotenvx targets
   // packages/server/.env.production, which doesn't exist post-prune,
-  // and the server-only auth/Mongo keys don't apply. A keypair may
+  // and the server-side auth/Mongo keys don't apply. A keypair may
   // still get minted later if the user provisions a service that
   // writes encrypted vars into packages/client/.env.production (e.g.
   // Plausible's NEXT_PUBLIC_* tracker config); `runProvision` then
   // mirrors that key into the keychain via `mirrorEnvKeysIfAbsent`.
   let dotenvx: DotenvxSeedResult | undefined;
-  if (config.surfaces !== "client-only") {
+  if (config.surfaces !== "static") {
     dotenvx = await seedDotenvxProduction(outputDir, config, config.envValues ?? {});
     modifications.push(
       `dotenvx: ${dotenvx.encryptedKeys.length} encrypted, ${dotenvx.placeholderKeys.length} placeholders`,
     );
   } else {
     modifications.push(
-      "client-only: skipped server-side dotenvx seed (provisioners may mint later)",
+      "static: skipped server-side dotenvx seed (provisioners may mint later)",
     );
   }
 
   // Tailscale-served local-dev opt-in. The host plumbing is the user's
   // own one-time setup (`hatchkit dev-setup init`); here we just write
   // the per-project pieces: the Caddy fragment at the client dev port
-  // (or server port for server-only surfaces), docs/dev-setup.md, the
+  // (or server port for backend surfaces), docs/dev-setup.md, the
   // next.config wrapper, and the @hatchkit/dev-plugin-next dep. None of
   // this is required for the project to function — the dev plugin
   // gracefully no-ops when the host bridge isn't active.
   let localDev: { slug: string; domain?: string } | undefined;
   if (config.localDev) {
-    const devPort = config.surfaces === "server-only" ? ports.server : ports.client;
+    const devPort = config.surfaces === "backend" ? ports.server : ports.client;
     const { enableProjectLocalDev } = await import("../dev-setup.js");
     const { localDevDomainFromProjectDomain } = await import("@hatchkit/dev-shared");
     const localDevDomain =
@@ -450,13 +450,13 @@ function scaffoldDryRun(config: ProjectConfig, outputDir: string): string[] {
     actions.push(`Set package.json description to "${config.description.trim()}"`);
   }
   actions.push(`Set domain to "${config.domain}"`);
-  if (config.surfaces === "server-only") {
+  if (config.surfaces === "backend") {
     actions.push(
-      "Prune to server-only (remove packages/client, native scaffolds, client compose service)",
+      "Prune to backend (remove packages/client, native scaffolds, client compose service)",
     );
-  } else if (config.surfaces === "client-only") {
+  } else if (config.surfaces === "static") {
     actions.push(
-      "Prune to client-only (remove packages/server, auth/tRPC routes, server/mongo/redis compose services)",
+      "Prune to static (remove packages/server, auth/tRPC routes, server/mongo/redis compose services)",
     );
   }
 
