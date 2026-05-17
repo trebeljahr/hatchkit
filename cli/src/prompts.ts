@@ -500,6 +500,11 @@ export interface CollectOptions {
   /** Hard-disable local-dev wiring, even though new projects default
    *  to enabling it. Used by `hatchkit create --no-local-dev`. */
   forceNoLocalDev?: boolean;
+  /** Runs after config is assembled but before the review loop (and
+   *  again after each in-review edit). Use to run provider pre-flight
+   *  checks so credentials are collected before "Proceed". Idempotent
+   *  — already-configured providers return instantly. */
+  beforeReview?: (config: ProjectConfig) => Promise<void>;
 }
 
 export async function collectProjectConfig(options: CollectOptions): Promise<ProjectConfig> {
@@ -1137,11 +1142,15 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     dryRun: options.dryRun || false,
   };
 
+  // Provider pre-flights: ensure credentials are configured before
+  // the review loop so "Proceed" means fully non-interactive execution.
+  if (options.beforeReview) await options.beforeReview(config);
+
   // Final review-and-edit loop. Lets the user step BACK and tweak any
   // headline choice before scaffold begins — mirrors the structure of
   // `hatchkit setup`'s stepper. Skipped in non-interactive mode.
   if (!nonInteractive) {
-    config = await reviewAndEditLoop(config);
+    config = await reviewAndEditLoop(config, options.beforeReview);
   }
 
   return config;
@@ -1303,7 +1312,10 @@ async function collectPagesProjectConfig(args: PagesCollectArgs): Promise<Projec
  *
  *  Loops until the user picks "Proceed" (or aborts via Ctrl-C, which
  *  inquirer turns into an exception caught by the outer handler).  */
-async function reviewAndEditLoop(initial: ProjectConfig): Promise<ProjectConfig> {
+async function reviewAndEditLoop(
+  initial: ProjectConfig,
+  afterEdit?: (config: ProjectConfig) => Promise<void>,
+): Promise<ProjectConfig> {
   console.log(chalk.bold("\n  hatchkit create — review"));
   let latestConfig = initial;
   const reviewedPlan = await runProjectOnboardingReview({
@@ -1315,6 +1327,7 @@ async function reviewAndEditLoop(initial: ProjectConfig): Promise<ProjectConfig>
     editStep: async (plan, picked) => {
       const currentConfig = onboardingPlanToProjectConfig(plan, latestConfig);
       latestConfig = await editSection(currentConfig, picked);
+      if (afterEdit) await afterEdit(latestConfig);
       return projectConfigToOnboardingPlan(latestConfig);
     },
   });

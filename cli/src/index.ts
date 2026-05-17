@@ -1547,6 +1547,75 @@ async function ensureCreateProvisionProviders(services: ProvisionService[]): Pro
 }
 
 // ---------------------------------------------------------------------------
+// Provider pre-flights
+// ---------------------------------------------------------------------------
+
+/** Ensure all providers required by the current config are configured.
+ *  Idempotent — already-configured providers return instantly. Called
+ *  before the review loop (so credentials are collected pre-"Proceed")
+ *  and again after each in-review edit that might add new providers. */
+async function ensureRequiredProviders(config: ProjectConfig): Promise<void> {
+  if (config.deploymentMode === "coolify" && config.runDeployment && !config.dryRun) {
+    const dns = await ensureDns();
+    await requireCloudflareZoneForTerraform(config.baseDomain, dns);
+  }
+
+  if (
+    config.deploymentMode === "coolify" &&
+    (config.deployTarget === "existing" || config.runDeployment)
+  ) {
+    await ensureCoolify();
+  }
+
+  if (config.createGithubRepo || config.deploymentMode === "gh-pages") {
+    await ensureGitHub();
+  }
+
+  if (
+    config.deploymentMode === "coolify" &&
+    config.deployTarget === "new" &&
+    config.runDeployment
+  ) {
+    await ensureHetzner();
+  }
+
+  if (
+    config.features.includes("s3") &&
+    config.s3Provider !== "existing" &&
+    config.s3Provider !== "none"
+  ) {
+    if (
+      config.s3Provider === "hetzner" ||
+      config.s3Provider === "aws" ||
+      config.s3Provider === "r2"
+    ) {
+      await ensureS3(config.s3Provider);
+    }
+  }
+
+  const provisionServices = createProvisionServices(config);
+  if (!config.dryRun) await ensureCreateProvisionProviders(provisionServices);
+
+  if (config.features.includes("stripe")) {
+    const { ensureStripe } = await import("./config.js");
+    await ensureStripe();
+
+    // Pre-collect per-project Stripe keys so execution doesn't prompt.
+    // Keys are cached in keychain — subsequent calls return instantly.
+    if (config.surfaces !== "client-only") {
+      const { collectPerProjectKeys } = await import("./provision/stripe.js");
+      const master = await ensureStripe();
+      if (master.hasTestMaster) {
+        await collectPerProjectKeys({ projectName: config.name, mode: "test", reprompt: false });
+      }
+      if (master.hasLiveMaster) {
+        await collectPerProjectKeys({ projectName: config.name, mode: "live", reprompt: false });
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 
@@ -1572,62 +1641,27 @@ async function handleCreate(): Promise<void> {
   }
 
   // Collect project config via interactive prompts (or presets).
-  const config = await collectProjectConfig({ dryRun, presets, nonInteractive, forceNoLocalDev });
+  // The beforeReview hook ensures all provider credentials are collected
+  // BEFORE the user clicks "Proceed" in the review loop — making post-
+  // Proceed execution fully non-interactive.
+  const config = await collectProjectConfig({
+    dryRun,
+    presets,
+    nonInteractive,
+    forceNoLocalDev,
+    beforeReview: nonInteractive ? undefined : ensureRequiredProviders,
+  });
   if (forceNoGithub) config.createGithubRepo = false;
   if (forceNoDeploy) config.runDeployment = false;
   if (forceNoInstall) config.installDeps = false;
   if (forceNoLocalDev) config.localDev = undefined;
 
-  // Terraform's Cloudflare stacks can only write records into an
-  // existing zone. Check that before project-specific mutations such as
-  // scaffolding, provider clients, GitHub repos, or infra files.
-  if (config.deploymentMode === "coolify" && config.runDeployment && !config.dryRun) {
-    const dns = await ensureDns();
-    await requireCloudflareZoneForTerraform(config.baseDomain, dns);
-  }
+  // In non-interactive mode the beforeReview hook doesn't run (no review
+  // loop), so we still need the provider pre-flight here. For interactive
+  // mode this is a no-op — credentials are already configured.
+  await ensureRequiredProviders(config);
 
-  // Ensure needed providers are configured (lazy prompting).
-  // Coolify + Hetzner only matter for the coolify deployment mode.
-  // gh-pages skips them entirely (no server, no Docker registry).
-  if (
-    config.deploymentMode === "coolify" &&
-    (config.deployTarget === "existing" || config.runDeployment)
-  ) {
-    await ensureCoolify();
-  }
-  // GitHub is checked here so auth failures surface before scaffold
-  // (not deep inside `setupGitHub` after files are on disk). Pages
-  // also needs GitHub auth for the API calls that enable Pages and
-  // set the cname — so we require it whenever gh-pages is involved.
-  if (config.createGithubRepo || config.deploymentMode === "gh-pages") {
-    await ensureGitHub();
-  }
-  if (
-    config.deploymentMode === "coolify" &&
-    config.deployTarget === "new" &&
-    config.runDeployment
-  ) {
-    await ensureHetzner();
-  }
-  if (
-    config.features.includes("s3") &&
-    config.s3Provider !== "existing" &&
-    config.s3Provider !== "none"
-  ) {
-    if (
-      config.s3Provider === "hetzner" ||
-      config.s3Provider === "aws" ||
-      config.s3Provider === "r2"
-    ) {
-      await ensureS3(config.s3Provider);
-    }
-  }
   const provisionServices = createProvisionServices(config);
-  if (!config.dryRun) await ensureCreateProvisionProviders(provisionServices);
-  if (config.features.includes("stripe")) {
-    const { ensureStripe } = await import("./config.js");
-    await ensureStripe();
-  }
 
   const appDir = resolve(config.name);
 

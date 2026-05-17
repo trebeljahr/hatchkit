@@ -291,17 +291,17 @@ async function provisionMode(args: ProvisionModeArgs): Promise<StripeModeOutcome
   };
 }
 
-interface CollectKeysArgs {
+export interface CollectKeysArgs {
   projectName: string;
   mode: StripeMode;
   reprompt: boolean;
 }
 
-type CollectedKeys =
+export type CollectedKeys =
   | { kind: "provided"; secretKey: string; publishableKey: string }
   | { kind: "skipped" };
 
-async function collectPerProjectKeys(args: CollectKeysArgs): Promise<CollectedKeys> {
+export async function collectPerProjectKeys(args: CollectKeysArgs): Promise<CollectedKeys> {
   const info = MODE_INFO[args.mode];
   const skKeychain = SECRET_KEYS.stripeProjectSecretKey(args.projectName, args.mode);
   const pkKeychain = SECRET_KEYS.stripeProjectPublishableKey(args.projectName, args.mode);
