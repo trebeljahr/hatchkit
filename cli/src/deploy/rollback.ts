@@ -255,6 +255,14 @@ function recipeFor(step: LedgerStep): string | null {
       return `hatchkit remove ${shellEscape(step.project)} plausible --yes`;
     case "resend":
       return `hatchkit remove ${shellEscape(step.client)} resend --yes`;
+    case "resendAudience":
+      return chalk.dim(
+        `# manual: delete Resend audience ${step.audience} (id ${step.audienceId}) via dashboard or API`,
+      );
+    case "resendDns":
+      return chalk.dim(
+        `# manual: remove the ${step.created + step.updated} Resend DNS record(s) in Cloudflare zone ${step.zoneName} (added for ${step.domainName})`,
+      );
     case "github":
       return `gh repo delete ${shellEscape(step.repo)} --yes`;
     case "scaffold":
@@ -486,6 +494,10 @@ function describeStep(step: LedgerStep): string {
       return `delete Plausible site for ${chalk.cyan(step.project)}`;
     case "resend":
       return `delete Resend API key ${chalk.cyan(step.client)}`;
+    case "resendAudience":
+      return `delete Resend audience ${chalk.cyan(step.audience)}`;
+    case "resendDns":
+      return `restore DNS for Resend domain ${chalk.cyan(step.domainName)} in zone ${chalk.cyan(step.zoneName)}`;
     case "tfvars":
       return `remove ${chalk.cyan(step.path)}`;
     case "coolifyEnv":
@@ -670,6 +682,19 @@ async function undoStep(
       const { deleteResendClient } = await import("../provision/resend.js");
       const result = await deleteResendClient(step.client);
       return result === "not-found" ? "not-found" : "done";
+    }
+    case "resendAudience": {
+      const { deleteResendAudience } = await import("../provision/resend.js");
+      const result = await deleteResendAudience(step.audience);
+      return result === "not-found" ? "not-found" : "done";
+    }
+    case "resendDns": {
+      // DNS records aren't auto-rolled-back — we don't persist the
+      // per-record Cloudflare IDs, so removing them safely would require
+      // re-fetching from Cloudflare and matching by content. Surface as
+      // "skipped" so the rollback summary points the operator at the
+      // manual cleanup line emitted by `manualCommandForStep`.
+      return "skipped";
     }
     case "manifest":
     case "dotenvxKeysFile":

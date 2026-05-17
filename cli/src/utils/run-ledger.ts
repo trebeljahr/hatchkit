@@ -38,6 +38,15 @@ export type LedgerStep =
   | { kind: "openpanel"; project: string }
   | { kind: "plausible"; project: string }
   | { kind: "resend"; client: string }
+  | { kind: "resendAudience"; audience: string; audienceId: string }
+  | {
+      kind: "resendDns";
+      domainId: string;
+      domainName: string;
+      zoneName: string;
+      created: number;
+      updated: number;
+    }
   | { kind: "tfvars"; path: string }
   | { kind: "coolifyEnv"; path: string }
   | { kind: "keychain"; account: string }

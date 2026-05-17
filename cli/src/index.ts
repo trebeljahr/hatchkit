@@ -663,6 +663,23 @@ function recordProvisionedEvent(ledger: RunLedger, event: ProvisionedEvent): voi
     ledger.record({ kind: "plausible", project: event.project });
   }
   if (event.service === "resend") ledger.record({ kind: "resend", client: event.client });
+  if (event.service === "resendAudience") {
+    ledger.record({
+      kind: "resendAudience",
+      audience: event.audience,
+      audienceId: event.audienceId,
+    });
+  }
+  if (event.service === "resendDns" && event.created + event.updated > 0) {
+    ledger.record({
+      kind: "resendDns",
+      domainId: event.domainId,
+      domainName: event.domainName,
+      zoneName: event.zoneName,
+      created: event.created,
+      updated: event.updated,
+    });
+  }
   if (event.service === "s3" && event.minted) {
     ledger.record({
       kind: "r2Token",
@@ -882,6 +899,20 @@ async function handleAdd(): Promise<void> {
   //   (no surface flags)              → prompt interactively
   const noWrite = args.includes("--no-write");
   const enableDevObs = args.includes("--enable-dev-obs");
+  const withAudience = args.includes("--with-audience");
+  const noResendDns = args.includes("--no-resend-dns");
+  if (withAudience && !services.includes("resend")) {
+    console.log(
+      chalk.red("  --with-audience requires `resend` in the services list."),
+    );
+    process.exit(1);
+  }
+  if (noResendDns && !services.includes("resend")) {
+    console.log(
+      chalk.red("  --no-resend-dns only applies when `resend` is in the services list."),
+    );
+    process.exit(1);
+  }
 
   const validSurfaceModes = ["shared", "separate", "server-only", "client-only"] as const;
   const noEnvServices = new Set<ProvisionService>(["email", "search-console"]);
@@ -952,6 +983,8 @@ async function handleAdd(): Promise<void> {
     enableDevObs,
     domain: domainFlag,
     failIfExists: true,
+    resendWithAudience: withAudience,
+    resendPublishDns: !noResendDns,
     onProvisioned: (event) => recordProvisionedEvent(ledger, event),
   });
   ledger.complete();

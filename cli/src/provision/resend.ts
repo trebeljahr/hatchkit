@@ -133,3 +133,150 @@ export function normalizeDomainInput(raw: string): string {
   s = s.replace(/^www\./, "");
   return s;
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Domain DNS records
+//
+// `GET /domains/:id` returns the DKIM + SPF records Resend needs published
+// before a domain can verify. Each record carries the same fields a DNS
+// provider needs: name, type ("TXT" | "MX" | "CNAME"), value, plus an MX
+// priority for MX rows and a `status` ("pending" | "verified") so the
+// caller can skip rows that already match.
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface ResendDnsRecord {
+  type: "TXT" | "MX" | "CNAME";
+  name: string;
+  value: string;
+  priority?: number;
+  status?: string;
+  /** Resend's human-readable hint, e.g. "SPF" or "DKIM". */
+  record?: string;
+  ttl?: string | number;
+}
+
+export interface ResendDomain {
+  id: string;
+  name: string;
+  status: string;
+  records: ResendDnsRecord[];
+}
+
+/** Fetch a single domain with its required DNS records. */
+export async function getResendDomain(domainId: string): Promise<ResendDomain> {
+  const cfg = await ensureResend();
+  const res = await fetch(`https://api.resend.com/domains/${domainId}`, {
+    headers: { Authorization: `Bearer ${cfg.apiKey}` },
+  });
+  if (!res.ok) {
+    throw new Error(`Resend get domain failed: HTTP ${res.status} ${await res.text()}`);
+  }
+  const data = (await res.json()) as {
+    id: string;
+    name: string;
+    status?: string;
+    records?: Array<{
+      type?: string;
+      name?: string;
+      value?: string;
+      priority?: number;
+      status?: string;
+      record?: string;
+      ttl?: string | number;
+    }>;
+  };
+  const records: ResendDnsRecord[] = (data.records ?? [])
+    .filter((r) => r.type && r.name && r.value)
+    .map((r) => ({
+      type: r.type as "TXT" | "MX" | "CNAME",
+      name: r.name as string,
+      value: r.value as string,
+      priority: r.priority,
+      status: r.status,
+      record: r.record,
+      ttl: r.ttl,
+    }));
+  return { id: data.id, name: data.name, status: data.status ?? "not_started", records };
+}
+
+/** Trigger Resend's verification check after DNS records propagate. */
+export async function verifyResendDomain(domainId: string): Promise<{ status: string }> {
+  const cfg = await ensureResend();
+  const res = await fetch(`https://api.resend.com/domains/${domainId}/verify`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${cfg.apiKey}` },
+  });
+  if (!res.ok) {
+    throw new Error(`Resend verify domain failed: HTTP ${res.status} ${await res.text()}`);
+  }
+  const data = (await res.json()) as { status?: string };
+  return { status: data.status ?? "pending" };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Audiences (mailing lists)
+//
+// Resend's Audiences API is the equivalent of a Mailgun mailing list:
+// a named collection of contacts you broadcast to. Audiences are
+// account-scoped (not bound to a sending domain), so callers typically
+// want one audience per project + an optional `<project>-test` audience
+// holding just the developer's own address for safe rehearsal sends.
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface ResendAudience {
+  id: string;
+  name: string;
+}
+
+export async function createResendAudience(name: string): Promise<ResendAudience> {
+  const cfg = await ensureResend();
+  const res = await fetch("https://api.resend.com/audiences", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${cfg.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    throw new Error(`Resend create audience failed: HTTP ${res.status} ${await res.text()}`);
+  }
+  const data = (await res.json()) as { id: string; name: string };
+  return { id: data.id, name: data.name };
+}
+
+export async function listResendAudiences(): Promise<ResendAudience[]> {
+  const cfg = await ensureResend();
+  const res = await fetch("https://api.resend.com/audiences", {
+    headers: { Authorization: `Bearer ${cfg.apiKey}` },
+  });
+  if (!res.ok) throw new Error(`Resend list audiences failed: HTTP ${res.status}`);
+  const body = (await res.json()) as { data?: Array<{ id: string; name: string }> };
+  return body.data ?? [];
+}
+
+/**
+ * Delete every audience whose name matches `audienceName`. Same shape as
+ * {@link deleteResendClient}: by-name lookup (Resend's create response
+ * gives the id but we don't persist it locally), 0-match → not-found,
+ * 1+-match → delete all so undo is total.
+ */
+export async function deleteResendAudience(audienceName: string): Promise<DeleteResult> {
+  const cfg = await ensureResend();
+  const auth = { Authorization: `Bearer ${cfg.apiKey}` };
+  const matches = (await listResendAudiences()).filter((a) => a.name === audienceName);
+  if (matches.length === 0) return "not-found";
+  for (const aud of matches) {
+    const delRes = await fetch(`https://api.resend.com/audiences/${aud.id}`, {
+      method: "DELETE",
+      headers: auth,
+    });
+    if (delRes.status === 404) continue;
+    if (!delRes.ok) {
+      throw new Error(
+        `Resend delete audience ${aud.id} failed: HTTP ${delRes.status} ${await delRes.text()}`,
+      );
+    }
+  }
+  return "deleted";
+}

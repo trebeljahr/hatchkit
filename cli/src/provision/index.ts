@@ -69,14 +69,19 @@ import {
   provisionPlausibleSite,
 } from "./plausible.js";
 import {
+  type ResendAudience,
   type ResendClient,
+  createResendAudience,
   createResendDomain,
+  deleteResendAudience,
   deleteResendClient,
   listResendApiKeys,
+  listResendAudiences,
   listResendDomains,
   normalizeDomainInput,
   provisionResendClient,
 } from "./resend.js";
+import { publishResendDnsToCloudflare } from "./resend-dns.js";
 import {
   type ProvisionR2TokensResult,
   provisionR2BucketTokens,
@@ -130,6 +135,16 @@ export type ProvisionedEvent =
   | { service: "openpanel"; project: string }
   | { service: "plausible"; project: string; domain: string; created: boolean }
   | { service: "resend"; client: string }
+  | { service: "resendAudience"; audience: string; audienceId: string; kind: "live" | "test" }
+  | {
+      service: "resendDns";
+      domainId: string;
+      domainName: string;
+      zoneName: string;
+      created: number;
+      updated: number;
+      finalStatus: string;
+    }
   | {
       service: "s3";
       bucketKey: string;
@@ -179,6 +194,19 @@ export interface ProvisionOptions {
   /** Optional Resend domain name paired with `resendDomainId`; used
    *  to seed a useful RESEND_FROM_EMAIL for scaffolded apps. */
   resendDomainName?: string;
+  /** Create a per-project Resend Audience (mailing list) alongside the
+   *  -dev / -prod keys. When true, also creates a `<project>-test`
+   *  audience so a developer can rehearse broadcasts without touching
+   *  the live list. Writes `RESEND_AUDIENCE_ID` (and `_TEST`) into the
+   *  server bundle env. Off by default — most projects only need
+   *  transactional sending. */
+  resendWithAudience?: boolean;
+  /** Automatically publish Resend's required DKIM/SPF DNS records into
+   *  Cloudflare after the domain is created. Requires `hatchkit config
+   *  add dns` to be set up (Cloudflare token + the Resend domain's
+   *  parent zone already on the account). Defaults to true when DNS is
+   *  configured; the publisher no-ops if the records already match. */
+  resendPublishDns?: boolean;
   /** If set, resolves the write destinations without prompting.
    *  Pass `false` to force cache-only mode (no writes). */
   surfaces?: Surfaces | false;
@@ -230,6 +258,7 @@ async function assertNoExistingProviderResources(args: {
   services: ProvisionService[];
   surfaces: Surfaces | null;
   plausibleDomain?: string;
+  resendWithAudience?: boolean;
 }): Promise<void> {
   const conflicts: string[] = [];
 
@@ -264,6 +293,13 @@ async function assertNoExistingProviderResources(args: {
     const names = new Set(keys.map((key) => key.name));
     for (const name of [`${args.baseName}-dev`, `${args.baseName}-prod`]) {
       if (names.has(name)) conflicts.push(`Resend API key ${name}`);
+    }
+    if (args.resendWithAudience) {
+      const audiences = await listResendAudiences();
+      const audienceNames = new Set(audiences.map((a) => a.name));
+      for (const name of [args.baseName, `${args.baseName}-test`]) {
+        if (audienceNames.has(name)) conflicts.push(`Resend audience ${name}`);
+      }
     }
   }
 
@@ -330,6 +366,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
       services: opts.services,
       surfaces,
       plausibleDomain,
+      resendWithAudience: opts.resendWithAudience,
     });
   }
 
@@ -452,6 +489,72 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
       // email real users.
       serverBucket.devLines.push(...renderResendEnv(devRes));
       serverBucket.prodLines.push(...renderResendEnv(prodRes));
+
+      // ── Audience ── (optional — only for projects that need a mailing list)
+      if (opts.resendWithAudience) {
+        const liveName = opts.baseName;
+        const testName = `${opts.baseName}-test`;
+        const live = await withSpinner(
+          `Resend: creating audience ${liveName}`,
+          () => createResendAudience(liveName),
+        );
+        opts.onProvisioned?.({
+          service: "resendAudience",
+          audience: liveName,
+          audienceId: live.id,
+          kind: "live",
+        });
+        const test = await withSpinner(
+          `Resend: creating audience ${testName}`,
+          () => createResendAudience(testName),
+        );
+        opts.onProvisioned?.({
+          service: "resendAudience",
+          audience: testName,
+          audienceId: test.id,
+          kind: "test",
+        });
+        // Same prod/dev split as the API keys: prod env hits the live
+        // list, dev env hits the test list. Both audiences are usable
+        // from either API key (audiences aren't scoped to a key), so
+        // the env value is the only thing that decides which list a
+        // broadcast targets.
+        serverBucket.prodLines.push(`RESEND_AUDIENCE_ID=${live.id}`);
+        serverBucket.devLines.push(`RESEND_AUDIENCE_ID=${test.id}`);
+      }
+
+      // ── DNS publish ── (best-effort; opt-out via `resendPublishDns: false`)
+      const wantDnsPublish = opts.resendPublishDns !== false && resendDomain?.id;
+      if (wantDnsPublish && resendDomain?.id) {
+        try {
+          const publishRes = await publishResendDnsToCloudflare(resendDomain.id, {
+            triggerVerify: true,
+          });
+          opts.onProvisioned?.({
+            service: "resendDns",
+            domainId: resendDomain.id,
+            domainName: publishRes.domain.name,
+            zoneName: publishRes.zoneName,
+            created: publishRes.created,
+            updated: publishRes.updated,
+            finalStatus: publishRes.finalStatus,
+          });
+          console.log(
+            chalk.dim(
+              `  Resend DNS: ${publishRes.created} created, ${publishRes.updated} updated, ${publishRes.unchanged} unchanged in zone ${publishRes.zoneName}. Domain status: ${publishRes.finalStatus}.`,
+            ),
+          );
+          for (const note of publishRes.skippedExtra) {
+            console.log(chalk.yellow(`  Resend DNS: skipped ${note}`));
+          }
+        } catch (err) {
+          console.log(
+            chalk.yellow(
+              `  Resend DNS auto-publish failed: ${(err as Error).message}\n  Publish records manually from https://resend.com/domains/${resendDomain.id} and re-run with --no-resend-dns to skip this step.`,
+            ),
+          );
+        }
+      }
     }
   }
 
@@ -1265,12 +1368,17 @@ export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
       deletePlausibleSite(opts.baseName),
     );
   }
-  // Resend keeps the -dev/-prod pair.
+  // Resend keeps the -dev/-prod pair plus (optionally) two audiences.
   if (opts.services.includes("resend")) {
     for (const env of ["dev", "prod"] as const) {
       const name = `${opts.baseName}-${env}`;
       await runDelete(`Resend: deleting API key ${name}`, opts.dryRun, () =>
         deleteResendClient(name),
+      );
+    }
+    for (const name of [opts.baseName, `${opts.baseName}-test`]) {
+      await runDelete(`Resend: deleting audience ${name} (if present)`, opts.dryRun, () =>
+        deleteResendAudience(name),
       );
     }
   }

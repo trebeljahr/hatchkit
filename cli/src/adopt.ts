@@ -2076,6 +2076,21 @@ async function executePlan(
             ledger.record({ kind: "plausible", project: event.project });
           } else if (event.service === "resend") {
             ledger.record({ kind: "resend", client: event.client });
+          } else if (event.service === "resendAudience") {
+            ledger.record({
+              kind: "resendAudience",
+              audience: event.audience,
+              audienceId: event.audienceId,
+            });
+          } else if (event.service === "resendDns" && event.created + event.updated > 0) {
+            ledger.record({
+              kind: "resendDns",
+              domainId: event.domainId,
+              domainName: event.domainName,
+              zoneName: event.zoneName,
+              created: event.created,
+              updated: event.updated,
+            });
           } else if (event.service === "search-console") {
             if (event.dnsRecord?.created) {
               ledger.record({
