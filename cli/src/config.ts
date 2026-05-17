@@ -2328,6 +2328,7 @@ async function wipeProvider(storeKey: string, secretKeys: string[]): Promise<voi
 
 type ReconfigurableProvider =
   | "coolify"
+  | "coolify-github-app"
   | "hetzner"
   | "dns"
   | "glitchtip"
@@ -2347,6 +2348,12 @@ export async function reconfigureProvider(name: ReconfigurableProvider): Promise
   if (name === "coolify") {
     await wipeProvider("providers.coolify", [SECRET_KEYS.coolifyToken]);
     await ensureCoolify();
+  } else if (name === "coolify-github-app") {
+    // No stored secret — the Coolify GitHub App lives on the Coolify
+    // server + on github.com. The walkthrough is interactive and
+    // idempotent, so "reconfigure" just re-runs it.
+    const { ensureCoolifyGithubApp } = await import("./deploy/coolify-github-app.js");
+    await ensureCoolifyGithubApp();
   } else if (name === "hetzner") {
     await wipeProvider("providers.hetzner", [SECRET_KEYS.hetznerToken]);
     await ensureHetzner();
@@ -2461,6 +2468,22 @@ function buildSetupGroups(): SetupGroup[] {
             return { configured: m?.status === "configured", summary: m?.username };
           },
           run: () => reconfigureProvider("ghcr"),
+        },
+        {
+          key: "coolify-github-app",
+          label: "Coolify GitHub App (for private repos)",
+          status: () => {
+            // Configured-ness is a runtime check (Coolify's /github-apps
+            // endpoint) — we don't mirror it into local state because
+            // sources can be added/removed in the Coolify dashboard
+            // out-of-band. Render as "·" with a hint until the user
+            // opens the step, which then verifies live.
+            return {
+              configured: false,
+              summary: "opt-in walkthrough for `--private` repos",
+            };
+          },
+          run: () => reconfigureProvider("coolify-github-app"),
         },
       ],
     },

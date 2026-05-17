@@ -347,17 +347,62 @@ async function resolveGithubAppSource(
   api: CoolifyApi,
   coolifyUrl: string,
 ): Promise<ResolvedGithubAppSource> {
-  const sources = await api.listGithubSources();
+  let sources = await api.listGithubSources();
+  if (sources.length === 0) {
+    // Just-in-time: the user asked for a private repo but never ran
+    // the Coolify GitHub App walkthrough. Offer to run it inline so
+    // they don't have to abort + rerun. The walkthrough is the same
+    // one wired into `hatchkit setup` and
+    // `hatchkit config add coolify-github-app`.
+    const sourcesUrl = `${coolifyUrl.replace(/\/$/, "")}/sources`;
+    const { select } = await import("@inquirer/prompts");
+    console.log(
+      chalk.yellow(
+        `\n  Private repo selected, but Coolify has no GitHub App source configured.`,
+      ),
+    );
+    const choice = await select<"walkthrough" | "abort">({
+      message: "What now?",
+      choices: [
+        {
+          name: "Run the GitHub App walkthrough now (recommended)",
+          value: "walkthrough",
+          description: `Opens ${sourcesUrl} + walks through registering & installing the App.`,
+        },
+        {
+          name: "Abort the create and roll back",
+          value: "abort",
+          description:
+            "Re-run with --public, OR run `hatchkit config add coolify-github-app`, then `hatchkit create` again.",
+        },
+      ],
+      default: "walkthrough",
+    });
+    if (choice === "abort") {
+      throw new Error(
+        `Aborted by user: no Coolify GitHub App source configured. ` +
+          `Run \`hatchkit config add coolify-github-app\` (or re-run with --public).`,
+      );
+    }
+    const { ensureCoolifyGithubApp } = await import("./coolify-github-app.js");
+    const result = await ensureCoolifyGithubApp();
+    if (!result.ok) {
+      throw new Error(
+        `Coolify GitHub App walkthrough did not complete. ` +
+          `Re-run \`hatchkit config add coolify-github-app\` (or re-run \`hatchkit create\` with --public).`,
+      );
+    }
+    sources = await api.listGithubSources();
+    if (sources.length === 0) {
+      throw new Error(
+        `Coolify still reports no GitHub sources after the walkthrough. ` +
+          `Check ${sourcesUrl} manually.`,
+      );
+    }
+  }
   if (sources.length === 1) {
     console.log(chalk.dim(`  Using Coolify GitHub source "${sources[0].name}".`));
     return { uuid: sources[0].uuid, htmlUrl: sources[0].html_url };
-  }
-  if (sources.length === 0) {
-    const sourcesUrl = `${coolifyUrl.replace(/\/$/, "")}/sources`;
-    throw new Error(
-      `GitHub repo is private but no Coolify GitHub App source is configured.\n` +
-        `  Install one at ${sourcesUrl}, grant it access to the repo, then re-run \`hatchkit create\`.`,
-    );
   }
   const { select } = await import("@inquirer/prompts");
   const picked = await select<ResolvedGithubAppSource>({
