@@ -756,6 +756,7 @@ async function handleAdd(): Promise<void> {
 
   const nameFlag = flagValue("--name");
   const domainFlag = flagValue("--domain");
+  const resendDomainFlag = flagValue("--resend-domain");
   const serverDirFlag = flagValue("--server-dir");
   const clientDirFlag = flagValue("--client-dir");
   const projectDirFlag = flagValue("--project-dir");
@@ -913,6 +914,45 @@ async function handleAdd(): Promise<void> {
     );
     process.exit(1);
   }
+  if (resendDomainFlag && !services.includes("resend")) {
+    console.log(
+      chalk.red("  --resend-domain only applies when `resend` is in the services list."),
+    );
+    process.exit(1);
+  }
+
+  // Resolve --resend-domain ahead of runProvision so the (TTY-only)
+  // picker is bypassed entirely. Match by name first; if no domain on
+  // the account uses this name yet, create it. Skips re-creation on
+  // re-runs and lets `hatchkit add` work non-interactively in CI.
+  let resendDomainSelection: { id: string; name: string } | undefined;
+  if (resendDomainFlag && services.includes("resend")) {
+    const { ensureResend } = await import("./config.js");
+    await ensureResend();
+    const {
+      listResendDomains,
+      createResendDomain,
+      normalizeDomainInput,
+    } = await import("./provision/resend.js");
+    const wanted = normalizeDomainInput(resendDomainFlag);
+    const existing = (await listResendDomains()).find((d) => d.name === wanted);
+    if (existing) {
+      console.log(
+        chalk.dim(
+          `  Reusing existing Resend domain ${existing.name} (status: ${existing.status}).`,
+        ),
+      );
+      resendDomainSelection = { id: existing.id, name: existing.name };
+    } else {
+      const created = await createResendDomain(wanted);
+      console.log(
+        chalk.green(
+          `  Created Resend domain ${created.name} (status: ${created.status}).`,
+        ),
+      );
+      resendDomainSelection = { id: created.id, name: created.name };
+    }
+  }
 
   const validSurfaceModes = ["shared", "separate", "server-only", "client-only"] as const;
   const noEnvServices = new Set<ProvisionService>(["email", "search-console"]);
@@ -985,6 +1025,8 @@ async function handleAdd(): Promise<void> {
     failIfExists: true,
     resendWithAudience: withAudience,
     resendPublishDns: !noResendDns,
+    resendDomainId: resendDomainSelection?.id,
+    resendDomainName: resendDomainSelection?.name,
     onProvisioned: (event) => recordProvisionedEvent(ledger, event),
   });
   ledger.complete();
