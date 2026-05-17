@@ -82,6 +82,17 @@ export function setPackageJsonDescription(outputDir: string, description: string
   writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
 }
 
+/** Set the top-level `name` field on the root `package.json`. No-op if
+ *  the file is missing. Used by `hatchkit rename-project` after the
+ *  manifest's project name changes. */
+export function setPackageJsonName(outputDir: string, name: string): void {
+  const path = join(outputDir, "package.json");
+  if (!existsSync(path)) return;
+  const pkg = JSON.parse(readFileSync(path, "utf-8"));
+  pkg.name = name;
+  writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
+}
+
 /** Set a specific script entry in the root `package.json`. Creates
  *  `scripts` if missing. */
 export function setPackageJsonScript(outputDir: string, name: string, value: string): void {

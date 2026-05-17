@@ -153,6 +153,13 @@ function ledgerPath(name: string): string {
   return join(runsDir(), `${sanitize(name)}.json`);
 }
 
+/** Absolute path of the on-disk ledger file for a project. Exposed for
+ *  tools that need to move/rewrite the ledger out-of-band (e.g.
+ *  `hatchkit rename-project`). The file may or may not exist. */
+export function getLedgerPath(name: string): string {
+  return ledgerPath(name);
+}
+
 export class RunLedger {
   private constructor(
     private readonly _path: string,

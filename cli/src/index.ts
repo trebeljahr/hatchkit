@@ -182,6 +182,12 @@ async function main(): Promise<void> {
       await runSetDescriptionCli(args.slice(1));
       break;
     }
+    case "rename-project": {
+      if (args.includes("--help")) return printHelp("rename-project");
+      const { runRenameProjectCli } = await import("./deploy/rename-project.js");
+      await runRenameProjectCli(args.slice(1), MONOREPO_ROOT);
+      break;
+    }
     case "sync": {
       if (args.includes("--help")) return printHelp("sync");
       const { runSyncCli } = await import("./deploy/sync.js");
@@ -2364,6 +2370,7 @@ type HelpTopic =
   | "remove"
   | "destroy"
   | "rename-domain"
+  | "rename-project"
   | "set-description"
   | "sync"
   | "regen-infra"
@@ -3103,6 +3110,53 @@ function printHelp(topic?: HelpTopic): void {
 `);
     return;
   }
+  if (topic === "rename-project") {
+    console.log(`
+  ${chalk.bold("hatchkit rename-project")} — change a scaffolded project's slug
+
+  ${chalk.bold("Usage:")}
+    cd <project-dir> && hatchkit rename-project --to <new-name>
+    hatchkit rename-project --dir <project-dir> --to <new-name> --dry-run
+
+  ${chalk.bold("What it rewrites (locally):")}
+    ${chalk.cyan(".hatchkit.json")}                                (manifest name)
+    ${chalk.cyan("package.json")}                                  (top-level name +
+                                                     ${chalk.dim("<old>-{dev,prod,e2e,assets}")} refs)
+    ${chalk.cyan("docker-compose.dev.yml, playwright.config.ts,")}
+    ${chalk.cyan("packages/server/.env.*, packages/server/src/config/env.ts")}
+                                                    (${chalk.dim("<old>-{dev,e2e,assets}")} swap)
+    ${chalk.cyan("README.md")}                                     (literal occurrences)
+    ${chalk.cyan("infra/terraform/stacks/<stack>/<old>.tfvars")}   (file rename +
+                                                     server_name + s3_bucket_name)
+    ${chalk.cyan("infra/stacks/<old>.env")}                        (file rename +
+                                                     PROJECT_NAME / APP_NAME /
+                                                     S3_BUCKET)
+    ${chalk.cyan("<configDir>/runs/<old>.json")}                   (ledger file rename +
+                                                     name field)
+
+  ${chalk.bold("What it does NOT touch (you run these manually):")}
+    - ${chalk.dim("gh repo rename")} — remote repo + origin URL.
+    - Coolify project + application rename (UI or API), then redeploy.
+    - Cloudflare R2 buckets: ${chalk.dim("<old>-assets / <old>-state")} — R2 has no
+      rename; create new, copy objects, update manifest, delete old.
+    - dotenvx Keychain account ${chalk.dim("hatchkit:<old>")} → ${chalk.dim("hatchkit:<new>")}.
+    - GlitchTip / OpenPanel / Plausible / Resend slugs in their dashboards.
+    - Tailscale local-dev Caddy fragment (re-run dev-setup if enabled).
+    - The project directory itself (mv it if you want the path to match).
+
+  ${chalk.bold("Options:")}
+    --to <name>     New project name (prompted if omitted; slug rules).
+    --dir <path>    Project dir (defaults to cwd).
+    --dry-run       Show the plan; don't write.
+    --yes, -y       Skip the confirmation prompt.
+
+  ${chalk.bold("Example:")}
+    cd ~/src/my-project
+    hatchkit rename-project --to my-app --dry-run
+    hatchkit rename-project --to my-app
+`);
+    return;
+  }
   if (topic === "sync") {
     console.log(`
   ${chalk.bold("hatchkit sync")} — push the manifest's view of the project onto Coolify
@@ -3303,6 +3357,7 @@ function printHelp(topic?: HelpTopic): void {
     remove          Delete the -dev/-prod clients created by 'add' (inverse of add)
     destroy         Roll back everything ${chalk.cyan("hatchkit create")} did for a project
     rename-domain   Move a scaffolded project to a new domain (rewrites tfvars/env/manifest)
+    rename-project  Change a scaffolded project's slug (rewrites manifest/pkg.json/tfvars/env/ledger)
     set-description Update a project's description across manifest, package.json, Coolify, GitHub
     sync            Push the manifest's domain/ports onto the matching Coolify app(s)
     gh-pages        Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
