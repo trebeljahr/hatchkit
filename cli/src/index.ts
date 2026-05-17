@@ -290,6 +290,10 @@ async function main(): Promise<void> {
       await handleEmailCommand(args.slice(1));
       break;
     }
+    case "ses": {
+      await handleSesCommand(args.slice(1));
+      break;
+    }
     case "gh-pages":
     case "pages": {
       if (args.includes("--help")) return printHelp("gh-pages");
@@ -1454,6 +1458,149 @@ async function handleDns(): Promise<void> {
   }
 }
 
+// SES sub-commands.
+//
+// `hatchkit ses verify <email>` is the everyday-use command: register a
+// recipient address so sandbox-mode test sends can reach it. SES mails
+// the user a confirm link; they click; status flips to verified. AWS
+// requires this per-address while the account is in sandbox.
+//
+// `hatchkit ses status` is the cheat-sheet view: region, sandbox flag,
+// daily/per-second send caps, count of verified identities. Cheap call
+// (one GetAccount + one ListEmailIdentities page).
+//
+// `hatchkit ses list` mirrors `aws sesv2 list-email-identities` but
+// pulls auth from hatchkit's keychain so it works without aws CLI config.
+async function handleSesCommand(rest: string[]): Promise<void> {
+  const sub = rest[0];
+  if (!sub || sub === "--help") {
+    console.log(`
+  ${chalk.bold("hatchkit ses")} — Amazon SES helpers
+
+  ${chalk.bold("Subcommands:")}
+    ${chalk.cyan("verify <email>")}     Register a recipient address. SES mails a
+                       one-time confirm link to that address; clicking it
+                       flips it to verified. Required for every test
+                       recipient while your SES account is in sandbox.
+
+    ${chalk.cyan("unverify <email>")}   Drop a verified address (sesv2:DeleteEmailIdentity).
+                       404-tolerant.
+
+    ${chalk.cyan("list [domains|emails]")}
+                       List identities. Without a filter, prints both.
+
+    ${chalk.cyan("status")}             Region, sandbox state, send caps, identity
+                       count. Run this first when something fails.
+`);
+    return;
+  }
+
+  const { ensureSes } = await import("./config.js");
+  const cfg = await ensureSes();
+  const auth = {
+    region: cfg.region,
+    accessKeyId: cfg.accessKeyId,
+    secretAccessKey: cfg.secretAccessKey,
+  };
+
+  switch (sub) {
+    case "verify": {
+      const email = rest[1];
+      if (!email || !/.+@.+\..+/.test(email)) {
+        console.log(chalk.red("  Usage: hatchkit ses verify <email>"));
+        process.exit(1);
+      }
+      const { verifySesEmailAddress } = await import("./provision/ses.js");
+      const r = await verifySesEmailAddress(email, auth);
+      if (r.verified) {
+        console.log(chalk.green(`  ✓ ${email} already verified.`));
+      } else {
+        console.log(
+          chalk.green(
+            `  ✓ Verification email sent to ${email}. Click the AWS link in the inbox to flip it to verified.`,
+          ),
+        );
+      }
+      break;
+    }
+    case "unverify": {
+      const email = rest[1];
+      if (!email) {
+        console.log(chalk.red("  Usage: hatchkit ses unverify <email>"));
+        process.exit(1);
+      }
+      const { deleteSesEmailAddress } = await import("./provision/ses.js");
+      const r = await deleteSesEmailAddress(email, auth);
+      console.log(
+        r === "deleted"
+          ? chalk.green(`  ✓ ${email} unverified.`)
+          : chalk.dim(`  · ${email} was not in the account.`),
+      );
+      break;
+    }
+    case "list": {
+      const filter = rest[1];
+      const { listSesDomains } = await import("./provision/ses.js");
+      const all = await listSesDomains(auth);
+      const isEmail = (s: string) => s.includes("@");
+      const domains = all.filter((s) => !isEmail(s));
+      const emails = all.filter(isEmail);
+      if (!filter || filter === "domains") {
+        console.log(chalk.bold(`\n  Domain identities (${domains.length}):`));
+        for (const d of domains) console.log(`    ${d}`);
+        if (domains.length === 0) console.log(chalk.dim("    (none)"));
+      }
+      if (!filter || filter === "emails") {
+        console.log(chalk.bold(`\n  Email-address identities (${emails.length}):`));
+        for (const e of emails) console.log(`    ${e}`);
+        if (emails.length === 0) console.log(chalk.dim("    (none)"));
+      }
+      break;
+    }
+    case "status": {
+      const { getSesAccountInfo, listSesDomains } = await import("./provision/ses.js");
+      const info = await getSesAccountInfo(auth);
+      const ids = await listSesDomains(auth);
+      console.log(chalk.bold("\n  SES account status\n"));
+      console.log(`  Region:               ${chalk.cyan(cfg.region)}`);
+      console.log(
+        `  Production access:    ${
+          info.productionAccessEnabled
+            ? chalk.green("yes (out of sandbox)")
+            : chalk.yellow("no (sandbox — verified recipients only)")
+        }`,
+      );
+      console.log(
+        `  Sending enabled:      ${info.sendingEnabled ? chalk.green("yes") : chalk.red("no (suspended)")}`,
+      );
+      if (info.max24HourSend !== undefined) {
+        console.log(
+          `  24h send cap:         ${info.max24HourSend === -1 ? chalk.green("unlimited") : info.max24HourSend}`,
+        );
+      }
+      if (info.maxSendRate !== undefined) {
+        console.log(`  Max send rate (/s):   ${info.maxSendRate}`);
+      }
+      if (info.enforcementStatus) {
+        console.log(`  Enforcement:          ${chalk.yellow(info.enforcementStatus)}`);
+      }
+      console.log(`  Identities:           ${ids.length}`);
+      if (!info.productionAccessEnabled) {
+        console.log(
+          chalk.dim(
+            `\n  Lift the sandbox at:  https://console.aws.amazon.com/ses/home?region=${cfg.region}#/account\n`,
+          ),
+        );
+      }
+      break;
+    }
+    default:
+      console.log(chalk.red(`  Unknown sub-command: ${sub}`));
+      console.log(chalk.dim("  Run `hatchkit ses --help` for the list."));
+      process.exit(1);
+  }
+}
+
 async function configureGhcrForCreate(
   repoUrl: string,
   isPrivateRepo: boolean,
@@ -1602,7 +1749,7 @@ async function ensureRequiredProviders(config: ProjectConfig): Promise<void> {
 
     // Pre-collect per-project Stripe keys so execution doesn't prompt.
     // Keys are cached in keychain — subsequent calls return instantly.
-    if (config.surfaces !== "client-only") {
+    if (config.surfaces !== "static") {
       const { collectPerProjectKeys } = await import("./provision/stripe.js");
       const master = await ensureStripe();
       if (master.hasTestMaster) {

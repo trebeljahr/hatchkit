@@ -1741,10 +1741,13 @@ export async function ensureSes(): Promise<SesConfig> {
   console.log(chalk.yellow("\n  AWS SES is not configured yet. Let's set it up."));
   console.log(
     chalk.dim(
-      "  New SES accounts start in sandbox mode — outbound goes only to verified\n" +
-        "  addresses until you request production access (AWS console form, ~24h\n" +
-        "  review). Hatchkit can verify domains + derive SMTP credentials before\n" +
-        "  that; you can't broadcast to real recipients until it clears.",
+      "  New SES accounts start in sandbox mode — outbound goes only to addresses\n" +
+        "  verified in advance (one-time per recipient). Request production access\n" +
+        "  via the AWS console (~24h review) to send to anyone. While sandboxed:\n" +
+        "    · Verify a recipient:  `hatchkit ses verify <email>`\n" +
+        "    · See current state:   `hatchkit ses status`\n" +
+        "  Hatchkit can verify your project's *sending* domain + derive SMTP creds\n" +
+        "  before sandbox lifts; only actual broadcasts are blocked.",
     ),
   );
 

@@ -770,6 +770,30 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
           );
         }
 
+        // Sandbox-mode reminder. Cheap one-shot GetAccount call after
+        // the heavy provisioning lifts — surfaces the friction the
+        // user is about to hit when they actually try to send.
+        try {
+          const { getSesAccountInfo } = await import("./ses.js");
+          const acct = await getSesAccountInfo({
+            region: sesCfg.region,
+            accessKeyId: sesCfg.accessKeyId,
+            secretAccessKey: sesCfg.secretAccessKey,
+          });
+          if (!acct.productionAccessEnabled) {
+            console.log(
+              chalk.yellow(
+                "  SES is in sandbox mode — outbound is limited to addresses verified in advance.\n" +
+                  `    · Verify a test recipient:  ${chalk.cyan("hatchkit ses verify <email>")}\n` +
+                  "    · Request production access (one-time AWS form, ~24h review):\n" +
+                  `      ${chalk.cyan(`https://console.aws.amazon.com/ses/home?region=${sesCfg.region}#/account`)}`,
+              ),
+            );
+          }
+        } catch {
+          // Diagnostic only; failure here doesn't matter to provisioning.
+        }
+
         const env = renderListmonkSesEnv({
           listmonkUrl: listmonkCfg.url,
           listmonkApiUser: listmonkCfg.apiUser,

@@ -21,6 +21,7 @@
 import {
   CreateEmailIdentityCommand,
   DeleteEmailIdentityCommand,
+  GetAccountCommand,
   GetEmailIdentityCommand,
   ListEmailIdentitiesCommand,
   PutEmailIdentityFeedbackAttributesCommand,
@@ -309,4 +310,104 @@ export async function sendSesEmail(
 export async function probeSes(auth: SesAuth): Promise<{ identityCount: number }> {
   const domains = await listSesDomains(auth);
   return { identityCount: domains.length };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Email-address identities (for sandbox-mode test recipients)
+//
+// SES's sandbox restriction: outbound can only reach addresses you've
+// verified ahead of time. Domain identities (mail.<projectDomain>) only
+// cover *outbound*; receiving test sends to your personal inbox needs
+// the recipient email itself registered as an EMAIL_ADDRESS identity.
+// AWS then mails a one-time confirm link; clicking flips it to
+// VerifiedForSendingStatus=true on the SES side.
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface SesEmailIdentity {
+  email: string;
+  verified: boolean;
+}
+
+/** Register `email` as an EMAIL_ADDRESS identity. SES auto-sends the
+ *  verification link to the address — the user must click before sends
+ *  to it are allowed (while the account is in sandbox).
+ *
+ *  Idempotent: AlreadyExistsException falls through to a status fetch
+ *  so re-runs don't re-trigger the verification email if one is
+ *  already pending. */
+export async function verifySesEmailAddress(
+  email: string,
+  authOverride?: SesAuth,
+): Promise<SesEmailIdentity> {
+  const auth = authOverride ?? (await ensureSes());
+  const client = makeClient(auth);
+  try {
+    const res = await client.send(new CreateEmailIdentityCommand({ EmailIdentity: email }));
+    return { email, verified: res.VerifiedForSendingStatus ?? false };
+  } catch (err) {
+    if ((err as { name?: string }).name === "AlreadyExistsException") {
+      return getSesEmailIdentity(email, auth);
+    }
+    throw err;
+  }
+}
+
+export async function getSesEmailIdentity(
+  email: string,
+  authOverride?: SesAuth,
+): Promise<SesEmailIdentity> {
+  const auth = authOverride ?? (await ensureSes());
+  const client = makeClient(auth);
+  const res = await client.send(new GetEmailIdentityCommand({ EmailIdentity: email }));
+  return { email, verified: res.VerifiedForSendingStatus ?? false };
+}
+
+/** 404-tolerant delete of an email-address identity. Used by
+ *  `hatchkit ses unverify <email>`. */
+export async function deleteSesEmailAddress(
+  email: string,
+  authOverride?: SesAuth,
+): Promise<DeleteResult> {
+  const auth = authOverride ?? (await ensureSes());
+  const client = makeClient(auth);
+  try {
+    await client.send(new DeleteEmailIdentityCommand({ EmailIdentity: email }));
+    return "deleted";
+  } catch (err) {
+    if ((err as { name?: string }).name === "NotFoundException") return "not-found";
+    throw err;
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Account info — sandbox detection + sending stats
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface SesAccountInfo {
+  /** True when AWS has approved production access. False = sandbox. */
+  productionAccessEnabled: boolean;
+  /** Whether outbound is currently allowed at all. Drops to false on
+   *  bounce-rate suspension; useful in `hatchkit doctor` output. */
+  sendingEnabled: boolean;
+  /** Daily send cap. -1 when uncapped (production-access accounts after
+   *  some history). */
+  max24HourSend?: number;
+  /** Per-second send rate cap. */
+  maxSendRate?: number;
+  /** AWS's view of what's still pending before production-access can
+   *  be requested or re-enabled. Empty when nothing's wrong. */
+  enforcementStatus?: string;
+}
+
+export async function getSesAccountInfo(authOverride?: SesAuth): Promise<SesAccountInfo> {
+  const auth = authOverride ?? (await ensureSes());
+  const client = makeClient(auth);
+  const res = await client.send(new GetAccountCommand({}));
+  return {
+    productionAccessEnabled: res.ProductionAccessEnabled ?? false,
+    sendingEnabled: res.SendingEnabled ?? true,
+    max24HourSend: res.SendQuota?.Max24HourSend ?? undefined,
+    maxSendRate: res.SendQuota?.MaxSendRate ?? undefined,
+    enforcementStatus: res.EnforcementStatus ?? undefined,
+  };
 }

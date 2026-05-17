@@ -52,7 +52,21 @@ You'll be prompted for an AWS region (suggest `eu-west-1` for EU compliance) and
 
 The simplest scoped policy is `AmazonSesFullAccess`. For least-privilege, copy the actions above into a custom policy.
 
-**SES sandbox mode is the default.** New AWS accounts can only send to verified recipient addresses. To send to real users you must request production access via the AWS console (one-time form, ~24h Amazon review). This is **not API-driven** — hatchkit can verify domains + derive SMTP credentials before sandbox is lifted, but you can't broadcast to real recipients until it clears.
+**SES sandbox mode is the default.** New AWS accounts can only send to recipient addresses verified ahead of time. To send to real users you must request production access via the AWS console (one-time form, ~24h Amazon review).
+
+While sandboxed, register every test recipient with:
+
+```sh
+hatchkit ses verify <email>
+```
+
+SES mails a one-time confirm link to that address; clicking it flips it to verified. Drop one with `hatchkit ses unverify <email>`. See the current account state (sandbox flag + send caps + identity count) with:
+
+```sh
+hatchkit ses status
+```
+
+Hatchkit verifies your project's *sending* domain + derives SMTP creds before sandbox lifts; only actual broadcasts to non-verified recipients are blocked.
 
 ### 2. Listmonk
 
