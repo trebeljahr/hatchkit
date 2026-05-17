@@ -176,6 +176,12 @@ async function main(): Promise<void> {
       await runRenameDomainCli(args.slice(1), MONOREPO_ROOT);
       break;
     }
+    case "set-description": {
+      if (args.includes("--help")) return printHelp("set-description");
+      const { runSetDescriptionCli } = await import("./deploy/set-description.js");
+      await runSetDescriptionCli(args.slice(1));
+      break;
+    }
     case "sync": {
       if (args.includes("--help")) return printHelp("sync");
       const { runSyncCli } = await import("./deploy/sync.js");
@@ -2358,6 +2364,7 @@ type HelpTopic =
   | "remove"
   | "destroy"
   | "rename-domain"
+  | "set-description"
   | "sync"
   | "regen-infra"
   | "doctor"
@@ -3022,6 +3029,45 @@ function printHelp(topic?: HelpTopic): void {
 `);
     return;
   }
+  if (topic === "set-description") {
+    console.log(`
+  ${chalk.bold("hatchkit set-description")} — update a project's description across every surface
+
+  ${chalk.bold("Usage:")}
+    cd <project-dir> && hatchkit set-description --to "New blurb"
+    hatchkit set-description --dir <project-dir> --to "New blurb" --dry-run
+    hatchkit set-description --clear
+
+  ${chalk.bold("What it updates:")}
+    ${chalk.cyan(".hatchkit.json")}      manifest.description
+    ${chalk.cyan("package.json")}        description field (root)
+    ${chalk.cyan("Coolify")}             project + application description (PATCH)
+    ${chalk.cyan("GitHub")}              ${chalk.dim("gh repo edit <slug> --description …")}
+
+  ${chalk.bold("Options:")}
+    --to <text>     New description (prompted if omitted). Positional
+                    arg works too: ${chalk.dim('hatchkit set-description "New blurb"')}.
+    --clear         Write an empty description everywhere. Mutually
+                    exclusive with --to.
+    --dir <path>    Project dir (defaults to cwd).
+    --no-coolify    Skip the two Coolify PATCHes.
+    --no-github     Skip ${chalk.dim("gh repo edit")}.
+    --dry-run       Show the plan; don't write.
+    --yes, -y       Skip the confirmation prompt.
+
+  ${chalk.bold("Notes:")}
+    · Each provider step is best-effort — a failed Coolify or GitHub
+      call logs a warning but the other surfaces still get updated.
+    · Coolify is auto-skipped when not configured; GitHub is auto-skipped
+      when the repo has no GitHub ${chalk.dim("origin")} remote.
+
+  ${chalk.bold("Example:")}
+    cd ~/src/my-project
+    hatchkit set-description --to "Realtime collab whiteboard" --dry-run
+    hatchkit set-description --to "Realtime collab whiteboard"
+`);
+    return;
+  }
   if (topic === "rename-domain") {
     console.log(`
   ${chalk.bold("hatchkit rename-domain")} — move a project to a new domain
@@ -3257,6 +3303,7 @@ function printHelp(topic?: HelpTopic): void {
     remove          Delete the -dev/-prod clients created by 'add' (inverse of add)
     destroy         Roll back everything ${chalk.cyan("hatchkit create")} did for a project
     rename-domain   Move a scaffolded project to a new domain (rewrites tfvars/env/manifest)
+    set-description Update a project's description across manifest, package.json, Coolify, GitHub
     sync            Push the manifest's domain/ports onto the matching Coolify app(s)
     gh-pages        Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
     dns             DNS reconciliation helpers (link-to-cloudflare, …)
