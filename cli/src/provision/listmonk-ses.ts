@@ -34,6 +34,7 @@
 import {
   type ListmonkAuth,
   type ListmonkList,
+  applySesSmtpToListmonk,
   createListmonkList,
   listListmonkLists,
 } from "./listmonk.js";
@@ -115,6 +116,11 @@ export interface ListmonkSesProvisionResult {
     createdRecords: CreatedDnsRecord[];
     mergedSpf: Array<{ name: string }>;
   } | null;
+  /** Whether Listmonk's runtime SMTP settings + from-email got auto-
+   *  configured via `/api/settings` PUT this run. `false + reason` lets
+   *  the caller surface the manual-paste fallback when the API user
+   *  lacked `Settings: All` permission. */
+  smtpApplied: { written: boolean; reason?: string };
 }
 
 /** Compute the sending subdomain hatchkit uses for this project's SES
@@ -224,6 +230,35 @@ export async function provisionListmonkSesForProject(
     });
   }
 
+  // 6. Push the SES SMTP relay + from-email into Listmonk's runtime
+  //    settings so the user doesn't have to paste them into Settings →
+  //    SMTP by hand. Best-effort: when the API user's role doesn't
+  //    cover `Settings: All` the helper throws — downgrade to a warning
+  //    and let the caller print the manual-paste fallback.
+  let smtpApplied: { written: boolean; reason?: string };
+  try {
+    smtpApplied = await applySesSmtpToListmonk(
+      {
+        host: smtp.host,
+        port: smtp.port,
+        username: smtp.username,
+        password: smtp.password,
+        fromEmail,
+        fromName: opts.projectName,
+      },
+      opts.listmonkAuth,
+    );
+  } catch (err) {
+    const msg = (err as Error).message;
+    const isPerm = /permission denied|403/.test(msg);
+    smtpApplied = {
+      written: false,
+      reason: isPerm
+        ? "API user lacks `Settings: All` — widen the role in Listmonk → Admin → Users, or paste SES SMTP creds into Settings → SMTP manually."
+        : msg,
+    };
+  }
+
   return {
     ses: identity,
     smtp,
@@ -231,6 +266,7 @@ export async function provisionListmonkSesForProject(
     liveList,
     testList,
     dnsPublish,
+    smtpApplied,
   };
 }
 

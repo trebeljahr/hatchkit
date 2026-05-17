@@ -71,25 +71,38 @@ hatchkit config add listmonk --deploy
 The `--deploy` flag prints a step-by-step walkthrough for the Coolify Listmonk service template. It is deliberately a guided manual flow — Coolify's services-from-template endpoint shape drifted across v4.x minor versions, and the next two steps after deployment are unavoidably manual anyway:
 
 1. **Open the Listmonk URL** Coolify auto-assigns. Complete the first-boot wizard — pick a superadmin username + password.
-2. **Admin → Users → New API user.** Name it `hatchkit`, grant Lists / Subscribers / TX permissions, click create. Copy the generated token.
+2. **Admin → Users → New API user.** Name it `hatchkit`. Required permissions on the role:
+   - `Lists: All` — hatchkit creates per-project lists.
+   - `Subscribers: All` — signup forms add subscribers.
+   - `Campaigns: All` — transactional sends via `/api/tx`.
+   - `Settings: All` — so hatchkit can push SES SMTP creds + from-email into Settings → SMTP without manual paste.
+   
+   Skipping `Settings: All` is OK — provisioning still works, but the SES SMTP step falls back to manual paste in the Listmonk admin UI. Copy the generated token after save.
 
 Then hatchkit prompts you for the URL + API user name + token. It validates by hitting `GET /api/lists` before storing anything.
 
 ### 3. Wire SES into Listmonk's SMTP settings
 
-Listmonk delivers via SMTP, so the SES SMTP relay credentials need to land in **Listmonk's** Settings → SMTP. This step is also manual — there is no Listmonk API for updating SMTP settings, and the alternatives (direct DB write, env-var injection on the container) are fragile across Listmonk versions.
+Listmonk delivers via SMTP, so the SES SMTP relay credentials need to land in **Listmonk's** Settings → SMTP. As of v0.2.12 hatchkit auto-pushes these via `PUT /api/settings` during `hatchkit add <project> listmonk-ses` — provided the API user's role includes `Settings: All`. If it does, you'll see:
 
-After `hatchkit add <project> listmonk-ses` runs (next section), `.env.production` will hold:
-
-```env
-SES_SMTP_HOST=email-smtp.eu-west-1.amazonaws.com
-SES_SMTP_PORT=587
-SES_SMTP_USERNAME=AKIA...
-SES_SMTP_PASSWORD=<derived-from-IAM-secret>
-SES_FROM_EMAIL=noreply@mail.<projectDomain>
+```
+✓ Listmonk SMTP settings auto-configured to SES — restart the Listmonk
+  container so the in-memory cache refreshes.
 ```
 
-Paste those values into Listmonk → Settings → SMTP. Hit "Test connection". Save.
+Restart Listmonk afterwards (Coolify dashboard → Restart) so the new settings load from the DB.
+
+If the API user lacks `Settings: All`, hatchkit downgrades to a warning and you paste manually:
+
+```env
+SES_SMTP_HOST=email-smtp.eu-west-1.amazonaws.com   → Host
+SES_SMTP_PORT=587                                  → Port
+SES_SMTP_USERNAME=AKIA...                          → Username
+SES_SMTP_PASSWORD=<derived-from-IAM-secret>        → Password
+SES_FROM_EMAIL=noreply@mail.<projectDomain>        → Settings → General → from-email
+```
+
+Listmonk → Settings → SMTP → enable, paste, save. Auth protocol: `LOGIN`. TLS type: `STARTTLS`.
 
 ## Per-project provisioning
 

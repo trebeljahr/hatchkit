@@ -1584,8 +1584,19 @@ export async function ensureListmonk(opts: { deploy?: boolean } = {}): Promise<L
   console.log(
     chalk.dim(
       "  Listmonk requires a one-time human step: open the admin UI, complete the\n" +
-        "  onboarding wizard, then go to Admin → Users → ‘New API user’. Paste the\n" +
-        "  API user name + the generated token below.",
+        "  onboarding wizard, then go to Admin → Users → ‘New API user’.\n" +
+        "\n" +
+        "  Required permissions on the API user's role:\n" +
+        "    · Lists: All        (hatchkit creates per-project lists)\n" +
+        "    · Subscribers: All  (signup forms add subscribers)\n" +
+        "    · Campaigns: All    (broadcasts via /api/tx)\n" +
+        "    · Settings: All     (so hatchkit can push SES SMTP relay creds + from-email\n" +
+        "                         into Settings → SMTP without you pasting by hand)\n" +
+        "\n" +
+        "  If you skip Settings: All, hatchkit will still provision everything else,\n" +
+        "  but you'll have to paste SES creds into Listmonk → Settings → SMTP yourself.\n" +
+        "\n" +
+        "  Paste the API user name + the generated token below.",
     ),
   );
 
@@ -1686,7 +1697,8 @@ async function guideCoolifyListmonkDeploy(): Promise<void> {
       `  5. Click the auto-assigned ${chalk.cyan("Domains")} URL — Listmonk's onboarding wizard opens`,
       `  6. Complete the wizard: create the superadmin account`,
       `  7. ${chalk.bold("Admin → Users → New API user")}: name it ${chalk.cyan("hatchkit")}`,
-      `     and grant ${chalk.cyan("Lists: All")} + ${chalk.cyan("Subscribers: All")} + ${chalk.cyan("TX: All")}`,
+      `     and grant ${chalk.cyan("Lists: All")} + ${chalk.cyan("Subscribers: All")} + ${chalk.cyan("Campaigns: All")} + ${chalk.cyan("Settings: All")}`,
+      `     (the Settings perm lets hatchkit auto-write SES SMTP creds + from-email)`,
       `  8. Copy the generated token — paste it on the next prompt`,
       "",
     ].join("\n"),

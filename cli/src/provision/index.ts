@@ -754,6 +754,22 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
           );
         }
 
+        if (result.smtpApplied.written) {
+          console.log(
+            chalk.green(
+              "  ✓ Listmonk SMTP settings auto-configured to SES — restart the Listmonk container so the in-memory cache refreshes.",
+            ),
+          );
+        } else if (result.smtpApplied.reason === "already in place") {
+          console.log(chalk.dim("  · Listmonk SMTP already matches SES; left as-is."));
+        } else if (result.smtpApplied.reason) {
+          console.log(
+            chalk.yellow(
+              `  Could not auto-configure Listmonk SMTP: ${result.smtpApplied.reason}`,
+            ),
+          );
+        }
+
         const env = renderListmonkSesEnv({
           listmonkUrl: listmonkCfg.url,
           listmonkApiUser: listmonkCfg.apiUser,
