@@ -49,6 +49,7 @@ import { CoolifyApi, type CoolifyApplication } from "./utils/coolify-api.js";
 import { exec, execOk } from "./utils/exec.js";
 import { listS3Buckets } from "./utils/s3-admin.js";
 import { SECRET_KEYS, getSecret } from "./utils/secrets.js";
+import { type Step, runSteps } from "./utils/step-runner.js";
 import { getCliVersion } from "./utils/version.js";
 
 // ---------------------------------------------------------------------------
@@ -828,86 +829,106 @@ async function promptForGaps(
     );
   console.log("");
 
-  const out: InventoryInput = { ...inferred };
-
-  // Name: required for most lookups. Always confirm or prompt.
-  if (!out.name) {
-    out.name = await input({
-      message: "Project / app name (matches Coolify apps, buckets, clients):",
-      validate: (v) => (v.trim().length > 0 ? true : "Required"),
-    });
-  } else if (!autoAccept) {
-    const ok = await confirm({
-      message: `Use ${chalk.bold(out.name)} as the project name?`,
-      default: true,
-    });
-    if (!ok) {
-      out.name = await input({
-        message: "Project / app name:",
-        default: out.name,
-        validate: (v) => (v.trim().length > 0 ? true : "Required"),
-      });
-    }
-  }
-
-  // Domain: optional. Skip lookups that need it if blank.
-  if (!out.domain) {
-    const want = autoAccept
-      ? false
-      : await confirm({
-          message: "Want to scan for resources tied to a specific domain?",
+  const steps: Step<InventoryInput>[] = [
+    {
+      name: "Project name",
+      skip: (s) => !!s.name && autoAccept,
+      run: async (s) => {
+        if (!s.name) {
+          const name = await input({
+            message: "Project / app name (matches Coolify apps, buckets, clients):",
+            validate: (v) => (v.trim().length > 0 ? true : "Required"),
+          });
+          return { ...s, name };
+        }
+        const ok = await confirm({
+          message: `Use ${chalk.bold(s.name)} as the project name?`,
           default: true,
         });
-    if (want) {
-      out.domain = await input({
-        message: "Primary domain (e.g. myapp.com — empty to skip):",
-      });
-      out.domain = out.domain?.trim() || undefined;
-    }
-  } else if (!autoAccept) {
-    const ok = await confirm({
-      message: `Use ${chalk.bold(out.domain)} as the primary domain?`,
-      default: true,
-    });
-    if (!ok) {
-      out.domain = await input({ message: "Primary domain (empty to skip):", default: out.domain });
-      out.domain = out.domain?.trim() || undefined;
-    }
-  }
-
-  // Repo: optional. Skip GH-side lookups if blank.
-  if (!out.repo) {
-    const want = autoAccept
-      ? false
-      : await confirm({
-          message: "Want to scan a GitHub repo (Pages, secrets, visibility)?",
-          default: false,
+        if (!ok) {
+          const name = await input({
+            message: "Project / app name:",
+            default: s.name,
+            validate: (v) => (v.trim().length > 0 ? true : "Required"),
+          });
+          return { ...s, name };
+        }
+        return s;
+      },
+    },
+    {
+      name: "Domain",
+      skip: () => autoAccept,
+      run: async (s) => {
+        if (!s.domain) {
+          const want = await confirm({
+            message: "Want to scan for resources tied to a specific domain?",
+            default: true,
+          });
+          if (!want) return s;
+          const domain =
+            (
+              await input({
+                message: "Primary domain (e.g. myapp.com — empty to skip):",
+              })
+            ).trim() || undefined;
+          return { ...s, domain };
+        }
+        const ok = await confirm({
+          message: `Use ${chalk.bold(s.domain)} as the primary domain?`,
+          default: true,
         });
-    if (want) {
-      out.repo = await input({
-        message: "GitHub repo slug (owner/name — empty to skip):",
-        validate: (v) =>
-          !v.trim() || /^[^/\s]+\/[^/\s]+$/.test(v.trim()) ? true : "Expected owner/name format",
-      });
-      out.repo = out.repo?.trim() || undefined;
-    }
-  } else if (!autoAccept) {
-    const ok = await confirm({
-      message: `Use ${chalk.bold(out.repo)} as the GitHub repo?`,
-      default: true,
-    });
-    if (!ok) {
-      out.repo = await input({
-        message: "GitHub repo slug (owner/name — empty to skip):",
-        default: out.repo,
-        validate: (v) =>
-          !v.trim() || /^[^/\s]+\/[^/\s]+$/.test(v.trim()) ? true : "Expected owner/name format",
-      });
-      out.repo = out.repo?.trim() || undefined;
-    }
-  }
+        if (ok) return s;
+        const domain =
+          (await input({ message: "Primary domain (empty to skip):", default: s.domain })).trim() ||
+          undefined;
+        return { ...s, domain };
+      },
+    },
+    {
+      name: "GitHub repo",
+      skip: () => autoAccept,
+      run: async (s) => {
+        if (!s.repo) {
+          const want = await confirm({
+            message: "Want to scan a GitHub repo (Pages, secrets, visibility)?",
+            default: false,
+          });
+          if (!want) return s;
+          const repo =
+            (
+              await input({
+                message: "GitHub repo slug (owner/name — empty to skip):",
+                validate: (v) =>
+                  !v.trim() || /^[^/\s]+\/[^/\s]+$/.test(v.trim())
+                    ? true
+                    : "Expected owner/name format",
+              })
+            ).trim() || undefined;
+          return { ...s, repo };
+        }
+        const ok = await confirm({
+          message: `Use ${chalk.bold(s.repo)} as the GitHub repo?`,
+          default: true,
+        });
+        if (ok) return s;
+        const repo =
+          (
+            await input({
+              message: "GitHub repo slug (owner/name — empty to skip):",
+              default: s.repo,
+              validate: (v) =>
+                !v.trim() || /^[^/\s]+\/[^/\s]+$/.test(v.trim())
+                  ? true
+                  : "Expected owner/name format",
+            })
+          ).trim() || undefined;
+        return { ...s, repo };
+      },
+    },
+  ];
 
-  return out;
+  return runSteps(steps, { ...inferred });
 }
 
 function labelRow(

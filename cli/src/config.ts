@@ -14,6 +14,7 @@ import {
   getSecret,
   setSecret,
 } from "./utils/secrets.js";
+import { type Step, runSteps } from "./utils/step-runner.js";
 import { validateRequired, validateUrl } from "./utils/validate.js";
 
 /** Sanity-check an S3 access/secret pair against shape rules. Returns
@@ -599,36 +600,43 @@ export async function ensureCoolify(): Promise<CoolifyConfig> {
     }
   }
 
-  const url = (
-    await input({
-      message: "Coolify dashboard URL:",
-      default: existing?.url,
-      validate: (v) => validateUrl(v.trim()),
-    })
-  ).trim();
+  const coolifySteps: Step<{ url: string; token: string }>[] = [
+    {
+      name: "Dashboard URL",
+      run: async (s) => ({
+        ...s,
+        url: (
+          await input({
+            message: "Coolify dashboard URL:",
+            default: s.url || existing?.url,
+            validate: (v) => validateUrl(v.trim()),
+          })
+        ).trim(),
+      }),
+    },
+    {
+      name: "API token",
+      run: async (s) => {
+        tokenHint(`${s.url.replace(/\/$/, "")}/security/api-tokens`, "root (full access)");
+        for (;;) {
+          const candidate = await confirmPastedSecret("Coolify API token");
+          const spinner = ora("Testing Coolify connection...").start();
+          try {
+            const version = await verifyCoolify(s.url, candidate);
+            spinner.succeed(`Connected to Coolify v${version}`);
+            return { ...s, token: candidate };
+          } catch (error) {
+            spinner.fail("Could not connect to Coolify");
+            console.log(chalk.dim(`  ${error instanceof Error ? error.message : String(error)}`));
+            const retry = await confirm({ message: "Try a different token?", default: true });
+            if (!retry) throw error;
+          }
+        }
+      },
+    },
+  ];
 
-  // Loop on the token until it authenticates — pasting the wrong token
-  // is easy, and re-running the whole onboarding just to retry is rude.
-  let token = "";
-  tokenHint(`${url.replace(/\/$/, "")}/security/api-tokens`, "root (full access)");
-  for (;;) {
-    token = await confirmPastedSecret("Coolify API token");
-
-    const spinner = ora("Testing Coolify connection...").start();
-    try {
-      const version = await verifyCoolify(url, token);
-      spinner.succeed(`Connected to Coolify v${version}`);
-      break;
-    } catch (error) {
-      spinner.fail("Could not connect to Coolify");
-      console.log(chalk.dim(`  ${error instanceof Error ? error.message : String(error)}`));
-      const retry = await confirm({
-        message: "Try a different token?",
-        default: true,
-      });
-      if (!retry) throw error;
-    }
-  }
+  const { url, token } = await runSteps(coolifySteps, { url: "", token: "" });
 
   const { CoolifyApi } = await import("./utils/coolify-api.js");
   const api = new CoolifyApi({ url, token });
@@ -755,55 +763,98 @@ export async function ensureDns(): Promise<DnsConfig> {
     ),
   );
 
-  // Cloudflare
-  tokenHint(
-    "https://dash.cloudflare.com/profile/api-tokens → Create Token",
-    "Zone:DNS:Edit + Zone:Zone:Read (scope to the zones you'll use)",
-    "Note: User API Token. Lives at /profile/api-tokens alongside the R2 admin token",
-    "      (hatchkit deliberately uses one token per concern — DNS vs R2 — both visible",
-    "      together so you can audit and rotate them in one place).",
-  );
-  const apiToken = await confirmPastedSecret("Cloudflare API token");
-  const accountId = await input({
-    message: "Cloudflare account ID (optional — leave blank to span all accounts):",
-    default: "",
-  });
-
-  // Cross-provider case: DNS on Cloudflare, but the domain is still
-  // registered at INWX. Offer to store INWX registrar creds so deploys
-  // (and the `dns link-to-cloudflare` command) can flip the delegated NS
-  // to Cloudflare automatically without a UI click-through per domain.
-  const wireInwxRegistrar = await confirm({
-    message:
-      "Is INWX your domain registrar? (if yes, hatchkit will auto-point NS at Cloudflare on deploy)",
-    default: false,
-  });
-  let registrarUsername: string | undefined;
-  let registrarPassword: string | undefined;
-  if (wireInwxRegistrar) {
-    registrarUsername = await input({
-      message: "INWX username (registrar):",
-      validate: validateRequired,
-    });
-    registrarPassword = await confirmPastedSecret("INWX password (registrar)");
+  interface DnsSetupState {
+    apiToken: string;
+    accountId: string;
+    wireInwx: boolean;
+    registrarUsername: string;
+    registrarPassword: string;
   }
+
+  const dnsSteps: Step<DnsSetupState>[] = [
+    {
+      name: "Cloudflare API token",
+      run: async (s) => {
+        tokenHint(
+          "https://dash.cloudflare.com/profile/api-tokens → Create Token",
+          "Zone:DNS:Edit + Zone:Zone:Read (scope to the zones you'll use)",
+          "Note: User API Token. Lives at /profile/api-tokens alongside the R2 admin token",
+          "      (hatchkit deliberately uses one token per concern — DNS vs R2 — both visible",
+          "      together so you can audit and rotate them in one place).",
+        );
+        return { ...s, apiToken: await confirmPastedSecret("Cloudflare API token") };
+      },
+    },
+    {
+      name: "Cloudflare account ID",
+      run: async (s) => ({
+        ...s,
+        accountId: await input({
+          message: "Cloudflare account ID (optional — leave blank to span all accounts):",
+          default: "",
+        }),
+      }),
+    },
+    {
+      name: "INWX registrar",
+      run: async (s) => ({
+        ...s,
+        wireInwx: await confirm({
+          message:
+            "Is INWX your domain registrar? (if yes, hatchkit will auto-point NS at Cloudflare on deploy)",
+          default: false,
+        }),
+      }),
+    },
+    {
+      name: "INWX username",
+      skip: (s) => !s.wireInwx,
+      run: async (s) => ({
+        ...s,
+        registrarUsername: await input({
+          message: "INWX username (registrar):",
+          validate: validateRequired,
+        }),
+      }),
+    },
+    {
+      name: "INWX password",
+      skip: (s) => !s.wireInwx,
+      run: async (s) => ({
+        ...s,
+        registrarPassword: await confirmPastedSecret("INWX password (registrar)"),
+      }),
+    },
+  ];
+
+  const dns = await runSteps(dnsSteps, {
+    apiToken: "",
+    accountId: "",
+    wireInwx: false,
+    registrarUsername: "",
+    registrarPassword: "",
+  });
 
   const meta: DnsMeta = {
     status: "configured",
     provider: "cloudflare",
-    accountId: accountId.trim() || undefined,
-    registrarUsername,
+    accountId: dns.accountId.trim() || undefined,
+    registrarUsername: dns.wireInwx ? dns.registrarUsername : undefined,
   };
   store.set("providers.dns", meta);
-  await setSecret(SECRET_KEYS.dnsCloudflareToken, apiToken);
-  if (registrarPassword) {
-    await setSecret(SECRET_KEYS.dnsInwxRegistrarPassword, registrarPassword);
+  await setSecret(SECRET_KEYS.dnsCloudflareToken, dns.apiToken);
+  if (dns.wireInwx && dns.registrarPassword) {
+    await setSecret(SECRET_KEYS.dnsInwxRegistrarPassword, dns.registrarPassword);
   }
   console.log(chalk.green("  ✓ Cloudflare DNS configured"));
-  if (registrarUsername) {
+  if (dns.wireInwx) {
     console.log(chalk.green("  ✓ INWX registrar wired for auto-NS updates"));
   }
-  return { ...meta, apiToken, registrarPassword };
+  return {
+    ...meta,
+    apiToken: dns.apiToken,
+    registrarPassword: dns.wireInwx ? dns.registrarPassword : undefined,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -945,11 +996,28 @@ export async function promptAndSaveInwxRegistrarCreds(): Promise<{
   password: string;
 }> {
   console.log(chalk.dim("\n  → Find these at: https://www.inwx.com → My Account"));
-  const username = await input({
-    message: "INWX username (registrar):",
-    validate: validateRequired,
-  });
-  const pwd = await confirmPastedSecret("INWX password (registrar)");
+
+  const inwxSteps: Step<{ username: string; password: string }>[] = [
+    {
+      name: "INWX username",
+      run: async (s) => ({
+        ...s,
+        username: await input({
+          message: "INWX username (registrar):",
+          validate: validateRequired,
+        }),
+      }),
+    },
+    {
+      name: "INWX password",
+      run: async (s) => ({
+        ...s,
+        password: await confirmPastedSecret("INWX password (registrar)"),
+      }),
+    },
+  ];
+
+  const { username, password: pwd } = await runSteps(inwxSteps, { username: "", password: "" });
 
   const meta = store.get("providers.dns") as DnsMeta | undefined;
   if (meta) {
@@ -1025,51 +1093,58 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
         ),
       );
     }
-    const accountId = (
-      await input({
-        message: "Cloudflare account ID:",
-        default: previousAccountId,
-        validate: validateRequired,
-      })
-    ).trim();
+    const r2Steps: Step<{ accountId: string; token: string }>[] = [
+      {
+        name: "Cloudflare account ID",
+        run: async (s) => ({
+          ...s,
+          accountId: (
+            await input({
+              message: "Cloudflare account ID:",
+              default: s.accountId || previousAccountId,
+              validate: validateRequired,
+            })
+          ).trim(),
+        }),
+      },
+      {
+        name: "R2 admin token",
+        run: async (s) => {
+          tokenHint(
+            "https://dash.cloudflare.com/profile/api-tokens → Create Token → Custom token",
+            "Account > Workers R2 Storage > Edit  +  User > API Tokens > Edit  (+ optional Zone > Zone > Read)",
+            "  • R2 Storage:Edit  — create and manage the project buckets.",
+            "  • API Tokens:Edit  — mint per-project bucket-scoped tokens at provision time.",
+            "  • Zone:Read        — optional, only for attaching a custom domain (assets.example.com).",
+            "Note: must be a User API Token. Account API Tokens can't carry API Tokens:Edit",
+            "      (it's a User-scoped permission), so they can't mint per-project credentials.",
+            "      DNS uses a separate User API Token; both live at /profile/api-tokens.",
+          );
+          for (;;) {
+            const candidate = await confirmPastedSecret("R2 admin Bearer token");
+            const spinner = ora("Verifying R2 admin token (both perms)...").start();
+            const verdict = await verifyR2AdminToken(candidate, s.accountId);
+            if (verdict.ok) {
+              spinner.succeed(`R2 admin token verified — ${verdict.detail}`);
+              return { ...s, token: candidate };
+            }
+            spinner.fail(verdict.detail);
+            console.log(chalk.dim(`  Fix at https://dash.cloudflare.com/profile/api-tokens.`));
+            const retry = await confirm({ message: "Try a different token?", default: true });
+            if (!retry) {
+              throw new Error(`R2 admin token rejected: ${verdict.detail}`);
+            }
+          }
+        },
+      },
+    ];
+
+    const r2 = await runSteps(r2Steps, { accountId: "", token: "" });
+    const accountId = r2.accountId;
     const endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
     const region = "auto";
 
-    tokenHint(
-      "https://dash.cloudflare.com/profile/api-tokens → Create Token → Custom token",
-      "Account > Workers R2 Storage > Edit  +  User > API Tokens > Edit  (+ optional Zone > Zone > Read)",
-      "  • R2 Storage:Edit  — create and manage the project buckets.",
-      "  • API Tokens:Edit  — mint per-project bucket-scoped tokens at provision time.",
-      "  • Zone:Read        — optional, only for attaching a custom domain (assets.example.com).",
-      "Note: must be a User API Token. Account API Tokens can't carry API Tokens:Edit",
-      "      (it's a User-scoped permission), so they can't mint per-project credentials.",
-      "      DNS uses a separate User API Token; both live at /profile/api-tokens.",
-    );
-
-    // Loop on the token until it passes BOTH permission checks
-    // (the same calls `hatchkit doctor` makes). Pasting a token with
-    // only one of the two perms is the most common misconfiguration —
-    // catch it here while the dashboard is still open instead of
-    // letting it surface during a 5-minute deploy or, worse, a silent
-    // half-provisioned project.
-    let verifiedToken: string;
-    for (;;) {
-      const candidate = await confirmPastedSecret("R2 admin Bearer token");
-      const spinner = ora("Verifying R2 admin token (both perms)...").start();
-      const verdict = await verifyR2AdminToken(candidate, accountId);
-      if (verdict.ok) {
-        spinner.succeed(`R2 admin token verified — ${verdict.detail}`);
-        verifiedToken = candidate;
-        break;
-      }
-      spinner.fail(verdict.detail);
-      console.log(chalk.dim(`  Fix at https://dash.cloudflare.com/profile/api-tokens.`));
-      const retry = await confirm({ message: "Try a different token?", default: true });
-      if (!retry) {
-        throw new Error(`R2 admin token rejected: ${verdict.detail}`);
-      }
-    }
-    await setSecret(SECRET_KEYS.r2AdminToken, verifiedToken);
+    await setSecret(SECRET_KEYS.r2AdminToken, r2.token);
 
     const meta: S3ProviderMeta = {
       status: "configured",
@@ -1096,10 +1171,6 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
     chalk.yellow(`\n  ${provider.toUpperCase()} S3 is not configured yet. Let's set it up.`),
   );
 
-  let endpoint: string | undefined;
-  let region: string | undefined;
-  let location: string | undefined;
-
   const s3Hints = {
     hetzner: {
       url: "https://console.hetzner.cloud → your project → Security → S3 credentials",
@@ -1110,52 +1181,75 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
       scope: "s3:PutObject, s3:GetObject, s3:DeleteObject on the target bucket",
     },
   } as const;
-  tokenHint(s3Hints[provider].url, s3Hints[provider].scope);
 
-  // Loop on the access/secret pair until both pass validation. Real
-  // bug we hit in the wild: the user fast-clicks through the dashboard
-  // and pastes the same value into BOTH prompts. The runtime then
-  // fails at S3-API time with a confusing 400 InvalidArgument. Catch
-  // it here while the user still has the dashboard open.
-  let promptedAccessKey: string;
-  let promptedSecretKey: string;
-  for (;;) {
-    promptedAccessKey = await confirmPastedSecret(`${provider} S3 Access Key ID`);
-    promptedSecretKey = await confirmPastedSecret(`${provider} S3 Secret Access Key`);
-    const issue = validateS3KeyPair(provider, promptedAccessKey, promptedSecretKey);
-    if (!issue) break;
-    console.log(chalk.yellow(`  ${issue}`));
-    console.log(chalk.dim("  Re-paste both values."));
+  interface S3SetupState {
+    accessKey: string;
+    secretKey: string;
+    location: string;
+    region: string;
+    endpoint: string;
   }
 
-  if (provider === "hetzner") {
-    location = await select({
-      message: "Hetzner Object Storage location:",
-      choices: [
-        { name: "Nuremberg (nbg1)", value: "nbg1" },
-        { name: "Falkenstein (fsn1)", value: "fsn1" },
-        { name: "Helsinki (hel1)", value: "hel1" },
-      ],
-    });
-    endpoint = `https://${location}.your-objectstorage.com`;
-    region = location;
-  } else if (provider === "aws") {
-    region = await input({ message: "AWS region:", default: "us-east-1" });
-    endpoint = `https://s3.${region}.amazonaws.com`;
-  }
+  const s3Steps: Step<S3SetupState>[] = [
+    {
+      name: "S3 credentials",
+      run: async (s) => {
+        tokenHint(s3Hints[provider].url, s3Hints[provider].scope);
+        for (;;) {
+          const ak = await confirmPastedSecret(`${provider} S3 Access Key ID`);
+          const sk = await confirmPastedSecret(`${provider} S3 Secret Access Key`);
+          const issue = validateS3KeyPair(provider, ak, sk);
+          if (!issue) return { ...s, accessKey: ak, secretKey: sk };
+          console.log(chalk.yellow(`  ${issue}`));
+          console.log(chalk.dim("  Re-paste both values."));
+        }
+      },
+    },
+    {
+      name: provider === "hetzner" ? "Storage location" : "AWS region",
+      run: async (s) => {
+        if (provider === "hetzner") {
+          const location = await select({
+            message: "Hetzner Object Storage location:",
+            choices: [
+              { name: "Nuremberg (nbg1)", value: "nbg1" },
+              { name: "Falkenstein (fsn1)", value: "fsn1" },
+              { name: "Helsinki (hel1)", value: "hel1" },
+            ],
+          });
+          return {
+            ...s,
+            location,
+            region: location,
+            endpoint: `https://${location}.your-objectstorage.com`,
+          };
+        }
+        const region = await input({ message: "AWS region:", default: "us-east-1" });
+        return { ...s, region, endpoint: `https://s3.${region}.amazonaws.com` };
+      },
+    },
+  ];
+
+  const s3 = await runSteps(s3Steps, {
+    accessKey: "",
+    secretKey: "",
+    location: "",
+    region: "",
+    endpoint: "",
+  });
 
   const meta: S3ProviderMeta = {
     status: "configured",
-    endpoint,
-    region,
-    location,
+    endpoint: s3.endpoint || undefined,
+    region: s3.region || undefined,
+    location: s3.location || undefined,
     lastVerified: new Date().toISOString(),
   };
   store.set(`providers.s3.${provider}`, meta);
-  await setSecret(SECRET_KEYS.s3AccessKey(provider), promptedAccessKey);
-  await setSecret(SECRET_KEYS.s3SecretKey(provider), promptedSecretKey);
+  await setSecret(SECRET_KEYS.s3AccessKey(provider), s3.accessKey);
+  await setSecret(SECRET_KEYS.s3SecretKey(provider), s3.secretKey);
   console.log(chalk.green(`  ✓ ${provider} S3 configured`));
-  return { ...meta, accessKey: promptedAccessKey, secretKey: promptedSecretKey };
+  return { ...meta, accessKey: s3.accessKey, secretKey: s3.secretKey };
 }
 
 export async function getS3Config(provider: string): Promise<S3ProviderConfig | null> {
@@ -1292,45 +1386,80 @@ export async function ensureGlitchtip(): Promise<GlitchtipConfig> {
   }
 
   console.log(chalk.yellow("\n  GlitchTip is not configured yet. Let's set it up."));
+
+  interface GlitchtipSetupState {
+    url: string;
+    token: string;
+    organizationSlug: string;
+    teamSlug: string;
+  }
+
   const rootForGlitchtip = getDefaultRootDomain();
-  const url = (
-    await input({
-      message: "GlitchTip base URL:",
-      default: existing?.url ?? (rootForGlitchtip ? `https://glitchtip.${rootForGlitchtip}` : ""),
-      validate: (v) => validateUrl(v.trim()),
-    })
-  ).trim();
-  tokenHint(
-    `${url.replace(/\/$/, "")}/profile/auth-tokens`,
-    "project:admin (read + write projects & teams)",
-  );
-  const token = await confirmPastedSecret("GlitchTip auth token");
-  const organizationSlug = (
-    await input({
-      message: "GlitchTip organization slug:",
-      default: existing?.organizationSlug,
-      validate: validateRequired,
-    })
-  ).trim();
-  const teamSlug = (
-    await input({
-      message: "GlitchTip team slug (must exist under that org):",
-      default: existing?.teamSlug,
-      validate: validateRequired,
-    })
-  ).trim();
+  const gtSteps: Step<GlitchtipSetupState>[] = [
+    {
+      name: "GlitchTip URL",
+      run: async (s) => ({
+        ...s,
+        url: (
+          await input({
+            message: "GlitchTip base URL:",
+            default: s.url || existing?.url || (rootForGlitchtip ? `https://glitchtip.${rootForGlitchtip}` : ""),
+            validate: (v) => validateUrl(v.trim()),
+          })
+        ).trim(),
+      }),
+    },
+    {
+      name: "Auth token",
+      run: async (s) => {
+        tokenHint(
+          `${s.url.replace(/\/$/, "")}/profile/auth-tokens`,
+          "project:admin (read + write projects & teams)",
+        );
+        return { ...s, token: await confirmPastedSecret("GlitchTip auth token") };
+      },
+    },
+    {
+      name: "Organization slug",
+      run: async (s) => ({
+        ...s,
+        organizationSlug: (
+          await input({
+            message: "GlitchTip organization slug:",
+            default: s.organizationSlug || existing?.organizationSlug,
+            validate: validateRequired,
+          })
+        ).trim(),
+      }),
+    },
+    {
+      name: "Team slug",
+      run: async (s) => ({
+        ...s,
+        teamSlug: (
+          await input({
+            message: "GlitchTip team slug (must exist under that org):",
+            default: s.teamSlug || existing?.teamSlug,
+            validate: validateRequired,
+          })
+        ).trim(),
+      }),
+    },
+  ];
+
+  const gt = await runSteps(gtSteps, { url: "", token: "", organizationSlug: "", teamSlug: "" });
 
   const meta: GlitchtipMeta = {
     status: "configured",
-    url: url.replace(/\/$/, ""),
-    organizationSlug,
-    teamSlug,
+    url: gt.url.replace(/\/$/, ""),
+    organizationSlug: gt.organizationSlug,
+    teamSlug: gt.teamSlug,
     lastVerified: new Date().toISOString(),
   };
   store.set("providers.glitchtip", meta);
-  await setSecret(SECRET_KEYS.glitchtipToken, token);
+  await setSecret(SECRET_KEYS.glitchtipToken, gt.token);
   console.log(chalk.green("  ✓ GlitchTip configured"));
-  return { ...meta, token };
+  return { ...meta, token: gt.token };
 }
 
 export async function getGlitchtipConfig(): Promise<GlitchtipConfig | null> {
@@ -1366,71 +1495,119 @@ export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
   } else {
     console.log(chalk.yellow("\n  OpenPanel is not configured yet. Let's set it up."));
   }
-  const rootForOpenpanel = getDefaultRootDomain();
-  const url = (
-    await input({
-      message: "OpenPanel dashboard URL:",
-      default: existing?.url ?? (rootForOpenpanel ? `https://analytics.${rootForOpenpanel}` : ""),
-      validate: (v) => validateUrl(v.trim()),
-    })
-  ).trim();
-  // Self-hosted OpenPanel exposes the Management API on a separate
-  // subdomain (e.g. `api.op.example.com`). Default by prepending `api.`
-  // to the dashboard host, which matches the docs' recommended layout.
-  const defaultApiUrl =
-    existing?.apiUrl ?? url.replace(/^https?:\/\//, (m) => `${m}api.`).replace(/\/$/, "");
-  const apiUrl = (
-    await input({
-      message: "OpenPanel API URL (Management API base — usually api.<dashboard>):",
-      default: defaultApiUrl,
-      validate: (v) => validateUrl(v.trim()),
-    })
-  )
-    .trim()
-    .replace(/\/$/, "");
-  const organizationSlug = (
-    await input({
-      message: "OpenPanel organization slug:",
-      default: existing?.organizationSlug,
-      validate: validateRequired,
-    })
-  ).trim();
 
-  console.log(
-    chalk.dim(
-      `\n  OpenPanel auth uses a client id/secret pair, not a bearer token.\n` +
-        `  Create a root-mode client once so hatchkit can auto-create\n` +
-        `  per-project clients via the Management API.\n\n` +
-        `  Where to create it:\n` +
-        `    1. Open ${chalk.cyan(`${url.replace(/\/$/, "")}/${organizationSlug}`)}\n` +
-        `    2. Pick any project (or create a placeholder "hatchkit-root" project)\n` +
-        `    3. Project → Settings → Clients → New client\n` +
-        `    4. Type: ${chalk.cyan("root")} (Management API access — full org-wide)\n` +
-        `    5. Copy the clientId and clientSecret (secret is shown once)\n`,
-    ),
-  );
-  const rootClientId = (
-    await input({
-      message: "OpenPanel root clientId:",
-      validate: validateRequired,
-    })
-  ).trim();
-  const rootClientSecret = await confirmPastedSecret(
-    "OpenPanel root clientSecret (shown once at creation)",
-  );
+  interface OpenpanelSetupState {
+    url: string;
+    apiUrl: string;
+    organizationSlug: string;
+    rootClientId: string;
+    rootClientSecret: string;
+  }
+
+  const rootForOpenpanel = getDefaultRootDomain();
+  const opSteps: Step<OpenpanelSetupState>[] = [
+    {
+      name: "Dashboard URL",
+      run: async (s) => ({
+        ...s,
+        url: (
+          await input({
+            message: "OpenPanel dashboard URL:",
+            default: s.url || existing?.url || (rootForOpenpanel ? `https://analytics.${rootForOpenpanel}` : ""),
+            validate: (v) => validateUrl(v.trim()),
+          })
+        ).trim(),
+      }),
+    },
+    {
+      name: "API URL",
+      run: async (s) => {
+        const defaultApiUrl =
+          s.apiUrl ||
+          existing?.apiUrl ||
+          s.url.replace(/^https?:\/\//, (m) => `${m}api.`).replace(/\/$/, "");
+        return {
+          ...s,
+          apiUrl: (
+            await input({
+              message: "OpenPanel API URL (Management API base — usually api.<dashboard>):",
+              default: defaultApiUrl,
+              validate: (v) => validateUrl(v.trim()),
+            })
+          )
+            .trim()
+            .replace(/\/$/, ""),
+        };
+      },
+    },
+    {
+      name: "Organization slug",
+      run: async (s) => ({
+        ...s,
+        organizationSlug: (
+          await input({
+            message: "OpenPanel organization slug:",
+            default: s.organizationSlug || existing?.organizationSlug,
+            validate: validateRequired,
+          })
+        ).trim(),
+      }),
+    },
+    {
+      name: "Root client ID",
+      run: async (s) => {
+        console.log(
+          chalk.dim(
+            `\n  OpenPanel auth uses a client id/secret pair, not a bearer token.\n` +
+              `  Create a root-mode client once so hatchkit can auto-create\n` +
+              `  per-project clients via the Management API.\n\n` +
+              `  Where to create it:\n` +
+              `    1. Open ${chalk.cyan(`${s.url.replace(/\/$/, "")}/${s.organizationSlug}`)}\n` +
+              `    2. Pick any project (or create a placeholder "hatchkit-root" project)\n` +
+              `    3. Project → Settings → Clients → New client\n` +
+              `    4. Type: ${chalk.cyan("root")} (Management API access — full org-wide)\n` +
+              `    5. Copy the clientId and clientSecret (secret is shown once)\n`,
+          ),
+        );
+        return {
+          ...s,
+          rootClientId: (
+            await input({ message: "OpenPanel root clientId:", validate: validateRequired })
+          ).trim(),
+        };
+      },
+    },
+    {
+      name: "Root client secret",
+      run: async (s) => ({
+        ...s,
+        rootClientSecret: await confirmPastedSecret(
+          "OpenPanel root clientSecret (shown once at creation)",
+        ),
+      }),
+    },
+  ];
+
+  const op = await runSteps(opSteps, {
+    url: "",
+    apiUrl: "",
+    organizationSlug: "",
+    rootClientId: "",
+    rootClientSecret: "",
+  });
 
   const meta: OpenpanelMeta = {
     status: "configured",
-    url: url.replace(/\/$/, ""),
-    apiUrl,
-    organizationSlug,
+    url: op.url.replace(/\/$/, ""),
+    apiUrl: op.apiUrl,
+    organizationSlug: op.organizationSlug,
     lastVerified: new Date().toISOString(),
   };
   store.set("providers.openpanel", meta);
-  await setSecret(SECRET_KEYS.openpanelRootClientId, rootClientId);
-  await setSecret(SECRET_KEYS.openpanelRootClientSecret, rootClientSecret);
+  await setSecret(SECRET_KEYS.openpanelRootClientId, op.rootClientId);
+  await setSecret(SECRET_KEYS.openpanelRootClientSecret, op.rootClientSecret);
   console.log(chalk.green("  ✓ OpenPanel configured"));
-  return { ...meta, rootClientId, rootClientSecret };
+  return { ...meta, rootClientId: op.rootClientId, rootClientSecret: op.rootClientSecret };
 }
 
 export async function getOpenpanelConfig(): Promise<OpenpanelConfig | null> {
@@ -1455,45 +1632,80 @@ export async function ensurePlausible(): Promise<PlausibleConfig> {
   }
 
   console.log(chalk.yellow("\n  Plausible is not configured yet. Let's set it up."));
-  const url = (
-    await input({
-      message: "Plausible base URL:",
-      default: existing?.url ?? "https://plausible.io",
-      validate: (v) => validateUrl(v.trim()),
-    })
-  )
-    .trim()
-    .replace(/\/$/, "");
-  tokenHint(
-    `${url}/settings`,
-    "Sites API key (can list/create/delete sites; Plausible Cloud requires a Sites API-enabled plan)",
-  );
-  const apiKey = await confirmPastedSecret("Plausible Sites API key");
-  const teamId = (
-    await input({
-      message: "Plausible team id (optional):",
-      default: existing?.teamId ?? "",
-    })
-  ).trim();
-  const timezone = (
-    await input({
-      message: "Default site timezone:",
-      default: existing?.timezone ?? "Etc/UTC",
-      validate: validateRequired,
-    })
-  ).trim();
+
+  interface PlausibleSetupState {
+    url: string;
+    apiKey: string;
+    teamId: string;
+    timezone: string;
+  }
+
+  const plSteps: Step<PlausibleSetupState>[] = [
+    {
+      name: "Plausible URL",
+      run: async (s) => ({
+        ...s,
+        url: (
+          await input({
+            message: "Plausible base URL:",
+            default: s.url || existing?.url || "https://plausible.io",
+            validate: (v) => validateUrl(v.trim()),
+          })
+        )
+          .trim()
+          .replace(/\/$/, ""),
+      }),
+    },
+    {
+      name: "Sites API key",
+      run: async (s) => {
+        tokenHint(
+          `${s.url}/settings`,
+          "Sites API key (can list/create/delete sites; Plausible Cloud requires a Sites API-enabled plan)",
+        );
+        return { ...s, apiKey: await confirmPastedSecret("Plausible Sites API key") };
+      },
+    },
+    {
+      name: "Team ID",
+      run: async (s) => ({
+        ...s,
+        teamId: (
+          await input({
+            message: "Plausible team id (optional):",
+            default: s.teamId || existing?.teamId || "",
+          })
+        ).trim(),
+      }),
+    },
+    {
+      name: "Timezone",
+      run: async (s) => ({
+        ...s,
+        timezone: (
+          await input({
+            message: "Default site timezone:",
+            default: s.timezone || existing?.timezone || "Etc/UTC",
+            validate: validateRequired,
+          })
+        ).trim(),
+      }),
+    },
+  ];
+
+  const pl = await runSteps(plSteps, { url: "", apiKey: "", teamId: "", timezone: "" });
 
   const meta: PlausibleMeta = {
     status: "configured",
-    url,
-    teamId: teamId || undefined,
-    timezone,
+    url: pl.url,
+    teamId: pl.teamId || undefined,
+    timezone: pl.timezone,
     lastVerified: new Date().toISOString(),
   };
   store.set("providers.plausible", meta);
-  await setSecret(SECRET_KEYS.plausibleApiKey, apiKey);
+  await setSecret(SECRET_KEYS.plausibleApiKey, pl.apiKey);
   console.log(chalk.green("  ✓ Plausible configured"));
-  return { ...meta, apiKey };
+  return { ...meta, apiKey: pl.apiKey };
 }
 
 export async function getPlausibleConfig(): Promise<PlausibleConfig | null> {
@@ -2541,8 +2753,18 @@ export async function ensureStripe(): Promise<StripeConfig> {
     await deleteSecret(SECRET_KEYS.stripePublishableKey);
   }
 
-  const testKey = await promptForMasterKey("test");
-  const liveKey = await promptForMasterKey("live");
+  const stripeSteps: Step<{ testKey: string | null; liveKey: string | null }>[] = [
+    {
+      name: "Stripe TEST/sandbox master key",
+      run: async (s) => ({ ...s, testKey: await promptForMasterKey("test") }),
+    },
+    {
+      name: "Stripe LIVE master key",
+      run: async (s) => ({ ...s, liveKey: await promptForMasterKey("live") }),
+    },
+  ];
+
+  const { testKey, liveKey } = await runSteps(stripeSteps, { testKey: null, liveKey: null });
 
   if (!testKey && !liveKey) {
     throw new Error(

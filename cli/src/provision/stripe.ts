@@ -34,6 +34,7 @@ import { input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { confirmPastedSecret, ensureStripe } from "../config.js";
 import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
+import { type Step, runSteps } from "../utils/step-runner.js";
 
 /** CHANGE_ME_<KEY> values the starter looks for to log a "Stripe is
  *  unconfigured" warning at boot. Kept in a single export so the
@@ -348,47 +349,76 @@ export async function collectPerProjectKeys(args: CollectKeysArgs): Promise<Coll
     );
   }
 
-  // Skip is a first-class option — opting out of one mode just means
-  // the env file gets `CHANGE_ME_*` placeholders + a comment header. The
-  // user can wire up later with `dotenvx set` (or by re-running adopt
-  // once the manifest exists). Defaulting to "provide" keeps the happy
-  // path one Enter away for users who already have keys ready.
-  const action = await select<"provide" | "skip">({
-    message: `${info.label}: provide keys now, or skip and wire up later?`,
-    choices: [
-      { name: "Provide keys now (paste sk + pk)", value: "provide" },
-      {
-        name: "Skip — write commented placeholders to the env file",
-        value: "skip",
+  interface KeysState {
+    action: "provide" | "skip";
+    secretKey: string;
+    publishableKey: string;
+  }
+
+  const steps: Step<KeysState>[] = [
+    {
+      name: `${info.label}: provide or skip`,
+      run: async (s) => ({
+        ...s,
+        action: await select<"provide" | "skip">({
+          message: `${info.label}: provide keys now, or skip and wire up later?`,
+          choices: [
+            { name: "Provide keys now (paste sk + pk)", value: "provide" },
+            {
+              name: "Skip — write commented placeholders to the env file",
+              value: "skip",
+            },
+          ],
+          default: "provide",
+        }),
+      }),
+    },
+    {
+      name: `${info.label} secret key`,
+      skip: (s) => s.action === "skip",
+      run: async (s) => {
+        const secretKey = await confirmPastedSecret(
+          `Per-project ${info.label} secret key (${info.skSample})`,
+        );
+        if (!info.skPattern.test(secretKey)) {
+          throw new Error(
+            `Pasted secret key doesn't match ${args.mode} mode (expected prefix ` +
+              `sk_${args.mode}_ or rk_${args.mode}_).`,
+          );
+        }
+        return { ...s, secretKey };
       },
-    ],
-    default: "provide",
+    },
+    {
+      name: `${info.label} publishable key`,
+      skip: (s) => s.action === "skip",
+      run: async (s) => ({
+        ...s,
+        publishableKey: (
+          await input({
+            message: `Per-project ${info.label} publishable key (${info.pkSample}):`,
+            validate: (v) => {
+              const t = v.trim();
+              if (!info.pkPattern.test(t))
+                return `Must start with pk_${args.mode}_ for ${args.mode} mode.`;
+              return true;
+            },
+          })
+        ).trim(),
+      }),
+    },
+  ];
+
+  const collected = await runSteps(steps, {
+    action: "provide" as const,
+    secretKey: "",
+    publishableKey: "",
   });
-  if (action === "skip") {
+  if (collected.action === "skip") {
     return { kind: "skipped" };
   }
 
-  const secretKey = await confirmPastedSecret(
-    `Per-project ${info.label} secret key (${info.skSample})`,
-  );
-  if (!info.skPattern.test(secretKey)) {
-    throw new Error(
-      `Pasted secret key doesn't match ${args.mode} mode (expected prefix ` +
-        `sk_${args.mode}_ or rk_${args.mode}_).`,
-    );
-  }
-
-  const publishableKey = (
-    await input({
-      message: `Per-project ${info.label} publishable key (${info.pkSample}):`,
-      validate: (v) => {
-        const t = v.trim();
-        if (!info.pkPattern.test(t))
-          return `Must start with pk_${args.mode}_ for ${args.mode} mode.`;
-        return true;
-      },
-    })
-  ).trim();
+  const { secretKey, publishableKey } = collected;
 
   // Sanity-check the per-project secret by hitting /v1/balance.
   const verifyRes = await fetch("https://api.stripe.com/v1/balance", {
