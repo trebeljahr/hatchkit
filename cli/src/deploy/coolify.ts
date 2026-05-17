@@ -34,12 +34,12 @@ import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
 import { type ApplicationCreateInput, CoolifyApi } from "../utils/coolify-api.js";
+import { repoSlugFromRemote } from "./gh-actions-secrets.js";
 import {
   appSlugFromHtmlUrl,
   ensureCoolifyAppHasRepoAccess,
   installUrlForSlug,
 } from "./github-app-access.js";
-import { repoSlugFromRemote } from "./gh-actions-secrets.js";
 
 export interface RunCoolifySetupOptions {
   /** GitHub repository URL — required when creating a new application
@@ -357,9 +357,7 @@ async function resolveGithubAppSource(
     const sourcesUrl = `${coolifyUrl.replace(/\/$/, "")}/sources`;
     const { select } = await import("@inquirer/prompts");
     console.log(
-      chalk.yellow(
-        `\n  Private repo selected, but Coolify has no GitHub App source configured.`,
-      ),
+      chalk.yellow(`\n  Private repo selected, but Coolify has no GitHub App source configured.`),
     );
     const choice = await select<"walkthrough" | "abort">({
       message: "What now?",
@@ -440,9 +438,7 @@ async function ensureRepoVisibleToCoolifyApp(input: {
       return;
     case "already-selected":
       console.log(
-        chalk.dim(
-          `  · Coolify GitHub App "${grant.appSlug}" already includes ${input.repoSlug}.`,
-        ),
+        chalk.dim(`  · Coolify GitHub App "${grant.appSlug}" already includes ${input.repoSlug}.`),
       );
       return;
     case "failed":
@@ -556,7 +552,6 @@ function isGithubAppAccessError(message: string): boolean {
   if (/private-github-app failed:\s*404/i.test(message)) return true;
   return false;
 }
-
 
 function normalizeCoolifyGitRepository(
   remoteUrl: string,

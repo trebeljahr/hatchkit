@@ -24,16 +24,13 @@
  * but no Coolify GitHub source exists yet.
  */
 
+import { confirm, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import ora from "ora";
-import { confirm, select } from "@inquirer/prompts";
 import { getCoolifyConfig } from "../config.js";
-import { exec } from "../utils/exec.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
-import {
-  appSlugFromHtmlUrl,
-  listUserInstallations,
-} from "./github-app-access.js";
+import { exec } from "../utils/exec.js";
+import { appSlugFromHtmlUrl, listUserInstallations } from "./github-app-access.js";
 
 export interface CoolifyGithubAppResult {
   ok: boolean;
@@ -50,7 +47,9 @@ export interface CoolifyGithubAppResult {
 /** Pre-flight: Coolify must be configured before we can walk the user
  *  through adding a GitHub source. Returns a typed result instead of
  *  throwing so the Setup stepper renders the right error. */
-async function requireCoolify(): Promise<{ ok: true; api: CoolifyApi; url: string } | { ok: false }> {
+async function requireCoolify(): Promise<
+  { ok: true; api: CoolifyApi; url: string } | { ok: false }
+> {
   const cfg = await getCoolifyConfig();
   if (!cfg) {
     console.log(
@@ -138,7 +137,9 @@ async function waitForGithubAppInstallation(appSlug: string): Promise<boolean> {
     }
     await new Promise((r) => setTimeout(r, 3000));
   }
-  spinner.warn(`Couldn't see App "${appSlug}" via gh api. If you installed it on an org you're not`);
+  spinner.warn(
+    `Couldn't see App "${appSlug}" via gh api. If you installed it on an org you're not`,
+  );
   console.log(
     chalk.dim(
       "  an admin of, that's fine — Coolify can still clone repos in that org as long as the App",
@@ -190,7 +191,12 @@ export async function ensureCoolifyGithubApp(): Promise<CoolifyGithubAppResult> 
       default: "verify",
     });
     if (action === "done") {
-      return { ok: true, uuid: existing[0].uuid, name: existing[0].name, htmlUrl: existing[0].html_url };
+      return {
+        ok: true,
+        uuid: existing[0].uuid,
+        name: existing[0].name,
+        htmlUrl: existing[0].html_url,
+      };
     }
     if (action === "verify") {
       const picked =
@@ -213,7 +219,13 @@ export async function ensureCoolifyGithubApp(): Promise<CoolifyGithubAppResult> 
         return { ok: true, uuid: picked.uuid, name: picked.name, htmlUrl: picked.html_url };
       }
       const installed = await waitForGithubAppInstallation(slug);
-      return { ok: true, uuid: picked.uuid, name: picked.name, htmlUrl: picked.html_url, installed };
+      return {
+        ok: true,
+        uuid: picked.uuid,
+        name: picked.name,
+        htmlUrl: picked.html_url,
+        installed,
+      };
     }
     // fallthrough: action === "add" runs the create flow below
   }

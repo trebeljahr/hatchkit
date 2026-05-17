@@ -20,7 +20,8 @@ import {
   refreshGoogleSearchConsoleAccessToken,
   validateS3KeyPair,
 } from "./config.js";
-import { verifyCoolify } from "./utils/coolify-api.js";
+import { appSlugFromHtmlUrl, listUserInstallations } from "./deploy/github-app-access.js";
+import { CoolifyApi, verifyCoolify } from "./utils/coolify-api.js";
 import { execOk } from "./utils/exec.js";
 import { SECRET_KEYS, getSecret } from "./utils/secrets.js";
 
@@ -104,6 +105,119 @@ async function checkCoolify(): Promise<CheckResult> {
       return undefined;
     },
   );
+}
+
+/** Coolify GitHub App health. Two related checks rolled into one
+ *  result list because they share a hint URL and a "Coolify must be
+ *  reachable first" precondition:
+ *
+ *    1. Sources present  — Coolify's /github-apps returns ≥1 entry.
+ *       Without this, `hatchkit create --private` can't run at all.
+ *    2. Installation     — every source's App is installed on at
+ *       least one account/org visible to the user's `gh` CLI. The App
+ *       being registered in Coolify but never installed on github.com
+ *       is a silent failure mode that only shows up at create time
+ *       with a 404 — doctor surfaces it ahead of time.
+ *
+ *  Step (2) is skipped when `gh` is missing/unauthenticated (we can't
+ *  enumerate installations) or when the source's html_url doesn't
+ *  resolve to a GitHub App URL. */
+async function checkCoolifyGithubApp(): Promise<CheckResult[]> {
+  const cfg = await getCoolifyConfig();
+  if (!cfg) return [{ name: "Coolify GitHub App", status: "skip" }];
+
+  const sourcesUrl = `${cfg.url.replace(/\/$/, "")}/sources`;
+  const out: CheckResult[] = [];
+
+  let sources: Array<{ uuid: string; name: string; html_url?: string }> = [];
+  try {
+    const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+    sources = await api.listGithubSources();
+  } catch (err) {
+    return [
+      {
+        name: "Coolify GitHub App (sources)",
+        status: "fail",
+        detail: err instanceof Error ? err.message : String(err),
+        hint: [
+          "Couldn't list /github-apps on Coolify — likely the API token lacks the right scope.",
+          "Re-run `hatchkit config add coolify` to refresh the token.",
+        ],
+      },
+    ];
+  }
+
+  if (sources.length === 0) {
+    out.push({
+      name: "Coolify GitHub App (sources)",
+      status: "fail",
+      detail: "no GitHub sources in Coolify",
+      hint: [
+        "Needed only if you plan to use `hatchkit create --private`. Public repos skip this.",
+        "Set up with: `hatchkit config add coolify-github-app`",
+        `Or manually at ${sourcesUrl} → 'New' → 'GitHub App'.`,
+      ],
+    });
+    return out;
+  }
+
+  out.push({
+    name: "Coolify GitHub App (sources)",
+    status: "ok",
+    detail: `${sources.length} source(s): ${sources.map((s) => s.name).join(", ")}`,
+  });
+
+  // Installation check: needs gh CLI authenticated to enumerate the
+  // user's installations. Soft-skip when gh is missing — the sources
+  // check above already covers the Coolify-side health.
+  if (!(await execOk("gh", ["auth", "status"]))) {
+    out.push({
+      name: "Coolify GitHub App (installation)",
+      status: "skip",
+      detail: "gh CLI not authenticated",
+      hint: ["Run `gh auth login` to let doctor verify the App is installed on github.com."],
+    });
+    return out;
+  }
+
+  const installs = await listUserInstallations();
+  const missing: string[] = [];
+  const installed: string[] = [];
+  const unknown: string[] = [];
+  for (const s of sources) {
+    const slug = appSlugFromHtmlUrl(s.html_url);
+    if (!slug) {
+      unknown.push(s.name);
+      continue;
+    }
+    if (installs.some((i) => i.app_slug === slug)) {
+      installed.push(slug);
+    } else {
+      missing.push(slug);
+    }
+  }
+
+  if (missing.length === 0 && installed.length > 0) {
+    out.push({
+      name: "Coolify GitHub App (installation)",
+      status: "ok",
+      detail: `installed: ${installed.join(", ")}${
+        unknown.length > 0 ? ` (skipped ${unknown.length} w/o App URL)` : ""
+      }`,
+    });
+    return out;
+  }
+
+  out.push({
+    name: "Coolify GitHub App (installation)",
+    status: "fail",
+    detail: `App not installed on any visible account/org: ${missing.join(", ")}`,
+    hint: [
+      "Open https://github.com/apps/<app-slug>/installations/select_target and install on your account.",
+      "Then re-run `hatchkit doctor` — or `hatchkit config add coolify-github-app` to walk through it.",
+    ],
+  });
+  return out;
 }
 
 async function checkHetzner(): Promise<CheckResult> {
@@ -622,6 +736,7 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   results.push(await checkGitHub());
   results.push(await checkCoolify());
+  for (const r of await checkCoolifyGithubApp()) results.push(r);
   results.push(await checkHetzner());
   results.push(await checkDns());
   for (const p of ["hetzner", "aws", "r2"] as const) results.push(await checkS3(p));

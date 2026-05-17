@@ -96,9 +96,11 @@ export function installUrlForSlug(slug: string): string {
 
 /** Existing-installation settings URL — points at the configure-
  *  repositories screen for a specific install. */
-export function installSettingsUrl(
-  info: { account: string; type?: string; installationId: number },
-): string {
+export function installSettingsUrl(info: {
+  account: string;
+  type?: string;
+  installationId: number;
+}): string {
   // Org installations live under /organizations/<org>/settings/...,
   // user installations under /settings/installations/<id>. GitHub
   // redirects either way, but the org URL avoids an extra hop.
