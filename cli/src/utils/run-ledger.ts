@@ -160,6 +160,88 @@ export function getLedgerPath(name: string): string {
   return ledgerPath(name);
 }
 
+/** Rewrite `github`, `ghActionsSecret`, and `ghPages` step entries whose
+ *  `repo` field equals `oldSlug` to `newSlug`. Called by
+ *  `hatchkit rename-project --gh` AFTER the GitHub repo rename succeeds,
+ *  so a subsequent `hatchkit destroy <new-name>` undoes the renamed
+ *  resource at its new address.
+ *
+ *  No-ops (returns `0`) if the ledger doesn't exist or no entries match.
+ *  Operates on the already-renamed ledger file (i.e. caller passes the
+ *  new project name). */
+export function rewriteLedgerStepSlugs(name: string, oldSlug: string, newSlug: string): number {
+  const path = ledgerPath(name);
+  if (!existsSync(path)) return 0;
+  const data = JSON.parse(readFileSync(path, "utf-8")) as LedgerData;
+  let rewritten = 0;
+  data.steps = data.steps.map((step) => {
+    if (step.kind === "github" && step.repo === oldSlug) {
+      rewritten++;
+      return { ...step, repo: newSlug };
+    }
+    if (step.kind === "ghActionsSecret" && step.repo === oldSlug) {
+      rewritten++;
+      return { ...step, repo: newSlug };
+    }
+    if (step.kind === "ghPages" && step.repo === oldSlug) {
+      rewritten++;
+      return { ...step, repo: newSlug };
+    }
+    return step;
+  });
+  if (rewritten > 0) writeFileSync(path, JSON.stringify(data, null, 2));
+  return rewritten;
+}
+
+/** Rewrite step entries whose `path` (or `tfvarsPath`) basename embeds
+ *  the old project name. Called after the local tfvars / Coolify-env
+ *  files have been renamed in the same operation, so the ledger keeps
+ *  pointing at files that exist.
+ *
+ *  Conservative: only swaps a path when the basename's stem equals
+ *  `oldName` exactly (e.g. `foo.tfvars` matches when oldName === "foo";
+ *  `foo-server.tfvars` does not). Operates on the already-renamed
+ *  ledger file. */
+export function rewriteLedgerStepPathBasenames(
+  name: string,
+  oldName: string,
+  newName: string,
+): number {
+  const path = ledgerPath(name);
+  if (!existsSync(path)) return 0;
+  const data = JSON.parse(readFileSync(path, "utf-8")) as LedgerData;
+  const swap = (p: string): string => {
+    const slash = p.lastIndexOf("/");
+    const dir = slash >= 0 ? p.slice(0, slash + 1) : "";
+    const base = slash >= 0 ? p.slice(slash + 1) : p;
+    const dot = base.indexOf(".");
+    if (dot < 0) return p;
+    const stem = base.slice(0, dot);
+    const ext = base.slice(dot);
+    if (stem !== oldName) return p;
+    return `${dir}${newName}${ext}`;
+  };
+  let rewritten = 0;
+  data.steps = data.steps.map((step) => {
+    if (step.kind === "tfvars" || step.kind === "coolifyEnv") {
+      const next = swap(step.path);
+      if (next !== step.path) {
+        rewritten++;
+        return { ...step, path: next };
+      }
+    } else if (step.kind === "terraformApplied") {
+      const next = swap(step.tfvarsPath);
+      if (next !== step.tfvarsPath) {
+        rewritten++;
+        return { ...step, tfvarsPath: next };
+      }
+    }
+    return step;
+  });
+  if (rewritten > 0) writeFileSync(path, JSON.stringify(data, null, 2));
+  return rewritten;
+}
+
 export class RunLedger {
   private constructor(
     private readonly _path: string,

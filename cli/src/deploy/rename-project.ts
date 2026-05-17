@@ -33,19 +33,59 @@
  *                                             provider resources that
  *                                             haven't been renamed yet)
  *
- * Intentionally does NOT touch provider-side state (Coolify, GitHub,
- * R2, GlitchTip, OpenPanel, Plausible, Resend, Tailscale, Keychain).
- * Those are destructive or visible-to-others operations the user should
- * drive themselves. A follow-up checklist is printed at the end.
+ * By default this is local-only: it does NOT touch provider-side state
+ * (Coolify, GitHub, R2, GlitchTip, OpenPanel, Plausible, Resend,
+ * Tailscale, Keychain). Those are destructive or visible-to-others
+ * operations the user should authorize. A follow-up checklist is
+ * printed at the end.
+ *
+ * Opt-in automation flags execute selected remote ops AFTER the local
+ * file rewrites succeed:
+ *
+ *   --gh        gh repo rename + git remote set-url. On success, rewrites
+ *               github / ghActionsSecret / ghPages step.repo entries in
+ *               the (already-renamed) run ledger.
+ *   --coolify   PATCH /projects/{uuid} {name}. Apps (uuid-keyed) survive
+ *               unchanged; their displayed names stay <old>-server etc.
+ *               unless you destroy + adopt --resume.
+ *   --keys      Re-key every per-project keychain entry (dotenvx,
+ *               per-project s3, openpanel, plausible, stripe-per-project)
+ *               from oldName to newName. Set-before-delete; refuses to
+ *               clobber an existing target with a different value.
+ *   --ci        After the above, dispatch the build-and-deploy.yml
+ *               GitHub Actions workflow so the new GHCR images get
+ *               published before the next deploy.
+ *   --all       Shorthand for --gh --coolify --keys --ci.
+ *
+ * Also: when --gh is requested (or when the origin remote already
+ * points at a GitHub repo), docker-compose.yml is rewritten to swap
+ * `ghcr.io/<owner>/<old>` → `<owner>/<new>` image refs as part of the
+ * local edits. The starter workflow file uses
+ * `${{ github.repository }}` which GitHub resolves to the new slug
+ * post-rename, so no workflow edit is needed.
+ *
+ * R2 buckets / GlitchTip / OpenPanel / Plausible / Resend projects
+ * still belong to the checklist — those providers have no rename API
+ * and recreating drops history. Scope is same-owner-only for the
+ * GitHub rename.
  */
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { confirm, input } from "@inquirer/prompts";
 import chalk from "chalk";
+import { getConfigPath, getCoolifyConfig } from "../config.js";
 import { type ProjectManifest, readManifest } from "../scaffold/manifest.js";
-import { getLedgerPath } from "../utils/run-ledger.js";
+import { CoolifyApi } from "../utils/coolify-api.js";
+import { exec } from "../utils/exec.js";
+import {
+  getLedgerPath,
+  rewriteLedgerStepPathBasenames,
+  rewriteLedgerStepSlugs,
+} from "../utils/run-ledger.js";
+import { migrateProjectSecrets } from "../utils/secrets.js";
 import { validateProjectName } from "../utils/validate.js";
+import { ownerFromRemote, repoSlugFromRemote } from "./gh-actions-secrets.js";
 
 // ---------------------------------------------------------------------------
 // Public entrypoint
@@ -58,10 +98,20 @@ export interface RenameProjectOptions {
   monorepoRoot: string;
   /** Target name. If omitted, the user is prompted. */
   newName?: string;
-  /** Show the plan, don't write. */
+  /** Show the plan, don't write, don't call APIs. */
   dryRun?: boolean;
   /** Skip the final confirmation prompt. */
   yes?: boolean;
+  /** Execute `gh repo rename` + `git remote set-url`, then rewrite
+   *  github/ghActionsSecret/ghPages step.repo entries in the ledger. */
+  gh?: boolean;
+  /** Execute the Coolify project PATCH to rename the project entity.
+   *  Coolify apps are not renamed (the API has no endpoint for it). */
+  coolify?: boolean;
+  /** Migrate per-project keychain entries to the new name. */
+  keys?: boolean;
+  /** Dispatch build-and-deploy.yml so new GHCR images publish. */
+  ci?: boolean;
 }
 
 export async function runRenameProject(opts: RenameProjectOptions): Promise<void> {
@@ -90,9 +140,20 @@ export async function runRenameProject(opts: RenameProjectOptions): Promise<void
     return;
   }
 
+  // 2b. Resolve GitHub slug from `origin` remote (best-effort — used by
+  //     docker-compose ghcr image rewrites and the optional --gh rename).
+  const remoteUrl = await readGitRemote(projectDir);
+  const oldSlug = repoSlugFromRemote(remoteUrl ?? undefined);
+  const owner = oldSlug ? ownerFromRemote(remoteUrl ?? undefined) : undefined;
+  const newSlug = owner ? `${owner}/${newName}` : undefined;
+  const newRemote = remoteUrl && oldSlug && newSlug ? rewriteRemoteUrl(remoteUrl, newSlug) : null;
+
   console.log(chalk.bold("\n  ── hatchkit rename-project ────────────────────────────────\n"));
   console.log(`  Domain:     ${chalk.dim(manifest.domain)}`);
   console.log(`  From → To:  ${chalk.dim(oldName)} → ${chalk.green(newName)}`);
+  if (oldSlug && newSlug) {
+    console.log(`  GitHub:     ${chalk.dim(oldSlug)} → ${chalk.green(newSlug)}`);
+  }
 
   // 3. Collect edit plan
   const fileOps: FileOp[] = [];
@@ -123,6 +184,17 @@ export async function runRenameProject(opts: RenameProjectOptions): Promise<void
     if (!existsSync(p)) continue;
     const edit = rewriteStarterNamedFile(p, oldName, newName);
     if (edit) fileOps.push(edit);
+  }
+
+  // 3c.bis docker-compose.yml — `ghcr.io/<owner>/<old>-{server,client}:<tag>`
+  //         image refs. Only meaningful when we know the slug; otherwise
+  //         the user has hand-rolled images and we don't touch them.
+  if (oldSlug && newSlug) {
+    const compose = join(projectDir, "docker-compose.yml");
+    if (existsSync(compose)) {
+      const edit = rewriteDockerCompose(compose, oldSlug, newSlug);
+      if (edit) fileOps.push(edit);
+    }
   }
 
   // 3d. README.md — best-effort literal swap.
@@ -190,6 +262,12 @@ export async function runRenameProject(opts: RenameProjectOptions): Promise<void
     fileOps.push(planLedgerRename(ledgerOldPath, ledgerNewPath, oldName, newName));
   }
 
+  // 3h. Provisioned env block files at <config-dir>/provisioned/<old>.*.env.
+  //     These cache the per-project env lines emitted by `hatchkit add`
+  //     so re-runs can rebuild .env files without re-prompting. Keyed by
+  //     project name, so they need renaming alongside the manifest.
+  const provisionedRenames = planProvisionedEnvRenames(oldName, newName);
+
   // 4. Plan
   console.log(chalk.bold("\n  ── Planned file changes ───────────────────────────────────\n"));
   for (const op of fileOps) {
@@ -198,17 +276,67 @@ export async function runRenameProject(opts: RenameProjectOptions): Promise<void
       console.log(chalk.dim(`    - ${change}`));
     }
   }
+  for (const r of provisionedRenames) {
+    console.log(`  ${chalk.cyan(r.label)}`);
+    console.log(chalk.dim(`    - rename: ${r.from.split("/").pop()} → ${r.to.split("/").pop()}`));
+  }
+
+  // Opt-in remote ops — print what will run.
+  const remoteOpsRequested =
+    opts.gh === true || opts.coolify === true || opts.keys === true || opts.ci === true;
+  if (remoteOpsRequested) {
+    console.log(chalk.bold("\n  ── Planned remote / keychain ops (opt-in) ─────────────────\n"));
+    if (opts.gh) {
+      if (oldSlug && newSlug) {
+        console.log(`  ${chalk.cyan("[gh]      ")} repo rename ${oldSlug} → ${newSlug}`);
+        if (newRemote && newRemote !== remoteUrl) {
+          console.log(
+            `  ${chalk.cyan("[git]     ")} origin set-url ${chalk.dim(remoteUrl)} → ${newRemote}`,
+          );
+        }
+        console.log(
+          `  ${chalk.cyan("[ledger]  ")} rewrite github/ghActionsSecret/ghPages step.repo entries`,
+        );
+      } else {
+        console.log(
+          chalk.yellow(`  ! --gh requested but no GitHub remote on origin — skipping GitHub bits.`),
+        );
+      }
+    }
+    if (opts.coolify) {
+      console.log(
+        `  ${chalk.cyan("[coolify] ")} PATCH /projects/{uuid} name=${newName} (apps NOT renamed)`,
+      );
+    }
+    if (opts.keys) {
+      console.log(
+        `  ${chalk.cyan("[keychain]")} re-key dotenvx / s3 / openpanel / plausible / stripe entries`,
+      );
+    }
+    if (opts.ci) {
+      console.log(
+        `  ${chalk.cyan("[ci]      ")} dispatch build-and-deploy.yml so new GHCR images publish`,
+      );
+    }
+  }
 
   if (opts.dryRun) {
-    console.log(chalk.yellow("\n  [dry-run] No files written."));
-    printChecklist(manifest, oldName, newName);
+    console.log(chalk.yellow("\n  [dry-run] No files written, no APIs called."));
+    printChecklist(manifest, oldName, newName, {
+      oldSlug,
+      newSlug,
+      executedGh: false,
+      executedCoolify: false,
+      executedKeys: false,
+    });
     return;
   }
 
   // 5. Confirm
   if (!opts.yes) {
+    const totalOps = fileOps.length + provisionedRenames.length;
     const ok = await confirm({
-      message: `Rewrite ${fileOps.length} file(s)?`,
+      message: `Apply ${totalOps} local change(s)${remoteOpsRequested ? " + remote ops" : ""}?`,
       default: true,
     });
     if (!ok) {
@@ -217,9 +345,10 @@ export async function runRenameProject(opts: RenameProjectOptions): Promise<void
     }
   }
 
-  // 6. Apply. For each op: write the new content to its target path,
-  //    then if there's a separate `oldPath` (rename), unlink the old.
-  //    Order: write new, verify, unlink old — atomic per file.
+  // 6. Apply local file ops. For each: write the new content to its
+  //    target path, then if there's a separate `oldPath` (rename),
+  //    unlink the old. Order: write new, verify, unlink old — atomic
+  //    per file.
   for (const op of fileOps) {
     writeFileSync(op.newPath, op.after);
     if (op.oldPath && op.oldPath !== op.newPath) {
@@ -235,7 +364,81 @@ export async function runRenameProject(opts: RenameProjectOptions): Promise<void
     console.log(chalk.green(`  ✓ ${op.verb} ${op.label}`));
   }
 
-  printChecklist(manifest, oldName, newName);
+  // 6b. Apply provisioned env block renames.
+  for (const r of provisionedRenames) {
+    const data = readFileSync(r.from);
+    writeFileSync(r.to, data, { mode: 0o600 });
+    if (existsSync(r.to)) unlinkSync(r.from);
+    console.log(chalk.green(`  ✓ renamed ${r.label}`));
+  }
+
+  // 6c. Update local-file step.path entries in the (just-renamed)
+  //     ledger so `hatchkit destroy <newName>` finds the tfvars/coolify-env
+  //     files at their new paths. Safe regardless of provider rename
+  //     status — these are local files we definitely moved.
+  if (existsSync(getLedgerPath(newName))) {
+    const n = rewriteLedgerStepPathBasenames(newName, oldName, newName);
+    if (n > 0) {
+      console.log(chalk.green(`  ✓ ledger: rewrote ${n} local-file step path(s)`));
+    }
+  }
+
+  // 7. Optional remote / keychain ops. Each is best-effort: a failure
+  //    prints a checklist hint but doesn't abort the run. The local
+  //    rename is already committed at this point — the user can re-run
+  //    individual --gh / --coolify / --keys / --ci flags as needed.
+  let executedGh = false;
+  let executedCoolify = false;
+  let executedKeys = false;
+
+  if (opts.gh && oldSlug && newSlug) {
+    executedGh = await renameGithubRepo(projectDir, oldSlug, newName);
+    if (executedGh) {
+      if (newRemote && newRemote !== remoteUrl) {
+        await setGitRemote(projectDir, newRemote);
+        console.log(chalk.green(`  ✓ set origin → ${newRemote}`));
+      }
+      const n = rewriteLedgerStepSlugs(newName, oldSlug, newSlug);
+      if (n > 0) {
+        console.log(chalk.green(`  ✓ ledger: rewrote ${n} repo-slug step(s)`));
+      }
+    }
+  }
+
+  if (opts.coolify) {
+    executedCoolify = await renameCoolifyProject(oldName, newName);
+  }
+
+  if (opts.keys) {
+    const result = await migrateProjectSecrets(oldName, newName);
+    executedKeys = result.unmoved.length === 0;
+    if (result.moved.length > 0) {
+      console.log(
+        chalk.green(`  ✓ keychain: migrated ${result.moved.length} entry(ies) to ${newName}`),
+      );
+    } else {
+      console.log(chalk.dim("  · keychain: no matching entries — nothing to migrate"));
+    }
+    for (const u of result.unmoved) {
+      console.log(chalk.yellow(`  ! keychain: ${u.account} — ${u.reason}`));
+    }
+  }
+
+  if (opts.ci) {
+    if (executedGh || (!opts.gh && oldSlug && newSlug)) {
+      await triggerCiWorkflow(projectDir);
+    } else {
+      console.log(chalk.dim("  · --ci skipped (no GitHub remote known)"));
+    }
+  }
+
+  printChecklist(manifest, oldName, newName, {
+    oldSlug,
+    newSlug,
+    executedGh,
+    executedCoolify,
+    executedKeys,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -505,6 +708,149 @@ function planLedgerRename(
   };
 }
 
+/**
+ * Rewrite GHCR image refs in docker-compose.yml. The starter writes
+ * refs in the form `ghcr.io/<owner>/<name>-{server,client}:<tag>` and
+ * occasionally a bare `ghcr.io/<owner>/<name>:<tag>` — both shapes get a
+ * substring swap of the `<owner>/<name>` slug. The companion CI
+ * workflow uses `${{ github.repository }}` which GitHub resolves to the
+ * new slug post-rename, so we don't need to edit that file.
+ */
+function rewriteDockerCompose(path: string, oldSlug: string, newSlug: string): FileOp | null {
+  const before = readFileSync(path, "utf8");
+  if (!before.includes(`ghcr.io/${oldSlug}`)) return null;
+  const count = before.split(`ghcr.io/${oldSlug}`).length - 1;
+  const after = before.split(`ghcr.io/${oldSlug}`).join(`ghcr.io/${newSlug}`);
+  return {
+    label: basename(path),
+    verb: "wrote",
+    newPath: path,
+    after,
+    changes: [`${count}× ghcr.io image ref(s): ${oldSlug} → ${newSlug}`],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Remote operations — best-effort, used only when --gh / --coolify / --keys
+// / --ci flags are set.
+// ---------------------------------------------------------------------------
+
+async function readGitRemote(cwd: string): Promise<string | null> {
+  const res = await exec("git", ["remote", "get-url", "origin"], { cwd, silent: true });
+  if (res.exitCode !== 0) return null;
+  return res.stdout.trim() || null;
+}
+
+function rewriteRemoteUrl(url: string, newSlug: string): string {
+  const ssh = url.match(/^(git@github\.com:)([^/]+)\/([^/]+?)(\.git)?$/);
+  if (ssh) {
+    const suffix = ssh[4] ?? "";
+    return `${ssh[1]}${newSlug}${suffix}`;
+  }
+  const https = url.match(/^(https?:\/\/github\.com\/)([^/]+)\/([^/]+?)(\.git)?(?:\/.*)?$/);
+  if (https) {
+    const suffix = https[4] ?? "";
+    return `${https[1]}${newSlug}${suffix}`;
+  }
+  return url;
+}
+
+async function setGitRemote(cwd: string, url: string): Promise<void> {
+  const res = await exec("git", ["remote", "set-url", "origin", url], { cwd, silent: true });
+  if (res.exitCode !== 0) {
+    console.log(chalk.yellow(`  ! git remote set-url failed: ${res.stderr.trim()}`));
+  }
+}
+
+/** Rename the GitHub repo via `gh repo rename`. Returns true on success.
+ *  Non-fatal on failure — the local edits already landed and the user
+ *  can re-run the gh command from the checklist. */
+async function renameGithubRepo(cwd: string, oldSlug: string, newName: string): Promise<boolean> {
+  console.log(chalk.dim(`  · gh repo rename ${newName} --repo ${oldSlug} --yes`));
+  const res = await exec("gh", ["repo", "rename", newName, "--repo", oldSlug, "--yes"], {
+    cwd,
+    silent: true,
+  });
+  if (res.exitCode === 0) {
+    console.log(chalk.green(`  ✓ renamed GitHub repo to ${newName}`));
+    return true;
+  }
+  const msg = `${res.stderr}\n${res.stdout}`.trim();
+  if (/already exists/i.test(msg)) {
+    console.log(chalk.yellow(`  ! GitHub repo already named ${newName} — treating as done`));
+    return true;
+  }
+  console.log(chalk.yellow(`  ! gh repo rename failed: ${msg.split("\n")[0]}`));
+  console.log(chalk.dim(`    Run manually: gh repo rename ${newName} --repo ${oldSlug} --yes`));
+  return false;
+}
+
+/** PATCH the Coolify project's name. Coolify apps are NOT renamed —
+ *  the API has no endpoint for `applications/{uuid}.name`. App lookups
+ *  are uuid-keyed so deploys keep working; only the dashboard display
+ *  is stale. */
+async function renameCoolifyProject(oldName: string, newName: string): Promise<boolean> {
+  const cfg = await getCoolifyConfig();
+  if (!cfg) {
+    console.log(chalk.dim("  · Coolify not configured — skipping project rename"));
+    return false;
+  }
+  const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+  let project: { uuid: string; name: string } | null = null;
+  try {
+    project = await api.findProjectByName(oldName);
+  } catch (err) {
+    console.log(chalk.yellow(`  ! Coolify lookup failed: ${(err as Error).message}`));
+    return false;
+  }
+  if (!project) {
+    console.log(chalk.dim(`  · no Coolify project named ${oldName} — skipping`));
+    return false;
+  }
+  try {
+    await api.updateProject(project.uuid, { name: newName });
+    console.log(chalk.green(`  ✓ renamed Coolify project ${oldName} → ${newName}`));
+    return true;
+  } catch (err) {
+    console.log(chalk.yellow(`  ! Coolify rename failed: ${(err as Error).message}`));
+    console.log(chalk.dim(`    Rename via the dashboard: ${cfg.url}/project/${project.uuid}`));
+    return false;
+  }
+}
+
+async function triggerCiWorkflow(cwd: string): Promise<void> {
+  const res = await exec("gh", ["workflow", "run", "build-and-deploy.yml"], { cwd, silent: true });
+  if (res.exitCode === 0) {
+    console.log(chalk.green("  ✓ dispatched build-and-deploy.yml"));
+    console.log(chalk.dim("    Track: gh run watch"));
+  } else {
+    console.log(chalk.yellow(`  ! workflow dispatch failed: ${res.stderr.trim().split("\n")[0]}`));
+    console.log(chalk.dim("    Run manually: gh workflow run build-and-deploy.yml"));
+  }
+}
+
+/** Locate provisioned env block files under `<config-dir>/provisioned/`
+ *  whose basename starts with `<oldName>.` so they can be renamed in
+ *  the same operation as the manifest. Caller does the actual move. */
+function planProvisionedEnvRenames(
+  oldName: string,
+  newName: string,
+): Array<{ from: string; to: string; label: string }> {
+  const dir = join(dirname(getConfigPath()), "provisioned");
+  if (!existsSync(dir)) return [];
+  const out: Array<{ from: string; to: string; label: string }> = [];
+  for (const entry of readdirSync(dir)) {
+    if (!entry.startsWith(`${oldName}.`)) continue;
+    const rest = entry.slice(oldName.length);
+    out.push({
+      from: join(dir, entry),
+      to: join(dir, `${newName}${rest}`),
+      label: `provisioned/${entry}`,
+    });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Path lookup helpers (mirrors rename-domain.ts)
 // ---------------------------------------------------------------------------
@@ -545,22 +891,75 @@ function findStacksEnv(monorepoRoot: string, name: string): string | null {
 // Follow-up checklist
 // ---------------------------------------------------------------------------
 
-function printChecklist(manifest: ProjectManifest, oldName: string, newName: string): void {
+interface ChecklistContext {
+  oldSlug?: string;
+  newSlug?: string;
+  executedGh: boolean;
+  executedCoolify: boolean;
+  executedKeys: boolean;
+}
+
+function printChecklist(
+  manifest: ProjectManifest,
+  oldName: string,
+  newName: string,
+  ctx: ChecklistContext,
+): void {
   console.log(chalk.bold("\n  ── Follow-up (hatchkit won't do these for you) ────────────\n"));
 
   console.log(chalk.bold("  1. GitHub repo"));
-  console.log(chalk.dim(`     gh repo rename ${newName}`));
-  console.log(
-    chalk.dim(
-      `     (Renames the remote and updates the local origin URL — non-destructive but visible.)`,
-    ),
-  );
+  if (ctx.executedGh) {
+    console.log(chalk.dim(`     ✓ repo renamed to ${ctx.newSlug ?? newName} via --gh.`));
+    if (ctx.oldSlug) {
+      console.log(
+        chalk.dim(
+          `     Old GHCR images at ghcr.io/${ctx.oldSlug}-* stay in the registry (intentional, easy rollback).`,
+        ),
+      );
+      const oldRepoName = ctx.oldSlug.split("/")[1];
+      console.log(
+        chalk.dim(
+          `     To delete them: gh api -X DELETE /user/packages/container/${oldRepoName}-server`,
+        ),
+      );
+      console.log(
+        chalk.dim(
+          `                     gh api -X DELETE /user/packages/container/${oldRepoName}-client`,
+        ),
+      );
+    }
+  } else {
+    console.log(
+      chalk.dim(`     gh repo rename ${newName}     ${chalk.dim("# or re-run with --gh")}`),
+    );
+    console.log(
+      chalk.dim(
+        `     (Renames the remote and updates the local origin URL — non-destructive but visible.)`,
+      ),
+    );
+  }
 
   console.log(chalk.bold("\n  2. Coolify project + app"));
-  console.log(`     In the Coolify dashboard (or via API):`);
-  console.log(chalk.dim(`       - Rename project "${oldName}" → "${newName}"`));
-  console.log(chalk.dim(`       - Rename application "${oldName}" → "${newName}"`));
-  console.log(chalk.dim(`     Then redeploy so the container Name labels refresh.`));
+  if (ctx.executedCoolify) {
+    console.log(chalk.dim(`     ✓ Coolify project renamed via --coolify.`));
+    console.log(
+      chalk.dim(
+        `     Applications still named ${oldName}-server, ${oldName}-client etc. — the Coolify API has`,
+      ),
+    );
+    console.log(
+      chalk.dim(`     no rename endpoint for applications. Cosmetic only; deploys still work.`),
+    );
+    console.log(
+      chalk.dim(`     To recreate apps under the new name (downtime): destroy + adopt --resume.`),
+    );
+  } else {
+    console.log(`     In the Coolify dashboard (or via API):`);
+    console.log(chalk.dim(`       - Rename project "${oldName}" → "${newName}"`));
+    console.log(chalk.dim(`       - Rename application "${oldName}" → "${newName}"`));
+    console.log(chalk.dim(`     Then redeploy so the container Name labels refresh.`));
+    console.log(chalk.dim(`     Or re-run with --coolify to PATCH the project automatically.`));
+  }
 
   if (manifest.s3Buckets?.assets?.name) {
     console.log(chalk.bold("\n  3. Cloudflare R2 buckets"));
@@ -591,14 +990,23 @@ function printChecklist(manifest: ProjectManifest, oldName: string, newName: str
   }
 
   console.log(chalk.bold("\n  4. dotenvx Keychain entry"));
-  console.log(chalk.dim(`     The keychain account "hatchkit:${oldName}" still holds the key.`));
-  console.log(
-    chalk.dim(`       hatchkit keys show ${oldName}      ${chalk.dim("# capture old key")}`),
-  );
-  console.log(chalk.dim(`       hatchkit keys set ${newName} --key <copied-key>`));
-  console.log(
-    chalk.dim(`       security delete-generic-password -s hatchkit -a hatchkit:${oldName}`),
-  );
+  if (ctx.executedKeys) {
+    console.log(
+      chalk.dim(
+        `     ✓ per-project keychain entries re-keyed to ${newName} via --keys (dotenvx / s3 / openpanel / plausible / stripe).`,
+      ),
+    );
+  } else {
+    console.log(chalk.dim(`     The keychain account "hatchkit:${oldName}" still holds the key.`));
+    console.log(
+      chalk.dim(`       hatchkit keys show ${oldName}      ${chalk.dim("# capture old key")}`),
+    );
+    console.log(chalk.dim(`       hatchkit keys set ${newName} --key <copied-key>`));
+    console.log(
+      chalk.dim(`       security delete-generic-password -s hatchkit -a hatchkit:${oldName}`),
+    );
+    console.log(chalk.dim(`     Or re-run with --keys to migrate every per-project entry.`));
+  }
 
   console.log(chalk.bold("\n  5. Provider clients (if provisioned via hatchkit add)"));
   console.log(chalk.dim(`     No CLI rename available — rename in each dashboard:`));
@@ -672,7 +1080,22 @@ export async function runRenameProjectCli(args: string[], monorepoRoot: string):
   const dirArg = flagValue("dir");
   const dryRun = args.includes("--dry-run");
   const yes = args.includes("--yes") || args.includes("-y");
+  const all = args.includes("--all");
+  const gh = all || args.includes("--gh");
+  const coolify = all || args.includes("--coolify");
+  const keys = all || args.includes("--keys");
+  const ci = all || args.includes("--ci");
 
   const projectDir = dirArg ? resolve(dirArg) : resolve(".");
-  await runRenameProject({ projectDir, monorepoRoot, newName, dryRun, yes });
+  await runRenameProject({
+    projectDir,
+    monorepoRoot,
+    newName,
+    dryRun,
+    yes,
+    gh,
+    coolify,
+    keys,
+    ci,
+  });
 }

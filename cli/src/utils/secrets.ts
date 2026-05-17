@@ -138,3 +138,77 @@ export async function clearAllSecrets(): Promise<void> {
   const entries = await keytar.findCredentials(SERVICE);
   await Promise.all(entries.map((e) => keytar.deletePassword(SERVICE, e.account)));
 }
+
+/** Move every per-project secret from `oldName` to `newName` in the OS
+ *  keychain. Used by `hatchkit rename-project --keys`.
+ *
+ *  Matches the project-name segment in every well-known per-project key
+ *  shape — dotenvx, per-project S3 (across all providers), OpenPanel,
+ *  Plausible, Stripe-per-project (both `test`/`live` modes, all subkeys).
+ *
+ *  Strategy: enumerate live keychain entries with `keytar.findCredentials`,
+ *  match each account name against the known patterns, re-store under the
+ *  new account name, then delete the old. Setting before deleting means a
+ *  crash mid-migration leaves both copies — recoverable. Returns the list
+ *  of migrated account names + tolerated failures. */
+export interface SecretMigrationResult {
+  moved: Array<{ from: string; to: string }>;
+  unmoved: Array<{ account: string; reason: string }>;
+}
+
+export async function migrateProjectSecrets(
+  oldName: string,
+  newName: string,
+): Promise<SecretMigrationResult> {
+  if (oldName === newName) return { moved: [], unmoved: [] };
+
+  const escaped = oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Each pattern captures (prefix)(oldName)(suffix-or-end) so we can
+  // rebuild the new account name by swapping the middle group.
+  const patterns: RegExp[] = [
+    new RegExp(`^(dotenvx:)(${escaped})(:.+)$`),
+    new RegExp(`^(s3:[^:]+:)(${escaped})(:(?:access-key|secret-key|token-id))$`),
+    new RegExp(`^(openpanel:)(${escaped})(:client-secret)$`),
+    new RegExp(`^(plausible:)(${escaped})(:site-domain)$`),
+    new RegExp(
+      `^(stripe:project:)(${escaped})(:(?:test|live):(?:secret-key|publishable-key|webhook-secret|webhook-id))$`,
+    ),
+  ];
+
+  const entries = await keytar.findCredentials(SERVICE);
+  const moved: SecretMigrationResult["moved"] = [];
+  const unmoved: SecretMigrationResult["unmoved"] = [];
+
+  for (const { account } of entries) {
+    const pattern = patterns.find((p) => p.test(account));
+    if (!pattern) continue;
+    const newAccount = account.replace(pattern, (_full, prefix, _name, suffix) => {
+      return `${prefix}${newName}${suffix}`;
+    });
+    if (newAccount === account) continue;
+    try {
+      const value = await keytar.getPassword(SERVICE, account);
+      if (value === null) {
+        unmoved.push({ account, reason: "value disappeared between list and read" });
+        continue;
+      }
+      // Refuse to clobber a pre-existing entry under the new name; safer
+      // to leave both alone so the user can resolve manually.
+      const collision = await keytar.getPassword(SERVICE, newAccount);
+      if (collision !== null && collision !== value) {
+        unmoved.push({
+          account,
+          reason: `target ${newAccount} already exists with a different value`,
+        });
+        continue;
+      }
+      await keytar.setPassword(SERVICE, newAccount, value);
+      await keytar.deletePassword(SERVICE, account);
+      moved.push({ from: account, to: newAccount });
+    } catch (err) {
+      unmoved.push({ account, reason: (err as Error).message });
+    }
+  }
+
+  return { moved, unmoved };
+}

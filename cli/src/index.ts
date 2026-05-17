@@ -3132,28 +3132,51 @@ function printHelp(topic?: HelpTopic): void {
                                                      PROJECT_NAME / APP_NAME /
                                                      S3_BUCKET)
     ${chalk.cyan("<configDir>/runs/<old>.json")}                   (ledger file rename +
-                                                     name field)
+                                                     name + local-file step paths)
+    ${chalk.cyan("<configDir>/provisioned/<old>.*.env")}            (cached provisioned env
+                                                     blocks renamed)
+    ${chalk.cyan("docker-compose.yml")}                             (${chalk.dim("ghcr.io/<owner>/<old>-*")}
+                                                     image refs — when an origin
+                                                     remote points at GitHub)
 
-  ${chalk.bold("What it does NOT touch (you run these manually):")}
-    - ${chalk.dim("gh repo rename")} — remote repo + origin URL.
-    - Coolify project + application rename (UI or API), then redeploy.
-    - Cloudflare R2 buckets: ${chalk.dim("<old>-assets / <old>-state")} — R2 has no
+  ${chalk.bold("Opt-in remote / keychain ops (off by default):")}
+    --gh            ${chalk.dim("gh repo rename")} + ${chalk.dim("git remote set-url origin")}; rewrites
+                    github / ghActionsSecret / ghPages step.repo entries in
+                    the ledger. Same-owner only — no cross-owner transfers.
+    --coolify       PATCH /projects/{uuid} {name}. Apps stay ${chalk.dim("<old>-server")}
+                    etc. (Coolify API has no rename for applications);
+                    cosmetic only, deploys still work because lookups
+                    are uuid-keyed.
+    --keys          Re-key every per-project keychain entry (dotenvx,
+                    per-project s3, openpanel, plausible, stripe-per-project)
+                    from ${chalk.dim("<old>")} to ${chalk.dim("<new>")}. Set-before-delete; refuses
+                    to clobber an existing target with a different value.
+    --ci            Dispatch ${chalk.dim("build-and-deploy.yml")} so new GHCR images
+                    publish at ${chalk.dim("ghcr.io/<owner>/<new>-*")} before redeploy.
+    --all           Shorthand for --gh --coolify --keys --ci.
+
+  ${chalk.bold("Still your job (no rename API or destructive):")}
+    - Cloudflare R2 buckets ${chalk.dim("<old>-assets / <old>-state")} — R2 has no
       rename; create new, copy objects, update manifest, delete old.
-    - dotenvx Keychain account ${chalk.dim("hatchkit:<old>")} → ${chalk.dim("hatchkit:<new>")}.
-    - GlitchTip / OpenPanel / Plausible / Resend slugs in their dashboards.
+    - GlitchTip / OpenPanel / Plausible / Resend project slugs — no
+      rename API. Recreating drops history; leave them or
+      ${chalk.dim("hatchkit add <new> <svc>")} + ${chalk.dim("hatchkit remove <old> <svc>")}.
     - Tailscale local-dev Caddy fragment (re-run dev-setup if enabled).
-    - The project directory itself (mv it if you want the path to match).
+    - The project directory itself (${chalk.dim("mv ../<old> ../<new>")} if you want it).
+    - Old GHCR images at ${chalk.dim("ghcr.io/<owner>/<old>-*")} — left in registry by
+      design (easy rollback). Delete recipe printed in the checklist.
 
   ${chalk.bold("Options:")}
     --to <name>     New project name (prompted if omitted; slug rules).
     --dir <path>    Project dir (defaults to cwd).
-    --dry-run       Show the plan; don't write.
+    --dry-run       Show the plan; don't write, don't call APIs.
     --yes, -y       Skip the confirmation prompt.
 
-  ${chalk.bold("Example:")}
-    cd ~/src/my-project
+  ${chalk.bold("Examples:")}
     hatchkit rename-project --to my-app --dry-run
     hatchkit rename-project --to my-app
+    hatchkit rename-project --to my-app --all          ${chalk.dim("# full automation")}
+    hatchkit rename-project --to my-app --gh --keys    ${chalk.dim("# GitHub + keychain only")}
 `);
     return;
   }
