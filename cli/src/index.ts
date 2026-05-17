@@ -2868,8 +2868,8 @@ function printHelp(topic?: HelpTopic): void {
     hatchkit add search-console
     hatchkit add raptor-runner
     hatchkit add raptor-runner all --enable-dev-obs
-    hatchkit add search-console --name asteroids --domain asteroids.trebeljahr.com \\
-        --project-dir /Users/rico/projects/asteroid-game
+    hatchkit add search-console --name asteroids --domain asteroids.example.com \\
+        --project-dir ~/projects/asteroid-game
     hatchkit add my-app search-console --domain app.example.com --project-dir ./my-app
     hatchkit add fractal-garden search-console --domain fractal.garden
     hatchkit add raptor-runner glitchtip,resend --no-write

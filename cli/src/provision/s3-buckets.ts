@@ -762,8 +762,8 @@ function pickClosestZoneName(hostname: string): string {
 }
 
 /** The default custom-domain hostname for the assets bucket. Sits at
- *  `assets.<project-domain>` so e.g. a project on `beauty.trebeljahr.com`
- *  gets `assets.beauty.trebeljahr.com`. Matches the canonical purpose
+ *  `assets.<project-domain>` so e.g. a project on `shop.example.com`
+ *  gets `assets.shop.example.com`. Matches the canonical purpose
  *  of the bucket (NEXT_PUBLIC_ASSETS_BASE_URL) and the existing
  *  `assets` key in the manifest's `s3Buckets`. Exposed for callers
  *  that want to show this as the default in an interactive prompt.

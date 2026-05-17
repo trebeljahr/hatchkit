@@ -73,7 +73,7 @@ These are the absolute minimum. Every guide agrees on these. Skip any of them an
 
 ### 1.1 Create a non-root user
 
-**What it does:** Creates a dedicated user (e.g., `rico`) with sudo privileges and SSH key authentication. Root login is subsequently disabled.
+**What it does:** Creates a dedicated user (e.g., `deploy`) with sudo privileges and SSH key authentication. Root login is subsequently disabled.
 
 **Why it matters:** The `root` account is the #1 target for automated attacks. Every bot on the internet tries `ssh root@<your-ip>` with common passwords. Even with key-only auth, running as root means any process you launch has unrestricted system access. A bug in your application could `rm -rf /` or read `/etc/shadow`. A non-root user with sudo means you get root when you explicitly ask for it, and your regular processes run with limited privileges.
 
@@ -83,22 +83,22 @@ These are the absolute minimum. Every guide agrees on these. Skip any of them an
 
 ```bash
 # Create user with no password (key-only auth)
-adduser --disabled-password --gecos "" rico
+adduser --disabled-password --gecos "" deploy
 
 # Grant passwordless sudo
-echo "rico ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/rico
-chmod 440 /etc/sudoers.d/rico
+echo "deploy ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/deploy
+chmod 440 /etc/sudoers.d/deploy
 
 # Set up SSH key
-mkdir -p /home/rico/.ssh
-cp /root/.ssh/authorized_keys /home/rico/.ssh/authorized_keys
-chown -R rico:rico /home/rico/.ssh
-chmod 700 /home/rico/.ssh
-chmod 600 /home/rico/.ssh/authorized_keys
+mkdir -p /home/deploy/.ssh
+cp /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
+chown -R deploy:deploy /home/deploy/.ssh
+chmod 700 /home/deploy/.ssh
+chmod 600 /home/deploy/.ssh/authorized_keys
 ```
 
 **What could go wrong:**
-- **Locking yourself out:** If you disable root login before verifying the rico user can SSH in, you're locked out. Always test from a second terminal before closing your root session.
+- **Locking yourself out:** If you disable root login before verifying the deploy user can SSH in, you're locked out. Always test from a second terminal before closing your root session.
 - **Passwordless sudo debate:** Some guides require a password for sudo. For a single-operator server with key-only SSH, passwordless sudo is fine — the SSH key IS your authentication factor. Requiring a password you'd have to store somewhere doesn't add meaningful security.
 - **Hetzner rescue mode:** If you do lock yourself out, Hetzner's rescue system lets you mount your disk and fix the SSH config. It's your safety net.
 
@@ -178,7 +178,7 @@ GatewayPorts no
 PermitUserEnvironment no
 
 # Restrict to specific users (adjust to your username)
-AllowUsers rico
+AllowUsers deploy
 ```
 
 > **Coolify users:** If you plan to run Coolify on this server, you need an additional `Match` block in this config to allow Coolify's Docker-internal SSH access. See [SSH hardening and Coolify compatibility](#ssh-hardening-and-coolify-compatibility) before finalizing your SSH config.
@@ -511,7 +511,7 @@ ufw delete allow 22/tcp
 ufw allow from 100.64.0.0/10 to any port 22 proto tcp comment 'SSH via Tailscale'
 ```
 
-**Tailscale SSH mode:** The `--ssh` flag enables Tailscale's built-in SSH server. This means you can use `tailscale ssh rico@<hostname>` without configuring SSH keys at all — Tailscale handles authentication via your identity provider. Your regular OpenSSH server still works over the tailnet for compatibility.
+**Tailscale SSH mode:** The `--ssh` flag enables Tailscale's built-in SSH server. This means you can use `tailscale ssh deploy@<hostname>` without configuring SSH keys at all — Tailscale handles authentication via your identity provider. Your regular OpenSSH server still works over the tailnet for compatibility.
 
 **What could go wrong:**
 - **Locking yourself out by closing port 22 too early:** If Tailscale isn't working and you've already closed public SSH, you're locked out. ALWAYS verify Tailscale SSH works from another device before closing port 22. The Ansible role verifies Tailscale connectivity before modifying UFW.
@@ -1654,7 +1654,7 @@ The `--interpret` flag translates numeric UIDs, syscall numbers, and timestamps 
 apt install libpam-google-authenticator -y
 ```
 
-As your rico user:
+As your deploy user:
 
 ```bash
 google-authenticator -t -d -f -r 3 -R 30 -w 3
@@ -1793,7 +1793,7 @@ Coolify has a unique lifecycle that requires a two-phase security approach. If y
 **The problem:** Coolify manages your server by SSHing into it as `root` from inside its own Docker container (via `host.docker.internal` on port 22). The SSH hardening in section 1.2 blocks this in two ways:
 
 - `PermitRootLogin no` — blocks root login entirely
-- `AllowUsers rico` — only allows your user, not root
+- `AllowUsers deploy` — only allows your user, not root
 
 After applying section 1.2, Coolify's dashboard will show "Not reachable & Not usable by Coolify" on the localhost server. Deploys, container management, and server validation all stop working.
 
@@ -1802,7 +1802,7 @@ After applying section 1.2, Coolify's dashboard will show "Not reachable & Not u
 First, update the `AllowUsers` line to include root:
 
 ```
-AllowUsers rico root
+AllowUsers deploy root
 ```
 
 Then add a `Match` block at the **very end** of the file (Match blocks must come last in SSH config — any directives after a Match block are scoped to that match, not global):

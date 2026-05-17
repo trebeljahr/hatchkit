@@ -25,7 +25,13 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export const LOCAL_DEV_DOMAIN = "local.ricoslabs.com";
+/** Fallback wildcard host for the host-wide Caddy listener. Real
+ *  installs override this through the project manifest
+ *  (`localDev.domain`), the project's public `domain`, or an explicit
+ *  argument — see {@link resolveLocalDevDomain}. The default is a
+ *  placeholder so the constant always has a value; TLS won't actually
+ *  work against `local.example.com` because nobody holds the cert. */
+export const LOCAL_DEV_DOMAIN = "local.example.com";
 export const LOCAL_DEV_DOMAIN_WILDCARD = `*.${LOCAL_DEV_DOMAIN}`;
 
 /** Root of the host-wide local-dev config. Tests + sandboxed runs

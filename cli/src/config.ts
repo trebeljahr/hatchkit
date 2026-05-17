@@ -405,6 +405,16 @@ export interface CliConfig {
      *  Routing). Used as the `--default-to` for `hatchkit email setup`
      *  unless the user overrides on the prompt. */
     forwardingEmail?: string;
+    /** Default *root* domain for new projects (e.g. `example.com`).
+     *  `hatchkit create` suggests `<project>.<defaultDomain>` as the
+     *  full project domain. Also feeds the suggested URLs for
+     *  self-hosted services (GlitchTip / OpenPanel / Plausible). */
+    rootDomain?: string;
+    /** Personal email local-part used as an opt-in alias preset when
+     *  configuring Cloudflare Email Routing (e.g. "alice" yields
+     *  `alice@<domain>`). Captured once during setup so the picker
+     *  has a sensible default for every new project. */
+    personalEmailLocalPart?: string;
   };
 }
 
@@ -809,6 +819,88 @@ export async function ensureDefaultForwardingEmail(): Promise<string> {
   return answer.trim();
 }
 
+/** Read the default root domain saved during `hatchkit setup`. Null when
+ *  the user hasn't set one — callers should fall back to a placeholder
+ *  (e.g. `example.com`) or lazy-prompt via {@link ensureDefaultRootDomain}. */
+export function getDefaultRootDomain(): string | null {
+  const defaults = store.get("defaults") as CliConfig["defaults"] | undefined;
+  return defaults?.rootDomain ?? null;
+}
+
+/** Persist the default root domain. */
+export function setDefaultRootDomain(domain: string): void {
+  const defaults = (store.get("defaults") ?? {}) as NonNullable<CliConfig["defaults"]>;
+  store.set("defaults", { ...defaults, rootDomain: domain });
+}
+
+/** Lazy-prompt for the default root domain when it's missing. Called from
+ *  `hatchkit create` so first-time users get walked through it. The
+ *  validator matches `validateDomain` minus the subdomain requirement —
+ *  the root domain itself can be just `example.com`. */
+export async function ensureDefaultRootDomain(): Promise<string> {
+  const existing = getDefaultRootDomain();
+  if (existing) return existing;
+  console.log(
+    chalk.dim(
+      "\n  Hatchkit needs a default root domain to suggest project URLs (e.g. `example.com`).",
+    ),
+  );
+  console.log(
+    chalk.dim(
+      "  Saved globally — every new project's domain will default to `<project>.<root-domain>`.",
+    ),
+  );
+  const answer = await input({
+    message: "Default root domain:",
+    validate: (raw) => {
+      const v = raw.trim().toLowerCase();
+      if (!v) return "Required.";
+      if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(v)) {
+        return "Looks malformed (use lowercase letters, numbers, hyphens, dots).";
+      }
+      return true;
+    },
+  });
+  const cleaned = answer.trim().toLowerCase();
+  setDefaultRootDomain(cleaned);
+  console.log(chalk.green(`  ✓ Saved default root domain: ${cleaned}`));
+  return cleaned;
+}
+
+/** Read the user's personal email local-part. Null when not set. Used by
+ *  `email` provisioning to seed the "personal alias" preset. */
+export function getPersonalEmailLocalPart(): string | null {
+  const defaults = store.get("defaults") as CliConfig["defaults"] | undefined;
+  return defaults?.personalEmailLocalPart ?? null;
+}
+
+/** Persist the personal email local-part. */
+export function setPersonalEmailLocalPart(localPart: string): void {
+  const defaults = (store.get("defaults") ?? {}) as NonNullable<CliConfig["defaults"]>;
+  store.set("defaults", { ...defaults, personalEmailLocalPart: localPart });
+}
+
+/** Best-effort guess at a reasonable default for the personal email
+ *  alias. Reads `git config user.email`, strips the domain, and
+ *  sanitizes — returns the local-part when it parses, else null. The
+ *  setup prompt uses this as the default so first-time users typically
+ *  just hit Enter. */
+export async function detectPersonalEmailLocalPart(): Promise<string | null> {
+  try {
+    const { execSync } = await import("node:child_process");
+    const raw = execSync("git config --get user.email", {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const at = raw.indexOf("@");
+    if (at <= 0) return null;
+    const local = raw.slice(0, at).toLowerCase();
+    return /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/.test(local) ? local : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Prompt for INWX *registrar* credentials and persist them. Used when the
  * primary DNS provider is Cloudflare but the domain is still registered
@@ -1171,10 +1263,11 @@ export async function ensureGlitchtip(): Promise<GlitchtipConfig> {
   }
 
   console.log(chalk.yellow("\n  GlitchTip is not configured yet. Let's set it up."));
+  const rootForGlitchtip = getDefaultRootDomain();
   const url = (
     await input({
       message: "GlitchTip base URL:",
-      default: existing?.url ?? "https://glitchtip.trebeljahr.com",
+      default: existing?.url ?? (rootForGlitchtip ? `https://glitchtip.${rootForGlitchtip}` : ""),
       validate: (v) => validateUrl(v.trim()),
     })
   ).trim();
@@ -1244,10 +1337,11 @@ export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
   } else {
     console.log(chalk.yellow("\n  OpenPanel is not configured yet. Let's set it up."));
   }
+  const rootForOpenpanel = getDefaultRootDomain();
   const url = (
     await input({
       message: "OpenPanel dashboard URL:",
-      default: existing?.url ?? "https://analytics.trebeljahr.com",
+      default: existing?.url ?? (rootForOpenpanel ? `https://analytics.${rootForOpenpanel}` : ""),
       validate: (v) => validateUrl(v.trim()),
     })
   ).trim();
@@ -2437,6 +2531,78 @@ interface SetupGroup {
 function buildSetupGroups(): SetupGroup[] {
   return [
     {
+      title: "Defaults",
+      steps: [
+        {
+          key: "defaultRootDomain",
+          label: "Default project domain",
+          status: () => {
+            const v = getDefaultRootDomain();
+            return {
+              configured: !!v,
+              summary: v ? `<project>.${v}` : undefined,
+            };
+          },
+          run: async () => {
+            const defaults = (store.get("defaults") ?? {}) as NonNullable<CliConfig["defaults"]>;
+            store.set("defaults", { ...defaults, rootDomain: undefined });
+            await ensureDefaultRootDomain();
+          },
+        },
+        {
+          key: "defaultForwardingEmail",
+          label: "Default forwarding email",
+          status: () => {
+            const v = getDefaultForwardingEmail();
+            return { configured: !!v, summary: v ?? undefined };
+          },
+          run: async () => {
+            const defaults = (store.get("defaults") ?? {}) as NonNullable<CliConfig["defaults"]>;
+            store.set("defaults", { ...defaults, forwardingEmail: undefined });
+            await ensureDefaultForwardingEmail();
+          },
+        },
+        {
+          key: "personalEmailLocalPart",
+          label: "Personal email alias (e.g. `alice` for alice@…)",
+          status: () => {
+            const v = getPersonalEmailLocalPart();
+            return { configured: !!v, summary: v ? `${v}@…` : undefined };
+          },
+          run: async () => {
+            const detected = await detectPersonalEmailLocalPart();
+            const answer = (
+              await input({
+                message:
+                  "Personal email alias local-part (used as a default-checked preset in `hatchkit email setup`; leave blank to skip):",
+                default: getPersonalEmailLocalPart() ?? detected ?? "",
+                validate: (raw) => {
+                  const v = raw.trim().toLowerCase();
+                  if (!v) return true;
+                  if (!/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/.test(v)) {
+                    return "Use lowercase letters, numbers, dot/underscore/hyphen.";
+                  }
+                  return true;
+                },
+              })
+            )
+              .trim()
+              .toLowerCase();
+            const defaults = (store.get("defaults") ?? {}) as NonNullable<CliConfig["defaults"]>;
+            store.set("defaults", {
+              ...defaults,
+              personalEmailLocalPart: answer || undefined,
+            });
+            if (answer) {
+              console.log(chalk.green(`  ✓ Saved personal email alias: ${answer}@…`));
+            } else {
+              console.log(chalk.dim("  · Cleared personal email alias."));
+            }
+          },
+        },
+      ],
+    },
+    {
       title: "Core",
       steps: [
         {
@@ -2583,22 +2749,6 @@ function buildSetupGroups(): SetupGroup[] {
             };
           },
           run: () => reconfigureProvider("search-console"),
-        },
-        {
-          key: "defaultForwardingEmail",
-          label: "Default forwarding email",
-          status: () => {
-            const v = getDefaultForwardingEmail();
-            return { configured: !!v, summary: v ?? undefined };
-          },
-          run: async () => {
-            // Wipe-then-prompt mirrors the contract every other step
-            // follows — Setup's "click this row again" should always
-            // re-ask, not silently skip on a stored value.
-            const defaults = (store.get("defaults") ?? {}) as NonNullable<CliConfig["defaults"]>;
-            store.set("defaults", { ...defaults, forwardingEmail: undefined });
-            await ensureDefaultForwardingEmail();
-          },
         },
         {
           key: "stripe",

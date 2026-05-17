@@ -46,7 +46,7 @@ local_dev_url() {
       const projectDomain = String(manifest?.domain || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "");
       const labels = projectDomain.split(".").filter(Boolean);
       const baseDomain = labels.length > 2 ? labels.slice(-2).join(".") : projectDomain;
-      const localDevDomain = configuredDomain || (baseDomain ? `local.${baseDomain}` : "local.ricoslabs.com");
+      const localDevDomain = configuredDomain || (baseDomain ? `local.${baseDomain}` : "local.example.com");
       if (slug) process.stdout.write(`https://${slug}.${localDevDomain}/`);
     } catch {}
   ' "$REPO/.hatchkit.json"

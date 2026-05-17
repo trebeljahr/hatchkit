@@ -1432,7 +1432,7 @@ console.log(
     cliVersion: "0.0.0-test",
     scaffoldedAt: "2026-05-01T00:00:00.000Z",
     name: "collection-of-beauty",
-    domain: "beauty.trebeljahr.com",
+    domain: "beauty.example.com",
     features: [],
     mlServices: [],
     s3Provider: "none",
@@ -1462,7 +1462,7 @@ console.log(
     ["client-only emits a single-app entry", !!singleApp],
     [
       "client-only: domain canonicalizes to https://<bare>",
-      singleApp?.domains[0]?.domain === "https://beauty.trebeljahr.com",
+      singleApp?.domains[0]?.domain === "https://beauty.example.com",
     ],
     ["client-only: app service named `app`", singleApp?.domains[0]?.name === "app"],
     ["client-only: ports_exposes is 80", singleApp?.portsExposes === "80"],
@@ -2538,10 +2538,10 @@ results.cloudflareZoneResolver = await (async () => {
   const calls: string[] = [];
   const zones = new Map([
     [
-      "trebeljahr.com",
+      "example.com",
       {
         id: "zone-parent",
-        name: "trebeljahr.com",
+        name: "example.com",
         name_servers: [],
         status: "active",
       },
@@ -2552,25 +2552,25 @@ results.cloudflareZoneResolver = await (async () => {
     return zones.get(name) ?? null;
   };
 
-  const parent = await api.resolveZoneForName("connection.trebeljahr.com");
+  const parent = await api.resolveZoneForName("connection.example.com");
   const parentCalls = calls.splice(0);
-  zones.set("connection.trebeljahr.com", {
+  zones.set("connection.example.com", {
     id: "zone-sub",
-    name: "connection.trebeljahr.com",
+    name: "connection.example.com",
     name_servers: [],
     status: "active",
   });
-  const exact = await api.resolveZoneForName("connection.trebeljahr.com.");
-  const wildcard = await api.resolveZoneForName("*.mail.trebeljahr.com");
+  const exact = await api.resolveZoneForName("connection.example.com.");
+  const wildcard = await api.resolveZoneForName("*.mail.example.com");
 
   const checks: Check[] = [
-    ["subdomain falls back to parent zone", parent?.name === "trebeljahr.com"],
+    ["subdomain falls back to parent zone", parent?.name === "example.com"],
     [
       "lookup tries exact hostname before parent",
-      parentCalls.join(",") === "connection.trebeljahr.com,trebeljahr.com",
+      parentCalls.join(",") === "connection.example.com,example.com",
     ],
-    ["delegated subdomain zone wins when present", exact?.name === "connection.trebeljahr.com"],
-    ["wildcard hostname strips leading star", wildcard?.name === "trebeljahr.com"],
+    ["delegated subdomain zone wins when present", exact?.name === "connection.example.com"],
+    ["wildcard hostname strips leading star", wildcard?.name === "example.com"],
   ];
   let ok = true;
   for (const [n, c] of checks) {

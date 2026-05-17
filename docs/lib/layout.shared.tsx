@@ -21,6 +21,6 @@ export function baseOptions(): BaseLayoutProps {
         external: true,
       },
     ],
-    githubUrl: "https://github.com/trebeljahr/hatchkit",
+    githubUrl: process.env.NEXT_PUBLIC_GITHUB_URL ?? "https://github.com/trebeljahr/hatchkit",
   };
 }

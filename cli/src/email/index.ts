@@ -19,15 +19,17 @@ import { join, resolve } from "node:path";
 import { confirm, input } from "@inquirer/prompts";
 import chalk from "chalk";
 import {
+  detectPersonalEmailLocalPart,
   ensureDefaultForwardingEmail,
   ensureDns,
   getDefaultForwardingEmail,
   getDnsConfig,
+  getPersonalEmailLocalPart,
 } from "../config.js";
 import { readManifest } from "../scaffold/manifest.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { multiselect } from "../utils/multiselect.js";
-import { DEFAULT_CATCH_ALL, DEFAULT_FORWARD_PRESETS } from "./presets.js";
+import { DEFAULT_CATCH_ALL, buildForwardPresets } from "./presets.js";
 import {
   type EmailSetupOptions,
   type EmailSetupResult,
@@ -39,7 +41,7 @@ export interface EmailCommandFlags {
   domain?: string;
   /** Forwarding destination override. Falls back to the saved default. */
   to?: string;
-  /** Comma-separated local parts (e.g. "hello,rico,admin"). Skips the
+  /** Comma-separated local parts (e.g. "hello,alice,admin"). Skips the
    *  multi-select prompt when present. */
   addresses?: string;
   /** Skip the prompt; use every default preset. */
@@ -80,6 +82,11 @@ async function resolveAddresses(
   flags: EmailCommandFlags,
   domain: string,
 ): Promise<{ addresses: string[]; catchAll: boolean }> {
+  // Personal-alias preset: saved value from `hatchkit setup` wins, then
+  // a best-effort guess from `git config user.email`. The picker still
+  // lets the user untick it.
+  const personalAlias = getPersonalEmailLocalPart() ?? (await detectPersonalEmailLocalPart());
+  const presets = buildForwardPresets(personalAlias);
   if (flags.addresses) {
     const list = flags.addresses
       .split(",")
@@ -89,13 +96,13 @@ async function resolveAddresses(
   }
   if (flags.allDefaults) {
     return {
-      addresses: DEFAULT_FORWARD_PRESETS.filter((p) => p.defaultChecked).map((p) => p.localPart),
+      addresses: presets.filter((p) => p.defaultChecked).map((p) => p.localPart),
       catchAll: !flags.noCatchAll,
     };
   }
   const picked = await multiselect<string>({
     message: `Which addresses on ${domain} should forward to your inbox?`,
-    choices: DEFAULT_FORWARD_PRESETS.map((p) => ({
+    choices: presets.map((p) => ({
       name: `${p.localPart}@${domain} — ${p.description}`,
       value: p.localPart,
       checked: p.defaultChecked,

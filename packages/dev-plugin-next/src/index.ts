@@ -103,9 +103,9 @@ async function initLocalDev(options: LocalDevOptions, resolved: ResolvedSlug | n
   // has flushed before we tack our line on. Picking a fixed delay is
   // unavoidable here — Next 14/15 don't expose a "server-listening"
   // hook to a config consumer. 1.5s is the empirically reliable point
-  // across Next 14, 15, and Turbopack on Rico's machine; if the user's
-  // dev server takes longer to come up our banner still prints, just
-  // mixed in with later HMR logs (harmless).
+  // across Next 14, 15, and Turbopack on a typical laptop; if the dev
+  // server takes longer to come up our banner still prints, just mixed
+  // in with later HMR logs (harmless).
   await sleep(1500);
 
   if (!resolved) {

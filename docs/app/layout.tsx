@@ -7,9 +7,14 @@ import type { ReactNode } from "react";
 import { DEFAULT_SOCIAL_IMAGE, DEFAULT_TWITTER_IMAGE, SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/seo";
 
 const inter = Inter({ subsets: ["latin"] });
-const plausibleDomain = "hatchkit.trebeljahr.com";
-const plausibleScriptUrl =
-  "https://plausible.trebeljahr.com/js/script.file-downloads.hash.outbound-links.pageview-props.revenue.tagged-events.js";
+// Plausible loader is opt-in: forks set both env vars (typically in
+// `.env.production`) to point at their own analytics endpoint. Leaving
+// either unset disables the loader entirely so the public docs site —
+// and any fork that hasn't wired up analytics — never beacons to a
+// stranger's Plausible instance.
+const plausibleDomain = process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN ?? "";
+const plausibleScriptUrl = process.env.NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL ?? "";
+const plausibleEnabled = plausibleDomain.length > 0 && plausibleScriptUrl.length > 0;
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -55,8 +60,9 @@ export default function Layout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className={inter.className} suppressHydrationWarning>
       <body className="flex flex-col min-h-screen">
-        <Script id="plausible-loader" strategy="afterInteractive">
-          {`
+        {plausibleEnabled ? (
+          <Script id="plausible-loader" strategy="afterInteractive">
+            {`
               (function () {
                 var domain = ${JSON.stringify(plausibleDomain)};
                 if (location.hostname !== domain) return;
@@ -70,7 +76,8 @@ export default function Layout({ children }: { children: ReactNode }) {
                 document.head.appendChild(script);
               })();
             `}
-        </Script>
+          </Script>
+        ) : null}
         <RootProvider search={{ enabled: false }}>{children}</RootProvider>
       </body>
     </html>

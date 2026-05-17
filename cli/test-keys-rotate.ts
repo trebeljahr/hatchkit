@@ -1,7 +1,7 @@
 /**
  * Unit tests for `hatchkit keys rotate`.
  *
- * Reproduces the three coupled bugs that bit gamedev.trebeljahr.com:
+ * Reproduces three coupled bugs originally observed in production:
  *   1. .env.keys accumulates stale comma-listed private keys across
  *      repeated rotations → downstream consumers forward a stale entry.
  *   2. keychain not updated to the new private key.

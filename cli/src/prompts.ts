@@ -1,6 +1,11 @@
 import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
-import { getCoolifyConfig, getMlServices } from "./config.js";
+import {
+  ensureDefaultRootDomain,
+  getCoolifyConfig,
+  getDefaultRootDomain,
+  getMlServices,
+} from "./config.js";
 import {
   type ProjectOnboardingPlan,
   onboardingPlanToProjectConfig,
@@ -365,16 +370,25 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     )
   ).trim();
 
+  // Suggest `<name>.<root-domain>`. The root domain is captured once in
+  // `hatchkit setup` so subsequent projects don't keep re-typing it.
+  // Interactive flow lazy-prompts when missing; non-interactive reads
+  // whatever's already stored and falls back to a generic placeholder.
+  let rootDomain: string | null = null;
+  if (!presets.domain) {
+    rootDomain = nonInteractive ? getDefaultRootDomain() : await ensureDefaultRootDomain();
+  }
+  const suggestedDomain = rootDomain ? `${name}.${rootDomain}` : `${name}.example.com`;
   const domain = await presetOrPrompt(
     presets.domain,
     nonInteractive,
     () =>
       input({
         message: "Domain:",
-        default: `${name}.ricos.site`,
+        default: suggestedDomain,
         validate: (v) => validateDomain(v),
       }),
-    `${name}.ricos.site`,
+    suggestedDomain,
   );
   const domainErr = validateDomain(domain);
   if (domainErr !== true) throw new Error(`--domain invalid: ${domainErr}`);
@@ -1316,9 +1330,13 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     return { ...cfg, description: description || undefined };
   }
   if (section === "domain") {
+    const rootHint = getDefaultRootDomain();
+    const message = rootHint
+      ? `Domain (e.g. ${cfg.name || "app"}.${rootHint}):`
+      : "Domain (e.g. app.example.com):";
     const raw = (
       await input({
-        message: "Domain (e.g. ai.trebeljahr.com):",
+        message,
         default: cfg.domain,
         validate: validateDomain,
       })

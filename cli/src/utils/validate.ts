@@ -1,8 +1,8 @@
-/** Validate a domain name (e.g. chess.ricos.site) */
+/** Validate a domain name (e.g. app.example.com) */
 export function validateDomain(value: string): boolean | string {
   const pattern = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
   if (!pattern.test(value)) {
-    return "Invalid domain. Use lowercase letters, numbers, and hyphens (e.g. chess.ricos.site)";
+    return "Invalid domain. Use lowercase letters, numbers, and hyphens (e.g. app.example.com)";
   }
   return true;
 }

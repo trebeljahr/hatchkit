@@ -297,20 +297,20 @@ assert.throws(
 {
   const dir = mkdtempSync(join(tmpdir(), "search-console-manifest-"));
   writeSearchConsoleManifest(dir, null, "asteroids", {
-    domain: "asteroids.trebeljahr.com",
-    siteUrl: "sc-domain:asteroids.trebeljahr.com",
+    domain: "asteroids.example.com",
+    siteUrl: "sc-domain:asteroids.example.com",
   });
   const manifest = readManifest(dir);
   assert.equal(manifest?.name, "asteroids");
-  assert.equal(manifest?.domain, "asteroids.trebeljahr.com");
+  assert.equal(manifest?.domain, "asteroids.example.com");
   assert.equal(manifest?.s3Provider, "none");
   assert.equal(manifest?.deployTarget, "existing");
   assert.deepEqual(manifest?.features, []);
   assert.deepEqual(manifest?.mlServices, []);
   assert.deepEqual(manifest?.ports, { server: 3000, client: 5173 });
   assert.deepEqual(manifest?.integrations?.searchConsole, {
-    domain: "asteroids.trebeljahr.com",
-    siteUrl: "sc-domain:asteroids.trebeljahr.com",
+    domain: "asteroids.example.com",
+    siteUrl: "sc-domain:asteroids.example.com",
     verifiedAt: manifest?.integrations?.searchConsole?.verifiedAt,
   });
 }

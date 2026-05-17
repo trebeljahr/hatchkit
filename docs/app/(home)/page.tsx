@@ -64,7 +64,7 @@ function Hero() {
               <span className={styles.ok}>✓</span> Scaffolded starter (44 files)
               {"\n"}
               <span className={styles.ok}>✓</span> Created GitHub repo
-              trebeljahr/nimbus
+              acme/nimbus
               {"\n"}
               <span className={styles.ok}>✓</span> Provisioned VPS + DNS via
               Terraform

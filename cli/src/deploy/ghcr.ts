@@ -36,7 +36,7 @@ import type { CoolifyApi } from "../utils/coolify-api.js";
 import { exec, execOk } from "../utils/exec.js";
 
 export interface GhcrSetupOptions {
-  /** Owner/repo slug, e.g. `trebeljahr/extinction-protocol`. */
+  /** Owner/repo slug, e.g. `acme/extinction-protocol`. */
   repoSlug: string;
   /** Maximum time to wait for the first Actions push to create the
    *  package in GHCR. Default 10 minutes — the starter's verify + e2e

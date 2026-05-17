@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { isTailscaleIpv4, localDevDomainSafetyIssue } from "./src/dev-setup.js";
 
-assert.equal(localDevDomainSafetyIssue("local.ricoslabs.com"), null);
-assert.equal(localDevDomainSafetyIssue("*.local.ricoslabs.com"), null);
-assert.match(localDevDomainSafetyIssue("ricoslabs.com") ?? "", /Unsafe local-dev domain/);
-assert.match(localDevDomainSafetyIssue("dev.ricoslabs.com") ?? "", /Unsafe local-dev domain/);
+assert.equal(localDevDomainSafetyIssue("local.example.com"), null);
+assert.equal(localDevDomainSafetyIssue("*.local.example.com"), null);
+assert.match(localDevDomainSafetyIssue("example.com") ?? "", /Unsafe local-dev domain/);
+assert.match(localDevDomainSafetyIssue("dev.example.com") ?? "", /Unsafe local-dev domain/);
 assert.match(localDevDomainSafetyIssue("local.com") ?? "", /Unsafe local-dev domain/);
 
 assert.equal(isTailscaleIpv4("100.64.0.0"), true);

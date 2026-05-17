@@ -1,10 +1,9 @@
 # Agent Instructions
 
-Before repo work on this machine, read and follow:
-
-```bash
-/Users/rico/.agents/AGENTS.md
-```
+If the operator maintains a machine-level agent file (e.g.
+`~/.agents/AGENTS.md` or `~/.claude/CLAUDE.md`), read and follow it
+first; the rules below are repo-specific and stack on top of any
+machine-level conventions.
 
 ## Hatchkit Context
 

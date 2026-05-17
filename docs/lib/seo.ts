@@ -1,7 +1,13 @@
 import { statSync } from "node:fs";
 import { join } from "node:path";
 
-export const SITE_URL = "https://hatchkit.trebeljahr.com";
+/** Canonical origin used for `metadata.metadataBase`, the sitemap, and
+ *  every `absoluteUrl()` call. Forks override via
+ *  `NEXT_PUBLIC_SITE_URL` (e.g. in `docs/.env.production`). The fallback
+ *  points at this repo's published docs so a local `pnpm dev` still
+ *  produces sensible canonical URLs without any env wiring. */
+export const SITE_URL =
+  process.env.NEXT_PUBLIC_SITE_URL ?? "https://hatchkit.trebeljahr.com";
 export const SITE_NAME = "hatchkit";
 export const SITE_DESCRIPTION =
   "Interactive CLI for scaffolding full-stack TypeScript projects with composable GPU-backed ML services on infrastructure you own.";

@@ -53,7 +53,7 @@ function detectedState(overrides: Partial<DetectedState> = {}): DetectedState {
     coolifyConfigured: true,
     coolifyGithubSourceCount: 1,
     isGitRepo: true,
-    gitRemoteUrl: "git@github.com:rico/existing-app.git",
+    gitRemoteUrl: "git@github.com:acme/existing-app.git",
     gitRemoteIsPrivate: true,
     ...overrides,
   };

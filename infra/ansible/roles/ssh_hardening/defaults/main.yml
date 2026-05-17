@@ -6,9 +6,11 @@ ssh_password_authentication: "no"
 ssh_kbd_interactive_authentication: "no"
 ssh_pubkey_authentication: "yes"
 
-# Users allowed to SSH in. Must match actual user on the system.
-ssh_allowed_users:
-  - rico
+# Users allowed to SSH in. Must match actual user on the system. Override
+# in inventory `group_vars/all.yml` (see all.example.yml). Leaving empty
+# falls back to whatever the SSH daemon's existing AllowUsers directive
+# already permits — typically the user you bootstrapped the host with.
+ssh_allowed_users: []
 
 # Coolify compatibility: allow root login from Docker internal networks only.
 # When true, adds a Match block that permits root key-based SSH from private

@@ -71,7 +71,10 @@ ssh_password_authentication: "no"
 ssh_kbd_interactive_authentication: "no"
 ssh_pubkey_authentication: "yes"
 ssh_allowed_users:
-  - rico
+  # Replace with the deploy user on your servers (e.g. `deploy`, `ubuntu`,
+  # or whatever the bootstrap step created). Wrong value here can lock
+  # you out — verify SSH access in a second terminal before disconnecting.
+  - deploy
 ssh_max_auth_tries: 3
 ssh_client_alive_interval: 300
 ssh_client_alive_count_max: 2

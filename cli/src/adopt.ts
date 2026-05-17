@@ -38,7 +38,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
-import { ensureGitHub, getCoolifyConfig, getGhcrConfig } from "./config.js";
+import { ensureGitHub, getCoolifyConfig, getDefaultRootDomain, getGhcrConfig } from "./config.js";
 import {
   ghSecretExists,
   ownerFromRemote,
@@ -1140,9 +1140,13 @@ async function editAdoptStep(
     return { ...plan, name };
   }
   if (step === "domain") {
+    const rootHint = getDefaultRootDomain();
+    const message = rootHint
+      ? `Domain (e.g. ${plan.name || state.packageName || "app"}.${rootHint}):`
+      : "Domain (e.g. app.example.com):";
     const domain = (
       await input({
-        message: "Domain (e.g. ai.trebeljahr.com):",
+        message,
         default: plan.domain,
         validate: validateDomain,
       })
