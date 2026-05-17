@@ -2305,7 +2305,7 @@ async function handleConfig(): Promise<void> {
       if (!provider) {
         console.log("Usage: hatchkit config add <provider>");
         console.log(
-          "Providers: coolify, coolify-github-app, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, plausible, resend, listmonk, search-console, stripe",
+          "Providers: coolify, coolify-github-app, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, plausible, resend, listmonk, ses, search-console, stripe",
         );
         return;
       }
@@ -2325,6 +2325,7 @@ async function handleConfig(): Promise<void> {
         case "plausible":
         case "resend":
         case "listmonk":
+        case "ses":
         case "search-console":
         case "stripe":
         case "ghcr":
@@ -2365,7 +2366,7 @@ async function handleConfig(): Promise<void> {
             console.log(chalk.red(`  Unknown provider: ${provider}`));
             console.log(
               chalk.dim(
-                "  Valid: coolify, coolify-github-app, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, plausible, resend, listmonk, search-console, stripe",
+                "  Valid: coolify, coolify-github-app, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, plausible, resend, listmonk, ses, search-console, stripe",
               ),
             );
             return;

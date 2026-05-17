@@ -1641,6 +1641,107 @@ function normalizeListmonkUrlInput(raw: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Provider: AWS SES (Simple Email Service)
+//
+// IAM access key + secret pair, paired with a region. Used both directly
+// (sesv2 SendEmail / CreateEmailIdentity from the CLI) and indirectly
+// (SMTP-relay credentials derived from the IAM secret + region — pasted
+// into Listmonk's SMTP settings so Listmonk delivers via SES).
+//
+// Sandbox mode is the default state of every new SES account: outbound
+// to non-verified addresses gets rejected until the user submits the
+// production-access form in the AWS console. Surfaced inline so the
+// user knows the constraint up front — `config add ses` can't lift it
+// for them (web UI only, ~24h review).
+// ---------------------------------------------------------------------------
+
+export async function ensureSes(): Promise<SesConfig> {
+  const existing = store.get("providers.ses") as SesMeta | undefined;
+  const existingKeyId = await getSecret(SECRET_KEYS.sesAccessKeyId);
+  const existingSecret = await getSecret(SECRET_KEYS.sesSecretAccessKey);
+
+  if (
+    existing?.status === "configured" &&
+    existing.region &&
+    existingKeyId &&
+    existingSecret
+  ) {
+    return { ...existing, accessKeyId: existingKeyId, secretAccessKey: existingSecret };
+  }
+
+  console.log(chalk.yellow("\n  AWS SES is not configured yet. Let's set it up."));
+  console.log(
+    chalk.dim(
+      "  New SES accounts start in sandbox mode — outbound goes only to verified\n" +
+        "  addresses until you request production access (AWS console form, ~24h\n" +
+        "  review). Hatchkit can verify domains + derive SMTP credentials before\n" +
+        "  that; you can't broadcast to real recipients until it clears.",
+    ),
+  );
+
+  const { SES_SMTP_REGIONS } = await import("./provision/ses.js");
+  const region = await select({
+    message: "AWS region for SES (must have an SMTP endpoint):",
+    default: existing?.region ?? "eu-west-1",
+    choices: SES_SMTP_REGIONS.map((r) => ({ name: r, value: r })),
+  });
+
+  tokenHint(
+    "https://console.aws.amazon.com/iam/home#/users",
+    "AmazonSesFullAccess (or a tighter custom policy covering sesv2:* + ses:SendRawEmail)",
+    "Pick an IAM USER (not a role) — programmatic access keys only.",
+  );
+
+  let accessKeyId = "";
+  let secretAccessKey = "";
+  for (;;) {
+    accessKeyId = (
+      await input({
+        message: "AWS access key ID:",
+        validate: validateRequired,
+      })
+    ).trim();
+    secretAccessKey = await confirmPastedSecret("AWS secret access key");
+
+    const spinner = ora("Verifying SES credentials...").start();
+    try {
+      const { probeSes } = await import("./provision/ses.js");
+      const { identityCount } = await probeSes({ region, accessKeyId, secretAccessKey });
+      spinner.succeed(`SES reachable in ${region} (${identityCount} identity/ies visible)`);
+      break;
+    } catch (err) {
+      spinner.fail("Could not authenticate against SES");
+      console.log(chalk.dim(`  ${err instanceof Error ? err.message : String(err)}`));
+      const retry = await confirm({
+        message: "Try a different access key / secret?",
+        default: true,
+      });
+      if (!retry) throw err;
+    }
+  }
+
+  const meta: SesMeta = {
+    status: "configured",
+    region,
+    lastVerified: new Date().toISOString(),
+  };
+  store.set("providers.ses", meta);
+  await setSecret(SECRET_KEYS.sesAccessKeyId, accessKeyId);
+  await setSecret(SECRET_KEYS.sesSecretAccessKey, secretAccessKey);
+  console.log(chalk.green("  ✓ SES configured"));
+  return { ...meta, accessKeyId, secretAccessKey };
+}
+
+export async function getSesConfig(): Promise<SesConfig | null> {
+  const meta = store.get("providers.ses") as SesMeta | undefined;
+  if (!meta || meta.status !== "configured") return null;
+  const accessKeyId = await getSecret(SECRET_KEYS.sesAccessKeyId);
+  const secretAccessKey = await getSecret(SECRET_KEYS.sesSecretAccessKey);
+  if (!accessKeyId || !secretAccessKey) return null;
+  return { ...meta, accessKeyId, secretAccessKey };
+}
+
+// ---------------------------------------------------------------------------
 // Provider: Google Search Console
 // ---------------------------------------------------------------------------
 
@@ -2549,6 +2650,7 @@ type ReconfigurableProvider =
   | "plausible"
   | "resend"
   | "listmonk"
+  | "ses"
   | "search-console"
   | "stripe"
   | "ghcr"
@@ -2595,6 +2697,12 @@ export async function reconfigureProvider(name: ReconfigurableProvider): Promise
   } else if (name === "listmonk") {
     await wipeProvider("providers.listmonk", [SECRET_KEYS.listmonkApiToken]);
     await ensureListmonk();
+  } else if (name === "ses") {
+    await wipeProvider("providers.ses", [
+      SECRET_KEYS.sesAccessKeyId,
+      SECRET_KEYS.sesSecretAccessKey,
+    ]);
+    await ensureSes();
   } else if (name === "search-console") {
     await wipeProvider("providers.googleSearchConsole", [
       SECRET_KEYS.googleSearchConsoleClientId,
