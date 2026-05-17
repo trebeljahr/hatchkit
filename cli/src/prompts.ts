@@ -78,6 +78,32 @@ export type Surface = "fullstack" | "split" | "backend" | "static";
 export type Feature = "websocket" | "stripe" | "analytics" | "s3" | "desktop" | "mobile";
 export type AnalyticsProvider = "glitchtip" | "openpanel" | "plausible";
 
+/** Provider for transactional sends (signup confirmations, password
+ *  resets, receipts — single-recipient). `listmonk-ses` is the combo
+ *  path that delivers via SES with Listmonk's /api/tx wrapper around it.
+ *  `none` means the user explicitly opted out — distinguishes a
+ *  decision from a missing answer. */
+export type EmailTransactionalProvider = "none" | "resend" | "listmonk-ses";
+/** Provider for mailing-list broadcasts. SES alone has no list/audience
+ *  management — broadcasting requires Listmonk (or Resend's Audiences
+ *  feature) on top. */
+export type EmailMailingListProvider = "none" | "resend" | "listmonk-ses";
+
+/** Captured email intent for a project — answered once at create/adopt
+ *  time and persisted into the manifest. Independent of the live
+ *  `provisionServices` list because the user can opt into both needs
+ *  but pick the same provider for both ("listmonk-ses" covers both),
+ *  or pick different providers (rare but possible). */
+export interface EmailIntent {
+  transactional: EmailTransactionalProvider;
+  mailingList: EmailMailingListProvider;
+}
+
+export const EMAIL_INTENT_NONE: EmailIntent = {
+  transactional: "none",
+  mailingList: "none",
+};
+
 export type MlService =
   | "3d-sam-objects"
   | "3d-sam-body"
@@ -207,6 +233,12 @@ export interface ProjectConfig {
    *  Absent → feature disabled for this project (no fragment, no
    *  plugin wiring, no docs). */
   localDev?: { slug: string; domain?: string };
+  /** Captured email-intent — answered by `askEmailIntent()` during
+   *  create/adopt, persisted in the manifest, drives downstream env
+   *  rendering. Absent means the prompt wasn't asked (legacy / scripted
+   *  flow); both fields being "none" means the user was asked and
+   *  opted out of email entirely. */
+  email?: EmailIntent;
   dryRun: boolean;
 }
 
@@ -249,6 +281,114 @@ function uniqueProvisionServices(services: ProvisionService[]): ProvisionService
 
 function analyticsProvidersFromServices(services: ProvisionService[]): AnalyticsProvider[] {
   return services.filter(isAnalyticsProvisionService);
+}
+
+// ---------------------------------------------------------------------------
+// Email intent — what kind of email does this project send + via which
+// provider. Answered once at create/adopt, persisted in the manifest.
+//
+// Two needs are independent: transactional (one-off sends like signup
+// confirmation) and mailing list (broadcast to a subscriber audience).
+// A project can want neither, either, or both. The chosen provider for
+// each gets persisted so a later `hatchkit update` doesn't re-prompt
+// every run.
+// ---------------------------------------------------------------------------
+
+export interface EmailNeeds {
+  transactional: boolean;
+  mailingList: boolean;
+}
+
+/** Translate the high-level "what do you need" question into
+ *  per-need booleans. Four options (none / one / the other / both)
+ *  rather than two separate yes-no prompts — same information, but
+ *  shorter and copy-paste friendly. */
+export async function askEmailNeeds(opts: {
+  defaults?: EmailNeeds;
+} = {}): Promise<EmailNeeds> {
+  const choice = await select<"none" | "tx" | "ml" | "both">({
+    message: "Email needs for this project:",
+    default: emailNeedsToChoiceKey(opts.defaults ?? { transactional: false, mailingList: false }),
+    choices: [
+      { name: "None", value: "none" },
+      { name: "Transactional only (signup confirmations, password resets, receipts)", value: "tx" },
+      { name: "Mailing list only (broadcasts to subscribers)", value: "ml" },
+      { name: "Transactional + mailing list (the newsletter-app pattern)", value: "both" },
+    ],
+  });
+  return choiceKeyToEmailNeeds(choice);
+}
+
+function emailNeedsToChoiceKey(n: EmailNeeds): "none" | "tx" | "ml" | "both" {
+  if (n.transactional && n.mailingList) return "both";
+  if (n.transactional) return "tx";
+  if (n.mailingList) return "ml";
+  return "none";
+}
+
+function choiceKeyToEmailNeeds(c: "none" | "tx" | "ml" | "both"): EmailNeeds {
+  return {
+    transactional: c === "tx" || c === "both",
+    mailingList: c === "ml" || c === "both",
+  };
+}
+
+/** Per-need provider picker. Listmonk+SES is the recommended option
+ *  because it's the sovereign-cheap path (SES is ~€0.10/1k vs Resend's
+ *  €20/month entry tier) and Listmonk owns the subscribe/confirm/
+ *  broadcast UI users expect. Resend stays available for users who'd
+ *  rather pay for managed simplicity. */
+export async function askEmailProvider(
+  need: "transactional" | "mailingList",
+  opts: {
+    /** Existing answer, if any — surfaced as the default so a re-prompt
+     *  doesn't undo a deliberate prior choice. */
+    current?: EmailTransactionalProvider | EmailMailingListProvider;
+  } = {},
+): Promise<EmailTransactionalProvider | EmailMailingListProvider> {
+  const label = need === "transactional" ? "transactional sends" : "mailing-list broadcasts";
+  return select<EmailTransactionalProvider | EmailMailingListProvider>({
+    message: `Provider for ${label}:`,
+    default: opts.current ?? "listmonk-ses",
+    choices: [
+      {
+        name: "Listmonk + SES — sovereign + cheap (recommended)",
+        value: "listmonk-ses",
+      },
+      {
+        name: "Resend — managed SaaS (€20/mo entry tier)",
+        value: "resend",
+      },
+      { name: "None — skip", value: "none" },
+    ],
+  });
+}
+
+/** Higher-level helper: ask the needs question, then per-need provider
+ *  questions only for the needs that came back true. Returns the full
+ *  intent struct ready to drop into the manifest. */
+export async function askEmailIntent(opts: {
+  current?: EmailIntent;
+} = {}): Promise<EmailIntent> {
+  const needs = await askEmailNeeds({
+    defaults: opts.current
+      ? {
+          transactional: opts.current.transactional !== "none",
+          mailingList: opts.current.mailingList !== "none",
+        }
+      : undefined,
+  });
+  const transactional: EmailTransactionalProvider = needs.transactional
+    ? ((await askEmailProvider("transactional", {
+        current: opts.current?.transactional,
+      })) as EmailTransactionalProvider)
+    : "none";
+  const mailingList: EmailMailingListProvider = needs.mailingList
+    ? ((await askEmailProvider("mailingList", {
+        current: opts.current?.mailingList,
+      })) as EmailMailingListProvider)
+    : "none";
+  return { transactional, mailingList };
 }
 
 async function collectExtraProvisionServices(args: {

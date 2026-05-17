@@ -31,18 +31,26 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { localDevDomainFromProjectDomain } from "@hatchkit/dev-shared";
-import type { Feature, GpuPlatform, MlService, ProjectConfig, S3Provider } from "../prompts.js";
+import type {
+  EmailIntent,
+  Feature,
+  GpuPlatform,
+  MlService,
+  ProjectConfig,
+  S3Provider,
+} from "../prompts.js";
 import type { ProjectPorts } from "../utils/ports.js";
 
 export const MANIFEST_FILENAME = ".hatchkit.json";
-export const MANIFEST_VERSION = 2;
+export const MANIFEST_VERSION = 3;
 /** Every schema version readManifest knows how to migrate FROM. The
  *  reader transparently upgrades v1 manifests (3-value surfaces enum:
  *  server-only / client-only / both, plus the unstable
- *  shared/separate values that leaked from the provisioner) on read,
- *  and the next write bumps the file's version field to {@link
- *  MANIFEST_VERSION}. */
-const MIGRATABLE_VERSIONS = new Set<number>([1, 2]);
+ *  shared/separate values that leaked from the provisioner) and v2
+ *  manifests (no `email` intent field — adopted as
+ *  `{ transactional: "none", mailingList: "none" }`) on read, and the
+ *  next write bumps the file's version field to {@link MANIFEST_VERSION}. */
+const MIGRATABLE_VERSIONS = new Set<number>([1, 2, 3]);
 
 export interface ProjectManifest {
   /** Schema version. Increment when the shape changes incompatibly. */
@@ -115,6 +123,20 @@ export interface ProjectManifest {
    *  Optional for back-compat with manifests written before this
    *  field existed; readers should fall back to detection. */
   surfaces?: "fullstack" | "split" | "backend" | "static";
+  /** Captured email-intent for this project, independent of the
+   *  current `provisionServices` list. Two needs (transactional and
+   *  mailing list) can be answered independently; each carries a
+   *  provider name. "none" means the user explicitly opted out so a
+   *  re-run won't re-prompt; the field being absent or `undefined`
+   *  means the manifest predates the prompt and we should treat as
+   *  "none" on read.
+   *
+   *  Drives both provisioning (which env vars to write) and tooling
+   *  (`hatchkit update` knows whether the user wants email).
+   *
+   *  Optional for back-compat with v2 manifests — the v2→v3 migration
+   *  in readManifestWithMigrationInfo seeds an explicit default. */
+  email?: EmailIntent;
   /** S3 buckets provisioned by `hatchkit provision s3`. Names + the
    *  shared token id go in the manifest (so re-runs are idempotent and
    *  `hatchkit destroy` knows what to undo); credentials never do —
@@ -240,6 +262,7 @@ export function toManifest(
             config.localDev.domain ?? localDevDomainFromProjectDomain(config.domain) ?? undefined,
         }
       : undefined,
+    email: config.email,
   };
 }
 
@@ -339,6 +362,17 @@ export function readManifestWithMigrationInfo(projectDir: string): ReadManifestR
       obj.surfaces = after;
       migrationNotes.push(`Renamed surface mode: ${before} → ${after}`);
     }
+  }
+
+  // v2 → v3: `email` intent field appears. Seed a "none" default so the
+  // reader's caller doesn't have to nullcheck on every read, and a
+  // `hatchkit update` re-prompt isn't triggered unnecessarily by an
+  // absent value.
+  if (fileVersion !== undefined && fileVersion < 3 && obj.email === undefined) {
+    obj.email = { transactional: "none", mailingList: "none" };
+    migrationNotes.push(
+      'Seeded email intent: { transactional: "none", mailingList: "none" }',
+    );
   }
 
   // Schema-version bump (in memory only — the file is rewritten on

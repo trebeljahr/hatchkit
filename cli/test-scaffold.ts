@@ -424,6 +424,7 @@ console.log("\n── ports: no collisions across two scaffolds ─────�
 // and NEVER contains credentials or infrastructure coordinates.
 console.log("\n── manifest: sanitized fields only, no leaks ─────────────────────────────");
 {
+  const { MANIFEST_VERSION } = await import("./src/scaffold/manifest.js");
   const d = mkdtempSync(join(tmpdir(), "scaffold-manifest-"));
   try {
     const cfgWithSecrets = cfg("manifest-test", ["desktop", "mobile"]);
@@ -443,7 +444,7 @@ console.log("\n── manifest: sanitized fields only, no leaks ─────�
     const json = JSON.stringify(manifest);
     const checks: Check[] = [
       ["manifest exists", typeof manifest === "object"],
-      ["has version = 2", manifest.version === 2],
+      ["has version = MANIFEST_VERSION", manifest.version === MANIFEST_VERSION],
       ["has cliVersion", typeof manifest.cliVersion === "string"],
       ["has scaffoldedAt (ISO)", typeof manifest.scaffoldedAt === "string"],
       ["contains name", manifest.name === "manifest-test"],

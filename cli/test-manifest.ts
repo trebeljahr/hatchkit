@@ -120,6 +120,97 @@ for (const c of CASES) {
   }
 }
 
+// v2 → v3: a v2 manifest without an `email` field gets seeded with
+// { transactional: "none", mailingList: "none" } on read, and the
+// migration note explicitly mentions the seed so re-runs can surface
+// it. Existing fields stay intact.
+{
+  const dir = mkdtempSync(join(tmpdir(), `hatchkit-manifest-v2-email-`));
+  try {
+    const path = join(dir, MANIFEST_FILENAME);
+    const v2 = {
+      version: 2,
+      cliVersion: "test",
+      scaffoldedAt: "2025-01-01T00:00:00.000Z",
+      name: "test-app",
+      domain: "test.example.com",
+      features: ["websocket"],
+      mlServices: [],
+      s3Provider: "none",
+      deployTarget: "existing",
+      surfaces: "fullstack",
+      ports: { server: 3000, client: 5173 },
+    };
+    writeFileSync(path, JSON.stringify(v2, null, 2), "utf-8");
+
+    const result = readManifestWithMigrationInfo(dir);
+    assert.ok(result, "v2 → v3 read returned null");
+    assert.equal(result.manifest.version, MANIFEST_VERSION, "v2 → v3 bumps version");
+    assert.deepEqual(
+      result.manifest.email,
+      { transactional: "none", mailingList: "none" },
+      "v2 → v3 seeds email intent to none/none",
+    );
+    assert.ok(
+      result.migrationNotes.some((n) => n.includes("Seeded email intent")),
+      `missing email-seed note. got: ${JSON.stringify(result.migrationNotes)}`,
+    );
+    // Existing fields untouched
+    assert.equal(result.manifest.name, "test-app");
+    assert.deepEqual(result.manifest.features, ["websocket"]);
+
+    console.log("  ✓ v2 → v3: seeds email = { none, none } and preserves other fields");
+  } catch (err) {
+    failures.push(`  ✗ v2 → v3 email seed: ${(err as Error).message}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// v3 read: existing `email` field is left alone (not overwritten with
+// the default). This catches a regression where the seed could clobber
+// an explicit user choice.
+{
+  const dir = mkdtempSync(join(tmpdir(), `hatchkit-manifest-v3-email-keep-`));
+  try {
+    const path = join(dir, MANIFEST_FILENAME);
+    const v3 = {
+      version: 3,
+      cliVersion: "test",
+      scaffoldedAt: "2025-01-01T00:00:00.000Z",
+      name: "test-app",
+      domain: "test.example.com",
+      features: [],
+      mlServices: [],
+      s3Provider: "none",
+      deployTarget: "existing",
+      surfaces: "fullstack",
+      ports: { server: 3000, client: 5173 },
+      email: { transactional: "resend", mailingList: "listmonk-ses" },
+    };
+    writeFileSync(path, JSON.stringify(v3, null, 2), "utf-8");
+
+    const result = readManifestWithMigrationInfo(dir);
+    assert.ok(result, "v3 read returned null");
+    assert.deepEqual(
+      result.manifest.email,
+      { transactional: "resend", mailingList: "listmonk-ses" },
+      "v3 read preserves explicit email intent",
+    );
+    assert.equal(
+      result.migrated,
+      false,
+      `expected migrated=false for current-version manifest. notes: ${JSON.stringify(result.migrationNotes)}`,
+    );
+
+    console.log("  ✓ v3 read: preserves explicit email intent, no migration triggered");
+  } catch (err) {
+    failures.push(`  ✗ v3 email preservation: ${(err as Error).message}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 if (failures.length > 0) {
   console.log("\nManifest migration test failures:");
   for (const f of failures) console.log(f);
