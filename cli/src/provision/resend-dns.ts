@@ -1,36 +1,33 @@
 /*
- * Publish Resend's required DKIM + SPF DNS records into Cloudflare.
+ * Resend's DKIM-publish flow, on top of the shared
+ * `publishDnsRecordsToCloudflare` helper.
  *
- *   1. Fetch the domain (with its `records` array) from Resend.
- *   2. Resolve the closest Cloudflare zone for the domain name.
- *   3. Upsert every record (CNAME / TXT / MX). For TXT rows that look
- *      like SPF (`v=spf1` …) we merge with any existing SPF at the same
- *      name — the RFC 7208 rule is one SPF record per host, multiple
- *      records cause PermError.
- *   4. Optionally trigger Resend's verify endpoint so the domain status
- *      flips to `verified` without the user clicking around the dashboard.
+ * Resend-specific bits this module still owns:
+ *   1. Fetching the domain (with its `records` array) from Resend.
+ *   2. Mapping Resend's record shape (`name` is already FQDN; `record`
+ *      is a hint like "DKIM"/"SPF") into the generic `PublishDnsRecord`.
+ *   3. Optionally triggering Resend's verify endpoint after the upsert
+ *      pass so the domain status flips to `verified` without a
+ *      dashboard click.
  *
- * Skips records whose `status` already reports `verified`, since they
- * match in DNS by definition.
+ * Everything else — zone resolution, per-record upsert, SPF merge,
+ * created/merged tracking — lives in cloudflare-dns-publish.ts so the
+ * SES flow can reuse the same plumbing.
  */
 
-import chalk from "chalk";
 import { getDnsConfig } from "../config.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
-import { buildSpfRecord, parseSpfIncludes } from "../email/spf.js";
 import {
-  type ResendDnsRecord,
-  type ResendDomain,
-  getResendDomain,
-  verifyResendDomain,
-} from "./resend.js";
+  type CreatedDnsRecord,
+  type PublishDnsRecord,
+  publishDnsRecordsToCloudflare,
+} from "./cloudflare-dns-publish.js";
+import { type ResendDomain, getResendDomain, verifyResendDomain } from "./resend.js";
 
-export interface CreatedDnsRecord {
-  /** Cloudflare record id — what DELETE /zones/:zone/dns_records/:id needs. */
-  id: string;
-  name: string;
-  type: "TXT" | "MX" | "CNAME";
-}
+// Re-export `CreatedDnsRecord` so existing imports through this module
+// (the run-ledger code path, callers in provision/index.ts) keep
+// working without touching every call site.
+export type { CreatedDnsRecord };
 
 export interface PublishResendDnsResult {
   domain: ResendDomain;
@@ -40,14 +37,7 @@ export interface PublishResendDnsResult {
   updated: number;
   unchanged: number;
   skippedExtra: string[];
-  /** Per-record handles for everything THIS run created. Excludes updates
-   *  and unchanged rows so a later rollback only removes records hatchkit
-   *  introduced; pre-existing records (e.g. an SPF that we merged into)
-   *  stay untouched. */
   createdRecords: CreatedDnsRecord[];
-  /** TXT rows where we merged into a pre-existing record. Auto-rollback
-   *  can't safely un-merge (we don't snapshot the original includes), so
-   *  the rollback surface flags these for the operator. */
   mergedSpf: Array<{ name: string }>;
   /** Whether `verifyResendDomain` was called after the upsert pass. */
   verifyTriggered: boolean;
@@ -69,96 +59,29 @@ export async function publishResendDnsToCloudflare(
   const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
 
   const domain = await getResendDomain(domainId);
-  const zone = await cf.resolveZoneForName(domain.name);
-  if (!zone) {
-    throw new Error(
-      `No Cloudflare zone covers ${domain.name}. Add the parent zone to Cloudflare (and update registrar NS) before re-running.`,
-    );
-  }
 
-  let created = 0;
-  let updated = 0;
-  let unchanged = 0;
-  const skippedExtra: string[] = [];
-  const createdRecords: CreatedDnsRecord[] = [];
-  const mergedSpf: Array<{ name: string }> = [];
+  const records: PublishDnsRecord[] = domain.records.map((r) => ({
+    type: r.type,
+    name: r.name,
+    value: r.value,
+    priority: r.priority,
+    status: r.status,
+    label: r.record,
+    ttl: r.ttl,
+  }));
 
-  for (const record of domain.records) {
-    const fqdn = record.name; // Resend already returns the FQDN
-
-    if (record.type === "CNAME") {
-      const res = await cf.upsertRecord(zone.id, {
-        type: "CNAME",
-        name: fqdn,
-        content: record.value,
-        proxied: false,
-      });
-      tally(res);
-      if (res.created) createdRecords.push({ id: res.id, name: fqdn, type: "CNAME" });
-      log(record, fqdn, res);
-      continue;
-    }
-
-    if (record.type === "MX") {
-      if (record.priority === undefined) {
-        skippedExtra.push(`${fqdn} MX (no priority returned by Resend)`);
-        continue;
-      }
-      const res = await cf.upsertRecord(zone.id, {
-        type: "MX",
-        name: fqdn,
-        content: record.value,
-        priority: record.priority,
-      });
-      tally(res);
-      if (res.created) createdRecords.push({ id: res.id, name: fqdn, type: "MX" });
-      log(record, fqdn, res);
-      continue;
-    }
-
-    if (record.type === "TXT") {
-      const isSpf = /v=spf1/i.test(record.value);
-      if (isSpf) {
-        const { merged, sourceWasExisting } = await mergeSpf(cf, zone.id, fqdn, record.value);
-        const res = await cf.upsertRecord(zone.id, {
-          type: "TXT",
-          name: fqdn,
-          content: merged,
-        });
-        tally(res);
-        if (res.created) {
-          createdRecords.push({ id: res.id, name: fqdn, type: "TXT" });
-        } else if (sourceWasExisting && res.updated) {
-          // We touched a pre-existing SPF record — auto-rollback must
-          // NOT delete it (would yank the user's other includes).
-          mergedSpf.push({ name: fqdn });
-        }
-        log(record, fqdn, res);
-      } else {
-        const res = await cf.upsertRecord(zone.id, {
-          type: "TXT",
-          name: fqdn,
-          content: record.value,
-        });
-        tally(res);
-        if (res.created) createdRecords.push({ id: res.id, name: fqdn, type: "TXT" });
-        log(record, fqdn, res);
-      }
-      continue;
-    }
-
-    skippedExtra.push(`${fqdn} ${record.type} (unsupported record type)`);
-  }
+  const result = await publishDnsRecordsToCloudflare(records, {
+    cf,
+    domain: domain.name,
+  });
 
   let verifyTriggered = false;
   let finalStatus = domain.status;
-  if (opts.triggerVerify && created + updated > 0) {
-    const verify = await verifyResendDomain(domainId);
-    verifyTriggered = true;
-    finalStatus = verify.status;
-  } else if (opts.triggerVerify) {
-    // Already up to date — kick verify anyway, cheap and may transition
-    // a stale `pending` status to `verified` if DNS now matches.
+  if (opts.triggerVerify) {
+    // Trigger verify unconditionally when requested — cheap, and may
+    // transition a stale `pending` status to `verified` even when the
+    // current run had no writes (e.g. DNS finally propagated since
+    // the last attempt).
     const verify = await verifyResendDomain(domainId);
     verifyTriggered = true;
     finalStatus = verify.status;
@@ -166,59 +89,15 @@ export async function publishResendDnsToCloudflare(
 
   return {
     domain,
-    zoneId: zone.id,
-    zoneName: zone.name,
-    created,
-    updated,
-    unchanged,
-    skippedExtra,
-    createdRecords,
-    mergedSpf,
+    zoneId: result.zoneId,
+    zoneName: result.zoneName,
+    created: result.created,
+    updated: result.updated,
+    unchanged: result.unchanged,
+    skippedExtra: result.skippedExtra,
+    createdRecords: result.createdRecords,
+    mergedSpf: result.mergedSpf,
     verifyTriggered,
     finalStatus,
-  };
-
-  function tally(res: { created: boolean; updated: boolean }): void {
-    if (res.created) created += 1;
-    else if (res.updated) updated += 1;
-    else unchanged += 1;
-  }
-
-  function log(
-    record: ResendDnsRecord,
-    fqdn: string,
-    res: { created: boolean; updated: boolean },
-  ): void {
-    const verb = res.created ? chalk.green("+ created") : res.updated ? chalk.yellow("~ updated") : chalk.dim("· unchanged");
-    const tag = record.record ? chalk.dim(`[${record.record}] `) : "";
-    console.log(`  ${verb} ${tag}${record.type.padEnd(5)} ${fqdn}`);
-  }
-}
-
-/** Merge Resend's SPF include into any pre-existing SPF TXT at the same
- *  name. Returns the SPF string to write plus a flag indicating whether
- *  we touched a pre-existing record (so the caller can decide rollback
- *  policy — auto-delete is safe only for records hatchkit introduced). */
-async function mergeSpf(
-  cf: CloudflareApi,
-  zoneId: string,
-  fqdn: string,
-  resendSpf: string,
-): Promise<{ merged: string; sourceWasExisting: boolean }> {
-  const existing = await cf.findRecordsByName(zoneId, fqdn, "TXT");
-  const existingSpf = existing.find((r) => /^"?v=spf1/i.test(r.content));
-  const resendIncludes = parseSpfIncludes(resendSpf);
-  if (!existingSpf) {
-    return { merged: resendSpf, sourceWasExisting: false };
-  }
-  const existingIncludes = parseSpfIncludes(existingSpf.content);
-  const merged = Array.from(new Set([...existingIncludes, ...resendIncludes]));
-  const existingHasHardfail = /\s-all\b/i.test(existingSpf.content);
-  return {
-    merged: buildSpfRecord({
-      includes: merged,
-      qualifier: existingHasHardfail ? "-all" : "~all",
-    }),
-    sourceWasExisting: true,
   };
 }
