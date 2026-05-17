@@ -259,10 +259,23 @@ function recipeFor(step: LedgerStep): string | null {
       return chalk.dim(
         `# manual: delete Resend audience ${step.audience} (id ${step.audienceId}) via dashboard or API`,
       );
-    case "resendDns":
-      return chalk.dim(
-        `# manual: remove the ${step.created + step.updated} Resend DNS record(s) in Cloudflare zone ${step.zoneName} (added for ${step.domainName})`,
+    case "resendDns": {
+      // Manual-command form is informational — actual deletion runs
+      // through executeStep below. Lists exact record ids so a user
+      // doing the cleanup by hand can verify what hatchkit would have
+      // removed.
+      const lines = step.records.map(
+        (r) => `  · DELETE ${r.type.padEnd(5)} ${r.name} (id ${r.id})`,
       );
+      const mergedNote = step.mergedSpf.length
+        ? `\n  # ${step.mergedSpf.length} SPF row(s) merged into pre-existing records — leave them alone (un-merge manually if needed): ${step.mergedSpf
+            .map((m) => m.name)
+            .join(", ")}`
+        : "";
+      return chalk.dim(
+        `# rollback Resend DNS in zone ${step.zoneName} (Resend domain ${step.domainName}):\n${lines.join("\n") || "  · (no auto-deletable records)"}${mergedNote}`,
+      );
+    }
     case "github":
       return `gh repo delete ${shellEscape(step.repo)} --yes`;
     case "scaffold":
@@ -496,8 +509,14 @@ function describeStep(step: LedgerStep): string {
       return `delete Resend API key ${chalk.cyan(step.client)}`;
     case "resendAudience":
       return `delete Resend audience ${chalk.cyan(step.audience)}`;
-    case "resendDns":
-      return `restore DNS for Resend domain ${chalk.cyan(step.domainName)} in zone ${chalk.cyan(step.zoneName)}`;
+    case "resendDns": {
+      const total = step.records.length;
+      const merged = step.mergedSpf.length;
+      const auto =
+        total === 1 ? `1 record` : total === 0 ? `no records` : `${total} records`;
+      const mergedNote = merged > 0 ? `, ${merged} merged SPF skipped` : "";
+      return `delete ${chalk.cyan(auto)} in Cloudflare zone ${chalk.cyan(step.zoneName)} (Resend ${step.domainName}${mergedNote})`;
+    }
     case "tfvars":
       return `remove ${chalk.cyan(step.path)}`;
     case "coolifyEnv":
@@ -689,12 +708,31 @@ async function undoStep(
       return result === "not-found" ? "not-found" : "done";
     }
     case "resendDns": {
-      // DNS records aren't auto-rolled-back — we don't persist the
-      // per-record Cloudflare IDs, so removing them safely would require
-      // re-fetching from Cloudflare and matching by content. Surface as
-      // "skipped" so the rollback summary points the operator at the
-      // manual cleanup line emitted by `manualCommandForStep`.
-      return "skipped";
+      // Delete only the records THIS run created — `step.records` was
+      // populated from upsertRecord results where `created: true`, so
+      // we can't accidentally remove anything that pre-existed. SPF
+      // rows that were merged into pre-existing records live in
+      // `step.mergedSpf` and stay manual; un-merging without the
+      // original snapshot risks yanking the user's other includes.
+      if (step.records.length === 0) {
+        // Pure-merge step — nothing safely auto-removable.
+        return step.mergedSpf.length > 0 ? "skipped" : "not-found";
+      }
+      const dns = await getDnsConfig();
+      if (!dns?.apiToken) {
+        throw new Error("Cloudflare credentials no longer in keychain — re-add them, then retry");
+      }
+      const { CloudflareApi } = await import("../utils/cloudflare-api.js");
+      const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
+      let removed = 0;
+      let missing = 0;
+      for (const record of step.records) {
+        const res = await cf.deleteRecord(step.zoneId, record.id);
+        if (res === "deleted") removed += 1;
+        else missing += 1;
+      }
+      if (removed === 0 && missing > 0) return "not-found";
+      return "done";
     }
     case "manifest":
     case "dotenvxKeysFile":

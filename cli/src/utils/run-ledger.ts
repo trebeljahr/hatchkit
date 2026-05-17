@@ -39,13 +39,21 @@ export type LedgerStep =
   | { kind: "plausible"; project: string }
   | { kind: "resend"; client: string }
   | { kind: "resendAudience"; audience: string; audienceId: string }
+  /** DNS records hatchkit added to Cloudflare to verify a Resend sending
+   *  domain. `records` is the exhaustive list of records this run
+   *  CREATED (skipping updates and unchanged rows) so auto-rollback can
+   *  DELETE each by id without touching pre-existing rows. `mergedSpf`
+   *  is the parallel list of SPF TXTs we merged into instead of
+   *  creating — those stay manual since we don't snapshot the original
+   *  includes to un-merge against. */
   | {
       kind: "resendDns";
       domainId: string;
       domainName: string;
+      zoneId: string;
       zoneName: string;
-      created: number;
-      updated: number;
+      records: Array<{ id: string; name: string; type: "TXT" | "MX" | "CNAME" }>;
+      mergedSpf: Array<{ name: string }>;
     }
   | { kind: "tfvars"; path: string }
   | { kind: "coolifyEnv"; path: string }

@@ -2082,14 +2082,18 @@ async function executePlan(
               audience: event.audience,
               audienceId: event.audienceId,
             });
-          } else if (event.service === "resendDns" && event.created + event.updated > 0) {
+          } else if (
+            event.service === "resendDns" &&
+            (event.createdRecords.length > 0 || event.mergedSpf.length > 0)
+          ) {
             ledger.record({
               kind: "resendDns",
               domainId: event.domainId,
               domainName: event.domainName,
+              zoneId: event.zoneId,
               zoneName: event.zoneName,
-              created: event.created,
-              updated: event.updated,
+              records: event.createdRecords,
+              mergedSpf: event.mergedSpf,
             });
           } else if (event.service === "search-console") {
             if (event.dnsRecord?.created) {

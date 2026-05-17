@@ -670,14 +670,18 @@ function recordProvisionedEvent(ledger: RunLedger, event: ProvisionedEvent): voi
       audienceId: event.audienceId,
     });
   }
-  if (event.service === "resendDns" && event.created + event.updated > 0) {
+  if (
+    event.service === "resendDns" &&
+    (event.createdRecords.length > 0 || event.mergedSpf.length > 0)
+  ) {
     ledger.record({
       kind: "resendDns",
       domainId: event.domainId,
       domainName: event.domainName,
+      zoneId: event.zoneId,
       zoneName: event.zoneName,
-      created: event.created,
-      updated: event.updated,
+      records: event.createdRecords,
+      mergedSpf: event.mergedSpf,
     });
   }
   if (event.service === "s3" && event.minted) {

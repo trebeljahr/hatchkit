@@ -140,9 +140,14 @@ export type ProvisionedEvent =
       service: "resendDns";
       domainId: string;
       domainName: string;
+      zoneId: string;
       zoneName: string;
-      created: number;
-      updated: number;
+      /** Records this run CREATED — undo can DELETE these by id without
+       *  touching anything else in the zone. */
+      createdRecords: Array<{ id: string; name: string; type: "TXT" | "MX" | "CNAME" }>;
+      /** SPF rows we merged into instead of creating — auto-rollback
+       *  skips these to avoid yanking includes the user added by hand. */
+      mergedSpf: Array<{ name: string }>;
       finalStatus: string;
     }
   | {
@@ -534,9 +539,10 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
             service: "resendDns",
             domainId: resendDomain.id,
             domainName: publishRes.domain.name,
+            zoneId: publishRes.zoneId,
             zoneName: publishRes.zoneName,
-            created: publishRes.created,
-            updated: publishRes.updated,
+            createdRecords: publishRes.createdRecords,
+            mergedSpf: publishRes.mergedSpf,
             finalStatus: publishRes.finalStatus,
           });
           console.log(
@@ -546,6 +552,13 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
           );
           for (const note of publishRes.skippedExtra) {
             console.log(chalk.yellow(`  Resend DNS: skipped ${note}`));
+          }
+          for (const m of publishRes.mergedSpf) {
+            console.log(
+              chalk.dim(
+                `  Resend DNS: merged SPF include into pre-existing record at ${m.name} — auto-rollback will not touch it (manual un-merge required if you ever undo).`,
+              ),
+            );
           }
         } catch (err) {
           console.log(
