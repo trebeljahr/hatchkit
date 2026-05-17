@@ -6,6 +6,7 @@
     "local-dev-mobile",
     "commands",
     "providers",
+    "email",
     "ml-services",
     "gh-pages",
     "deployment",

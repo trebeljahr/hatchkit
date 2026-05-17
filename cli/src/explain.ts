@@ -25,7 +25,7 @@ const MODEL: ExplainModel = {
   what_it_does: [
     "Scaffolds opinionated full-stack projects (web + optional desktop/mobile + optional ML) from a starter template.",
     "Wires them up to your own infra: Hetzner (server), DNS (Cloudflare/INWX), Coolify (deploys), GitHub (repo).",
-    "Provisions per-project clients/sites in third-party services (GlitchTip errors, OpenPanel/Plausible analytics, Resend email, Email Routing, Search Console).",
+    "Provisions per-project clients/sites in third-party services (GlitchTip errors, OpenPanel/Plausible analytics, Resend or Listmonk+SES email, Email Routing, Search Console).",
     "Manages per-project dotenvx private keys in your OS keychain.",
   ],
   concepts: [
@@ -145,6 +145,10 @@ const MODEL: ExplainModel = {
     { name: "OpenPanel", role: "Privacy-friendly product analytics." },
     { name: "Plausible", role: "Privacy-friendly web analytics and dashboard sites." },
     { name: "Resend", role: "Transactional email; keys can be scoped to a sending domain." },
+    {
+      name: "Listmonk + AWS SES",
+      role: "Self-hosted mailing-list manager (Listmonk) backed by SES for delivery. Hatchkit verifies the SES sending subdomain, publishes DKIM into Cloudflare, creates per-project lists, and renders LISTMONK_/SES_SMTP_* env. Sovereign alternative to Resend.",
+    },
   ],
   state_locations: [
     {

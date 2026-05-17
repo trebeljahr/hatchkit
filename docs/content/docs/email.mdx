@@ -1,0 +1,136 @@
+---
+title: Email — Listmonk + SES
+description: Self-hosted mailing-list manager backed by AWS SES delivery. The sovereign-cheap alternative to Resend Pro for transactional sends and broadcasts.
+---
+
+Hatchkit can wire up two providers for outbound email:
+
+| Need | Resend | Listmonk + SES |
+|---|---|---|
+| Transactional sends | one API key per env | SMTP relay (direct) or Listmonk `/api/tx` |
+| Mailing list broadcasts | Audiences | Listmonk lists |
+| Subscribe / confirm / unsub UI | bring your own | Listmonk admin UI |
+| Cost (low-volume hobbyist) | €20/month entry tier | ~€0.10 per 1,000 sends + €0 Listmonk |
+| Owns IP reputation | Resend | you (via SES) |
+| Setup friction | one paste of an API key | SES + Listmonk + admin wizard |
+
+If you only need transactional sends and don't want to think about infra, Resend is the right answer. If you run more than one project from your domain, or you want a sovereign + cheap stack, Listmonk + SES is the pick.
+
+## How the stack composes
+
+```text
+                                  ┌─ Listmonk API ──┐
+your app  ─── HTTPS POST ─────────┤                 │── Listmonk UI: lists, subscribers,
+          /api/subscribers       │                 │   broadcasts, bounces
+          /api/tx (transactional)│                 │
+                                  └──────────┬──────┘
+                                             │ SMTP
+                                             ▼
+                                      AWS SES (email-smtp.<region>.amazonaws.com)
+                                      DKIM-signs + delivers
+```
+
+- SES owns IP reputation, delivery, bounce + complaint feedback.
+- Listmonk owns subscribe/confirm/broadcast/template UX.
+- The runtime app can pick either route:
+  - `LISTMONK_URL` + `LISTMONK_API_USER` + `LISTMONK_API_TOKEN` + `LISTMONK_LIST_ID` for list ops + `/api/tx` transactional.
+  - `SES_SMTP_HOST` + `SES_SMTP_USERNAME` + `SES_SMTP_PASSWORD` + `SES_FROM_EMAIL` for direct SMTP sends (bypassing Listmonk — e.g. signup confirmations that go to non-subscribers).
+
+## One-time global setup
+
+### 1. AWS SES
+
+```sh
+hatchkit config add ses
+```
+
+You'll be prompted for an AWS region (suggest `eu-west-1` for EU compliance) and an IAM access key id + secret. The credentials need:
+
+- `sesv2:CreateEmailIdentity`, `sesv2:GetEmailIdentity`, `sesv2:ListEmailIdentities`, `sesv2:DeleteEmailIdentity`
+- `sesv2:SendEmail` / `ses:SendRawEmail`
+- `sesv2:PutEmailIdentityFeedbackAttributes` (only for the bounce-webhook path)
+
+The simplest scoped policy is `AmazonSesFullAccess`. For least-privilege, copy the actions above into a custom policy.
+
+**SES sandbox mode is the default.** New AWS accounts can only send to verified recipient addresses. To send to real users you must request production access via the AWS console (one-time form, ~24h Amazon review). This is **not API-driven** — hatchkit can verify domains + derive SMTP credentials before sandbox is lifted, but you can't broadcast to real recipients until it clears.
+
+### 2. Listmonk
+
+You need a running Listmonk instance somewhere. If you already self-host one:
+
+```sh
+hatchkit config add listmonk
+```
+
+If you don't yet have one and want it on your Coolify install:
+
+```sh
+hatchkit config add listmonk --deploy
+```
+
+The `--deploy` flag prints a step-by-step walkthrough for the Coolify Listmonk service template. It is deliberately a guided manual flow — Coolify's services-from-template endpoint shape drifted across v4.x minor versions, and the next two steps after deployment are unavoidably manual anyway:
+
+1. **Open the Listmonk URL** Coolify auto-assigns. Complete the first-boot wizard — pick a superadmin username + password.
+2. **Admin → Users → New API user.** Name it `hatchkit`, grant Lists / Subscribers / TX permissions, click create. Copy the generated token.
+
+Then hatchkit prompts you for the URL + API user name + token. It validates by hitting `GET /api/lists` before storing anything.
+
+### 3. Wire SES into Listmonk's SMTP settings
+
+Listmonk delivers via SMTP, so the SES SMTP relay credentials need to land in **Listmonk's** Settings → SMTP. This step is also manual — there is no Listmonk API for updating SMTP settings, and the alternatives (direct DB write, env-var injection on the container) are fragile across Listmonk versions.
+
+After `hatchkit add <project> listmonk-ses` runs (next section), `.env.production` will hold:
+
+```env
+SES_SMTP_HOST=email-smtp.eu-west-1.amazonaws.com
+SES_SMTP_PORT=587
+SES_SMTP_USERNAME=AKIA...
+SES_SMTP_PASSWORD=<derived-from-IAM-secret>
+SES_FROM_EMAIL=noreply@mail.<projectDomain>
+```
+
+Paste those values into Listmonk → Settings → SMTP. Hit "Test connection". Save.
+
+## Per-project provisioning
+
+```sh
+hatchkit add <project> listmonk-ses
+```
+
+This runs four steps, all idempotent on re-run:
+
+1. **Verify the SES sending subdomain.** Hatchkit calls `sesv2:CreateEmailIdentity` for `mail.<projectDomain>` and gets back 3 DKIM tokens.
+2. **Publish DKIM CNAMEs into Cloudflare.** Same upsert + SPF-merge plumbing as Resend's flow. Records are tracked in the run-ledger so `hatchkit destroy <project>` can DELETE only what this run created.
+3. **Create the project's Listmonk lists.** `<project>` (live, lands in `.env.production`) and `<project>-test` (dev, lands in `.env.development`).
+4. **Render env into the server bundle.** The full `LISTMONK_*` + `SES_*` quartet. The only diff between prod and dev is which list id receives broadcasts — same pattern as Resend's audience split.
+
+SES verification flips from Pending → Verified once DNS propagates (usually under 30 min). Hatchkit doesn't poll for it — you can check status anytime with `aws sesv2 get-email-identity --email-identity mail.<projectDomain>`.
+
+## Tearing down
+
+```sh
+hatchkit remove <project> listmonk-ses
+```
+
+Removes the per-project Listmonk lists. The SES identity (`mail.<projectDomain>`) is intentionally left in place because un-verifying it requires re-publishing DKIM if you ever recreate the project. To fully destroy SES state, use `hatchkit destroy <project>` — the ledger-driven destroy honors the `sesDomain` step.
+
+## The bounce webhook (optional)
+
+For Listmonk to auto-blocklist on SES bounces/complaints:
+
+1. Create an SNS Standard topic in the same region as SES.
+2. Add an HTTPS subscription pointing at `https://<your-listmonk-url>/webhooks/service/ses`.
+3. In Listmonk → Bounces, enable the SES webhook.
+4. In SES → Verified identities → `mail.<projectDomain>` → Notifications, set the SNS topic as the Bounce + Complaint destination.
+
+Hatchkit doesn't automate this today — it's a one-time setup whose API surface varies across Coolify Caddy fronts. The flow is documented at <https://listmonk.app/docs/bounces/>.
+
+## Troubleshooting
+
+**`sesv2:CreateEmailIdentity` fails with `AccessDeniedException`** — the IAM user needs the policy listed above. Re-run `hatchkit config add ses` to repaste a key with the right policy attached.
+
+**Listmonk says `unauthorized`** — your API user's permissions are too narrow. Edit them in Admin → Users; grant Lists / Subscribers / TX. Then re-run `hatchkit config add listmonk` to repaste the (still-valid) token.
+
+**Send fails: `Email address is not verified`** — your SES account is still in sandbox mode. Request production access in the AWS console.
+
+**Send fails: `554 ... not authorized to send`** — SES SMTP credentials are derived from the IAM secret. Don't paste the IAM secret directly into Listmonk; hatchkit renders the *derived* value into `.env.production` under `SES_SMTP_PASSWORD`. Use that.

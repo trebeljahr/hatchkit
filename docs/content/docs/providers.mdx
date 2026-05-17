@@ -91,6 +91,16 @@ Configure: `hatchkit config add resend`.
 
 ---
 
+## Email — Listmonk + AWS SES
+
+The sovereign alternative to Resend. Hatchkit verifies a per-project sending subdomain on SES (`mail.<projectDomain>`), publishes the 3 DKIM CNAMEs into Cloudflare, then provisions a `<project>` (live) + `<project>-test` (dev) list in your Listmonk instance. SES handles delivery + IP reputation (~€0.10 per 1,000 sends); Listmonk owns subscribe/confirm/broadcast UI. The runtime gets a quartet of env vars covering both routes (`LISTMONK_*` for the API, `SES_SMTP_*` for direct SMTP, `SES_FROM_EMAIL` for the from-address).
+
+Configure: `hatchkit config add ses` + `hatchkit config add listmonk` (add `--deploy` to the second one to get a guided walkthrough for the Coolify Listmonk service template).
+
+See [Email — Listmonk + SES](/docs/email) for the full setup walkthrough and the unavoidable human-in-the-loop steps (SES production-access lift, Listmonk admin wizard, SMTP relay paste).
+
+---
+
 ## Error tracking — GlitchTip
 
 Hatchkit provisions a GlitchTip project and returns a DSN ready to drop into Sentry-compatible SDKs.
