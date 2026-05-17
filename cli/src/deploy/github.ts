@@ -31,7 +31,7 @@ export async function setupGitHub(config: ProjectConfig, appDir: string): Promis
   // Create GitHub repo + register `origin`, but DO NOT push yet.
   // pushInitialBranch is called by the caller after Coolify wiring
   // and Actions-secret upserts have completed.
-  const visibility = config.githubRepoVisibility ?? "private";
+  const visibility = config.githubRepoVisibility ?? "public";
   const createResult = await exec(
     "gh",
     ["repo", "create", config.name, `--${visibility}`, "--source=."],

@@ -744,7 +744,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
         presets.githubRepoVisibility,
         nonInteractive,
         () => promptGithubRepoVisibility("GitHub repo visibility:"),
-        "private",
+        "public",
       );
     }
   }
@@ -1058,7 +1058,7 @@ async function collectPagesProjectConfig(args: PagesCollectArgs): Promise<Projec
         presets.githubRepoVisibility,
         nonInteractive,
         () => promptGithubRepoVisibility("GitHub repo visibility:"),
-        "private",
+        "public",
       );
     }
   }
@@ -1288,7 +1288,7 @@ function buildCreateStepGroups(plan: ProjectOnboardingPlan, cfg: ProjectConfig):
 
 function renderGithubCreateSummary(plan: ProjectOnboardingPlan): string {
   if (!plan.repo.createGithubRepo) return "no";
-  return plan.repo.githubRepoVisibility ?? "private";
+  return plan.repo.githubRepoVisibility ?? "public";
 }
 
 /** Per-section editors — re-run the relevant prompt(s) and return an
@@ -1622,23 +1622,24 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
 
 function promptGithubRepoVisibility(
   message: string,
-  current: GitHubRepoVisibility | undefined = "private",
+  current: GitHubRepoVisibility | undefined = "public",
 ): Promise<GitHubRepoVisibility> {
   return select<GitHubRepoVisibility>({
     message,
     choices: [
       {
-        name: "Private (recommended for account repos)",
-        value: "private",
-        description: "Coolify uses a GitHub App source and GHCR pull credentials.",
-      },
-      {
-        name: "Public",
+        name: "Public (recommended — zero extra setup)",
         value: "public",
         description: "Coolify clones over HTTPS; GHCR is made public after first push.",
       },
+      {
+        name: "Private",
+        value: "private",
+        description:
+          "Needs a Coolify GitHub App source + GHCR pull credentials. Hatchkit walks you through it if missing.",
+      },
     ],
-    default: current ?? "private",
+    default: current ?? "public",
   });
 }
 

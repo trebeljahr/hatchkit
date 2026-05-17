@@ -1377,7 +1377,7 @@ async function configureGhcrForCreate(
 }
 
 function isCreatedGithubRepoPrivate(config: ProjectConfig): boolean {
-  return config.createGithubRepo && (config.githubRepoVisibility ?? "private") === "private";
+  return config.createGithubRepo && (config.githubRepoVisibility ?? "public") === "private";
 }
 
 function createProvisionServices(config: ProjectConfig): ProvisionService[] {
@@ -1530,7 +1530,7 @@ async function handleCreate(): Promise<void> {
   );
   console.log(`  Scaffold:   ${config.scaffoldRepo ? "yes" : "no"}`);
   console.log(
-    `  GitHub:     ${config.createGithubRepo ? `yes (${config.githubRepoVisibility ?? "private"})` : "no"}`,
+    `  GitHub:     ${config.createGithubRepo ? `yes (${config.githubRepoVisibility ?? "public"})` : "no"}`,
   );
   console.log(`  Install:    ${config.installDeps ? "yes (pnpm install)" : "no"}`);
   console.log(`  Deploy now: ${config.runDeployment ? "yes" : "no"}`);
