@@ -317,6 +317,22 @@ async function runScaffoldSteps(
     modifications.push("next.config.ts: output 'standalone' → 'export'");
   }
 
+  // Newsletter scaffolding — Listmonk+SES subscribe/confirm pipeline,
+  // /sub pages, and CLI sender scripts. Kept by default; stripped
+  // when the user didn't opt into the mailing-list intent.
+  const wantsNewsletter =
+    config.email?.mailingList === "listmonk-ses" && config.surfaces !== "static";
+  if (!wantsNewsletter) {
+    removeIfExists(join(outputDir, "packages/server/src/services/newsletter"));
+    removeIfExists(join(outputDir, "packages/client/src/components/subscribe-form.tsx"));
+    removeIfExists(join(outputDir, "packages/client/src/app/sub"));
+    removeIfExists(join(outputDir, "scripts/newsletter-send.ts"));
+    removeIfExists(join(outputDir, "scripts/newsletter-draft.ts"));
+    stripPackageJsonScripts(outputDir, ["newsletter:send", "newsletter:draft"]);
+    stripNewsletterFromServerApp(outputDir);
+    modifications.push("removed: newsletter (Listmonk + SES) scaffolding");
+  }
+
   // ML playground prune — remove unselected service pages.
   const allMlServices: MlService[] = [
     "background-removal",
@@ -434,6 +450,27 @@ async function runScaffoldSteps(
   }
 
   return { modifications, ports, dotenvx, localDev };
+}
+
+/** Edit packages/server/src/app.ts to drop the newsletter route import +
+ *  registration, so a project that opted out doesn't carry a dangling
+ *  import to a deleted file. Safe to call on a starter copy that
+ *  doesn't have the lines (no-op). */
+function stripNewsletterFromServerApp(outputDir: string): void {
+  const path = join(outputDir, "packages/server/src/app.ts");
+  if (!existsSync(path)) return;
+  let content = readFileSync(path, "utf-8");
+  content = content.replace(
+    /import\s+{\s*registerNewsletterRoutes\s*}\s+from\s+"\.\/services\/newsletter\/routes\.js";\n/,
+    "",
+  );
+  content = content.replace(
+    /\n\s*\/\/[^\n]*Newsletter[^\n]*\n\s*registerNewsletterRoutes\(app\);\n/,
+    "\n",
+  );
+  // Defensive fallback for the bare line if the comment shape ever drifts.
+  content = content.replace(/\n\s*registerNewsletterRoutes\(app\);\n/, "\n");
+  writeFileSync(path, content, "utf-8");
 }
 
 /** Dry run — list what would happen without touching disk. */

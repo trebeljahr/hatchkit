@@ -46,7 +46,9 @@
     "build:ios:release": "pnpm build:mobile && cap open ios",
     "build:android:release": "pnpm build:mobile && cd android && ./gradlew bundleRelease",
     "build:android:apk": "pnpm build:mobile && cd android && ./gradlew assembleRelease",
-    "mobile:assets": "capacitor-assets generate --iconBackgroundColor '#ffffff'"
+    "mobile:assets": "capacitor-assets generate --iconBackgroundColor '#ffffff'",
+    "newsletter:send": "tsx scripts/newsletter-send.ts",
+    "newsletter:draft": "tsx scripts/newsletter-draft.ts"
   },
   "devDependencies": {
     "@capacitor/assets": "^3.0.5",
@@ -57,6 +59,7 @@
     "electron-builder": "^26.8.1",
     "icon-gen": "^5.0.0",
     "mongodb": "^7.2.0",
+    "tsx": "^4.22.0",
     "typescript": "^6.0.3",
     "wait-on": "^9.0.10"
   },
