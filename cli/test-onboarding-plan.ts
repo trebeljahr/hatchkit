@@ -77,6 +77,7 @@ function adoptPlan(overrides: Partial<AdoptPlan> = {}): AdoptPlan {
     scaffoldBuildPipeline: true,
     services: ["glitchtip", "plausible"],
     pushKey: true,
+    email: { transactional: "none", mailingList: "none" },
     ...overrides,
   };
 }

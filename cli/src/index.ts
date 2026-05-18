@@ -858,16 +858,28 @@ async function handleAdd(): Promise<void> {
       return;
     }
     const { multiselect } = await import("./utils/multiselect.js");
+    // Resend / Listmonk+SES are reached via the opinionated email-intent
+    // prompt below, not the generic service multi-select. The order
+    // here is: ask email-intent first (only when at least one email
+    // provider is still addable), then the multi-select for the
+    // remaining non-email services.
+    const emailServicesAddable: ProvisionService[] = (
+      ["resend", "listmonk-ses"] as ProvisionService[]
+    ).filter((s) => addableServices.includes(s));
+    let emailIntentServices: ProvisionService[] = [];
+    if (emailServicesAddable.length > 0) {
+      const { askEmailIntent, emailIntentToProvisionServices } = await import("./prompts.js");
+      const intent = await askEmailIntent({
+        current: inferredManifest?.email,
+      });
+      emailIntentServices = emailIntentToProvisionServices(intent).filter((s) =>
+        emailServicesAddable.includes(s),
+      );
+    }
     const serviceChoices: Array<{ name: string; value: ProvisionService; checked: boolean }> = [
       { name: "GlitchTip (error tracking)", value: "glitchtip", checked: false },
       { name: "OpenPanel (product analytics)", value: "openpanel", checked: false },
       { name: "Plausible (web analytics)", value: "plausible", checked: false },
-      { name: "Resend (transactional email)", value: "resend", checked: false },
-      {
-        name: "Listmonk + SES (self-hosted mailing list + SMTP delivery)",
-        value: "listmonk-ses",
-        checked: false,
-      },
       {
         name: "S3 / R2 (per-bucket scoped credentials from .hatchkit.json)",
         value: "s3",
@@ -884,11 +896,19 @@ async function handleAdd(): Promise<void> {
         checked: false,
       },
     ];
-    services = await multiselect<ProvisionService>({
-      message: "Which services to add?",
-      choices: serviceChoices.filter((choice) => addableServices.includes(choice.value)),
-      required: true,
-    });
+    const remainingChoices = serviceChoices.filter((choice) => addableServices.includes(choice.value));
+    const extra = remainingChoices.length > 0
+      ? await multiselect<ProvisionService>({
+          message: "Other services to add?",
+          choices: remainingChoices,
+          required: emailIntentServices.length === 0,
+        })
+      : [];
+    services = [...emailIntentServices, ...extra];
+    if (services.length === 0) {
+      console.log(chalk.dim("  Nothing selected — exiting."));
+      return;
+    }
   } else if (rawService === "all") {
     services = addableServices;
     if (services.length === 0) {

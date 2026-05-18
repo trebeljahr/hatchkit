@@ -62,7 +62,18 @@ import {
   type OnboardingStepGroup,
   runProjectOnboardingReview,
 } from "./onboarding/review.js";
-import type { DeploymentMode, Feature, S3Provider, Surface } from "./prompts.js";
+import {
+  type DeploymentMode,
+  EMAIL_INTENT_NONE,
+  type EmailIntent,
+  type Feature,
+  type S3Provider,
+  type Surface,
+  askEmailIntent,
+  emailIntentToProvisionServices,
+  mergeEmailIntoProvisionServices,
+  summarizeEmailIntent,
+} from "./prompts.js";
 import { type ProvisionService, runProvision } from "./provision/index.js";
 import { readEnvKeys } from "./provision/write-env.js";
 import { detectBuildPipeline, scaffoldBuildPipeline } from "./scaffold/build-pipeline.js";
@@ -220,6 +231,12 @@ export interface AdoptPlan {
   services: ProvisionService[];
   /** Push dotenvx key to Coolify after everything's written. */
   pushKey: boolean;
+  /** Email intent — captured opinionatedly (transactional → Resend,
+   *  newsletter → Listmonk+SES, both → both). Static surfaces skip the
+   *  prompt and land here as {@link EMAIL_INTENT_NONE}. Persisted into
+   *  the manifest so downstream provisioning + future `update` /
+   *  `add` runs don't have to re-ask. */
+  email: EmailIntent;
 }
 
 export async function runAdopt(
@@ -344,6 +361,10 @@ export async function runAdopt(
     // new clients they didn't ask for. The user opens the "Provision
     // clients" row and ticks whichever they want.
     services: [],
+    // Email intent — recover from manifest (`--resume` keeps the
+    // earlier opinionated answer). First-time adopt starts at "none";
+    // the user opens the Email stepper row to opt in.
+    email: m?.email ?? EMAIL_INTENT_NONE,
     // Default the push only when there's already a Coolify app to push to.
     // When wireCoolify creates a fresh app, it sets the baseline env
     // itself (including the dotenvx key), so a separate push is
@@ -1096,6 +1117,20 @@ function buildAdoptGroups(
     {
       title: "Provisioning",
       steps: [
+        // Email row is hidden on static surfaces — there's no server
+        // to receive RESEND_API_KEY / LISTMONK_*/SES_* anyway, and the
+        // edit handler would refuse the prompt. Keeping the row out
+        // entirely avoids a dead "(none)" line in the review summary.
+        ...(plan.surfaces !== "static"
+          ? [
+              {
+                key: "email",
+                label: "Email",
+                set: true,
+                summary: summarizeEmailIntent(plan.email),
+              } satisfies AdoptStep,
+            ]
+          : []),
         {
           key: "services",
           label: "Provision clients",
@@ -1319,7 +1354,12 @@ async function editAdoptStep(
     return { ...plan, features };
   }
   if (step === "services") {
-    const services = await multiselect<ProvisionService>({
+    // Resend / Listmonk+SES are picked through the dedicated "Email"
+    // row (askEmailIntent) so the multi-select only carries the
+    // non-email entries. Carry any email providers already on the plan
+    // back in after the prompt so toggling unrelated services doesn't
+    // strip the user's email choice.
+    const edited = await multiselect<ProvisionService>({
       message: "Provision per-project clients now?",
       choices: [
         {
@@ -1338,11 +1378,6 @@ async function editAdoptStep(
           checked: plan.services.includes("plausible"),
         },
         {
-          name: "Resend (transactional email)",
-          value: "resend",
-          checked: plan.services.includes("resend"),
-        },
-        {
           name: "Email forwarding (Cloudflare Email Routing → your inbox)",
           value: "email",
           checked: plan.services.includes("email"),
@@ -1354,7 +1389,24 @@ async function editAdoptStep(
         },
       ],
     });
+    const services = [
+      ...edited,
+      ...emailIntentToProvisionServices(plan.email),
+    ].filter((s, i, arr) => arr.indexOf(s) === i);
     return { ...plan, services };
+  }
+  if (step === "email") {
+    if (plan.surfaces === "static") {
+      console.log(
+        chalk.yellow(
+          "  ⚠ Email needs a server runtime — switch surfaces to enable it.",
+        ),
+      );
+      return { ...plan, email: EMAIL_INTENT_NONE };
+    }
+    const email = await askEmailIntent({ current: plan.email });
+    const services = mergeEmailIntoProvisionServices(plan.services, email);
+    return { ...plan, email, services };
   }
   if (step === "pushKey") {
     const pushKey = await confirm({
@@ -3200,6 +3252,7 @@ function writeAdoptManifest(projectDir: string, plan: AdoptPlan): void {
     // "backend" just because there's no client/ directory in the
     // current layout.
     surfaces: plan.surfaces,
+    email: plan.email,
   };
   writeManifest(projectDir, manifest);
 }
