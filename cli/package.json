@@ -1,6 +1,6 @@
 {
   "name": "hatchkit",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "packageManager": "pnpm@10.33.2",
   "description": "Interactive CLI for scaffolding full-stack projects and provisioning observability/email clients",
   "license": "MIT",
