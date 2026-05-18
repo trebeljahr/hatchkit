@@ -791,14 +791,20 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       name: "S3 provider",
       skip: (c) => !c.features.includes("s3") || presets.s3Provider !== undefined,
       run: async (c) => {
-        const s3Provider = await select<S3Provider>({
+        // Only Cloudflare R2 has a working `hatchkit add s3` bucket
+        // provisioner today (see cli/src/provision/s3.ts) — Hetzner /
+        // AWS used to be in this list but rejected at provision time
+        // with "not yet supported". The collapsed prompt offers R2 by
+        // default and an `existing` escape hatch for users bringing
+        // their own bucket (any S3-API endpoint).
+        const initial: "r2" | "existing" =
+          c.s3Provider === "existing" ? "existing" : "r2";
+        const s3Provider = await select<"r2" | "existing">({
           message: "S3 storage provider:",
-          default: c.s3Provider !== "none" ? c.s3Provider : undefined,
+          default: initial,
           choices: [
-            { name: "Hetzner Object Storage", value: "hetzner" },
-            { name: "Cloudflare R2 (zero egress)", value: "r2" },
-            { name: "AWS S3", value: "aws" },
-            { name: "Use existing bucket", value: "existing" },
+            { name: "Cloudflare R2 (zero egress) — recommended", value: "r2" },
+            { name: "Use existing bucket (any S3-API endpoint)", value: "existing" },
           ],
         });
         return { ...c, s3Provider };
@@ -1095,7 +1101,7 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
     : uniqueProvisionServices(analyticsProviders ? [...analyticsProviders] : []);
 
   const s3Provider: S3Provider =
-    presets.s3Provider ?? (features.includes("s3") ? "hetzner" : "none");
+    presets.s3Provider ?? (features.includes("s3") ? "r2" : "none");
   const mlServices = presets.mlServices ?? [];
   const gpuPlatforms =
     presets.gpuPlatforms ?? (mlServices.length > 0 ? ["modal" as const] : undefined);
