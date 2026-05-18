@@ -56,6 +56,9 @@ const baseInput = {
   listmonkApiToken: "tok-abc",
   liveListId: 11,
   testListId: 22,
+  txTemplateId: 33,
+  campaignTemplateId: 44,
+  listmonkFrom: "Playtiao <noreply@mail.playtiao.com>",
   smtpHost: "email-smtp.eu-west-1.amazonaws.com",
   smtpPort: 587,
   smtpUsername: "AKIAEXAMPLE",
@@ -89,6 +92,10 @@ expect("emits every required key the runtime needs", () => {
     "LISTMONK_API_USER=",
     "LISTMONK_API_TOKEN=",
     "LISTMONK_LIST_ID=",
+    "LISTMONK_TEST_LIST_ID=",
+    "LISTMONK_TX_TEMPLATE_ID=",
+    "LISTMONK_CAMPAIGN_TEMPLATE_ID=",
+    "LISTMONK_FROM=",
     "SES_SMTP_HOST=",
     "SES_SMTP_PORT=",
     "SES_SMTP_USERNAME=",
@@ -105,6 +112,24 @@ expect("emits every required key the runtime needs", () => {
       env.dev.some((l) => l.startsWith(prefix)),
       `missing key ${prefix} in dev env`,
     );
+  }
+});
+
+expect("LISTMONK_TEST_LIST_ID stays pinned to the test list in BOTH surfaces", () => {
+  const env = renderListmonkSesEnv(baseInput);
+  assert.ok(env.prod.includes("LISTMONK_TEST_LIST_ID=22"));
+  assert.ok(env.dev.includes("LISTMONK_TEST_LIST_ID=22"));
+});
+
+expect("template ids + LISTMONK_FROM are identical across prod and dev", () => {
+  const env = renderListmonkSesEnv(baseInput);
+  for (const line of [
+    "LISTMONK_TX_TEMPLATE_ID=33",
+    "LISTMONK_CAMPAIGN_TEMPLATE_ID=44",
+    "LISTMONK_FROM=Playtiao <noreply@mail.playtiao.com>",
+  ]) {
+    assert.ok(env.prod.includes(line), `prod missing ${line}`);
+    assert.ok(env.dev.includes(line), `dev missing ${line}`);
   }
 });
 

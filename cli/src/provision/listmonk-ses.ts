@@ -34,9 +34,12 @@
 import {
   type ListmonkAuth,
   type ListmonkList,
+  type ListmonkTemplate,
   applySesSmtpToListmonk,
   createListmonkList,
+  createListmonkTemplate,
   listListmonkLists,
+  listListmonkTemplates,
 } from "./listmonk.js";
 import {
   type CreatedDnsRecord,
@@ -91,6 +94,16 @@ export interface ListmonkSesProvisionEvents {
     kind: "live" | "test";
     createdThisRun: boolean;
   }) => void;
+  /** Fires after each Listmonk template (tx + campaign) is created or
+   *  detected. The runtime needs both ids in env so the ledger has to
+   *  know which we minted this run for the undo path. */
+  onListmonkTemplate?: (event: {
+    listmonkUrl: string;
+    templateName: string;
+    templateId: number;
+    kind: "tx" | "campaign";
+    createdThisRun: boolean;
+  }) => void;
   /** Fires after the DKIM CNAMEs are upserted into Cloudflare.
    *  `createdRecords` is the per-record handle list for everything
    *  THIS run created — auto-rollback uses it to DELETE only what we
@@ -108,8 +121,15 @@ export interface ListmonkSesProvisionResult {
   ses: SesIdentity;
   smtp: ReturnType<typeof sesSmtpCredentials>;
   fromEmail: string;
+  /** `"<projectName> <noreply@mail.<domain>>"` — the value Listmonk's
+   *  campaign send wants in its `from_email` field and the runtime reads
+   *  as `LISTMONK_FROM`. Distinct from `fromEmail` (the bare SMTP
+   *  envelope sender, exported as `SES_FROM_EMAIL`). */
+  fromDisplay: string;
   liveList: ListmonkList;
   testList: ListmonkList;
+  txTemplate: ListmonkTemplate;
+  campaignTemplate: ListmonkTemplate;
   dnsPublish: {
     zoneId: string;
     zoneName: string;
@@ -214,6 +234,30 @@ export async function provisionListmonkSesForProject(
     listmonkUrl,
   );
 
+  // 4b. Listmonk templates — tx + campaign. Same idempotency contract as
+  //     lists: look up by `<projectName>-tx` / `<projectName>-campaign`
+  //     first, only POST when missing. Both default bodies are minimal
+  //     passthrough wrappers — the calling app supplies the real HTML
+  //     and we only need an id the runtime can hand to `/api/tx` and
+  //     `/api/campaigns`.
+  const existingTemplates = await listListmonkTemplates(opts.listmonkAuth);
+  const txTemplate = await getOrCreateTemplate(
+    `${opts.projectName}-tx`,
+    "tx",
+    existingTemplates,
+    opts,
+    events,
+    listmonkUrl,
+  );
+  const campaignTemplate = await getOrCreateTemplate(
+    `${opts.projectName}-campaign`,
+    "campaign",
+    existingTemplates,
+    opts,
+    events,
+    listmonkUrl,
+  );
+
   // 5. SMTP credentials are deterministic from the SES IAM secret +
   //    region — derive them now so the env-render step has the values
   //    without a second round-trip.
@@ -263,8 +307,11 @@ export async function provisionListmonkSesForProject(
     ses: identity,
     smtp,
     fromEmail,
+    fromDisplay: `${opts.projectName} <${fromEmail}>`,
     liveList,
     testList,
+    txTemplate,
+    campaignTemplate,
     dnsPublish,
     smtpApplied,
   };
@@ -304,6 +351,65 @@ async function getOrCreateList(
   return created;
 }
 
+/** Minimal passthrough bodies for the seeded templates. The calling app
+ *  supplies the real HTML at send-time — these scaffolds only have to be
+ *  valid Listmonk Go templates that render the runtime's input. The tx
+ *  template's subject expects `{{ .Tx.Data.subject }}` and the body
+ *  expects `{{ .Tx.Data.body | safeHTML }}`; the campaign template is a
+ *  pure passthrough so the digest HTML the app already wraps lands
+ *  verbatim with per-recipient `{{ UnsubscribeURL }}` substitution. */
+const DEFAULT_TX_TEMPLATE_SUBJECT = "{{ .Tx.Data.subject }}";
+const DEFAULT_TX_TEMPLATE_BODY = `<!doctype html>
+<html>
+  <body>
+    {{ .Tx.Data.body | safeHTML }}
+  </body>
+</html>
+`;
+const DEFAULT_CAMPAIGN_TEMPLATE_BODY = `<!doctype html>
+<html>
+  <body>
+    {{ template "content" . }}
+  </body>
+</html>
+`;
+
+async function getOrCreateTemplate(
+  name: string,
+  kind: "tx" | "campaign",
+  existing: ListmonkTemplate[],
+  opts: ListmonkSesProvisionOptions,
+  events: ListmonkSesProvisionEvents,
+  listmonkUrl: string,
+): Promise<ListmonkTemplate> {
+  const found = existing.find((t) => t.name === name && t.type === kind);
+  if (found) {
+    events.onListmonkTemplate?.({
+      listmonkUrl,
+      templateName: name,
+      templateId: found.id,
+      kind,
+      createdThisRun: false,
+    });
+    return found;
+  }
+  const created = await createListmonkTemplate({
+    name,
+    type: kind,
+    subject: kind === "tx" ? DEFAULT_TX_TEMPLATE_SUBJECT : "",
+    body: kind === "tx" ? DEFAULT_TX_TEMPLATE_BODY : DEFAULT_CAMPAIGN_TEMPLATE_BODY,
+    auth: opts.listmonkAuth,
+  });
+  events.onListmonkTemplate?.({
+    listmonkUrl,
+    templateName: name,
+    templateId: created.id,
+    kind,
+    createdThisRun: true,
+  });
+  return created;
+}
+
 /** Hatchkit only knows the Listmonk URL via `ensureListmonk`. When the
  *  caller doesn't pass an override the orchestrator pulls the URL from
  *  the global config at first use; this helper is the fallback for
@@ -325,6 +431,14 @@ export interface RenderListmonkSesEnvOptions {
   listmonkApiToken: string;
   liveListId: number;
   testListId: number;
+  txTemplateId: number;
+  campaignTemplateId: number;
+  /** Listmonk-style display sender — `"<name> <email>"`. Used as
+   *  `LISTMONK_FROM` for `/api/campaigns`'s `from_email` field. Distinct
+   *  from `fromEmail` (the SMTP-level envelope sender exported as
+   *  `SES_FROM_EMAIL`); the two can drift when the project's display name
+   *  differs from the bare mailbox. */
+  listmonkFrom: string;
   smtpHost: string;
   smtpPort: number;
   smtpUsername: string;
@@ -335,8 +449,13 @@ export interface RenderListmonkSesEnvOptions {
 
 /** Render the env quartets for prod vs dev. Both surfaces share
  *  identical LISTMONK_URL / LISTMONK_API_USER / LISTMONK_API_TOKEN /
- *  SES_SMTP_* values; the only thing that differs is which list id
- *  receives broadcasts. Mirrors the Resend audience-split pattern. */
+ *  LISTMONK_TEST_LIST_ID / LISTMONK_TX_TEMPLATE_ID /
+ *  LISTMONK_CAMPAIGN_TEMPLATE_ID / LISTMONK_FROM / SES_SMTP_* values; the
+ *  only thing that differs is which list id lands in `LISTMONK_LIST_ID`
+ *  (live in prod, test in dev — mirrors Resend's audience-split pattern).
+ *  `LISTMONK_TEST_LIST_ID` is written explicitly in both surfaces so the
+ *  app can send to the test audience from prod when an opt-in flow needs
+ *  to rehearse without depending on `NODE_ENV` to swap the bucket. */
 export function renderListmonkSesEnv(opts: RenderListmonkSesEnvOptions): {
   prod: string[];
   dev: string[];
@@ -345,6 +464,10 @@ export function renderListmonkSesEnv(opts: RenderListmonkSesEnvOptions): {
     `LISTMONK_URL=${opts.listmonkUrl}`,
     `LISTMONK_API_USER=${opts.listmonkApiUser}`,
     `LISTMONK_API_TOKEN=${opts.listmonkApiToken}`,
+    `LISTMONK_TEST_LIST_ID=${opts.testListId}`,
+    `LISTMONK_TX_TEMPLATE_ID=${opts.txTemplateId}`,
+    `LISTMONK_CAMPAIGN_TEMPLATE_ID=${opts.campaignTemplateId}`,
+    `LISTMONK_FROM=${opts.listmonkFrom}`,
     `SES_SMTP_HOST=${opts.smtpHost}`,
     `SES_SMTP_PORT=${opts.smtpPort}`,
     `SES_SMTP_USERNAME=${opts.smtpUsername}`,

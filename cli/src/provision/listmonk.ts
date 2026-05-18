@@ -15,6 +15,9 @@
  *   DELETE /api/lists/{id}
  *   POST /api/subscribers
  *   POST /api/tx
+ *   GET  /api/templates
+ *   POST /api/templates
+ *   DELETE /api/templates/{id}
  */
 
 import { ensureListmonk } from "../config.js";
@@ -148,6 +151,69 @@ export async function deleteListmonkListById(
   if (res.status === 404) return "not-found";
   if (!res.ok) {
     throw new Error(`Listmonk delete list ${id} failed: HTTP ${res.status} ${await res.text()}`);
+  }
+  return "deleted";
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Templates — passthrough templates for transactional + campaign sends.
+//
+// The runtime needs two templates configured in Listmonk:
+//   · tx template: subject `{{ .Tx.Data.subject }}`, body renders
+//     `{{ .Tx.Data.body | safeHTML }}` so the calling app can pass
+//     pre-rendered subject + HTML through `POST /api/tx`.
+//   · campaign template: a passthrough wrapper `{{ template "content" . }}`
+//     so the digest HTML the app already composed is broadcast verbatim
+//     with Listmonk's per-recipient `{{ UnsubscribeURL }}` substitution.
+//
+// Both are minimal HTML scaffolds — the calling app supplies the real
+// markup. We seed them on first provision and reuse them on re-runs.
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface ListmonkTemplate {
+  id: number;
+  name: string;
+  type: "campaign" | "tx" | "campaign_visual";
+  subject?: string;
+  body?: string;
+}
+
+export async function listListmonkTemplates(
+  authOverride?: ListmonkAuth,
+): Promise<ListmonkTemplate[]> {
+  const auth = authOverride ?? (await ensureListmonk());
+  return listmonkFetch<ListmonkTemplate[]>(auth, "GET", "/api/templates");
+}
+
+export async function createListmonkTemplate(params: {
+  name: string;
+  type: "campaign" | "tx";
+  subject?: string;
+  body: string;
+  auth?: ListmonkAuth;
+}): Promise<ListmonkTemplate> {
+  const auth = params.auth ?? (await ensureListmonk());
+  return listmonkFetch<ListmonkTemplate>(auth, "POST", "/api/templates", {
+    name: params.name,
+    type: params.type,
+    subject: params.subject ?? "",
+    body: params.body,
+  });
+}
+
+/** Delete a single template by id. 404-tolerant. Used by ledger rollback. */
+export async function deleteListmonkTemplateById(
+  id: number,
+  authOverride?: ListmonkAuth,
+): Promise<DeleteResult> {
+  const auth = authOverride ?? (await ensureListmonk());
+  const url = `${normalizeListmonkUrl(auth.url)}/api/templates/${id}`;
+  const res = await fetch(url, { method: "DELETE", headers: authHeaders(auth) });
+  if (res.status === 404) return "not-found";
+  if (!res.ok) {
+    throw new Error(
+      `Listmonk delete template ${id} failed: HTTP ${res.status} ${await res.text()}`,
+    );
   }
   return "deleted";
 }
