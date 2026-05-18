@@ -7,6 +7,25 @@ Hatchkit treats GPU-backed inference as a first-class feature. Pick which models
 
 ---
 
+## Licensing
+
+Hatchkit's ML service wrapper code ships under this repo's MIT license. Model weights are not relicensed by Hatchkit: each downloaded model keeps its upstream license, and you should review those terms before shipping a product that uses the service.
+
+| Service name | Upstream model | Upstream license | Link to upstream license |
+|---|---|---|---|
+| `3d-sam-objects` | SAM 3D Objects (`facebook/sam-3d-objects`) | SAM License | [SAM 3D Objects LICENSE](https://huggingface.co/facebook/sam-3d-objects/blob/main/LICENSE) |
+| `3d-sam-body` | SAM 3D Body (`facebook/sam-3d-body`) | SAM License | [SAM 3D Body LICENSE](https://github.com/facebookresearch/sam-3d-body/blob/main/LICENSE) |
+| `3d-hunyuan` | Hunyuan3D 2.1 (`tencent/Hunyuan3D-2.1`) | Tencent Hunyuan 3D 2.1 Community License | [Hunyuan3D 2.1 LICENSE](https://huggingface.co/tencent/Hunyuan3D-2.1/blob/main/LICENSE) |
+| `3d-trellis` | TRELLIS 2 (`microsoft/TRELLIS-2-image-large`) | MIT | [TRELLIS.2 LICENSE](https://github.com/microsoft/TRELLIS.2/blob/main/LICENSE) |
+| `3d-extraction` | TripoSR (`stabilityai/TripoSR`) | MIT | [TripoSR LICENSE](https://github.com/VAST-AI-Research/TripoSR/blob/main/LICENSE) |
+| `image-recognition` | CLIP ViT-L/14 (`openai/clip-vit-large-patch14`) | MIT | [CLIP LICENSE](https://github.com/openai/CLIP/blob/main/LICENSE) |
+| `subtitles` | Whisper large-v3 (`openai-whisper` `large-v3`) | MIT | [Whisper LICENSE](https://github.com/openai/whisper/blob/main/LICENSE) |
+| `background-removal` | TBD (`rembg` `birefnet-general` alias; service does not pin an upstream weight repo) | TBD | TBD |
+
+`custom-hf` is user-selected rather than a fixed template under `services/ml/`; its model weights carry the license of the Hugging Face model ID you choose. If you override any service's runtime model parameter, check the selected model's license separately.
+
+---
+
 ## 3D generation
 
 Single image → 3D mesh (GLB). Five options — pick by quality, license, and intended product category.
@@ -41,7 +60,7 @@ Single image → 3D mesh (GLB). Five options — pick by quality, license, and i
 |---|---|---|
 | `image-recognition` | CLIP | image → labels + scores |
 | `subtitles` | Whisper large-v3 | audio / video → SRT / VTT |
-| `background-removal` | RMBG-2.0 | image → RGBA with alpha |
+| `background-removal` | rembg `birefnet-general` | image → RGBA with alpha |
 | `custom-hf` | _any HuggingFace model_ | configurable per use case |
 
 For `custom-hf`, hatchkit prompts for a HuggingFace model ID (e.g. `runwayml/stable-diffusion-v1-5`) and deploys via the Hugging Face Inference Endpoints API.
