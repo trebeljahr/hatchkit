@@ -198,6 +198,17 @@ git clone https://github.com/trebeljahr/hatchkit.git
 
 ---
 
+## Related tools
+
+Hatchkit handles scaffolding, providers, infrastructure, and deployment. These sibling tools cover asset and naming work that often happens before or beside a Hatchkit project.
+
+- [`conv3d`](https://github.com/trebeljahr/conv3d) — converts FBX, OBJ, and glTF assets to GLB and can emit typed React Three Fiber components for 3D, game, or asset-heavy starters.
+- [`sprite-tools`](https://github.com/trebeljahr/sprite-tools) — builds game-ready 2D sprite assets with collision polygons, pivots, animation tags, palettes, atlases, and exports.
+- [`name-checker`](https://github.com/trebeljahr/name-checker) — checks candidate names across trademarks, domains, socials, app stores, package registries, and code hosts before launch setup.
+- [`gamedev-asset-library`](https://github.com/trebeljahr/gamedev) — catalogs free, permissively licensed game assets for Hatchkit games, prototypes, R3F scenes, and ML-backed asset workflows.
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
