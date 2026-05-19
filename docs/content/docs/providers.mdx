@@ -10,13 +10,41 @@ Hatchkit talks to a handful of external systems. Every one is optional until a c
 | Where | What |
 |---|---|
 | OS keychain (macOS Keychain / libsecret) | All tokens + secrets, scoped under the `hatchkit` service. |
-| `~/.config/hatchkit/config.json` | Non-sensitive metadata — URLs, user IDs, region hints, provider status. Override with `HATCHKIT_CONF_DIR`. |
+| Default config file | Non-sensitive metadata — URLs, user IDs, region hints, provider status. Run `hatchkit status --json` to see `configPath`; override the directory with `HATCHKIT_CONF_DIR`. |
 
 Re-check everything:
 
 ```bash
 hatchkit config   # status
 hatchkit doctor   # live API check
+```
+
+## Config directory override
+
+`HATCHKIT_CONF_DIR` points Hatchkit at a different config directory. When it is
+set, Hatchkit reads and writes `$HATCHKIT_CONF_DIR/config.json`; cached
+provisioned env blocks stay beside it under
+`$HATCHKIT_CONF_DIR/provisioned/<project>.{dev,prod}.env`. Secrets do not move:
+provider tokens and private keys still live in the OS keychain under the
+`hatchkit` service.
+
+Use it for isolated test state, CI jobs, demos, or separate local workspaces
+where you do not want commands to read or update your normal provider metadata
+and assigned-port registry.
+
+Default: unset. Without an override, Hatchkit uses the OS config directory from
+the `conf` package for project `hatchkit`: on macOS,
+`~/Library/Preferences/hatchkit-nodejs/config.json`; on Linux,
+`$XDG_CONFIG_HOME/hatchkit-nodejs/config.json` or
+`~/.config/hatchkit-nodejs/config.json`; on Windows,
+`%APPDATA%\hatchkit-nodejs\Config\config.json`.
+
+Example:
+
+```bash
+export HATCHKIT_CONF_DIR="$PWD/.hatchkit-conf"
+hatchkit status --json
+hatchkit setup
 ```
 
 ---

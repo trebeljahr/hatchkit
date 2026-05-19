@@ -35,7 +35,7 @@ hatchkit setup
 This walks through every credential hatchkit knows about and stores:
 
 - **Tokens** → your OS keychain (macOS Keychain, libsecret on Linux) under the `hatchkit` service.
-- **Metadata** (URLs, user IDs, non-secret IDs) → `~/.config/hatchkit/config.json` (or `$HATCHKIT_CONF_DIR`).
+- **Metadata** (URLs, user IDs, non-secret IDs) → Hatchkit's config file; see [Config directory override](./providers#config-directory-override) for isolated state with `HATCHKIT_CONF_DIR`.
 
 Skip anything you don't need right now — you'll be prompted on first use. At any time you can re-check with:
 
