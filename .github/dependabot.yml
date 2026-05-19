@@ -4,6 +4,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
     labels:
       - "dependencies"
       - "github-actions"
@@ -12,6 +13,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
     labels:
       - "dependencies"
 
@@ -19,6 +24,10 @@ updates:
     directory: "/cli"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
     labels:
       - "dependencies"
 
@@ -26,6 +35,10 @@ updates:
     directory: "/docs"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
     labels:
       - "dependencies"
 
@@ -33,6 +46,10 @@ updates:
     directory: "/mcp"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
     labels:
       - "dependencies"
 
@@ -40,6 +57,10 @@ updates:
     directory: "/packages/dev-plugin-next"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
     labels:
       - "dependencies"
 
@@ -47,6 +68,10 @@ updates:
     directory: "/packages/dev-plugin-vite"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
     labels:
       - "dependencies"
 
@@ -54,6 +79,10 @@ updates:
     directory: "/packages/dev-shared"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
     labels:
       - "dependencies"
 
@@ -61,5 +90,9 @@ updates:
     directory: "/starter"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
     labels:
       - "dependencies"
