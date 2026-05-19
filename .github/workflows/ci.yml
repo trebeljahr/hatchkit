@@ -38,6 +38,29 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: JSON smoke tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export HATCHKIT_CONF_DIR
+          HATCHKIT_CONF_DIR="$(mktemp -d)"
+          trap 'rm -rf "$HATCHKIT_CONF_DIR"' EXIT
+
+          pnpm --filter @hatchkit/dev-shared run build
+
+          hatchkit() {
+            pnpm --filter hatchkit exec tsx src/index.ts "$@"
+          }
+
+          parse_json() {
+            node -e 'JSON.parse(require("fs").readFileSync(0, "utf8"))'
+          }
+
+          hatchkit status --json | parse_json
+          hatchkit doctor --json | parse_json
+          hatchkit explain --json | parse_json
+
       - name: Typecheck
         run: pnpm --filter hatchkit run typecheck
 
