@@ -9,6 +9,11 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 ### Added
 
 - Added GitHub community health files, issue templates, release-note config, Dependabot config, and package metadata so the repository is easier to evaluate and contribute to.
+
+## 0.2.13
+
+### Added
+
 - Added Listmonk newsletter subscribe/confirm handlers plus newsletter send and draft scripts.
 - Added an opinionated email intent prompt for choosing Resend transactional email or Listmonk+SES newsletters.
 - Added an opinionated S3 prompt that defaults new projects to Cloudflare R2 while preserving existing-storage setup.
@@ -16,4 +21,4 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 
 ## 0.1.47
 
-- Current published CLI version.
+- Previous published CLI version.

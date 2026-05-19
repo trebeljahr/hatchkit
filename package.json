@@ -34,6 +34,7 @@
     "create": "pnpm --filter hatchkit run start",
     "typecheck": "pnpm --filter hatchkit run typecheck",
     "install-local": "pnpm --filter hatchkit run install-local",
+    "changelog": "pnpm --filter hatchkit run changelog",
     "release": "pnpm --filter hatchkit run release",
     "release:patch": "pnpm --filter hatchkit run release:patch",
     "release:minor": "pnpm --filter hatchkit run release:minor",
