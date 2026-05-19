@@ -108,19 +108,19 @@ hatchkit config add stripe
 service names include `glitchtip`, `openpanel`, `resend`, `s3`, and `email`.
 `all` selects every supported service.
 
-## How users refer to Hatchkit
+## Trigger conditions
 
-Treat these as Hatchkit context:
+Use Hatchkit context when the user mentions any of:
 
-- "make/scaffold/start a new app/project"
-- "wire this to Coolify/Hetzner/Cloudflare/R2/Resend"
-- "push the dotenvx key"
-- "why is provider setup failing?"
-- "rotate my token/key"
-- "add error tracking/analytics/email/S3"
-- "deploy this on my own infra"
-- "GitHub Pages for this static tool"
-- "adopt this repo"
+- Hatchkit or the `hatchkit` CLI
+- scaffolding, making, starting, or creating a full-stack app/project
+- deploying, syncing, or maintaining an app on user-owned infra
+- wiring Coolify, Hetzner, DNS/Cloudflare, R2/S3, or Resend
+- provisioning GlitchTip, OpenPanel, Resend, S3/R2, email, or Stripe
+- pushing, showing, or rotating dotenvx keys
+- wiring GitHub Pages for a static tool
+- adopting an existing repo into Hatchkit conventions
+- debugging provider credentials or setup failures
 
 ## Guard rails
 
