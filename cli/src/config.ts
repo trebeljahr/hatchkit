@@ -1403,7 +1403,10 @@ export async function ensureGlitchtip(): Promise<GlitchtipConfig> {
         url: (
           await input({
             message: "GlitchTip base URL:",
-            default: s.url || existing?.url || (rootForGlitchtip ? `https://glitchtip.${rootForGlitchtip}` : ""),
+            default:
+              s.url ||
+              existing?.url ||
+              (rootForGlitchtip ? `https://glitchtip.${rootForGlitchtip}` : ""),
             validate: (v) => validateUrl(v.trim()),
           })
         ).trim(),
@@ -1513,7 +1516,10 @@ export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
         url: (
           await input({
             message: "OpenPanel dashboard URL:",
-            default: s.url || existing?.url || (rootForOpenpanel ? `https://analytics.${rootForOpenpanel}` : ""),
+            default:
+              s.url ||
+              existing?.url ||
+              (rootForOpenpanel ? `https://analytics.${rootForOpenpanel}` : ""),
             validate: (v) => validateUrl(v.trim()),
           })
         ).trim(),
@@ -1897,9 +1903,7 @@ async function guideCoolifyListmonkDeploy(): Promise<void> {
     return;
   }
   const base = coolify.url.replace(/\/$/, "");
-  console.log(
-    chalk.bold("\n  ── Deploy Listmonk on Coolify ────────────────────────────\n"),
-  );
+  console.log(chalk.bold("\n  ── Deploy Listmonk on Coolify ────────────────────────────\n"));
   console.log(
     [
       `  1. Open ${chalk.cyan(`${base}/`)}`,
@@ -1941,12 +1945,7 @@ export async function ensureSes(): Promise<SesConfig> {
   const existingKeyId = await getSecret(SECRET_KEYS.sesAccessKeyId);
   const existingSecret = await getSecret(SECRET_KEYS.sesSecretAccessKey);
 
-  if (
-    existing?.status === "configured" &&
-    existing.region &&
-    existingKeyId &&
-    existingSecret
-  ) {
+  if (existing?.status === "configured" && existing.region && existingKeyId && existingSecret) {
     return { ...existing, accessKeyId: existingKeyId, secretAccessKey: existingSecret };
   }
 

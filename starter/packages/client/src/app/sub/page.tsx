@@ -14,7 +14,7 @@ export default function SubscribePage() {
       <header className="mb-8">
         <h1 className="text-3xl md:text-4xl font-semibold">Subscribe</h1>
         <p className="mt-3 text-gray-600">
-          Drop your email below. We'll send a confirmation link to verify the address — no list
+          Drop your email below. We will send a confirmation link to verify the address — no list
           membership is created until you click it.
         </p>
       </header>

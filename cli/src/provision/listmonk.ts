@@ -87,11 +87,7 @@ interface ListmonkListsResponse {
 
 export async function listListmonkLists(authOverride?: ListmonkAuth): Promise<ListmonkList[]> {
   const auth = authOverride ?? (await ensureListmonk());
-  const data = await listmonkFetch<ListmonkListsResponse>(
-    auth,
-    "GET",
-    "/api/lists?per_page=all",
-  );
+  const data = await listmonkFetch<ListmonkListsResponse>(auth, "GET", "/api/lists?per_page=all");
   return data.results ?? [];
 }
 

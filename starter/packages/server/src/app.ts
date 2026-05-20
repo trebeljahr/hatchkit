@@ -1,4 +1,4 @@
-import express from "express";
+import express, { type RequestHandler } from "express";
 import helmet from "helmet";
 import cors from "cors";
 import morgan from "morgan";
@@ -55,13 +55,11 @@ export function createApp() {
   app.use(morgan(env.isProduction ? "combined" : "dev"));
 
   // ── 5. tRPC ────────────────────────────────────────────────────────
-  app.use(
-    "/api/trpc",
-    createExpressMiddleware({
-      router: appRouter,
-      createContext,
-    }),
-  );
+  const trpcMiddleware = createExpressMiddleware({
+    router: appRouter,
+    createContext,
+  }) as RequestHandler;
+  app.use("/api/trpc", trpcMiddleware);
 
   // ── 5b. Newsletter (Listmonk + SES double-opt-in subscribe + confirm)
   registerNewsletterRoutes(app);

@@ -4,7 +4,11 @@
     "rootDir": "./src",
     "outDir": "./dist",
     "declaration": false,
-    "declarationMap": false
+    "declarationMap": false,
+    "paths": {
+      "@starter/shared": ["../shared/src/index.ts"],
+      "@starter/shared/*": ["../shared/src/*"]
+    }
   },
   "include": ["src"],
   "references": [

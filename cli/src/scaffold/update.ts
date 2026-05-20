@@ -214,8 +214,7 @@ export async function runUpdate(
   // next.config wrap, package.json dep) is identical regardless of
   // whether the project picked it up at scaffold or via this retrofit.
   if (localDevEnabled) {
-    const devPort =
-      manifest.surfaces === "backend" ? manifest.ports.server : manifest.ports.client;
+    const devPort = manifest.surfaces === "backend" ? manifest.ports.server : manifest.ports.client;
     const { enableProjectLocalDev } = await import("../dev-setup.js");
     const { localDevUrl } = await import("@hatchkit/dev-shared");
     await enableProjectLocalDev({

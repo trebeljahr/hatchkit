@@ -331,10 +331,8 @@ export async function runAdopt(
     // best-guess fallback for the first-ever adopt.
     features: m?.features ?? state.features,
     surfaces: inferredSurfaces,
-    serverDir:
-      inferredSurfaces === "static" ? undefined : (state.serverDir ?? state.projectDir),
-    clientDir:
-      inferredSurfaces === "backend" ? undefined : (state.clientDir ?? state.projectDir),
+    serverDir: inferredSurfaces === "static" ? undefined : (state.serverDir ?? state.projectDir),
+    clientDir: inferredSurfaces === "backend" ? undefined : (state.clientDir ?? state.projectDir),
     bootstrapDotenvx: !state.prodEnvIsEncrypted,
     setupGitHub: !state.gitRemoteUrl,
     wireCoolify: !state.coolifyAppMatch,
@@ -1224,9 +1222,7 @@ async function editAdoptStep(
     // can't host a backend). Snap deploymentMode back to coolify in
     // that case so the user doesn't keep an invalid combo.
     const nextDeploymentMode: AdoptDeploymentMode =
-      plan.deploymentMode === "gh-pages" && next !== "static"
-        ? "coolify"
-        : plan.deploymentMode;
+      plan.deploymentMode === "gh-pages" && next !== "static" ? "coolify" : plan.deploymentMode;
     if (plan.deploymentMode === "gh-pages" && next !== "static") {
       console.log(
         chalk.yellow(
@@ -1239,13 +1235,9 @@ async function editAdoptStep(
       surfaces: next,
       deploymentMode: nextDeploymentMode,
       serverDir:
-        next === "static"
-          ? undefined
-          : (plan.serverDir ?? state.serverDir ?? state.projectDir),
+        next === "static" ? undefined : (plan.serverDir ?? state.serverDir ?? state.projectDir),
       clientDir:
-        next === "backend"
-          ? undefined
-          : (plan.clientDir ?? state.clientDir ?? state.projectDir),
+        next === "backend" ? undefined : (plan.clientDir ?? state.clientDir ?? state.projectDir),
     };
   }
   if (step === "deploymentMode") {
@@ -1389,19 +1381,14 @@ async function editAdoptStep(
         },
       ],
     });
-    const services = [
-      ...edited,
-      ...emailIntentToProvisionServices(plan.email),
-    ].filter((s, i, arr) => arr.indexOf(s) === i);
+    const services = [...edited, ...emailIntentToProvisionServices(plan.email)].filter(
+      (s, i, arr) => arr.indexOf(s) === i,
+    );
     return { ...plan, services };
   }
   if (step === "email") {
     if (plan.surfaces === "static") {
-      console.log(
-        chalk.yellow(
-          "  ⚠ Email needs a server runtime — switch surfaces to enable it.",
-        ),
-      );
+      console.log(chalk.yellow("  ⚠ Email needs a server runtime — switch surfaces to enable it."));
       return { ...plan, email: EMAIL_INTENT_NONE };
     }
     const email = await askEmailIntent({ current: plan.email });

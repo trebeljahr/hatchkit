@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 
 type Model3dViewerProps = {
   glbUrl: string;
@@ -8,8 +8,6 @@ type Model3dViewerProps = {
 };
 
 export function Model3dViewer({ glbUrl, vertices }: Model3dViewerProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-
   useEffect(() => {
     // Dynamically load model-viewer if not already loaded
     if (!customElements.get("model-viewer")) {

@@ -45,18 +45,13 @@ export function ComparisonViewer({
       />
 
       {/* After image (clipped) */}
-      <div
-        className="absolute inset-0 overflow-hidden"
-        style={{ width: `${sliderPos}%` }}
-      >
-        <img
-          src={afterSrc}
-          alt={afterLabel}
-          className="h-full w-full object-contain"
-          style={{ width: `${containerRef.current?.offsetWidth || 0}px` }}
-          draggable={false}
-        />
-      </div>
+      <img
+        src={afterSrc}
+        alt={afterLabel}
+        className="absolute inset-0 h-full w-full object-contain"
+        style={{ clipPath: `inset(0 ${100 - sliderPos}% 0 0)` }}
+        draggable={false}
+      />
 
       {/* Slider line */}
       <div

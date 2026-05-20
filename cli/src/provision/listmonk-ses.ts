@@ -32,6 +32,11 @@
  */
 
 import {
+  type CreatedDnsRecord,
+  type PublishDnsRecord,
+  publishDnsRecordsToCloudflare,
+} from "./cloudflare-dns-publish.js";
+import {
   type ListmonkAuth,
   type ListmonkList,
   type ListmonkTemplate,
@@ -41,11 +46,6 @@ import {
   listListmonkLists,
   listListmonkTemplates,
 } from "./listmonk.js";
-import {
-  type CreatedDnsRecord,
-  type PublishDnsRecord,
-  publishDnsRecordsToCloudflare,
-} from "./cloudflare-dns-publish.js";
 import {
   type SesAuth,
   type SesIdentity,

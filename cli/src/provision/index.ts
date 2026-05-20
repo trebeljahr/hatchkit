@@ -70,8 +70,8 @@ import {
   plausibleSiteExists,
   provisionPlausibleSite,
 } from "./plausible.js";
+import { publishResendDnsToCloudflare } from "./resend-dns.js";
 import {
-  type ResendAudience,
   type ResendClient,
   createResendAudience,
   createResendDomain,
@@ -83,7 +83,6 @@ import {
   normalizeDomainInput,
   provisionResendClient,
 } from "./resend.js";
-import { publishResendDnsToCloudflare } from "./resend-dns.js";
 import {
   type ProvisionR2TokensResult,
   provisionR2BucketTokens,
@@ -564,9 +563,8 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
       if (opts.resendWithAudience) {
         const liveName = opts.baseName;
         const testName = `${opts.baseName}-test`;
-        const live = await withSpinner(
-          `Resend: creating audience ${liveName}`,
-          () => createResendAudience(liveName),
+        const live = await withSpinner(`Resend: creating audience ${liveName}`, () =>
+          createResendAudience(liveName),
         );
         opts.onProvisioned?.({
           service: "resendAudience",
@@ -574,9 +572,8 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
           audienceId: live.id,
           kind: "live",
         });
-        const test = await withSpinner(
-          `Resend: creating audience ${testName}`,
-          () => createResendAudience(testName),
+        const test = await withSpinner(`Resend: creating audience ${testName}`, () =>
+          createResendAudience(testName),
         );
         opts.onProvisioned?.({
           service: "resendAudience",
@@ -676,60 +673,58 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
           cf = new CloudflareApi({ token: dnsCfg.apiToken, accountId: dnsCfg.accountId });
         }
 
-        const result = await withSpinner(
-          `Listmonk + SES: provisioning mail.${projectDomain}`,
-          () =>
-            provisionListmonkSesForProject(
-              {
-                projectName: opts.baseName,
-                projectDomain,
-                publishDns: !!cf,
-                cf,
-                sesAuth: {
-                  region: sesCfg.region,
-                  accessKeyId: sesCfg.accessKeyId,
-                  secretAccessKey: sesCfg.secretAccessKey,
-                },
-                listmonkAuth: {
-                  url: listmonkCfg.url,
-                  apiUser: listmonkCfg.apiUser,
-                  apiToken: listmonkCfg.apiToken,
-                },
+        const result = await withSpinner(`Listmonk + SES: provisioning mail.${projectDomain}`, () =>
+          provisionListmonkSesForProject(
+            {
+              projectName: opts.baseName,
+              projectDomain,
+              publishDns: !!cf,
+              cf,
+              sesAuth: {
+                region: sesCfg.region,
+                accessKeyId: sesCfg.accessKeyId,
+                secretAccessKey: sesCfg.secretAccessKey,
               },
-              {
-                onSesDomain: (e) => {
-                  opts.onProvisioned?.({
-                    service: "sesDomain",
-                    domain: e.domain,
-                    dkimRecords: e.dkimRecords,
-                  });
-                },
-                onSesDns: (e) => {
-                  opts.onProvisioned?.({
-                    service: "sesDns",
-                    domainName: e.domainName,
-                    zoneId: e.zoneId,
-                    zoneName: e.zoneName,
-                    createdRecords: e.createdRecords,
-                    mergedSpf: e.mergedSpf,
-                  });
-                },
-                onListmonkList: (e) => {
-                  // Override the orchestrator's placeholder URL with
-                  // the one we actually configured. (The orchestrator
-                  // can't reach the global config without an
-                  // injected dep.)
-                  opts.onProvisioned?.({
-                    service: "listmonkList",
-                    listmonkUrl: listmonkCfg.url,
-                    listName: e.listName,
-                    listId: e.listId,
-                    kind: e.kind,
-                    createdThisRun: e.createdThisRun,
-                  });
-                },
+              listmonkAuth: {
+                url: listmonkCfg.url,
+                apiUser: listmonkCfg.apiUser,
+                apiToken: listmonkCfg.apiToken,
               },
-            ),
+            },
+            {
+              onSesDomain: (e) => {
+                opts.onProvisioned?.({
+                  service: "sesDomain",
+                  domain: e.domain,
+                  dkimRecords: e.dkimRecords,
+                });
+              },
+              onSesDns: (e) => {
+                opts.onProvisioned?.({
+                  service: "sesDns",
+                  domainName: e.domainName,
+                  zoneId: e.zoneId,
+                  zoneName: e.zoneName,
+                  createdRecords: e.createdRecords,
+                  mergedSpf: e.mergedSpf,
+                });
+              },
+              onListmonkList: (e) => {
+                // Override the orchestrator's placeholder URL with
+                // the one we actually configured. (The orchestrator
+                // can't reach the global config without an
+                // injected dep.)
+                opts.onProvisioned?.({
+                  service: "listmonkList",
+                  listmonkUrl: listmonkCfg.url,
+                  listName: e.listName,
+                  listId: e.listId,
+                  kind: e.kind,
+                  createdThisRun: e.createdThisRun,
+                });
+              },
+            },
+          ),
         );
 
         if (result.dnsPublish) {
@@ -764,9 +759,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
           console.log(chalk.dim("  · Listmonk SMTP already matches SES; left as-is."));
         } else if (result.smtpApplied.reason) {
           console.log(
-            chalk.yellow(
-              `  Could not auto-configure Listmonk SMTP: ${result.smtpApplied.reason}`,
-            ),
+            chalk.yellow(`  Could not auto-configure Listmonk SMTP: ${result.smtpApplied.reason}`),
           );
         }
 

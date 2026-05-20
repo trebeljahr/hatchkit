@@ -21,8 +21,7 @@
       "@starter/shared": ["../shared/src/index.ts"],
       "@starter/shared/*": ["../shared/src/*"],
       "@starter/server/trpc": ["../server/src/trpc/router.ts"]
-    },
-    "baseUrl": "."
+    }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
   "exclude": ["node_modules"]

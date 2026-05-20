@@ -896,14 +896,17 @@ async function handleAdd(): Promise<void> {
         checked: false,
       },
     ];
-    const remainingChoices = serviceChoices.filter((choice) => addableServices.includes(choice.value));
-    const extra = remainingChoices.length > 0
-      ? await multiselect<ProvisionService>({
-          message: "Other services to add?",
-          choices: remainingChoices,
-          required: emailIntentServices.length === 0,
-        })
-      : [];
+    const remainingChoices = serviceChoices.filter((choice) =>
+      addableServices.includes(choice.value),
+    );
+    const extra =
+      remainingChoices.length > 0
+        ? await multiselect<ProvisionService>({
+            message: "Other services to add?",
+            choices: remainingChoices,
+            required: emailIntentServices.length === 0,
+          })
+        : [];
     services = [...emailIntentServices, ...extra];
     if (services.length === 0) {
       console.log(chalk.dim("  Nothing selected — exiting."));
@@ -966,21 +969,15 @@ async function handleAdd(): Promise<void> {
   const withAudience = args.includes("--with-audience");
   const noResendDns = args.includes("--no-resend-dns");
   if (withAudience && !services.includes("resend")) {
-    console.log(
-      chalk.red("  --with-audience requires `resend` in the services list."),
-    );
+    console.log(chalk.red("  --with-audience requires `resend` in the services list."));
     process.exit(1);
   }
   if (noResendDns && !services.includes("resend")) {
-    console.log(
-      chalk.red("  --no-resend-dns only applies when `resend` is in the services list."),
-    );
+    console.log(chalk.red("  --no-resend-dns only applies when `resend` is in the services list."));
     process.exit(1);
   }
   if (resendDomainFlag && !services.includes("resend")) {
-    console.log(
-      chalk.red("  --resend-domain only applies when `resend` is in the services list."),
-    );
+    console.log(chalk.red("  --resend-domain only applies when `resend` is in the services list."));
     process.exit(1);
   }
 
@@ -992,11 +989,9 @@ async function handleAdd(): Promise<void> {
   if (resendDomainFlag && services.includes("resend")) {
     const { ensureResend } = await import("./config.js");
     await ensureResend();
-    const {
-      listResendDomains,
-      createResendDomain,
-      normalizeDomainInput,
-    } = await import("./provision/resend.js");
+    const { listResendDomains, createResendDomain, normalizeDomainInput } = await import(
+      "./provision/resend.js"
+    );
     const wanted = normalizeDomainInput(resendDomainFlag);
     const existing = (await listResendDomains()).find((d) => d.name === wanted);
     if (existing) {
@@ -1009,9 +1004,7 @@ async function handleAdd(): Promise<void> {
     } else {
       const created = await createResendDomain(wanted);
       console.log(
-        chalk.green(
-          `  Created Resend domain ${created.name} (status: ${created.status}).`,
-        ),
+        chalk.green(`  Created Resend domain ${created.name} (status: ${created.status}).`),
       );
       resendDomainSelection = { id: created.id, name: created.name };
     }

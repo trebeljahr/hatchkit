@@ -418,9 +418,7 @@ async function runScaffoldSteps(
       `dotenvx: ${dotenvx.encryptedKeys.length} encrypted, ${dotenvx.placeholderKeys.length} placeholders`,
     );
   } else {
-    modifications.push(
-      "static: skipped server-side dotenvx seed (provisioners may mint later)",
-    );
+    modifications.push("static: skipped server-side dotenvx seed (provisioners may mint later)");
   }
 
   // Tailscale-served local-dev opt-in. The host plumbing is the user's

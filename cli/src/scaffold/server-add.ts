@@ -89,9 +89,7 @@ export async function runServerAdd(
 
   const surfaces = manifest.surfaces ?? "static";
   if (surfaces === "fullstack" || surfaces === "split" || surfaces === "backend") {
-    result.skipped.push(
-      `manifest surfaces already ${surfaces}; no server retrofit needed`,
-    );
+    result.skipped.push(`manifest surfaces already ${surfaces}; no server retrofit needed`);
     result.nextSteps = ["hatchkit adopt --resume --regenerate-pipeline"];
     return result;
   }

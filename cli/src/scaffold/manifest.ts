@@ -370,9 +370,7 @@ export function readManifestWithMigrationInfo(projectDir: string): ReadManifestR
   // absent value.
   if (fileVersion !== undefined && fileVersion < 3 && obj.email === undefined) {
     obj.email = { transactional: "none", mailingList: "none" };
-    migrationNotes.push(
-      'Seeded email intent: { transactional: "none", mailingList: "none" }',
-    );
+    migrationNotes.push('Seeded email intent: { transactional: "none", mailingList: "none" }');
   }
 
   // Schema-version bump (in memory only — the file is rewritten on

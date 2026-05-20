@@ -1,11 +1,6 @@
 import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
-import {
-  ensureDefaultRootDomain,
-  getCoolifyConfig,
-  getDefaultRootDomain,
-  getMlServices,
-} from "./config.js";
+import { getCoolifyConfig, getDefaultRootDomain, getMlServices } from "./config.js";
 import {
   type ProjectOnboardingPlan,
   onboardingPlanToProjectConfig,
@@ -285,9 +280,11 @@ export interface EmailNeeds {
  *  per-need booleans. Four options (none / one / the other / both)
  *  rather than two separate yes-no prompts — same information, but
  *  shorter and copy-paste friendly. */
-export async function askEmailNeeds(opts: {
-  defaults?: EmailNeeds;
-} = {}): Promise<EmailNeeds> {
+export async function askEmailNeeds(
+  opts: {
+    defaults?: EmailNeeds;
+  } = {},
+): Promise<EmailNeeds> {
   const choice = await select<"none" | "tx" | "ml" | "both">({
     message: "Email needs for this project:",
     default: emailNeedsToChoiceKey(opts.defaults ?? { transactional: false, mailingList: false }),
@@ -361,9 +358,7 @@ export async function askEmailProvider(
  *  / `listmonk-ses` directly. `askEmailProvider` (above) is kept around
  *  as an escape hatch for callers that genuinely need per-need provider
  *  prompting — not used by create/adopt/add today. */
-export async function askEmailIntent(
-  opts: { current?: EmailIntent } = {},
-): Promise<EmailIntent> {
+export async function askEmailIntent(opts: { current?: EmailIntent } = {}): Promise<EmailIntent> {
   const needs = await askEmailNeeds({
     defaults: opts.current
       ? {
@@ -604,7 +599,9 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
         const rootDomain = getDefaultRootDomain();
         const domain =
           !c.domain || (rootDomain && c.domain === `${c.name}.${rootDomain}`)
-            ? rootDomain ? `${name}.${rootDomain}` : c.domain
+            ? rootDomain
+              ? `${name}.${rootDomain}`
+              : c.domain
             : c.domain;
         const parsed = parseDomain(domain);
         return { ...c, name, domain, baseDomain: parsed.baseDomain, subdomain: parsed.subdomain };
@@ -630,7 +627,9 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       run: async (c) => {
         const domain = await input({
           message: "Domain:",
-          default: c.domain || (getDefaultRootDomain() ? `${c.name}.${getDefaultRootDomain()}` : undefined),
+          default:
+            c.domain ||
+            (getDefaultRootDomain() ? `${c.name}.${getDefaultRootDomain()}` : undefined),
           validate: (v) => validateDomain(v),
         });
         const parsed = parseDomain(domain);
@@ -827,15 +826,10 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       // Skip the email-intent prompt entirely in that case; the
       // manifest gets `{ transactional: "none", mailingList: "none" }`.
       skip: (c) =>
-        c.surfaces === "static" ||
-        c.deploymentMode === "gh-pages" ||
-        presets.email !== undefined,
+        c.surfaces === "static" || c.deploymentMode === "gh-pages" || presets.email !== undefined,
       run: async (c) => {
         const email = await askEmailIntent({ current: c.email });
-        const provisionServices = mergeEmailIntoProvisionServices(
-          c.provisionServices,
-          email,
-        );
+        const provisionServices = mergeEmailIntoProvisionServices(c.provisionServices, email);
         return { ...c, email, provisionServices };
       },
     },
@@ -867,8 +861,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
         // with "not yet supported". The collapsed prompt offers R2 by
         // default and an `existing` escape hatch for users bringing
         // their own bucket (any S3-API endpoint).
-        const initial: "r2" | "existing" =
-          c.s3Provider === "existing" ? "existing" : "r2";
+        const initial: "r2" | "existing" = c.s3Provider === "existing" ? "existing" : "r2";
         const s3Provider = await select<"r2" | "existing">({
           message: "S3 storage provider:",
           default: initial,
@@ -1149,9 +1142,7 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
   const surfaces = presets.surfaces ?? "fullstack";
   const deploymentMode = presets.deploymentMode ?? "coolify";
   if (deploymentMode === "gh-pages" && surfaces !== "static") {
-    throw new Error(
-      `--deployment-mode gh-pages requires --surfaces static (got: ${surfaces}).`,
-    );
+    throw new Error(`--deployment-mode gh-pages requires --surfaces static (got: ${surfaces}).`);
   }
 
   const deployTarget = presets.deployTarget ?? "new";
@@ -1170,8 +1161,7 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
     ? uniqueProvisionServices(presets.provisionServices)
     : uniqueProvisionServices(analyticsProviders ? [...analyticsProviders] : []);
 
-  const s3Provider: S3Provider =
-    presets.s3Provider ?? (features.includes("s3") ? "r2" : "none");
+  const s3Provider: S3Provider = presets.s3Provider ?? (features.includes("s3") ? "r2" : "none");
   const mlServices = presets.mlServices ?? [];
   const gpuPlatforms =
     presets.gpuPlatforms ?? (mlServices.length > 0 ? ["modal" as const] : undefined);

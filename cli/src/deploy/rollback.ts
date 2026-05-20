@@ -533,8 +533,7 @@ function describeStep(step: LedgerStep): string {
     case "resendDns": {
       const total = step.records.length;
       const merged = step.mergedSpf.length;
-      const auto =
-        total === 1 ? `1 record` : total === 0 ? `no records` : `${total} records`;
+      const auto = total === 1 ? `1 record` : total === 0 ? `no records` : `${total} records`;
       const mergedNote = merged > 0 ? `, ${merged} merged SPF skipped` : "";
       return `delete ${chalk.cyan(auto)} in Cloudflare zone ${chalk.cyan(step.zoneName)} (Resend ${step.domainName}${mergedNote})`;
     }
@@ -543,8 +542,7 @@ function describeStep(step: LedgerStep): string {
     case "sesDns": {
       const total = step.records.length;
       const merged = step.mergedSpf.length;
-      const auto =
-        total === 1 ? `1 record` : total === 0 ? `no records` : `${total} records`;
+      const auto = total === 1 ? `1 record` : total === 0 ? `no records` : `${total} records`;
       const mergedNote = merged > 0 ? `, ${merged} merged SPF skipped` : "";
       return `delete ${chalk.cyan(auto)} in Cloudflare zone ${chalk.cyan(step.zoneName)} (SES ${step.domainName}${mergedNote})`;
     }

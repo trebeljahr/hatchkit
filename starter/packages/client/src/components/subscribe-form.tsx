@@ -80,7 +80,7 @@ export function SubscribeForm() {
       <div role="status" aria-live="polite" className="rounded-lg border p-5 text-sm">
         <p className="font-medium">Check your inbox.</p>
         <p className="mt-1 text-gray-600">
-          Tap the confirmation link to finish. Spam folder is the usual suspect if it doesn't
+          Tap the confirmation link to finish. Spam folder is the usual suspect if it does not
           surface.
         </p>
       </div>
@@ -90,7 +90,7 @@ export function SubscribeForm() {
   if (status.kind === "already-subscribed") {
     return (
       <div role="status" aria-live="polite" className="rounded-lg border p-5 text-sm">
-        <p className="font-medium">You're already on the list.</p>
+        <p className="font-medium">You are already on the list.</p>
         <p className="mt-1 text-gray-600">
           That address is already a confirmed subscriber. Nothing to do.
         </p>

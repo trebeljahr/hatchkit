@@ -18,6 +18,7 @@
  * gate sends, but the upstream user-facing flow does.
  */
 
+import { createHmac } from "node:crypto";
 import {
   CreateEmailIdentityCommand,
   DeleteEmailIdentityCommand,
@@ -25,10 +26,9 @@ import {
   GetEmailIdentityCommand,
   ListEmailIdentitiesCommand,
   PutEmailIdentityFeedbackAttributesCommand,
-  SendEmailCommand,
   SESv2Client,
+  SendEmailCommand,
 } from "@aws-sdk/client-sesv2";
-import { createHmac } from "node:crypto";
 import { ensureSes } from "../config.js";
 
 export interface SesAuth {
@@ -185,9 +185,7 @@ export async function createSesDomain(
   const auth = authOverride ?? (await ensureSes());
   const client = makeClient(auth);
   try {
-    const res = await client.send(
-      new CreateEmailIdentityCommand({ EmailIdentity: domain }),
-    );
+    const res = await client.send(new CreateEmailIdentityCommand({ EmailIdentity: domain }));
     return {
       name: domain,
       verifiedForSendingStatus: res.VerifiedForSendingStatus ?? false,
@@ -203,10 +201,7 @@ export async function createSesDomain(
   }
 }
 
-export async function getSesDomain(
-  domain: string,
-  authOverride?: SesAuth,
-): Promise<SesIdentity> {
+export async function getSesDomain(domain: string, authOverride?: SesAuth): Promise<SesIdentity> {
   const auth = authOverride ?? (await ensureSes());
   const client = makeClient(auth);
   const res = await client.send(new GetEmailIdentityCommand({ EmailIdentity: domain }));

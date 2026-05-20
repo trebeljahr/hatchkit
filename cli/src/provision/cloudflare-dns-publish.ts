@@ -22,8 +22,8 @@
  */
 
 import chalk from "chalk";
-import type { CloudflareApi } from "../utils/cloudflare-api.js";
 import { buildSpfRecord, parseSpfIncludes } from "../email/spf.js";
+import type { CloudflareApi } from "../utils/cloudflare-api.js";
 
 export interface PublishDnsRecord {
   type: "TXT" | "MX" | "CNAME";
@@ -140,12 +140,7 @@ export async function publishDnsRecordsToCloudflare(
     if (record.type === "TXT") {
       const isSpf = /v=spf1/i.test(record.value);
       if (isSpf) {
-        const { merged, sourceWasExisting } = await mergeSpf(
-          opts.cf,
-          zone.id,
-          fqdn,
-          record.value,
-        );
+        const { merged, sourceWasExisting } = await mergeSpf(opts.cf, zone.id, fqdn, record.value);
         const res = await opts.cf.upsertRecord(zone.id, {
           type: "TXT",
           name: fqdn,
