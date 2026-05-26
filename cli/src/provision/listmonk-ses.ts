@@ -355,14 +355,17 @@ async function getOrCreateList(
  *  supplies the real HTML at send-time — these scaffolds only have to be
  *  valid Listmonk Go templates that render the runtime's input. The tx
  *  template's subject expects `{{ .Tx.Data.subject }}` and the body
- *  expects `{{ .Tx.Data.body | safeHTML }}`; the campaign template is a
- *  pure passthrough so the digest HTML the app already wraps lands
- *  verbatim with per-recipient `{{ UnsubscribeURL }}` substitution. */
+ *  renders `{{ .Tx.Data.body }}` raw — tx templates use Go's
+ *  `text/template` (no auto-escape, and `safeHTML` is not registered
+ *  there); the calling app is responsible for the HTML it passes.
+ *  The campaign template is a pure passthrough so the digest HTML the
+ *  app already wraps lands verbatim with per-recipient
+ *  `{{ UnsubscribeURL }}` substitution. */
 const DEFAULT_TX_TEMPLATE_SUBJECT = "{{ .Tx.Data.subject }}";
 const DEFAULT_TX_TEMPLATE_BODY = `<!doctype html>
 <html>
   <body>
-    {{ .Tx.Data.body | safeHTML }}
+    {{ .Tx.Data.body }}
   </body>
 </html>
 `;

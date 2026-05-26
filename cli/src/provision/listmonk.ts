@@ -156,8 +156,10 @@ export async function deleteListmonkListById(
 //
 // The runtime needs two templates configured in Listmonk:
 //   · tx template: subject `{{ .Tx.Data.subject }}`, body renders
-//     `{{ .Tx.Data.body | safeHTML }}` so the calling app can pass
-//     pre-rendered subject + HTML through `POST /api/tx`.
+//     `{{ .Tx.Data.body }}` raw so the calling app can pass
+//     pre-rendered subject + HTML through `POST /api/tx`. Tx templates
+//     use Go's `text/template` (no auto-escape, and `safeHTML` is not
+//     registered there) — the calling app owns the HTML it sends.
 //   · campaign template: a passthrough wrapper `{{ template "content" . }}`
 //     so the digest HTML the app already composed is broadcast verbatim
 //     with Listmonk's per-recipient `{{ UnsubscribeURL }}` substitution.
