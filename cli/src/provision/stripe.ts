@@ -147,11 +147,33 @@ const MODE_INFO: Record<
 export async function provisionStripeProject(
   opts: ProvisionStripeProjectOptions,
 ): Promise<ProvisionStripeProjectResult> {
-  // Master keys — at least one mode must be configured. ensureStripe
-  // throws if neither is.
+  // Master keys — ensureStripe returns an `unconfigured` meta (no
+  // throw) when the user deferred both modes during onboarding. In
+  // that case we still emit per-mode skipped outcomes so the caller
+  // writes CHANGE_ME placeholders + skip-comment recipes into both
+  // env files; the starter then surfaces a clear "Stripe not
+  // configured" notice in the billing UI at runtime.
   const master = await ensureStripe();
 
   console.log(chalk.bold(`\n  ── Stripe (${opts.projectName}) ─────────────────────────────\n`));
+
+  if (!master.hasTestMaster && !master.hasLiveMaster) {
+    console.log(
+      chalk.yellow(
+        `  Stripe master keys are not configured — emitting placeholder env values\n` +
+          `  for both modes. The scaffolded project still ships the Stripe surface;\n` +
+          `  the billing screen will render an "unconfigured" notice with the exact\n` +
+          `  dotenvx commands until you wire real keys.\n` +
+          `    Add masters later:  hatchkit config add stripe\n` +
+          `    Then re-run wiring: hatchkit add ${opts.projectName} stripe\n`,
+      ),
+    );
+    return {
+      test: { kind: "skipped", mode: "test" },
+      live: { kind: "skipped", mode: "live" },
+    };
+  }
+
   console.log(
     chalk.dim(
       `  Hatchkit provisions Stripe in two modes per project:\n` +
@@ -181,6 +203,7 @@ export async function provisionStripeProject(
           "Run `hatchkit config add stripe` to add one.",
       ),
     );
+    result.test = { kind: "skipped", mode: "test" };
   }
 
   if (master.hasLiveMaster && master.liveSecretKey) {
@@ -199,6 +222,7 @@ export async function provisionStripeProject(
           "Run `hatchkit config add stripe` to add one.",
       ),
     );
+    result.live = { kind: "skipped", mode: "live" };
   }
 
   return result;

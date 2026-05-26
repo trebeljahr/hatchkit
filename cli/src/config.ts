@@ -2766,10 +2766,34 @@ export async function ensureStripe(): Promise<StripeConfig> {
   const { testKey, liveKey } = await runSteps(stripeSteps, { testKey: null, liveKey: null });
 
   if (!testKey && !liveKey) {
-    throw new Error(
-      "At least one Stripe master key (test or live) must be configured. " +
-        "Re-run `hatchkit config add stripe`.",
+    // User opted to skip BOTH master keys. We don't abort — the project
+    // still gets scaffolded with the Stripe surface in place; hatchkit
+    // writes CHANGE_ME_* placeholders into the env files and the starter
+    // renders an "unconfigured" fallback at runtime. Persist an
+    // `unconfigured` provider entry so `hatchkit doctor` / `status` show
+    // the deferred state, and `hatchkit config add stripe` can resume.
+    const deferredMeta: StripeMeta = {
+      status: "unconfigured",
+      hasTestMaster: false,
+      hasLiveMaster: false,
+      lastVerified: new Date().toISOString(),
+    };
+    store.set("providers.stripe", deferredMeta);
+    console.log(
+      chalk.yellow(
+        "  · Stripe master keys deferred — continuing without auto-provisioned webhooks.\n" +
+          "    The scaffolded project will be wired with placeholder env values and a\n" +
+          '    "Stripe not configured" notice in the billing UI. Add real keys later via:\n' +
+          "      hatchkit config add stripe\n" +
+          "    then per-project keys via dotenvx (commands are written next to the\n" +
+          "    placeholders in each .env file).",
+      ),
     );
+    return {
+      ...deferredMeta,
+      testSecretKey: undefined,
+      liveSecretKey: undefined,
+    };
   }
 
   // Account id from whichever master key we have — prefer live since

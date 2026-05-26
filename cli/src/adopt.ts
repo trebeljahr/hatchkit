@@ -2443,11 +2443,11 @@ async function executePlan(
                 ),
               );
             }
-            if (!result.test && !result.live) {
+            if (result.test?.kind === "skipped" && result.live?.kind === "skipped") {
               caveats.push({
-                title: "Stripe wiring skipped",
+                title: "Stripe placeholders written",
                 reason:
-                  "No Stripe master key configured — neither test nor live mode could be wired.",
+                  'No master key configured for either mode — wrote CHANGE_ME_* placeholders to both env files. The billing UI will render an "unconfigured" notice until real keys are wired.',
                 recovery: [
                   "Run `hatchkit config add stripe` to add at least one master key,",
                   `then re-run \`hatchkit adopt --resume\` from ${state.projectDir}.`,

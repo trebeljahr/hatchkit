@@ -2008,16 +2008,6 @@ async function handleCreate(): Promise<void> {
               ),
             );
           }
-
-          if (!result.test && !result.live) {
-            console.log(
-              chalk.yellow(
-                "  Stripe: no master key configured for either mode — wiring skipped.\n" +
-                  "  Run `hatchkit config add stripe` to add a test and/or live master key,\n" +
-                  "  then re-run from the project dir.",
-              ),
-            );
-          }
         } catch (err) {
           console.log(chalk.yellow(`  Couldn't auto-provision Stripe: ${(err as Error).message}`));
           console.log(
