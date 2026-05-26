@@ -1854,6 +1854,12 @@ async function handleCreate(): Promise<void> {
               clientEnvDir:
                 config.surfaces === "backend" ? undefined : join(appDir, "packages/client"),
             },
+            emailForwarding: config.emailForwarding?.enabled
+              ? {
+                  addresses: config.emailForwarding.addresses,
+                  catchAll: config.emailForwarding.catchAll,
+                }
+              : undefined,
             onProvisioned: (event) => {
               if (ledger) recordProvisionedEvent(ledger, event);
             },
@@ -2214,60 +2220,12 @@ async function handleCreate(): Promise<void> {
       }
     }
 
-    // Step 6.6: optional email forwarding setup (Cloudflare Email
-    // Routing). Opt-in prompt — most projects want it but a scripted
-    // / non-interactive create shouldn't pay the latency cost or sink
-    // on a missing accountId without explicit consent.
-    if (config.scaffoldRepo && !config.dryRun && !nonInteractive && process.stdin.isTTY) {
-      try {
-        const wantsEmail = await confirm({
-          message: `Set up email forwarding for ${chalk.cyan(config.domain)} (Cloudflare Email Routing)?`,
-          default: true,
-        });
-        if (wantsEmail) {
-          const { runEmailSetupForDomain } = await import("./email/index.js");
-          const result = await runEmailSetupForDomain({ domain: config.domain }, appDir);
-          // Mirror adopt's ledger plumbing so `hatchkit destroy <project>`
-          // can roll back the email-routing state we just created.
-          if (ledger && result.destination.createdThisRun) {
-            ledger.record({
-              kind: "cloudflareEmailDestination",
-              accountId: result.accountId,
-              destinationId: result.destination.record.id,
-              email: result.destination.record.email,
-            });
-          }
-          for (const dns of result.dnsRecords) {
-            if (!dns.created) continue;
-            ledger?.record({
-              kind: "cloudflareDnsRecord",
-              zoneId: result.zoneId,
-              recordId: dns.id,
-              name: dns.name,
-              type: dns.type,
-            });
-          }
-          for (const rule of result.rules) {
-            if (!rule.created) continue;
-            ledger?.record({
-              kind: "cloudflareEmailRoutingRule",
-              zoneId: result.zoneId,
-              ruleId: rule.id,
-              address: rule.address,
-            });
-          }
-        }
-      } catch (err) {
-        // Soft-fail: email forwarding is a follow-up convenience, not a
-        // gating step for the rest of `create`. The user can re-run
-        // `hatchkit email setup` once any underlying issue (e.g. zone
-        // not yet in Cloudflare) is fixed.
-        console.log(chalk.yellow(`  ⚠ Email forwarding setup skipped: ${(err as Error).message}`));
-        console.log(
-          chalk.dim(`    Re-run with \`hatchkit email setup --domain ${config.domain}\`.`),
-        );
-      }
-    }
+    // Email forwarding (Cloudflare Email Routing) is now wired through
+    // the standard provision pipeline at Step 1's runProvision call
+    // when the planning-phase Email forwarding step set
+    // `config.emailForwarding.enabled = true` (which also adds `"email"`
+    // to provisionServices). No mid-exec confirm — answers are
+    // collected up-front so the rest of `create` runs unattended.
 
     // Step 7: Deploy ML services
     if (

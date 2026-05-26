@@ -1,6 +1,13 @@
 import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
-import { getCoolifyConfig, getDefaultRootDomain, getMlServices } from "./config.js";
+import {
+  detectPersonalEmailLocalPart,
+  getCoolifyConfig,
+  getDefaultRootDomain,
+  getMlServices,
+  getPersonalEmailLocalPart,
+} from "./config.js";
+import { DEFAULT_CATCH_ALL, buildForwardPresets } from "./email/presets.js";
 import {
   type ProjectOnboardingPlan,
   onboardingPlanToProjectConfig,
@@ -240,6 +247,17 @@ export interface ProjectConfig {
    *  flow); both fields being "none" means the user was asked and
    *  opted out of email entirely. */
   email?: EmailIntent;
+  /** Cloudflare Email Routing for the project domain (incoming mail
+   *  → user's inbox). Answered up-front so the create execution phase
+   *  doesn't block on the addresses/catch-all picker. When `enabled`
+   *  is true, `"email"` is also added to `provisionServices` and the
+   *  provision step uses these answers to call `runEmailSetupForDomain`
+   *  non-interactively. */
+  emailForwarding?: {
+    enabled: boolean;
+    addresses: string[];
+    catchAll: boolean;
+  };
   dryRun: boolean;
 }
 
@@ -429,16 +447,12 @@ async function collectExtraProvisionServices(args: {
   if (args.nonInteractive) return uniqueProvisionServices(baseServices);
 
   // The email provider (listmonk-ses) is handled by the dedicated
-  // "Email" step above this one — see askEmailIntent. The multi-select
+  // "Email" step. Inbound forwarding (Cloudflare Email Routing) is
+  // handled by the dedicated "Email forwarding" step. The multi-select
   // here only covers the remaining domain/launch ops services.
   const extra = await multiselect<ProvisionService>({
     message: "Launch services to provision now:",
     choices: [
-      {
-        name: "Email forwarding (Cloudflare Email Routing → your inbox)",
-        value: "email",
-        checked: false,
-      },
       {
         name: "Google Search Console (DNS verification + domain property)",
         value: "search-console",
@@ -451,11 +465,11 @@ async function collectExtraProvisionServices(args: {
 }
 
 async function promptProvisionServicesEditor(cfg: ProjectConfig): Promise<ProvisionService[]> {
-  // Listmonk + SES is edited via the dedicated "Email" review row so
-  // the user can't end up with mismatched provisionServices vs
-  // `cfg.email` intent. The non-email entries below ("Email forwarding"
-  // = Cloudflare Email Routing for inbound mail) are unrelated to the
-  // outbound email-intent question.
+  // Listmonk + SES is edited via the dedicated "Email" review row.
+  // Cloudflare Email Routing (inbound forwarding) is edited via the
+  // dedicated "Email forwarding" review row. The two are kept off this
+  // list so the user can't desynchronise the addresses/catch-all
+  // answers from the `"email"` provisionService entry.
   return multiselect<ProvisionService>({
     message: "Services to provision now:",
     choices: [
@@ -476,17 +490,71 @@ async function promptProvisionServicesEditor(cfg: ProjectConfig): Promise<Provis
         disabled: cfg.surfaces === "backend" ? "client surface required" : false,
       },
       {
-        name: "Email forwarding (Cloudflare Email Routing → your inbox)",
-        value: "email",
-        checked: cfg.provisionServices.includes("email"),
-      },
-      {
         name: "Google Search Console (DNS verification + domain property)",
         value: "search-console",
         checked: cfg.provisionServices.includes("search-console"),
       },
     ],
   });
+}
+
+// ---------------------------------------------------------------------------
+// Email forwarding step — Cloudflare Email Routing (inbound mail)
+// ---------------------------------------------------------------------------
+
+/** Prompt for Cloudflare Email Routing settings up-front so the create
+ *  execution phase doesn't block on the picker. Mirrors the choices
+ *  the runtime `runEmailSetupForDomain` would have asked, except the
+ *  domain comes from `c.domain` (not interactive) and the catch-all
+ *  question follows the addresses one immediately so the user can
+ *  step through both without context switches. */
+async function askEmailForwardingStep(c: ProjectConfig): Promise<ProjectConfig> {
+  const wantsForwarding = await confirm({
+    message: `Set up email forwarding for ${chalk.cyan(c.domain)} (Cloudflare Email Routing → your inbox)?`,
+    default: c.emailForwarding?.enabled ?? true,
+  });
+  if (!wantsForwarding) {
+    const provisionServices = uniqueProvisionServices(
+      c.provisionServices.filter((s) => s !== "email"),
+    );
+    return {
+      ...c,
+      emailForwarding: { enabled: false, addresses: [], catchAll: false },
+      provisionServices,
+    };
+  }
+
+  const personalAlias = getPersonalEmailLocalPart() ?? (await detectPersonalEmailLocalPart());
+  const presetList = buildForwardPresets(personalAlias);
+  const previouslyPicked = c.emailForwarding?.enabled ? c.emailForwarding.addresses : null;
+  const addresses = await multiselect<string>({
+    message: `Which addresses on ${c.domain} should forward to your inbox?`,
+    choices: presetList.map((p) => ({
+      name: `${p.localPart}@${c.domain} — ${p.description}`,
+      value: p.localPart,
+      checked: previouslyPicked ? previouslyPicked.includes(p.localPart) : p.defaultChecked,
+    })),
+    required: false,
+  });
+  const catchAll = await confirm({
+    message: `Also enable catch-all (*@${c.domain} → your inbox)?`,
+    default: c.emailForwarding?.enabled ? c.emailForwarding.catchAll : DEFAULT_CATCH_ALL,
+  });
+  const provisionServices = uniqueProvisionServices([...c.provisionServices, "email"]);
+  return {
+    ...c,
+    emailForwarding: { enabled: true, addresses, catchAll },
+    provisionServices,
+  };
+}
+
+/** One-line render of the email-forwarding answer for the review summary. */
+export function summarizeEmailForwarding(ef: ProjectConfig["emailForwarding"]): string {
+  if (!ef || !ef.enabled) return chalk.dim("(off)");
+  const list =
+    ef.addresses.length > 0 ? ef.addresses.map((a) => `${a}@`).join(", ") : chalk.dim("(none)");
+  const catchAll = ef.catchAll ? chalk.dim(" + catch-all") : "";
+  return `${list}${catchAll}`;
 }
 
 function summarizeProvisionServices(services: ProvisionService[]): string {
@@ -569,6 +637,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     envValues: presets.envValues,
     localDev: options.forceNoLocalDev ? undefined : presets.localDev,
     email: presets.email,
+    emailForwarding: presets.emailForwarding,
     dryRun,
   };
 
@@ -818,6 +887,14 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
         const provisionServices = mergeEmailIntoProvisionServices(c.provisionServices, email);
         return { ...c, email, provisionServices };
       },
+    },
+    {
+      name: "Email forwarding",
+      // Cloudflare Email Routing is DNS-only, so it works for any
+      // deployment mode that has a real domain. Skip only when the
+      // domain is missing or the preset already answered.
+      skip: (c) => !c.domain || presets.emailForwarding !== undefined,
+      run: async (c) => askEmailForwardingStep(c),
     },
     {
       name: "Extra services",
@@ -1156,9 +1233,17 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
   const analyticsProviders =
     presets.analyticsProviders ??
     (features.includes("analytics") ? ["glitchtip" as const] : undefined);
-  const provisionServices = presets.provisionServices
+  // Mirror the interactive planning step: an `emailForwarding.enabled`
+  // preset implies the project also wants `"email"` provisioned. The
+  // explicit preset still wins — we only ADD it when missing.
+  const wantsEmailForwarding = presets.emailForwarding?.enabled === true;
+  const provisionServicesBase = presets.provisionServices
     ? uniqueProvisionServices(presets.provisionServices)
     : uniqueProvisionServices(analyticsProviders ? [...analyticsProviders] : []);
+  const provisionServices =
+    wantsEmailForwarding && !provisionServicesBase.includes("email")
+      ? uniqueProvisionServices([...provisionServicesBase, "email"])
+      : provisionServicesBase;
 
   const s3Provider: S3Provider = presets.s3Provider ?? (features.includes("s3") ? "r2" : "none");
   const mlServices = presets.mlServices ?? [];
@@ -1241,6 +1326,7 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
     envValues,
     localDev,
     email,
+    emailForwarding: presets.emailForwarding,
     dryRun,
   };
 }
@@ -1413,6 +1499,12 @@ function buildCreateStepGroups(plan: ProjectOnboardingPlan, cfg: ProjectConfig):
             summary: summarizeEmailIntent(cfg.email),
           },
           {
+            key: "emailForwarding",
+            label: "Email forwarding",
+            set: cfg.emailForwarding !== undefined,
+            summary: summarizeEmailForwarding(cfg.emailForwarding),
+          },
+          {
             key: "services",
             label: "Services",
             set: true,
@@ -1452,6 +1544,12 @@ function buildCreateStepGroups(plan: ProjectOnboardingPlan, cfg: ProjectConfig):
     groups.push({
       title: "Services",
       steps: [
+        {
+          key: "emailForwarding",
+          label: "Email forwarding",
+          set: cfg.emailForwarding !== undefined,
+          summary: summarizeEmailForwarding(cfg.emailForwarding),
+        },
         {
           key: "services",
           label: "Services",
@@ -1716,6 +1814,13 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     const email = await askEmailIntent({ current: cfg.email });
     const provisionServices = mergeEmailIntoProvisionServices(cfg.provisionServices, email);
     return { ...cfg, email, provisionServices };
+  }
+  if (section === "emailForwarding") {
+    if (!cfg.domain) {
+      console.log(chalk.yellow("  ⚠ Set a domain first."));
+      return cfg;
+    }
+    return askEmailForwardingStep(cfg);
   }
   if (section === "deployTarget") {
     const target = await selectDeployTarget();

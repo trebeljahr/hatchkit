@@ -44,6 +44,16 @@ export interface EmailCommandFlags {
   /** Comma-separated local parts (e.g. "hello,alice,admin"). Skips the
    *  multi-select prompt when present. */
   addresses?: string;
+  /** Programmatic equivalent of `--addresses` for callers that already
+   *  hold a resolved list (e.g. `hatchkit create` after the planning
+   *  step). Accepts an empty array as an explicit "no per-local-part
+   *  rules" — the comma-string form can't express that because empty
+   *  string is falsy. When set, both the addresses prompt and the
+   *  catch-all prompt are skipped; pair with {@link catchAllResolved}. */
+  addressesResolved?: string[];
+  /** Programmatic catch-all answer. Used alongside `addressesResolved`
+   *  to bypass `resolveAddresses` entirely. */
+  catchAllResolved?: boolean;
   /** Skip the prompt; use every default preset. */
   allDefaults?: boolean;
   /** Force no catch-all (overrides the default-true). */
@@ -82,6 +92,16 @@ async function resolveAddresses(
   flags: EmailCommandFlags,
   domain: string,
 ): Promise<{ addresses: string[]; catchAll: boolean }> {
+  // Caller-provided structured answers win first — used by `hatchkit
+  // create` after the planning-phase Email forwarding step so the
+  // execution path never reprompts. Distinct from `flags.addresses`
+  // because the empty-array case has to round-trip.
+  if (flags.addressesResolved !== undefined) {
+    return {
+      addresses: flags.addressesResolved.map((a) => a.trim().toLowerCase()).filter(Boolean),
+      catchAll: flags.catchAllResolved ?? !flags.noCatchAll,
+    };
+  }
   // Personal-alias preset: saved value from `hatchkit setup` wins, then
   // a best-effort guess from `git config user.email`. The picker still
   // lets the user untick it.

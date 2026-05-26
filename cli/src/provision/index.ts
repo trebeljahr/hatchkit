@@ -219,6 +219,12 @@ export interface ProvisionOptions {
   /** When true, run read-only existence probes before creating remote
    *  resources and abort if anything selected already exists. */
   failIfExists?: boolean;
+  /** Pre-collected Cloudflare Email Routing answers (addresses +
+   *  catch-all). When set, the `"email"` service runs non-interactively
+   *  with these values — skipping the picker that would otherwise fire
+   *  inside `runEmailSetupForDomain`. The create flow populates this
+   *  from the planning-phase `Email forwarding` step. */
+  emailForwarding?: { addresses: string[]; catchAll: boolean };
 }
 
 export interface SearchConsoleDomainGuess {
@@ -670,7 +676,14 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
         console.log(chalk.yellow("  Skipping Email — manifest has no `domain` field."));
       } else {
         const { runEmailSetupForDomain } = await import("../email/index.js");
-        const result = await runEmailSetupForDomain({ domain: manifest.domain }, projectDir);
+        const emailFlags: import("../email/index.js").EmailCommandFlags = {
+          domain: manifest.domain,
+        };
+        if (opts.emailForwarding) {
+          emailFlags.addressesResolved = opts.emailForwarding.addresses;
+          emailFlags.catchAllResolved = opts.emailForwarding.catchAll;
+        }
+        const result = await runEmailSetupForDomain(emailFlags, projectDir);
         opts.onProvisioned?.({
           service: "email",
           domain: result.domain,
