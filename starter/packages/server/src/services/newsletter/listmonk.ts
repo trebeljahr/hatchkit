@@ -188,9 +188,9 @@ export type SendTransactionalParams = {
 /** Send a one-off transactional email through `/api/tx`. Uses the
  *  passthrough template wired by Hatchkit's listmonk-ses provisioner
  *  (LISTMONK_TX_TEMPLATE_ID); the template consumes
- *  `{{ .Tx.Data.subject }}` + `{{ .Tx.Data.body | safeHTML }}` and
- *  optionally renders an unsubscribe footer via Listmonk's built-in
- *  `{{ UnsubscribeURL }}`. The recipient must exist as a subscriber —
+ *  `{{ .Tx.Data.subject }}` + `{{ .Tx.Data.body }}` raw (tx templates
+ *  use Go `text/template`, which doesn't auto-escape HTML and doesn't
+ *  register `safeHTML`). The recipient must exist as a subscriber —
  *  call `upsertSubscriber` first. */
 export async function sendTransactional(params: SendTransactionalParams): Promise<void> {
   const templateId = Number(required("LISTMONK_TX_TEMPLATE_ID"));

@@ -40,6 +40,7 @@ import {
   type ListmonkAuth,
   type ListmonkList,
   type ListmonkTemplate,
+  addListmonkSubscriberToList,
   applySesSmtpToListmonk,
   createListmonkList,
   createListmonkTemplate,
@@ -72,6 +73,14 @@ export interface ListmonkSesProvisionOptions {
    *  default — turning this on is a 2-step process (the SNS topic
    *  has to exist first), so most users will wire it later. */
   enableFeedback?: boolean;
+  /** Email address to auto-subscribe to the project's `-test` list as
+   *  `confirmed`. Hatchkit passes the global default forwarding email
+   *  here so the first `pnpm newsletter:verify` run lands a real send
+   *  in the user's own inbox with zero manual list-management work.
+   *  Also gets rendered as `LISTMONK_TEST_RECIPIENT` in the dev env so
+   *  the bundled test scripts know which address to target. Skipped
+   *  when not set. */
+  seedSubscriberEmail?: string;
   /** Pre-resolved SES + Listmonk credentials. When omitted the
    *  orchestrator falls back to the global config (ensureSes /
    *  ensureListmonk). Tests pass overrides to avoid keychain. */
@@ -102,6 +111,19 @@ export interface ListmonkSesProvisionEvents {
     templateName: string;
     templateId: number;
     kind: "tx" | "campaign";
+    createdThisRun: boolean;
+  }) => void;
+  /** Fires after `seedSubscriberEmail` lands on the `-test` list.
+   *  `createdThisRun` is true only when this run *created* the
+   *  subscriber row (vs. promoted an existing row to confirmed on the
+   *  list) — the ledger uses the flag to decide whether destroy
+   *  should remove the subscriber entirely. */
+  onListmonkSubscriber?: (event: {
+    listmonkUrl: string;
+    email: string;
+    subscriberId: number;
+    listId: number;
+    listName: string;
     createdThisRun: boolean;
   }) => void;
   /** Fires after the DKIM CNAMEs are upserted into Cloudflare.
@@ -141,6 +163,15 @@ export interface ListmonkSesProvisionResult {
    *  the caller surface the manual-paste fallback when the API user
    *  lacked `Settings: All` permission. */
   smtpApplied: { written: boolean; reason?: string };
+  /** Subscriber seeded onto the `-test` list (if any). Null when the
+   *  caller didn't pass `seedSubscriberEmail`. The runtime reads the
+   *  email as `LISTMONK_TEST_RECIPIENT` in dev so bundled scripts have
+   *  a default target for tx + welcome sends. */
+  seededSubscriber: {
+    email: string;
+    subscriberId: number;
+    createdThisRun: boolean;
+  } | null;
 }
 
 /** Compute the sending subdomain hatchkit uses for this project's SES
@@ -303,6 +334,39 @@ export async function provisionListmonkSesForProject(
     };
   }
 
+  // 7. Optional: seed the user's own address onto the `-test` list as a
+  //    confirmed subscriber. Best-effort — a Listmonk hiccup here
+  //    shouldn't roll back a successful SES + lists + templates run.
+  //    Wires the verify scripts in the starter to a real inbox without
+  //    any post-install setup.
+  let seededSubscriber: ListmonkSesProvisionResult["seededSubscriber"] = null;
+  if (opts.seedSubscriberEmail) {
+    try {
+      const seeded = await addListmonkSubscriberToList({
+        email: opts.seedSubscriberEmail,
+        listId: testList.id,
+        auth: opts.listmonkAuth,
+      });
+      seededSubscriber = {
+        email: opts.seedSubscriberEmail,
+        subscriberId: seeded.subscriberId,
+        createdThisRun: seeded.createdThisRun,
+      };
+      events.onListmonkSubscriber?.({
+        listmonkUrl,
+        email: opts.seedSubscriberEmail,
+        subscriberId: seeded.subscriberId,
+        listId: testList.id,
+        listName: testList.name,
+        createdThisRun: seeded.createdThisRun,
+      });
+    } catch (err) {
+      console.warn(
+        `  Could not seed ${opts.seedSubscriberEmail} onto ${testList.name}: ${(err as Error).message}`,
+      );
+    }
+  }
+
   return {
     ses: identity,
     smtp,
@@ -314,6 +378,7 @@ export async function provisionListmonkSesForProject(
     campaignTemplate,
     dnsPublish,
     smtpApplied,
+    seededSubscriber,
   };
 }
 
@@ -448,6 +513,12 @@ export interface RenderListmonkSesEnvOptions {
   smtpPassword: string;
   fromEmail: string;
   region: string;
+  /** Optional default-recipient for the bundled `newsletter:test-tx` /
+   *  `newsletter:welcome` / `newsletter:verify` scripts. Rendered into
+   *  `.env.development` ONLY — production never auto-targets a single
+   *  inbox. Typically the user's `defaults.forwardingEmail` from
+   *  `hatchkit setup`. */
+  testRecipient?: string;
 }
 
 /** Render the env quartets for prod vs dev. Both surfaces share
@@ -478,8 +549,9 @@ export function renderListmonkSesEnv(opts: RenderListmonkSesEnvOptions): {
     `SES_FROM_EMAIL=${opts.fromEmail}`,
     `SES_REGION=${opts.region}`,
   ];
+  const devOnly = opts.testRecipient ? [`LISTMONK_TEST_RECIPIENT=${opts.testRecipient}`] : [];
   return {
     prod: [...shared, `LISTMONK_LIST_ID=${opts.liveListId}`],
-    dev: [...shared, `LISTMONK_LIST_ID=${opts.testListId}`],
+    dev: [...shared, `LISTMONK_LIST_ID=${opts.testListId}`, ...devOnly],
   };
 }

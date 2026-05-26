@@ -133,6 +133,18 @@ expect("template ids + LISTMONK_FROM are identical across prod and dev", () => {
   }
 });
 
+expect("testRecipient lands in dev env ONLY (smoke scripts target dev only)", () => {
+  const env = renderListmonkSesEnv({ ...baseInput, testRecipient: "rico@example.com" });
+  assert.ok(env.dev.includes("LISTMONK_TEST_RECIPIENT=rico@example.com"));
+  assert.ok(!env.prod.some((l) => l.startsWith("LISTMONK_TEST_RECIPIENT=")));
+});
+
+expect("omitted testRecipient leaves both surfaces without the key", () => {
+  const env = renderListmonkSesEnv(baseInput);
+  assert.ok(!env.dev.some((l) => l.startsWith("LISTMONK_TEST_RECIPIENT=")));
+  assert.ok(!env.prod.some((l) => l.startsWith("LISTMONK_TEST_RECIPIENT=")));
+});
+
 if (failures.length > 0) {
   console.error(`\n${failures.length} failure(s):`);
   for (const f of failures) console.error(`  - ${f}`);

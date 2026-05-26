@@ -22,6 +22,22 @@ hatchkit provision s3                    # create project buckets + env entries
 hatchkit assets pull                     # mirror remote object storage assets locally
 ```
 
+Newsletter / Listmonk + SES smoke commands (run from the project root
+once `hatchkit add <project> listmonk-ses` has populated env):
+
+```bash
+pnpm newsletter:verify              # full smoke — API reach, list ids, subscriber, real tx send
+pnpm newsletter:test-tx             # send one /api/tx email to LISTMONK_TEST_RECIPIENT
+pnpm newsletter:welcome             # send emails/welcome.html to LISTMONK_TEST_RECIPIENT
+pnpm newsletter:draft emails/digest-sample.html --subject "Issue 1"   # stage digest as a Listmonk draft
+NODE_ENV=production pnpm newsletter:send emails/digest-sample.html --subject "..." --confirm   # real broadcast
+```
+
+Hatchkit auto-subscribes your default forwarding email onto
+`<project>-test` and writes it to `.env.development` as
+`LISTMONK_TEST_RECIPIENT`, so the smoke scripts work end-to-end on a
+fresh provision with no extra setup.
+
 Before giving Hatchkit setup advice, run `hatchkit status --json` and
 read `providers[]`, `nextStep`, and `suggestions[]`. For provider failures,
 run `hatchkit doctor --json` and surface the failing `checks[].hint[]`

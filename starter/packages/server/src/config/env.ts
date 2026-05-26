@@ -78,6 +78,12 @@ export const env = {
   LISTMONK_TEST_LIST_ID: getOptional("LISTMONK_TEST_LIST_ID"),
   LISTMONK_TX_TEMPLATE_ID: getOptional("LISTMONK_TX_TEMPLATE_ID"),
   LISTMONK_CAMPAIGN_TEMPLATE_ID: getOptional("LISTMONK_CAMPAIGN_TEMPLATE_ID"),
+  // Pre-filled into .env.development by `hatchkit add <project>
+  // listmonk-ses` when a global default forwarding email is configured.
+  // The bundled `pnpm newsletter:test-tx` / `newsletter:welcome` /
+  // `newsletter:verify` scripts default to this address so a fresh
+  // provision is one command away from a real send in your own inbox.
+  LISTMONK_TEST_RECIPIENT: getOptional("LISTMONK_TEST_RECIPIENT"),
 
   // S3
   S3_ENDPOINT: getOptional("S3_ENDPOINT"),

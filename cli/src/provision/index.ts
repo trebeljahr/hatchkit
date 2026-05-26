@@ -470,10 +470,16 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
         const { provisionListmonkSesForProject, renderListmonkSesEnv } = await import(
           "./listmonk-ses.js"
         );
-        const { getDnsConfig, getListmonkConfig, getSesConfig } = await import("../config.js");
+        const { getDefaultForwardingEmail, getDnsConfig, getListmonkConfig, getSesConfig } =
+          await import("../config.js");
 
         const sesCfg = await getSesConfig();
         const listmonkCfg = await getListmonkConfig();
+        // Auto-seed the user's forwarding email onto the project's
+        // `-test` list as `confirmed` so `pnpm newsletter:verify` lands
+        // a real send in their inbox on the first run. Skipped silently
+        // when the default isn't set — `hatchkit setup` captures it.
+        const seedEmail = getDefaultForwardingEmail() ?? undefined;
         if (!sesCfg || !listmonkCfg) {
           throw new Error(
             "SES or Listmonk credentials disappeared between ensure and dispatch — re-run `hatchkit config add ses` / `hatchkit config add listmonk`.",
@@ -495,6 +501,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
               projectDomain,
               publishDns: !!cf,
               cf,
+              seedSubscriberEmail: seedEmail,
               sesAuth: {
                 region: sesCfg.region,
                 accessKeyId: sesCfg.accessKeyId,
@@ -578,6 +585,21 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
           );
         }
 
+        if (result.seededSubscriber) {
+          const verb = result.seededSubscriber.createdThisRun ? "subscribed" : "confirmed";
+          console.log(
+            chalk.green(
+              `  ✓ ${result.seededSubscriber.email} ${verb} on ${result.testList.name} — \`pnpm newsletter:verify\` from the project dir will send a real test email.`,
+            ),
+          );
+        } else if (!seedEmail) {
+          console.log(
+            chalk.dim(
+              "  · No default forwarding email on file — skipping auto-subscribe. Run `hatchkit setup` to capture one, or seed manually in Listmonk → Subscribers.",
+            ),
+          );
+        }
+
         // Sandbox-mode reminder. Cheap one-shot GetAccount call after
         // the heavy provisioning lifts — surfaces the friction the
         // user is about to hit when they actually try to send.
@@ -617,6 +639,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
           smtpPassword: result.smtp.password,
           fromEmail: result.fromEmail,
           region: sesCfg.region,
+          testRecipient: result.seededSubscriber?.email,
         });
         const serverBucket = buckets.find((b) => b.label === "server")!;
         serverBucket.prodLines.push(...env.prod);

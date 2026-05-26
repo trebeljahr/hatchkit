@@ -254,6 +254,69 @@ export async function createListmonkSubscriber(
   });
 }
 
+/** SQL-string query against `subscribers.email`. Listmonk supports
+ *  `?query=<sql-fragment>` over `GET /api/subscribers`; the inner
+ *  string is interpolated raw, so single quotes in the email get
+ *  doubled to escape. Returns `null` on no match. */
+export async function findListmonkSubscriberByEmail(
+  email: string,
+  authOverride?: ListmonkAuth,
+): Promise<ListmonkSubscriber | null> {
+  const auth = authOverride ?? (await ensureListmonk());
+  const escaped = email.toLowerCase().replace(/'/g, "''");
+  const q = encodeURIComponent(`subscribers.email = '${escaped}'`);
+  const res = await listmonkFetch<{ results: ListmonkSubscriber[] }>(
+    auth,
+    "GET",
+    `/api/subscribers?query=${q}&per_page=1`,
+  );
+  return res.results[0] ?? null;
+}
+
+/** Add an address to one list as a confirmed subscriber, idempotently.
+ *  Used by the listmonk-ses provisioner to seed the user's own
+ *  forwarding email into the project's `-test` list so the first
+ *  `pnpm newsletter:verify` run lands a real email in their inbox
+ *  without any manual setup.
+ *
+ *  Two paths:
+ *    · subscriber doesn't exist yet → POST /api/subscribers with
+ *      `preconfirm_subscriptions: true` so they land as `confirmed`
+ *      on the target list immediately (Listmonk skips its own opt-in
+ *      mailer).
+ *    · subscriber exists → PUT /api/subscribers/lists with
+ *      `action: "add"` + `status: "confirmed"`. The Listmonk PUT is a
+ *      no-op when membership already matches, so re-runs stay quiet.
+ *  Returns the subscriber id + whether the row was created this run
+ *  (the ledger uses the flag to decide whether destroy should clean
+ *  it up). */
+export async function addListmonkSubscriberToList(params: {
+  email: string;
+  listId: number;
+  name?: string;
+  auth?: ListmonkAuth;
+}): Promise<{ subscriberId: number; createdThisRun: boolean }> {
+  const auth = params.auth ?? (await ensureListmonk());
+  const existing = await findListmonkSubscriberByEmail(params.email, auth);
+  if (existing) {
+    await listmonkFetch<boolean>(auth, "PUT", "/api/subscribers/lists", {
+      ids: [existing.id],
+      action: "add",
+      target_list_ids: [params.listId],
+      status: "confirmed",
+    });
+    return { subscriberId: existing.id, createdThisRun: false };
+  }
+  const created = await listmonkFetch<ListmonkSubscriber>(auth, "POST", "/api/subscribers", {
+    email: params.email.toLowerCase(),
+    name: params.name ?? params.email.toLowerCase(),
+    status: "enabled",
+    lists: [params.listId],
+    preconfirm_subscriptions: true,
+  });
+  return { subscriberId: created.id, createdThisRun: true };
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Settings (singleton runtime config, stored in Listmonk's `settings` table)
 //
