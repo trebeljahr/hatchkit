@@ -70,7 +70,6 @@ export const SECRET_KEYS = {
   openpanelClientSecret: (name: string) => `openpanel:${name}:client-secret`,
   plausibleApiKey: "plausible:api-key",
   plausibleSiteDomain: (name: string) => `plausible:${name}:site-domain`,
-  resendApiKey: "resend:api-key",
   /** Listmonk API user token. The API user *name* lives in meta JSON
    *  alongside the URL; only the bearer token belongs in the keychain.
    *  Auth header format is `Authorization: token <api_user>:<token>`. */

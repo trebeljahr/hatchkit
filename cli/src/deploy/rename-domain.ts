@@ -18,7 +18,7 @@
  *   - terraform apply (destroys old records, creates new in new zone)
  *   - the Coolify app's FQDN + env (update in dashboard or via API)
  *   - gh-pages CNAME (if applicable)
- *   - OAuth redirect URIs at Google / GitHub / Stripe / Resend
+ *   - OAuth redirect URIs at Google / GitHub / Stripe
  *   - any hardcoded URLs in the app's own code
  */
 

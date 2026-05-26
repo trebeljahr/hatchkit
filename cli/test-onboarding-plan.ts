@@ -22,7 +22,7 @@ function projectConfig(overrides: Partial<ProjectConfig> = {}): ProjectConfig {
     serverIpv4: "192.0.2.10",
     features: ["analytics"],
     analyticsProviders: ["glitchtip", "plausible"],
-    provisionServices: ["glitchtip", "plausible", "resend"],
+    provisionServices: ["glitchtip", "plausible", "listmonk-ses"],
     s3Provider: "none",
     mlServices: [],
     forceRedeployMl: [],
@@ -94,7 +94,7 @@ function adoptPlan(overrides: Partial<AdoptPlan> = {}): AdoptPlan {
   assert.equal(plan.repo.githubRepoVisibility, "public");
   assert.deepEqual(plan.provisioning.features, ["analytics"]);
   assert.deepEqual(plan.provisioning.analyticsProviders, ["glitchtip", "plausible"]);
-  assert.deepEqual(plan.provisioning.services, ["glitchtip", "plausible", "resend"]);
+  assert.deepEqual(plan.provisioning.services, ["glitchtip", "plausible", "listmonk-ses"]);
 
   const edited = onboardingPlanToProjectConfig(
     {
@@ -151,7 +151,7 @@ function adoptPlan(overrides: Partial<AdoptPlan> = {}): AdoptPlan {
       deployment: { ...plan.deployment, mode: "scaffold-only", isPrivate: false },
       repo: { ...plan.repo, setupGitHub: true },
       env: { bootstrapDotenvx: false },
-      provisioning: { features: ["s3"], services: ["resend"] },
+      provisioning: { features: ["s3"], services: ["listmonk-ses"] },
     },
     adopted,
     state,
@@ -165,7 +165,7 @@ function adoptPlan(overrides: Partial<AdoptPlan> = {}): AdoptPlan {
   assert.equal(roundTripped.isPrivate, false);
   assert.equal(roundTripped.bootstrapDotenvx, false);
   assert.deepEqual(roundTripped.features, ["s3"]);
-  assert.deepEqual(roundTripped.services, ["resend"]);
+  assert.deepEqual(roundTripped.services, ["listmonk-ses"]);
   assert.equal(roundTripped.wireCoolify, true);
   assert.equal(roundTripped.pushKey, true);
 }

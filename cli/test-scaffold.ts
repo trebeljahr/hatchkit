@@ -1531,7 +1531,12 @@ console.log("\n── adopt ledger: every kind has recipe/describe + safe file u
   ledger.record({ kind: "glitchtip", project: "test-glitch" });
   ledger.record({ kind: "openpanel", project: "test-op" });
   ledger.record({ kind: "plausible", project: "test-plausible" });
-  ledger.record({ kind: "resend", client: "test-resend-prod" });
+  ledger.record({
+    kind: "listmonkList",
+    listmonkUrl: "https://listmonk.example.com",
+    listName: "test-listmonk",
+    listId: 1,
+  });
 
   const checks: Check[] = [];
   // 1. Recipe printer handles every kind without throwing.

@@ -108,12 +108,6 @@ export function collectStatus(): StatusSnapshot {
     configureCommand: "hatchkit config add plausible",
   });
   providers.push({
-    key: "resend",
-    label: "Resend (email)",
-    configured: !!config.providers.resend && config.providers.resend.status === "configured",
-    configureCommand: "hatchkit config add resend",
-  });
-  providers.push({
     key: "search-console",
     label: "Google Search Console",
     configured: googleSearchConsoleConfigured,
@@ -204,7 +198,7 @@ function computeSuggestions(
   });
   out.push({
     command: "hatchkit add <project>",
-    why: "add per-project GlitchTip / OpenPanel / Plausible / Resend / Search Console services",
+    why: "add per-project GlitchTip / OpenPanel / Plausible / Listmonk + SES / Search Console services",
   });
   out.push({
     command: "hatchkit explain",

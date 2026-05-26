@@ -28,9 +28,9 @@ export async function initAuth(): Promise<void> {
 
     emailAndPassword: {
       enabled: true,
-      requireEmailVerification: false, // Set to true once Resend is configured
+      requireEmailVerification: false, // Set to true once Listmonk + SES is configured
       async sendResetPassword({ user, url }: { user: { email: string }; url: string }) {
-        if (!env.RESEND_API_KEY || !env.RESEND_FROM_EMAIL) {
+        if (!env.LISTMONK_URL || !env.LISTMONK_TX_TEMPLATE_ID) {
           console.log(`[auth] Password reset URL for ${user.email}: ${url}`);
           return;
         }
@@ -42,7 +42,7 @@ export async function initAuth(): Promise<void> {
         });
       },
       async sendVerificationEmail({ user, url }: { user: { email: string }; url: string }) {
-        if (!env.RESEND_API_KEY || !env.RESEND_FROM_EMAIL) {
+        if (!env.LISTMONK_URL || !env.LISTMONK_TX_TEMPLATE_ID) {
           console.log(`[auth] Verification URL for ${user.email}: ${url}`);
           return;
         }

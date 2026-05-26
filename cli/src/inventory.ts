@@ -14,7 +14,7 @@
  *      be inferred (and confirms inferred values unless --yes).
  *   2. Scan every configured provider in parallel for resources matching
  *      that identity (Coolify app by name, R2 buckets, DNS zone records,
- *      GitHub Pages config, Resend domain verification, etc.).
+ *      GitHub Pages config, etc.).
  *   3. Cross-reference findings to flag drift — e.g. Coolify app fqdn
  *      doesn't match DNS, manifest bucket name doesn't exist live,
  *      gh-pages workflow committed but Pages isn't enabled, CORS on the
@@ -33,7 +33,6 @@ import {
   getDnsConfig,
   getGlitchtipConfig,
   getOpenpanelConfig,
-  getResendConfig,
   getS3Config,
   getStripeConfig,
 } from "./config.js";
@@ -283,7 +282,6 @@ export async function collectInventory(
     scanR2(identity, local.manifest, expectations.r2),
     scanS3Other(identity),
     scanGitHub(identity, { github: expectations.github, githubPages: expectations.githubPages }),
-    scanResend(identity, expectations.resend),
     scanGlitchtip(identity, expectations.glitchtip),
     scanOpenpanel(identity, expectations.openpanel),
     scanStripe(identity, expectations.stripe),
@@ -529,7 +527,7 @@ function collectEnvSignals(
   // Patterns we recognize — prefix → signal name. Keep this list
   // tight; over-broad matches lead to spurious "expected" flags.
   const patterns: Array<{ re: RegExp; signal: string }> = [
-    { re: /^\s*RESEND_/m, signal: "RESEND" },
+    { re: /^\s*LISTMONK_/m, signal: "LISTMONK" },
     { re: /^\s*GLITCHTIP_DSN|^\s*PUBLIC_GLITCHTIP_DSN/m, signal: "GLITCHTIP" },
     { re: /^\s*SENTRY_DSN|^\s*PUBLIC_SENTRY_DSN/m, signal: "SENTRY" },
     { re: /^\s*OPENPANEL_|^\s*PUBLIC_OPENPANEL_/m, signal: "OPENPANEL" },
@@ -548,8 +546,8 @@ function collectEnvSignals(
       } catch {
         continue;
       }
-      // Strip commented-out lines — `# RESEND_API_KEY=...` shouldn't
-      // count as a signal that the project uses Resend.
+      // Strip commented-out lines — `# LISTMONK_URL=...` shouldn't
+      // count as a signal that the project uses Listmonk.
       const live = body
         .split("\n")
         .filter((l) => !/^\s*#/.test(l))
@@ -969,7 +967,6 @@ export interface ProviderExpectations {
   r2: boolean;
   github: boolean;
   githubPages: boolean;
-  resend: boolean;
   glitchtip: boolean;
   openpanel: boolean;
   plausible: boolean;
@@ -1000,7 +997,6 @@ export function computeExpectations(
     // Pages is expected when a deploy workflow is committed or the
     // repo has a CNAME file at one of the conventional locations.
     githubPages: !!local.ghPagesWorkflowPath || !!local.cnameFile,
-    resend: env.has("RESEND") || deps.has("resend"),
     // The Sentry SDK works against GlitchTip (same wire protocol), so
     // either signal counts. Same for an explicit GLITCHTIP_DSN.
     glitchtip:
@@ -1591,58 +1587,6 @@ async function scanGitHub(
   }
 
   return { provider, findings, skipped, raw: { repoInfo, pages } };
-}
-
-async function scanResend(input: InventoryInput, expected: boolean): Promise<ScanResult> {
-  const provider = "resend";
-  const findings: InventoryFinding[] = [];
-  const skipped: Array<{ provider: string; reason: string }> = [];
-  const cfg = await getResendConfig();
-  if (!cfg) {
-    skipped.push({ provider, reason: "not configured" });
-    return { provider, findings, skipped };
-  }
-  if (!input.domain) {
-    skipped.push({ provider, reason: "no domain to match against verified Resend domains" });
-    return { provider, findings, skipped };
-  }
-  try {
-    const res = await fetch("https://api.resend.com/domains", {
-      headers: { Authorization: `Bearer ${cfg.apiKey}` },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const body = (await res.json()) as { data?: Array<{ name?: string; status?: string }> };
-    const apex = apexOf(input.domain);
-    const matches = (body.data ?? []).filter(
-      (d) => typeof d.name === "string" && (d.name === input.domain || d.name === apex),
-    );
-    if (matches.length === 0) {
-      findings.push({
-        provider,
-        kind: "verified-domain",
-        identity: input.domain,
-        status: "missing",
-        expected,
-        detail: `no Resend domain entry for ${input.domain} (${(body.data ?? []).length} domain(s) total)`,
-      });
-    } else {
-      for (const m of matches) {
-        findings.push({
-          provider,
-          kind: "verified-domain",
-          identity: m.name ?? input.domain,
-          status: "present",
-          detail: `status: ${m.status ?? "?"}`,
-        });
-      }
-    }
-  } catch (err) {
-    skipped.push({
-      provider,
-      reason: `Resend lookup failed: ${(err as Error).message.split("\n")[0]}`,
-    });
-  }
-  return { provider, findings, skipped };
 }
 
 async function scanGlitchtip(input: InventoryInput, expected: boolean): Promise<ScanResult> {
@@ -2336,10 +2280,6 @@ function summarizePresent(
       }
       return "enabled";
     }
-    case "resend": {
-      const domains = present.filter((f) => f.kind === "verified-domain").map((f) => f.identity);
-      return domains.join(", ") + partial;
-    }
     case "glitchtip":
     case "openpanel": {
       const projects = present.filter((f) => f.kind === "project").map((f) => f.identity);
@@ -2369,8 +2309,6 @@ function summarizeMissing(providerKey: string): string {
       return "repo not found";
     case "github-pages":
       return "Pages not enabled";
-    case "resend":
-      return "domain not verified";
     case "glitchtip":
     case "openpanel":
       return "no matching project";
@@ -2397,8 +2335,6 @@ function providerLabel(key: string): string {
       return "GitHub";
     case "github-pages":
       return "Pages";
-    case "resend":
-      return "Resend";
     case "glitchtip":
       return "GlitchTip";
     case "openpanel":

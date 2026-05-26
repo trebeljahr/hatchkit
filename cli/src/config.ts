@@ -271,11 +271,6 @@ export interface PlausibleMeta extends ProviderStatus {
   timezone?: string;
 }
 
-export interface ResendMeta extends ProviderStatus {
-  /** Optional default region for new sending domains ("us-east-1", "eu-west-1"…). */
-  defaultRegion?: string;
-}
-
 export interface ListmonkMeta extends ProviderStatus {
   /** Listmonk instance base URL — e.g. `https://newsletter.example.com`.
    *  Stored without a trailing slash. */
@@ -363,9 +358,6 @@ export interface OpenpanelConfig extends OpenpanelMeta {
 export interface PlausibleConfig extends PlausibleMeta {
   apiKey: string;
 }
-export interface ResendConfig extends ResendMeta {
-  apiKey: string;
-}
 export interface ListmonkConfig extends ListmonkMeta {
   /** Bearer token paired with `apiUser` for the Listmonk Authorization
    *  header: `Authorization: token <apiUser>:<apiToken>`. */
@@ -416,7 +408,6 @@ export interface CliConfig {
     glitchtip?: GlitchtipMeta;
     openpanel?: OpenpanelMeta;
     plausible?: PlausibleMeta;
-    resend?: ResendMeta;
     listmonk?: ListmonkMeta;
     ses?: SesMeta;
     googleSearchConsole?: GoogleSearchConsoleMeta;
@@ -1723,52 +1714,6 @@ export async function getPlausibleConfig(): Promise<PlausibleConfig | null> {
 }
 
 // ---------------------------------------------------------------------------
-// Provider: Resend (transactional email SaaS)
-// ---------------------------------------------------------------------------
-
-export async function ensureResend(): Promise<ResendConfig> {
-  const existing = store.get("providers.resend") as ResendMeta | undefined;
-  const existingKey = await getSecret(SECRET_KEYS.resendApiKey);
-
-  if (existing?.status === "configured" && existingKey) {
-    return { ...existing, apiKey: existingKey };
-  }
-
-  console.log(chalk.yellow("\n  Resend is not configured yet. Let's set it up."));
-  tokenHint("https://resend.com/api-keys", "Full access (needed to create domain-scoped keys)");
-  const apiKey = await confirmPastedSecret("Resend API key");
-
-  const spinner = ora("Verifying Resend API key...").start();
-  try {
-    const res = await fetch("https://api.resend.com/domains", {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    spinner.succeed("Resend API key verified");
-  } catch (error) {
-    spinner.fail("Could not verify Resend API key");
-    throw error;
-  }
-
-  const meta: ResendMeta = {
-    status: "configured",
-    lastVerified: new Date().toISOString(),
-  };
-  store.set("providers.resend", meta);
-  await setSecret(SECRET_KEYS.resendApiKey, apiKey);
-  console.log(chalk.green("  ✓ Resend configured"));
-  return { ...meta, apiKey };
-}
-
-export async function getResendConfig(): Promise<ResendConfig | null> {
-  const meta = store.get("providers.resend") as ResendMeta | undefined;
-  if (!meta || meta.status !== "configured") return null;
-  const apiKey = await getSecret(SECRET_KEYS.resendApiKey);
-  if (!apiKey) return null;
-  return { ...meta, apiKey };
-}
-
-// ---------------------------------------------------------------------------
 // Provider: Listmonk (self-hosted mailing-list manager)
 //
 // Two-piece auth: an API *user name* (created manually via Admin → Users
@@ -2965,7 +2910,6 @@ type ReconfigurableProvider =
   | "glitchtip"
   | "openpanel"
   | "plausible"
-  | "resend"
   | "listmonk"
   | "ses"
   | "search-console"
@@ -3015,9 +2959,6 @@ export async function reconfigureProvider(
   } else if (name === "plausible") {
     await wipeProvider("providers.plausible", [SECRET_KEYS.plausibleApiKey]);
     await ensurePlausible();
-  } else if (name === "resend") {
-    await wipeProvider("providers.resend", [SECRET_KEYS.resendApiKey]);
-    await ensureResend();
   } else if (name === "listmonk") {
     await wipeProvider("providers.listmonk", [SECRET_KEYS.listmonkApiToken]);
     await ensureListmonk({ deploy: opts.deploy });
@@ -3278,15 +3219,6 @@ function buildSetupGroups(): SetupGroup[] {
           run: () => reconfigureProvider("plausible"),
         },
         {
-          key: "resend",
-          label: "Resend (transactional email)",
-          status: () => {
-            const m = store.get("providers.resend") as ResendMeta | undefined;
-            return { configured: m?.status === "configured" };
-          },
-          run: () => reconfigureProvider("resend"),
-        },
-        {
           key: "search-console",
           label: "Google Search Console",
           status: () => {
@@ -3409,7 +3341,7 @@ export async function runOnboarding(): Promise<void> {
 
   // Summary — show both what's configured and what's still missing so
   // the user notices optional-but-important steps (GlitchTip / OpenPanel / Plausible
-  // / Resend) they may have skipped.
+  // / Listmonk + SES) they may have skipped.
   const configured = allSteps.filter((s) => s.status().configured);
   const unconfigured = allSteps.filter((s) => !s.status().configured);
   console.log(chalk.bold("\n  ── Done ───────────────────────────────────────────────────\n"));

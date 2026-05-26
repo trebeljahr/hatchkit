@@ -22,7 +22,7 @@
  *      c. Write .hatchkit.json so the project is recognized by
  *         `update`, `add`, `keys`, etc.
  *      d. Optionally run the same observability/email provisioning
- *         that `hatchkit add` does (GlitchTip, OpenPanel, Resend),
+ *         that `hatchkit add` does (GlitchTip, OpenPanel, Plausible, Listmonk + SES),
  *         scoped to whichever surfaces (server/client/both) the user
  *         picked. DSN/clientId/keys land encrypted into the existing
  *         .env.production.
@@ -231,11 +231,11 @@ export interface AdoptPlan {
   services: ProvisionService[];
   /** Push dotenvx key to Coolify after everything's written. */
   pushKey: boolean;
-  /** Email intent — captured opinionatedly (transactional → Resend,
-   *  newsletter → Listmonk+SES, both → both). Static surfaces skip the
-   *  prompt and land here as {@link EMAIL_INTENT_NONE}. Persisted into
-   *  the manifest so downstream provisioning + future `update` /
-   *  `add` runs don't have to re-ask. */
+  /** Email intent — captured opinionatedly (transactional + newsletter
+   *  both map to Listmonk + SES). Static surfaces skip the prompt and
+   *  land here as {@link EMAIL_INTENT_NONE}. Persisted into the manifest
+   *  so downstream provisioning + future `update` / `add` runs don't
+   *  have to re-ask. */
   email: EmailIntent;
 }
 
@@ -353,8 +353,8 @@ export async function runAdopt(
     // the cursor on the row in this case so the choice is explicit.
     scaffoldBuildPipeline: !state.unknownWorkspaceLayout,
     // Provisioning is opt-in. Each service mints real resources on a
-    // third-party (GlitchTip project, OpenPanel project, Plausible site, Resend API
-    // key) and cleaning those up after the fact is a chore — better
+    // third-party (GlitchTip project, OpenPanel project, Plausible site, Listmonk lists +
+    // SES identity) and cleaning those up after the fact is a chore — better
     // to require an explicit tick than to surprise the user with three
     // new clients they didn't ask for. The user opens the "Provision
     // clients" row and ticks whichever they want.
@@ -1116,9 +1116,9 @@ function buildAdoptGroups(
       title: "Provisioning",
       steps: [
         // Email row is hidden on static surfaces — there's no server
-        // to receive RESEND_API_KEY / LISTMONK_*/SES_* anyway, and the
-        // edit handler would refuse the prompt. Keeping the row out
-        // entirely avoids a dead "(none)" line in the review summary.
+        // to receive LISTMONK_*/SES_* anyway, and the edit handler
+        // would refuse the prompt. Keeping the row out entirely avoids
+        // a dead "(none)" line in the review summary.
         ...(plan.surfaces !== "static"
           ? [
               {
@@ -1346,11 +1346,11 @@ async function editAdoptStep(
     return { ...plan, features };
   }
   if (step === "services") {
-    // Resend / Listmonk+SES are picked through the dedicated "Email"
-    // row (askEmailIntent) so the multi-select only carries the
-    // non-email entries. Carry any email providers already on the plan
-    // back in after the prompt so toggling unrelated services doesn't
-    // strip the user's email choice.
+    // Listmonk + SES is picked through the dedicated "Email" row
+    // (askEmailIntent) so the multi-select only carries the non-email
+    // entries. Carry any email providers already on the plan back in
+    // after the prompt so toggling unrelated services doesn't strip
+    // the user's email choice.
     const edited = await multiselect<ProvisionService>({
       message: "Provision per-project clients now?",
       choices: [
@@ -1494,16 +1494,14 @@ interface AdoptCaveat {
 /** Canonical env key per service — used by `filterServicesForResume`
  *  to decide whether a service's credentials are already wired into
  *  the project's env files. If the key is present, re-minting on a
- *  resume would orphan whatever's there (Resend mints a fresh API
- *  key each call; OpenPanel mints a fresh project; Stripe re-creates
- *  the webhook endpoint). `email` is intentionally absent — Email
- *  Routing is zone-state with no env footprint, and its provisioner
- *  is already 409-idempotent. */
+ *  resume would orphan whatever's there (OpenPanel mints a fresh
+ *  project; Stripe re-creates the webhook endpoint). `email` is
+ *  intentionally absent — Email Routing is zone-state with no env
+ *  footprint, and its provisioner is already 409-idempotent. */
 const RESUME_SERVICE_ENV_KEY: Record<ProvisionService, { server?: string; client?: string }> = {
   glitchtip: { server: "GLITCHTIP_DSN", client: "PUBLIC_GLITCHTIP_DSN" },
   openpanel: { server: "OPENPANEL_CLIENT_ID", client: "PUBLIC_OPENPANEL_CLIENT_ID" },
   plausible: { client: "NEXT_PUBLIC_PLAUSIBLE_DOMAIN" },
-  resend: { server: "RESEND_API_KEY" },
   "listmonk-ses": { server: "LISTMONK_URL" },
   s3: { server: "R2_ENDPOINT" },
   email: {},
@@ -2075,9 +2073,9 @@ async function executePlan(
     // client-only `add`.
     //
     // --resume contract: filter out services whose canonical env keys
-    // are already present in the target env files. Re-minting Resend
-    // keys / OpenPanel projects / Stripe webhooks on every resume
-    // orphans live credentials and rotates secrets the user didn't
+    // are already present in the target env files. Re-minting OpenPanel
+    // projects / Stripe webhooks on every resume orphans live
+    // credentials and rotates secrets the user didn't
     // ask to rotate. The keychain caches some of these per-service,
     // but those caches don't survive a fresh machine — the env file
     // is the durable signal, so we trust it. A service is re-included
@@ -2102,9 +2100,9 @@ async function executePlan(
         },
         domain: plan.domain,
         // Record per-resource as runProvision creates them. Done via
-        // callback so a mid-loop failure (e.g. Resend after GlitchTip
-        // already succeeded) still leaves a complete trail of what
-        // to undo.
+        // callback so a mid-loop failure (e.g. Listmonk + SES after
+        // GlitchTip already succeeded) still leaves a complete trail
+        // of what to undo.
         onProvisioned: (event) => {
           if (event.service === "glitchtip") {
             ledger.record({ kind: "glitchtip", project: event.project });
@@ -2112,27 +2110,6 @@ async function executePlan(
             ledger.record({ kind: "openpanel", project: event.project });
           } else if (event.service === "plausible" && event.created) {
             ledger.record({ kind: "plausible", project: event.project });
-          } else if (event.service === "resend") {
-            ledger.record({ kind: "resend", client: event.client });
-          } else if (event.service === "resendAudience") {
-            ledger.record({
-              kind: "resendAudience",
-              audience: event.audience,
-              audienceId: event.audienceId,
-            });
-          } else if (
-            event.service === "resendDns" &&
-            (event.createdRecords.length > 0 || event.mergedSpf.length > 0)
-          ) {
-            ledger.record({
-              kind: "resendDns",
-              domainId: event.domainId,
-              domainName: event.domainName,
-              zoneId: event.zoneId,
-              zoneName: event.zoneName,
-              records: event.createdRecords,
-              mergedSpf: event.mergedSpf,
-            });
           } else if (event.service === "sesDomain") {
             ledger.record({ kind: "sesDomain", domain: event.domain });
           } else if (

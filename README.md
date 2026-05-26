@@ -13,7 +13,7 @@
 Hatchkit turns the messy 2-week ritual of *"start a new product"* into a single guided command. It:
 
 - **Scaffolds** a production-ready full-stack TypeScript app from a batteries-included starter (websockets, Stripe, analytics, S3, native desktop/mobile, auth — pick what you need).
-- **Provisions** observability, email, and analytics clients (GlitchTip, OpenPanel, Resend) paired per environment.
+- **Provisions** observability, email, and analytics clients (GlitchTip, OpenPanel, Plausible, Listmonk + SES) paired per environment.
 - **Deploys** DNS, a VPS, and a Coolify app via Terraform — or pushes to an existing server you already own.
 - **Ships ML** by deploying pre-built GPU services (subtitles, image recognition, background removal, 3D extraction) to Modal, RunPod, Hugging Face, or Replicate.
 - **Encrypts secrets** with dotenvx and keeps private keys in the OS keychain — never in git.
@@ -51,7 +51,7 @@ New to the CLI? Run `hatchkit explain` for a one-page mental model covering ever
 | `hatchkit explain` | Print the one-page mental model (concepts, commands, workflow). |
 | `hatchkit create` | Scaffold a new project (interactive) and optionally deploy it end-to-end. |
 | `hatchkit update` | Add features (desktop, mobile, …) to a project already scaffolded. |
-| `hatchkit add <project> [services]` | Provision `-dev` / `-prod` GlitchTip / OpenPanel / Resend clients. |
+| `hatchkit add <project> [services]` | Provision GlitchTip / OpenPanel / Plausible / Listmonk + SES / email / search clients for an existing project. |
 | `hatchkit gh-pages` | Wire GitHub Pages for the current repo (static / Vite / Jekyll) with optional custom domain + DNS. |
 | `hatchkit keys show/push <project>` | Read or push the dotenvx private key to Coolify. |
 | `hatchkit config [add/reset]` | Inspect or modify stored provider credentials. |

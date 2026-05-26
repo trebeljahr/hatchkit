@@ -1,12 +1,12 @@
 /**
  * cloudflare-dns-publish.ts: SPF-merge unit tests.
  *
- * The shared helper now backs both Resend's and SES's DKIM-publish
- * flow. SPF-merge is the one piece with non-trivial logic — multiple
- * SPF records at the same host cause receivers to PermError (RFC 7208
- * §3.2), so when a provider's record says "v=spf1 …" and a CNAME at
- * the same name already exists, we MUST combine includes into one
- * record, not write two. Goldens lock in:
+ * The shared helper backs SES's DKIM-publish flow. SPF-merge is the
+ * one piece with non-trivial logic — multiple SPF records at the same
+ * host cause receivers to PermError (RFC 7208 §3.2), so when a
+ * provider's record says "v=spf1 …" and a CNAME at the same name
+ * already exists, we MUST combine includes into one record, not write
+ * two. Goldens lock in:
  *
  *   1. No existing SPF → write the provider's record verbatim, and the
  *      caller learns we created (not merged into) a record so rollback
@@ -56,20 +56,20 @@ console.log("mergeSpf:");
 
 await expect("no existing SPF → write provider record as-is, flag sourceWasExisting=false", async () => {
   const cf = makeFakeCf([]);
-  const out = await mergeSpf(cf, "zone-1", "example.com", "v=spf1 include:_spf.resend.com ~all");
+  const out = await mergeSpf(cf, "zone-1", "example.com", "v=spf1 include:amazonses.com ~all");
   assert.equal(out.sourceWasExisting, false);
-  assert.equal(out.merged, "v=spf1 include:_spf.resend.com ~all");
+  assert.equal(out.merged, "v=spf1 include:amazonses.com ~all");
 });
 
 await expect("existing SPF (softfail) + provider include → union, preserve ~all, flag merged", async () => {
   const cf = makeFakeCf([
     { id: "r1", content: "v=spf1 include:_spf.mx.cloudflare.net ~all" },
   ]);
-  const out = await mergeSpf(cf, "zone-1", "example.com", "v=spf1 include:_spf.resend.com ~all");
+  const out = await mergeSpf(cf, "zone-1", "example.com", "v=spf1 include:amazonses.com ~all");
   assert.equal(out.sourceWasExisting, true);
   assert.match(out.merged, /^v=spf1 /);
   assert.match(out.merged, /include:_spf\.mx\.cloudflare\.net/);
-  assert.match(out.merged, /include:_spf\.resend\.com/);
+  assert.match(out.merged, /include:amazonses\.com/);
   assert.match(out.merged, /~all$/);
   assert.doesNotMatch(out.merged, /-all/);
 });
@@ -78,7 +78,7 @@ await expect("existing SPF (hardfail) → preserved, NOT silently downgraded to 
   const cf = makeFakeCf([
     { id: "r1", content: "v=spf1 include:_spf.mx.cloudflare.net -all" },
   ]);
-  const out = await mergeSpf(cf, "zone-1", "example.com", "v=spf1 include:_spf.resend.com ~all");
+  const out = await mergeSpf(cf, "zone-1", "example.com", "v=spf1 include:amazonses.com ~all");
   assert.equal(out.sourceWasExisting, true);
   assert.match(out.merged, /-all$/);
   assert.doesNotMatch(out.merged, /~all/);
@@ -86,10 +86,10 @@ await expect("existing SPF (hardfail) → preserved, NOT silently downgraded to 
 
 await expect("duplicates in provider + existing includes are deduplicated", async () => {
   const cf = makeFakeCf([
-    { id: "r1", content: "v=spf1 include:_spf.resend.com include:_spf.mx.cloudflare.net ~all" },
+    { id: "r1", content: "v=spf1 include:amazonses.com include:_spf.mx.cloudflare.net ~all" },
   ]);
-  const out = await mergeSpf(cf, "zone-1", "example.com", "v=spf1 include:_spf.resend.com ~all");
-  const occurrences = (out.merged.match(/include:_spf\.resend\.com/g) ?? []).length;
+  const out = await mergeSpf(cf, "zone-1", "example.com", "v=spf1 include:amazonses.com ~all");
+  const occurrences = (out.merged.match(/include:amazonses\.com/g) ?? []).length;
   assert.equal(occurrences, 1);
 });
 

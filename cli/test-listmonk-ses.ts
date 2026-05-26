@@ -13,10 +13,10 @@
  *
  *   2. `renderListmonkSesEnv` — the prod/dev env quartets. The only
  *      difference between prod and dev is which list id lands in
- *      `LISTMONK_LIST_ID` (live for prod, test for dev — same pattern
- *      Resend's audience split uses). Everything else (SMTP host,
- *      username/password, region, from-email, API user/token) is
- *      identical across surfaces.
+ *      `LISTMONK_LIST_ID` (live for prod, test for dev — keeps a bug
+ *      in dev from broadcasting to real subscribers). Everything else
+ *      (SMTP host, username/password, region, from-email, API user/
+ *      token) is identical across surfaces.
  *
  * Run: `pnpm test` (via the script in cli/package.json).
  */

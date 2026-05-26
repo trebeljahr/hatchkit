@@ -616,7 +616,6 @@ function servicesAlreadyAdded(args: {
   if (/(^|\n)(PUBLIC_)?GLITCHTIP_DSN=/m.test(text)) added.add("glitchtip");
   if (/(^|\n)(PUBLIC_)?OPENPANEL_CLIENT_ID=/m.test(text)) added.add("openpanel");
   if (/(^|\n)(NEXT_PUBLIC_|PUBLIC_)?PLAUSIBLE_DOMAIN=/m.test(text)) added.add("plausible");
-  if (/(^|\n)RESEND_API_KEY=/m.test(text)) added.add("resend");
   if (/(^|\n)LISTMONK_URL=/m.test(text) && /(^|\n)SES_SMTP_HOST=/m.test(text)) {
     added.add("listmonk-ses");
   }
@@ -635,7 +634,6 @@ function servicesImpossibleForProject(manifest: ProjectManifest | null): Set<Pro
   }
   if (manifest.surfaces === "backend") blocked.add("plausible");
   if (manifest.surfaces === "static") {
-    blocked.add("resend");
     blocked.add("listmonk-ses");
     blocked.add("s3");
   }
@@ -670,28 +668,6 @@ function recordProvisionedEvent(ledger: RunLedger, event: ProvisionedEvent): voi
   if (event.service === "openpanel") ledger.record({ kind: "openpanel", project: event.project });
   if (event.service === "plausible" && event.created) {
     ledger.record({ kind: "plausible", project: event.project });
-  }
-  if (event.service === "resend") ledger.record({ kind: "resend", client: event.client });
-  if (event.service === "resendAudience") {
-    ledger.record({
-      kind: "resendAudience",
-      audience: event.audience,
-      audienceId: event.audienceId,
-    });
-  }
-  if (
-    event.service === "resendDns" &&
-    (event.createdRecords.length > 0 || event.mergedSpf.length > 0)
-  ) {
-    ledger.record({
-      kind: "resendDns",
-      domainId: event.domainId,
-      domainName: event.domainName,
-      zoneId: event.zoneId,
-      zoneName: event.zoneName,
-      records: event.createdRecords,
-      mergedSpf: event.mergedSpf,
-    });
   }
   if (event.service === "sesDomain") {
     ledger.record({ kind: "sesDomain", domain: event.domain });
@@ -772,12 +748,11 @@ async function handleAdd(): Promise<void> {
   //   hatchkit add                             (fully interactive)
   //   hatchkit add raptor-runner               (prompts for services)
   //   hatchkit add raptor-runner all
-  //   hatchkit add raptor-runner glitchtip,resend
+  //   hatchkit add raptor-runner glitchtip,listmonk-ses
   const allServices: ProvisionService[] = [
     "glitchtip",
     "openpanel",
     "plausible",
-    "resend",
     "listmonk-ses",
     "s3",
     "email",
@@ -794,7 +769,6 @@ async function handleAdd(): Promise<void> {
 
   const nameFlag = flagValue("--name");
   const domainFlag = flagValue("--domain");
-  const resendDomainFlag = flagValue("--resend-domain");
   const serverDirFlag = flagValue("--server-dir");
   const clientDirFlag = flagValue("--client-dir");
   const projectDirFlag = flagValue("--project-dir");
@@ -858,13 +832,13 @@ async function handleAdd(): Promise<void> {
       return;
     }
     const { multiselect } = await import("./utils/multiselect.js");
-    // Resend / Listmonk+SES are reached via the opinionated email-intent
+    // Listmonk + SES is reached via the opinionated email-intent
     // prompt below, not the generic service multi-select. The order
-    // here is: ask email-intent first (only when at least one email
-    // provider is still addable), then the multi-select for the
+    // here is: ask email-intent first (only when the listmonk-ses
+    // service is still addable), then the multi-select for the
     // remaining non-email services.
     const emailServicesAddable: ProvisionService[] = (
-      ["resend", "listmonk-ses"] as ProvisionService[]
+      ["listmonk-ses"] as ProvisionService[]
     ).filter((s) => addableServices.includes(s));
     let emailIntentServices: ProvisionService[] = [];
     if (emailServicesAddable.length > 0) {
@@ -966,49 +940,6 @@ async function handleAdd(): Promise<void> {
   //   (no surface flags)              → prompt interactively
   const noWrite = args.includes("--no-write");
   const enableDevObs = args.includes("--enable-dev-obs");
-  const withAudience = args.includes("--with-audience");
-  const noResendDns = args.includes("--no-resend-dns");
-  if (withAudience && !services.includes("resend")) {
-    console.log(chalk.red("  --with-audience requires `resend` in the services list."));
-    process.exit(1);
-  }
-  if (noResendDns && !services.includes("resend")) {
-    console.log(chalk.red("  --no-resend-dns only applies when `resend` is in the services list."));
-    process.exit(1);
-  }
-  if (resendDomainFlag && !services.includes("resend")) {
-    console.log(chalk.red("  --resend-domain only applies when `resend` is in the services list."));
-    process.exit(1);
-  }
-
-  // Resolve --resend-domain ahead of runProvision so the (TTY-only)
-  // picker is bypassed entirely. Match by name first; if no domain on
-  // the account uses this name yet, create it. Skips re-creation on
-  // re-runs and lets `hatchkit add` work non-interactively in CI.
-  let resendDomainSelection: { id: string; name: string } | undefined;
-  if (resendDomainFlag && services.includes("resend")) {
-    const { ensureResend } = await import("./config.js");
-    await ensureResend();
-    const { listResendDomains, createResendDomain, normalizeDomainInput } = await import(
-      "./provision/resend.js"
-    );
-    const wanted = normalizeDomainInput(resendDomainFlag);
-    const existing = (await listResendDomains()).find((d) => d.name === wanted);
-    if (existing) {
-      console.log(
-        chalk.dim(
-          `  Reusing existing Resend domain ${existing.name} (status: ${existing.status}).`,
-        ),
-      );
-      resendDomainSelection = { id: existing.id, name: existing.name };
-    } else {
-      const created = await createResendDomain(wanted);
-      console.log(
-        chalk.green(`  Created Resend domain ${created.name} (status: ${created.status}).`),
-      );
-      resendDomainSelection = { id: created.id, name: created.name };
-    }
-  }
 
   const validSurfaceModes = ["fullstack", "split", "backend", "static"] as const;
   const noEnvServices = new Set<ProvisionService>(["email", "search-console"]);
@@ -1079,10 +1010,6 @@ async function handleAdd(): Promise<void> {
     enableDevObs,
     domain: domainFlag,
     failIfExists: true,
-    resendWithAudience: withAudience,
-    resendPublishDns: !noResendDns,
-    resendDomainId: resendDomainSelection?.id,
-    resendDomainName: resendDomainSelection?.name,
     onProvisioned: (event) => recordProvisionedEvent(ledger, event),
   });
   ledger.complete();
@@ -1355,7 +1282,7 @@ async function handleRemove(): Promise<void> {
   //   hatchkit remove                             (fully interactive)
   //   hatchkit remove raptor-runner               (prompts for services)
   //   hatchkit remove raptor-runner all
-  //   hatchkit remove raptor-runner glitchtip,resend
+  //   hatchkit remove raptor-runner glitchtip,listmonk-ses
   //   hatchkit remove raptor-runner all --yes     (skip confirmation)
   const positional = args.slice(1).filter((a) => !a.startsWith("--"));
   const dryRun = args.includes("--dry-run");
@@ -1367,7 +1294,6 @@ async function handleRemove(): Promise<void> {
     "glitchtip",
     "openpanel",
     "plausible",
-    "resend",
     "listmonk-ses",
     "s3",
     "email",
@@ -1392,11 +1318,10 @@ async function handleRemove(): Promise<void> {
         { name: "GlitchTip (deletes the project)", value: "glitchtip", checked: true },
         { name: "OpenPanel (deletes the project)", value: "openpanel", checked: true },
         { name: "Plausible (deletes the site)", value: "plausible", checked: false },
-        { name: "Resend (deletes the API key)", value: "resend", checked: true },
         {
           name: "Listmonk + SES (deletes the per-project Listmonk lists; keeps the SES identity)",
           value: "listmonk-ses",
-          checked: false,
+          checked: true,
         },
         { name: "S3 / R2 (deletes per-bucket scoped tokens)", value: "s3", checked: false },
         {
@@ -1687,15 +1612,19 @@ async function ensureCreateProvisionProviders(services: ProvisionService[]): Pro
     ensureDefaultForwardingEmail,
     ensureGlitchtip,
     ensureGoogleSearchConsole,
+    ensureListmonk,
     ensureOpenpanel,
     ensurePlausible,
-    ensureResend,
+    ensureSes,
   } = await import("./config.js");
 
   if (unique.has("glitchtip")) await ensureGlitchtip();
   if (unique.has("openpanel")) await ensureOpenpanel();
   if (unique.has("plausible")) await ensurePlausible();
-  if (unique.has("resend")) await ensureResend();
+  if (unique.has("listmonk-ses")) {
+    await ensureSes();
+    await ensureListmonk();
+  }
   if (unique.has("email")) {
     await ensureDns();
     await ensureDefaultForwardingEmail();
@@ -2529,7 +2458,7 @@ async function handleConfig(): Promise<void> {
       if (!provider) {
         console.log("Usage: hatchkit config add <provider>");
         console.log(
-          "Providers: coolify, coolify-github-app, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, plausible, resend, listmonk, ses, search-console, stripe",
+          "Providers: coolify, coolify-github-app, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, plausible, listmonk, ses, search-console, stripe",
         );
         return;
       }
@@ -2547,7 +2476,6 @@ async function handleConfig(): Promise<void> {
         case "glitchtip":
         case "openpanel":
         case "plausible":
-        case "resend":
         case "ses":
         case "search-console":
         case "stripe":
@@ -2599,7 +2527,7 @@ async function handleConfig(): Promise<void> {
             console.log(chalk.red(`  Unknown provider: ${provider}`));
             console.log(
               chalk.dim(
-                "  Valid: coolify, coolify-github-app, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, plausible, resend, listmonk, ses, search-console, stripe",
+                "  Valid: coolify, coolify-github-app, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate, glitchtip, openpanel, plausible, listmonk, ses, search-console, stripe",
               ),
             );
             return;
@@ -2708,7 +2636,7 @@ function printHelp(topic?: HelpTopic): void {
     3. Assigns unique ports per project (server, client, native HMR)
     4. Runs \`pnpm install\` (if pnpm is present and you opt in)
     5. Initializes git, optionally creates a GitHub repo
-    6. Optionally provisions GlitchTip/OpenPanel/Plausible, Resend, Email Routing, Search Console
+    6. Optionally provisions GlitchTip/OpenPanel/Plausible, Listmonk + SES, Email Routing, Search Console
     7. Generates Terraform tfvars + Coolify .env (Coolify mode)
     8. Deploys: Terraform → Coolify → ML  ${chalk.dim("OR")}  GitHub Pages setup
 
@@ -2733,7 +2661,7 @@ function printHelp(topic?: HelpTopic): void {
     - GitHub (via gh CLI)
     - Coolify (URL + token)
     - Hetzner Cloud, DNS provider, S3 (optional)
-    - GlitchTip, OpenPanel, Resend, Search Console (optional)
+    - GlitchTip, OpenPanel, Listmonk + SES, Search Console (optional)
 
   Tokens go to the OS keychain; metadata to
   ${chalk.dim(getConfigPath())}.
@@ -2923,13 +2851,13 @@ function printHelp(topic?: HelpTopic): void {
     --all-defaults            Use every default preset; skip picker
     --no-catch-all            Don't set the *@domain catch-all rule
     --dmarc <none|quarantine|reject>  DMARC policy (default: quarantine)
-    --no-resend-spf           Skip auto-merging _spf.resend.com
+    --no-listmonk-spf         Skip auto-merging amazonses.com
 
   ${chalk.bold("What it sets:")}
     · Email Routing enabled on the zone
     · Destination address verified at Cloudflare (verification email sent)
     · MX records → route1/route2/route3.mx.cloudflare.net
-    · SPF TXT (single record, merged with Resend if detected)
+    · SPF TXT (single record, merged with SES if detected)
     · DMARC TXT at _dmarc.<domain> (default p=quarantine sp=none)
     · One forwarding rule per picked address
     · Optional catch-all rule (*@<domain>)
@@ -2947,7 +2875,7 @@ function printHelp(topic?: HelpTopic): void {
 
   Runs a read-only API call against each provider whose credentials are
   stored (Coolify /version, Hetzner /servers, Cloudflare /tokens/verify,
-  Resend /domains, …). Reports ok / fail / not-configured per provider
+  Listmonk /api/lists, …). Reports ok / fail / not-configured per provider
   and exits non-zero if any check fails. Safe to run repeatedly.
 `);
     return;
@@ -3021,7 +2949,6 @@ function printHelp(topic?: HelpTopic): void {
     · Cloudflare DNS       zones
     · R2                   buckets (whole account)
     · Hetzner S3 / AWS S3  credential presence (bucket listing not implemented)
-    · Resend               verified domains
     · GlitchTip            projects in the configured org
     · OpenPanel            projects
     · Stripe               webhook endpoints (test + live)
@@ -3071,7 +2998,6 @@ function printHelp(topic?: HelpTopic): void {
     · DNS        — Cloudflare zone + relevant records (apex/www/api/s3/…)
     · R2         — buckets (manifest + naming-convention candidates) + CORS
     · GitHub     — repo visibility, Pages status, relevant repo secrets
-    · Resend     — verified-domain match
     · GlitchTip  — projects in the configured org
     · OpenPanel  — projects
     · Stripe     — webhook endpoints whose URL contains the project domain
@@ -3120,8 +3046,11 @@ function printHelp(topic?: HelpTopic): void {
     · Plausible: one site for the public project domain, with browser tracker env.
       Observability values are written to ${chalk.cyan(".env.production")} only — dev noise pollutes real metrics.
       Pass ${chalk.cyan("--enable-dev-obs")} to populate ${chalk.cyan(".env.development")} too.
-    · Resend: separate ${chalk.cyan("-dev")} and ${chalk.cyan("-prod")} API keys (audience
-      safety). Written to the server's dev + prod env respectively.
+    · Listmonk + SES: verifies the SES sending identity for
+      ${chalk.cyan("mail.<projectDomain>")}, publishes DKIM into Cloudflare, creates
+      per-project ${chalk.cyan("<project>")} + ${chalk.cyan("<project>-test")} Listmonk lists,
+      seeds passthrough tx + campaign templates, and writes LISTMONK_*/
+      SES_SMTP_* into the server env.
     · Search Console: verifies the project domain via Cloudflare DNS TXT,
       then adds the ${chalk.cyan("sc-domain:<domain>")} property to your Google account.
       No runtime env is written.
@@ -3150,7 +3079,11 @@ function printHelp(topic?: HelpTopic): void {
     glitchtip   GLITCHTIP_DSN (server) / PUBLIC_GLITCHTIP_DSN (client)
     openpanel   OPENPANEL_* (server) / PUBLIC_OPENPANEL_* (client)
     plausible   NEXT_PUBLIC_PLAUSIBLE_DOMAIN / *_SCRIPT_URL (client only)
-    resend      RESEND_API_KEY + RESEND_FROM_EMAIL (server only)
+    listmonk-ses
+                LISTMONK_URL / _API_USER / _API_TOKEN / _FROM_EMAIL /
+                _LIVE_LIST_ID / _TEST_LIST_ID / _TX_TEMPLATE_ID /
+                _CAMPAIGN_TEMPLATE_ID + SES_SMTP_HOST / _PORT / _USERNAME /
+                _PASSWORD (server only)
     search-console
                 Google Search Console domain property (DNS verification; no env)
     s3          R2_<BUCKET>_ACCESS_KEY_ID / *_SECRET_ACCESS_KEY / *_BUCKET / R2_ENDPOINT
@@ -3181,7 +3114,7 @@ function printHelp(topic?: HelpTopic): void {
         --project-dir ~/projects/asteroid-game
     hatchkit add my-app search-console --domain app.example.com --project-dir ./my-app
     hatchkit add fractal-garden search-console --domain fractal.garden
-    hatchkit add raptor-runner glitchtip,resend --no-write
+    hatchkit add raptor-runner glitchtip,listmonk-ses --no-write
     hatchkit add raptor-runner all --surfaces=shared \\
         --server-dir ./raptor-runner/packages/server \\
         --client-dir ./raptor-runner/packages/client
@@ -3223,7 +3156,7 @@ function printHelp(topic?: HelpTopic): void {
         (DOTENV_PRIVATE_KEY_PRODUCTION + GITHUB_REPO_URL), upserts an
         A record \`<domain> → <server-ip>\` on Cloudflare, and triggers
         the first deploy. Defaults ON when no matching app exists.
-      · Optionally provisions GlitchTip / OpenPanel / Plausible / Resend,
+      · Optionally provisions GlitchTip / OpenPanel / Plausible / Listmonk + SES,
         Email Routing, and Search Console (same machinery as \`hatchkit add\`).
       · Optionally pushes the dotenvx private key to Coolify
         (redundant when the Coolify+DNS step ran — it already does).
@@ -3283,7 +3216,9 @@ function printHelp(topic?: HelpTopic): void {
     glitchtip   Deletes the GlitchTip project
     openpanel   Deletes the OpenPanel project (and clears cached creds)
     plausible   Deletes the Plausible site cached for this project
-    resend      Finds API keys by name and deletes them
+    listmonk-ses
+                Deletes the per-project Listmonk lists; keeps the SES identity
+                so a future re-add can reuse the verified sending subdomain
     search-console
                 Removes the Search Console property from your Google account
                 (keeps DNS verification token / ownership state)
@@ -3296,7 +3231,7 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Examples:")}
     hatchkit remove raptor-runner all
-    hatchkit remove raptor-runner glitchtip,resend --dry-run
+    hatchkit remove raptor-runner glitchtip,listmonk-ses --dry-run
     hatchkit remove raptor-runner all --yes
 `);
     return;
@@ -3324,7 +3259,7 @@ function printHelp(topic?: HelpTopic): void {
     create + adopt:
     - GitHub repo                              ${chalk.dim("gh repo delete")}
     - dotenvx private key in keychain          ${chalk.dim("keytar deletePassword")}
-    - GlitchTip / OpenPanel / Plausible / Resend ${chalk.dim("DELETE")} per-vendor
+    - GlitchTip / OpenPanel / Plausible / Listmonk + SES ${chalk.dim("DELETE")} per-vendor
     - Coolify app / project / database         ${chalk.dim("DELETE /api/v1/...")}
 
     adopt-only (fine-grained, never wider than what adopt itself wrote):
@@ -3467,8 +3402,8 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Still your job (no rename API or destructive):")}
     - Cloudflare R2 buckets ${chalk.dim("<old>-assets / <old>-state")} — R2 has no
       rename; create new, copy objects, update manifest, delete old.
-    - GlitchTip / OpenPanel / Plausible / Resend project slugs — no
-      rename API. Recreating drops history; leave them or
+    - GlitchTip / OpenPanel / Plausible project slugs + Listmonk list
+      names — no rename API. Recreating drops history; leave them or
       ${chalk.dim("hatchkit add <new> <svc>")} + ${chalk.dim("hatchkit remove <old> <svc>")}.
     - Tailscale local-dev Caddy fragment (re-run dev-setup if enabled).
     - The project directory itself (${chalk.dim("mv ../<old> ../<new>")} if you want it).
@@ -3578,7 +3513,7 @@ function printHelp(topic?: HelpTopic): void {
     config              Show status of every configured provider (alias: \`status\`)
     config add <p>      Configure a provider
                         (coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate,
-                         glitchtip, openpanel, plausible, resend, search-console, stripe)
+                         glitchtip, openpanel, plausible, listmonk, ses, search-console, stripe)
     config reset        Clear ALL CLI config (providers, tokens, ML registry, ports)
 `);
     return;
@@ -3684,7 +3619,7 @@ function printHelp(topic?: HelpTopic): void {
     adopt           Bring an existing project under hatchkit management (run in project dir)
     update          Add features to an already-scaffolded project (run in project dir)
     server add      Retrofit a server into a client-only project
-    add             Create GlitchTip / OpenPanel / Plausible / Resend / email / search clients for an existing project
+    add             Create GlitchTip / OpenPanel / Plausible / Listmonk + SES / email / search clients for an existing project
     assets          Move bytes between local S3 and prod buckets (seed/push/pull/migrate)
     remove          Delete the -dev/-prod clients created by 'add' (inverse of add)
     destroy         Roll back everything ${chalk.cyan("hatchkit create")} did for a project

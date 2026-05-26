@@ -65,9 +65,19 @@ export const env = {
   STRIPE_PUBLISHABLE_KEY: getOptional("STRIPE_PUBLISHABLE_KEY"),
   STRIPE_WEBHOOK_SECRET: getOptional("STRIPE_WEBHOOK_SECRET"),
 
-  // Email
-  RESEND_API_KEY: getOptional("RESEND_API_KEY"),
-  RESEND_FROM_EMAIL: getOptional("RESEND_FROM_EMAIL"),
+  // Email — Listmonk + SES. Listmonk owns the API surface (tx + campaigns
+  // + subscriber management); SES is the SMTP relay it sends through.
+  // `hatchkit add <project> listmonk-ses` provisions the SES identity +
+  // Listmonk lists/templates and writes these values.
+  LISTMONK_URL: getOptional("LISTMONK_URL"),
+  LISTMONK_API_USER: getOptional("LISTMONK_API_USER"),
+  LISTMONK_API_TOKEN: getOptional("LISTMONK_API_TOKEN"),
+  LISTMONK_FROM_EMAIL: getOptional("LISTMONK_FROM_EMAIL"),
+  LISTMONK_FROM: getOptional("LISTMONK_FROM"),
+  LISTMONK_LIVE_LIST_ID: getOptional("LISTMONK_LIVE_LIST_ID"),
+  LISTMONK_TEST_LIST_ID: getOptional("LISTMONK_TEST_LIST_ID"),
+  LISTMONK_TX_TEMPLATE_ID: getOptional("LISTMONK_TX_TEMPLATE_ID"),
+  LISTMONK_CAMPAIGN_TEMPLATE_ID: getOptional("LISTMONK_CAMPAIGN_TEMPLATE_ID"),
 
   // S3
   S3_ENDPOINT: getOptional("S3_ENDPOINT"),

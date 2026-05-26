@@ -11,10 +11,12 @@
  *     ONLY by default. Most teams don't want dev events polluting
  *     their real error / analytics metrics. Opt in via
  *     `--enable-dev-obs` when you need to debug the SDK wiring.
- *   · Resend is different: dev and prod keys are genuinely separated
- *     so a bug in dev can't email real users. We still mint two keys
- *     (`<name>-dev` / `<name>-prod`) and write them into the server's
- *     dev/prod env respectively.
+ *   · Listmonk + SES is the email path: a project gets a `<name>`
+ *     and a `<name>-test` Listmonk list, two passthrough templates
+ *     (tx + campaign), and reuses the global SES sending identity for
+ *     `mail.<projectDomain>`. dev/prod share the same SMTP relay creds;
+ *     dev sends through the `-test` list so broadcasts never hit real
+ *     subscribers.
  *   · Surfaces: a project can be fullstack, split into two packages,
  *     backend-only, or pure static. When the project has both a server
  *     and a client surface, the common case is a single shared
@@ -36,7 +38,6 @@ import {
   ensureGoogleSearchConsole,
   ensureOpenpanel,
   ensurePlausible,
-  ensureResend,
   ensureS3,
   getConfigPath,
 } from "../config.js";
@@ -70,19 +71,6 @@ import {
   plausibleSiteExists,
   provisionPlausibleSite,
 } from "./plausible.js";
-import { publishResendDnsToCloudflare } from "./resend-dns.js";
-import {
-  type ResendClient,
-  createResendAudience,
-  createResendDomain,
-  deleteResendAudience,
-  deleteResendClient,
-  listResendApiKeys,
-  listResendAudiences,
-  listResendDomains,
-  normalizeDomainInput,
-  provisionResendClient,
-} from "./resend.js";
 import {
   type ProvisionR2TokensResult,
   provisionR2BucketTokens,
@@ -100,7 +88,6 @@ export type ProvisionService =
   | "glitchtip"
   | "openpanel"
   | "plausible"
-  | "resend"
   | "listmonk-ses"
   | "s3"
   | "email"
@@ -135,28 +122,12 @@ export interface Surfaces {
 /** Per-resource event surfaced to the caller as each provider succeeds.
  *  Used by `hatchkit adopt` to record into the run ledger immediately
  *  after a resource is created — that way a later failure inside
- *  runProvision (e.g. Resend after GlitchTip already succeeded) still
- *  leaves a complete trail of what to undo. */
+ *  runProvision (e.g. Listmonk + SES after GlitchTip already succeeded)
+ *  still leaves a complete trail of what to undo. */
 export type ProvisionedEvent =
   | { service: "glitchtip"; project: string }
   | { service: "openpanel"; project: string }
   | { service: "plausible"; project: string; domain: string; created: boolean }
-  | { service: "resend"; client: string }
-  | { service: "resendAudience"; audience: string; audienceId: string; kind: "live" | "test" }
-  | {
-      service: "resendDns";
-      domainId: string;
-      domainName: string;
-      zoneId: string;
-      zoneName: string;
-      /** Records this run CREATED — undo can DELETE these by id without
-       *  touching anything else in the zone. */
-      createdRecords: Array<{ id: string; name: string; type: "TXT" | "MX" | "CNAME" }>;
-      /** SPF rows we merged into instead of creating — auto-rollback
-       *  skips these to avoid yanking includes the user added by hand. */
-      mergedSpf: Array<{ name: string }>;
-      finalStatus: string;
-    }
   /** SES verified-identity event. Emitted once per project provision
    *  when the `mail.<projectDomain>` identity is freshly created (or
    *  fetched intact on a re-run). Records on the ledger so destroy can
@@ -166,9 +137,8 @@ export type ProvisionedEvent =
       domain: string;
       dkimRecords: Array<{ type: "CNAME"; name: string; value: string }>;
     }
-  /** SES → Cloudflare DKIM publish. Parallel of `resendDns`; same
-   *  per-record-id tracking so auto-rollback can DELETE only what this
-   *  run created. */
+  /** SES → Cloudflare DKIM publish. Per-record-id tracking so
+   *  auto-rollback can DELETE only what this run created. */
   | {
       service: "sesDns";
       domainName: string;
@@ -233,24 +203,6 @@ export type ProvisionedEvent =
 export interface ProvisionOptions {
   baseName: string;
   services: ProvisionService[];
-  /** Optional pre-selected Resend domain id, skipping the picker. */
-  resendDomainId?: string;
-  /** Optional Resend domain name paired with `resendDomainId`; used
-   *  to seed a useful RESEND_FROM_EMAIL for scaffolded apps. */
-  resendDomainName?: string;
-  /** Create a per-project Resend Audience (mailing list) alongside the
-   *  -dev / -prod keys. When true, also creates a `<project>-test`
-   *  audience so a developer can rehearse broadcasts without touching
-   *  the live list. Writes `RESEND_AUDIENCE_ID` (and `_TEST`) into the
-   *  server bundle env. Off by default — most projects only need
-   *  transactional sending. */
-  resendWithAudience?: boolean;
-  /** Automatically publish Resend's required DKIM/SPF DNS records into
-   *  Cloudflare after the domain is created. Requires `hatchkit config
-   *  add dns` to be set up (Cloudflare token + the Resend domain's
-   *  parent zone already on the account). Defaults to true when DNS is
-   *  configured; the publisher no-ops if the records already match. */
-  resendPublishDns?: boolean;
   /** If set, resolves the write destinations without prompting.
    *  Pass `false` to force cache-only mode (no writes). */
   surfaces?: Surfaces | false;
@@ -279,11 +231,6 @@ interface SearchConsoleTarget {
   domain: string;
 }
 
-interface ResendDomainSelection {
-  id?: string;
-  name?: string;
-}
-
 interface WriteBucket {
   /** Display label like "server" or "client". */
   label: string;
@@ -292,8 +239,7 @@ interface WriteBucket {
   /** KEY=VALUE lines destined for `.env.production`. */
   prodLines: string[];
   /** KEY=VALUE lines destined for `.env.development` (only if
-   *  enableDevObs or when values are genuinely dev-scoped, e.g.
-   *  Resend's dev key). */
+   *  enableDevObs or when values are genuinely dev-scoped). */
   devLines: string[];
 }
 
@@ -302,7 +248,6 @@ async function assertNoExistingProviderResources(args: {
   services: ProvisionService[];
   surfaces: Surfaces | null;
   plausibleDomain?: string;
-  resendWithAudience?: boolean;
 }): Promise<void> {
   const conflicts: string[] = [];
 
@@ -329,21 +274,6 @@ async function assertNoExistingProviderResources(args: {
   if (args.services.includes("plausible") && args.plausibleDomain) {
     if (await plausibleSiteExists(args.plausibleDomain)) {
       conflicts.push(`Plausible site ${args.plausibleDomain}`);
-    }
-  }
-
-  if (args.services.includes("resend")) {
-    const keys = await listResendApiKeys();
-    const names = new Set(keys.map((key) => key.name));
-    for (const name of [`${args.baseName}-dev`, `${args.baseName}-prod`]) {
-      if (names.has(name)) conflicts.push(`Resend API key ${name}`);
-    }
-    if (args.resendWithAudience) {
-      const audiences = await listResendAudiences();
-      const audienceNames = new Set(audiences.map((a) => a.name));
-      for (const name of [args.baseName, `${args.baseName}-test`]) {
-        if (audienceNames.has(name)) conflicts.push(`Resend audience ${name}`);
-      }
     }
   }
 
@@ -378,7 +308,6 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   if (opts.services.includes("glitchtip")) await ensureGlitchtip();
   if (opts.services.includes("openpanel")) await ensureOpenpanel();
   if (opts.services.includes("plausible")) await ensurePlausible();
-  if (opts.services.includes("resend")) await ensureResend();
   if (opts.services.includes("listmonk-ses")) {
     // Two global providers gate the combo: a Listmonk instance + an
     // SES IAM key. Both prompt up front (interactively) so the user
@@ -405,14 +334,6 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
     await ensureDns();
   }
 
-  // Resend domain: pick once, reused across dev + prod.
-  let resendDomain: ResendDomainSelection | undefined = opts.resendDomainId
-    ? { id: opts.resendDomainId, name: opts.resendDomainName }
-    : undefined;
-  if (opts.services.includes("resend") && !resendDomain) {
-    resendDomain = await pickResendDomain();
-  }
-
   const buckets = initBuckets(surfaces);
 
   if (opts.failIfExists) {
@@ -421,7 +342,6 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
       services: opts.services,
       surfaces,
       plausibleDomain,
-      resendWithAudience: opts.resendWithAudience,
     });
   }
 
@@ -430,7 +350,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   // Runtime-shape gate. `static` is the ONLY surface mode without a
   // server runtime; everything else (fullstack, split, backend) does
   // have one and therefore has somewhere to put server-side env. Used
-  // by Resend, S3, and the server-side half of GlitchTip/OpenPanel.
+  // by Listmonk + SES, S3, and the server-side half of GlitchTip/OpenPanel.
   // The `surfaces === null` branch is cache-only mode (--no-write):
   // env lines still get cached on disk, so treat it as having both
   // surfaces available.
@@ -525,111 +445,6 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
         created: res.created,
       });
       pushObsLines(buckets, "client", renderPlausibleEnv(res), enableDevObs);
-    }
-  }
-
-  // ── Resend ── (always server-side; dev/prod keys are not observability)
-  if (opts.services.includes("resend")) {
-    if (!hasServerRuntime) {
-      console.log(
-        chalk.yellow(
-          `  Skipping Resend — surface mode is "static" (no server runtime), so there's nowhere to put RESEND_API_KEY.`,
-        ),
-      );
-    } else {
-      // `buckets.find` is non-null here: hasServerRuntime is true iff
-      // `surfaces?.mode !== "static"`, and every non-static mode causes
-      // initBuckets to push a "server" entry (including the
-      // surfaces === null cache-only path). The non-null assertion
-      // keeps the TS types tight without restructuring the bucket model.
-      const serverBucket = buckets.find((b) => b.label === "server")!;
-      const devRes = await withSpinner(
-        `Resend: creating restricted API key ${opts.baseName}-dev`,
-        () => provisionResendClient(`${opts.baseName}-dev`, resendDomain?.id, resendDomain?.name),
-      );
-      opts.onProvisioned?.({ service: "resend", client: `${opts.baseName}-dev` });
-      const prodRes = await withSpinner(
-        `Resend: creating restricted API key ${opts.baseName}-prod`,
-        () => provisionResendClient(`${opts.baseName}-prod`, resendDomain?.id, resendDomain?.name),
-      );
-      opts.onProvisioned?.({ service: "resend", client: `${opts.baseName}-prod` });
-      // Resend is the one case where dev gets its OWN value, not the
-      // prod value — dev keys are audience-restricted so they can't
-      // email real users.
-      serverBucket.devLines.push(...renderResendEnv(devRes));
-      serverBucket.prodLines.push(...renderResendEnv(prodRes));
-
-      // ── Audience ── (optional — only for projects that need a mailing list)
-      if (opts.resendWithAudience) {
-        const liveName = opts.baseName;
-        const testName = `${opts.baseName}-test`;
-        const live = await withSpinner(`Resend: creating audience ${liveName}`, () =>
-          createResendAudience(liveName),
-        );
-        opts.onProvisioned?.({
-          service: "resendAudience",
-          audience: liveName,
-          audienceId: live.id,
-          kind: "live",
-        });
-        const test = await withSpinner(`Resend: creating audience ${testName}`, () =>
-          createResendAudience(testName),
-        );
-        opts.onProvisioned?.({
-          service: "resendAudience",
-          audience: testName,
-          audienceId: test.id,
-          kind: "test",
-        });
-        // Same prod/dev split as the API keys: prod env hits the live
-        // list, dev env hits the test list. Both audiences are usable
-        // from either API key (audiences aren't scoped to a key), so
-        // the env value is the only thing that decides which list a
-        // broadcast targets.
-        serverBucket.prodLines.push(`RESEND_AUDIENCE_ID=${live.id}`);
-        serverBucket.devLines.push(`RESEND_AUDIENCE_ID=${test.id}`);
-      }
-
-      // ── DNS publish ── (best-effort; opt-out via `resendPublishDns: false`)
-      const wantDnsPublish = opts.resendPublishDns !== false && resendDomain?.id;
-      if (wantDnsPublish && resendDomain?.id) {
-        try {
-          const publishRes = await publishResendDnsToCloudflare(resendDomain.id, {
-            triggerVerify: true,
-          });
-          opts.onProvisioned?.({
-            service: "resendDns",
-            domainId: resendDomain.id,
-            domainName: publishRes.domain.name,
-            zoneId: publishRes.zoneId,
-            zoneName: publishRes.zoneName,
-            createdRecords: publishRes.createdRecords,
-            mergedSpf: publishRes.mergedSpf,
-            finalStatus: publishRes.finalStatus,
-          });
-          console.log(
-            chalk.dim(
-              `  Resend DNS: ${publishRes.created} created, ${publishRes.updated} updated, ${publishRes.unchanged} unchanged in zone ${publishRes.zoneName}. Domain status: ${publishRes.finalStatus}.`,
-            ),
-          );
-          for (const note of publishRes.skippedExtra) {
-            console.log(chalk.yellow(`  Resend DNS: skipped ${note}`));
-          }
-          for (const m of publishRes.mergedSpf) {
-            console.log(
-              chalk.dim(
-                `  Resend DNS: merged SPF include into pre-existing record at ${m.name} — auto-rollback will not touch it (manual un-merge required if you ever undo).`,
-              ),
-            );
-          }
-        } catch (err) {
-          console.log(
-            chalk.yellow(
-              `  Resend DNS auto-publish failed: ${(err as Error).message}\n  Publish records manually from https://resend.com/domains/${resendDomain.id} and re-run with --no-resend-dns to skip this step.`,
-            ),
-          );
-        }
-      }
     }
   }
 
@@ -1231,7 +1046,7 @@ async function resolvePlausibleDomain(
 
 function servicesNeedEnvSurfaces(services: ProvisionService[]): boolean {
   return services.some((service) =>
-    ["glitchtip", "openpanel", "plausible", "resend", "listmonk-ses", "s3"].includes(service),
+    ["glitchtip", "openpanel", "plausible", "listmonk-ses", "s3"].includes(service),
   );
 }
 
@@ -1599,7 +1414,6 @@ export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
   if (opts.services.includes("glitchtip")) await ensureGlitchtip();
   if (opts.services.includes("openpanel")) await ensureOpenpanel();
   if (opts.services.includes("plausible")) await ensurePlausible();
-  if (opts.services.includes("resend")) await ensureResend();
   if (opts.services.includes("listmonk-ses")) {
     const { ensureListmonk } = await import("../config.js");
     await ensureListmonk();
@@ -1632,21 +1446,6 @@ export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
       deletePlausibleSite(opts.baseName),
     );
   }
-  // Resend keeps the -dev/-prod pair plus (optionally) two audiences.
-  if (opts.services.includes("resend")) {
-    for (const env of ["dev", "prod"] as const) {
-      const name = `${opts.baseName}-${env}`;
-      await runDelete(`Resend: deleting API key ${name}`, opts.dryRun, () =>
-        deleteResendClient(name),
-      );
-    }
-    for (const name of [opts.baseName, `${opts.baseName}-test`]) {
-      await runDelete(`Resend: deleting audience ${name} (if present)`, opts.dryRun, () =>
-        deleteResendAudience(name),
-      );
-    }
-  }
-
   // Listmonk + SES — delete the per-project Listmonk lists. The SES
   // verified identity is intentionally LEFT IN PLACE because the
   // sending subdomain (`mail.<projectDomain>`) is project-scoped but
@@ -1868,61 +1667,6 @@ async function withSpinner<T>(label: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-async function pickResendDomain(): Promise<ResendDomainSelection> {
-  const domains = await listResendDomains();
-  const sorted = [...domains].sort((a, b) => {
-    const av = a.status === "verified" ? 0 : 1;
-    const bv = b.status === "verified" ? 0 : 1;
-    return av - bv || a.name.localeCompare(b.name);
-  });
-
-  const ADD_NEW = "__add_new__";
-  const NONE = "";
-
-  const choices = [
-    ...sorted.map((d) => ({
-      name: d.status === "verified" ? d.name : `${d.name}  ${chalk.dim(`(${d.status})`)}`,
-      value: d.id,
-    })),
-    { name: chalk.cyan("＋ Add a new sending domain…"), value: ADD_NEW },
-    { name: "— no domain restriction (account-wide) —", value: NONE },
-  ];
-
-  const picked = await select({
-    message: "Resend sending domain (both keys will be scoped to it):",
-    choices,
-  });
-
-  if (picked === NONE) return {};
-  if (picked !== ADD_NEW) {
-    const domain = sorted.find((d) => d.id === picked);
-    return { id: picked, name: domain?.name };
-  }
-
-  // Add-new flow.
-  const raw = await input({
-    message: "New sending domain (bare domain — e.g. playtiao.com or mail.playtiao.com):",
-    validate: (v) => {
-      const n = normalizeDomainInput(v);
-      if (!n) return "Enter a domain.";
-      if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(n)) {
-        return "That doesn't look like a valid domain.";
-      }
-      return true;
-    },
-  });
-  const name = normalizeDomainInput(raw);
-  const created = await withSpinner(`Resend: creating domain ${name}`, () =>
-    createResendDomain(name),
-  );
-  console.log(
-    chalk.yellow(
-      `  ${created.name} created (status: ${created.status}). Add the DNS records in the Resend dashboard before sending — https://resend.com/domains/${created.id}`,
-    ),
-  );
-  return { id: created.id, name: created.name };
-}
-
 /** Server env uses the plain names; browser env uses a `PUBLIC_`
  *  prefix (Vite / Astro / SvelteKit / Remix convention — bundlers
  *  typically only expose variables with this kind of prefix to
@@ -1950,12 +1694,5 @@ function renderPlausibleEnv(c: PlausibleSite): string[] {
     `PUBLIC_PLAUSIBLE_SCRIPT_URL=${c.scriptUrl}`,
     `NEXT_PUBLIC_PLAUSIBLE_DOMAIN=${c.domain}`,
     `NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL=${c.scriptUrl}`,
-  ];
-}
-
-function renderResendEnv(c: ResendClient): string[] {
-  return [
-    `RESEND_API_KEY=${c.apiKey}`,
-    ...(c.domainName ? [`RESEND_FROM_EMAIL=noreply@${c.domainName}`] : []),
   ];
 }

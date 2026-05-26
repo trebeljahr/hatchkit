@@ -18,7 +18,6 @@ import {
   getDnsConfig,
   getGlitchtipConfig,
   getOpenpanelConfig,
-  getResendConfig,
   getS3Config,
   getStripeConfig,
 } from "./config.js";
@@ -131,7 +130,6 @@ interface ProbeOutput {
   rawCoolifyApps?: CoolifyApplication[];
   rawZones?: CloudflareZone[];
   rawR2Buckets?: Array<{ name: string }>;
-  rawResendDomains?: Array<{ name: string; status?: string }>;
   rawGlitchtipProjects?: Array<{ slug?: string; name?: string }>;
   rawOpenpanelProjects?: Array<{ name?: string; id?: string }>;
 }
@@ -165,7 +163,6 @@ export async function collectOverview(): Promise<OverviewReport> {
     probeR2(),
     probeS3Other("hetzner"),
     probeS3Other("aws"),
-    probeResend(),
     probeGlitchtip(),
     probeOpenpanel(),
     probeStripe(),
@@ -453,52 +450,6 @@ async function probeS3Other(provider: "hetzner" | "aws"): Promise<ProbeOutput> {
         label,
         status: "error",
         detail: `ListBuckets failed: ${(err as Error).message.split("\n")[0]}`,
-      },
-    };
-  }
-}
-
-async function probeResend(): Promise<ProbeOutput> {
-  const key = "resend";
-  const label = "Resend";
-  const cfg = await getResendConfig();
-  if (!cfg) return { provider: { key, label, status: "skip", detail: "not configured" } };
-  try {
-    const res = await fetch("https://api.resend.com/domains", {
-      headers: { Authorization: `Bearer ${cfg.apiKey}` },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const body = (await res.json()) as {
-      data?: Array<{ name?: string; status?: string }>;
-    };
-    const domains = (body.data ?? []).filter(
-      (d): d is { name: string; status?: string } => typeof d.name === "string",
-    );
-    if (domains.length === 0) {
-      return { provider: { key, label, status: "empty", resources: [] }, rawResendDomains: [] };
-    }
-    return {
-      provider: {
-        key,
-        label,
-        status: "present",
-        summary: `${domains.length} domain${domains.length === 1 ? "" : "s"}`,
-        preview: domains.map((d) => `${d.name}${d.status ? ` (${d.status})` : ""}`).slice(0, 6),
-        resources: domains.map((d) => ({
-          kind: "verified-domain",
-          identity: d.name,
-          detail: d.status,
-        })),
-      },
-      rawResendDomains: domains,
-    };
-  } catch (err) {
-    return {
-      provider: {
-        key,
-        label,
-        status: "error",
-        detail: `Resend list failed: ${(err as Error).message.split("\n")[0]}`,
       },
     };
   }

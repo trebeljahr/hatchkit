@@ -14,7 +14,6 @@ import {
   getHetznerConfig,
   getOpenpanelConfig,
   getPlausibleConfig,
-  getResendConfig,
   getS3Config,
   getStore,
   refreshGoogleSearchConsoleAccessToken,
@@ -616,38 +615,6 @@ async function checkPlausible(): Promise<CheckResult> {
   );
 }
 
-async function checkResend(): Promise<CheckResult> {
-  const cfg = await getResendConfig();
-  if (!cfg) return { name: "Resend", status: "skip" };
-  return check(
-    "Resend",
-    async () => {
-      const res = await fetch("https://api.resend.com/domains", {
-        headers: { Authorization: `Bearer ${cfg.apiKey}` },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return "API key valid";
-    },
-    (detail) => {
-      const code = httpCode(detail);
-      if (code === 401) {
-        return [
-          "Resend API key is invalid or was deleted.",
-          "Create a new one (full access): https://resend.com/api-keys",
-          "Then re-run: `hatchkit config add resend`",
-        ];
-      }
-      if (code === 403) {
-        return [
-          "API key lacks permissions — needs `Full access` to list/create domains and keys.",
-          "Re-create at https://resend.com/api-keys and re-run `hatchkit config add resend`.",
-        ];
-      }
-      return undefined;
-    },
-  );
-}
-
 async function checkGoogleSearchConsole(): Promise<CheckResult> {
   const cfg = await getGoogleSearchConsoleConfig();
   if (!cfg) return { name: "Google Search Console", status: "skip" };
@@ -744,7 +711,6 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   results.push(await checkGlitchtip());
   results.push(await checkOpenpanel());
   results.push(await checkPlausible());
-  results.push(await checkResend());
   results.push(await checkGoogleSearchConsole());
   for (const r of await checkStripe()) results.push(r);
   // Local-dev (Tailscale-served per-project URLs). Returns [] when the

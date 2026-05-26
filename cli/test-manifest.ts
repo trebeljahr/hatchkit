@@ -186,7 +186,7 @@ for (const c of CASES) {
       deployTarget: "existing",
       surfaces: "fullstack",
       ports: { server: 3000, client: 5173 },
-      email: { transactional: "resend", mailingList: "listmonk-ses" },
+      email: { transactional: "listmonk-ses", mailingList: "listmonk-ses" },
     };
     writeFileSync(path, JSON.stringify(v3, null, 2), "utf-8");
 
@@ -194,7 +194,7 @@ for (const c of CASES) {
     assert.ok(result, "v3 read returned null");
     assert.deepEqual(
       result.manifest.email,
-      { transactional: "resend", mailingList: "listmonk-ses" },
+      { transactional: "listmonk-ses", mailingList: "listmonk-ses" },
       "v3 read preserves explicit email intent",
     );
     assert.equal(

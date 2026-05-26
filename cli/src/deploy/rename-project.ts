@@ -34,7 +34,7 @@
  *                                             haven't been renamed yet)
  *
  * By default this is local-only: it does NOT touch provider-side state
- * (Coolify, GitHub, R2, GlitchTip, OpenPanel, Plausible, Resend,
+ * (Coolify, GitHub, R2, GlitchTip, OpenPanel, Plausible, Listmonk + SES,
  * Tailscale, Keychain). Those are destructive or visible-to-others
  * operations the user should authorize. A follow-up checklist is
  * printed at the end.
@@ -64,7 +64,7 @@
  * `${{ github.repository }}` which GitHub resolves to the new slug
  * post-rename, so no workflow edit is needed.
  *
- * R2 buckets / GlitchTip / OpenPanel / Plausible / Resend projects
+ * R2 buckets / GlitchTip / OpenPanel / Plausible / Listmonk + SES projects
  * still belong to the checklist — those providers have no rename API
  * and recreating drops history. Scope is same-owner-only for the
  * GitHub rename.
@@ -1015,7 +1015,7 @@ function printChecklist(
   console.log(chalk.dim(`       - Plausible site name (rarely matters — keyed by domain)`));
   console.log(
     chalk.dim(
-      `       - Resend: revoke ${oldName}-dev/-prod API keys, mint ${newName}-dev/-prod (if used)`,
+      `       - Listmonk: rename per-project lists ${oldName} / ${oldName}-test to ${newName} / ${newName}-test (if used)`,
     ),
   );
 

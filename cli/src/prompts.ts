@@ -52,7 +52,7 @@ export type GpuPlatform = "modal" | "runpod" | "hf" | "replicate";
  *  The four values disambiguate code topology (one package vs. split
  *  packages vs. single surface) from runtime shape (has a server
  *  runtime vs. pure static). The provisioner uses the latter to decide
- *  whether to mint server-side env (Resend keys, server-side
+ *  whether to mint server-side env (Listmonk/SES creds, server-side
  *  observability DSNs, S3 tokens).
  *
  *  · `fullstack` — single repo with a server runtime: Next App Router,
@@ -66,24 +66,23 @@ export type GpuPlatform = "modal" | "runpod" | "hf" | "replicate";
  *                  the api host.
  *  · `static`    — gh-pages / S3+CDN / pure SPA. NO server runtime,
  *                  even if the framework supports one. Server-side
- *                  env-seeded providers (Resend, server-side GlitchTip,
- *                  S3 tokens) are skipped — there is no server to
- *                  consume them. */
+ *                  env-seeded providers (Listmonk/SES, server-side
+ *                  GlitchTip, S3 tokens) are skipped — there is no
+ *                  server to consume them. */
 export type Surface = "fullstack" | "split" | "backend" | "static";
 
 export type Feature = "websocket" | "stripe" | "analytics" | "s3" | "desktop" | "mobile";
 export type AnalyticsProvider = "glitchtip" | "openpanel" | "plausible";
 
 /** Provider for transactional sends (signup confirmations, password
- *  resets, receipts — single-recipient). `listmonk-ses` is the combo
- *  path that delivers via SES with Listmonk's /api/tx wrapper around it.
- *  `none` means the user explicitly opted out — distinguishes a
- *  decision from a missing answer. */
-export type EmailTransactionalProvider = "none" | "resend" | "listmonk-ses";
-/** Provider for mailing-list broadcasts. SES alone has no list/audience
- *  management — broadcasting requires Listmonk (or Resend's Audiences
- *  feature) on top. */
-export type EmailMailingListProvider = "none" | "resend" | "listmonk-ses";
+ *  resets, receipts — single-recipient). `listmonk-ses` is the canonical
+ *  path: SES delivers; Listmonk's /api/tx wraps it with a templated
+ *  subject + body. `none` means the user explicitly opted out —
+ *  distinguishes a decision from a missing answer. */
+export type EmailTransactionalProvider = "none" | "listmonk-ses";
+/** Provider for mailing-list broadcasts. Listmonk owns list / subscriber /
+ *  campaign management; SES is the SMTP relay it sends through. */
+export type EmailMailingListProvider = "none" | "listmonk-ses";
 
 /** Captured email intent for a project — answered once at create/adopt
  *  time and persisted into the manifest. Independent of the live
@@ -312,11 +311,10 @@ function choiceKeyToEmailNeeds(c: "none" | "tx" | "ml" | "both"): EmailNeeds {
   };
 }
 
-/** Per-need provider picker. Listmonk+SES is the recommended option
- *  because it's the sovereign-cheap path (SES is ~€0.10/1k vs Resend's
- *  €20/month entry tier) and Listmonk owns the subscribe/confirm/
- *  broadcast UI users expect. Resend stays available for users who'd
- *  rather pay for managed simplicity. */
+/** Per-need provider picker. Listmonk + SES is the canonical path —
+ *  Listmonk owns the subscribe/confirm/broadcast UI and the /api/tx
+ *  wrapper; SES is the SMTP relay it delivers through. SES alone is
+ *  ~€0.10/1k. The only other choice is opting out. */
 export async function askEmailProvider(
   need: "transactional" | "mailingList",
   opts: {
@@ -334,30 +332,17 @@ export async function askEmailProvider(
         name: "Listmonk + SES — sovereign + cheap (recommended)",
         value: "listmonk-ses",
       },
-      {
-        name: "Resend — managed SaaS (€20/mo entry tier)",
-        value: "resend",
-      },
       { name: "None — skip", value: "none" },
     ],
   });
 }
 
 /** Higher-level helper: ask the intent question once and map directly
- *  to opinionated providers. No provider-choice prompt is exposed —
- *  Hatchkit picks the canonical pair so users land on a working
- *  newsletter stack without having to evaluate Resend vs SES vs
- *  Listmonk on day one:
- *
- *    transactional only         → Resend  (managed SDK, cheap on low volume)
- *    newsletter/campaigns only  → Listmonk + SES (sovereign + €0.10/1k)
- *    both                       → Resend (tx) + Listmonk+SES (broadcast)
- *
- *  Users who want a different combination can edit `.hatchkit.json`'s
- *  `email` field by hand or call `hatchkit add <project> resend`
- *  / `listmonk-ses` directly. `askEmailProvider` (above) is kept around
- *  as an escape hatch for callers that genuinely need per-need provider
- *  prompting — not used by create/adopt/add today. */
+ *  to the opinionated provider. Hatchkit only wires Listmonk + SES for
+ *  both needs — same stack handles tx (`/api/tx`) and broadcasts
+ *  (campaigns), so picking the same thing twice keeps the manifest
+ *  simple and the env surface small. Opt-out lands as `"none"` on
+ *  whichever need the user skipped. */
 export async function askEmailIntent(opts: { current?: EmailIntent } = {}): Promise<EmailIntent> {
   const needs = await askEmailNeeds({
     defaults: opts.current
@@ -375,7 +360,7 @@ export async function askEmailIntent(opts: { current?: EmailIntent } = {}): Prom
  *  (presets / scripted create) that pass `email` in directly. */
 export function opinionatedIntentFromNeeds(needs: EmailNeeds): EmailIntent {
   return {
-    transactional: needs.transactional ? "resend" : "none",
+    transactional: needs.transactional ? "listmonk-ses" : "none",
     mailingList: needs.mailingList ? "listmonk-ses" : "none",
   };
 }
@@ -386,7 +371,6 @@ export function opinionatedIntentFromNeeds(needs: EmailNeeds): EmailIntent {
 export function emailIntentToProvisionServices(email: EmailIntent): ProvisionService[] {
   const services = new Set<ProvisionService>();
   for (const p of [email.transactional, email.mailingList]) {
-    if (p === "resend") services.add("resend");
     if (p === "listmonk-ses") services.add("listmonk-ses");
   }
   return [...services];
@@ -400,7 +384,7 @@ export function mergeEmailIntoProvisionServices(
   existing: ProvisionService[],
   email: EmailIntent,
 ): ProvisionService[] {
-  const stripped = existing.filter((s) => s !== "resend" && s !== "listmonk-ses");
+  const stripped = existing.filter((s) => s !== "listmonk-ses");
   return uniqueProvisionServices([...stripped, ...emailIntentToProvisionServices(email)]);
 }
 
@@ -421,7 +405,6 @@ export function summarizeEmailIntent(email: EmailIntent | undefined): string {
 }
 
 function providerLabel(p: EmailTransactionalProvider | EmailMailingListProvider): string {
-  if (p === "resend") return "Resend";
   if (p === "listmonk-ses") return "Listmonk + SES";
   return "(none)";
 }
@@ -439,10 +422,9 @@ async function collectExtraProvisionServices(args: {
     : [];
   if (args.nonInteractive) return uniqueProvisionServices(baseServices);
 
-  // Email providers (resend, listmonk-ses) are handled by the
-  // dedicated "Email" step above this one — see askEmailIntent. The
-  // multi-select here only covers the remaining domain/launch ops
-  // services.
+  // The email provider (listmonk-ses) is handled by the dedicated
+  // "Email" step above this one — see askEmailIntent. The multi-select
+  // here only covers the remaining domain/launch ops services.
   const extra = await multiselect<ProvisionService>({
     message: "Launch services to provision now:",
     choices: [
@@ -463,8 +445,8 @@ async function collectExtraProvisionServices(args: {
 }
 
 async function promptProvisionServicesEditor(cfg: ProjectConfig): Promise<ProvisionService[]> {
-  // Resend / Listmonk+SES are edited via the dedicated "Email" review
-  // row so the user can't end up with mismatched provisionServices vs
+  // Listmonk + SES is edited via the dedicated "Email" review row so
+  // the user can't end up with mismatched provisionServices vs
   // `cfg.email` intent. The non-email entries below ("Email forwarding"
   // = Cloudflare Email Routing for inbound mail) are unrelated to the
   // outbound email-intent question.
@@ -682,9 +664,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
             // queued services so the manifest doesn't claim email intent
             // for a project that can't actually send mail.
             email: EMAIL_INTENT_NONE,
-            provisionServices: c.provisionServices.filter(
-              (s) => s !== "resend" && s !== "listmonk-ses",
-            ),
+            provisionServices: c.provisionServices.filter((s) => s !== "listmonk-ses"),
           };
         }
         return {
@@ -822,9 +802,9 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     {
       name: "Email",
       // Static / gh-pages projects have no server runtime, so
-      // RESEND_API_KEY / LISTMONK_*/SES_* env vars have nowhere to live.
-      // Skip the email-intent prompt entirely in that case; the
-      // manifest gets `{ transactional: "none", mailingList: "none" }`.
+      // LISTMONK_*/SES_* env vars have nowhere to live. Skip the
+      // email-intent prompt entirely in that case; the manifest gets
+      // `{ transactional: "none", mailingList: "none" }`.
       skip: (c) =>
         c.surfaces === "static" || c.deploymentMode === "gh-pages" || presets.email !== undefined,
       run: async (c) => {
@@ -1180,9 +1160,9 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
 
   // Email intent in non-interactive mode is whatever the caller supplied
   // (manifest preset / scripted create). Absent → "none" both ways, and
-  // any matching resend / listmonk-ses entries in provisionServices stay
-  // intact (the caller chose them explicitly). For static surfaces force
-  // it to "none" — no server to read the env vars.
+  // any matching listmonk-ses entries in provisionServices stay intact
+  // (the caller chose them explicitly). For static surfaces force it to
+  // "none" — no server to read the env vars.
   const email =
     surfaces === "static" || deploymentMode === "gh-pages"
       ? EMAIL_INTENT_NONE
@@ -1563,8 +1543,8 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
         ),
       );
     }
-    // Static surfaces have no server to read RESEND_API_KEY / LISTMONK_*,
-    // so drop the email intent + queued email providers when the user
+    // Static surfaces have no server to read LISTMONK_*/SES_SMTP_*, so
+    // drop the email intent + queued email providers when the user
     // switches to static. Anyone re-enabling a server surface can
     // re-answer via the Email review row.
     const emailAfter = next === "static" ? EMAIL_INTENT_NONE : cfg.email;
@@ -1576,9 +1556,7 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
       runDeployment: nextDeploymentMode === "scaffold-only" ? false : cfg.runDeployment,
       email: emailAfter,
       provisionServices: cfg.provisionServices.filter((service) => {
-        if (next === "static" && (service === "resend" || service === "listmonk-ses")) {
-          return false;
-        }
+        if (next === "static" && service === "listmonk-ses") return false;
         if (next === "backend" && service === "plausible") return false;
         return true;
       }),
@@ -1683,10 +1661,10 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
   }
   if (section === "services") {
     const edited = await promptProvisionServicesEditor(cfg);
-    // The editor excludes resend / listmonk-ses (the dedicated Email
-    // row owns those). Carry them back in from cfg.email so toggling
-    // an unrelated service like Search Console doesn't accidentally
-    // drop the user's email providers.
+    // The editor excludes listmonk-ses (the dedicated Email row owns
+    // that). Carry it back in from cfg.email so toggling an unrelated
+    // service like Search Console doesn't accidentally drop the user's
+    // email provider.
     const provisionServices = uniqueProvisionServices([
       ...edited,
       ...emailIntentToProvisionServices(cfg.email ?? EMAIL_INTENT_NONE),
@@ -1706,6 +1684,8 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     // Static / gh-pages projects have no server runtime — refuse the
     // re-prompt and leave the intent at "none". The review row stays
     // visible so the user sees that email is intentionally disabled.
+    // (See onboardingPlanToProjectConfig for the same gate on the
+    // non-interactive path.)
     if (cfg.surfaces === "static" || cfg.deploymentMode === "gh-pages") {
       console.log(
         chalk.yellow(

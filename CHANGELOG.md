@@ -10,6 +10,18 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 
 - Added GitHub community health files, issue templates, release-note config, Dependabot config, and package metadata so the repository is easier to evaluate and contribute to.
 
+### Changed
+
+- Listmonk + SES is now the only supported email path. The opinionated email intent maps both transactional and newsletter needs to `listmonk-ses`; the starter ships a Listmonk `/api/tx` sender (with the matching `LISTMONK_*` env keys) in place of the Resend HTTP client.
+
+### Fixed
+
+- Fixed the Listmonk transactional template seeded by `hatchkit add <project> listmonk-ses` — tx templates use Go `text/template`, which doesn't register `safeHTML`, so the body now renders `{{ .Tx.Data.body }}` raw instead of failing with `function "safeHTML" not defined`.
+
+### Removed
+
+- Removed the Resend provider, configure flow, provision/destroy paths, and all `--resend-*` flags from `hatchkit add`. The starter's email service and `better-auth` reset/verify hooks now talk to Listmonk + SES; existing projects keep working until their next provisioning run.
+
 ## 0.2.13
 
 ### Added

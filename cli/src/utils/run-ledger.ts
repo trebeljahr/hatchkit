@@ -37,33 +37,15 @@ export type LedgerStep =
   | { kind: "glitchtip"; project: string }
   | { kind: "openpanel"; project: string }
   | { kind: "plausible"; project: string }
-  | { kind: "resend"; client: string }
-  | { kind: "resendAudience"; audience: string; audienceId: string }
-  /** DNS records hatchkit added to Cloudflare to verify a Resend sending
-   *  domain. `records` is the exhaustive list of records this run
-   *  CREATED (skipping updates and unchanged rows) so auto-rollback can
-   *  DELETE each by id without touching pre-existing rows. `mergedSpf`
-   *  is the parallel list of SPF TXTs we merged into instead of
-   *  creating — those stay manual since we don't snapshot the original
-   *  includes to un-merge against. */
-  | {
-      kind: "resendDns";
-      domainId: string;
-      domainName: string;
-      zoneId: string;
-      zoneName: string;
-      records: Array<{ id: string; name: string; type: "TXT" | "MX" | "CNAME" }>;
-      mergedSpf: Array<{ name: string }>;
-    }
   /** SES verified identity hatchkit created. Destroy issues
    *  sesv2:DeleteEmailIdentity, 404-tolerant — re-runs after a partial
    *  rollback won't fail just because the identity is already gone. */
   | { kind: "sesDomain"; domain: string }
-  /** SES DKIM CNAMEs hatchkit published into Cloudflare. Parallel of
-   *  resendDns — `records` is the exhaustive list of records THIS run
-   *  created; auto-rollback DELETEs each by id. `mergedSpf` (empty in
-   *  practice for the SES flow, since SES doesn't ship an SPF record,
-   *  but kept for shape parity) flags SPF rows we touched. */
+  /** SES DKIM CNAMEs hatchkit published into Cloudflare. `records` is
+   *  the exhaustive list of records THIS run created; auto-rollback
+   *  DELETEs each by id. `mergedSpf` (empty in practice for the SES
+   *  flow, since SES doesn't ship an SPF record, but kept for shape
+   *  parity) flags SPF rows we touched. */
   | {
       kind: "sesDns";
       domainName: string;
