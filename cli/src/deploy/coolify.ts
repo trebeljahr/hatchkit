@@ -59,6 +59,10 @@ export interface RunCoolifySetupOptions {
    *  GitHub App source, not the public-repo endpoint, or Coolify accepts
    *  the app but later cannot clone/pull it. */
   isPrivateRepo?: boolean;
+  /** Pre-resolved Coolify GitHub App source — picked upfront in the
+   *  stepper (or edit loop) when the user selects a private repo, so the
+   *  deploy step doesn't pause for an inline picker / walkthrough. */
+  preresolvedGithubSource?: ResolvedGithubAppSource;
 }
 
 export interface RunCoolifySetupResult {
@@ -113,7 +117,7 @@ export async function runCoolifySetup(
   let githubAppUuid: string | undefined;
   let githubAppHtmlUrl: string | undefined;
   if (isPrivateRepo) {
-    const source = await resolveGithubAppSource(api, cfg.url);
+    const source = options.preresolvedGithubSource ?? (await resolveGithubAppSource(api, cfg.url));
     githubAppUuid = source.uuid;
     githubAppHtmlUrl = source.htmlUrl;
     if (repoRef && repoRef.gitRepository !== options.repoUrl) {
@@ -338,9 +342,25 @@ export async function runCoolifySetup(
   return { appUuid, projectUuid, projectCreated, appCreated };
 }
 
-interface ResolvedGithubAppSource {
+export interface ResolvedGithubAppSource {
   uuid: string;
   htmlUrl?: string;
+}
+
+/** Resolve (or walk the user through configuring) the Coolify GitHub App
+ *  source used to clone a private repo. Designed to be called upfront in
+ *  the create stepper as soon as the user picks `visibility: private`,
+ *  so the deploy step can run unattended.
+ *
+ *  Returns `null` when Coolify isn't configured — the deploy step will
+ *  surface a hard failure later, which is the right place for that
+ *  diagnostic. Throws on any other error (no sources after walkthrough,
+ *  user aborts) so the stepper fails loudly before scaffolding starts. */
+export async function prefetchCoolifyGithubAppSource(): Promise<ResolvedGithubAppSource | null> {
+  const cfg = await getCoolifyConfig();
+  if (!cfg) return null;
+  const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+  return resolveGithubAppSource(api, cfg.url);
 }
 
 async function resolveGithubAppSource(

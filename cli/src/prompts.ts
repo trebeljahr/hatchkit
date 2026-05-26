@@ -202,6 +202,12 @@ export interface ProjectConfig {
   /** Visibility for repos created by `hatchkit create`. Defaults to
    *  private for backwards compatibility and safer first deploys. */
   githubRepoVisibility?: GitHubRepoVisibility;
+  /** Pre-resolved Coolify GitHub App source picked upfront in the
+   *  stepper when the user selects a private repo + coolify deploy. Lets
+   *  the Coolify setup step run unattended instead of pausing mid-deploy
+   *  for the source picker / walkthrough. Cleared when visibility flips
+   *  back to public or deployment mode changes off coolify. */
+  coolifyGithubSource?: { uuid: string; htmlUrl?: string };
   /** Whether to run `pnpm install` in the scaffolded repo right after
    *  files are written. Asked upfront in the stepper (rather than mid-
    *  scaffold) so the whole `hatchkit create` flow is non-blocking once
@@ -1010,7 +1016,20 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
             default: c.installDeps,
           });
         }
-        return { ...c, scaffoldRepo, createGithubRepo, githubRepoVisibility, installDeps };
+        const coolifyGithubSource = await resolveCoolifyGithubSourceForStepper({
+          createGithubRepo,
+          githubRepoVisibility,
+          deploymentMode: c.deploymentMode,
+          existing: c.coolifyGithubSource,
+        });
+        return {
+          ...c,
+          scaffoldRepo,
+          createGithubRepo,
+          githubRepoVisibility,
+          installDeps,
+          coolifyGithubSource,
+        };
       },
     },
     {
@@ -1818,6 +1837,12 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     } else {
       runDeployment = false;
     }
+    const coolifyGithubSource = await resolveCoolifyGithubSourceForStepper({
+      createGithubRepo,
+      githubRepoVisibility,
+      deploymentMode: cfg.deploymentMode,
+      existing: cfg.coolifyGithubSource,
+    });
     return {
       ...cfg,
       scaffoldRepo,
@@ -1825,6 +1850,7 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
       githubRepoVisibility,
       installDeps,
       runDeployment,
+      coolifyGithubSource,
     };
   }
   return cfg;
@@ -1833,6 +1859,41 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Frontload the Coolify GitHub App source picker when the user selects
+ *  a private repo + coolify deploy. Without this, the picker (or App
+ *  walkthrough when no sources exist yet) gets wedged between auto-
+ *  running deploy steps — the user walks away thinking it's running
+ *  unattended and comes back to a stalled inquirer prompt.
+ *
+ *  Returns the cached source unchanged when the user didn't touch the
+ *  relevant inputs; clears it when private + coolify is no longer the
+ *  active combo; re-prompts when entering that combo afresh. */
+async function resolveCoolifyGithubSourceForStepper(input: {
+  createGithubRepo: boolean;
+  githubRepoVisibility: GitHubRepoVisibility | undefined;
+  deploymentMode: DeploymentMode;
+  existing: ProjectConfig["coolifyGithubSource"];
+}): Promise<ProjectConfig["coolifyGithubSource"]> {
+  const needsSource =
+    input.createGithubRepo &&
+    input.githubRepoVisibility === "private" &&
+    input.deploymentMode === "coolify";
+  if (!needsSource) return undefined;
+  if (input.existing) return input.existing;
+  try {
+    const { prefetchCoolifyGithubAppSource } = await import("./deploy/coolify.js");
+    const source = await prefetchCoolifyGithubAppSource();
+    return source ?? undefined;
+  } catch (err) {
+    console.log(
+      chalk.yellow(
+        `  Couldn't pre-pick a Coolify GitHub source (${(err as Error).message}). The Coolify step will prompt during deploy.`,
+      ),
+    );
+    return undefined;
+  }
+}
 
 function promptGithubRepoVisibility(
   message: string,

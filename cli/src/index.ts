@@ -2044,6 +2044,7 @@ async function handleCreate(): Promise<void> {
         serverPort: scaffoldResult?.ports.server,
         clientPort: scaffoldResult?.ports.client,
         isPrivateRepo: isCreatedGithubRepoPrivate(config),
+        preresolvedGithubSource: config.coolifyGithubSource,
       });
       // Order matters: rollback iterates the ledger in REVERSE, so we
       // record parent-before-child (project before app). Otherwise
