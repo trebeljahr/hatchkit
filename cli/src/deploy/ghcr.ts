@@ -34,6 +34,7 @@
 import ora from "ora";
 import type { CoolifyApi } from "../utils/coolify-api.js";
 import { exec, execOk } from "../utils/exec.js";
+import { ghTokenScopes } from "../utils/gh-token.js";
 
 export interface GhcrSetupOptions {
   /** Owner/repo slug, e.g. `acme/extinction-protocol`. */
@@ -249,23 +250,6 @@ async function waitForGhcrPackage(opts: {
     await sleep(pollIntervalMs);
   }
   return "timeout";
-}
-
-/** Read the active gh token's scopes. Returns null if the lookup
- *  fails (e.g. user not logged in) — caller treats null as "unknown,
- *  proceed and let the API call fail clearly". */
-async function ghTokenScopes(): Promise<string[] | null> {
-  // `gh auth status -t` prints a token; `gh auth status` (no -t) prints
-  // the scope list to stderr. Easier path: call `gh api -i /` and parse
-  // the `X-Oauth-Scopes` response header.
-  const r = await exec("gh", ["api", "-i", "/"], { silent: true });
-  if (r.exitCode !== 0) return null;
-  const m = r.stdout.match(/^X-Oauth-Scopes:\s*(.*)$/im);
-  if (!m) return [];
-  return m[1]
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
 }
 
 function splitSlug(slug: string): [string, string] {

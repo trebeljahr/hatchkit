@@ -38,7 +38,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
-import { ensureGitHub, getCoolifyConfig, getDefaultRootDomain, getGhcrConfig } from "./config.js";
+import { ensureGhcrViaGh, ensureGitHub, getCoolifyConfig, getDefaultRootDomain } from "./config.js";
 import {
   ghSecretExists,
   ownerFromRemote,
@@ -2024,11 +2024,15 @@ async function executePlan(
           "./deploy/ghcr.js"
         );
         if (plan.isPrivate) {
-          // Read the full GHCR config (token + the PAT owner's GitHub
-          // login). When either is missing the helper surfaces a
-          // `hatchkit config add ghcr` caveat instead of failing the
-          // run, so the user can drop creds in and re-run --resume.
-          const ghcrConfig = await getGhcrConfig();
+          // Resolve GHCR creds. `ensureGhcrViaGh` first re-uses any
+          // previously configured creds, then transparently derives
+          // them from the active gh CLI session when none are set —
+          // keeps adopt non-interactive in the common case (personal
+          // repo, personal gh login with `read:packages`). When gh
+          // can't satisfy (no auth, missing scope in non-TTY, SSO'd
+          // org), it returns null and the existing
+          // `hatchkit config add ghcr` caveat surfaces below.
+          const ghcrConfig = await ensureGhcrViaGh();
           const cfg = await getCoolifyConfig();
           if (cfg) {
             const api = new CoolifyApi({ url: cfg.url, token: cfg.token });

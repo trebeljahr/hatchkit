@@ -2453,9 +2453,17 @@ async function handleConfig(): Promise<void> {
         case "ses":
         case "search-console":
         case "stripe":
-        case "ghcr":
           await reconfigureProvider(provider);
           break;
+        case "ghcr": {
+          // `--manual` forces the legacy paste flow for users who want a
+          // machine PAT separate from the gh CLI session (e.g. an SSO'd
+          // org token, or a CI machine where gh isn't logged in).
+          // Otherwise hatchkit derives the pull token from `gh` directly.
+          const manual = args.includes("--manual");
+          await reconfigureProvider("ghcr", { manual });
+          break;
+        }
         case "listmonk": {
           // `hatchkit config add listmonk --deploy` walks the user
           // through deploying Listmonk on Coolify before the regular

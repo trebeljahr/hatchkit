@@ -6,6 +6,13 @@ import Conf from "conf";
 import ora from "ora";
 import { verifyCoolify } from "./utils/coolify-api.js";
 import { execOk } from "./utils/exec.js";
+import {
+  ghAuthToken,
+  ghAvailable,
+  ghTokenScopes,
+  ghUserLogin,
+  refreshGhScope,
+} from "./utils/gh-token.js";
 import { pickPort } from "./utils/ports.js";
 import {
   SECRET_KEYS,
@@ -2802,14 +2809,141 @@ export async function getStripeConfig(): Promise<StripeConfig | null> {
 //   · 401/403 → wrong scope or revoked PAT; surface a precise error
 //     instead of letting it fail downstream during a 5-minute deploy.
 
-export async function ensureGhcr(): Promise<GhcrConfig> {
-  const existing = store.get("providers.ghcr") as GhcrMeta | undefined;
-  const existingToken = await getSecret(SECRET_KEYS.ghcrPullToken);
+/** Verify a GHCR pull token against `GET /user`. Returns the token
+ *  owner's GitHub login on success, throws on rejection. Shared by
+ *  every persistence path (gh-derived + manual paste) so a bad token
+ *  is caught before a 5-minute deploy fails on `unauthorized`. */
+async function verifyGhcrToken(pullToken: string): Promise<string> {
+  const res = await fetch("https://api.github.com/user", {
+    headers: {
+      Authorization: `Bearer ${pullToken}`,
+      Accept: "application/vnd.github+json",
+      "User-Agent": "hatchkit",
+    },
+  });
+  if (!res.ok) {
+    throw new Error(
+      `HTTP ${res.status} — token rejected by GitHub. Check it has \`read:packages\` and isn't expired.`,
+    );
+  }
+  const body = (await res.json()) as { login?: string };
+  if (!body.login) {
+    throw new Error("GitHub returned no `login` for this token — is it a user PAT?");
+  }
+  return body.login;
+}
 
-  if (existing?.status === "configured" && existingToken && existing.username) {
-    return { ...existing, pullToken: existingToken };
+/** Persist a verified pull token + login to the keychain + config
+ *  store. Same on-disk shape regardless of provenance (gh-derived vs
+ *  manual paste). */
+async function persistGhcrConfig(pullToken: string, username: string): Promise<GhcrConfig> {
+  const meta: GhcrMeta = {
+    status: "configured",
+    lastVerified: new Date().toISOString(),
+    username,
+  };
+  store.set("providers.ghcr", meta);
+  await setSecret(SECRET_KEYS.ghcrPullToken, pullToken);
+  return { ...meta, pullToken };
+}
+
+/** Try to derive a GHCR pull token from the active gh CLI session.
+ *  Returns the persisted config on success, or a structured "reason"
+ *  on failure so the caller decides between falling through to the
+ *  paste flow or surfacing a caveat.
+ *
+ *  Success path is silent — one spinner line, no prompts beyond the
+ *  one-time browser handoff when `read:packages` is missing from the
+ *  active token's scopes. The verification still happens via the
+ *  existing `GET /user` smoke check, so a misconfigured gh token
+ *  fails fast here instead of mid-deploy.
+ *
+ *  `opts.allowRefresh: false` skips the interactive `gh auth refresh`
+ *  step — used by adopt's auto-call path so a missing scope falls
+ *  through to a caveat rather than hijacking the run with a browser
+ *  prompt. */
+async function tryGhCliGhcr(
+  opts: { allowRefresh: boolean } = { allowRefresh: true },
+): Promise<
+  { ok: true; config: GhcrConfig } | { ok: false; reason: string; recoverable: "paste" | "caveat" }
+> {
+  if (!(await ghAvailable())) {
+    return {
+      ok: false,
+      reason: "gh CLI not available or not logged into github.com",
+      recoverable: "paste",
+    };
   }
 
+  let scopes = await ghTokenScopes();
+  if (scopes && !scopes.includes("read:packages")) {
+    if (!opts.allowRefresh) {
+      return {
+        ok: false,
+        reason: "gh token is missing the `read:packages` scope",
+        recoverable: "caveat",
+      };
+    }
+    console.log(
+      chalk.dim(
+        "  → gh token is missing `read:packages`. Running a one-time scope upgrade\n" +
+          "    so Coolify can pull private GHCR images. A browser tab will open.",
+      ),
+    );
+    const refreshed = await refreshGhScope("read:packages");
+    if (!refreshed) {
+      return {
+        ok: false,
+        reason: "gh auth refresh declined or failed",
+        recoverable: "paste",
+      };
+    }
+    scopes = await ghTokenScopes();
+  }
+
+  const spinner = ora("Using gh CLI token for ghcr.io").start();
+  const pullToken = await ghAuthToken();
+  if (!pullToken) {
+    spinner.fail("gh auth token returned no value");
+    return { ok: false, reason: "gh auth token empty", recoverable: "paste" };
+  }
+  let username: string | null = await ghUserLogin();
+  try {
+    const verified = await verifyGhcrToken(pullToken);
+    if (!username) username = verified;
+    if (username !== verified) {
+      spinner.fail("gh login disagrees with token owner");
+      return {
+        ok: false,
+        reason: `gh reports user "${username}" but the token belongs to "${verified}"`,
+        recoverable: "paste",
+      };
+    }
+  } catch (err) {
+    spinner.fail("gh CLI token rejected by GitHub");
+    return {
+      ok: false,
+      reason: (err as Error).message,
+      recoverable: "caveat",
+    };
+  }
+  spinner.succeed(`Using gh CLI token for ghcr.io (${username})`);
+
+  const config = await persistGhcrConfig(pullToken, username);
+  console.log(chalk.green(`  ✓ GHCR configured (${username})`));
+  console.log(
+    chalk.dim(
+      "    Rotating `gh auth` invalidates this token — re-run `hatchkit config add ghcr` after.",
+    ),
+  );
+  return { ok: true, config };
+}
+
+/** Interactive paste flow — kept verbatim from the pre-gh implementation
+ *  so `--manual` is exactly the legacy behavior. Used by `hatchkit
+ *  config add ghcr --manual` and as the fallback when the gh path
+ *  bails out. */
+async function ensureGhcrViaPaste(): Promise<GhcrConfig> {
   console.log(chalk.yellow("\n  GHCR is not configured yet. Let's set it up."));
   console.log(
     chalk.dim(
@@ -2827,38 +2961,52 @@ export async function ensureGhcr(): Promise<GhcrConfig> {
   const spinner = ora("Verifying GHCR token (gh API /user)...").start();
   let username: string;
   try {
-    const res = await fetch("https://api.github.com/user", {
-      headers: {
-        Authorization: `Bearer ${pullToken}`,
-        Accept: "application/vnd.github+json",
-        "User-Agent": "hatchkit",
-      },
-    });
-    if (!res.ok) {
-      throw new Error(
-        `HTTP ${res.status} — token rejected by GitHub. Check it has \`read:packages\` and isn't expired.`,
-      );
-    }
-    const body = (await res.json()) as { login?: string };
-    if (!body.login) {
-      throw new Error("GitHub returned no `login` for this token — is it a user PAT?");
-    }
-    username = body.login;
+    username = await verifyGhcrToken(pullToken);
     spinner.succeed(`GHCR token verified (user: ${username})`);
   } catch (error) {
     spinner.fail("Could not verify GHCR token");
     throw error;
   }
 
-  const meta: GhcrMeta = {
-    status: "configured",
-    lastVerified: new Date().toISOString(),
-    username,
-  };
-  store.set("providers.ghcr", meta);
-  await setSecret(SECRET_KEYS.ghcrPullToken, pullToken);
+  const config = await persistGhcrConfig(pullToken, username);
   console.log(chalk.green(`  ✓ GHCR configured (${username})`));
-  return { ...meta, pullToken };
+  return config;
+}
+
+/** Interactive entry point used by `hatchkit config add ghcr`. Tries
+ *  the gh CLI first (zero prompts when scopes are already in place;
+ *  one browser handoff when `read:packages` needs adding), then falls
+ *  back to the paste flow when gh can't satisfy. `opts.manual` skips
+ *  the gh path entirely — power users who want a machine PAT separate
+ *  from their personal gh session pass `--manual`. */
+export async function ensureGhcr(opts: { manual?: boolean } = {}): Promise<GhcrConfig> {
+  const existing = store.get("providers.ghcr") as GhcrMeta | undefined;
+  const existingToken = await getSecret(SECRET_KEYS.ghcrPullToken);
+
+  if (existing?.status === "configured" && existingToken && existing.username) {
+    return { ...existing, pullToken: existingToken };
+  }
+
+  if (!opts.manual) {
+    const r = await tryGhCliGhcr({ allowRefresh: true });
+    if (r.ok) return r.config;
+    console.log(chalk.dim(`  · gh CLI path unavailable: ${r.reason}. Falling back to paste.`));
+  }
+
+  return ensureGhcrViaPaste();
+}
+
+/** Non-prompting variant for `hatchkit adopt`: auto-runs the gh path
+ *  (without the interactive `gh auth refresh` browser handoff) but
+ *  never falls back to a paste prompt. Returns null when gh can't
+ *  satisfy — adopt then surfaces the existing "GHCR pull credentials
+ *  not configured" caveat so the user can run `hatchkit config add
+ *  ghcr` and resume. Keeps adopt non-interactive when gh is enough. */
+export async function ensureGhcrViaGh(): Promise<GhcrConfig | null> {
+  const existing = await getGhcrConfig();
+  if (existing) return existing;
+  const r = await tryGhCliGhcr({ allowRefresh: false });
+  return r.ok ? r.config : null;
 }
 
 export async function getGhcrConfig(): Promise<GhcrConfig | null> {
@@ -2927,7 +3075,7 @@ type ReconfigurableProvider =
  *  branches ignore it. */
 export async function reconfigureProvider(
   name: ReconfigurableProvider,
-  opts: { deploy?: boolean } = {},
+  opts: { deploy?: boolean; manual?: boolean } = {},
 ): Promise<void> {
   if (name === "coolify") {
     await wipeProvider("providers.coolify", [SECRET_KEYS.coolifyToken]);
@@ -2992,7 +3140,7 @@ export async function reconfigureProvider(
     await ensureStripe();
   } else if (name === "ghcr") {
     await wipeProvider("providers.ghcr", [SECRET_KEYS.ghcrPullToken]);
-    await ensureGhcr();
+    await ensureGhcr({ manual: opts.manual });
   } else if (name.startsWith("s3.")) {
     const p = name.slice(3) as "hetzner" | "aws" | "r2";
     if (p === "r2") {
