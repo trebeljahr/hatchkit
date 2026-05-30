@@ -2847,6 +2847,19 @@ async function persistGhcrConfig(pullToken: string, username: string): Promise<G
   return { ...meta, pullToken };
 }
 
+/** GitHub OAuth packages scopes are a superset hierarchy:
+ *  `admin:packages` ⊃ `write:packages` ⊃ `read:packages`. Any of the
+ *  three grants pull access, so the gh-token path accepts whichever
+ *  the user already has rather than forcing a refresh for `read:` when
+ *  `write:` is already present. */
+function hasPackagesReadScope(scopes: string[]): boolean {
+  return (
+    scopes.includes("read:packages") ||
+    scopes.includes("write:packages") ||
+    scopes.includes("admin:packages")
+  );
+}
+
 /** Try to derive a GHCR pull token from the active gh CLI session.
  *  Returns the persisted config on success, or a structured "reason"
  *  on failure so the caller decides between falling through to the
@@ -2876,7 +2889,7 @@ async function tryGhCliGhcr(
   }
 
   let scopes = await ghTokenScopes();
-  if (scopes && !scopes.includes("read:packages")) {
+  if (scopes && !hasPackagesReadScope(scopes)) {
     if (!opts.allowRefresh) {
       return {
         ok: false,
