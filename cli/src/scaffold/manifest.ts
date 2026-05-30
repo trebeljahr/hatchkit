@@ -123,6 +123,28 @@ export interface ProjectManifest {
    *  Optional for back-compat with manifests written before this
    *  field existed; readers should fall back to detection. */
   surfaces?: "fullstack" | "split" | "backend" | "static";
+  /** Compose service that should receive the public/bare-domain
+   *  routing on Coolify's dockercompose build pack. Coolify rejects
+   *  a flat `domains` field for compose apps and requires
+   *  `docker_compose_domains` keyed by service name (422 — "Use
+   *  docker_compose_domains instead …"); without a correct name
+   *  the PATCH silently no-ops, Traefik never gets labels, and
+   *  the FQDN stays empty (the symptom that left
+   *  mood-magic.trebeljahr.com 503ing after a clean adopt).
+   *
+   *  Persisted to the manifest so `hatchkit adopt --resume` and
+   *  `hatchkit sync` don't have to re-derive from disk on every
+   *  run. Source-of-truth precedence:
+   *    1. This field (explicit / persisted choice).
+   *    2. {@link defaultPublicServiceForSurfaces} based on `surfaces`.
+   *    3. Compose-file inference (read services, pick by
+   *       surface-aware preference list).
+   *
+   *  Optional for back-compat with manifests written before this
+   *  field existed. Readers without it must fall through to (2)+(3);
+   *  `hatchkit doctor` flags older fullstack manifests so the user
+   *  can opt in via `hatchkit update`. */
+  publicService?: string;
   /** Captured email-intent for this project, independent of the
    *  current `provisionServices` list. Two needs (transactional and
    *  mailing list) can be answered independently; each carries a
@@ -266,6 +288,28 @@ export interface BucketCors {
   skipped?: boolean;
 }
 
+/** Default `publicService` name keyed by surface, matching the
+ *  service names baked into the starter's docker-compose.yml
+ *  (`server`, `client`, plus infra). Fullstack / split / static all
+ *  bind the bare/public domain to the Next.js `client` image (it
+ *  serves the SPA and proxies `/api` to server); backend-only has no
+ *  client and routes everything to `server`. Anything else returns
+ *  undefined so the caller falls through to compose-file inference. */
+export function defaultPublicServiceForSurfaces(
+  surfaces: ProjectManifest["surfaces"] | undefined,
+): string | undefined {
+  switch (surfaces) {
+    case "fullstack":
+    case "split":
+    case "static":
+      return "client";
+    case "backend":
+      return "server";
+    default:
+      return undefined;
+  }
+}
+
 /** Build a manifest from the internal ProjectConfig, explicitly
  *  whitelisting only the safe fields. Any new field on ProjectConfig
  *  will NOT leak into the manifest unless added here on purpose. */
@@ -287,6 +331,7 @@ export function toManifest(
     deployTarget: config.deployTarget,
     deploymentMode: config.deploymentMode,
     surfaces: config.surfaces,
+    publicService: config.publicService ?? defaultPublicServiceForSurfaces(config.surfaces),
     gpuPlatforms: config.gpuPlatforms,
     customHfModelId: config.customHfModelId,
     customHfGpuType: config.customHfGpuType,

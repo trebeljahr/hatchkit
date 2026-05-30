@@ -77,6 +77,18 @@ export interface WireUpInput {
   projectDir?: string;
 }
 
+/** Structural shape of a "do this next" hint that `wireProjectIntoCoolify`
+ *  surfaces back to its caller. Mirrors adopt.ts's `AdoptCaveat` so the
+ *  caller can push it straight into the caveats array without an
+ *  adapter — keeps the two layers loosely coupled (coolify-app.ts has
+ *  no dependency on adopt.ts's type) while still giving the user a
+ *  single consolidated recovery block. */
+export interface CoolifyCaveat {
+  title: string;
+  reason: string;
+  recovery: string[];
+}
+
 export interface WireUpResult {
   /** Coolify application uuid. */
   appUuid: string;
@@ -98,6 +110,14 @@ export interface WireUpResult {
   dnsZoneId?: string;
   /** True when at least one DNS record (A or AAAA) was upserted. */
   dnsManaged: boolean;
+  /** Populated when DNS wasn't fully wired — either skipped (no
+   *  provider, no token, no IPs) or failed mid-call. Carries the
+   *  copy-pasteable recovery recipe the user needs (target IPs,
+   *  recommended record type, the `dig` they can run to verify).
+   *  Surfaced verbatim in adopt's caveats block so the user sees
+   *  one consolidated "what's missing" list. Absent when DNS was
+   *  wired successfully (no caveat to surface). */
+  dnsCaveat?: CoolifyCaveat;
   // ── "Did this run actually create vs. reuse?" flags. Adopt's
   //    ledger keys off these — only resources hatchkit *created* are
   //    recorded, so a later rollback never deletes things the user
@@ -252,6 +272,13 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
         ? (input.dockerComposeServiceName ??
           pickComposeServiceForPort(input.projectDir, portsExposes))
         : undefined;
+    if (dockerComposeServiceName) {
+      assertComposeServiceExists(
+        input.projectDir,
+        dockerComposeServiceName,
+        input.dockerComposeServiceName ? "caller override" : "auto-detected fallback",
+      );
+    }
     // Reconcile the build pack + compose location + ports + DOMAINS
     // against what hatchkit's pipeline expects. Catches the case where
     // the app was created (by Coolify's UI, an older hatchkit, or a
@@ -314,6 +341,13 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
         ? (input.dockerComposeServiceName ??
           pickComposeServiceForPort(input.projectDir, portsExposes))
         : undefined;
+    if (dockerComposeServiceName) {
+      assertComposeServiceExists(
+        input.projectDir,
+        dockerComposeServiceName,
+        input.dockerComposeServiceName ? "caller override" : "auto-detected fallback",
+      );
+    }
     const baseInput: ApplicationCreateInput = {
       projectUuid,
       serverUuid: resolveServer.uuid,
@@ -421,6 +455,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     dnsRecordIdV6: dnsResult.recordIdV6,
     dnsZoneId: dnsResult.zoneId,
     dnsManaged: dnsResult.managed,
+    dnsCaveat: dnsResult.caveat,
     projectCreated,
     appCreated,
     dnsRecordCreatedV4: dnsResult.createdV4,
@@ -472,43 +507,92 @@ interface DnsWireResult {
    *  reverting an update means restoring content we don't have. */
   createdV4: boolean;
   createdV6: boolean;
+  /** Populated whenever DNS wasn't fully wired — skipped (no provider,
+   *  no token, no IPs) or failed mid-call. Carries a copy-pasteable
+   *  recovery recipe surfaced verbatim in the adopt caveats block. */
+  caveat?: CoolifyCaveat;
+}
+
+/** Compose the "add this record manually" recovery lines that go into
+ *  the DNS caveat. Centralised so the no-provider / no-token / no-IP
+ *  / no-zone branches all give the user the same shape of fix. The
+ *  `dig` line at the end is what the user runs after they apply the
+ *  fix to confirm the record propagated. */
+function dnsRecoveryRecipe(domain: string, ips: PublicIps, extra: string[] = []): string[] {
+  const records: string[] = [];
+  if (ips.v4) records.push(`A    ${domain}  →  ${ips.v4}  (proxied/orange-cloud ON)`);
+  if (ips.v6) records.push(`AAAA ${domain}  →  ${ips.v6}  (proxied/orange-cloud ON)`);
+  if (records.length === 0) {
+    records.push(`A/AAAA ${domain}  →  <Coolify server public IP>`);
+  }
+  return [
+    "Set the following DNS record(s) yourself:",
+    ...records.map((r) => `  ${r}`),
+    ...extra,
+    `Verify after propagation: dig +short ${domain}`,
+  ];
 }
 
 /** Upsert A and/or AAAA records for `domain` on Cloudflare. Either
  *  IP being undefined is fine — we only upsert what we've got, so a
  *  v6-only deploy gets just an AAAA record and v4-only gets just an A. */
 async function wireDns(domain: string, ips: PublicIps): Promise<DnsWireResult> {
-  const empty: DnsWireResult = { managed: false, createdV4: false, createdV6: false };
+  const empty = (caveat?: CoolifyCaveat): DnsWireResult => ({
+    managed: false,
+    createdV4: false,
+    createdV6: false,
+    caveat,
+  });
   if (!ips.v4 && !ips.v6) {
     console.log(
       chalk.yellow(
-        "  Couldn't resolve a public IPv4 or IPv6 for the Coolify server.\n" +
-          `  Add an A (and optionally AAAA) record for ${domain} manually pointing at\n` +
-          "  the box's public IP, or fix the server's IP in the Coolify dashboard so\n" +
-          "  /servers/{uuid}/domains returns it.",
+        `\n  ⚠ Couldn't resolve a public IPv4 or IPv6 for the Coolify server — DNS wiring skipped.`,
       ),
     );
-    return empty;
+    return empty({
+      title: `DNS for ${domain} not wired`,
+      reason: "Coolify reported no public IPv4 / IPv6 for the server.",
+      recovery: [
+        "Fix the server's IP in the Coolify dashboard so /servers/{uuid}/domains returns it,",
+        "or look up the box's IP manually and add the record yourself:",
+        `  A ${domain}  →  <Coolify server public IP>  (proxied/orange-cloud ON)`,
+        `Verify after propagation: dig +short ${domain}`,
+      ],
+    });
   }
   const dns = await getDnsConfig();
   if (!dns) {
     console.log(
       chalk.yellow(
-        "  No DNS provider configured. Add records yourself:\n" +
-          (ips.v4 ? `    A    ${domain}  →  ${ips.v4}\n` : "") +
-          (ips.v6 ? `    AAAA ${domain}  →  ${ips.v6}\n` : "") +
-          "  Or run `hatchkit config add dns` and re-run.",
+        `\n  ⚠ No DNS provider configured — ${domain} record NOT created. ` +
+          `Recipe surfaced in the caveats block at the end of this run.`,
       ),
     );
-    return empty;
+    return empty({
+      title: `DNS for ${domain} not wired`,
+      reason: "No DNS provider configured in hatchkit.",
+      recovery: dnsRecoveryRecipe(domain, ips, [
+        "Or wire it once via Hatchkit so future runs auto-upsert:",
+        "  hatchkit config add dns",
+        "  hatchkit adopt --resume",
+      ]),
+    });
   }
   if (!dns.apiToken) {
     console.log(
-      chalk.yellow(
-        "  Cloudflare token missing from keychain — re-run `hatchkit config add dns` to refresh.",
-      ),
+      chalk.yellow(`\n  ⚠ Cloudflare token missing from keychain — ${domain} record NOT created.`),
     );
-    return empty;
+    return empty({
+      title: `DNS for ${domain} not wired`,
+      reason: "Cloudflare DNS provider configured but its API token is missing from the keychain.",
+      recovery: [
+        "Refresh the token:",
+        "  hatchkit config add dns",
+        "Then re-run: hatchkit adopt --resume",
+        "Or apply the record manually:",
+        ...dnsRecoveryRecipe(domain, ips).slice(1),
+      ],
+    });
   }
 
   const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
@@ -519,18 +603,31 @@ async function wireDns(domain: string, ips: PublicIps): Promise<DnsWireResult> {
     zone = await cf.getZoneByName(zoneName);
     if (!zone) {
       zoneSpinner.fail();
-      console.log(
-        chalk.yellow(
-          `  No Cloudflare zone matches "${zoneName}". Add one (or change the\n` +
-            "  domain) and set the records manually.",
-        ),
-      );
-      return empty;
+      return empty({
+        title: `DNS for ${domain} not wired`,
+        reason: `No Cloudflare zone matches "${zoneName}" on the configured account.`,
+        recovery: [
+          `Add the zone in Cloudflare (or change the project domain so it lives under a zone you already own),`,
+          `then re-run: hatchkit adopt --resume`,
+          `Or apply the record on whatever DNS provider owns ${zoneName}:`,
+          ...dnsRecoveryRecipe(domain, ips).slice(1),
+        ],
+      });
     }
     zoneSpinner.succeed(`Cloudflare zone: ${zone.name}`);
   } catch (err) {
     zoneSpinner.fail(`Cloudflare zone lookup failed: ${(err as Error).message}`);
-    return empty;
+    return empty({
+      title: `DNS for ${domain} not wired`,
+      reason: `Cloudflare zone lookup failed: ${(err as Error).message}`,
+      recovery: [
+        `Re-check token scope (Zone:DNS:Edit + Zone:Zone:Read required):`,
+        `  hatchkit doctor`,
+        `Then re-run: hatchkit adopt --resume`,
+        `Or apply the record manually:`,
+        ...dnsRecoveryRecipe(domain, ips).slice(1),
+      ],
+    });
   }
 
   const result: DnsWireResult = {
@@ -539,12 +636,15 @@ async function wireDns(domain: string, ips: PublicIps): Promise<DnsWireResult> {
     createdV4: false,
     createdV6: false,
   };
+  const upsertFailures: string[] = [];
   if (ips.v4) {
     const r = await upsertOne(cf, zone.id, "A", domain, ips.v4);
     if (r) {
       result.recordIdV4 = r.id;
       result.createdV4 = r.created;
       result.managed = true;
+    } else {
+      upsertFailures.push(`A → ${ips.v4}`);
     }
   }
   if (ips.v6) {
@@ -553,7 +653,22 @@ async function wireDns(domain: string, ips: PublicIps): Promise<DnsWireResult> {
       result.recordIdV6 = r.id;
       result.createdV6 = r.created;
       result.managed = true;
+    } else {
+      upsertFailures.push(`AAAA → ${ips.v6}`);
     }
+  }
+  if (upsertFailures.length > 0 && !result.managed) {
+    // Every requested upsert failed (so `managed` stayed false). Surface
+    // a caveat with the full set so the user knows what didn't land.
+    result.caveat = {
+      title: `DNS for ${domain} not wired`,
+      reason: `Cloudflare upsert failed for: ${upsertFailures.join(", ")}.`,
+      recovery: [
+        `Check Cloudflare's last error in the spinner output above.`,
+        `Apply the record manually:`,
+        ...dnsRecoveryRecipe(domain, ips).slice(1),
+      ],
+    };
   }
 
   // Edge hardening — only attempt once we've actually managed at least
@@ -620,6 +735,83 @@ async function upsertOne(
     spinner.fail(`Cloudflare: ${type}-record upsert failed: ${(err as Error).message}`);
     return undefined;
   }
+}
+
+/** Verify that the chosen compose service name is actually declared
+ *  in the project's docker-compose file. Coolify's docker_compose_domains
+ *  PATCH silently no-ops when `name` doesn't match a service in the
+ *  compose — the response is still 200 OK, but no Traefik labels get
+ *  emitted, the app's FQDN stays empty, and every request 503s.
+ *  Failing loud here turns that into a thrown error the adopt caller
+ *  can catch + surface as a clear caveat instead of leaving the user
+ *  staring at a healthy-looking deploy that doesn't route.
+ *
+ *  Skipped silently when no compose file is on disk — the caller has
+ *  already decided to send a name (typically `app`), and we can't
+ *  validate without the file. */
+function assertComposeServiceExists(
+  projectDir: string | undefined,
+  serviceName: string,
+  source: string,
+): void {
+  if (!projectDir) return;
+  for (const name of ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"]) {
+    const path = join(projectDir, name);
+    if (!existsSync(path)) continue;
+    let services: string[];
+    try {
+      services = listComposeServices(readFileSync(path, "utf-8"));
+    } catch {
+      // Unreadable / unparseable compose: don't block the deploy on
+      // our parser's limits.
+      return;
+    }
+    if (services.length === 0) return;
+    if (services.includes(serviceName)) return;
+    throw new Error(
+      `Compose service "${serviceName}" (${source}) is not declared in ${name}. ` +
+        `Coolify's docker_compose_domains PATCH silently no-ops when the name doesn't match — ` +
+        `the deploy would succeed but Traefik would never bind a domain. ` +
+        `Services declared: ${services.join(", ")}. ` +
+        `Fix: set "publicService" in .hatchkit.json to one of those, then re-run.`,
+    );
+  }
+}
+
+/** Extract the list of top-level service keys from a compose file.
+ *  Shares the indent-aware traversal with matchComposeService below
+ *  but returns the full set instead of a single match. */
+function listComposeServices(content: string): string[] {
+  const services: string[] = [];
+  const lines = content.split(/\r?\n/);
+  let servicesIndent = -1;
+  let inServices = false;
+  let currentServiceIndent = -1;
+
+  for (const raw of lines) {
+    const line = raw.replace(/#.*$/, "").trimEnd();
+    if (!line.trim()) continue;
+    const indent = line.length - line.trimStart().length;
+
+    if (!inServices) {
+      if (/^services\s*:/.test(line)) {
+        inServices = true;
+        servicesIndent = indent;
+      }
+      continue;
+    }
+
+    if (indent <= servicesIndent) break;
+
+    if (currentServiceIndent === -1 || indent === currentServiceIndent) {
+      const m = line.match(/^\s*([A-Za-z0-9_.-]+)\s*:\s*$/);
+      if (m && !m[1].startsWith("x-")) {
+        currentServiceIndent = indent;
+        services.push(m[1]);
+      }
+    }
+  }
+  return services;
 }
 
 /** Read the project's compose file and pick the service the public

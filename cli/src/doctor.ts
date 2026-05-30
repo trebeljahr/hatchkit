@@ -895,6 +895,10 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of credChecks) results.push(r);
   const mailFromChecks = await checkProjectSesMailFromState(process.cwd());
   for (const r of mailFromChecks) results.push(r);
+  const publicSvcChecks = await checkProjectPublicServiceState(process.cwd());
+  for (const r of publicSvcChecks) results.push(r);
+  const dnsResolveChecks = await checkProjectDnsResolveState(process.cwd());
+  for (const r of dnsResolveChecks) results.push(r);
   return results;
 }
 
@@ -1385,6 +1389,125 @@ export async function checkProjectR2CredsState(projectDir: string): Promise<Chec
   } finally {
     client.destroy();
   }
+  return out;
+}
+
+/** Flag adopted manifests that predate the `publicService` field.
+ *  Without it, Coolify's per-service routing PATCH falls back to a
+ *  heuristic that can pick the wrong service (e.g. binding the bare
+ *  domain to `server` on a fullstack project where Next.js lives on
+ *  `client`). The fix is a one-line manifest edit, surfaced here so
+ *  the user opts in via `hatchkit update` rather than silently being
+ *  backfilled.
+ *
+ *  Skipped silently when:
+ *    · no manifest at cwd
+ *    · manifest already has `publicService` set
+ *    · manifest has no `surfaces` field (legacy v1 / pre-surfaces) */
+export async function checkProjectPublicServiceState(projectDir: string): Promise<CheckResult[]> {
+  const out: CheckResult[] = [];
+  const { existsSync, readFileSync } = await import("node:fs");
+  const manifestPath = `${projectDir}/.hatchkit.json`;
+  if (!existsSync(manifestPath)) return out;
+
+  let manifest: {
+    name?: string;
+    surfaces?: string;
+    publicService?: string;
+    deploymentMode?: string;
+  };
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  } catch {
+    return out;
+  }
+  if (!manifest.name) return out;
+  // gh-pages projects don't route through Coolify, so publicService
+  // is irrelevant to them.
+  if (manifest.deploymentMode === "gh-pages" || manifest.deploymentMode === "scaffold-only") {
+    return out;
+  }
+  if (!manifest.surfaces) return out;
+  if (manifest.publicService) {
+    out.push({
+      name: `Project ${manifest.name} (publicService)`,
+      status: "ok",
+      detail: `${manifest.publicService} (surfaces=${manifest.surfaces})`,
+    });
+    return out;
+  }
+  const { defaultPublicServiceForSurfaces } = await import("./scaffold/manifest.js");
+  const suggested = defaultPublicServiceForSurfaces(
+    manifest.surfaces as "fullstack" | "split" | "backend" | "static" | undefined,
+  );
+  out.push({
+    name: `Project ${manifest.name} (publicService)`,
+    status: "fail",
+    detail: "manifest has no publicService — Coolify routing may bind the wrong service",
+    hint: [
+      `Set publicService in .hatchkit.json. Suggested for surfaces=${manifest.surfaces}: "${suggested ?? "client"}".`,
+      `Or run: hatchkit update    (re-applies scaffold defaults including publicService)`,
+      `Then re-run: hatchkit adopt --resume    (pushes the corrected routing to Coolify)`,
+    ],
+  });
+  return out;
+}
+
+/** Verify every adopted project's domain actually resolves in DNS.
+ *  Catches the silent failure mode where `hatchkit adopt --resume`
+ *  finishes cleanly (because the DNS provider isn't configured) but
+ *  the user assumes the record was written. Cross-checks against the
+ *  resolved server IP from every ledger (gh-pages, coolify, anything
+ *  with a recorded server-side endpoint) so the failing record is
+ *  actionable — the hint tells the user the exact A target to set. */
+export async function checkProjectDnsResolveState(projectDir: string): Promise<CheckResult[]> {
+  const out: CheckResult[] = [];
+  const { existsSync, readFileSync } = await import("node:fs");
+  const manifestPath = `${projectDir}/.hatchkit.json`;
+  if (!existsSync(manifestPath)) return out;
+
+  let manifest: { name?: string; domain?: string; deploymentMode?: string };
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  } catch {
+    return out;
+  }
+  if (!manifest.name || !manifest.domain) return out;
+  // gh-pages projects use github.io / Pages CNAMEs handled separately.
+  if (manifest.deploymentMode === "gh-pages" || manifest.deploymentMode === "scaffold-only") {
+    return out;
+  }
+
+  const { resolve4, resolve6 } = await import("node:dns/promises");
+  let resolved: string[];
+  try {
+    resolved = await resolve4(manifest.domain);
+  } catch (err4) {
+    try {
+      const v6 = await resolve6(manifest.domain);
+      resolved = v6;
+    } catch {
+      const reason = (err4 as Error).message.split("\n")[0];
+      out.push({
+        name: `Project ${manifest.name} (DNS)`,
+        status: "fail",
+        detail: `${manifest.domain} doesn't resolve: ${reason}`,
+        hint: [
+          `No A or AAAA record found for ${manifest.domain}.`,
+          `Likely cause: hatchkit adopt skipped DNS provisioning because no DNS provider is configured.`,
+          `Fix: hatchkit config add dns         (configure Cloudflare)`,
+          `Then: hatchkit adopt --resume       (re-runs the DNS upsert)`,
+          `Or set the record manually pointing at the Coolify server's public IP.`,
+        ],
+      });
+      return out;
+    }
+  }
+  out.push({
+    name: `Project ${manifest.name} (DNS)`,
+    status: "ok",
+    detail: `${manifest.domain} → ${resolved.join(", ")}`,
+  });
   return out;
 }
 

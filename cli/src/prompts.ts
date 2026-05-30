@@ -133,6 +133,14 @@ export interface ProjectConfig {
    *  unused package half + adjust the docker-compose / Coolify routing
    *  accordingly. See the `Surface` type for the per-value semantics. */
   surfaces: Surface;
+  /** Override for the docker-compose service that receives the public
+   *  domain on Coolify's dockercompose build pack. Almost always
+   *  unset — `toManifest` derives a sensible default from `surfaces`
+   *  via {@link defaultPublicServiceForSurfaces}. Only set this when a
+   *  caller (preset, scripted flow) needs to pin a non-standard service
+   *  name. See {@link ProjectManifest.publicService} for the full
+   *  resolution chain. */
+  publicService?: string;
 
   deployTarget: DeployTarget;
   serverId?: number;

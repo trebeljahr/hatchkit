@@ -81,6 +81,7 @@ import {
   MANIFEST_FILENAME,
   MANIFEST_VERSION,
   type ProjectManifest,
+  defaultPublicServiceForSurfaces,
   readManifest,
   writeManifest,
 } from "./scaffold/manifest.js";
@@ -1602,7 +1603,7 @@ async function executePlan(
     // failure doesn't leave a manifest pointing at no key. The
     // manifest lives at the project ROOT (not under packages/server).
     const manifestPath = join(state.projectDir, MANIFEST_FILENAME);
-    writeAdoptManifest(state.projectDir, plan);
+    writeAdoptManifest(state.projectDir, plan, state);
     console.log(chalk.green(`  ✓ Wrote ${MANIFEST_FILENAME} at ${relativeTo(state.projectDir)}`));
     if (!state.hasManifest) {
       // Only on first-time adopt — `--resume` reuses the manifest the
@@ -1667,6 +1668,18 @@ async function executePlan(
     if (plan.wireCoolify && plan.deploymentMode === "coolify" && remoteUrl) {
       try {
         const { wireProjectIntoCoolify } = await import("./deploy/coolify-app.js");
+        // publicService resolution: manifest persistence wins (explicit
+        // / persisted user choice on re-runs), else surface-derived
+        // default, else compose-file inference. The third fallback
+        // reads the actual compose so a user-authored layout with
+        // non-default names (`web`, `frontend`) still resolves to the
+        // right service instead of pushing `app` and silently no-opping
+        // the Coolify PATCH (the exact bug that left mood-magic's
+        // Traefik labels empty after a clean adopt).
+        const resolvedPublicService =
+          state.existingManifest?.publicService ??
+          defaultPublicServiceForSurfaces(plan.surfaces) ??
+          detectDockerComposeDomainServiceName(state.projectDir, plan.surfaces);
         coolifyResult = await wireProjectIntoCoolify({
           projectName: plan.name,
           domain: plan.domain,
@@ -1687,10 +1700,7 @@ async function executePlan(
           // dockercompose; it's purely metadata once the compose file
           // takes over.
           portsExposes: plan.surfaces === "static" ? "80" : plan.appPort,
-          dockerComposeServiceName: detectDockerComposeDomainServiceName(
-            state.projectDir,
-            plan.surfaces,
-          ),
+          dockerComposeServiceName: resolvedPublicService,
           // Explicit choice from the stepper. Defaulted from `gh repo
           // view --json visibility` for existing remotes, `true` for
           // newly-created `gh repo create --private` repos. See the
@@ -1742,6 +1752,18 @@ async function executePlan(
             name: plan.domain,
             type: "AAAA",
           });
+        }
+        // Surface any DNS-step caveat returned by wireProjectIntoCoolify.
+        // The Coolify step itself succeeded (we're in the success branch),
+        // but DNS may have been skipped (no provider) or failed mid-call —
+        // either way the user needs a clear recovery recipe in the
+        // consolidated caveats block at the end. Without this, adopt
+        // would print `✓` for the Coolify step and the user would assume
+        // DNS was wired too — the silent failure that left
+        // mood-magic.trebeljahr.com unreachable for hours after adopt
+        // "succeeded".
+        if (coolifyResult.dnsCaveat) {
+          caveats.push(coolifyResult.dnsCaveat);
         }
       } catch (err) {
         // Brief inline note — the full recovery recipe lands in the
@@ -3239,7 +3261,18 @@ async function importKeyToKeychain(
   return { account, created: !existing, imported: true };
 }
 
-function writeAdoptManifest(projectDir: string, plan: AdoptPlan): void {
+function writeAdoptManifest(projectDir: string, plan: AdoptPlan, state: DetectedState): void {
+  // publicService resolution mirrors the wire-up call site: prefer
+  // any previously-persisted value (don't overwrite a user-pinned
+  // choice on --resume), else derive from surfaces, else infer from
+  // the compose file. Persisting on every write means a project
+  // adopted before this field existed silently picks up the right
+  // value on the next adopt run — and re-running with a manually
+  // edited compose surfaces the updated inference too.
+  const resolvedPublicService =
+    state.existingManifest?.publicService ??
+    defaultPublicServiceForSurfaces(plan.surfaces) ??
+    detectDockerComposeDomainServiceName(state.projectDir, plan.surfaces);
   // Unknown bits (ports, deployTarget specifics) get conservative
   // defaults — adopt's role is to take inventory, not to make
   // infra decisions. The user can edit the manifest later.
@@ -3266,6 +3299,7 @@ function writeAdoptManifest(projectDir: string, plan: AdoptPlan): void {
     // "backend" just because there's no client/ directory in the
     // current layout.
     surfaces: plan.surfaces,
+    publicService: resolvedPublicService,
     email: plan.email,
   };
   writeManifest(projectDir, manifest);
@@ -3330,10 +3364,20 @@ function detectDockerComposeDomainServiceName(projectDir: string, surfaces: Adop
   const services = readComposeServiceNames(pipe.composePath);
   if (services.length === 0) return "app";
 
+  // Preference ordering reflects which service binds the bare/public
+  // domain on the starter's docker-compose.yml. Fullstack / split /
+  // static all serve the SPA from the Next.js `client` image (which
+  // proxies `/api` to `server`), so `client` MUST come before
+  // `server` — otherwise a fullstack project gets the API container
+  // bound to its root URL and the SPA never reaches the browser.
+  // Backend-only has no client image so `server` wins.
+  // `app` stays in each list as a fallback for projects whose compose
+  // was authored by hatchkit's own build-pipeline scaffolder (which
+  // emits a single `app` service).
   const preferred =
-    surfaces === "static"
-      ? ["app", "web", "client", "frontend", "site"]
-      : ["app", "server", "api", "backend", "web", "client", "frontend"];
+    surfaces === "backend"
+      ? ["server", "api", "app", "backend"]
+      : ["client", "app", "web", "frontend", "site", "server"];
   for (const name of preferred) {
     if (services.includes(name)) return name;
   }
@@ -3353,6 +3397,7 @@ function detectDockerComposeDomainServiceName(projectDir: string, surfaces: Adop
     "mailhog",
     "nginx",
     "traefik",
+    "migrate",
   ]);
   return services.find((name) => !infraServices.has(name)) ?? services[0] ?? "app";
 }
