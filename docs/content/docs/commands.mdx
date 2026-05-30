@@ -55,8 +55,8 @@ hatchkit create [options]
 
 ### Flow
 
-1. Prompts for name, domain, deploy target, features, services, ML services.
-2. Scaffolds the starter, strips unselected features, assigns unique ports.
+1. Prompts for name, domain, deploy target, features, services, ML services, **database engine** (MongoDB or Postgres), and **database provider** (Coolify-provisioned container or external URI).
+2. Scaffolds the starter, strips unselected features, assigns unique ports. When `dbEngine: postgres` is selected, the starter's Mongoose stack is rewritten to Drizzle ORM + `pg` + better-auth's `drizzleAdapter`, and the `docker-compose` mongo service is swapped for a `postgres:16-alpine` container.
 3. Auto-wires local-dev unless disabled: `.hatchkit.json` gets `localDev.slug`, `docs/dev-setup.md` is generated, and the Next/Vite dev plugin plus Caddy fragment are added.
 4. Installs deps (if `pnpm` is available and you opt in).
 5. `git init` + first commit + GitHub repo.
@@ -206,7 +206,7 @@ If you opt in:
 
 ### Not a good fit
 
-- Anything that needs a running server (websockets, MongoDB, auth sessions, server-rendered Next). Use `hatchkit create` with the full-stack flow for those.
+- Anything that needs a running server (websockets, MongoDB / Postgres, auth sessions, server-rendered Next). Use `hatchkit create` with the full-stack flow for those.
 
 ---
 

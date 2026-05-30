@@ -414,6 +414,16 @@ async function runScaffoldSteps(
     modifications.push("removed: ML playground, ML router, ML types, ML navbar link");
   }
 
+  // Postgres overlay. Runs AFTER feature-flag strips and applyProjectName
+  // (so the dev DB name is already substituted) but BEFORE pruneToSurface
+  // (so the surface prune sees the rewritten compose service names).
+  // Static surfaces skip — they have no server, so no DB engine to swap.
+  if (config.dbEngine === "postgres" && config.surfaces !== "static") {
+    const { applyPostgresOverlay } = await import("./postgres-overlay.js");
+    const overlayResult = applyPostgresOverlay(outputDir);
+    modifications.push(...overlayResult.modifications.map((m) => `postgres: ${m}`));
+  }
+
   // Surface-aware prune. Runs LAST among the file-mutation steps so the
   // feature-flag work above (which uses `removeIfExists`) doesn't fight
   // it — anything the prune wipes was either already gone or was a

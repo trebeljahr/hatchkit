@@ -187,14 +187,26 @@ export interface ProjectConfig {
    *  as a plaintext CHANGE_ME_<KEY> placeholder that the user can
    *  encrypt later with `dotenvx set`. */
   envValues?: Record<string, string>;
-  /** Where the production MongoDB lives:
-   *    "coolify"  — hatchkit will provision a per-project MongoDB
-   *                 container on Coolify after the app deploys, and
-   *                 encrypt the resulting URL into .env.production.
-   *    "external" — the user provides MONGODB_URI themselves
-   *                 (Atlas, self-hosted, etc.).
+  /** Which database engine the scaffolded server uses.
+   *    "mongodb"  — Mongoose models + better-auth mongodb adapter (default).
+   *    "postgres" — Drizzle ORM + pg + better-auth drizzle adapter.
+   *  Picked in the stepper before the provider question; controls both
+   *  template overlay during scaffold and which engine gets provisioned
+   *  on Coolify. */
+  dbEngine?: "mongodb" | "postgres";
+  /** Where the production database lives (applies to whichever engine
+   *  is chosen via {@link dbEngine}):
+   *    "coolify"  — hatchkit will provision a per-project DB container
+   *                 on Coolify after the app deploys, and encrypt the
+   *                 resulting URL into .env.production.
+   *    "external" — the user provides the connection URI themselves
+   *                 (Atlas/Neon/Supabase/self-hosted/etc.).
    *  Defaults to "coolify" when runDeployment is true, "external"
    *  otherwise. */
+  dbProvider?: "coolify" | "external";
+  /** @deprecated Pre-postgres alias for {@link dbProvider}. Still
+   *  accepted in presets (manifests, scripted callers) and mapped over;
+   *  new code reads {@link dbProvider}. */
   mongodbProvider?: "coolify" | "external";
   /** GPU platforms to deploy each ML service to. The first entry is
    *  the default backend at runtime; switch by setting `ML_BACKEND` on
@@ -630,7 +642,9 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     s3ExistingRegion: presets.s3ExistingRegion,
     mlServices: presets.mlServices ?? [],
     forceRedeployMl: presets.forceRedeployMl ?? [],
-    mongodbProvider: presets.mongodbProvider ?? "coolify",
+    dbEngine: presets.dbEngine ?? "mongodb",
+    dbProvider: presets.dbProvider ?? presets.mongodbProvider ?? "coolify",
+    mongodbProvider: presets.mongodbProvider,
     gpuPlatforms: presets.gpuPlatforms,
     customHfModelId: presets.customHfModelId,
     customHfGpuType: presets.customHfGpuType,
@@ -740,6 +754,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
             s3Provider: "none" as const,
             mlServices: [],
             forceRedeployMl: [],
+            dbProvider: "external" as const,
             mongodbProvider: "external" as const,
             // gh-pages has no server runtime — drop email providers + their
             // queued services so the manifest doesn't claim email intent
@@ -1156,18 +1171,42 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       },
     },
     {
-      name: "MongoDB provider",
+      name: "Database engine",
       skip: (c) => c.surfaces === "static" || c.deploymentMode === "gh-pages",
       run: async (c) => {
-        const mongodbProvider = await select<"coolify" | "external">({
-          message: "Prod MongoDB:",
-          default: c.mongodbProvider ?? (c.runDeployment ? "coolify" : "external"),
+        const dbEngine = await select<"mongodb" | "postgres">({
+          message: "Database engine:",
+          default: c.dbEngine ?? "mongodb",
           choices: [
-            { name: "Provision a dedicated container on Coolify (recommended)", value: "coolify" },
-            { name: "I'll provide a URI (Atlas, self-hosted, …)", value: "external" },
+            { name: "MongoDB (Mongoose, better-auth mongodb adapter)", value: "mongodb" },
+            { name: "Postgres (Drizzle ORM, better-auth drizzle adapter)", value: "postgres" },
           ],
         });
-        return { ...c, mongodbProvider };
+        return { ...c, dbEngine };
+      },
+    },
+    {
+      name: "Database provider",
+      skip: (c) => c.surfaces === "static" || c.deploymentMode === "gh-pages",
+      run: async (c) => {
+        const engineLabel = c.dbEngine === "postgres" ? "Postgres" : "MongoDB";
+        const externalHint =
+          c.dbEngine === "postgres" ? "Neon, Supabase, self-hosted, …" : "Atlas, self-hosted, …";
+        const dbProvider = await select<"coolify" | "external">({
+          message: `Prod ${engineLabel}:`,
+          default: c.dbProvider ?? c.mongodbProvider ?? (c.runDeployment ? "coolify" : "external"),
+          choices: [
+            { name: "Provision a dedicated container on Coolify (recommended)", value: "coolify" },
+            { name: `I'll provide a URI (${externalHint})`, value: "external" },
+          ],
+        });
+        return {
+          ...c,
+          dbProvider,
+          // Keep the legacy field in sync so any preset / manifest readers
+          // that still look at `mongodbProvider` see the same value.
+          mongodbProvider: dbProvider,
+        };
       },
     },
   ];
@@ -1263,10 +1302,11 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
   const installDeps = scaffoldRepo ? (presets.installDeps ?? true) : false;
   const runDeployment =
     deploymentMode === "scaffold-only" || dryRun ? false : (presets.runDeployment ?? true);
-  const mongodbProvider: "coolify" | "external" =
+  const dbEngine: "mongodb" | "postgres" = presets.dbEngine ?? "mongodb";
+  const dbProvider: "coolify" | "external" =
     surfaces === "static"
       ? "external"
-      : (presets.mongodbProvider ?? (runDeployment ? "coolify" : "external"));
+      : (presets.dbProvider ?? presets.mongodbProvider ?? (runDeployment ? "coolify" : "external"));
 
   // Email intent in non-interactive mode is whatever the caller supplied
   // (manifest preset / scripted create). Absent → "none" both ways, and
@@ -1319,7 +1359,9 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
     s3ExistingRegion: presets.s3ExistingRegion,
     mlServices,
     forceRedeployMl: presets.forceRedeployMl ?? [],
-    mongodbProvider,
+    dbEngine,
+    dbProvider,
+    mongodbProvider: dbProvider,
     gpuPlatforms,
     customHfModelId: presets.customHfModelId,
     customHfGpuType: presets.customHfGpuType,
@@ -1517,15 +1559,20 @@ function buildCreateStepGroups(plan: ProjectOnboardingPlan, cfg: ProjectConfig):
             summary: summarizeProvisionServices(cfg.provisionServices),
           },
           {
-            key: "mongo",
-            label: "MongoDB",
-            set: !!cfg.mongodbProvider,
-            summary:
-              cfg.mongodbProvider === "coolify"
-                ? "Coolify container (auto-provisioned)"
-                : cfg.mongodbProvider === "external"
-                  ? "external URI"
-                  : "(unset)",
+            key: "db",
+            label: "Database",
+            set: !!(cfg.dbProvider ?? cfg.mongodbProvider),
+            summary: (() => {
+              const engineLabel = cfg.dbEngine === "postgres" ? "Postgres" : "MongoDB";
+              const provider = cfg.dbProvider ?? cfg.mongodbProvider;
+              if (provider === "coolify") {
+                return `${engineLabel}  ${chalk.dim("→ Coolify container (auto-provisioned)")}`;
+              }
+              if (provider === "external") {
+                return `${engineLabel}  ${chalk.dim("→ external URI")}`;
+              }
+              return engineLabel;
+            })(),
           },
         ],
       },
@@ -1674,7 +1721,8 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     return {
       ...cfg,
       surfaces: next,
-      mongodbProvider: next === "static" ? "external" : cfg.mongodbProvider,
+      dbProvider: next === "static" ? "external" : cfg.dbProvider,
+      mongodbProvider: next === "static" ? "external" : (cfg.dbProvider ?? cfg.mongodbProvider),
       deploymentMode: nextDeploymentMode,
       runDeployment: nextDeploymentMode === "scaffold-only" ? false : cfg.runDeployment,
       email: emailAfter,
@@ -1713,6 +1761,7 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
         s3Provider: "none",
         mlServices: [],
         forceRedeployMl: [],
+        dbProvider: "external",
         mongodbProvider: "external",
         gpuPlatforms: undefined,
         customHfModelId: undefined,
@@ -1907,16 +1956,27 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     }
     return { ...cfg, mlServices: ml, gpuPlatforms };
   }
-  if (section === "mongo") {
+  if (section === "db" || section === "mongo") {
+    const dbEngine = await select<"mongodb" | "postgres">({
+      message: "Database engine:",
+      choices: [
+        { name: "MongoDB (Mongoose, better-auth mongodb adapter)", value: "mongodb" },
+        { name: "Postgres (Drizzle ORM, better-auth drizzle adapter)", value: "postgres" },
+      ],
+      default: cfg.dbEngine ?? "mongodb",
+    });
+    const engineLabel = dbEngine === "postgres" ? "Postgres" : "MongoDB";
+    const externalHint =
+      dbEngine === "postgres" ? "Neon, Supabase, self-hosted, …" : "Atlas, self-hosted, …";
     const next = await select<"coolify" | "external">({
-      message: "Prod MongoDB:",
+      message: `Prod ${engineLabel}:`,
       choices: [
         { name: "Coolify container (recommended)", value: "coolify" },
-        { name: "External URI (Atlas, self-hosted, …)", value: "external" },
+        { name: `External URI (${externalHint})`, value: "external" },
       ],
-      default: cfg.mongodbProvider ?? "coolify",
+      default: cfg.dbProvider ?? cfg.mongodbProvider ?? "coolify",
     });
-    return { ...cfg, mongodbProvider: next };
+    return { ...cfg, dbEngine, dbProvider: next, mongodbProvider: next };
   }
   if (section === "scaffoldFlags") {
     const scaffoldRepo = await confirm({

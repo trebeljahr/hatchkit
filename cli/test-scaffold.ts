@@ -310,6 +310,61 @@ results.clientOnly = await run(
   { surfaces: "static", mongodbProvider: "external" },
 );
 
+results.postgres = await run(
+  "dbEngine: postgres",
+  "pg-app",
+  [],
+  (d) => {
+    const compose = readFileSync(join(d, "docker-compose.yml"), "utf-8");
+    const composeDev = readFileSync(join(d, "docker-compose.dev.yml"), "utf-8");
+    const serverPkg = JSON.parse(
+      readFileSync(join(d, "packages/server/package.json"), "utf-8"),
+    );
+    const connection = readFileSync(
+      join(d, "packages/server/src/db/connection.ts"),
+      "utf-8",
+    );
+    const schema = readFileSync(join(d, "packages/server/src/db/schema.ts"), "utf-8");
+    const auth = readFileSync(join(d, "packages/server/src/auth/auth.ts"), "utf-8");
+    const itemsRouter = readFileSync(
+      join(d, "packages/server/src/trpc/routers/items.ts"),
+      "utf-8",
+    );
+    const envExample = readFileSync(join(d, "packages/server/.env.example"), "utf-8");
+    const envDev = readFileSync(join(d, "packages/server/.env.development"), "utf-8");
+    const envTs = readFileSync(join(d, "packages/server/src/config/env.ts"), "utf-8");
+    return [
+      ["docker-compose: postgres service", /^ {2}postgres:/m.test(compose)],
+      ["docker-compose: no mongo service", !/^ {2}mongo:/m.test(compose)],
+      ["docker-compose: postgres-data volume", /postgres-data:/.test(compose)],
+      ["docker-compose: no mongo-data volume", !/mongo-data:/.test(compose)],
+      ["docker-compose.dev: postgres service", /postgres:/.test(composeDev)],
+      ["server pkg: drizzle-orm dep", !!serverPkg.dependencies?.["drizzle-orm"]],
+      ["server pkg: pg dep", !!serverPkg.dependencies?.pg],
+      ["server pkg: no mongoose dep", !serverPkg.dependencies?.mongoose],
+      ["server pkg: no mongodb dep", !serverPkg.dependencies?.mongodb],
+      ["server pkg: drizzle-kit devDep", !!serverPkg.devDependencies?.["drizzle-kit"]],
+      ["server pkg: db:generate script", !!serverPkg.scripts?.["db:generate"]],
+      ["drizzle.config.ts written", existsSync(join(d, "packages/server/drizzle.config.ts"))],
+      ["connection.ts uses drizzle", /drizzle/.test(connection)],
+      ["connection.ts has connectToDB", /export async function connectToDB/.test(connection)],
+      ["connection.ts has isDatabaseReady", /export function isDatabaseReady/.test(connection)],
+      ["schema.ts defines items table", /pgTable\("items"/.test(schema)],
+      ["schema.ts defines profiles table", /pgTable\("profiles"/.test(schema)],
+      ["schema.ts defines better-auth user table", /pgTable\("user"/.test(schema)],
+      ["auth.ts uses drizzle adapter", /drizzleAdapter/.test(auth)],
+      ["auth.ts: no mongodb adapter", !/mongodbAdapter/.test(auth)],
+      ["items router queries via Item.listForOwner", /Item\.listForOwner/.test(itemsRouter)],
+      ["env.ts has POSTGRES_URL", /POSTGRES_URL/.test(envTs)],
+      ["env.ts: no MONGODB_URI", !/MONGODB_URI/.test(envTs)],
+      [".env.example: POSTGRES_URL", /^POSTGRES_URL=postgres:\/\//m.test(envExample)],
+      [".env.example: no MONGODB_URI", !/MONGODB_URI/.test(envExample)],
+      [".env.development: POSTGRES_URL", /^POSTGRES_URL=postgres:\/\//m.test(envDev)],
+    ];
+  },
+  { dbEngine: "postgres", dbProvider: "external", mongodbProvider: "external" },
+);
+
 results.both = await run("desktop + mobile", "my-cool-app", ["desktop", "mobile"], (d) => {
   const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
   const nextCfg = readFileSync(join(d, "packages/client/next.config.ts"), "utf-8");

@@ -168,16 +168,17 @@ function pruneToClientOnly(outputDir: string, modifications: string[]): void {
   modifications.push("static: pruned @trpc/* + better-auth from packages/client/package.json");
 
   // Strip server-oriented services from compose. The starter's compose
-  // has `server`, `client`, `mongo`, `redis` plus a `mongo-data`
-  // volume. For static we keep just `client`.
+  // has `server`, `client`, `mongo` (or `postgres` after the postgres
+  // overlay), `redis` plus a `mongo-data` / `postgres-data` volume.
+  // For static we keep just `client`.
   for (const rel of ["docker-compose.yml", "docker-compose.dev.yml"]) {
     const p = join(outputDir, rel);
     if (existsSync(p)) {
-      rewriteFile(p, (c) => stripComposeServices(c, ["server", "mongo", "redis"]));
-      rewriteFile(p, removeMongoDataVolume);
+      rewriteFile(p, (c) => stripComposeServices(c, ["server", "mongo", "postgres", "redis"]));
+      rewriteFile(p, removeDbDataVolume);
     }
   }
-  modifications.push("static: removed server/mongo/redis from docker-compose");
+  modifications.push("static: removed server/mongo/postgres/redis from docker-compose");
 
   // docs-site doubles as the starter's marketing docs. It's a separate
   // app and not particularly useful in a static scaffold; drop it
@@ -310,13 +311,14 @@ function stripOneComposeService(content: string, name: string): string {
   return out.join("\n");
 }
 
-/** Remove the top-level `volumes:` block + its `mongo-data:` entry. Used
- *  after stripping the mongo service so the compose doesn't reference
- *  an orphaned volume. The starter only declares one volume, so we
- *  drop the whole block; if a future starter adds more, this'll need
- *  to become entry-aware. */
-function removeMongoDataVolume(content: string): string {
-  return content.replace(/\nvolumes:\s*\n\s+mongo-data:\s*\n?/m, "\n");
+/** Remove the top-level `volumes:` block + its `mongo-data:` (or
+ *  `postgres-data:` after the postgres overlay) entry. Used after
+ *  stripping the DB service so the compose doesn't reference an
+ *  orphaned volume. The starter only declares one volume, so we drop
+ *  the whole block; if a future starter adds more, this'll need to
+ *  become entry-aware. */
+function removeDbDataVolume(content: string): string {
+  return content.replace(/\nvolumes:\s*\n\s+(mongo-data|postgres-data):\s*\n?/m, "\n");
 }
 
 // ── shared helpers ─────────────────────────────────────────────────────

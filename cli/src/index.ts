@@ -2077,22 +2077,36 @@ async function handleCreate(): Promise<void> {
       }
       ledger?.record({ kind: "coolifyApp", uuid: coolifyResult.appUuid });
 
-      // Provision a per-project MongoDB container on Coolify when the
-      // user picked that path. Best-effort: a failure here doesn't undo
-      // the app deploy — we surface clear instructions instead.
-      if (config.mongodbProvider === "coolify" && config.scaffoldRepo) {
+      // Provision a per-project DB container on Coolify when the user
+      // picked that path. Best-effort: a failure here doesn't undo the
+      // app deploy — we surface clear instructions instead. Engine
+      // dispatch follows config.dbEngine (default "mongodb"); the
+      // legacy `mongodbProvider` field is read as a fallback for
+      // pre-postgres presets.
+      const dbProvider = config.dbProvider ?? config.mongodbProvider;
+      if (dbProvider === "coolify" && config.scaffoldRepo) {
         try {
-          const { provisionCoolifyMongo } = await import("./deploy/coolify-mongo.js");
           const serverEnvDir = join(appDir, "packages/server");
-          const mongoResult = await provisionCoolifyMongo(config, serverEnvDir);
-          ledger?.record({ kind: "coolifyDb", uuid: mongoResult.databaseUuid });
+          if (config.dbEngine === "postgres") {
+            const { provisionCoolifyPostgres } = await import("./deploy/coolify-postgres.js");
+            const pgResult = await provisionCoolifyPostgres(config, serverEnvDir);
+            ledger?.record({ kind: "coolifyDb", uuid: pgResult.databaseUuid });
+          } else {
+            const { provisionCoolifyMongo } = await import("./deploy/coolify-mongo.js");
+            const mongoResult = await provisionCoolifyMongo(config, serverEnvDir);
+            ledger?.record({ kind: "coolifyDb", uuid: mongoResult.databaseUuid });
+          }
         } catch (err) {
-          console.log(chalk.yellow(`  Couldn't auto-provision MongoDB: ${(err as Error).message}`));
+          const engineLabel = config.dbEngine === "postgres" ? "Postgres" : "MongoDB";
+          const uriVar = config.dbEngine === "postgres" ? "POSTGRES_URL" : "MONGODB_URI";
+          console.log(
+            chalk.yellow(`  Couldn't auto-provision ${engineLabel}: ${(err as Error).message}`),
+          );
           console.log(
             chalk.dim(
-              `  Create one manually in Coolify: New → Database → MongoDB,\n` +
-                `  then set MONGODB_URI on the app's env (or run\n` +
-                `  \`dotenvx set MONGODB_URI <url> -f packages/server/.env.production\`).`,
+              `  Create one manually in Coolify: New → Database → ${engineLabel},\n` +
+                `  then set ${uriVar} on the app's env (or run\n` +
+                `  \`dotenvx set ${uriVar} <url> -f packages/server/.env.production\`).`,
             ),
           );
         }
