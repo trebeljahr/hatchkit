@@ -420,6 +420,103 @@ console.log("\n── ports: no collisions across two scaffolds ─────�
   }
 }
 
+// Compose image refs: docker-compose.yml ships with literal
+// `ghcr.io/OWNER/REPO-{server,client}:main` defaults. Without
+// substitution, the first Coolify `docker compose up` fails with
+// `invalid reference format`. The scaffold has to fill OWNER + REPO
+// during the initial copy so the first deploy "just works".
+console.log("\n── compose: OWNER/REPO substituted for first-deploy correctness ─────────────────────────────");
+{
+  const d = mkdtempSync(join(tmpdir(), "scaffold-compose-refs-"));
+  try {
+    await scaffoldApp(cfg("compose-refs", [], { githubOwner: "acme" }), d);
+    const compose = readFileSync(join(d, "docker-compose.yml"), "utf-8");
+    const checks: Check[] = [
+      ["no literal OWNER token", !/\bOWNER\b/.test(compose)],
+      ["no literal REPO token", !/\bREPO\b/.test(compose)],
+      [
+        "server image points at ghcr.io/acme/compose-refs-server:main",
+        compose.includes("ghcr.io/acme/compose-refs-server:main"),
+      ],
+      [
+        "client image points at ghcr.io/acme/compose-refs-client:main",
+        compose.includes("ghcr.io/acme/compose-refs-client:main"),
+      ],
+      [
+        "SERVER_IMAGE override still wins (default form preserved)",
+        compose.includes("${SERVER_IMAGE:-ghcr.io/acme/compose-refs-server:main}"),
+      ],
+      [
+        "CLIENT_IMAGE override still wins (default form preserved)",
+        compose.includes("${CLIENT_IMAGE:-ghcr.io/acme/compose-refs-client:main}"),
+      ],
+    ];
+    let ok = true;
+    for (const [n, c] of checks) {
+      console.log(`  ${c ? "✓" : "✗"} ${n}`);
+      if (!c) ok = false;
+    }
+    results.composeImageRefs = ok;
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+}
+
+// Compose substitution helper: verify idempotency + literal-only
+// matching so `hatchkit update` re-runs never overwrite a project
+// where the user already hand-edited the image refs.
+console.log("\n── compose: substituteComposeImageRefs is idempotent + literal-only ─────────────────────────────");
+{
+  const { substituteComposeImageRefs } = await import("./src/scaffold/owner.js");
+  const d = mkdtempSync(join(tmpdir(), "scaffold-compose-helper-"));
+  try {
+    mkdirSync(d, { recursive: true });
+    const composePath = join(d, "docker-compose.yml");
+    const original = [
+      "services:",
+      "  server:",
+      "    image: ${SERVER_IMAGE:-ghcr.io/OWNER/REPO-server:main}",
+      "",
+    ].join("\n");
+    writeFileSync(composePath, original, "utf-8");
+
+    const first = substituteComposeImageRefs(d, "acme", "my-app");
+    const afterFirst = readFileSync(composePath, "utf-8");
+
+    // Second call on the already-substituted file should be a no-op.
+    const second = substituteComposeImageRefs(d, "acme", "my-app");
+    const afterSecond = readFileSync(composePath, "utf-8");
+
+    // User hand-edits to a different owner/repo must survive re-runs.
+    writeFileSync(
+      composePath,
+      "image: ${SERVER_IMAGE:-ghcr.io/different-owner/different-repo-server:main}\n",
+      "utf-8",
+    );
+    const third = substituteComposeImageRefs(d, "acme", "my-app");
+    const afterThird = readFileSync(composePath, "utf-8");
+
+    const checks: Check[] = [
+      ["first call rewrites file", first.written === true],
+      ["first call substitutes owner + repo", afterFirst.includes("ghcr.io/acme/my-app-server:main")],
+      ["second call is a no-op", second.written === false && afterSecond === afterFirst],
+      ["hand-edited file left alone", third.written === false],
+      [
+        "hand-edited owner/repo preserved verbatim",
+        afterThird.includes("different-owner/different-repo-server"),
+      ],
+    ];
+    let ok = true;
+    for (const [n, c] of checks) {
+      console.log(`  ${c ? "✓" : "✗"} ${n}`);
+      if (!c) ok = false;
+    }
+    results.composeHelper = ok;
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+}
+
 // Manifest: verify .hatchkit.json is written with sanitized fields
 // and NEVER contains credentials or infrastructure coordinates.
 console.log("\n── manifest: sanitized fields only, no leaks ─────────────────────────────");

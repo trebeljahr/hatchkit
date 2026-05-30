@@ -33,6 +33,7 @@ import { type ProjectPorts, pickProjectPorts } from "../utils/ports.js";
 import { getCliVersion } from "../utils/version.js";
 import { type DotenvxSeedResult, seedDotenvxProduction } from "./dotenvx.js";
 import { MANIFEST_FILENAME, toManifest, writeManifest } from "./manifest.js";
+import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
 import {
   setPackageJsonDescription,
   stripPackageJsonBuildBlock,
@@ -203,6 +204,32 @@ async function runScaffoldSteps(
   // the same `starter-dev` bucket and `starter-dev` Mongo database.
   applyProjectName(outputDir, config.name);
   modifications.push("renamed local-infra identifiers (Mongo DB / local S3 bucket / E2E names)");
+
+  // docker-compose.yml: substitute `OWNER/REPO` placeholders so the
+  // first Coolify deploy can pull `ghcr.io/<owner>/<repo>-{server,client}:main`
+  // without the user hand-editing the file. The CI workflow already
+  // tags images by `${{ github.repository }}`, so this aligns the
+  // compose default with what GHCR actually receives.
+  const ghOwner = await inferGhOwner({
+    configOwner: config.githubOwner,
+    projectDir: outputDir,
+  });
+  const composeSub = substituteComposeImageRefs(outputDir, ghOwner, config.name);
+  if (composeSub.written) {
+    modifications.push(
+      ghOwner
+        ? `docker-compose.yml: image refs → ghcr.io/${ghOwner}/${config.name}-{server,client}:main`
+        : `docker-compose.yml: substituted REPO=${config.name} (owner unresolved; left literal OWNER)`,
+    );
+    if (!ghOwner) {
+      console.log(
+        chalk.yellow(
+          "  ⚠ Couldn't infer GitHub owner — edit `image: ghcr.io/OWNER/...`\n" +
+            "    in docker-compose.yml before pushing.",
+        ),
+      );
+    }
+  }
 
   // .env.example files: production URLs for this project's domain.
   // .env.development is left alone (local dev defaults should stay pointing at localhost).

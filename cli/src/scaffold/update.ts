@@ -33,6 +33,7 @@ import {
   readManifest,
   writeManifest,
 } from "./manifest.js";
+import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
 import { setPackageJsonScript } from "./pkg-json.js";
 import { applyPorts, rewriteFile } from "./starter-files.js";
 
@@ -88,6 +89,35 @@ export async function runUpdate(
   console.log(chalk.bold(`\n  ── Update: ${manifest.name} ─────────────────────────────\n`));
   console.log(chalk.dim(`  Current features: ${manifest.features.join(", ") || "(none)"}`));
   console.log(chalk.dim(`  Supported additions: ${SUPPORTED_ADDITIONS.join(", ")}`));
+
+  // Retrofit docker-compose.yml image refs for projects scaffolded
+  // before the OWNER/REPO substitution landed in scaffoldApp. Idempotent
+  // — only touches the file when the literal `OWNER/REPO` placeholder is
+  // still present, so projects that already have a real owner/repo (or
+  // any hand-edited image ref) are left alone. No flag, no opt-in: the
+  // bug shipped as a broken Coolify default, and the only path to a
+  // working first deploy is fixing the placeholder.
+  const ghOwner = await inferGhOwner({ projectDir });
+  const composeSub = substituteComposeImageRefs(projectDir, ghOwner, manifest.name);
+  if (composeSub.written) {
+    console.log(
+      ghOwner
+        ? chalk.green(
+            `  ✓ docker-compose.yml: image refs → ghcr.io/${ghOwner}/${manifest.name}-{server,client}:main`,
+          )
+        : chalk.yellow(
+            `  ↻ docker-compose.yml: substituted REPO=${manifest.name} (owner unresolved; left literal OWNER)`,
+          ),
+    );
+    if (!ghOwner) {
+      console.log(
+        chalk.yellow(
+          "  ⚠ Couldn't infer GitHub owner — edit `image: ghcr.io/OWNER/...`\n" +
+            "    in docker-compose.yml before pushing.",
+        ),
+      );
+    }
+  }
 
   const allOptions: Feature[] = ["websocket", "stripe", "analytics", "s3", "desktop", "mobile"];
   const desired =

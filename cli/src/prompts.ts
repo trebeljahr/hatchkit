@@ -206,6 +206,12 @@ export interface ProjectConfig {
 
   scaffoldRepo: boolean;
   createGithubRepo: boolean;
+  /** Explicit GitHub owner for the scaffold's GHCR image refs. When set,
+   *  bypasses the `git config` / `gh api user` fallbacks in
+   *  `inferGhOwner`. Currently unset by the interactive prompt — kept
+   *  optional so callers (tests, scripted flows, future "scaffold for
+   *  this org" prompt) can pin the owner deterministically. */
+  githubOwner?: string;
   /** Visibility for repos created by `hatchkit create`. Defaults to
    *  private for backwards compatibility and safer first deploys. */
   githubRepoVisibility?: GitHubRepoVisibility;
