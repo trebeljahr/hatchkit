@@ -490,7 +490,14 @@ export class CoolifyApi {
    *  Coolify rejects the flat `domains` field on dockercompose apps with
    *  422 ("Use docker_compose_domains instead"), so the caller is
    *  responsible for picking the right field — this method does no
-   *  auto-translation, unlike `buildAppCreateBody`. */
+   *  auto-translation, unlike `buildAppCreateBody`.
+   *
+   *  `isAutoDeployEnabled` toggles Coolify's git-webhook auto-deploy.
+   *  Build-pipeline projects (GHA builds the image + calls the deploy
+   *  webhook) want this OFF — otherwise Coolify reacts to every push
+   *  by trying to deploy stale-or-absent images before the GHA build
+   *  has produced fresh ones, racing the workflow and surfacing as
+   *  flaky deploys. Coolify-builds-from-source projects want it ON. */
   async updateApplication(
     uuid: string,
     fields: {
@@ -507,6 +514,8 @@ export class CoolifyApi {
       /** Per-service domains for dockercompose apps. Pass `[]` to clear
        *  every routing entry. */
       dockerComposeDomains?: Array<{ name: string; domain: string }>;
+      /** Toggle Coolify's git-webhook auto-deploy. See method doc above. */
+      isAutoDeployEnabled?: boolean;
     },
   ): Promise<void> {
     const body: Record<string, unknown> = {};
@@ -522,6 +531,9 @@ export class CoolifyApi {
     if (fields.domains !== undefined) body.domains = fields.domains.join(",");
     if (fields.dockerComposeDomains !== undefined) {
       body.docker_compose_domains = fields.dockerComposeDomains;
+    }
+    if (fields.isAutoDeployEnabled !== undefined) {
+      body.is_auto_deploy_enabled = fields.isAutoDeployEnabled;
     }
     if (Object.keys(body).length === 0) return;
     await this.request("PATCH", `/applications/${uuid}`, body);
@@ -595,6 +607,8 @@ export class CoolifyApi {
       gitRepository: typeof raw.git_repository === "string" ? raw.git_repository : undefined,
       gitBranch: typeof raw.git_branch === "string" ? raw.git_branch : undefined,
       serverUuid: extractServerUuid(raw),
+      isAutoDeployEnabled:
+        typeof raw.is_auto_deploy_enabled === "boolean" ? raw.is_auto_deploy_enabled : undefined,
     };
   }
 
@@ -649,6 +663,11 @@ export interface CoolifyApplication {
    *  Lets inventory resolve the server's IP via `getServerDomains` and
    *  compare against the DNS A record for `fqdn`. */
   serverUuid?: string;
+  /** Coolify's git-webhook auto-deploy flag. Undefined when the API
+   *  doesn't surface it (older Coolify builds). Build-pipeline projects
+   *  expect this to be `false` so GHA owns the deploy trigger; doctor's
+   *  check surfaces the mismatch. */
+  isAutoDeployEnabled?: boolean;
 }
 
 export interface ApplicationCreateInput {

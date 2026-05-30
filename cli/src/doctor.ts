@@ -897,6 +897,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of mailFromChecks) results.push(r);
   const publicSvcChecks = await checkProjectPublicServiceState(process.cwd());
   for (const r of publicSvcChecks) results.push(r);
+  const autoDeployChecks = await checkProjectCoolifyAutoDeployState(process.cwd());
+  for (const r of autoDeployChecks) results.push(r);
   const dnsResolveChecks = await checkProjectDnsResolveState(process.cwd());
   for (const r of dnsResolveChecks) results.push(r);
   return results;
@@ -1448,6 +1450,101 @@ export async function checkProjectPublicServiceState(projectDir: string): Promis
       `Set publicService in .hatchkit.json. Suggested for surfaces=${manifest.surfaces}: "${suggested ?? "client"}".`,
       `Or run: hatchkit update    (re-applies scaffold defaults including publicService)`,
       `Then re-run: hatchkit adopt --resume    (pushes the corrected routing to Coolify)`,
+    ],
+  });
+  return out;
+}
+
+/** Verify build-pipeline projects (the canonical hatchkit adopt flow:
+ *  GHA builds + pushes to GHCR + calls Coolify's deploy webhook) have
+ *  Coolify's git-webhook auto-deploy turned OFF. If both are on, every
+ *  git push triggers Coolify to redeploy from a stale-or-absent GHCR
+ *  image before GHA has finished pushing the fresh one — race-y deploy
+ *  failures with no obvious root cause from the UI.
+ *
+ *  Build-pipeline projects are detected by the presence of
+ *  `.github/workflows/deploy.yml` (the file hatchkit's build-pipeline
+ *  scaffold writes). Source-build projects don't have it and want
+ *  auto-deploy on, so the check is skipped. */
+export async function checkProjectCoolifyAutoDeployState(
+  projectDir: string,
+): Promise<CheckResult[]> {
+  const out: CheckResult[] = [];
+  const { existsSync, readFileSync } = await import("node:fs");
+  const manifestPath = `${projectDir}/.hatchkit.json`;
+  if (!existsSync(manifestPath)) return out;
+
+  let manifest: { name?: string; deploymentMode?: string };
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  } catch {
+    return out;
+  }
+  if (!manifest.name) return out;
+  if (manifest.deploymentMode !== "coolify") return out;
+  // Build-pipeline signal: hatchkit-scaffolded deploy.yml.
+  const deployWorkflow = `${projectDir}/.github/workflows/deploy.yml`;
+  if (!existsSync(deployWorkflow)) return out;
+
+  // Resolve the Coolify app uuid from the per-project ledger (recorded
+  // at adopt-time as `coolifyApp`). Without a ledger entry there's
+  // nothing to probe.
+  const ledgers = loadAllLedgers();
+  const ourLedger = ledgers.find((l) => l.name === manifest.name);
+  const appStep = ourLedger?.steps.find((s): s is LedgerStep & { kind: "coolifyApp" } => {
+    return s.kind === "coolifyApp";
+  });
+  if (!appStep) return out;
+
+  const cfg = await getCoolifyConfig();
+  if (!cfg) return out;
+  const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+
+  let isAutoDeployEnabled: boolean | undefined;
+  try {
+    const app = await api.getApplication(appStep.uuid);
+    isAutoDeployEnabled = app.isAutoDeployEnabled;
+  } catch (err) {
+    out.push({
+      name: `Project ${manifest.name} (Coolify auto-deploy)`,
+      status: "fail",
+      detail: `couldn't read app state: ${(err as Error).message.split("\n")[0]}`,
+      hint: [
+        `Confirm the Coolify app still exists and the token is valid:`,
+        `  hatchkit doctor`,
+        `Then re-run: hatchkit doctor`,
+      ],
+    });
+    return out;
+  }
+
+  if (isAutoDeployEnabled === undefined) {
+    out.push({
+      name: `Project ${manifest.name} (Coolify auto-deploy)`,
+      status: "skip",
+      detail: "Coolify API didn't surface is_auto_deploy_enabled (older build?)",
+    });
+    return out;
+  }
+
+  if (isAutoDeployEnabled === false) {
+    out.push({
+      name: `Project ${manifest.name} (Coolify auto-deploy)`,
+      status: "ok",
+      detail: "auto-deploy off (GHA owns deploys)",
+    });
+    return out;
+  }
+
+  out.push({
+    name: `Project ${manifest.name} (Coolify auto-deploy)`,
+    status: "fail",
+    detail:
+      "Coolify's git-webhook auto-deploy is ON for a build-pipeline project — every push will race the GHA build with a stale-image redeploy.",
+    hint: [
+      `Re-run the SSH+login + auto-deploy toggle:`,
+      `  hatchkit config add ghcr`,
+      `Or open the Coolify app's Configuration → Source → toggle "Auto Deploy on Git Push" OFF.`,
     ],
   });
   return out;

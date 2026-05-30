@@ -75,6 +75,15 @@ export interface WireUpInput {
    *  with a non-default service name. Falls through to `app` when the
    *  file isn't there or the parse fails. */
   projectDir?: string;
+  /** True when this project's deploys are GHA-driven (build → push to
+   *  GHCR → call Coolify's deploy webhook). In that mode Coolify's
+   *  git-webhook auto-deploy MUST be off — otherwise Coolify reacts to
+   *  every git push by trying to deploy a stale/absent image before the
+   *  GHA build finishes pushing the fresh one, surfacing as race-y deploy
+   *  failures. When false / undefined, hatchkit leaves Coolify's
+   *  auto-deploy at its default (i.e. on) so source-builds work as
+   *  expected. */
+  scaffoldBuildPipeline?: boolean;
 }
 
 /** Structural shape of a "do this next" hint that `wireProjectIntoCoolify`
@@ -135,6 +144,11 @@ export interface WireUpResult {
   dnsRecordCreatedV4: boolean;
   /** Same as dnsRecordCreatedV4, for the AAAA record. */
   dnsRecordCreatedV6: boolean;
+  /** Additional caveats surfaced by Coolify wiring (compose-service
+   *  mismatch on a phantom name, is_auto_deploy_enabled toggle failed,
+   *  etc.). Adopt concatenates these into its top-level caveats array
+   *  so the user sees one consolidated recovery block. */
+  caveats: CoolifyCaveat[];
 }
 
 /** Top-level wire-up. Throws on the first hard failure (no project,
@@ -144,6 +158,11 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
   const cfg = await getCoolifyConfig();
   if (!cfg) throw new Error("Coolify is not configured. Run `hatchkit config add coolify` first.");
   const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+
+  /** Caveats accumulated during the wire-up. Adopt concatenates these
+   *  into its top-level caveats array so the user sees one consolidated
+   *  recovery block at the end. */
+  const caveats: CoolifyCaveat[] = [];
 
   // ── 1. Resolve / create the Coolify project ─────────────────────────
   //
@@ -261,9 +280,9 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     appUuid = existingApp.uuid;
     // Pick the compose service the public domain should bind to.
     // Same priority chain as the create branch: explicit caller hint →
-    // compose-file auto-detect → "app" fallback. We compute it here too
-    // because the reconcile PATCH below has to send `docker_compose_domains`
-    // — without it Coolify keeps the previous (or empty) routing and
+    // compose-file auto-detect. We compute it here too because the
+    // reconcile PATCH below has to send `docker_compose_domains` —
+    // without it Coolify keeps the previous (or empty) routing and
     // never generates the per-service traefik labels, which is the
     // exact symptom that left collection-of-beauty with zero traefik
     // labels on its container.
@@ -272,12 +291,24 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
         ? (input.dockerComposeServiceName ??
           pickComposeServiceForPort(input.projectDir, portsExposes))
         : undefined;
+    // Validate the picked name actually appears in the compose file.
+    // Coolify's docker_compose_domains PATCH silently no-ops when the
+    // name doesn't match a service — the deploy succeeds, but Traefik
+    // never binds the domain. Emit a caveat + skip the domain PATCH
+    // when validation fails (the rest of the reconcile still runs).
+    let composeServiceCaveat: CoolifyCaveat | undefined;
     if (dockerComposeServiceName) {
-      assertComposeServiceExists(
-        input.projectDir,
-        dockerComposeServiceName,
-        input.dockerComposeServiceName ? "caller override" : "auto-detected fallback",
-      );
+      const validation = validateComposeService(input.projectDir, dockerComposeServiceName);
+      if (!validation.ok) {
+        composeServiceCaveat = {
+          title: `Coolify routing skipped — phantom compose service "${dockerComposeServiceName}"`,
+          reason: `Service "${dockerComposeServiceName}" is not declared in ${validation.composeFile}. Coolify would accept the PATCH (200 OK) but Traefik would never bind a domain, so every request 503s.`,
+          recovery: [
+            `Set "publicService" in .hatchkit.json to one of: ${validation.declaredServices.join(", ")}.`,
+            `Then re-run: hatchkit adopt --resume`,
+          ],
+        };
+      }
     }
     // Reconcile the build pack + compose location + ports + DOMAINS
     // against what hatchkit's pipeline expects. Catches the case where
@@ -293,9 +324,11 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     // manifest's `domain` to Coolify even when the app already exists
     // — the previous code path skipped this and Coolify kept the
     // empty (or stale) Domain field, so Traefik never got per-service
-    // routing labels.
+    // routing labels. Skipped when the compose-service validation
+    // above flagged a phantom name (caveat already queued).
     const reconcile = ora("Coolify: reconciling build pack + domain on existing app").start();
     try {
+      const skipDomain = !!composeServiceCaveat;
       await api.updateApplication(existingApp.uuid, {
         buildPack,
         portsExposes,
@@ -308,14 +341,20 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
         // clobber a description the user edited in the dashboard).
         description: userDescription ? userDescription : undefined,
         ...(buildPack === "dockercompose"
-          ? {
-              dockerComposeDomains: [
-                { name: dockerComposeServiceName ?? "app", domain: appDomain },
-              ],
-            }
+          ? skipDomain || !dockerComposeServiceName
+            ? {}
+            : {
+                dockerComposeDomains: [{ name: dockerComposeServiceName, domain: appDomain }],
+              }
           : { domains: [appDomain] }),
       });
-      reconcile.succeed(`Coolify: build pack set to ${buildPack}, domain → ${appDomain}`);
+      if (skipDomain) {
+        reconcile.warn(
+          `Coolify: build pack set to ${buildPack}; domain PATCH skipped (compose service mismatch).`,
+        );
+      } else {
+        reconcile.succeed(`Coolify: build pack set to ${buildPack}, domain → ${appDomain}`);
+      }
     } catch (err) {
       reconcile.fail(`Coolify: couldn't reconcile build pack/domain: ${(err as Error).message}`);
       console.log(
@@ -324,6 +363,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
         ),
       );
     }
+    if (composeServiceCaveat) caveats.push(composeServiceCaveat);
   } else {
     // Pick the compose service name the public domain should bind to.
     // Coolify's dockercompose build pack rejects a flat `domains` field
@@ -334,20 +374,30 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     //   2. Auto-detect from the project's compose file by port match,
     //      so user-authored composes with non-default service names
     //      (`web`, `client`, …) just work.
-    //   3. `app` — hatchkit's scaffolded compose template uses that
-    //      name. Safe fallback when neither signal is present.
+    //   3. undefined — when we have no signal at all (no caller hint
+    //      and no compose file on disk yet). The create POST omits the
+    //      per-service domain in that case; a follow-up `--resume` (or
+    //      `hatchkit sync`) after the compose file lands will fix it.
     const dockerComposeServiceName =
       buildPack === "dockercompose"
         ? (input.dockerComposeServiceName ??
           pickComposeServiceForPort(input.projectDir, portsExposes))
         : undefined;
+    let composeServiceCaveat: CoolifyCaveat | undefined;
     if (dockerComposeServiceName) {
-      assertComposeServiceExists(
-        input.projectDir,
-        dockerComposeServiceName,
-        input.dockerComposeServiceName ? "caller override" : "auto-detected fallback",
-      );
+      const validation = validateComposeService(input.projectDir, dockerComposeServiceName);
+      if (!validation.ok) {
+        composeServiceCaveat = {
+          title: `Coolify routing skipped — phantom compose service "${dockerComposeServiceName}"`,
+          reason: `Service "${dockerComposeServiceName}" is not declared in ${validation.composeFile}. Coolify would accept the create but Traefik would never bind a domain, so every request 503s.`,
+          recovery: [
+            `Set "publicService" in .hatchkit.json to one of: ${validation.declaredServices.join(", ")}.`,
+            `Then re-run: hatchkit adopt --resume`,
+          ],
+        };
+      }
     }
+    const skipDomain = !!composeServiceCaveat;
     const baseInput: ApplicationCreateInput = {
       projectUuid,
       serverUuid: resolveServer.uuid,
@@ -362,8 +412,8 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       buildPack,
       name: input.projectName,
       description: createDescription,
-      domains: [appDomain],
-      dockerComposeDomainServiceName: dockerComposeServiceName,
+      domains: skipDomain ? undefined : [appDomain],
+      dockerComposeDomainServiceName: skipDomain ? undefined : dockerComposeServiceName,
       instantDeploy: false,
     };
 
@@ -381,6 +431,37 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     } catch (err) {
       createApp.fail();
       throw err;
+    }
+    if (composeServiceCaveat) caveats.push(composeServiceCaveat);
+  }
+
+  // ── 4b. Toggle Coolify's git-webhook auto-deploy.
+  //
+  // Build-pipeline projects (GHA builds the image + calls Coolify's
+  // deploy webhook) want auto-deploy OFF. Otherwise every git push
+  // triggers Coolify to redeploy from a stale-or-absent GHCR image
+  // before the GHA build has produced the fresh one — surfaces as
+  // flaky deploys. Source-build projects keep the default ON.
+  //
+  // Best-effort: PATCH failure surfaces as a caveat (rare — the field
+  // is documented on every Coolify v4 build hatchkit supports), the
+  // create/reconcile above already succeeded, and the user can flip
+  // the toggle from the dashboard.
+  if (input.scaffoldBuildPipeline === true) {
+    const toggle = ora("Coolify: disabling git-webhook auto-deploy (GHA owns deploys)").start();
+    try {
+      await api.updateApplication(appUuid, { isAutoDeployEnabled: false });
+      toggle.succeed("Coolify: auto-deploy off (GHA owns deploys)");
+    } catch (err) {
+      toggle.fail(`Coolify: couldn't disable auto-deploy: ${(err as Error).message}`);
+      caveats.push({
+        title: "Coolify auto-deploy left ON for a build-pipeline project",
+        reason: `PATCH is_auto_deploy_enabled=false failed: ${(err as Error).message}`,
+        recovery: [
+          `Open the Coolify app's Configuration page → Source → "Auto Deploy on Git Push" → toggle OFF.`,
+          `Or re-run: hatchkit adopt --resume`,
+        ],
+      });
     }
   }
 
@@ -460,6 +541,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     appCreated,
     dnsRecordCreatedV4: dnsResult.createdV4,
     dnsRecordCreatedV6: dnsResult.createdV6,
+    caveats,
   };
 }
 
@@ -737,24 +819,25 @@ async function upsertOne(
   }
 }
 
-/** Verify that the chosen compose service name is actually declared
- *  in the project's docker-compose file. Coolify's docker_compose_domains
- *  PATCH silently no-ops when `name` doesn't match a service in the
- *  compose — the response is still 200 OK, but no Traefik labels get
- *  emitted, the app's FQDN stays empty, and every request 503s.
- *  Failing loud here turns that into a thrown error the adopt caller
- *  can catch + surface as a clear caveat instead of leaving the user
- *  staring at a healthy-looking deploy that doesn't route.
+/** Validate the chosen compose service name against the project's
+ *  docker-compose file. Coolify's docker_compose_domains PATCH silently
+ *  no-ops when `name` doesn't match a service in the compose — the
+ *  response is still 200 OK, but no Traefik labels get emitted, the
+ *  app's FQDN stays empty, and every request 503s. We surface this
+ *  to the caller as a structured result so they can skip the PATCH +
+ *  emit a copy-pasteable caveat instead of pushing to a phantom name.
  *
- *  Skipped silently when no compose file is on disk — the caller has
- *  already decided to send a name (typically `app`), and we can't
- *  validate without the file. */
-function assertComposeServiceExists(
+ *  Result shapes:
+ *    · { ok: true } — service exists in compose, or no compose file on
+ *      disk we can parse (caller proceeds with the PATCH).
+ *    · { ok: false, declaredServices } — compose found, service NOT in
+ *      its `services:` block; caller skips the PATCH and emits caveat.
+ */
+function validateComposeService(
   projectDir: string | undefined,
   serviceName: string,
-  source: string,
-): void {
-  if (!projectDir) return;
+): { ok: true } | { ok: false; declaredServices: string[]; composeFile: string } {
+  if (!projectDir) return { ok: true };
   for (const name of ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"]) {
     const path = join(projectDir, name);
     if (!existsSync(path)) continue;
@@ -764,18 +847,13 @@ function assertComposeServiceExists(
     } catch {
       // Unreadable / unparseable compose: don't block the deploy on
       // our parser's limits.
-      return;
+      return { ok: true };
     }
-    if (services.length === 0) return;
-    if (services.includes(serviceName)) return;
-    throw new Error(
-      `Compose service "${serviceName}" (${source}) is not declared in ${name}. ` +
-        `Coolify's docker_compose_domains PATCH silently no-ops when the name doesn't match — ` +
-        `the deploy would succeed but Traefik would never bind a domain. ` +
-        `Services declared: ${services.join(", ")}. ` +
-        `Fix: set "publicService" in .hatchkit.json to one of those, then re-run.`,
-    );
+    if (services.length === 0) return { ok: true };
+    if (services.includes(serviceName)) return { ok: true };
+    return { ok: false, declaredServices: services, composeFile: name };
   }
+  return { ok: true };
 }
 
 /** Extract the list of top-level service keys from a compose file.
@@ -937,19 +1015,18 @@ function inferZone(domain: string): string {
 }
 
 /** Look up the Coolify apps belonging to a project for the
- *  Actions-secrets push. Tries the names hatchkit / the starter
- *  conventions produce, in priority order:
- *    · `<name>-server` + `<name>-client`  → legacy starter-split
- *      layout (currently unused but kept for projects in the wild
- *      that landed in this shape).
+ *  Actions-secrets push. Tries the names hatchkit produces, in
+ *  priority order:
  *    · `<name>`                            → single-app layout
  *      (current `create` + `adopt` output, all surfaces).
+ *    · `<name>-server`                     → legacy starter-server.
  *    · `<name>-web` / `<name>-app` / `<name>-api` → legacy
- *      `runCoolifySetup` output (treated as single-app, no
- *      SERVER/CLIENT label).
+ *      `runCoolifySetup` output (single-app).
  *
  *  Returns an empty array when Coolify isn't configured or no app
- *  matches — callers log a manual-recipe hint in that case. */
+ *  matches — callers log a manual-recipe hint in that case. The
+ *  per-surface split layout (`-server` + `-client` simultaneously)
+ *  isn't supported any more; the current deploy.yml takes one uuid. */
 export async function findCoolifyAppsForProject(projectName: string): Promise<CoolifyDeployApp[]> {
   const cfg = await getCoolifyConfig();
   if (!cfg) return [];
@@ -958,24 +1035,18 @@ export async function findCoolifyAppsForProject(projectName: string): Promise<Co
   const byName = new Map(apps.map((a) => [a.name, a.uuid]));
 
   const found: CoolifyDeployApp[] = [];
-  const serverUuid = byName.get(`${projectName}-server`);
-  const clientUuid = byName.get(`${projectName}-client`);
-  if (serverUuid) found.push({ uuid: serverUuid, label: "SERVER" });
-  if (clientUuid) found.push({ uuid: clientUuid, label: "CLIENT" });
-
-  if (found.length === 0) {
-    // Single-app fallbacks. Picked in priority order — first match wins.
-    for (const candidate of [
-      projectName,
-      `${projectName}-web`,
-      `${projectName}-app`,
-      `${projectName}-api`,
-    ]) {
-      const uuid = byName.get(candidate);
-      if (uuid) {
-        found.push({ uuid });
-        break;
-      }
+  // Single-app fallbacks. Picked in priority order — first match wins.
+  for (const candidate of [
+    projectName,
+    `${projectName}-server`,
+    `${projectName}-web`,
+    `${projectName}-app`,
+    `${projectName}-api`,
+  ]) {
+    const uuid = byName.get(candidate);
+    if (uuid) {
+      found.push({ uuid });
+      break;
     }
   }
 

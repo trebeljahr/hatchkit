@@ -19,18 +19,34 @@
 #      from the container env (forwarded by docker-compose.yml from
 #      Coolify's app env). This covers server-side values the runtime
 #      reads with `process.env.X`.
+#
+# Workspace layout assumption: `packages/shared` (types/schemas
+# shared across surfaces) + `packages/server` (the runtime). The
+# build stage uses `pnpm deploy --prod --legacy` to assemble a
+# self-contained bundle at /prod — REAL (non-symlinked) node_modules
+# including the workspace dep, ready to copy verbatim into the
+# runtime stage. Copying `packages/server/node_modules` directly
+# would carry pnpm's `.pnpm/<pkg>/...` symlink farm, which dangles
+# the moment the workspace root isn't in the image — first bare
+# import (e.g. `@sentry/node`) explodes with ERR_MODULE_NOT_FOUND.
+# The `--legacy` flag is required on pnpm v10+ which otherwise
+# refuses with ERR_PNPM_DEPLOY_NONINJECTED_WORKSPACE.
 ARG NODE_VERSION={{nodeMajor}}
 
+# ── Stage 1: Install dependencies ────────────────────────────────────
 FROM node:${NODE_VERSION}-alpine AS deps
+RUN corepack enable
 WORKDIR /app
-COPY package.json pnpm-lock.yaml* ./
-RUN corepack enable && pnpm install --frozen-lockfile
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+COPY packages/shared/package.json packages/shared/
+COPY packages/server/package.json packages/server/
+RUN pnpm install --frozen-lockfile
 
-FROM node:${NODE_VERSION}-alpine AS build
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
-# Build-time decryption — see the header comment for the rationale.
+# ── Stage 2: Build ───────────────────────────────────────────────────
+FROM deps AS build
+COPY tsconfig.base.json ./
+COPY packages/shared packages/shared
+COPY packages/server packages/server
 # Two separate RUN steps on purpose: BuildKit dumps the entire RUN
 # command into the build error when ANY step in a chained `&&` fails,
 # echo strings included. Splitting the secret-presence check off means
@@ -42,15 +58,31 @@ RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION
       echo "ERROR: dotenvx_private_key build secret not supplied. The workflow at .github/workflows/deploy.yml should pass it via 'secrets:' from the GH Actions secret DOTENV_PRIVATE_KEY_PRODUCTION." >&2; \
       exit 1; \
     }
+RUN pnpm --filter @{{name}}/shared run build
 RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION \
-    corepack enable && \
-    pnpm dlx @dotenvx/dotenvx run -- pnpm build
+    pnpm dlx @dotenvx/dotenvx run -- pnpm --filter @{{name}}/server run build
+# pnpm deploy bundles prod deps without symlinks into a self-contained
+# directory at /prod — copies the package's files (including dist) +
+# inlined node_modules for every prod dep including workspace deps.
+# --legacy required on pnpm v10+ which otherwise refuses with
+# ERR_PNPM_DEPLOY_NONINJECTED_WORKSPACE.
+RUN pnpm --filter @{{name}}/server --prod --legacy deploy /prod
 
+# ── Stage 3: Runtime ─────────────────────────────────────────────────
 FROM node:${NODE_VERSION}-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT={{port}}
-COPY --from=build /app /app
+# Copy the self-contained deploy bundle. dist/, package.json, and
+# node_modules (with workspace deps and all prod deps fully resolved —
+# no pnpm symlinks pointing outside the tree).
+COPY --from=build /prod/dist ./dist
+COPY --from=build /prod/package.json ./
+COPY --from=build /prod/node_modules ./node_modules
+# The encrypted .env.production rides along so the runtime CMD's
+# `dotenvx run` can decrypt it. Pulled from the package source so
+# this is robust to whatever `pnpm deploy` chooses to include.
+COPY --from=build /app/packages/server/.env.production ./
 EXPOSE {{port}}
 # `dotenvx run` reads .env.production (encrypted, committed) and
 # decrypts in-process using DOTENV_PRIVATE_KEY_PRODUCTION before

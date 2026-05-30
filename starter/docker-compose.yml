@@ -41,6 +41,9 @@ services:
   client:
     image: ${CLIENT_IMAGE:-ghcr.io/OWNER/REPO-client:main}
     environment:
+      # Pin client port — Coolify's app-level PORT (set for the server)
+      # would otherwise bleed into every service.
+      PORT: "3000"
       NEXT_PUBLIC_API_URL: ${API_URL}
       NEXT_PUBLIC_WS_URL: ${WS_URL:-}
       NEXT_PUBLIC_OPENPANEL_CLIENT_ID: ${OPENPANEL_CLIENT_ID:-}

@@ -1710,6 +1710,12 @@ async function executePlan(
           // to pick the right service name for `docker_compose_domains`
           // (Coolify rejects flat `domains` for dockercompose apps).
           projectDir: state.projectDir,
+          // Build-pipeline projects = GHA builds image + calls Coolify's
+          // deploy webhook. Coolify's own git-webhook auto-deploy must
+          // be off in that mode — otherwise every push races the GHA
+          // build with a deploy of stale-or-absent images. Source-build
+          // projects (when this is false) keep the Coolify default.
+          scaffoldBuildPipeline: plan.scaffoldBuildPipeline,
         });
         // Record only the bits we actually created. wireProjectIntoCoolify
         // returns explicit `*Created` flags exactly so adopt can guard
@@ -1764,6 +1770,13 @@ async function executePlan(
         // "succeeded".
         if (coolifyResult.dnsCaveat) {
           caveats.push(coolifyResult.dnsCaveat);
+        }
+        // Surface any additional Coolify caveats (compose-service
+        // mismatch on a phantom name, is_auto_deploy_enabled toggle
+        // failed, etc.). Same consolidation pattern as dnsCaveat —
+        // user sees one combined recovery block.
+        if (coolifyResult.caveats && coolifyResult.caveats.length > 0) {
+          caveats.push(...coolifyResult.caveats);
         }
       } catch (err) {
         // Brief inline note — the full recovery recipe lands in the

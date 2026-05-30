@@ -8,16 +8,13 @@
  * push, otherwise the workflow's first run hits the "secret not
  * set — skipping deploy trigger" branch and silently no-ops.
  *
- * Two workflow shapes coexist today:
- *   · adopt's `deploy.yml` uses COOLIFY_WEBHOOK_URL + COOLIFY_TOKEN
- *     for a single app.
- *   · the starter's `build-and-deploy.yml` uses COOLIFY_BASE_URL +
- *     COOLIFY_API_TOKEN + COOLIFY_<SERVER|CLIENT>_RESOURCE_UUID +
- *     COOLIFY_<SERVER|CLIENT>_DEPLOY_WEBHOOK for split server/client
- *     apps (with API-vs-webhook fallback).
+ * Canonical workflow shape (current hatchkit deploy.yml):
+ *   COOLIFY_BASE_URL + COOLIFY_API_TOKEN + COOLIFY_RESOURCE_UUID +
+ *   COOLIFY_WEBHOOK_URL (legacy fallback path). One uuid per project —
+ *   the per-surface split (COOLIFY_<SERVER|CLIENT>_RESOURCE_UUID) used
+ *   by an older starter template never matched a real project layout
+ *   in production, so hatchkit no longer pushes those names.
  *
- * setCoolifyDeploySecrets sets BOTH naming conventions so a project
- * works regardless of which workflow file is checked into the repo.
  * Idempotent (`gh secret set` upserts).
  */
 
@@ -27,17 +24,16 @@ import { getCoolifyConfig } from "../config.js";
 import { exec } from "../utils/exec.js";
 
 /** A Coolify application the workflow should redeploy on push.
- *  `label`:
- *    · undefined   → single-app project (adopt-style). Sets
- *                    COOLIFY_WEBHOOK_URL.
- *    · "SERVER"    → starter-style server app. Sets
- *                    COOLIFY_SERVER_RESOURCE_UUID +
- *                    COOLIFY_SERVER_DEPLOY_WEBHOOK.
- *    · "CLIENT"    → starter-style client app. Sets
- *                    COOLIFY_CLIENT_RESOURCE_UUID +
- *                    COOLIFY_CLIENT_DEPLOY_WEBHOOK. */
+ *
+ *  Hatchkit's current deploy.yml uses a single uuid per project
+ *  (`COOLIFY_RESOURCE_UUID` + `COOLIFY_WEBHOOK_URL`). Older code
+ *  optionally labelled apps as `SERVER` / `CLIENT` to push
+ *  `COOLIFY_<label>_RESOURCE_UUID` / `_DEPLOY_WEBHOOK` for a
+ *  per-surface split deploy — that workflow shape is gone and the
+ *  caller now passes the single resolved app uuid directly. The
+ *  `label` field is retained as `never` to give existing callsites a
+ *  loud compile error if they try to set it again. */
 export interface CoolifyDeployApp {
-  label?: "SERVER" | "CLIENT";
   /** Coolify application uuid. */
   uuid: string;
 }
@@ -78,10 +74,10 @@ export async function setCoolifyDeploySecrets(
   }
 
   // Build the secret map.
-  //   Always set the starter's API-style triple — once those are in
-  //   place the workflow uses the per-resource uuid + bearer token to
-  //   call Coolify directly, which is more robust than webhooks.
-  //   Per-app webhook URLs are still set as a fallback.
+  //   Set the API-style triple so the workflow uses the per-resource
+  //   uuid + bearer token to call Coolify directly. The webhook URL is
+  //   set as a fallback path that bypasses the bearer token when an
+  //   older deploy.yml template is checked in.
   const baseUrl = cfg.url.replace(/\/$/, "");
   const secrets: Record<string, string> = {
     COOLIFY_BASE_URL: baseUrl,
@@ -90,18 +86,13 @@ export async function setCoolifyDeploySecrets(
     COOLIFY_TOKEN: cfg.token,
   };
 
-  for (const app of input.apps) {
-    const webhook = `${baseUrl}/api/v1/deploy?uuid=${app.uuid}`;
-    if (app.label === undefined) {
-      // Single-app convention (adopt's template).
-      secrets.COOLIFY_WEBHOOK_URL = webhook;
-      secrets.COOLIFY_RESOURCE_UUID = app.uuid;
-    } else {
-      // Split server/client convention (starter's template).
-      secrets[`COOLIFY_${app.label}_RESOURCE_UUID`] = app.uuid;
-      secrets[`COOLIFY_${app.label}_DEPLOY_WEBHOOK`] = webhook;
-    }
-  }
+  // Hatchkit's current deploy.yml takes a single uuid per project. If
+  // multiple apps are passed (legacy callers), use the first — the
+  // others wouldn't have a workflow waiting on their secrets anyway.
+  const primary = input.apps[0];
+  const webhook = `${baseUrl}/api/v1/deploy?uuid=${primary.uuid}`;
+  secrets.COOLIFY_WEBHOOK_URL = webhook;
+  secrets.COOLIFY_RESOURCE_UUID = primary.uuid;
 
   const names = Object.keys(secrets);
   const spinner = ora(
