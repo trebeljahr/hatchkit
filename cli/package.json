@@ -37,7 +37,7 @@
     "build": "pnpm --filter @hatchkit/dev-shared run build && tsc && node scripts/copy-templates.mjs",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "test": "tsx test-dev-setup.ts && tsx test-dns-preflight.ts && tsx test-google-oauth.ts && tsx test-keys-rotate.ts && tsx test-scaffold.ts && tsx test-onboarding-plan.ts && tsx test-set-description.ts && tsx test-rename-project.ts && tsx test-manifest.ts && tsx test-listmonk.ts && tsx test-ses-smtp.ts && tsx test-ses-mail-from.ts && tsx test-cloudflare-dns-publish.ts && tsx test-listmonk-ses.ts",
+    "test": "tsx test-dev-setup.ts && tsx test-dns-preflight.ts && tsx test-dns-legacy-migration.ts && tsx test-google-oauth.ts && tsx test-keys-rotate.ts && tsx test-scaffold.ts && tsx test-onboarding-plan.ts && tsx test-set-description.ts && tsx test-rename-project.ts && tsx test-manifest.ts && tsx test-listmonk.ts && tsx test-ses-smtp.ts && tsx test-ses-mail-from.ts && tsx test-cloudflare-dns-publish.ts && tsx test-listmonk-ses.ts",
     "test:keys-rotate": "tsx test-keys-rotate.ts",
     "typecheck": "tsc --noEmit",
     "dev:typecheck": "tsc --noEmit --watch --preserveWatchOutput",

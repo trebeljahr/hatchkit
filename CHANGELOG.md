@@ -20,6 +20,7 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 ### Fixed
 
 - Fixed the Listmonk transactional template seeded by `hatchkit add <project> listmonk-ses` — tx templates use Go `text/template`, which doesn't register `safeHTML`, so the body now renders `{{ .Tx.Data.body }}` raw instead of failing with `function "safeHTML" not defined`.
+- `fix(dns): preserve Cloudflare API token across legacy-provider auto-migration` — `ensureDns` no longer wipes `dns:cloudflare:token` when migrating a pre-v2 `inwx`/`manual` DNS config. The token is read first, verified against `GET /user/tokens/verify`, and reused under the new `provider: "cloudflare"` meta so users keep their existing token instead of being forced to roll + re-paste (Cloudflare never re-exposes token values). Only the `dns:inwx:password` secret and the stale `provider` field are cleared. Explicit `hatchkit config add dns` still wipes both — that path is user-initiated.
 
 ### Removed
 

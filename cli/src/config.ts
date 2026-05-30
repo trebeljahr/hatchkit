@@ -4,6 +4,7 @@ import { Separator, confirm, input, password, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import Conf from "conf";
 import ora from "ora";
+import { CloudflareApi } from "./utils/cloudflare-api.js";
 import { verifyCoolify } from "./utils/coolify-api.js";
 import { execOk } from "./utils/exec.js";
 import {
@@ -720,6 +721,74 @@ export async function getHetznerConfig(): Promise<HetznerConfig | null> {
 // Provider: DNS
 // ---------------------------------------------------------------------------
 
+/** Handle a pre-v2 stored DNS provider ("inwx" | "manual"). v2 dropped
+ *  both modes — DNS must be on Cloudflare — but a parallel code path
+ *  (e.g. legacy Cloudflare Email Routing setup) may have already stored
+ *  a valid CF token alongside the legacy provider entry. Cloudflare never
+ *  re-exposes token values, so a blind wipe is unrecoverable for those
+ *  users.
+ *
+ *  Behavior:
+ *    · Reads any stored CF token before touching the keychain.
+ *    · Always clears the INWX-specific secret + the legacy `provider`
+ *      meta. The CF token is preserved (or dropped only on failed verify).
+ *    · If a CF token exists and verifies, writes a fresh
+ *      `provider: "cloudflare"` meta and returns the config — no prompt.
+ *    · If verify fails (or no token was stored), returns null so the
+ *      caller falls through to the interactive prompt path.
+ *
+ *  Verify hook is parameterized so tests don't have to stub global fetch
+ *  to exercise the success/failure branches. */
+async function migrateLegacyDnsProvider(
+  legacyProvider: string,
+  verify: (token: string) => Promise<boolean> = async (token) => {
+    try {
+      await new CloudflareApi({ token }).verifyToken();
+      return true;
+    } catch {
+      return false;
+    }
+  },
+): Promise<DnsConfig | null> {
+  console.log(
+    chalk.yellow(
+      `  ! Legacy DNS provider "${legacyProvider}" detected — hatchkit now manages DNS via Cloudflare only.`,
+    ),
+  );
+
+  const preservedCfToken = await getSecret(SECRET_KEYS.dnsCloudflareToken);
+
+  // Wipe only the legacy-provider-specific secret + the stale meta.
+  // The CF token (if any) is left intact in the keychain.
+  await wipeProvider("providers.dns", [SECRET_KEYS.dnsInwxPassword]);
+
+  if (!preservedCfToken) {
+    console.log(chalk.dim("    Re-prompting for Cloudflare API token below."));
+    return null;
+  }
+
+  const verified = await verify(preservedCfToken);
+  if (!verified) {
+    // Stored token is dead. Drop it and fall through to the prompt path.
+    await deleteSecret(SECRET_KEYS.dnsCloudflareToken);
+    console.log(
+      chalk.dim("    · Stored Cloudflare token failed verification — re-prompting below."),
+    );
+    return null;
+  }
+
+  const meta: DnsMeta = { status: "configured", provider: "cloudflare" };
+  store.set("providers.dns", meta);
+  await setSecret(SECRET_KEYS.dnsCloudflareToken, preservedCfToken);
+  const registrarPassword = await getSecret(SECRET_KEYS.dnsInwxRegistrarPassword);
+  console.log(chalk.dim("    · Existing Cloudflare token preserved (verified)."));
+  return {
+    ...meta,
+    apiToken: preservedCfToken,
+    registrarPassword: registrarPassword ?? undefined,
+  };
+}
+
 export async function ensureDns(): Promise<DnsConfig> {
   await migrateSecret("providers.dns.apiToken", SECRET_KEYS.dnsCloudflareToken);
   const existingRaw = store.get("providers.dns") as (DnsMeta & { provider?: string }) | undefined;
@@ -732,16 +801,8 @@ export async function ensureDns(): Promise<DnsConfig> {
       ? (existingRaw.provider as string)
       : null;
   if (legacyProvider) {
-    console.log(
-      chalk.yellow(
-        `  ! Legacy DNS provider "${legacyProvider}" detected — hatchkit now manages DNS via Cloudflare only.`,
-      ),
-    );
-    console.log(chalk.dim("    Re-prompting for Cloudflare API token below."));
-    await wipeProvider("providers.dns", [
-      SECRET_KEYS.dnsInwxPassword,
-      SECRET_KEYS.dnsCloudflareToken,
-    ]);
+    const preserved = await migrateLegacyDnsProvider(legacyProvider);
+    if (preserved) return preserved;
   }
   const existing = legacyProvider ? undefined : (existingRaw as DnsMeta | undefined);
   if (existing?.status === "configured") {
@@ -3523,3 +3584,9 @@ export async function runOnboarding(): Promise<void> {
   }
   console.log(chalk.dim("\n  ✓ Run `hatchkit doctor` to verify every configured provider.\n"));
 }
+
+/** Test-only handles. Stable across the codebase via the `_internals`
+ *  convention used by other modules — not part of the public API. */
+export const _internals = {
+  migrateLegacyDnsProvider,
+};
