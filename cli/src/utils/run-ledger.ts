@@ -14,7 +14,14 @@
  *
  * Path: <configDir>/runs/<sanitized-name>.json
  */
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { getStore } from "../config.js";
 
@@ -66,11 +73,26 @@ export type LedgerStep =
   | { kind: "coolifyProject"; uuid: string }
   | { kind: "coolifyApp"; uuid: string }
   | { kind: "coolifyDb"; uuid: string }
-  /** Coolify private-registry credential entry. Recorded only when
-   *  hatchkit was the one that created it (Path B of GHCR setup) so
-   *  destroy doesn't yank registry creds the user added by hand for
-   *  unrelated apps. */
+  /** LEGACY: Coolify private-registry credential entry. Recorded by
+   *  pre-SSH builds of hatchkit (the API was the
+   *  `POST /api/v1/private-registries` flow that Coolify v4 doesn't
+   *  expose). New runs never record this kind, but the rollback path
+   *  still recognizes it on old ledgers and prints a manual-cleanup
+   *  hint. */
   | { kind: "coolifyPrivateRegistry"; uuid: string }
+  /** GHCR `docker login` hatchkit performed on a Coolify host via SSH
+   *  (the path that replaced the broken private-registries API). One
+   *  entry per host the run touched. Destroy SSHes back and runs
+   *  `docker logout ghcr.io`, BUT only when the same host doesn't
+   *  appear in another hatchkit project's ledger (refcount via
+   *  scanning the runs dir) — multiple projects share the same login. */
+  | {
+      kind: "coolifyGhcrSshLogin";
+      serverUuid: string;
+      host: string;
+      user: string;
+      port: number;
+    }
   | { kind: "mlService"; platform: string; name: string }
   // Adopt-only kinds — fine-grained file/git removal so undo only
   // touches things adopt itself wrote. Never `rm -rf` anything wider
@@ -261,6 +283,32 @@ export function rewriteLedgerStepPathBasenames(
   });
   if (rewritten > 0) writeFileSync(path, JSON.stringify(data, null, 2));
   return rewritten;
+}
+
+/** Read every persisted ledger file in the runs dir. Used by the
+ *  rollback flow to refcount cross-project resources (e.g. the SSH-
+ *  level GHCR `docker login` is shared across every hatchkit project
+ *  whose images land on the same Coolify host — only the last project
+ *  out should run `docker logout`).
+ *
+ *  Quiet on errors: an unreadable / malformed ledger file maps to
+ *  "skip", not "throw". A bad file shouldn't block destroy. */
+export function loadAllLedgers(): Array<{ name: string; steps: readonly LedgerStep[] }> {
+  const dir = runsDir();
+  if (!existsSync(dir)) return [];
+  const out: Array<{ name: string; steps: readonly LedgerStep[] }> = [];
+  for (const entry of readdirSync(dir)) {
+    if (!entry.endsWith(".json")) continue;
+    try {
+      const data = JSON.parse(readFileSync(join(dir, entry), "utf-8")) as LedgerData;
+      if (data?.name && Array.isArray(data.steps)) {
+        out.push({ name: data.name, steps: data.steps });
+      }
+    } catch {
+      // Skip malformed ledgers — they're surfaced elsewhere if needed.
+    }
+  }
+  return out;
 }
 
 export class RunLedger {

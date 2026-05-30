@@ -1593,11 +1593,20 @@ async function configureGhcrForCreate(
     repoSlug: slug,
     pullToken: ghcrConfig?.pullToken,
     username: ghcrConfig?.username,
+    coolifyUrl: coolify.url,
+    manual: ghcrConfig?.manual === true,
   });
 
   if (result.kind === "private-registered") {
-    if (result.created) {
-      ledger?.record({ kind: "coolifyPrivateRegistry", uuid: result.registryUuid });
+    for (const h of result.hosts) {
+      if (!h.newlyLoggedIn) continue;
+      ledger?.record({
+        kind: "coolifyGhcrSshLogin",
+        serverUuid: h.serverUuid,
+        host: h.host,
+        user: h.user,
+        port: h.port,
+      });
     }
     return;
   }

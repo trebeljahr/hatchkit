@@ -323,12 +323,20 @@ export interface StripeMeta extends ProviderStatus {
 
 export interface GhcrMeta extends ProviderStatus {
   /** GitHub login the PAT belongs to. Surfaced in `hatchkit config`
-   *  status and used as the username for Coolify's private-registry
-   *  entry — GHCR's anonymous-looking `_json_key`-style placeholder
-   *  isn't accepted by docker login. Captured at validation time
-   *  (`gh api /user --jq .login` while we already have the token in
-   *  hand) so adopt's Path B doesn't need a second round-trip. */
+   *  status and used as the username for the docker-login on each
+   *  Coolify host — GHCR's anonymous-looking `_json_key`-style
+   *  placeholder isn't accepted by docker login. Captured at
+   *  validation time (`gh api /user --jq .login` while we already have
+   *  the token in hand) so adopt's Path B doesn't need a second
+   *  round-trip. */
   username?: string;
+  /** True when the user explicitly opted into the legacy paste flow
+   *  (`hatchkit config add ghcr --manual`). The flag tells adopt's
+   *  GHCR-on-Coolify path to print a manual `docker login` recipe per
+   *  host instead of SSHing automatically — power users running a
+   *  dedicated machine PAT typically want full control over where it
+   *  lands. */
+  manual?: boolean;
 }
 
 // === Full-config types — metadata + the associated secret. These are
@@ -2895,13 +2903,18 @@ async function verifyGhcrToken(pullToken: string): Promise<string> {
 }
 
 /** Persist a verified pull token + login to the keychain + config
- *  store. Same on-disk shape regardless of provenance (gh-derived vs
- *  manual paste). */
-async function persistGhcrConfig(pullToken: string, username: string): Promise<GhcrConfig> {
+ *  store. `manual` records whether the user opted into the paste flow
+ *  so adopt's GHCR-on-Coolify path can honor it. */
+async function persistGhcrConfig(
+  pullToken: string,
+  username: string,
+  opts: { manual?: boolean } = {},
+): Promise<GhcrConfig> {
   const meta: GhcrMeta = {
     status: "configured",
     lastVerified: new Date().toISOString(),
     username,
+    manual: opts.manual ? true : undefined,
   };
   store.set("providers.ghcr", meta);
   await setSecret(SECRET_KEYS.ghcrPullToken, pullToken);
@@ -3042,7 +3055,7 @@ async function ensureGhcrViaPaste(): Promise<GhcrConfig> {
     throw error;
   }
 
-  const config = await persistGhcrConfig(pullToken, username);
+  const config = await persistGhcrConfig(pullToken, username, { manual: true });
   console.log(chalk.green(`  ✓ GHCR configured (${username})`));
   return config;
 }

@@ -21,8 +21,9 @@ import { confirm, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { getCoolifyConfig, getDnsConfig } from "../config.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
+import { dockerLogoutViaSsh } from "../utils/coolify-ssh.js";
 import { exec } from "../utils/exec.js";
-import { type LedgerStep, RunLedger } from "../utils/run-ledger.js";
+import { type LedgerStep, RunLedger, loadAllLedgers } from "../utils/run-ledger.js";
 import { SECRET_KEYS, deleteSecret, getSecret } from "../utils/secrets.js";
 import { ghSecretDelete } from "./gh-actions-secrets.js";
 
@@ -238,9 +239,15 @@ function recipeFor(step: LedgerStep): string | null {
         `# manual: delete Coolify project ${step.uuid} (only after its apps are gone)`,
       );
     case "coolifyPrivateRegistry":
+      // Legacy ledger entry from pre-SSH builds. The Coolify v4
+      // private-registries API doesn't exist, so there's nothing for
+      // hatchkit to revoke programmatically — surface a manual hint
+      // for any human-installed creds left behind by old builds.
       return chalk.dim(
-        `# manual: delete private-registry credential ${step.uuid} from Coolify (Servers → Private Registries)`,
+        `# manual (legacy): if a 'GHCR' entry remains under Servers → Private Registries (uuid ${step.uuid}), delete it from the Coolify UI`,
       );
+    case "coolifyGhcrSshLogin":
+      return `ssh -p ${step.port} ${shellEscape(`${step.user}@${step.host}`)} 'docker logout ghcr.io'`;
     case "terraformApplied":
       return `cd ${shellEscape(step.stackDir)} && terraform destroy -var-file=${shellEscape(step.tfvarsPath)}`;
     case "coolifyEnv":
@@ -339,12 +346,14 @@ export async function runRollback(ledger: RunLedger, opts: RollbackOptions = {})
   for (const step of [...ledger.steps].reverse()) {
     const label = describeStep(step);
 
-    // Pre-confirm warning for the GHCR registry: it's shared per-host
-    // across every Coolify app that pulls from `ghcr.io`. If other apps
-    // still exist on this Coolify install they'll lose pull access. We
-    // only print the warning — the standard destructive confirm below
-    // is what actually gates the delete.
-    if (step.kind === "coolifyPrivateRegistry") {
+    // Pre-confirm warning for the SSH-level GHCR credential: shared
+    // per-host across every Coolify app that pulls from `ghcr.io` on
+    // this box. If another hatchkit project still references the same
+    // host in its ledger, we treat the logout as a no-op (refcount in
+    // undoStep). For any *non*-hatchkit Coolify apps on the host we
+    // can't track precisely; surface the broader fleet count instead
+    // so the user knows what's at risk.
+    if (step.kind === "coolifyGhcrSshLogin") {
       const others = await countOtherCoolifyApps(ledger);
       if (others && others.count > 0) {
         const list =
@@ -357,7 +366,7 @@ export async function runRollback(ledger: RunLedger, opts: RollbackOptions = {})
         );
         console.log(
           chalk.yellow(
-            `    This is a shared ghcr.io credential — deleting it removes pull access for all of them.`,
+            `    This is a shared ghcr.io credential on ${step.host} — logout removes pull access for any other app that relies on it.`,
           ),
         );
       }
@@ -451,6 +460,12 @@ function isDestructive(step: LedgerStep): boolean {
     step.kind === "coolifyProject" ||
     step.kind === "coolifyDb" ||
     step.kind === "coolifyPrivateRegistry" ||
+    // SSH-level `docker logout ghcr.io` is shared across every hatchkit
+    // project whose images land on the same Coolify host. Gate behind
+    // the destructive-confirm so a careless destroy doesn't break
+    // unrelated projects' pulls. The countOther* warning surfaces just
+    // before the prompt below.
+    step.kind === "coolifyGhcrSshLogin" ||
     step.kind === "cloudflareDnsRecord" ||
     // R2 bucket delete drops every object inside it. Token revocation
     // is reversible (just re-mint), so it stays out of this list.
@@ -529,7 +544,9 @@ function describeStep(step: LedgerStep): string {
     case "coolifyDb":
       return `delete Coolify db ${chalk.cyan(step.uuid)}`;
     case "coolifyPrivateRegistry":
-      return `delete Coolify private-registry creds ${chalk.cyan(step.uuid)}`;
+      return `(legacy) Coolify private-registry creds ${chalk.cyan(step.uuid)} — manual cleanup`;
+    case "coolifyGhcrSshLogin":
+      return `ssh ${chalk.cyan(`${step.user}@${step.host}:${step.port}`)} → docker logout ghcr.io`;
     case "mlService":
       return `${chalk.cyan(step.platform)} ML service ${chalk.cyan(step.name)}`;
     case "manifest":
@@ -678,11 +695,53 @@ async function undoStep(
       return "done";
     }
     case "coolifyPrivateRegistry": {
-      const cfg = await getCoolifyConfig();
-      if (!cfg) throw new Error("Coolify config no longer present");
-      const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
-      const result = await api.deletePrivateRegistry(step.uuid);
-      return result === "not-found" ? "not-found" : "done";
+      // Legacy ledger entry from pre-SSH builds. Coolify v4 has no
+      // private-registries API to call, so we can't auto-revoke;
+      // surface the manual hint and let the user clean up via the
+      // dashboard if anything was actually created back then.
+      throw new RollbackSkip(
+        `Legacy ledger entry: Coolify v4 has no /private-registries API; this credential (if it exists) must be removed manually.`,
+        [
+          `Open the Coolify dashboard → Servers → Private Registries.`,
+          `Delete any 'GHCR (hatchkit)' entry with uuid ${step.uuid} if it's still listed.`,
+        ],
+      );
+    }
+    case "coolifyGhcrSshLogin": {
+      // Refcount across all on-disk ledgers: if another hatchkit
+      // project's ledger still references the same SSH host, leave the
+      // login in place — yanking it would break the other project's
+      // pulls. Compare by host (lowercased) so trivial casing
+      // differences don't slip past the refcount.
+      const all = loadAllLedgers();
+      const ourHost = step.host.toLowerCase();
+      let otherProjects = 0;
+      for (const other of all) {
+        if (other.name === ledgerName) continue;
+        for (const s of other.steps) {
+          if (s.kind === "coolifyGhcrSshLogin" && s.host.toLowerCase() === ourHost) {
+            otherProjects += 1;
+            break;
+          }
+        }
+      }
+      if (otherProjects > 0) {
+        return "skipped";
+      }
+      const result = await dockerLogoutViaSsh(
+        { uuid: step.serverUuid, user: step.user, host: step.host, port: step.port },
+        "ghcr.io",
+      );
+      if (result.exitCode !== 0) {
+        throw new RollbackSkip(
+          `ssh ${step.user}@${step.host}:${step.port} 'docker logout ghcr.io' failed.`,
+          [
+            `Reason: ${result.stderr || `exit code ${result.exitCode}`}`,
+            `Run it yourself: ssh -p ${step.port} ${step.user}@${step.host} 'docker logout ghcr.io'`,
+          ],
+        );
+      }
+      return "done";
     }
     case "openpanel": {
       const { deleteOpenpanelClient } = await import("../provision/openpanel.js");

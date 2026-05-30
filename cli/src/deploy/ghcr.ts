@@ -32,7 +32,14 @@
  */
 
 import ora from "ora";
-import type { CoolifyApi } from "../utils/coolify-api.js";
+import type { CoolifyApi, CoolifyServer } from "../utils/coolify-api.js";
+import {
+  type CoolifyServerSshTarget,
+  dockerLoginAlreadyOk,
+  dockerLoginViaSsh,
+  resolveSshTarget,
+  sshProbe,
+} from "../utils/coolify-ssh.js";
 import { exec, execOk } from "../utils/exec.js";
 import { ghTokenScopes } from "../utils/gh-token.js";
 
@@ -53,10 +60,31 @@ export interface GhcrSetupOptions {
 /** Outcome surface for adopt's caveats list. The caller logs success
  *  inline and only forwards `failed`/`skipped` to the run's caveat
  *  block — that way the user sees the recovery recipe right where
- *  they need it. */
+ *  they need it.
+ *
+ *  The `private-registered` discriminator is retained from the pre-SSH
+ *  era for caller compatibility, but its payload changed: instead of a
+ *  Coolify-registry uuid (the broken `/api/v1/private-registries`
+ *  surface), it now carries one entry per host where hatchkit ran
+ *  `docker login`. Callers iterate `hosts[]` to record one ledger
+ *  entry per host. */
 export type GhcrSetupResult =
   | { kind: "public-set"; visibility: "public" }
-  | { kind: "private-registered"; registryUuid: string; created: boolean }
+  | {
+      kind: "private-registered";
+      hosts: Array<{
+        serverUuid: string;
+        host: string;
+        user: string;
+        port: number;
+        /** True when THIS run wrote a new entry into the remote's
+         *  `~/.docker/config.json`; false when the entry was already
+         *  there (idempotent re-run). Drives the ledger record: only
+         *  newly-written entries are recorded so destroy doesn't run
+         *  `docker logout` on a credential the user added by hand. */
+        newlyLoggedIn: boolean;
+      }>;
+    }
   | { kind: "skipped"; reason: string; recovery: string[] }
   | { kind: "failed"; reason: string; recovery: string[] };
 
@@ -137,34 +165,65 @@ export async function makeGhcrPackagePublic(options: GhcrSetupOptions): Promise<
 }
 
 /**
- * Path B — register a GHCR PAT with Coolify so it can pull a private
- * package. Reads the PAT (and its owner login) from `getGhcrConfig()`;
- * when missing, surfaces a caveat pointing at `hatchkit config add
- * ghcr` rather than prompting mid-adopt.
+ * Path B — wire GHCR pull credentials on every Coolify-managed host
+ * that pulls or builds images, by SSHing in and running `docker login`.
+ *
+ * Why SSH and not the Coolify API: Coolify v4 doesn't expose a
+ * private-registries surface. `POST /api/v1/private-registries`
+ * returns 404 on every live install; openapi.yaml v4.x has no
+ * registry-management endpoints. The canonical workflow per the
+ * Coolify "Custom Docker Registry" docs is to SSH into each host and
+ * run `docker login`. Coolify's daemon reads `~/.docker/config.json`
+ * on every subsequent pull.
+ *
+ * Target selection: every server returned by `listServers()` that is
+ * reachable AND usable AND (is the Coolify host OR is a build server).
+ *   · Coolify-host: pulls runtime images for deploys
+ *   · build server: pushes built images (and may pull base images)
+ *   · others: no need to log them in
+ *
+ * Idempotency: before running `docker login`, we grep
+ * `~/.docker/config.json` for a matching registry entry. If present,
+ * we treat that host as already configured and don't re-write
+ * credentials (so a successful re-run is a no-op). The `newlyLoggedIn`
+ * flag on each result entry tells the caller whether to record a
+ * ledger entry — only newly-written logins are recorded so destroy
+ * never `docker logout`s a credential the user installed by hand.
+ *
+ * Security: the token is piped via stdin into `docker login
+ * --password-stdin`. It never appears in argv (visible via `ps`) or in
+ * an environment variable (visible via `/proc/<pid>/environ`).
  *
  * Username vs repo owner: the registry login docker uses is the *PAT
  * owner's* GitHub username, not necessarily the repo owner. They line
  * up for personal repos but diverge for org-owned repos pulled with a
  * personal PAT. Callers pass the username explicitly.
  *
- * The Coolify private-registries endpoint is system-wide: once a creds
- * entry exists for `ghcr.io`, every app on every server in this Coolify
- * install pulls authenticated from there. So we only register once per
- * Coolify install (idempotent on hostname).
+ * Opt-out (`manual: true`): emit a caveat with a copy-pasteable
+ * `docker login` one-liner per target host and don't SSH. Power users
+ * running a dedicated machine PAT separate from their personal gh
+ * session opted into this via `hatchkit config add ghcr --manual`.
  */
 export async function registerGhcrCredsWithCoolify(
   options: GhcrSetupOptions & {
     api: CoolifyApi;
     /** GHCR PAT (scope `read:packages`). Caller owns the keychain
-     *  lookup so this module stays IO-free aside from `gh`. */
+     *  lookup so this module stays IO-free aside from `gh` and ssh. */
     pullToken: string | undefined;
-    /** GitHub login the PAT belongs to. Sent as the registry username.
-     *  When undefined we treat it as "creds incomplete" and surface
-     *  the same `config add ghcr` caveat. */
+    /** GitHub login the PAT belongs to. Used as the docker-login
+     *  username. When undefined we treat it as "creds incomplete" and
+     *  surface the same `config add ghcr` caveat. */
     username: string | undefined;
+    /** Coolify panel URL — used to resolve the SSHable hostname for
+     *  the box Coolify itself runs on (where `listServers` reports
+     *  `ip: host.docker.internal`). */
+    coolifyUrl: string;
+    /** When true, skip the automatic SSH+login flow and emit a manual
+     *  one-liner per target host. Mapped from `GhcrMeta.manual`. */
+    manual?: boolean;
   },
 ): Promise<GhcrSetupResult> {
-  const { api, pullToken, username } = options;
+  const { api, pullToken, username, coolifyUrl, manual } = options;
 
   if (!pullToken || !username) {
     return {
@@ -172,40 +231,193 @@ export async function registerGhcrCredsWithCoolify(
       reason: "GHCR pull credentials are not configured.",
       recovery: [
         "Run: hatchkit config add ghcr",
-        "  → paste a fine-grained PAT scoped `read:packages`.",
+        "  → paste a fine-grained PAT scoped `read:packages`,",
+        "  → or let hatchkit derive one from your `gh auth` session.",
         "  → create one at https://github.com/settings/tokens?type=beta if needed.",
         "Then re-run: hatchkit adopt --resume",
       ],
     };
   }
 
-  const spin = ora("Coolify: registering GHCR pull credentials").start();
+  // Resolve target Coolify hosts.
+  let servers: CoolifyServer[];
   try {
-    const existing = await api.findPrivateRegistry({ url: "ghcr.io" });
-    if (existing) {
-      spin.succeed(`Coolify: GHCR registry already configured (${existing.uuid})`);
-      return { kind: "private-registered", registryUuid: existing.uuid, created: false };
-    }
-    const created = await api.addPrivateRegistry({
-      name: "GHCR (hatchkit)",
-      registryUrl: "ghcr.io",
-      username,
-      password: pullToken,
-    });
-    spin.succeed(`Coolify: GHCR registry created (${created.uuid})`);
-    return { kind: "private-registered", registryUuid: created.uuid, created: true };
+    servers = await api.listServers();
   } catch (err) {
-    spin.fail("Coolify: couldn't register GHCR creds");
     return {
       kind: "failed",
-      reason: (err as Error).message,
+      reason: `Couldn't list Coolify servers: ${(err as Error).message}`,
       recovery: [
-        "Add the registry manually in Coolify:",
-        `  Servers → <your server> → Private Registries → Add → ghcr.io / ${username} / <PAT>`,
+        "Verify Coolify is reachable + the API token is valid:",
+        "  hatchkit doctor",
+        "Then re-run: hatchkit adopt --resume",
+      ],
+    };
+  }
+
+  const targets = pickGhcrTargets(servers, coolifyUrl);
+  if (targets.length === 0) {
+    return {
+      kind: "skipped",
+      reason: "No reachable Coolify host/build server to install GHCR credentials on.",
+      recovery: [
+        "Check `hatchkit doctor` + the Servers page in the Coolify dashboard.",
+        "Once at least one server is reachable + usable, re-run: hatchkit adopt --resume",
+      ],
+    };
+  }
+
+  // Manual opt-out: emit the recipe and stop. No SSH attempt.
+  if (manual) {
+    return {
+      kind: "skipped",
+      reason: "GHCR was configured with --manual; skipping automatic SSH + docker login.",
+      recovery: [
+        "Run this once on each Coolify host (token is piped over stdin — never paste it on the command line):",
+        ...targets.map(
+          (t) =>
+            `  gh auth token | ssh -p ${t.port} ${t.user}@${t.host} 'docker login ghcr.io -u ${username} --password-stdin'`,
+        ),
         "Then click Deploy in the Coolify dashboard.",
       ],
     };
   }
+
+  const hosts: Array<{
+    serverUuid: string;
+    host: string;
+    user: string;
+    port: number;
+    newlyLoggedIn: boolean;
+  }> = [];
+  const failures: Array<{ target: CoolifyServerSshTarget; reason: string }> = [];
+
+  for (const target of targets) {
+    const spin = ora(`Coolify ${target.host}: installing GHCR pull credentials via SSH`).start();
+
+    // Probe reachability before sending the token over the wire.
+    const probe = await sshProbe(target);
+    if (!probe.ok) {
+      const reason = probe.stderr.split("\n")[0] || "ssh probe failed";
+      spin.fail(`Coolify ${target.host}: SSH unreachable (${reason})`);
+      failures.push({ target, reason: `SSH unreachable: ${reason}` });
+      continue;
+    }
+
+    // Idempotent skip when an entry for ghcr.io is already on disk.
+    if (await dockerLoginAlreadyOk(target, "ghcr.io")) {
+      spin.succeed(`Coolify ${target.host}: GHCR creds already present`);
+      hosts.push({
+        serverUuid: target.uuid,
+        host: target.host,
+        user: target.user,
+        port: target.port,
+        newlyLoggedIn: false,
+      });
+      continue;
+    }
+
+    const login = await dockerLoginViaSsh({
+      target,
+      registry: "ghcr.io",
+      username,
+      password: pullToken,
+    });
+    if (login.exitCode !== 0) {
+      const detail = login.stderr || `docker login exited ${login.exitCode}`;
+      spin.fail(`Coolify ${target.host}: docker login failed`);
+      failures.push({ target, reason: detail });
+      continue;
+    }
+
+    spin.succeed(`Coolify ${target.host}: GHCR creds installed via SSH`);
+    hosts.push({
+      serverUuid: target.uuid,
+      host: target.host,
+      user: target.user,
+      port: target.port,
+      newlyLoggedIn: true,
+    });
+  }
+
+  if (hosts.length === 0) {
+    return {
+      kind: "failed",
+      reason:
+        failures.length === 1
+          ? failures[0].reason
+          : `Failed to install GHCR credentials on ${failures.length} host(s).`,
+      recovery: buildManualRecipe(failures, username),
+    };
+  }
+
+  if (failures.length > 0) {
+    // Partial success — surface manual recipe for the failing hosts
+    // but still record the ones that did succeed.
+    return {
+      kind: "failed",
+      reason: `GHCR creds installed on ${hosts.length}/${
+        hosts.length + failures.length
+      } host(s); ${failures.length} failed.`,
+      recovery: buildManualRecipe(failures, username),
+    };
+  }
+
+  return { kind: "private-registered", hosts };
+}
+
+/** Filter `listServers()` output down to the boxes a GHCR pull
+ *  credential needs to land on: the Coolify host (pulls runtime
+ *  images) + every build server (pushes/pulls during build). Skip
+ *  unreachable or non-usable servers — Coolify already knows they're
+ *  not in service. Skip anything we can't resolve to an SSHable
+ *  address (e.g. `host.docker.internal` with an unparseable panel
+ *  URL). */
+function pickGhcrTargets(servers: CoolifyServer[], coolifyUrl: string): CoolifyServerSshTarget[] {
+  const targets: CoolifyServerSshTarget[] = [];
+  const seen = new Set<string>();
+  for (const s of servers) {
+    if (s.isReachable === false) continue;
+    if (s.isUsable === false) continue;
+    const relevant = s.isCoolifyHost || s.isBuildServer;
+    // Conservative default: when Coolify didn't tell us the role,
+    // treat it as a runtime host (older builds don't populate the
+    // role flags). Build-only servers in those setups still get
+    // covered because they're tagged via description in practice.
+    const fallback = s.isCoolifyHost === undefined && s.isBuildServer === undefined;
+    if (!relevant && !fallback) continue;
+
+    const target = resolveSshTarget(s, coolifyUrl);
+    if (!target) continue;
+    const key = `${target.user}@${target.host}:${target.port}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push(target);
+  }
+  return targets;
+}
+
+/** Build the per-host manual recipe surfaced when SSH+login fails (or
+ *  partially fails). Mirrors the acceptance criterion: every failed
+ *  host gets an exact `gh auth token | ssh ... docker login` line. */
+function buildManualRecipe(
+  failures: Array<{ target: CoolifyServerSshTarget; reason: string }>,
+  username: string,
+): string[] {
+  const lines: string[] = [];
+  for (const { target, reason } of failures) {
+    lines.push(
+      `${target.host}: ${reason}`,
+      `  gh auth token | ssh -p ${target.port} ${target.user}@${target.host} 'docker login ghcr.io -u ${username} --password-stdin'`,
+    );
+  }
+  lines.push(
+    "If the SSH probe failed, add your public key to the host's ~/.ssh/authorized_keys (e.g. via `ssh-copy-id`).",
+    "If `docker login` failed with `denied: bad credentials`, refresh the scope:",
+    "  gh auth refresh -s read:packages",
+    "  hatchkit config add ghcr",
+  );
+  return lines;
 }
 
 /* ─── Helpers ──────────────────────────────────────────────────────── */

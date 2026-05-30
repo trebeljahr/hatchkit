@@ -2041,12 +2041,18 @@ async function executePlan(
               repoSlug: slug,
               pullToken: ghcrConfig?.pullToken,
               username: ghcrConfig?.username,
+              coolifyUrl: cfg.url,
+              manual: ghcrConfig?.manual === true,
             });
             if (r.kind === "private-registered") {
-              if (r.created) {
+              for (const h of r.hosts) {
+                if (!h.newlyLoggedIn) continue;
                 ledger.record({
-                  kind: "coolifyPrivateRegistry",
-                  uuid: r.registryUuid,
+                  kind: "coolifyGhcrSshLogin",
+                  serverUuid: h.serverUuid,
+                  host: h.host,
+                  user: h.user,
+                  port: h.port,
                 });
               }
             } else if (r.kind === "skipped" || r.kind === "failed") {

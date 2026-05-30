@@ -21,7 +21,13 @@ import {
 } from "./config.js";
 import { appSlugFromHtmlUrl, listUserInstallations } from "./deploy/github-app-access.js";
 import { CoolifyApi, verifyCoolify } from "./utils/coolify-api.js";
+import {
+  dockerLoginAlreadyOk,
+  dockerManifestInspectViaSsh,
+  sshProbe,
+} from "./utils/coolify-ssh.js";
 import { execOk } from "./utils/exec.js";
+import { type LedgerStep, loadAllLedgers } from "./utils/run-ledger.js";
 import { SECRET_KEYS, getSecret } from "./utils/secrets.js";
 
 interface CheckResult {
@@ -699,11 +705,171 @@ async function checkStripe(): Promise<CheckResult[]> {
   return out;
 }
 
+/** GHCR pull credentials live on each Coolify host in
+ *  `~/.docker/config.json` (written by `hatchkit adopt` via SSH +
+ *  `docker login`). They're invisible to the Coolify API, so a
+ *  rotated `gh auth` token can leave Coolify silently unable to pull
+ *  a private image — the only outward signal is a deploy that fails
+ *  with `unauthorized` at pull time.
+ *
+ *  This check walks every Coolify host hatchkit logged into (per the
+ *  on-disk ledgers) and:
+ *    1. SSH-probes reachability.
+ *    2. Greps `~/.docker/config.json` for an entry under `ghcr.io`.
+ *    3. When a `github`-recorded private repo is in the same ledger,
+ *       does a `docker manifest inspect ghcr.io/<owner>/<repo>` to
+ *       distinguish "creds present but stale" (denied) from "creds
+ *       present + still authorized" (success or `manifest unknown`).
+ *
+ *  Returns one row per host. Skipped silently when no ledger contains
+ *  a `coolifyGhcrSshLogin` step (i.e. nothing to check yet). */
+async function checkCoolifyGhcrSsh(): Promise<CheckResult[]> {
+  const ledgers = loadAllLedgers();
+  // Aggregate by host: a single host may serve multiple projects.
+  type HostEntry = {
+    serverUuid: string;
+    host: string;
+    user: string;
+    port: number;
+    probeImages: string[];
+  };
+  const byHost = new Map<string, HostEntry>();
+  for (const ledger of ledgers) {
+    // Resolve any github repos in the same ledger so we have a known
+    // private package to probe. `step.repo` is `owner/name` so the
+    // GHCR image is `ghcr.io/<repo>`.
+    const repos: string[] = [];
+    for (const s of ledger.steps as LedgerStep[]) {
+      if (s.kind === "github") repos.push(s.repo);
+    }
+    for (const s of ledger.steps as LedgerStep[]) {
+      if (s.kind !== "coolifyGhcrSshLogin") continue;
+      const key = `${s.user}@${s.host}:${s.port}`;
+      let entry = byHost.get(key);
+      if (!entry) {
+        entry = {
+          serverUuid: s.serverUuid,
+          host: s.host,
+          user: s.user,
+          port: s.port,
+          probeImages: [],
+        };
+        byHost.set(key, entry);
+      }
+      for (const r of repos) {
+        const image = `ghcr.io/${r.toLowerCase()}:latest`;
+        if (!entry.probeImages.includes(image)) entry.probeImages.push(image);
+      }
+    }
+  }
+
+  if (byHost.size === 0) return [];
+
+  const out: CheckResult[] = [];
+  for (const entry of byHost.values()) {
+    const target = {
+      uuid: entry.serverUuid,
+      user: entry.user,
+      host: entry.host,
+      port: entry.port,
+    };
+    const name = `Coolify GHCR creds (${entry.host})`;
+
+    const probe = await sshProbe(target);
+    if (!probe.ok) {
+      out.push({
+        name,
+        status: "fail",
+        detail: `ssh unreachable: ${probe.stderr.split("\n")[0] || "no detail"}`,
+        hint: [
+          `Confirm the host is reachable from this machine:`,
+          `  ssh -p ${entry.port} ${entry.user}@${entry.host} true`,
+          "If the key auth fails, add your public key to the host's ~/.ssh/authorized_keys.",
+          "Then re-run: hatchkit doctor",
+        ],
+      });
+      continue;
+    }
+
+    const hasEntry = await dockerLoginAlreadyOk(target, "ghcr.io");
+    if (!hasEntry) {
+      out.push({
+        name,
+        status: "fail",
+        detail: "no ghcr.io entry in ~/.docker/config.json on the host",
+        hint: [
+          "Re-install the credential:",
+          "  hatchkit config add ghcr",
+          "  hatchkit adopt --resume    (per project) — runs the SSH+docker login flow again",
+        ],
+      });
+      continue;
+    }
+
+    // Authorisation probe — only when we have a candidate image.
+    if (entry.probeImages.length === 0) {
+      out.push({
+        name,
+        status: "ok",
+        detail: "ghcr.io entry present (no recorded image to probe pull authorization)",
+      });
+      continue;
+    }
+
+    let inspect: { exitCode: number; stderr: string } | null = null;
+    let lastImage = entry.probeImages[0];
+    for (const image of entry.probeImages) {
+      lastImage = image;
+      inspect = await dockerManifestInspectViaSsh(target, image);
+      // 0 = creds OK + image exists. Skip the rest — any single
+      // success proves auth.
+      if (inspect.exitCode === 0) break;
+      // `manifest unknown` / `not found` = creds OK + image not yet
+      // pushed. Treat as OK for this host.
+      if (/manifest unknown|not found|no such manifest/i.test(inspect.stderr)) {
+        inspect.exitCode = 0;
+        break;
+      }
+    }
+    if (inspect && inspect.exitCode === 0) {
+      out.push({
+        name,
+        status: "ok",
+        detail: `ghcr.io login still authorizes pulls (probed ${lastImage})`,
+      });
+      continue;
+    }
+    const reason = inspect?.stderr.split("\n").find((l) => l.trim()) || "unknown manifest error";
+    const isAuthFail = /denied|unauthor|forbidden|requested access/i.test(reason);
+    out.push({
+      name,
+      status: "fail",
+      detail: isAuthFail
+        ? `pull denied for ${lastImage}: ${reason}`
+        : `manifest probe failed for ${lastImage}: ${reason}`,
+      hint: isAuthFail
+        ? [
+            "The stored credential no longer authorizes ghcr.io pulls (token rotated, revoked, or scopes dropped).",
+            "Refresh and re-install:",
+            "  gh auth refresh -s read:packages",
+            "  hatchkit config add ghcr",
+            "  hatchkit adopt --resume   (per project)",
+          ]
+        : [
+            "docker may not be installed on the host, or the user can't reach the docker socket.",
+            `Verify manually: ssh -p ${entry.port} ${entry.user}@${entry.host} 'docker info'`,
+          ],
+    });
+  }
+  return out;
+}
+
 export async function collectDoctorResults(): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   results.push(await checkGitHub());
   results.push(await checkCoolify());
   for (const r of await checkCoolifyGithubApp()) results.push(r);
+  for (const r of await checkCoolifyGhcrSsh()) results.push(r);
   results.push(await checkHetzner());
   results.push(await checkDns());
   for (const p of ["hetzner", "aws", "r2"] as const) results.push(await checkS3(p));

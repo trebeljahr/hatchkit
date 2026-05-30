@@ -1,8 +1,26 @@
 export interface CoolifyServer {
   id: number;
+  /** Coolify's UUID — stable handle across renames/IP changes. Newer
+   *  Coolify builds always return this; older ones may not, in which
+   *  case it's undefined and callers fall back to `id` + `ip`. */
+  uuid?: string;
   name: string;
   ip: string;
   description?: string;
+  /** SSH user Coolify uses to connect to this server (default `root`). */
+  user?: string;
+  /** SSH port Coolify uses (default 22). */
+  port?: number;
+  /** True for the box Coolify itself runs on — that's the box that
+   *  pulls runtime images for `instant_deploy` apps. */
+  isCoolifyHost?: boolean;
+  /** True for build-only worker nodes that push images. */
+  isBuildServer?: boolean;
+  /** Coolify's last reachability probe result. */
+  isReachable?: boolean;
+  /** True when the server has finished Coolify's bootstrap and is
+   *  accepting work. */
+  isUsable?: boolean;
 }
 
 export interface CoolifyApiOptions {
@@ -82,22 +100,39 @@ export class CoolifyApi {
     return text;
   }
 
-  /** List all servers. */
+  /** List all servers. Surface the SSH + role fields the GHCR-on-host
+   *  flow needs (uuid, user, port, is_coolify_host, is_build_server,
+   *  is_reachable, is_usable) — older callers only used id/name/ip
+   *  and ignore the extras. */
   async listServers(): Promise<CoolifyServer[]> {
     const data = await this.request<
       Array<{
         id: number;
+        uuid?: string;
         name: string;
         ip: string;
         description?: string;
+        user?: string;
+        port?: number;
+        is_coolify_host?: boolean;
+        is_build_server?: boolean;
+        is_reachable?: boolean;
+        is_usable?: boolean;
       }>
     >("GET", "/servers");
 
     return data.map((s) => ({
       id: s.id,
+      uuid: s.uuid,
       name: s.name,
       ip: s.ip,
       description: s.description,
+      user: s.user,
+      port: s.port,
+      isCoolifyHost: s.is_coolify_host,
+      isBuildServer: s.is_build_server,
+      isReachable: s.is_reachable,
+      isUsable: s.is_usable,
     }));
   }
 
@@ -262,62 +297,22 @@ export class CoolifyApi {
   }
 
   // ---------------------------------------------------------------------
-  // Private registries
+  // Private registries — NOT exposed by Coolify v4
   // ---------------------------------------------------------------------
   //
-  // Coolify can hold credentials for image registries (Docker Hub, GHCR,
-  // etc.) so its Docker daemon can pull from private repos. We use this
-  // for Path B of GHCR setup — the user owns a private repo, so the GHCR
-  // package is also private and Coolify needs auth to pull it.
+  // Coolify v4 does not expose a /private-registries surface (verified
+  // against openapi.yaml v4.x and against a live v4.0.0-beta.469 server:
+  // GET /api/v1/private-registries returns 404 `{"message":"Not found."}`
+  // ). The canonical workflow per the Coolify docs is to SSH into each
+  // managed host and `docker login` — `~/.docker/config.json` then
+  // satisfies every subsequent `docker pull`. See
+  // `cli/src/utils/coolify-ssh.ts` for the helpers, and
+  // `cli/src/deploy/ghcr.ts:registerGhcrCredsWithCoolify` for the flow
+  // that uses them.
   //
-  // Coolify treats this as system-wide config: one creds entry per
-  // hostname covers every app pulling from that registry. Idempotent
-  // lookup-by-url is on us (Coolify doesn't enforce uniqueness).
-
-  /** List private registries. Used to find an existing entry for a host
-   *  before creating a duplicate. */
-  async listPrivateRegistries(): Promise<
-    Array<{ uuid: string; name: string; url: string; username?: string }>
-  > {
-    return this.request("GET", "/private-registries");
-  }
-
-  /** Find a registry by its base URL (e.g. `ghcr.io`). First match wins
-   *  — the same hostname appearing twice would be a Coolify config bug
-   *  but isn't ours to police here. */
-  async findPrivateRegistry(query: {
-    url: string;
-  }): Promise<{ uuid: string; name: string; url: string } | null> {
-    const all = await this.listPrivateRegistries();
-    const want = normalizeRegistryUrl(query.url);
-    const hit = all.find((r) => normalizeRegistryUrl(r.url) === want);
-    if (!hit) return null;
-    return { uuid: hit.uuid, name: hit.name, url: hit.url };
-  }
-
-  /** Create a private-registry credential. Coolify v4 stores the
-   *  password encrypted at rest. The returned uuid is the handle the
-   *  caller should record in the run ledger so a later `hatchkit
-   *  destroy` can clean it up. */
-  async addPrivateRegistry(params: {
-    name: string;
-    registryUrl: string;
-    username: string;
-    password: string;
-  }): Promise<{ uuid: string }> {
-    return this.request("POST", "/private-registries", {
-      name: params.name,
-      registry_url: params.registryUrl,
-      username: params.username,
-      password: params.password,
-    });
-  }
-
-  /** Delete a private-registry entry by uuid. Idempotent: 404 → no-op.
-   *  Used by the rollback flow when adopt was the one that created it. */
-  async deletePrivateRegistry(uuid: string): Promise<"deleted" | "not-found"> {
-    return this.delete(`/private-registries/${uuid}`);
-  }
+  // When upstream ships a private-registries endpoint (tracked at
+  // https://github.com/coollabsio/coolify/issues/2499) hatchkit can
+  // pivot back to API-based registration here.
 
   /** Raw DELETE that handles both 404 (already gone) and empty bodies
    *  (Coolify returns 200 with no body for some delete endpoints). */
@@ -710,18 +705,6 @@ function extractServerUuid(raw: Record<string, unknown>): string | undefined {
     if (typeof uuid === "string") return uuid;
   }
   return undefined;
-}
-
-/** Normalize a registry URL for equality matching. Different Coolify
- *  builds (and different humans) record GHCR as `ghcr.io`,
- *  `https://ghcr.io`, or `https://ghcr.io/`. Strip the scheme and any
- *  trailing slash so all three compare equal. */
-function normalizeRegistryUrl(url: string): string {
-  return url
-    .trim()
-    .replace(/^https?:\/\//, "")
-    .replace(/\/+$/, "")
-    .toLowerCase();
 }
 
 /** Verify Coolify connection. Returns version string or throws. */
