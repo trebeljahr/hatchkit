@@ -69,10 +69,7 @@ expect("region binding: same secret → different output per region", () => {
 });
 
 expect("throws on a region with no SES SMTP endpoint", () => {
-  assert.throws(
-    () => deriveSesSmtpPassword(EXAMPLE_SECRET, "moon-base-1"),
-    /no SMTP endpoint/,
-  );
+  assert.throws(() => deriveSesSmtpPassword(EXAMPLE_SECRET, "moon-base-1"), /no SMTP endpoint/);
 });
 
 console.log("\nsesSmtpCredentials:");

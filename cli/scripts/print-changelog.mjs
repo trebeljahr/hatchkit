@@ -54,7 +54,10 @@ for (let i = start + 1; i < lines.length; i += 1) {
   }
 }
 
-const section = lines.slice(start + 1, end).join("\n").trim();
+const section = lines
+  .slice(start + 1, end)
+  .join("\n")
+  .trim();
 if (!section) {
   console.error(`print-changelog: CHANGELOG.md section "## ${version}" is empty`);
   process.exit(1);

@@ -79,20 +79,26 @@ function write(rel: string, content: string): string {
     op.changes.some((c) => c.includes(`name: "old" → "new"`)),
     "should record name change",
   );
-  assert.ok(op.changes.some((c) => c.includes("old-dev")), "should record -dev swap");
+  assert.ok(
+    op.changes.some((c) => c.includes("old-dev")),
+    "should record -dev swap",
+  );
 }
 
 // rewritePackageJson — top-level name doesn't match (e.g. user already renamed it)
 {
   const path = write(
     "package-2.json",
-    JSON.stringify({ name: "totally-unrelated", scripts: { "x": "old-dev" } }, null, 2),
+    JSON.stringify({ name: "totally-unrelated", scripts: { x: "old-dev" } }, null, 2),
   );
   const op = _internals.rewritePackageJson(path, "old", "new");
   const parsed = JSON.parse(op.after) as { name: string };
   assert.equal(parsed.name, "totally-unrelated", "untouched when not matching");
   assert.ok(op.changes.some((c) => c.includes("left alone")));
-  assert.ok(op.changes.some((c) => c.includes("old-dev")), "suffix swaps still happen");
+  assert.ok(
+    op.changes.some((c) => c.includes("old-dev")),
+    "suffix swaps still happen",
+  );
 }
 
 // ---------------------------------------------------------------------------

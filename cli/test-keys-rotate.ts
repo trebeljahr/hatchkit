@@ -30,14 +30,11 @@ import { PrivateKey } from "eciesjs";
 process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-rotate-${process.pid}`;
 process.env.HATCHKIT_CONF_DIR = mkdtempSync(join(tmpdir(), "rotate-conf-"));
 
-const {
-  rotateProjectKey,
-  parseEnvKeysEntries,
-  derivePublicKey,
-  pruneEnvKeysFile,
-  readPublicKey,
-} = await import("./src/deploy/keys.js");
-const { SECRET_KEYS, getSecret, setSecret, clearAllSecrets } = await import("./src/utils/secrets.js");
+const { rotateProjectKey, parseEnvKeysEntries, derivePublicKey, pruneEnvKeysFile, readPublicKey } =
+  await import("./src/deploy/keys.js");
+const { SECRET_KEYS, getSecret, setSecret, clearAllSecrets } = await import(
+  "./src/utils/secrets.js"
+);
 
 interface Keypair {
   privateKey: string;
@@ -235,8 +232,7 @@ function report(label: string, checks: [string, boolean][]): boolean {
     ["new public key written", newPublic.length > 0],
     [
       "kept key derives the new public",
-      entries.length === 1 &&
-        derivePublicKey(entries[0]).toLowerCase() === newPublic.toLowerCase(),
+      entries.length === 1 && derivePublicKey(entries[0]).toLowerCase() === newPublic.toLowerCase(),
     ],
   ]);
   rmSync(dir, { recursive: true, force: true });
@@ -284,10 +280,7 @@ function report(label: string, checks: [string, boolean][]): boolean {
       "error mentions the mismatch / no-match",
       !!caught && /no private key|derives the new/i.test(caught.message),
     ],
-    [
-      "keychain left untouched (still original)",
-      keychainKey === original.privateKey,
-    ],
+    ["keychain left untouched (still original)", keychainKey === original.privateKey],
   ]);
   rmSync(dir, { recursive: true, force: true });
 }
@@ -313,7 +306,10 @@ function report(label: string, checks: [string, boolean][]): boolean {
 
   results.pruneHelper = report("Test 5: pruneEnvKeysFile semantics", [
     ["first prune drops two stale entries", r1.pruned === 2],
-    ["first prune keeps the requested value", r1.kept === c && after1.length === 1 && after1[0] === c],
+    [
+      "first prune keeps the requested value",
+      r1.kept === c && after1.length === 1 && after1[0] === c,
+    ],
     ["second prune is idempotent (pruned=0)", r2.pruned === 0],
     ["file unchanged on idempotent re-prune", after2.length === 1 && after2[0] === c],
   ]);

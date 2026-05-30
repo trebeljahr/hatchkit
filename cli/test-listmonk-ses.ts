@@ -21,10 +21,7 @@
  * Run: `pnpm test` (via the script in cli/package.json).
  */
 import assert from "node:assert/strict";
-import {
-  renderListmonkSesEnv,
-  sesSendingSubdomain,
-} from "./src/provision/listmonk-ses.js";
+import { renderListmonkSesEnv, sesSendingSubdomain } from "./src/provision/listmonk-ses.js";
 
 const failures: string[] = [];
 

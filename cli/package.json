@@ -28,11 +28,7 @@
   "bin": {
     "hatchkit": "dist/index.js"
   },
-  "files": [
-    "dist",
-    "scripts",
-    "README.md"
-  ],
+  "files": ["dist", "scripts", "README.md"],
   "scripts": {
     "build": "pnpm --filter @hatchkit/dev-shared run build && tsc && node scripts/copy-templates.mjs",
     "dev": "tsx src/index.ts",

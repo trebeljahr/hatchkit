@@ -82,11 +82,11 @@ for (const name of PACKAGES) {
   // publish). `--no-git-checks` because release-prep.mjs already
   // confirmed the tree is clean and the commit/tag came from
   // release-bump.mjs.
-  const publish = spawnSync(
-    "pnpm",
-    ["publish", "--access", "public", "--no-git-checks"],
-    { cwd: pkgDir, stdio: ["ignore", "pipe", "pipe"], encoding: "utf-8" },
-  );
+  const publish = spawnSync("pnpm", ["publish", "--access", "public", "--no-git-checks"], {
+    cwd: pkgDir,
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf-8",
+  });
   process.stdout.write(publish.stdout);
   if (publish.status === 0) continue;
 

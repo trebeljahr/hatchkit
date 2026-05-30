@@ -47,19 +47,31 @@ expect("does not URL-encode or otherwise transform the inputs", () => {
 console.log("\nnormalizeListmonkUrl:");
 
 expect("strips a single trailing slash", () => {
-  assert.equal(normalizeListmonkUrl("https://newsletter.example.com/"), "https://newsletter.example.com");
+  assert.equal(
+    normalizeListmonkUrl("https://newsletter.example.com/"),
+    "https://newsletter.example.com",
+  );
 });
 
 expect("strips multiple trailing slashes", () => {
-  assert.equal(normalizeListmonkUrl("https://newsletter.example.com///"), "https://newsletter.example.com");
+  assert.equal(
+    normalizeListmonkUrl("https://newsletter.example.com///"),
+    "https://newsletter.example.com",
+  );
 });
 
 expect("leaves a slashless URL untouched", () => {
-  assert.equal(normalizeListmonkUrl("https://newsletter.example.com"), "https://newsletter.example.com");
+  assert.equal(
+    normalizeListmonkUrl("https://newsletter.example.com"),
+    "https://newsletter.example.com",
+  );
 });
 
 expect("trims surrounding whitespace", () => {
-  assert.equal(normalizeListmonkUrl("  https://newsletter.example.com/  "), "https://newsletter.example.com");
+  assert.equal(
+    normalizeListmonkUrl("  https://newsletter.example.com/  "),
+    "https://newsletter.example.com",
+  );
 });
 
 if (failures.length > 0) {

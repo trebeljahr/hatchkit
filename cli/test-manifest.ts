@@ -17,9 +17,9 @@
  * Run: `pnpm test` (via the script in cli/package.json).
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   MANIFEST_FILENAME,
   MANIFEST_VERSION,

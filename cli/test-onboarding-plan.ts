@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
+import type { AdoptPlan, DetectedState } from "./src/adopt.js";
 import {
   adoptPlanToOnboardingPlan,
   onboardingPlanToAdoptPlan,
   onboardingPlanToProjectConfig,
   projectConfigToOnboardingPlan,
 } from "./src/onboarding/plan.js";
-import type { AdoptPlan, DetectedState } from "./src/adopt.js";
 import type { ProjectConfig } from "./src/prompts.js";
 
 function projectConfig(overrides: Partial<ProjectConfig> = {}): ProjectConfig {

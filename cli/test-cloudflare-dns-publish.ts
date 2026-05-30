@@ -24,8 +24,8 @@
  * Run: `pnpm test` (via the script in cli/package.json).
  */
 import assert from "node:assert/strict";
-import type { CloudflareApi } from "./src/utils/cloudflare-api.js";
 import { mergeSpf } from "./src/provision/cloudflare-dns-publish.js";
+import type { CloudflareApi } from "./src/utils/cloudflare-api.js";
 
 interface FakeTxt {
   id: string;
@@ -54,35 +54,40 @@ async function expect(label: string, fn: () => Promise<void>): Promise<void> {
 
 console.log("mergeSpf:");
 
-await expect("no existing SPF → write provider record as-is, flag sourceWasExisting=false", async () => {
-  const cf = makeFakeCf([]);
-  const out = await mergeSpf(cf, "zone-1", "example.com", "v=spf1 include:amazonses.com ~all");
-  assert.equal(out.sourceWasExisting, false);
-  assert.equal(out.merged, "v=spf1 include:amazonses.com ~all");
-});
+await expect(
+  "no existing SPF → write provider record as-is, flag sourceWasExisting=false",
+  async () => {
+    const cf = makeFakeCf([]);
+    const out = await mergeSpf(cf, "zone-1", "example.com", "v=spf1 include:amazonses.com ~all");
+    assert.equal(out.sourceWasExisting, false);
+    assert.equal(out.merged, "v=spf1 include:amazonses.com ~all");
+  },
+);
 
-await expect("existing SPF (softfail) + provider include → union, preserve ~all, flag merged", async () => {
-  const cf = makeFakeCf([
-    { id: "r1", content: "v=spf1 include:_spf.mx.cloudflare.net ~all" },
-  ]);
-  const out = await mergeSpf(cf, "zone-1", "example.com", "v=spf1 include:amazonses.com ~all");
-  assert.equal(out.sourceWasExisting, true);
-  assert.match(out.merged, /^v=spf1 /);
-  assert.match(out.merged, /include:_spf\.mx\.cloudflare\.net/);
-  assert.match(out.merged, /include:amazonses\.com/);
-  assert.match(out.merged, /~all$/);
-  assert.doesNotMatch(out.merged, /-all/);
-});
+await expect(
+  "existing SPF (softfail) + provider include → union, preserve ~all, flag merged",
+  async () => {
+    const cf = makeFakeCf([{ id: "r1", content: "v=spf1 include:_spf.mx.cloudflare.net ~all" }]);
+    const out = await mergeSpf(cf, "zone-1", "example.com", "v=spf1 include:amazonses.com ~all");
+    assert.equal(out.sourceWasExisting, true);
+    assert.match(out.merged, /^v=spf1 /);
+    assert.match(out.merged, /include:_spf\.mx\.cloudflare\.net/);
+    assert.match(out.merged, /include:amazonses\.com/);
+    assert.match(out.merged, /~all$/);
+    assert.doesNotMatch(out.merged, /-all/);
+  },
+);
 
-await expect("existing SPF (hardfail) → preserved, NOT silently downgraded to softfail", async () => {
-  const cf = makeFakeCf([
-    { id: "r1", content: "v=spf1 include:_spf.mx.cloudflare.net -all" },
-  ]);
-  const out = await mergeSpf(cf, "zone-1", "example.com", "v=spf1 include:amazonses.com ~all");
-  assert.equal(out.sourceWasExisting, true);
-  assert.match(out.merged, /-all$/);
-  assert.doesNotMatch(out.merged, /~all/);
-});
+await expect(
+  "existing SPF (hardfail) → preserved, NOT silently downgraded to softfail",
+  async () => {
+    const cf = makeFakeCf([{ id: "r1", content: "v=spf1 include:_spf.mx.cloudflare.net -all" }]);
+    const out = await mergeSpf(cf, "zone-1", "example.com", "v=spf1 include:amazonses.com ~all");
+    assert.equal(out.sourceWasExisting, true);
+    assert.match(out.merged, /-all$/);
+    assert.doesNotMatch(out.merged, /~all/);
+  },
+);
 
 await expect("duplicates in provider + existing includes are deduplicated", async () => {
   const cf = makeFakeCf([

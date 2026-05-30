@@ -58,17 +58,11 @@ expect("default label 'bounce' prepended to sending domain", () => {
 });
 
 expect("custom label overrides the default", () => {
-  assert.equal(
-    sesMailFromSubdomain("mail.example.com", "feedback"),
-    "feedback.mail.example.com",
-  );
+  assert.equal(sesMailFromSubdomain("mail.example.com", "feedback"), "feedback.mail.example.com");
 });
 
 expect("trims surrounding dots in the label (defense against user typo)", () => {
-  assert.equal(
-    sesMailFromSubdomain("mail.example.com", ".bounce."),
-    "bounce.mail.example.com",
-  );
+  assert.equal(sesMailFromSubdomain("mail.example.com", ".bounce."), "bounce.mail.example.com");
 });
 
 expect("throws on an empty label (would produce an invalid name)", () => {
@@ -87,10 +81,7 @@ expect("us-east-1 → feedback-smtp.us-east-1.amazonses.com (region binding work
 });
 
 expect("ap-southeast-2 produces the right hostname (multi-region coverage)", () => {
-  assert.equal(
-    sesMailFromMxTarget("ap-southeast-2"),
-    "feedback-smtp.ap-southeast-2.amazonses.com",
-  );
+  assert.equal(sesMailFromMxTarget("ap-southeast-2"), "feedback-smtp.ap-southeast-2.amazonses.com");
 });
 
 console.log("\nSES_MAIL_FROM_SPF:");
@@ -99,9 +90,12 @@ expect("exact SPF string SES expects", () => {
   assert.equal(SES_MAIL_FROM_SPF, "v=spf1 include:amazonses.com ~all");
 });
 
-expect("includes the amazonses.com directive (without which SES MAIL FROM verification can't pass)", () => {
-  assert.match(SES_MAIL_FROM_SPF, /include:amazonses\.com/);
-});
+expect(
+  "includes the amazonses.com directive (without which SES MAIL FROM verification can't pass)",
+  () => {
+    assert.match(SES_MAIL_FROM_SPF, /include:amazonses\.com/);
+  },
+);
 
 console.log("\ndecideMailFromPlan:");
 
@@ -143,20 +137,23 @@ expect("adopt: SES already holds a DIFFERENT user-set MAIL FROM → never overwr
   assert.equal(plan.needsSet, false);
 });
 
-expect("healthy match: identical MAIL FROM + SUCCESS → skip the SET call (avoids unnecessary API write)", () => {
-  const state: SesMailFromState = {
-    identity: "mail.example.com",
-    mailFromDomain: "bounce.mail.example.com",
-    behaviorOnMxFailure: "UseDefaultValue",
-    status: "SUCCESS",
-  };
-  const plan = decideMailFromPlan(state, "bounce.mail.example.com", "UseDefaultValue");
-  // Identity match between SES + computed flips the adopted flag (semantically:
-  // there IS an existing value, just one identical to what we'd set). What we
-  // care about is `needsSet`: a no-op write should be skipped.
-  assert.equal(plan.mailFromDomain, "bounce.mail.example.com");
-  assert.equal(plan.needsSet, false, "SES already holds the same name + behavior + SUCCESS");
-});
+expect(
+  "healthy match: identical MAIL FROM + SUCCESS → skip the SET call (avoids unnecessary API write)",
+  () => {
+    const state: SesMailFromState = {
+      identity: "mail.example.com",
+      mailFromDomain: "bounce.mail.example.com",
+      behaviorOnMxFailure: "UseDefaultValue",
+      status: "SUCCESS",
+    };
+    const plan = decideMailFromPlan(state, "bounce.mail.example.com", "UseDefaultValue");
+    // Identity match between SES + computed flips the adopted flag (semantically:
+    // there IS an existing value, just one identical to what we'd set). What we
+    // care about is `needsSet`: a no-op write should be skipped.
+    assert.equal(plan.mailFromDomain, "bounce.mail.example.com");
+    assert.equal(plan.needsSet, false, "SES already holds the same name + behavior + SUCCESS");
+  },
+);
 
 expect("drift: identical MAIL FROM but status PENDING → re-apply (SES is still verifying)", () => {
   const state: SesMailFromState = {
