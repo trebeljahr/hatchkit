@@ -147,6 +147,24 @@ export type ProvisionedEvent =
       createdRecords: Array<{ id: string; name: string; type: "TXT" | "MX" | "CNAME" }>;
       mergedSpf: Array<{ name: string }>;
     }
+  /** SES Custom MAIL FROM Domain configured + matching DNS records
+   *  published. Fires once per project provision after the listmonk-ses
+   *  bundle has set the SES attribute and (when a CF token is present)
+   *  upserted the MX + SPF TXT records at the chosen subdomain. The
+   *  per-record list covers only rows THIS run *created*; auto-rollback
+   *  uses it to DELETE only what hatchkit added (user-edited rows at
+   *  the same name stay put). */
+  | {
+      service: "sesMailFromConfigured";
+      identity: string;
+      mailFromDomain: string;
+      region: string;
+      behaviorOnMxFailure: "UseDefaultValue" | "RejectMessage";
+      status: "SUCCESS" | "PENDING" | "FAILED" | "TEMPORARY_FAILURE" | null;
+      zoneId: string;
+      zoneName: string;
+      createdRecords: Array<{ id: string; name: string; type: "TXT" | "MX" | "CNAME" }>;
+    }
   /** Listmonk list created (or adopted) for this project. Two such
    *  events fire per provision — `kind: "live"` (`<project>`) and
    *  `kind: "test"` (`<project>-test`). The ledger drops `kind`; only
@@ -551,9 +569,79 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
                   createdThisRun: e.createdThisRun,
                 });
               },
+              onSesMailFromConfigured: (e) => {
+                opts.onProvisioned?.({
+                  service: "sesMailFromConfigured",
+                  identity: e.identity,
+                  mailFromDomain: e.mailFromDomain,
+                  region: e.region,
+                  behaviorOnMxFailure: e.behaviorOnMxFailure,
+                  status: e.status,
+                  zoneId: e.zoneId,
+                  zoneName: e.zoneName,
+                  createdRecords: e.createdRecords,
+                });
+              },
             },
           ),
         );
+
+        // Persist the MAIL FROM state into the project manifest so
+        // future `hatchkit update` runs are idempotent + `remove` knows
+        // what to delete. Skipped silently when there's no project dir
+        // (cache-only mode) or the orchestrator opted out / soft-failed.
+        if (projectDir && result.mailFrom) {
+          const latestManifest = readManifest(projectDir);
+          if (latestManifest) {
+            const { SES_MAIL_FROM_SPF, sesMailFromMxTarget } = await import("./ses.js");
+            writeManifest(projectDir, {
+              ...latestManifest,
+              ses: {
+                ...(latestManifest.ses ?? {}),
+                identity: result.mailFrom.identity,
+                mailFromDomain: result.mailFrom.mailFromDomain,
+                mailFromLabel: result.mailFrom.mailFromDomain.split(".")[0],
+                mailFromBehaviorOnMxFailure: result.mailFrom.behaviorOnMxFailure,
+                mailFromManagedDnsRecords: [
+                  {
+                    type: "MX",
+                    name: result.mailFrom.mailFromDomain,
+                    value: sesMailFromMxTarget(result.mailFrom.region),
+                    priority: 10,
+                  },
+                  {
+                    type: "TXT",
+                    name: result.mailFrom.mailFromDomain,
+                    value: SES_MAIL_FROM_SPF,
+                  },
+                ],
+              },
+            });
+          }
+        }
+
+        if (result.mailFrom) {
+          if (result.mailFrom.status === "SUCCESS") {
+            console.log(
+              chalk.green(
+                `  ✓ SES Custom MAIL FROM: ${result.mailFrom.mailFromDomain} (status SUCCESS)`,
+              ),
+            );
+          } else {
+            console.log(
+              chalk.yellow(
+                `  · SES Custom MAIL FROM: ${result.mailFrom.mailFromDomain} (status ${result.mailFrom.status ?? "unknown"} — DNS propagating)`,
+              ),
+            );
+          }
+          if (result.mailFrom.adoptedExisting) {
+            console.log(
+              chalk.dim(
+                `    Adopted existing user-set MAIL FROM; Hatchkit ensured matching DNS rows but did not override.`,
+              ),
+            );
+          }
+        }
 
         if (result.dnsPublish) {
           console.log(

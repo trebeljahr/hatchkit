@@ -277,7 +277,45 @@ export async function runUpdate(
     writeManifest(projectDir, updatedManifest);
   }
 
+  // SES Custom MAIL FROM retrofit. Pre-existing projects (provisioned
+  // before this feature shipped) reach here with `manifest.email`
+  // already pointing at `listmonk-ses` for at least one need but with
+  // no `manifest.ses.mailFromDomain` recorded. Running setup here is
+  // idempotent + adopt-safe, so the no-op case is cheap.
+  if (projectUsesListmonkSes(manifest) && !manifest.ses?.mailFromDomain) {
+    try {
+      const { runSesMailFromSetup } = await import("../email/ses-mail-from.js");
+      console.log(
+        chalk.bold(
+          "\n  Retrofit: SES Custom MAIL FROM Domain — improves Gmail mailed-by header + DMARC SPF alignment.",
+        ),
+      );
+      console.log(
+        chalk.dim(
+          "  Existing sends keep working. Only NEW sends — after DNS propagates — see the custom MAIL FROM.",
+        ),
+      );
+      await runSesMailFromSetup({ noWait: false }, projectDir);
+    } catch (err) {
+      console.log(chalk.yellow(`\n  Could not configure SES MAIL FROM: ${(err as Error).message}`));
+      console.log(
+        chalk.dim(
+          "  Re-run `hatchkit email ses-mail-from setup` after fixing the underlying issue.",
+        ),
+      );
+    }
+  }
+
   return { added: actuallyAdded, skipped: skippedAdditions, removed, localDevEnabled };
+}
+
+/** True when the project's recorded email intent points at the
+ *  Listmonk + SES stack — the only path Hatchkit knows that needs the
+ *  custom MAIL FROM. Used by `runUpdate` to gate the retrofit step. */
+function projectUsesListmonkSes(manifest: ProjectManifest): boolean {
+  const e = manifest.email;
+  if (!e) return false;
+  return e.transactional === "listmonk-ses" || e.mailingList === "listmonk-ses";
 }
 
 /** Copy desktop scaffolding from the starter + apply project-name

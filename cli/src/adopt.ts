@@ -2124,6 +2124,16 @@ async function executePlan(
               records: event.createdRecords,
               mergedSpf: event.mergedSpf,
             });
+          } else if (event.service === "sesMailFromConfigured") {
+            for (const r of event.createdRecords) {
+              ledger.record({
+                kind: "cloudflareDnsRecord",
+                zoneId: event.zoneId,
+                recordId: r.id,
+                name: r.name,
+                type: r.type,
+              });
+            }
           } else if (event.service === "listmonkList" && event.createdThisRun) {
             // Only record lists hatchkit *created* — an adopted list
             // (already in Listmonk before this run) belongs to the
@@ -2183,6 +2193,36 @@ async function executePlan(
           }
         },
       });
+    }
+
+    // Step 4a-mailfrom: SES Custom MAIL FROM retrofit. Adopt --resume
+    // filters listmonk-ses out when LISTMONK_URL is already in
+    // .env.production, so the orchestrator step 3b above never runs for
+    // pre-existing projects. Probe for MAIL FROM state and run setup
+    // (idempotent + adopt-safe) if the project uses listmonk-ses and
+    // the manifest has no recorded MAIL FROM yet.
+    if (plan.services.includes("listmonk-ses")) {
+      const latestManifest = readManifest(state.projectDir);
+      if (latestManifest && !latestManifest.ses?.mailFromDomain) {
+        try {
+          const { runSesMailFromSetup } = await import("./email/ses-mail-from.js");
+          console.log(
+            chalk.bold("\n  ── SES Custom MAIL FROM ─────────────────────────────────\n"),
+          );
+          console.log(
+            chalk.dim(
+              "  Probing SES for an existing MAIL FROM value, adopting if found, else configuring the default.",
+            ),
+          );
+          await runSesMailFromSetup({ noWait: false }, state.projectDir);
+        } catch (err) {
+          caveats.push({
+            title: "SES Custom MAIL FROM not configured",
+            reason: (err as Error).message,
+            recovery: ["Re-run from the project dir: hatchkit email ses-mail-from setup"],
+          });
+        }
+      }
     }
 
     // Step 4b: S3 / R2 bucket provisioning — only when the project

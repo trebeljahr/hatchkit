@@ -685,6 +685,21 @@ function recordProvisionedEvent(ledger: RunLedger, event: ProvisionedEvent): voi
       mergedSpf: event.mergedSpf,
     });
   }
+  if (event.service === "sesMailFromConfigured") {
+    // MAIL FROM DNS records reuse the generic cloudflareDnsRecord
+    // ledger kind so destroy / rollback paths already handle deletion.
+    // Only entries this run *created* land here — the orchestrator
+    // pre-filters updates + unchanged rows out of `createdRecords`.
+    for (const r of event.createdRecords) {
+      ledger.record({
+        kind: "cloudflareDnsRecord",
+        zoneId: event.zoneId,
+        recordId: r.id,
+        name: r.name,
+        type: r.type,
+      });
+    }
+  }
   if (event.service === "listmonkList" && event.createdThisRun) {
     ledger.record({
       kind: "listmonkList",
@@ -2797,11 +2812,13 @@ function printHelp(topic?: HelpTopic): void {
   }
   if (topic === "email") {
     console.log(`
-  ${chalk.bold("hatchkit email")} — Cloudflare Email Routing setup
+  ${chalk.bold("hatchkit email")} — Cloudflare Email Routing + SES MAIL FROM
 
   ${chalk.bold("Subcommands:")}
-    setup    Configure Email Routing + DNS (MX, SPF, DMARC) for a domain
-    status   Print current routing state (read-only)
+    setup            Configure Email Routing + DNS (MX, SPF, DMARC) for a domain
+    status           Print current routing state (read-only)
+    ses-mail-from    Manage SES Custom MAIL FROM Domain for this project
+                     ${chalk.dim("(subcommands: setup | status | remove)")}
 
   ${chalk.bold("Flags (setup):")}
     --domain <fqdn>           Override the project domain

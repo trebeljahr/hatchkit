@@ -26,6 +26,7 @@ import {
   GetEmailIdentityCommand,
   ListEmailIdentitiesCommand,
   PutEmailIdentityFeedbackAttributesCommand,
+  PutEmailIdentityMailFromAttributesCommand,
   SESv2Client,
   SendEmailCommand,
 } from "@aws-sdk/client-sesv2";
@@ -392,6 +393,204 @@ export interface SesAccountInfo {
   /** AWS's view of what's still pending before production-access can
    *  be requested or re-enabled. Empty when nothing's wrong. */
   enforcementStatus?: string;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Custom MAIL FROM domain
+//
+// SES defaults the SMTP envelope sender (Return-Path / MAIL FROM) to a
+// subdomain of amazonses.com, which surfaces in Gmail as
+// `mailed-by: <region>.amazonses.com` and also defeats SPF alignment for
+// DMARC. Setting a Custom MAIL FROM domain (typically a subdomain of the
+// sending domain, e.g. `bounce.mail.<projectDomain>`) hides the AWS
+// infrastructure name and makes SPF alignment possible.
+//
+// Two DNS records are required at the chosen subdomain — an MX pointing
+// to `feedback-smtp.<region>.amazonses.com` priority 10, plus a TXT with
+// `v=spf1 include:amazonses.com ~all`. Hatchkit publishes both through
+// the existing Cloudflare DNS helper; this module owns only the SES-side
+// attribute toggle + status read.
+// ────────────────────────────────────────────────────────────────────────────
+
+/** PascalCase form Hatchkit uses everywhere (manifest, env, public API).
+ *  Translated to/from AWS's SCREAMING_SNAKE form at the SDK boundary. */
+export type SesMailFromBehaviorOnMxFailure = "UseDefaultValue" | "RejectMessage";
+
+export type SesMailFromStatus = "SUCCESS" | "PENDING" | "FAILED" | "TEMPORARY_FAILURE";
+
+export interface SesMailFromState {
+  identity: string;
+  /** Active custom MAIL FROM domain. Null when the identity is using the
+   *  AWS default (`<region>.amazonses.com`). */
+  mailFromDomain: string | null;
+  behaviorOnMxFailure: SesMailFromBehaviorOnMxFailure | null;
+  /** SES's view of MX-record verification. Null when no custom MAIL FROM
+   *  is configured. `SUCCESS` means SES has detected the required MX. */
+  status: SesMailFromStatus | null;
+}
+
+/** Compute the conventional MAIL FROM subdomain Hatchkit publishes for a
+ *  sending domain. Default label `bounce` → `bounce.<sendingDomain>`.
+ *  Kept as a named pure helper so destroy/inventory derive the same name
+ *  from a manifest without depending on the orchestrator. */
+export function sesMailFromSubdomain(sendingDomain: string, label = "bounce"): string {
+  const trimmed = label.trim().replace(/^\.+|\.+$/g, "");
+  if (!trimmed) throw new Error("MAIL FROM label cannot be empty.");
+  return `${trimmed}.${sendingDomain}`;
+}
+
+/** Compute the MX target for the chosen MAIL FROM subdomain in a given
+ *  SES region. The format is fixed by AWS — see SES Custom MAIL FROM
+ *  documentation. */
+export function sesMailFromMxTarget(region: string): string {
+  return `feedback-smtp.${region}.amazonses.com`;
+}
+
+/** The TXT SPF value SES requires at the MAIL FROM subdomain. The
+ *  include is what makes SPF align with the From: domain. */
+export const SES_MAIL_FROM_SPF = "v=spf1 include:amazonses.com ~all";
+
+export interface MailFromPlan {
+  /** The MAIL FROM domain to apply (or assert). May be the computed
+   *  default OR an adopted user-set value. */
+  mailFromDomain: string;
+  /** True when SES already has a user-set value different from what
+   *  Hatchkit would compute. Adopt path: never overwrite. */
+  adoptedExisting: boolean;
+  /** The behavior to apply (or assert). On the adopt path, falls back
+   *  to the existing value when SES has one. */
+  behaviorOnMxFailure: SesMailFromBehaviorOnMxFailure;
+  /** Whether the orchestrator should issue
+   *  `PutEmailIdentityMailFromAttributes`. Skipped when the SES side
+   *  already matches what we'd set AND status is SUCCESS — avoids a
+   *  pointless quota-counted call on healthy re-runs. */
+  needsSet: boolean;
+}
+
+/**
+ * Pure helper — decides what the MAIL FROM step should DO given the
+ * current SES state + caller intent. Extracted so the decision table
+ * can be unit-tested without mocking the SES client.
+ *
+ *   · `currentState`        — read from `getSesMailFromDomain`.
+ *   · `computedMailFrom`    — what Hatchkit would compute from the
+ *                             sending domain + chosen label.
+ *   · `desiredBehavior`     — caller intent (`UseDefaultValue` default).
+ */
+export function decideMailFromPlan(
+  currentState: SesMailFromState,
+  computedMailFrom: string,
+  desiredBehavior: SesMailFromBehaviorOnMxFailure,
+): MailFromPlan {
+  const adoptedExisting =
+    !!currentState.mailFromDomain && currentState.mailFromDomain !== computedMailFrom;
+  const mailFromDomain = currentState.mailFromDomain ?? computedMailFrom;
+  const behaviorOnMxFailure: SesMailFromBehaviorOnMxFailure = adoptedExisting
+    ? (currentState.behaviorOnMxFailure ?? desiredBehavior)
+    : desiredBehavior;
+  // Skip the SET call only when SES already holds exactly what we'd
+  // write (same name + same behavior) AND the verification is in a
+  // good state. Any drift along any axis → re-apply.
+  const needsSet =
+    currentState.mailFromDomain !== mailFromDomain ||
+    currentState.behaviorOnMxFailure !== behaviorOnMxFailure ||
+    currentState.status !== "SUCCESS";
+  return { mailFromDomain, adoptedExisting, behaviorOnMxFailure, needsSet };
+}
+
+function fromAwsBehavior(b: string | undefined): SesMailFromBehaviorOnMxFailure | null {
+  if (b === "USE_DEFAULT_VALUE") return "UseDefaultValue";
+  if (b === "REJECT_MESSAGE") return "RejectMessage";
+  return null;
+}
+
+function toAwsBehavior(b: SesMailFromBehaviorOnMxFailure): "USE_DEFAULT_VALUE" | "REJECT_MESSAGE" {
+  return b === "UseDefaultValue" ? "USE_DEFAULT_VALUE" : "REJECT_MESSAGE";
+}
+
+function fromAwsStatus(s: string | undefined): SesMailFromStatus | null {
+  if (s === "SUCCESS" || s === "PENDING" || s === "FAILED" || s === "TEMPORARY_FAILURE") return s;
+  return null;
+}
+
+/**
+ * Set (or update) the custom MAIL FROM domain on a SES identity. Pass
+ * `behaviorOnMxFailure="UseDefaultValue"` so a misconfigured DNS state
+ * degrades to `amazonses.com` instead of bouncing mail outright; switch
+ * to `RejectMessage` only for strict-alignment deployments that prefer a
+ * hard fail over a silent default.
+ *
+ * Returns the SES-reported state at the moment of the call. Status will
+ * usually be `PENDING` immediately after the first set — SES polls the
+ * MX record and flips to `SUCCESS` within minutes once DNS propagates.
+ */
+export async function setSesMailFromDomain(
+  identity: string,
+  mailFromDomain: string,
+  behaviorOnMxFailure: SesMailFromBehaviorOnMxFailure = "UseDefaultValue",
+  authOverride?: SesAuth,
+): Promise<SesMailFromState> {
+  const auth = authOverride ?? (await ensureSes());
+  const client = makeClient(auth);
+  await client.send(
+    new PutEmailIdentityMailFromAttributesCommand({
+      EmailIdentity: identity,
+      MailFromDomain: mailFromDomain,
+      BehaviorOnMxFailure: toAwsBehavior(behaviorOnMxFailure),
+    }),
+  );
+  return getSesMailFromDomain(identity, auth);
+}
+
+/**
+ * Read the current MAIL FROM state for a SES identity. Uses
+ * `GetEmailIdentity` (SESv2) which inlines `MailFromAttributes` —
+ * cheaper than the legacy v1 `GetIdentityMailFromDomainAttributes` call.
+ *
+ * Returns `mailFromDomain: null` when no custom MAIL FROM is configured.
+ */
+export async function getSesMailFromDomain(
+  identity: string,
+  authOverride?: SesAuth,
+): Promise<SesMailFromState> {
+  const auth = authOverride ?? (await ensureSes());
+  const client = makeClient(auth);
+  const res = await client.send(new GetEmailIdentityCommand({ EmailIdentity: identity }));
+  const attrs = res.MailFromAttributes;
+  const domain = attrs?.MailFromDomain?.trim();
+  if (!domain) {
+    return { identity, mailFromDomain: null, behaviorOnMxFailure: null, status: null };
+  }
+  return {
+    identity,
+    mailFromDomain: domain,
+    behaviorOnMxFailure: fromAwsBehavior(attrs?.BehaviorOnMxFailure),
+    status: fromAwsStatus(attrs?.MailFromDomainStatus),
+  };
+}
+
+/**
+ * Clear the custom MAIL FROM domain from a SES identity, reverting it
+ * to the AWS default. Idempotent: clearing an already-cleared identity
+ * is a no-op.
+ *
+ * Note: AWS clears MAIL FROM when the call omits `MailFromDomain`.
+ * `BehaviorOnMxFailure` must still be supplied; the value is irrelevant
+ * once no domain is set, but the SDK requires the field.
+ */
+export async function clearSesMailFromDomain(
+  identity: string,
+  authOverride?: SesAuth,
+): Promise<void> {
+  const auth = authOverride ?? (await ensureSes());
+  const client = makeClient(auth);
+  await client.send(
+    new PutEmailIdentityMailFromAttributesCommand({
+      EmailIdentity: identity,
+      MailFromDomain: undefined,
+      BehaviorOnMxFailure: "USE_DEFAULT_VALUE",
+    }),
+  );
 }
 
 export async function getSesAccountInfo(authOverride?: SesAuth): Promise<SesAccountInfo> {

@@ -727,7 +727,165 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of corsChecks) results.push(r);
   const credChecks = await checkProjectR2CredsState(process.cwd());
   for (const r of credChecks) results.push(r);
+  const mailFromChecks = await checkProjectSesMailFromState(process.cwd());
+  for (const r of mailFromChecks) results.push(r);
   return results;
+}
+
+/**
+ * Project-local SES Custom MAIL FROM hygiene check, gated on the
+ * presence of `.hatchkit.json` in the cwd AND the project using
+ * Listmonk + SES for at least one email need.
+ *
+ * Reports:
+ *   · MAIL FROM not configured → suggests `hatchkit email ses-mail-from setup`.
+ *   · SES status != SUCCESS    → status + actionable hint based on the value.
+ *   · DNS drift (MX missing /
+ *     SPF wrong)                → reconcile hint.
+ *
+ * Non-fatal: every problem here surfaces as a warning, never blocks. A
+ * project with a working DKIM pipeline still sends mail without MAIL
+ * FROM — it just leaks the AWS hostname into Gmail's "mailed-by" and
+ * weakens DMARC SPF alignment.
+ */
+export async function checkProjectSesMailFromState(projectDir: string): Promise<CheckResult[]> {
+  const out: CheckResult[] = [];
+  const { existsSync, readFileSync } = await import("node:fs");
+  const manifestPath = `${projectDir}/.hatchkit.json`;
+  if (!existsSync(manifestPath)) return out;
+
+  let manifest: {
+    name?: string;
+    domain?: string;
+    email?: { transactional?: string; mailingList?: string };
+    ses?: { identity?: string; mailFromDomain?: string };
+  };
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  } catch {
+    return out;
+  }
+  const usesListmonkSes =
+    manifest.email?.transactional === "listmonk-ses" ||
+    manifest.email?.mailingList === "listmonk-ses";
+  if (!usesListmonkSes || !manifest.name || !manifest.domain) return out;
+
+  const { getSesConfig } = await import("./config.js");
+  const sesCfg = await getSesConfig();
+  if (!sesCfg) {
+    out.push({
+      name: `Project ${manifest.name} (SES MAIL FROM)`,
+      status: "skip",
+      detail: "SES not configured globally — can't probe",
+    });
+    return out;
+  }
+
+  const { sesSendingSubdomain } = await import("./provision/listmonk-ses.js");
+  const identity = manifest.ses?.identity ?? sesSendingSubdomain(manifest.domain);
+
+  const { getSesMailFromDomain, sesMailFromMxTarget, SES_MAIL_FROM_SPF } = await import(
+    "./provision/ses.js"
+  );
+  let state: Awaited<ReturnType<typeof getSesMailFromDomain>>;
+  try {
+    state = await getSesMailFromDomain(identity, {
+      region: sesCfg.region,
+      accessKeyId: sesCfg.accessKeyId,
+      secretAccessKey: sesCfg.secretAccessKey,
+    });
+  } catch (err) {
+    out.push({
+      name: `Project ${manifest.name} (SES MAIL FROM)`,
+      status: "fail",
+      detail: `couldn't read SES MailFromAttributes: ${(err as Error).message.split("\n")[0]}`,
+      hint: [
+        "The SES IAM user may lack `ses:GetEmailIdentity` on this identity.",
+        "Widen the policy and re-run.",
+      ],
+    });
+    return out;
+  }
+
+  if (!state.mailFromDomain) {
+    out.push({
+      name: `Project ${manifest.name} (SES MAIL FROM)`,
+      status: "fail",
+      detail: `no custom MAIL FROM on ${identity} — Gmail shows mailed-by ${sesCfg.region}.amazonses.com and DMARC SPF alignment is weak`,
+      hint: [`Run from the project dir: hatchkit email ses-mail-from setup`],
+    });
+    return out;
+  }
+
+  if (state.status !== "SUCCESS") {
+    const statusHint =
+      state.status === "PENDING"
+        ? "SES is still waiting for DNS to propagate; normally flips to SUCCESS within minutes of the first set. Re-run doctor in a few minutes."
+        : state.status === "FAILED"
+          ? "SES couldn't find the MX record. Inspect MX + SPF rows in Cloudflare; reconcile via `hatchkit email ses-mail-from setup`."
+          : state.status === "TEMPORARY_FAILURE"
+            ? "SES had a transient DNS lookup failure. Re-run doctor in a few minutes."
+            : "Unknown SES MAIL FROM status — re-run `hatchkit email ses-mail-from status` for live state.";
+    out.push({
+      name: `Project ${manifest.name} (SES MAIL FROM)`,
+      status: "fail",
+      detail: `${state.mailFromDomain} status: ${state.status ?? "unknown"}`,
+      hint: [statusHint],
+    });
+    return out;
+  }
+
+  // DNS drift check: only runs when CF is configured.
+  const dnsCfg = await getDnsConfig();
+  if (!dnsCfg?.apiToken) {
+    out.push({
+      name: `Project ${manifest.name} (SES MAIL FROM)`,
+      status: "ok",
+      detail: `${state.mailFromDomain} status SUCCESS (DNS drift not verified — Cloudflare not configured)`,
+    });
+    return out;
+  }
+  const { CloudflareApi } = await import("./utils/cloudflare-api.js");
+  const cf = new CloudflareApi({ token: dnsCfg.apiToken, accountId: dnsCfg.accountId });
+  let zone: Awaited<ReturnType<typeof cf.resolveZoneForName>>;
+  try {
+    zone = await cf.resolveZoneForName(state.mailFromDomain);
+  } catch {
+    zone = null;
+  }
+  if (!zone) {
+    out.push({
+      name: `Project ${manifest.name} (SES MAIL FROM)`,
+      status: "ok",
+      detail: `${state.mailFromDomain} status SUCCESS (no CF zone — assuming user-managed DNS)`,
+    });
+    return out;
+  }
+
+  const expectedMx = sesMailFromMxTarget(sesCfg.region);
+  const mxRows = await cf.findRecordsByName(zone.id, state.mailFromDomain, "MX");
+  const txtRows = await cf.findRecordsByName(zone.id, state.mailFromDomain, "TXT");
+  const mxOk = mxRows.some((r) => r.content === expectedMx);
+  const spfOk = txtRows.some((r) => /v=spf1.*include:amazonses\.com/i.test(r.content));
+  if (mxOk && spfOk) {
+    out.push({
+      name: `Project ${manifest.name} (SES MAIL FROM)`,
+      status: "ok",
+      detail: `${state.mailFromDomain} status SUCCESS, MX + SPF live`,
+    });
+    return out;
+  }
+
+  const drift: string[] = [];
+  if (!mxOk) drift.push(`MX missing or wrong (expected ${expectedMx})`);
+  if (!spfOk) drift.push(`SPF TXT missing (expected ${SES_MAIL_FROM_SPF})`);
+  out.push({
+    name: `Project ${manifest.name} (SES MAIL FROM)`,
+    status: "fail",
+    detail: `${state.mailFromDomain} DNS drift: ${drift.join("; ")}`,
+    hint: [`Reconcile: hatchkit email ses-mail-from setup`],
+  });
+  return out;
 }
 
 /** Project-local key hygiene checks, gated on the presence of

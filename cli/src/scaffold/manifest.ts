@@ -167,6 +167,46 @@ export interface ProjectManifest {
    *  account-token provisioning landed (legacy projects still have
    *  user-tokens stashed in the OS keychain; provision migrates them
    *  on next run). */
+  /** Per-project SES state that Hatchkit owns directly. Today this
+   *  only covers the Custom MAIL FROM Domain attribute + the two DNS
+   *  records (MX + SPF TXT) Hatchkit publishes at the chosen subdomain.
+   *  Recording the managed DNS-record contents — not just the names —
+   *  lets `email ses-mail-from remove` delete only what Hatchkit added,
+   *  even if the user later edited a row by hand.
+   *
+   *  Optional for back-compat with manifests written before the MAIL
+   *  FROM auto-configuration feature shipped; on first run of
+   *  `hatchkit update` the field is populated. */
+  ses?: {
+    /** SES identity name (typically `mail.<projectDomain>`). Mirrors
+     *  the derived value `sesSendingSubdomain(domain)` so a
+     *  domain-rename can resync via inspection. */
+    identity: string;
+    /** Active custom MAIL FROM subdomain (typically
+     *  `bounce.<sendingDomain>`). Null is encoded as an absent field —
+     *  the presence of `ses.mailFromDomain` is itself the signal that
+     *  MAIL FROM is configured. */
+    mailFromDomain?: string;
+    /** Behavior toggle on MX-failure. Defaults to `UseDefaultValue` so
+     *  a misconfigured DNS state degrades to `amazonses.com` instead of
+     *  bouncing mail. Strict-alignment setups can flip to
+     *  `RejectMessage`. */
+    mailFromBehaviorOnMxFailure?: "UseDefaultValue" | "RejectMessage";
+    /** Subdomain label Hatchkit used when computing
+     *  `mailFromDomain = <label>.<sendingDomain>`. Recorded so
+     *  re-running the provision keeps the same name even if the
+     *  default label changes in a future Hatchkit release. */
+    mailFromLabel?: string;
+    /** Exact record content Hatchkit upserted at the MAIL FROM
+     *  subdomain. Stored by content (not just name) so
+     *  `email ses-mail-from remove` can match-and-delete only what
+     *  Hatchkit added — user-edited rows at the same name are left
+     *  untouched. */
+    mailFromManagedDnsRecords?: Array<
+      | { type: "MX"; name: string; value: string; priority: number }
+      | { type: "TXT"; name: string; value: string }
+    >;
+  };
   s3Buckets?: {
     assets?: { name: string; publicUrl: string; tokenId?: string; cors?: BucketCors };
     state?: { name: string; publicUrl: null; tokenId?: string };

@@ -48,11 +48,19 @@ import {
   listListmonkTemplates,
 } from "./listmonk.js";
 import {
+  SES_MAIL_FROM_SPF,
   type SesAuth,
   type SesIdentity,
+  type SesMailFromBehaviorOnMxFailure,
+  type SesMailFromState,
   createSesDomain,
+  decideMailFromPlan,
   enableSesFeedbackNotifications,
+  getSesMailFromDomain,
+  sesMailFromMxTarget,
+  sesMailFromSubdomain,
   sesSmtpCredentials,
+  setSesMailFromDomain,
 } from "./ses.js";
 
 export interface ListmonkSesProvisionOptions {
@@ -86,6 +94,24 @@ export interface ListmonkSesProvisionOptions {
    *  ensureListmonk). Tests pass overrides to avoid keychain. */
   sesAuth?: SesAuth;
   listmonkAuth?: ListmonkAuth;
+  /** Subdomain label prepended to the sending domain to form the
+   *  custom MAIL FROM domain (default `"bounce"` →
+   *  `bounce.mail.<projectDomain>`). Recorded into the manifest so a
+   *  re-run keeps the same name even if the default label later
+   *  changes. */
+  mailFromLabel?: string;
+  /** Toggle for SES's `BehaviorOnMxFailure`. Default
+   *  `"UseDefaultValue"` so a misconfigured DNS state degrades to
+   *  `amazonses.com` instead of bouncing mail. Strict-alignment setups
+   *  can flip to `"RejectMessage"`. */
+  mailFromBehaviorOnMxFailure?: SesMailFromBehaviorOnMxFailure;
+  /** Skip the MAIL FROM step entirely. Defaults to running. Useful
+   *  for tests + callers that explicitly opted out via project config. */
+  configureMailFrom?: boolean;
+  /** Soft-timeout for the `getSesMailFromDomain` poll that waits for
+   *  the status to flip to `SUCCESS`. Defaults to 5 minutes. Set to 0
+   *  to skip the poll entirely — the next `hatchkit update` re-checks. */
+  mailFromPollTimeoutMs?: number;
 }
 
 export interface ListmonkSesProvisionEvents {
@@ -137,6 +163,25 @@ export interface ListmonkSesProvisionEvents {
     createdRecords: CreatedDnsRecord[];
     mergedSpf: Array<{ name: string }>;
   }) => void;
+  /** Fires once the Custom MAIL FROM attribute is set on the SES
+   *  identity AND the matching MX + SPF TXT records are published.
+   *  `status` is SES's view at the moment of the call — usually
+   *  `PENDING` immediately after the first set, flipping to `SUCCESS`
+   *  within minutes once DNS propagates. */
+  onSesMailFromConfigured?: (event: {
+    identity: string;
+    mailFromDomain: string;
+    region: string;
+    behaviorOnMxFailure: SesMailFromBehaviorOnMxFailure;
+    status: SesMailFromState["status"];
+    /** Per-record handles for everything THIS run CREATED in
+     *  Cloudflare. Excludes updates + unchanged rows so a later
+     *  rollback only removes records Hatchkit introduced. */
+    createdRecords: CreatedDnsRecord[];
+    /** Cloudflare zone covering the MAIL FROM subdomain. */
+    zoneId: string;
+    zoneName: string;
+  }) => void;
 }
 
 export interface ListmonkSesProvisionResult {
@@ -157,6 +202,34 @@ export interface ListmonkSesProvisionResult {
     zoneName: string;
     createdRecords: CreatedDnsRecord[];
     mergedSpf: Array<{ name: string }>;
+  } | null;
+  /** Custom MAIL FROM state after the orchestrator's set + DNS publish
+   *  step. Null when the caller opted out via `configureMailFrom:
+   *  false`, when the orchestrator adopted a user-set MAIL FROM
+   *  (mailFromDomain populated, dnsPublish skipped), or when the SES
+   *  side failed soft (e.g. IAM gap). The status field reflects SES's
+   *  view at the moment of the call — `PENDING` immediately after the
+   *  first set, flipping to `SUCCESS` after DNS propagation. */
+  mailFrom: {
+    identity: string;
+    mailFromDomain: string;
+    region: string;
+    behaviorOnMxFailure: SesMailFromBehaviorOnMxFailure;
+    status: SesMailFromState["status"];
+    /** Per-record handles for everything THIS run CREATED in
+     *  Cloudflare at the MAIL FROM subdomain. Excludes updates +
+     *  unchanged rows so auto-rollback only removes records Hatchkit
+     *  introduced. */
+    createdRecords: CreatedDnsRecord[];
+    /** Whether Hatchkit adopted a user-set custom MAIL FROM (and only
+     *  ensured DNS) vs. set it from scratch. Used by callers to print
+     *  a different message ("adopted existing" vs. "configured"). */
+    adoptedExisting: boolean;
+    /** Cloudflare zone covering the MAIL FROM subdomain. Null when
+     *  DNS publish was skipped (no CF token, adopt path with no
+     *  matching records to verify, etc.). */
+    zoneId: string | null;
+    zoneName: string | null;
   } | null;
   /** Whether Listmonk's runtime SMTP settings + from-email got auto-
    *  configured via `/api/settings` PUT this run. `false + reason` lets
@@ -240,6 +313,21 @@ export async function provisionListmonkSesForProject(
       mergedSpf: publishRes.mergedSpf,
     });
   }
+
+  // 3b. Custom MAIL FROM Domain. Without this, Gmail surfaces
+  //     `mailed-by: <region>.amazonses.com` on every send and SPF
+  //     alignment for DMARC fails (SPF passes for amazonses.com, not
+  //     for the From: domain). Setting a custom MAIL FROM
+  //     (`<label>.<sendingDomain>`) hides the AWS infrastructure name
+  //     and lets SPF align with the From: domain. Idempotent on re-run;
+  //     adopt-path when SES already holds a user-set MAIL FROM.
+  const mailFromResult = await configureMailFromStep({
+    opts,
+    sendingDomain,
+    region: await resolveSesRegion(opts.sesAuth),
+    cf: opts.cf,
+    events,
+  });
 
   // 4. Listmonk lists — live + test. Idempotent by-name: if the user
   //    re-runs and the list already exists, we adopt it instead of
@@ -379,7 +467,186 @@ export async function provisionListmonkSesForProject(
     dnsPublish,
     smtpApplied,
     seededSubscriber,
+    mailFrom: mailFromResult,
   };
+}
+
+/** Resolve the SES region, honoring an explicit auth override and
+ *  falling back to the global config. Pulled out so the MAIL FROM step
+ *  can reference it without a second `ensureSes` round-trip. */
+async function resolveSesRegion(auth: SesAuth | undefined): Promise<string> {
+  if (auth?.region) return auth.region;
+  const { ensureSes } = await import("../config.js");
+  const cfg = await ensureSes();
+  return cfg.region;
+}
+
+interface ConfigureMailFromStepInput {
+  opts: ListmonkSesProvisionOptions;
+  sendingDomain: string;
+  region: string;
+  cf: import("../utils/cloudflare-api.js").CloudflareApi | undefined;
+  events: ListmonkSesProvisionEvents;
+}
+
+/**
+ * Step 3b — set Custom MAIL FROM on the SES identity AND publish the
+ * matching MX + SPF TXT into Cloudflare. Splits cleanly into three
+ * paths:
+ *
+ *   1. Opt-out      — caller passed `configureMailFrom: false`. No-op.
+ *   2. Adopt        — SES already holds a user-set MAIL FROM. Hatchkit
+ *                     adopts that name; DNS publish ensures the matching
+ *                     records exist but does NOT override a different
+ *                     value. The manifest is recorded by the caller.
+ *   3. Set + publish — Default. Compute `<label>.<sendingDomain>`, call
+ *                      `setSesMailFromDomain`, publish MX + SPF TXT,
+ *                      optionally poll until SUCCESS.
+ *
+ * Returns `null` only on opt-out or a soft-fail in the SES call (IAM
+ * gap, transient API error). DNS publish errors propagate — they're the
+ * same class of fatal as the DKIM publish above.
+ */
+async function configureMailFromStep(
+  input: ConfigureMailFromStepInput,
+): Promise<ListmonkSesProvisionResult["mailFrom"]> {
+  const { opts, sendingDomain, region, cf, events } = input;
+  if (opts.configureMailFrom === false) return null;
+
+  const desiredLabel = (opts.mailFromLabel ?? "bounce").trim();
+  if (!desiredLabel) return null;
+  const desiredBehavior: SesMailFromBehaviorOnMxFailure =
+    opts.mailFromBehaviorOnMxFailure ?? "UseDefaultValue";
+
+  // 1. Inspect the SES side first. Adopt path: if a user manually set
+  //    a custom MAIL FROM in the AWS console before Hatchkit got here,
+  //    we use THAT name (not the computed default). Hatchkit must
+  //    never overwrite a user-set value silently — adopt is the
+  //    explicit contract.
+  let currentState: SesMailFromState;
+  try {
+    currentState = await getSesMailFromDomain(sendingDomain, opts.sesAuth);
+  } catch (err) {
+    console.warn(
+      `  MAIL FROM lookup failed for ${sendingDomain}: ${(err as Error).message} — skipping.`,
+    );
+    return null;
+  }
+
+  const computedMailFrom = sesMailFromSubdomain(sendingDomain, desiredLabel);
+  const plan = decideMailFromPlan(currentState, computedMailFrom, desiredBehavior);
+  const { mailFromDomain, adoptedExisting, behaviorOnMxFailure: behaviorToApply, needsSet } = plan;
+
+  // 2. Apply the SES attribute. Skipped on the pure-adopt path when
+  //    the behavior already matches what we'd set — no point burning
+  //    a quota-counted API call to re-write the same value.
+  let stateAfter: SesMailFromState = currentState;
+  if (needsSet) {
+    try {
+      stateAfter = await setSesMailFromDomain(
+        sendingDomain,
+        mailFromDomain,
+        behaviorToApply,
+        opts.sesAuth,
+      );
+    } catch (err) {
+      const msg = (err as Error).message;
+      // IAM gap on `ses:PutEmailIdentityMailFromAttributes` is the most
+      // common cause — surface clearly so the operator widens the policy.
+      console.warn(
+        `  MAIL FROM set failed for ${sendingDomain} → ${mailFromDomain}: ${msg}\n` +
+          `    Most likely cause: missing IAM action ses:PutEmailIdentityMailFromAttributes.\n` +
+          `    Re-run after widening the SES IAM user's policy.`,
+      );
+      return null;
+    }
+  }
+
+  // 3. Publish MX + SPF TXT into Cloudflare. Skipped only when the
+  //    caller has no CF token at all — same gate as the DKIM publish.
+  //    The records are tagged "MAIL-FROM" so the per-record log line
+  //    visually separates from DKIM rows.
+  let zoneId: string | null = null;
+  let zoneName: string | null = null;
+  let createdRecords: CreatedDnsRecord[] = [];
+  if (cf) {
+    const records: PublishDnsRecord[] = [
+      {
+        type: "MX",
+        name: mailFromDomain,
+        value: sesMailFromMxTarget(region),
+        priority: 10,
+        label: "MAIL-FROM",
+      },
+      {
+        type: "TXT",
+        name: mailFromDomain,
+        value: SES_MAIL_FROM_SPF,
+        label: "MAIL-FROM-SPF",
+      },
+    ];
+    const publishRes = await publishDnsRecordsToCloudflare(records, {
+      cf,
+      domain: sendingDomain,
+      logTag: "MAIL-FROM",
+    });
+    zoneId = publishRes.zoneId;
+    zoneName = publishRes.zoneName;
+    createdRecords = publishRes.createdRecords;
+  }
+
+  // 4. Optional poll for status flip. PENDING is the expected state
+  //    right after the first set; SES re-checks DNS every minute or so
+  //    and flips to SUCCESS once the MX record resolves. The poll is
+  //    soft — on timeout we return PENDING and the next `hatchkit
+  //    update` re-checks.
+  const pollTimeoutMs = opts.mailFromPollTimeoutMs ?? 5 * 60 * 1000;
+  if (pollTimeoutMs > 0 && stateAfter.status !== "SUCCESS") {
+    const deadline = pollNow() + pollTimeoutMs;
+    while (pollNow() < deadline) {
+      await sleep(15_000);
+      try {
+        const polled = await getSesMailFromDomain(sendingDomain, opts.sesAuth);
+        stateAfter = polled;
+        if (polled.status === "SUCCESS" || polled.status === "FAILED") break;
+      } catch {
+        // Transient — keep polling.
+      }
+    }
+  }
+
+  events.onSesMailFromConfigured?.({
+    identity: sendingDomain,
+    mailFromDomain,
+    region,
+    behaviorOnMxFailure: behaviorToApply,
+    status: stateAfter.status,
+    createdRecords,
+    zoneId: zoneId ?? "",
+    zoneName: zoneName ?? "",
+  });
+
+  return {
+    identity: sendingDomain,
+    mailFromDomain,
+    region,
+    behaviorOnMxFailure: behaviorToApply,
+    status: stateAfter.status,
+    createdRecords,
+    adoptedExisting,
+    zoneId,
+    zoneName,
+  };
+}
+
+// pollNow + sleep — pulled out so they're trivial to monkey-patch from
+// the test suite. Date.now() is fine here (we're not in a workflow
+// script).
+function pollNow(): number {
+  return Date.now();
+}
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function getOrCreateList(

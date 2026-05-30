@@ -285,6 +285,7 @@ export async function collectInventory(
     scanGlitchtip(identity, expectations.glitchtip),
     scanOpenpanel(identity, expectations.openpanel),
     scanStripe(identity, expectations.stripe),
+    scanSesMailFrom(identity, local.manifest, expectations.sesMailFrom),
   ]);
 
   const findings: InventoryFinding[] = [];
@@ -528,6 +529,7 @@ function collectEnvSignals(
   // tight; over-broad matches lead to spurious "expected" flags.
   const patterns: Array<{ re: RegExp; signal: string }> = [
     { re: /^\s*LISTMONK_/m, signal: "LISTMONK" },
+    { re: /^\s*SES_SMTP_/m, signal: "SES_SMTP" },
     { re: /^\s*GLITCHTIP_DSN|^\s*PUBLIC_GLITCHTIP_DSN/m, signal: "GLITCHTIP" },
     { re: /^\s*SENTRY_DSN|^\s*PUBLIC_SENTRY_DSN/m, signal: "SENTRY" },
     { re: /^\s*OPENPANEL_|^\s*PUBLIC_OPENPANEL_/m, signal: "OPENPANEL" },
@@ -971,6 +973,11 @@ export interface ProviderExpectations {
   openpanel: boolean;
   plausible: boolean;
   stripe: boolean;
+  /** True when the project sends mail via the Listmonk + SES bundle —
+   *  either env signals (LISTMONK_URL + SES_SMTP_HOST present) or the
+   *  manifest's email intent points at `listmonk-ses`. Drives the SES
+   *  MAIL FROM scanner. */
+  sesMailFrom: boolean;
 }
 
 export function computeExpectations(
@@ -1008,6 +1015,16 @@ export function computeExpectations(
       env.has("OPENPANEL") || hasDepMatching(deps, /^@openpanel\//) || deps.has("openpanel"),
     plausible: env.has("PLAUSIBLE") || deps.has("plausible-tracker") || deps.has("next-plausible"),
     stripe: env.has("STRIPE") || deps.has("stripe") || deps.has("@stripe/stripe-js"),
+    sesMailFrom: (() => {
+      const intent = local.manifest?.email;
+      const intentSays =
+        intent?.transactional === "listmonk-ses" || intent?.mailingList === "listmonk-ses";
+      if (intentSays) return true;
+      // Env fallback for projects whose manifest predates the email intent
+      // field — both signals required to avoid false positives from a
+      // Listmonk-only or SES-only setup that lives outside Hatchkit's bundle.
+      return env.has("LISTMONK") && env.has("SES_SMTP");
+    })(),
   };
 }
 
@@ -1767,6 +1784,82 @@ async function scanStripe(input: InventoryInput, expected: boolean): Promise<Sca
   return { provider, findings, skipped };
 }
 
+/** SES Custom MAIL FROM Domain scanner. Reads `MailFromAttributes` off
+ *  the project's SES identity (typically `mail.<projectDomain>`) and
+ *  reports the configured subdomain + status. Skipped when the project
+ *  doesn't use Listmonk + SES, when SES isn't configured globally, or
+ *  when no domain has been resolved for the project. */
+async function scanSesMailFrom(
+  input: InventoryInput,
+  manifest: ProjectManifest | undefined,
+  expected: boolean,
+): Promise<ScanResult> {
+  const provider = "ses-mail-from";
+  const findings: InventoryFinding[] = [];
+  const skipped: Array<{ provider: string; reason: string }> = [];
+
+  if (!input.domain) {
+    if (expected) skipped.push({ provider, reason: "no domain to derive SES identity" });
+    return { provider, findings, skipped };
+  }
+  if (!expected) {
+    skipped.push({ provider, reason: "project does not use Listmonk + SES" });
+    return { provider, findings, skipped };
+  }
+
+  const { getSesConfig } = await import("./config.js");
+  const sesCfg = await getSesConfig();
+  if (!sesCfg) {
+    skipped.push({ provider, reason: "SES not configured (`hatchkit config add ses`)" });
+    return { provider, findings, skipped };
+  }
+
+  const { sesSendingSubdomain } = await import("./provision/listmonk-ses.js");
+  const identity = manifest?.ses?.identity ?? sesSendingSubdomain(input.domain);
+
+  try {
+    const { getSesMailFromDomain } = await import("./provision/ses.js");
+    const state = await getSesMailFromDomain(identity, {
+      region: sesCfg.region,
+      accessKeyId: sesCfg.accessKeyId,
+      secretAccessKey: sesCfg.secretAccessKey,
+    });
+    if (!state.mailFromDomain) {
+      findings.push({
+        provider,
+        kind: "mail-from",
+        identity,
+        status: "missing",
+        expected,
+        detail: `no custom MAIL FROM on identity ${identity} — Gmail surfaces mailed-by ${sesCfg.region}.amazonses.com`,
+      });
+    } else {
+      const driftLines: string[] = [];
+      const recorded = manifest?.ses?.mailFromDomain;
+      if (recorded && recorded !== state.mailFromDomain) {
+        driftLines.push(`manifest=${recorded} vs SES=${state.mailFromDomain}`);
+      }
+      if (state.status && state.status !== "SUCCESS") {
+        driftLines.push(`status=${state.status} (expected SUCCESS)`);
+      }
+      findings.push({
+        provider,
+        kind: "mail-from",
+        identity: state.mailFromDomain,
+        status: driftLines.length > 0 ? "drift" : "present",
+        drift: driftLines.length > 0 ? driftLines : undefined,
+        detail: `behavior=${state.behaviorOnMxFailure ?? "?"} status=${state.status ?? "?"}`,
+      });
+    }
+  } catch (err) {
+    skipped.push({
+      provider,
+      reason: `SES MailFromAttributes lookup failed: ${(err as Error).message.split("\n")[0]}`,
+    });
+  }
+  return { provider, findings, skipped };
+}
+
 // ---------------------------------------------------------------------------
 // Drift detection (cross-references between scan results + local state)
 // ---------------------------------------------------------------------------
@@ -2289,6 +2382,11 @@ function summarizePresent(
       const hooks = present.filter((f) => f.kind === "webhook-endpoint");
       return `${hooks.length} webhook${hooks.length === 1 ? "" : "s"}` + partial;
     }
+    case "ses-mail-from": {
+      const row = present.find((f) => f.kind === "mail-from");
+      if (row) return `${row.identity}${row.detail ? chalk.dim(` (${row.detail})`) : ""}`;
+      return present[0].identity + partial;
+    }
     default:
       return present[0].identity + partial;
   }
@@ -2314,6 +2412,8 @@ function summarizeMissing(providerKey: string): string {
       return "no matching project";
     case "stripe":
       return "no webhook for this domain";
+    case "ses-mail-from":
+      return "no custom MAIL FROM";
     default:
       return "not found";
   }
@@ -2341,6 +2441,8 @@ function providerLabel(key: string): string {
       return "OpenPanel";
     case "stripe":
       return "Stripe";
+    case "ses-mail-from":
+      return "SES MAIL FROM";
     default:
       return key;
   }

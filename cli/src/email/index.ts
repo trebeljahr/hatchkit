@@ -303,6 +303,11 @@ export function parseEmailFlags(rest: string[]): EmailCommandFlags {
 /** Top-level `hatchkit email <sub>` dispatcher. */
 export async function handleEmailCommand(rest: string[]): Promise<void> {
   const sub = rest[0];
+  if (sub === "ses-mail-from") {
+    const { handleSesMailFromCommand } = await import("./ses-mail-from.js");
+    await handleSesMailFromCommand(rest.slice(1), resolve("."));
+    return;
+  }
   const flags = parseEmailFlags(rest.slice(1));
   switch (sub) {
     case "setup":
@@ -312,10 +317,11 @@ export async function handleEmailCommand(rest: string[]): Promise<void> {
       await runEmailStatus(flags, resolve("."));
       return;
     default:
-      console.log("Usage: hatchkit email <setup|status> [flags]");
+      console.log("Usage: hatchkit email <setup|status|ses-mail-from> [flags]");
       console.log("");
-      console.log("  setup   Configure Cloudflare Email Routing + DNS for a domain");
-      console.log("  status  Print the current Email Routing state");
+      console.log("  setup           Configure Cloudflare Email Routing + DNS for a domain");
+      console.log("  status          Print the current Email Routing state");
+      console.log("  ses-mail-from   Manage the SES Custom MAIL FROM Domain for this project");
       console.log("");
       console.log("Flags (setup):");
       console.log("  --domain <fqdn>           Override the project domain");
@@ -325,6 +331,8 @@ export async function handleEmailCommand(rest: string[]): Promise<void> {
       console.log("  --no-catch-all            Don't set the *@domain catch-all rule");
       console.log("  --dmarc <none|quarantine|reject>  DMARC policy (default: quarantine)");
       console.log("  --no-resend-spf           Skip auto-merging _spf.resend.com");
+      console.log("");
+      console.log("Run `hatchkit email ses-mail-from` for the SES MAIL FROM subcommands.");
       process.exit(1);
   }
 }
