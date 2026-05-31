@@ -6,6 +6,7 @@
     "local-dev-mobile",
     "commands",
     "providers",
+    "secrets-rotation",
     "email",
     "ml-services",
     "gh-pages",

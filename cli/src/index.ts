@@ -149,6 +149,10 @@ async function main(): Promise<void> {
       if (args.includes("--help") && args.length === 2) return printHelp("keys");
       await handleKeys();
       break;
+    case "secrets":
+      if (args.includes("--help") && args.length === 2) return printHelp("secrets");
+      await handleSecrets();
+      break;
     case "add":
       if (args.includes("--help")) return printHelp("add");
       await handleAdd();
@@ -463,6 +467,144 @@ async function handleKeys(): Promise<void> {
     default:
       console.log(`Unknown keys subcommand: ${sub}`);
       console.log("Valid: show, set, rotate, push");
+      process.exit(1);
+  }
+}
+
+/** `hatchkit secrets <sub> <project>` dispatch. Only `rotate` is wired
+ *  today — the orchestrator at `./secrets/orchestrator.ts` owns every
+ *  upstream call, env-file write, deploy-target push, keychain rollback
+ *  bookkeeping, and audit emission. This handler is intentionally thin:
+ *  parse flags, run the orchestrator, exit. Modeled after `handleKeys`. */
+async function handleSecrets(): Promise<void> {
+  const sub = args[1];
+  if (!sub) {
+    console.log("Usage: hatchkit secrets rotate <project-name> [flags]");
+    process.exit(1);
+  }
+
+  switch (sub) {
+    case "rotate": {
+      if (args.includes("--help")) return printHelp("secrets");
+      const projectName = args[2];
+      if (!projectName || projectName.startsWith("--")) {
+        console.log("Usage: hatchkit secrets rotate <project-name> [flags]");
+        process.exit(1);
+      }
+
+      const isJson = args.includes("--json");
+      const dryRun = args.includes("--dry-run");
+
+      // `--env` is reserved for future scoping; only `production` is
+      // supported today (Coolify + gh secrets are production-only).
+      const envFlag = (flagValue("--env") ?? "production").toLowerCase();
+      if (envFlag !== "production") {
+        console.log(`Invalid --env=${envFlag}. Only 'production' is supported today.`);
+        process.exit(1);
+      }
+
+      // Lazy-import so the registry side-effects (adapter registration
+      // via the barrel) only run when the user actually invokes this
+      // path. Matches the lazy-import convention used elsewhere in
+      // this router (doctor, inventory, overview, dns, email, ...).
+      const { runSecretsRotate } = await import("./secrets/orchestrator.js");
+      const { all: listAdapters } = await import("./secrets/registry.js");
+
+      // `--providers` is a comma list of adapter names, or 'all'.
+      // Validated against the live registry so a typo errors cleanly
+      // rather than silently rotating zero adapters.
+      const providersFlag = flagValue("--providers");
+      let only: string[] | undefined;
+      if (providersFlag && providersFlag.toLowerCase() !== "all") {
+        const requested = providersFlag
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const known = new Set(listAdapters().map((a) => a.name));
+        const unknown = requested.filter((n) => !known.has(n));
+        if (unknown.length > 0) {
+          console.log(
+            `Unknown --providers entries: ${unknown.join(", ")}. ` +
+              `Known: ${[...known].join(", ") || "(none registered)"}.`,
+          );
+          process.exit(1);
+        }
+        only = requested;
+      }
+
+      // `--push-targets` is a comma list of coolify|gh|github, or 'both'.
+      // 'github' is accepted as a friendly alias for the canonical 'gh'.
+      const pushTargetsFlag = flagValue("--push-targets");
+      let pushTargets: ("coolify" | "gh")[] | undefined;
+      let noPush = false;
+      if (pushTargetsFlag) {
+        const raw = pushTargetsFlag.toLowerCase();
+        if (raw === "both") {
+          pushTargets = ["coolify", "gh"];
+        } else if (raw === "none") {
+          noPush = true;
+        } else {
+          const requested = raw
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const normalized = requested.map((t) => (t === "github" ? "gh" : t));
+          const valid = new Set(["coolify", "gh"]);
+          const invalid = normalized.filter((t) => !valid.has(t));
+          if (invalid.length > 0) {
+            console.log(
+              `Invalid --push-targets entries: ${invalid.join(", ")}. ` +
+                "Valid: coolify, gh, github, both, none.",
+            );
+            process.exit(1);
+          }
+          pushTargets = normalized as ("coolify" | "gh")[];
+        }
+      }
+
+      // `--revoke-old=after-verify|never|immediate`. Default
+      // `after-verify` matches the orchestrator's default and the
+      // safety-guards section of the design.
+      const revokeFlag = (flagValue("--revoke-old") ?? "after-verify").toLowerCase();
+      const validRevoke = new Set(["after-verify", "never", "immediate"]);
+      if (!validRevoke.has(revokeFlag)) {
+        console.log(`Invalid --revoke-old=${revokeFlag}. Valid: after-verify, never, immediate.`);
+        process.exit(1);
+      }
+      const revokePolicy = revokeFlag as "after-verify" | "never" | "immediate";
+
+      const ghRepo = flagValue("--push-gh") ?? flagValue("--repo");
+
+      try {
+        await runSecretsRotate({
+          projectName,
+          projectDir: resolve("."),
+          dryRun,
+          noPush,
+          pushTargets,
+          revokePolicy,
+          only,
+          json: isJson,
+          ghRepo,
+        });
+      } catch (err) {
+        // Orchestrator throws on captureOld/createNew failures (rollback
+        // blob preserved) and on the pre-flight guards
+        // (assertManifest, assertEnvKeysNotTracked). Surface the
+        // already-redacted message and exit non-zero so CI catches it.
+        const message = err instanceof Error ? err.message : String(err);
+        if (isJson) {
+          process.stdout.write(`${JSON.stringify({ project: projectName, error: message })}\n`);
+        } else {
+          console.error(chalk.red(`  ${message}`));
+        }
+        process.exit(1);
+      }
+      break;
+    }
+    default:
+      console.log(`Unknown secrets subcommand: ${sub}`);
+      console.log("Valid: rotate");
       process.exit(1);
   }
 }
@@ -2606,6 +2748,7 @@ type HelpTopic =
   | "update"
   | "server"
   | "keys"
+  | "secrets"
   | "add"
   | "adopt"
   | "assets"
@@ -2720,6 +2863,66 @@ function printHelp(topic?: HelpTopic): void {
 
   The key is generated at scaffold time and lives in macOS Keychain /
   libsecret under the "hatchkit" service. Never written to git.
+`);
+    return;
+  }
+  if (topic === "secrets") {
+    console.log(`
+  ${chalk.bold("hatchkit secrets")} — rotate per-project provider credentials
+
+  ${chalk.bold("Subcommands:")}
+    secrets rotate <project>   Mint fresh upstream credentials for every
+                               detected provider, write them to
+                               ${chalk.cyan(".env.production")} (encrypted) and
+                               ${chalk.cyan(".env.development")} (plaintext), push to
+                               deploy targets, verify, then revoke the
+                               old credential. Two-phase: a verify
+                               failure leaves the OLD credential live
+                               and stashes a rollback blob in the
+                               keychain so you can recover.
+
+  ${chalk.bold("Flags (rotate):")}
+    --env production           Scope the rotation. Only ${chalk.cyan("production")} is
+                               supported today.
+    --providers <list>         Comma list of adapter names, or ${chalk.cyan("all")}.
+                               E.g. ${chalk.dim("--providers=openpanel,glitchtip")}.
+                               Default: ${chalk.dim("all")} (every registered adapter
+                               whose detect() returns true).
+    --push-targets <list>      Comma list of ${chalk.cyan("coolify")}, ${chalk.cyan("gh")} (alias
+                               ${chalk.cyan("github")}), or ${chalk.cyan("both")} / ${chalk.cyan("none")}. Default:
+                               ${chalk.dim("both")} — silently filters to whatever's
+                               actually configured + detected.
+    --revoke-old=<policy>      ${chalk.cyan("after-verify")} (default): revoke OLD
+                               credential only after verify succeeds.
+                               ${chalk.cyan("never")}: leave OLD credential live (safe
+                               for audit replays).
+                               ${chalk.cyan("immediate")}: revoke BEFORE verify (for
+                               emergency leak-race rotations only).
+    --push-gh <owner/repo>     Override the auto-detected GitHub repo
+                               for the Actions secret push. (alias:
+                               ${chalk.cyan("--repo")})
+    --dry-run                  Print the plan (providers, env-key names,
+                               deploy targets, revoke policy) without
+                               minting, writing, or pushing anything.
+    --json                     Emit one NDJSON line of ${chalk.cyan("RotationAudit")} on
+                               stdout. Names + outcomes only — never
+                               credential values.
+
+  ${chalk.bold("Examples:")}
+    hatchkit secrets rotate raptor-runner
+    hatchkit secrets rotate raptor-runner --dry-run
+    hatchkit secrets rotate raptor-runner --providers=openpanel
+    hatchkit secrets rotate raptor-runner --push-targets=none
+    hatchkit secrets rotate raptor-runner --revoke-old=immediate
+
+  ${chalk.bold("Safety:")}
+    REFUSES if ${chalk.cyan(".env.keys")} is tracked by git (run
+    ${chalk.cyan("git rm --cached .env.keys && hatchkit keys rotate <project>")} first).
+    WARNS but proceeds if ${chalk.cyan(".env.production")} isn't dotenvx-encrypted
+    (run ${chalk.cyan("hatchkit adopt")} first to migrate).
+    A failed verify leaves the OLD credential live and stashes a
+    rollback blob under keychain account
+    ${chalk.dim("secrets-rollback:<project>:<adapter>")}.
 `);
     return;
   }
@@ -3641,6 +3844,7 @@ function printHelp(topic?: HelpTopic): void {
     keys set <p>    Upsert the key into the OS keychain (after \`dotenvx rotate\`)
     keys rotate <p> Rotate the dotenvx keypair, mirror to keychain + (default) deploy targets
     keys push <p>   Push the key to Coolify (default) and/or GitHub Actions
+    secrets rotate <p>  Rotate per-project provider credentials (OpenPanel, GlitchTip, ...)
 
   ${chalk.bold("Config:")}
     config          Show provider status (same as \`status\`)
