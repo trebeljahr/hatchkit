@@ -174,7 +174,22 @@ function renderEntry(entry: AdapterAuditEntry): void {
         : chalk.yellow("held (rollback blob preserved in keychain)");
   console.log(`      revoke: ${revokeText}`);
 
-  if (entry.skipReason) {
+  if (entry.skipReason === "push-failed") {
+    // Loud: env+upstream succeeded but deploy targets are still on
+    // the OLD value. Operator must heal the push surface and re-run
+    // `hatchkit secrets rotate --only=<provider>` (the rollback blob
+    // is preserved in the keychain so the old credential can still
+    // be restored via `secrets rollback` if needed).
+    const detail = entry.pushError ? ` (${entry.pushError})` : "";
+    console.log(
+      `      push:   ${chalk.red(`failed — env written locally but deploy targets still hold OLD credential${detail}`)}`,
+    );
+    console.log(
+      chalk.yellow(
+        `              heal the push surface, then re-run \`hatchkit secrets rotate --only=${entry.provider}\``,
+      ),
+    );
+  } else if (entry.skipReason) {
     console.log(chalk.dim(`      skip:   ${entry.skipReason}`));
   }
 }

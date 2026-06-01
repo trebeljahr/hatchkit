@@ -140,13 +140,14 @@ export async function pushToGithub(
 /** Single dispatcher used by the orchestrator. Iterates the requested
  *  `targets`, calls the matching helper for each, and returns the
  *  array of per-target results in input order. Each target's failure
- *  is captured as a skip; an unexpected exception bubbles up so the
- *  orchestrator can preserve the rollback blob.
+ *  is captured as a skip; an unexpected exception bubbles up to the
+ *  orchestrator, which catches it locally so other adapters keep
+ *  their audit entries.
  *
  *  Pairs are filtered to "production-scope" by the orchestrator before
  *  reaching here; both Coolify and GH Actions are production-only
  *  surfaces in the current hatchkit model. */
-export async function push(
+async function pushReal(
   targets: ReadonlyArray<DeployTarget>,
   projectName: string,
   pairs: PushPair[],
@@ -163,6 +164,29 @@ export async function push(
     }
   }
   return results;
+}
+
+/** Mutable indirection so unit tests can swap in a throwing stub
+ *  without touching real Coolify/GH credentials. The exported `push`
+ *  delegates through this reference; the rotation orchestrator only
+ *  ever sees `push`, so no production code path notices the seam. */
+let activePush: typeof pushReal = pushReal;
+
+export async function push(
+  targets: ReadonlyArray<DeployTarget>,
+  projectName: string,
+  pairs: PushPair[],
+  options: { ghRepoSlug?: string; coolifyAppName?: string; cwd?: string } = {},
+): Promise<PushResult[]> {
+  return activePush(targets, projectName, pairs, options);
+}
+
+/** Test-only seam. Replaces the internal push implementation with
+ *  `fn` (typically a throwing stub for exercising the orchestrator's
+ *  push-failure path). Call with `undefined` to restore the real
+ *  implementation. NEVER use this in production code. */
+export function __setPushImplForTesting(fn: typeof pushReal | undefined): void {
+  activePush = fn ?? pushReal;
 }
 
 /** Resolve `owner/repo` from `git remote get-url origin`. Returns

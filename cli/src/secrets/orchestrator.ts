@@ -31,7 +31,7 @@ import {
   setProdPairs,
   warnIfNotEncrypted,
 } from "./env-writer.js";
-import { type PushPair, detectRepoSlug, push } from "./push.js";
+import { type PushPair, type PushResult, detectRepoSlug, push } from "./push.js";
 import { all as listAdapters } from "./registry.js";
 import { clearRollback, saveRollback } from "./rollback-store.js";
 import type {
@@ -181,11 +181,16 @@ export async function runSecretsRotate(
  *  the adapter is asked for createNew/verify/revoke and the
  *  orchestrator owns disk writes, deploy pushes, and rollback bookkeeping.
  *
- *  Any exception from an adapter call is wrapped (value-redacted) and
- *  re-thrown UP THE STACK — the caller's loop stops, but other
- *  adapters that ran earlier keep their audit entries. The rollback
- *  blob is preserved on every failure path so the operator can
- *  recover. */
+ *  Any exception from an adapter call (captureOld/createNew/revoke) is
+ *  wrapped (value-redacted) and re-thrown UP THE STACK — the caller's
+ *  loop stops, but other adapters that ran earlier keep their audit
+ *  entries. A thrown `push()` (Coolify 5xx, `gh` auth expired, network)
+ *  is CAUGHT locally: the env file stays written, revoke is
+ *  force-skipped (deploy targets still hold the OLD value), and the
+ *  audit reports `skipReason: 'push-failed'` with a redacted
+ *  `pushError` so each adapter's outcome reaches the operator. The
+ *  rollback blob is preserved on every failure path so the operator
+ *  can recover. */
 async function rotateOneAdapter(
   adapter: ProviderRotator,
   ctx: RotationContext,
@@ -208,7 +213,10 @@ async function rotateOneAdapter(
   // Adapters that can't recover the old credential MUST NOT be
   // told to revoke — `after-verify` silently downgrades to `held`
   // for that adapter. Audit picks this up via `revoke-held` skipReason.
-  const effectivePolicy: RevokePolicy =
+  // `let` (not `const`) because a thrown push() further downgrades
+  // this to `'never'` so the OLD credential stays live for the deploy
+  // targets that didn't receive the new value.
+  let effectivePolicy: RevokePolicy =
     Object.keys(oldCred.values).length === 0 && Object.keys(oldCred.handle).length === 0
       ? "never"
       : ctx.revokePolicy;
@@ -247,14 +255,30 @@ async function rotateOneAdapter(
   // Push only production-scope values to deploy targets. Coolify
   // and GH Actions are production-only surfaces in hatchkit's model.
   const pushPairs: PushPair[] = prodPairs.map((p) => ({ key: p.key, value: p.value }));
-  const pushResults =
-    ctx.pushTargets.length > 0 && pushPairs.length > 0
-      ? await push(ctx.pushTargets, ctx.projectName, pushPairs, {
-          ghRepoSlug: options.ghRepoSlug,
-          coolifyAppName: options.coolifyAppName,
-          cwd: ctx.projectDir,
-        })
-      : [];
+  let pushResults: PushResult[] = [];
+  // When push() throws (Coolify 5xx, gh auth expired, network), the
+  // env file is already on disk (the in-disk new value is good) but
+  // the deploy targets still hold the OLD credential. Record the
+  // failure and continue to verify+revoke against local state — the
+  // operator gets per-adapter audit visibility instead of losing every
+  // earlier adapter's entry to a bubbled exception.
+  let pushError: string | undefined;
+  if (ctx.pushTargets.length > 0 && pushPairs.length > 0) {
+    try {
+      pushResults = await push(ctx.pushTargets, ctx.projectName, pushPairs, {
+        ghRepoSlug: options.ghRepoSlug,
+        coolifyAppName: options.coolifyAppName,
+        cwd: ctx.projectDir,
+      });
+    } catch (err) {
+      pushError = redactErrorMessage(err instanceof Error ? err.message : String(err));
+      console.error(`  · ${adapter.name} push failed: ${pushError}`);
+      // Force-hold the OLD credential: deploy targets are still
+      // pointing at it, so revoking would break production until
+      // the operator pushes the new value manually.
+      effectivePolicy = "never";
+    }
+  }
 
   const deployTargetsUpdated: DeployTarget[] = [];
   let firstPushSkipReason: RotationSkipReason | undefined;
@@ -310,12 +334,17 @@ async function rotateOneAdapter(
     await clearRollback(ctx.projectName, adapter.name);
   }
 
-  // Compose the skipReason: verify-failed wins over revoke-held wins
-  // over push-side failures. Adapter-not-detected was handled before
-  // we got here.
+  // Compose the skipReason. Precedence (most → least important):
+  //   verify-failed   → new credential itself doesn't work
+  //   push-failed     → env+upstream good, deploy targets behind
+  //   revoke-held     → captureOld empty (downgrade) or --revoke=never
+  //   <push skip>     → graceful (no-coolify-config, no-git-remote, …)
+  // Adapter-not-detected was handled before we got here.
   let skipReason: RotationSkipReason | undefined;
   if (verifyOutcome === "failed") {
     skipReason = "verify-failed";
+  } else if (pushError) {
+    skipReason = "push-failed";
   } else if (effectivePolicy === "never" && ctx.revokePolicy !== "never") {
     // Downgraded from `after-verify` to `never` because captureOld
     // returned empty — still report as revoke-held so the operator
@@ -334,6 +363,7 @@ async function rotateOneAdapter(
     verificationResult: verifyOutcome,
     oldRevoked,
     skipReason,
+    ...(pushError ? { pushError } : {}),
   };
 }
 

@@ -38,7 +38,8 @@ export type RotationSkipReason =
   | "no-push-flag"
   | "adapter-not-detected"
   | "verify-failed"
-  | "revoke-held";
+  | "revoke-held"
+  | "push-failed";
 
 /** Outcome of the verification step. `'skipped'` means the adapter
  *  declined to verify (e.g. no upstream probe is feasible); the
@@ -198,6 +199,13 @@ export interface AdapterAuditEntry {
   /** Populated when the orchestrator skipped a step entirely.
    *  See `RotationSkipReason` for the vocabulary. */
   skipReason?: RotationSkipReason;
+  /** Redacted error message from a thrown `push()`. Only set when
+   *  `skipReason === 'push-failed'`. Signals that the env file was
+   *  written locally and the upstream credential exists, but the
+   *  Coolify/GH Actions deploy targets still hold the OLD value —
+   *  the operator must re-push manually (e.g. `hatchkit keys push`)
+   *  before the new credential takes effect in production. */
+  pushError?: string;
 }
 
 /** Returned by `runSecretsRotate` for the whole command. The CLI

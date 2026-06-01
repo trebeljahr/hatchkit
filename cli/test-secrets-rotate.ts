@@ -2,7 +2,7 @@
  * Unit tests for `hatchkit secrets rotate` — the rotation orchestrator
  * in `cli/src/secrets/`.
  *
- * Coverage (10 tests):
+ * Coverage (12 tests):
  *   1. happy path: detect → envKeys → captureOld → createNew →
  *      env write (asserted via on-disk side effect) → verify → revoke,
  *      audit reports oldRevoked === true and verificationResult 'ok'.
@@ -25,6 +25,11 @@
  *      rollback preserved + revoke not called.
  *  10. captureOld empty → auto-downgrade after-verify to never (no
  *      revoke on adapter); audit reports skipReason 'revoke-held'.
+ *  11. pushToGithub: `gh secret set` non-zero exit redacts secret-shaped
+ *      stderr before throwing (fake `gh` on PATH).
+ *  12. push() throws → orchestrator catches, env stays written, revoke
+ *      force-held, rollback preserved, audit reports skipReason
+ *      'push-failed' with redacted `pushError`.
  *
  * Scoping: every test registers a fresh fake adapter (with a unique
  * name per test, since `registry.register()` throws on duplicates) and
@@ -733,6 +738,94 @@ exit 1
       ["message contains [REDACTED]", msg.includes("[REDACTED]")],
     ],
   );
+}
+
+// ---------------------------------------------------------------------------
+// Test 12 — push() throws: env file is written locally, verify still runs,
+// revoke is force-skipped (deploy targets still hold OLD cred), rollback
+// blob preserved, audit reports skipReason 'push-failed' with a redacted
+// pushError. Uses the __setPushImplForTesting seam in push.ts so we never
+// touch real Coolify/GH credentials.
+// ---------------------------------------------------------------------------
+{
+  const projectName = "fake-push-fail";
+  const dir = makeProject(projectName);
+  const fake = makeFakeAdapter({ name: "fake-push-fail-adapter" });
+
+  const { __setPushImplForTesting } = await import("./src/secrets/push.js");
+  __setPushImplForTesting(async () => {
+    // Include a hex run so we can assert it's redacted in pushError.
+    throw new Error(`coolify 503: upstream connect error ${"a".repeat(40)}`);
+  });
+
+  const stderrCaptured: string[] = [];
+  const originalErr = console.error;
+  console.error = (...args: unknown[]) => {
+    stderrCaptured.push(args.map((a) => String(a)).join(" "));
+  };
+
+  let threw = false;
+  let audit;
+  try {
+    audit = await runSecretsRotate({
+      projectName,
+      projectDir: dir,
+      only: [fake.name],
+      // Don't set noPush — we want the push() call to happen and throw.
+      pushTargets: ["coolify"],
+      revokePolicy: "after-verify",
+    });
+  } catch {
+    threw = true;
+  } finally {
+    console.error = originalErr;
+    __setPushImplForTesting(undefined);
+  }
+
+  const order = fake.callOrder();
+  const a = audit?.adapters[0];
+  const rollback = await loadRollback(projectName, fake.name);
+  const joinedStderr = stderrCaptured.join("\n");
+
+  results.pushFailed = report(
+    "Test 12: push() throws — orchestrator continues, revoke held, rollback preserved",
+    [
+      ["orchestrator did NOT throw", !threw],
+      ["captureOld called", order.includes("captureOld")],
+      ["createNew called", order.includes("createNew")],
+      ["verify still called (against local newCred, not deploy targets)", order.includes("verify")],
+      [
+        "revoke NOT called (force-held — OLD cred still live in deploy targets)",
+        !order.includes("revoke"),
+      ],
+      ["entry.verificationResult === 'ok'", a?.verificationResult === "ok"],
+      ["entry.oldRevoked === 'held'", a?.oldRevoked === "held"],
+      ["entry.skipReason === 'push-failed'", a?.skipReason === "push-failed"],
+      [
+        "entry.pushError is a non-empty redacted string",
+        typeof a?.pushError === "string" && a.pushError.length > 0,
+      ],
+      [
+        "entry.pushError has long hex run redacted (defence-in-depth)",
+        typeof a?.pushError === "string" && !/[0-9a-f]{32,}/.test(a.pushError),
+      ],
+      [
+        "entry.deployTargetsUpdated is empty (no targets succeeded)",
+        a?.deployTargetsUpdated.length === 0,
+      ],
+      [
+        ".env.production WAS written locally (in-disk new value is good)",
+        readProdEnvText(dir).includes("FAKE_SECRET"),
+      ],
+      ["rollback blob preserved (OLD cred recoverable via secrets rollback)", rollback !== null],
+      [
+        "rollback.values carries the OLD value",
+        rollback?.values.FAKE_SECRET === "OLD-VALUE-DO-NOT-LEAK",
+      ],
+      ["stderr line printed about push failure", /push failed/i.test(joinedStderr)],
+    ],
+  );
+  rmSync(dir, { recursive: true, force: true });
 }
 
 // ---------------------------------------------------------------------------
