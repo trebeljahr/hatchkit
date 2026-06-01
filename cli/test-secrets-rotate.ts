@@ -43,7 +43,7 @@
  * Run: pnpm test:secrets-rotate
  */
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -681,6 +681,58 @@ function report(label: string, checks: [string, boolean][]): boolean {
     ],
   );
   rmSync(dir, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// Test 11 — push.ts: `gh secret set` failure redacts secret-shaped stderr
+// before throwing. Defense-in-depth — today `gh` doesn't echo `--body` argv,
+// but a future release might on auth failure, and the throw message bubbles
+// to the user / orchestrator audit. Uses a fake `gh` on PATH so the real
+// binary isn't required for the test to run.
+// ---------------------------------------------------------------------------
+{
+  const { pushToGithub } = await import("./src/secrets/push.js");
+
+  const fakeBinDir = mkdtempSync(join(tmpdir(), "fake-gh-bin-"));
+  const ghPath = join(fakeBinDir, "gh");
+  // Fake gh: exits non-zero with stderr that contains both a sk_ token
+  // and a long hex run — exactly the shapes redactErrorMessage strips.
+  writeFileSync(
+    ghPath,
+    `#!/bin/sh
+echo "auth failed: token sk_test_abcdefghijklmnopqrst (${"f".repeat(40)})" 1>&2
+exit 1
+`,
+  );
+  chmodSync(ghPath, 0o755);
+
+  const origPath = process.env.PATH;
+  process.env.PATH = `${fakeBinDir}:${origPath ?? ""}`;
+
+  let thrown: Error | null = null;
+  try {
+    await pushToGithub([{ key: "FAKE_SECRET", value: "new-value-do-not-leak" }], {
+      repoSlug: "owner/repo",
+    });
+  } catch (err) {
+    thrown = err as Error;
+  } finally {
+    process.env.PATH = origPath;
+    rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+
+  const msg = thrown?.message ?? "";
+  results.pushGhRedact = report(
+    "Test 11: pushToGithub redacts secret-shaped stderr on gh failure",
+    [
+      ["throws Error", thrown instanceof Error],
+      ["message mentions key name", msg.includes("FAKE_SECRET")],
+      ["message mentions exit code", msg.includes("exited 1")],
+      ["message does NOT contain sk_ token", !/sk_test_/.test(msg)],
+      ["message does NOT contain long hex run", !/[0-9a-f]{32,}/.test(msg)],
+      ["message contains [REDACTED]", msg.includes("[REDACTED]")],
+    ],
+  );
 }
 
 // ---------------------------------------------------------------------------

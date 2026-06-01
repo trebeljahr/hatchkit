@@ -20,6 +20,7 @@ import { getCoolifyConfig } from "../config.js";
 import { repoSlugFromRemote } from "../deploy/gh-actions-secrets.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { exec } from "../utils/exec.js";
+import { redactErrorMessage } from "./audit.js";
 import type { DeployTarget, RotationSkipReason } from "./types.js";
 
 export interface PushResult {
@@ -127,7 +128,9 @@ export async function pushToGithub(
       silent: true,
     });
     if (res.exitCode !== 0) {
-      throw new Error(`gh secret set ${key} exited ${res.exitCode}: ${res.stderr.trim()}`);
+      throw new Error(
+        redactErrorMessage(`gh secret set ${key} exited ${res.exitCode}: ${res.stderr.trim()}`),
+      );
     }
     pushed.push(key);
   }
