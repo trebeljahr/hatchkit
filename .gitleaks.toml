@@ -1,0 +1,16 @@
+# Extend default gitleaks rules and allowlist test fixtures.
+#
+# cli/test-secrets-rotate.ts contains fake credential shapes
+# (sk_test_…, whsec_…, "looks-password", etc.) used to exercise the
+# secrets-rotation redaction code paths. They never leave the test
+# process and are not real secrets. Allowlist by path so future
+# fixtures in the same file do not need per-line tweaks.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures — fake Stripe / generic keys used by secrets-rotation unit tests, never sent anywhere."
+paths = [
+  '''cli/test-secrets-rotate\.ts''',
+]
