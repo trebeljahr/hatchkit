@@ -1,0 +1,138 @@
+# Android build → Play Console internal track.
+#
+# Required repo secrets:
+#   ANDROID_KEYSTORE_BASE64         — base64 of the upload keystore (.jks)
+#   ANDROID_KEYSTORE_PASSWORD       — store password
+#   ANDROID_KEY_ALIAS               — key alias (typically "upload")
+#   ANDROID_KEY_PASSWORD            — alias password
+#   PLAY_SERVICE_ACCOUNT_JSON       — full JSON of a Google Cloud service account with
+#                                     Play Console "Release manager" or "Release apps to
+#                                     testing tracks" permission on this app
+#
+# Setup steps (one-time):
+#   1. Generate keystore locally and back it up off-machine:
+#        keytool -genkey -v -keystore __HATCHKIT_APP_SLUG__.keystore -alias upload \
+#                -keyalg RSA -keysize 2048 -validity 10000
+#      → base64-encode and paste as ANDROID_KEYSTORE_BASE64.
+#   2. Play Console → create app, set up internal testing track, link package
+#      name __HATCHKIT_BUNDLE_ID__.
+#   3. Play Console → Setup → API access → link a Google Cloud project →
+#      create a service account → grant "Release manager" → download JSON.
+#      Paste the JSON contents into PLAY_SERVICE_ACCOUNT_JSON.
+#   4. First release MUST be uploaded manually through the Play Console UI so
+#      Google can validate the app and you can accept distribution terms.
+#      After that, this workflow can ship subsequent versions automatically.
+
+name: Build Android
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      track:
+        description: Play Console track
+        required: true
+        default: internal
+        type: choice
+        options: [internal, alpha, beta, production]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-android-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ANDROID_VERSION_CODE: ${{ github.run_number }}
+      ANDROID_VERSION_NAME: ${{ github.ref_type == 'tag' && github.ref_name || format('0.0.{0}', github.run_number) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: __HATCHKIT_PNPM_VERSION__
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: __HATCHKIT_NODE_VERSION__
+          cache: pnpm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platform-tools
+            platforms;android-35
+            build-tools;35.0.0
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build web bundle and sync Android
+        run: |
+          pnpm build
+          npx cap sync android
+
+      - name: Decode keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          echo -n "$KEYSTORE_B64" | base64 --decode > android/app/upload.keystore
+
+      - name: Write keystore.properties
+        env:
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cat > android/keystore.properties <<EOF
+          storeFile=app/upload.keystore
+          storePassword=${STORE_PASSWORD}
+          keyAlias=${KEY_ALIAS}
+          keyPassword=${KEY_PASSWORD}
+          EOF
+
+      - name: Build signed AAB
+        working-directory: android
+        run: ./gradlew bundleRelease --no-daemon
+
+      - name: Verify AAB is signed
+        run: |
+          set -euo pipefail
+          AAB=android/app/build/outputs/bundle/release/app-release.aab
+          test -f "$AAB" || { echo "AAB not produced"; exit 1; }
+          unzip -p "$AAB" META-INF/MANIFEST.MF | head -5
+          ls -lah "$AAB"
+
+      - name: Upload to Play Console
+        uses: r0adkll/upload-google-play@v1.1.3
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: __HATCHKIT_BUNDLE_ID__
+          releaseFiles: android/app/build/outputs/bundle/release/app-release.aab
+          track: ${{ github.event.inputs.track || 'internal' }}
+          status: completed
+          changesNotSentForReview: false
+
+      - name: Clean up keystore artifacts
+        if: always()
+        run: |
+          rm -f android/app/upload.keystore android/keystore.properties
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error

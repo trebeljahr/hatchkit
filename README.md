@@ -52,6 +52,8 @@ New to the CLI? Run `hatchkit explain` for a one-page mental model covering ever
 | `hatchkit create` | Scaffold a new project (interactive) and optionally deploy it end-to-end. |
 | `hatchkit update` | Add features (desktop, mobile, …) to a project already scaffolded. |
 | `hatchkit add <project> [services]` | Provision GlitchTip / OpenPanel / Plausible / Listmonk + SES / email / search clients for an existing project. |
+| `hatchkit signing org-init` | One-time per dev machine — collect Apple Distribution .p12 / App Store Connect API key, Google Play service account JSON, Azure Trusted Signing service principal. |
+| `hatchkit signing apply [project-dir]` | Wire signed installers + store uploads: writes `build-{windows,ios,android}.yml`, rewrites bundle ID in `src-tauri/tauri.conf.json` / `capacitor.config.ts` / `android/app/build.gradle` / `strings.xml` / `MainActivity.java` / `project.pbxproj`, mints the Apple Bundle ID + App record + provisioning profile via the ASC API, generates an Android upload keystore, pushes ~20 GitHub Actions secrets. Idempotent. Same flow runs via `hatchkit add <project> signing`. |
 | `hatchkit gh-pages` | Wire GitHub Pages for the current repo (static / Vite / Jekyll) with optional custom domain + DNS. |
 | `hatchkit keys show/push <project>` | Read or push the dotenvx private key to Coolify. |
 | `hatchkit config [add/reset]` | Inspect or modify stored provider credentials. |

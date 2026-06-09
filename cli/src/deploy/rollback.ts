@@ -323,6 +323,27 @@ function recipeFor(step: LedgerStep): string | null {
       return `cd ${shellEscape(step.projectDir)} && hatchkit gh-pages --undo --yes`;
     case "localDevFragment":
       return `rm -f ~/.config/dev/projects/${shellEscape(step.slug)}.caddy`;
+    case "appleBundleId":
+      return chalk.dim(
+        `# manual: delete Apple Bundle ID ${step.identifier} (resource ${step.resourceId}) at https://developer.apple.com/account/resources/identifiers/list`,
+      );
+    case "appleAppRecord":
+      return chalk.dim(
+        `# manual: delete App Store Connect app record ${step.resourceId} (bundle ${step.bundleId}) at https://appstoreconnect.apple.com/apps`,
+      );
+    case "appleProvisioningProfile":
+      return chalk.dim(
+        `# manual: delete provisioning profile "${step.name}" (id ${step.resourceId}) at https://developer.apple.com/account/resources/profiles/list`,
+      );
+    case "androidKeystoreLocal":
+      // Never auto-delete — losing the upload key bricks Play uploads.
+      return chalk.dim(
+        `# DO NOT delete ${step.path} — losing the upload keystore locks the dev out of Play updates. Back it up off-machine instead.`,
+      );
+    case "ghSigningSecret":
+      return `gh secret delete ${shellEscape(step.name)} --repo ${shellEscape(step.repo)}`;
+    case "signingWorkflowFile":
+      return `rm ${shellEscape(step.path)}`;
   }
 }
 
@@ -573,6 +594,18 @@ function describeStep(step: LedgerStep): string {
       return `tear down GitHub Pages for ${chalk.cyan(step.repo)}`;
     case "localDevFragment":
       return `remove local-dev Caddy fragment ${chalk.cyan(`${step.slug}.caddy`)}`;
+    case "appleBundleId":
+      return `delete Apple Bundle ID ${chalk.cyan(step.identifier)}`;
+    case "appleAppRecord":
+      return `delete App Store Connect app record (bundle ${chalk.cyan(step.bundleId)})`;
+    case "appleProvisioningProfile":
+      return `delete Apple provisioning profile ${chalk.cyan(step.name)}`;
+    case "androidKeystoreLocal":
+      return `keep Android upload keystore at ${chalk.cyan(step.path)} (never deleted)`;
+    case "ghSigningSecret":
+      return `delete GH signing secret ${chalk.cyan(step.name)} on ${chalk.cyan(step.repo)}`;
+    case "signingWorkflowFile":
+      return `remove signing workflow ${chalk.cyan(step.path)}`;
   }
 }
 
@@ -899,6 +932,29 @@ async function undoStep(
       const { removeProjectFragment } = await import("@hatchkit/dev-shared");
       const removed = removeProjectFragment(step.slug);
       return removed ? "done" : "not-found";
+    }
+    case "appleBundleId":
+    case "appleAppRecord":
+    case "appleProvisioningProfile":
+      // ASC deletion requires the org's API .p8 key. We don't have it
+      // here (rollback runs without the signing module's org-config
+      // lookup chain). Surface via recipe instead.
+      return "skipped";
+    case "androidKeystoreLocal":
+      // Never delete the upload keystore — see recipeFor's note.
+      return "skipped";
+    case "ghSigningSecret": {
+      const res = await exec("gh", ["secret", "delete", step.name, "--repo", step.repo], {
+        silent: true,
+      });
+      if (res.exitCode === 0) return "done";
+      if (/not found|could not find/i.test(`${res.stderr}\n${res.stdout}`)) return "not-found";
+      throw new Error(`gh secret delete ${step.name} failed: ${res.stderr || res.stdout}`);
+    }
+    case "signingWorkflowFile": {
+      if (!existsSync(step.path)) return "not-found";
+      unlinkSync(step.path);
+      return "done";
     }
   }
 }

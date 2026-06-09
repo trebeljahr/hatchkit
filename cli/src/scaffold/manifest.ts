@@ -31,6 +31,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { localDevDomainFromProjectDomain } from "@hatchkit/dev-shared";
+import type { SigningProjectConfig } from "../features/signing/types.js";
 import type {
   EmailIntent,
   Feature,
@@ -229,6 +230,19 @@ export interface ProjectManifest {
       | { type: "TXT"; name: string; value: string }
     >;
   };
+  /** Per-project code-signing / store-upload config. Populated by
+   *  `hatchkit signing` (called by create/adopt/add). Holds only
+   *  non-secret identifiers and references:
+   *    · Bundle ID + app name + platform set
+   *    · Apple Bundle ID resource id, App record id, Provisioning
+   *      Profile id + Name (returned by ASC POST — public-safe)
+   *    · Local path to the Android upload keystore + `github://<secret>`
+   *      reference to where the keystore base64 is pushed
+   *
+   *  Actual signing secrets (P12 password, P8 key, SA JSON, Azure SP
+   *  secret) NEVER appear here — they live in keychain (org config) or
+   *  on the user's filesystem (paths referenced from org config). */
+  signing?: SigningProjectConfig;
   s3Buckets?: {
     assets?: { name: string; publicUrl: string; tokenId?: string; cors?: BucketCors };
     state?: { name: string; publicUrl: null; tokenId?: string };

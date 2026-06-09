@@ -1,0 +1,105 @@
+# Tauri Windows build, signed with Azure Trusted Signing.
+#
+# Required repo secrets:
+#   AZURE_TENANT_ID          — Azure AD tenant containing the Trusted Signing account
+#   AZURE_CLIENT_ID          — service principal app ID (or federated identity client ID)
+#   AZURE_CLIENT_SECRET      — service principal secret (omit if using OIDC; see below)
+#   AZURE_TS_ACCOUNT         — Trusted Signing account name
+#   AZURE_TS_PROFILE         — certificate profile name (Public Trust if eligible, else Private Trust)
+#   AZURE_TS_ENDPOINT        — e.g. https://wus2.codesigning.azure.net
+#
+# OIDC upgrade (recommended once secret-auth works): drop AZURE_CLIENT_SECRET,
+# add `permissions: id-token: write` to the job, and configure a federated
+# identity credential on the Azure AD app registration pointing at this repo.
+
+name: Build Windows
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_CODE_SIGNING_DLIB: ${{ github.workspace }}\dlib\bin\x64\Azure.CodeSigning.Dlib.dll
+      AZURE_CODE_SIGNING_METADATA: ${{ github.workspace }}\dlib\metadata.json
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: __HATCHKIT_PNPM_VERSION__
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: __HATCHKIT_NODE_VERSION__
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/target
+          key: cargo-windows-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Install Trusted Signing client (dlib)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dlib | Out-Null
+          nuget install Microsoft.Trusted.Signing.Client -Version 1.0.60 -OutputDirectory dlib-pkg -ExcludeVersion
+          Copy-Item -Recurse -Force dlib-pkg\Microsoft.Trusted.Signing.Client\bin dlib\
+          @"
+          {
+            "Endpoint": "${{ secrets.AZURE_TS_ENDPOINT }}",
+            "CodeSigningAccountName": "${{ secrets.AZURE_TS_ACCOUNT }}",
+            "CertificateProfileName": "${{ secrets.AZURE_TS_PROFILE }}"
+          }
+          "@ | Out-File -FilePath dlib\metadata.json -Encoding utf8
+
+      - name: Verify signtool sees dlib
+        shell: pwsh
+        run: |
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe `
+            | Where-Object { $_.FullName -match "x64\\signtool.exe$" } | Select-Object -First 1).FullName
+          if (-not $signtool) { throw "signtool.exe not found" }
+          Write-Host "signtool: $signtool"
+          if (-not (Test-Path "$env:AZURE_CODE_SIGNING_DLIB")) {
+            throw "dlib missing at $env:AZURE_CODE_SIGNING_DLIB"
+          }
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build + sign (Tauri)
+        run: pnpm tauri build
+
+      - name: Verify signatures
+        shell: pwsh
+        run: |
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe `
+            | Where-Object { $_.FullName -match "x64\\signtool.exe$" } | Select-Object -First 1).FullName
+          Get-ChildItem -Recurse -Include *.exe,*.msi -Path src-tauri\target\release\bundle | ForEach-Object {
+            Write-Host "Verifying $_"
+            & $signtool verify /pa /v $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "verify failed for $_" }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-bundles
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error

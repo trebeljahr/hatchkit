@@ -1,0 +1,179 @@
+---
+title: Signing & store uploads
+description: Wire code-signed desktop installers + TestFlight + Play Console internal track for a Hatchkit-managed desktop / mobile project, end-to-end.
+---
+
+`hatchkit signing` takes a desktop/mobile project from "freshly scaffolded" to "signed installer on Windows + TestFlight build queued + Play Console internal track upload" with one command, plus the unavoidable vendor-side manual clicks.
+
+Templates and CI workflows are byte-for-byte the same shape that ships [mesozoic-protocol](https://github.com/RicoTrebeljahr/mesozoic-protocol) (Tauri + Capacitor + Azure Trusted Signing + Apple App Store Connect + Google Play Console).
+
+## Mental model — three tiers
+
+The vendor side splits cleanly into work Hatchkit can automate and work Hatchkit cannot:
+
+**Tier 1 — per-org, one-time.** Reused across every app the team ships.
+
+- Apple Developer Program enrollment ($99/yr) + Distribution cert export (.p12)
+- App Store Connect API Key (.p8 + Key ID + Issuer ID)
+- Google Play Developer account ($25 once) + service account JSON
+- Azure Trusted Signing account + service principal
+
+These live in Hatchkit's global config (`~/.hatchkit/<conf>`) plus the OS keychain for the few real secrets (P12 password, Azure SP secret). Populate them once via:
+
+```bash
+hatchkit signing org-init
+```
+
+Hatchkit never tries to enroll developer programs or create the Trusted Signing account itself — it collects references to artifacts you already produced.
+
+**Tier 2 — per-app, fully automated.** Run on every new project.
+
+- Apple Bundle ID registration via ASC API
+- App Store Connect App record creation via ASC API
+- App Store provisioning profile creation + .mobileprovision download
+- Android upload keystore generation (`keytool`)
+- 20 GitHub Actions repo secrets (`gh secret set` via stdin)
+- 3 workflow files (`.github/workflows/build-{windows,ios,android}.yml`)
+- Bundle ID + app name rewritten in `src-tauri/tauri.conf.json`, `capacitor.config.ts`, `android/app/build.gradle`, `strings.xml`, `MainActivity.java` (+ Java package dir move), `ios/App/App.xcodeproj/project.pbxproj`
+
+Idempotent: re-runs GET-before-POST on Apple resources and diff-before-write on every file. Resource IDs persist into the project manifest so subsequent runs reuse rather than duplicate.
+
+**Tier 3 — stuck manual.** Vendors enforce a UI step:
+
+- Apple identity validation (Apple human review, hours-to-days)
+- Azure identity validation (Azure human review, hours-to-days)
+- Google Play Console app creation (no API)
+- Google Play Console first AAB upload (Google blocks API uploads until terms accepted)
+- Play Console permission grant to the service account
+- App Store / Play Store listing copy + screenshots + age rating
+
+Hatchkit writes these to `.hatchkit/post-signing.md` and prints them after the run.
+
+## Usage
+
+```bash
+# One-time per machine + org.
+hatchkit signing org-init
+
+# Per project.
+cd my-app
+hatchkit signing apply
+# or:
+hatchkit add my-app signing
+```
+
+`hatchkit create` and `hatchkit adopt` both detect desktop/mobile features + print a hint pointing at `hatchkit signing apply` after the main flow completes.
+
+### Flags
+
+| Flag | What it does |
+|---|---|
+| `--platforms windows,ios,android` | Limit to a subset. Defaults derived from `src-tauri/`, `ios/`, `android/` presence. |
+| `--bundle-id com.example.app` | Skip the bundle-ID prompt. |
+| `--app-name "My App"` | Skip the app-name prompt. |
+| `--repo owner/repo` | Override the GitHub repo slug detected from `git remote`. |
+| `--no-signing` | Skip everything. Honored by the stepper so `hatchkit create --no-signing` works too. |
+| `--dry-run` | Stepper + preflight + plan; no file writes, no API calls. |
+| `--only apple,google,azure` | `org-init` only — limit the providers configured this run. |
+
+### Bundle ID rules
+
+The stepper validates bundle IDs before doing anything:
+
+- All lowercase.
+- 2+ dot-separated segments.
+- Each segment starts with a letter, contains only `[a-z0-9]`, no hyphens.
+
+`com.mesozoicprotocol.app` ✓, `com.Example.app` ✗, `com.my-app.demo` ✗.
+
+## Pre-flight checks
+
+Run BEFORE any mutation. If any fail, the run aborts with all errors listed so you fix once and re-run:
+
+- `gh auth status` + admin/maintain on the target repo
+- `keytool` available (JDK 17+) when Android is selected
+- macOS host + `xcodebuild` when iOS is selected
+- Org config readable + referenced `.p12` / `.p8` / SA JSON exist
+- Trusted Signing service principal can list the cert profile (via `az`; soft-skipped when `az` isn't installed)
+- No existing `build-{ios,android,windows}.yml` (warns; doesn't abort)
+- Local Android keystore matches the manifest reference (aborts on mismatch — regenerating would brick Play uploads)
+
+## What the workflows do
+
+The three workflow files are byte-for-byte copies of mesozoic-protocol's reference impl with two Hatchkit-time token swaps:
+
+- `build-windows.yml` — Tauri build → Azure Trusted Signing → MSI + EXE artifact upload. Driven entirely by secrets.
+- `build-ios.yml` — `cap sync ios` → `xcodebuild archive` → `xcodebuild -exportArchive` → TestFlight upload via App Store Connect API. The `__APPLE_TEAM_ID__` and `__APPLE_PROVISIONING_PROFILE_NAME__` placeholders in `ExportOptions.plist.template` are substituted by `sed` at workflow runtime — Hatchkit only substitutes `__HATCHKIT_BUNDLE_ID__`.
+- `build-android.yml` — `cap sync android` → `gradle bundleRelease` (reads keystore.properties at runtime, never committed) → Play Console upload via service account JSON.
+
+Triggered on `git tag v*` (or `workflow_dispatch`).
+
+## Reuse + idempotency
+
+Manifest fields populated after the first successful run:
+
+```json
+{
+  "signing": {
+    "enabled": true,
+    "bundleId": "com.example.tiao",
+    "appName": "Tiao",
+    "appSlug": "tiao",
+    "platforms": ["windows", "ios", "android"],
+    "appleSku": "tiao",
+    "appleBundleIdResourceId": "...",
+    "appleAppRecordId": "...",
+    "appleProvisioningProfileId": "...",
+    "appleProvisioningProfileName": "Tiao App Store",
+    "androidKeystoreLocalPath": ".hatchkit/signing/tiao.keystore",
+    "androidKeystoreSecretRef": "github://ANDROID_KEYSTORE_BASE64"
+  }
+}
+```
+
+Re-running `hatchkit signing apply`:
+
+- `validateBundleIdRef` against ASC — falls through to `ensureBundleId` only if Apple 404s.
+- `find*ByX` GET-first for app records and profiles.
+- `gh secret set` always upserts.
+- File rewrites: read → diff → write only on actual change.
+- Android keystore: REFUSES to regenerate when the file exists locally. Losing the upload keystore locks the dev out of Play updates. To rotate, file a key reset through Play Console first.
+
+## Where secrets live
+
+| Where | What |
+|---|---|
+| `~/.hatchkit/<conf>` | Apple/Google/Azure paths + IDs (non-secret). |
+| OS keychain (service `hatchkit`) | P12 password (`signing:apple:p12-password`), Azure SP secret (`signing:azure:sp-secret`). |
+| Project filesystem | Apple .p12 + .p8 at user-controlled paths; Android upload keystore at `<projectDir>/.hatchkit/signing/<slug>.keystore`. |
+| GitHub repo secrets | The 20 build-time values pushed via `gh secret set`. |
+| Hatchkit config | Never plaintext secrets. References to keychain accounts and filesystem paths only. |
+
+## Required GitHub Actions secrets
+
+Pushed automatically by `hatchkit signing apply`:
+
+```
+# Windows
+AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET,
+AZURE_TS_ACCOUNT, AZURE_TS_PROFILE, AZURE_TS_ENDPOINT
+
+# iOS
+APPLE_TEAM_ID, APPLE_CERT_P12_BASE64, APPLE_CERT_P12_PASSWORD,
+APPLE_PROVISIONING_PROFILE_B64, APPLE_PROVISIONING_PROFILE_NAME,
+APPLE_KEYCHAIN_PASSWORD, APPSTORE_API_KEY_ID, APPSTORE_API_ISSUER_ID,
+APPSTORE_API_KEY_P8_BASE64
+
+# Android
+ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
+ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD, PLAY_SERVICE_ACCOUNT_JSON
+```
+
+## Rollback
+
+Resources Hatchkit created during signing setup are recorded in the run ledger and surfaced by `hatchkit destroy <project>`:
+
+- Apple Bundle ID, App record, Provisioning Profile → manual cleanup hint (ASC delete requires the org's .p8 key chain — destroy intentionally doesn't have it; recipe links to developer.apple.com).
+- GitHub Actions secrets → `gh secret delete`.
+- Workflow files → `rm`.
+- Android upload keystore → **never deleted**. Recipe warns "back it up off-machine".

@@ -169,7 +169,35 @@ export type LedgerStep =
    *  project opted into the local-dev integration. Destroy removes the
    *  fragment file — host-wide Caddy + tailscale serve stay put (they
    *  belong to the user, not this project). */
-  | { kind: "localDevFragment"; slug: string };
+  | { kind: "localDevFragment"; slug: string }
+  /** Apple Bundle ID resource created via App Store Connect API.
+   *  Recorded only when this run CREATED the bundle id (ASC's POST
+   *  returned 201, not when GET found it). Destroy issues
+   *  `DELETE /v1/bundleIds/{id}` — 404-tolerant. */
+  | { kind: "appleBundleId"; resourceId: string; identifier: string }
+  /** Apple App Store Connect "App record" created via POST /v1/apps.
+   *  Destroy issues DELETE /v1/apps/{id}, 404-tolerant. */
+  | { kind: "appleAppRecord"; resourceId: string; bundleId: string }
+  /** Apple App Store distribution provisioning profile created via
+   *  POST /v1/profiles. Destroy issues DELETE /v1/profiles/{id},
+   *  404-tolerant. The base64 content of the profile lives only in
+   *  the GitHub Actions secret, never in the ledger. */
+  | { kind: "appleProvisioningProfile"; resourceId: string; name: string }
+  /** Android upload keystore generated locally via `keytool`. The file
+   *  itself lives at `path`. The base64 contents are in the
+   *  ANDROID_KEYSTORE_BASE64 GitHub secret; the keystore passwords are
+   *  in ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_PASSWORD. Destroy must
+   *  NEVER delete this file — regenerating an upload keystore bricks
+   *  Play uploads. The ledger entry exists so destroy can WARN, not
+   *  remove. */
+  | { kind: "androidKeystoreLocal"; path: string }
+  /** A GitHub Actions secret pushed by `hatchkit signing`. Distinct
+   *  from `ghActionsSecret` so a partial signing failure doesn't
+   *  trigger Coolify-deploy rollback paths. */
+  | { kind: "ghSigningSecret"; repo: string; name: string }
+  /** A GitHub Actions workflow file written by `hatchkit signing`
+   *  (build-{windows,ios,android}.yml). Destroy removes the file. */
+  | { kind: "signingWorkflowFile"; path: string };
 
 export interface LedgerData {
   /** Project slug. Also the filename. */

@@ -16,6 +16,10 @@ export async function exec(
     env?: Record<string, string>;
     spinner?: string;
     silent?: boolean;
+    /** Plaintext piped to the child's stdin. Useful for `gh secret set
+     *  NAME --body -` style invocations that take the secret value via
+     *  stdin so it never appears in argv. */
+    input?: string;
   },
 ): Promise<ExecResult> {
   const spinner = options?.spinner ? ora(options.spinner).start() : null;
@@ -25,6 +29,7 @@ export async function exec(
       cwd: options?.cwd,
       env: { ...process.env, ...options?.env },
       reject: false,
+      input: options?.input,
     });
 
     if (result.exitCode !== 0) {

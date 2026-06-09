@@ -2632,6 +2632,30 @@ async function executePlan(
   } else {
     console.log();
   }
+
+  // Signing hint — surface when the adopted repo has any of the
+  // platform-specific native dirs. Doesn't run signing inline (adopt
+  // is already a long flow); points the user at the explicit command.
+  try {
+    const { detectPlatforms } = await import("./features/signing/index.js");
+    const platforms = detectPlatforms(state.projectDir);
+    if (platforms.length > 0) {
+      console.log(chalk.yellow("  Signing detected:"));
+      console.log(
+        chalk.dim(
+          `    ${platforms.join(", ")} — run \`hatchkit signing apply\` to wire installers + store uploads.`,
+        ),
+      );
+      console.log(
+        chalk.dim(
+          `    One-time prereq: \`hatchkit signing org-init\` (Apple .p12 / .p8, Play SA JSON, Azure SP).`,
+        ),
+      );
+      console.log();
+    }
+  } catch {
+    // best-effort; signing module is optional plumbing.
+  }
 }
 
 /** Where dotenvx writes the encrypted env. Server-only / both layouts

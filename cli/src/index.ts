@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
 import {
@@ -202,6 +202,63 @@ async function main(): Promise<void> {
       if (args.includes("--help")) return printHelp("regen-infra");
       const { runRegenInfraCli } = await import("./deploy/regen-infra.js");
       await runRegenInfraCli(args.slice(1), MONOREPO_ROOT);
+      break;
+    }
+    case "signing": {
+      const sub = args[1];
+      if (sub === "--help" || sub === "help") {
+        console.log("Usage:");
+        console.log("  hatchkit signing org-init [--only apple,google,azure]");
+        console.log(
+          "  hatchkit signing apply [project-dir] [--platforms windows,ios,android] [--bundle-id <id>] [--app-name <name>] [--repo <owner/repo>] [--no-signing] [--dry-run]",
+        );
+        break;
+      }
+      if (sub === "org-init") {
+        const { runSigningOrgInit } = await import("./features/signing/index.js");
+        const only = (flagValue("--only") ?? "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => s === "apple" || s === "google" || s === "azure") as Array<
+          "apple" | "google" | "azure"
+        >;
+        await runSigningOrgInit(only.length > 0 ? { only } : {});
+        break;
+      }
+      if (sub === "apply" || sub === undefined) {
+        const { runSigningSetup } = await import("./features/signing/index.js");
+        const projectDir = resolve(args[2] ?? ".");
+        const noSigning = args.includes("--no-signing");
+        const dryRun = args.includes("--dry-run");
+        const platformsFlag = flagValue("--platforms");
+        const platforms = platformsFlag
+          ? (platformsFlag
+              .split(",")
+              .map((p) => p.trim())
+              .filter((p) => p === "windows" || p === "ios" || p === "android") as Array<
+              "windows" | "ios" | "android"
+            >)
+          : undefined;
+        const projectName = basename(projectDir);
+        const audit = await runSigningSetup({
+          mode: "add",
+          projectDir,
+          projectName,
+          platforms,
+          skip: noSigning,
+          dryRun,
+          bundleId: flagValue("--bundle-id"),
+          appName: flagValue("--app-name"),
+          ghRepoSlug: flagValue("--repo"),
+        });
+        if (!audit.ok) process.exitCode = 1;
+        break;
+      }
+      console.log("Usage:");
+      console.log("  hatchkit signing org-init [--only apple,google,azure]");
+      console.log(
+        "  hatchkit signing apply [project-dir] [--platforms windows,ios,android] [--no-signing] [--dry-run]",
+      );
       break;
     }
     case "doctor": {
@@ -906,6 +963,44 @@ async function handleAdd(): Promise<void> {
   //   hatchkit add raptor-runner               (prompts for services)
   //   hatchkit add raptor-runner all
   //   hatchkit add raptor-runner glitchtip,listmonk-ses
+  //   hatchkit add signing                     (apply signing to cwd)
+  //   hatchkit add <project> signing           (apply signing to project)
+
+  // Signing has a totally different shape from the env-var-emitting
+  // services routed through runProvision (workflow files, native
+  // config edits, ASC API). Special-case it BEFORE the dispatcher so
+  // the rest of the handler doesn't have to know about it.
+  const positional0 = args.slice(1).filter((a) => !a.startsWith("-"));
+  const wantsSigning = positional0[0] === "signing" || positional0[1] === "signing";
+  if (wantsSigning) {
+    const { runSigningSetup } = await import("./features/signing/index.js");
+    const projectDirArg = positional0[0] === "signing" ? undefined : positional0[0];
+    const projectDir = projectDirArg ? resolve(projectDirArg) : resolve(".");
+    const projectName = basename(projectDir);
+    const platformsFlag = flagValue("--platforms");
+    const platforms = platformsFlag
+      ? (platformsFlag
+          .split(",")
+          .map((p) => p.trim())
+          .filter((p) => p === "windows" || p === "ios" || p === "android") as Array<
+          "windows" | "ios" | "android"
+        >)
+      : undefined;
+    const audit = await runSigningSetup({
+      mode: "add",
+      projectDir,
+      projectName,
+      platforms,
+      skip: args.includes("--no-signing"),
+      dryRun: args.includes("--dry-run"),
+      bundleId: flagValue("--bundle-id"),
+      appName: flagValue("--app-name"),
+      ghRepoSlug: flagValue("--repo"),
+    });
+    if (!audit.ok) process.exitCode = 1;
+    return;
+  }
+
   const allServices: ProvisionService[] = [
     "glitchtip",
     "openpanel",
@@ -2520,6 +2615,14 @@ async function handleCreate(): Promise<void> {
     );
     // Note: file:// sends Origin: null — not safe with credentials. A
     // custom Electron protocol (app://-) is what needs to be trusted.
+
+    console.log(chalk.yellow("\n  Next (signing): wire installers + store uploads:"));
+    console.log(chalk.dim(`    cd ${config.name} && hatchkit signing apply`));
+    console.log(
+      chalk.dim(
+        "  (one-time prereq: hatchkit signing org-init — collects Apple .p12 / .p8, Play SA JSON, Azure SP)",
+      ),
+    );
   }
 
   console.log();
