@@ -27,6 +27,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install libsecret (keytar runtime dep)
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev
+
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
