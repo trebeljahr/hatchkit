@@ -248,20 +248,21 @@ async function runScaffoldSteps(
   }
 
   const wantsDesktop = config.features.includes("desktop");
+  const wantsTauri = config.features.includes("desktop-tauri");
   const wantsMobile = config.features.includes("mobile");
   const bundleId = config.name.replace(/[^a-z0-9]/gi, "").toLowerCase();
 
   // Port assignment — tested-free via isPortFree + persisted into the
   // CLI registry so subsequent scaffolds can't collide.
   const ports = await pickProjectPorts(getUsedPorts(), {
-    nativeHmr: wantsDesktop || wantsMobile,
+    nativeHmr: wantsDesktop || wantsTauri || wantsMobile,
   });
   const claimed = [ports.server, ports.client, ports.nativeHmr].filter(
     (p): p is number => p !== undefined,
   );
   addUsedPorts(claimed);
   reservedPorts.push(...claimed);
-  applyPorts(outputDir, ports, { wantsDesktop, wantsMobile });
+  applyPorts(outputDir, ports, { wantsDesktop, wantsTauri, wantsMobile });
   modifications.push(
     `assigned ports: server=${ports.server} client=${ports.client}` +
       (ports.nativeHmr ? ` native=${ports.nativeHmr}` : ""),
@@ -293,6 +294,20 @@ async function runScaffoldSteps(
   } else {
     replaceInFile(join(outputDir, "package.json"), "{{projectName}}", config.name);
     replaceInFile(join(outputDir, "package.json"), "{{bundleId}}", bundleId);
+  }
+
+  // Desktop (Tauri) strip / substitute
+  if (!wantsTauri) {
+    removeIfExists(join(outputDir, "src-tauri"));
+    removeIfExists(join(outputDir, ".github/workflows/tauri-release.yml"));
+    stripPackageJsonScripts(outputDir, ["tauri", "dev:tauri", "build:tauri", "icons:tauri"]);
+    stripPackageJsonDeps(outputDir, ["@tauri-apps/cli"]);
+    modifications.push("removed: desktop (Tauri) scaffolding");
+  } else {
+    for (const rel of ["src-tauri/tauri.conf.json", "src-tauri/Cargo.toml"]) {
+      replaceInFile(join(outputDir, rel), "{{projectName}}", config.name);
+      replaceInFile(join(outputDir, rel), "{{bundleId}}", bundleId);
+    }
   }
 
   // Mobile (Capacitor) strip / substitute
@@ -339,7 +354,7 @@ async function runScaffoldSteps(
     replaceInFile(join(outputDir, "capacitor.config.ts"), "{{bundleId}}", bundleId);
   }
 
-  if (wantsDesktop || wantsMobile) {
+  if (wantsDesktop || wantsTauri || wantsMobile) {
     flipNextConfigToStaticExport(outputDir);
     modifications.push("next.config.ts: output 'standalone' → 'export'");
   }
@@ -535,8 +550,15 @@ function scaffoldDryRun(config: ProjectConfig, outputDir: string): string[] {
   if (!config.features.includes("websocket")) actions.push("Remove WebSocket support");
   if (!config.features.includes("stripe")) actions.push("Remove Stripe integration");
   if (!config.features.includes("desktop")) actions.push("Remove desktop (Electron) scaffolding");
+  if (!config.features.includes("desktop-tauri")) {
+    actions.push("Remove desktop (Tauri) scaffolding");
+  }
   if (!config.features.includes("mobile")) actions.push("Remove mobile (Capacitor) scaffolding");
-  if (config.features.includes("desktop") || config.features.includes("mobile")) {
+  if (
+    config.features.includes("desktop") ||
+    config.features.includes("desktop-tauri") ||
+    config.features.includes("mobile")
+  ) {
     actions.push("Flip next.config.ts to output: 'export' (static)");
   }
   if (config.mlServices.length === 0) {

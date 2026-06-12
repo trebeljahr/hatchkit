@@ -63,11 +63,15 @@ export function updateEnvExample(outputDir: string, relPath: string, config: Pro
   // guidance in the starter's .env.example is replaced with a working
   // default the user only has to uncomment.
   const wantsDesktop = config.features.includes("desktop");
+  const wantsTauri = config.features.includes("desktop-tauri");
   const wantsMobile = config.features.includes("mobile");
-  if ((wantsDesktop || wantsMobile) && /^#\s*TRUSTED_ORIGINS=/m.test(content)) {
+  if ((wantsDesktop || wantsTauri || wantsMobile) && /^#\s*TRUSTED_ORIGINS=/m.test(content)) {
     const origins: string[] = [];
     if (wantsMobile) origins.push("capacitor://localhost", "https://localhost");
     if (wantsDesktop) origins.push("app://-");
+    // Tauri serves the bundled frontend from tauri://localhost on
+    // macOS/Linux and http://tauri.localhost on Windows.
+    if (wantsTauri) origins.push("tauri://localhost", "http://tauri.localhost");
     content = content.replace(/^#\s*TRUSTED_ORIGINS=.*$/m, `TRUSTED_ORIGINS=${origins.join(",")}`);
   }
 
@@ -125,13 +129,14 @@ export default nextConfig;
  *    • docker-compose.yml                      (server PORT env)
  *    • scripts/dev.mjs                         (fixed-mode defaults)
  *    • electron/main.ts                        (DEV_URL fallback)
+ *    • src-tauri/tauri.conf.json              (build.devUrl + beforeDevCommand PORT)
  *    • scripts/android-dev.sh + ios-dev.sh    (NEXT_PORT default)
  *    • package.json dev:desktop script        (Next port + wait-on)
  */
 export function applyPorts(
   outputDir: string,
   ports: ProjectPorts,
-  opts: { wantsDesktop: boolean; wantsMobile: boolean },
+  opts: { wantsDesktop: boolean; wantsTauri?: boolean; wantsMobile: boolean },
 ): void {
   const { server, client, nativeHmr } = ports;
 
@@ -216,6 +221,15 @@ export function applyPorts(
       /const DEV_URL = process\.env\.ELECTRON_DEV_URL \|\| "http:\/\/localhost:\d+"/,
       `const DEV_URL = process.env.ELECTRON_DEV_URL || "http://localhost:${nativeHmr}"`,
     ),
+  );
+
+  // Tauri: the dev URL + the PORT the beforeDevCommand starts the Next
+  // dev server on both live in tauri.conf.json. Same nativeHmr port as
+  // the electron DEV_URL rewrite above.
+  rewriteFile(join(outputDir, "src-tauri/tauri.conf.json"), (c) =>
+    c
+      .replace(/"devUrl":\s*"http:\/\/localhost:\d+"/, `"devUrl": "http://localhost:${nativeHmr}"`)
+      .replace(/"beforeDevCommand":\s*"PORT=\d+ /, `"beforeDevCommand": "PORT=${nativeHmr} `),
   );
 
   for (const script of ["scripts/android-dev.sh", "scripts/ios-dev.sh"]) {

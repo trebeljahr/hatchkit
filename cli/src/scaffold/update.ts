@@ -11,7 +11,7 @@
  *     into the project and merge package.json edits.
  *   • Refresh the manifest.
  *
- * Currently supported additions: `desktop`, `mobile`.
+ * Currently supported additions: `desktop`, `desktop-tauri`, `mobile`.
  * `websocket` / `stripe` / `analytics` / `s3` additions are flagged
  * as "manual" — the scaffold-time strip for those is coarse-grained
  * and re-adding them cleanly would need per-feature merge logic that
@@ -43,7 +43,7 @@ const MONOREPO_ROOT = resolve(join(import.meta.dirname, "..", "..", ".."));
 const STARTER_ROOT = join(MONOREPO_ROOT, "starter");
 
 /** Features that `update` knows how to layer onto an existing project. */
-const SUPPORTED_ADDITIONS: readonly Feature[] = ["desktop", "mobile"];
+const SUPPORTED_ADDITIONS: readonly Feature[] = ["desktop", "desktop-tauri", "mobile"];
 
 export interface UpdateResult {
   added: Feature[];
@@ -119,7 +119,15 @@ export async function runUpdate(
     }
   }
 
-  const allOptions: Feature[] = ["websocket", "stripe", "analytics", "s3", "desktop", "mobile"];
+  const allOptions: Feature[] = [
+    "websocket",
+    "stripe",
+    "analytics",
+    "s3",
+    "desktop",
+    "desktop-tauri",
+    "mobile",
+  ];
   const desired =
     options.presets?.desiredFeatures ??
     (await multiselect<Feature>({
@@ -178,8 +186,24 @@ export async function runUpdate(
 
   const current = new Set(manifest.features);
   const next = new Set(desired);
-  const added: Feature[] = [...next].filter((f) => !current.has(f));
+  let added: Feature[] = [...next].filter((f) => !current.has(f));
   const removed: Feature[] = [...current].filter((f) => !next.has(f));
+
+  // The two desktop wrappers are mutually exclusive — both wrap the same
+  // static client export. Reject whichever one this run tried to add.
+  let conflictSkipped: Feature[] = [];
+  if (
+    [...next, ...current].includes("desktop") &&
+    [...next, ...current].includes("desktop-tauri")
+  ) {
+    conflictSkipped = added.filter((f) => f === "desktop" || f === "desktop-tauri");
+    added = added.filter((f) => f !== "desktop" && f !== "desktop-tauri");
+    console.log(
+      chalk.yellow(
+        `\n  Pick one desktop wrapper: desktop (Electron) or desktop-tauri (Tauri + Steamworks), not both. Skipping: ${conflictSkipped.join(", ")}.`,
+      ),
+    );
+  }
 
   if (removed.length > 0) {
     console.log(
@@ -212,6 +236,9 @@ export async function runUpdate(
         if (feature === "desktop") {
           await addDesktop(projectDir, resolvedStarter, manifest);
           updatedFeatures.add("desktop");
+        } else if (feature === "desktop-tauri") {
+          await addDesktopTauri(projectDir, resolvedStarter, manifest);
+          updatedFeatures.add("desktop-tauri");
         } else if (feature === "mobile") {
           await addMobile(projectDir, resolvedStarter, manifest);
           updatedFeatures.add("mobile");
@@ -220,7 +247,10 @@ export async function runUpdate(
       actuallyAdded = added;
 
       // Pick a nativeHmr port if the project didn't have one and now needs one.
-      const needsNative = updatedFeatures.has("desktop") || updatedFeatures.has("mobile");
+      const needsNative =
+        updatedFeatures.has("desktop") ||
+        updatedFeatures.has("desktop-tauri") ||
+        updatedFeatures.has("mobile");
       if (needsNative && updatedPorts.nativeHmr === undefined) {
         const used = new Set(getUsedPorts());
         const nativeHmr = await pickPort(PORT_RANGES.nativeHmr[0], PORT_RANGES.nativeHmr[1], used);
@@ -228,6 +258,7 @@ export async function runUpdate(
         updatedPorts = { ...updatedPorts, nativeHmr };
         applyPorts(projectDir, updatedPorts, {
           wantsDesktop: updatedFeatures.has("desktop"),
+          wantsTauri: updatedFeatures.has("desktop-tauri"),
           wantsMobile: updatedFeatures.has("mobile"),
         });
         console.log(chalk.dim(`  Assigned native HMR port: ${nativeHmr}`));
@@ -306,7 +337,12 @@ export async function runUpdate(
     }
   }
 
-  return { added: actuallyAdded, skipped: skippedAdditions, removed, localDevEnabled };
+  return {
+    added: actuallyAdded,
+    skipped: [...skippedAdditions, ...conflictSkipped],
+    removed,
+    localDevEnabled,
+  };
 }
 
 /** True when the project's recorded email intent points at the
@@ -385,6 +421,65 @@ async function addDesktop(
       projectDir,
       "typecheck",
       `${projectPkg.scripts.typecheck} && pnpm typecheck:electron`,
+    );
+  }
+}
+
+/** Copy desktop (Tauri) scaffolding from the starter + apply
+ *  project-name substitutions. Assumes the feature isn't already
+ *  present; re-runs are no-ops (copyFromStarter skips existing files,
+ *  placeholder rewrites find nothing to replace). */
+async function addDesktopTauri(
+  projectDir: string,
+  resolvedStarter: string,
+  manifest: ProjectManifest,
+): Promise<void> {
+  console.log(chalk.dim("\n  Adding desktop (Tauri + Steamworks)..."));
+  copyFromStarter(resolvedStarter, projectDir, "src-tauri");
+  copyFromStarter(resolvedStarter, projectDir, ".github/workflows/tauri-release.yml");
+
+  // Substitute project identifiers into the Tauri config + crate.
+  const bundleId = manifest.name.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  for (const rel of ["src-tauri/tauri.conf.json", "src-tauri/Cargo.toml"]) {
+    rewriteFile(join(projectDir, rel), (c) =>
+      c.replaceAll("{{projectName}}", manifest.name).replaceAll("{{bundleId}}", bundleId),
+    );
+  }
+
+  // Merge package.json scripts + devDeps.
+  const starterPkg = readJson(join(resolvedStarter, "package.json"));
+  const projectPkgPath = join(projectDir, "package.json");
+  const projectPkg = readJson(projectPkgPath);
+  const TAURI_SCRIPTS = ["tauri", "dev:tauri", "build:tauri", "icons:tauri"];
+  const TAURI_DEPS = ["@tauri-apps/cli"];
+
+  projectPkg.scripts = projectPkg.scripts ?? {};
+  for (const name of TAURI_SCRIPTS) {
+    if (starterPkg.scripts?.[name]) projectPkg.scripts[name] = starterPkg.scripts[name];
+  }
+
+  projectPkg.devDependencies = projectPkg.devDependencies ?? {};
+  for (const name of TAURI_DEPS) {
+    if (starterPkg.devDependencies?.[name]) {
+      projectPkg.devDependencies[name] = starterPkg.devDependencies[name];
+    }
+  }
+
+  writeFileSync(projectPkgPath, JSON.stringify(projectPkg, null, 2) + "\n", "utf-8");
+
+  // If the project already has a nativeHmr port (e.g. mobile was added
+  // first), retarget the freshly-copied tauri.conf.json at it now — the
+  // applyPorts pass in runUpdate only fires when the port is newly
+  // assigned.
+  const nativeHmr = manifest.ports.nativeHmr;
+  if (nativeHmr !== undefined) {
+    rewriteFile(join(projectDir, "src-tauri/tauri.conf.json"), (c) =>
+      c
+        .replace(
+          /"devUrl":\s*"http:\/\/localhost:\d+"/,
+          `"devUrl": "http://localhost:${nativeHmr}"`,
+        )
+        .replace(/"beforeDevCommand":\s*"PORT=\d+ /, `"beforeDevCommand": "PORT=${nativeHmr} `),
     );
   }
 }

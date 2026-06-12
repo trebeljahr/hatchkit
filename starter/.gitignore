@@ -19,6 +19,13 @@ build/icon.icns
 build/icon.ico
 build/icons/
 
+# Tauri build output (source is src-tauri/; target/ and gen/ are generated)
+src-tauri/target/
+src-tauri/gen/
+# macOS-style global gitignores often contain `Icon?`, which also matches
+# the src-tauri/icons/ directory — re-include the Tauri icon set explicitly.
+!src-tauri/icons/
+
 # Capacitor-generated native projects (created by `cap add ios|android`)
 # Comment these out if you want to commit the native Xcode / Gradle projects.
 ios/

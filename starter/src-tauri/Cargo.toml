@@ -1,0 +1,25 @@
+[package]
+name = "{{projectName}}"
+version = "0.1.0"
+description = "{{projectName}} desktop app (Tauri)"
+authors = ["you"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Steamworks bindings — only compiled when the `steam` cargo feature is
+# enabled. Shipping a Steam build requires the Steamworks SDK
+# redistributables (steam_api64.dll / libsteam_api.dylib / libsteam_api.so)
+# next to the binary: https://partner.steamgames.com/doc/sdk
+steamworks = { version = "0.11", optional = true }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+# Enable with: pnpm tauri build -- --features steam
+steam = ["dep:steamworks"]

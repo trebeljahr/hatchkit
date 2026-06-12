@@ -1,0 +1,224 @@
+name: Tauri Release
+
+# Triggered by pushing a tag like v0.1.0 or manual dispatch.
+# Builds the Tauri desktop app per platform. Signing/notarization steps
+# run only when the matching secrets are configured:
+#
+# macOS (signed + notarized):
+#   APPLE_TEAM_ID                     — 10-char team identifier
+#   APPLE_DEVELOPER_ID_CERT_BASE64    — base64 of "Developer ID Application" .p12
+#   APPLE_DEVELOPER_ID_CERT_PASSWORD  — password for that .p12
+#   APPLE_DEVELOPER_ID_IDENTITY       — e.g. "Developer ID Application: Acme Inc (TEAMID1234)"
+#   APPLE_KEYCHAIN_PASSWORD           — locks the temp keychain
+#   APPSTORE_API_KEY_ID               — App Store Connect API key (notarization)
+#   APPSTORE_API_ISSUER_ID
+#   APPSTORE_API_KEY_P8_BASE64
+#
+# Windows (Azure Trusted Signing):
+#   AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
+#   AZURE_TS_ACCOUNT / AZURE_TS_PROFILE / AZURE_TS_ENDPOINT
+#   plus a "signCommand" entry under bundle.windows in tauri.conf.json —
+#   `hatchkit signing apply` wires both ends.
+#
+# All platforms:
+#   NEXT_PUBLIC_API_URL               — API URL baked into the static client export
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_IDENTITY }}
+      APPLE_API_ISSUER: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+      APPLE_API_KEY: ${{ secrets.APPSTORE_API_KEY_ID }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/target
+          key: cargo-macos-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Import Developer ID certificate
+        if: env.APPLE_TEAM_ID != ''
+        env:
+          CERT_B64: ${{ secrets.APPLE_DEVELOPER_ID_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/macos-build.keychain"
+          echo -n "$CERT_B64" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Write ASC API key to disk for notarization
+        if: env.APPLE_TEAM_ID != ''
+        env:
+          API_KEY_B64: ${{ secrets.APPSTORE_API_KEY_P8_BASE64 }}
+          API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+        run: |
+          set -euo pipefail
+          KEY_DIR="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$KEY_DIR"
+          echo -n "$API_KEY_B64" | base64 --decode > "$KEY_DIR/AuthKey_${API_KEY_ID}.p8"
+          echo "APPLE_API_KEY_PATH=$KEY_DIR/AuthKey_${API_KEY_ID}.p8" >> "$GITHUB_ENV"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build (Tauri, universal binary)
+        env:
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_DEVELOPER_ID_CERT_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+        run: pnpm tauri build --target universal-apple-darwin
+
+      - name: Verify signature + notarization
+        if: env.APPLE_TEAM_ID != ''
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -maxdepth 2 -name "*.app" | head -1)
+          DMG_PATH=$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -maxdepth 1 -name "*.dmg" | head -1)
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          spctl -a -vv -t install "$APP_PATH" || echo "::warning::spctl check failed — notarization stapling may be incomplete"
+          xcrun stapler validate "$DMG_PATH" || echo "::warning::stapler validate failed on .dmg"
+
+      - name: Clean up keychain + API key
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/macos-build.keychain" || true
+          rm -rf "$HOME/.appstoreconnect" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tauri-macos
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_CODE_SIGNING_DLIB: ${{ github.workspace }}\dlib\bin\x64\Azure.CodeSigning.Dlib.dll
+      AZURE_CODE_SIGNING_METADATA: ${{ github.workspace }}\dlib\metadata.json
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/target
+          key: cargo-windows-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Install Trusted Signing client (dlib)
+        if: env.AZURE_TENANT_ID != ''
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dlib | Out-Null
+          nuget install Microsoft.Trusted.Signing.Client -Version 1.0.60 -OutputDirectory dlib-pkg -ExcludeVersion
+          Copy-Item -Recurse -Force dlib-pkg\Microsoft.Trusted.Signing.Client\bin dlib\
+          @"
+          {
+            "Endpoint": "${{ secrets.AZURE_TS_ENDPOINT }}",
+            "CodeSigningAccountName": "${{ secrets.AZURE_TS_ACCOUNT }}",
+            "CertificateProfileName": "${{ secrets.AZURE_TS_PROFILE }}"
+          }
+          "@ | Out-File -FilePath dlib\metadata.json -Encoding utf8
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build (Tauri)
+        env:
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+        run: pnpm tauri build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tauri-windows
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/target
+          key: cargo-linux-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build (Tauri)
+        env:
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+        run: pnpm tauri build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tauri-linux
+          path: |
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error

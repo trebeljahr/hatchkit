@@ -86,12 +86,18 @@ pnpm run test:e2e                     # Playwright E2E tests
 pnpm run build                        # build all packages
 ```
 
-## Desktop (Electron) + Mobile (Capacitor)
+## Desktop (Electron or Tauri) + Mobile (Capacitor)
 
-Both targets wrap the Next.js client as a **static export** (`output: "export"`).
+All native targets wrap the Next.js client as a **static export** (`output: "export"`).
 The Express server is always remote — the client talks to it over HTTPS.
 
-### Desktop
+There are two desktop wrappers — a project has at most one:
+
+- **Electron** (`desktop` feature) — the default for apps.
+- **Tauri** (`desktop-tauri` feature) — for games: much smaller binaries,
+  Steamworks integration via the Rust side. See `src-tauri/README.md`.
+
+### Desktop (Electron)
 
 ```bash
 pnpm dev:desktop                      # Next dev + Electron window, HMR recovery
@@ -103,6 +109,22 @@ pnpm icons:desktop                    # regenerate icns/ico/png set (electron-ic
 Replace `build/icon.png` with a 512×512 logo before shipping.
 Bundle config lives in root `package.json` `"build"` (electron-builder).
 Electron IPC bridge: `electron/preload.ts` exposes `window.electronAPI`.
+
+### Desktop (Tauri + Steamworks)
+
+Requires the Rust toolchain (https://rustup.rs).
+
+```bash
+pnpm dev:tauri                        # Next dev + Tauri window, HMR
+pnpm build:tauri                      # static export + native bundle (dmg/msi/AppImage)
+pnpm icons:tauri                      # regenerate src-tauri/icons/ from build/icon.png
+pnpm tauri build -- --features steam  # Steam-enabled build (needs Steamworks SDK redistributable)
+```
+
+Bundle config lives in `src-tauri/tauri.conf.json` (strict JSON — no
+comments; caveats documented in `src-tauri/README.md`). Steam init is
+gated behind the `steam` cargo feature in `src-tauri/src/main.rs` — set
+`STEAM_APP_ID` there before shipping.
 
 ### Mobile
 
@@ -132,6 +154,10 @@ TRUSTED_ORIGINS=capacitor://localhost,https://localhost
 Electron `file://` sends `Origin: null` and can't be trusted with
 credentials. Register a custom protocol in `electron/main.ts` and add
 it (e.g. `app://-`) instead.
+
+Tauri serves the bundled frontend from `tauri://localhost` (macOS/Linux)
+and `http://tauri.localhost` (Windows) — both must be in
+`TRUSTED_ORIGINS` for cookie auth to work.
 
 ### Static export caveats
 

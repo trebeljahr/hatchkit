@@ -2602,7 +2602,22 @@ async function handleCreate(): Promise<void> {
     console.log(chalk.dim("    pnpm icons:desktop     # cross-platform (icon-gen)"));
   }
 
-  if (config.features.includes("desktop") || config.features.includes("mobile")) {
+  if (config.features.includes("desktop-tauri")) {
+    console.log(
+      chalk.yellow("\n  Next (desktop-tauri): replace build/icon.png with a 512×512 logo, then:"),
+    );
+    console.log(chalk.dim("    pnpm icons:tauri       # regenerate src-tauri/icons/"));
+    console.log(chalk.dim("    pnpm dev:tauri         # needs the Rust toolchain (rustup.rs)"));
+    console.log(
+      chalk.dim("  Steam builds: pnpm tauri build -- --features steam  (see src-tauri/README.md)"),
+    );
+  }
+
+  if (
+    config.features.includes("desktop") ||
+    config.features.includes("desktop-tauri") ||
+    config.features.includes("mobile")
+  ) {
     console.log(
       chalk.yellow(
         "\n  Server CORS: TRUSTED_ORIGINS is already set in .env.example for native clients.",
@@ -3039,7 +3054,9 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("What it does:")}
     Reads the project's .hatchkit.json manifest, lets you pick a new
     feature set, and copies the additive pieces from the starter.
-    Currently supported additions: ${chalk.cyan("desktop")}, ${chalk.cyan("mobile")}.
+    Currently supported additions: ${chalk.cyan("desktop")}, ${chalk.cyan("desktop-tauri")}, ${chalk.cyan("mobile")}.
+    The two desktop wrappers are mutually exclusive — pick Electron
+    (${chalk.cyan("desktop")}) or Tauri + Steamworks (${chalk.cyan("desktop-tauri")}, for games).
 
   ${chalk.bold("Removal is not supported.")} Removing features could delete
     user code — remove manually + edit the manifest.

@@ -222,6 +222,87 @@ results.mobile = await run("mobile only", "my-cool-app", ["mobile"], (d) => {
   ];
 });
 
+results.desktopTauri = await run(
+  "desktop-tauri + mobile (game stack)",
+  "dino-game",
+  ["mobile", "desktop-tauri"],
+  (d) => {
+    const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
+    const manifest = JSON.parse(readFileSync(join(d, ".hatchkit.json"), "utf-8"));
+    const tauriConfRaw = readFileSync(join(d, "src-tauri/tauri.conf.json"), "utf-8");
+    const cargoToml = readFileSync(join(d, "src-tauri/Cargo.toml"), "utf-8");
+    const mainRs = readFileSync(join(d, "src-tauri/src/main.rs"), "utf-8");
+    const serverEnv = readFileSync(join(d, "packages/server/.env.example"), "utf-8");
+    const nextCfg = readFileSync(join(d, "packages/client/next.config.ts"), "utf-8");
+    let tauriConf: Record<string, any> | undefined;
+    try {
+      tauriConf = JSON.parse(tauriConfRaw);
+    } catch {
+      tauriConf = undefined;
+    }
+    const nativeHmr = manifest.ports?.nativeHmr;
+    return [
+      ["src-tauri/ kept", existsSync(join(d, "src-tauri"))],
+      ["tauri workflow kept", existsSync(join(d, ".github/workflows/tauri-release.yml"))],
+      ["electron/ removed (tauri is the desktop wrapper)", !existsSync(join(d, "electron"))],
+      ["desktop workflow removed", !existsSync(join(d, ".github/workflows/desktop-release.yml"))],
+      ["tauri.conf.json is valid JSON", tauriConf !== undefined],
+      ["tauri.conf.json placeholders substituted", !tauriConfRaw.includes("{{")],
+      ["productName has display name", tauriConf?.productName === "dino-game"],
+      ["identifier sanitized (no hyphens)", tauriConf?.identifier === "com.example.dinogame"],
+      ["window title matches productName", tauriConf?.app?.windows?.[0]?.title === "dino-game"],
+      ["nativeHmr port assigned", typeof nativeHmr === "number"],
+      [
+        "devUrl retargeted at nativeHmr port",
+        tauriConf?.build?.devUrl === `http://localhost:${nativeHmr}`,
+      ],
+      [
+        "beforeDevCommand PORT retargeted at nativeHmr port",
+        typeof tauriConf?.build?.beforeDevCommand === "string" &&
+          tauriConf.build.beforeDevCommand.startsWith(`PORT=${nativeHmr} `),
+      ],
+      ["frontendDist points at client static export", tauriConf?.build?.frontendDist === "../packages/client/out"],
+      ["Cargo.toml crate named after project", /^name = "dino-game"$/m.test(cargoToml)],
+      ["Cargo.toml has optional steamworks dep", /steamworks = \{[^}]*optional = true/.test(cargoToml)],
+      ["Cargo.toml steam feature off by default", /^default = \["custom-protocol"\]$/m.test(cargoToml)],
+      ["main.rs gates Steam init behind cfg(feature)", mainRs.includes('#[cfg(feature = "steam")]')],
+      ["main.rs has STEAM_APP_ID placeholder", mainRs.includes("STEAM_APP_ID")],
+      ["icons shipped (icon.icns)", statSync(join(d, "src-tauri/icons/icon.icns")).size > 1000],
+      ["entitlements.plist shipped", existsSync(join(d, "src-tauri/entitlements.plist"))],
+      ["capabilities/default.json shipped", existsSync(join(d, "src-tauri/capabilities/default.json"))],
+      ["dev:tauri script present", pkg.scripts?.["dev:tauri"] === "tauri dev"],
+      ["build:tauri script present", pkg.scripts?.["build:tauri"] === "tauri build"],
+      ["icons:tauri script present", !!pkg.scripts?.["icons:tauri"]],
+      ["@tauri-apps/cli devDep present", !!pkg.devDependencies?.["@tauri-apps/cli"]],
+      ["no electron deps", !pkg.devDependencies?.electron],
+      ["capacitor deps present (mobile selected)", !!pkg.dependencies?.["@capacitor/core"]],
+      [
+        "TRUSTED_ORIGINS includes tauri://localhost",
+        /^TRUSTED_ORIGINS=.*tauri:\/\/localhost/m.test(serverEnv),
+      ],
+      [
+        "TRUSTED_ORIGINS includes http://tauri.localhost (Windows)",
+        /^TRUSTED_ORIGINS=.*http:\/\/tauri\.localhost/m.test(serverEnv),
+      ],
+      ["next.config flipped to export", nextCfg.includes('output: "export"')],
+      [
+        "manifest records desktop-tauri feature",
+        Array.isArray(manifest.features) && manifest.features.includes("desktop-tauri"),
+      ],
+    ];
+  },
+);
+
+results.tauriStripped = await run("web-only strips tauri", "no-tauri-app", ["websocket"], (d) => {
+  const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
+  return [
+    ["src-tauri/ removed", !existsSync(join(d, "src-tauri"))],
+    ["tauri workflow removed", !existsSync(join(d, ".github/workflows/tauri-release.yml"))],
+    ["no tauri scripts", !pkg.scripts?.["dev:tauri"] && !pkg.scripts?.["build:tauri"] && !pkg.scripts?.tauri],
+    ["no @tauri-apps/cli devDep", !pkg.devDependencies?.["@tauri-apps/cli"]],
+  ];
+});
+
 results.serverOnly = await run(
   "surfaces: server-only",
   "api-only",
@@ -694,6 +775,107 @@ console.log("\n── update: manifest round-trip for web-only project ───
   } finally {
     rmSync(d, { recursive: true, force: true });
   }
+}
+
+// Update: add desktop-tauri to a web-only project, then verify the
+// re-run is a no-op and the Electron/Tauri conflict is rejected.
+console.log("\n── update: add desktop-tauri (+ idempotent re-run, wrapper conflict) ─────────");
+{
+  const { runUpdate } = await import("./src/scaffold/update.js");
+  const { readManifest } = await import("./src/scaffold/manifest.js");
+  const d = mkdtempSync(join(tmpdir(), "scaffold-update-tauri-"));
+  try {
+    await scaffoldApp(cfg("tauri-add-test", ["websocket"]), d);
+
+    const first = await runUpdate(d, {
+      presets: {
+        desiredFeatures: ["websocket", "desktop-tauri"],
+        confirmAddFeatures: true,
+        enableLocalDev: false,
+      },
+    });
+    const m1 = readManifest(d);
+    const pkg1 = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
+    const tauriConfRaw = readFileSync(join(d, "src-tauri/tauri.conf.json"), "utf-8");
+    const tauriConf = JSON.parse(tauriConfRaw);
+    const cargoToml = readFileSync(join(d, "src-tauri/Cargo.toml"), "utf-8");
+
+    // Second run with the same desired set must be a no-op.
+    const second = await runUpdate(d, {
+      presets: {
+        desiredFeatures: ["websocket", "desktop-tauri"],
+        confirmAddFeatures: true,
+        enableLocalDev: false,
+      },
+    });
+    const tauriConfRaw2 = readFileSync(join(d, "src-tauri/tauri.conf.json"), "utf-8");
+
+    // Conflict: Electron on top of Tauri must be rejected, not added.
+    const conflict = await runUpdate(d, {
+      presets: {
+        desiredFeatures: ["websocket", "desktop-tauri", "desktop"],
+        confirmAddFeatures: true,
+        enableLocalDev: false,
+      },
+    });
+    const m3 = readManifest(d);
+
+    const checks: Check[] = [
+      ["first run reports desktop-tauri added", first.added.includes("desktop-tauri")],
+      ["src-tauri/ copied", existsSync(join(d, "src-tauri/tauri.conf.json"))],
+      ["tauri workflow copied", existsSync(join(d, ".github/workflows/tauri-release.yml"))],
+      ["manifest gains desktop-tauri", m1?.features.includes("desktop-tauri") === true],
+      ["manifest gains nativeHmr port", typeof m1?.ports.nativeHmr === "number"],
+      ["placeholders substituted", !tauriConfRaw.includes("{{")],
+      ["productName substituted", tauriConf.productName === "tauri-add-test"],
+      ["identifier sanitized", tauriConf.identifier === "com.example.tauriaddtest"],
+      [
+        "devUrl retargeted at nativeHmr port",
+        tauriConf.build?.devUrl === `http://localhost:${m1?.ports.nativeHmr}`,
+      ],
+      ["Cargo.toml crate renamed", /^name = "tauri-add-test"$/m.test(cargoToml)],
+      ["dev:tauri script merged", pkg1.scripts?.["dev:tauri"] === "tauri dev"],
+      ["@tauri-apps/cli devDep merged", !!pkg1.devDependencies?.["@tauri-apps/cli"]],
+      ["re-run adds nothing", second.added.length === 0],
+      ["re-run leaves tauri.conf.json untouched", tauriConfRaw2 === tauriConfRaw],
+      ["conflict run adds nothing", conflict.added.length === 0],
+      ["conflict run reports desktop skipped", conflict.skipped.includes("desktop")],
+      ["electron/ not copied by conflict run", !existsSync(join(d, "electron"))],
+      ["manifest keeps desktop-tauri only", m3?.features.includes("desktop") === false],
+    ];
+    let ok = true;
+    for (const [n, c] of checks) {
+      console.log(`  ${c ? "✓" : "✗"} ${n}`);
+      if (!c) ok = false;
+    }
+    results.updateDesktopTauri = ok;
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+}
+
+// Non-interactive create: both desktop wrappers in --features must be
+// rejected before any scaffolding happens.
+console.log("\n── create: desktop + desktop-tauri preset conflict rejected ─────────");
+{
+  const { collectProjectConfig } = await import("./src/prompts.js");
+  let threw = false;
+  try {
+    await collectProjectConfig({
+      nonInteractive: true,
+      presets: {
+        name: "conflict-app",
+        domain: "conflict-app.example.com",
+        features: ["desktop", "desktop-tauri"],
+        createGithubRepo: false,
+        runDeployment: false,
+      },
+    });
+  } catch (err) {
+    threw = (err as Error).message.includes("Pick one desktop wrapper");
+  }
+  console.log(`  ${threw ? "✓" : "✗"} non-interactive conflict throws`);
+  results.desktopWrapperConflict = threw;
 }
 
 // Server add: retrofit a client-only scaffold back to full-stack

@@ -333,6 +333,7 @@ function dropWorkspaceEntry(outputDir: string, name: string): void {
 
 const CLIENT_SIDE_TOP_LEVEL = [
   "electron",
+  "src-tauri",
   "ios",
   "android",
   "capacitor.config.ts",
@@ -342,6 +343,7 @@ const CLIENT_SIDE_TOP_LEVEL = [
   "e2e",
   "playwright.config.ts",
   ".github/workflows/desktop-release.yml",
+  ".github/workflows/tauri-release.yml",
   ".github/workflows/mobile-release.yml",
 ];
 
@@ -354,6 +356,10 @@ const NATIVE_SCRIPTS = [
   "electron:preview",
   "typecheck:electron",
   "icons:desktop",
+  "tauri",
+  "dev:tauri",
+  "build:tauri",
+  "icons:tauri",
   "itch:push:mac",
   "itch:push:win",
   "itch:push:linux",
