@@ -28,6 +28,13 @@ import { multiselect } from "../utils/multiselect.js";
 import { PORT_RANGES, pickPort } from "../utils/ports.js";
 import { getCliVersion } from "../utils/version.js";
 import {
+  CLIENT_DOCKERFILE_REL_PATH,
+  CLIENT_WORKFLOW_REL_PATH,
+  stripComposeClientRuntimeNextPublic,
+  upgradeClientDockerfile,
+  upgradeWorkflowClientBuildArgs,
+} from "./client-build-args.js";
+import {
   MANIFEST_FILENAME,
   type ProjectManifest,
   readManifest,
@@ -117,6 +124,40 @@ export async function runUpdate(
         ),
       );
     }
+  }
+
+  // Retrofit the client image's NEXT_PUBLIC_* build-arg wiring for
+  // projects scaffolded before it landed. Next.js inlines NEXT_PUBLIC_*
+  // at BUILD time; older scaffolds supplied them only as runtime env on
+  // the deployed container, which baked the localhost fallback into the
+  // shipped browser bundle (production auth silently pointed every
+  // visitor at their own machine). Same no-flag rationale as the
+  // OWNER/REPO retrofit above. Idempotent — all three transforms no-op
+  // once the files carry the current shape.
+  const buildArgRetrofits: Array<[rel: string, fn: (c: string) => string]> = [
+    [CLIENT_DOCKERFILE_REL_PATH, upgradeClientDockerfile],
+    [CLIENT_WORKFLOW_REL_PATH, (c) => upgradeWorkflowClientBuildArgs(c, manifest.domain)],
+    ["docker-compose.yml", stripComposeClientRuntimeNextPublic],
+  ];
+  let buildArgsRetrofitted = false;
+  for (const [rel, fn] of buildArgRetrofits) {
+    const path = join(projectDir, rel);
+    if (!existsSync(path)) continue;
+    const before = readFileSync(path, "utf-8");
+    const after = fn(before);
+    if (after !== before) {
+      writeFileSync(path, after, "utf-8");
+      buildArgsRetrofitted = true;
+      console.log(chalk.green(`  ✓ ${rel}: client NEXT_PUBLIC_* build-arg wiring updated`));
+    }
+  }
+  if (buildArgsRetrofitted) {
+    console.log(
+      chalk.yellow(
+        "  ⚠ Commit + push so CI rebuilds the client image — NEXT_PUBLIC_* values\n" +
+          "    are baked into the browser bundle at image build time.",
+      ),
+    );
   }
 
   const allOptions: Feature[] = [

@@ -44,12 +44,10 @@ services:
       # Pin client port — Coolify's app-level PORT (set for the server)
       # would otherwise bleed into every service.
       PORT: "3000"
-      NEXT_PUBLIC_API_URL: ${API_URL}
-      NEXT_PUBLIC_WS_URL: ${WS_URL:-}
-      NEXT_PUBLIC_OPENPANEL_CLIENT_ID: ${OPENPANEL_CLIENT_ID:-}
-      NEXT_PUBLIC_PLAUSIBLE_DOMAIN: ${PLAUSIBLE_DOMAIN:-}
-      NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL: ${PLAUSIBLE_SCRIPT_URL:-}
-      NEXT_PUBLIC_SENTRY_DSN: ${CLIENT_SENTRY_DSN:-}
+      # Deliberately NO NEXT_PUBLIC_* here: Next.js inlines those into
+      # the browser bundle when the image is BUILT, so runtime env on
+      # this prebuilt container cannot affect them. They are passed as
+      # Docker build args in .github/workflows/build-and-deploy.yml.
     restart: unless-stopped
 
   mongo:

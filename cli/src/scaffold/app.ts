@@ -31,6 +31,7 @@ import type { MlService, ProjectConfig } from "../prompts.js";
 import { explainFsError } from "../utils/errors.js";
 import { type ProjectPorts, pickProjectPorts } from "../utils/ports.js";
 import { getCliVersion } from "../utils/version.js";
+import { applyWorkflowClientBuildArgUrls } from "./client-build-args.js";
 import { type DotenvxSeedResult, seedDotenvxProduction } from "./dotenvx.js";
 import { MANIFEST_FILENAME, toManifest, writeManifest } from "./manifest.js";
 import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
@@ -236,6 +237,16 @@ async function runScaffoldSteps(
   updateEnvExample(outputDir, "packages/server/.env.example", config);
   updateEnvExample(outputDir, "packages/client/.env.example", config);
   modifications.push("updated .env.example files with production URLs");
+
+  // CI workflow: bake the literal production URLs into the client
+  // image's build-args. Next.js inlines NEXT_PUBLIC_* at build time, so
+  // these MUST be present when CI builds the image — runtime env on the
+  // deployed container can't reach browser code.
+  if (applyWorkflowClientBuildArgUrls(outputDir, config.domain)) {
+    modifications.push(
+      `build-and-deploy.yml: client build-args → https://${config.domain} (NEXT_PUBLIC_* baked at image build)`,
+    );
+  }
 
   // Feature-flag removal
   if (!config.features.includes("websocket")) {

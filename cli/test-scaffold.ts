@@ -114,6 +114,9 @@ results.minimal = await run("minimal (no flags)", "plain-app", [], (d) => {
   const serverEnv = readFileSync(join(d, "packages/server/.env.example"), "utf-8");
   const clientEnv = readFileSync(join(d, "packages/client/.env.example"), "utf-8");
   const serverEnvDev = readFileSync(join(d, "packages/server/.env.development"), "utf-8");
+  const ciWorkflow = readFileSync(join(d, ".github/workflows/build-and-deploy.yml"), "utf-8");
+  const clientDockerfile = readFileSync(join(d, "packages/client/Dockerfile"), "utf-8");
+  const compose = readFileSync(join(d, "docker-compose.yml"), "utf-8");
   const gitignore = existsSync(join(d, ".gitignore"))
     ? readFileSync(join(d, ".gitignore"), "utf-8")
     : "";
@@ -138,16 +141,16 @@ results.minimal = await run("minimal (no flags)", "plain-app", [], (d) => {
       /^FRONTEND_URL=https:\/\/plain-app\.example\.com$/m.test(serverEnv),
     ],
     [
-      "server .env.example BETTER_AUTH_URL rewritten to api subdomain",
-      /^BETTER_AUTH_URL=https:\/\/api\.plain-app\.example\.com$/m.test(serverEnv),
+      "server .env.example BETTER_AUTH_URL rewritten to bare domain (single-domain routing)",
+      /^BETTER_AUTH_URL=https:\/\/plain-app\.example\.com$/m.test(serverEnv),
     ],
     [
-      "client .env.example NEXT_PUBLIC_API_URL rewritten",
-      /^NEXT_PUBLIC_API_URL=https:\/\/api\.plain-app\.example\.com$/m.test(clientEnv),
+      "client .env.example NEXT_PUBLIC_API_URL rewritten to bare domain",
+      /^NEXT_PUBLIC_API_URL=https:\/\/plain-app\.example\.com$/m.test(clientEnv),
     ],
     [
-      "client .env.example NEXT_PUBLIC_WS_URL uses wss",
-      /^NEXT_PUBLIC_WS_URL=wss:\/\/api\.plain-app\.example\.com$/m.test(clientEnv),
+      "client .env.example NEXT_PUBLIC_WS_URL uses wss on bare domain",
+      /^NEXT_PUBLIC_WS_URL=wss:\/\/plain-app\.example\.com$/m.test(clientEnv),
     ],
     [
       ".env.development untouched (still localhost)",
@@ -157,6 +160,27 @@ results.minimal = await run("minimal (no flags)", "plain-app", [], (d) => {
       "TRUSTED_ORIGINS stays commented out (no native clients)",
       /^#\s*TRUSTED_ORIGINS=/m.test(serverEnv),
     ],
+    // The client image bakes NEXT_PUBLIC_* at BUILD time — the CI
+    // workflow must carry the literal production URLs as build args,
+    // the Dockerfile must accept them, and the compose file must NOT
+    // pretend runtime env reaches the browser bundle.
+    [
+      "CI workflow client build-args carry literal API URL",
+      /^\s*NEXT_PUBLIC_API_URL=https:\/\/plain-app\.example\.com$/m.test(ciWorkflow),
+    ],
+    [
+      "CI workflow client build-args carry literal WS URL",
+      /^\s*NEXT_PUBLIC_WS_URL=wss:\/\/plain-app\.example\.com$/m.test(ciWorkflow),
+    ],
+    [
+      "client Dockerfile declares NEXT_PUBLIC_API_URL build arg",
+      clientDockerfile.includes("ARG NEXT_PUBLIC_API_URL"),
+    ],
+    [
+      "client Dockerfile sets HATCHKIT_IMAGE_BUILD guard",
+      clientDockerfile.includes("HATCHKIT_IMAGE_BUILD=1"),
+    ],
+    ["docker-compose has no runtime NEXT_PUBLIC_*", !/^\s*NEXT_PUBLIC_/m.test(compose)],
   ];
 });
 
@@ -2911,6 +2935,105 @@ results.cloudflareZoneResolver = await (async () => {
     ],
     ["delegated subdomain zone wins when present", exact?.name === "connection.example.com"],
     ["wildcard hostname strips leading star", wildcard?.name === "example.com"],
+  ];
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  return ok;
+})();
+
+// Pure-transform coverage for the regen-infra / rename-domain upgrade
+// path: projects scaffolded before the client build-args existed must
+// gain the Dockerfile ARG/ENV block and the workflow build-args, and
+// re-running the transforms must be a no-op.
+results.clientBuildArgUpgrades = await (async () => {
+  console.log(`\n── client build-arg upgrade transforms ─────────────`);
+  const {
+    setWorkflowClientBuildArgUrls,
+    stripComposeClientRuntimeNextPublic,
+    upgradeClientDockerfile,
+    upgradeWorkflowClientBuildArgs,
+  } = await import("./src/scaffold/client-build-args.js");
+
+  const oldDockerfile = [
+    "FROM deps AS build",
+    "COPY packages/client packages/client",
+    "RUN pnpm --filter @starter/shared run build",
+    "RUN pnpm --filter @starter/client run build",
+    "",
+  ].join("\n");
+  const upgradedDockerfile = upgradeClientDockerfile(oldDockerfile);
+
+  const oldWorkflow = [
+    "      - uses: docker/build-push-action@v6",
+    "        with:",
+    "          context: .",
+    "          file: packages/client/Dockerfile",
+    "          push: true",
+    "          tags: |",
+    "            ghcr.io/owner/repo-client:main",
+    "",
+  ].join("\n");
+  const upgradedWorkflow = upgradeWorkflowClientBuildArgs(oldWorkflow, "shiny.example.com");
+
+  const compose = [
+    "  client:",
+    "    environment:",
+    '      PORT: "3000"',
+    "      NEXT_PUBLIC_API_URL: ${API_URL}",
+    "      NEXT_PUBLIC_WS_URL: ${WS_URL:-}",
+    "    restart: unless-stopped",
+    "",
+  ].join("\n");
+  const strippedCompose = stripComposeClientRuntimeNextPublic(compose);
+
+  const checks: Check[] = [
+    [
+      "Dockerfile upgrade inserts ARG block before the build RUN",
+      upgradedDockerfile.indexOf("ARG NEXT_PUBLIC_API_URL") > 0 &&
+        upgradedDockerfile.indexOf("ARG NEXT_PUBLIC_API_URL") <
+          upgradedDockerfile.indexOf("RUN pnpm --filter @starter/shared run build"),
+    ],
+    [
+      "Dockerfile upgrade sets HATCHKIT_IMAGE_BUILD guard",
+      upgradedDockerfile.includes("HATCHKIT_IMAGE_BUILD=1"),
+    ],
+    [
+      "Dockerfile upgrade is idempotent",
+      upgradeClientDockerfile(upgradedDockerfile) === upgradedDockerfile,
+    ],
+    [
+      "workflow upgrade inserts build-args with literal API URL",
+      /^\s*NEXT_PUBLIC_API_URL=https:\/\/shiny\.example\.com$/m.test(upgradedWorkflow),
+    ],
+    [
+      "workflow upgrade inserts build-args before tags",
+      upgradedWorkflow.indexOf("build-args: |") > 0 &&
+        upgradedWorkflow.indexOf("build-args: |") < upgradedWorkflow.indexOf("tags: |"),
+    ],
+    [
+      "workflow upgrade is idempotent",
+      upgradeWorkflowClientBuildArgs(upgradedWorkflow, "shiny.example.com") === upgradedWorkflow,
+    ],
+    [
+      "rename rewrites existing literal URLs to the new domain",
+      /^\s*NEXT_PUBLIC_API_URL=https:\/\/moved\.example\.org$/m.test(
+        setWorkflowClientBuildArgUrls(upgradedWorkflow, "moved.example.org"),
+      ) &&
+        /^\s*NEXT_PUBLIC_WS_URL=wss:\/\/moved\.example\.org$/m.test(
+          setWorkflowClientBuildArgUrls(upgradedWorkflow, "moved.example.org"),
+        ),
+    ],
+    [
+      "compose strip removes NEXT_PUBLIC_* lines, keeps PORT",
+      !/NEXT_PUBLIC_/.test(strippedCompose) && strippedCompose.includes('PORT: "3000"'),
+    ],
+    [
+      "compose strip is idempotent",
+      stripComposeClientRuntimeNextPublic(strippedCompose) === strippedCompose,
+    ],
   ];
   let ok = true;
   for (const [n, c] of checks) {

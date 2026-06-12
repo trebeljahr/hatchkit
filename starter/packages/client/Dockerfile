@@ -15,6 +15,26 @@ COPY tsconfig.base.json ./
 COPY packages/shared packages/shared
 COPY packages/server packages/server
 COPY packages/client packages/client
+
+# Next.js inlines NEXT_PUBLIC_* into the browser bundle at BUILD time —
+# runtime env on the deployed container has no effect on browser code.
+# CI passes these as --build-arg (see .github/workflows/build-and-deploy.yml).
+# HATCHKIT_IMAGE_BUILD makes next.config.ts fail the build loudly when
+# NEXT_PUBLIC_API_URL is missing, instead of baking a broken fallback.
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_WS_URL
+ARG NEXT_PUBLIC_OPENPANEL_CLIENT_ID
+ARG NEXT_PUBLIC_PLAUSIBLE_DOMAIN
+ARG NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL
+ARG NEXT_PUBLIC_SENTRY_DSN
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
+    NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL \
+    NEXT_PUBLIC_OPENPANEL_CLIENT_ID=$NEXT_PUBLIC_OPENPANEL_CLIENT_ID \
+    NEXT_PUBLIC_PLAUSIBLE_DOMAIN=$NEXT_PUBLIC_PLAUSIBLE_DOMAIN \
+    NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL=$NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL \
+    NEXT_PUBLIC_SENTRY_DSN=$NEXT_PUBLIC_SENTRY_DSN \
+    HATCHKIT_IMAGE_BUILD=1
+
 RUN pnpm --filter @starter/shared run build
 RUN pnpm --filter @starter/client run build
 

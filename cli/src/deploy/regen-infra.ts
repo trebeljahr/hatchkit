@@ -14,6 +14,17 @@
  * serverType / serverLocation for new-server), diff against what's on
  * disk, and write the new files.
  *
+ * Also upgrades the project-side deploy files to current conventions:
+ *   · packages/client/Dockerfile — NEXT_PUBLIC_* ARG/ENV block in the
+ *     build stage (Next.js inlines those at build time; without the
+ *     block the CI build-args never reach `next build` and the bundle
+ *     ships with the localhost fallback baked in).
+ *   · .github/workflows/build-and-deploy.yml — `build-args:` on the
+ *     client image build, with the literal production URLs.
+ *   · docker-compose.yml — drops dead NEXT_PUBLIC_* runtime env from
+ *     the client service (it never reached the prebuilt bundle and
+ *     misleads readers into thinking runtime env works).
+ *
  * Intentionally does NOT run `terraform apply` or touch Coolify. The
  * user runs `terraform apply -var-file=<name>.tfvars` themselves once
  * they've reviewed the plan.
@@ -23,6 +34,13 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import chalk from "chalk";
 import type { ProjectConfig, Surface } from "../prompts.js";
+import {
+  CLIENT_DOCKERFILE_REL_PATH,
+  CLIENT_WORKFLOW_REL_PATH,
+  stripComposeClientRuntimeNextPublic,
+  upgradeClientDockerfile,
+  upgradeWorkflowClientBuildArgs,
+} from "../scaffold/client-build-args.js";
 import { generateCoolifyEnv, generateTfvars, resolveStackDir } from "../scaffold/infra.js";
 import { type ProjectManifest, readManifest } from "../scaffold/manifest.js";
 import { parseDomain } from "../utils/validate.js";
@@ -112,6 +130,30 @@ export async function runRegenInfra(opts: RegenArgs): Promise<void> {
   touched += renderFileChange("tfvars", tfvarsTargetPath, oldTfvars, newTfvars, dryRun);
   touched += renderFileChange("coolify .env", coolifyEnvPath, oldCoolifyEnv, newCoolifyEnv, dryRun);
 
+  // Project-side deploy files — upgrade the client image's NEXT_PUBLIC_*
+  // wiring to current conventions (see header). Each transform is
+  // idempotent and no-ops on files that don't match the generated shape.
+  const projectFileUpgrades: Array<[label: string, relPath: string, fn: (c: string) => string]> = [
+    ["client Dockerfile", CLIENT_DOCKERFILE_REL_PATH, upgradeClientDockerfile],
+    [
+      "CI workflow",
+      CLIENT_WORKFLOW_REL_PATH,
+      (c) => upgradeWorkflowClientBuildArgs(c, manifest.domain),
+    ],
+    ["docker-compose.yml", "docker-compose.yml", stripComposeClientRuntimeNextPublic],
+  ];
+  let projectFilesTouched = 0;
+  for (const [label, relPath, fn] of projectFileUpgrades) {
+    const path = join(projectDir, relPath);
+    if (!existsSync(path)) {
+      console.log(chalk.dim(`  ${label}: not present — skipped`));
+      continue;
+    }
+    const before = readFileSync(path, "utf-8");
+    projectFilesTouched += renderFileChange(label, path, before, fn(before), dryRun);
+  }
+  touched += projectFilesTouched;
+
   if (touched === 0) {
     console.log(chalk.green("\n  ✓ Already up to date — no changes."));
     return;
@@ -134,6 +176,16 @@ export async function runRegenInfra(opts: RegenArgs): Promise<void> {
     console.log(
       chalk.dim(
         `        terraform -chdir=${stackDir} apply -var-file=${basename(tfvarsTargetPath)}`,
+      ),
+    );
+  }
+  if (projectFilesTouched > 0) {
+    console.log(
+      chalk.yellow("\n  Commit + push the project file changes — the client image must be REBUILT"),
+    );
+    console.log(
+      chalk.yellow(
+        "  for the new NEXT_PUBLIC_* values to reach the browser bundle (they're baked at build time).",
       ),
     );
   }

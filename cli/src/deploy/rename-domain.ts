@@ -26,6 +26,10 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { confirm, input } from "@inquirer/prompts";
 import chalk from "chalk";
+import {
+  CLIENT_WORKFLOW_REL_PATH,
+  setWorkflowClientBuildArgUrls,
+} from "../scaffold/client-build-args.js";
 import { type ProjectManifest, readManifest } from "../scaffold/manifest.js";
 import { parseDomain, validateDomain } from "../utils/validate.js";
 
@@ -153,6 +157,33 @@ export async function runRenameDomain(opts: RenameDomainOptions): Promise<void> 
         `  ! No stacks/${manifest.name}.env found — skipping Coolify env bit. (You may need to set APP_DOMAIN manually in the Coolify dashboard.)`,
       ),
     );
+  }
+
+  // 3d. CI workflow build-args — the client image bakes NEXT_PUBLIC_*
+  //     into the browser bundle at build time, and the generated
+  //     build-and-deploy.yml carries the literal production URLs as
+  //     build args. Refresh them so the next image build targets the
+  //     new domain (the rebuild itself is on the follow-up checklist).
+  const workflowPath = join(projectDir, CLIENT_WORKFLOW_REL_PATH);
+  if (existsSync(workflowPath)) {
+    const before = readFileSync(workflowPath, "utf8");
+    if (!/^\s*NEXT_PUBLIC_API_URL=/m.test(before)) {
+      console.log(
+        chalk.yellow(
+          `  ! ${CLIENT_WORKFLOW_REL_PATH} has no client build-args block — run \`hatchkit regen-infra\` to add it (older scaffolds bake a broken localhost API URL into the client image without it).`,
+        ),
+      );
+    } else {
+      const after = setWorkflowClientBuildArgUrls(before, newDomain);
+      if (after !== before) {
+        edits.push({
+          label: CLIENT_WORKFLOW_REL_PATH,
+          path: workflowPath,
+          after,
+          changes: [`client build-args NEXT_PUBLIC_API_URL/WS_URL → https://${newDomain}`],
+        });
+      }
+    }
   }
 
   // 4. Plan
@@ -425,6 +456,13 @@ function printChecklist(
     `     Then confirm env vars like ${chalk.dim("FRONTEND_URL / BETTER_AUTH_URL / TRUSTED_ORIGINS")}`,
   );
   console.log(`     moved across. Redeploy after updating — new TLS cert takes 1-3 min.`);
+  console.log(
+    `     REBUILD the client image (push to main or ${chalk.dim("gh workflow run build-and-deploy.yml")})`,
+  );
+  console.log(
+    chalk.dim(`     — NEXT_PUBLIC_* URLs are baked into the browser bundle at image build time,`),
+  );
+  console.log(chalk.dim(`     so the currently deployed image still targets ${oldDomain}.`));
 
   if (manifest.features.includes("stripe")) {
     console.log(chalk.bold("\n  4. External integrations"));
