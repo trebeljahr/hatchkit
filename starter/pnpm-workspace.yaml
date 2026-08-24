@@ -8,3 +8,4 @@ allowBuilds:
   electron-winstaller: true
   esbuild: true
   sharp: true
+  unrs-resolver: true

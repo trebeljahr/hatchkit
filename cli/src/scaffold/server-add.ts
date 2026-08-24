@@ -256,7 +256,13 @@ function ensureWorkspacePackages(root: string, result: ServerAddResult): void {
   }
   const existing = readFileSync(path, "utf-8");
   if (/^\s*-\s*["']?packages\/\*["']?\s*$/m.test(existing)) return;
-  if (!result.dryRun) writeFileSync(path, `${existing.trimEnd()}\n  - "packages/*"\n`, "utf-8");
+  // Append inside the `packages:` block, not at EOF — the starter keeps
+  // sibling top-level keys (`allowBuilds:`) after it, and a bare list
+  // item tacked onto the end would land under the wrong mapping.
+  const next = /^packages:\s*$/m.test(existing)
+    ? existing.replace(/^packages:[^\n]*\n/m, (m) => `${m}  - "packages/*"\n`)
+    : `${existing.trimEnd()}\npackages:\n  - "packages/*"\n`;
+  if (!result.dryRun) writeFileSync(path, next, "utf-8");
   markUpdated(result, "pnpm-workspace.yaml");
 }
 
