@@ -7,6 +7,7 @@ import {
   getMlServices,
   getPersonalEmailLocalPart,
 } from "./config.js";
+import type { Topology } from "./deploy/routing.js";
 import { DEFAULT_CATCH_ALL, buildForwardPresets } from "./email/presets.js";
 import {
   type ProjectOnboardingPlan,
@@ -159,6 +160,12 @@ export interface ProjectConfig {
    *  name. See {@link ProjectManifest.publicService} for the full
    *  resolution chain. */
   publicService?: string;
+  /** How the deployment is spread across Coolify applications. See
+   *  {@link ProjectManifest.topology}. Defaults to `single-origin`
+   *  (one compose app, `/api` path-routed to the server) — `split`
+   *  creates `<name>-client` + `<name>-server` with an `api.<domain>`
+   *  subdomain and Coolify-managed mongo/redis. */
+  topology?: Topology;
 
   deployTarget: DeployTarget;
   serverId?: number;
@@ -681,6 +688,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     baseDomain: "",
     subdomain: "",
     surfaces: presets.surfaces ?? "fullstack",
+    topology: presets.topology ?? "single-origin",
     deployTarget: presets.deployTarget ?? "new",
     serverId: presets.serverId,
     serverUuid: presets.serverUuid,
@@ -826,6 +834,34 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
           deploymentMode: mode,
           runDeployment: mode === "scaffold-only" ? false : c.runDeployment,
         };
+      },
+    },
+    {
+      name: "Deployment topology",
+      // Only meaningful when there are two runtimes to place. Static and
+      // gh-pages projects have one surface and no API to route.
+      skip: (c) =>
+        presets.topology !== undefined || c.deploymentMode !== "coolify" || c.surfaces === "static",
+      run: async (c) => {
+        const topology = await select<Topology>({
+          message: "How should this deploy onto Coolify?",
+          default: c.topology ?? "single-origin",
+          choices: [
+            {
+              name: "Single origin — one app, API under https://<domain>/api (recommended)",
+              value: "single-origin",
+              description:
+                "One Coolify app running the compose file. Same-origin, so no CORS and no cookie-domain setup, and only one DNS record.",
+            },
+            {
+              name: "Split — <name>-client at <domain>, <name>-server at api.<domain>",
+              value: "split",
+              description:
+                "Two Coolify apps from the two GHCR images, with mongo/redis as Coolify databases. Needs a DNS record for api.<domain> and puts the API cross-origin.",
+            },
+          ],
+        });
+        return { ...c, topology };
       },
     },
     {

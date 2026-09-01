@@ -31,6 +31,10 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { localDevDomainFromProjectDomain } from "@hatchkit/dev-shared";
+import {
+  type Topology,
+  defaultPublicServiceForSurfaces as routingDefaultPublicService,
+} from "../deploy/routing.js";
 import type { SigningProjectConfig } from "../features/signing/types.js";
 import type {
   EmailIntent,
@@ -43,15 +47,17 @@ import type {
 import type { ProjectPorts } from "../utils/ports.js";
 
 export const MANIFEST_FILENAME = ".hatchkit.json";
-export const MANIFEST_VERSION = 3;
+export const MANIFEST_VERSION = 4;
 /** Every schema version readManifest knows how to migrate FROM. The
  *  reader transparently upgrades v1 manifests (3-value surfaces enum:
  *  server-only / client-only / both, plus the unstable
  *  shared/separate values that leaked from the provisioner) and v2
  *  manifests (no `email` intent field — adopted as
- *  `{ transactional: "none", mailingList: "none" }`) on read, and the
- *  next write bumps the file's version field to {@link MANIFEST_VERSION}. */
-const MIGRATABLE_VERSIONS = new Set<number>([1, 2, 3]);
+ *  `{ transactional: "none", mailingList: "none" }`) and v3 manifests
+ *  (no `topology` field — adopted as `single-origin`, the shape every
+ *  pre-topology `create` run actually produced) on read, and the next
+ *  write bumps the file's version field to {@link MANIFEST_VERSION}. */
+const MIGRATABLE_VERSIONS = new Set<number>([1, 2, 3, 4]);
 
 export interface ProjectManifest {
   /** Schema version. Increment when the shape changes incompatibly. */
@@ -146,6 +152,31 @@ export interface ProjectManifest {
    *  `hatchkit doctor` flags older fullstack manifests so the user
    *  can opt in via `hatchkit update`. */
   publicService?: string;
+  /** How this project's runtime is spread across Coolify applications.
+   *  THE field `create`, `adopt` and `sync` must agree on — before it
+   *  existed each command had its own hardcoded idea and they didn't
+   *  match, which is how projects shipped with routing no command could
+   *  express.
+   *
+   *    · `single-origin` — one Coolify app running the multi-service
+   *      compose. `client` takes `https://<domain>`, `server` takes
+   *      `https://<domain>/api` (with Coolify's stripprefix middleware
+   *      turned off so the `/api` prefix survives to Express).
+   *      Same-origin, so no CORS and no cookie-domain problems, and
+   *      `wss://<domain>/api/ws` rides the same Traefik router.
+   *    · `split` — two Coolify apps, `<name>-client` at `<domain>` and
+   *      `<name>-server` at `api.<domain>`, built from the two GHCR
+   *      images, with mongo/redis as Coolify-managed databases rather
+   *      than compose services. Needs a DNS record for `api.<domain>`.
+   *
+   *  Optional for back-compat. Absent means `single-origin`: every
+   *  manifest written before this field came from a run that produced
+   *  exactly that shape, so defaulting there preserves the behaviour of
+   *  whatever is currently deployed. `split` is never inferred — nothing
+   *  on disk distinguishes "should be split" from "is single-origin", so
+   *  it has to be chosen explicitly. See `inferTopology` in
+   *  deploy/routing.ts. */
+  topology?: Topology;
   /** Captured email-intent for this project, independent of the
    *  current `provisionServices` list. Two needs (transactional and
    *  mailing list) can be answered independently; each carries a
@@ -312,16 +343,7 @@ export interface BucketCors {
 export function defaultPublicServiceForSurfaces(
   surfaces: ProjectManifest["surfaces"] | undefined,
 ): string | undefined {
-  switch (surfaces) {
-    case "fullstack":
-    case "split":
-    case "static":
-      return "client";
-    case "backend":
-      return "server";
-    default:
-      return undefined;
-  }
+  return routingDefaultPublicService(surfaces);
 }
 
 /** Build a manifest from the internal ProjectConfig, explicitly
@@ -346,6 +368,7 @@ export function toManifest(
     deploymentMode: config.deploymentMode,
     surfaces: config.surfaces,
     publicService: config.publicService ?? defaultPublicServiceForSurfaces(config.surfaces),
+    topology: config.topology ?? "single-origin",
     gpuPlatforms: config.gpuPlatforms,
     customHfModelId: config.customHfModelId,
     customHfGpuType: config.customHfGpuType,
@@ -470,6 +493,16 @@ export function readManifestWithMigrationInfo(projectDir: string): ReadManifestR
   if (fileVersion !== undefined && fileVersion < 3 && obj.email === undefined) {
     obj.email = { transactional: "none", mailingList: "none" };
     migrationNotes.push('Seeded email intent: { transactional: "none", mailingList: "none" }');
+  }
+
+  // v3 -> v4: `topology` appears. Seed `single-origin` explicitly rather
+  // than leaving it absent: every pre-v4 manifest came from a run that
+  // created ONE Coolify app running the multi-service compose, so that
+  // IS the deployed shape, and writing it down stops `sync` from having
+  // to re-infer it (or guess differently) on every run.
+  if (fileVersion !== undefined && fileVersion < 4 && obj.topology === undefined) {
+    obj.topology = "single-origin";
+    migrationNotes.push('Seeded topology: "single-origin" (matches what pre-v4 hatchkit deployed)');
   }
 
   // Schema-version bump (in memory only — the file is rewritten on

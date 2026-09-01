@@ -33,6 +33,7 @@ import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
+import { composeServicesOf, validateComposeServices } from "../utils/compose.js";
 import { type ApplicationCreateInput, CoolifyApi } from "../utils/coolify-api.js";
 import { repoSlugFromRemote } from "./gh-actions-secrets.js";
 import {
@@ -40,6 +41,7 @@ import {
   ensureCoolifyAppHasRepoAccess,
   installUrlForSlug,
 } from "./github-app-access.js";
+import { type RoutedApp, computeRoutingPlan } from "./routing.js";
 
 export interface RunCoolifySetupOptions {
   /** GitHub repository URL — required when creating a new application
@@ -63,6 +65,11 @@ export interface RunCoolifySetupOptions {
    *  stepper (or edit loop) when the user selects a private repo, so the
    *  deploy step doesn't pause for an inline picker / walkthrough. */
   preresolvedGithubSource?: ResolvedGithubAppSource;
+  /** Scaffolded project root. Used to read the compose file so routing
+   *  can only ever name services that actually exist — a name that
+   *  isn't in the compose is accepted by Coolify with a 200 and then
+   *  produces no Traefik labels at all. */
+  projectDir?: string;
 }
 
 export interface RunCoolifySetupResult {
@@ -82,6 +89,21 @@ export interface RunCoolifySetupResult {
    *  existing Coolify application by name). Same ledger guard
    *  reasoning as `projectCreated`. */
   appCreated: boolean;
+  /** Every Coolify application this run created or reconciled. One
+   *  entry for `single-origin`; two (`-client` + `-server`) for
+   *  `split`. `appUuid` above is `apps[0].uuid` — the app that owns the
+   *  bare domain — kept as a distinct field so existing single-app
+   *  callers don't have to change. */
+  apps: Array<{
+    uuid: string;
+    name: string;
+    role: RoutedApp["role"];
+    created: boolean;
+  }>;
+  /** Hostnames beyond the bare domain that this topology needs DNS for
+   *  (`api.<domain>` under `split`). Terraform owns the bare domain's
+   *  record on the create path; anything listed here still needs one. */
+  extraDnsHostnames: string[];
 }
 
 /** Create the Coolify project + application for this hatchkit project,
@@ -172,146 +194,91 @@ export async function runCoolifySetup(
     console.log(chalk.green(`  ✓ Project created: ${config.name} (${projectUuid})`));
   }
 
-  // Domain routing — surface-aware. Coolify's dockercompose build pack
-  // rejects a flat `domains` field (422 — "Use docker_compose_domains
-  // instead …") because routing is per-service.
+  // ── Routing ────────────────────────────────────────────────────────
   //
-  //  · both        — `client` gets the bare hostname; `server` gets the
-  //                  api subdomain + the path-based API/WS hosts.
-  //  · server-only — no client service in the pruned compose, so the
-  //                  bare hostname AND every API/WS host all point at
-  //                  `server`. Browsers hitting `<domain>` reach the
-  //                  Express app directly (which can still serve a 200
-  //                  health page or redirect to the api host).
-  //  · client-only — only the `client` service exists; nothing public
-  //                  about the API is needed. Currently unreachable
-  //                  from `hatchkit create` (the scaffold step throws
-  //                  before we get here) but the branch is wired so
-  //                  `hatchkit adopt`-driven client-only callers and a
-  //                  future create-side implementation share one path.
-  const apiDomain = `api.${config.domain}`;
-  const frontendDomain = `https://${config.domain}`;
-  const backendDomains = [
-    `https://${apiDomain}`,
-    `https://${config.domain}/api`,
-    `https://${config.domain}/api/ws`,
-    `https://${apiDomain}/ws`,
-  ];
-  const surfaces = config.surfaces ?? "fullstack";
-  const dockerComposeDomains: Array<{ name: string; domain: string }> =
-    surfaces === "static"
-      ? [{ name: "client", domain: frontendDomain }]
-      : surfaces === "backend"
-        ? [
-            { name: "server", domain: frontendDomain },
-            ...backendDomains.map((domain) => ({ name: "server", domain })),
-          ]
-        : [
-            { name: "client", domain: frontendDomain },
-            ...backendDomains.map((domain) => ({ name: "server", domain })),
-          ];
+  // Delegated wholesale to deploy/routing.ts so `create`, `adopt` and
+  // `sync` cannot drift apart again. That module also documents the two
+  // Coolify behaviours this used to get wrong:
+  //
+  //   · `docker_compose_domains` is STORED as a map keyed by service
+  //     name, so the old code's four separate `server` entries were a
+  //     silent last-wins collapse — `https://<domain>/api` never
+  //     existed on any project hatchkit created. Several FQDNs for one
+  //     service have to be comma-joined into one entry instead.
+  //   · a non-`/` path pulls in Coolify's Traefik `stripprefix`
+  //     middleware, so `/api/health` would arrive at Express as
+  //     `/health`. `stripPrefix` below turns that off.
+  const composeServices = composeServicesOf(options.projectDir);
+  const plan = computeRoutingPlan({
+    name: config.name,
+    domain: config.domain,
+    topology: config.topology ?? "single-origin",
+    surfaces: config.surfaces ?? "fullstack",
+    ports: { server: options.serverPort, client: options.clientPort },
+    publicService: config.publicService,
+    composeServices,
+  });
 
-  console.log(chalk.dim("  Domain routing:"));
-  if (surfaces === "static") {
-    console.log(chalk.dim(`    Frontend (client): ${frontendDomain}`));
-  } else if (surfaces === "backend") {
+  console.log(chalk.dim(`  Topology: ${plan.topology}`));
+  for (const app of plan.apps) {
+    console.log(chalk.dim(`  Domain routing — ${app.appName}:`));
+    for (const entry of app.composeDomains) {
+      console.log(chalk.dim(`    ${entry.name} → ${entry.domain}`));
+    }
+    if (!app.stripPrefix) {
+      console.log(chalk.dim("    (path-prefix stripping disabled so /api survives to the server)"));
+    }
+  }
+  if (plan.extraDnsHostnames.length > 0) {
     console.log(
-      chalk.dim(`    All hosts → server: ${[frontendDomain, ...backendDomains].join(", ")}`),
+      chalk.dim(`  Extra DNS needed: ${plan.extraDnsHostnames.map((h) => `A ${h}`).join(", ")}`),
     );
-  } else {
-    console.log(chalk.dim(`    Frontend (client): ${frontendDomain}`));
-    console.log(chalk.dim(`    Backend  (server): ${backendDomains.join(", ")}`));
   }
 
-  // Application: reuse-by-name. `findApplicationByName` matches across
-  // every project the user can see; first hit wins. Within a single
-  // hatchkit-managed Coolify install, project names are unique enough
-  // that a hit means "the same app" — same assumption coolify-mongo
-  // makes when it resolves the project.
-  const appName = config.name;
-  let appUuid: string;
-  let appCreated = false;
-  const existingApp = await api.findApplicationByName(appName);
-  if (existingApp) {
-    appUuid = existingApp.uuid;
-    console.log(chalk.dim(`  Using existing Coolify application ${appName} (${appUuid})`));
-    const reconcile = ora("Reconciling Coolify app git source + routing").start();
-    try {
-      await api.updateApplication(appUuid, {
-        buildPack: "dockercompose",
-        portsExposes: String(options.serverPort ?? 3000),
-        dockerComposeLocation: "/docker-compose.yml",
-        gitBranch: "main",
-        gitRepository: repoRef?.gitRepository,
-        githubAppUuid: isPrivateRepo ? githubAppUuid : undefined,
-        description,
-        dockerComposeDomains,
-      });
-      reconcile.succeed("Coolify app source/routing reconciled");
-    } catch (err) {
-      reconcile.fail(`Coolify app reconcile failed: ${(err as Error).message}`);
-      console.log(
-        chalk.dim(
-          "  Existing app kept. In Coolify, verify Build Pack = Docker Compose, Git source is the GitHub App source, and domains are attached to the right compose services.",
-        ),
-      );
-    }
-  } else {
-    if (!repoRef) {
+  // Fail loudly rather than pushing a service name the compose doesn't
+  // declare: Coolify answers such a PATCH with 200 OK, emits no Traefik
+  // labels, and every request to the app 503s. A hard error here is far
+  // cheaper to debug than a green create followed by a dead domain.
+  for (const app of plan.apps) {
+    const validation = validateComposeServices(
+      options.projectDir,
+      app.role === "compose" ? app.requiredComposeServices : [],
+    );
+    if (!validation.ok) {
       throw new Error(
-        "No GitHub repo URL — can't create the Coolify application. Did the GitHub step run?",
+        `Coolify routing for "${app.appName}" names compose service(s) ` +
+          `${validation.missing.map((m) => `"${m}"`).join(", ")}, but ${validation.composeFile} ` +
+          `declares only: ${validation.declaredServices.join(", ")}. ` +
+          `Coolify would accept this and then serve 503s. ` +
+          `Set "publicService" in .hatchkit.json to one of the declared services and re-run.`,
       );
     }
-    const create = ora(`Creating application ${appName}`).start();
-    try {
-      const createInput: ApplicationCreateInput = {
+  }
+
+  // Application(s): reuse-by-name. `findApplicationByName` matches
+  // across every project the user can see; first hit wins. Within a
+  // single hatchkit-managed Coolify install, project names are unique
+  // enough that a hit means "the same app" — same assumption
+  // coolify-mongo makes when it resolves the project.
+  const provisioned: RunCoolifySetupResult["apps"] = [];
+  for (const routed of plan.apps) {
+    provisioned.push(
+      await provisionRoutedApp({
+        api,
+        routed,
         projectUuid,
         serverUuid,
-        environmentName: "production",
-        gitRepository: repoRef.gitRepository,
-        gitBranch: "main",
-        // Canonical pipeline: GitHub Actions builds → pushes to GHCR →
-        // Coolify pulls via docker-compose.yml (scaffolded at the repo
-        // root by `scaffoldBuildPipeline`). `dockerfile` here would
-        // ignore that compose file and try to build the repo directly,
-        // which fails on the monorepo layout.
-        buildPack: "dockercompose",
-        // Coolify still requires a `ports_exposes` value even for
-        // dockercompose apps — it's metadata once the compose file
-        // takes over. The server's Express port is the conventional
-        // pick.
-        portsExposes: String(options.serverPort ?? 3000),
-        name: appName,
         description,
-        // Per-service routing (see comment above). Bypasses the
-        // `domains`-flat translation in coolify-api.ts because the
-        // starter's compose has more than one public service.
-        dockerComposeDomains,
-        // First deploy lands via GitHub Actions on first push, so we
-        // don't need Coolify to start the (empty) container right now.
-        instantDeploy: false,
-      };
-      const created = isPrivateRepo
-        ? await createPrivateAppWithRetry({
-            api,
-            createInput,
-            githubAppUuid: githubAppUuid as string,
-            githubAppHtmlUrl,
-            repoSlug: repoRef.gitRepository,
-            spinner: create,
-            appName,
-          })
-        : await api.createApplicationFromPublicRepo(createInput);
-      appUuid = created.uuid;
-      appCreated = true;
-      create.succeed(`Application created: ${appName} (${appUuid})`);
-    } catch (err) {
-      // The private-repo path may have stopped the spinner itself with
-      // a tailored message. Don't overwrite that with a generic fail.
-      if (create.isSpinning) create.fail();
-      throw err;
-    }
+        repoRef,
+        isPrivateRepo,
+        githubAppUuid,
+        githubAppHtmlUrl,
+      }),
+    );
   }
+
+  const appUuid = provisioned[0].uuid;
+  const appCreated = provisioned.some((a) => a.created);
 
   // Env vars on the Coolify application. Keep this list minimal —
   // anything secret (DB URLs, S3 creds, JWT secrets, …) goes into
@@ -322,6 +289,7 @@ export async function runCoolifySetup(
   // Static scaffolds get only NODE_ENV — there's no server to honour
   // PORT (the Next.js standalone server already binds 3000) and
   // FRONTEND_URL is meaningless without a CORS-checking backend.
+  const surfaces = config.surfaces ?? "fullstack";
   const envs: Record<string, string> =
     surfaces === "static"
       ? { NODE_ENV: "production" }
@@ -330,16 +298,176 @@ export async function runCoolifySetup(
           PORT: String(options.serverPort ?? 3000),
           FRONTEND_URL: `https://${config.domain}`,
         };
-  await api.setAppEnv(appUuid, envs);
+  // Every app in the plan gets the same baseline. Under `split` the
+  // client app has no use for PORT/FRONTEND_URL, but Coolify env is
+  // additive and harmless, and keeping one code path means the two
+  // halves can't drift.
+  for (const app of provisioned) {
+    await api.setAppEnv(app.uuid, envs);
+  }
   console.log(
     chalk.green(
-      `  ✓ Set ${Object.keys(envs).length} env vars on application (${Object.keys(envs).join(", ")})`,
+      `  ✓ Set ${Object.keys(envs).length} env vars on ${provisioned.length} application(s) (${Object.keys(envs).join(", ")})`,
     ),
   );
 
   console.log(chalk.green("\n  ✓ Coolify app stack created"));
 
-  return { appUuid, projectUuid, projectCreated, appCreated };
+  return {
+    appUuid,
+    projectUuid,
+    projectCreated,
+    appCreated,
+    apps: provisioned,
+    extraDnsHostnames: plan.extraDnsHostnames,
+  };
+}
+
+/** Create-or-reconcile ONE Coolify application against its slice of the
+ *  routing plan. Split out of `runCoolifySetup` because `split`
+ *  topology runs it twice and the two calls must be identical apart
+ *  from the name / domains / ports they carry.
+ *
+ *  Every field pushed here is idempotent, so a re-run converges rather
+ *  than duplicating. `is_stripprefix_enabled` is pushed unconditionally
+ *  (not only when a path route exists) so flipping a project back to a
+ *  path-free layout also restores Coolify's default. */
+async function provisionRoutedApp(args: {
+  api: CoolifyApi;
+  routed: RoutedApp;
+  projectUuid: string;
+  serverUuid: string;
+  description?: string;
+  repoRef: { gitRepository: string } | null;
+  isPrivateRepo: boolean;
+  githubAppUuid?: string;
+  githubAppHtmlUrl?: string;
+}): Promise<{ uuid: string; name: string; role: RoutedApp["role"]; created: boolean }> {
+  const { api, routed, projectUuid, serverUuid, description, repoRef, isPrivateRepo } = args;
+
+  // Accept the alias names when LOOKING UP an existing app so a
+  // hand-rolled `<name>-backend` / `<name>-frontend` pair is reconciled
+  // in place instead of being shadowed by a second, empty app.
+  let existingApp = await api.findApplicationByName(routed.appName);
+  if (!existingApp) {
+    for (const alias of routed.aliases) {
+      existingApp = await api.findApplicationByName(alias);
+      if (existingApp) {
+        console.log(
+          chalk.dim(
+            `  Matched existing Coolify app "${alias}" for the ${routed.role} half ` +
+              `(hatchkit's own name would be "${routed.appName}").`,
+          ),
+        );
+        break;
+      }
+    }
+  }
+
+  if (existingApp) {
+    console.log(
+      chalk.dim(`  Using existing Coolify application ${existingApp.name} (${existingApp.uuid})`),
+    );
+    const reconcile = ora(`Reconciling Coolify app source + routing (${existingApp.name})`).start();
+    try {
+      await api.updateApplication(existingApp.uuid, {
+        buildPack: "dockercompose",
+        portsExposes: routed.portsExposes,
+        dockerComposeLocation: "/docker-compose.yml",
+        gitBranch: "main",
+        gitRepository: repoRef?.gitRepository,
+        githubAppUuid: isPrivateRepo ? args.githubAppUuid : undefined,
+        description,
+        dockerComposeDomains: routed.composeDomains,
+        isStripprefixEnabled: routed.stripPrefix,
+      });
+      reconcile.succeed(`Coolify app source/routing reconciled (${existingApp.name})`);
+    } catch (err) {
+      reconcile.fail(`Coolify app reconcile failed: ${(err as Error).message}`);
+      console.log(
+        chalk.dim(
+          "  Existing app kept. In Coolify, verify Build Pack = Docker Compose, Git source is the GitHub App source, and domains are attached to the right compose services.",
+        ),
+      );
+    }
+    return {
+      uuid: existingApp.uuid,
+      name: existingApp.name || routed.appName,
+      role: routed.role,
+      created: false,
+    };
+  }
+
+  if (!repoRef) {
+    throw new Error(
+      "No GitHub repo URL — can't create the Coolify application. Did the GitHub step run?",
+    );
+  }
+  const create = ora(`Creating application ${routed.appName}`).start();
+  try {
+    const createInput: ApplicationCreateInput = {
+      projectUuid,
+      serverUuid,
+      environmentName: "production",
+      gitRepository: repoRef.gitRepository,
+      gitBranch: "main",
+      // Canonical pipeline: GitHub Actions builds → pushes to GHCR →
+      // Coolify pulls via docker-compose.yml (scaffolded at the repo
+      // root by `scaffoldBuildPipeline`). `dockerfile` here would
+      // ignore that compose file and try to build the repo directly,
+      // which fails on the monorepo layout.
+      buildPack: "dockercompose",
+      // Coolify still requires a `ports_exposes` value even for
+      // dockercompose apps — it's metadata once the compose file
+      // takes over.
+      portsExposes: routed.portsExposes,
+      name: routed.appName,
+      description,
+      // Per-service routing. Bypasses the `domains`-flat translation in
+      // coolify-api.ts because the starter's compose has more than one
+      // public service.
+      dockerComposeDomains: routed.composeDomains,
+      // First deploy lands via GitHub Actions on first push, so we
+      // don't need Coolify to start the (empty) container right now.
+      instantDeploy: false,
+    };
+    const created = isPrivateRepo
+      ? await createPrivateAppWithRetry({
+          api,
+          createInput,
+          githubAppUuid: args.githubAppUuid as string,
+          githubAppHtmlUrl: args.githubAppHtmlUrl,
+          repoSlug: repoRef.gitRepository,
+          spinner: create,
+          appName: routed.appName,
+        })
+      : await api.createApplicationFromPublicRepo(createInput);
+    create.succeed(`Application created: ${routed.appName} (${created.uuid})`);
+
+    // `is_stripprefix_enabled` isn't accepted on the create endpoints,
+    // so path-scoped routing needs this follow-up PATCH. Without it
+    // Coolify strips `/api` and every API call 404s at Express.
+    if (!routed.stripPrefix) {
+      const strip = ora("Coolify: disabling path-prefix stripping").start();
+      try {
+        await api.updateApplication(created.uuid, { isStripprefixEnabled: false });
+        strip.succeed("Coolify: path-prefix stripping disabled (so /api reaches the server)");
+      } catch (err) {
+        strip.fail(`Coolify: couldn't disable path-prefix stripping — ${(err as Error).message}`);
+        console.log(
+          chalk.yellow(
+            `  Turn "Strip Prefix" OFF on ${routed.appName} in Coolify, or every /api request will 404.`,
+          ),
+        );
+      }
+    }
+    return { uuid: created.uuid, name: routed.appName, role: routed.role, created: true };
+  } catch (err) {
+    // The private-repo path may have stopped the spinner itself with
+    // a tailored message. Don't overwrite that with a generic fail.
+    if (create.isSpinning) create.fail();
+    throw err;
+  }
 }
 
 export interface ResolvedGithubAppSource {

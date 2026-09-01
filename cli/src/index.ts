@@ -2346,6 +2346,10 @@ async function handleCreate(): Promise<void> {
         clientPort: scaffoldResult?.ports.client,
         isPrivateRepo: isCreatedGithubRepoPrivate(config),
         preresolvedGithubSource: config.coolifyGithubSource,
+        // Lets routing read the scaffolded compose file so it can only
+        // ever name services that exist — a phantom service name is
+        // accepted by Coolify and then 503s every request.
+        projectDir: appDir,
       });
       // Order matters: rollback iterates the ledger in REVERSE, so we
       // record parent-before-child (project before app). Otherwise
@@ -2355,7 +2359,31 @@ async function handleCreate(): Promise<void> {
       if (coolifyResult.projectCreated) {
         ledger?.record({ kind: "coolifyProject", uuid: coolifyResult.projectUuid });
       }
-      ledger?.record({ kind: "coolifyApp", uuid: coolifyResult.appUuid });
+      // Record EVERY app the run created (split topology creates two);
+      // recording only the primary would strand the other on rollback.
+      for (const app of coolifyResult.apps) {
+        if (app.created) ledger?.record({ kind: "coolifyApp", uuid: app.uuid });
+      }
+
+      // Terraform owns the bare domain's DNS record. Anything the
+      // topology adds on top (api.<domain> under `split`) isn't in the
+      // tfvars, so surface it rather than letting the user discover a
+      // dead subdomain after the first deploy.
+      if (coolifyResult.extraDnsHostnames.length > 0) {
+        console.log(
+          chalk.yellow(
+            `\n  ⚠ ${config.topology ?? "single-origin"} topology needs extra DNS records:`,
+          ),
+        );
+        for (const host of coolifyResult.extraDnsHostnames) {
+          console.log(
+            chalk.dim(
+              `      A ${host}  →  ${config.serverIpv4 ?? "<Coolify server public IP>"}  (proxied ON)`,
+            ),
+          );
+        }
+        console.log(chalk.dim(`      Verify: dig +short ${coolifyResult.extraDnsHostnames[0]}`));
+      }
 
       // Provision a per-project DB container on Coolify when the user
       // picked that path. Best-effort: a failure here doesn't undo the

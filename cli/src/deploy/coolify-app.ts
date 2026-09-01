@@ -1,41 +1,14 @@
-/*
- * Wire an existing project into the user's already-configured
- * Coolify + DNS setup, without scaffolding new infra.
- *
- * Used by `hatchkit adopt` (and reusable from elsewhere). The
- * difference from the create-flow `runCoolifySetup`:
- *   · `runCoolifySetup` runs a shell script that lives in the
- *     hatchkit monorepo's infra/ submodule. It generates Terraform
- *     tfvars, runs `terraform apply` for new servers + DNS, then
- *     calls a stack script. None of that is reachable when hatchkit
- *     is installed globally and run from a foreign project repo.
- *   · This module talks directly to the Coolify + Cloudflare REST
- *     APIs. No submodule, no shell scripts, no Terraform — just
- *     idempotent API calls against credentials hatchkit already has
- *     in keychain.
- *
- * Scope:
- *   · Coolify: find/create the project, find the server, create the
- *     application from a public or private GitHub repo, set the
- *     baseline env (DOTENV_PRIVATE_KEY_PRODUCTION, GITHUB_REPO_URL),
- *     trigger a deploy.
- *   · DNS: upsert a single A record for the bare domain pointing at
- *     the Coolify server's IP. Cloudflare-only for now (the only DNS
- *     provider whose record CRUD is wired up today). INWX users get
- *     a clear "add an A record yourself" hint.
- */
-
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig, getDnsConfig } from "../config.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
+import { composeServicesOf, validateComposeServices } from "../utils/compose.js";
 import type { ApplicationCreateInput } from "../utils/coolify-api.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { type PublicIps, discoverPublicIps } from "../utils/coolify-server-ips.js";
 import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
 import { type CoolifyDeployApp, repoSlugFromRemote } from "./gh-actions-secrets.js";
+import { type RoutedApp, type RoutingPlan, type Topology, computeRoutingPlan } from "./routing.js";
 
 export interface WireUpInput {
   projectName: string;
@@ -64,11 +37,22 @@ export interface WireUpInput {
   isPrivate?: boolean;
   /** When the user has already chosen one previously, skip the picker. */
   githubAppUuid?: string;
-  /** Compose service that should receive the public domain. When set,
-   *  takes precedence over the `projectDir`-based autodetect below.
-   *  Defaults to `app` (hatchkit's scaffolded service name) when neither
-   *  is provided and no compose file is on disk. */
+  /** Compose service that should receive the public/bare domain. Feeds
+   *  routing's `publicService`; when unset routing derives it from
+   *  `surfaces` and then from the compose file itself. */
   dockerComposeServiceName?: string;
+  /** Fully-computed routing plan. Pass this when the caller already
+   *  built one (adopt does, so the stepper can show it before the user
+   *  commits); otherwise it's derived from the fields below. */
+  routing?: RoutingPlan;
+  /** How the deployment is spread across Coolify applications. Default
+   *  `single-origin` — one compose app with `/api` path-routed to the
+   *  server. See {@link ProjectManifest.topology}. */
+  topology?: Topology;
+  /** Project shape, used to pick default service names. */
+  surfaces?: "fullstack" | "split" | "backend" | "static";
+  /** Ports the two halves listen on, for `ports_exposes`. */
+  ports?: { server?: number; client?: number };
   /** Project root on disk. When `dockerComposeServiceName` is unset, we
    *  read the compose file here and pick the service whose `ports:`
    *  mapping matches `portsExposes` — handles user-authored composes
@@ -99,8 +83,18 @@ export interface CoolifyCaveat {
 }
 
 export interface WireUpResult {
-  /** Coolify application uuid. */
+  /** Coolify application uuid of the app that owns the bare domain.
+   *  Equals `apps[0].uuid`; kept as its own field so single-app callers
+   *  don't have to change. */
   appUuid: string;
+  /** Every Coolify application created or reconciled by this call. One
+   *  entry under `single-origin`, two under `split`. */
+  apps: Array<{ uuid: string; name: string; role: RoutedApp["role"]; created: boolean }>;
+  /** Hostnames beyond the bare domain this topology needs DNS for
+   *  (`api.<domain>` under `split`). Records for these ARE upserted
+   *  when a DNS provider is configured; the list is returned so the
+   *  caller can print a manual recipe when one isn't. */
+  extraDnsHostnames: string[];
   /** Coolify project uuid (existing or freshly created). */
   projectUuid: string;
   /** Coolify server uuid the app runs on. */
@@ -251,13 +245,8 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     }
   }
 
-  // ── 4. Create the app — or reuse an existing one with the same
-  //       name. Coolify doesn't enforce name uniqueness, but creating
-  //       a duplicate on every `--resume` is loud and confusing. ───
-  let appUuid: string;
-  let appCreated = false;
+  // ── 4. Create / reconcile the Coolify application(s) ───────────────
   const buildPack = input.buildPack ?? "dockercompose";
-  const portsExposes = input.portsExposes ?? "3000";
   const repoRef = normalizeCoolifyGitRepository(input.gitRepository, !!input.isPrivate);
   if (repoRef.gitRepository !== input.gitRepository) {
     console.log(
@@ -266,158 +255,168 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       ),
     );
   }
-  const appDomain =
-    buildPack === "dockercompose"
-      ? formatDockerComposeDomain(input.domain, portsExposes)
-      : `https://${input.domain}`;
-  const existingApp = await api.findApplicationByName(input.projectName);
-  if (existingApp) {
-    console.log(
-      chalk.dim(
-        `  · Coolify app "${input.projectName}" already exists (${existingApp.uuid}) — skipping create, will reconcile build pack + domain + env + DNS.`,
-      ),
-    );
-    appUuid = existingApp.uuid;
-    // Pick the compose service the public domain should bind to.
-    // Same priority chain as the create branch: explicit caller hint →
-    // compose-file auto-detect. We compute it here too because the
-    // reconcile PATCH below has to send `docker_compose_domains` —
-    // without it Coolify keeps the previous (or empty) routing and
-    // never generates the per-service traefik labels, which is the
-    // exact symptom that left collection-of-beauty with zero traefik
-    // labels on its container.
-    const dockerComposeServiceName =
-      buildPack === "dockercompose"
-        ? (input.dockerComposeServiceName ??
-          pickComposeServiceForPort(input.projectDir, portsExposes))
-        : undefined;
-    // Validate the picked name actually appears in the compose file.
-    // Coolify's docker_compose_domains PATCH silently no-ops when the
-    // name doesn't match a service — the deploy succeeds, but Traefik
-    // never binds the domain. Emit a caveat + skip the domain PATCH
-    // when validation fails (the rest of the reconcile still runs).
+
+  //
+  // The desired routing comes from deploy/routing.ts — the SAME module
+  // `create` and `sync` use, so the three commands can no longer
+  // disagree about which apps exist or which domains hang off them.
+  // `single-origin` yields one app; `split` yields `<name>-client` +
+  // `<name>-server`.
+  const composeServices = composeServicesOf(input.projectDir);
+  const plan =
+    input.routing ??
+    computeRoutingPlan({
+      name: input.projectName,
+      domain: input.domain,
+      topology: input.topology ?? "single-origin",
+      surfaces: input.surfaces,
+      ports: input.ports,
+      publicService: input.dockerComposeServiceName || undefined,
+      composeServices,
+    });
+
+  const provisioned: Array<{
+    uuid: string;
+    name: string;
+    role: RoutedApp["role"];
+    created: boolean;
+  }> = [];
+
+  for (const routed of plan.apps) {
+    // Validate the routed service names against the compose file BEFORE
+    // any write. Coolify answers a `docker_compose_domains` PATCH that
+    // names a non-existent service with 200 OK, then emits no Traefik
+    // labels at all — the app's FQDN stays empty and every request
+    // 503s. Skip the domain payload and emit a copy-pasteable caveat
+    // rather than pushing to a phantom name; the rest of the
+    // create/reconcile still runs.
     let composeServiceCaveat: CoolifyCaveat | undefined;
-    if (dockerComposeServiceName) {
-      const validation = validateComposeService(input.projectDir, dockerComposeServiceName);
+    if (buildPack === "dockercompose") {
+      const validation = validateComposeServices(input.projectDir, routed.requiredComposeServices);
       if (!validation.ok) {
         composeServiceCaveat = {
-          title: `Coolify routing skipped — phantom compose service "${dockerComposeServiceName}"`,
-          reason: `Service "${dockerComposeServiceName}" is not declared in ${validation.composeFile}. Coolify would accept the PATCH (200 OK) but Traefik would never bind a domain, so every request 503s.`,
+          title: `Coolify routing skipped — phantom compose service(s) ${validation.missing
+            .map((m: string) => `"${m}"`)
+            .join(", ")}`,
+          reason:
+            `${validation.composeFile} declares only: ${validation.declaredServices.join(", ")}. ` +
+            "Coolify would accept the write (200 OK) but Traefik would never bind a domain, so every request 503s.",
           recovery: [
             `Set "publicService" in .hatchkit.json to one of: ${validation.declaredServices.join(", ")}.`,
-            `Then re-run: hatchkit adopt --resume`,
-          ],
-        };
-      }
-    }
-    // Reconcile the build pack + compose location + ports + DOMAINS
-    // against what hatchkit's pipeline expects. Catches the case where
-    // the app was created (by Coolify's UI, an older hatchkit, or a
-    // first-run that picked the wrong value) with build_pack=static
-    // or nixpacks — symptom is "Coolify ignores docker-compose.yml
-    // and tries to serve the repo as a static site". A blind PATCH
-    // is fine here: every adopted app goes through the same
-    // GHCR-pull-via-compose pipeline, so dockercompose is always
-    // the right answer once adopt has scaffolded the build files.
-    //
-    // Domain is included so re-running adopt actually pushes the
-    // manifest's `domain` to Coolify even when the app already exists
-    // — the previous code path skipped this and Coolify kept the
-    // empty (or stale) Domain field, so Traefik never got per-service
-    // routing labels. Skipped when the compose-service validation
-    // above flagged a phantom name (caveat already queued).
-    const reconcile = ora("Coolify: reconciling build pack + domain on existing app").start();
-    try {
-      const skipDomain = !!composeServiceCaveat;
-      await api.updateApplication(existingApp.uuid, {
-        buildPack,
-        portsExposes,
-        dockerComposeLocation: buildPack === "dockercompose" ? "/docker-compose.yml" : undefined,
-        gitBranch: input.gitBranch ?? "main",
-        gitRepository: repoRef.gitRepository,
-        githubAppUuid: input.isPrivate ? githubAppUuid : undefined,
-        // Only patch description when the user supplied one — same
-        // reasoning as the project-level reconcile above (don't
-        // clobber a description the user edited in the dashboard).
-        description: userDescription ? userDescription : undefined,
-        ...(buildPack === "dockercompose"
-          ? skipDomain || !dockerComposeServiceName
-            ? {}
-            : {
-                dockerComposeDomains: [{ name: dockerComposeServiceName, domain: appDomain }],
-              }
-          : { domains: [appDomain] }),
-      });
-      if (skipDomain) {
-        reconcile.warn(
-          `Coolify: build pack set to ${buildPack}; domain PATCH skipped (compose service mismatch).`,
-        );
-      } else {
-        reconcile.succeed(`Coolify: build pack set to ${buildPack}, domain → ${appDomain}`);
-      }
-    } catch (err) {
-      reconcile.fail(`Coolify: couldn't reconcile build pack/domain: ${(err as Error).message}`);
-      console.log(
-        chalk.dim(
-          `  Set Build Pack = ${buildPack} and Domain = ${appDomain} manually on the app's Configuration page in Coolify.`,
-        ),
-      );
-    }
-    if (composeServiceCaveat) caveats.push(composeServiceCaveat);
-  } else {
-    // Pick the compose service name the public domain should bind to.
-    // Coolify's dockercompose build pack rejects a flat `domains` field
-    // (422 — "Use docker_compose_domains instead") because routing has
-    // to be per-service. Resolution order:
-    //   1. Explicit `dockerComposeServiceName` from the caller (e.g.
-    //      adopt's stepper override).
-    //   2. Auto-detect from the project's compose file by port match,
-    //      so user-authored composes with non-default service names
-    //      (`web`, `client`, …) just work.
-    //   3. undefined — when we have no signal at all (no caller hint
-    //      and no compose file on disk yet). The create POST omits the
-    //      per-service domain in that case; a follow-up `--resume` (or
-    //      `hatchkit sync`) after the compose file lands will fix it.
-    const dockerComposeServiceName =
-      buildPack === "dockercompose"
-        ? (input.dockerComposeServiceName ??
-          pickComposeServiceForPort(input.projectDir, portsExposes))
-        : undefined;
-    let composeServiceCaveat: CoolifyCaveat | undefined;
-    if (dockerComposeServiceName) {
-      const validation = validateComposeService(input.projectDir, dockerComposeServiceName);
-      if (!validation.ok) {
-        composeServiceCaveat = {
-          title: `Coolify routing skipped — phantom compose service "${dockerComposeServiceName}"`,
-          reason: `Service "${dockerComposeServiceName}" is not declared in ${validation.composeFile}. Coolify would accept the create but Traefik would never bind a domain, so every request 503s.`,
-          recovery: [
-            `Set "publicService" in .hatchkit.json to one of: ${validation.declaredServices.join(", ")}.`,
-            `Then re-run: hatchkit adopt --resume`,
+            "Then re-run: hatchkit adopt --resume",
           ],
         };
       }
     }
     const skipDomain = !!composeServiceCaveat;
+    const domainPayload =
+      buildPack === "dockercompose"
+        ? skipDomain
+          ? {}
+          : { dockerComposeDomains: routed.composeDomains }
+        : { domains: routed.flatDomains };
+
+    // Accept the alias names on LOOKUP so a hand-rolled
+    // `<name>-backend` / `<name>-frontend` pair is reconciled in place
+    // instead of being shadowed by a second, empty app.
+    let existingApp = await api.findApplicationByName(routed.appName);
+    if (!existingApp) {
+      for (const alias of routed.aliases) {
+        existingApp = await api.findApplicationByName(alias);
+        if (existingApp) {
+          console.log(
+            chalk.dim(
+              `  · Matched existing Coolify app "${alias}" for the ${routed.role} half ` +
+                `(hatchkit's own name would be "${routed.appName}").`,
+            ),
+          );
+          break;
+        }
+      }
+    }
+
+    if (existingApp) {
+      console.log(
+        chalk.dim(
+          `  · Coolify app "${existingApp.name || routed.appName}" already exists (${existingApp.uuid}) — skipping create, will reconcile build pack + domain + env + DNS.`,
+        ),
+      );
+      // Reconcile the build pack + compose location + ports + DOMAINS
+      // against what hatchkit's pipeline expects. Catches the case where
+      // the app was created (by Coolify's UI, an older hatchkit, or a
+      // first-run that picked the wrong value) with build_pack=static
+      // or nixpacks — symptom is "Coolify ignores docker-compose.yml
+      // and tries to serve the repo as a static site".
+      const reconcile = ora(
+        `Coolify: reconciling build pack + domain on "${existingApp.name || routed.appName}"`,
+      ).start();
+      try {
+        await api.updateApplication(existingApp.uuid, {
+          buildPack,
+          portsExposes: routed.portsExposes,
+          dockerComposeLocation: buildPack === "dockercompose" ? "/docker-compose.yml" : undefined,
+          gitBranch: input.gitBranch ?? "main",
+          gitRepository: repoRef.gitRepository,
+          githubAppUuid: input.isPrivate ? githubAppUuid : undefined,
+          // Only patch description when the user supplied one — don't
+          // clobber a description edited in the dashboard.
+          description: userDescription ? userDescription : undefined,
+          // Pushed even when the domain payload is skipped: it's an app
+          // setting, not part of the routing, and getting it wrong is
+          // the difference between /api/health and a 404.
+          isStripprefixEnabled: routed.stripPrefix,
+          ...domainPayload,
+        });
+        if (skipDomain) {
+          reconcile.warn(
+            `Coolify: build pack set to ${buildPack}; domain PATCH skipped (compose service mismatch).`,
+          );
+        } else {
+          reconcile.succeed(
+            `Coolify: build pack set to ${buildPack}, routing → ${formatRouting(routed)}`,
+          );
+        }
+      } catch (err) {
+        reconcile.fail(`Coolify: couldn't reconcile build pack/domain: ${(err as Error).message}`);
+        console.log(
+          chalk.dim(
+            `  Set Build Pack = ${buildPack} and Domain = ${formatRouting(routed)} manually on the app's Configuration page in Coolify.`,
+          ),
+        );
+      }
+      if (composeServiceCaveat) caveats.push(composeServiceCaveat);
+      provisioned.push({
+        uuid: existingApp.uuid,
+        name: existingApp.name || routed.appName,
+        role: routed.role,
+        created: false,
+      });
+      continue;
+    }
+
     const baseInput: ApplicationCreateInput = {
       projectUuid,
       serverUuid: resolveServer.uuid,
       gitRepository: repoRef.gitRepository,
       gitBranch: input.gitBranch ?? "main",
-      portsExposes,
+      portsExposes: routed.portsExposes,
       // hatchkit's canonical pipeline = GitHub Actions builds image →
       // pushes to GHCR → Coolify pulls via docker-compose.yml. Caller
       // can still override (e.g. for legacy nixpacks paths) but
       // `dockercompose` is the default for any project that's gone
       // through `hatchkit adopt`'s build-pipeline scaffold.
       buildPack,
-      name: input.projectName,
+      name: routed.appName,
       description: createDescription,
-      domains: skipDomain ? undefined : [appDomain],
-      dockerComposeDomainServiceName: skipDomain ? undefined : dockerComposeServiceName,
+      ...(buildPack === "dockercompose" ? {} : { domains: routed.flatDomains }),
+      ...(buildPack === "dockercompose" && !skipDomain
+        ? { dockerComposeDomains: routed.composeDomains }
+        : {}),
       instantDeploy: false,
     };
 
-    const createApp = ora(`Coolify: creating app for ${repoRef.gitRepository}`).start();
+    const createApp = ora(`Coolify: creating app "${routed.appName}"`).start();
+    let createdUuid: string;
     try {
       const res = input.isPrivate
         ? await api.createApplicationFromPrivateGithubApp({
@@ -425,15 +424,45 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
             githubAppUuid: githubAppUuid as string,
           })
         : await api.createApplicationFromPublicRepo(baseInput);
-      appUuid = res.uuid;
-      appCreated = true;
-      createApp.succeed(`Coolify app created (uuid: ${appUuid})`);
+      createdUuid = res.uuid;
+      createApp.succeed(`Coolify app created: ${routed.appName} (uuid: ${createdUuid})`);
     } catch (err) {
       createApp.fail();
       throw err;
     }
+
+    // `is_stripprefix_enabled` isn't accepted on the create endpoints,
+    // so path-scoped routing needs this follow-up PATCH. Without it
+    // Coolify strips `/api` and every API call 404s at Express.
+    if (!routed.stripPrefix) {
+      const strip = ora("Coolify: disabling path-prefix stripping").start();
+      try {
+        await api.updateApplication(createdUuid, { isStripprefixEnabled: false });
+        strip.succeed("Coolify: path-prefix stripping disabled (so /api reaches the server)");
+      } catch (err) {
+        strip.fail(`Coolify: couldn't disable path-prefix stripping — ${(err as Error).message}`);
+        caveats.push({
+          title: `Path-prefix stripping left ON for "${routed.appName}"`,
+          reason: `PATCH is_stripprefix_enabled=false failed: ${(err as Error).message}. Coolify will deliver /api/health to the server as /health, so every API call 404s.`,
+          recovery: [
+            `Open the Coolify app's Configuration page → Advanced → "Strip Prefix" → toggle OFF.`,
+            "Or re-run: hatchkit sync",
+          ],
+        });
+      }
+    }
+
     if (composeServiceCaveat) caveats.push(composeServiceCaveat);
+    provisioned.push({
+      uuid: createdUuid,
+      name: routed.appName,
+      role: routed.role,
+      created: true,
+    });
   }
+
+  const appUuid = provisioned[0].uuid;
+  const appCreated = provisioned.some((a) => a.created);
 
   // ── 4b. Toggle Coolify's git-webhook auto-deploy.
   //
@@ -502,6 +531,14 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
   // /servers itself returns a real IPv4 on non-Docker installs.
   const ips = await discoverPublicIps(api, resolveServer.uuid, server.ip);
   const dnsResult = await wireDns(input.domain, ips);
+  // Topologies that add a hostname (split's `api.<domain>`) need their
+  // own record — the bare-domain A record above doesn't cover it, and a
+  // missing one presents as "the API is just down" with no other
+  // symptom. Best-effort: failures become a caveat, not a hard stop.
+  for (const host of plan.extraDnsHostnames) {
+    const extra = await wireDns(host, ips);
+    if (extra.caveat) caveats.push(extra.caveat);
+  }
 
   // ── 7. First deploy is owned by GitHub Actions, not us. ─────────────
   //
@@ -528,6 +565,8 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
 
   return {
     appUuid,
+    apps: provisioned,
+    extraDnsHostnames: plan.extraDnsHostnames,
     projectUuid,
     serverUuid: resolveServer.uuid,
     serverIpv4: ips.v4,
@@ -562,18 +601,14 @@ export function normalizeCoolifyGitRepository(
   };
 }
 
-function formatDockerComposeDomain(domain: string, portsExposes: string): string {
-  const port = firstExposePort(portsExposes);
-  if (!port || port === "80" || port === "443") return `https://${domain}`;
-  return `https://${domain}:${port}`;
-}
-
-function firstExposePort(portsExposes: string): string | undefined {
-  const first = portsExposes
-    .split(",")
-    .map((p) => p.trim())
-    .find(Boolean);
-  return first?.split(":").pop()?.trim();
+/** One-line rendering of an app's routing, for spinner text and the
+ *  manual-fix hint. Shows `service=url` for compose apps (the shape
+ *  Coolify stores) and a plain URL list otherwise. */
+function formatRouting(routed: RoutedApp): string {
+  if (routed.composeDomains.length > 0) {
+    return routed.composeDomains.map((d) => `${d.name}=${d.domain}`).join(", ");
+  }
+  return routed.flatDomains.join(", ");
 }
 
 interface DnsWireResult {
@@ -817,191 +852,6 @@ async function upsertOne(
     spinner.fail(`Cloudflare: ${type}-record upsert failed: ${(err as Error).message}`);
     return undefined;
   }
-}
-
-/** Validate the chosen compose service name against the project's
- *  docker-compose file. Coolify's docker_compose_domains PATCH silently
- *  no-ops when `name` doesn't match a service in the compose — the
- *  response is still 200 OK, but no Traefik labels get emitted, the
- *  app's FQDN stays empty, and every request 503s. We surface this
- *  to the caller as a structured result so they can skip the PATCH +
- *  emit a copy-pasteable caveat instead of pushing to a phantom name.
- *
- *  Result shapes:
- *    · { ok: true } — service exists in compose, or no compose file on
- *      disk we can parse (caller proceeds with the PATCH).
- *    · { ok: false, declaredServices } — compose found, service NOT in
- *      its `services:` block; caller skips the PATCH and emits caveat.
- */
-function validateComposeService(
-  projectDir: string | undefined,
-  serviceName: string,
-): { ok: true } | { ok: false; declaredServices: string[]; composeFile: string } {
-  if (!projectDir) return { ok: true };
-  for (const name of ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"]) {
-    const path = join(projectDir, name);
-    if (!existsSync(path)) continue;
-    let services: string[];
-    try {
-      services = listComposeServices(readFileSync(path, "utf-8"));
-    } catch {
-      // Unreadable / unparseable compose: don't block the deploy on
-      // our parser's limits.
-      return { ok: true };
-    }
-    if (services.length === 0) return { ok: true };
-    if (services.includes(serviceName)) return { ok: true };
-    return { ok: false, declaredServices: services, composeFile: name };
-  }
-  return { ok: true };
-}
-
-/** Extract the list of top-level service keys from a compose file.
- *  Shares the indent-aware traversal with matchComposeService below
- *  but returns the full set instead of a single match. */
-function listComposeServices(content: string): string[] {
-  const services: string[] = [];
-  const lines = content.split(/\r?\n/);
-  let servicesIndent = -1;
-  let inServices = false;
-  let currentServiceIndent = -1;
-
-  for (const raw of lines) {
-    const line = raw.replace(/#.*$/, "").trimEnd();
-    if (!line.trim()) continue;
-    const indent = line.length - line.trimStart().length;
-
-    if (!inServices) {
-      if (/^services\s*:/.test(line)) {
-        inServices = true;
-        servicesIndent = indent;
-      }
-      continue;
-    }
-
-    if (indent <= servicesIndent) break;
-
-    if (currentServiceIndent === -1 || indent === currentServiceIndent) {
-      const m = line.match(/^\s*([A-Za-z0-9_.-]+)\s*:\s*$/);
-      if (m && !m[1].startsWith("x-")) {
-        currentServiceIndent = indent;
-        services.push(m[1]);
-      }
-    }
-  }
-  return services;
-}
-
-/** Read the project's compose file and pick the service the public
- *  domain should bind to under Coolify's dockercompose build pack.
- *
- *  Why this exists: Coolify's API rejects the flat `domains` field for
- *  dockercompose apps and requires `docker_compose_domains` keyed by
- *  service name (422 — "Use docker_compose_domains instead to set
- *  domains for individual services"). The compose file is the source
- *  of truth for which service names exist on this project, so we read
- *  it directly instead of guessing.
- *
- *  Selection rules (first match wins):
- *    1. A service whose `ports:` mapping includes `<portsExposes>` —
- *       most accurate signal that this is the public-facing service.
- *    2. The first top-level service in the file — a sensible fallback
- *       for compose files written without explicit port mappings (e.g.
- *       hatchkit's own template, where the app service exposes the
- *       port via a build arg).
- *    3. `app` — the service name in hatchkit's compose template. Used
- *       when there's no compose file on disk yet (the build-pipeline
- *       scaffold may have written it after a hatchkit run that didn't
- *       reach this branch) or the file can't be parsed.
- *
- *  We deliberately avoid pulling in a YAML library — the regex below
- *  matches top-level `<name>:` keys and `<host>:<container>` port
- *  entries, which is enough for any compose file that compose itself
- *  parses successfully. */
-function pickComposeServiceForPort(projectDir: string | undefined, portsExposes: string): string {
-  if (!projectDir) return "app";
-  for (const name of ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"]) {
-    const path = join(projectDir, name);
-    if (!existsSync(path)) continue;
-    try {
-      const content = readFileSync(path, "utf-8");
-      const match = matchComposeService(content, portsExposes);
-      if (match) return match;
-    } catch {
-      // Fall through to the default — better to send a request that
-      // might fail with a clearer Coolify error than to crash the
-      // adopt flow on a malformed compose file.
-    }
-    break;
-  }
-  return "app";
-}
-
-/** Extract service-name candidates from a compose file. Returns the
- *  first service with a port mapping that includes `portsExposes`,
- *  else the first top-level service, else undefined. */
-function matchComposeService(content: string, portsExposes: string): string | undefined {
-  // Find the `services:` block. Anything before it (e.g. version, name)
-  // is irrelevant.
-  const lines = content.split(/\r?\n/);
-  let servicesIndent = -1;
-  let inServices = false;
-  let firstService: string | undefined;
-  let portMatchService: string | undefined;
-  let currentService: string | undefined;
-  let currentServiceIndent = -1;
-
-  for (const raw of lines) {
-    const line = raw.replace(/#.*$/, "").trimEnd();
-    if (!line.trim()) continue;
-    const indent = line.length - line.trimStart().length;
-
-    if (!inServices) {
-      if (/^services\s*:/.test(line)) {
-        inServices = true;
-        servicesIndent = indent;
-      }
-      continue;
-    }
-
-    // Exited the services block.
-    if (indent <= servicesIndent) break;
-
-    // A service header — `<name>:` indented deeper than `services:`
-    // and not deeper than another service. We track the first one we
-    // see at the shallowest depth; deeper lines belong to the same
-    // service definition.
-    if (currentServiceIndent === -1 || indent === currentServiceIndent) {
-      const m = line.match(/^\s*([A-Za-z0-9_.-]+)\s*:\s*$/);
-      if (m) {
-        currentService = m[1];
-        currentServiceIndent = indent;
-        if (!firstService) firstService = currentService;
-        continue;
-      }
-    }
-
-    // Inside a service body: look for a port mapping that includes
-    // the host or container port we care about. Compose accepts
-    // "<host>:<container>", "<container>", or the long form with a
-    // `target:` key — we match all three.
-    if (currentService && !portMatchService) {
-      const portsLine = line.match(/^\s*-\s*"?([0-9]+)(?::([0-9]+))?(?:\/[a-z]+)?"?$/);
-      if (portsLine) {
-        const host = portsLine[1];
-        const container = portsLine[2] ?? portsLine[1];
-        if (host === portsExposes || container === portsExposes) {
-          portMatchService = currentService;
-        }
-      }
-      const targetLine = line.match(/^\s*target\s*:\s*"?([0-9]+)"?\s*$/);
-      if (targetLine && targetLine[1] === portsExposes) {
-        portMatchService = currentService;
-      }
-    }
-  }
-
-  return portMatchService ?? firstService;
 }
 
 /** Best-effort eTLD+1 inference. Works for the common case

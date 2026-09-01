@@ -48,6 +48,7 @@ import {
 import { pushInitialBranch } from "./deploy/github.js";
 import { pushProjectKeyToCoolify, pushProjectKeyToGh } from "./deploy/keys.js";
 import { handleAdoptFailure } from "./deploy/rollback.js";
+import { computeRoutingPlan, inferTopology } from "./deploy/routing.js";
 import {
   type ProjectOnboardingPlan,
   adoptPlanToOnboardingPlan,
@@ -67,7 +68,6 @@ import {
   EMAIL_INTENT_NONE,
   type EmailIntent,
   type Feature,
-  type S3Provider,
   type Surface,
   askEmailIntent,
   emailIntentToProvisionServices,
@@ -90,6 +90,7 @@ import {
   isCancelInProgress,
   uninstallCancelHandler,
 } from "./utils/cancel-handler.js";
+import { composeServicesOf } from "./utils/compose.js";
 import { CoolifyApi } from "./utils/coolify-api.js";
 import { ensureDockerignoreAllowsEnvProduction } from "./utils/dockerignore.js";
 import { exec, execOk } from "./utils/exec.js";
@@ -1692,7 +1693,34 @@ async function executePlan(
           state.existingManifest?.publicService ??
           defaultPublicServiceForSurfaces(plan.surfaces) ??
           detectDockerComposeDomainServiceName(state.projectDir, plan.surfaces);
+        // Topology is never re-decided here — an existing manifest's
+        // value wins, and a project without one is `single-origin`
+        // (what every pre-topology hatchkit run produced). Computing
+        // the plan on this side means adopt, create and sync all read
+        // the same module and can't drift apart.
+        const topology = inferTopology({
+          topology: state.existingManifest?.topology,
+          composeServices: composeServicesOf(state.projectDir),
+        }).topology;
+        const routing = computeRoutingPlan({
+          name: plan.name,
+          domain: plan.domain,
+          topology,
+          surfaces: plan.surfaces,
+          ports: state.existingManifest?.ports ?? {
+            server: Number(plan.appPort) || undefined,
+          },
+          publicService: resolvedPublicService || undefined,
+          composeServices: composeServicesOf(state.projectDir),
+        });
+        console.log(chalk.dim(`  · Topology: ${topology}`));
+        for (const app of routing.apps) {
+          for (const entry of app.composeDomains) {
+            console.log(chalk.dim(`  · ${app.appName}: ${entry.name} → ${entry.domain}`));
+          }
+        }
         coolifyResult = await wireProjectIntoCoolify({
+          routing,
           projectName: plan.name,
           domain: plan.domain,
           // Empty string → wireProjectIntoCoolify uses its built-in
@@ -1742,8 +1770,11 @@ async function executePlan(
         if (coolifyResult.projectCreated) {
           ledger.record({ kind: "coolifyProject", uuid: coolifyResult.projectUuid });
         }
-        if (coolifyResult.appCreated) {
-          ledger.record({ kind: "coolifyApp", uuid: coolifyResult.appUuid });
+        // Record EVERY app this run created — `split` creates two, and
+        // recording only the primary would strand the other behind on
+        // rollback (and then block the project delete).
+        for (const app of coolifyResult.apps) {
+          if (app.created) ledger.record({ kind: "coolifyApp", uuid: app.uuid });
         }
         if (
           coolifyResult.dnsRecordCreatedV4 &&
@@ -3310,48 +3341,125 @@ async function importKeyToKeychain(
   return { account, created: !existing, imported: true };
 }
 
-function writeAdoptManifest(projectDir: string, plan: AdoptPlan, state: DetectedState): void {
-  // publicService resolution mirrors the wire-up call site: prefer
-  // any previously-persisted value (don't overwrite a user-pinned
-  // choice on --resume), else derive from surfaces, else infer from
-  // the compose file. Persisting on every write means a project
-  // adopted before this field existed silently picks up the right
-  // value on the next adopt run — and re-running with a manually
-  // edited compose surfaces the updated inference too.
+/** Build the manifest `adopt` should write, MERGED over whatever the
+ *  project already had.
+ *
+ *  Exported for the regression test. Pure — takes the existing manifest
+ *  rather than reading it — so the merge rules can be asserted without
+ *  a filesystem.
+ *
+ *  ## Why a merge, and not a fresh object
+ *
+ *  This used to construct a brand-new `ProjectManifest` from `plan`
+ *  alone. On a project that `hatchkit create` had scaffolded, running
+ *  `hatchkit adopt --resume` therefore silently destroyed real state:
+ *
+ *    · `ports` was overwritten with a hardcoded `{server:3000,
+ *      client:3001}`, losing e.g. tracktime's `{5159, 6477, 7130}` —
+ *      the ports its Dockerfiles EXPOSE, its compose pins and its
+ *      local-dev bridge routes to.
+ *    · the whole `ses` block vanished: identity, MAIL FROM domain and
+ *      the record-by-record list of DNS rows hatchkit manages. Without
+ *      it `email ses-mail-from remove` can no longer tell hatchkit's
+ *      rows from the user's, so it stops being able to clean up.
+ *    · `localDev` vanished, orphaning the project's Caddy fragment.
+ *    · `s3Provider` flipped `"r2"` → `"existing"`, because adopt infers
+ *      it from feature flags alone and can't see that create had
+ *      provisioned R2 buckets.
+ *    · `topology`, `deploymentMode`, `mlServices`, `gpuPlatforms`,
+ *      `integrations`, `signing` and `s3Buckets` were all dropped too.
+ *
+ *  Only `publicService` survived, because it was the one field with an
+ *  explicit `state.existingManifest?.…` read.
+ *
+ *  ## The merge rules
+ *
+ *  Adopt's job is to take inventory, not to make infra decisions, so
+ *  the default is: the existing value wins, and adopt only supplies
+ *  what the project doesn't already have. The exceptions are the four
+ *  fields the user just answered for in the stepper — name, domain,
+ *  description, surfaces — plus `features`, which the stepper detects
+ *  fresh from the code on every run. Those are adopt's to set. */
+export function buildAdoptManifest(
+  plan: AdoptPlan,
+  state: DetectedState,
+  cliVersion: string,
+): ProjectManifest {
+  const existing = state.existingManifest;
+
+  // publicService resolution: prefer any previously-persisted value
+  // (don't overwrite a user-pinned choice on --resume), else derive
+  // from surfaces, else infer from the compose file. Persisting on
+  // every write means a project adopted before this field existed
+  // silently picks up the right value on the next adopt run.
   const resolvedPublicService =
-    state.existingManifest?.publicService ??
+    existing?.publicService ??
     defaultPublicServiceForSurfaces(plan.surfaces) ??
     detectDockerComposeDomainServiceName(state.projectDir, plan.surfaces);
-  // Unknown bits (ports, deployTarget specifics) get conservative
-  // defaults — adopt's role is to take inventory, not to make
-  // infra decisions. The user can edit the manifest later.
-  const manifest: ProjectManifest = {
+
+  // Topology: never re-decide it here. A project already carrying the
+  // field keeps it; one without gets the inferred value (always
+  // `single-origin` — see inferTopology), written down so `sync` and
+  // `create` stop having to re-derive it.
+  const topology = inferTopology({
+    topology: existing?.topology,
+    composeServices: composeServicesOf(state.projectDir),
+  }).topology;
+
+  return {
+    // ── Adopt owns these: the stepper just collected them ───────────
     version: MANIFEST_VERSION,
-    cliVersion: getCliVersion(),
-    scaffoldedAt: new Date().toISOString(),
+    cliVersion,
     name: plan.name,
     domain: plan.domain,
-    // Only persist non-empty descriptions — keeping the field absent
-    // when unset is friendlier to manifest readers that haven't been
-    // taught the new field yet (and to humans diffing the file).
-    ...(plan.description ? { description: plan.description } : {}),
     features: plan.features,
-    mlServices: [],
-    s3Provider: ((): S3Provider => (plan.features.includes("s3") ? "existing" : "none"))(),
-    deployTarget: "existing",
-    // Persist deployment mode so `--resume` recovers the gh-pages
-    // path without re-asking the user. Same back-compat invariant
-    // as `surfaces` — readers without this field fall back to coolify.
-    deploymentMode: plan.deploymentMode,
-    ports: { server: 3000, client: 3001 },
-    // Persist the surface choice so `--resume` doesn't re-infer
-    // "backend" just because there's no client/ directory in the
-    // current layout.
     surfaces: plan.surfaces,
-    publicService: resolvedPublicService,
     email: plan.email,
+    deploymentMode: plan.deploymentMode,
+    publicService: resolvedPublicService,
+    topology,
+
+    // Keep the original scaffold timestamp — it records when the
+    // project came into being, not when adopt last ran. Overwriting it
+    // would make the manifest claim every `--resume` was a re-scaffold.
+    scaffoldedAt: existing?.scaffoldedAt ?? new Date().toISOString(),
+
+    // Only persist non-empty descriptions, and don't blank out one the
+    // user already had by leaving the stepper field empty.
+    ...(plan.description
+      ? { description: plan.description }
+      : existing?.description
+        ? { description: existing.description }
+        : {}),
+
+    // ── Existing value wins: adopt cannot observe these ─────────────
+    //
+    // Ports come from the scaffold (Dockerfile EXPOSE, compose PORT
+    // pins, the local-dev bridge). Adopt has no way to rediscover them,
+    // so its 3000/3001 default is only a last resort for a project that
+    // never had a manifest.
+    ports: existing?.ports ?? { server: 3000, client: 3001 },
+    // `existing` is adopt's honest answer for a project it's seeing for
+    // the first time — but it's a downgrade from a real provider name.
+    s3Provider: existing?.s3Provider ?? (plan.features.includes("s3") ? "existing" : "none"),
+    deployTarget: existing?.deployTarget ?? "existing",
+    mlServices: existing?.mlServices ?? [],
+
+    // Straight carry-overs. Spread conditionally so absent stays absent
+    // rather than becoming an explicit `undefined` in the JSON.
+    ...(existing?.localDev ? { localDev: existing.localDev } : {}),
+    ...(existing?.ses ? { ses: existing.ses } : {}),
+    ...(existing?.s3Buckets ? { s3Buckets: existing.s3Buckets } : {}),
+    ...(existing?.integrations ? { integrations: existing.integrations } : {}),
+    ...(existing?.signing ? { signing: existing.signing } : {}),
+    ...(existing?.gpuPlatforms ? { gpuPlatforms: existing.gpuPlatforms } : {}),
+    ...(existing?.customHfModelId ? { customHfModelId: existing.customHfModelId } : {}),
+    ...(existing?.customHfGpuType ? { customHfGpuType: existing.customHfGpuType } : {}),
   };
-  writeManifest(projectDir, manifest);
+}
+
+function writeAdoptManifest(projectDir: string, plan: AdoptPlan, state: DetectedState): void {
+  writeManifest(projectDir, buildAdoptManifest(plan, state, getCliVersion()));
 }
 
 function relativeTo(p: string, from = process.cwd()): string {

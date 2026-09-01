@@ -1774,69 +1774,91 @@ console.log("\n── plausible api: CE fallback writes manual tracker env ─�
   results.plausibleCeManualFallback = ok;
 }
 
-// Sync plan computation: the manifest → DesiredApp map must produce the
-// per-app payload that runCoolifySetup / wireProjectIntoCoolify create
-// at scaffold time. Anchored on collection-of-beauty's real shape
-// (client-only, port 80, single `app` service) since that's the ground
-// truth case the bug was reported against.
-console.log(
-  "\n── sync: manifest → desired Coolify app states (matches scaffold time) ────────",
-);
+// Sync plan computation: the manifest → desired Coolify state must
+// name compose services that actually exist, and must emit at most one
+// entry per service (Coolify STORES docker_compose_domains as a map, so
+// duplicates are a silent last-wins drop). Anchored on
+// collection-of-beauty's real shape (static, port 80) and on the
+// starter's fullstack compose.
+//
+// The previous version of this block asserted the OLD behaviour — a
+// service literally named `app`, and four separate `server` entries.
+// Both were bugs: `app` appears in no hatchkit compose file, and the
+// four entries collapsed to one inside Coolify.
+console.log("\n── sync: manifest → desired Coolify app states (matches scaffold time) ────────");
 {
-  const { computeDesiredAppStates } = await import("./src/deploy/sync.js");
-  const { MANIFEST_VERSION } = await import("./src/scaffold/manifest.js");
+  const { computeRoutingPlan } = await import("./src/deploy/routing.js");
 
-  const clientOnly = computeDesiredAppStates({
-    version: MANIFEST_VERSION,
-    cliVersion: "0.0.0-test",
-    scaffoldedAt: "2026-05-01T00:00:00.000Z",
+  const staticSite = computeRoutingPlan({
     name: "collection-of-beauty",
     domain: "beauty.example.com",
-    features: [],
-    mlServices: [],
-    s3Provider: "none",
-    deployTarget: "existing",
-    ports: { server: 3000, client: 3001 },
+    topology: "single-origin",
     surfaces: "static",
+    ports: { server: 3000, client: 3001 },
+    composeServices: ["client"],
   });
-  const both = computeDesiredAppStates({
-    version: MANIFEST_VERSION,
-    cliVersion: "0.0.0-test",
-    scaffoldedAt: "2026-05-01T00:00:00.000Z",
+  const fullstack = computeRoutingPlan({
     name: "split-app",
     domain: "split.example.com",
-    features: [],
-    mlServices: [],
-    s3Provider: "none",
-    deployTarget: "existing",
-    ports: { server: 3000, client: 3001 },
+    topology: "single-origin",
     surfaces: "fullstack",
+    ports: { server: 3000, client: 3001 },
+    composeServices: ["server", "client", "mongo", "redis"],
+  });
+  const split = computeRoutingPlan({
+    name: "split-app",
+    domain: "split.example.com",
+    topology: "split",
+    surfaces: "fullstack",
+    ports: { server: 3000, client: 3001 },
   });
 
-  const singleApp = clientOnly.find((d) => d.appName === "collection-of-beauty");
-  const splitClient = both.find((d) => d.appName === "split-app-client");
-  const splitServer = both.find((d) => d.appName === "split-app-server");
+  const staticApp = staticSite.apps[0];
+  const composeApp = fullstack.apps[0];
+  const splitClient = split.apps.find((a) => a.appName === "split-app-client");
+  const splitServer = split.apps.find((a) => a.appName === "split-app-server");
 
   const checks: Check[] = [
-    ["client-only emits a single-app entry", !!singleApp],
+    ["static: one app named after the project", staticSite.apps.length === 1 && staticApp.appName === "collection-of-beauty"],
     [
-      "client-only: domain canonicalizes to https://<bare>",
-      singleApp?.domains[0]?.domain === "https://beauty.example.com",
-    ],
-    ["client-only: app service named `app`", singleApp?.domains[0]?.name === "app"],
-    ["client-only: ports_exposes is 80", singleApp?.portsExposes === "80"],
-    ["both: emits split client app", !!splitClient],
-    ["both: emits split server app", !!splitServer],
-    [
-      "both: client gets frontend hostname only",
-      splitClient?.domains.length === 1 &&
-        splitClient?.domains[0]?.domain === "https://split.example.com",
+      "static: domain canonicalizes to https://<bare>",
+      staticApp.composeDomains[0]?.domain === "https://beauty.example.com",
     ],
     [
-      "both: server gets api + path-based backend hosts",
-      Array.isArray(splitServer?.domains) &&
-        (splitServer?.domains.length ?? 0) === 4 &&
-        splitServer?.domains.every((d) => d.name === "server"),
+      "static: routes the `client` service, never the phantom `app`",
+      staticApp.composeDomains[0]?.name === "client",
+    ],
+    ["static: ports_exposes is 80", staticApp.portsExposes === "80"],
+    [
+      "fullstack: client on the bare domain, server on /api",
+      composeApp.composeDomains.length === 2 &&
+        composeApp.composeDomains[0]?.domain === "https://split.example.com" &&
+        composeApp.composeDomains[1]?.domain === "https://split.example.com/api",
+    ],
+    [
+      "fullstack: one entry per service (Coolify stores a map)",
+      new Set(composeApp.composeDomains.map((d) => d.name)).size ===
+        composeApp.composeDomains.length,
+    ],
+    [
+      "fullstack: strip-prefix off so /api survives to Express",
+      composeApp.stripPrefix === false,
+    ],
+    ["split: emits split client app", !!splitClient],
+    ["split: emits split server app", !!splitServer],
+    [
+      "split: client gets the frontend hostname only",
+      splitClient?.composeDomains.length === 1 &&
+        splitClient?.composeDomains[0]?.domain === "https://split.example.com",
+    ],
+    [
+      "split: server gets api.<domain> at the root path",
+      splitServer?.composeDomains.length === 1 &&
+        splitServer?.composeDomains[0]?.domain === "https://api.split.example.com",
+    ],
+    [
+      "split: reports the extra DNS record it needs",
+      split.extraDnsHostnames.join(",") === "api.split.example.com",
     ],
   ];
   let ok = true;

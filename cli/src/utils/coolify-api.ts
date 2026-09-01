@@ -1,3 +1,5 @@
+import { collapseComposeDomains, splitDomainString } from "../deploy/routing.js";
+
 export interface CoolifyServer {
   id: number;
   /** Coolify's UUID — stable handle across renames/IP changes. Newer
@@ -451,8 +453,13 @@ export class CoolifyApi {
           name: input.dockerComposeDomainServiceName ?? "app",
           domain,
         }));
+      // Collapse to one entry per service. Coolify STORES this as a map
+      // keyed by service name, so two entries with the same `name` are a
+      // silent last-wins drop; several FQDNs for one service have to be
+      // comma-joined into a single entry instead (Coolify explodes on
+      // commas at both validation and label-generation time).
       if (dockerComposeDomains && dockerComposeDomains.length > 0) {
-        body.docker_compose_domains = dockerComposeDomains;
+        body.docker_compose_domains = collapseComposeDomains(dockerComposeDomains);
       }
     } else if (input.domains && input.domains.length > 0) {
       body.domains = input.domains.join(",");
@@ -512,10 +519,23 @@ export class CoolifyApi {
        *  sent. Pass `[]` to clear all domains. */
       domains?: string[];
       /** Per-service domains for dockercompose apps. Pass `[]` to clear
-       *  every routing entry. */
+       *  every routing entry. Several FQDNs for one service may be
+       *  passed as repeated entries — they're collapsed into the single
+       *  comma-joined entry Coolify actually stores. */
       dockerComposeDomains?: Array<{ name: string; domain: string }>;
       /** Toggle Coolify's git-webhook auto-deploy. See method doc above. */
       isAutoDeployEnabled?: boolean;
+      /** Coolify's `is_stripprefix_enabled`. MUST be false on any app
+       *  whose routing uses a path (e.g. `https://<domain>/api`):
+       *  Coolify attaches a Traefik `stripprefix` middleware for every
+       *  non-`/` path, so with it on the backend receives `/health`
+       *  where the client asked for `/api/health`. */
+      isStripprefixEnabled?: boolean;
+      /** Coolify rejects a domain already claimed by another resource
+       *  (409) or repeated inside one request (422) unless this is set.
+       *  Only pass true when the conflicting resource is one hatchkit
+       *  is itself replacing. */
+      forceDomainOverride?: boolean;
     },
   ): Promise<void> {
     const body: Record<string, unknown> = {};
@@ -530,10 +550,16 @@ export class CoolifyApi {
     if (fields.description !== undefined) body.description = fields.description;
     if (fields.domains !== undefined) body.domains = fields.domains.join(",");
     if (fields.dockerComposeDomains !== undefined) {
-      body.docker_compose_domains = fields.dockerComposeDomains;
+      body.docker_compose_domains = collapseComposeDomains(fields.dockerComposeDomains);
     }
     if (fields.isAutoDeployEnabled !== undefined) {
       body.is_auto_deploy_enabled = fields.isAutoDeployEnabled;
+    }
+    if (fields.isStripprefixEnabled !== undefined) {
+      body.is_stripprefix_enabled = fields.isStripprefixEnabled;
+    }
+    if (fields.forceDomainOverride) {
+      body.force_domain_override = true;
     }
     if (Object.keys(body).length === 0) return;
     await this.request("PATCH", `/applications/${uuid}`, body);
@@ -566,44 +592,21 @@ export class CoolifyApi {
     const raw = (await this.request("GET", `/applications/${uuid}`)) as Record<string, unknown>;
     const buildPack = (raw.build_pack as CoolifyApplication["buildPack"]) ?? undefined;
     const fqdn = typeof raw.fqdn === "string" ? raw.fqdn : null;
-    // docker_compose_domains arrives as either a JSON-encoded string,
-    // a parsed array, or null depending on the Coolify version. Normalize
-    // to `Array<{ name, domain }>` (or undefined when absent).
-    let dockerComposeDomains: Array<{ name: string; domain: string }> | undefined;
-    const rawDomains = raw.docker_compose_domains;
-    if (Array.isArray(rawDomains)) {
-      dockerComposeDomains = rawDomains
-        .map((entry) => {
-          if (!entry || typeof entry !== "object") return null;
-          const e = entry as Record<string, unknown>;
-          const name = typeof e.name === "string" ? e.name : null;
-          const domain = typeof e.domain === "string" ? e.domain : null;
-          return name && domain ? { name, domain } : null;
-        })
-        .filter((entry): entry is { name: string; domain: string } => entry !== null);
-    } else if (typeof rawDomains === "string" && rawDomains.trim()) {
-      try {
-        const parsed = JSON.parse(rawDomains);
-        if (Array.isArray(parsed)) {
-          dockerComposeDomains = parsed.filter(
-            (e): e is { name: string; domain: string } =>
-              !!e &&
-              typeof e === "object" &&
-              typeof e.name === "string" &&
-              typeof e.domain === "string",
-          );
-        }
-      } catch {
-        // Coolify wrote something we can't parse — surface as undefined.
-      }
-    }
+    const dockerComposeDomains = parseDockerComposeDomains(raw.docker_compose_domains);
     return {
       uuid: typeof raw.uuid === "string" ? raw.uuid : uuid,
       name: typeof raw.name === "string" ? raw.name : "",
       buildPack,
       fqdn,
       dockerComposeDomains,
-      portsExposes: typeof raw.ports_exposes === "string" ? raw.ports_exposes : undefined,
+      portsExposes:
+        typeof raw.ports_exposes === "string"
+          ? raw.ports_exposes
+          : typeof raw.ports_exposes === "number"
+            ? String(raw.ports_exposes)
+            : undefined,
+      isStripprefixEnabled:
+        typeof raw.is_stripprefix_enabled === "boolean" ? raw.is_stripprefix_enabled : undefined,
       gitRepository: typeof raw.git_repository === "string" ? raw.git_repository : undefined,
       gitBranch: typeof raw.git_branch === "string" ? raw.git_branch : undefined,
       serverUuid: extractServerUuid(raw),
@@ -650,8 +653,12 @@ export interface CoolifyApplication {
   /** Per-service routing for dockercompose apps. Undefined when the
    *  app isn't dockercompose or no per-service domains are set. */
   dockerComposeDomains?: Array<{ name: string; domain: string }>;
-  /** `ports_exposes` as Coolify stores it (comma-separated). */
+  /** `ports_exposes` as Coolify stores it (comma-separated). Coolify
+   *  returns this as a number on some builds; normalised to string. */
   portsExposes?: string;
+  /** Coolify's `is_stripprefix_enabled` app setting. See the field of
+   *  the same name on {@link CoolifyApi.updateApplication}. */
+  isStripprefixEnabled?: boolean;
   /** Linked git source — surfaced for read-only inventory/drift checks
    *  that need to compare what Coolify thinks the app deploys from
    *  against the local `git remote`. Both fields are best-effort; old
@@ -730,4 +737,64 @@ function extractServerUuid(raw: Record<string, unknown>): string | undefined {
 export async function verifyCoolify(url: string, token: string): Promise<string> {
   const api = new CoolifyApi({ url, token });
   return api.getVersion();
+}
+
+/** Normalise Coolify's `docker_compose_domains` into the flat
+ *  `Array<{ name, domain }>` hatchkit works with.
+ *
+ *  Coolify's on-the-wire shape has changed across versions and is NOT
+ *  the shape it accepts on write:
+ *    · a JSON-encoded STRING holding a MAP keyed by service name —
+ *      `{"client":{"domain":"https://x"},"server":{"domain":"https://x/api"}}`
+ *      — which is what 4.0.0-beta.469 stores and returns;
+ *    · the same map already parsed into an object;
+ *    · an array of `{ name, domain }` on older builds;
+ *    · null / absent when no routing is configured.
+ *
+ *  The map form is the one that mattered: the previous reader only
+ *  understood arrays, so it returned undefined for every real app.
+ *  `hatchkit sync` therefore saw "Coolify has no domains", reported
+ *  every app as out-of-sync, and its before/after diff was fiction.
+ *
+ *  A service's value may itself carry several comma-joined FQDNs; those
+ *  are split back out into one entry per FQDN so callers can compare
+ *  domain-by-domain. `collapseComposeDomains` is the inverse.
+ */
+export function parseDockerComposeDomains(
+  raw: unknown,
+): Array<{ name: string; domain: string }> | undefined {
+  let value = raw;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    try {
+      value = JSON.parse(trimmed);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!value || typeof value !== "object") return undefined;
+
+  const out: Array<{ name: string; domain: string }> = [];
+  const push = (name: unknown, domain: unknown): void => {
+    if (typeof name !== "string" || typeof domain !== "string") return;
+    for (const d of splitDomainString(domain)) out.push({ name, domain: d });
+  };
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (!entry || typeof entry !== "object") continue;
+      const e = entry as Record<string, unknown>;
+      push(e.name, e.domain);
+    }
+  } else {
+    for (const [name, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof entry === "string") {
+        push(name, entry);
+      } else if (entry && typeof entry === "object") {
+        push(name, (entry as Record<string, unknown>).domain);
+      }
+    }
+  }
+  return out.length > 0 ? out : undefined;
 }

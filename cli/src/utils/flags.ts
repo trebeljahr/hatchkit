@@ -18,6 +18,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import type { Topology } from "../deploy/routing.js";
 import type {
   AnalyticsProvider,
   DeployTarget,
@@ -80,6 +81,7 @@ export const KNOWN_ML_SERVICES: readonly MlService[] = [
   "custom-hf",
 ];
 export const KNOWN_SURFACES: readonly Surface[] = ["fullstack", "split", "backend", "static"];
+export const KNOWN_TOPOLOGIES: readonly Topology[] = ["single-origin", "split"];
 export const KNOWN_DEPLOYMENT_MODES: readonly DeploymentMode[] = [
   "coolify",
   "gh-pages",
@@ -232,6 +234,9 @@ export function parseCreateFlags(argv: string[]): ParsedCreateFlags {
   // ── Layout + deployment ───────────────────────────────────────────
   const surfaces = pickEnum("surfaces", KNOWN_SURFACES);
   if (surfaces) presets.surfaces = surfaces;
+
+  const topology = pickEnum("topology", KNOWN_TOPOLOGIES);
+  if (topology) presets.topology = topology;
 
   const deploymentMode = pickEnum("deployment-mode", KNOWN_DEPLOYMENT_MODES);
   if (deploymentMode) presets.deploymentMode = deploymentMode;

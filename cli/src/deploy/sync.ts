@@ -6,19 +6,39 @@
  * from the application's Domain field (`docker_compose_domains` for
  * dockercompose build packs, `fqdn` / `domains` otherwise). When a
  * scaffold or adopt run created the app without that field populated —
- * either because of the pre-fix bug where `updateApplication` couldn't
- * push domains, or because the user changed the manifest after scaffold —
- * the container ends up with zero traefik labels and Traefik silently
- * drops the route. `hatchkit sync` reads the manifest, finds the matching
- * Coolify app(s), and PATCHes them so Coolify regenerates the labels on
- * the next deploy.
+ * or populated it with a shape Coolify silently drops — the container
+ * ends up with zero traefik labels and Traefik drops the route.
+ * `hatchkit sync` reads the manifest, finds the matching Coolify
+ * app(s), and PATCHes them so Coolify regenerates the labels on the
+ * next deploy.
+ *
+ * ---------------------------------------------------------------------
+ * What sync used to get wrong
+ * ---------------------------------------------------------------------
+ *
+ * It hardcoded `domains: [{ name: "app", … }]` — a compose service name
+ * that appears in NO hatchkit-generated compose file (the starter's
+ * services are `server` / `client` / `mongo` / `redis`). Coolify accepts
+ * a PATCH naming a service that isn't in the compose with a 200 OK and
+ * then emits no Traefik labels for it at all, so running sync on a
+ * working project would have replaced its correct routing with a
+ * phantom and taken the site down. It also never called the compose
+ * validator that documents exactly this hazard.
+ *
+ * Now: the desired state comes from deploy/routing.ts (the same module
+ * `create` and `adopt` use, so the three cannot disagree), every service
+ * name is checked against the project's actual compose file BEFORE any
+ * PATCH, and a mismatch refuses loudly instead of pushing.
  *
  * Scope is deliberately narrow. Sync only pushes fields that are safe to
  * blast over the wire idempotently:
  *   · domain (`docker_compose_domains` for compose apps; `domains` for
  *     nixpacks / dockerfile / static)
- *   · ports_exposes (so the multi-host routing for the starter's split
- *     compose stays consistent with what runCoolifySetup creates)
+ *   · ports_exposes — only on non-compose build packs; Coolify
+ *     re-derives it from the compose file otherwise and discards ours
+ *   · is_stripprefix_enabled — required to be false whenever routing
+ *     uses a path (`https://<domain>/api`), or Coolify's Traefik
+ *     middleware strips `/api` and Express 404s every API call.
  *
  * Out of scope (handled by other commands):
  *   · env vars              → `hatchkit keys push` + adopt's setAppEnv
@@ -27,15 +47,23 @@
  *   · S3 buckets / tokens   → `hatchkit provision s3`
  *
  * Idempotent by design: reads current state first, only PATCHes when the
- * desired domain set differs from what Coolify reports. `--dry-run`
- * shows the diff without touching anything.
+ * desired state differs from what Coolify reports. `--dry-run` shows the
+ * diff without touching anything.
  */
 
 import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
-import { type ProjectManifest, readManifest } from "../scaffold/manifest.js";
+import { readManifest } from "../scaffold/manifest.js";
+import { readComposeFile } from "../utils/compose.js";
 import { CoolifyApi, type CoolifyApplication } from "../utils/coolify-api.js";
+import {
+  type RoutedApp,
+  type Topology,
+  collapseComposeDomains,
+  computeRoutingPlan,
+  inferTopology,
+} from "./routing.js";
 
 export interface SyncOptions {
   /** Project root containing `.hatchkit.json`. */
@@ -45,6 +73,10 @@ export interface SyncOptions {
   /** Emit `{ ok, apps: [...] }` JSON to stdout. Suppresses the human
    *  rendering for scripts. */
   json?: boolean;
+  /** Push routing even when Coolify reports the domain as claimed by
+   *  another resource. Only correct when the conflicting resource is a
+   *  stale app for this same project. */
+  force?: boolean;
 }
 
 /** What sync intends to do for one Coolify application — surfaces both
@@ -55,30 +87,45 @@ export interface AppSyncPlan {
   uuid: string;
   /** Coolify app name (used to locate the resource). */
   name: string;
+  /** Which half of the deployment this app is. */
+  role: RoutedApp["role"];
   /** Build pack reported by Coolify — drives which API field carries
    *  the domain payload. */
   buildPack?: CoolifyApplication["buildPack"];
-  /** Per-service domains for dockercompose apps. Always populated when
-   *  the build pack is dockercompose; undefined otherwise. */
+  /** Per-service domains for dockercompose apps, in the one-entry-per-
+   *  service shape Coolify actually stores. Always populated when the
+   *  build pack is dockercompose; undefined otherwise. */
   desiredDockerComposeDomains?: Array<{ name: string; domain: string }>;
-  /** Comma-joined FQDN list for non-dockercompose apps. Always
-   *  populated when the build pack is nixpacks / dockerfile / static;
-   *  undefined for dockercompose. */
+  /** FQDN list for non-dockercompose apps. Always populated when the
+   *  build pack is nixpacks / dockerfile / static; undefined for
+   *  dockercompose. */
   desiredDomains?: string[];
-  /** ports_exposes the manifest expects on this app. Always set —
-   *  Coolify keeps it as a non-empty string. */
+  /** ports_exposes the manifest expects on this app. */
   desiredPortsExposes: string;
-  /** Snapshot of the same fields as Coolify currently reports them.
-   *  Used by the renderer to decide "already correct" vs. "will
-   *  change", and by the JSON output as the before-state. */
+  /** Desired `is_stripprefix_enabled`. False whenever any routed domain
+   *  carries a path. */
+  desiredStripPrefix: boolean;
+  /** Snapshot of the same fields as Coolify currently reports them. */
   current: {
     fqdn: string | null;
     dockerComposeDomains?: Array<{ name: string; domain: string }>;
     portsExposes?: string;
+    stripPrefix?: boolean;
   };
   /** Whether a PATCH is needed to converge — false means everything
    *  already matches, sync skips the API call. */
   changed: boolean;
+  /** Set when the routing this app needs names a compose service the
+   *  project doesn't declare. sync REFUSES to PATCH in that case: the
+   *  call would return 200 and then produce no Traefik labels, which
+   *  reads as a successful sync followed by a fully-503 site. */
+  blocked?: {
+    reason: string;
+    missingServices: string[];
+    declaredServices: string[];
+    composeFile: string;
+    fix: string[];
+  };
 }
 
 export interface SyncResult {
@@ -87,6 +134,13 @@ export interface SyncResult {
    *  config, no matching apps). Either `apps` or `error` will be
    *  meaningful — never both. */
   error?: string;
+  /** Topology sync planned against, and where that value came from. */
+  topology: Topology;
+  topologySource: "manifest" | "compose" | "default";
+  topologyReason: string;
+  /** Compose services read off disk, or null when there's no readable
+   *  compose file (sync then can't validate names and says so). */
+  composeServices: string[] | null;
   apps: AppSyncPlan[];
   /** When dryRun, no PATCH was made even if `changed` was true. */
   dryRun: boolean;
@@ -94,7 +148,8 @@ export interface SyncResult {
 
 /** Top-level entrypoint. Reads the project manifest, finds the Coolify
  *  app(s) hatchkit knows about by name, and pushes the desired domain
- *  + ports payload — or just prints what it would push when `dryRun`. */
+ *  + ports + stripprefix payload — or just prints what it would push
+ *  when `dryRun`. */
 export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   const manifest = readManifest(opts.projectDir);
   if (!manifest) {
@@ -107,88 +162,137 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
         ),
       );
     }
-    return { ok: false, error: err, apps: [], dryRun: !!opts.dryRun };
+    return { ...emptyResult(opts), error: err };
   }
   const cfg = await getCoolifyConfig();
   if (!cfg) {
     const err = "Coolify is not configured. Run `hatchkit config add coolify` first.";
     if (!opts.json) console.log(chalk.red(`  ${err}`));
-    return { ok: false, error: err, apps: [], dryRun: !!opts.dryRun };
+    return { ...emptyResult(opts), error: err };
   }
   const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
 
-  const desiredAll = computeDesiredAppStates(manifest);
+  const compose = readComposeFile(opts.projectDir);
+  const inference = inferTopology({
+    topology: manifest.topology,
+    composeServices: compose?.services,
+  });
+  const routing = computeRoutingPlan({
+    name: manifest.name,
+    domain: manifest.domain,
+    topology: inference.topology,
+    surfaces: manifest.surfaces,
+    ports: manifest.ports,
+    publicService: manifest.publicService,
+    composeServices: compose?.services,
+  });
+
+  if (!opts.json) {
+    console.log(chalk.bold(`\n  ${manifest.name}`) + chalk.dim(` → ${manifest.domain}`));
+    console.log(chalk.dim(`    topology: ${inference.topology} (${inference.reason})`));
+    console.log(
+      chalk.dim(
+        compose
+          ? `    compose:  ${compose.fileName} — services: ${compose.services.join(", ")}`
+          : "    compose:  none readable — service names cannot be validated",
+      ),
+    );
+    if (routing.extraDnsHostnames.length > 0) {
+      console.log(
+        chalk.dim(`    extra DNS this topology needs: ${routing.extraDnsHostnames.join(", ")}`),
+      );
+    }
+  }
+
   const apps: AppSyncPlan[] = [];
   const errors: string[] = [];
+  const notFound: string[] = [];
 
-  // Match every desired-app entry against Coolify by name. We don't
-  // pre-list /applications and intersect because sync should still work
-  // when the user has hundreds of apps; a per-name lookup is cheaper.
-  // Apps the manifest expects but that don't exist in Coolify are
-  // logged as a hint (the user probably needs `hatchkit adopt` first)
-  // but don't fail the whole run — partial sync of the apps that DO
-  // exist is the most useful behavior.
-  for (const desired of desiredAll) {
-    const matchSpinner = opts.json ? null : ora(`Coolify: locating "${desired.appName}"`).start();
-    const found = await api.findApplicationByName(desired.appName);
+  for (const routed of routing.apps) {
+    const found = await locateApp(api, routed, opts);
     if (!found) {
-      matchSpinner?.warn(`Coolify: no app named "${desired.appName}" — skipping`);
+      notFound.push([routed.appName, ...routed.aliases].join(" / "));
       continue;
     }
-    matchSpinner?.succeed(`Coolify: found "${desired.appName}" (${found.uuid})`);
 
     let current: CoolifyApplication;
     try {
       current = await api.getApplication(found.uuid);
     } catch (err) {
       errors.push(
-        `Failed to read Coolify app "${desired.appName}" (${found.uuid}): ${(err as Error).message}`,
+        `Failed to read Coolify app "${found.name}" (${found.uuid}): ${(err as Error).message}`,
       );
       continue;
     }
 
-    const plan = buildPlan(found.uuid, desired, current);
+    const plan = buildPlan(routed, current, compose);
     apps.push(plan);
-
     if (!opts.json) renderPlan(plan);
 
+    if (plan.blocked) {
+      errors.push(`${plan.name}: ${plan.blocked.reason}`);
+      continue;
+    }
     if (!plan.changed) continue;
     if (opts.dryRun) continue;
 
-    const patch = ora(`Coolify: updating "${desired.appName}"`).start();
+    const patch = ora(`Coolify: updating "${plan.name}"`).start();
     try {
       await api.updateApplication(plan.uuid, {
-        portsExposes: plan.desiredPortsExposes,
+        // Skipped for compose apps — Coolify re-derives it from the
+        // compose file and our value would be discarded anyway.
+        ...(plan.buildPack === "dockercompose" ? {} : { portsExposes: plan.desiredPortsExposes }),
+        isStripprefixEnabled: plan.desiredStripPrefix,
         ...(plan.desiredDockerComposeDomains
           ? { dockerComposeDomains: plan.desiredDockerComposeDomains }
           : {}),
         ...(plan.desiredDomains ? { domains: plan.desiredDomains } : {}),
+        ...(opts.force ? { forceDomainOverride: true } : {}),
       });
-      patch.succeed(`Coolify: updated "${desired.appName}"`);
+      patch.succeed(`Coolify: updated "${plan.name}"`);
     } catch (err) {
-      patch.fail(`Coolify: PATCH failed: ${(err as Error).message}`);
-      errors.push(`PATCH ${desired.appName}: ${(err as Error).message}`);
+      const message = (err as Error).message;
+      patch.fail(`Coolify: PATCH failed: ${message}`);
+      if (/409|conflict|already/i.test(message)) {
+        console.log(
+          chalk.dim(
+            "    Coolify reports this domain as claimed by another resource. Re-run with `--force`\n" +
+              "    once you've confirmed the other resource is a stale app for this same project.",
+          ),
+        );
+      }
+      errors.push(`PATCH ${plan.name}: ${message}`);
     }
   }
+
+  const base = {
+    topology: inference.topology,
+    topologySource: inference.source,
+    topologyReason: inference.reason,
+    composeServices: compose?.services ?? null,
+    apps,
+    dryRun: !!opts.dryRun,
+  };
 
   if (apps.length === 0 && errors.length === 0) {
     const err = `No Coolify apps matched manifest project "${manifest.name}".`;
     if (!opts.json) {
-      console.log(chalk.yellow(`  ${err}`));
+      console.log(chalk.yellow(`\n  ${err}`));
       console.log(
         chalk.dim(
-          `  Looked for: ${desiredAll.map((d) => `"${d.appName}"`).join(", ")}.\n` +
-            `  Run \`hatchkit adopt\` to create them, or rename the existing app(s) to match.`,
+          `  Looked for: ${notFound.join(", ")}.\n` +
+            "  Run `hatchkit adopt` to create them, or rename the existing app(s) to match.",
         ),
       );
     }
-    return { ok: false, error: err, apps, dryRun: !!opts.dryRun };
+    return { ok: false, error: err, ...base };
   }
 
   if (!opts.json) {
+    const blocked = apps.filter((a) => a.blocked);
     if (opts.dryRun) {
       console.log(chalk.dim("\n  --dry-run: no changes pushed."));
-    } else {
+    } else if (blocked.length === 0) {
       const changed = apps.filter((a) => a.changed);
       if (changed.length === 0) {
         console.log(chalk.green("\n  ✓ Coolify already in sync with manifest."));
@@ -209,205 +313,221 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
 
   return {
     ok: errors.length === 0,
-    apps,
-    dryRun: !!opts.dryRun,
+    ...base,
     ...(errors.length > 0 ? { error: errors.join("; ") } : {}),
   };
 }
 
-// ---------------------------------------------------------------------------
-// Plan computation — manifest → desired Coolify state
-// ---------------------------------------------------------------------------
-
-/** Desired state for one Coolify application, derived from the manifest.
- *  Computed before any API calls so `--dry-run` never hits the network
- *  for plan generation. */
-interface DesiredApp {
-  /** Name to look up in Coolify. */
-  appName: string;
-  /** Build-pack-aware payload — only one of these is set per app. The
-   *  CoolifyApi.updateApplication shape needs the right field for the
-   *  build pack reported by Coolify; we resolve that at apply time, not
-   *  here, since the manifest doesn't carry build pack. */
-  domains: Array<{ name: string; domain: string }>;
-  /** ports_exposes for this app. Comma-separated string Coolify
-   *  stores verbatim. */
-  portsExposes: string;
+function emptyResult(opts: SyncOptions): SyncResult {
+  return {
+    ok: false,
+    topology: "single-origin",
+    topologySource: "default",
+    topologyReason: "sync aborted before topology resolution",
+    composeServices: null,
+    apps: [],
+    dryRun: !!opts.dryRun,
+  };
 }
 
-/** Map a manifest to the set of Coolify apps hatchkit owns for it. The
- *  shapes we cover (matching the layouts `findCoolifyAppsForProject`
- *  understands):
- *
- *    1. Single-app (current `create` + `adopt` output):  `<name>`
- *    2. Legacy single-app fallback:                      `<name>-web`
- *    3. Starter-split (legacy, currently unused):        `<name>-server` + `<name>-client`
- *
- *  All current surfaces use shape (1) — the surface affects which
- *  services live inside the compose file, not the outer Coolify app
- *  name. We synthesize a candidate list per layout. The actual lookup
- *  happens per-name; misses are skipped. This means a project that
- *  scaffolded as starter-split AND was later adopted as single-app
- *  would push twice — not a problem because each PATCH is independent
- *  and idempotent. */
-export function computeDesiredAppStates(manifest: ProjectManifest): DesiredApp[] {
-  const { name, domain, surfaces, ports } = manifest;
-  const portServer = String(ports?.server ?? 3000);
-  const portClient = String(ports?.client ?? 3001);
-
-  // Routing recipes — see `runCoolifySetup` (cli/src/deploy/coolify.ts)
-  // for the create-time source of truth. Sync mirrors that exactly so
-  // re-running sync converges to the same labels Coolify generated at
-  // create time.
-  const apiDomain = `api.${domain}`;
-  const frontendDomain = `https://${domain}`;
-  const backendDomains = [
-    `https://${apiDomain}`,
-    `https://${domain}/api`,
-    `https://${domain}/api/ws`,
-    `https://${apiDomain}/ws`,
-  ];
-  const splitClientDomains = [{ name: "client", domain: frontendDomain }];
-  const splitServerDomains = backendDomains.map((d) => ({ name: "server", domain: d }));
-
-  // Single-app layout: one Coolify app named `<name>` with one compose
-  // service `app`. ports_exposes is surface-aware:
-  //   fullstack / split / backend → server port (the public listener)
-  //   static                       → 80 (matches adopt.ts's static-site default)
-  const singleAppPort = surfaces === "static" ? "80" : portServer;
-  const singleAppDomain =
-    surfaces === "static" && (singleAppPort === "80" || singleAppPort === "443")
-      ? `https://${domain}`
-      : `https://${domain}:${singleAppPort}`;
-  // Use bare `https://<domain>` when the listener is on the conventional
-  // 80/443 — Coolify's Traefik handles the HTTPS termination and the
-  // explicit port suffix would push the route through Traefik on a
-  // non-standard port (which won't match the Coolify ingress). The
-  // formatDockerComposeDomain helper in coolify-app.ts uses the same
-  // rule; mirror it here so sync output matches what adopt creates.
-  const singleAppCanonicalDomain =
-    singleAppPort === "80" || singleAppPort === "443" ? `https://${domain}` : singleAppDomain;
-  const singleApp: DesiredApp = {
-    appName: name,
-    domains: [{ name: "app", domain: singleAppCanonicalDomain }],
-    portsExposes: singleAppPort,
-  };
-
-  // Starter-split layout: two apps. Each app's compose has its own
-  // service named `client` or `server` respectively; routing splits
-  // along the same lines as runCoolifySetup creates.
-  const splitClient: DesiredApp = {
-    appName: `${name}-client`,
-    domains: splitClientDomains,
-    portsExposes: portClient,
-  };
-  const splitServer: DesiredApp = {
-    appName: `${name}-server`,
-    domains: splitServerDomains,
-    portsExposes: portServer,
-  };
-
-  // Legacy single-app fallbacks. `runCoolifySetup` used to create
-  // `<name>-web` for every surface before settling on the bare `<name>`
-  // matched by `singleApp` above; the others are speculative for
-  // hand-written compose layouts that adopt previously matched.
-  const fallbackWeb: DesiredApp = {
-    ...singleApp,
-    appName: `${name}-web`,
-  };
-
-  // Filter by surfaces so we don't ship a non-existent split shape
-  // in JSON output. The actual Coolify lookup will skip non-existent
-  // names anyway, but keeping the candidate list tight reduces noise.
-  if (surfaces === "static") {
-    return [singleApp, fallbackWeb, splitClient];
+/** Find the Coolify app for one routing-plan entry. Tries hatchkit's
+ *  canonical name first, then the accepted aliases — a hand-rolled
+ *  `<name>-backend` / `<name>-frontend` pair (tiao's shape) is a real
+ *  deployment sync should reconcile, not skip. */
+async function locateApp(
+  api: CoolifyApi,
+  routed: RoutedApp,
+  opts: SyncOptions,
+): Promise<{ uuid: string; name: string } | null> {
+  const candidates = [routed.appName, ...routed.aliases];
+  const spinner = opts.json ? null : ora(`Coolify: locating "${routed.appName}"`).start();
+  for (const name of candidates) {
+    const found = await api.findApplicationByName(name);
+    if (!found) continue;
+    spinner?.succeed(
+      name === routed.appName
+        ? `Coolify: found "${name}" (${found.uuid})`
+        : `Coolify: found "${name}" (${found.uuid}) — alias for "${routed.appName}"`,
+    );
+    return { uuid: found.uuid, name: found.name || name };
   }
-  if (surfaces === "backend") {
-    return [singleApp, fallbackWeb, splitServer];
+  spinner?.warn(`Coolify: no app named ${candidates.map((c) => `"${c}"`).join(" or ")} — skipping`);
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Plan computation
+// ---------------------------------------------------------------------------
+
+function buildPlan(
+  routed: RoutedApp,
+  current: CoolifyApplication,
+  compose: ReturnType<typeof readComposeFile>,
+): AppSyncPlan {
+  const isCompose = current.buildPack === "dockercompose";
+  // dockercompose apps use docker_compose_domains; everything else uses
+  // the flat `domains` field. Coolify rejects a domain payload that
+  // doesn't match the build pack with a 422.
+  //
+  // Collapse first: Coolify stores one entry per service, so comparing
+  // an uncollapsed desired list against what Coolify reports would
+  // always look "changed".
+  const desiredDockerComposeDomains = isCompose
+    ? collapseComposeDomains(routed.composeDomains)
+    : undefined;
+  const desiredDomains = isCompose ? undefined : routed.flatDomains;
+
+  // Validate BEFORE anything else. A service name that isn't in the
+  // compose is the one failure mode Coolify won't report: 200 OK, no
+  // labels, total outage. Only meaningful for compose apps — a
+  // dockerfile/static app has no services to name.
+  let blocked: AppSyncPlan["blocked"];
+  if (isCompose && compose) {
+    const missing = routed.requiredComposeServices.filter((n) => !compose.services.includes(n));
+    if (missing.length > 0) {
+      blocked = {
+        reason:
+          `routing names compose service(s) ${missing.map((m) => `"${m}"`).join(", ")} ` +
+          `that ${compose.fileName} does not declare`,
+        missingServices: missing,
+        declaredServices: compose.services,
+        composeFile: compose.fileName,
+        fix: [
+          `Set "publicService" in .hatchkit.json to one of: ${compose.services.join(", ")}.`,
+          `Or add the missing service(s) to ${compose.fileName} and redeploy.`,
+          "Coolify would answer this PATCH with 200 OK and then emit no Traefik labels — every request would 503.",
+        ],
+      };
+    }
   }
-  // fullstack / split / undefined → source-of-truth is the split layout,
-  // but adopt collapses to single-app for projects without a separate
-  // frontend.
-  return [singleApp, fallbackWeb, splitServer, splitClient];
+
+  const currentCollapsed = current.dockerComposeDomains
+    ? collapseComposeDomains(current.dockerComposeDomains)
+    : undefined;
+
+  // `ports_exposes` is owned by Coolify on compose apps: it re-derives
+  // the value from the compose file's exposed ports (the starter
+  // declares none, so Coolify parks it at 80) and ignores whatever we
+  // push. Diffing it there would make every project permanently
+  // "out of sync" and every run a no-op PATCH, so only compare it on
+  // build packs where the field is actually ours.
+  const portsChanged =
+    !isCompose &&
+    current.portsExposes !== undefined &&
+    current.portsExposes !== routed.portsExposes;
+  const domainsChanged = isCompose
+    ? !sameDockerComposeDomains(currentCollapsed, desiredDockerComposeDomains ?? [])
+    : !sameStringList(splitFqdn(current.fqdn), desiredDomains ?? []);
+  // `is_stripprefix_enabled` is write-only on Coolify 4.0.0-beta.469:
+  // the application-settings relation isn't serialized on GET, so we
+  // can never read back what it currently is. It therefore must NOT
+  // drive `changed` — that would make every app look permanently out of
+  // sync. It IS included in every PATCH we do make, so it converges
+  // alongside any real routing change.
+  const stripChanged =
+    current.isStripprefixEnabled !== undefined &&
+    current.isStripprefixEnabled !== routed.stripPrefix;
+
+  return {
+    uuid: current.uuid,
+    name: current.name || routed.appName,
+    role: routed.role,
+    buildPack: current.buildPack,
+    ...(desiredDockerComposeDomains ? { desiredDockerComposeDomains } : {}),
+    ...(desiredDomains ? { desiredDomains } : {}),
+    desiredPortsExposes: routed.portsExposes,
+    desiredStripPrefix: routed.stripPrefix,
+    current: {
+      fqdn: current.fqdn,
+      ...(currentCollapsed ? { dockerComposeDomains: currentCollapsed } : {}),
+      ...(current.portsExposes !== undefined ? { portsExposes: current.portsExposes } : {}),
+      ...(current.isStripprefixEnabled !== undefined
+        ? { stripPrefix: current.isStripprefixEnabled }
+        : {}),
+    },
+    changed: portsChanged || domainsChanged || stripChanged,
+    ...(blocked ? { blocked } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Plan rendering
 // ---------------------------------------------------------------------------
 
-function buildPlan(uuid: string, desired: DesiredApp, current: CoolifyApplication): AppSyncPlan {
-  const isCompose = current.buildPack === "dockercompose";
-  // dockercompose apps use docker_compose_domains; everything else uses
-  // the flat `domains` field. Coolify rejects a domain payload that
-  // doesn't match the build pack with a 422.
-  const desiredDockerComposeDomains = isCompose ? desired.domains : undefined;
-  const desiredDomains = isCompose ? undefined : desired.domains.map((d) => d.domain);
-
-  const portsChanged =
-    current.portsExposes !== undefined && current.portsExposes !== desired.portsExposes;
-  const domainsChanged = isCompose
-    ? !sameDockerComposeDomains(current.dockerComposeDomains, desired.domains)
-    : !sameStringList(
-        splitFqdn(current.fqdn),
-        desired.domains.map((d) => d.domain),
-      );
-
-  return {
-    uuid,
-    name: current.name || desired.appName,
-    buildPack: current.buildPack,
-    ...(desiredDockerComposeDomains ? { desiredDockerComposeDomains } : {}),
-    ...(desiredDomains ? { desiredDomains } : {}),
-    desiredPortsExposes: desired.portsExposes,
-    current: {
-      fqdn: current.fqdn,
-      ...(current.dockerComposeDomains
-        ? { dockerComposeDomains: current.dockerComposeDomains }
-        : {}),
-      ...(current.portsExposes !== undefined ? { portsExposes: current.portsExposes } : {}),
-    },
-    changed: portsChanged || domainsChanged,
-  };
-}
-
 function renderPlan(plan: AppSyncPlan): void {
-  console.log(chalk.bold(`\n  ${plan.name}`) + chalk.dim(` (${plan.uuid.slice(0, 8)}…)`));
+  console.log(
+    chalk.bold(`\n  ${plan.name}`) + chalk.dim(` (${plan.uuid.slice(0, 8)}… · ${plan.role})`),
+  );
   if (plan.buildPack) {
     console.log(chalk.dim(`    build pack: ${plan.buildPack}`));
   }
+
+  if (plan.blocked) {
+    console.log(chalk.red(`    ✗ REFUSING to sync — ${plan.blocked.reason}.`));
+    console.log(
+      chalk.dim(`        declared in ${plan.blocked.composeFile}: `) +
+        chalk.dim(plan.blocked.declaredServices.join(", ")),
+    );
+    for (const line of plan.blocked.fix) console.log(chalk.yellow(`        ${line}`));
+    return;
+  }
+
   if (plan.desiredDockerComposeDomains) {
     const before = plan.current.dockerComposeDomains ?? [];
     const after = plan.desiredDockerComposeDomains;
-    const same = sameDockerComposeDomains(before, after);
-    if (same) {
-      console.log(chalk.green(`    ✓ docker_compose_domains: in sync`));
+    if (sameDockerComposeDomains(before, after)) {
+      console.log(chalk.green("    ✓ docker_compose_domains: in sync"));
       console.log(chalk.dim(`        ${formatDockerComposeDomains(after)}`));
     } else {
-      console.log(chalk.yellow(`    · docker_compose_domains:`));
+      console.log(chalk.yellow("    · docker_compose_domains:"));
       console.log(chalk.dim(`        before: ${formatDockerComposeDomains(before)}`));
       console.log(chalk.dim(`        after:  ${formatDockerComposeDomains(after)}`));
     }
   } else if (plan.desiredDomains) {
     const before = splitFqdn(plan.current.fqdn);
     const after = plan.desiredDomains;
-    const same = sameStringList(before, after);
-    if (same) {
+    if (sameStringList(before, after)) {
       console.log(chalk.green(`    ✓ domains: in sync (${after.join(", ")})`));
     } else {
-      console.log(chalk.yellow(`    · domains:`));
+      console.log(chalk.yellow("    · domains:"));
       console.log(chalk.dim(`        before: ${before.join(", ") || "(empty)"}`));
       console.log(chalk.dim(`        after:  ${after.join(", ")}`));
     }
   }
-  if (
-    plan.current.portsExposes !== undefined &&
-    plan.current.portsExposes !== plan.desiredPortsExposes
-  ) {
-    console.log(chalk.yellow(`    · ports_exposes:`));
-    console.log(chalk.dim(`        before: ${plan.current.portsExposes}`));
-    console.log(chalk.dim(`        after:  ${plan.desiredPortsExposes}`));
+
+  if (plan.buildPack === "dockercompose") {
+    console.log(
+      chalk.dim(
+        `    · ports_exposes: ${plan.current.portsExposes ?? "?"} (Coolify-owned on compose apps — not pushed)`,
+      ),
+    );
   } else if (plan.current.portsExposes === plan.desiredPortsExposes) {
     console.log(chalk.green(`    ✓ ports_exposes: ${plan.desiredPortsExposes}`));
+  } else {
+    console.log(chalk.yellow("    · ports_exposes:"));
+    console.log(chalk.dim(`        before: ${plan.current.portsExposes ?? "(unset)"}`));
+    console.log(chalk.dim(`        after:  ${plan.desiredPortsExposes}`));
+  }
+
+  if (plan.current.stripPrefix === undefined) {
+    console.log(
+      chalk.dim(
+        `    · strip_prefix → ${plan.desiredStripPrefix} (write-only in Coolify's API; pushed with any update)`,
+      ),
+    );
+    if (!plan.desiredStripPrefix) {
+      console.log(
+        chalk.dim(
+          "        routing uses a path — with stripping ON Coolify delivers /api/health to Express as /health",
+        ),
+      );
+    }
+  } else if (plan.current.stripPrefix === plan.desiredStripPrefix) {
+    console.log(chalk.green(`    ✓ strip_prefix: ${plan.desiredStripPrefix}`));
+  } else {
+    console.log(chalk.yellow("    · strip_prefix:"));
+    console.log(chalk.dim(`        before: ${plan.current.stripPrefix}`));
+    console.log(chalk.dim(`        after:  ${plan.desiredStripPrefix}`));
   }
 }
 
@@ -437,7 +557,8 @@ function sameDockerComposeDomains(
   const left = a ?? [];
   if (left.length !== b.length) return false;
   // Order-insensitive comparison — Coolify doesn't promise to round-trip
-  // the array in the same order it was sent.
+  // the array in the same order it was sent. Both sides are collapsed
+  // before this runs, so one entry per service.
   const key = (e: { name: string; domain: string }) => `${e.name}::${e.domain}`;
   const setA = new Set(left.map(key));
   return b.every((e) => setA.has(key(e)));
@@ -455,6 +576,7 @@ function formatDockerComposeDomains(entries: Array<{ name: string; domain: strin
 export async function runSyncCli(args: string[]): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const json = args.includes("--json");
+  const force = args.includes("--force");
   const dirArg = ((): string | undefined => {
     const i = args.findIndex((a) => a === "--dir");
     if (i >= 0 && args[i + 1]) return args[i + 1];
@@ -462,7 +584,7 @@ export async function runSyncCli(args: string[]): Promise<void> {
   })();
 
   const projectDir = dirArg ? dirArg : process.cwd();
-  const result = await runSync({ projectDir, dryRun, json });
+  const result = await runSync({ projectDir, dryRun, json, force });
   if (json) {
     console.log(JSON.stringify(result, null, 2));
   }

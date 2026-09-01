@@ -197,15 +197,55 @@ for (const c of CASES) {
       { transactional: "listmonk-ses", mailingList: "listmonk-ses" },
       "v3 read preserves explicit email intent",
     );
+    // v3 → v4 seeds `topology`, so the read DOES migrate now — but it
+    // must not touch anything else on the way through.
+    assert.equal(result.manifest.topology, "single-origin", "v3 → v4 seeds topology");
+    assert.equal(result.manifest.version, MANIFEST_VERSION, "v3 → v4 bumps version");
+    assert.deepEqual(result.manifest.ports, { server: 3000, client: 5173 }, "ports untouched");
+
+    console.log("  ✓ v3 → v4: preserves explicit email intent, seeds topology");
+  } catch (err) {
+    failures.push(`  ✗ v3 email preservation: ${(err as Error).message}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// v4 read: an explicit `topology` is never overwritten, and a
+// current-version manifest reports no migration at all.
+{
+  const dir = mkdtempSync(join(tmpdir(), `hatchkit-manifest-v4-topology-`));
+  try {
+    const path = join(dir, MANIFEST_FILENAME);
+    const v4 = {
+      version: 4,
+      cliVersion: "test",
+      scaffoldedAt: "2025-01-01T00:00:00.000Z",
+      name: "test-app",
+      domain: "test.example.com",
+      features: [],
+      mlServices: [],
+      s3Provider: "none",
+      deployTarget: "existing",
+      surfaces: "fullstack",
+      ports: { server: 3000, client: 5173 },
+      email: { transactional: "none", mailingList: "none" },
+      topology: "split",
+    };
+    writeFileSync(path, JSON.stringify(v4, null, 2), "utf-8");
+
+    const result = readManifestWithMigrationInfo(dir);
+    assert.ok(result, "v4 read returned null");
+    assert.equal(result.manifest.topology, "split", "explicit topology survives the read");
     assert.equal(
       result.migrated,
       false,
       `expected migrated=false for current-version manifest. notes: ${JSON.stringify(result.migrationNotes)}`,
     );
 
-    console.log("  ✓ v3 read: preserves explicit email intent, no migration triggered");
+    console.log("  ✓ v4 read: explicit topology preserved, no migration triggered");
   } catch (err) {
-    failures.push(`  ✗ v3 email preservation: ${(err as Error).message}`);
+    failures.push(`  ✗ v4 topology preservation: ${(err as Error).message}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
