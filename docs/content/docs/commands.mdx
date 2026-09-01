@@ -42,16 +42,107 @@ hatchkit create [options]
 
 ### Options
 
+Every question the interactive stepper asks has a matching flag. A value
+you pass is used as-is and **its prompt is skipped**; anything you leave
+out is still prompted for. Partial flag sets are the normal case — this
+is a hybrid mode, not an all-or-nothing switch.
+
+Add `--yes` (alias `--non-interactive`) to take defaults for whatever is
+still unset and hard-fail — naming the missing flag — instead of
+prompting. That makes `create` CI-safe.
+
+#### Run mode
+
 | Flag | Effect |
 |---|---|
-| `--dry-run` | Show the plan without writing anything. |
-| `--yes`, `-y` | Skip prompts; use defaults + `--config` values. Non-interactive. |
-| `--config <path>` | Load a JSON file with `ProjectConfig` overrides. |
-| `--name <name>` | Set the project name without prompting. |
-| `--local-dev[=<slug>]` | Enable the Tailscale/Caddy dev URL and optionally set its slug. Defaults on for new projects. |
+| `--yes`, `-y`, `--non-interactive` | Never prompt. Defaults for unset values; hard-fail when a required one has no default. |
+| `--dry-run` | Print the fully-resolved plan (including flag-supplied values) and write nothing. |
+| `--config <path>` | Load a JSON file of `Partial<ProjectConfig>` overrides. Individual flags win over the file. |
+
+#### Project
+
+| Flag | Values / effect |
+|---|---|
+| `--name <name>` | Project name. Required with `--yes`. |
+| `--domain <host>` | Public domain. Defaults to `<name>.<your root domain>`. |
+| `--description <text>` | One-liner for `package.json` + Coolify. Pass an empty value to answer "none". |
+| `--surfaces <value>` | `fullstack` · `split` · `backend` · `static` |
+
+#### Deployment
+
+| Flag | Values / effect |
+|---|---|
+| `--deployment-mode <value>` | `coolify` · `gh-pages` · `scaffold-only`. `gh-pages` requires `--surfaces static`. |
+| `--deploy-target <value>` | `new` (provision a Hetzner box) · `existing` (reuse one). |
+| `--server-size <value>` | `cpx21` · `cpx31` · `cpx41`. Only for `--deploy-target new`. |
+| `--server-location <value>` | `nbg1` · `fsn1` · `hel1`. Only for `--deploy-target new`. |
+| `--server-id <id>`, `--server-ip <ip>` | Coolify server to reuse. Both required with `--deploy-target existing` under `--yes`. |
+| `--deploy` / `--no-deploy` | Run the deploy after scaffolding, or skip Terraform / Coolify / ML. |
+
+#### Stack
+
+| Flag | Values / effect |
+|---|---|
+| `--features <list>` | `websocket`, `stripe`, `analytics`, `s3`, `desktop`, `desktop-tauri`, `mobile`. Comma-separated; pass empty for none. The two desktop wrappers are mutually exclusive. |
+| `--analytics-providers <list>` | `glitchtip`, `openpanel`, `plausible` |
+| `--services <list>` | `glitchtip`, `openpanel`, `plausible`, `listmonk-ses`, `s3`, `email`, `search-console` |
+| `--db-engine <value>` | `mongodb` · `postgres` |
+| `--db-provider <value>` | `coolify` (provision a container) · `external` (you supply a URI) |
+
+#### Storage
+
+| Flag | Values / effect |
+|---|---|
+| `--s3-provider <value>` | `hetzner` · `r2` · `aws` · `existing` · `none` |
+| `--s3-endpoint`, `--s3-bucket`, `--s3-access-key`, `--s3-secret-key` | Required with `--s3-provider existing`. Prefer `--config` for the secret key so it stays out of your shell history. |
+| `--s3-region <region>` | Defaults to `us-east-1`. |
+
+#### Email
+
+| Flag | Values / effect |
+|---|---|
+| `--email <value>` | `none` · `transactional` · `mailing-list` · `both`. All non-`none` answers map to Listmonk + SES. |
+| `--email-forwarding <off\|addr[,addr…]>` | Cloudflare Email Routing local-parts to forward to your inbox, or `off`. |
+| `--email-catch-all` / `--no-email-catch-all` | Also forward `*@domain` (on by default when addresses are given). |
+
+#### ML / GPU
+
+| Flag | Values / effect |
+|---|---|
+| `--ml-services <list>` | `3d-sam-objects`, `3d-sam-body`, `3d-hunyuan`, `3d-trellis`, `3d-extraction`, `subtitles`, `image-recognition`, `background-removal`, `custom-hf` |
+| `--gpu-platforms <list>` | `modal`, `runpod`, `hf`, `replicate`. First entry becomes the default `ML_BACKEND`. |
+| `--custom-hf-model <owner/model>` | Required with `--ml-services custom-hf`. |
+| `--custom-hf-gpu-type <type>` | GPU type for the custom HF endpoint. |
+
+#### Repo
+
+| Flag | Values / effect |
+|---|---|
+| `--scaffold` / `--no-scaffold` | Write the app repo, or skip straight to provisioning. |
+| `--github` / `--no-github` | Create the GitHub remote, or skip it. |
+| `--github-visibility <value>` | `private` · `public`. `--public` / `--private` are shorthands. |
+| `--install` / `--no-install` | Run `pnpm install` after scaffolding. |
+| `--local-dev[=<slug>]` | Enable the Tailscale/Caddy dev URL and optionally set its slug (defaults to the project name). Defaults on for new projects. |
 | `--no-local-dev` | Skip local-dev wiring for this project. |
-| `--no-github` | Skip GitHub repo creation. |
-| `--no-deploy` | Skip Terraform / Coolify / ML deployment. |
+
+### Examples
+
+Hybrid — name and stack from flags, everything else still prompted:
+
+```bash
+hatchkit create --name blog --surfaces static --deployment-mode gh-pages
+```
+
+Fully non-interactive, CI-safe:
+
+```bash
+hatchkit create --yes --name blog --domain blog.example.com \
+  --surfaces fullstack --deployment-mode coolify --deploy-target new \
+  --features analytics,s3 --analytics-providers glitchtip \
+  --db-engine postgres --db-provider coolify \
+  --email transactional --email-forwarding hello,support \
+  --ml-services "" --public
+```
 
 ### Flow
 

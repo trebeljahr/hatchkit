@@ -32,7 +32,13 @@ import {
 } from "./deploy/keys.js";
 import { handleCreateFailure, runRollback } from "./deploy/rollback.js";
 import { requireCloudflareZoneForTerraform, runTerraform } from "./deploy/terraform.js";
-import { type GpuPlatform, type ProjectConfig, collectProjectConfig } from "./prompts.js";
+import {
+  type GpuPlatform,
+  type ProjectConfig,
+  collectProjectConfig,
+  summarizeEmailForwarding,
+  summarizeEmailIntent,
+} from "./prompts.js";
 import {
   type ProvisionService,
   type ProvisionedEvent,
@@ -51,7 +57,24 @@ import {
   uninstallCancelHandler,
 } from "./utils/cancel-handler.js";
 import { exec, execOk } from "./utils/exec.js";
-import { parseCreateFlags } from "./utils/flags.js";
+import {
+  KNOWN_ANALYTICS_PROVIDERS,
+  KNOWN_DB_ENGINES,
+  KNOWN_DB_PROVIDERS,
+  KNOWN_DEPLOYMENT_MODES,
+  KNOWN_DEPLOY_TARGETS,
+  KNOWN_EMAIL_INTENTS,
+  KNOWN_FEATURES,
+  KNOWN_GITHUB_VISIBILITIES,
+  KNOWN_GPU_PLATFORMS,
+  KNOWN_ML_SERVICES,
+  KNOWN_PROVISION_SERVICES,
+  KNOWN_S3_PROVIDERS,
+  KNOWN_SERVER_LOCATIONS,
+  KNOWN_SERVER_SIZES,
+  KNOWN_SURFACES,
+  parseCreateFlags,
+} from "./utils/flags.js";
 import { RunLedger } from "./utils/run-ledger.js";
 import { SECRET_KEYS } from "./utils/secrets.js";
 import { getCliVersion } from "./utils/version.js";
@@ -2028,6 +2051,7 @@ async function handleCreate(): Promise<void> {
     console.log(`  Descr.:     ${chalk.cyan(config.description)}`);
   }
   console.log(`  Domain:     ${chalk.cyan(config.domain)}`);
+  console.log(`  Type:       ${chalk.cyan(config.surfaces)}`);
   if (config.deploymentMode === "gh-pages") {
     console.log(`  Deploy to:  ${chalk.cyan("GitHub Pages (static)")}`);
   } else if (config.deploymentMode === "scaffold-only") {
@@ -2042,8 +2066,18 @@ async function handleCreate(): Promise<void> {
     `  Services:   ${provisionServices.length > 0 ? provisionServices.join(", ") : "none"}`,
   );
   console.log(
-    `  ML:         ${config.mlServices.length > 0 ? config.mlServices.join(", ") : "none"}`,
+    `  ML:         ${config.mlServices.length > 0 ? config.mlServices.join(", ") : "none"}${
+      config.mlServices.length > 0 ? ` → ${(config.gpuPlatforms ?? ["modal"]).join(", ")}` : ""
+    }`,
   );
+  if (config.surfaces !== "static" && config.deploymentMode !== "gh-pages") {
+    const dbEngine = config.dbEngine === "postgres" ? "Postgres" : "MongoDB";
+    const dbProvider = config.dbProvider ?? config.mongodbProvider ?? "coolify";
+    console.log(`  Database:   ${dbEngine} (${dbProvider})`);
+  }
+  console.log(`  Email:      ${summarizeEmailIntent(config.email)}`);
+  console.log(`  Forwarding: ${summarizeEmailForwarding(config.emailForwarding)}`);
+  console.log(`  Local dev:  ${config.localDev ? config.localDev.slug : "off"}`);
   console.log(`  Scaffold:   ${config.scaffoldRepo ? "yes" : "no"}`);
   console.log(
     `  GitHub:     ${config.createGithubRepo ? `yes (${config.githubRepoVisibility ?? "public"})` : "no"}`,
@@ -2888,13 +2922,32 @@ type HelpTopic =
   | "dns"
   | "email";
 
+// Rendered value lists for `printHelp("create")`. Derived from the flag
+// parser's allowed sets so the documented values can't drift from the
+// ones actually accepted.
+const SURFACE_VALUES = KNOWN_SURFACES.join("|");
+const DEPLOYMENT_MODE_VALUES = KNOWN_DEPLOYMENT_MODES.join("|");
+const DEPLOY_TARGET_VALUES = KNOWN_DEPLOY_TARGETS.join("|");
+const SERVER_SIZE_VALUES = KNOWN_SERVER_SIZES.join("|");
+const SERVER_LOCATION_VALUES = KNOWN_SERVER_LOCATIONS.join("|");
+const DB_ENGINE_VALUES = KNOWN_DB_ENGINES.join("|");
+const DB_PROVIDER_VALUES = KNOWN_DB_PROVIDERS.join("|");
+const S3_PROVIDER_VALUES = KNOWN_S3_PROVIDERS.join("|");
+const EMAIL_INTENT_VALUES = KNOWN_EMAIL_INTENTS.join("|");
+const GITHUB_VISIBILITY_VALUES = KNOWN_GITHUB_VISIBILITIES.join("|");
+const FEATURE_VALUES = KNOWN_FEATURES.join(", ");
+const ANALYTICS_VALUES = KNOWN_ANALYTICS_PROVIDERS.join(", ");
+const PROVISION_SERVICE_VALUES = KNOWN_PROVISION_SERVICES.join(", ");
+const ML_SERVICE_VALUES = KNOWN_ML_SERVICES.join(", ");
+const GPU_PLATFORM_VALUES = KNOWN_GPU_PLATFORMS.join(", ");
+
 function printHelp(topic?: HelpTopic): void {
   if (topic === "create") {
     console.log(`
   ${chalk.bold("hatchkit create")} — scaffold a new project
 
   ${chalk.bold("Usage:")}
-    hatchkit create [--dry-run]
+    hatchkit create [flags]
 
   ${chalk.bold("What it does (interactively):")}
     1. Prompts for project name, domain, surfaces, deployment mode, features, services, ML
@@ -2906,6 +2959,14 @@ function printHelp(topic?: HelpTopic): void {
     7. Generates Terraform tfvars + Coolify .env (Coolify mode)
     8. Deploys: Terraform → Coolify → ML  ${chalk.dim("OR")}  GitHub Pages setup
 
+  ${chalk.bold("Flags and prompts:")}
+    Every question above has a matching flag. Anything you pass is used
+    as-is and its prompt is ${chalk.bold("skipped")}; anything you leave out is still
+    asked. Partial flag sets are the normal case.
+    Add ${chalk.cyan("--yes")} (alias ${chalk.cyan("--non-interactive")}) to take defaults for whatever
+    is still unset and fail — naming the missing flag — instead of
+    prompting. That makes the command CI-safe.
+
   ${chalk.bold("Deployment modes:")}
     ${chalk.cyan("coolify")}        Full-stack on Hetzner — DB, providers, Docker. Default.
     ${chalk.cyan("gh-pages")}       Static-only on GitHub Pages. Only offered when surfaces
@@ -2913,9 +2974,88 @@ function printHelp(topic?: HelpTopic): void {
                    ${chalk.dim('`output: "export"`')} and the gh-pages workflow is written.
     ${chalk.cyan("scaffold-only")}  Write files, skip deploy. Pick this to defer setup.
 
-  ${chalk.bold("Options:")}
-    --dry-run       Show the plan without writing anything
-    --help          Show this help
+  ${chalk.bold("Run mode:")}
+    --yes, -y, --non-interactive   Never prompt; defaults for unset values, hard-fail
+                                   when a required one has no default
+    --dry-run                      Print the fully-resolved plan, write nothing
+    --config <path>                JSON file of Partial<ProjectConfig> overrides.
+                                   Individual flags win over the file.
+    --help                         Show this help
+
+  ${chalk.bold("Project:")}
+    --name <name>                  Project name (required with --yes)
+    --domain <host>                Public domain. Defaults to <name>.<your root domain>
+    --description <text>           One-liner for package.json + Coolify. Pass empty to skip.
+    --surfaces <${SURFACE_VALUES}>
+                                   ${chalk.dim("fullstack")}=one package w/ server runtime, ${chalk.dim("split")}=server+client,
+                                   ${chalk.dim("backend")}=API/worker only, ${chalk.dim("static")}=no server runtime
+
+  ${chalk.bold("Deployment:")}
+    --deployment-mode <${DEPLOYMENT_MODE_VALUES}>
+    --deploy-target <${DEPLOY_TARGET_VALUES}>     ${chalk.dim("new")} provisions a Hetzner box, ${chalk.dim("existing")} reuses one
+    --server-size <${SERVER_SIZE_VALUES}>  Hetzner size for --deploy-target new
+    --server-location <${SERVER_LOCATION_VALUES}> Hetzner region for --deploy-target new
+    --server-id <id>               Coolify server id (--deploy-target existing)
+    --server-ip <ip>               Coolify server IP (--deploy-target existing)
+    --deploy / --no-deploy         Run the deploy after scaffolding, or skip it
+
+  ${chalk.bold("Stack:")}
+    --features <list>              ${FEATURE_VALUES}
+                                   Comma-separated. Pass empty for none. The two
+                                   desktop wrappers are mutually exclusive.
+    --analytics-providers <list>   ${ANALYTICS_VALUES}
+    --services <list>              ${PROVISION_SERVICE_VALUES}
+    --db-engine <${DB_ENGINE_VALUES}>     Database engine for the scaffolded server
+    --db-provider <${DB_PROVIDER_VALUES}>   ${chalk.dim("coolify")} provisions a container, ${chalk.dim("external")} means you supply a URI
+
+  ${chalk.bold("Storage:")}
+    --s3-provider <${S3_PROVIDER_VALUES}>
+    --s3-endpoint <url>            Required with --s3-provider existing
+    --s3-bucket <name>             Required with --s3-provider existing
+    --s3-access-key <key>          Required with --s3-provider existing
+    --s3-secret-key <key>          Required with --s3-provider existing ${chalk.dim("(prefer --config)")}
+    --s3-region <region>           Defaults to us-east-1
+
+  ${chalk.bold("Email:")}
+    --email <${EMAIL_INTENT_VALUES}>
+                                   What the project sends. Both map to Listmonk + SES.
+    --email-forwarding <off|addr[,addr…]>
+                                   Cloudflare Email Routing local-parts to forward to
+                                   your inbox, or ${chalk.dim("off")} to disable
+    --email-catch-all              Also forward *@domain (default when addresses given)
+    --no-email-catch-all           Forward only the listed addresses
+
+  ${chalk.bold("ML / GPU:")}
+    --ml-services <list>           ${ML_SERVICE_VALUES}
+    --gpu-platforms <list>         ${GPU_PLATFORM_VALUES}
+                                   First entry becomes the default ML_BACKEND
+    --custom-hf-model <owner/model>    Required with --ml-services custom-hf
+    --custom-hf-gpu-type <type>        GPU type for the custom HF endpoint
+
+  ${chalk.bold("Repo:")}
+    --scaffold / --no-scaffold     Write the app repo, or skip straight to provisioning
+    --github / --no-github         Create the GitHub remote, or skip it
+    --github-visibility <${GITHUB_VISIBILITY_VALUES}>  Visibility for the created repo
+    --public / --private           Shorthands for --github-visibility
+    --install / --no-install       Run \`pnpm install\` after scaffolding
+    --local-dev[=<slug>]           Enable the Tailscale dev URL (slug defaults to the
+                                   project name). On by default for new projects.
+    --no-local-dev                 Skip local-dev wiring entirely
+
+  ${chalk.bold("Examples:")}
+    ${chalk.dim("# Hybrid — name + stack from flags, everything else still prompted")}
+    hatchkit create --name blog --surfaces static --deployment-mode gh-pages
+
+    ${chalk.dim("# Fully non-interactive, CI-safe")}
+    hatchkit create --yes --name blog --domain blog.example.com \\
+      --surfaces fullstack --deployment-mode coolify --deploy-target new \\
+      --features analytics,s3 --analytics-providers glitchtip \\
+      --db-engine postgres --db-provider coolify \\
+      --email transactional --email-forwarding hello,support \\
+      --ml-services "" --public
+
+    ${chalk.dim("# See the resolved plan without touching anything")}
+    hatchkit create --yes --name blog --dry-run
 `);
     return;
   }

@@ -74,8 +74,9 @@ const MODEL: ExplainModel = {
     },
     {
       name: "hatchkit create",
-      summary: "Scaffold (and optionally deploy) a new project. Interactive.",
-      when: "Starting a new project.",
+      summary:
+        "Scaffold (and optionally deploy) a new project. Interactive by default; every prompt (name, domain, surfaces, deployment mode, deploy target, features, analytics providers, services, email, email forwarding, S3, database engine/provider, ML services, GPU platforms, scaffold/GitHub/install/deploy, local-dev) has a matching flag. Supplying a flag skips its prompt; `--yes` / `--non-interactive` takes defaults for the rest and hard-fails instead of prompting. `hatchkit create --help` lists every flag with its valid values.",
+      when: "Starting a new project. Use the flags (or `--yes`) to drive it from a script or CI.",
     },
     {
       name: "hatchkit adopt",
@@ -125,7 +126,7 @@ const MODEL: ExplainModel = {
   workflow: [
     "1. `hatchkit setup` — configure credentials once (per machine).",
     "2. `hatchkit status` — confirm everything's green.",
-    "3. `hatchkit create` — scaffold a new project; pick features, deploy target, ML services.",
+    "3. `hatchkit create` — scaffold a new project; pick features, deploy target, ML services. Pass any answer as a flag to skip its prompt, or `--yes` to run it unattended.",
     "4. `hatchkit add <project>` — provision per-project clients/sites (GlitchTip, OpenPanel, Plausible, Listmonk + SES, Email Routing, Search Console).",
     "5. `hatchkit keys push <project>` — ship the dotenvx key to Coolify so prod can decrypt.",
     "6. `hatchkit doctor` — sanity-check before/after anything risky.",

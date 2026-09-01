@@ -327,6 +327,34 @@ function analyticsProvidersFromServices(services: ProvisionService[]): Analytics
   return services.filter(isAnalyticsProvisionService);
 }
 
+/** Seed `provisionServices` from whatever the caller already answered
+ *  via flags / `--config`.
+ *
+ *  The interactive stepper skips its Analytics / Email / Email-forwarding
+ *  steps when a preset supplied them — and those steps are what normally
+ *  fold the chosen providers into `provisionServices`. So when they're
+ *  skipped, the same merges have to happen up-front instead, or a
+ *  `--email both` run would record the intent in the manifest but never
+ *  queue Listmonk + SES for provisioning. Shared with the non-interactive
+ *  path so both resolve to the same list. */
+function seedProvisionServices(input: {
+  provisionServices?: ProvisionService[];
+  analyticsProviders?: AnalyticsProvider[];
+  email?: EmailIntent;
+  emailForwarding?: ProjectConfig["emailForwarding"];
+}): ProvisionService[] {
+  const base = input.provisionServices
+    ? uniqueProvisionServices(input.provisionServices)
+    : uniqueProvisionServices([...(input.analyticsProviders ?? [])]);
+  // An explicit email answer wins over a stale `listmonk-ses` entry in
+  // an explicit service list — same precedence the "Email" step applies.
+  const withEmail = input.email ? mergeEmailIntoProvisionServices(base, input.email) : base;
+  if (input.emailForwarding === undefined) return withEmail;
+  return input.emailForwarding.enabled
+    ? uniqueProvisionServices([...withEmail, "email"])
+    : withEmail.filter((service) => service !== "email");
+}
+
 // ---------------------------------------------------------------------------
 // Email intent — what kind of email does this project send + via which
 // provider. Answered once at create/adopt, persisted in the manifest.
@@ -663,7 +691,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     serverLocation: presets.serverLocation ?? "nbg1",
     features: presets.features ?? [],
     analyticsProviders: presets.analyticsProviders,
-    provisionServices: presets.provisionServices ?? [],
+    provisionServices: seedProvisionServices(presets),
     s3Provider: presets.s3Provider ?? "none",
     s3ExistingEndpoint: presets.s3ExistingEndpoint,
     s3ExistingBucket: presets.s3ExistingBucket,
@@ -679,9 +707,9 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     customHfModelId: presets.customHfModelId,
     customHfGpuType: presets.customHfGpuType,
     scaffoldRepo: presets.scaffoldRepo ?? true,
-    createGithubRepo: presets.createGithubRepo ?? true,
+    createGithubRepo: presets.scaffoldRepo === false ? false : (presets.createGithubRepo ?? true),
     githubRepoVisibility: presets.githubRepoVisibility ?? "public",
-    installDeps: presets.installDeps ?? true,
+    installDeps: presets.scaffoldRepo === false ? false : (presets.installDeps ?? true),
     deploymentMode: presets.deploymentMode ?? "coolify",
     runDeployment: presets.runDeployment ?? !dryRun,
     envValues: presets.envValues,
@@ -1021,7 +1049,14 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     },
     {
       name: "S3 bucket details",
-      skip: (c) => c.s3Provider !== "existing",
+      // The four credential answers travel together — a caller that
+      // passed all of them via flags / --config has nothing left to ask.
+      skip: (c) =>
+        c.s3Provider !== "existing" ||
+        (presets.s3ExistingEndpoint !== undefined &&
+          presets.s3ExistingBucket !== undefined &&
+          presets.s3ExistingAccessKey !== undefined &&
+          presets.s3ExistingSecretKey !== undefined),
       run: async (c) => {
         const s3ExistingEndpoint = await input({
           message: "S3 endpoint URL:",
@@ -1113,6 +1148,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     {
       name: "GPU platforms",
       skip: (c) => {
+        if (presets.gpuPlatforms !== undefined) return true;
         if (c.mlServices.length === 0) return true;
         const registry = getMlServices();
         const needsDeploy = c.mlServices.filter(
@@ -1152,29 +1188,49 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     },
     {
       name: "Scaffold / GitHub / install",
+      // Skipped only when every question below arrived as a flag AND
+      // there's no Coolify GitHub-App source left to pre-pick — that
+      // last part has no flag, so a private repo on a Coolify deploy
+      // keeps the step alive even with all four presets supplied.
+      // Otherwise the questions are skipped individually inside `run`.
+      skip: (c) => {
+        if (presets.scaffoldRepo === false) return true;
+        if (presets.scaffoldRepo === undefined) return false;
+        if (presets.createGithubRepo === undefined || presets.installDeps === undefined) {
+          return false;
+        }
+        if (presets.createGithubRepo === false) return true;
+        if (presets.githubRepoVisibility === undefined) return false;
+        return !(presets.githubRepoVisibility === "private" && c.deploymentMode === "coolify");
+      },
       run: async (c) => {
-        const scaffoldRepo = await confirm({
-          message: "Scaffold app repo?",
-          default: c.scaffoldRepo,
-        });
+        const scaffoldRepo =
+          presets.scaffoldRepo ??
+          (await confirm({
+            message: "Scaffold app repo?",
+            default: c.scaffoldRepo,
+          }));
         let createGithubRepo = false;
         let githubRepoVisibility: GitHubRepoVisibility | undefined;
         let installDeps = false;
         if (scaffoldRepo) {
-          createGithubRepo = await confirm({
-            message: "Create GitHub remote repo?",
-            default: c.createGithubRepo,
-          });
+          createGithubRepo =
+            presets.createGithubRepo ??
+            (await confirm({
+              message: "Create GitHub remote repo?",
+              default: c.createGithubRepo,
+            }));
           if (createGithubRepo) {
-            githubRepoVisibility = await promptGithubRepoVisibility(
-              "GitHub repo visibility:",
-              c.githubRepoVisibility,
-            );
+            githubRepoVisibility =
+              presets.githubRepoVisibility ??
+              (await promptGithubRepoVisibility("GitHub repo visibility:", c.githubRepoVisibility));
           }
-          installDeps = await confirm({
-            message: "Run pnpm install after scaffolding?",
-            default: c.installDeps,
-          });
+          installDeps =
+            presets.installDeps ??
+            (await confirm({
+              message: "Run pnpm install after scaffolding?",
+              default: c.installDeps,
+            }));
         }
         const coolifyGithubSource = await resolveCoolifyGithubSourceForStepper({
           createGithubRepo,
@@ -1223,7 +1279,10 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     {
       name: "Deploy now",
       skip: (c) =>
-        c.deploymentMode === "scaffold-only" || c.deploymentMode === "gh-pages" || dryRun,
+        c.deploymentMode === "scaffold-only" ||
+        c.deploymentMode === "gh-pages" ||
+        dryRun ||
+        presets.runDeployment !== undefined,
       run: async (c) => {
         const runDeployment = await confirm({
           message: "Run deployment now?",
@@ -1234,7 +1293,10 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     },
     {
       name: "Database engine",
-      skip: (c) => c.surfaces === "static" || c.deploymentMode === "gh-pages",
+      skip: (c) =>
+        c.surfaces === "static" ||
+        c.deploymentMode === "gh-pages" ||
+        presets.dbEngine !== undefined,
       run: async (c) => {
         const dbEngine = await select<"mongodb" | "postgres">({
           message: "Database engine:",
@@ -1249,7 +1311,11 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     },
     {
       name: "Database provider",
-      skip: (c) => c.surfaces === "static" || c.deploymentMode === "gh-pages",
+      skip: (c) =>
+        c.surfaces === "static" ||
+        c.deploymentMode === "gh-pages" ||
+        presets.dbProvider !== undefined ||
+        presets.mongodbProvider !== undefined,
       run: async (c) => {
         const engineLabel = c.dbEngine === "postgres" ? "Postgres" : "MongoDB";
         const externalHint =
@@ -1281,6 +1347,17 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
   }
 
   let config = await runSteps(steps, initial);
+
+  // A bare `--local-dev` (no `=slug`) means "enable it, derive the slug
+  // from the project name" — and the name isn't known until the name
+  // step has run, so it's filled in here rather than in the parser.
+  if (config.localDev && !config.localDev.slug) {
+    const { localDevDomainFromProjectDomain, sanitiseSlug } = await import("@hatchkit/dev-shared");
+    config.localDev = {
+      slug: sanitiseSlug(config.name),
+      domain: config.localDev.domain ?? localDevDomainFromProjectDomain(config.domain) ?? undefined,
+    };
+  }
 
   // Derive env values from final domain
   config.envValues = {
@@ -1317,7 +1394,12 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
 
   const description = (presets.description ?? "").trim();
   const rootDomain = getDefaultRootDomain();
-  const domain = presets.domain ?? (rootDomain ? `${name}.${rootDomain}` : name);
+  if (!presets.domain && !rootDomain) {
+    throw new Error(
+      "--domain is required in non-interactive mode (--yes): no default root domain is configured. Set one with `hatchkit setup`, or pass --domain <host>.",
+    );
+  }
+  const domain = presets.domain ?? `${name}.${rootDomain}`;
   const domainErr = validateDomain(domain);
   if (domainErr !== true) throw new Error(`--domain invalid: ${domainErr}`);
   const { baseDomain, subdomain } = parseDomain(domain);
@@ -1333,7 +1415,9 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
     deployTarget === "existing" &&
     (presets.serverId === undefined || presets.serverIp === undefined)
   ) {
-    throw new Error("--deploy-target existing requires serverId + serverIp in --config.");
+    throw new Error(
+      "--deploy-target existing requires --server-id <id> and --server-ip <ip> (or serverId/serverIp in --config).",
+    );
   }
 
   const features = presets.features ?? [];
@@ -1343,20 +1427,52 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
   const analyticsProviders =
     presets.analyticsProviders ??
     (features.includes("analytics") ? ["glitchtip" as const] : undefined);
-  // Mirror the interactive planning step: an `emailForwarding.enabled`
-  // preset implies the project also wants `"email"` provisioned. The
-  // explicit preset still wins — we only ADD it when missing.
-  const wantsEmailForwarding = presets.emailForwarding?.enabled === true;
-  const provisionServicesBase = presets.provisionServices
-    ? uniqueProvisionServices(presets.provisionServices)
-    : uniqueProvisionServices(analyticsProviders ? [...analyticsProviders] : []);
-  const provisionServices =
-    wantsEmailForwarding && !provisionServicesBase.includes("email")
-      ? uniqueProvisionServices([...provisionServicesBase, "email"])
-      : provisionServicesBase;
+
+  // Email intent in non-interactive mode is whatever the caller supplied
+  // (`--email`, manifest preset, scripted create). Absent → the services
+  // list is left exactly as given. Static surfaces force it to "none" —
+  // there's no server to read LISTMONK_*/SES_* env, so any queued
+  // provider would be dead weight.
+  const email =
+    surfaces === "static" || deploymentMode === "gh-pages"
+      ? EMAIL_INTENT_NONE
+      : (presets.email ?? EMAIL_INTENT_NONE);
+
+  // Mirror the steps the interactive stepper would have run: analytics
+  // providers, the email intent, and an `emailForwarding` answer all
+  // fold into the provision list.
+  const provisionServices = seedProvisionServices({
+    provisionServices: presets.provisionServices,
+    analyticsProviders,
+    email:
+      presets.email ?? (surfaces === "static" || deploymentMode === "gh-pages" ? email : undefined),
+    emailForwarding: presets.emailForwarding,
+  });
 
   const s3Provider: S3Provider = presets.s3Provider ?? (features.includes("s3") ? "r2" : "none");
+  if (s3Provider === "existing") {
+    const missing = (
+      [
+        ["--s3-endpoint", presets.s3ExistingEndpoint],
+        ["--s3-bucket", presets.s3ExistingBucket],
+        ["--s3-access-key", presets.s3ExistingAccessKey],
+        ["--s3-secret-key", presets.s3ExistingSecretKey],
+      ] as const
+    )
+      .filter(([, value]) => !value)
+      .map(([flag]) => flag);
+    if (missing.length > 0) {
+      throw new Error(
+        `--s3-provider existing requires ${missing.join(", ")} in non-interactive mode (--yes).`,
+      );
+    }
+  }
   const mlServices = presets.mlServices ?? [];
+  if (mlServices.includes("custom-hf") && !presets.customHfModelId) {
+    throw new Error(
+      "--ml-services custom-hf requires --custom-hf-model <owner/model> in non-interactive mode (--yes).",
+    );
+  }
   const gpuPlatforms =
     presets.gpuPlatforms ?? (mlServices.length > 0 ? ["modal" as const] : undefined);
   const scaffoldRepo = presets.scaffoldRepo ?? true;
@@ -1372,16 +1488,6 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
     surfaces === "static"
       ? "external"
       : (presets.dbProvider ?? presets.mongodbProvider ?? (runDeployment ? "coolify" : "external"));
-
-  // Email intent in non-interactive mode is whatever the caller supplied
-  // (manifest preset / scripted create). Absent → "none" both ways, and
-  // any matching listmonk-ses entries in provisionServices stay intact
-  // (the caller chose them explicitly). For static surfaces force it to
-  // "none" — no server to read the env vars.
-  const email =
-    surfaces === "static" || deploymentMode === "gh-pages"
-      ? EMAIL_INTENT_NONE
-      : (presets.email ?? EMAIL_INTENT_NONE);
 
   const envValues: Record<string, string> = { ...(presets.envValues ?? {}) };
   envValues.FRONTEND_URL ??= `https://${domain}`;

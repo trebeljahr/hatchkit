@@ -62,7 +62,7 @@ rotation URL, required scopes, and exact `hatchkit config add <provider>` comman
 | `hatchkit setup` / `init` | One-time interactive onboarding for credentials |
 | `hatchkit config` | Show configured provider status |
 | `hatchkit config add <provider>` | Reconfigure one provider |
-| `hatchkit create` | Interactive scaffold/deploy flow for a new app |
+| `hatchkit create` | Scaffold/deploy flow for a new app. Interactive by default; every prompt has a flag, and `--yes` runs it unattended |
 | `hatchkit update` | Add supported features to an existing Hatchkit project |
 | `hatchkit add <project> [services]` | Provision per-project clients/env blocks |
 | `hatchkit remove <project> [services]` | Unprovision selected project clients |
@@ -125,11 +125,11 @@ Use Hatchkit context when the user mentions any of:
 ## Guard rails
 
 - `hatchkit doctor` is safe and read-only. Use it freely for diagnosis.
-- `hatchkit create`, `setup`, and `config add` are interactive. Do not run them
-  non-interactively unless the user gave flags/config for automation.
+- `hatchkit setup` and `config add` are interactive. Do not run them
+  unattended unless the user gave flags/config for automation.
 - `hatchkit create` can write files, initialize git, create GitHub repos,
   run Terraform, configure DNS, create Coolify apps, and deploy. Be explicit
-  before starting it.
+  before starting it — driving it from flags does not lower the blast radius.
 - `hatchkit add`, `remove`, `keys push`, `keys rotate`, `gh-pages`, `sync`,
   `rename-domain`, `regen-infra`, `provision s3`, and `destroy` can mutate local
   files and/or remote systems. Make sure the user's request authorizes that action.
@@ -150,6 +150,65 @@ Use Hatchkit context when the user mentions any of:
   explicit user approval.
 - Never assume Hatchkit owns pre-existing resources. Rollback ledgers are meant
   to avoid deleting user-owned state; preserve that model when fixing code.
+
+## Driving `hatchkit create` from flags
+
+`hatchkit create` is interactive by default, but every question it asks has a
+matching CLI flag. This is the path to prefer when acting for a user, because
+it makes the plan reviewable before anything runs.
+
+Precedence: a value passed as a flag is used as-is and **its prompt is
+skipped**. Anything not passed is still prompted for, so partial flag sets
+work — this is hybrid, not all-or-nothing.
+
+`--yes` (alias `--non-interactive`) additionally takes defaults for whatever
+is still unset and hard-fails, naming the missing flag, instead of prompting.
+Pair it with `--dry-run` to print the fully-resolved plan without writing
+anything:
+
+```bash
+hatchkit create --yes --dry-run --name blog --domain blog.example.com \
+  --surfaces fullstack --deployment-mode coolify
+```
+
+Flags, with their valid values:
+
+| Flag | Values |
+|---|---|
+| `--name <name>` | required under `--yes` |
+| `--domain <host>` | defaults to `<name>.<root domain>` |
+| `--description <text>` | pass empty for "none" |
+| `--surfaces` | `fullstack` `split` `backend` `static` |
+| `--deployment-mode` | `coolify` `gh-pages` `scaffold-only` (`gh-pages` needs `--surfaces static`) |
+| `--deploy-target` | `new` `existing` |
+| `--server-size` | `cpx21` `cpx31` `cpx41` |
+| `--server-location` | `nbg1` `fsn1` `hel1` |
+| `--server-id`, `--server-ip` | required with `--deploy-target existing` |
+| `--features` | `websocket` `stripe` `analytics` `s3` `desktop` `desktop-tauri` `mobile` (comma-separated) |
+| `--analytics-providers` | `glitchtip` `openpanel` `plausible` |
+| `--services` | `glitchtip` `openpanel` `plausible` `listmonk-ses` `s3` `email` `search-console` |
+| `--db-engine` | `mongodb` `postgres` |
+| `--db-provider` | `coolify` `external` |
+| `--s3-provider` | `hetzner` `r2` `aws` `existing` `none` |
+| `--s3-endpoint`, `--s3-bucket`, `--s3-access-key`, `--s3-secret-key`, `--s3-region` | required with `--s3-provider existing` |
+| `--email` | `none` `transactional` `mailing-list` `both` |
+| `--email-forwarding` | `off`, or comma-separated local-parts |
+| `--email-catch-all` / `--no-email-catch-all` | forward `*@domain` |
+| `--ml-services` | `3d-sam-objects` `3d-sam-body` `3d-hunyuan` `3d-trellis` `3d-extraction` `subtitles` `image-recognition` `background-removal` `custom-hf` |
+| `--gpu-platforms` | `modal` `runpod` `hf` `replicate` (first is default `ML_BACKEND`) |
+| `--custom-hf-model`, `--custom-hf-gpu-type` | required with `--ml-services custom-hf` |
+| `--scaffold` / `--no-scaffold` | write the app repo |
+| `--github` / `--no-github`, `--github-visibility` (`private` `public`), `--public`, `--private` | GitHub remote |
+| `--install` / `--no-install` | run `pnpm install` |
+| `--deploy` / `--no-deploy` | run the deploy |
+| `--local-dev[=<slug>]` / `--no-local-dev` | Tailscale dev URL |
+| `--config <path>` | JSON `Partial<ProjectConfig>`; individual flags win over it |
+
+Invalid values fail before anything is written, with the valid set in the
+error. Run `hatchkit create --help` for the authoritative list.
+
+Secrets on the command line end up in shell history — prefer `--config <path>`
+for `--s3-secret-key`.
 
 ## When something breaks
 

@@ -37,6 +37,15 @@ npx hatchkit create
 
 That's it. You'll be walked through name → domain → features → ML → deploy target, then hatchkit will scaffold, commit, create the GitHub repo, provision DNS + server, and push the app to Coolify.
 
+Every one of those questions also has a flag. Pass the answers you already know and only the rest get prompted, or add `--yes` to skip prompting entirely:
+
+```bash
+hatchkit create --yes --name blog --domain blog.example.com \
+  --surfaces fullstack --deployment-mode coolify --features analytics --public
+```
+
+Run `hatchkit create --help` for the full flag list, or see the [commands reference](https://hatchkit.trebeljahr.com/docs/commands#hatchkit-create).
+
 New to the CLI? Run `hatchkit explain` for a one-page mental model covering every concept, command, and the canonical workflow.
 
 ---
@@ -49,7 +58,7 @@ New to the CLI? Run `hatchkit explain` for a one-page mental model covering ever
 | `hatchkit status` | Show which providers are configured and what's the next best step. |
 | `hatchkit doctor` | Health-check every configured provider with a read-only API call + contextual fix hints on failures. |
 | `hatchkit explain` | Print the one-page mental model (concepts, commands, workflow). |
-| `hatchkit create` | Scaffold a new project (interactive) and optionally deploy it end-to-end. |
+| `hatchkit create` | Scaffold a new project and optionally deploy it end-to-end. Interactive by default; every prompt has a matching flag, and `--yes` makes it fully non-interactive. |
 | `hatchkit update` | Add features (desktop, desktop-tauri, mobile, …) to a project already scaffolded. |
 | `hatchkit add <project> [services]` | Provision GlitchTip / OpenPanel / Plausible / Listmonk + SES / email / search clients for an existing project. |
 | `hatchkit signing org-init` | One-time per dev machine — collect Apple Distribution .p12 / App Store Connect API key, Google Play service account JSON, Azure Trusted Signing service principal. |
