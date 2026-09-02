@@ -69,16 +69,21 @@ import {
 } from "./deferrals.js";
 import {
   type GlitchtipClient,
+  adoptGlitchtipClient,
   deleteGlitchtipClient,
-  glitchtipProjectExists,
   provisionGlitchtipClient,
 } from "./glitchtip.js";
 import {
   type OpenpanelClient,
+  adoptOpenpanelClient,
   deleteOpenpanelClient,
-  openpanelProjectExists,
   provisionOpenpanelClient,
 } from "./openpanel.js";
+import {
+  type ProjectMatch,
+  resolveGlitchtipProjects,
+  resolveOpenpanelProjects,
+} from "./project-lookup.js";
 import {
   type PlausibleSite,
   deletePlausibleSite,
@@ -256,9 +261,16 @@ export interface ProvisionOptions {
    *  and the next provider, so it can append to a ledger / log
    *  without racing the next API call. */
   onProvisioned?: (event: ProvisionedEvent) => void;
-  /** When true, run read-only existence probes before creating remote
-   *  resources and abort if anything selected already exists. */
+  /** When true, survey the providers before creating anything and abort
+   *  if a resource this run would create already exists. Ignored when
+   *  `adoptExisting` is set — then the survey still runs, but a hit
+   *  means "reuse this" rather than "stop". */
   failIfExists?: boolean;
+  /** Reuse resources that already exist instead of refusing to run.
+   *  Nothing is created for them; their existing credentials (GlitchTip
+   *  DSN, OpenPanel client id/secret) are read and written into the env
+   *  files exactly as a fresh provision would have. */
+  adoptExisting?: boolean;
   /** Pre-collected Cloudflare Email Routing answers (addresses +
    *  catch-all). When set, the `"email"` service runs non-interactively
    *  with these values — skipping the picker that would otherwise fire
@@ -311,53 +323,111 @@ interface WriteBucket {
   devLines: string[];
 }
 
-async function assertNoExistingProviderResources(args: {
+/** What the preflight found already living on the providers, keyed by
+ *  the name hatchkit would have created. `runProvision` reads this to
+ *  adopt instead of create when `--adopt` is on. */
+interface ExistingResources {
+  glitchtip: Map<string, ProjectMatch>;
+  openpanel: Map<string, ProjectMatch>;
+  plausible: Set<string>;
+}
+
+function emptyExistingResources(): ExistingResources {
+  return { glitchtip: new Map(), openpanel: new Map(), plausible: new Set() };
+}
+
+/** The exact names this run intends to create for a per-surface
+ *  service. Split layouts get one project per surface. */
+function plannedProjectNames(baseName: string, surfaces: Surfaces | null): string[] {
+  return surfaces && surfaces.mode === "split"
+    ? [`${baseName}-server`, `${baseName}-client`]
+    : [baseName];
+}
+
+/** Read-only preflight: which of the resources this run would create
+ *  already exist upstream?
+ *
+ *  Every provider answers from its own project *listing* via the shared
+ *  resolver in `project-lookup.ts` — the same code path `hatchkit
+ *  inventory` uses, so the two commands cannot drift apart again. The
+ *  candidate list here is the exact set of names this run would create,
+ *  not the wider alias set inventory surveys: refusing to create
+ *  `foo-server` because an unrelated `foo-api` exists would be wrong. */
+async function findExistingProviderResources(args: {
   baseName: string;
   services: ProvisionService[];
   surfaces: Surfaces | null;
   plausibleDomain?: string;
-}): Promise<void> {
-  const conflicts: string[] = [];
+}): Promise<ExistingResources> {
+  const found = emptyExistingResources();
+  const names = plannedProjectNames(args.baseName, args.surfaces);
 
   if (args.services.includes("glitchtip")) {
-    const names =
-      args.surfaces && args.surfaces.mode === "split"
-        ? [`${args.baseName}-server`, `${args.baseName}-client`]
-        : [args.baseName];
+    const cfg = await ensureGlitchtip();
+    const { matches } = await resolveGlitchtipProjects(cfg, names);
     for (const name of names) {
-      if (await glitchtipProjectExists(name)) conflicts.push(`GlitchTip project ${name}`);
+      const match = matches.find((m) => m.matchedAs === name);
+      if (match) found.glitchtip.set(name, match);
     }
   }
 
   if (args.services.includes("openpanel")) {
-    const names =
-      args.surfaces && args.surfaces.mode === "split"
-        ? [`${args.baseName}-server`, `${args.baseName}-client`]
-        : [args.baseName];
+    const cfg = await ensureOpenpanel();
+    const { matches } = await resolveOpenpanelProjects(cfg, names);
     for (const name of names) {
-      if (await openpanelProjectExists(name)) conflicts.push(`OpenPanel project ${name}`);
+      const match = matches.find((m) => m.matchedAs === name);
+      if (match) found.openpanel.set(name, match);
     }
   }
 
   if (args.services.includes("plausible") && args.plausibleDomain) {
-    if (await plausibleSiteExists(args.plausibleDomain)) {
-      conflicts.push(`Plausible site ${args.plausibleDomain}`);
-    }
+    if (await plausibleSiteExists(args.plausibleDomain)) found.plausible.add(args.plausibleDomain);
   }
 
-  if (conflicts.length > 0) {
-    // Fatal by design: silently continuing would either duplicate a
-    // live resource or clobber credentials the user is already
-    // depending on. Not a deferral — there's nothing to finish later.
-    throw new FatalProvisionError(
-      [
-        "Refusing to add services because these resources already exist:",
-        ...conflicts.map((conflict) => `  - ${conflict}`),
-        "",
-        "Remove or rename the existing resources, or run `hatchkit remove` if Hatchkit created them before.",
-      ].join("\n"),
-    );
+  return found;
+}
+
+function describeExisting(found: ExistingResources): string[] {
+  const lines: string[] = [];
+  for (const [name, match] of found.glitchtip) {
+    const where = match.identity !== name ? ` (slug ${match.identity})` : "";
+    lines.push(`GlitchTip project ${name}${where}`);
   }
+  for (const [name, match] of found.openpanel) {
+    const where = match.id && match.id !== name ? ` (id ${match.id})` : "";
+    lines.push(`OpenPanel project ${name}${where}`);
+  }
+  for (const domain of found.plausible) lines.push(`Plausible site ${domain}`);
+  return lines;
+}
+
+function assertNoExistingProviderResources(args: {
+  baseName: string;
+  services: ProvisionService[];
+  found: ExistingResources;
+}): void {
+  const conflicts = describeExisting(args.found);
+  if (conflicts.length === 0) return;
+
+  // Fatal by design: silently continuing would either duplicate a
+  // live resource or clobber credentials the user is already
+  // depending on. Not a deferral — there's nothing to finish later.
+  //
+  // But a refusal that leaves no way to reach the resource's own
+  // credentials is a dead end, which is exactly what this used to be.
+  // `--adopt` reads the existing resource instead of creating one, so
+  // the DSN / client id still lands in the env files.
+  throw new FatalProvisionError(
+    [
+      "Refusing to add services because these resources already exist:",
+      ...conflicts.map((conflict) => `  - ${conflict}`),
+      "",
+      `Reuse them (writes their credentials into your env files):`,
+      `  hatchkit add ${args.baseName} ${args.services.join(",")} --adopt`,
+      "",
+      "Or remove/rename the existing resources, or run `hatchkit remove` if Hatchkit created them before.",
+    ].join("\n"),
+  );
 }
 
 export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRunResult> {
@@ -581,13 +651,25 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
     return { configured: [...configured], deferred: [...deferred] };
   };
 
-  if (opts.failIfExists) {
-    await assertNoExistingProviderResources({
+  // Read-only provider survey. Runs for `failIfExists` (abort on a
+  // collision) and for `adoptExisting` (reuse what it finds) — one
+  // lookup, two readings, so the two modes can never disagree about
+  // what is out there.
+  let existing = emptyExistingResources();
+  if (opts.failIfExists || opts.adoptExisting) {
+    existing = await findExistingProviderResources({
       baseName: opts.baseName,
       services: [...active],
       surfaces,
       plausibleDomain,
     });
+    if (!opts.adoptExisting) {
+      assertNoExistingProviderResources({
+        baseName: opts.baseName,
+        services: [...active],
+        found: existing,
+      });
+    }
   }
 
   // Runtime-shape gate. `static` is the ONLY surface mode without a
@@ -600,23 +682,36 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
   const hasServerRuntime = !surfaces || surfaces.mode !== "static";
   const hasClientSurface = !surfaces || surfaces.mode !== "backend";
 
+  /** Create the GlitchTip project, or read the DSN off the one that is
+   *  already there. Adoption never records a `onProvisioned` event —
+   *  the run ledger drives `hatchkit remove`, and hatchkit must not
+   *  offer to delete a resource it did not create. */
+  const glitchtipFor = async (projectName: string): Promise<GlitchtipClient> => {
+    const match = existing.glitchtip.get(projectName);
+    if (match) {
+      const res = await withSpinner(`GlitchTip: adopting project ${match.identity}`, () =>
+        adoptGlitchtipClient(match.identity),
+      );
+      return res;
+    }
+    const res = await withSpinner(`GlitchTip: creating project ${projectName}`, () =>
+      provisionGlitchtipClient(projectName),
+    );
+    opts.onProvisioned?.({ service: "glitchtip", project: projectName });
+    return res;
+  };
+
   // ── GlitchTip ──
   await runOptionalStep("glitchtip", async () => {
     if (surfaces?.mode === "split") {
       for (const side of ["server", "client"] as const) {
         const projectName = `${opts.baseName}-${side}`;
-        const res = await withSpinner(`GlitchTip: creating project ${projectName}`, () =>
-          provisionGlitchtipClient(projectName),
-        );
-        opts.onProvisioned?.({ service: "glitchtip", project: projectName });
+        const res = await glitchtipFor(projectName);
         pushObsLines(buckets, side, renderGlitchtipEnv(res, side === "client"), enableDevObs);
       }
     } else {
       const projectName = opts.baseName;
-      const res = await withSpinner(`GlitchTip: creating project ${projectName}`, () =>
-        provisionGlitchtipClient(projectName),
-      );
-      opts.onProvisioned?.({ service: "glitchtip", project: projectName });
+      const res = await glitchtipFor(projectName);
       // Shared-DSN case: the server SDK reads GLITCHTIP_DSN; the client
       // SDK reads GLITCHTIP_DSN_CLIENT (same value). Both SDKs tag
       // events with `sdk.name`, so filtering by surface in the UI is
@@ -630,23 +725,35 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
     }
   });
 
+  /** Same shape as `glitchtipFor`: adopt when the preflight saw the
+   *  project, otherwise create. OpenPanel addresses projects by id, so
+   *  adoption needs the id off the match rather than the name. */
+  const openpanelFor = async (projectName: string): Promise<OpenpanelClient> => {
+    const match = existing.openpanel.get(projectName);
+    if (match?.id) {
+      const projectId = match.id;
+      return await withSpinner(`OpenPanel: adopting project ${projectName}`, () =>
+        adoptOpenpanelClient({ clientName: projectName, projectId }),
+      );
+    }
+    const res = await withSpinner(`OpenPanel: creating project ${projectName}`, () =>
+      provisionOpenpanelClient(projectName),
+    );
+    opts.onProvisioned?.({ service: "openpanel", project: projectName });
+    return res;
+  };
+
   // ── OpenPanel ──
   await runOptionalStep("openpanel", async () => {
     if (surfaces?.mode === "split") {
       for (const side of ["server", "client"] as const) {
         const projectName = `${opts.baseName}-${side}`;
-        const res = await withSpinner(`OpenPanel: creating project ${projectName}`, () =>
-          provisionOpenpanelClient(projectName),
-        );
-        opts.onProvisioned?.({ service: "openpanel", project: projectName });
+        const res = await openpanelFor(projectName);
         pushObsLines(buckets, side, renderOpenpanelEnv(res, side === "client"), enableDevObs);
       }
     } else {
       const projectName = opts.baseName;
-      const res = await withSpinner(`OpenPanel: creating project ${projectName}`, () =>
-        provisionOpenpanelClient(projectName),
-      );
-      opts.onProvisioned?.({ service: "openpanel", project: projectName });
+      const res = await openpanelFor(projectName);
       if (hasServerRuntime) {
         pushObsLines(buckets, "server", renderOpenpanelEnv(res, false), enableDevObs);
       }

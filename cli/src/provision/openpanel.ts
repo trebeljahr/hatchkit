@@ -16,8 +16,10 @@
  * idempotent and `delete` can target the exact upstream project.
  */
 
+import type { OpenpanelConfig } from "../config.js";
 import { ensureOpenpanel } from "../config.js";
 import { SECRET_KEYS, deleteSecret, getSecret, setSecret } from "../utils/secrets.js";
+import type { RemoteProject } from "./project-lookup.js";
 
 export interface OpenpanelClient {
   projectName: string;
@@ -50,28 +52,79 @@ function resolveManageBase(url: string, apiUrl: string | undefined): string {
   return `${(apiUrl ?? url).replace(/\/$/, "")}/manage`;
 }
 
-export async function openpanelProjectExists(clientName: string): Promise<boolean> {
-  const cfg = await ensureOpenpanel();
-  const { url, apiUrl, rootClientId, rootClientSecret } = cfg;
-  const cachedSecret = await getSecret(SECRET_KEYS.openpanelClientSecret(clientName));
-  const cachedId = await getSecret(clientIdKey(clientName));
-  if (cachedSecret && cachedId) return true;
+/** Parse the manage API's project list. It returns a bare array in
+ *  some versions and `{ data: [...] }` in others; accept either. */
+function readProjectList(raw: unknown): RemoteProject[] {
+  const rows = Array.isArray(raw) ? raw : ((raw as { data?: unknown }).data ?? []);
+  return Array.isArray(rows) ? (rows as RemoteProject[]) : [];
+}
 
-  const manageBase = resolveManageBase(url, apiUrl);
+/** Every project the root client can see.
+ *
+ *  Deliberately does NOT consult the keychain first. A cached client
+ *  secret proves hatchkit once created a project, not that the project
+ *  is still there — short-circuiting on it made `add` refuse to run for
+ *  resources that had since been deleted upstream, while `inventory`
+ *  (which always asks the API) reported them missing. */
+export async function listOpenpanelProjects(cfg: OpenpanelConfig): Promise<RemoteProject[]> {
+  const manageBase = resolveManageBase(cfg.url, cfg.apiUrl);
   const res = await fetch(`${manageBase}/projects`, {
-    headers: buildHeaders(rootClientId, rootClientSecret),
+    headers: buildHeaders(cfg.rootClientId, cfg.rootClientSecret),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(
-      `OpenPanel preflight failed: ${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`,
+      `OpenPanel list projects failed: ${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`,
     );
   }
-  const raw = (await res.json()) as unknown;
-  const projects: Array<{ name?: string; id?: string }> = Array.isArray(raw)
-    ? (raw as Array<{ name?: string; id?: string }>)
-    : ((raw as { data?: Array<{ name?: string; id?: string }> }).data ?? []);
-  return projects.some((project) => project.name === clientName || project.id === clientName);
+  return readProjectList(await res.json());
+}
+
+/** Credentials for a project that already exists, without creating one.
+ *
+ *  Prefers the cached client this machine minted; otherwise mints a
+ *  fresh write client against the existing project, because OpenPanel
+ *  does not hand back an existing client's secret after creation. */
+export async function adoptOpenpanelClient(args: {
+  /** Name to file the credentials under locally — the name hatchkit
+   *  would have created. */
+  clientName: string;
+  /** Upstream project id, from the resolver. */
+  projectId: string;
+}): Promise<OpenpanelClient> {
+  const { clientName, projectId } = args;
+  const cfg = await ensureOpenpanel();
+  const manageBase = resolveManageBase(cfg.url, cfg.apiUrl);
+
+  const cachedSecret = await getSecret(SECRET_KEYS.openpanelClientSecret(clientName));
+  const cachedId = await getSecret(clientIdKey(clientName));
+  if (cachedSecret && cachedId) {
+    return { projectName: clientName, clientId: cachedId, clientSecret: cachedSecret, apiUrl: manageBase };
+  }
+
+  const headers = buildHeaders(cfg.rootClientId, cfg.rootClientSecret, { jsonBody: true });
+  const clientRes = await fetch(`${manageBase}/clients`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ name: clientName, type: "write", projectId }),
+  });
+  if (!clientRes.ok) {
+    const text = await clientRes.text().catch(() => "");
+    throw new Error(
+      `OpenPanel create client failed: ${clientRes.status} ${clientRes.statusText}${text ? ` — ${text}` : ""}`,
+    );
+  }
+  const body = (await clientRes.json()) as { data?: { id?: string; secret?: string } };
+  const clientId = body.data?.id;
+  const clientSecret = body.data?.secret;
+  if (!clientId || !clientSecret) {
+    throw new Error("OpenPanel: client created but response lacked id/secret.");
+  }
+
+  await setSecret(SECRET_KEYS.openpanelClientSecret(clientName), clientSecret);
+  await setSecret(clientIdKey(clientName), clientId);
+  await setSecret(projectIdKey(clientName), projectId);
+  return { projectName: clientName, clientId, clientSecret, apiUrl: manageBase };
 }
 
 export async function provisionOpenpanelClient(clientName: string): Promise<OpenpanelClient> {
