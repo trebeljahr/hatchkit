@@ -41,6 +41,11 @@ import { locateEnvProductionFile } from "./keys.js";
  *  private key would be an outright leak into a second system. */
 const NON_RUNTIME_KEYS = /^DOTENV_(PUBLIC|PRIVATE)_KEY/;
 
+/** Scaffold placeholders. `hatchkit create` writes these for values it
+ *  can't know yet, and a provision step is meant to overwrite them.
+ *  When one survives to a sync it means that step never ran. */
+const PLACEHOLDER_VALUE = /^(CHANGE_ME|REPLACE_ME|TODO)\b|^CHANGE_ME/;
+
 export interface ResolvedProdEnv {
   /** Absolute path of the file the values came from. */
   path: string;
@@ -53,6 +58,12 @@ export interface ResolvedProdEnv {
    *  would put ciphertext into Coolify as though it were a value, so
    *  callers must refuse rather than push a half-resolved env. */
   undecrypted: string[];
+  /** Names whose value is still a scaffold placeholder (`CHANGE_ME…`).
+   *  Present in `values` — some are genuinely optional and a project can
+   *  ship without them — but callers should surface them, because
+   *  pushing one is how an app ends up configured with a string that
+   *  looks like a value and isn't. */
+  placeholders: string[];
 }
 
 /** Read and decrypt a project's `.env.production`.
@@ -90,6 +101,7 @@ export async function resolveProductionEnv(projectDir: string): Promise<Resolved
 
   const values: Record<string, string> = {};
   const undecrypted: string[] = [];
+  const placeholders: string[] = [];
   for (const [name, value] of Object.entries(merged)) {
     if (NON_RUNTIME_KEYS.test(name)) continue;
     if (typeof value !== "string") continue;
@@ -97,10 +109,11 @@ export async function resolveProductionEnv(projectDir: string): Promise<Resolved
       undecrypted.push(name);
       continue;
     }
+    if (PLACEHOLDER_VALUE.test(value)) placeholders.push(name);
     values[name] = value;
   }
 
-  return { path, relPath: relative(projectDir, path), values, undecrypted };
+  return { path, relPath: relative(projectDir, path), values, undecrypted, placeholders };
 }
 
 /** Minimal `.env` parser — `KEY=value`, optional `export`, optional

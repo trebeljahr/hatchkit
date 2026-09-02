@@ -216,6 +216,8 @@ export interface SyncResult {
   created: string[];
   /** Per-app count of env vars pushed, keyed by app name. */
   envPushed: Record<string, number>;
+  /** Env names still holding a scaffold placeholder value. */
+  envPlaceholders: string[];
   /** Hostnames whose DNS records were upserted. */
   dnsUpserted: string[];
   /** GitHub Actions secret names pushed, and stale ones removed. */
@@ -303,6 +305,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   const created: string[] = [];
   const wouldCreate: string[] = [];
   const envPushed: Record<string, number> = {};
+  let envPlaceholders: string[] = [];
   const dnsUpserted: string[] = [];
   let secretsPushed: string[] = [];
   let secretsRemoved: string[] = [];
@@ -461,6 +464,25 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
       errors.push(err);
       if (!opts.json) console.log(chalk.yellow(`\n  ${err}`));
     } else {
+      // Placeholders are pushed, not blocked — several are optional and
+      // a project can legitimately ship without them — but they are
+      // called out, because a `CHANGE_ME…` in Coolify is a value-shaped
+      // string that silently misconfigures the app.
+      if (resolvedEnv.placeholders.length > 0 && !opts.json) {
+        console.log(
+          chalk.yellow(
+            `\n  ${resolvedEnv.placeholders.length} value(s) in ${resolvedEnv.relPath} are still scaffold placeholders:`,
+          ),
+        );
+        console.log(chalk.dim(`    ${resolvedEnv.placeholders.join(", ")}`));
+        console.log(
+          chalk.dim(
+            "    The provision step that fills these never ran. Set them (`hatchkit add <project> …`,\n" +
+              "    or `dotenvx set <KEY> <value> -f .env.production --encrypt`) before relying on them.",
+          ),
+        );
+      }
+      envPlaceholders = resolvedEnv.placeholders;
       // Baseline first so file values win: the at-rest store is the
       // source of truth, and these only fill gaps it doesn't cover.
       const baseline: Record<string, string> = { NODE_ENV: "production" };
@@ -607,6 +629,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     deployed,
     created,
     envPushed,
+    envPlaceholders,
     dnsUpserted,
     secretsPushed,
     secretsRemoved,
@@ -686,6 +709,7 @@ function emptyResult(opts: SyncOptions): SyncResult {
     deployed: [],
     created: [],
     envPushed: {},
+    envPlaceholders: [],
     dnsUpserted: [],
     secretsPushed: [],
     secretsRemoved: [],
