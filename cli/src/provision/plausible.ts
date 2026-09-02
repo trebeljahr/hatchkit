@@ -187,6 +187,68 @@ export async function provisionPlausibleSite(
   return makeSite(projectName, normalizedDomain, baseUrl, { created: res.ok });
 }
 
+export interface PlausibleRenameResult {
+  oldDomain: string;
+  newDomain: string;
+  baseUrl: string;
+}
+
+/** Change a Plausible site's domain via the Sites API
+ *  (`PUT /api/v1/sites/{old}` with `{ domain: new }`). Plausible
+ *  preserves the site's stats history across the rename and keeps the
+ *  old domain working as a redirect alias for a transition window, so
+ *  this is the right tool when a deployed project moves to a new
+ *  canonical hostname. The keychain domain cache is keyed by project
+ *  name — callers that know the project should follow up with
+ *  {@link updateCachedPlausibleDomain}. */
+export async function renamePlausibleSite(
+  oldDomain: string,
+  newDomain: string,
+): Promise<PlausibleRenameResult> {
+  const cfg = await ensurePlausible();
+  const baseUrl = cfg.url.replace(/\/$/, "");
+  const from = oldDomain.trim().toLowerCase();
+  const to = newDomain.trim().toLowerCase();
+  if (!from || !to) throw new Error("Both the old and the new domain are required.");
+  if (from === to) throw new Error("Old and new domain are identical — nothing to rename.");
+
+  const res = await fetch(siteUrl(baseUrl, from), {
+    method: "PUT",
+    headers: authHeaders(cfg.apiKey),
+    body: JSON.stringify({ domain: to }),
+  });
+  if (!res.ok) {
+    const text = await responseText(res);
+    if (isSitesApiUnavailableStatus(res.status)) {
+      throw new PlausibleSitesApiUnavailableError(baseUrl, res.status, text);
+    }
+    if (res.status === 404) {
+      throw new Error(
+        `Plausible has no site for "${from}" at ${baseUrl} — check the domain (or create the site first).`,
+      );
+    }
+    throw new Error(
+      `Plausible rename site failed: ${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`,
+    );
+  }
+  return { oldDomain: from, newDomain: to, baseUrl };
+}
+
+/** Point the per-project domain cache at the renamed site. Only
+ *  rewrites the cache when it currently holds `oldDomain` — a project
+ *  tracking some other domain is left alone. Returns true when the
+ *  cache was updated. */
+export async function updateCachedPlausibleDomain(
+  projectName: string,
+  oldDomain: string,
+  newDomain: string,
+): Promise<boolean> {
+  const cached = await getSecret(siteDomainKey(projectName));
+  if (cached !== oldDomain.trim().toLowerCase()) return false;
+  await setSecret(siteDomainKey(projectName), newDomain.trim().toLowerCase());
+  return true;
+}
+
 export async function deletePlausibleSite(projectName: string): Promise<DeleteResult> {
   const cfg = await ensurePlausible();
   const domain = (await getSecret(siteDomainKey(projectName))) ?? projectName;

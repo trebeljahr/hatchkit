@@ -1702,6 +1702,7 @@ export async function checkProjectRoutingState(projectDir: string): Promise<Chec
   let manifest: {
     name?: string;
     domain?: string;
+    aliases?: string[];
     surfaces?: string;
     topology?: string;
     publicService?: string;
@@ -1719,6 +1720,7 @@ export async function checkProjectRoutingState(projectDir: string): Promise<Chec
   }
 
   const { computeRoutingPlan, inferTopology } = await import("./deploy/routing.js");
+  const { manifestHostnames } = await import("./scaffold/manifest.js");
   const { readComposeFile } = await import("./utils/compose.js");
   const compose = readComposeFile(projectDir);
   const inference = inferTopology({
@@ -1728,6 +1730,10 @@ export async function checkProjectRoutingState(projectDir: string): Promise<Chec
   const plan = computeRoutingPlan({
     name: manifest.name,
     domain: manifest.domain,
+    hostnameAliases: manifestHostnames({
+      domain: manifest.domain,
+      aliases: manifest.aliases,
+    }).slice(1),
     topology: inference.topology,
     surfaces: manifest.surfaces as "fullstack" | "split" | "backend" | "static" | undefined,
     ports: manifest.ports,

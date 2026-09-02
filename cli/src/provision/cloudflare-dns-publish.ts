@@ -5,7 +5,8 @@
  * flow (and any future provider that hands hatchkit a list of records
  * to add). Owns:
  *
- *   1. Per-record upsert (CNAME / TXT / MX) against the resolved zone.
+ *   1. Per-record upsert (A / AAAA / CNAME / TXT / MX) against the
+ *      resolved zone.
  *   2. SPF merge for TXT records whose value starts with `v=spf1` —
  *      RFC 7208 forbids multiple SPF records at one host, so combining
  *      includes is the only safe write.
@@ -26,7 +27,7 @@ import { buildSpfRecord, parseSpfIncludes } from "../email/spf.js";
 import type { CloudflareApi } from "../utils/cloudflare-api.js";
 
 export interface PublishDnsRecord {
-  type: "TXT" | "MX" | "CNAME";
+  type: "TXT" | "MX" | "CNAME" | "A" | "AAAA";
   /** Fully-qualified record name — callers must resolve to FQDN
    *  themselves (Resend's API already does; SES needs the caller to
    *  build `<token>._domainkey.<domain>`). */
@@ -42,13 +43,18 @@ export interface PublishDnsRecord {
   /** Short tag for the per-record log line, e.g. "DKIM" / "SPF". */
   label?: string;
   ttl?: string | number;
+  /** Orange-cloud proxy toggle. Only meaningful for A / AAAA / CNAME.
+   *  Defaults: A/AAAA → true (records pointing at a hatchkit-managed
+   *  origin want Cloudflare in front, matching adopt's wireDns);
+   *  CNAME → false (DKIM/verification CNAMEs must resolve verbatim). */
+  proxied?: boolean;
 }
 
 export interface CreatedDnsRecord {
   /** Cloudflare record id — what DELETE /zones/:zone/dns_records/:id needs. */
   id: string;
   name: string;
-  type: "TXT" | "MX" | "CNAME";
+  type: PublishDnsRecord["type"];
 }
 
 export interface PublishDnsRecordsResult {
@@ -79,6 +85,11 @@ export interface PublishDnsRecordsOptions {
   /** Optional log prefix shown next to each `+ created` / `~ updated` /
    *  `· unchanged` line. Defaults to nothing. */
   logTag?: string;
+  /** Classify without writing — every upsert runs its read + comparison
+   *  but skips the POST/PATCH, and the log verbs switch to
+   *  "would create" / "would update". `createdRecords` ids are empty
+   *  for would-create rows. */
+  dryRun?: boolean;
 }
 
 /**
@@ -107,12 +118,27 @@ export async function publishDnsRecordsToCloudflare(
   for (const record of records) {
     const fqdn = record.name;
 
+    if (record.type === "A" || record.type === "AAAA") {
+      const res = await opts.cf.upsertRecord(zone.id, {
+        type: record.type,
+        name: fqdn,
+        content: record.value,
+        proxied: record.proxied ?? true,
+        dryRun: opts.dryRun,
+      });
+      tally(res);
+      if (res.created) createdRecords.push({ id: res.id, name: fqdn, type: record.type });
+      log(record, fqdn, res);
+      continue;
+    }
+
     if (record.type === "CNAME") {
       const res = await opts.cf.upsertRecord(zone.id, {
         type: "CNAME",
         name: fqdn,
         content: record.value,
-        proxied: false,
+        proxied: record.proxied ?? false,
+        dryRun: opts.dryRun,
       });
       tally(res);
       if (res.created) createdRecords.push({ id: res.id, name: fqdn, type: "CNAME" });
@@ -130,6 +156,7 @@ export async function publishDnsRecordsToCloudflare(
         name: fqdn,
         content: record.value,
         priority: record.priority,
+        dryRun: opts.dryRun,
       });
       tally(res);
       if (res.created) createdRecords.push({ id: res.id, name: fqdn, type: "MX" });
@@ -145,6 +172,7 @@ export async function publishDnsRecordsToCloudflare(
           type: "TXT",
           name: fqdn,
           content: merged,
+          dryRun: opts.dryRun,
         });
         tally(res);
         if (res.created) {
@@ -160,6 +188,7 @@ export async function publishDnsRecordsToCloudflare(
           type: "TXT",
           name: fqdn,
           content: record.value,
+          dryRun: opts.dryRun,
         });
         tally(res);
         if (res.created) createdRecords.push({ id: res.id, name: fqdn, type: "TXT" });
@@ -194,13 +223,20 @@ export async function publishDnsRecordsToCloudflare(
     res: { created: boolean; updated: boolean },
   ): void {
     const verb = res.created
-      ? chalk.green("+ created")
+      ? chalk.green(opts.dryRun ? "+ would create" : "+ created")
       : res.updated
-        ? chalk.yellow("~ updated")
+        ? chalk.yellow(opts.dryRun ? "~ would update" : "~ updated")
         : chalk.dim("· unchanged");
     const tag = record.label ?? opts.logTag;
     const tagStr = tag ? chalk.dim(`[${tag}] `) : "";
-    console.log(`  ${verb} ${tagStr}${record.type.padEnd(5)} ${fqdn}`);
+    // Show the target only for address records — it's the payload the
+    // user cares about there. TXT/MX values (DKIM keys, SPF) are long
+    // and were never printed; keep those lines as they always were.
+    const target =
+      record.type === "A" || record.type === "AAAA" || record.type === "CNAME"
+        ? chalk.dim(` → ${record.value}`)
+        : "";
+    console.log(`  ${verb} ${tagStr}${record.type.padEnd(5)} ${fqdn}${target}`);
   }
 }
 

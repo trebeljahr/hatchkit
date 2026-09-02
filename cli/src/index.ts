@@ -376,6 +376,11 @@ async function main(): Promise<void> {
       await handleDns();
       break;
     }
+    case "plausible": {
+      if (args.includes("--help")) return printHelp("plausible");
+      await handlePlausible();
+      break;
+    }
     case "email": {
       if (args.includes("--help") && args.length === 2) return printHelp("email");
       const { handleEmailCommand } = await import("./email/index.js");
@@ -1738,9 +1743,70 @@ async function handleDns(): Promise<void> {
       await runDnsLinkToCloudflare({ domains, dryRun });
       break;
     }
+    case "publish": {
+      const rest = args.slice(2);
+      const dirFlag = flagValue("--dir");
+      const { runDnsPublish } = await import("./dns.js");
+      await runDnsPublish({
+        projectDir: dirFlag ? resolve(dirFlag) : process.cwd(),
+        dryRun: rest.includes("--dry-run"),
+        server: flagValue("--server"),
+      });
+      break;
+    }
     default:
       printHelp("dns");
   }
+}
+
+// `hatchkit plausible rename <old> <new>` — move a Plausible site to a
+// new domain (stats history survives; Plausible keeps the old domain
+// as a redirect alias for a transition window). Used when a deployed
+// project changes its canonical hostname — e.g. after adding aliases
+// and flipping which one is primary.
+async function handlePlausible(): Promise<void> {
+  const sub = args[1];
+  if (sub !== "rename") {
+    printHelp("plausible");
+    if (sub !== undefined) process.exit(1);
+    return;
+  }
+  const positionals = args.slice(2).filter((a) => !a.startsWith("-"));
+  const [oldDomain, newDomain] = positionals;
+  if (!oldDomain || !newDomain) {
+    console.log(chalk.red("  Usage: hatchkit plausible rename <old-domain> <new-domain>"));
+    process.exit(1);
+  }
+  const { renamePlausibleSite, updateCachedPlausibleDomain } = await import(
+    "./provision/plausible.js"
+  );
+  const result = await renamePlausibleSite(oldDomain, newDomain);
+  console.log(chalk.green(`  ✓ Plausible site renamed: ${result.oldDomain} → ${result.newDomain}`));
+  console.log(
+    chalk.dim(
+      `    Stats history is preserved; ${result.baseUrl}/${encodeURIComponent(result.newDomain)} is the new dashboard URL.`,
+    ),
+  );
+
+  // Keep the per-project domain cache in step so a later `hatchkit add
+  // <project> plausible` doesn't try to recreate the old site. The
+  // project is taken from --project, falling back to the cwd manifest.
+  const projectName = flagValue("--project") ?? readManifest(process.cwd())?.name;
+  if (projectName) {
+    const updated = await updateCachedPlausibleDomain(
+      projectName,
+      result.oldDomain,
+      result.newDomain,
+    );
+    if (updated) {
+      console.log(chalk.dim(`    Updated cached site domain for project "${projectName}".`));
+    }
+  }
+  console.log(
+    chalk.dim(
+      "    Remember to update PLAUSIBLE_DOMAIN / data-domain in the deployed app to the new domain.",
+    ),
+  );
 }
 
 // SES sub-commands.
@@ -3043,6 +3109,7 @@ type HelpTopic =
   | "completion"
   | "gh-pages"
   | "dns"
+  | "plausible"
   | "email";
 
 // Rendered value lists for `printHelp("create")`. Derived from the flag
@@ -3411,6 +3478,22 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("hatchkit dns")} — DNS reconciliation helpers
 
   ${chalk.bold("Subcommands:")}
+    publish [--dry-run] [--dir <path>] [--server <name|uuid>]
+        Read ${chalk.cyan(".hatchkit.json")} (primary ${chalk.dim("domain")} + ${chalk.dim("aliases[]")}), resolve the
+        Coolify server's public IPv4/IPv6, and upsert an A (and AAAA
+        when available) record per hostname into the covering
+        Cloudflare zone. Each hostname resolves its own zone, so
+        aliases under a different apex work. Idempotent — records
+        already pointing at the box are reported as unchanged.
+
+        ${chalk.dim("--dry-run")}  → classify (would create / would update / unchanged)
+                     without writing.
+        ${chalk.dim("--dir")}      → project root (defaults to cwd).
+        ${chalk.dim("--server")}   → pick the Coolify server when several exist.
+
+        Pairs with ${chalk.cyan("hatchkit sync")}: sync teaches Coolify/Traefik about
+        the hostnames; publish makes the hostnames reach the box.
+
     link-to-cloudflare [domain...]
         For each Cloudflare zone, push its nameservers to INWX as the
         registrar delegation. Use after importing zones into Cloudflare
@@ -3422,8 +3505,36 @@ function printHelp(topic?: HelpTopic): void {
         ${chalk.dim("INWX_SANDBOX=1")} → use the OTE sandbox instead of production.
 
   ${chalk.bold("Prerequisites:")}
-    Run ${chalk.cyan("hatchkit config add dns")} (Cloudflare-only), then answer
-    ${chalk.cyan("yes")} to "Is INWX your domain registrar?" when prompted.
+    Run ${chalk.cyan("hatchkit config add dns")} (Cloudflare-only). ${chalk.dim("link-to-cloudflare")}
+    additionally needs INWX registrar credentials — answer ${chalk.cyan("yes")} to
+    "Is INWX your domain registrar?" when prompted.
+`);
+    return;
+  }
+  if (topic === "plausible") {
+    console.log(`
+  ${chalk.bold("hatchkit plausible")} — Plausible Analytics site helpers
+
+  ${chalk.bold("Subcommands:")}
+    rename <old-domain> <new-domain> [--project <name>]
+        Change a Plausible site's domain via the Sites API (PUT).
+        Stats history is preserved, and Plausible keeps the old domain
+        working as a redirect alias for a transition window. Use when
+        a deployed project moves to a new canonical hostname.
+
+        ${chalk.dim("--project")} → also update hatchkit's cached site-domain for
+                    that project (defaults to the cwd manifest's name),
+                    so a later ${chalk.cyan("hatchkit add <project> plausible")} doesn't
+                    recreate the old site.
+
+  ${chalk.bold("After renaming:")}
+    Update PLAUSIBLE_DOMAIN / the script tag's ${chalk.dim("data-domain")} in the
+    deployed app — the tracker must report the NEW domain.
+
+  ${chalk.bold("Prerequisites:")}
+    ${chalk.cyan("hatchkit config add plausible")} (API key with Sites API access).
+    Creating sites is ${chalk.cyan("hatchkit add <project> plausible")}; deleting is
+    ${chalk.cyan("hatchkit remove")}.
 `);
     return;
   }
@@ -4046,6 +4157,12 @@ function printHelp(topic?: HelpTopic): void {
     payload onto each one. Idempotent — apps already in sync are
     reported and skipped.
 
+    Multi-hostname projects: the manifest's primary ${chalk.dim("domain")} plus any
+    ${chalk.dim("aliases[]")} are comma-joined into one Domain value, so a single
+    container serves every hostname (Traefik routes them all; the app
+    tells them apart). Pair with ${chalk.cyan("hatchkit dns publish")} so each
+    hostname also resolves to the box.
+
     For ${chalk.cyan("dockercompose")} apps the domain lands in
     ${chalk.dim("docker_compose_domains")} (per-service routing); Coolify regenerates
     its auto-traefik labels on the next deploy. For nixpacks / dockerfile
@@ -4071,12 +4188,12 @@ function printHelp(topic?: HelpTopic): void {
     · The API is unreachable at ${chalk.dim("https://<domain>/api")} — pre-0.2.19
       hatchkit sent several domains for one compose service, which
       Coolify silently collapsed to the last one.
-    · You changed the domain in ${chalk.dim(".hatchkit.json")} and want Coolify to
-      catch up without re-running adopt.
+    · You changed the domain (or added ${chalk.dim("aliases")}) in ${chalk.dim(".hatchkit.json")} and
+      want Coolify to catch up without re-running adopt.
     · You want a one-shot reconcile after editing the manifest by hand.
 
   ${chalk.bold("Out of scope (use other commands):")}
-    · DNS records  → ${chalk.cyan("hatchkit adopt")} or rename-domain follow-ups
+    · DNS records  → ${chalk.cyan("hatchkit dns publish")} (or adopt / rename-domain)
     · Env vars     → ${chalk.cyan("hatchkit keys push")}
     · ML services  → ${chalk.cyan("hatchkit add gpu")}
     · S3 buckets   → ${chalk.cyan("hatchkit provision s3")}
@@ -4260,7 +4377,8 @@ function printHelp(topic?: HelpTopic): void {
     set-description Update a project's description across manifest, package.json, Coolify, GitHub
     sync            Push the manifest's domain/ports onto the matching Coolify app(s)
     gh-pages        Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
-    dns             DNS reconciliation helpers (link-to-cloudflare, …)
+    dns             DNS reconciliation helpers (publish, link-to-cloudflare)
+    plausible       Plausible site helpers (rename — domain change with history kept)
     email           Set up Cloudflare Email Routing + MX/SPF/DMARC (setup/status)
     keys show <p>   Print the dotenvx private key for a project
     keys set <p>    Upsert the key into the OS keychain (after \`dotenvx rotate\`)

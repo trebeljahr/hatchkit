@@ -142,6 +142,15 @@ export interface RoutingInput {
   name: string;
   /** Bare production domain, no scheme. */
   domain: string;
+  /** Extra public hostnames served by the same deployment (manifest
+   *  `aliases[]`), bare and pre-normalized — callers pass
+   *  `manifestHostnames(manifest).slice(1)` so normalization happens in
+   *  one place. They ride whichever entry owns the bare domain (the
+   *  public service in single-origin, the client app in split);
+   *  API-facing entries stay primary-only — aliases are user-facing
+   *  hostnames, not extra API endpoints. NOT the same thing as
+   *  {@link RoutedApp.aliases}, which are app-NAME lookup aliases. */
+  hostnameAliases?: string[];
   topology: Topology;
   surfaces?: Surface;
   ports?: { server?: number; client?: number };
@@ -277,21 +286,40 @@ export function computeRoutingPlan(input: RoutingInput): RoutingPlan {
   return input.topology === "split" ? splitPlan(input) : singleOriginPlan(input);
 }
 
+/** `https://<host>` for the primary domain plus every hostname alias,
+ *  primary first, deduped. The full user-facing URL set one routed
+ *  entry carries (comma-joined for compose payloads, element-wise for
+ *  the flat `domains` field). */
+function publicUrls(input: RoutingInput): string[] {
+  const hosts = [input.domain];
+  for (const h of input.hostnameAliases ?? []) {
+    if (h && !hosts.includes(h)) hosts.push(h);
+  }
+  return hosts.map((h) => `https://${h}`);
+}
+
 function singleOriginPlan(input: RoutingInput): RoutingPlan {
   const publicService = resolvePublicService(input);
   const apiService = resolveApiService(input, publicService);
 
   const bare = `https://${input.domain}`;
-  const entries: Array<{ name: string; domain: string }> = [{ name: publicService, domain: bare }];
+  const publics = publicUrls(input);
+  // Multiple FQDNs for one service are ONE comma-joined entry — see
+  // module header, point 2.
+  const entries: Array<{ name: string; domain: string }> = [
+    { name: publicService, domain: publics.join(",") },
+  ];
   if (apiService) {
     // Path-scoped, same host. `/api` also covers `/api/ws`, so the
     // WebSocket upgrade rides this router without a second entry —
     // and a second entry would be a *duplicate URL prefix* Coolify
-    // rejects with 422 anyway.
+    // rejects with 422 anyway. Primary host only: aliases never gain
+    // an API surface just by being aliases.
     entries.push({ name: apiService, domain: `${bare}/api` });
   }
 
-  const hasPathRoute = entries.some((e) => pathOf(e.domain) !== "/");
+  const flat = [...publics, ...(apiService ? [`${bare}/api`] : [])];
+  const hasPathRoute = flat.some((u) => pathOf(u) !== "/");
   // `ports_exposes` is metadata once the compose file takes over
   // (Coolify normalises it to 80 on compose apps), but Coolify still
   // requires a value. Use the public service's own port so the field
@@ -309,7 +337,7 @@ function singleOriginPlan(input: RoutingInput): RoutingPlan {
         aliases: [],
         role: "compose",
         composeDomains: entries,
-        flatDomains: entries.map((e) => e.domain),
+        flatDomains: flat,
         portsExposes: String(input.surfaces === "static" ? 80 : publicPort),
         composeLocation: SINGLE_ORIGIN_COMPOSE,
         stripPrefix: !hasPathRoute,
@@ -322,12 +350,15 @@ function singleOriginPlan(input: RoutingInput): RoutingPlan {
 
 function splitPlan(input: RoutingInput): RoutingPlan {
   const apiHost = `api.${input.domain}`;
+  // Hostname aliases ride the user-facing app (client); the API app
+  // stays primary-only.
+  const publics = publicUrls(input);
   const clientApp: RoutedApp = {
     appName: `${input.name}-client`,
     aliases: CLIENT_APP_SUFFIXES.slice(1).map((s) => `${input.name}${s}`),
     role: "client",
-    composeDomains: [{ name: "client", domain: `https://${input.domain}` }],
-    flatDomains: [`https://${input.domain}`],
+    composeDomains: [{ name: "client", domain: publics.join(",") }],
+    flatDomains: publics,
     portsExposes: String(input.ports?.client ?? 3001),
     composeLocation: SPLIT_CLIENT_COMPOSE,
     stripPrefix: true,
@@ -352,7 +383,7 @@ function splitPlan(input: RoutingInput): RoutingPlan {
     input.surfaces === "static"
       ? [clientApp]
       : input.surfaces === "backend"
-        ? [{ ...serverApp, flatDomains: [`https://${input.domain}`, `https://${apiHost}`] }]
+        ? [{ ...serverApp, flatDomains: [...publics, `https://${apiHost}`] }]
         : [clientApp, serverApp];
 
   return {

@@ -24,7 +24,7 @@
  * Run: `pnpm test` (via the script in cli/package.json).
  */
 import assert from "node:assert/strict";
-import { mergeSpf } from "./src/provision/cloudflare-dns-publish.js";
+import { mergeSpf, publishDnsRecordsToCloudflare } from "./src/provision/cloudflare-dns-publish.js";
 import type { CloudflareApi } from "./src/utils/cloudflare-api.js";
 
 interface FakeTxt {
@@ -96,6 +96,73 @@ await expect("duplicates in provider + existing includes are deduplicated", asyn
   const out = await mergeSpf(cf, "zone-1", "example.com", "v=spf1 include:amazonses.com ~all");
   const occurrences = (out.merged.match(/include:amazonses\.com/g) ?? []).length;
   assert.equal(occurrences, 1);
+});
+
+// ---------------------------------------------------------------------------
+// publishDnsRecordsToCloudflare — A/AAAA address records + dry-run plumbing
+// (`hatchkit dns publish` is built on these paths).
+// ---------------------------------------------------------------------------
+
+interface UpsertCall {
+  type: string;
+  name: string;
+  content: string;
+  proxied?: boolean;
+  dryRun?: boolean;
+}
+
+function makePublishFakeCf(calls: UpsertCall[]): CloudflareApi {
+  return {
+    async resolveZoneForName(_name: string) {
+      return { id: "zone-1", name: "example.com" };
+    },
+    async upsertRecord(_zoneId: string, params: UpsertCall) {
+      calls.push(params);
+      return { id: "rec-1", created: true, updated: false };
+    },
+  } as unknown as CloudflareApi;
+}
+
+console.log("\npublishDnsRecordsToCloudflare (A/AAAA):");
+
+await expect("A record defaults to proxied=true and is tracked as created", async () => {
+  const calls: UpsertCall[] = [];
+  const cf = makePublishFakeCf(calls);
+  const res = await publishDnsRecordsToCloudflare(
+    [{ type: "A", name: "play.example.com", value: "203.0.113.7" }],
+    { cf, domain: "play.example.com" },
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.type, "A");
+  assert.equal(calls[0]?.content, "203.0.113.7");
+  assert.equal(calls[0]?.proxied, true);
+  assert.equal(res.created, 1);
+  assert.deepEqual(res.createdRecords, [{ id: "rec-1", name: "play.example.com", type: "A" }]);
+});
+
+await expect("explicit proxied=false on an A record is respected", async () => {
+  const calls: UpsertCall[] = [];
+  const cf = makePublishFakeCf(calls);
+  await publishDnsRecordsToCloudflare(
+    [{ type: "A", name: "play.example.com", value: "203.0.113.7", proxied: false }],
+    { cf, domain: "play.example.com" },
+  );
+  assert.equal(calls[0]?.proxied, false);
+});
+
+await expect("dryRun option reaches every upsert (A + AAAA + CNAME)", async () => {
+  const calls: UpsertCall[] = [];
+  const cf = makePublishFakeCf(calls);
+  await publishDnsRecordsToCloudflare(
+    [
+      { type: "A", name: "a.example.com", value: "203.0.113.7" },
+      { type: "AAAA", name: "a.example.com", value: "2001:db8::1" },
+      { type: "CNAME", name: "alias.example.com", value: "a.example.com" },
+    ],
+    { cf, domain: "a.example.com", dryRun: true },
+  );
+  assert.equal(calls.length, 3);
+  for (const call of calls) assert.equal(call.dryRun, true);
 });
 
 if (failures.length > 0) {

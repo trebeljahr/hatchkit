@@ -285,6 +285,10 @@ export class CloudflareApi {
       ttl?: number;
       /** Required for MX. Ignored for other types. */
       priority?: number;
+      /** Classify only — performs the read + comparison but never
+       *  POSTs/PATCHes. `created`/`updated` report what a real run
+       *  WOULD do; `id` is empty for would-create records. */
+      dryRun?: boolean;
     },
   ): Promise<{ id: string; created: boolean; updated: boolean }> {
     const isMx = params.type === "MX";
@@ -313,6 +317,7 @@ export class CloudflareApi {
       body.priority = params.priority;
     }
     if (!existing) {
+      if (params.dryRun) return { id: "", created: true, updated: false };
       const created = await this.request<{ id: string }>(
         "POST",
         `/zones/${zoneId}/dns_records`,
@@ -329,6 +334,7 @@ export class CloudflareApi {
       proxiedSame &&
       prioritySame;
     if (same) return { id: existing.id, created: false, updated: false };
+    if (params.dryRun) return { id: existing.id, created: false, updated: true };
     const updated = await this.request<{ id: string }>(
       "PATCH",
       `/zones/${zoneId}/dns_records/${existing.id}`,

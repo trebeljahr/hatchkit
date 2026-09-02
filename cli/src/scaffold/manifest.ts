@@ -71,6 +71,19 @@ export interface ProjectManifest {
   name: string;
   /** Production domain — already public in DNS + .env.example. */
   domain: string;
+  /** Additional public hostnames served by the same deployment (e.g. a
+   *  marketing apex + www next to the canonical app subdomain, or a
+   *  legacy domain kept alive for origin-keyed browser storage). Bare
+   *  hostnames, no scheme. Public-safe — they're in DNS anyway.
+   *
+   *  `hatchkit sync` joins `domain` + `aliases` into the Coolify
+   *  Domain field (comma-separated) so Traefik routes every hostname
+   *  to the same container; `hatchkit dns publish` upserts an
+   *  A/AAAA record per hostname. The app itself (nginx/Next/etc.) is
+   *  responsible for telling the hostnames apart.
+   *
+   *  Optional for back-compat — absent means "primary domain only". */
+  aliases?: string[];
   /** Human-readable one-liner shown on the Coolify project + application
    *  pages. Optional: when unset, hatchkit falls back to a generic
    *  "Adopted by hatchkit" blurb on create, and leaves the field alone
@@ -346,6 +359,27 @@ export interface BucketCors {
    *  (`--no-cors`). `provision s3` skips the CORS step on re-runs;
    *  `doctor` skips drift detection. */
   skipped?: boolean;
+}
+
+/** Every public hostname the project serves — primary `domain` first,
+ *  then `aliases`, normalized (lowercased, scheme/trailing-dot
+ *  stripped) and deduplicated. The single source of truth for
+ *  multi-hostname consumers (`hatchkit sync`, `hatchkit dns publish`)
+ *  so the two can't disagree about ordering or normalization. */
+export function manifestHostnames(manifest: Pick<ProjectManifest, "domain" | "aliases">): string[] {
+  const normalize = (h: string): string =>
+    h
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, "")
+      .replace(/\/.*$/, "")
+      .replace(/\.$/, "");
+  const out: string[] = [];
+  for (const host of [manifest.domain, ...(manifest.aliases ?? [])]) {
+    const n = normalize(host);
+    if (n && !out.includes(n)) out.push(n);
+  }
+  return out;
 }
 
 /** Default `publicService` name keyed by surface, matching the

@@ -54,7 +54,7 @@
 import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
-import { readManifestWithMigrationInfo } from "../scaffold/manifest.js";
+import { manifestHostnames, readManifestWithMigrationInfo } from "../scaffold/manifest.js";
 import { readComposeFile } from "../utils/compose.js";
 import { CoolifyApi, type CoolifyApplication } from "../utils/coolify-api.js";
 import {
@@ -198,6 +198,9 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   const routing = computeRoutingPlan({
     name: manifest.name,
     domain: manifest.domain,
+    // Normalized extra hostnames (manifest `aliases[]`) — primary is
+    // hostnames[0], so everything after it rides the public entry.
+    hostnameAliases: manifestHostnames(manifest).slice(1),
     topology: inference.topology,
     surfaces: manifest.surfaces,
     ports: manifest.ports,
@@ -601,14 +604,22 @@ function sameDockerComposeDomains(
   a: Array<{ name: string; domain: string }> | undefined,
   b: Array<{ name: string; domain: string }>,
 ): boolean {
+  // Order-insensitive comparison, per service — Coolify doesn't promise
+  // to round-trip the entry array in the order it was sent, and an
+  // entry's domain may be a comma-joined list (primary + aliases) whose
+  // internal order Coolify may also normalize. Both sides are collapsed
+  // before this runs (one entry per service), so compare the
+  // per-service URL sets.
   const left = a ?? [];
   if (left.length !== b.length) return false;
-  // Order-insensitive comparison — Coolify doesn't promise to round-trip
-  // the array in the same order it was sent. Both sides are collapsed
-  // before this runs, so one entry per service.
-  const key = (e: { name: string; domain: string }) => `${e.name}::${e.domain}`;
-  const setA = new Set(left.map(key));
-  return b.every((e) => setA.has(key(e)));
+  const urlSet = (domain: string) => new Set(splitFqdn(domain));
+  const setsByService = new Map(left.map((e) => [e.name, urlSet(e.domain)]));
+  return b.every((e) => {
+    const have = setsByService.get(e.name);
+    if (!have) return false;
+    const want = urlSet(e.domain);
+    return have.size === want.size && [...want].every((d) => have.has(d));
+  });
 }
 
 function formatDockerComposeDomains(entries: Array<{ name: string; domain: string }>): string {

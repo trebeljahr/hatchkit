@@ -158,7 +158,11 @@ export type ProvisionedEvent =
       domainName: string;
       zoneId: string;
       zoneName: string;
-      createdRecords: Array<{ id: string; name: string; type: "TXT" | "MX" | "CNAME" }>;
+      createdRecords: Array<{
+        id: string;
+        name: string;
+        type: "TXT" | "MX" | "CNAME" | "A" | "AAAA";
+      }>;
       mergedSpf: Array<{ name: string }>;
     }
   /** SES Custom MAIL FROM Domain configured + matching DNS records
@@ -177,7 +181,11 @@ export type ProvisionedEvent =
       status: "SUCCESS" | "PENDING" | "FAILED" | "TEMPORARY_FAILURE" | null;
       zoneId: string;
       zoneName: string;
-      createdRecords: Array<{ id: string; name: string; type: "TXT" | "MX" | "CNAME" }>;
+      createdRecords: Array<{
+        id: string;
+        name: string;
+        type: "TXT" | "MX" | "CNAME" | "A" | "AAAA";
+      }>;
     }
   /** Listmonk list created (or adopted) for this project. Two such
    *  events fire per provision — `kind: "live"` (`<project>`) and

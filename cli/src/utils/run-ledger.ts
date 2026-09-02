@@ -58,7 +58,7 @@ export type LedgerStep =
       domainName: string;
       zoneId: string;
       zoneName: string;
-      records: Array<{ id: string; name: string; type: "TXT" | "MX" | "CNAME" }>;
+      records: Array<{ id: string; name: string; type: "TXT" | "MX" | "CNAME" | "A" | "AAAA" }>;
       mergedSpf: Array<{ name: string }>;
     }
   /** Listmonk list hatchkit created via POST /api/lists. Recorded only

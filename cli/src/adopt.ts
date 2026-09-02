@@ -85,6 +85,7 @@ import {
   MANIFEST_VERSION,
   type ProjectManifest,
   defaultPublicServiceForSurfaces,
+  manifestHostnames,
   readManifest,
   writeManifest,
 } from "./scaffold/manifest.js";
@@ -1708,6 +1709,12 @@ async function executePlan(
         const routing = computeRoutingPlan({
           name: plan.name,
           domain: plan.domain,
+          // Preserve alias hostnames on re-adopt — dropping them here
+          // would PATCH primary-only routing over an aliased project.
+          hostnameAliases: manifestHostnames({
+            domain: plan.domain,
+            aliases: state.existingManifest?.aliases,
+          }).slice(1),
           topology,
           surfaces: plan.surfaces,
           ports: state.existingManifest?.ports ?? {

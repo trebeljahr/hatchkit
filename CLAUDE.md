@@ -44,7 +44,9 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
 - `hatchkit keys show|push|rotate <project>`: manage dotenvx private keys.
 - `hatchkit gh-pages`: configure GitHub Pages for the current repo.
 - `hatchkit adopt`: bring an existing repo under Hatchkit conventions.
-- `hatchkit sync`, `rename-domain`, `regen-infra`, `provision s3`: maintain deployed projects.
+- `hatchkit sync`, `rename-domain`, `regen-infra`, `provision s3`: maintain deployed projects. `sync` pushes the manifest's `domain` + `aliases[]` (multi-hostname) onto Coolify.
+- `hatchkit dns publish [--dry-run]`: upsert Cloudflare A/AAAA records for the manifest's domain + aliases, pointing at the Coolify server.
+- `hatchkit plausible rename <old> <new>`: move a Plausible site to a new domain (stats history preserved).
 - `hatchkit explain --json`: source-of-truth mental model.
 
 Check `hatchkit help <command>` before using flags you have not verified.
