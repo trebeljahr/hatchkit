@@ -32,6 +32,7 @@ import {
 } from "./deploy/keys.js";
 import { handleCreateFailure, runRollback } from "./deploy/rollback.js";
 import { requireCloudflareZoneForTerraform, runTerraform } from "./deploy/terraform.js";
+import { type HelpTopic, helpTopicForCommand, isHelpRequest } from "./help-routing.js";
 import {
   type GpuPlatform,
   type ProjectConfig,
@@ -123,18 +124,26 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Any other `--help` / `-h`, at any position. Checked here, once,
+  // ahead of the dispatch — never per case. The per-case checks each
+  // only saw their own bare form, so every subcommand fell through to
+  // the real work: `hatchkit provision s3 --help` created an R2 bucket,
+  // a custom domain and an account API token before printing nothing.
+  // See ./help-routing.ts.
+  if (isHelpRequest(args)) {
+    printCommandHelp(command);
+    return;
+  }
+
   switch (command) {
     case "init":
     case "setup":
-      if (args.includes("--help")) return printHelp("setup");
       await runOnboarding();
       break;
     case "config":
-      if (args.includes("--help") && args.length === 2) return printHelp("config");
       await handleConfig();
       break;
     case "status": {
-      if (args.includes("--help")) return printHelp("status");
       const { collectStatus, renderStatusHuman } = await import("./status.js");
       const s = collectStatus();
       if (isJson) {
@@ -145,13 +154,11 @@ async function main(): Promise<void> {
       break;
     }
     case "explain": {
-      if (args.includes("--help")) return printHelp("explain");
       const { renderExplain } = await import("./explain.js");
       console.log(renderExplain({ json: isJson }));
       break;
     }
     case "completion": {
-      if (args.includes("--help")) return printHelp("completion");
       const { renderCompletion } = await import("./completion.js");
       const shell = (args[1] ?? "").toLowerCase();
       if (shell !== "zsh" && shell !== "bash" && shell !== "fish") {
@@ -162,38 +169,30 @@ async function main(): Promise<void> {
       break;
     }
     case "create":
-      if (args.includes("--help")) return printHelp("create");
       await handleCreate();
       break;
     case undefined:
       await handleNoArgs();
       break;
     case "update":
-      if (args.includes("--help")) return printHelp("update");
       await handleUpdate();
       break;
     case "server":
-      if (args.includes("--help") && args.length === 2) return printHelp("server");
       await handleServer();
       break;
     case "keys":
-      if (args.includes("--help") && args.length === 2) return printHelp("keys");
       await handleKeys();
       break;
     case "secrets":
-      if (args.includes("--help") && args.length === 2) return printHelp("secrets");
       await handleSecrets();
       break;
     case "add":
-      if (args.includes("--help")) return printHelp("add");
       await handleAdd();
       break;
     case "remove":
-      if (args.includes("--help")) return printHelp("remove");
       await handleRemove();
       break;
     case "adopt": {
-      if (args.includes("--help")) return printHelp("adopt");
       const { runAdopt } = await import("./adopt.js");
       await runAdopt(resolve("."), {
         resume: args.includes("--resume"),
@@ -202,47 +201,37 @@ async function main(): Promise<void> {
       break;
     }
     case "destroy":
-      if (args.includes("--help")) return printHelp("destroy");
       await handleDestroy();
       break;
     case "rename-domain": {
-      if (args.includes("--help")) return printHelp("rename-domain");
       const { runRenameDomainCli } = await import("./deploy/rename-domain.js");
       await runRenameDomainCli(args.slice(1), MONOREPO_ROOT);
       break;
     }
     case "set-description": {
-      if (args.includes("--help")) return printHelp("set-description");
       const { runSetDescriptionCli } = await import("./deploy/set-description.js");
       await runSetDescriptionCli(args.slice(1));
       break;
     }
     case "rename-project": {
-      if (args.includes("--help")) return printHelp("rename-project");
       const { runRenameProjectCli } = await import("./deploy/rename-project.js");
       await runRenameProjectCli(args.slice(1), MONOREPO_ROOT);
       break;
     }
     case "sync": {
-      if (args.includes("--help")) return printHelp("sync");
       const { runSyncCli } = await import("./deploy/sync.js");
       await runSyncCli(args.slice(1));
       break;
     }
     case "regen-infra": {
-      if (args.includes("--help")) return printHelp("regen-infra");
       const { runRegenInfraCli } = await import("./deploy/regen-infra.js");
       await runRegenInfraCli(args.slice(1), MONOREPO_ROOT);
       break;
     }
     case "signing": {
       const sub = args[1];
-      if (sub === "--help" || sub === "help") {
-        console.log("Usage:");
-        console.log("  hatchkit signing org-init [--only apple,google,azure]");
-        console.log(
-          "  hatchkit signing apply [project-dir] [--platforms windows,ios,android] [--bundle-id <id>] [--app-name <name>] [--repo <owner/repo>] [--no-signing] [--dry-run]",
-        );
+      if (sub === "help") {
+        printSigningUsage();
         break;
       }
       if (sub === "org-init") {
@@ -285,33 +274,25 @@ async function main(): Promise<void> {
         if (!audit.ok) process.exitCode = 1;
         break;
       }
-      console.log("Usage:");
-      console.log("  hatchkit signing org-init [--only apple,google,azure]");
-      console.log(
-        "  hatchkit signing apply [project-dir] [--platforms windows,ios,android] [--no-signing] [--dry-run]",
-      );
+      printSigningUsage();
       break;
     }
     case "doctor": {
-      if (args.includes("--help")) return printHelp("doctor");
       const { runDoctor } = await import("./doctor.js");
       await runDoctor({ json: isJson });
       break;
     }
     case "dev-setup": {
-      if (args.includes("--help")) return printHelp("dev-setup");
       const { runDevSetupCli } = await import("./dev-setup.js");
       await runDevSetupCli(args.slice(1));
       break;
     }
     case "overview": {
-      if (args.includes("--help")) return printHelp("overview");
       const { runOverview } = await import("./overview.js");
       await runOverview({ json: isJson, all: args.includes("--all") });
       break;
     }
     case "inventory": {
-      if (args.includes("--help")) return printHelp("inventory");
       const { runInventory } = await import("./inventory.js");
       const nameFlag = flagValue("--name");
       const domainFlag = flagValue("--domain");
@@ -335,54 +316,25 @@ async function main(): Promise<void> {
         await handleProvisionS3();
         break;
       }
-      console.log("Usage: hatchkit provision s3 [flags]");
-      console.log("Provisions S3/R2 buckets for the project in the current directory.\n");
-      console.log("Flags:");
-      console.log("  --assets-bucket <name>     Override default <project>-assets name");
-      console.log("  --with-state-bucket        Also create the private <project>-state bucket");
-      console.log(
-        "  --state-bucket <name>      Create state bucket with this name (implies --with-state-bucket)",
-      );
-      console.log(
-        "  --public-hostname <host>   Custom domain for the assets bucket (default s3.<domain>)",
-      );
-      console.log(
-        "  --no-custom-domain         Skip custom-domain attempt; use the managed r2.dev URL",
-      );
-      console.log("  --env-prefix R2|S3|AWS     Override auto-detected env-var prefix");
-      console.log("  --no-cron-secret           Skip CRON_SECRET generation");
-      console.log(
-        "  --cors-origin <url>        Add an origin to the assets-bucket CORS rule (repeatable)",
-      );
-      console.log(
-        '  --cors-allow-all           Set CORS origins to ["*"] (mutually exclusive with --cors-origin)',
-      );
-      console.log("  --no-cors                  Skip the CORS reconcile step entirely");
+      printProvisionUsage();
       process.exit(1);
       break;
     }
     case "assets": {
-      if (args.includes("--help") && args.length === 2) {
-        printHelp("assets");
-        break;
-      }
       const { handleAssets } = await import("./assets/index.js");
       const code = await handleAssets(args.slice(1));
       if (code !== 0) process.exit(code);
       break;
     }
     case "dns": {
-      if (args.includes("--help")) return printHelp("dns");
       await handleDns();
       break;
     }
     case "plausible": {
-      if (args.includes("--help")) return printHelp("plausible");
       await handlePlausible();
       break;
     }
     case "email": {
-      if (args.includes("--help") && args.length === 2) return printHelp("email");
       const { handleEmailCommand } = await import("./email/index.js");
       await handleEmailCommand(args.slice(1));
       break;
@@ -393,7 +345,6 @@ async function main(): Promise<void> {
     }
     case "gh-pages":
     case "pages": {
-      if (args.includes("--help")) return printHelp("gh-pages");
       if (command === "pages") {
         console.log(
           chalk.yellow("  Note: `hatchkit pages` has been renamed to `hatchkit gh-pages`."),
@@ -578,7 +529,6 @@ async function handleSecrets(): Promise<void> {
 
   switch (sub) {
     case "rotate": {
-      if (args.includes("--help")) return printHelp("secrets");
       const projectName = args[2];
       if (!projectName || projectName.startsWith("--")) {
         console.log("Usage: hatchkit secrets rotate <project-name> [flags]");
@@ -1292,6 +1242,11 @@ async function handleAdd(): Promise<void> {
   //   (no surface flags)              → prompt interactively
   const noWrite = args.includes("--no-write");
   const enableDevObs = args.includes("--enable-dev-obs");
+  // Reuse resources that already exist upstream instead of refusing to
+  // run. Without this, a project that exists on the provider is a dead
+  // end: `add` won't run, so its DSN / client id never reaches the env
+  // files. `--reuse` is accepted as the more obvious synonym.
+  const adoptExisting = args.includes("--adopt") || args.includes("--reuse");
 
   const validSurfaceModes = ["fullstack", "split", "backend", "static"] as const;
   const noEnvServices = new Set<ProvisionService>(["email", "search-console"]);
@@ -1362,6 +1317,7 @@ async function handleAdd(): Promise<void> {
     enableDevObs,
     domain: domainFlag,
     failIfExists: true,
+    adoptExisting,
     onProvisioned: (event) => recordProvisionedEvent(ledger, event),
   });
   ledger.complete();
@@ -1824,25 +1780,8 @@ async function handlePlausible(): Promise<void> {
 // pulls auth from hatchkit's keychain so it works without aws CLI config.
 async function handleSesCommand(rest: string[]): Promise<void> {
   const sub = rest[0];
-  if (!sub || sub === "--help") {
-    console.log(`
-  ${chalk.bold("hatchkit ses")} — Amazon SES helpers
-
-  ${chalk.bold("Subcommands:")}
-    ${chalk.cyan("verify <email>")}     Register a recipient address. SES mails a
-                       one-time confirm link to that address; clicking it
-                       flips it to verified. Required for every test
-                       recipient while your SES account is in sandbox.
-
-    ${chalk.cyan("unverify <email>")}   Drop a verified address (sesv2:DeleteEmailIdentity).
-                       404-tolerant.
-
-    ${chalk.cyan("list [domains|emails]")}
-                       List identities. Without a filter, prints both.
-
-    ${chalk.cyan("status")}             Region, sandbox state, send caps, identity
-                       count. Run this first when something fails.
-`);
+  if (!sub) {
+    printSesUsage();
     return;
   }
 
@@ -3147,37 +3086,6 @@ async function handleConfig(): Promise<void> {
   }
 }
 
-type HelpTopic =
-  | "create"
-  | "init"
-  | "setup"
-  | "config"
-  | "update"
-  | "server"
-  | "keys"
-  | "secrets"
-  | "add"
-  | "adopt"
-  | "assets"
-  | "remove"
-  | "destroy"
-  | "rename-domain"
-  | "rename-project"
-  | "set-description"
-  | "sync"
-  | "regen-infra"
-  | "doctor"
-  | "dev-setup"
-  | "inventory"
-  | "overview"
-  | "status"
-  | "explain"
-  | "completion"
-  | "gh-pages"
-  | "dns"
-  | "plausible"
-  | "email";
-
 // Rendered value lists for `printHelp("create")`. Derived from the flag
 // parser's allowed sets so the documented values can't drift from the
 // ones actually accepted.
@@ -3196,6 +3104,81 @@ const ANALYTICS_VALUES = KNOWN_ANALYTICS_PROVIDERS.join(", ");
 const PROVISION_SERVICE_VALUES = KNOWN_PROVISION_SERVICES.join(", ");
 const ML_SERVICE_VALUES = KNOWN_ML_SERVICES.join(", ");
 const GPU_PLATFORM_VALUES = KNOWN_GPU_PLATFORMS.join(", ");
+
+/** Help for whatever `command` is, without running any of it. Most
+ *  commands are `printHelp` topics; `provision`, `signing` and `ses`
+ *  own their usage text, so they are routed by hand. An unmapped
+ *  command gets the root help, which is what a typo deserves. */
+function printCommandHelp(cmd: string | undefined): void {
+  switch (cmd) {
+    case "provision":
+      printProvisionUsage();
+      return;
+    case "signing":
+      printSigningUsage();
+      return;
+    case "ses":
+      printSesUsage();
+      return;
+    default:
+      printHelp(helpTopicForCommand(cmd));
+  }
+}
+
+function printProvisionUsage(): void {
+  console.log("Usage: hatchkit provision s3 [flags]");
+  console.log("Provisions S3/R2 buckets for the project in the current directory.\n");
+  console.log("Flags:");
+  console.log("  --assets-bucket <name>     Override default <project>-assets name");
+  console.log("  --with-state-bucket        Also create the private <project>-state bucket");
+  console.log(
+    "  --state-bucket <name>      Create state bucket with this name (implies --with-state-bucket)",
+  );
+  console.log(
+    "  --public-hostname <host>   Custom domain for the assets bucket (default s3.<domain>)",
+  );
+  console.log(
+    "  --no-custom-domain         Skip custom-domain attempt; use the managed r2.dev URL",
+  );
+  console.log("  --env-prefix R2|S3|AWS     Override auto-detected env-var prefix");
+  console.log("  --no-cron-secret           Skip CRON_SECRET generation");
+  console.log(
+    "  --cors-origin <url>        Add an origin to the assets-bucket CORS rule (repeatable)",
+  );
+  console.log(
+    '  --cors-allow-all           Set CORS origins to ["*"] (mutually exclusive with --cors-origin)',
+  );
+  console.log("  --no-cors                  Skip the CORS reconcile step entirely");
+}
+
+function printSigningUsage(): void {
+  console.log("Usage:");
+  console.log("  hatchkit signing org-init [--only apple,google,azure]");
+  console.log(
+    "  hatchkit signing apply [project-dir] [--platforms windows,ios,android] [--bundle-id <id>] [--app-name <name>] [--repo <owner/repo>] [--no-signing] [--dry-run]",
+  );
+}
+
+function printSesUsage(): void {
+  console.log(`
+  ${chalk.bold("hatchkit ses")} — Amazon SES helpers
+
+  ${chalk.bold("Subcommands:")}
+    ${chalk.cyan("verify <email>")}     Register a recipient address. SES mails a
+                       one-time confirm link to that address; clicking it
+                       flips it to verified. Required for every test
+                       recipient while your SES account is in sandbox.
+
+    ${chalk.cyan("unverify <email>")}   Drop a verified address (sesv2:DeleteEmailIdentity).
+                       404-tolerant.
+
+    ${chalk.cyan("list [domains|emails]")}
+                       List identities. Without a filter, prints both.
+
+    ${chalk.cyan("status")}             Region, sandbox state, send caps, identity
+                       count. Run this first when something fails.
+`);
+}
 
 function printHelp(topic?: HelpTopic): void {
   if (topic === "create") {
@@ -3877,6 +3860,12 @@ function printHelp(topic?: HelpTopic): void {
     Re-running the command clears the entry — nothing is provisioned twice.
 
   ${chalk.bold("Flags:")}
+    --adopt, --reuse            Reuse resources that already exist on the provider
+                                instead of refusing to run: nothing is created, and
+                                the existing GlitchTip DSN / OpenPanel client id is
+                                written into your env files. Adopted resources are
+                                not recorded in the run ledger, so \`hatchkit remove\`
+                                will not delete something Hatchkit didn't create.
     --enable-dev-obs            Also populate .env.development with obs creds.
     --no-write                  Skip writing; save 0600 cache only.
     --surfaces=<mode>           shared | server-only | client-only | separate
@@ -3899,6 +3888,7 @@ function printHelp(topic?: HelpTopic): void {
     hatchkit add my-app search-console --domain app.example.com --project-dir ./my-app
     hatchkit add fractal-garden search-console --domain fractal.garden
     hatchkit add raptor-runner glitchtip,listmonk-ses --no-write
+    hatchkit add raptor-runner glitchtip --adopt   ${chalk.dim("(GlitchTip project already exists)")}
     hatchkit add raptor-runner stripe
     hatchkit add raptor-runner all --surfaces=shared \\
         --server-dir ./raptor-runner/packages/server \\

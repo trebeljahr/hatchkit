@@ -38,6 +38,11 @@ import {
 } from "./config.js";
 import { locateEnvKeysFile, locateEnvProductionFile } from "./deploy/keys.js";
 import {
+  projectNameCandidates,
+  resolveGlitchtipProjects,
+  resolveOpenpanelProjects,
+} from "./provision/project-lookup.js";
+import {
   MANIFEST_FILENAME,
   MANIFEST_VERSION,
   type ProjectManifest,
@@ -1174,8 +1179,10 @@ function collectFqdns(app: CoolifyApplication): string[] {
 /** Project name aliases we'll match against remote resources.
  *  Keep in sync with `hatchkit adopt`'s detectProject — same family of
  *  conventions (raw, -server, -client, -web). */
+/** Local alias for the shared candidate list. Kept as a named helper
+ *  because several scanners (Coolify, DNS, …) match on the same set. */
 function nameAliases(name: string): string[] {
-  return [name, `${name}-server`, `${name}-client`, `${name}-web`, `${name}-api`];
+  return projectNameCandidates(name);
 }
 
 async function scanDns(input: InventoryInput, expected: boolean): Promise<ScanResult> {
@@ -1647,18 +1654,10 @@ async function scanGlitchtip(input: InventoryInput, expected: boolean): Promise<
     return { provider, findings, skipped };
   }
   try {
-    const res = await fetch(
-      `${cfg.url.replace(/\/$/, "")}/api/0/organizations/${cfg.organizationSlug}/projects/`,
-      { headers: { Authorization: `Bearer ${cfg.token}` } },
-    );
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const body = (await res.json()) as Array<{ name?: string; slug?: string; platform?: string }>;
+    // Same resolver `hatchkit add`'s preflight uses, so the two commands
+    // cannot disagree about whether a project exists.
     const wanted = nameAliases(input.name);
-    const matches = body.filter(
-      (p) =>
-        (typeof p.name === "string" && wanted.includes(p.name)) ||
-        (typeof p.slug === "string" && wanted.includes(p.slug)),
-    );
+    const { projects, matches } = await resolveGlitchtipProjects(cfg, wanted);
     if (matches.length === 0) {
       findings.push({
         provider,
@@ -1666,16 +1665,23 @@ async function scanGlitchtip(input: InventoryInput, expected: boolean): Promise<
         identity: input.name,
         status: "missing",
         expected,
-        detail: `no GlitchTip project matching ${wanted.join(" / ")} (${body.length} total in org)`,
+        detail: `no GlitchTip project matching ${wanted.join(" / ")} (${projects.length} total in org)`,
       });
     } else {
       for (const p of matches) {
+        // Name the command that reads this project's DSN — a survey
+        // that says "present" and stops there leaves the user with no
+        // route to the value they actually need.
+        const bits = [
+          p.platform ? `platform: ${p.platform}` : undefined,
+          `DSN: hatchkit add ${input.name} glitchtip --adopt`,
+        ].filter((bit): bit is string => Boolean(bit));
         findings.push({
           provider,
           kind: "project",
-          identity: p.slug ?? p.name ?? input.name,
+          identity: p.identity,
           status: "present",
-          detail: p.platform ? `platform: ${p.platform}` : undefined,
+          detail: bits.join(" — "),
         });
       }
     }
@@ -1702,26 +1708,8 @@ async function scanOpenpanel(input: InventoryInput, expected: boolean): Promise<
     return { provider, findings, skipped };
   }
   try {
-    const base = (cfg.apiUrl ?? cfg.url).replace(/\/$/, "");
-    const res = await fetch(`${base}/manage/projects`, {
-      headers: {
-        "openpanel-client-id": cfg.rootClientId,
-        "openpanel-client-secret": cfg.rootClientSecret,
-      },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    // OpenPanel's manage API sometimes returns a bare array, sometimes
-    // `{ data: [...] }`. Accept either shape.
-    const raw = (await res.json()) as unknown;
-    const projects: Array<{ name?: string; id?: string }> = Array.isArray(raw)
-      ? (raw as Array<{ name?: string; id?: string }>)
-      : ((raw as { data?: Array<{ name?: string; id?: string }> }).data ?? []);
     const wanted = nameAliases(input.name);
-    const matches = projects.filter(
-      (p) =>
-        (typeof p.name === "string" && wanted.includes(p.name)) ||
-        (typeof p.id === "string" && wanted.includes(p.id)),
-    );
+    const { projects, matches } = await resolveOpenpanelProjects(cfg, wanted);
     if (matches.length === 0) {
       findings.push({
         provider,
@@ -1736,8 +1724,9 @@ async function scanOpenpanel(input: InventoryInput, expected: boolean): Promise<
         findings.push({
           provider,
           kind: "project",
-          identity: p.name ?? p.id ?? input.name,
+          identity: p.name ?? p.identity,
           status: "present",
+          detail: `client id: hatchkit add ${input.name} openpanel --adopt`,
         });
       }
     }
