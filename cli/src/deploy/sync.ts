@@ -30,25 +30,55 @@
  * name is checked against the project's actual compose file BEFORE any
  * PATCH, and a mismatch refuses loudly instead of pushing.
  *
- * Scope is deliberately narrow. Sync only pushes fields that are safe to
- * blast over the wire idempotently:
+ * ---------------------------------------------------------------------
+ * Reconciler, not patcher
+ * ---------------------------------------------------------------------
+ *
+ * Sync used to only PATCH applications that already existed, which left
+ * a hole nothing could fill. `create` scaffolds AND wires, but only for
+ * a new project. `adopt` imports AND wires, but refuses once
+ * `.hatchkit.json` exists. So a project that was scaffolded and never
+ * fully deployed — Coolify app present, no domain, no DNS, no route to
+ * the API — fell through all three commands with no way forward.
+ *
+ * Sync now drives the whole desired state, in five passes, each
+ * idempotent and each skippable with a `--no-*` flag:
+ *
+ *   1. locate      find each app the topology requires, by hatchkit's
+ *                  name or an accepted alias
+ *   2. create      provision the ones Coolify doesn't have, through the
+ *                  same `provisionRoutedApp` that `create` uses
+ *   3. routing     PATCH domain / ports_exposes / stripprefix
+ *   4. env         push the resolved production env (see below)
+ *   5. dns         upsert an A record per hostname the topology needs
+ *   6. secrets     push the paired GitHub Actions deploy secrets
+ *
+ * Fields pushed in the routing pass, and their caveats:
  *   · domain (`docker_compose_domains` for compose apps; `domains` for
  *     nixpacks / dockerfile / static)
  *   · ports_exposes — only on non-compose build packs; Coolify
- *     re-derives it from the compose file otherwise and discards ours
- *   · is_stripprefix_enabled — required to be false whenever routing
- *     uses a path (`https://<domain>/api`), or Coolify's Traefik
- *     middleware strips `/api` and Express 404s every API call.
+ *     re-derives it from the compose file otherwise and discards ours,
+ *     so diffing it there makes every app look permanently out of sync
+ *   · is_stripprefix_enabled — must be false whenever routing uses a
+ *     path (`https://<domain>/api`), or Coolify's Traefik middleware
+ *     strips `/api` and Express 404s every API call. Write-only in this
+ *     Coolify build (the app-settings relation isn't serialized on GET),
+ *     so it never drives `changed` — it is pushed with every update.
  *
- * Out of scope (handled by other commands):
- *   · env vars              → `hatchkit keys push` + adopt's setAppEnv
- *   · DNS records           → adopt's wireDns + `rename-domain`
+ * Env deserves a note. Coolify's environment is the RUNTIME source of
+ * truth and the dotenvx-encrypted `.env.production` is the at-rest store
+ * sync reads it from; the encrypted file is not shipped into the image.
+ * Under `split` that is load-bearing rather than merely tidy: the two
+ * applications sit on separate Docker networks with no in-stack mongo,
+ * so MONGODB_URI reaches the server through Coolify env or not at all.
+ *
+ * Still out of scope (other commands own these):
  *   · ML services / GPU     → `hatchkit add gpu`
  *   · S3 buckets / tokens   → `hatchkit provision s3`
  *
  * Idempotent by design: reads current state first, only PATCHes when the
- * desired state differs from what Coolify reports. `--dry-run` shows the
- * diff without touching anything.
+ * desired state differs from what Coolify reports. `--dry-run` shows
+ * exactly what would be created vs reused, and touches nothing.
  */
 
 import chalk from "chalk";
@@ -57,6 +87,16 @@ import { getCoolifyConfig } from "../config.js";
 import { manifestHostnames, readManifestWithMigrationInfo } from "../scaffold/manifest.js";
 import { readComposeFile } from "../utils/compose.js";
 import { CoolifyApi, type CoolifyApplication } from "../utils/coolify-api.js";
+import { discoverPublicIps } from "../utils/coolify-server-ips.js";
+import { exec } from "../utils/exec.js";
+import { normalizeCoolifyGitRepository, wireDns } from "./coolify-app.js";
+import { provisionRoutedApp } from "./coolify.js";
+import { resolveProductionEnv } from "./env-resolve.js";
+import {
+  type CoolifyDeployApp,
+  repoSlugFromRemote,
+  setCoolifyDeploySecrets,
+} from "./gh-actions-secrets.js";
 import {
   type RoutedApp,
   type Topology,
@@ -86,6 +126,22 @@ export interface SyncOptions {
    *  503ing — under the old labels. Opt-in because it restarts
    *  containers. */
   deploy?: boolean;
+  /** Create Coolify applications the topology requires but that don't
+   *  exist yet. Default ON — this is what makes sync a reconciler
+   *  rather than a patcher, and it is the only path that can finish a
+   *  project which was scaffolded but never fully deployed.
+   *  `--no-create` reduces sync to its previous patch-only behaviour. */
+  create?: boolean;
+  /** Push the resolved production env onto each application. Default
+   *  ON. Under `split` this is not optional in practice: the two apps
+   *  sit on separate Docker networks with no in-stack mongo, so
+   *  MONGODB_URI reaches the server through Coolify env or not at all. */
+  env?: boolean;
+  /** Upsert the DNS records the topology needs (the bare domain, plus
+   *  `api.<domain>` under `split`). Default ON. */
+  dns?: boolean;
+  /** Push the GitHub Actions deploy secrets. Default ON. */
+  secrets?: boolean;
 }
 
 /** What sync intends to do for one Coolify application — surfaces both
@@ -153,6 +209,16 @@ export interface SyncResult {
   apps: AppSyncPlan[];
   /** Names of the apps a `--deploy` run asked Coolify to redeploy. */
   deployed: string[];
+  /** Coolify applications this run created (empty when everything the
+   *  topology needs already existed). */
+  created: string[];
+  /** Per-app count of env vars pushed, keyed by app name. */
+  envPushed: Record<string, number>;
+  /** Hostnames whose DNS records were upserted. */
+  dnsUpserted: string[];
+  /** GitHub Actions secret names pushed, and stale ones removed. */
+  secretsPushed: string[];
+  secretsRemoved: string[];
   /** When dryRun, no PATCH was made even if `changed` was true. */
   dryRun: boolean;
 }
@@ -229,9 +295,69 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   const patched: AppSyncPlan[] = [];
   const errors: string[] = [];
   const notFound: string[] = [];
+  const created: string[] = [];
+  const envPushed: Record<string, number> = {};
+  const dnsUpserted: string[] = [];
+  let secretsPushed: string[] = [];
+  let secretsRemoved: string[] = [];
 
+  // ── Pass 1: locate, then CREATE whatever the topology requires and
+  //    Coolify doesn't have.
+  //
+  // This is the difference between a reconciler and a patcher, and the
+  // gap this command existed inside: `create` wires a brand-new project
+  // and `adopt` refuses once `.hatchkit.json` exists, so a project that
+  // was scaffolded but never fully deployed had nothing that would
+  // finish the job. Now sync will.
+  const locations = new Map<string, { uuid: string; name: string }>();
   for (const routed of routing.apps) {
     const found = await locateApp(api, routed, opts);
+    if (found) locations.set(routed.appName, found);
+  }
+  const missing = routing.apps.filter((r) => !locations.has(r.appName));
+  if (missing.length > 0 && opts.create !== false) {
+    if (opts.dryRun) {
+      if (!opts.json) {
+        console.log(chalk.bold("\n  Would create:"));
+        for (const routed of missing) {
+          console.log(
+            `    + ${routed.appName} ${chalk.dim(`(${routed.role})`)}\n` +
+              chalk.dim(
+                `        compose: ${routed.composeLocation}\n` +
+                  `        domains: ${routed.composeDomains.map((d) => `${d.name}=${d.domain}`).join(", ")}`,
+              ),
+          );
+        }
+      }
+    } else {
+      try {
+        const madeApps = await createMissingApps({
+          api,
+          missing,
+          projectName: manifest.name,
+          description: manifest.description,
+          projectDir: opts.projectDir,
+          json: opts.json,
+        });
+        for (const made of madeApps) {
+          locations.set(made.appName, { uuid: made.uuid, name: made.name });
+          if (made.created) created.push(made.name);
+        }
+      } catch (err) {
+        errors.push(`create: ${(err as Error).message}`);
+      }
+    }
+  } else if (missing.length > 0 && !opts.json) {
+    console.log(
+      chalk.yellow(
+        `\n  ${missing.length} app(s) missing and --no-create given — routing for them can't be reconciled.`,
+      ),
+    );
+  }
+
+  // ── Pass 2: reconcile routing on every app that now exists.
+  for (const routed of routing.apps) {
+    const found = locations.get(routed.appName);
     if (!found) {
       notFound.push([routed.appName, ...routed.aliases].join(" / "));
       continue;
@@ -288,12 +414,144 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     }
   }
 
+  // ── Pass 3: env. Coolify's environment is the RUNTIME source of
+  //    truth; the dotenvx-encrypted .env.production is the at-rest
+  //    store we read it from. See deploy/env-resolve.ts.
+  const resolvedEnv = opts.env === false ? null : await resolveProductionEnv(opts.projectDir);
+  if (resolvedEnv) {
+    if (resolvedEnv.undecrypted.length > 0) {
+      // Pushing `encrypted:...` as though it were a value would put
+      // ciphertext into the container and fail at a much more confusing
+      // point, so refuse the whole push rather than half of it.
+      const err =
+        `${resolvedEnv.relPath}: ${resolvedEnv.undecrypted.length} value(s) still encrypted ` +
+        `(${resolvedEnv.undecrypted.join(", ")}) — DOTENV_PRIVATE_KEY_PRODUCTION is missing or wrong. ` +
+        `Run \`hatchkit keys show ${manifest.name}\` to check, then re-run.`;
+      errors.push(err);
+      if (!opts.json) console.log(chalk.yellow(`\n  ${err}`));
+    } else {
+      // Baseline first so file values win: the at-rest store is the
+      // source of truth, and these only fill gaps it doesn't cover.
+      const baseline: Record<string, string> = { NODE_ENV: "production" };
+      if (manifest.surfaces !== "static") {
+        baseline.FRONTEND_URL = `https://${manifest.domain}`;
+      }
+      for (const routed of routing.apps) {
+        const found = locations.get(routed.appName);
+        if (!found) continue;
+        const values: Record<string, string> = { ...baseline, ...resolvedEnv.values };
+        // Each half binds its own port. Without this the client app
+        // inherits the server's PORT and Traefik reaches nothing.
+        if (routed.role !== "compose") values.PORT = routed.portsExposes;
+        if (opts.dryRun) {
+          if (!opts.json) {
+            console.log(
+              chalk.dim(
+                `    · env → ${found.name}: would push ${Object.keys(values).length} var(s) from ${resolvedEnv.relPath}`,
+              ),
+            );
+          }
+          envPushed[found.name] = Object.keys(values).length;
+          continue;
+        }
+        const spinner = opts.json ? null : ora(`Coolify: env → "${found.name}"`).start();
+        try {
+          await api.setAppEnv(found.uuid, values);
+          envPushed[found.name] = Object.keys(values).length;
+          // Names only. These are production secrets.
+          spinner?.succeed(
+            `Coolify: pushed ${Object.keys(values).length} env var(s) to "${found.name}"`,
+          );
+        } catch (err) {
+          spinner?.fail(`Coolify: env push failed: ${(err as Error).message}`);
+          errors.push(`env ${found.name}: ${(err as Error).message}`);
+        }
+      }
+    }
+  }
+
+  // ── Pass 4: DNS. `split` needs a second record for api.<domain>;
+  //    without it the API host simply doesn't resolve, which is the
+  //    state tracktime was left in.
+  const dnsHostnames = [manifest.domain, ...routing.extraDnsHostnames];
+  if (opts.dns !== false && locations.size > 0) {
+    if (opts.dryRun) {
+      if (!opts.json) {
+        console.log(
+          chalk.dim(`    · dns: would upsert A record(s) for ${dnsHostnames.join(", ")}`),
+        );
+      }
+      dnsUpserted.push(...dnsHostnames);
+    } else {
+      try {
+        const servers = await api.listServers();
+        if (servers.length === 0) throw new Error("Coolify reports no servers.");
+        const server = servers[0];
+        const resolved = await api.findServer({ ip: server.ip });
+        const ips = await discoverPublicIps(api, resolved?.uuid ?? "", server.ip);
+        for (const host of dnsHostnames) {
+          const res = await wireDns(host, ips);
+          if (res.managed) dnsUpserted.push(host);
+          else if (res.caveat) errors.push(`dns ${host}: ${res.caveat.reason}`);
+        }
+      } catch (err) {
+        errors.push(`dns: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  // ── Pass 5: GitHub Actions deploy secrets, paired under `split` so
+  //    CI can trigger BOTH apps. See deploy/gh-actions-secrets.ts.
+  if (opts.secrets !== false && locations.size > 0) {
+    const deployApps: CoolifyDeployApp[] = routing.apps
+      .map((routed) => {
+        const found = locations.get(routed.appName);
+        if (!found) return null;
+        return {
+          uuid: found.uuid,
+          ...(routed.role === "compose" ? {} : { role: routed.role }),
+        } as CoolifyDeployApp;
+      })
+      .filter((a): a is CoolifyDeployApp => a !== null);
+    const slug = await detectRepoSlug(opts.projectDir);
+    if (!slug) {
+      if (!opts.json) {
+        console.log(
+          chalk.dim("    · secrets: no GitHub remote resolved — skipping Actions secret push."),
+        );
+      }
+    } else if (opts.dryRun) {
+      if (!opts.json) {
+        console.log(
+          chalk.dim(
+            `    · secrets: would push deploy secrets for ${deployApps.length} app(s) to ${slug}`,
+          ),
+        );
+      }
+    } else if (deployApps.length > 0) {
+      const res = await setCoolifyDeploySecrets({
+        projectDir: opts.projectDir,
+        repoSlug: slug,
+        apps: deployApps,
+      });
+      secretsPushed = res.pushed;
+      secretsRemoved = res.removed;
+      if (!res.ok) errors.push(`secrets: push to ${slug} failed`);
+    }
+  }
+
   // Redeploy AFTER every PATCH has landed. Coolify only regenerates
   // Traefik labels on deploy, so a routing change that isn't followed
   // by one is invisible to the running containers.
   const deployed: string[] = [];
   if (opts.deploy && !opts.dryRun) {
-    for (const plan of patched) {
+    // Freshly created apps have never deployed at all, so they need a
+    // trigger even though they were never "patched".
+    const toDeploy = [
+      ...patched,
+      ...apps.filter((a) => created.includes(a.name) && !patched.includes(a)),
+    ];
+    for (const plan of toDeploy) {
       const spinner = opts.json ? null : ora(`Coolify: redeploying "${plan.name}"`).start();
       try {
         await api.deployApplication(plan.uuid);
@@ -316,6 +574,11 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   const base = {
     topology: inference.topology,
     deployed,
+    created,
+    envPushed,
+    dnsUpserted,
+    secretsPushed,
+    secretsRemoved,
     topologySource: inference.source,
     topologyReason: inference.reason,
     composeServices: compose?.services ?? null,
@@ -376,8 +639,132 @@ function emptyResult(opts: SyncOptions): SyncResult {
     composeServices: null,
     apps: [],
     deployed: [],
+    created: [],
+    envPushed: {},
+    dnsUpserted: [],
+    secretsPushed: [],
+    secretsRemoved: [],
     dryRun: !!opts.dryRun,
   };
+}
+
+/** Resolve `<owner>/<repo>` from the project's `origin` remote. */
+async function detectRepoSlug(projectDir: string): Promise<string | undefined> {
+  const res = await exec("git", ["remote", "get-url", "origin"], {
+    cwd: projectDir,
+    silent: true,
+  });
+  if (res.exitCode !== 0) return undefined;
+  return repoSlugFromRemote(res.stdout.trim());
+}
+
+/** Create the Coolify applications a routing plan needs but Coolify
+ *  doesn't have.
+ *
+ *  Deliberately reuses `provisionRoutedApp` — the same helper `create`
+ *  drives — rather than open-coding a fourth idea of how an application
+ *  should be shaped. That helper is already find-or-create, so a race
+ *  with a concurrent run (or an alias match sync's own lookup missed)
+ *  resolves to the existing app instead of a duplicate.
+ *
+ *  The Coolify project and the server are resolved the same way
+ *  `wireProjectIntoCoolify` resolves them: reuse a project of the same
+ *  name, and take the first server unless the user has several. */
+async function createMissingApps(args: {
+  api: CoolifyApi;
+  missing: RoutedApp[];
+  projectName: string;
+  description?: string;
+  projectDir: string;
+  json?: boolean;
+}): Promise<Array<{ appName: string; uuid: string; name: string; created: boolean }>> {
+  const { api, missing, projectName, projectDir } = args;
+
+  const remote = await exec("git", ["remote", "get-url", "origin"], {
+    cwd: projectDir,
+    silent: true,
+  });
+  if (remote.exitCode !== 0) {
+    throw new Error(
+      "No `origin` git remote — Coolify needs a repo URL to create an application from. " +
+        "Add a remote (or run `hatchkit adopt`) and re-run.",
+    );
+  }
+  const repoUrl = remote.stdout.trim();
+  const slug = repoSlugFromRemote(repoUrl);
+
+  // Visibility decides which Coolify create endpoint applies: a private
+  // repo needs the GitHub App source, a public one takes a plain HTTPS
+  // URL. `gh` knows; assume public when it can't say, which fails loudly
+  // at create time rather than silently wiring the wrong source.
+  let isPrivate = false;
+  if (slug) {
+    const vis = await exec(
+      "gh",
+      ["repo", "view", slug, "--json", "isPrivate", "-q", ".isPrivate"],
+      {
+        cwd: projectDir,
+        silent: true,
+      },
+    );
+    if (vis.exitCode === 0) isPrivate = vis.stdout.trim() === "true";
+  }
+
+  const existingProject = await api.findProjectByName(projectName);
+  const projectUuid =
+    existingProject?.uuid ??
+    (await api.createProject(projectName, args.description?.trim() || "Created by hatchkit sync"))
+      .uuid;
+
+  const servers = await api.listServers();
+  if (servers.length === 0) {
+    throw new Error("No Coolify servers configured. Add one in the Coolify dashboard first.");
+  }
+  const server = servers[0];
+  if (servers.length > 1 && !args.json) {
+    console.log(
+      chalk.yellow(
+        `  Multiple Coolify servers found — defaulting to "${server.name}" (${server.ip}).`,
+      ),
+    );
+  }
+  const resolvedServer = await api.findServer({ ip: server.ip });
+  if (!resolvedServer) {
+    throw new Error(`Couldn't resolve uuid for Coolify server "${server.name}" (${server.ip}).`);
+  }
+
+  let githubAppUuid: string | undefined;
+  let githubAppHtmlUrl: string | undefined;
+  if (isPrivate) {
+    const sources = await api.listGithubSources();
+    if (sources.length === 0) {
+      throw new Error(
+        "Repo is private but no Coolify GitHub source is configured. Install a GitHub App in " +
+          "Coolify (Sources), then re-run `hatchkit sync`.",
+      );
+    }
+    githubAppUuid = sources[0].uuid;
+    githubAppHtmlUrl = sources[0].html_url;
+  }
+
+  const repoRef = normalizeCoolifyGitRepository(repoUrl, isPrivate);
+
+  const out: Array<{ appName: string; uuid: string; name: string; created: boolean }> = [];
+  for (const routed of missing) {
+    const made = await provisionRoutedApp({
+      api,
+      routed,
+      projectUuid,
+      serverUuid: resolvedServer.uuid,
+      description: args.description?.trim() || undefined,
+      repoRef,
+      isPrivateRepo: isPrivate,
+      githubAppUuid,
+      githubAppHtmlUrl,
+    });
+    out.push({ appName: routed.appName, uuid: made.uuid, name: made.name, created: made.created });
+  }
+  return out;
 }
 
 /** Find the Coolify app for one routing-plan entry. Tries hatchkit's
@@ -636,6 +1023,13 @@ export async function runSyncCli(args: string[]): Promise<void> {
   const json = args.includes("--json");
   const force = args.includes("--force");
   const deploy = args.includes("--deploy");
+  // Every reconcile step is on by default — that is what makes this a
+  // reconciler. The `--no-*` switches exist to narrow a run when only
+  // one thing needs fixing, not because the defaults are risky.
+  const create = !args.includes("--no-create");
+  const env = !args.includes("--no-env");
+  const dns = !args.includes("--no-dns");
+  const secrets = !args.includes("--no-secrets");
   const dirArg = ((): string | undefined => {
     const i = args.findIndex((a) => a === "--dir");
     if (i >= 0 && args[i + 1]) return args[i + 1];
@@ -643,7 +1037,17 @@ export async function runSyncCli(args: string[]): Promise<void> {
   })();
 
   const projectDir = dirArg ? dirArg : process.cwd();
-  const result = await runSync({ projectDir, dryRun, json, force, deploy });
+  const result = await runSync({
+    projectDir,
+    dryRun,
+    json,
+    force,
+    deploy,
+    create,
+    env,
+    dns,
+    secrets,
+  });
   if (json) {
     console.log(JSON.stringify(result, null, 2));
   }

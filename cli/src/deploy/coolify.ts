@@ -332,7 +332,7 @@ export async function runCoolifySetup(
  *  than duplicating. `is_stripprefix_enabled` is pushed unconditionally
  *  (not only when a path route exists) so flipping a project back to a
  *  path-free layout also restores Coolify's default. */
-async function provisionRoutedApp(args: {
+export async function provisionRoutedApp(args: {
   api: CoolifyApi;
   routed: RoutedApp;
   projectUuid: string;

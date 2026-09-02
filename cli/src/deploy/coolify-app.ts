@@ -629,7 +629,7 @@ function formatRouting(routed: RoutedApp): string {
   return routed.flatDomains.join(", ");
 }
 
-interface DnsWireResult {
+export interface DnsWireResult {
   managed: boolean;
   recordIdV4?: string;
   recordIdV6?: string;
@@ -671,7 +671,7 @@ function dnsRecoveryRecipe(domain: string, ips: PublicIps, extra: string[] = [])
 /** Upsert A and/or AAAA records for `domain` on Cloudflare. Either
  *  IP being undefined is fine — we only upsert what we've got, so a
  *  v6-only deploy gets just an AAAA record and v4-only gets just an A. */
-async function wireDns(domain: string, ips: PublicIps): Promise<DnsWireResult> {
+export async function wireDns(domain: string, ips: PublicIps): Promise<DnsWireResult> {
   const empty = (caveat?: CoolifyCaveat): DnsWireResult => ({
     managed: false,
     createdV4: false,
