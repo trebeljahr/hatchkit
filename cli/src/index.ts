@@ -4274,6 +4274,10 @@ function printHelp(topic?: HelpTopic): void {
     --force        Push even when Coolify reports the domain as claimed
                    by another resource (409). Only correct when that
                    resource is a stale app for this same project.
+                   Applies to routing UPDATES only: Coolify ignores the
+                   override when CREATING a compose app, so a 409 on
+                   creation has to be cleared by removing the domain
+                   from the app that holds it.
     --json         Emit ${chalk.dim("{ ok, topology, apps, deployed, dryRun, error? }")} to
                    stdout (suppresses the human-readable rendering).
 
