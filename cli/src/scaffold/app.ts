@@ -308,7 +308,12 @@ async function runScaffoldSteps(
   if (!wantsDesktop) {
     removeIfExists(join(outputDir, "electron"));
     removeIfExists(join(outputDir, ".github/workflows/desktop-release.yml"));
-    removeIfExists(join(outputDir, "build"));
+    // build/icon.png is the shared icon source: Electron's `icons:desktop` and
+    // Tauri's `icons:tauri` both read it, so it only goes when neither wrapper
+    // is selected.
+    if (!wantsTauri) {
+      removeIfExists(join(outputDir, "build"));
+    }
     removeIfExists(join(outputDir, "packages/client/src/types/electron.d.ts"));
     // The icon generator is only wired to `icons:desktop` (Electron);
     // Tauri regenerates from build/icon.png via its own CLI.

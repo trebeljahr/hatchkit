@@ -290,6 +290,7 @@ results.desktopTauri = await run(
     const nativeHmr = manifest.ports?.nativeHmr;
     return [
       ["src-tauri/ kept", existsSync(join(d, "src-tauri"))],
+      ["build/icon.png kept", statSync(join(d, "build/icon.png")).size > 1000],
       ["tauri workflow kept", existsSync(join(d, ".github/workflows/tauri-release.yml"))],
       ["electron/ removed (tauri is the desktop wrapper)", !existsSync(join(d, "electron"))],
       ["desktop workflow removed", !existsSync(join(d, ".github/workflows/desktop-release.yml"))],
