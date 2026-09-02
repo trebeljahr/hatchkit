@@ -138,7 +138,7 @@ export async function runRegenInfra(opts: RegenArgs): Promise<void> {
     [
       "CI workflow",
       CLIENT_WORKFLOW_REL_PATH,
-      (c) => upgradeWorkflowClientBuildArgs(c, manifest.domain),
+      (c) => upgradeWorkflowClientBuildArgs(c, manifest.domain, manifest.topology),
     ],
     ["docker-compose.yml", "docker-compose.yml", stripComposeClientRuntimeNextPublic],
   ];

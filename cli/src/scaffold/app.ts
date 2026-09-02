@@ -42,6 +42,7 @@ import {
   stripPackageJsonScripts,
   unchainTypecheckScript,
 } from "./pkg-json.js";
+import { writeSplitComposeFiles } from "./split-compose.js";
 import {
   applyPorts,
   applyProjectName,
@@ -242,7 +243,7 @@ async function runScaffoldSteps(
   // image's build-args. Next.js inlines NEXT_PUBLIC_* at build time, so
   // these MUST be present when CI builds the image — runtime env on the
   // deployed container can't reach browser code.
-  if (applyWorkflowClientBuildArgUrls(outputDir, config.domain)) {
+  if (applyWorkflowClientBuildArgUrls(outputDir, config.domain, config.topology)) {
     modifications.push(
       `build-and-deploy.yml: client build-args → https://${config.domain} (NEXT_PUBLIC_* baked at image build)`,
     );
@@ -278,6 +279,29 @@ async function runScaffoldSteps(
     `assigned ports: server=${ports.server} client=${ports.client}` +
       (ports.nativeHmr ? ` native=${ports.nativeHmr}` : ""),
   );
+
+  // split topology: each Coolify app builds from its own single-service
+  // compose. Pointing both at the root file would run the whole stack
+  // twice (two clients, two servers, two mongos on one volume).
+  if (config.topology === "split") {
+    const stem = ghOwner ? `ghcr.io/${ghOwner}/${config.name}` : `ghcr.io/OWNER/${config.name}`;
+    const split = writeSplitComposeFiles({
+      projectDir: outputDir,
+      imageStem: stem,
+      ports: { server: ports.server, client: ports.client },
+      surfaces: config.surfaces,
+    });
+    if (split.written.length > 0) {
+      modifications.push(`split topology: wrote ${split.written.join(", ")}`);
+    }
+    console.log(
+      chalk.dim(
+        "  · split topology: mongo/redis are provisioned as Coolify databases, not compose\n" +
+          "    services — the two apps sit on separate Docker networks, so an in-stack\n" +
+          "    datastore would only be reachable from one half.",
+      ),
+    );
+  }
 
   // Desktop (Electron) strip / substitute
   if (!wantsDesktop) {

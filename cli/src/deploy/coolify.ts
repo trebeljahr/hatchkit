@@ -373,7 +373,7 @@ async function provisionRoutedApp(args: {
       await api.updateApplication(existingApp.uuid, {
         buildPack: "dockercompose",
         portsExposes: routed.portsExposes,
-        dockerComposeLocation: "/docker-compose.yml",
+        dockerComposeLocation: routed.composeLocation,
         gitBranch: "main",
         gitRepository: repoRef?.gitRepository,
         githubAppUuid: isPrivateRepo ? args.githubAppUuid : undefined,
@@ -417,6 +417,7 @@ async function provisionRoutedApp(args: {
       // ignore that compose file and try to build the repo directly,
       // which fails on the monorepo layout.
       buildPack: "dockercompose",
+      dockerComposeLocation: routed.composeLocation,
       // Coolify still requires a `ports_exposes` value even for
       // dockercompose apps — it's metadata once the compose file
       // takes over.

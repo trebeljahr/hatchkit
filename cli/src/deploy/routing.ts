@@ -90,6 +90,14 @@ export function isTopology(v: unknown): v is Topology {
   return typeof v === "string" && (TOPOLOGIES as readonly string[]).includes(v);
 }
 
+/** Compose file the single Coolify app of a `single-origin` project
+ *  builds from — the four-service stack the starter ships. */
+export const SINGLE_ORIGIN_COMPOSE = "/docker-compose.yml";
+/** Per-half compose files for `split`. Each declares exactly one
+ *  service, so the two Coolify apps don't each run the whole stack. */
+export const SPLIT_CLIENT_COMPOSE = "/docker-compose.client.yml";
+export const SPLIT_SERVER_COMPOSE = "/docker-compose.server.yml";
+
 /** Compose services that are never a routing target — infrastructure
  *  containers with no public surface. Used when inferring which service
  *  should take the public domain on a compose file we didn't write. */
@@ -166,6 +174,14 @@ export interface RoutedApp {
   flatDomains: string[];
   /** `ports_exposes` this app should carry. */
   portsExposes: string;
+  /** Repo-relative path of the compose file this Coolify app builds
+   *  from (`docker_compose_location`).
+   *
+   *  `single-origin` uses the root `docker-compose.yml` — one app, all
+   *  four services. `split` CANNOT: pointing both apps at that file
+   *  would run the whole stack twice (two clients, two servers, two
+   *  mongos), so each half gets its own single-service compose. */
+  composeLocation: string;
   /** Desired `is_stripprefix_enabled`. False whenever any routed domain
    *  carries a path other than `/` — otherwise Coolify strips the
    *  prefix and the backend 404s (module header, point 4). */
@@ -295,6 +311,7 @@ function singleOriginPlan(input: RoutingInput): RoutingPlan {
         composeDomains: entries,
         flatDomains: entries.map((e) => e.domain),
         portsExposes: String(input.surfaces === "static" ? 80 : publicPort),
+        composeLocation: SINGLE_ORIGIN_COMPOSE,
         stripPrefix: !hasPathRoute,
         requiredComposeServices: unique(entries.map((e) => e.name)),
       },
@@ -312,6 +329,7 @@ function splitPlan(input: RoutingInput): RoutingPlan {
     composeDomains: [{ name: "client", domain: `https://${input.domain}` }],
     flatDomains: [`https://${input.domain}`],
     portsExposes: String(input.ports?.client ?? 3001),
+    composeLocation: SPLIT_CLIENT_COMPOSE,
     stripPrefix: true,
     requiredComposeServices: ["client"],
   };
@@ -325,6 +343,7 @@ function splitPlan(input: RoutingInput): RoutingPlan {
     composeDomains: [{ name: "server", domain: `https://${apiHost}` }],
     flatDomains: [`https://${apiHost}`],
     portsExposes: String(input.ports?.server ?? 3000),
+    composeLocation: SPLIT_SERVER_COMPOSE,
     stripPrefix: true,
     requiredComposeServices: ["server"],
   };

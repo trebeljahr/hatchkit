@@ -37,7 +37,7 @@ import {
 import {
   MANIFEST_FILENAME,
   type ProjectManifest,
-  readManifest,
+  readManifestWithMigrationInfo,
   writeManifest,
 } from "./manifest.js";
 import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
@@ -80,7 +80,15 @@ export async function runUpdate(
   projectDir: string,
   options: UpdateOptions = {},
 ): Promise<UpdateResult> {
-  const manifest = readManifest(projectDir);
+  // Read with migration info so a stale on-disk schema (e.g. a v3
+  // manifest that predates `topology`) can be persisted below even when
+  // no feature was added. Otherwise `hatchkit doctor`'s "run hatchkit
+  // update" hint would be a no-op on an otherwise up-to-date project.
+  const manifestRead = readManifestWithMigrationInfo(projectDir);
+  if (manifestRead?.migrated) {
+    for (const note of manifestRead.migrationNotes) console.log(`  ${note}`);
+  }
+  const manifest = manifestRead?.manifest ?? null;
   if (!manifest) {
     throw new Error(
       `No ${MANIFEST_FILENAME} found in ${projectDir}. This directory wasn't scaffolded by hatchkit, or the manifest was deleted.`,
@@ -136,7 +144,10 @@ export async function runUpdate(
   // once the files carry the current shape.
   const buildArgRetrofits: Array<[rel: string, fn: (c: string) => string]> = [
     [CLIENT_DOCKERFILE_REL_PATH, upgradeClientDockerfile],
-    [CLIENT_WORKFLOW_REL_PATH, (c) => upgradeWorkflowClientBuildArgs(c, manifest.domain)],
+    [
+      CLIENT_WORKFLOW_REL_PATH,
+      (c) => upgradeWorkflowClientBuildArgs(c, manifest.domain, manifest.topology),
+    ],
     ["docker-compose.yml", stripComposeClientRuntimeNextPublic],
   ];
   let buildArgsRetrofitted = false;
@@ -336,7 +347,7 @@ export async function runUpdate(
   // no local-dev opt-in) — keeps the file mtime stable for the no-op
   // case so update-then-doctor doesn't re-read a touched-but-identical
   // manifest.
-  if (actuallyAdded.length > 0 || localDevEnabled) {
+  if (actuallyAdded.length > 0 || localDevEnabled || manifestRead?.migrated) {
     const updatedManifest: ProjectManifest = {
       ...manifest,
       version: manifest.version,

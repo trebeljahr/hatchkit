@@ -36,6 +36,10 @@ import { exec } from "../utils/exec.js";
 export interface CoolifyDeployApp {
   /** Coolify application uuid. */
   uuid: string;
+  /** Which half of a `split` deployment this app is. Undefined for a
+   *  `single-origin` project, which has exactly one app and therefore
+   *  exactly one deploy trigger. */
+  role?: "client" | "server";
 }
 
 export interface CoolifyDeploySecretsInput {
@@ -44,9 +48,9 @@ export interface CoolifyDeploySecretsInput {
   /** GitHub `<owner>/<repo>` slug. */
   repoSlug: string;
   /** One or more apps to wire deploy hooks for. Pass a single
-   *  unlabelled entry for adopt-style single-app repos; pass two
-   *  labelled entries (SERVER + CLIENT) for the split layout the
-   *  starter ships. */
+   *  unlabelled entry for a `single-origin` project; pass two entries
+   *  carrying `role` for a `split` one. The first entry is always the
+   *  app that owns the bare domain. */
   apps: CoolifyDeployApp[];
 }
 
@@ -86,13 +90,23 @@ export async function setCoolifyDeploySecrets(
     COOLIFY_TOKEN: cfg.token,
   };
 
-  // Hatchkit's current deploy.yml takes a single uuid per project. If
-  // multiple apps are passed (legacy callers), use the first — the
-  // others wouldn't have a workflow waiting on their secrets anyway.
+  // COOLIFY_RESOURCE_UUID is always set, to the app that owns the bare
+  // domain. A `single-origin` project has only that one app, and the
+  // generated deploy job fires exactly one trigger from it.
   const primary = input.apps[0];
-  const webhook = `${baseUrl}/api/v1/deploy?uuid=${primary.uuid}`;
-  secrets.COOLIFY_WEBHOOK_URL = webhook;
+  secrets.COOLIFY_WEBHOOK_URL = `${baseUrl}/api/v1/deploy?uuid=${primary.uuid}`;
   secrets.COOLIFY_RESOURCE_UUID = primary.uuid;
+
+  // `split` deployments have two apps and therefore need two triggers.
+  // The role-suffixed names are additive: the deploy job fires each one
+  // only when its secret is non-empty, so an older checked-in workflow
+  // that only knows COOLIFY_RESOURCE_UUID keeps working unchanged.
+  for (const app of input.apps) {
+    if (!app.role) continue;
+    const suffix = app.role.toUpperCase();
+    secrets[`COOLIFY_RESOURCE_UUID_${suffix}`] = app.uuid;
+    secrets[`COOLIFY_WEBHOOK_URL_${suffix}`] = `${baseUrl}/api/v1/deploy?uuid=${app.uuid}`;
+  }
 
   const names = Object.keys(secrets);
   const spinner = ora(

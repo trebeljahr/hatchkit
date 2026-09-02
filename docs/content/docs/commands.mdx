@@ -67,6 +67,7 @@ prompting. That makes `create` CI-safe.
 | `--domain <host>` | Public domain. Defaults to `<name>.<your root domain>`. |
 | `--description <text>` | One-liner for `package.json` + Coolify. Pass an empty value to answer "none". |
 | `--surfaces <value>` | `fullstack` · `split` · `backend` · `static` |
+| `--topology <value>` | `single-origin` (default) · `split`. How the deploy is laid out across Coolify apps — see [Deployment topology](/docs/topology). |
 
 #### Deployment
 
@@ -298,6 +299,40 @@ If you opt in:
 ### Not a good fit
 
 - Anything that needs a running server (websockets, MongoDB / Postgres, auth sessions, server-rendered Next). Use `hatchkit create` with the full-stack flow for those.
+
+---
+
+## `hatchkit sync`
+
+Pushes the manifest's view of the project onto Coolify: which applications
+should exist, which domains hang off which compose services, and whether
+Traefik's path-prefix stripping should be on. Idempotent.
+
+```bash
+hatchkit sync --dry-run    # read-only: print the diff
+hatchkit sync              # push it
+hatchkit sync --deploy     # push it, then redeploy so Traefik regenerates labels
+```
+
+`--deploy` is what makes a routing fix take effect: Coolify regenerates a
+container's Traefik labels on deploy, not when the application record is
+PATCHed.
+
+Sync **refuses** to push routing that names a compose service the project
+doesn't declare. Coolify answers such a PATCH with a 200 OK and then emits no
+Traefik labels at all, so the app 503s every request — a silent outage that
+looks like a successful sync.
+
+| Flag | Effect |
+|---|---|
+| `--dir <path>` | Project root (defaults to cwd). |
+| `--dry-run` | Show the diff without touching Coolify. Read-only. |
+| `--deploy` | Redeploy each changed app so the new labels go live. |
+| `--force` | Push through a Coolify domain-conflict (409). |
+| `--json` | Machine-readable output. |
+
+See [Deployment topology](/docs/topology) for what the two topologies route,
+and for repairing a project deployed before 0.2.19.
 
 ---
 

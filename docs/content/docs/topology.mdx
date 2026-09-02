@@ -1,0 +1,190 @@
+---
+title: Deployment topology
+description: How hatchkit lays a project out across Coolify applications, why /api routing works the way it does, and how to repair a project deployed before 0.2.19.
+---
+
+Every hatchkit project records a **topology** in `.hatchkit.json`. It is the
+single field `create`, `adopt` and `sync` all read to decide which Coolify
+applications exist and which domains hang off them.
+
+```json
+{
+  "topology": "single-origin"
+}
+```
+
+| Value | Coolify apps | Front end | API | Datastores |
+|---|---|---|---|---|
+| `single-origin` (default) | one, named `<name>` | `https://<domain>` | `https://<domain>/api` | `mongo` / `redis` services in the same compose |
+| `split` | two, `<name>-client` + `<name>-server` | `https://<domain>` | `https://api.<domain>` | Coolify-managed databases |
+
+Manifests written before the field existed are treated as `single-origin`.
+That is what every earlier hatchkit run actually deployed, so the default
+preserves whatever is currently live. `split` is never inferred — nothing on
+disk distinguishes "should be split" from "is single-origin", and guessing it
+would re-point a running project at a subdomain with no DNS record.
+
+Pick one at scaffold time:
+
+```bash
+hatchkit create --topology=split
+```
+
+Or answer the **Deployment topology** step in the interactive flow.
+
+## single-origin
+
+One Coolify application running the project's `docker-compose.yml`, with all
+four services (`server`, `client`, `mongo`, `redis`) inside it. Routing:
+
+```
+client → https://<domain>
+server → https://<domain>/api
+```
+
+Both entries live on the same host, so the browser only ever talks to one
+origin. That means no CORS preflights, no cookie-domain configuration, and one
+DNS record. WebSockets ride the same route: `wss://<domain>/api/ws` matches the
+`/api` router, and Traefik proxies the upgrade transparently.
+
+Two Coolify behaviours make this work, and both bit hatchkit before 0.2.19:
+
+**Path routing needs prefix-stripping turned off.** Coolify turns a URL path
+into a Traefik ``PathPrefix`` rule, but it also attaches a `stripprefix`
+middleware for any path other than `/`. With that on, a request for
+`/api/health` arrives at Express as `/health` and 404s. hatchkit sets
+`is_stripprefix_enabled: false` on any app whose routing uses a path. The field
+is not accepted on Coolify's create endpoints, so it goes out as a follow-up
+PATCH — and it is write-only, so hatchkit pushes it with every update rather
+than trying to read it back.
+
+**Router priority resolves itself.** Traefik's default rule priority is the
+length of the rule string, so ``Host(`x`) && PathPrefix(`/api`)`` outranks
+``Host(`x`) && PathPrefix(`/`)`` on the same host. No explicit priority needed.
+
+## split
+
+Two Coolify applications built from the two GHCR images:
+
+```
+<name>-client → https://<domain>
+<name>-server → https://api.<domain>
+```
+
+Choose this when the API needs to scale, restart or roll back independently of
+the front end, or when something outside the browser app is a first-class
+consumer of it.
+
+What it costs you:
+
+- **A second DNS record.** `api.<domain>` needs its own A record. `adopt`
+  upserts it when a DNS provider is configured; `create` prints the record for
+  you to add, because Terraform owns the bare domain's record and doesn't know
+  about this one.
+- **Cross-origin.** The client's bundle is built against `https://api.<domain>`,
+  so the server's CORS allow-list and better-auth `trustedOrigins` have to
+  cover the front end's origin. hatchkit keeps `FRONTEND_URL` on the bare
+  domain (that's what `getTrustedOrigins()` builds from) and points
+  `BETTER_AUTH_URL` / `AUTH_URL` at the API host.
+- **Managed datastores.** The two applications get separate Docker networks, so
+  a `mongo` or `redis` declared in either half's compose is unreachable from
+  the other. hatchkit provisions them as Coolify databases and writes
+  `MONGODB_URI` / `REDIS_URL` into the encrypted `.env.production`.
+- **Two compose files.** `docker-compose.client.yml` and
+  `docker-compose.server.yml`, each declaring one service. Pointing both
+  applications at the root `docker-compose.yml` would run the whole stack
+  twice. The root file stays put — it's still what `docker compose up` gives you
+  locally.
+
+hatchkit also accepts `-frontend` / `-backend` (and `-web` / `-api`) as lookup
+aliases, so a hand-rolled pair under those names is reconciled in place rather
+than shadowed by a second, empty application.
+
+## Checking what's actually deployed
+
+`hatchkit sync --dry-run` is read-only. It prints the topology it resolved,
+where that value came from, the services your compose file declares, and a
+before/after diff of the routing:
+
+```bash
+hatchkit sync --dry-run
+```
+
+```
+  streaks → streaks.trebeljahr.com
+    topology: single-origin (manifest declares topology "single-origin")
+    compose:  docker-compose.yml — services: server, client, mongo, redis
+
+  streaks (qr7yhl7j… · compose)
+    build pack: dockercompose
+    · docker_compose_domains:
+        before: client=https://streaks.trebeljahr.com, server=https://api.streaks.trebeljahr.com/ws
+        after:  client=https://streaks.trebeljahr.com, server=https://streaks.trebeljahr.com/api
+    · strip_prefix → false (write-only in Coolify's API; pushed with any update)
+```
+
+`hatchkit doctor` reports the same thing offline.
+
+## Repairing a project deployed before 0.2.19
+
+**Symptom:** the front page loads but `https://<domain>/api/...` returns a
+redirect or a 404 from Next.js — or the whole domain 503s.
+
+**Cause:** Coolify stores `docker_compose_domains` as a *map keyed by service
+name*. Older hatchkit sent four separate entries for the `server` service, so
+Coolify kept only the last one and silently discarded the rest. Every project
+ended up routing `https://api.<domain>/ws` — a subdomain with no DNS record —
+and nothing at all on `https://<domain>/api`. Several FQDNs for one service
+have to be comma-joined into a single entry instead.
+
+The fix needs no hand-editing in Coolify:
+
+```bash
+cd <project>
+hatchkit sync --dry-run
+```
+
+Confirm the "after" line routes `server` to `https://<domain>/api` and that
+every service name it mentions appears in your `docker-compose.yml`. Then:
+
+```bash
+hatchkit sync --deploy
+```
+
+`--deploy` matters. Coolify regenerates a container's Traefik labels when it
+deploys, not when the application record is PATCHed — without it the corrected
+routing sits in the database while the live containers keep serving under the
+old labels.
+
+Verify:
+
+```bash
+curl -fsS -o /dev/null -w '%{http_code}\n' https://<domain>/api/health
+```
+
+### If sync refuses
+
+```
+✗ REFUSING to sync — routing names compose service(s) "app" that
+  docker-compose.yml does not declare
+```
+
+That is the guard working. Coolify answers a routing PATCH for a service that
+isn't in the compose with a **200 OK** and then emits no Traefik labels at all,
+so the application 503s every request — a silent outage that reads as a
+successful sync. Set `publicService` in `.hatchkit.json` to one of the services
+the error lists, then re-run.
+
+### If Coolify reports a domain conflict
+
+A 409 means another Coolify resource already claims the domain. Check that it
+isn't a live app you still need; if it's a stale one for this same project,
+re-run with `--force`.
+
+### The client bundle also has to be rebuilt
+
+`NEXT_PUBLIC_API_URL` is inlined into the browser bundle when CI **builds** the
+image — runtime env on the deployed container cannot change it. If you switch
+topology, `hatchkit regen-infra` refreshes the build-args in
+`.github/workflows/build-and-deploy.yml`, and the next push rebuilds the image
+against the new API host.

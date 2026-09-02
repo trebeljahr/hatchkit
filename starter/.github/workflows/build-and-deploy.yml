@@ -138,15 +138,25 @@ jobs:
             ghcr.io/${{ github.repository }}-client:main
             ghcr.io/${{ github.repository }}-client:${{ github.sha }}
 
-  # Single deploy job — Hatchkit registers ONE Coolify app per project
-  # (a single dockercompose pulling both ghcr.io/<owner>/<repo>-server
-  # and -client images), so there is exactly ONE deploy trigger to fire
-  # once both image builds succeed. Earlier revisions of this workflow
-  # had per-build deploy steps reading per-surface secret names
-  # (COOLIFY_SERVER_RESOURCE_UUID, COOLIFY_CLIENT_RESOURCE_UUID) that
-  # Hatchkit never sets — both steps silently no-opped and Coolify
-  # never got told to redeploy. The secret names below match what
-  # `hatchkit adopt` and `setCoolifyDeploySecrets` push.
+  # Deploy job. How many triggers fire depends on the project's
+  # deployment topology (`topology` in .hatchkit.json):
+  #
+  #   single-origin  ONE Coolify app running a dockercompose that pulls
+  #                  both the -server and -client images. Only
+  #                  COOLIFY_RESOURCE_UUID is set, so only the first
+  #                  step runs.
+  #   split          TWO Coolify apps. Hatchkit additionally sets
+  #                  COOLIFY_RESOURCE_UUID_CLIENT / _SERVER, and the
+  #                  per-half steps below fire alongside the primary.
+  #
+  # Every step is guarded on its own secret being non-empty, so a repo
+  # that only ever had the single-app secrets keeps working unchanged.
+  #
+  # Historical note: earlier revisions had per-build deploy steps
+  # reading COOLIFY_SERVER_RESOURCE_UUID / COOLIFY_CLIENT_RESOURCE_UUID,
+  # names Hatchkit never set — both steps silently no-opped and Coolify
+  # never got told to redeploy. The names below are the ones
+  # `setCoolifyDeploySecrets` actually pushes.
   deploy:
     runs-on: ubuntu-latest
     needs: [build-server, build-client]
@@ -160,6 +170,29 @@ jobs:
         run: |
           curl -fsSL -X POST \
             "$COOLIFY_BASE_URL/api/v1/deploy?uuid=$COOLIFY_RESOURCE_UUID&force=true" \
+            -H "Authorization: Bearer $COOLIFY_API_TOKEN"
+
+      # split topology only — unset (and skipped) for single-origin.
+      - name: Deploy server app via Coolify API (split topology)
+        env:
+          COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
+          COOLIFY_RESOURCE_UUID_SERVER: ${{ secrets.COOLIFY_RESOURCE_UUID_SERVER }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        if: env.COOLIFY_BASE_URL != '' && env.COOLIFY_RESOURCE_UUID_SERVER != ''
+        run: |
+          curl -fsSL -X POST \
+            "$COOLIFY_BASE_URL/api/v1/deploy?uuid=$COOLIFY_RESOURCE_UUID_SERVER&force=true" \
+            -H "Authorization: Bearer $COOLIFY_API_TOKEN"
+
+      - name: Deploy client app via Coolify API (split topology)
+        env:
+          COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
+          COOLIFY_RESOURCE_UUID_CLIENT: ${{ secrets.COOLIFY_RESOURCE_UUID_CLIENT }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        if: env.COOLIFY_BASE_URL != '' && env.COOLIFY_RESOURCE_UUID_CLIENT != ''
+        run: |
+          curl -fsSL -X POST \
+            "$COOLIFY_BASE_URL/api/v1/deploy?uuid=$COOLIFY_RESOURCE_UUID_CLIENT&force=true" \
             -H "Authorization: Bearer $COOLIFY_API_TOKEN"
 
       - name: Deploy via webhook (fallback)

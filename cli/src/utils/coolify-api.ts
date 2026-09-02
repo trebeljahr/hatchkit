@@ -273,6 +273,34 @@ export class CoolifyApi {
     return this.request("POST", "/databases/postgresql", body);
   }
 
+  /** Create a Redis database. Needed by the `split` deployment
+   *  topology: the two Coolify apps sit on separate Docker networks, so
+   *  a redis declared in one half's compose is unreachable from the
+   *  other — it has to be a Coolify-managed resource on the shared
+   *  network instead. `internal_db_url` is the `redis://…` string
+   *  usable from inside that network. */
+  async createRedisDatabase(params: {
+    serverUuid: string;
+    projectUuid: string;
+    environmentName?: string;
+    environmentUuid?: string;
+    name: string;
+    /** Coolify auto-generates one if omitted. */
+    redisPassword?: string;
+    instantDeploy?: boolean;
+  }): Promise<{ uuid: string; internal_db_url: string }> {
+    const body: Record<string, unknown> = {
+      server_uuid: params.serverUuid,
+      project_uuid: params.projectUuid,
+      environment_name: params.environmentName ?? "production",
+      name: params.name,
+      instant_deploy: params.instantDeploy ?? true,
+    };
+    if (params.environmentUuid) body.environment_uuid = params.environmentUuid;
+    if (params.redisPassword) body.redis_password = params.redisPassword;
+    return this.request("POST", "/databases/redis", body);
+  }
+
   /** Get a database (any engine) by uuid. We use this to read the
    *  `internal_db_url` post-creation when the create response didn't
    *  include it (older Coolify builds). */

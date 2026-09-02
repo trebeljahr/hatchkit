@@ -54,7 +54,7 @@
 import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
-import { readManifest } from "../scaffold/manifest.js";
+import { readManifestWithMigrationInfo } from "../scaffold/manifest.js";
 import { readComposeFile } from "../utils/compose.js";
 import { CoolifyApi, type CoolifyApplication } from "../utils/coolify-api.js";
 import {
@@ -77,6 +77,15 @@ export interface SyncOptions {
    *  another resource. Only correct when the conflicting resource is a
    *  stale app for this same project. */
   force?: boolean;
+  /** Trigger a Coolify redeploy of every app sync changed.
+   *
+   *  Needed to actually finish a repair: Coolify regenerates a
+   *  container's Traefik labels when it (re)deploys, not when the
+   *  application record is PATCHed. Without a redeploy the new routing
+   *  sits in the database and the live containers keep serving — or
+   *  503ing — under the old labels. Opt-in because it restarts
+   *  containers. */
+  deploy?: boolean;
 }
 
 /** What sync intends to do for one Coolify application — surfaces both
@@ -142,6 +151,8 @@ export interface SyncResult {
    *  compose file (sync then can't validate names and says so). */
   composeServices: string[] | null;
   apps: AppSyncPlan[];
+  /** Names of the apps a `--deploy` run asked Coolify to redeploy. */
+  deployed: string[];
   /** When dryRun, no PATCH was made even if `changed` was true. */
   dryRun: boolean;
 }
@@ -151,7 +162,14 @@ export interface SyncResult {
  *  + ports + stripprefix payload — or just prints what it would push
  *  when `dryRun`. */
 export async function runSync(opts: SyncOptions): Promise<SyncResult> {
-  const manifest = readManifest(opts.projectDir);
+  // Read WITHOUT the console-logging wrapper: `readManifest` prints its
+  // migration notes to stdout, which corrupts `--json` output for any
+  // caller trying to parse it.
+  const read = readManifestWithMigrationInfo(opts.projectDir);
+  const manifest = read?.manifest;
+  if (read?.migrated && !opts.json) {
+    for (const note of read.migrationNotes) console.log(`  ${note}`);
+  }
   if (!manifest) {
     const err = `No .hatchkit.json found in ${opts.projectDir}.`;
     if (!opts.json) {
@@ -205,6 +223,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   }
 
   const apps: AppSyncPlan[] = [];
+  const patched: AppSyncPlan[] = [];
   const errors: string[] = [];
   const notFound: string[] = [];
 
@@ -250,6 +269,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
         ...(opts.force ? { forceDomainOverride: true } : {}),
       });
       patch.succeed(`Coolify: updated "${plan.name}"`);
+      patched.push(plan);
     } catch (err) {
       const message = (err as Error).message;
       patch.fail(`Coolify: PATCH failed: ${message}`);
@@ -265,8 +285,34 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     }
   }
 
+  // Redeploy AFTER every PATCH has landed. Coolify only regenerates
+  // Traefik labels on deploy, so a routing change that isn't followed
+  // by one is invisible to the running containers.
+  const deployed: string[] = [];
+  if (opts.deploy && !opts.dryRun) {
+    for (const plan of patched) {
+      const spinner = opts.json ? null : ora(`Coolify: redeploying "${plan.name}"`).start();
+      try {
+        await api.deployApplication(plan.uuid);
+        spinner?.succeed(`Coolify: redeploy triggered for "${plan.name}"`);
+        deployed.push(plan.name);
+      } catch (err) {
+        spinner?.fail(`Coolify: redeploy failed: ${(err as Error).message}`);
+        errors.push(`deploy ${plan.name}: ${(err as Error).message}`);
+      }
+    }
+  } else if (patched.length > 0 && !opts.json) {
+    console.log(
+      chalk.yellow(
+        "\n  Routing pushed, but the running containers still carry their old Traefik labels.\n" +
+          "  Coolify only regenerates them on deploy — re-run with `--deploy`, or hit Redeploy in the dashboard.",
+      ),
+    );
+  }
+
   const base = {
     topology: inference.topology,
+    deployed,
     topologySource: inference.source,
     topologyReason: inference.reason,
     composeServices: compose?.services ?? null,
@@ -326,6 +372,7 @@ function emptyResult(opts: SyncOptions): SyncResult {
     topologyReason: "sync aborted before topology resolution",
     composeServices: null,
     apps: [],
+    deployed: [],
     dryRun: !!opts.dryRun,
   };
 }
@@ -577,6 +624,7 @@ export async function runSyncCli(args: string[]): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const json = args.includes("--json");
   const force = args.includes("--force");
+  const deploy = args.includes("--deploy");
   const dirArg = ((): string | undefined => {
     const i = args.findIndex((a) => a === "--dir");
     if (i >= 0 && args[i + 1]) return args[i + 1];
@@ -584,7 +632,7 @@ export async function runSyncCli(args: string[]): Promise<void> {
   })();
 
   const projectDir = dirArg ? dirArg : process.cwd();
-  const result = await runSync({ projectDir, dryRun, json, force });
+  const result = await runSync({ projectDir, dryRun, json, force, deploy });
   if (json) {
     console.log(JSON.stringify(result, null, 2));
   }

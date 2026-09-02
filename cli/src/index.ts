@@ -2391,7 +2391,24 @@ async function handleCreate(): Promise<void> {
       // dispatch follows config.dbEngine (default "mongodb"); the
       // legacy `mongodbProvider` field is read as a fallback for
       // pre-postgres presets.
-      const dbProvider = config.dbProvider ?? config.mongodbProvider;
+      // `split` forces Coolify-managed datastores: the two apps sit on
+      // separate Docker networks, so a mongo/redis declared in either
+      // half's compose is unreachable from the other. The generated
+      // per-half compose files reflect that — the server reads
+      // MONGODB_URI / REDIS_URL from env with no in-stack fallback —
+      // so provisioning them is not optional here.
+      const dbProvider =
+        config.topology === "split" ? "coolify" : (config.dbProvider ?? config.mongodbProvider);
+      if (
+        config.topology === "split" &&
+        (config.dbProvider ?? config.mongodbProvider) !== "coolify"
+      ) {
+        console.log(
+          chalk.dim(
+            "  · split topology: provisioning Coolify-managed datastores (the two apps don't share a Docker network).",
+          ),
+        );
+      }
       if (dbProvider === "coolify" && config.scaffoldRepo) {
         try {
           const serverEnvDir = join(appDir, "packages/server");
@@ -2403,6 +2420,14 @@ async function handleCreate(): Promise<void> {
             const { provisionCoolifyMongo } = await import("./deploy/coolify-mongo.js");
             const mongoResult = await provisionCoolifyMongo(config, serverEnvDir);
             ledger?.record({ kind: "coolifyDb", uuid: mongoResult.databaseUuid });
+          }
+          // Redis is only provisioned for `split` — under
+          // `single-origin` it's a service in the project's own compose
+          // and reachable at redis://redis:6379 with nothing to create.
+          if (config.topology === "split" && config.features.includes("websocket")) {
+            const { provisionCoolifyRedis } = await import("./deploy/coolify-redis.js");
+            const redisResult = await provisionCoolifyRedis(config, serverEnvDir);
+            ledger?.record({ kind: "coolifyDb", uuid: redisResult.databaseUuid });
           }
         } catch (err) {
           const engineLabel = config.dbEngine === "postgres" ? "Postgres" : "MongoDB";
@@ -2454,7 +2479,7 @@ async function handleCreate(): Promise<void> {
             "./deploy/gh-actions-secrets.js"
           );
           const slug = repoSlugFromRemote(repoUrl);
-          const apps = await findCoolifyAppsForProject(config.name);
+          const apps = await findCoolifyAppsForProject(config.name, config.topology);
           if (slug) {
             if (apps.length > 0) {
               await setCoolifyDeploySecrets({
@@ -3927,7 +3952,7 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("hatchkit sync")} — push the manifest's view of the project onto Coolify
 
   ${chalk.bold("Usage:")}
-    cd <project-dir> && hatchkit sync [--dry-run] [--json]
+    cd <project-dir> && hatchkit sync [--dry-run] [--deploy] [--json]
     hatchkit sync --dir <project-dir>
 
   ${chalk.bold("What it does:")}
@@ -3941,9 +3966,26 @@ function printHelp(topic?: HelpTopic): void {
     its auto-traefik labels on the next deploy. For nixpacks / dockerfile
     / static apps the domain lands in the flat ${chalk.dim("domains")} field instead.
 
+    Which services get which domains comes from the manifest's
+    ${chalk.dim("topology")} field:
+      ${chalk.cyan("single-origin")}  one app — ${chalk.dim("client")} at ${chalk.dim("https://<domain>")},
+                     ${chalk.dim("server")} at ${chalk.dim("https://<domain>/api")}
+      ${chalk.cyan("split")}          ${chalk.dim("<name>-client")} at ${chalk.dim("<domain>")},
+                     ${chalk.dim("<name>-server")} at ${chalk.dim("api.<domain>")}
+    Manifests without the field are treated as ${chalk.cyan("single-origin")} — what
+    every pre-topology hatchkit run actually deployed.
+
+    Sync REFUSES to push routing that names a compose service the
+    project doesn't declare. Coolify answers such a PATCH with 200 OK
+    and then emits no traefik labels at all, so the app 503s every
+    request — a silent outage that looks like a successful sync.
+
   ${chalk.bold("When to use:")}
     · An older hatchkit scaffolded the project with no Domain set in
       Coolify (the container had zero ${chalk.dim("traefik.*")} labels).
+    · The API is unreachable at ${chalk.dim("https://<domain>/api")} — pre-0.2.19
+      hatchkit sent several domains for one compose service, which
+      Coolify silently collapsed to the last one.
     · You changed the domain in ${chalk.dim(".hatchkit.json")} and want Coolify to
       catch up without re-running adopt.
     · You want a one-shot reconcile after editing the manifest by hand.
@@ -3956,9 +3998,16 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Options:")}
     --dir <path>   Project root (defaults to cwd).
-    --dry-run      Show the diff without PATCHing Coolify.
-    --json         Emit ${chalk.dim("{ ok, apps, dryRun, error? }")} to stdout (suppresses
-                   the human-readable rendering).
+    --dry-run      Show the diff without PATCHing Coolify. Read-only.
+    --deploy       After PATCHing, trigger a Coolify redeploy of each
+                   changed app. Coolify only regenerates traefik labels
+                   on deploy, so a routing fix isn't live until this
+                   runs (or you hit Redeploy in the dashboard).
+    --force        Push even when Coolify reports the domain as claimed
+                   by another resource (409). Only correct when that
+                   resource is a stale app for this same project.
+    --json         Emit ${chalk.dim("{ ok, topology, apps, deployed, dryRun, error? }")} to
+                   stdout (suppresses the human-readable rendering).
 
   ${chalk.bold("Verifying on the box:")}
     On the VPS hosting Coolify, after a redeploy:

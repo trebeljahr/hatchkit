@@ -174,13 +174,17 @@ export async function runRenameDomain(opts: RenameDomainOptions): Promise<void> 
         ),
       );
     } else {
-      const after = setWorkflowClientBuildArgUrls(before, newDomain);
+      // Topology decides whether the client talks to the bare domain
+      // or to api.<domain>; renaming must carry that choice across or
+      // the next image build bakes in a host that doesn't answer.
+      const after = setWorkflowClientBuildArgUrls(before, newDomain, manifest.topology);
       if (after !== before) {
+        const apiHost = manifest.topology === "split" ? `api.${newDomain}` : newDomain;
         edits.push({
           label: CLIENT_WORKFLOW_REL_PATH,
           path: workflowPath,
           after,
-          changes: [`client build-args NEXT_PUBLIC_API_URL/WS_URL → https://${newDomain}`],
+          changes: [`client build-args NEXT_PUBLIC_API_URL/WS_URL → https://${apiHost}`],
         });
       }
     }

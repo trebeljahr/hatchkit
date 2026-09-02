@@ -1874,6 +1874,18 @@ async function executePlan(
           "COOLIFY_TOKEN",
           "COOLIFY_WEBHOOK_URL",
           "COOLIFY_RESOURCE_UUID",
+          // A `split` deployment needs a trigger per app. Without these
+          // in the list, a --resume on a split project would see the
+          // five single-app secrets present and skip the push, leaving
+          // the second app permanently untriggered.
+          ...(coolifyResult && coolifyResult.apps.length > 1
+            ? [
+                "COOLIFY_RESOURCE_UUID_CLIENT",
+                "COOLIFY_RESOURCE_UUID_SERVER",
+                "COOLIFY_WEBHOOK_URL_CLIENT",
+                "COOLIFY_WEBHOOK_URL_SERVER",
+              ]
+            : []),
         ];
         let skipCoolifySecrets = false;
         if (opts.resume) {
@@ -1893,7 +1905,18 @@ async function executePlan(
           await setCoolifyDeploySecrets({
             projectDir: state.projectDir,
             repoSlug: slug,
-            apps: [{ uuid: appUuidForSecrets }],
+            // `split` wires two apps, each with its own deploy
+            // trigger — passing only the primary would leave the other
+            // half stuck on a stale image forever. Falls back to the
+            // single-app shape when this run didn't create the apps
+            // (a --resume that matched an existing one by name).
+            apps:
+              coolifyResult && coolifyResult.apps.length > 1
+                ? coolifyResult.apps.map((a) => ({
+                    uuid: a.uuid,
+                    role: a.role === "server" ? ("server" as const) : ("client" as const),
+                  }))
+                : [{ uuid: appUuidForSecrets }],
           });
         }
       } else {

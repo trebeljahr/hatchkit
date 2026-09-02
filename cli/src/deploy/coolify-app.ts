@@ -354,7 +354,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
         await api.updateApplication(existingApp.uuid, {
           buildPack,
           portsExposes: routed.portsExposes,
-          dockerComposeLocation: buildPack === "dockercompose" ? "/docker-compose.yml" : undefined,
+          dockerComposeLocation: buildPack === "dockercompose" ? routed.composeLocation : undefined,
           gitBranch: input.gitBranch ?? "main",
           gitRepository: repoRef.gitRepository,
           githubAppUuid: input.isPrivate ? githubAppUuid : undefined,
@@ -406,6 +406,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       // `dockercompose` is the default for any project that's gone
       // through `hatchkit adopt`'s build-pipeline scaffold.
       buildPack,
+      dockerComposeLocation: routed.composeLocation,
       name: routed.appName,
       description: createDescription,
       ...(buildPack === "dockercompose" ? {} : { domains: routed.flatDomains }),
@@ -865,24 +866,50 @@ function inferZone(domain: string): string {
 }
 
 /** Look up the Coolify apps belonging to a project for the
- *  Actions-secrets push. Tries the names hatchkit produces, in
- *  priority order:
- *    · `<name>`                            → single-app layout
- *      (current `create` + `adopt` output, all surfaces).
- *    · `<name>-server`                     → legacy starter-server.
- *    · `<name>-web` / `<name>-app` / `<name>-api` → legacy
- *      `runCoolifySetup` output (single-app).
+ *  Actions-secrets push.
  *
- *  Returns an empty array when Coolify isn't configured or no app
- *  matches — callers log a manual-recipe hint in that case. The
- *  per-surface split layout (`-server` + `-client` simultaneously)
- *  isn't supported any more; the current deploy.yml takes one uuid. */
-export async function findCoolifyAppsForProject(projectName: string): Promise<CoolifyDeployApp[]> {
+ *  `single-origin` (and any project whose topology we don't know) has
+ *  ONE app; the candidate list below covers hatchkit's current name
+ *  plus the legacy ones older `runCoolifySetup` releases produced.
+ *
+ *  `split` has TWO, and both need a deploy trigger — returning only one
+ *  would leave half the deployment stuck on a stale image forever. Each
+ *  is matched through its aliases so a hand-rolled `-backend` /
+ *  `-frontend` pair (tiao's shape) is found rather than skipped, and
+ *  each carries a `role` so the secrets push can name them apart.
+ *
+ *  Returns an empty array when Coolify isn't configured or nothing
+ *  matches — callers log a manual-recipe hint in that case. */
+export async function findCoolifyAppsForProject(
+  projectName: string,
+  topology: Topology = "single-origin",
+): Promise<CoolifyDeployApp[]> {
   const cfg = await getCoolifyConfig();
   if (!cfg) return [];
   const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
   const apps = await api.listApplications();
   const byName = new Map(apps.map((a) => [a.name, a.uuid]));
+
+  if (topology === "split") {
+    const plan = computeRoutingPlan({
+      name: projectName,
+      // Domain doesn't affect the app NAMES, which is all we need here.
+      domain: "example.invalid",
+      topology: "split",
+    });
+    const found: CoolifyDeployApp[] = [];
+    for (const routed of plan.apps) {
+      for (const candidate of [routed.appName, ...routed.aliases]) {
+        const uuid = byName.get(candidate);
+        if (uuid) {
+          found.push({ uuid, role: routed.role === "server" ? "server" : "client" });
+          break;
+        }
+      }
+    }
+    if (found.length > 0) return found;
+    // Fall through: a manifest may say `split` before the apps exist.
+  }
 
   const found: CoolifyDeployApp[] = [];
   // Single-app fallbacks. Picked in priority order — first match wins.

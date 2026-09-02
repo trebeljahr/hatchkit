@@ -897,6 +897,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of mailFromChecks) results.push(r);
   const publicSvcChecks = await checkProjectPublicServiceState(process.cwd());
   for (const r of publicSvcChecks) results.push(r);
+  const routingChecks = await checkProjectRoutingState(process.cwd());
+  for (const r of routingChecks) results.push(r);
   const autoDeployChecks = await checkProjectCoolifyAutoDeployState(process.cwd());
   for (const r of autoDeployChecks) results.push(r);
   const dnsResolveChecks = await checkProjectDnsResolveState(process.cwd());
@@ -1629,6 +1631,124 @@ export async function checkProjectPublicServiceState(projectDir: string): Promis
       `Or run: hatchkit update    (re-applies scaffold defaults including publicService)`,
       `Then re-run: hatchkit adopt --resume    (pushes the corrected routing to Coolify)`,
     ],
+  });
+  return out;
+}
+
+/** Report the project's deployment topology and the routing it implies,
+ *  offline.
+ *
+ *  Worth its own check because the failure it points at is invisible
+ *  from the outside: every pre-0.2.19 hatchkit sent SEVERAL domains for
+ *  one compose service, and Coolify — which stores
+ *  `docker_compose_domains` as a map keyed by service name — kept only
+ *  the last. So `https://<domain>/api` was never routed on any project
+ *  hatchkit created, and the only surviving API route pointed at an
+ *  `api.<domain>` subdomain that had no DNS record. The front page
+ *  worked, so nothing looked wrong until someone called the API.
+ *
+ *  Deliberately offline: it reads the manifest and the compose file and
+ *  names the command that checks the live state (`hatchkit sync
+ *  --dry-run`, which is read-only) rather than doing network I/O here.
+ *
+ *  Skipped silently for gh-pages / scaffold-only projects — they don't
+ *  route through Coolify at all. */
+export async function checkProjectRoutingState(projectDir: string): Promise<CheckResult[]> {
+  const out: CheckResult[] = [];
+  const { existsSync, readFileSync } = await import("node:fs");
+  const manifestPath = `${projectDir}/.hatchkit.json`;
+  if (!existsSync(manifestPath)) return out;
+
+  let manifest: {
+    name?: string;
+    domain?: string;
+    surfaces?: string;
+    topology?: string;
+    publicService?: string;
+    ports?: { server?: number; client?: number };
+    deploymentMode?: string;
+  };
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  } catch {
+    return out;
+  }
+  if (!manifest.name || !manifest.domain) return out;
+  if (manifest.deploymentMode === "gh-pages" || manifest.deploymentMode === "scaffold-only") {
+    return out;
+  }
+
+  const { computeRoutingPlan, inferTopology } = await import("./deploy/routing.js");
+  const { readComposeFile } = await import("./utils/compose.js");
+  const compose = readComposeFile(projectDir);
+  const inference = inferTopology({
+    topology: manifest.topology,
+    composeServices: compose?.services,
+  });
+  const plan = computeRoutingPlan({
+    name: manifest.name,
+    domain: manifest.domain,
+    topology: inference.topology,
+    surfaces: manifest.surfaces as "fullstack" | "split" | "backend" | "static" | undefined,
+    ports: manifest.ports,
+    publicService: manifest.publicService,
+    composeServices: compose?.services,
+  });
+
+  const routes = plan.apps
+    .flatMap((a) => a.composeDomains.map((d) => `${a.appName}:${d.name} → ${d.domain}`))
+    .join("; ");
+
+  // A phantom service name is the one failure Coolify won't report:
+  // it answers the PATCH with 200 OK and then emits no traefik labels,
+  // so the app 503s every request.
+  const missing = plan.apps.flatMap((a) =>
+    compose ? a.requiredComposeServices.filter((n) => !compose.services.includes(n)) : [],
+  );
+  if (missing.length > 0 && compose) {
+    out.push({
+      name: `Project ${manifest.name} (routing)`,
+      status: "fail",
+      detail: `routing names compose service(s) ${missing.join(", ")} that ${compose.fileName} does not declare`,
+      hint: [
+        `${compose.fileName} declares: ${compose.services.join(", ")}.`,
+        `Set "publicService" in .hatchkit.json to one of those, or add the missing service.`,
+        "Coolify accepts routing for a service that isn't in the compose with a 200 OK and then emits no traefik labels — every request 503s.",
+      ],
+    });
+    return out;
+  }
+
+  if (!manifest.topology) {
+    out.push({
+      name: `Project ${manifest.name} (topology)`,
+      // `skip`, not `fail`: the assumed value is what every pre-topology
+      // hatchkit actually deployed, so nothing is broken — it's just
+      // not written down, and writing it down stops future runs from
+      // having to re-derive it.
+      status: "skip",
+      detail: `no topology in manifest — assuming ${inference.topology}`,
+      hint: [
+        `Run \`hatchkit update\` to persist it, or add "topology": "${inference.topology}" to .hatchkit.json by hand.`,
+        `Assumed routing: ${routes}`,
+        "Check the live state (read-only): hatchkit sync --dry-run",
+      ],
+    });
+    return out;
+  }
+
+  out.push({
+    name: `Project ${manifest.name} (topology)`,
+    status: "ok",
+    detail: `${inference.topology} — ${routes}`,
+    ...(plan.extraDnsHostnames.length > 0
+      ? {
+          hint: [
+            `This topology also needs DNS for: ${plan.extraDnsHostnames.join(", ")}.`,
+            `Verify: dig +short ${plan.extraDnsHostnames[0]}`,
+          ],
+        }
+      : {}),
   });
   return out;
 }

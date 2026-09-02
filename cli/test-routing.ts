@@ -30,7 +30,12 @@ import {
   resolvePublicService,
   splitDomainString,
 } from "./src/deploy/routing.js";
+import {
+  extractComposeService,
+  rewriteDatastoreEnvForSplit,
+} from "./src/scaffold/split-compose.js";
 import { listComposeServices, validateComposeServices } from "./src/utils/compose.js";
+import { parseDockerComposeDomains } from "./src/utils/coolify-api.js";
 
 const failures: string[] = [];
 
@@ -314,6 +319,108 @@ check("validateComposeServices: no project dir means 'unknown', not 'empty'", ()
   // Blocking a deploy on our parser's limits would be worse than the
   // risk it guards against.
   assert.equal(validateComposeServices(undefined, ["app"]).ok, true);
+});
+
+// ---------------------------------------------------------------------------
+// Coolify's docker_compose_domains wire format
+// ---------------------------------------------------------------------------
+
+check("parse: the JSON-encoded MAP Coolify actually returns", () => {
+  // This is verbatim what GET /applications/{uuid} returns on
+  // 4.0.0-beta.469. The previous reader only understood arrays, so it
+  // returned undefined for every real app — sync's before/after diff
+  // was fiction and every app looked permanently out of sync.
+  assert.deepEqual(
+    parseDockerComposeDomains(
+      '{"client":{"domain":"https:\\/\\/x.com"},"server":{"domain":"https:\\/\\/x.com\\/api"}}',
+    ),
+    [
+      { name: "client", domain: "https://x.com" },
+      { name: "server", domain: "https://x.com/api" },
+    ],
+  );
+});
+
+check("parse: splits a comma-joined service entry back out", () => {
+  assert.deepEqual(
+    parseDockerComposeDomains('{"server":{"domain":"https://a.com,https://b.com"}}'),
+    [
+      { name: "server", domain: "https://a.com" },
+      { name: "server", domain: "https://b.com" },
+    ],
+  );
+});
+
+check("parse: still accepts the legacy array shape and an already-parsed map", () => {
+  const expected = [{ name: "client", domain: "https://x.com" }];
+  assert.deepEqual(
+    parseDockerComposeDomains([{ name: "client", domain: "https://x.com" }]),
+    expected,
+  );
+  assert.deepEqual(parseDockerComposeDomains({ client: { domain: "https://x.com" } }), expected);
+  assert.deepEqual(parseDockerComposeDomains({ client: "https://x.com" }), expected);
+});
+
+check("parse: null / empty / garbage are undefined, never a wrong answer", () => {
+  for (const input of [null, undefined, "", "   ", "not json", 42, []]) {
+    assert.equal(parseDockerComposeDomains(input), undefined, `input: ${JSON.stringify(input)}`);
+  }
+});
+
+check("parse ∘ collapse round-trips through Coolify's storage shape", () => {
+  const desired = collapseComposeDomains([
+    { name: "client", domain: "https://x.com" },
+    { name: "server", domain: "https://api.x.com" },
+    { name: "server", domain: "https://x.com/api" },
+  ]);
+  // What the API layer sends → what Coolify stores → what we read back.
+  const stored = JSON.stringify(
+    Object.fromEntries(desired.map((d) => [d.name, { domain: d.domain }])),
+  );
+  assert.deepEqual(collapseComposeDomains(parseDockerComposeDomains(stored) ?? []), desired);
+});
+
+// ---------------------------------------------------------------------------
+// split: per-half compose files
+// ---------------------------------------------------------------------------
+
+check("split compose: extracts one service's block verbatim", () => {
+  const block = extractComposeService(STARTER_COMPOSE, "server");
+  assert.ok(block, "server block not found");
+  assert.ok(block.includes('PORT: "5276"'), "keeps the port pin");
+  assert.ok(block.includes("ghcr.io/o/r-server:main"), "keeps the image ref");
+  assert.ok(!block.includes("mongo:7"), "must not bleed into the next service");
+});
+
+check("split compose: returns null for a service that isn't declared", () => {
+  assert.equal(extractComposeService(STARTER_COMPOSE, "app"), null);
+});
+
+check("split compose: server half reads datastore URLs from env", () => {
+  // Under `split` the two apps are on separate Docker networks, so
+  // `mongodb://mongo:27017` resolves to nothing. No `:-default`
+  // fallback on purpose — a missing value should fail loudly rather
+  // than have the container retry forever against a dead host.
+  const rewritten = rewriteDatastoreEnvForSplit(
+    "  server:\n    environment:\n      MONGODB_URI: mongodb://mongo:27017/app\n      REDIS_URL: redis://redis:6379\n    depends_on:\n      - mongo\n      - redis\n    restart: unless-stopped",
+  );
+  assert.ok(rewritten.includes("MONGODB_URI: ${MONGODB_URI}"));
+  assert.ok(rewritten.includes("REDIS_URL: ${REDIS_URL}"));
+  assert.ok(!rewritten.includes("depends_on"), "depends_on names services this file no longer has");
+  assert.ok(rewritten.includes("restart: unless-stopped"), "unrelated keys survive");
+});
+
+check("split compose: files keep the service names routing validates against", () => {
+  const plan = computeRoutingPlan({ ...fullstack, topology: "split" });
+  assert.equal(plan.apps[0].composeLocation, "/docker-compose.client.yml");
+  assert.equal(plan.apps[1].composeLocation, "/docker-compose.server.yml");
+  assert.deepEqual(plan.apps[0].requiredComposeServices, ["client"]);
+  assert.deepEqual(plan.apps[1].requiredComposeServices, ["server"]);
+});
+
+check("single-origin builds from the root compose", () => {
+  const plan = computeRoutingPlan({ ...fullstack, topology: "single-origin" });
+  assert.equal(plan.apps[0].composeLocation, "/docker-compose.yml");
 });
 
 if (failures.length > 0) {
