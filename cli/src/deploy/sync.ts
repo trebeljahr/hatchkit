@@ -81,11 +81,13 @@
  * exactly what would be created vs reused, and touches nothing.
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import { manifestHostnames, readManifestWithMigrationInfo } from "../scaffold/manifest.js";
-import { readComposeFile } from "../utils/compose.js";
+import { listComposeServices, readComposeFile } from "../utils/compose.js";
 import { CoolifyApi, type CoolifyApplication } from "../utils/coolify-api.js";
 import { discoverPublicIps } from "../utils/coolify-server-ips.js";
 import { exec } from "../utils/exec.js";
@@ -219,6 +221,9 @@ export interface SyncResult {
   /** GitHub Actions secret names pushed, and stale ones removed. */
   secretsPushed: string[];
   secretsRemoved: string[];
+  /** Set when a pre-split app still claims the bare domain, which would
+   *  make Coolify reject the new client half's domain. */
+  legacyDomainHolder?: string;
   /** When dryRun, no PATCH was made even if `changed` was true. */
   dryRun: boolean;
 }
@@ -296,6 +301,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   const errors: string[] = [];
   const notFound: string[] = [];
   const created: string[] = [];
+  const wouldCreate: string[] = [];
   const envPushed: Record<string, number> = {};
   const dnsUpserted: string[] = [];
   let secretsPushed: string[] = [];
@@ -309,14 +315,39 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   // and `adopt` refuses once `.hatchkit.json` exists, so a project that
   // was scaffolded but never fully deployed had nothing that would
   // finish the job. Now sync will.
+  let legacyDomainHolder: string | undefined;
   const locations = new Map<string, { uuid: string; name: string }>();
   for (const routed of routing.apps) {
     const found = await locateApp(api, routed, opts);
     if (found) locations.set(routed.appName, found);
   }
   const missing = routing.apps.filter((r) => !locations.has(r.appName));
+
+  // Under `split`, an app named after the project itself is the
+  // pre-split single-origin deployment. It still holds the bare domain,
+  // and Coolify won't attach one FQDN to two resources — so creating the
+  // client half would 409. Say so before the attempt, not after it fails.
+  if (inference.topology === "split") {
+    const legacy = await api.findApplicationByName(manifest.name);
+    if (legacy && ![...locations.values()].some((l) => l.uuid === legacy.uuid)) {
+      legacyDomainHolder =
+        `A single-origin app named "${manifest.name}" (${legacy.uuid}) still exists and claims ` +
+        `https://${manifest.domain}. Coolify won't attach that domain to a second resource.`;
+      if (!opts.json) {
+        console.log(chalk.yellow(`\n  ${legacyDomainHolder}`));
+        console.log(
+          chalk.dim(
+            "    Either remove its domain in the Coolify dashboard (Configuration -> Domains)\n" +
+              "    and stop or delete the app, or re-run with `--force` to take the domain over.\n" +
+              "    `--force` is only correct once you've confirmed that app is the stale one.",
+          ),
+        );
+      }
+    }
+  }
   if (missing.length > 0 && opts.create !== false) {
     if (opts.dryRun) {
+      wouldCreate.push(...missing.map((m) => m.appName));
       if (!opts.json) {
         console.log(chalk.bold("\n  Would create:"));
         for (const routed of missing) {
@@ -373,7 +404,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
       continue;
     }
 
-    const plan = buildPlan(routed, current, compose);
+    const plan = buildPlan(routed, current, composeForApp(opts.projectDir, routed, compose));
     apps.push(plan);
     if (!opts.json) renderPlan(plan);
 
@@ -579,12 +610,26 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     dnsUpserted,
     secretsPushed,
     secretsRemoved,
+    ...(legacyDomainHolder ? { legacyDomainHolder } : {}),
     topologySource: inference.source,
     topologyReason: inference.reason,
     composeServices: compose?.services ?? null,
     apps,
     dryRun: !!opts.dryRun,
   };
+
+  if (apps.length === 0 && errors.length === 0 && wouldCreate.length > 0) {
+    // A dry-run that planned creations isn't a failure — it is the plan
+    // the user asked to see.
+    if (!opts.json) {
+      console.log(
+        chalk.dim(
+          `\n  --dry-run: no changes pushed. ${wouldCreate.length} app(s) would be created.`,
+        ),
+      );
+    }
+    return { ok: true, ...base };
+  }
 
   if (apps.length === 0 && errors.length === 0) {
     const err = `No Coolify apps matched manifest project "${manifest.name}".`;
@@ -795,6 +840,35 @@ async function locateApp(
 // ---------------------------------------------------------------------------
 // Plan computation
 // ---------------------------------------------------------------------------
+
+/** Read the compose file a routed app actually builds from.
+ *
+ *  Under `split` the two apps build from `/docker-compose.client.yml`
+ *  and `/docker-compose.server.yml`, not the root file — pointing both
+ *  at the root would run the whole stack twice. Validating service
+ *  names against the root compose would therefore check the wrong file
+ *  and could pass a name the app's own compose doesn't declare, which
+ *  is the 200-OK-then-no-Traefik-labels outage this validation exists
+ *  to prevent. Falls back to the root compose when the per-app file
+ *  can't be read, since an unreadable compose is not evidence of a
+ *  phantom service. */
+function composeForApp(
+  projectDir: string,
+  routed: RoutedApp,
+  rootCompose: ReturnType<typeof readComposeFile>,
+): ReturnType<typeof readComposeFile> {
+  const loc = routed.composeLocation?.replace(/^\//, "");
+  if (!loc) return rootCompose;
+  const path = join(projectDir, loc);
+  if (!existsSync(path)) return rootCompose;
+  try {
+    const services = listComposeServices(readFileSync(path, "utf-8"));
+    if (services.length === 0) return rootCompose;
+    return { fileName: loc, path, services };
+  } catch {
+    return rootCompose;
+  }
+}
 
 function buildPlan(
   routed: RoutedApp,
