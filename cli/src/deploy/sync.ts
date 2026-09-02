@@ -98,6 +98,14 @@ import { discoverPublicIps } from "../utils/coolify-server-ips.js";
 import { exec } from "../utils/exec.js";
 import { normalizeCoolifyGitRepository, wireDns } from "./coolify-app.js";
 import { provisionRoutedApp } from "./coolify.js";
+import {
+  type DeployedRefReport,
+  checkDeployedRef,
+  composePathAtRepoRoot,
+  pinnedCommitOf,
+  renderDeployedRef,
+  summarizeDeployedRef,
+} from "./deployed-ref.js";
 import { resolveProductionEnv } from "./env-resolve.js";
 import {
   type CoolifyDeployApp,
@@ -149,6 +157,14 @@ export interface SyncOptions {
   dns?: boolean;
   /** Push the GitHub Actions deploy secrets. Default ON. */
   secrets?: boolean;
+  /** Before creating, patching or deploying anything, verify that the
+   *  commit Coolify will CLONE contains the compose file each app is
+   *  configured to build from. Default ON and blocking, because an app
+   *  whose `docker_compose_location` is absent at the deployed ref
+   *  cannot deploy, and the error Coolify reports for it names a git
+   *  authentication problem that does not exist (deploy/deployed-ref.ts
+   *  has the full story). `--no-preflight` proceeds anyway. */
+  preflight?: boolean;
 }
 
 /** What sync intends to do for one Coolify application — surfaces both
@@ -245,6 +261,9 @@ export interface SyncResult {
   /** Set when a pre-split app still claims the bare domain, which would
    *  make Coolify reject the new client half's domain. */
   legacyDomainHolder?: string;
+  /** Deploy-ref preflight: one entry per distinct ref the apps deploy
+   *  from (normally one). Empty under `--no-preflight`. */
+  deployedRef: DeployedRefReport[];
   /** Apps whose routing PATCH failed. Non-empty means those apps still
    *  carry their previous domains — none, for an app this run created —
    *  no matter what the rest of the passes reported. */
@@ -352,6 +371,55 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     if (found) locations.set(routed.appName, found);
   }
   const missing = routing.apps.filter((r) => !locations.has(r.appName));
+
+  // ── Preflight: is each app's compose file actually IN the commit
+  //    Coolify will clone?
+  //
+  // Placed after locate (so it can read each existing app's real
+  // branch, pinned commit and compose location instead of assuming the
+  // manifest's) and before create / patch / deploy, because all three
+  // are wasted against a ref that cannot build — and `--deploy` would
+  // queue a deploy already known to fail. deploy/deployed-ref.ts has
+  // the failure this prevents, and why its Coolify error message sends
+  // you looking at credentials that are fine.
+  const deployedRef: DeployedRefReport[] = [];
+  if (opts.preflight !== false) {
+    deployedRef.push(
+      ...(await preflightDeployedRefs({
+        api,
+        routed: routing.apps,
+        locations,
+        projectDir: opts.projectDir,
+        projectSubdir: manifest.projectSubdir || undefined,
+      })),
+    );
+    if (!opts.json) renderDeployedRefReports(deployedRef);
+    const blocked = deployedRef.filter((r) => r.blocking);
+    for (const r of blocked) errors.push(`preflight: ${summarizeDeployedRef(r)}`);
+    // A dry run reports and carries on — it changes nothing, and the
+    // rest of the plan is still what the user asked to see. A real run
+    // stops here, since creating an application pointed at a path the
+    // deployed ref doesn't have is precisely how this failure gets
+    // built.
+    if (blocked.length > 0 && !opts.dryRun) {
+      if (!opts.json) {
+        console.log(
+          chalk.dim(
+            "\n  Nothing was changed. Fix the ref above, or re-run with `--no-preflight` to sync anyway.",
+          ),
+        );
+      }
+      return {
+        ...emptyResult(opts),
+        topology: inference.topology,
+        topologySource: inference.source,
+        topologyReason: inference.reason,
+        composeServices: compose?.services ?? null,
+        deployedRef,
+        error: errors.join("; "),
+      };
+    }
+  }
 
   // Under `split`, an app named after the project itself is the
   // pre-split single-origin deployment. It still holds the bare domain,
@@ -713,14 +781,26 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
       ...patched,
       ...apps.filter((a) => created.includes(a.name) && !patched.includes(a)),
     ];
+    // What the deploy will actually build. Printed with the trigger
+    // rather than left to be inferred, because the single most
+    // expensive mistake around a Coolify deploy is assuming it ships
+    // the working tree.
+    const clonedCommit = describeClonedCommit(deployedRef);
     for (const plan of toDeploy) {
       const spinner = opts.json ? null : ora(`Coolify: redeploying "${plan.name}"`).start();
       try {
-        await api.deployApplication(plan.uuid);
-        spinner?.succeed(`Coolify: redeploy triggered for "${plan.name}"`);
+        const { deploymentUuid } = await api.deployApplication(plan.uuid);
+        spinner?.succeed(
+          `Coolify: redeploy triggered for "${plan.name}"` +
+            (deploymentUuid ? ` (deployment ${deploymentUuid})` : ""),
+        );
+        if (clonedCommit && !opts.json) console.log(chalk.dim(`        building ${clonedCommit}`));
         deployed.push(plan.name);
       } catch (err) {
         spinner?.fail(`Coolify: redeploy failed: ${(err as Error).message}`);
+        if (clonedCommit && !opts.json) {
+          console.log(chalk.dim(`        the deploy would have built ${clonedCommit}`));
+        }
         errors.push(`deploy ${plan.name}: ${(err as Error).message}`);
       }
     }
@@ -742,6 +822,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     dnsUpserted,
     secretsPushed,
     secretsRemoved,
+    deployedRef,
     ...(legacyDomainHolder ? { legacyDomainHolder } : {}),
     topologySource: inference.source,
     topologyReason: inference.reason,
@@ -854,6 +935,7 @@ function emptyResult(opts: SyncOptions): SyncResult {
     dnsUpserted: [],
     secretsPushed: [],
     secretsRemoved: [],
+    deployedRef: [],
     dryRun: !!opts.dryRun,
   };
 }
@@ -983,6 +1065,116 @@ async function createMissingApps(args: {
     out.push({ appName: routed.appName, uuid: made.uuid, name: made.name, created: made.created });
   }
   return out;
+}
+
+/** Run the deploy-ref preflight for a whole routing plan.
+ *
+ *  Reads the LIVE branch / pinned commit / compose location off every
+ *  app Coolify already has, and falls back to what the manifest and
+ *  routing plan imply for the ones this run would create. A hand-edited
+ *  app in the dashboard is exactly the case where those two disagree,
+ *  and the live value is the one that will be cloned.
+ *
+ *  Apps are grouped by the ref they deploy from, so the normal case
+ *  (both halves of a `split` on `origin/main`) is one fetch and one
+ *  report rather than two of each.
+ *
+ *  Never throws: a Coolify read that fails degrades to the manifest's
+ *  assumption, and a git repo that can't answer produces a skipped
+ *  report. A preflight is not worth failing a sync over — only what it
+ *  positively finds is. */
+async function preflightDeployedRefs(args: {
+  api: CoolifyApi;
+  routed: RoutedApp[];
+  locations: Map<string, { uuid: string; name: string }>;
+  projectDir: string;
+  projectSubdir?: string;
+}): Promise<DeployedRefReport[]> {
+  const groups = new Map<
+    string,
+    { branch: string; pinnedCommit?: string; paths: Array<{ appName: string; path: string }> }
+  >();
+
+  for (const routed of args.routed) {
+    const found = args.locations.get(routed.appName);
+    let branch = DEFAULT_DEPLOY_BRANCH;
+    let pinnedCommit: string | undefined;
+    let composeLocation = routed.composeLocation;
+    let subdir = args.projectSubdir;
+    let appName = routed.appName;
+
+    if (found) {
+      appName = found.name;
+      try {
+        const live = await args.api.getApplication(found.uuid);
+        // A non-compose build pack has no compose file to look for —
+        // an adopted nixpacks/static app is a real deployment, just not
+        // one this check has anything to say about.
+        if (live.buildPack && live.buildPack !== "dockercompose") continue;
+        branch = live.gitBranch?.trim() || branch;
+        pinnedCommit = pinnedCommitOf(live.gitCommitSha);
+        if (live.dockerComposeLocation) composeLocation = live.dockerComposeLocation;
+        const liveBase = live.baseDirectory?.trim();
+        if (liveBase) subdir = liveBase === "/" ? undefined : liveBase.replace(/^\/+/, "");
+      } catch {
+        // Couldn't read it — check against what the manifest implies.
+        // A preflight built on the manifest is still worth far more
+        // than no preflight.
+      }
+    }
+
+    const key = `${branch}\u0000${pinnedCommit ?? ""}`;
+    const group = groups.get(key) ?? {
+      branch,
+      ...(pinnedCommit ? { pinnedCommit } : {}),
+      paths: [],
+    };
+    group.paths.push({ appName, path: composePathAtRepoRoot(composeLocation, subdir) });
+    groups.set(key, group);
+  }
+
+  const reports: DeployedRefReport[] = [];
+  for (const group of groups.values()) {
+    reports.push(
+      await checkDeployedRef({
+        projectDir: args.projectDir,
+        paths: group.paths,
+        branch: group.branch,
+        ...(group.pinnedCommit ? { pinnedCommit: group.pinnedCommit } : {}),
+      }),
+    );
+  }
+  return reports;
+}
+
+/** Branch every hatchkit-created Coolify application is configured
+ *  with (see `provisionRoutedApp`). Used only as the fallback for an
+ *  app that doesn't exist yet — an existing one is asked. */
+const DEFAULT_DEPLOY_BRANCH = "main";
+
+function renderDeployedRefReports(reports: DeployedRefReport[]): void {
+  for (const report of reports) {
+    if (!report.ran) {
+      console.log(chalk.dim(`\n  Deploy preflight skipped — ${report.skipped}`));
+      continue;
+    }
+    const lines = renderDeployedRef(report);
+    const [head, ...rest] = lines;
+    const paint = report.blocking ? chalk.red : report.ahead ? chalk.yellow : chalk.green;
+    const mark = report.blocking ? "✗" : report.ahead ? "·" : "✓";
+    console.log(paint(`\n  ${mark} Coolify deploys ${report.ref} — ${head}`));
+    for (const line of rest) {
+      console.log(report.blocking ? chalk.yellow(`      ${line}`) : chalk.dim(`      ${line}`));
+    }
+  }
+}
+
+/** One-line "what will this deploy build", or undefined when the
+ *  preflight didn't run. */
+function describeClonedCommit(reports: DeployedRefReport[]): string | undefined {
+  const usable = reports.find((r) => r.ran && r.refSha);
+  if (!usable?.refSha) return undefined;
+  return `${usable.ref} @ ${usable.refSha.slice(0, 7)} "${usable.refSubject ?? "?"}"`;
 }
 
 /** Find the Coolify app for one routing-plan entry. Tries hatchkit's
@@ -1300,6 +1492,11 @@ export async function runSyncCli(args: string[]): Promise<void> {
   const env = !args.includes("--no-env");
   const dns = !args.includes("--no-dns");
   const secrets = !args.includes("--no-secrets");
+  // Blocking by default. `--no-preflight` is for the case where the
+  // user knows the ref is fine and git can't tell them so (a shallow
+  // clone, a repo Coolify reaches and this machine doesn't), not for
+  // pushing past a finding.
+  const preflight = !args.includes("--no-preflight");
   const dirArg = ((): string | undefined => {
     const i = args.findIndex((a) => a === "--dir");
     if (i >= 0 && args[i + 1]) return args[i + 1];
@@ -1317,6 +1514,7 @@ export async function runSyncCli(args: string[]): Promise<void> {
     env,
     dns,
     secrets,
+    preflight,
   });
   if (json) {
     console.log(JSON.stringify(result, null, 2));

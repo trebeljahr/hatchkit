@@ -346,6 +346,36 @@ hatchkit sync --deploy     # push it, then redeploy so Traefik regenerates label
 container's Traefik labels on deploy, not when the application record is
 PATCHed.
 
+Before it creates, patches or deploys anything, sync checks that the commit
+Coolify will **clone** actually contains the compose file each application
+builds from. Coolify never deploys your working tree — it clones
+`origin/<branch>` and reads `base_directory` + `docker_compose_location` out of
+that commit, so a compose file you have written but not pushed does not exist as
+far as the deploy is concerned. Sync stops rather than build that state, and
+prints the commit it checked:
+
+```
+✗ Coolify deploys origin/main — origin/main @ 26fdc06 "Initial scaffold"
+    local main @ 8f5ddaf "chore: split the compose file in two"
+    local is 55 commit(s) ahead of origin/main — Coolify deploys origin/main, not your working tree.
+    docker-compose.server.yml is missing from origin/main — it exists locally but has never been pushed (tracktime-server).
+    Fix: git push origin main
+```
+
+This is worth its own guard because of how the failure presents. Coolify's
+deployment log shows `git ls-remote`, `git clone`, `git fetch` and `git log -1`
+all succeeding and then ends with `fatal: could not read Username for
+'https://github.com'` — an authentication error for authentication that is
+working fine. The `git log -1` line in the same log names the commit that was
+actually cloned, and that is the line worth reading.
+
+The check runs `git fetch` first so it isn't answering from a stale
+remote-tracking ref — that fetch is the only thing it writes, and it writes
+nothing outside `.git/refs/remotes`.
+
+`hatchkit doctor` and `hatchkit inventory` report the same fact for a project
+whose manifest (or live Coolify app) declares a compose location.
+
 Sync **refuses** to push routing that names a compose service the project
 doesn't declare. Coolify answers such a PATCH with a 200 OK and then emits no
 Traefik labels at all, so the app 503s every request — a silent outage that
@@ -357,6 +387,7 @@ looks like a successful sync.
 | `--dry-run` | Show the diff without touching Coolify. Read-only. |
 | `--deploy` | Redeploy each changed app so the new labels go live. |
 | `--force` | Push through a Coolify domain-conflict (409). |
+| `--no-preflight` | Skip the deployed-ref check. For a repo git can't answer for (a shallow clone, a remote only Coolify can reach) — not for pushing past a finding. |
 | `--json` | Machine-readable output. |
 
 See [Deployment topology](/docs/topology) for what the two topologies route,

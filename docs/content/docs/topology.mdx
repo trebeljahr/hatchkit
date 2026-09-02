@@ -175,6 +175,19 @@ so the application 503s every request — a silent outage that reads as a
 successful sync. Set `publicService` in `.hatchkit.json` to one of the services
 the error lists, then re-run.
 
+### If sync stops on the deployed ref
+
+```
+✗ Coolify deploys origin/main — origin/main @ 26fdc06 "Initial scaffold"
+    docker-compose.server.yml is missing from origin/main — it exists locally but has never been pushed
+```
+
+Under `split` the two halves build from `docker-compose.client.yml` and
+`docker-compose.server.yml`, which are new files. Coolify clones the remote
+branch, so until they are pushed every deploy fails — and it fails with a git
+error about credentials rather than about the missing file. `git push` and
+re-run.
+
 ### If Coolify reports a domain conflict
 
 A 409 means another Coolify resource already claims the domain. Check that it

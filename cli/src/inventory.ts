@@ -36,6 +36,12 @@ import {
   getS3Config,
   getStripeConfig,
 } from "./config.js";
+import {
+  checkDeployedRef,
+  composePathAtRepoRoot,
+  pinnedCommitOf,
+  renderDeployedRef,
+} from "./deploy/deployed-ref.js";
 import { locateEnvKeysFile, locateEnvProductionFile } from "./deploy/keys.js";
 import {
   projectNameCandidates,
@@ -1977,6 +1983,58 @@ async function detectDrift(
           ],
         });
       }
+    }
+  }
+
+  // D2b: the compose file a Coolify app builds from, vs what is
+  //      actually in the commit Coolify clones. Coolify deploys
+  //      `origin/<branch>`, never the working tree, so a compose file
+  //      that exists here and has never been pushed is a guaranteed
+  //      deploy failure — reported by Coolify as a git authentication
+  //      error that has nothing to do with the cause. See
+  //      deploy/deployed-ref.ts.
+  if (coolify?.raw && local.isGitRepo) {
+    const hydrated = (coolify.raw.hydrated ?? []) as CoolifyApplication[];
+    const composeApps = hydrated.filter(
+      (a) => a.buildPack === "dockercompose" && a.dockerComposeLocation,
+    );
+    // One report per ref, so the two halves of a `split` cost one fetch.
+    const byRef = new Map<
+      string,
+      { branch: string; pinnedCommit?: string; paths: Array<{ appName: string; path: string }> }
+    >();
+    for (const app of composeApps) {
+      const branch = app.gitBranch?.trim() || "main";
+      const pinnedCommit = pinnedCommitOf(app.gitCommitSha);
+      const base = app.baseDirectory?.trim();
+      const subdir = !base || base === "/" ? undefined : base.replace(/^\/+/, "");
+      const key = `${branch}\u0000${pinnedCommit ?? ""}`;
+      const group = byRef.get(key) ?? {
+        branch,
+        ...(pinnedCommit ? { pinnedCommit } : {}),
+        paths: [],
+      };
+      group.paths.push({
+        appName: app.name,
+        path: composePathAtRepoRoot(app.dockerComposeLocation as string, subdir),
+      });
+      byRef.set(key, group);
+    }
+    for (const group of byRef.values()) {
+      const report = await checkDeployedRef({
+        projectDir: local.cwd,
+        paths: group.paths,
+        branch: group.branch,
+        ...(group.pinnedCommit ? { pinnedCommit: group.pinnedCommit } : {}),
+      });
+      if (!report.ran || !report.blocking) continue;
+      out.push({
+        provider: "drift",
+        kind: "coolify-deployed-ref",
+        identity: group.paths.map((p) => p.appName).join(", "),
+        status: "drift",
+        drift: renderDeployedRef(report),
+      });
     }
   }
 

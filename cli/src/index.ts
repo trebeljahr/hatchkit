@@ -4238,6 +4238,14 @@ function printHelp(topic?: HelpTopic): void {
     and then emits no traefik labels at all, so the app 503s every
     request — a silent outage that looks like a successful sync.
 
+    It also REFUSES before creating or deploying anything when the
+    commit Coolify will CLONE doesn't contain the compose file an app
+    builds from. Coolify deploys ${chalk.dim("origin/<branch>")}, never your working
+    tree, so an unpushed compose file is a guaranteed deploy failure —
+    reported by Coolify as ${chalk.dim("could not read Username for 'https://github.com'")}
+    while every git step in the same log succeeded. ${chalk.dim("--no-preflight")}
+    skips the check.
+
   ${chalk.bold("When to use:")}
     · An older hatchkit scaffolded the project with no Domain set in
       Coolify (the container had zero ${chalk.dim("traefik.*")} labels).
@@ -4268,8 +4276,11 @@ function printHelp(topic?: HelpTopic): void {
                    override when CREATING a compose app, so a 409 on
                    creation has to be cleared by removing the domain
                    from the app that holds it.
-    --json         Emit ${chalk.dim("{ ok, topology, apps, deployed, dryRun, error? }")} to
-                   stdout (suppresses the human-readable rendering).
+    --no-preflight Skip the deployed-ref check. For a repo git here
+                   can't answer for (a shallow clone, a remote only
+                   Coolify can reach) — not for pushing past a finding.
+    --json         Emit ${chalk.dim("{ ok, topology, apps, deployed, deployedRef, dryRun, error? }")}
+                   to stdout (suppresses the human-readable rendering).
 
   ${chalk.bold("Verifying on the box:")}
     On the VPS hosting Coolify, after a redeploy:

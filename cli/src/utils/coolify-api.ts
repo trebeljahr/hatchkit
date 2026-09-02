@@ -821,6 +821,9 @@ export class CoolifyApi {
         typeof raw.is_stripprefix_enabled === "boolean" ? raw.is_stripprefix_enabled : undefined,
       gitRepository: typeof raw.git_repository === "string" ? raw.git_repository : undefined,
       gitBranch: typeof raw.git_branch === "string" ? raw.git_branch : undefined,
+      gitCommitSha: typeof raw.git_commit_sha === "string" ? raw.git_commit_sha : undefined,
+      dockerComposeLocation:
+        typeof raw.docker_compose_location === "string" ? raw.docker_compose_location : undefined,
       serverUuid: extractServerUuid(raw),
       isAutoDeployEnabled:
         typeof raw.is_auto_deploy_enabled === "boolean" ? raw.is_auto_deploy_enabled : undefined,
@@ -829,9 +832,50 @@ export class CoolifyApi {
   }
 
   /** Trigger a deploy of an existing application. Useful after we've
-   *  set env vars post-creation. */
-  async deployApplication(uuid: string): Promise<void> {
-    await this.request("POST", `/applications/${uuid}/start`);
+   *  set env vars post-creation.
+   *
+   *  Returns the queued deployment's uuid when Coolify reports one.
+   *  Worth carrying: the deployment record is the only place that names
+   *  the commit the deploy actually cloned, and the trailing git error
+   *  in a failed deployment's log is routinely not the cause of the
+   *  failure (see deploy/deployed-ref.ts). */
+  async deployApplication(uuid: string): Promise<{ deploymentUuid?: string }> {
+    const raw = (await this.request("POST", `/applications/${uuid}/start`)) as
+      | Record<string, unknown>
+      | undefined;
+    const deploymentUuid =
+      typeof raw?.deployment_uuid === "string"
+        ? raw.deployment_uuid
+        : typeof raw?.uuid === "string"
+          ? raw.uuid
+          : undefined;
+    return { ...(deploymentUuid ? { deploymentUuid } : {}) };
+  }
+
+  /** Read one deployment record. The fields that matter for diagnosis
+   *  are `commit` and `commit_message` — what Coolify actually cloned,
+   *  as opposed to what the caller assumed it would.
+   *
+   *  Best-effort by design: this Coolify build's `/deployments` lists
+   *  only what is currently running, and a finished deployment can 404,
+   *  so callers get `null` rather than an exception. */
+  async getDeployment(deploymentUuid: string): Promise<CoolifyDeployment | null> {
+    try {
+      const raw = (await this.request("GET", `/deployments/${deploymentUuid}`)) as Record<
+        string,
+        unknown
+      >;
+      return {
+        uuid: typeof raw.deployment_uuid === "string" ? raw.deployment_uuid : deploymentUuid,
+        status: typeof raw.status === "string" ? raw.status : undefined,
+        commit: typeof raw.commit === "string" ? raw.commit : undefined,
+        commitMessage: typeof raw.commit_message === "string" ? raw.commit_message : undefined,
+        applicationName:
+          typeof raw.application_name === "string" ? raw.application_name : undefined,
+      };
+    } catch {
+      return null;
+    }
   }
 
   /** GET /servers/{uuid}/domains — returns one entry per running
@@ -879,6 +923,16 @@ export interface CoolifyApplication {
    *  the URL in a non-standard shape. */
   gitRepository?: string;
   gitBranch?: string;
+  /** Commit the app is pinned to, or the literal `"HEAD"` (Coolify's
+   *  way of saying "track the branch tip"). `pinnedCommitOf` in
+   *  deploy/deployed-ref.ts turns this into a real sha or `undefined`
+   *  — never read it as a commit without that. */
+  gitCommitSha?: string;
+  /** `docker_compose_location` — the compose file this app builds from,
+   *  resolved INSIDE `baseDirectory`. Surfaced so a preflight can check
+   *  the value Coolify actually holds rather than the one the manifest
+   *  implies; a dashboard edit is exactly how those two diverge. */
+  dockerComposeLocation?: string;
   /** UUID of the linked Coolify server (the box this app deploys to).
    *  Lets inventory resolve the server's IP via `getServerDomains` and
    *  compare against the DNS A record for `fqdn`. */
@@ -893,6 +947,17 @@ export interface CoolifyApplication {
    *  (`/site`, `/apps/web`) or `"/"` for the repo-root default. Used
    *  by `hatchkit sync` to diff against the manifest's `projectSubdir`. */
   baseDirectory?: string;
+}
+
+/** One Coolify deployment record, trimmed to the fields that answer
+ *  "what did this deploy actually build?". */
+export interface CoolifyDeployment {
+  uuid: string;
+  status?: string;
+  /** The commit Coolify cloned. */
+  commit?: string;
+  commitMessage?: string;
+  applicationName?: string;
 }
 
 export interface ApplicationCreateInput {

@@ -906,6 +906,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of routingChecks) results.push(r);
   const autoDeployChecks = await checkProjectCoolifyAutoDeployState(process.cwd());
   for (const r of autoDeployChecks) results.push(r);
+  const deployedRefChecks = await checkProjectDeployedRefState(process.cwd());
+  for (const r of deployedRefChecks) results.push(r);
   const dnsResolveChecks = await checkProjectDnsResolveState(process.cwd());
   for (const r of dnsResolveChecks) results.push(r);
   const prodEnvChecks = await checkProjectProdEnvState(process.cwd());
@@ -1881,6 +1883,123 @@ export async function checkProjectRoutingState(projectDir: string): Promise<Chec
           ],
         }
       : {}),
+  });
+  return out;
+}
+
+/** Verify that the commit Coolify clones actually contains the compose
+ *  file each application builds from.
+ *
+ *  This is the cheapest possible read of the most expensive
+ *  misdiagnosis in the deploy path: Coolify deploys `origin/<branch>`,
+ *  not the working tree, and a compose file that has never been pushed
+ *  makes every deploy fail with a git error about credentials that are
+ *  perfectly fine. deploy/deployed-ref.ts has the whole story.
+ *
+ *  Git-only apart from one optional Coolify GET for the app's real
+ *  branch — so it still answers on a machine with no Coolify token. */
+export async function checkProjectDeployedRefState(projectDir: string): Promise<CheckResult[]> {
+  const out: CheckResult[] = [];
+  const { existsSync, readFileSync } = await import("node:fs");
+  const manifestPath = `${projectDir}/.hatchkit.json`;
+  if (!existsSync(manifestPath)) return out;
+
+  let manifest: {
+    name?: string;
+    domain?: string;
+    aliases?: string[];
+    surfaces?: string;
+    topology?: string;
+    publicService?: string;
+    ports?: { server?: number; client?: number };
+    projectSubdir?: string;
+    deploymentMode?: string;
+  };
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  } catch {
+    return out;
+  }
+  if (!manifest.name || !manifest.domain) return out;
+  // Only Coolify clones a git ref to find a compose file. gh-pages and
+  // scaffold-only projects have no such relationship.
+  if (manifest.deploymentMode !== "coolify") return out;
+
+  const { computeRoutingPlan, inferTopology } = await import("./deploy/routing.js");
+  const {
+    checkDeployedRef,
+    composePathAtRepoRoot,
+    pinnedCommitOf,
+    renderDeployedRef,
+    summarizeDeployedRef,
+  } = await import("./deploy/deployed-ref.js");
+  const { manifestHostnames } = await import("./scaffold/manifest.js");
+  const { readComposeFile } = await import("./utils/compose.js");
+  const compose = readComposeFile(projectDir);
+  const inference = inferTopology({
+    topology: manifest.topology,
+    composeServices: compose?.services,
+  });
+  const plan = computeRoutingPlan({
+    name: manifest.name,
+    domain: manifest.domain,
+    hostnameAliases: manifestHostnames({
+      domain: manifest.domain,
+      aliases: manifest.aliases,
+    }).slice(1),
+    topology: inference.topology,
+    surfaces: manifest.surfaces as "fullstack" | "split" | "backend" | "static" | undefined,
+    ports: manifest.ports,
+    publicService: manifest.publicService,
+    composeServices: compose?.services,
+  });
+
+  // Prefer the branch / pinned commit the live app actually carries.
+  // The ledger records one app uuid per project, which under `split` is
+  // whichever half was created first — both halves are configured from
+  // the same repo and branch, so either answers this question.
+  let branch = "main";
+  let pinnedCommit: string | undefined;
+  const ledgers = loadAllLedgers();
+  const appStep = ledgers
+    .find((l) => l.name === manifest.name)
+    ?.steps.find((s): s is LedgerStep & { kind: "coolifyApp" } => s.kind === "coolifyApp");
+  if (appStep) {
+    const cfg = await getCoolifyConfig();
+    if (cfg) {
+      try {
+        const app = await new CoolifyApi({ url: cfg.url, token: cfg.token }).getApplication(
+          appStep.uuid,
+        );
+        branch = app.gitBranch?.trim() || branch;
+        pinnedCommit = pinnedCommitOf(app.gitCommitSha);
+      } catch {
+        // Unreachable Coolify is the auto-deploy check's problem, not
+        // this one's — fall back to the branch hatchkit configures.
+      }
+    }
+  }
+
+  const report = await checkDeployedRef({
+    projectDir,
+    branch,
+    ...(pinnedCommit ? { pinnedCommit } : {}),
+    paths: plan.apps.map((a) => ({
+      appName: a.appName,
+      path: composePathAtRepoRoot(a.composeLocation, manifest.projectSubdir),
+    })),
+  });
+
+  const name = `Project ${manifest.name} (deployed ref)`;
+  if (!report.ran) {
+    out.push({ name, status: "skip", detail: report.skipped });
+    return out;
+  }
+  out.push({
+    name,
+    status: report.blocking ? "fail" : "ok",
+    detail: summarizeDeployedRef(report),
+    ...(report.blocking || report.ahead ? { hint: renderDeployedRef(report) } : {}),
   });
   return out;
 }
