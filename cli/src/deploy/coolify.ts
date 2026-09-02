@@ -342,6 +342,12 @@ export async function provisionRoutedApp(args: {
   isPrivateRepo: boolean;
   githubAppUuid?: string;
   githubAppHtmlUrl?: string;
+  /** Take the domain even when Coolify reports it as claimed. Threaded
+   *  into the reconcile PATCH (where Coolify honours it) and into the
+   *  create body (where, for `dockercompose`, Coolify strips it before
+   *  reading it — see ApplicationCreateInput.forceDomainOverride). Do
+   *  not present this to users as a fix for a create-time 409. */
+  forceDomainOverride?: boolean;
 }): Promise<{ uuid: string; name: string; role: RoutedApp["role"]; created: boolean }> {
   const { api, routed, projectUuid, serverUuid, description, repoRef, isPrivateRepo } = args;
 
@@ -380,6 +386,7 @@ export async function provisionRoutedApp(args: {
         description,
         dockerComposeDomains: routed.composeDomains,
         isStripprefixEnabled: routed.stripPrefix,
+        forceDomainOverride: args.forceDomainOverride,
       });
       reconcile.succeed(`Coolify app source/routing reconciled (${existingApp.name})`);
     } catch (err) {
@@ -428,6 +435,7 @@ export async function provisionRoutedApp(args: {
       // coolify-api.ts because the starter's compose has more than one
       // public service.
       dockerComposeDomains: routed.composeDomains,
+      forceDomainOverride: args.forceDomainOverride,
       // First deploy lands via GitHub Actions on first push, so we
       // don't need Coolify to start the (empty) container right now.
       instantDeploy: false,

@@ -507,6 +507,13 @@ export class CoolifyApi {
     } else if (input.domains && input.domains.length > 0) {
       body.domains = input.domains.join(",");
     }
+    // Sent on create too, though Coolify strips it before the
+    // compose-domain conflict check reads it — see the field's doc on
+    // ApplicationCreateInput. Present so the request is correct by the
+    // API's own contract, not because it currently rescues a create.
+    if (input.forceDomainOverride) {
+      body.force_domain_override = true;
+    }
     return body;
   }
 
@@ -764,6 +771,30 @@ export interface ApplicationCreateInput {
    *  dockercompose app. Defaults to the hatchkit scaffold's `app`. */
   dockerComposeDomainServiceName?: string;
   instantDeploy?: boolean;
+  /** Coolify's `force_domain_override`: take the domain even when it is
+   *  still claimed by another resource, instead of 409ing.
+   *
+   *  We send it on create as well as update, but be precise about what
+   *  that buys — verified against Coolify 4.0.0-beta.469:
+   *
+   *    · PATCH `/applications/{uuid}`   — honoured. The conflict checks
+   *      run before `removeUnnecessaryFieldsFromRequest`.
+   *    · POST create, flat `domains`    — honoured. The check lives in
+   *      `validateDataApplications`, also called before the strip.
+   *    · POST create, `docker_compose_domains` — IGNORED, upstream bug.
+   *      `removeUnnecessaryFieldsFromRequest` unsets the field
+   *      (`bootstrap/helpers/api.php`), and the compose-domain conflict
+   *      check reads `$request->boolean('force_domain_override')` only
+   *      AFTER that call — so it always reads false and 409s anyway,
+   *      with an error telling you to pass the flag you just passed.
+   *
+   *  Every hatchkit app is `dockercompose`, so in practice the create
+   *  path always lands in the broken case. We keep sending it because
+   *  the field is in Coolify's create `$allowedFields`, the omission
+   *  would be wrong the day upstream reorders those two lines, and it
+   *  costs one boolean. Callers must NOT tell users that `--force`
+   *  rescues a create — see deploy/sync.ts. */
+  forceDomainOverride?: boolean;
   /** Repo-relative path to the compose file when buildPack is
    *  `dockercompose`. Defaults to `/docker-compose.yml`. */
   dockerComposeLocation?: string;

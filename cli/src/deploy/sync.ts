@@ -346,13 +346,33 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
         `https://${manifest.domain}. Coolify won't attach that domain to a second resource.`;
       if (!opts.json) {
         console.log(chalk.yellow(`\n  ${legacyDomainHolder}`));
-        console.log(
-          chalk.dim(
-            "    Either remove its domain in the Coolify dashboard (Configuration -> Domains)\n" +
-              "    and stop or delete the app, or re-run with `--force` to take the domain over.\n" +
-              "    `--force` is only correct once you've confirmed that app is the stale one.",
-          ),
-        );
+        // Which advice is true depends on whether the clashing half
+        // still has to be CREATED. Coolify honours
+        // `force_domain_override` on the routing PATCH, but strips it
+        // before the conflict check on a `dockercompose` create — so
+        // telling someone to `--force` past a create-time 409 sends
+        // them round the same loop with the same error. Say the one
+        // thing that actually clears it: free the domain first.
+        if (missing.length > 0) {
+          console.log(
+            chalk.dim(
+              "    The apps that would carry this domain don't exist yet, and Coolify refuses to\n" +
+                "    CREATE a resource on a claimed domain. `--force` cannot help here — it is\n" +
+                "    honoured on the routing update, not on creation.\n" +
+                `    Free the domain on "${manifest.name}" first: Coolify dashboard -> that app ->\n` +
+                "    Configuration -> Domains, clear the domain(s), Save. Then stop or delete the\n" +
+                "    app and re-run `hatchkit sync`.",
+            ),
+          );
+        } else {
+          console.log(
+            chalk.dim(
+              "    Either remove its domain in the Coolify dashboard (Configuration -> Domains)\n" +
+                "    and stop or delete the app, or re-run with `--force` to take the domain over.\n" +
+                "    `--force` is only correct once you've confirmed that app is the stale one.",
+            ),
+          );
+        }
       }
     }
   }
@@ -380,13 +400,31 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
           description: manifest.description,
           projectDir: opts.projectDir,
           json: opts.json,
+          force: opts.force,
         });
         for (const made of madeApps) {
           locations.set(made.appName, { uuid: made.uuid, name: made.name });
           if (made.created) created.push(made.name);
         }
       } catch (err) {
-        errors.push(`create: ${(err as Error).message}`);
+        const message = (err as Error).message;
+        // Coolify's own 409 text says "Use force_domain_override=true
+        // to proceed". On a create it is wrong: hatchkit already sends
+        // that flag, and Coolify unsets it before the compose-domain
+        // conflict check reads it. Don't relay advice we've verified
+        // is a dead end.
+        if (/409|conflict/i.test(message) && !opts.json) {
+          console.log(
+            chalk.dim(
+              "    Coolify refused to create the app because another resource already claims the\n" +
+                "    domain. This is not something `--force` can push through: the override is\n" +
+                "    honoured when UPDATING an app's routing, but not when creating one.\n" +
+                "    Free the domain on the resource holding it (Coolify dashboard -> that app ->\n" +
+                "    Configuration -> Domains, clear it, Save), then re-run `hatchkit sync`.",
+            ),
+          );
+        }
+        errors.push(`create: ${message}`);
       }
     }
   } else if (missing.length > 0 && !opts.json) {
@@ -765,6 +803,13 @@ async function createMissingApps(args: {
   description?: string;
   projectDir: string;
   json?: boolean;
+  /** `--force`: take a domain Coolify reports as claimed. Threaded
+   *  into the create body for contract correctness, but Coolify strips
+   *  `force_domain_override` before the `dockercompose` create checks
+   *  for conflicts, so this does NOT currently unblock a create-time
+   *  409 — the caller's error path says so rather than looping the
+   *  user through the flag again. */
+  force?: boolean;
 }): Promise<Array<{ appName: string; uuid: string; name: string; created: boolean }>> {
   const { api, missing, projectName, projectDir } = args;
 
@@ -849,6 +894,7 @@ async function createMissingApps(args: {
       isPrivateRepo: isPrivate,
       githubAppUuid,
       githubAppHtmlUrl,
+      forceDomainOverride: args.force,
     });
     out.push({ appName: routed.appName, uuid: made.uuid, name: made.name, created: made.created });
   }
