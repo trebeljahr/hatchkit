@@ -182,11 +182,20 @@ function checkHelpRun(argv: string[], expected: string): void {
 // dispatched a subcommand ahead of its help check.
 checkHelpRun(["provision", "s3", "--help"], "Usage: hatchkit provision s3 [flags]");
 checkHelpRun(["provision", "s3", "--with-state-bucket", "-h"], "Usage: hatchkit provision s3");
-checkHelpRun(["assets", "push", "--help"], "hatchkit assets");
-checkHelpRun(["keys", "rotate", "demo", "--help"], "hatchkit keys");
-checkHelpRun(["ses", "unverify", "someone@example.com", "--help"], "hatchkit ses");
+checkHelpRun(["assets", "push", "--help"], "hatchkit assets — move bytes");
+checkHelpRun(["keys", "rotate", "demo", "--help"], "hatchkit keys — manage per-project");
+checkHelpRun(["ses", "unverify", "someone@example.com", "--help"], "hatchkit ses — Amazon SES");
 checkHelpRun(["signing", "apply", "--help"], "hatchkit signing org-init");
-checkHelpRun(["email", "setup", "--help"], "hatchkit email");
+checkHelpRun(["email", "setup", "--help"], "hatchkit email — Cloudflare Email Routing");
+
+// The topic has to be the command's own — root help would satisfy a
+// looser assertion while telling the user nothing about what they
+// asked for.
+check("an unknown command still gets the root help, not a crash", () => {
+  const run = runHelp(["not-a-command", "--help"]);
+  assert.equal(run.status, 0, run.stderr);
+  assert.ok(run.stdout.includes("Usage: hatchkit <command> [options]"), run.stdout);
+});
 
 // ---------------------------------------------------------------------------
 
