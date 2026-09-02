@@ -31,6 +31,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import chalk from "chalk";
 import { PrivateKey } from "eciesjs";
@@ -187,7 +188,7 @@ export interface RotateProjectKeyOptions {
   ghRepo?: string;
   /** Print what would change, don't actually rotate. */
   dryRun?: boolean;
-  /** Test hook: replace the `npx dotenvx rotate` subprocess. */
+  /** Test hook: replace the `dotenvx rotate` subprocess. */
   _runDotenvxRotate?: RunDotenvxRotateFn;
   /** Test hook: replace the Coolify push call. */
   _coolifyPush?: CoolifyPushFn;
@@ -264,6 +265,13 @@ export async function rotateProjectKey(
     };
   }
 
+  // Snapshot the pre-rotate public key so we can prove afterwards that
+  // a rotation actually happened. Any dotenvx that no-ops without a
+  // non-zero exit would otherwise leave `keys rotate` reporting a
+  // rotation it never performed — the worst failure mode for a
+  // credential-rotation command.
+  const previousPublicKey = readPublicKey(envProductionPath);
+
   await runDotenvxRotate(projectDir, envProductionPath, opts._runDotenvxRotate);
 
   // dotenvx writes .env.keys next to the env file it was given. Use
@@ -284,6 +292,11 @@ export async function rotateProjectKey(
   if (!newPublicKey) {
     throw new Error(
       `${envProductionPath} has no DOTENV_PUBLIC_KEY_PRODUCTION line after rotate. The env file may be malformed.`,
+    );
+  }
+  if (previousPublicKey && newPublicKey === previousPublicKey) {
+    throw new Error(
+      `dotenvx rotate reported success but DOTENV_PUBLIC_KEY_PRODUCTION in ${envProductionPath} is unchanged — nothing was rotated. Leaving keychain and deploy targets untouched.`,
     );
   }
 
@@ -377,10 +390,40 @@ export async function rotateProjectKey(
   };
 }
 
-/** Shell out to `npx --yes @dotenvx/dotenvx rotate -f <relProd>`. The
- *  dotenvx JS API doesn't expose a rotate helper, and we don't want
- *  to import the package's internal `Rotate` class. Overridable for
- *  tests (we can't bring up a working `npx` in the sandbox). */
+/** dotenvx major that still ships the `rotate` command. v2 dropped it.
+ *  Used for the `npx` fallback and in the error text that tells a user
+ *  how to rotate by hand. */
+const DOTENVX_ROTATE_MAJOR = "1";
+
+/** Absolute path to the `dotenvx` CLI entrypoint of the
+ *  `@dotenvx/dotenvx` copy this package depends on, or `undefined`
+ *  when it can't be resolved (unusual — it's a runtime dependency).
+ *
+ *  Resolving the bundled copy is load-bearing. `npx --yes
+ *  @dotenvx/dotenvx` fetches whatever is newest on npm, and dotenvx v2
+ *  REMOVED `rotate`. Its arg parser prints `error: unknown command
+ *  'rotate'` and still exits 0, so a version-drifted rotate looked
+ *  like a clean success while leaving the keypair untouched — i.e.
+ *  `keys rotate` reported a rotation that never happened. */
+function resolveDotenvxCli(): string | undefined {
+  try {
+    const require = createRequire(import.meta.url);
+    const pkgPath = require.resolve("@dotenvx/dotenvx/package.json");
+    const { bin } = JSON.parse(readFileSync(pkgPath, "utf-8"));
+    const rel = typeof bin === "string" ? bin : bin?.dotenvx;
+    if (!rel) return undefined;
+    const cliPath = join(dirname(pkgPath), rel);
+    return existsSync(cliPath) ? cliPath : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Run `dotenvx rotate -f <relProd>` in the project. The dotenvx JS
+ *  API doesn't expose a rotate helper, and we don't want to import
+ *  the package's internal `Rotate` class, so this shells out — but to
+ *  the bundled CLI rather than to an unpinned `npx --yes`. Overridable
+ *  for tests. */
 async function runDotenvxRotate(
   projectDir: string,
   envProductionPath: string,
@@ -393,15 +436,30 @@ async function runDotenvxRotate(
   const relProd = envProductionPath.startsWith(projectDir)
     ? envProductionPath.slice(projectDir.length + 1)
     : envProductionPath;
+  const cli = resolveDotenvxCli();
+  // The fallback pins the major that still has `rotate`, so an
+  // unresolvable bundled copy degrades to a correct npx call rather
+  // than to a silent no-op.
+  const [command, baseArgs] = cli
+    ? [process.execPath, [cli]]
+    : ["npx", ["--yes", `@dotenvx/dotenvx@${DOTENVX_ROTATE_MAJOR}`]];
   const spinner = ora(`Rotating dotenvx keypair (${relProd})`).start();
   try {
-    const res = await exec("npx", ["--yes", "@dotenvx/dotenvx", "rotate", "-f", relProd], {
+    const res = await exec(command, [...baseArgs, "rotate", "-f", relProd], {
       cwd: projectDir,
       silent: true,
     });
     if (res.exitCode !== 0) {
       throw new Error(
         `dotenvx rotate exited ${res.exitCode}: ${res.stderr.trim() || res.stdout.trim()}`,
+      );
+    }
+    // Commander prints this and exits 0 for an unrecognised subcommand,
+    // so without the check a dotenvx that has no `rotate` reads as
+    // success.
+    if (/unknown command/i.test(`${res.stdout}\n${res.stderr}`)) {
+      throw new Error(
+        `The dotenvx CLI in use has no \`rotate\` command (removed in dotenvx v2), so no keypair was rotated. Reinstall hatchkit so it picks up its bundled @dotenvx/dotenvx v${DOTENVX_ROTATE_MAJOR}, or rotate by hand with \`npx @dotenvx/dotenvx@${DOTENVX_ROTATE_MAJOR} rotate -f ${relProd}\`.`,
       );
     }
     spinner.succeed(`Rotated keypair for ${relProd}`);

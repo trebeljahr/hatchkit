@@ -286,7 +286,45 @@ function report(label: string, checks: [string, boolean][]): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Test 5 — pruneEnvKeysFile helper directly: idempotent on a
+// Test 5 — silent no-op rejected. `npx --yes @dotenvx/dotenvx` used to
+// resolve to dotenvx v2, which REMOVED `rotate`: it printed
+// `error: unknown command 'rotate'` and exited 0, so rotate reported
+// success while the keypair never changed. The subprocess is now the
+// bundled v1 CLI, and rotate additionally verifies the public key
+// actually moved — a no-op must throw and touch nothing.
+// ---------------------------------------------------------------------------
+{
+  const { dir, original } = makeProject();
+  await setSecret(SECRET_KEYS.dotenvxPrivateKey("test-fixture"), original.privateKey);
+  const before = readFileSync(join(dir, ".env.keys"), "utf-8");
+  const noopRotate: import("./src/deploy/keys.js").RunDotenvxRotateFn = async () => {
+    // Exactly what a `rotate`-less dotenvx does: nothing at all.
+  };
+  let caught: Error | undefined;
+  try {
+    await rotateProjectKey("test-fixture", {
+      projectDir: dir,
+      noPush: true,
+      _runDotenvxRotate: noopRotate,
+    });
+  } catch (err) {
+    caught = err as Error;
+  }
+  const keychainKey = await getSecret(SECRET_KEYS.dotenvxPrivateKey("test-fixture"));
+  results.noopRotateRejected = report("Test 5: silent no-op rotate rejected", [
+    ["rotate threw an error", !!caught],
+    [
+      "error says nothing was rotated",
+      !!caught && /unchanged|nothing was rotated/i.test(caught.message),
+    ],
+    ["keychain left untouched (still original)", keychainKey === original.privateKey],
+    [".env.keys left untouched", readFileSync(join(dir, ".env.keys"), "utf-8") === before],
+  ]);
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// Test 6 — pruneEnvKeysFile helper directly: idempotent on a
 // single-entry file, drops everything except the kept value otherwise.
 // ---------------------------------------------------------------------------
 {
@@ -304,7 +342,7 @@ function report(label: string, checks: [string, boolean][]): boolean {
   const r2 = pruneEnvKeysFile(keysPath, c);
   const after2 = parseEnvKeysEntries(readFileSync(keysPath, "utf-8"))!;
 
-  results.pruneHelper = report("Test 5: pruneEnvKeysFile semantics", [
+  results.pruneHelper = report("Test 6: pruneEnvKeysFile semantics", [
     ["first prune drops two stale entries", r1.pruned === 2],
     [
       "first prune keeps the requested value",
