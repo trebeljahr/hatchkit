@@ -379,7 +379,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
           // Pushed even when the domain payload is skipped: it's an app
           // setting, not part of the routing, and getting it wrong is
           // the difference between /api/health and a 404.
-          isStripprefixEnabled: routed.stripPrefix,
+          ...(routed.stripPrefix !== undefined ? { isStripprefixEnabled: routed.stripPrefix } : {}),
           ...domainPayload,
         });
         if (skipDomain) {
@@ -472,7 +472,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     // `is_stripprefix_enabled` isn't accepted on the create endpoints,
     // so path-scoped routing needs this follow-up PATCH. Without it
     // Coolify strips `/api` and every API call 404s at Express.
-    if (!routed.stripPrefix) {
+    if (routed.stripPrefix === false) {
       const strip = ora("Coolify: disabling path-prefix stripping").start();
       try {
         await api.updateApplication(createdUuid, { isStripprefixEnabled: false });

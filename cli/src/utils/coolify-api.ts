@@ -30,6 +30,110 @@ export interface CoolifyApiOptions {
   token: string;
 }
 
+// ---------------------------------------------------------------------------
+// Known PATCH limits of Coolify's application endpoint
+// ---------------------------------------------------------------------------
+//
+// `PATCH /applications/{uuid}` validates against a per-build allow-list
+// and fails the WHOLE request on the first key outside it:
+//
+//   422 {"message":"Validation failed.",
+//        "errors":{"<field>":["This field is not allowed."]}}
+//
+// Verified against Coolify 4.0.0-beta.469 (coolify.trebeljahr.com), and
+// the reason `hatchkit sync` once reported "✓ Synced 2 app(s)" over an
+// error block while both apps sat there with no domain:
+//
+//   · `is_stripprefix_enabled` — REJECTED on this build. Write-only
+//     even where accepted (absent from GET), and inert unless some
+//     route carries a non-`/` path, so it is best-effort: drop it and
+//     keep the domains.
+//   · `docker_compose_raw`     — REJECTED on this build, and
+//     `docker_compose_domains` cannot be stored without it. An app that
+//     has never deployed successfully has `docker_compose_raw: null`
+//     (Coolify fills it from the repo at deploy time), and therefore
+//     CANNOT be given a domain over the API at all. Deploy once, then
+//     re-run sync.
+//   · `source_id` / `source_type` — REJECTED on this build, though both
+//     come back on GET. Source is chosen at creation time; hatchkit
+//     re-points a repo via `git_repository` / `github_app_uuid`.
+
+/** Fields hatchkit will silently drop and retry without when Coolify
+ *  rejects them. Everything NOT listed here is essential: rejecting one
+ *  of those means the caller's intent can't be carried out, and a
+ *  thrown error is the honest answer. */
+const BEST_EFFORT_PATCH_FIELDS = new Set(["is_stripprefix_enabled"]);
+
+/** How many drop-and-retry passes one `updateApplication` call may make.
+ *  Two is enough for every rejection combination seen, and bounds the
+ *  loop against a Coolify that answers 422 for some other reason. */
+const MAX_FIELD_DROP_RETRIES = 2;
+
+/** Field names Coolify named as "not allowed" in a 422 validation body.
+ *  Reads the `errors` map out of the JSON tail of the message
+ *  {@link CoolifyApi.request} builds, and falls back to a regex when
+ *  the body isn't parseable. Returns `[]` for any error that isn't a
+ *  field-rejection — callers must not treat that as "nothing wrong". */
+export function parseRejectedFields(message: string): string[] {
+  const jsonStart = message.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(message.slice(jsonStart)) as {
+        errors?: Record<string, unknown>;
+      };
+      if (parsed.errors && typeof parsed.errors === "object") {
+        return Object.entries(parsed.errors)
+          .filter(([, msgs]) =>
+            (Array.isArray(msgs) ? msgs : [msgs]).some(
+              (m) => typeof m === "string" && /not allowed/i.test(m),
+            ),
+          )
+          .map(([field]) => field);
+      }
+    } catch {
+      // Not JSON (or a truncated body) — fall through to the regex.
+    }
+  }
+  const out: string[] = [];
+  const re = /"([a-z0-9_]+)"\s*:\s*\[\s*"[^"]*not allowed[^"]*"/gi;
+  for (let m = re.exec(message); m; m = re.exec(message)) out.push(m[1]);
+  return out;
+}
+
+/** A user-facing explanation for a Coolify field rejection hatchkit
+ *  already understands, or `undefined` when the field is new to us and
+ *  the raw 422 is the most honest thing to show.
+ *
+ *  Exists so a known API limit reads as a limit with a way forward,
+ *  rather than as a validation error the user has to go decode. */
+export function describeCoolifyPatchLimit(field: string): string | undefined {
+  switch (field) {
+    case "is_stripprefix_enabled":
+      return (
+        "This Coolify build rejects `is_stripprefix_enabled` on PATCH. It only matters for " +
+        "path-scoped routing (`https://<domain>/api`); toggle it in the app's Configuration → " +
+        "Advanced → Strip Prefix if a path route 404s at the backend."
+      );
+    case "docker_compose_raw":
+    case "docker_compose_domains":
+      return (
+        "This Coolify build won't store `docker_compose_domains` without `docker_compose_raw`, " +
+        "and rejects `docker_compose_raw` on PATCH. Coolify fills that field from the repo on a " +
+        "successful deploy, so an app that has NEVER deployed cannot be given a domain over the " +
+        "API. Deploy the app once (Coolify dashboard → Deploy, or push a commit), then re-run " +
+        "`hatchkit sync` to attach the domains."
+      );
+    case "source_id":
+    case "source_type":
+      return (
+        "Coolify sets an application's git source at creation time and rejects it on PATCH. " +
+        "Re-point the repo with `git_repository` / the GitHub App instead, or recreate the app."
+      );
+    default:
+      return undefined;
+  }
+}
+
 /** Coolify REST API client. */
 export class CoolifyApi {
   private url: string;
@@ -579,7 +683,13 @@ export class CoolifyApi {
        *  whose routing uses a path (e.g. `https://<domain>/api`):
        *  Coolify attaches a Traefik `stripprefix` middleware for every
        *  non-`/` path, so with it on the backend receives `/health`
-       *  where the client asked for `/api/health`. */
+       *  where the client asked for `/api/health`.
+       *
+       *  Leave undefined when routing is all-`/` — the setting is inert
+       *  there, and some builds reject the field outright (see the
+       *  known-PATCH-limits block at the top of this file). It is
+       *  BEST-EFFORT: a rejection drops it and retries rather than
+       *  failing the domains it travelled with. */
       isStripprefixEnabled?: boolean;
       /** Coolify rejects a domain already claimed by another resource
        *  (409) or repeated inside one request (422) unless this is set.
@@ -592,7 +702,7 @@ export class CoolifyApi {
        *  build context. Mirrors the manifest's `projectSubdir`. */
       baseDirectory?: string;
     },
-  ): Promise<void> {
+  ): Promise<{ droppedFields: string[] }> {
     const body: Record<string, unknown> = {};
     if (fields.buildPack !== undefined) body.build_pack = fields.buildPack;
     if (fields.portsExposes !== undefined) body.ports_exposes = fields.portsExposes;
@@ -619,8 +729,52 @@ export class CoolifyApi {
     if (fields.forceDomainOverride) {
       body.force_domain_override = true;
     }
-    if (Object.keys(body).length === 0) return;
-    await this.request("PATCH", `/applications/${uuid}`, body);
+    if (Object.keys(body).length === 0) return { droppedFields: [] };
+    return this.patchApplicationDroppingRejectedFields(uuid, body);
+  }
+
+  /** PATCH an application, retrying without any BEST-EFFORT field this
+   *  Coolify build refuses.
+   *
+   *  Coolify's allow-list is per-build, and a field outside it fails the
+   *  WHOLE request: `422 {"message":"Validation failed.","errors":
+   *  {"is_stripprefix_enabled":["This field is not allowed."]}}` — which
+   *  is how a routing sync that only wanted to attach two domains ended
+   *  up attaching none. The domains are the point; the strip-prefix
+   *  toggle is a nicety. So a rejected best-effort field is dropped and
+   *  the request retried, while a rejected ESSENTIAL field still throws
+   *  (dropping it would report success for a call that changed nothing
+   *  the caller asked for).
+   *
+   *  Bounded to {@link MAX_FIELD_DROP_RETRIES} passes so a build that
+   *  rejects several fields converges in one call site rather than
+   *  needing one round trip per field, and a Coolify that answers 422
+   *  for some other reason can never spin. */
+  private async patchApplicationDroppingRejectedFields(
+    uuid: string,
+    body: Record<string, unknown>,
+  ): Promise<{ droppedFields: string[] }> {
+    const droppedFields: string[] = [];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.request("PATCH", `/applications/${uuid}`, body);
+        return { droppedFields };
+      } catch (err) {
+        const rejected = parseRejectedFields((err as Error).message).filter((f) => f in body);
+        const droppable = rejected.filter((f) => BEST_EFFORT_PATCH_FIELDS.has(f));
+        // Nothing droppable: either no field was named, or the field
+        // that was named is one the caller actually needs. Either way
+        // the caller has to hear about it.
+        if (droppable.length === 0 || attempt >= MAX_FIELD_DROP_RETRIES) throw err;
+        for (const f of droppable) {
+          delete body[f];
+          droppedFields.push(f);
+        }
+        // Every remaining key was a companion of the dropped ones —
+        // there is nothing left to ask for, so don't ask.
+        if (Object.keys(body).length === 0) return { droppedFields };
+      }
+    }
   }
 
   /** Patch fields on an existing Coolify project. Used by adopt's

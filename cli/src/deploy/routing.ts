@@ -45,8 +45,14 @@
  *    app-level `is_stripprefix_enabled` setting, default ON). With it
  *    on, `/api/health` reaches the Express server as `/health` → 404.
  *    Path-scoped routing therefore REQUIRES turning that setting off,
- *    which is why {@link RoutedApp.stripPrefix} exists and is pushed
- *    on every PATCH.
+ *    which is why {@link RoutedApp.stripPrefix} exists.
+ *
+ *    It is pushed ONLY when a path route exists. Routes at `/` get no
+ *    stripprefix middleware at all, so the setting is inert there — and
+ *    some Coolify builds reject `is_stripprefix_enabled` on PATCH
+ *    outright ("This field is not allowed."), taking the domains in the
+ *    same request down with it. A field with nothing to say stays
+ *    unsent.
  *
  * 5. A URL port (`https://x.com:6477`) becomes an explicit
  *    `loadbalancer.server.port` label. We omit it: the scaffolded
@@ -191,10 +197,25 @@ export interface RoutedApp {
    *  would run the whole stack twice (two clients, two servers, two
    *  mongos), so each half gets its own single-service compose. */
   composeLocation: string;
-  /** Desired `is_stripprefix_enabled`. False whenever any routed domain
-   *  carries a path other than `/` — otherwise Coolify strips the
-   *  prefix and the backend 404s (module header, point 4). */
-  stripPrefix: boolean;
+  /** Desired `is_stripprefix_enabled`, or `undefined` when hatchkit has
+   *  NO OPINION and the field must not be pushed at all.
+   *
+   *  Only `false` is ever an opinion, and only when some routed domain
+   *  carries a path other than `/`: Coolify attaches the `stripprefix`
+   *  middleware for exactly those routers, so leaving the setting ON
+   *  would deliver `/api/health` to Express as `/health` (module
+   *  header, point 4).
+   *
+   *  When every routed domain sits at `/` — ALWAYS true under `split`,
+   *  where each half owns its own host — Coolify attaches no such
+   *  middleware and the setting is inert. Pushing the default value
+   *  anyway bought nothing and cost everything: some Coolify builds
+   *  reject `is_stripprefix_enabled` on PATCH with
+   *  `422 {"errors":{"is_stripprefix_enabled":["This field is not
+   *  allowed."]}}`, which aborted the entire routing PATCH and left
+   *  both split apps with no domains at all. So say nothing unless we
+   *  mean it. */
+  stripPrefix?: boolean;
   /** Compose service names this app's routing references. `sync`
    *  validates these against the on-disk compose before PATCHing so a
    *  phantom name can never reach Coolify. Empty for non-compose apps. */
@@ -340,7 +361,8 @@ function singleOriginPlan(input: RoutingInput): RoutingPlan {
         flatDomains: flat,
         portsExposes: String(input.surfaces === "static" ? 80 : publicPort),
         composeLocation: SINGLE_ORIGIN_COMPOSE,
-        stripPrefix: !hasPathRoute,
+        // Only an opinion when a path route exists; see RoutedApp.stripPrefix.
+        ...(hasPathRoute ? { stripPrefix: false } : {}),
         requiredComposeServices: unique(entries.map((e) => e.name)),
       },
     ],
@@ -361,7 +383,9 @@ function splitPlan(input: RoutingInput): RoutingPlan {
     flatDomains: publics,
     portsExposes: String(input.ports?.client ?? 3001),
     composeLocation: SPLIT_CLIENT_COMPOSE,
-    stripPrefix: true,
+    // No stripPrefix opinion: every split route is a bare host at `/`,
+    // so Coolify attaches no stripprefix middleware and the setting is
+    // inert. See RoutedApp.stripPrefix.
     requiredComposeServices: ["client"],
   };
   const serverApp: RoutedApp = {
@@ -375,7 +399,6 @@ function splitPlan(input: RoutingInput): RoutingPlan {
     flatDomains: [`https://${apiHost}`],
     portsExposes: String(input.ports?.server ?? 3000),
     composeLocation: SPLIT_SERVER_COMPOSE,
-    stripPrefix: true,
     requiredComposeServices: ["server"],
   };
 

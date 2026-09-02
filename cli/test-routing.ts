@@ -18,7 +18,11 @@
  *  2. A non-`/` path pulls in Coolify's Traefik `stripprefix`
  *     middleware, so `/api/health` would arrive at Express as
  *     `/health`. → `stripPrefix` must be false whenever routing uses a
- *     path.
+ *     path — and `undefined` whenever it does not, so the field is left
+ *     out of the PATCH entirely. Routes at `/` get no such middleware,
+ *     and some Coolify builds reject `is_stripprefix_enabled` outright
+ *     (422 "This field is not allowed."), failing the domains that
+ *     travelled with it. See test-coolify-patch-limits.ts.
  *
  * Run: `pnpm test` (via the script in cli/package.json).
  */
@@ -112,7 +116,11 @@ check("single-origin: backend-only routes everything at the server, path-free", 
   assert.deepEqual(plan.apps[0].composeDomains, [
     { name: "server", domain: "https://streaks.trebeljahr.com" },
   ]);
-  assert.equal(plan.apps[0].stripPrefix, true, "no path route → leave Coolify's default alone");
+  assert.equal(
+    plan.apps[0].stripPrefix,
+    undefined,
+    "no path route → no opinion, so the field is never pushed",
+  );
 });
 
 check("single-origin: static has no API route", () => {
@@ -125,7 +133,7 @@ check("single-origin: static has no API route", () => {
   assert.deepEqual(plan.apps[0].composeDomains, [
     { name: "client", domain: "https://streaks.trebeljahr.com" },
   ]);
-  assert.equal(plan.apps[0].stripPrefix, true);
+  assert.equal(plan.apps[0].stripPrefix, undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -148,7 +156,21 @@ check("split: client at <domain>, server at api.<domain>, both path-free", () =>
   assert.deepEqual(plan.apps[1].composeDomains, [
     { name: "server", domain: "https://api.streaks.trebeljahr.com" },
   ]);
-  assert.ok(plan.apps.every((a) => a.stripPrefix));
+  // Every split route is a bare host at `/`, so Coolify attaches no
+  // stripprefix middleware and the setting is inert. hatchkit therefore
+  // has NO opinion and must not push the field: some Coolify builds
+  // answer `is_stripprefix_enabled` with
+  // `422 {"errors":{"is_stripprefix_enabled":["This field is not
+  // allowed."]}}`, which failed the whole routing PATCH and left both
+  // split apps of a real project with no domain at all.
+  assert.ok(
+    plan.apps.every((a) => a.stripPrefix === undefined),
+    "split must have no strip-prefix opinion",
+  );
+  assert.ok(
+    plan.apps.every((a) => !("stripPrefix" in a) || a.stripPrefix === undefined),
+    "and must not even carry the key",
+  );
 });
 
 check("split: reports the extra DNS record the topology needs", () => {

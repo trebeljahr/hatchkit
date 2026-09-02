@@ -225,7 +225,7 @@ export async function runCoolifySetup(
     for (const entry of app.composeDomains) {
       console.log(chalk.dim(`    ${entry.name} → ${entry.domain}`));
     }
-    if (!app.stripPrefix) {
+    if (app.stripPrefix === false) {
       console.log(chalk.dim("    (path-prefix stripping disabled so /api survives to the server)"));
     }
   }
@@ -329,9 +329,10 @@ export async function runCoolifySetup(
  *  from the name / domains / ports they carry.
  *
  *  Every field pushed here is idempotent, so a re-run converges rather
- *  than duplicating. `is_stripprefix_enabled` is pushed unconditionally
- *  (not only when a path route exists) so flipping a project back to a
- *  path-free layout also restores Coolify's default. */
+ *  than duplicating. `is_stripprefix_enabled` rides along only when the
+ *  plan has an opinion about it — a path-free layout leaves the field
+ *  unsent, because Coolify attaches no stripprefix middleware there and
+ *  some builds reject the key outright. */
 export async function provisionRoutedApp(args: {
   api: CoolifyApi;
   routed: RoutedApp;
@@ -385,7 +386,9 @@ export async function provisionRoutedApp(args: {
         githubAppUuid: isPrivateRepo ? args.githubAppUuid : undefined,
         description,
         dockerComposeDomains: routed.composeDomains,
-        isStripprefixEnabled: routed.stripPrefix,
+        // Omitted entirely when the plan has no opinion — see
+        // RoutedApp.stripPrefix.
+        ...(routed.stripPrefix !== undefined ? { isStripprefixEnabled: routed.stripPrefix } : {}),
         forceDomainOverride: args.forceDomainOverride,
       });
       reconcile.succeed(`Coolify app source/routing reconciled (${existingApp.name})`);
@@ -456,7 +459,7 @@ export async function provisionRoutedApp(args: {
     // `is_stripprefix_enabled` isn't accepted on the create endpoints,
     // so path-scoped routing needs this follow-up PATCH. Without it
     // Coolify strips `/api` and every API call 404s at Express.
-    if (!routed.stripPrefix) {
+    if (routed.stripPrefix === false) {
       const strip = ora("Coolify: disabling path-prefix stripping").start();
       try {
         await api.updateApplication(created.uuid, { isStripprefixEnabled: false });

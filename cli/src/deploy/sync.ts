@@ -88,7 +88,12 @@ import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import { manifestHostnames, readManifestWithMigrationInfo } from "../scaffold/manifest.js";
 import { listComposeServices, readComposeFile } from "../utils/compose.js";
-import { CoolifyApi, type CoolifyApplication } from "../utils/coolify-api.js";
+import {
+  CoolifyApi,
+  type CoolifyApplication,
+  describeCoolifyPatchLimit,
+  parseRejectedFields,
+} from "../utils/coolify-api.js";
 import { discoverPublicIps } from "../utils/coolify-server-ips.js";
 import { exec } from "../utils/exec.js";
 import { normalizeCoolifyGitRepository, wireDns } from "./coolify-app.js";
@@ -169,9 +174,10 @@ export interface AppSyncPlan {
   desiredDomains?: string[];
   /** ports_exposes the manifest expects on this app. */
   desiredPortsExposes: string;
-  /** Desired `is_stripprefix_enabled`. False whenever any routed domain
-   *  carries a path. */
-  desiredStripPrefix: boolean;
+  /** Desired `is_stripprefix_enabled`, or undefined when routing is
+   *  all-`/` and hatchkit has no opinion — the field is then left out
+   *  of the PATCH entirely. See {@link RoutedApp.stripPrefix}. */
+  desiredStripPrefix?: boolean;
   /** Repo-relative build context root the manifest expects. Mirrors
    *  `manifest.projectSubdir`; `undefined` means "build from repo root"
    *  (the default). Sent to Coolify as `base_directory: <value>` —
@@ -190,6 +196,11 @@ export interface AppSyncPlan {
   /** Whether a PATCH is needed to converge — false means everything
    *  already matches, sync skips the API call. */
   changed: boolean;
+  /** Coolify-API fields this build refused, which sync dropped so the
+   *  rest of the PATCH could land. Present only when something was
+   *  actually dropped; the run still counts as a success, because every
+   *  droppable field is one hatchkit can live without. */
+  droppedFields?: string[];
   /** Set when the routing this app needs names a compose service the
    *  project doesn't declare. sync REFUSES to PATCH in that case: the
    *  call would return 200 and then produce no Traefik labels, which
@@ -234,6 +245,10 @@ export interface SyncResult {
   /** Set when a pre-split app still claims the bare domain, which would
    *  make Coolify reject the new client half's domain. */
   legacyDomainHolder?: string;
+  /** Apps whose routing PATCH failed. Non-empty means those apps still
+   *  carry their previous domains — none, for an app this run created —
+   *  no matter what the rest of the passes reported. */
+  routingFailed: string[];
   /** When dryRun, no PATCH was made even if `changed` was true. */
   dryRun: boolean;
 }
@@ -308,6 +323,10 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
 
   const apps: AppSyncPlan[] = [];
   const patched: AppSyncPlan[] = [];
+  /** Apps whose routing PATCH threw. Kept apart from the flat `errors`
+   *  list so the final summary can say "these apps have no domain"
+   *  instead of printing a success headline above an error block. */
+  const routingFailed: string[] = [];
   const errors: string[] = [];
   const notFound: string[] = [];
   const created: string[] = [];
@@ -471,11 +490,13 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
 
     const patch = ora(`Coolify: updating "${plan.name}"`).start();
     try {
-      await api.updateApplication(plan.uuid, {
+      const result = await api.updateApplication(plan.uuid, {
         // Skipped for compose apps — Coolify re-derives it from the
         // compose file and our value would be discarded anyway.
         ...(plan.buildPack === "dockercompose" ? {} : { portsExposes: plan.desiredPortsExposes }),
-        isStripprefixEnabled: plan.desiredStripPrefix,
+        ...(plan.desiredStripPrefix !== undefined
+          ? { isStripprefixEnabled: plan.desiredStripPrefix }
+          : {}),
         // Push the manifest's `projectSubdir` onto Coolify's
         // `base_directory`. Empty string resets to repo root — the
         // case where a manifest drops `projectSubdir` after an earlier
@@ -489,10 +510,26 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
         ...(opts.force ? { forceDomainOverride: true } : {}),
       });
       patch.succeed(`Coolify: updated "${plan.name}"`);
+      // A field this Coolify build refuses is dropped so the domains
+      // still land, but it is never silent: the user has to know the
+      // setting didn't take, and what to do instead.
+      if (result.droppedFields.length > 0) {
+        plan.droppedFields = result.droppedFields;
+        if (!opts.json) {
+          for (const field of result.droppedFields) {
+            console.log(
+              chalk.yellow(`    · Coolify rejected \`${field}\` — pushed the rest without it.`),
+            );
+            const limit = describeCoolifyPatchLimit(field);
+            if (limit) console.log(chalk.dim(`        ${limit}`));
+          }
+        }
+      }
       patched.push(plan);
     } catch (err) {
       const message = (err as Error).message;
       patch.fail(`Coolify: PATCH failed: ${message}`);
+      routingFailed.push(plan.name);
       if (/409|conflict|already/i.test(message)) {
         console.log(
           chalk.dim(
@@ -501,7 +538,22 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
           ),
         );
       }
-      errors.push(`PATCH ${plan.name}: ${message}`);
+      // A rejected field hatchkit already understands reads as a known
+      // API limit with a way forward, not as a raw validation error.
+      // The compose-domains case is the one that matters most: an app
+      // that has never deployed CANNOT be given a domain over the API,
+      // and no amount of re-running sync will change that.
+      const explained = parseRejectedFields(message)
+        .map((field) => [field, describeCoolifyPatchLimit(field)] as const)
+        .filter((pair): pair is readonly [string, string] => pair[1] !== undefined);
+      for (const [field, limit] of explained) {
+        if (!opts.json) console.log(chalk.yellow(`    ${field}: ${limit}`));
+      }
+      const suffix = explained.length > 0 ? ` — ${explained.map(([, l]) => l).join(" ")}` : "";
+      errors.push(
+        `PATCH ${plan.name}: ${message}${suffix}\n` +
+          `      → "${plan.name}" still has the routing it had before this run.`,
+      );
     }
   }
 
@@ -695,6 +747,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     topologyReason: inference.reason,
     composeServices: compose?.services ?? null,
     apps,
+    routingFailed,
     dryRun: !!opts.dryRun,
   };
 
@@ -729,13 +782,43 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     const blocked = apps.filter((a) => a.blocked);
     if (opts.dryRun) {
       console.log(chalk.dim("\n  --dry-run: no changes pushed."));
+    } else if (routingFailed.length > 0) {
+      // The headline must never contradict the error block under it.
+      // A routing PATCH that threw means that app kept whatever domains
+      // it already had — which, for an app created by this same run, is
+      // none at all. Saying "✓ Synced 2 app(s)" over that is how a
+      // fully-undomained deployment got read as a success.
+      const wanted = apps.filter((a) => a.changed && !a.blocked).length;
+      console.log(
+        chalk.red(
+          `\n  ✗ Routing NOT synced for ${routingFailed.length} of ${wanted} app(s): ` +
+            `${routingFailed.join(", ")}.`,
+        ),
+      );
+      const freshlyCreated = routingFailed.filter((n) => created.includes(n));
+      console.log(
+        chalk.yellow(
+          "  They keep whatever routing they already had. See Errors below for why each failed.",
+        ),
+      );
+      if (freshlyCreated.length > 0) {
+        console.log(
+          chalk.yellow(
+            `  ${freshlyCreated.join(", ")} — created by this run, so "whatever they had" is NO domain.\n` +
+              "  Those apps will not answer on their domain at all until a routing sync succeeds.",
+          ),
+        );
+      }
+      if (patched.length > 0) {
+        console.log(chalk.dim(`  ${patched.length} other app(s) did sync: ${names(patched)}.`));
+      }
     } else if (blocked.length === 0) {
-      const changed = apps.filter((a) => a.changed);
-      if (changed.length === 0) {
+      // Count what actually landed, not what was planned.
+      if (patched.length === 0) {
         console.log(chalk.green("\n  ✓ Coolify already in sync with manifest."));
       } else {
         console.log(
-          chalk.green(`\n  ✓ Synced ${changed.length} app(s) to manifest state.`) +
+          chalk.green(`\n  ✓ Synced ${patched.length} app(s) to manifest state.`) +
             chalk.dim(
               "\n  Trigger a redeploy in Coolify (or push a commit) for Traefik to pick up the new labels.",
             ),
@@ -763,6 +846,7 @@ function emptyResult(opts: SyncOptions): SyncResult {
     topologyReason: "sync aborted before topology resolution",
     composeServices: null,
     apps: [],
+    routingFailed: [],
     deployed: [],
     created: [],
     envPushed: {},
@@ -1026,6 +1110,7 @@ function buildPlan(
   // sync. It IS included in every PATCH we do make, so it converges
   // alongside any real routing change.
   const stripChanged =
+    routed.stripPrefix !== undefined &&
     current.isStripprefixEnabled !== undefined &&
     current.isStripprefixEnabled !== routed.stripPrefix;
 
@@ -1044,7 +1129,7 @@ function buildPlan(
     ...(desiredDockerComposeDomains ? { desiredDockerComposeDomains } : {}),
     ...(desiredDomains ? { desiredDomains } : {}),
     desiredPortsExposes: routed.portsExposes,
-    desiredStripPrefix: routed.stripPrefix,
+    ...(routed.stripPrefix !== undefined ? { desiredStripPrefix: routed.stripPrefix } : {}),
     ...(desiredBaseDirectory ? { desiredBaseDirectory } : {}),
     current: {
       fqdn: current.fqdn,
@@ -1119,19 +1204,26 @@ function renderPlan(plan: AppSyncPlan): void {
     console.log(chalk.dim(`        after:  ${plan.desiredPortsExposes}`));
   }
 
-  if (plan.current.stripPrefix === undefined) {
+  if (plan.desiredStripPrefix === undefined) {
+    // Nothing to say: every route sits at `/`, so Coolify attaches no
+    // stripprefix middleware and the setting cannot affect anything.
+    // Printing "strip_prefix → true" here was worse than silence — it
+    // advertised a field sync was about to push and Coolify was about
+    // to reject, taking the domains with it.
+    console.log(
+      chalk.dim("    · strip_prefix: not applicable (no path-scoped route) — not pushed"),
+    );
+  } else if (plan.current.stripPrefix === undefined) {
     console.log(
       chalk.dim(
-        `    · strip_prefix → ${plan.desiredStripPrefix} (write-only in Coolify's API; pushed with any update)`,
+        `    · strip_prefix → ${plan.desiredStripPrefix} (write-only in Coolify's API; pushed with this update)`,
       ),
     );
-    if (!plan.desiredStripPrefix) {
-      console.log(
-        chalk.dim(
-          "        routing uses a path — with stripping ON Coolify delivers /api/health to Express as /health",
-        ),
-      );
-    }
+    console.log(
+      chalk.dim(
+        "        routing uses a path — with stripping ON Coolify delivers /api/health to Express as /health",
+      ),
+    );
   } else if (plan.current.stripPrefix === plan.desiredStripPrefix) {
     console.log(chalk.green(`    ✓ strip_prefix: ${plan.desiredStripPrefix}`));
   } else {
@@ -1144,6 +1236,11 @@ function renderPlan(plan: AppSyncPlan): void {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Comma-joined app names, for a one-line summary of a plan list. */
+function names(plans: AppSyncPlan[]): string {
+  return plans.map((p) => p.name).join(", ");
+}
 
 function splitFqdn(fqdn: string | null): string[] {
   if (!fqdn) return [];
