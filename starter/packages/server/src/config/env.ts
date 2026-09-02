@@ -4,14 +4,22 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
 // dotenvx handles encrypted .env files transparently. It looks for
-// `DOTENV_PRIVATE_KEY_*` either in the process env (Coolify / CI set
-// it there) or in a local .env.keys file (dev workstation).
+// `DOTENV_PRIVATE_KEY_*` either in the process env (CI sets it there)
+// or in a local .env.keys file (dev workstation).
 //
 // Load order mirrors conventional dotenv behavior:
 //   - production: only .env.production (encrypted, committed to git)
 //   - otherwise:  .env.development (plaintext, local-dev defaults)
 // Any plaintext values in a production file stay plaintext — dotenvx
 // only decrypts values whose cipher prefix starts with "encrypted:".
+//
+// In a deployed container there is normally NO .env.production on disk:
+// the server Dockerfile deliberately doesn't copy it, and runtime
+// values arrive as real environment variables that Coolify injects
+// (`hatchkit sync` pushes them there, reading this file as its source).
+// The existsSync guard below is what makes that work — dotenvx is a
+// no-op in production and `process.env` already holds everything.
+// So this block matters on a dev workstation and in CI, not in prod.
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverRoot = resolve(__dirname, "../..");
 const envFile =

@@ -45,6 +45,25 @@ packages/client/out/
 .env.keys
 .env.*.local
 
+# The negations below are load-bearing, not decoration.
+#
+# Leaving `.env.production` merely *unlisted* here is not enough to
+# commit it. Git also consults the user's global excludes file
+# (`core.excludesFile`, usually ~/.config/git/ignore), and the widely
+# copy-pasted version of that file lists `.env.development` and
+# `.env.production`. A repo .gitignore only overrides a global pattern
+# when it has a matching pattern of its own — absence loses, so both
+# files were silently never committed, on every machine with that
+# global ignore. An explicit `!` re-includes them and wins.
+#
+# This matters because the encrypted `.env.production` is hatchkit's
+# at-rest store for production values: `hatchkit secrets rotate` writes
+# into it and `hatchkit sync` reads it to push resolved values into
+# Coolify. A file that never reaches git is a store that only exists on
+# whichever laptop last wrote it.
+!.env.development
+!.env.production
+
 # IDE
 .vscode/
 !.vscode/settings.json

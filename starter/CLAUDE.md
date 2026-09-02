@@ -206,16 +206,40 @@ NODE_ENV=production pnpm --filter @starter/server start
 
 ### Deploying to Coolify
 
-The CLI's `devops-cli create` (with `runDeployment: true`) pushes
-`DOTENV_PRIVATE_KEY_PRODUCTION` to Coolify's env for you. The
-encrypted `.env.production` ships with the repo; Coolify injects the
-key at runtime and dotenvx decrypts on load.
+Two roles, easy to conflate:
+
+- **`.env.production` (encrypted, committed) is the at-rest store.**
+  `hatchkit secrets rotate` writes into it and `hatchkit sync` reads it.
+  Committing it is what keeps the values off a single laptop.
+- **Coolify's environment is the runtime source of truth.** `hatchkit
+  sync` decrypts the at-rest store locally and pushes the resolved
+  values into Coolify's env fields, which is where the running
+  container reads them from. `docker-compose.yml` declares each one as
+  `${VAR}`, which is what makes Coolify render a field per value.
+
+The encrypted file is **not** shipped into the image — the server
+Dockerfile deliberately does not copy it. It could never cover the
+client half anyway (`NEXT_PUBLIC_*` are inlined into the browser bundle
+at image *build* time and arrive as Docker build args), and pairing
+ciphertext with its own decryption key in one image buys little.
+
+`config/env.ts` still calls dotenvx behind an `existsSync` guard, so in
+a deployed container the call is a no-op and `process.env` already holds
+everything. That guard is why the same file works locally, in CI, and in
+production.
+
+Note for machines with a global git ignore: the usual
+`~/.config/git/ignore` lists `.env.production`, and a repo `.gitignore`
+only overrides a global pattern when it has one of its own — omitting
+the file is not enough. This repo's `.gitignore` carries an explicit
+`!.env.production` negation for exactly that reason. `hatchkit doctor`
+fails if the encrypted file ends up uncommitted anyway.
 
 ### Key rotation
 
 ```bash
 pnpm --filter @starter/server exec dotenvx rotate -f .env.production
-# Then re-deploy so Coolify picks up the new private key.
+# Then `hatchkit sync` to push the re-encrypted values to Coolify.
 ```
 
 Keep `.env.keys` out of commits. `.gitignore` enforces this.

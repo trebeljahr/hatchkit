@@ -52,7 +52,23 @@ Key properties of the pipeline:
 ## Secret handling
 
 - **Provider tokens** → OS keychain (`keytar`), service name `hatchkit`.
-- **Per-project encryption key** → OS keychain. Used by [dotenvx](https://dotenvx.com) to encrypt `.env.production` in the generated repo. Safe to commit the encrypted file; the private key is pushed to Coolify via API.
+- **Per-project encryption key** → OS keychain. Used by [dotenvx](https://dotenvx.com) to encrypt `.env.production` in the generated repo. The encrypted file is safe to commit, and should be — it is the at-rest store, see below.
+
+### Where production values live at runtime
+
+Two things are easy to conflate here, so plainly:
+
+- **`.env.production` (dotenvx-encrypted, committed) is the *at-rest store*.** It is what `hatchkit secrets rotate` writes into and what `hatchkit sync` reads. Versioning it in git is what stops the values from existing only on whichever laptop last wrote them.
+- **The container's environment, held by Coolify, is the *runtime source of truth*.** `hatchkit sync` decrypts the at-rest store locally and pushes the resolved values into Coolify's env fields. The generated `docker-compose.yml` already declares every one of them as `${VAR}`, which is what makes Coolify render a UI field per value.
+
+The encrypted file is **not** shipped into the image, and the server `Dockerfile` deliberately doesn't copy it. Two reasons:
+
+1. It could never cover the client half anyway. Next.js inlines `NEXT_PUBLIC_*` into the browser bundle at image **build** time, so those arrive as Docker build args — no runtime file can affect them.
+2. Putting the ciphertext and the key that decrypts it in one image buys little over just holding the resolved values.
+
+`src/config/env.ts` still calls dotenvx, guarded by an `existsSync`, so in a deployed container the call is a no-op and `process.env` already holds everything. The guard is what makes the same file work on a workstation, in CI, and in production.
+
+`hatchkit doctor` fails when a project's repo disagrees with this — when `.env.production` exists but isn't committed (a global `core.excludesFile` listing `.env.production` is the usual cause, and a repo `.gitignore` only beats it with an explicit `!` negation), or when a `Dockerfile` still copies the file into its runtime stage.
 - **Provisioned service credentials** → printed at the end of `add`, plus cached under `<config-dir>/provisioned/<project>.{dev,prod}.env`.
 
 ## Scaffolding strategy

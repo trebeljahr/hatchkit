@@ -28,7 +28,7 @@ Starting a new product is the same toil every time: pick a starter, wire up auth
 
 - **No vendor lock-in.** Your code, your GitHub repo, your Coolify, your server, your domain. Hatchkit is an orchestrator, not a platform.
 - **Lazy prompting.** You only get asked about a provider when you actually need it. `doctor` + `config` let you fix things without running the wizard again.
-- **Secrets stay out of git.** dotenvx for encrypted `.env.production`, OS keychain for provider tokens, per-project private keys pushed to Coolify.
+- **Secrets stay out of git in plaintext.** dotenvx encrypts `.env.production` (the committed at-rest store), the OS keychain holds provider tokens and per-project private keys, and `sync` pushes resolved values into Coolify, which is what the running container reads.
 - **One starter, many shapes.** Features are stripped from the starter at scaffold time rather than layered on top — the output is lean, not scaffold-soup.
 
 ## Next steps

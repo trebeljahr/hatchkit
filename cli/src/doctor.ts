@@ -901,7 +901,185 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of autoDeployChecks) results.push(r);
   const dnsResolveChecks = await checkProjectDnsResolveState(process.cwd());
   for (const r of dnsResolveChecks) results.push(r);
+  const prodEnvChecks = await checkProjectProdEnvState(process.cwd());
+  for (const r of prodEnvChecks) results.push(r);
   return results;
+}
+
+/**
+ * Project-local check that the repo agrees with hatchkit's production
+ * env model. Gated on `.hatchkit.json` in the cwd, so it's a no-op
+ * outside a hatchkit project.
+ *
+ * ---------------------------------------------------------------------
+ * The model
+ * ---------------------------------------------------------------------
+ *
+ * Runtime configuration comes from the container's environment, which
+ * Coolify holds and `hatchkit sync` populates. The dotenvx-encrypted
+ * `.env.production` is the AT-REST store that sync reads from — it is
+ * versioned in git so the values survive a laptop, and `secrets rotate`
+ * writes into it. It is not shipped into the image.
+ *
+ * ---------------------------------------------------------------------
+ * What used to go wrong, silently
+ * ---------------------------------------------------------------------
+ *
+ * Both halves of that model failed quietly at once, which is why this
+ * check exists rather than a comment:
+ *
+ *  1. The widely copy-pasted global git excludes file
+ *     (`core.excludesFile`, usually ~/.config/git/ignore) lists
+ *     `.env.production`. The starter's .gitignore didn't list the file
+ *     at all, and *absence* doesn't beat a global pattern — only an
+ *     explicit `!` negation does. So on any machine with that global
+ *     ignore the at-rest store was never committed, and nothing said so.
+ *
+ *  2. Separately, a repo may still carry the older "ship the encrypted
+ *     file into the image and decrypt at boot" wiring, where the server
+ *     Dockerfile COPYs `.env.production` into the runtime stage. That's
+ *     the other model. Mixing them means two sources of truth that
+ *     drift, so we flag it rather than let it ride.
+ *
+ * Both are reported as failures with the exact fix, because either one
+ * turns a `hatchkit keys push` into a key that decrypts nothing.
+ */
+export async function checkProjectProdEnvState(projectDir: string): Promise<CheckResult[]> {
+  const out: CheckResult[] = [];
+  const { existsSync, readFileSync } = await import("node:fs");
+  const manifestPath = `${projectDir}/.hatchkit.json`;
+  if (!existsSync(manifestPath)) return out;
+
+  let projectName: string;
+  try {
+    const m = JSON.parse(readFileSync(manifestPath, "utf-8")) as { name?: string };
+    if (!m.name) return out;
+    projectName = m.name;
+  } catch {
+    return out;
+  }
+
+  const { locateEnvProductionFile } = await import("./deploy/keys.js");
+  const prodEnvPath = locateEnvProductionFile(projectDir);
+  if (!prodEnvPath) {
+    // No `.env.production` anywhere. A project that keeps every value
+    // in Coolify directly is a legitimate (if less portable) setup, and
+    // a freshly scaffolded project hasn't written one yet. Nothing to
+    // verify either way — stay quiet rather than nag.
+    return out;
+  }
+
+  const { relative } = await import("node:path");
+  const relProdEnv = relative(projectDir, prodEnvPath);
+
+  // ── 1. Is the at-rest store actually in git? ──────────────────────
+  const tracked = await execOk("git", ["ls-files", "--error-unmatch", relProdEnv], {
+    cwd: projectDir,
+  });
+  if (tracked) {
+    out.push({
+      name: `Project ${projectName} (.env.production tracked)`,
+      status: "ok",
+      detail: `${relProdEnv} is committed — the encrypted at-rest store is versioned`,
+    });
+  } else {
+    // Name the culprit when we can. `git check-ignore -v` prints
+    // `<source>:<line>:<pattern>` for the pattern that matched, which
+    // tells the user whether this is their global ignore or the repo's.
+    // `silent` matters: check-ignore exits 1 when no pattern matches,
+    // and exec() echoes stderr on a non-zero exit by default — which
+    // would splatter noise through the middle of doctor's report for
+    // the perfectly ordinary "never added" case.
+    let ignoredBy: string | undefined;
+    try {
+      const { exec } = await import("./utils/exec.js");
+      const res = await exec("git", ["check-ignore", "-v", relProdEnv], {
+        cwd: projectDir,
+        silent: true,
+      });
+      if (res.exitCode === 0) {
+        const line = res.stdout.split("\n").find((l) => l.trim());
+        // Format: `<source>:<line>:<pattern>\t<pathname>`. check-ignore
+        // also exits 0 when the winning pattern is a NEGATION (`!...`),
+        // i.e. when the file is explicitly RE-INCLUDED. Reporting that
+        // as "ignored by" would tell someone who already has the fix to
+        // apply it again, so only a non-negated pattern counts.
+        const pattern = line?.split("\t")[0]?.split(":")[2];
+        if (line && pattern && !pattern.trim().startsWith("!")) ignoredBy = line.split("\t")[0];
+      }
+    } catch {
+      // Not a git repo, or no git binary. Fall back to the generic
+      // "not tracked" wording rather than failing the whole check.
+    }
+    out.push({
+      name: `Project ${projectName} (.env.production not committed)`,
+      status: "fail",
+      detail: ignoredBy
+        ? `${relProdEnv} exists on disk but is git-ignored by ${ignoredBy}`
+        : `${relProdEnv} exists on disk but is not tracked by git`,
+      hint: [
+        "The dotenvx-encrypted .env.production is hatchkit's at-rest store for production values.",
+        "Untracked, it exists only on this machine: a fresh clone (or CI) deploys without it, and",
+        "`hatchkit keys push` then pushes a private key that decrypts nothing.",
+        ...(ignoredBy
+          ? [
+              "A global ignore usually causes this. A repo .gitignore only overrides a global pattern",
+              "when it has a pattern of its own — omitting the file is not enough, so add a negation:",
+              `  echo '!.env.production' >> .gitignore`,
+            ]
+          : []),
+        `  git add -f ${relProdEnv} && git commit -m 'chore: commit encrypted .env.production'`,
+        "Values are dotenvx ciphertext, so committing them is safe — but confirm with",
+        `  head -3 ${relProdEnv}    # every value should read encrypted:...`,
+        "and make sure .env.keys is NOT tracked (see the .env.keys hygiene check).",
+      ],
+    });
+  }
+
+  // ── 2. Does a Dockerfile still ship the file into the image? ──────
+  //
+  // Only the runtime stage matters. A build stage that COPYs the repo
+  // wholesale is fine and extremely common (`COPY packages/server ...`),
+  // so match an explicit copy of the env file rather than any COPY.
+  for (const rel of ["packages/server/Dockerfile", "Dockerfile"]) {
+    const dockerfilePath = `${projectDir}/${rel}`;
+    if (!existsSync(dockerfilePath)) continue;
+    let content: string;
+    try {
+      content = readFileSync(dockerfilePath, "utf-8");
+    } catch {
+      continue;
+    }
+    // Only the FINAL stage ships. Everything before the last `FROM` is
+    // discarded at build time, so a build stage that copies the env file
+    // (to run a migration, say) is harmless and must not be flagged.
+    // Docker builds the last stage unless `--target` says otherwise;
+    // that's the assumption here, and the wrong guess would only cost a
+    // false negative.
+    const lines = content.split(/\r?\n/).map((l) => l.replace(/#.*$/, ""));
+    const lastFrom = lines.reduce((acc, l, i) => (/^\s*FROM\b/i.test(l) ? i : acc), -1);
+    const shipsEnv = lines
+      .slice(lastFrom + 1)
+      .some((l) => /^\s*COPY\b.*\.env\.production/i.test(l));
+    if (!shipsEnv) continue;
+    out.push({
+      name: `Project ${projectName} (env model mismatch)`,
+      status: "fail",
+      detail: `${rel} copies .env.production into the image, but runtime config comes from Coolify env`,
+      hint: [
+        "hatchkit's model: Coolify's environment is the runtime source of truth, and the encrypted",
+        ".env.production is the at-rest store `hatchkit sync` reads to populate it.",
+        `Shipping the file into the image is the other model, and running both means two sources`,
+        "of truth that drift — the container keeps serving a stale baked-in value after a rotate.",
+        `Remove the COPY of .env.production from the runtime stage of ${rel}, then:`,
+        `  hatchkit sync            # pushes the resolved values into Coolify`,
+        "(It also puts ciphertext and its decryption key in the same image, which buys little.)",
+      ],
+    });
+    break;
+  }
+
+  return out;
 }
 
 /**

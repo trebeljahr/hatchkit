@@ -2386,6 +2386,142 @@ console.log("\n── doctor: project key-state checks ────────�
   results.doctorKeyChecks = ok;
 }
 
+// doctor's production-env model check. Two independent failures used to
+// pass silently, and both are reproduced here with a real git repo:
+//   · a GLOBAL ignore (core.excludesFile) dropping `.env.production`,
+//     which a repo .gitignore only beats with an explicit `!` negation —
+//     omitting the file is not enough;
+//   · a Dockerfile still shipping the encrypted file into its RUNTIME
+//     stage, which is the other env model and drifts against Coolify.
+console.log("\n── doctor: production env model ─────────────────────────────");
+{
+  const { execa } = await import("execa");
+  const { checkProjectProdEnvState } = await import("./src/doctor.js");
+  const checks: Check[] = [];
+
+  /** Spin up a throwaway repo with a global excludes file that lists
+   *  `.env.production`, mirroring the ~/.config/git/ignore most machines
+   *  actually carry. */
+  const makeRepo = async (label: string, gitignore: string) => {
+    const dir = mkdtempSync(join(tmpdir(), `doctor-prodenv-${label}-`));
+    await execa("git", ["init", "--initial-branch=main"], { cwd: dir });
+    await execa("git", ["config", "user.email", "t@t"], { cwd: dir });
+    await execa("git", ["config", "user.name", "t"], { cwd: dir });
+    writeFileSync(join(dir, "globalignore"), ".env.production\n.env.development\n");
+    await execa("git", ["config", "core.excludesFile", join(dir, "globalignore")], { cwd: dir });
+    writeFileSync(join(dir, ".hatchkit.json"), JSON.stringify({ name: `pe-${label}` }));
+    writeFileSync(join(dir, ".gitignore"), gitignore);
+    mkdirSync(join(dir, "packages", "server"), { recursive: true });
+    writeFileSync(
+      join(dir, "packages", "server", ".env.production"),
+      'BETTER_AUTH_SECRET="encrypted:abc"\n',
+    );
+    return dir;
+  };
+
+  // Scenario 1: no negation → the global ignore silently wins.
+  const tmpA = await makeRepo("global", ".env\n.env.keys\n");
+  const resA = await checkProjectProdEnvState(tmpA);
+  const failA = resA.find((r) => r.name.includes("not committed"));
+  checks.push(["global ignore: status=fail", failA?.status === "fail"]);
+  checks.push([
+    "global ignore: detail names the offending ignore file",
+    !!failA?.detail?.includes("globalignore"),
+  ]);
+  checks.push([
+    "global ignore: hint offers the `!` negation",
+    !!failA?.hint?.some((h) => h.includes("!.env.production")),
+  ]);
+  rmSync(tmpA, { recursive: true, force: true });
+
+  // Scenario 2: negation present AND committed → clean.
+  const tmpB = await makeRepo("ok", ".env\n.env.keys\n!.env.production\n");
+  await execa("git", ["add", "-A"], { cwd: tmpB });
+  await execa("git", ["commit", "-m", "init"], { cwd: tmpB });
+  const resB = await checkProjectProdEnvState(tmpB);
+  checks.push([
+    "negation + committed: status=ok",
+    resB.find((r) => r.name.includes("tracked"))?.status === "ok",
+  ]);
+  checks.push([
+    "negation + committed: no mismatch reported",
+    !resB.some((r) => r.name.includes("mismatch")),
+  ]);
+  rmSync(tmpB, { recursive: true, force: true });
+
+  // Scenario 3: negation present but the file was never `git add`ed.
+  // `git check-ignore -v` exits 0 here and prints the NEGATED pattern,
+  // so a naive reading reports "ignored by !.env.production" and tells
+  // the user to apply a fix they already have. It must not.
+  const tmpC = await makeRepo("unadded", ".env\n.env.keys\n!.env.production\n");
+  const resC = await checkProjectProdEnvState(tmpC);
+  const failC = resC.find((r) => r.name.includes("not committed"));
+  checks.push(["negation, unadded: status=fail", failC?.status === "fail"]);
+  checks.push([
+    "negation, unadded: not blamed on an ignore rule",
+    !!failC?.detail?.includes("not tracked by git") && !failC.detail.includes("git-ignored"),
+  ]);
+  rmSync(tmpC, { recursive: true, force: true });
+
+  // Scenario 4: runtime stage ships the encrypted file → model mismatch.
+  const tmpD = await makeRepo("shipped", ".env\n.env.keys\n!.env.production\n");
+  writeFileSync(
+    join(tmpD, "packages", "server", "Dockerfile"),
+    [
+      "FROM node:24 AS build",
+      "COPY . .",
+      "FROM node:24 AS runtime",
+      "COPY --from=build /prod/dist ./dist",
+      "COPY packages/server/.env.production ./.env.production",
+      'CMD ["node", "dist/index.js"]',
+    ].join("\n"),
+  );
+  const resD = await checkProjectProdEnvState(tmpD);
+  const mismatchD = resD.find((r) => r.name.includes("mismatch"));
+  checks.push(["runtime COPY: status=fail", mismatchD?.status === "fail"]);
+  checks.push([
+    "runtime COPY: hint points at `hatchkit sync`",
+    !!mismatchD?.hint?.some((h) => h.includes("hatchkit sync")),
+  ]);
+  rmSync(tmpD, { recursive: true, force: true });
+
+  // Scenario 5: only a BUILD stage copies it. That layer is discarded,
+  // so nothing ships and there is nothing to report.
+  const tmpE = await makeRepo("buildonly", ".env\n.env.keys\n!.env.production\n");
+  writeFileSync(
+    join(tmpE, "packages", "server", "Dockerfile"),
+    [
+      "FROM node:24 AS build",
+      "COPY packages/server/.env.production ./.env.production",
+      "RUN node scripts/migrate.js",
+      "FROM node:24 AS runtime",
+      "COPY --from=build /prod/dist ./dist",
+      'CMD ["node", "dist/index.js"]',
+    ].join("\n"),
+  );
+  const resE = await checkProjectProdEnvState(tmpE);
+  checks.push([
+    "build-stage-only COPY: no mismatch reported",
+    !resE.some((r) => r.name.includes("mismatch")),
+  ]);
+  rmSync(tmpE, { recursive: true, force: true });
+
+  // Scenario 6: no `.env.production` at all. A project holding every
+  // value directly in Coolify is legitimate — stay silent, don't nag.
+  const tmpF = mkdtempSync(join(tmpdir(), "doctor-prodenv-none-"));
+  writeFileSync(join(tmpF, ".hatchkit.json"), JSON.stringify({ name: "pe-none" }));
+  const resF = await checkProjectProdEnvState(tmpF);
+  checks.push(["no .env.production: silent", resF.length === 0]);
+  rmSync(tmpF, { recursive: true, force: true });
+
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  results.doctorProdEnvChecks = ok;
+}
+
 // Adopt's first line of defence against leaking dotenvx private keys.
 // Locks down two helpers in cli/src/utils/gitignore.ts:
 //   · ensureGitignoreEntries — append `.env.keys` before bootstrapDotenvxNow

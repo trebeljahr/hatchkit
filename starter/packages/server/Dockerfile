@@ -41,6 +41,22 @@ COPY --from=build /prod/dist ./dist
 COPY --from=build /prod/package.json ./
 COPY --from=build /prod/node_modules ./node_modules
 
+# `.env.production` is deliberately NOT copied in.
+#
+# Runtime configuration comes from the container's environment, which
+# Coolify populates (`hatchkit sync` pushes the resolved values there).
+# The encrypted `.env.production` is the at-rest store that sync reads
+# FROM on the developer's machine — it is not the runtime source.
+#
+# Two reasons it isn't the runtime source. It cannot cover the client
+# half at all: Next.js inlines NEXT_PUBLIC_* into the browser bundle at
+# image BUILD time, so those arrive as Docker build args and no runtime
+# file can affect them. And shipping the ciphertext next to the key that
+# decrypts it, in one image, buys little over just holding the values.
+#
+# src/config/env.ts still calls dotenvx and is guarded by an existsSync,
+# so the absence of the file here is a no-op rather than a crash.
+
 USER node
 EXPOSE 3000
 
