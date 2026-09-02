@@ -1,3 +1,11 @@
+<!-- hatchkit:doc Blocks between a `hatchkit:if <cond>` marker and the matching -->
+<!-- hatchkit:doc `hatchkit:endif` are pruned at scaffold time by -->
+<!-- hatchkit:doc cli/src/scaffold/claude-md.ts. Markers also work inline, spanning part -->
+<!-- hatchkit:doc of a line. Every hatchkit marker is stripped from generated projects, so -->
+<!-- hatchkit:doc what ships is plain Markdown. Conditions: server, client, fullstack, -->
+<!-- hatchkit:doc static, backend, newsletter, native, desktop, desktop-tauri, mobile, -->
+<!-- hatchkit:doc websocket, stripe. -->
+
 # node-realtime-starter
 
 A stampable starter repo for multiplayer web games and SaaS apps. Express backend, Next.js frontend, MongoDB, tRPC, better-auth, Stripe, WebSocket support.
@@ -22,6 +30,7 @@ hatchkit provision s3                    # create project buckets + env entries
 hatchkit assets pull                     # mirror remote object storage assets locally
 ```
 
+<!-- hatchkit:if newsletter -->
 Newsletter / Listmonk + SES smoke commands (run from the project root
 once `hatchkit add <project> listmonk-ses` has populated env):
 
@@ -38,6 +47,7 @@ Hatchkit auto-subscribes your default forwarding email onto
 `LISTMONK_TEST_RECIPIENT`, so the smoke scripts work end-to-end on a
 fresh provision with no extra setup.
 
+<!-- hatchkit:endif -->
 Before giving Hatchkit setup advice, run `hatchkit status --json` and
 read `providers[]`, `nextStep`, and `suggestions[]`. For provider failures,
 run `hatchkit doctor --json` and surface the failing `checks[].hint[]`
@@ -56,14 +66,34 @@ such as `hatchkit destroy <project> --recipe`, `hatchkit gh-pages --undo
 
 ## Tech Stack
 
-- **Backend:** Express + TypeScript, tRPC for typed API, better-auth for authentication, Stripe for payments
+<!-- hatchkit:if server -->
+- **Backend:** Express + TypeScript, tRPC for typed API, better-auth for authentication<!-- hatchkit:if stripe -->, Stripe for payments<!-- hatchkit:endif -->
+<!-- hatchkit:endif -->
+<!-- hatchkit:if fullstack -->
 - **Frontend:** Next.js (App Router) + Tailwind CSS + shadcn/ui, tRPC React Query client
+<!-- hatchkit:endif -->
+<!-- hatchkit:if static -->
+- **Frontend:** Next.js (App Router) + Tailwind CSS + shadcn/ui
+<!-- hatchkit:endif -->
+<!-- hatchkit:if server -->
 - **Database:** MongoDB (Mongoose) + Redis (ioredis)
+<!-- hatchkit:endif -->
+<!-- hatchkit:if websocket -->
 - **Real-time:** Native `ws` WebSocket on same Express process
+<!-- hatchkit:endif -->
+<!-- hatchkit:if fullstack -->
 - **Monorepo:** pnpm workspaces — `packages/server`, `packages/client`, `packages/shared`
+<!-- hatchkit:endif -->
+<!-- hatchkit:if backend -->
+- **Monorepo:** pnpm workspaces — `packages/server`, `packages/shared`
+<!-- hatchkit:endif -->
+<!-- hatchkit:if static -->
+- **Monorepo:** pnpm workspaces — `packages/client`, `packages/shared`
+<!-- hatchkit:endif -->
 
 ## How to Run
 
+<!-- hatchkit:if server -->
 ```bash
 pnpm install                          # install all dependencies
 pnpm run dev:infra                    # start MongoDB, Redis, local S3 (Docker, one-time)
@@ -76,27 +106,47 @@ Drop fixtures into `seed/assets/` to have them auto-populate the
 local bucket — see `seed/README.md`. To copy a real-prod bucket into
 local for realistic dev data, `hatchkit assets pull` (treat the copy
 as production data — same handling rules apply).
+<!-- hatchkit:endif -->
+<!-- hatchkit:if static -->
+```bash
+pnpm install                          # install all dependencies
+pnpm run dev                          # start the Next.js client
+pnpm run build                        # production build
+```
+<!-- hatchkit:endif -->
 
 ## How to Test
 
+<!-- hatchkit:if fullstack -->
 ```bash
 pnpm run test:unit                    # server unit tests (node:test)
 pnpm run test:client                  # client unit tests (Vitest)
 pnpm run test:e2e                     # Playwright E2E tests
 pnpm run build                        # build all packages
 ```
+<!-- hatchkit:endif -->
+<!-- hatchkit:if backend -->
+```bash
+pnpm run test:unit                    # server unit tests (node:test)
+pnpm run build                        # build all packages
+```
+<!-- hatchkit:endif -->
+<!-- hatchkit:if static -->
+```bash
+pnpm run test:client                  # client unit tests (Vitest)
+pnpm run build                        # build all packages
+```
+<!-- hatchkit:endif -->
 
-## Desktop (Electron or Tauri) + Mobile (Capacitor)
+<!-- hatchkit:if native -->
+## Native Shells
 
 All native targets wrap the Next.js client as a **static export** (`output: "export"`).
+<!-- hatchkit:if server -->
 The Express server is always remote — the client talks to it over HTTPS.
+<!-- hatchkit:endif -->
 
-There are two desktop wrappers — a project has at most one:
-
-- **Electron** (`desktop` feature) — the default for apps.
-- **Tauri** (`desktop-tauri` feature) — for games: much smaller binaries,
-  Steamworks integration via the Rust side. See `src-tauri/README.md`.
-
+<!-- hatchkit:if desktop -->
 ### Desktop (Electron)
 
 ```bash
@@ -109,7 +159,9 @@ pnpm icons:desktop                    # regenerate icns/ico/png set (electron-ic
 Replace `build/icon.png` with a 512×512 logo before shipping.
 Bundle config lives in root `package.json` `"build"` (electron-builder).
 Electron IPC bridge: `electron/preload.ts` exposes `window.electronAPI`.
+<!-- hatchkit:endif -->
 
+<!-- hatchkit:if desktop-tauri -->
 ### Desktop (Tauri + Steamworks)
 
 Requires the Rust toolchain (https://rustup.rs).
@@ -125,7 +177,9 @@ Bundle config lives in `src-tauri/tauri.conf.json` (strict JSON — no
 comments; caveats documented in `src-tauri/README.md`). Steam init is
 gated behind the `steam` cargo feature in `src-tauri/src/main.rs` — set
 `STEAM_APP_ID` there before shipping.
+<!-- hatchkit:endif -->
 
+<!-- hatchkit:if mobile -->
 ### Mobile
 
 ```bash
@@ -141,7 +195,9 @@ pnpm build:ios:release                # opens Xcode for App Store archive
 
 Bridge runs in `packages/client/src/mobile/bridge.ts` — lifecycle, splash,
 status bar, orientation. Durable persistence mirror in `durable.ts`.
+<!-- hatchkit:endif -->
 
+<!-- hatchkit:if server -->
 ### Native client auth
 
 Better-auth uses cookies; native shells need extra CORS/trust origins.
@@ -151,24 +207,33 @@ Set `TRUSTED_ORIGINS` on the server (comma-separated):
 TRUSTED_ORIGINS=capacitor://localhost,https://localhost
 ```
 
+<!-- hatchkit:if desktop -->
 Electron `file://` sends `Origin: null` and can't be trusted with
 credentials. Register a custom protocol in `electron/main.ts` and add
 it (e.g. `app://-`) instead.
+<!-- hatchkit:endif -->
 
+<!-- hatchkit:if desktop-tauri -->
 Tauri serves the bundled frontend from `tauri://localhost` (macOS/Linux)
 and `http://tauri.localhost` (Windows) — both must be in
 `TRUSTED_ORIGINS` for cookie auth to work.
+<!-- hatchkit:endif -->
+<!-- hatchkit:endif -->
 
 ### Static export caveats
 
+<!-- hatchkit:if server -->
 - `NEXT_PUBLIC_API_URL` is baked at build time — desktop/mobile binaries
   are locked to whichever API URL they were built against. Rebuild to
   retarget.
+<!-- hatchkit:endif -->
 - No `rewrites()`, no `middleware.ts`, no server components with runtime
   data. Dynamic routes need `generateStaticParams`.
 - Next `<Image>` uses the default loader only because `images.unoptimized`
   is set in `next.config.ts`.
+<!-- hatchkit:endif -->
 
+<!-- hatchkit:if server -->
 ## Environment & Secrets (dotenvx)
 
 The server uses **[dotenvx](https://dotenvx.com)** for env handling — a
@@ -243,6 +308,7 @@ pnpm --filter @starter/server exec dotenvx rotate -f .env.production
 ```
 
 Keep `.env.keys` out of commits. `.gitignore` enforces this.
+<!-- hatchkit:endif -->
 
 ## Code Style
 
@@ -250,11 +316,16 @@ Keep `.env.keys` out of commits. `.gitignore` enforces this.
 - Prefer `const` over `let`. Never use `var`.
 - Named exports only (no default exports except Next.js pages which require them).
 - Explicit return types on all public/exported functions.
+<!-- hatchkit:if fullstack -->
 - Use `@starter/shared` for types shared between client and server.
+<!-- hatchkit:endif -->
+<!-- hatchkit:if client -->
 - Use `@/` path alias for client-side imports within the client package.
+<!-- hatchkit:endif -->
 
 ## File Organization
 
+<!-- hatchkit:if server -->
 ```
 packages/server/src/
   config/       — environment variables, app config
@@ -267,7 +338,11 @@ packages/server/src/
   services/     — external service integrations (Stripe, email, S3)
   middleware/   — Express middleware (error handler, etc.)
   tests/        — server unit tests
+```
+<!-- hatchkit:endif -->
 
+<!-- hatchkit:if fullstack -->
+```
 packages/client/src/
   app/          — Next.js App Router pages
   lib/          — tRPC client, auth client, utilities
@@ -276,13 +351,27 @@ packages/client/src/
   components/   — React components
     ui/         — shadcn/ui components
   styles/       — global CSS
+```
+<!-- hatchkit:endif -->
+<!-- hatchkit:if static -->
+```
+packages/client/src/
+  app/          — Next.js App Router pages
+  lib/          — utilities
+  components/   — React components
+    ui/         — shadcn/ui components
+  styles/       — global CSS
+```
+<!-- hatchkit:endif -->
 
+```
 packages/shared/src/
   protocol.ts   — WebSocket message types (discriminated unions)
   types.ts      — shared domain types
   schemas.ts    — Zod validation schemas
 ```
 
+<!-- hatchkit:if server -->
 ## Critical Middleware Ordering (Express)
 
 The order in `app.ts` is load-bearing. Do not rearrange:
@@ -296,21 +385,32 @@ The order in `app.ts` is load-bearing. Do not rearrange:
 7. tRPC middleware at `/api/trpc`
 8. Health endpoint at `/api/health`
 9. Error handlers (404 + 500) — must be last
+<!-- hatchkit:endif -->
 
 ## Environment Variables
 
 - Always add new env vars to `.env.example` with a comment explaining the value
 - Add sensible dev defaults to `.env.development` (this file is committed)
 - Never commit `.env` or `.env.local` (these are gitignored)
+<!-- hatchkit:if server -->
 - Server env vars: plain `process.env.X` via `config/env.ts`
+<!-- hatchkit:endif -->
+<!-- hatchkit:if client -->
 - Client env vars: must be prefixed with `NEXT_PUBLIC_` to be available in the browser
+<!-- hatchkit:endif -->
 
 ## Testing Conventions
 
+<!-- hatchkit:if server -->
 - **Server unit tests:** `node:test` module + `assert/strict`. Files in `packages/server/src/tests/*.test.ts`.
+<!-- hatchkit:endif -->
+<!-- hatchkit:if client -->
 - **Client unit tests:** Vitest + @testing-library/react. Files colocated as `*.test.tsx`.
+<!-- hatchkit:endif -->
+<!-- hatchkit:if fullstack -->
 - **E2E tests:** Playwright. Files in `e2e/*.spec.ts`. Helpers in `e2e/helpers.ts`.
 - Use `data-testid` attributes for E2E selectors, not CSS classes or text content.
+<!-- hatchkit:endif -->
 
 ## Commit Messages
 

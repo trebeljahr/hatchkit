@@ -31,6 +31,7 @@ import type { MlService, ProjectConfig } from "../prompts.js";
 import { explainFsError } from "../utils/errors.js";
 import { type ProjectPorts, pickProjectPorts } from "../utils/ports.js";
 import { getCliVersion } from "../utils/version.js";
+import { applyClaudeMd } from "./claude-md.js";
 import { applyWorkflowClientBuildArgUrls } from "./client-build-args.js";
 import { type DotenvxSeedResult, seedDotenvxProduction } from "./dotenvx.js";
 import { MANIFEST_FILENAME, toManifest, writeManifest } from "./manifest.js";
@@ -309,6 +310,9 @@ async function runScaffoldSteps(
     removeIfExists(join(outputDir, ".github/workflows/desktop-release.yml"));
     removeIfExists(join(outputDir, "build"));
     removeIfExists(join(outputDir, "packages/client/src/types/electron.d.ts"));
+    // The icon generator is only wired to `icons:desktop` (Electron);
+    // Tauri regenerates from build/icon.png via its own CLI.
+    removeIfExists(join(outputDir, "scripts/icons-desktop.mjs"));
     stripPackageJsonScripts(outputDir, [
       "dev:desktop",
       "dev:electron",
@@ -403,9 +407,25 @@ async function runScaffoldSteps(
     removeIfExists(join(outputDir, "packages/server/src/services/newsletter"));
     removeIfExists(join(outputDir, "packages/client/src/components/subscribe-form.tsx"));
     removeIfExists(join(outputDir, "packages/client/src/app/sub"));
-    removeIfExists(join(outputDir, "scripts/newsletter-send.ts"));
-    removeIfExists(join(outputDir, "scripts/newsletter-draft.ts"));
-    stripPackageJsonScripts(outputDir, ["newsletter:send", "newsletter:draft"]);
+    for (const script of [
+      "newsletter-send",
+      "newsletter-draft",
+      "newsletter-test-tx",
+      "newsletter-verify",
+      "newsletter-welcome",
+    ]) {
+      removeIfExists(join(outputDir, `scripts/${script}.ts`));
+    }
+    // emails/ only holds the Listmonk broadcast templates the scripts
+    // above send (welcome.html, digest-sample.html).
+    removeIfExists(join(outputDir, "emails"));
+    stripPackageJsonScripts(outputDir, [
+      "newsletter:send",
+      "newsletter:draft",
+      "newsletter:test-tx",
+      "newsletter:welcome",
+      "newsletter:verify",
+    ]);
     stripNewsletterFromServerApp(outputDir);
     modifications.push("removed: newsletter (Listmonk + SES) scaffolding");
   }
@@ -480,6 +500,11 @@ async function runScaffoldSteps(
   // safe no-op write. See scaffold/surfaces.ts for the per-surface
   // semantics.
   pruneToSurface(config, outputDir, modifications);
+
+  // CLAUDE.md last: it documents what's left on disk, so it has to see
+  // the post-prune, post-overlay world. Otherwise every scaffold ships
+  // agent memory describing the full starter.
+  applyClaudeMd(config, outputDir, modifications);
 
   // Write the sanitized manifest so `hatchkit update` can diff
   // against this scaffold's choices later. See manifest.ts for the

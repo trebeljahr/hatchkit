@@ -1,23 +1,28 @@
 name: CLI CI
 
-# Runs typecheck, lint, and the scaffold matrix on every push + PR.
-# The test suite skips the scaffold-matrix blocks gracefully when the
-# `starter` submodule isn't on disk, so we intentionally do NOT fetch
-# submodules here — both `starter` and `infra` point at private SSH
-# URLs that GitHub Actions' default token can't authenticate to.
+# Runs typecheck, lint, the scaffold matrix, and a real build of a
+# scaffolded project on every push + PR.
 #
-# To run the full 12-group matrix locally (or in a runner with an SSH
-# deploy key configured), `git submodule update --init` first.
+# `starter/` is tracked in this repo (it is NOT a submodule), so the
+# scaffold matrix runs here in full. The suite still skips those blocks
+# gracefully if `starter/package.json` is missing, which is what keeps a
+# partial checkout from failing the run.
+#
+# `starter/**` is in the path filters because the scaffolder's output is
+# only as correct as its input — a broken CSS import or Next config in
+# the template ships to every generated project.
 
 on:
   push:
     branches: [main]
     paths:
       - "cli/**"
+      - "starter/**"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
       - "cli/**"
+      - "starter/**"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
 
@@ -72,3 +77,56 @@ jobs:
 
       - name: Test (scaffold matrix)
         run: pnpm --filter hatchkit run test
+
+  # The scaffold matrix asserts on file CONTENTS. This job asserts the
+  # toolchain accepts them: scaffold a static, Coolify-mode project and
+  # run its real `pnpm build`, including the HATCHKIT_IMAGE_BUILD=1 pass
+  # the Coolify client image uses. Two blockers shipped that only a real
+  # build catches — a Tailwind `@plugin` directive pointing at a
+  # CSS-only package, and a next.config still referencing the pruned
+  # server package.
+  scaffold-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libsecret (keytar runtime dep)
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build dev-shared
+        run: pnpm --filter @hatchkit/dev-shared run build
+
+      - name: Scaffold a static project
+        env:
+          HATCHKIT_CONF_DIR: ${{ runner.temp }}/hatchkit-conf
+          HATCHKIT_DEV_CONFIG_DIR: ${{ runner.temp }}/hatchkit-dev
+        run: pnpm --filter hatchkit exec tsx scaffold-fixture.ts "${{ runner.temp }}/fixture" static
+
+      # The scaffold has no lockfile of its own — resolve fresh.
+      - name: Install the scaffolded project
+        working-directory: ${{ runner.temp }}/fixture
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build the scaffolded project
+        working-directory: ${{ runner.temp }}/fixture
+        run: pnpm run build
+
+      # Mirrors the Coolify client image build, which sets this flag and
+      # supplies NEXT_PUBLIC_* as build args. A static surface has no
+      # API, so the guard must be gone rather than satisfied.
+      - name: Build as the Coolify client image would
+        working-directory: ${{ runner.temp }}/fixture
+        env:
+          HATCHKIT_IMAGE_BUILD: "1"
+        run: pnpm --filter @starter/client run build

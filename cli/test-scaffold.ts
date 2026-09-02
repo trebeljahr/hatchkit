@@ -120,6 +120,7 @@ results.minimal = await run("minimal (no flags)", "plain-app", [], (d) => {
   const gitignore = existsSync(join(d, ".gitignore"))
     ? readFileSync(join(d, ".gitignore"), "utf-8")
     : "";
+  const claudeMd = readFileSync(join(d, "CLAUDE.md"), "utf-8");
   return [
     ["package.json renamed", pkg.name === "plain-app"],
     [".gitignore copied into scaffold", gitignore.length > 0],
@@ -181,6 +182,19 @@ results.minimal = await run("minimal (no flags)", "plain-app", [], (d) => {
       clientDockerfile.includes("HATCHKIT_IMAGE_BUILD=1"),
     ],
     ["docker-compose has no runtime NEXT_PUBLIC_*", !/^\s*NEXT_PUBLIC_/m.test(compose)],
+    // CLAUDE.md is the first file an agent reads in a generated project.
+    // A fullstack scaffold keeps the server-side sections; the marker
+    // syntax that drives the pruning must never survive.
+    ["CLAUDE.md H1 renamed", /^# plain-app$/m.test(claudeMd)],
+    ["CLAUDE.md leaves no hatchkit: markers", !claudeMd.includes("hatchkit:")],
+    ["CLAUDE.md keeps the Express middleware section", claudeMd.includes("Critical Middleware Ordering")],
+    ["CLAUDE.md keeps the dotenvx section", claudeMd.includes("Environment & Secrets")],
+    ["CLAUDE.md keeps both package trees", claudeMd.includes("packages/server/src/") && claudeMd.includes("packages/client/src/")],
+    ["CLAUDE.md drops the newsletter smoke commands (no mailing list)", !claudeMd.includes("newsletter:verify")],
+    ["CLAUDE.md drops the native section (no desktop/mobile)", !claudeMd.includes("Capacitor")],
+    ["CLAUDE.md drops the Stripe inline span (stripe not selected)", !claudeMd.includes("Stripe for payments")],
+    ["CLAUDE.md drops the WebSocket bullet (websocket not selected)", !claudeMd.includes("**Real-time:**")],
+    ["CLAUDE.md has no 3-blank-line runs", !/\n{3,}/.test(claudeMd)],
   ];
 });
 
@@ -194,6 +208,7 @@ results.websocket = await run("websocket only", "rt-app", ["websocket"], (d) => 
 results.desktop = await run("desktop only", "my-cool-app", ["desktop"], (d) => {
   const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
   const nextCfg = readFileSync(join(d, "packages/client/next.config.ts"), "utf-8");
+  const claudeMd = readFileSync(join(d, "CLAUDE.md"), "utf-8");
   return [
     ["electron/main.ts kept", existsSync(join(d, "electron/main.ts"))],
     ["build/icon.png placeholder kept", statSync(join(d, "build/icon.png")).size > 1000],
@@ -209,6 +224,14 @@ results.desktop = await run("desktop only", "my-cool-app", ["desktop"], (d) => {
     ["next.config flipped to export", nextCfg.includes('output: "export"')],
     ["next.config has assetPrefix", nextCfg.includes('assetPrefix: "./"')],
     ["next.config has trailingSlash", nextCfg.includes("trailingSlash: true")],
+    ["scripts/icons-desktop.mjs kept", existsSync(join(d, "scripts/icons-desktop.mjs"))],
+    // Nested conditionals: the native section survives, but only the
+    // Electron subsection inside it.
+    ["CLAUDE.md keeps the Electron section", claudeMd.includes("### Desktop (Electron)")],
+    ["CLAUDE.md drops the Tauri section", !claudeMd.includes("Tauri")],
+    ["CLAUDE.md drops the Mobile section", !claudeMd.includes("### Mobile")],
+    ["CLAUDE.md keeps static-export caveats", claudeMd.includes("Static export caveats")],
+    ["CLAUDE.md leaves no hatchkit: markers", !claudeMd.includes("hatchkit:")],
   ];
 });
 
@@ -413,6 +436,97 @@ results.clientOnly = await run(
     ];
   },
   { surfaces: "static", mongodbProvider: "external" },
+);
+
+// The exact combination that shipped broken: a static, Coolify-hosted
+// client with no features and no newsletter. Every assertion here maps
+// to something that had to be hand-fixed downstream after a scaffold.
+results.staticCoolify = await run(
+  "surfaces: static + coolify, no features",
+  "flat-site",
+  [],
+  (d) => {
+    const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
+    const nextCfg = readFileSync(join(d, "packages/client/next.config.ts"), "utf-8");
+    const rawTsconfig = readFileSync(join(d, "packages/client/tsconfig.json"), "utf-8");
+    const globals = readFileSync(join(d, "packages/client/src/styles/globals.css"), "utf-8");
+    const claudeMd = readFileSync(join(d, "CLAUDE.md"), "utf-8");
+    return [
+      // ── next.config: nothing may reference the deleted server ──
+      [
+        "next.config drops the NEXT_PUBLIC_API_URL build guard",
+        !nextCfg.includes("NEXT_PUBLIC_API_URL"),
+      ],
+      ["next.config drops the /api/* rewrite", !nextCfg.includes("/api/")],
+      ["next.config has no rewrites() at all", !/rewrites\s*\(/.test(nextCfg)],
+      ["next.config drops @starter/server from transpilePackages", !nextCfg.includes("@starter/server")],
+      [
+        "next.config keeps @starter/shared in transpilePackages",
+        /transpilePackages\s*:\s*\[\s*"@starter\/shared"\s*\]/.test(nextCfg),
+      ],
+      [
+        "next.config keeps output: standalone (coolify, not pages)",
+        nextCfg.includes('output: "standalone"'),
+      ],
+
+      // ── client tsconfig ──
+      ["client tsconfig drops @starter/server/trpc path", !rawTsconfig.includes("@starter/server")],
+      [
+        "client tsconfig is still valid JSON",
+        (() => {
+          try {
+            JSON.parse(rawTsconfig);
+            return true;
+          } catch {
+            return false;
+          }
+        })(),
+      ],
+      [
+        "client tsconfig keeps @starter/shared paths",
+        JSON.parse(rawTsconfig).compilerOptions.paths["@starter/shared"] !== undefined,
+      ],
+
+      // ── globals.css: @plugin only resolves JS plugins ──
+      ["globals.css imports tw-animate-css (not @plugin)", /^@import "tw-animate-css";$/m.test(globals)],
+      ["globals.css has no @plugin directive", !globals.includes("@plugin")],
+
+      // ── newsletter strip is complete ──
+      ["scripts/newsletter-send.ts removed", !existsSync(join(d, "scripts/newsletter-send.ts"))],
+      ["scripts/newsletter-draft.ts removed", !existsSync(join(d, "scripts/newsletter-draft.ts"))],
+      ["scripts/newsletter-test-tx.ts removed", !existsSync(join(d, "scripts/newsletter-test-tx.ts"))],
+      ["scripts/newsletter-verify.ts removed", !existsSync(join(d, "scripts/newsletter-verify.ts"))],
+      ["scripts/newsletter-welcome.ts removed", !existsSync(join(d, "scripts/newsletter-welcome.ts"))],
+      ["emails/ removed", !existsSync(join(d, "emails"))],
+      [
+        "no newsletter:* scripts survive",
+        !Object.keys(pkg.scripts ?? {}).some((s) => s.startsWith("newsletter:")),
+      ],
+
+      // ── desktop strip is complete ──
+      ["scripts/icons-desktop.mjs removed", !existsSync(join(d, "scripts/icons-desktop.mjs"))],
+      ["pkg.scripts has no icons:desktop", !pkg.scripts?.["icons:desktop"]],
+
+      // ── CLAUDE.md: renamed + pruned ──
+      ["CLAUDE.md H1 renamed", /^# flat-site$/m.test(claudeMd)],
+      ["CLAUDE.md drops the starter name entirely", !claudeMd.includes("node-realtime-starter")],
+      ["CLAUDE.md leaves no hatchkit: markers", !claudeMd.includes("hatchkit:")],
+      [
+        "CLAUDE.md drops the Express middleware section",
+        !claudeMd.includes("Critical Middleware Ordering"),
+      ],
+      ["CLAUDE.md drops the dotenvx section", !claudeMd.includes("Environment & Secrets")],
+      ["CLAUDE.md drops the newsletter smoke commands", !claudeMd.includes("newsletter:verify")],
+      ["CLAUDE.md drops the desktop/mobile section", !claudeMd.includes("Capacitor")],
+      ["CLAUDE.md drops the packages/server tree", !claudeMd.includes("packages/server/src/")],
+      ["CLAUDE.md keeps the packages/client tree", claudeMd.includes("packages/client/src/")],
+      ["CLAUDE.md drops test:unit / test:e2e", !/test:(unit|e2e)/.test(claudeMd)],
+      ["CLAUDE.md keeps a static-appropriate tagline", /no backend\.$/m.test(claudeMd)],
+      ["CLAUDE.md has no 3-blank-line runs", !/\n{3,}/.test(claudeMd)],
+      ["CLAUDE.md starts at the H1 (no leading blank)", claudeMd.startsWith("# flat-site")],
+    ];
+  },
+  { surfaces: "static", deploymentMode: "coolify", mongodbProvider: "external" },
 );
 
 results.postgres = await run(

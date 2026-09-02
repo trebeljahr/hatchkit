@@ -44,8 +44,9 @@ export function pruneToSurface(
   else {
     pruneToClientOnly(outputDir, modifications);
     // Pages needs additional config tweaks on top of the static
-    // prune — the prune leaves `output: "standalone"` + `/api/*`
-    // rewrites in place, both of which assume a running backend.
+    // prune — the prune drops the `/api/*` rewrites and the API-URL
+    // guard but leaves `output: "standalone"`, which assumes a Node
+    // server Pages can't run.
     if (config.deploymentMode === "gh-pages") {
       // Lazy import to avoid pulling node:fs deeper than needed for
       // the non-pages paths. The dep graph here is already heavy.
@@ -156,6 +157,14 @@ function pruneToClientOnly(outputDir: string, modifications: string[]): void {
   // this with their own marketing content anyway.
   rewriteLandingForClientOnly(outputDir);
 
+  // next.config.ts + tsconfig.json still reference the server we just
+  // deleted. Applies to EVERY static deployment mode — gh-pages gets
+  // further tweaks from applyPagesMode on top, but Coolify-hosted
+  // static scaffolds only get this pass, and without it the image
+  // build throws on the NEXT_PUBLIC_API_URL guard.
+  patchNextConfigForClientOnly(outputDir, modifications);
+  patchClientTsconfigForClientOnly(outputDir, modifications);
+
   // packages/client/package.json: drop the deps we no longer use. The
   // client still keeps Next.js, React, Sentry, OpenPanel, Tailwind,
   // class-variance-authority, etc.
@@ -237,6 +246,68 @@ function rewriteClientLayoutForClientOnly(outputDir: string): void {
     );
     return next;
   });
+}
+
+/** Strip the three server-dependent pieces of the starter's Next
+ *  config once `packages/server` is gone:
+ *
+ *    1. The build-time `NEXT_PUBLIC_API_URL` guard. It throws when the
+ *       Coolify image build (`HATCHKIT_IMAGE_BUILD=1`) or a native
+ *       static export runs without an API URL — correct for a
+ *       fullstack scaffold, fatal for a static one where there is no
+ *       API to point at.
+ *    2. `async rewrites()`, which proxies `/api/*` to an Express
+ *       server that no longer exists.
+ *    3. `@starter/server` in `transpilePackages`, a deleted workspace
+ *       package.
+ *
+ *  Runs for every static deployment mode. `applyPagesMode` layers the
+ *  gh-pages-only changes (output=export) on top and is idempotent
+ *  against this pass. */
+function patchNextConfigForClientOnly(outputDir: string, modifications: string[]): void {
+  const clientDir = join(outputDir, "packages/client");
+  const found = NEXT_CONFIG_CANDIDATES.map((c) => join(clientDir, c)).find((p) => existsSync(p));
+  if (!found) return;
+
+  rewriteFile(found, (raw) => {
+    let out = raw;
+
+    // 1. The guard, plus the comment block explaining it. Both live at
+    //    column 0 in the starter, so the closing `}` at column 0
+    //    bounds the block.
+    out = out.replace(/(?:^\/\/[^\n]*\n)*^if \([\s\S]*?NEXT_PUBLIC_API_URL[\s\S]*?^\}\n+/m, "");
+
+    // 2. The rewrites() block and the comment above it. Same shape as
+    //    the pages-mode strip so the two stay consistent.
+    out = out.replace(/\n[^\n]*\/\/[^\n]*Proxy API[^\n]*\n/, "\n");
+    out = out.replace(/[ \t]*async\s+rewrites\s*\(\s*\)\s*\{[\s\S]*?\n\s*\},?\s*\n/, "");
+
+    // 3. transpilePackages + the tracing comment that names the
+    //    deleted package.
+    out = out.replace(/(transpilePackages\s*:\s*\[[^\]]*?)\s*,?\s*"@starter\/server"/, "$1");
+    out = out.replace(/\(@starter\/shared, @starter\/server\)/, "(@starter/shared)");
+
+    return out;
+  });
+  modifications.push(
+    "static: patched next.config (dropped NEXT_PUBLIC_API_URL guard, /api rewrites, @starter/server)",
+  );
+}
+
+/** Drop the `@starter/server/trpc` path alias from the client's
+ *  tsconfig — it points into the package the static prune deletes, so
+ *  `tsc --noEmit` fails to resolve it. */
+function patchClientTsconfigForClientOnly(outputDir: string, modifications: string[]): void {
+  const path = join(outputDir, "packages/client/tsconfig.json");
+  if (!existsSync(path)) return;
+  rewriteFile(path, (raw) => {
+    // Two shapes: the entry is last (preceded by a comma we must eat
+    // too) or it isn't (it carries its own trailing comma).
+    const withLeadingComma = raw.replace(/,[^\n]*\n\s*"@starter\/server\/trpc":\s*\[[^\]]*\]/, "");
+    if (withLeadingComma !== raw) return withLeadingComma;
+    return raw.replace(/^\s*"@starter\/server\/trpc":\s*\[[^\]]*\],?[^\n]*\n/m, "");
+  });
+  modifications.push("static: dropped @starter/server/trpc path alias from client tsconfig");
 }
 
 function rewriteLandingForClientOnly(outputDir: string): void {
@@ -330,6 +401,13 @@ function dropWorkspaceEntry(outputDir: string, name: string): void {
   const next = content.replace(new RegExp(`^\\s*-\\s*"${name}"\\s*\\n`, "m"), "");
   if (next !== content) writeFileSync(path, next, "utf-8");
 }
+
+const NEXT_CONFIG_CANDIDATES = [
+  "next.config.ts",
+  "next.config.js",
+  "next.config.mjs",
+  "next.config.cjs",
+];
 
 const CLIENT_SIDE_TOP_LEVEL = [
   "electron",
