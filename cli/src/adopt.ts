@@ -97,6 +97,7 @@ import {
 import { composeServicesOf } from "./utils/compose.js";
 import { CoolifyApi } from "./utils/coolify-api.js";
 import { ensureDockerignoreAllowsEnvProduction } from "./utils/dockerignore.js";
+import { resolveEnvFileTarget } from "./utils/env-files.js";
 import { exec, execOk } from "./utils/exec.js";
 import { ensureGitignoreEntries, looksLikeDotenvxPrivateKey } from "./utils/gitignore.js";
 import { multiselect } from "./utils/multiselect.js";
@@ -2790,7 +2791,7 @@ async function executePlan(
       // tokens, all of which are network round-trips with no payoff
       // when nothing has changed since the last attempt.
       const s3ManifestSnapshot = readManifest(state.projectDir);
-      const s3EnvPath = join(state.projectDir, ".env.production");
+      const s3EnvPath = resolveEnvFileTarget(state.projectDir, ".env.production");
       const s3EnvKeys = readEnvKeys(s3EnvPath);
       const s3HasEnvCreds =
         (s3EnvKeys.has("R2_ACCESS_KEY_ID") && s3EnvKeys.has("R2_SECRET_ACCESS_KEY")) ||

@@ -27,9 +27,15 @@
  *
  * Env var names are project-specific. Some projects standardised on
  * R2_*; others on the generic S3_* / AWS_* set the starter ships. We
- * sniff the project's `.env.example` for whichever prefix the runtime
- * already reads, so the seeded values match. Without this the env
- * lands under names the app's `process.env.X` calls won't pick up.
+ * sniff whichever access-key name the project's runtime already reads
+ * — its env files, its compose passthrough, its server env module —
+ * so the seeded values match. Without this the env lands under names
+ * the app's `process.env.X` calls won't pick up.
+ *
+ * The file we write is resolved by `utils/env-files.ts`, the SAME
+ * search every reader uses. Guessing the repo root here once forked a
+ * second dotenvx keypair at the root of a starter project whose real
+ * env — and real keypair — lived in `packages/server/`.
  *
  * Idempotent on every step: existing buckets are reused (409 →
  * success), existing managed/custom domains are re-fetched, and env
@@ -38,7 +44,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { set as dotenvxSet } from "@dotenvx/dotenvx";
 import chalk from "chalk";
 import ora from "ora";
@@ -51,6 +57,7 @@ import {
   writeManifest,
 } from "../scaffold/manifest.js";
 import { CloudflareApi, type R2CorsRule } from "../utils/cloudflare-api.js";
+import { locateEnvFile, resolveEnvFileTarget, resolveEnvSearchRoot } from "../utils/env-files.js";
 import { SECRET_KEYS, deleteSecret, getSecret } from "../utils/secrets.js";
 import { readEnvKeys } from "./write-env.js";
 
@@ -130,28 +137,89 @@ export function accountIdFromR2Endpoint(endpoint: string): string {
   return m[1];
 }
 
-/** Sniff the project's `.env.example` (and falling back to source files)
- *  to pick the env-var prefix the runtime already reads. Some projects
- *  use R2_*, others S3_*, others AWS_*. Picking the wrong prefix here
- *  is the difference between "deploys" and "deploys but every request
- *  throws Missing required env var". */
+/** The credential key names that identify each prefix. The endpoint,
+ *  bucket and public-URL names are shared between S3 and AWS (the
+ *  starter reads `S3_ENDPOINT` + `S3_BUCKET_NAME` alongside
+ *  `AWS_ACCESS_KEY_ID`), so ONLY the access-key pair actually
+ *  distinguishes them. Counting every `S3_*` line, as the first
+ *  version of this did, therefore reads a starter project — 4 `S3_*`
+ *  keys, 3 `AWS_*` — as "S3" and seeds credentials under names its
+ *  server never reads. */
+const CREDENTIAL_KEYS: Array<[EnvPrefix, RegExp]> = [
+  ["R2", /\bR2_ACCESS_KEY_ID\b/],
+  ["AWS", /\bAWS_ACCESS_KEY_ID\b/],
+  ["S3", /\bS3_ACCESS_KEY_ID\b/],
+];
+
+/** Pick the prefix a single file's text votes for, or undefined when
+ *  it names no access key at all. Ties (a file mentioning two) go to
+ *  the CREDENTIAL_KEYS order: R2 is the most explicit, AWS beats S3
+ *  because `AWS_ACCESS_KEY_ID` is what an S3 SDK picks up implicitly. */
+function credentialPrefixIn(text: string): EnvPrefix | undefined {
+  return CREDENTIAL_KEYS.find(([, re]) => re.test(text))?.[0];
+}
+
+function readIfPresent(path: string | undefined): string | undefined {
+  if (!path || !existsSync(path)) return undefined;
+  return readFileSync(path, "utf-8");
+}
+
+/** Pick the env-var prefix the project's runtime actually reads. Some
+ *  projects use R2_*, others S3_*, others the AWS_* triple the starter
+ *  ships. Picking the wrong prefix is the difference between "deploys"
+ *  and "deploys but every upload throws Missing credentials" — the
+ *  values land encrypted in `.env.production` under names nothing
+ *  reads, which no build step can catch.
+ *
+ *  Evidence, most authoritative first:
+ *    1. The project's own env files, resolved through the SAME search
+ *       the readers use, `.env.production` first: whatever the running
+ *       deployment already uses wins, so a re-provision never renames
+ *       a working project's credentials.
+ *    2. What the compose file passes through to the container — the
+ *       contract between the deploy and the app.
+ *    3. What the server's env module reads out of `process.env`.
+ *    4. Legacy bulk count over all `<PREFIX>_*` keys, then "S3" to
+ *       match the historical default. */
 export function detectEnvPrefix(projectDir: string): EnvPrefix {
-  const candidates = [
-    join(projectDir, ".env.example"),
-    join(projectDir, ".env.development"),
-    join(projectDir, ".env.production"),
-  ];
+  for (const name of [".env.production", ".env.development", ".env.example"]) {
+    const hit = credentialPrefixIn(readIfPresent(locateEnvFile(projectDir, name)) ?? "");
+    if (hit) return hit;
+  }
+
+  const root = resolveEnvSearchRoot(projectDir);
+  const composeFiles = [
+    "docker-compose.server.yml",
+    "docker-compose.yml",
+    "docker-compose.client.yml",
+  ].map((f) => join(root, f));
+  for (const p of composeFiles) {
+    const hit = credentialPrefixIn(readIfPresent(p) ?? "");
+    if (hit) return hit;
+  }
+
+  const serverConfigs = [
+    "packages/server/src/config/env.ts",
+    "apps/server/src/config/env.ts",
+    "src/config/env.ts",
+  ].map((f) => join(root, f));
+  for (const p of serverConfigs) {
+    const hit = credentialPrefixIn(readIfPresent(p) ?? "");
+    if (hit) return hit;
+  }
+
+  // Nothing named an access key. Fall back to the old bulk count so a
+  // project that only declares e.g. `R2_BUCKET` still gets R2 names.
   let r2 = 0;
   let s3 = 0;
   let aws = 0;
-  for (const p of candidates) {
-    if (!existsSync(p)) continue;
-    const text = readFileSync(p, "utf-8");
+  for (const name of [".env.example", ".env.development", ".env.production"]) {
+    const text = readIfPresent(locateEnvFile(projectDir, name));
+    if (!text) continue;
     r2 += (text.match(/(^|\s)R2_[A-Z_]+\s*=/gm) ?? []).length;
     s3 += (text.match(/(^|\s)S3_[A-Z_]+\s*=/gm) ?? []).length;
     aws += (text.match(/(^|\s)AWS_(REGION|ACCESS_KEY_ID|SECRET_ACCESS_KEY)\s*=/gm) ?? []).length;
   }
-  // Highest wins; ties prefer R2 (most explicit) > S3 > AWS.
   const pairs: Array<[EnvPrefix, number]> = [
     ["R2", r2],
     ["S3", s3],
@@ -450,7 +518,7 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   //         currently using and revoking them would break runtime.
   const existingTokenId = manifest.s3Buckets?.tokenId;
   const existingAccountId = manifest.s3Buckets?.accountId;
-  const envPathForCheck = join(opts.projectDir, ".env.production");
+  const envPathForCheck = resolveEnvFileTarget(opts.projectDir, ".env.production");
   const existingEnvKeysSet = existingEnvKeys(envPathForCheck);
   const envPrefixForCheck = opts.envPrefix ?? detectEnvPrefix(opts.projectDir);
   const keysForCheck = envKeysForPrefix(envPrefixForCheck);
@@ -604,7 +672,11 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   //    detected from `.env.example` etc.
   const envPrefix = opts.envPrefix ?? detectEnvPrefix(opts.projectDir);
   const keys = envKeysForPrefix(envPrefix);
-  const envPath = join(opts.projectDir, ".env.production");
+  // Resolve the file the READERS use (`hatchkit keys`, `sync`'s env
+  // pass) instead of assuming the repo root. Writing the root of a
+  // starter project forked a second dotenvx keypair + `.env.keys`
+  // there while the real env sat in `packages/server/`.
+  const envPath = resolveEnvFileTarget(opts.projectDir, ".env.production");
 
   const existingKeys = existingEnvKeys(envPath);
 
@@ -651,8 +723,8 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   // Always write it under NEXT_PUBLIC_ASSETS_BASE_URL when present in
   // .env.example since that's the next.js convention; under
   // <PREFIX>_PUBLIC_URL for non-Next projects.
-  const examplePath = join(opts.projectDir, ".env.example");
-  const exampleText = existsSync(examplePath) ? readFileSync(examplePath, "utf-8") : "";
+  const examplePath = locateEnvFile(opts.projectDir, ".env.example");
+  const exampleText = readIfPresent(examplePath) ?? "";
   const usesNextPublicAssets = /NEXT_PUBLIC_ASSETS_BASE_URL/.test(exampleText);
   if (usesNextPublicAssets) {
     toWrite.push({ key: "NEXT_PUBLIC_ASSETS_BASE_URL", value: publicUrl });
@@ -673,7 +745,11 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
 
   const envWritten: string[] = [];
   const envKept: string[] = [];
-  const envSpinner = ora(`Writing ${toWrite.length} entries to .env.production`).start();
+  // Name the resolved file, not ".env.production" — a project whose
+  // env lives in packages/server should be able to SEE that from the
+  // log line, which is how the root-vs-server split went unnoticed.
+  const envLabel = relative(opts.projectDir, envPath) || envPath;
+  const envSpinner = ora(`Writing ${toWrite.length} entries to ${envLabel}`).start();
   try {
     for (const { key, value } of toWrite) {
       // Idempotency: re-write everything except CRON_SECRET (treated
@@ -686,9 +762,9 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
       dotenvxSet(key, value, { path: envPath, encrypt: true });
       envWritten.push(key);
     }
-    envSpinner.succeed(`Wrote ${envWritten.length} encrypted entries to .env.production`);
+    envSpinner.succeed(`Wrote ${envWritten.length} encrypted entries to ${envLabel}`);
   } catch (err) {
-    envSpinner.fail("Could not write .env.production");
+    envSpinner.fail(`Could not write ${envLabel}`);
     throw err;
   }
 

@@ -38,6 +38,7 @@ import { PrivateKey } from "eciesjs";
 import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
+import { locateEnvFile } from "../utils/env-files.js";
 import { exec } from "../utils/exec.js";
 import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
 import { repoSlugFromRemote } from "./gh-actions-secrets.js";
@@ -626,58 +627,12 @@ export async function mirrorEnvKeysIfAbsent(
   return { mirrored: true, envKeysPath, account };
 }
 
+/** Locate one `.env.*` for a project. Thin wrapper over the shared
+ *  resolver in `utils/env-files.ts` — the SAME search every writer
+ *  (`provision/*`, `secrets/env-writer`) uses, so a provisioner can
+ *  never seed a file these readers don't resolve. */
 function locateDotenvxFile(projectDir: string, name: string): string | undefined {
-  // Rebase against the manifest's `projectSubdir` when one is set —
-  // a subdir-deployed project's .env files live under the subdir, NOT
-  // at the repo root the user happens to run keys/sync/rotate from.
-  // Reading the manifest here keeps every keys.ts caller (setProjectKey,
-  // rotateProjectKey, mirrorEnvKeysIfAbsent, push*) subdir-aware
-  // without each having to plumb the subdir down explicitly.
-  const root = resolveEnvSearchRoot(projectDir);
-  const candidates = [
-    join(root, "packages/server", name),
-    join(root, "apps/server", name),
-    join(root, "packages/client", name),
-    join(root, "apps/client", name),
-    join(root, name),
-  ];
-  return candidates.find((p) => existsSync(p));
-}
-
-/** Resolve which directory to scan for `.env.production` / `.env.keys`
- *  given a project dir. When the project's manifest records a
- *  `projectSubdir`, walks into it; otherwise falls back to the
- *  supplied dir. The manifest lookup tolerates either the projectDir
- *  itself or an enclosing dir carrying it — so `cd /repo &&
- *  hatchkit keys push <name>` AND `cd /repo/site && hatchkit keys
- *  push <name>` both resolve to the same env files. */
-function resolveEnvSearchRoot(projectDir: string): string {
-  let manifestDir: string | undefined;
-  if (existsSync(join(projectDir, ".hatchkit.json"))) {
-    manifestDir = projectDir;
-  } else {
-    let dir = projectDir;
-    for (let i = 0; i < 12; i++) {
-      if (existsSync(join(dir, ".hatchkit.json"))) {
-        manifestDir = dir;
-        break;
-      }
-      const parent = dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-  }
-  if (!manifestDir) return projectDir;
-  try {
-    const raw = readFileSync(join(manifestDir, ".hatchkit.json"), "utf-8");
-    const parsed = JSON.parse(raw) as { projectSubdir?: unknown };
-    if (typeof parsed.projectSubdir === "string" && parsed.projectSubdir.trim()) {
-      return join(manifestDir, parsed.projectSubdir);
-    }
-  } catch {
-    // Unreadable / malformed manifest — fall back to the supplied dir.
-  }
-  return manifestDir;
+  return locateEnvFile(projectDir, name);
 }
 
 /** Pull the CURRENT private key out of a `DOTENV_PRIVATE_KEY_PRODUCTION="…"`

@@ -38,6 +38,7 @@ import chalk from "chalk";
 import ora from "ora";
 import { type ProjectManifest, readManifest, writeManifest } from "../scaffold/manifest.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
+import { resolveEnvFileTarget } from "../utils/env-files.js";
 import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
 import { accountIdFromR2Endpoint } from "./s3-buckets.js";
 
@@ -138,7 +139,7 @@ export async function provisionR2BucketTokens(
   // tokens still have usable credentials in the file. CF doesn't
   // expose the secret-access-key after creation, so a manifest token
   // without matching env entries is effectively dead — re-mint.
-  const envPath = join(opts.projectDir, ".env.production");
+  const envPath = resolveEnvFileTarget(opts.projectDir, ".env.production");
   const existingEnv = await readEnvKeysSet(envPath);
 
   const bucketTokens: R2BucketToken[] = [];

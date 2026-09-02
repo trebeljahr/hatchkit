@@ -16,6 +16,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { set as dotenvxSet } from "@dotenvx/dotenvx";
+import { resolveEnvFileTarget } from "../utils/env-files.js";
 
 /** One `KEY=VALUE` pair parsed out of a provisioned env block. */
 export interface EnvPair {
@@ -63,15 +64,19 @@ export function parseEnvLines(lines: string[]): EnvPair[] {
 
 /** Resolve where `.env.{development,production}` should live. The
  *  starter keeps them under `packages/server/`; other layouts (a
- *  hand-maintained project root, a monorepo not from the starter) are
- *  also accepted.
+ *  hand-maintained project root, an `apps/server` monorepo) are also
+ *  accepted.
+ *
+ *  Delegates to `utils/env-files.ts`, the same resolver the READERS
+ *  use (`hatchkit keys`, `sync`'s env pass). A writer that guesses its
+ *  own layout can seed a file no reader resolves — and, worse, mint a
+ *  second dotenvx keypair for it. See that module's header.
  *
  *  When `projectSubdir` is supplied (mirrored from
  *  `manifest.projectSubdir`), `projectDir` is treated as the enclosing
- *  repo root and the search is rebased into the subdir — so a
- *  manifest-recorded subfolder always wins over disk-layout guessing.
- *  Callers without manifest awareness can omit the second arg and get
- *  the historical heuristic behaviour. */
+ *  repo root and the search is rebased into the subdir. Callers
+ *  without manifest awareness can omit the second arg — the shared
+ *  resolver reads `projectSubdir` off `.hatchkit.json` itself. */
 export function resolveEnvTarget(
   projectDir: string,
   projectSubdir?: string,
@@ -80,11 +85,8 @@ export function resolveEnvTarget(
   layout: "starter" | "root";
 } {
   const root = projectSubdir ? join(projectDir, projectSubdir) : projectDir;
-  const starterDir = join(root, "packages/server");
-  if (existsSync(starterDir)) {
-    return { baseDir: starterDir, layout: "starter" };
-  }
-  return { baseDir: root, layout: "root" };
+  const baseDir = dirname(resolveEnvFileTarget(root, ".env.production"));
+  return { baseDir, layout: baseDir === root ? "root" : "starter" };
 }
 
 /** Upsert plain-text KEY=VALUE entries into `.env.development`. If the
