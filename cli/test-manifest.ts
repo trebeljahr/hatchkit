@@ -200,6 +200,10 @@ for (const c of CASES) {
     // v3 → v4 seeds `topology`, so the read DOES migrate now — but it
     // must not touch anything else on the way through.
     assert.equal(result.manifest.topology, "single-origin", "v3 → v4 seeds topology");
+    // publicService was optional, so some manifests carried "client" and
+    // others nothing — with three different fallback chains reading it.
+    // v4 states it explicitly so every reader sees the same answer.
+    assert.equal(result.manifest.publicService, "client", "v3 → v4 seeds publicService");
     assert.equal(result.manifest.version, MANIFEST_VERSION, "v3 → v4 bumps version");
     assert.deepEqual(result.manifest.ports, { server: 3000, client: 5173 }, "ports untouched");
 
@@ -237,6 +241,7 @@ for (const c of CASES) {
     const result = readManifestWithMigrationInfo(dir);
     assert.ok(result, "v4 read returned null");
     assert.equal(result.manifest.topology, "split", "explicit topology survives the read");
+    assert.equal(result.manifest.publicService, undefined, "v4 files are left exactly as written");
     assert.equal(
       result.migrated,
       false,

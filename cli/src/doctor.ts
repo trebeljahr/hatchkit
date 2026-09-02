@@ -1574,13 +1574,15 @@ export async function checkProjectR2CredsState(projectDir: string): Promise<Chec
   return out;
 }
 
-/** Flag adopted manifests that predate the `publicService` field.
- *  Without it, Coolify's per-service routing PATCH falls back to a
- *  heuristic that can pick the wrong service (e.g. binding the bare
- *  domain to `server` on a fullstack project where Next.js lives on
- *  `client`). The fix is a one-line manifest edit, surfaced here so
- *  the user opts in via `hatchkit update` rather than silently being
- *  backfilled.
+/** Report manifests that predate the `publicService` field.
+ *
+ *  `publicService` names the compose service that takes the bare
+ *  domain. The manifest reader now derives it from `surfaces` on every
+ *  read and routing filters the result through the project's actual
+ *  compose file, so an absent value is no longer a routing hazard —
+ *  which is why this reports `skip` rather than `fail`. What's left is
+ *  that the file doesn't SAY what it is, leaving every reader to
+ *  re-derive it; `hatchkit update` writes it down.
  *
  *  Skipped silently when:
  *    · no manifest at cwd
@@ -1624,12 +1626,15 @@ export async function checkProjectPublicServiceState(projectDir: string): Promis
   );
   out.push({
     name: `Project ${manifest.name} (publicService)`,
-    status: "fail",
-    detail: "manifest has no publicService — Coolify routing may bind the wrong service",
+    // Not a `fail`: hatchkit derives the value from `surfaces` on every
+    // read, so routing is already correct — the file just doesn't say
+    // so, which leaves the next reader to re-derive it.
+    status: "skip",
+    detail: `manifest has no publicService on disk — derived as "${suggested ?? "client"}" from surfaces=${manifest.surfaces}`,
     hint: [
-      `Set publicService in .hatchkit.json. Suggested for surfaces=${manifest.surfaces}: "${suggested ?? "client"}".`,
-      `Or run: hatchkit update    (re-applies scaffold defaults including publicService)`,
-      `Then re-run: hatchkit adopt --resume    (pushes the corrected routing to Coolify)`,
+      `Run: hatchkit update    (persists publicService + the current manifest schema)`,
+      `Or set it by hand. Suggested for surfaces=${manifest.surfaces}: "${suggested ?? "client"}".`,
+      `Then: hatchkit sync --dry-run    (read-only; shows what routing that produces)`,
     ],
   });
   return out;

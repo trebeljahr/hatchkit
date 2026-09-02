@@ -495,6 +495,30 @@ export function readManifestWithMigrationInfo(projectDir: string): ReadManifestR
     migrationNotes.push('Seeded email intent: { transactional: "none", mailingList: "none" }');
   }
 
+  // v3 -> v4: `publicService` becomes mandatory-in-practice.
+  //
+  // It was optional, so some manifests carry `"client"` and others
+  // (mood-magic) nothing at all, with three different fallback chains
+  // reading it — which is exactly the kind of "no apparent behavioural
+  // difference until suddenly there is one" that made create, adopt and
+  // sync disagree. Seed it from `surfaces` so every manifest states the
+  // same thing explicitly. Routing still filters the value through the
+  // project's actual compose file, so a stale name can't reach Coolify.
+  if (
+    fileVersion !== undefined &&
+    fileVersion < 4 &&
+    obj.publicService === undefined &&
+    typeof obj.surfaces === "string"
+  ) {
+    const seeded = routingDefaultPublicService(
+      obj.surfaces as ProjectManifest["surfaces"] | undefined,
+    );
+    if (seeded) {
+      obj.publicService = seeded;
+      migrationNotes.push(`Seeded publicService: "${seeded}" (from surfaces=${obj.surfaces})`);
+    }
+  }
+
   // v3 -> v4: `topology` appears. Seed `single-origin` explicitly rather
   // than leaving it absent: every pre-v4 manifest came from a run that
   // created ONE Coolify app running the multi-service compose, so that
