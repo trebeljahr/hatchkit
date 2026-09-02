@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
 import {
@@ -40,6 +40,14 @@ import {
   summarizeEmailIntent,
 } from "./prompts.js";
 import {
+  type DeferredStep,
+  STANDALONE_STEP_KEYS,
+  deferralForStep,
+  labelForService,
+  persistDeferredSteps,
+  renderDeferralSummary,
+} from "./provision/deferrals.js";
+import {
   type ProvisionService,
   type ProvisionedEvent,
   type SurfaceMode,
@@ -48,7 +56,7 @@ import {
 } from "./provision/index.js";
 import { scaffoldApp } from "./scaffold/app.js";
 import { scaffoldInfra } from "./scaffold/infra.js";
-import { type ProjectManifest, readManifest } from "./scaffold/manifest.js";
+import { MANIFEST_FILENAME, type ProjectManifest, readManifest } from "./scaffold/manifest.js";
 import { mlEnvVarName, printMlSummary, resolveMlServices } from "./scaffold/ml-client.js";
 import { runUpdate } from "./scaffold/update.js";
 import {
@@ -737,6 +745,26 @@ function inferProjectDir(startDir: string | undefined): string | undefined {
   return undefined;
 }
 
+/** Best-effort server-env directory for a project root. Mirrors the
+ *  candidate list `resolveSurfaces` uses in the provisioner so
+ *  `hatchkit add <project> stripe` writes to the same files the create
+ *  flow does. Falls back to the project root when no conventional
+ *  server package exists (single-package repos). */
+function resolveServerEnvDir(projectDir: string): string {
+  const candidates = [
+    "packages/server",
+    "apps/server",
+    "apps/api",
+    "server",
+    "api",
+    "packages/backend",
+  ];
+  for (const rel of candidates) {
+    if (existsSync(join(projectDir, rel))) return join(projectDir, rel);
+  }
+  return projectDir;
+}
+
 function looksLikeProjectDir(dir: string): boolean {
   return [
     "package.json",
@@ -994,6 +1022,50 @@ async function handleAdd(): Promise<void> {
   // config edits, ASC API). Special-case it BEFORE the dispatcher so
   // the rest of the handler doesn't have to know about it.
   const positional0 = args.slice(1).filter((a) => !a.startsWith("-"));
+
+  // Stripe, like signing, doesn't fit the env-bucket shape the
+  // `ProvisionService` fan-out assumes (it writes both env files and
+  // mints webhook endpoints per mode). Special-case it here so the
+  // `hatchkit add <project> stripe` command printed by a deferral
+  // summary actually resolves to the same wiring `create` runs.
+  const wantsStripe = positional0[0] === "stripe" || positional0[1] === "stripe";
+  if (wantsStripe) {
+    const projectDirArg = positional0[0] === "stripe" ? undefined : positional0[0];
+    const projectDir = projectDirArg ? resolve(projectDirArg) : resolve(".");
+    const manifest = readManifest(projectDir);
+    if (!manifest) {
+      console.log(chalk.red(`  No ${MANIFEST_FILENAME} in ${projectDir}.`));
+      console.log(chalk.dim("  Run `hatchkit adopt` first, or pass the project directory."));
+      process.exit(1);
+    }
+    if (manifest.surfaces === "static") {
+      console.log(
+        chalk.red("  Stripe needs a server runtime — this project's surface mode is `static`."),
+      );
+      process.exit(1);
+    }
+    const serverEnvDir = resolveServerEnvDir(projectDir);
+    const { wireStripeForProject } = await import("./provision/stripe-wiring.js");
+    const result = await wireStripeForProject({
+      projectName: manifest.name,
+      domain: manifest.domain,
+      serverEnvDir,
+      envLabelPrefix: relative(projectDir, serverEnvDir) || ".",
+    });
+    persistDeferredSteps(
+      projectDir,
+      result.deferred ? [result.deferred] : [],
+      result.configured ? [STANDALONE_STEP_KEYS.stripe] : [],
+    );
+    const block = renderDeferralSummary({
+      configured: result.configured ? ["Stripe (payments)"] : [],
+      deferred: result.deferred ? [result.deferred] : [],
+      title: `Optional steps — ${manifest.name}`,
+    });
+    if (block) console.log(block);
+    return;
+  }
+
   const wantsSigning = positional0[0] === "signing" || positional0[1] === "signing";
   if (wantsSigning) {
     const { runSigningSetup } = await import("./features/signing/index.js");
@@ -2105,6 +2177,15 @@ async function handleCreate(): Promise<void> {
   // can read them. Declared with let so they can be reassigned inside.
   let scaffoldResult: Awaited<ReturnType<typeof scaffoldApp>> | undefined;
   let installedDeps = false;
+  // Optional-step bookkeeping. Every deferrable step appends here
+  // instead of throwing, so the run always reaches the Done banner and
+  // the user gets one list of what's still outstanding plus the exact
+  // command per item.
+  const configuredSteps: string[] = [];
+  const deferredSteps: DeferredStep[] = [];
+  /** Deferral keys this run *completed* — cleared out of the manifest
+   *  so a resumed create doesn't keep reporting a step as pending. */
+  const resolvedStepKeys: string[] = [];
 
   try {
     // Step 1: Scaffold app repo
@@ -2135,9 +2216,15 @@ async function handleCreate(): Promise<void> {
       // Auto-provision selected project-scoped services
       // through the same machinery used by `hatchkit add`, so create,
       // adopt, and existing-project provisioning stay aligned.
+      //
+      // Optional services never abort the create: runProvision turns a
+      // declined credential prompt or a failing provider call into a
+      // deferral (recorded in .hatchkit.json + reported below) and
+      // carries on with the next one. Only genuinely fatal problems
+      // still throw out to the ledger/rollback handler.
       if (provisionServices.length > 0 && !config.dryRun) {
         try {
-          await runProvision({
+          const provisionResult = await runProvision({
             baseName: config.name,
             services: provisionServices,
             domain: config.domain,
@@ -2155,10 +2242,15 @@ async function handleCreate(): Promise<void> {
                   catchAll: config.emailForwarding.catchAll,
                 }
               : undefined,
+            // One combined "what got configured / what's still pending"
+            // block is printed at the very end of create instead.
+            printSummary: false,
             onProvisioned: (event) => {
               if (ledger) recordProvisionedEvent(ledger, event);
             },
           });
+          configuredSteps.push(...provisionResult.configured.map((s) => labelForService(s)));
+          deferredSteps.push(...provisionResult.deferred);
         } catch (err) {
           console.log(
             chalk.yellow(`  Couldn't auto-provision services: ${(err as Error).message}`),
@@ -2178,76 +2270,28 @@ async function handleCreate(): Promise<void> {
       //   · live creds     → .env.production  (dotenvx-encrypted)
       // Webhook endpoint ids are tracked in keychain so destroy can
       // reach them later. Skipped for static (no server runtime).
+      //
+      // Optional throughout: skipping the key prompts (or a Stripe API
+      // failure) writes CHANGE_ME placeholders + a recipe comment and
+      // records a deferral. The same helper backs
+      // `hatchkit add <project> stripe`, so the follow-up command in
+      // the summary resumes exactly here.
       if (config.features.includes("stripe") && config.surfaces !== "static") {
-        try {
-          const { provisionStripeProject, renderStripeEnv, renderStripeSkipComment } = await import(
-            "./provision/stripe.js"
-          );
-          const { appendCommentBlock, parseEnvLines, writeDevEnv, writeProdEnv } = await import(
-            "./provision/write-env.js"
-          );
-          const result = await provisionStripeProject({
-            projectName: config.name,
-            domain: config.domain,
-          });
-
-          const devEnvPath = join(appDir, "packages/server/.env.development");
-          const prodEnvPath = join(appDir, "packages/server/.env.production");
-          const devLabel = "packages/server/.env.development";
-          const prodLabel = "packages/server/.env.production";
-
-          if (result.test) {
-            if (result.test.kind === "skipped") {
-              appendCommentBlock(devEnvPath, renderStripeSkipComment("test", devLabel));
-            }
-            const pairs = parseEnvLines(renderStripeEnv(result.test));
-            writeDevEnv(devEnvPath, pairs);
-            // Only record the webhook ledger entry when we actually
-            // touched Stripe's API — skipped runs leave nothing to undo.
-            if (result.test.kind === "configured") {
-              ledger?.record({
-                kind: "keychain",
-                account: SECRET_KEYS.stripeProjectWebhookId(config.name, "test"),
-              });
-            }
-            console.log(
-              chalk.green(
-                result.test.kind === "skipped"
-                  ? `  ✓ Stripe sandbox placeholders → ${devLabel} (fill in later)`
-                  : `  ✓ Stripe sandbox creds → ${devLabel} (${pairs.length} keys)`,
-              ),
-            );
-          }
-          if (result.live) {
-            if (result.live.kind === "skipped") {
-              appendCommentBlock(prodEnvPath, renderStripeSkipComment("live", prodLabel));
-            }
-            const pairs = parseEnvLines(renderStripeEnv(result.live));
-            writeProdEnv(prodEnvPath, pairs);
-            if (result.live.kind === "configured") {
-              ledger?.record({
-                kind: "keychain",
-                account: SECRET_KEYS.stripeProjectWebhookId(config.name, "live"),
-              });
-            }
-            console.log(
-              chalk.green(
-                result.live.kind === "skipped"
-                  ? `  ✓ Stripe live placeholders → ${prodLabel} (encrypted CHANGE_ME values, fill in later)`
-                  : `  ✓ Stripe live creds → ${prodLabel} (encrypted, ${pairs.length} keys)`,
-              ),
-            );
-          }
-        } catch (err) {
-          console.log(chalk.yellow(`  Couldn't auto-provision Stripe: ${(err as Error).message}`));
-          console.log(
-            chalk.dim(
-              `  Create the webhook manually: dashboard.stripe.com → Developers → Webhooks,\n` +
-                `  point at https://${config.domain}/api/stripe/webhook, then\n` +
-                `  \`dotenvx set STRIPE_WEBHOOK_SECRET <whsec_…> -f packages/server/.env.production\`.`,
-            ),
-          );
+        const { wireStripeForProject } = await import("./provision/stripe-wiring.js");
+        const stripeResult = await wireStripeForProject({
+          projectName: config.name,
+          domain: config.domain,
+          serverEnvDir: join(appDir, "packages/server"),
+          envLabelPrefix: "packages/server",
+        });
+        for (const account of stripeResult.webhookKeychainAccounts) {
+          ledger?.record({ kind: "keychain", account });
         }
+        if (stripeResult.configured) {
+          configuredSteps.push("Stripe (payments)");
+          resolvedStepKeys.push(STANDALONE_STEP_KEYS.stripe);
+        }
+        if (stripeResult.deferred) deferredSteps.push(stripeResult.deferred);
       }
     }
 
@@ -2458,10 +2502,14 @@ async function handleCreate(): Promise<void> {
           await pushProjectKeyToCoolify(config.name, { appName: config.name });
         } catch (err) {
           console.log(chalk.yellow(`  Couldn't auto-push dotenvx key: ${(err as Error).message}`));
-          console.log(
-            chalk.dim(
-              `  Push manually once the Coolify app exists: hatchkit keys push ${config.name}`,
-            ),
+          deferredSteps.push(
+            deferralForStep({
+              key: "keys-push-coolify",
+              label: "dotenvx key → Coolify",
+              kind: "failed",
+              reason: (err as Error).message,
+              command: `hatchkit keys push ${config.name}`,
+            }),
           );
         }
       }
@@ -2564,8 +2612,14 @@ async function handleCreate(): Promise<void> {
         console.log(chalk.green(`  ✓ GitHub Pages will publish at ${pageUrl}`));
       } catch (err) {
         console.log(chalk.yellow(`  Couldn't auto-wire GitHub Pages: ${(err as Error).message}`));
-        console.log(
-          chalk.dim(`  Run \`hatchkit gh-pages\` from ${appDir} once the issue is resolved.`),
+        deferredSteps.push(
+          deferralForStep({
+            key: "gh-pages",
+            label: "GitHub Pages wiring",
+            kind: "failed",
+            reason: (err as Error).message,
+            command: `cd ${appDir} && hatchkit gh-pages`,
+          }),
         );
       }
     }
@@ -2649,7 +2703,23 @@ async function handleCreate(): Promise<void> {
     uninstallCancelHandler();
   }
 
-  // Final summary
+  // Final summary. The deferral block goes first so "what's still
+  // outstanding" isn't buried under the next-steps hints — and so a run
+  // that skipped three optional steps still reads as a success with a
+  // to-do list, not as a half-failure.
+  if (configuredSteps.length > 0 || deferredSteps.length > 0) {
+    // Fold the create-level steps (Stripe) into the manifest alongside
+    // whatever runProvision already recorded, so `hatchkit status` sees
+    // the complete picture.
+    persistDeferredSteps(appDir, deferredSteps, resolvedStepKeys);
+    const block = renderDeferralSummary({
+      configured: configuredSteps,
+      deferred: deferredSteps,
+      title: `Optional steps — ${config.name}`,
+    });
+    if (block) console.log(block);
+  }
+
   console.log(chalk.bold("\n  ── Done! ─────────────────────────────────────────────────\n"));
   console.log(`  App:       ${chalk.cyan(`https://${config.domain}`)}`);
   // Skip the API line for static — there's no backend, so showing a
@@ -3615,6 +3685,20 @@ function printHelp(topic?: HelpTopic): void {
                   projects also get unprefixed R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
                   aliases. Buckets must already exist (s3Provider: "existing").
 
+  ${chalk.bold("Standalone targets")} ${chalk.dim("(not part of `all` — run them by name)")}:
+    stripe      Per-project sk/pk pairs + a webhook endpoint per mode.
+                Same wiring \`hatchkit create\` runs, so it's the follow-up
+                for a Stripe step deferred during create.
+    signing     Installer signing + store uploads (see \`hatchkit help signing\`).
+
+  ${chalk.bold("Deferred steps:")}
+    Every service above is optional. Declining its credential prompt — or a
+    provider erroring mid-run — skips just that service, records it in
+    ${chalk.cyan(".hatchkit.json")} under ${chalk.cyan("deferred[]")}, and lets the rest of the run finish.
+    The end-of-run summary prints the exact command per skipped item;
+    ${chalk.cyan("hatchkit status")} and ${chalk.cyan("hatchkit doctor")} keep reporting them until they're done.
+    Re-running the command clears the entry — nothing is provisioned twice.
+
   ${chalk.bold("Flags:")}
     --enable-dev-obs            Also populate .env.development with obs creds.
     --no-write                  Skip writing; save 0600 cache only.
@@ -3638,6 +3722,7 @@ function printHelp(topic?: HelpTopic): void {
     hatchkit add my-app search-console --domain app.example.com --project-dir ./my-app
     hatchkit add fractal-garden search-console --domain fractal.garden
     hatchkit add raptor-runner glitchtip,listmonk-ses --no-write
+    hatchkit add raptor-runner stripe
     hatchkit add raptor-runner all --surfaces=shared \\
         --server-dir ./raptor-runner/packages/server \\
         --client-dir ./raptor-runner/packages/client

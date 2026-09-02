@@ -255,7 +255,35 @@ hatchkit add raptor-runner search-console        # verify domain + add Search Co
 | `email` | Cloudflare Email Routing rules | no env; DNS MX/SPF/DMARC + forwarding rules |
 | `search-console` | Google Search Console domain property | no env; DNS TXT verification |
 
+| `stripe` | Per-project Stripe keys + a webhook endpoint per mode | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` |
+
+`stripe` and `signing` are standalone targets — run them by name; they are not part of `all`.
+
 The resulting env blocks are printed **and** saved under `<config-dir>/provisioned/<project>.{dev,prod}.env` for safe keeping.
+
+---
+
+## Deferred steps
+
+Every service above is **optional**, and so is every credential prompt behind it. If you pick a service and then discover you don't have the token to hand, answer **no** at the "Set up X now?" gate. That step is skipped; the rest of the run continues and finishes normally.
+
+The same applies when a provider fails mid-run — a 401, a timeout, an unreachable host. Only genuinely fatal problems (a name collision with an existing resource, Ctrl+C) still abort.
+
+Each skip is recorded three ways:
+
+1. **End-of-run summary** — a `Configured` / `Deferred` block with the exact follow-up command per skipped item.
+2. **`.hatchkit.json`** — under `deferred[]`. Labels, reasons, and CLI commands only; never a credential.
+3. **`hatchkit status` and `hatchkit doctor`** — both keep reporting them until they're done. `doctor` shows them as `deferred`, distinct from `fail`, and does **not** exit non-zero for them.
+
+```bash
+hatchkit status            # "2 steps deferred" + the command for each
+hatchkit status --json     # `deferredSteps[]` on the StatusSnapshot
+hatchkit add raptor-runner s3   # finish one; the entry clears itself
+```
+
+Re-running a deferred step is safe: `hatchkit add` refuses services whose credentials are already in the env files, so nothing is provisioned twice. `hatchkit adopt --resume` retries deferred steps for the same reason — they wrote no env keys the first time round.
+
+Nothing is rolled back for a deferral. A declined step created no remote resource, so there is no partial state to undo.
 
 ---
 
@@ -338,7 +366,9 @@ and for repairing a project deployed before 0.2.19.
 
 ## `hatchkit doctor`
 
-Runs a read-only API call against every configured provider — Coolify `/version`, Hetzner `/servers`, Cloudflare `/tokens/verify`, Resend `/domains`, and so on. Reports `ok` / `fail` / `not configured` per provider and exits non-zero if anything fails. Safe to run repeatedly.
+Runs a read-only API call against every configured provider — Coolify `/version`, Hetzner `/servers`, Cloudflare `/tokens/verify`, Resend `/domains`, and so on. Reports `ok` / `fail` / `deferred` / `not configured` per provider and exits non-zero if anything **fails**. Safe to run repeatedly.
+
+Run from inside a project directory and it also lists that project's [deferred steps](#deferred-steps) with the command to finish each one. Deferred steps never make `doctor` exit non-zero — they're work you postponed, not a broken credential.
 
 ---
 

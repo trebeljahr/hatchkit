@@ -54,6 +54,11 @@ const MODEL: ExplainModel = {
       description:
         "Per-project private key that decrypts .env.production at runtime. Generated at scaffold time; lives in the OS keychain under service `hatchkit`; pushed to Coolify via `hatchkit keys push`.",
     },
+    {
+      name: "Deferred step",
+      description:
+        "An optional step the user skipped ('I don't have that credential right now') or that failed with a recoverable provider error. Recorded in .hatchkit.json under `deferred[]` with the exact follow-up command. Never aborts the run, never triggers rollback (nothing was created), and clears itself once the step succeeds. Surfaced by `hatchkit status` and `hatchkit doctor`.",
+    },
   ],
   commands: [
     {

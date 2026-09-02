@@ -20,6 +20,7 @@ import {
   validateS3KeyPair,
 } from "./config.js";
 import { appSlugFromHtmlUrl, listUserInstallations } from "./deploy/github-app-access.js";
+import { readDeferredSteps } from "./provision/deferrals.js";
 import { CoolifyApi, verifyCoolify } from "./utils/coolify-api.js";
 import {
   dockerLoginAlreadyOk,
@@ -32,7 +33,11 @@ import { SECRET_KEYS, getSecret } from "./utils/secrets.js";
 
 interface CheckResult {
   name: string;
-  status: "ok" | "fail" | "skip";
+  /** `deferred` is a deliberate user choice ("I'll do it later"), not a
+   *  health problem: it renders distinctly and does NOT make doctor
+   *  exit non-zero, so a project with skipped optional steps still
+   *  passes CI. */
+  status: "ok" | "fail" | "skip" | "deferred";
   detail?: string;
   /** Multi-line troubleshooting hint, shown under a failing check. */
   hint?: string[];
@@ -905,6 +910,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of dnsResolveChecks) results.push(r);
   const prodEnvChecks = await checkProjectProdEnvState(process.cwd());
   for (const r of prodEnvChecks) results.push(r);
+  const deferredChecks = checkProjectDeferredSteps(process.cwd());
+  for (const r of deferredChecks) results.push(r);
   return results;
 }
 
@@ -1082,6 +1089,34 @@ export async function checkProjectProdEnvState(projectDir: string): Promise<Chec
   }
 
   return out;
+}
+
+/**
+ * Project-local deferred-step check, gated on `.hatchkit.json` in cwd.
+ *
+ * Reports one `deferred` row per optional step the user skipped during
+ * create / adopt / add, with the exact follow-up command as the hint.
+ * These are genuinely unfinished work the user asked to postpone — not
+ * broken credentials — so they render distinctly and never make doctor
+ * exit non-zero. A `skip` row would be invisible in the summary counts,
+ * which is why they get their own status instead.
+ *
+ * Returns [] outside a Hatchkit project and for projects with nothing
+ * deferred, so `hatchkit doctor` from $HOME stays clean.
+ */
+export function checkProjectDeferredSteps(projectDir: string): CheckResult[] {
+  let steps: ReturnType<typeof readDeferredSteps>;
+  try {
+    steps = readDeferredSteps(projectDir);
+  } catch {
+    return [];
+  }
+  return steps.map((step) => ({
+    name: `Deferred: ${step.label}`,
+    status: "deferred" as const,
+    detail: `${step.reason} (deferred ${step.deferredAt.slice(0, 10)})`,
+    hint: [`Finish it: ${step.command}`, ...(step.hint ?? []).map((h) => `Prerequisite: ${h}`)],
+  }));
 }
 
 /**
@@ -1916,10 +1951,16 @@ export async function runDoctor(opts: { json?: boolean } = {}): Promise<void> {
   const okCount = results.filter((r) => r.status === "ok").length;
   const failCount = results.filter((r) => r.status === "fail").length;
   const skipCount = results.filter((r) => r.status === "skip").length;
+  const deferredResults = results.filter((r) => r.status === "deferred");
 
   if (opts.json) {
     const payload = {
-      summary: { ok: okCount, failing: failCount, not_configured: skipCount },
+      summary: {
+        ok: okCount,
+        failing: failCount,
+        not_configured: skipCount,
+        deferred: deferredResults.length,
+      },
       checks: results.map((r) => ({
         name: r.name,
         status: r.status,
@@ -1935,14 +1976,41 @@ export async function runDoctor(opts: { json?: boolean } = {}): Promise<void> {
   console.log(chalk.bold("  hatchkit doctor — checking configured providers\n"));
   for (const r of results) {
     const icon =
-      r.status === "ok" ? chalk.green("✓") : r.status === "fail" ? chalk.red("✗") : chalk.dim("·");
-    const name = r.status === "fail" ? chalk.red(r.name) : r.name;
+      r.status === "ok"
+        ? chalk.green("✓")
+        : r.status === "fail"
+          ? chalk.red("✗")
+          : r.status === "deferred"
+            ? chalk.yellow("»")
+            : chalk.dim("·");
+    const name =
+      r.status === "fail"
+        ? chalk.red(r.name)
+        : r.status === "deferred"
+          ? chalk.yellow(r.name)
+          : r.name;
     const detail = r.detail ? chalk.dim(` — ${r.detail}`) : "";
     console.log(`  ${icon} ${name}${detail}`);
   }
   console.log(
-    `\n  ${chalk.green(`${okCount} ok`)}  ${failCount ? chalk.red(`${failCount} failing`) : chalk.dim("0 failing")}  ${chalk.dim(`${skipCount} not configured`)}\n`,
+    `\n  ${chalk.green(`${okCount} ok`)}  ${failCount ? chalk.red(`${failCount} failing`) : chalk.dim("0 failing")}  ${
+      deferredResults.length
+        ? chalk.yellow(`${deferredResults.length} deferred`)
+        : chalk.dim("0 deferred")
+    }  ${chalk.dim(`${skipCount} not configured`)}\n`,
   );
+
+  // Deferred steps come before the failure block: they're the user's
+  // own to-do list, and printing them first means a run with no real
+  // failures still ends on the actionable list.
+  if (deferredResults.length > 0) {
+    console.log(chalk.bold("  Deferred — finish when you have the credentials"));
+    for (const r of deferredResults) {
+      console.log(`\n  ${chalk.yellow("»")} ${chalk.bold(r.name)}`);
+      for (const line of r.hint ?? []) console.log(`    ${chalk.dim("→")} ${line}`);
+    }
+    console.log();
+  }
 
   const failed = results.filter((r) => r.status === "fail");
   if (failed.length > 0) {

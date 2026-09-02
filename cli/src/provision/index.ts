@@ -54,6 +54,20 @@ import { exec } from "../utils/exec.js";
 import { validateDomain, validateProjectName } from "../utils/validate.js";
 import { getCliVersion } from "../utils/version.js";
 import {
+  type DeferralKind,
+  type DeferredStep,
+  FatalProvisionError,
+  classifyOptionalStepError,
+  confirmConfigureOrDefer,
+  deferStep,
+  deferralForService,
+  deferralKeyForService,
+  labelForService,
+  persistDeferredSteps,
+  renderDeferralSummary,
+  setupCommandsForService,
+} from "./deferrals.js";
+import {
   type GlitchtipClient,
   deleteGlitchtipClient,
   glitchtipProjectExists,
@@ -243,6 +257,28 @@ export interface ProvisionOptions {
    *  inside `runEmailSetupForDomain`. The create flow populates this
    *  from the planning-phase `Email forwarding` step. */
   emailForwarding?: { addresses: string[]; catchAll: boolean };
+  /** Fired once per optional step the run skipped — the user declined
+   *  the credential prompt, the provider errored, or the step doesn't
+   *  apply to this project shape. Mirrors `onProvisioned` so callers
+   *  (create / adopt) can fold deferrals into their own end-of-run
+   *  report without re-deriving them from the return value. */
+  onDeferred?: (step: DeferredStep) => void;
+  /** Print the "Configured / Deferred" block at the end of the run.
+   *  Default true. `hatchkit create` and `hatchkit adopt` turn it off
+   *  and render one combined summary for the whole flow instead. */
+  printSummary?: boolean;
+}
+
+/** Outcome of a provision run. Never throws for an optional step: a
+ *  declined credential prompt, a 401 from a provider, or a service that
+ *  can't apply to this surface all land in `deferred` and the rest of
+ *  the run continues. Only genuinely fatal problems (invalid base name,
+ *  pre-existing resource conflict under `failIfExists`, Ctrl+C) throw. */
+export interface ProvisionRunResult {
+  /** Services that completed end-to-end this run. */
+  configured: ProvisionService[];
+  /** Optional steps that were skipped, each with its follow-up command. */
+  deferred: DeferredStep[];
 }
 
 export interface SearchConsoleDomainGuess {
@@ -302,7 +338,10 @@ async function assertNoExistingProviderResources(args: {
   }
 
   if (conflicts.length > 0) {
-    throw new Error(
+    // Fatal by design: silently continuing would either duplicate a
+    // live resource or clobber credentials the user is already
+    // depending on. Not a deferral — there's nothing to finish later.
+    throw new FatalProvisionError(
       [
         "Refusing to add services because these resources already exist:",
         ...conflicts.map((conflict) => `  - ${conflict}`),
@@ -313,63 +352,235 @@ async function assertNoExistingProviderResources(args: {
   }
 }
 
-export async function runProvision(opts: ProvisionOptions): Promise<void> {
+export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRunResult> {
   const nameCheck = validateProjectName(opts.baseName);
-  if (nameCheck !== true) throw new Error(`Invalid base name: ${nameCheck}`);
+  if (nameCheck !== true) throw new FatalProvisionError(`Invalid base name: ${nameCheck}`);
 
   const surfaces = await resolveSurfaces(opts);
   const enableDevObs = opts.enableDevObs ?? false;
-  const plausibleDomain = opts.services.includes("plausible")
-    ? await resolvePlausibleDomain(opts, surfaces)
-    : undefined;
-  const searchConsoleTarget = opts.services.includes("search-console")
-    ? await resolveSearchConsoleTarget(opts, surfaces)
-    : undefined;
+
+  // ── Deferral bookkeeping ────────────────────────────────────────
+  //
+  // `active` is the working set of services; a deferred service drops
+  // out of it so every downstream `if (active.has(...))` guard sees a
+  // consistent view. `configured` collects the ones that finished, and
+  // is what clears stale `deferred[]` entries out of the manifest when
+  // the user later comes back and completes a step.
+  const active = new Set<ProvisionService>(opts.services);
+  const configured: ProvisionService[] = [];
+  const deferred: DeferredStep[] = [];
+
+  const defer = (service: ProvisionService, kind: DeferralKind, reason: string): void => {
+    active.delete(service);
+    const step = deferralForService({
+      service,
+      project: opts.baseName,
+      kind,
+      reason,
+      withoutSetupHint: kind === "unavailable",
+    });
+    deferred.push(step);
+    const verb = kind === "failed" ? "failed" : "skipped";
+    console.log(chalk.yellow(`  » ${step.label} ${verb}: ${reason}`));
+    console.log(chalk.dim(`    Finish later: ${step.command}`));
+    opts.onDeferred?.(step);
+  };
+
+  /** Run one optional step. Anything the step throws that isn't
+   *  genuinely fatal becomes a deferral: the step is skipped, the
+   *  reason is recorded with its follow-up command, and the run
+   *  continues with the next service. `markConfigured` is false for
+   *  the credential-gathering pre-pass — reaching a credential isn't
+   *  the same as having provisioned the service. */
+  const runOptionalStep = async (
+    service: ProvisionService,
+    body: () => Promise<void>,
+    markConfigured = true,
+  ): Promise<void> => {
+    if (!active.has(service)) return;
+    try {
+      await body();
+      if (markConfigured) configured.push(service);
+    } catch (err) {
+      const outcome = classifyOptionalStepError(err);
+      if (!outcome) throw err;
+      defer(service, outcome.kind, outcome.reason);
+    }
+  };
+
+  // Domain resolution runs through the same wrapper as the providers
+  // themselves: these two prompt when they can't infer a domain, and a
+  // user who can't answer (or a manifest that's missing the field)
+  // should lose only that one service.
+  let plausibleDomain: string | undefined;
+  await runOptionalStep(
+    "plausible",
+    async () => {
+      plausibleDomain = await resolvePlausibleDomain(opts, surfaces);
+    },
+    false,
+  );
+  let searchConsoleTarget: SearchConsoleTarget | undefined;
+  await runOptionalStep(
+    "search-console",
+    async () => {
+      searchConsoleTarget = await resolveSearchConsoleTarget(opts, surfaces);
+    },
+    false,
+  );
+
+  console.log(chalk.bold(`\n  ── Provisioning ${opts.baseName} ──────────────────────────\n`));
 
   // Ensure every selected provider is configured *before* any spinner
   // starts. Otherwise a lazy `ensure*` prompt fires underneath the ora
   // spinner and inquirer waits forever for invisible input.
-  if (opts.services.includes("glitchtip")) await ensureGlitchtip();
-  if (opts.services.includes("openpanel")) await ensureOpenpanel();
-  if (opts.services.includes("plausible")) await ensurePlausible();
-  if (opts.services.includes("listmonk-ses")) {
-    // Two global providers gate the combo: a Listmonk instance + an
-    // SES IAM key. Both prompt up front (interactively) so the user
-    // doesn't discover a missing credential mid-provision. DNS auto-
-    // publish needs Cloudflare configured too, but it's optional —
-    // ensureDns is called in the dispatch block only when the user
-    // hasn't opted out of DNS publish.
-    const { ensureListmonk, ensureSes } = await import("../config.js");
-    await ensureSes();
-    await ensureListmonk();
-  }
+  //
+  // Each gate offers an explicit "not now" (see confirmConfigureOrDefer):
+  // declining drops just that service and the rest of the run proceeds,
+  // instead of aborting the whole flow at the one prompt the user
+  // couldn't answer.
+  await runOptionalStep(
+    "glitchtip",
+    async () => {
+      const { getGlitchtipConfig } = await import("../config.js");
+      await confirmConfigureOrDefer({
+        label: labelForService("glitchtip"),
+        configured: !!(await getGlitchtipConfig()),
+        setupCommands: setupCommandsForService("glitchtip"),
+      });
+      await ensureGlitchtip();
+    },
+    false,
+  );
+  await runOptionalStep(
+    "openpanel",
+    async () => {
+      const { getOpenpanelConfig } = await import("../config.js");
+      await confirmConfigureOrDefer({
+        label: labelForService("openpanel"),
+        configured: !!(await getOpenpanelConfig()),
+        setupCommands: setupCommandsForService("openpanel"),
+      });
+      await ensureOpenpanel();
+    },
+    false,
+  );
+  await runOptionalStep(
+    "plausible",
+    async () => {
+      const { getPlausibleConfig } = await import("../config.js");
+      await confirmConfigureOrDefer({
+        label: labelForService("plausible"),
+        configured: !!(await getPlausibleConfig()),
+        setupCommands: setupCommandsForService("plausible"),
+      });
+      await ensurePlausible();
+    },
+    false,
+  );
+  await runOptionalStep(
+    "listmonk-ses",
+    async () => {
+      // Two global providers gate the combo: a Listmonk instance + an
+      // SES IAM key. Both prompt up front (interactively) so the user
+      // doesn't discover a missing credential mid-provision. DNS auto-
+      // publish needs Cloudflare configured too, but it's optional —
+      // ensureDns is called in the dispatch block only when the user
+      // hasn't opted out of DNS publish.
+      const { ensureListmonk, ensureSes, getListmonkConfig, getSesConfig } = await import(
+        "../config.js"
+      );
+      await confirmConfigureOrDefer({
+        label: labelForService("listmonk-ses"),
+        configured: !!(await getSesConfig()) && !!(await getListmonkConfig()),
+        setupCommands: setupCommandsForService("listmonk-ses"),
+      });
+      await ensureSes();
+      await ensureListmonk();
+    },
+    false,
+  );
   // S3 is currently R2-only — `ensureS3("r2")` prompts for the admin
   // token (Account>R2:Edit + User>API Tokens:Edit) and stores the
   // endpoint metadata. Same lazy-config-before-spinner contract.
-  if (opts.services.includes("s3")) await ensureS3("r2");
-  if (opts.services.includes("email")) {
-    const { ensureDns, ensureDefaultForwardingEmail } = await import("../config.js");
-    await ensureDns();
-    await ensureDefaultForwardingEmail();
-  }
+  await runOptionalStep(
+    "s3",
+    async () => {
+      const { getS3Config } = await import("../config.js");
+      await confirmConfigureOrDefer({
+        label: labelForService("s3"),
+        configured: !!(await getS3Config("r2")),
+        setupCommands: setupCommandsForService("s3"),
+      });
+      await ensureS3("r2");
+    },
+    false,
+  );
+  await runOptionalStep(
+    "email",
+    async () => {
+      const { ensureDns, ensureDefaultForwardingEmail, getDefaultForwardingEmail, getDnsConfig } =
+        await import("../config.js");
+      await confirmConfigureOrDefer({
+        label: labelForService("email"),
+        configured: !!(await getDnsConfig()) && !!getDefaultForwardingEmail(),
+        setupCommands: setupCommandsForService("email"),
+      });
+      await ensureDns();
+      await ensureDefaultForwardingEmail();
+    },
+    false,
+  );
   if (searchConsoleTarget?.domain) {
-    const { ensureDns } = await import("../config.js");
-    await ensureGoogleSearchConsole();
-    await ensureDns();
+    await runOptionalStep(
+      "search-console",
+      async () => {
+        const { ensureDns, getDnsConfig, getGoogleSearchConsoleConfig } = await import(
+          "../config.js"
+        );
+        await confirmConfigureOrDefer({
+          label: labelForService("search-console"),
+          configured: !!(await getGoogleSearchConsoleConfig()) && !!(await getDnsConfig()),
+          setupCommands: setupCommandsForService("search-console"),
+        });
+        await ensureGoogleSearchConsole();
+        await ensureDns();
+      },
+      false,
+    );
   }
 
   const buckets = initBuckets(surfaces);
 
+  /** Persist deferrals + resolutions into `.hatchkit.json` and print the
+   *  end-of-run block. Called on every exit path (cache-only mode, the
+   *  no-env-lines short circuit, and the normal tail) so the manifest is
+   *  never left claiming a step is pending when it just succeeded. */
+  const finish = (): ProvisionRunResult => {
+    persistDeferredSteps(
+      surfaces?.projectDir,
+      deferred,
+      configured.map((service) => deferralKeyForService(service)),
+    );
+    if (opts.printSummary !== false) {
+      const block = renderDeferralSummary({
+        configured: configured.map((service) => labelForService(service)),
+        deferred,
+        title: `Provisioning summary — ${opts.baseName}`,
+      });
+      if (block) console.log(block);
+    }
+    return { configured: [...configured], deferred: [...deferred] };
+  };
+
   if (opts.failIfExists) {
     await assertNoExistingProviderResources({
       baseName: opts.baseName,
-      services: opts.services,
+      services: [...active],
       surfaces,
       plausibleDomain,
     });
   }
-
-  console.log(chalk.bold(`\n  ── Provisioning ${opts.baseName} ──────────────────────────\n`));
 
   // Runtime-shape gate. `static` is the ONLY surface mode without a
   // server runtime; everything else (fullstack, split, backend) does
@@ -382,7 +593,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   const hasClientSurface = !surfaces || surfaces.mode !== "backend";
 
   // ── GlitchTip ──
-  if (opts.services.includes("glitchtip")) {
+  await runOptionalStep("glitchtip", async () => {
     if (surfaces?.mode === "split") {
       for (const side of ["server", "client"] as const) {
         const projectName = `${opts.baseName}-${side}`;
@@ -409,10 +620,10 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
         pushObsLines(buckets, "client", renderGlitchtipEnv(res, true), enableDevObs);
       }
     }
-  }
+  });
 
   // ── OpenPanel ──
-  if (opts.services.includes("openpanel")) {
+  await runOptionalStep("openpanel", async () => {
     if (surfaces?.mode === "split") {
       for (const side of ["server", "client"] as const) {
         const projectName = `${opts.baseName}-${side}`;
@@ -435,25 +646,24 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
         pushObsLines(buckets, "client", renderOpenpanelEnv(res, true), enableDevObs);
       }
     }
-  }
+  });
 
   // ── Plausible ── (site-scoped browser analytics)
-  if (opts.services.includes("plausible")) {
+  await runOptionalStep("plausible", async () => {
     if (!hasClientSurface) {
-      console.log(
-        chalk.yellow(
-          `  Skipping Plausible — surface mode is "backend" (no client surface), so there's nowhere to put NEXT_PUBLIC_PLAUSIBLE_*.`,
-        ),
+      deferStep(
+        `surface mode is "backend" (no client surface), so there's nowhere to put NEXT_PUBLIC_PLAUSIBLE_*`,
+        "unavailable",
       );
     } else if (!plausibleDomain) {
-      console.log(
-        chalk.yellow(
-          `  Skipping Plausible — couldn't resolve the public site domain for ${opts.baseName}.`,
-        ),
-      );
+      deferStep(`couldn't resolve the public site domain for ${opts.baseName}`, "unavailable");
     } else {
-      const res = await withSpinner(`Plausible: wiring site ${plausibleDomain}`, () =>
-        provisionPlausibleSite(opts.baseName, plausibleDomain),
+      // Re-bind to a const: `plausibleDomain` is a mutable outer `let`
+      // (assigned by the resolver step above), so TS can't keep the
+      // non-null narrowing across the closure below.
+      const siteDomain = plausibleDomain;
+      const res = await withSpinner(`Plausible: wiring site ${siteDomain}`, () =>
+        provisionPlausibleSite(opts.baseName, siteDomain),
       );
       if (res.manual) {
         console.log(
@@ -470,25 +680,23 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
       });
       pushObsLines(buckets, "client", renderPlausibleEnv(res), enableDevObs);
     }
-  }
+  });
 
   // ── Listmonk + SES ── (server-side: SMTP relay creds + Listmonk API)
-  if (opts.services.includes("listmonk-ses")) {
+  await runOptionalStep("listmonk-ses", async () => {
     if (!hasServerRuntime) {
-      console.log(
-        chalk.yellow(
-          `  Skipping listmonk-ses — surface mode is "static" (no server runtime), so there's nowhere to put LISTMONK_/SES_* env.`,
-        ),
+      deferStep(
+        `surface mode is "static" (no server runtime), so there's nowhere to put LISTMONK_/SES_* env`,
+        "unavailable",
       );
     } else {
       const projectDir = surfaces?.projectDir;
       const manifest = projectDir ? readManifest(projectDir) : null;
       const projectDomain = manifest?.domain ?? opts.domain;
       if (!projectDomain) {
-        console.log(
-          chalk.yellow(
-            `  Skipping listmonk-ses — need a project dir (.hatchkit.json) with a domain, or --domain, to derive mail.<projectDomain>.`,
-          ),
+        deferStep(
+          `need a project dir (.hatchkit.json) with a domain, or --domain, to derive mail.<projectDomain>`,
+          "unavailable",
         );
       } else {
         const { provisionListmonkSesForProject, renderListmonkSesEnv } = await import(
@@ -740,7 +948,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
         serverBucket.devLines.push(...env.dev);
       }
     }
-  }
+  });
 
   // ── Email (Cloudflare Email Routing) ── (zone-level, not env-bucketed)
   //
@@ -749,19 +957,18 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
   // destination inbox the first time, and applies MX/SPF/DMARC +
   // forwarding rules. Doesn't write into .env.{production,development}
   // — email forwarding is a DNS-only concern; no app-runtime secret.
-  if (opts.services.includes("email")) {
+  await runOptionalStep("email", async () => {
     const projectDir = surfaces?.projectDir;
     if (!projectDir) {
-      console.log(
-        chalk.yellow(
-          "  Skipping Email — need a project dir (.hatchkit.json) to read the domain. Pass --project-dir, or run `hatchkit email setup --domain <fqdn>` directly.",
-        ),
+      deferStep(
+        "need a project dir (.hatchkit.json) to read the domain — pass --project-dir, or run `hatchkit email setup --domain <fqdn>` directly",
+        "unavailable",
       );
     } else {
       const { readManifest } = await import("../scaffold/manifest.js");
       const manifest = readManifest(projectDir);
       if (!manifest?.domain) {
-        console.log(chalk.yellow("  Skipping Email — manifest has no `domain` field."));
+        deferStep("manifest has no `domain` field", "unavailable");
       } else {
         const { runEmailSetupForDomain } = await import("../email/index.js");
         const emailFlags: import("../email/index.js").EmailCommandFlags = {
@@ -803,15 +1010,17 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
         });
       }
     }
-  }
+  });
 
   // ── Google Search Console ── (domain verification + property add)
   //
   // Uses Google OAuth stored once during setup, then proves ownership
   // with a Cloudflare DNS TXT record. It writes no runtime env because
   // Search Console is account state, not app config.
-  if (opts.services.includes("search-console")) {
-    if (!searchConsoleTarget) throw new Error("Search Console target was not resolved.");
+  await runOptionalStep("search-console", async () => {
+    if (!searchConsoleTarget) {
+      deferStep("couldn't resolve a domain to verify", "unavailable");
+    }
     const projectDir = searchConsoleTarget.projectDir;
     const domain = searchConsoleTarget.domain;
     const result = await withSpinner(`Search Console: verifying ${domain}`, () =>
@@ -843,24 +1052,22 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
         ),
       );
     }
-  }
+  });
 
   // ── S3 / R2 ── (server-side only; per-bucket scoped tokens)
-  if (opts.services.includes("s3")) {
+  await runOptionalStep("s3", async () => {
     if (!hasServerRuntime) {
-      console.log(
-        chalk.yellow(
-          `  Skipping S3 — surface mode is "static" (no server runtime), so there's nowhere to put R2_*.`,
-        ),
+      deferStep(
+        `surface mode is "static" (no server runtime), so there's nowhere to put R2_*`,
+        "unavailable",
       );
     } else if (!surfaces || !surfaces.projectDir) {
       // surfaces=null happens with --no-write; surfaces.projectDir is
       // populated by resolveSurfaces. Without it we can't read the
       // manifest to know which buckets to mint tokens for.
-      console.log(
-        chalk.yellow(
-          `  Skipping S3 — couldn't resolve the project directory (need .hatchkit.json to read s3Buckets).`,
-        ),
+      deferStep(
+        `couldn't resolve the project directory (need .hatchkit.json to read s3Buckets)`,
+        "unavailable",
       );
     } else {
       const r2Result: ProvisionR2TokensResult = await provisionR2BucketTokens({
@@ -880,7 +1087,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
       const serverBucket = buckets.find((b) => b.label === "server")!;
       serverBucket.prodLines.push(...renderR2BucketTokensEnv(r2Result));
     }
-  }
+  });
 
   const hasEnvLines = buckets.some((b) => b.devLines.length > 0 || b.prodLines.length > 0);
 
@@ -905,7 +1112,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
     console.log(chalk.bold("\n  ── Provisioned ────────────────────────────────────────────\n"));
     if (!hasEnvLines) {
       console.log(chalk.dim("  No environment values were produced for the selected services.\n"));
-      return;
+      return finish();
     }
     for (const b of buckets) {
       const prodKeys = parseEnvLines(b.prodLines).map((p) => p.key);
@@ -930,12 +1137,12 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
           `  Read them with \`cat\` or re-run with a project directory to write directly.\n`,
       ),
     );
-    return;
+    return finish();
   }
 
   if (!hasEnvLines) {
     console.log(chalk.dim("\n  No environment values to write for the selected services.\n"));
-    return;
+    return finish();
   }
 
   // Write values into the resolved directories.
@@ -1013,6 +1220,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<void> {
     );
   }
   console.log(chalk.dim(`\n  Cached copies (0600): ${outDir}/${opts.baseName}.*.env\n`));
+  return finish();
 }
 
 // ---------------------------------------------------------------------------

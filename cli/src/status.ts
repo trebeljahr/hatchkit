@@ -9,6 +9,8 @@
 
 import chalk from "chalk";
 import { getConfig, getConfigPath, getMlServices } from "./config.js";
+import { type DeferredStep, readDeferredSteps } from "./provision/deferrals.js";
+import { readManifest } from "./scaffold/manifest.js";
 import { getCliVersion } from "./utils/version.js";
 
 export interface ProviderSnapshot {
@@ -30,9 +32,17 @@ export interface StatusSnapshot {
   nextStep: string;
   /** Ordered suggestions for discoverability in the menu. */
   suggestions: Array<{ command: string; why: string }>;
+  /** Project whose `.hatchkit.json` supplied `deferredSteps`. Null when
+   *  status ran outside a Hatchkit project — the provider rows above
+   *  are global, these two fields are not. */
+  project: { name: string; dir: string } | null;
+  /** Optional steps the user skipped during create / adopt / add, each
+   *  with the exact command that finishes it. Always an array (empty
+   *  outside a project), so `--json` consumers never have to nullcheck. */
+  deferredSteps: DeferredStep[];
 }
 
-export function collectStatus(): StatusSnapshot {
+export function collectStatus(projectDir: string = process.cwd()): StatusSnapshot {
   const config = getConfig();
   const providers: ProviderSnapshot[] = [];
   const googleSearchConsole = config.providers.googleSearchConsole;
@@ -136,8 +146,22 @@ export function collectStatus(): StatusSnapshot {
     platform: entry.platform,
   }));
 
-  const nextStep = computeNextStep(providers);
-  const suggestions = computeSuggestions(providers);
+  // Project-local deferrals. Silently empty outside a Hatchkit project
+  // so `hatchkit status` from $HOME keeps reporting global state only.
+  let project: StatusSnapshot["project"] = null;
+  let deferredSteps: DeferredStep[] = [];
+  try {
+    const manifest = readManifest(projectDir);
+    if (manifest) {
+      project = { name: manifest.name, dir: projectDir };
+      deferredSteps = readDeferredSteps(projectDir);
+    }
+  } catch {
+    // A malformed manifest is doctor's problem, not status'.
+  }
+
+  const nextStep = computeNextStep(providers, deferredSteps);
+  const suggestions = computeSuggestions(providers, deferredSteps);
 
   return {
     version: getCliVersion(),
@@ -147,6 +171,8 @@ export function collectStatus(): StatusSnapshot {
     mlServices: mlServiceList,
     nextStep,
     suggestions,
+    project,
+    deferredSteps,
   };
 }
 
@@ -168,20 +194,36 @@ function stripeDetail(
   return meta.accountId ? `${modes} · ${meta.accountId}` : modes;
 }
 
-function computeNextStep(providers: ProviderSnapshot[]): string {
+function computeNextStep(
+  providers: ProviderSnapshot[],
+  deferredSteps: readonly DeferredStep[] = [],
+): string {
   const required = ["github", "coolify", "hetzner", "dns"];
   const firstMissing = providers.find((p) => required.includes(p.key) && !p.configured);
   if (firstMissing) {
     return `Run \`${firstMissing.configureCommand}\` — ${firstMissing.label} is required for full scaffolds.`;
+  }
+  // Deferred steps outrank the generic "try create" nudge: the user is
+  // already mid-project and asked to finish these later.
+  const first = deferredSteps[0];
+  if (first) {
+    const n = deferredSteps.length;
+    return `${n} step${n === 1 ? "" : "s"} deferred — finish the first with \`${first.command}\`.`;
   }
   return "You're set up. Try `hatchkit create` to scaffold a new project.";
 }
 
 function computeSuggestions(
   providers: ProviderSnapshot[],
+  deferredSteps: readonly DeferredStep[] = [],
 ): Array<{ command: string; why: string }> {
   const out: Array<{ command: string; why: string }> = [];
   const has = (k: string) => providers.find((p) => p.key === k)?.configured;
+
+  // Deferred follow-ups first — they're the concrete unfinished work.
+  for (const step of deferredSteps) {
+    out.push({ command: step.command, why: `deferred: ${step.label} — ${step.reason}` });
+  }
 
   if (!has("github") || !has("coolify") || !has("hetzner") || !has("dns")) {
     out.push({
@@ -231,6 +273,18 @@ export function renderStatusHuman(s: StatusSnapshot): string {
     lines.push(chalk.dim(`    ${m.name}: ${m.endpoint} (${m.platform})`));
   }
   lines.push("");
+  if (s.deferredSteps.length > 0) {
+    lines.push(
+      `  ${chalk.bold(chalk.yellow(`Deferred steps: ${s.deferredSteps.length}`))}${
+        s.project ? chalk.dim(`  (${s.project.name})`) : ""
+      }`,
+    );
+    for (const step of s.deferredSteps) {
+      lines.push(`    ${chalk.yellow("»")} ${step.label} ${chalk.dim(`— ${step.reason}`)}`);
+      lines.push(`      ${chalk.dim("→")} ${chalk.cyan(step.command)}`);
+    }
+    lines.push("");
+  }
   lines.push(`  ${chalk.bold("Next:")} ${s.nextStep}`);
   lines.push(chalk.dim(`  Config: ${s.configPath}`));
   lines.push("");
@@ -247,6 +301,13 @@ export function renderMenu(s: StatusSnapshot): string {
       s.version ? `v${s.version}` : "",
     )}`,
   );
+  if (s.deferredSteps.length > 0) {
+    lines.push(
+      `  ${chalk.yellow(`${s.deferredSteps.length} step${s.deferredSteps.length === 1 ? "" : "s"} deferred`)}${
+        s.project ? chalk.dim(` in ${s.project.name}`) : ""
+      }`,
+    );
+  }
   lines.push("");
   lines.push(`  ${chalk.bold("Next:")} ${s.nextStep}`);
   lines.push("");

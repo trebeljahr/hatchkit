@@ -10,6 +10,12 @@ export interface OnboardingStep {
   set: boolean;
   /** Right-side tail showing the current value. */
   summary: string;
+  /** The user answered this step with "later" — an explicit decision,
+   *  but not a configured value. Rendered as a yellow `»` so it reads
+   *  as neither done (`✓`) nor untouched (`·`), and excluded from the
+   *  "jump to the first unanswered step" default: re-defaulting onto a
+   *  step the user just deferred would trap them in a loop. */
+  deferred?: boolean;
 }
 
 export interface OnboardingStepGroup {
@@ -42,7 +48,7 @@ export async function runProjectOnboardingReview<TPlan>(
   for (;;) {
     const groups = options.buildGroups(plan);
     const allSteps = groups.flatMap((g) => g.steps);
-    const firstUnset = allSteps.find((s) => !s.set);
+    const firstUnset = allSteps.find((s) => !s.set && !s.deferred);
     const defaultKey = firstUnset?.key ?? PROCEED;
 
     const choices: Array<Separator | { name: string; value: string }> = [];
@@ -80,7 +86,7 @@ export async function runProjectOnboardingReview<TPlan>(
 }
 
 export function renderOnboardingStepLabel(step: OnboardingStep): string {
-  const mark = step.set ? chalk.green("✓") : chalk.dim("·");
+  const mark = step.deferred ? chalk.yellow("»") : step.set ? chalk.green("✓") : chalk.dim("·");
   const tail = step.summary ? chalk.dim(` — ${step.summary}`) : "";
   return `${mark}  ${step.label.padEnd(18)}${tail}`;
 }

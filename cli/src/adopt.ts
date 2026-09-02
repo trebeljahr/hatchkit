@@ -74,6 +74,7 @@ import {
   mergeEmailIntoProvisionServices,
   summarizeEmailIntent,
 } from "./prompts.js";
+import { readDeferredSteps } from "./provision/deferrals.js";
 import { type ProvisionService, runProvision } from "./provision/index.js";
 import { readEnvKeys } from "./provision/write-env.js";
 import { detectBuildPipeline, scaffoldBuildPipeline } from "./scaffold/build-pipeline.js";
@@ -2198,11 +2199,33 @@ async function executePlan(
       serverEnvPath: plan.serverDir ? join(plan.serverDir, ".env.production") : null,
       clientEnvPath: plan.clientDir ? join(plan.clientDir, ".env.production") : null,
     });
+    // Previously-deferred steps aren't filtered out by
+    // `filterServicesForResume` (they wrote no env keys), so a resume
+    // retries them naturally. Say so out loud — otherwise the second
+    // run silently re-asks for the same credential with no explanation.
+    const previouslyDeferred = readDeferredSteps(state.projectDir);
+    if (opts.resume && previouslyDeferred.length > 0) {
+      console.log(
+        chalk.dim(
+          `\n  Retrying ${previouslyDeferred.length} previously-deferred step(s): ` +
+            previouslyDeferred.map((step) => step.label).join(", "),
+        ),
+      );
+    }
+
     if (resumeServices.length > 0) {
       console.log();
-      await runProvision({
+      const provisionResult = await runProvision({
         baseName: plan.name,
         services: resumeServices,
+        // Declining a credential prompt, or a provider 401 mid-run, is
+        // a deferral — not an adopt failure. It never reaches
+        // `handleAdoptFailure` / the rollback prompt, because nothing
+        // was created that would need undoing. Each one lands in the
+        // caveats block below with its follow-up command, and in
+        // `.hatchkit.json` so `--resume` and `hatchkit status` can see
+        // what's still outstanding.
+        printSummary: false,
         surfaces: {
           mode: plan.surfaces,
           projectDir: state.projectDir,
@@ -2304,6 +2327,13 @@ async function executePlan(
           }
         },
       });
+      for (const step of provisionResult.deferred) {
+        caveats.push({
+          title: `${step.label} not configured`,
+          reason: step.reason,
+          recovery: [step.command, ...(step.hint ?? [])],
+        });
+      }
     }
 
     // Step 4a-mailfrom: SES Custom MAIL FROM retrofit. Adopt --resume

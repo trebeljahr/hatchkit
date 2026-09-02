@@ -44,6 +44,7 @@ import type {
   ProjectConfig,
   S3Provider,
 } from "../prompts.js";
+import type { DeferredStep } from "../provision/deferrals.js";
 import type { ProjectPorts } from "../utils/ports.js";
 
 export const MANIFEST_FILENAME = ".hatchkit.json";
@@ -261,6 +262,20 @@ export interface ProjectManifest {
       | { type: "TXT"; name: string; value: string }
     >;
   };
+  /** Optional steps the user declined (or that failed with a
+   *  recoverable provider error) during create / adopt / add. Each
+   *  entry carries the exact follow-up command, so `hatchkit status`
+   *  can report "3 steps deferred" and the user can finish one at a
+   *  time later.
+   *
+   *  Public-safe by construction: labels, reasons, and CLI commands
+   *  only — never a credential. `runProvision` clears an entry as soon
+   *  as the corresponding step succeeds, so a resumed run leaves the
+   *  list accurate rather than stale.
+   *
+   *  Optional + additive, so v3 manifests written before deferral
+   *  tracking existed read back unchanged (no schema bump needed). */
+  deferred?: DeferredStep[];
   /** Per-project code-signing / store-upload config. Populated by
    *  `hatchkit signing` (called by create/adopt/add). Holds only
    *  non-secret identifiers and references:
