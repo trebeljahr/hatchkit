@@ -912,7 +912,93 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of prodEnvChecks) results.push(r);
   const deferredChecks = checkProjectDeferredSteps(process.cwd());
   for (const r of deferredChecks) results.push(r);
+  const subdirChecks = await checkProjectSubdirState(process.cwd());
+  for (const r of subdirChecks) results.push(r);
   return results;
+}
+
+/** Verify that a manifest-recorded `projectSubdir` still exists and
+ *  looks buildable. Surfaces a hint when the user renamed / moved /
+ *  deleted the subdir without updating the manifest — without this,
+ *  `hatchkit sync` would happily push a stale base_directory to
+ *  Coolify and Coolify would fail the next build with an opaque
+ *  "context not found" error. */
+export async function checkProjectSubdirState(cwd: string): Promise<CheckResult[]> {
+  const { existsSync, readFileSync } = await import("node:fs");
+  const { join, dirname } = await import("node:path");
+  let manifestDir: string | undefined;
+  let dir = cwd;
+  for (let i = 0; i < 12; i++) {
+    if (existsSync(join(dir, ".hatchkit.json"))) {
+      manifestDir = dir;
+      break;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  if (!manifestDir) return [];
+  let manifest: { projectSubdir?: string };
+  try {
+    manifest = JSON.parse(readFileSync(join(manifestDir, ".hatchkit.json"), "utf-8")) as {
+      projectSubdir?: string;
+    };
+  } catch {
+    return [];
+  }
+  if (!manifest.projectSubdir) return [];
+  const subdirAbs = join(manifestDir, manifest.projectSubdir);
+  if (!existsSync(subdirAbs)) {
+    return [
+      {
+        name: `Project subdir (${manifest.projectSubdir})`,
+        status: "fail",
+        detail: `recorded subdir does not exist at ${subdirAbs}`,
+        hint: [
+          "The manifest's `projectSubdir` points at a folder that's no longer there.",
+          "Either rename the folder back, or update the manifest:",
+          "  · edit .hatchkit.json and set `projectSubdir` to the new path,",
+          "  · then run `hatchkit sync` to push the new base_directory to Coolify.",
+        ],
+      },
+    ];
+  }
+  const buildable =
+    existsSync(join(subdirAbs, "Dockerfile")) ||
+    [
+      "next.config.ts",
+      "next.config.js",
+      "next.config.mjs",
+      "vite.config.ts",
+      "astro.config.mjs",
+    ].some((n) => existsSync(join(subdirAbs, n))) ||
+    (() => {
+      const pkgPath = join(subdirAbs, "package.json");
+      if (!existsSync(pkgPath)) return false;
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
+          scripts?: Record<string, string>;
+        };
+        return !!pkg.scripts?.build;
+      } catch {
+        return false;
+      }
+    })();
+  if (!buildable) {
+    return [
+      {
+        name: `Project subdir (${manifest.projectSubdir})`,
+        status: "fail",
+        detail: `${subdirAbs} exists but has no build script / framework config / Dockerfile`,
+        hint: [
+          "Coolify will try to build this folder and fail. Either:",
+          "  · add a `build` script or Dockerfile inside the subdir,",
+          "  · or update the manifest's `projectSubdir` to the right path.",
+        ],
+      },
+    ];
+  }
+  return [{ name: `Project subdir (${manifest.projectSubdir})`, status: "ok" }];
 }
 
 /**

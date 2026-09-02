@@ -68,6 +68,14 @@ export interface WireUpInput {
    *  auto-deploy at its default (i.e. on) so source-builds work as
    *  expected. */
   scaffoldBuildPipeline?: boolean;
+  /** Repo-relative path Coolify should use as the build context root
+   *  for every app in the routing plan (single-origin: one app; split:
+   *  both client + server share the git tree, so the same subdir
+   *  applies to both). Set (e.g. `"site"`, `"apps/web"`) when the
+   *  deployable lives in a subfolder of a larger repo; leave unset
+   *  for the historical single-package-at-root layout. Passed
+   *  verbatim to Coolify as `base_directory` on every create + PATCH. */
+  baseDirectory?: string;
 }
 
 /** Structural shape of a "do this next" hint that `wireProjectIntoCoolify`
@@ -363,6 +371,11 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
           // Only patch description when the user supplied one — don't
           // clobber a description edited in the dashboard.
           description: userDescription ? userDescription : undefined,
+          // Always push the manifest's view of `base_directory` so an
+          // app that was created at repo root, then re-adopted from a
+          // subdir (or vice versa), converges to the right build context
+          // on the next deploy. Empty string resets Coolify back to `/`.
+          baseDirectory: input.baseDirectory ?? "",
           // Pushed even when the domain payload is skipped: it's an app
           // setting, not part of the routing, and getting it wrong is
           // the difference between /api/health and a 404.
@@ -415,6 +428,13 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       ...(buildPack === "dockercompose" && !skipDomain
         ? { dockerComposeDomains: routed.composeDomains }
         : {}),
+      // Tell Coolify which subfolder of the repo holds the build
+      // context. Coolify reads docker-compose.yml / Dockerfile relative
+      // to this directory, so getting it right is the difference
+      // between "Coolify builds the marketing site" and "Coolify
+      // tries to build the CLI and fails". Every app in the routing
+      // plan builds from the same subdir (they share the git tree).
+      ...(input.baseDirectory ? { baseDirectory: input.baseDirectory } : {}),
       instantDeploy: false,
     };
 

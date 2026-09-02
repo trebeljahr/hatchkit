@@ -140,7 +140,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@v6
         with:
-          context: .
+          # Build context — points at the project's deployable directory.
+          # `.` for single-package-at-root projects; the repo-relative
+          # subdir (e.g. `site` or `apps/web`) when the deployable
+          # lives inside a larger repo. hatchkit's adopt / create flow
+          # substitutes the right value at scaffold time.
+          context: __SUBDIR_CONTEXT__
           file: packages/server/Dockerfile
           push: true
           tags: |
@@ -167,7 +172,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@v6
         with:
-          context: .
+          # Build context — points at the project's deployable directory.
+          # `.` for single-package-at-root projects; the repo-relative
+          # subdir (e.g. `site` or `apps/web`) when the deployable
+          # lives inside a larger repo. hatchkit's adopt / create flow
+          # substitutes the right value at scaffold time.
+          context: __SUBDIR_CONTEXT__
           file: packages/client/Dockerfile
           push: true
           tags: |

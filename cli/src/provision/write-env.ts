@@ -64,16 +64,27 @@ export function parseEnvLines(lines: string[]): EnvPair[] {
 /** Resolve where `.env.{development,production}` should live. The
  *  starter keeps them under `packages/server/`; other layouts (a
  *  hand-maintained project root, a monorepo not from the starter) are
- *  also accepted. */
-export function resolveEnvTarget(projectDir: string): {
+ *  also accepted.
+ *
+ *  When `projectSubdir` is supplied (mirrored from
+ *  `manifest.projectSubdir`), `projectDir` is treated as the enclosing
+ *  repo root and the search is rebased into the subdir — so a
+ *  manifest-recorded subfolder always wins over disk-layout guessing.
+ *  Callers without manifest awareness can omit the second arg and get
+ *  the historical heuristic behaviour. */
+export function resolveEnvTarget(
+  projectDir: string,
+  projectSubdir?: string,
+): {
   baseDir: string;
   layout: "starter" | "root";
 } {
-  const starterDir = join(projectDir, "packages/server");
+  const root = projectSubdir ? join(projectDir, projectSubdir) : projectDir;
+  const starterDir = join(root, "packages/server");
   if (existsSync(starterDir)) {
     return { baseDir: starterDir, layout: "starter" };
   }
-  return { baseDir: projectDir, layout: "root" };
+  return { baseDir: root, layout: "root" };
 }
 
 /** Upsert plain-text KEY=VALUE entries into `.env.development`. If the

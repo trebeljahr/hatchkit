@@ -2849,9 +2849,10 @@ console.log("\n── adopt: gitignore + private-key guard ───────
   const checks: Array<[string, boolean]> = [];
 
   // Scenario A: pnpm-workspace.yaml at root + no server/client dirs.
-  // Two custom dirs (cli, docs) that aren't on the recognised lists.
-  // docs has its own lockfile + .npmrc:ignore-workspace=true — the
-  // standalone-buildable marker.
+  // With the projectSubdir feature, detection now AUTO-PICKS the sole
+  // standalone candidate as the deployable. To exercise the original
+  // "we genuinely don't know" path, add a second sibling candidate so
+  // the auto-pick bails out and parks the cursor for the stepper.
   const repoA = mkdtempSync(join(tmpdir(), "adopt-unknown-layout-"));
   writeFileSync(join(repoA, "package.json"), JSON.stringify({ name: "x" }));
   writeFileSync(join(repoA, "pnpm-workspace.yaml"), 'packages:\n  - "cli"\n');
@@ -2862,7 +2863,14 @@ console.log("\n── adopt: gitignore + private-key guard ───────
   writeFileSync(join(repoA, "docs/package.json"), JSON.stringify({ name: "x-docs" }));
   writeFileSync(join(repoA, "docs/pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
   writeFileSync(join(repoA, "docs/.npmrc"), "ignore-workspace=true\n");
+  // Second candidate keeps detection ambiguous — otherwise adopt now
+  // auto-picks docs/ as the deployable (the desired new behavior for
+  // the CLI + marketing-site case).
+  mkdirSync(join(repoA, "site"));
+  writeFileSync(join(repoA, "site/package.json"), JSON.stringify({ name: "x-site" }));
+  writeFileSync(join(repoA, "site/pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
   const stateA = await detectProject(repoA);
+  checks.push(["A: projectSubdir undefined (ambiguous)", stateA.projectSubdir === undefined]);
   checks.push(["A: unknownWorkspaceLayout flagged", stateA.unknownWorkspaceLayout === true]);
   checks.push(["A: no serverDir matched", stateA.serverDir === undefined]);
   checks.push(["A: no clientDir matched", stateA.clientDir === undefined]);
@@ -2871,10 +2879,31 @@ console.log("\n── adopt: gitignore + private-key guard ───────
     stateA.standaloneBuildCandidates.some((c) => c.dir.endsWith("/docs")),
   ]);
   checks.push([
+    "A: site/ also surfaced as standalone candidate",
+    stateA.standaloneBuildCandidates.some((c) => c.dir.endsWith("/site")),
+  ]);
+  checks.push([
     "A: ignore-workspace flag captured",
     stateA.standaloneBuildCandidates.find((c) => c.dir.endsWith("/docs"))?.hasIgnoreWorkspace ===
       true,
   ]);
+
+  // Scenario A2: single-candidate variant — auto-pick site/, subdir
+  // set, unknown-layout flag stays off.
+  const repoA2 = mkdtempSync(join(tmpdir(), "adopt-auto-pick-"));
+  writeFileSync(join(repoA2, "package.json"), JSON.stringify({ name: "cli-repo" }));
+  mkdirSync(join(repoA2, "site"));
+  writeFileSync(join(repoA2, "site/package.json"), JSON.stringify({ name: "marketing" }));
+  writeFileSync(join(repoA2, "site/pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+  writeFileSync(join(repoA2, "site/.npmrc"), "ignore-workspace=true\n");
+  const stateA2 = await detectProject(repoA2);
+  checks.push(["A2: projectSubdir auto-picked to site", stateA2.projectSubdir === "site"]);
+  checks.push(["A2: projectDir rebased into site", stateA2.projectDir.endsWith("/site")]);
+  checks.push([
+    "A2: unknownWorkspaceLayout off after auto-pick",
+    stateA2.unknownWorkspaceLayout === false,
+  ]);
+  rmSync(repoA2, { recursive: true, force: true });
 
   // Scenario B: standard layout — `apps/web` exists, so detection
   // resolves a clientDir and the unknown-layout flag stays off even

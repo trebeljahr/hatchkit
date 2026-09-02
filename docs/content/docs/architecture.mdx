@@ -49,6 +49,20 @@ Key properties of the pipeline:
 - **Unique ports.** A per-machine ports registry (`config.json#ports`) assigns collision-free `server` / `client` / `nativeHmr` ports so you can run many hatchkit apps locally.
 - **Repo URL flows into infra.** GitHub runs **before** infra scaffold so the generated Coolify env has the real `GITHUB_REPO_URL` in it, not a placeholder.
 
+## Project layout: root vs. subdir
+
+By default the deployable lives at the repo root — one `package.json` at the top, one Dockerfile, one Coolify app. The manifest sits at the root too, and every Hatchkit command resolves paths against it.
+
+When the deployable lives in a sub-folder of a larger repo (a CLI with a sibling marketing site at `site/`, a monorepo with the runtime at `apps/web/`), the manifest's optional `projectSubdir` field captures that path. Hatchkit then:
+
+- writes the Dockerfile + `docker-compose.yml` **inside the subdir** (Coolify's build context);
+- writes `.github/workflows/*.yml` at the **repo root** with `context: <subdir>` on every build-push step so GitHub Actions only sends the subdir subtree to BuildKit;
+- sets Coolify's **Base Directory** to the same subdir on app create / sync, so Coolify clones the repo and builds from `<repo>/<subdir>` rather than from `/`.
+
+`hatchkit adopt` detects this automatically: invoke it from inside a sub-folder (`cd /repo/site && hatchkit adopt`), or from the repo root when the root's `package.json` isn't itself buildable, and the stepper offers a **Project subdir** row pre-filled with the obvious candidate. `hatchkit create` similarly offers a "scaffold into a sub-folder of this repo" option when you run it from inside an existing git repo.
+
+The manifest **always** lives at the repo root, even when `projectSubdir` is set — that way `git rev-parse --show-toplevel` plus a manifest read composes cleanly from any directory inside the repo, and downstream tooling (`hatchkit sync`, `keys push`, `regen-infra`, `destroy`) finds it without knowing about the subdir.
+
 ## Secret handling
 
 - **Provider tokens** → OS keychain (`keytar`), service name `hatchkit`.

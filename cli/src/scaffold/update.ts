@@ -37,6 +37,7 @@ import {
 import {
   MANIFEST_FILENAME,
   type ProjectManifest,
+  findManifestDirUpward,
   readManifestWithMigrationInfo,
   writeManifest,
 } from "./manifest.js";
@@ -77,23 +78,36 @@ export interface UpdateOptions {
 }
 
 export async function runUpdate(
-  projectDir: string,
+  invokedDir: string,
   options: UpdateOptions = {},
 ): Promise<UpdateResult> {
+  // Walk up so users running `hatchkit update` from inside a
+  // sub-folder of a subdir-deployed project find the repo-root
+  // manifest. Single-package-at-root projects resolve to the same
+  // dir for both manifest and the deployable — the historical case.
+  // For subdir-deployed projects manifestDir is the repo root and
+  // projectDir is `<manifestDir>/<manifest.projectSubdir>`, so
+  // feature additions land inside the deployable while the manifest
+  // itself is read + rewritten at the repo root.
+  //
   // Read with migration info so a stale on-disk schema (e.g. a v3
   // manifest that predates `topology`) can be persisted below even when
   // no feature was added. Otherwise `hatchkit doctor`'s "run hatchkit
   // update" hint would be a no-op on an otherwise up-to-date project.
-  const manifestRead = readManifestWithMigrationInfo(projectDir);
+  const manifestDir = findManifestDirUpward(invokedDir) ?? invokedDir;
+  const manifestRead = readManifestWithMigrationInfo(manifestDir);
   if (manifestRead?.migrated) {
     for (const note of manifestRead.migrationNotes) console.log(`  ${note}`);
   }
   const manifest = manifestRead?.manifest ?? null;
   if (!manifest) {
     throw new Error(
-      `No ${MANIFEST_FILENAME} found in ${projectDir}. This directory wasn't scaffolded by hatchkit, or the manifest was deleted.`,
+      `No ${MANIFEST_FILENAME} found in ${invokedDir} (or any parent). This directory wasn't scaffolded by hatchkit, or the manifest was deleted.`,
     );
   }
+  const projectDir = manifest.projectSubdir
+    ? join(manifestDir, manifest.projectSubdir)
+    : manifestDir;
 
   if (!existsSync(STARTER_ROOT)) {
     throw new Error(
@@ -357,7 +371,7 @@ export async function runUpdate(
       ports: updatedPorts,
       localDev: localDevEnabled ?? manifest.localDev,
     };
-    writeManifest(projectDir, updatedManifest);
+    writeManifest(manifestDir, updatedManifest);
   }
 
   // SES Custom MAIL FROM retrofit. Pre-existing projects (provisioned

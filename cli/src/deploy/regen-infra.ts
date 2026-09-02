@@ -42,7 +42,7 @@ import {
   upgradeWorkflowClientBuildArgs,
 } from "../scaffold/client-build-args.js";
 import { generateCoolifyEnv, generateTfvars, resolveStackDir } from "../scaffold/infra.js";
-import { type ProjectManifest, readManifest } from "../scaffold/manifest.js";
+import { type ProjectManifest, findManifestDirUpward, readManifest } from "../scaffold/manifest.js";
 import { parseDomain } from "../utils/validate.js";
 
 interface RegenArgs {
@@ -62,12 +62,16 @@ export async function runRegenInfraCli(args: string[], monorepoRoot: string): Pr
 }
 
 export async function runRegenInfra(opts: RegenArgs): Promise<void> {
-  const { projectDir, monorepoRoot, dryRun } = opts;
+  const { monorepoRoot, dryRun } = opts;
 
+  // Walk up so users invoking from inside a subdir-deployed project
+  // (manifest at the repo root, deployable at <repo>/<subdir>) still
+  // find the manifest.
+  const projectDir = findManifestDirUpward(opts.projectDir) ?? opts.projectDir;
   const manifest = readManifest(projectDir);
   if (!manifest) {
     throw new Error(
-      `No .hatchkit.json in ${projectDir}. Run from inside a scaffolded project, or pass --dir <project-dir>.`,
+      `No .hatchkit.json in ${opts.projectDir} (or any parent). Run from inside a scaffolded project, or pass --dir <project-dir>.`,
     );
   }
 

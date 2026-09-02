@@ -472,6 +472,17 @@ export class CoolifyApi {
       description: input.description,
       instant_deploy: input.instantDeploy ?? true,
     };
+    // `base_directory` is the repo-relative path Coolify uses as the
+    // build context root. Required when the deployable lives in a
+    // subfolder of a larger repo (CLI repo with sibling marketing site,
+    // monorepo with apps/web). Coolify accepts it for every build pack
+    // (nixpacks, dockerfile, dockercompose, static). When unset,
+    // Coolify falls back to its built-in default ("/") which is the
+    // single-package-at-root layout — that's the back-compat we want
+    // for every manifest without a `projectSubdir`.
+    if (input.baseDirectory) {
+      body.base_directory = normalizeCoolifyBaseDirectory(input.baseDirectory);
+    }
     // dockercompose build pack reads docker-compose.yml from the repo;
     // tell Coolify where to find it. Default works when the file is
     // at the repo root (the canonical hatchkit layout). Coolify rejects
@@ -568,6 +579,11 @@ export class CoolifyApi {
        *  Only pass true when the conflicting resource is one hatchkit
        *  is itself replacing. */
       forceDomainOverride?: boolean;
+      /** Repo-relative build context root. Pass `""` (empty string) or
+       *  `"/"` to reset back to repo root; pass a sub-path like
+       *  `"site"` or `"apps/web"` to point Coolify at a sub-folder
+       *  build context. Mirrors the manifest's `projectSubdir`. */
+      baseDirectory?: string;
     },
   ): Promise<void> {
     const body: Record<string, unknown> = {};
@@ -580,6 +596,9 @@ export class CoolifyApi {
     if (fields.gitRepository !== undefined) body.git_repository = fields.gitRepository;
     if (fields.githubAppUuid !== undefined) body.github_app_uuid = fields.githubAppUuid;
     if (fields.description !== undefined) body.description = fields.description;
+    if (fields.baseDirectory !== undefined) {
+      body.base_directory = normalizeCoolifyBaseDirectory(fields.baseDirectory);
+    }
     if (fields.domains !== undefined) body.domains = fields.domains.join(",");
     if (fields.dockerComposeDomains !== undefined) {
       body.docker_compose_domains = collapseComposeDomains(fields.dockerComposeDomains);
@@ -644,6 +663,7 @@ export class CoolifyApi {
       serverUuid: extractServerUuid(raw),
       isAutoDeployEnabled:
         typeof raw.is_auto_deploy_enabled === "boolean" ? raw.is_auto_deploy_enabled : undefined,
+      baseDirectory: typeof raw.base_directory === "string" ? raw.base_directory : undefined,
     };
   }
 
@@ -707,6 +727,11 @@ export interface CoolifyApplication {
    *  expect this to be `false` so GHA owns the deploy trigger; doctor's
    *  check surfaces the mismatch. */
   isAutoDeployEnabled?: boolean;
+  /** Coolify's `base_directory` for this app — the repo-relative path
+   *  Coolify uses as the build context. Reported with a leading slash
+   *  (`/site`, `/apps/web`) or `"/"` for the repo-root default. Used
+   *  by `hatchkit sync` to diff against the manifest's `projectSubdir`. */
+  baseDirectory?: string;
 }
 
 export interface ApplicationCreateInput {
@@ -742,6 +767,13 @@ export interface ApplicationCreateInput {
   /** Repo-relative path to the compose file when buildPack is
    *  `dockercompose`. Defaults to `/docker-compose.yml`. */
   dockerComposeLocation?: string;
+  /** Repo-relative build context root Coolify clones the app at. Set
+   *  to `"site"` / `"apps/web"` / etc. to point Coolify at a subfolder
+   *  of a larger repo (CLI repo with marketing site, monorepo). Leave
+   *  unset for the historical single-package-at-root layout. The API
+   *  client posix-normalizes the value (forward slashes, leading
+   *  slash) before sending. */
+  baseDirectory?: string;
 }
 
 /** Is this `/github-apps` entry Coolify's built-in anonymous
@@ -864,4 +896,21 @@ export function parseDockerComposeDomains(
     }
   }
   return out.length > 0 ? out : undefined;
+}
+
+/** Normalize a `base_directory` value for the Coolify API. Coolify
+ *  stores the field as a leading-slash posix path (`/site`, `/apps/web`)
+ *  or `/` for the repo root. Empty / `.` / `./` inputs all map to `/`
+ *  so callers can reset an app back to the root by passing the empty
+ *  string. Backslashes (Windows-style inputs) get rewritten to forward
+ *  slashes; trailing slashes are stripped. */
+export function normalizeCoolifyBaseDirectory(raw: string): string {
+  const cleaned = raw
+    .replace(/\\/g, "/")
+    .trim()
+    .replace(/^\.\/+/, "")
+    .replace(/\/+$/, "");
+  if (cleaned === "" || cleaned === ".") return "/";
+  if (cleaned.startsWith("/")) return cleaned;
+  return `/${cleaned}`;
 }

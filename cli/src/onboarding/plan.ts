@@ -37,6 +37,12 @@ export interface ProjectOnboardingPlan {
     surfaces: Surface;
     serverDir?: string;
     clientDir?: string;
+    /** Posix-slashed relative path from the repo root to the deployable
+     *  subfolder (e.g. `"site"`, `"apps/web"`). Undefined / absent
+     *  means the deployable lives at the repo root — the default for
+     *  the single-package-at-root layout. Drives Coolify's Base
+     *  Directory + the scaffolded build-pipeline `context:` line. */
+    projectSubdir?: string;
   };
   deployment: {
     mode: DeploymentMode;
@@ -74,6 +80,7 @@ export function projectConfigToOnboardingPlan(config: ProjectConfig): ProjectOnb
       surfaces: config.surfaces,
       serverDir: config.surfaces === "static" ? undefined : "packages/server",
       clientDir: config.surfaces === "backend" ? undefined : "packages/client",
+      projectSubdir: config.projectSubdir || undefined,
     },
     deployment: {
       mode: config.deploymentMode,
@@ -111,6 +118,7 @@ export function onboardingPlanToProjectConfig(
     baseDomain: parsed.baseDomain,
     subdomain: parsed.subdomain,
     surfaces: plan.layout.surfaces,
+    projectSubdir: plan.layout.projectSubdir || undefined,
     deployTarget: plan.deployment.target ?? previousConfig.deployTarget,
     deploymentMode: plan.deployment.mode,
     runDeployment: plan.deployment.runNow,
@@ -141,6 +149,7 @@ export function adoptPlanToOnboardingPlan(
       surfaces: plan.surfaces,
       serverDir: plan.serverDir,
       clientDir: plan.clientDir,
+      projectSubdir: plan.projectSubdir || undefined,
     },
     deployment: {
       mode: plan.deploymentMode,
@@ -178,6 +187,7 @@ export function onboardingPlanToAdoptPlan(
     surfaces: plan.layout.surfaces,
     serverDir: plan.layout.surfaces === "static" ? undefined : plan.layout.serverDir,
     clientDir: plan.layout.surfaces === "backend" ? undefined : plan.layout.clientDir,
+    projectSubdir: plan.layout.projectSubdir || undefined,
     deploymentMode: plan.deployment.mode,
     setupGitHub: plan.repo.setupGitHub,
     isPrivate: plan.deployment.isPrivate ?? previousPlan.isPrivate,

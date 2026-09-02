@@ -152,6 +152,15 @@ export interface ProjectConfig {
    *  unused package half + adjust the docker-compose / Coolify routing
    *  accordingly. See the `Surface` type for the per-value semantics. */
   surfaces: Surface;
+
+  /** Path from the repo root to the deployable subdir (posix slashes,
+   *  no leading "./"). Set when `hatchkit create` is asked to scaffold
+   *  into a subfolder of an existing repo instead of a fresh directory.
+   *  Absent / undefined means the deployable lives at the project root
+   *  — the historical single-package-at-root layout. Propagates to the
+   *  manifest's `projectSubdir`, Coolify's Base Directory, and the
+   *  scaffolded GitHub Actions workflow's `context:` line. */
+  projectSubdir?: string;
   /** Override for the docker-compose service that receives the public
    *  domain on Coolify's dockercompose build pack. Almost always
    *  unset — `toManifest` derives a sensible default from `surfaces`

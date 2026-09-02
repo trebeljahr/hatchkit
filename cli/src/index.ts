@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { confirm } from "@inquirer/prompts";
+import { confirm, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import {
   ensureCoolify,
@@ -2061,6 +2061,23 @@ async function ensureCreateProvisionProviders(services: ProvisionService[]): Pro
 // Provider pre-flights
 // ---------------------------------------------------------------------------
 
+/** Walk up from `cwd` to find the enclosing git repo root via
+ *  `git rev-parse --show-toplevel`. Returns `undefined` when not inside
+ *  a git repo or when git isn't installed. Used by `hatchkit create`
+ *  to decide whether the "scaffold into a subfolder of this repo"
+ *  prompt is even worth asking — outside a repo it's a non-option. */
+async function findEnclosingGitRoot(cwd: string): Promise<string | undefined> {
+  try {
+    const res = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, silent: true });
+    if (res.exitCode !== 0) return undefined;
+    const top = res.stdout.trim();
+    if (!top || !existsSync(top)) return undefined;
+    return top;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Ensure all providers required by the current config are configured.
  *  Idempotent — already-configured providers return instantly. Called
  *  before the review loop (so credentials are collected pre-"Proceed")
@@ -2174,7 +2191,56 @@ async function handleCreate(): Promise<void> {
 
   const provisionServices = createProvisionServices(config);
 
-  const appDir = resolve(config.name);
+  // Resolve where this new project lives on disk. Default: fresh
+  // directory at `./<name>`. When cwd is inside an existing git
+  // repo, offer to scaffold into a subfolder of that repo instead —
+  // grows a CLI / monorepo with a deployable marketing site without
+  // having to clone twice. Non-interactive falls back to the
+  // default; automation sets `projectSubdir` on the preset directly.
+  let appDir = resolve(config.name);
+  if (!nonInteractive && !config.projectSubdir) {
+    const enclosingRepo = await findEnclosingGitRoot(process.cwd());
+    if (enclosingRepo && enclosingRepo !== resolve(process.cwd(), "..")) {
+      const choice = await select<"fresh" | "subfolder" | "adopt">({
+        message: "Where should this project live?",
+        default: "fresh",
+        choices: [
+          {
+            name: `Fresh directory at ./${config.name}`,
+            value: "fresh",
+          },
+          {
+            name: `Subfolder of the current repo (${relative(process.cwd(), enclosingRepo) || "."}/${config.name})`,
+            value: "subfolder",
+          },
+          {
+            name: "Cancel — I'll adopt the existing repo instead",
+            value: "adopt",
+          },
+        ],
+      });
+      if (choice === "adopt") {
+        console.log(
+          chalk.dim(
+            "\n  Run `hatchkit adopt` from the existing repo to bring it under Hatchkit\n  management instead.\n",
+          ),
+        );
+        return;
+      }
+      if (choice === "subfolder") {
+        config.projectSubdir = config.name;
+        appDir = join(enclosingRepo, config.name);
+      }
+    }
+  } else if (config.projectSubdir) {
+    const enclosingRepo = await findEnclosingGitRoot(process.cwd());
+    if (!enclosingRepo) {
+      throw new Error(
+        "config.projectSubdir was set but the current directory isn't inside a git repo. Run `git init` first or unset projectSubdir.",
+      );
+    }
+    appDir = join(enclosingRepo, config.projectSubdir);
+  }
 
   // Resolve ML services (reuse or deploy)
   const { reuse, deploy } = await resolveMlServices(config);

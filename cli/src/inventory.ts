@@ -25,7 +25,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { confirm, input } from "@inquirer/prompts";
 import chalk from "chalk";
 import {
@@ -330,11 +330,25 @@ export async function collectInventory(
 // ---------------------------------------------------------------------------
 
 function inferLocal(cwd: string): InventoryLocal {
-  const manifestPresent = existsSync(join(cwd, MANIFEST_FILENAME));
+  // Manifest lives at the enclosing repo root in the subdir-deployed
+  // model (single-package-at-root projects still find it at cwd
+  // because cwd === repoRoot for them). Walk up so inventory from a
+  // subdir — e.g. `cd /repo/site && hatchkit inventory` — still
+  // picks up the project manifest.
+  const repoRootHint = findGitRoot(cwd);
+  let manifestPresent = false;
+  let manifestSourceDir: string | undefined;
+  if (repoRootHint && existsSync(join(repoRootHint, MANIFEST_FILENAME))) {
+    manifestPresent = true;
+    manifestSourceDir = repoRootHint;
+  } else if (existsSync(join(cwd, MANIFEST_FILENAME))) {
+    manifestPresent = true;
+    manifestSourceDir = cwd;
+  }
   let manifest: ProjectManifest | undefined;
-  if (manifestPresent) {
+  if (manifestPresent && manifestSourceDir) {
     try {
-      manifest = readManifest(cwd) ?? undefined;
+      manifest = readManifest(manifestSourceDir) ?? undefined;
     } catch {
       // Malformed manifest — leave undefined; inferIdentity falls
       // through to other signals.
@@ -627,6 +641,18 @@ export function writeMinimalManifest(
         : local.clientDir
           ? "static"
           : "fullstack";
+  // Detect whether cwd is a sub-folder of the repo. When it is, record
+  // the relative path as `projectSubdir` so downstream tooling (sync,
+  // keys push, regen-infra) operates on the right subfolder, and write
+  // the manifest at the repo root (NOT at cwd) so a fresh checkout
+  // always finds it at the top of the tree.
+  const gitRoot = findGitRoot(cwd);
+  const projectSubdir =
+    gitRoot && gitRoot !== cwd
+      ? relative(gitRoot, cwd).replace(/\\/g, "/").replace(/^\.\//, "")
+      : undefined;
+  const manifestDir = gitRoot ?? cwd;
+
   const manifest: ProjectManifest = {
     version: MANIFEST_VERSION,
     cliVersion: getCliVersion(),
@@ -641,11 +667,12 @@ export function writeMinimalManifest(
     s3Provider: "none",
     deployTarget: "existing",
     surfaces,
+    ...(projectSubdir ? { projectSubdir } : {}),
     // Conventional defaults — `hatchkit adopt --resume` lets the user
     // override if the project actually uses different ports.
     ports: { server: 3000, client: 5173 },
   };
-  writeManifestFile(cwd, manifest);
+  writeManifestFile(manifestDir, manifest);
   return manifest;
 }
 

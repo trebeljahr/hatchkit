@@ -172,12 +172,20 @@ export interface AppSyncPlan {
   /** Desired `is_stripprefix_enabled`. False whenever any routed domain
    *  carries a path. */
   desiredStripPrefix: boolean;
+  /** Repo-relative build context root the manifest expects. Mirrors
+   *  `manifest.projectSubdir`; `undefined` means "build from repo root"
+   *  (the default). Sent to Coolify as `base_directory: <value>` —
+   *  empty string resets back to `/`. */
+  desiredBaseDirectory?: string;
   /** Snapshot of the same fields as Coolify currently reports them. */
   current: {
     fqdn: string | null;
     dockerComposeDomains?: Array<{ name: string; domain: string }>;
     portsExposes?: string;
     stripPrefix?: boolean;
+    /** Coolify's reported `base_directory`. Leading-slash form
+     *  (`"/site"`) or `"/"` for repo root. */
+    baseDirectory?: string;
   };
   /** Whether a PATCH is needed to converge — false means everything
    *  already matches, sync skips the API call. */
@@ -407,7 +415,12 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
       continue;
     }
 
-    const plan = buildPlan(routed, current, composeForApp(opts.projectDir, routed, compose));
+    const plan = buildPlan(
+      routed,
+      current,
+      composeForApp(opts.projectDir, routed, compose),
+      manifest.projectSubdir || undefined,
+    );
     apps.push(plan);
     if (!opts.json) renderPlan(plan);
 
@@ -425,6 +438,12 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
         // compose file and our value would be discarded anyway.
         ...(plan.buildPack === "dockercompose" ? {} : { portsExposes: plan.desiredPortsExposes }),
         isStripprefixEnabled: plan.desiredStripPrefix,
+        // Push the manifest's `projectSubdir` onto Coolify's
+        // `base_directory`. Empty string resets to repo root — the
+        // case where a manifest drops `projectSubdir` after an earlier
+        // adopt set one. Coolify's API treats `""` and `"/"` as
+        // equivalent (both mean repo root).
+        baseDirectory: plan.desiredBaseDirectory ?? "",
         ...(plan.desiredDockerComposeDomains
           ? { dockerComposeDomains: plan.desiredDockerComposeDomains }
           : {}),
@@ -898,6 +917,7 @@ function buildPlan(
   routed: RoutedApp,
   current: CoolifyApplication,
   compose: ReturnType<typeof readComposeFile>,
+  desiredBaseDirectory: string | undefined,
 ): AppSyncPlan {
   const isCompose = current.buildPack === "dockercompose";
   // dockercompose apps use docker_compose_domains; everything else uses
@@ -963,6 +983,13 @@ function buildPlan(
     current.isStripprefixEnabled !== undefined &&
     current.isStripprefixEnabled !== routed.stripPrefix;
 
+  // `base_directory` diff. Coolify normalizes the field to a
+  // leading-slash path (`"/site"`), so compare against the same shape
+  // built from `desiredBaseDirectory` (`"/"` for the unset case).
+  const desiredBaseDirCanonical = desiredBaseDirectory ? `/${desiredBaseDirectory}` : "/";
+  const currentBaseDirCanonical = current.baseDirectory?.trim() || "/";
+  const baseDirectoryChanged = desiredBaseDirCanonical !== currentBaseDirCanonical;
+
   return {
     uuid: current.uuid,
     name: current.name || routed.appName,
@@ -972,6 +999,7 @@ function buildPlan(
     ...(desiredDomains ? { desiredDomains } : {}),
     desiredPortsExposes: routed.portsExposes,
     desiredStripPrefix: routed.stripPrefix,
+    ...(desiredBaseDirectory ? { desiredBaseDirectory } : {}),
     current: {
       fqdn: current.fqdn,
       ...(currentCollapsed ? { dockerComposeDomains: currentCollapsed } : {}),
@@ -979,8 +1007,9 @@ function buildPlan(
       ...(current.isStripprefixEnabled !== undefined
         ? { stripPrefix: current.isStripprefixEnabled }
         : {}),
+      ...(current.baseDirectory !== undefined ? { baseDirectory: current.baseDirectory } : {}),
     },
-    changed: portsChanged || domainsChanged || stripChanged,
+    changed: portsChanged || domainsChanged || stripChanged || baseDirectoryChanged,
     ...(blocked ? { blocked } : {}),
   };
 }

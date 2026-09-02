@@ -298,6 +298,20 @@ export function detectBuildPipeline(projectDir: string): BuildPipelineState {
 
 export interface ScaffoldBuildPipelineInput {
   projectDir: string;
+  /** Enclosing git repo root. Defaults to `projectDir` for the
+   *  single-package-at-root layout — back-compat for every caller that
+   *  doesn't yet know about subdir builds. When `projectDir` lives
+   *  inside a larger repo, set this to the git root so the GitHub
+   *  Actions workflow lands at `<repoRoot>/.github/workflows/deploy.yml`
+   *  (where Actions actually reads from) while the Dockerfile +
+   *  docker-compose.yml stay inside the subdir. */
+  repoRoot?: string;
+  /** Posix-slashed repo-relative subdir where the deployable lives
+   *  (e.g. `"site"`, `"apps/web"`). Empty / undefined means the
+   *  deployable IS the repo root — the historical default. Used to
+   *  set the workflow's `context: <subdir>` on every build step so
+   *  Docker only sends the subdir subtree to BuildKit. */
+  projectSubdir?: string;
   projectName: string;
   /** GitHub `<owner>/<repo>` slug — owner is what GHCR images get
    *  scoped under (`ghcr.io/<owner>/<name>`). Inferred from the
@@ -334,8 +348,10 @@ export interface ScaffoldBuildPipelineInput {
 }
 
 export interface ScaffoldBuildPipelineResult {
-  /** Files we wrote (relative to projectDir). Useful for printing a
-   *  summary + later git-add. Union of `created` and `overwritten`. */
+  /** Files we wrote (relative to whichever base dir owns each path —
+   *  projectDir for Dockerfile / compose, repoRoot for the GH Actions
+   *  workflow). Useful for printing a summary + later git-add. Union
+   *  of `created` and `overwritten`. */
   written: string[];
   /** Files we wrote that DIDN'T exist before this call. Adopt records
    *  these in its run ledger so a later rollback / destroy can delete
@@ -346,6 +362,15 @@ export interface ScaffoldBuildPipelineResult {
    *  in the ledger — the file was the user's before regeneration,
    *  and a later destroy must never delete pre-existing content. */
   overwritten: string[];
+  /** Absolute paths of the `created` files — resolved against the
+   *  correct base dir per file (projectDir for Docker files, repoRoot
+   *  for the workflow). Callers should prefer this over joining
+   *  `created` against projectDir since the workflow file lives at
+   *  repoRoot when subdir builds are in play. */
+  createdAbs: string[];
+  /** Absolute paths of the `overwritten` files — same baseDir-aware
+   *  resolution as {@link createdAbs}. */
+  overwrittenAbs: string[];
   /** Files we skipped because they already existed. */
   skipped: string[];
   /** Project-relative path of the `.dockerignore` we appended a
@@ -363,19 +388,41 @@ export function scaffoldBuildPipeline(
   input: ScaffoldBuildPipelineInput,
 ): ScaffoldBuildPipelineResult {
   const state = detectBuildPipeline(input.projectDir);
+  // repoRoot defaults to projectDir for back-compat. When set (subdir
+  // builds), the GitHub Actions workflow lands under repoRoot's
+  // .github/workflows/ — the only place Actions reads from.
+  const repoRoot = input.repoRoot ?? input.projectDir;
+  const subdir = input.projectSubdir
+    ? input.projectSubdir.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "")
+    : undefined;
   const written: string[] = [];
   const created: string[] = [];
   const overwritten: string[] = [];
+  const createdAbs: string[] = [];
+  const overwrittenAbs: string[] = [];
   const skipped: string[] = [];
 
   // Helper: write a file and bucket it as created/overwritten based on
   // whether it existed before this call. Adopt's ledger only records
   // `created` entries — see ScaffoldBuildPipelineResult docs.
-  const write = (relPath: string, content: string, existedBefore: boolean): void => {
-    writeProjectFile(input.projectDir, relPath, content);
+  // `baseDir` lets the caller pick between projectDir (Dockerfile /
+  // compose) and repoRoot (the workflow — GH Actions is repo-root-only).
+  const write = (
+    relPath: string,
+    content: string,
+    existedBefore: boolean,
+    baseDir: string = input.projectDir,
+  ): void => {
+    writeProjectFile(baseDir, relPath, content);
     written.push(relPath);
-    if (existedBefore) overwritten.push(relPath);
-    else created.push(relPath);
+    const abs = join(baseDir, relPath);
+    if (existedBefore) {
+      overwritten.push(relPath);
+      overwrittenAbs.push(abs);
+    } else {
+      created.push(relPath);
+      createdAbs.push(abs);
+    }
   };
 
   // Dockerfile.
@@ -443,15 +490,27 @@ export function scaffoldBuildPipeline(
     skipped.push(state.composePath?.replace(`${input.projectDir}/`, "") ?? "compose file");
   }
 
-  // GitHub Actions deploy workflow.
-  if (input.force || !state.hasDeployWorkflow) {
+  // GitHub Actions deploy workflow. Always lives under the REPO root's
+  // .github/workflows/ — Actions only reads workflows from there, so a
+  // subdir-deployed project still needs the file at the git top level.
+  // Detect existence against repoRoot (not projectDir) so a re-scaffold
+  // doesn't double-write when subdir != repoRoot.
+  const workflowExistedBefore = existsSync(join(repoRoot, DEPLOY_WORKFLOW_PATH));
+  if (input.force || !workflowExistedBefore) {
     // The deploy template uses GitHub Actions' own `${{ … }}` syntax,
     // which clashes with Handlebars. We render it as a plain text
     // file with `__VAR__` placeholders that get substituted here
     // instead — no Handlebars on this one.
     const raw = readTemplateRaw("build-pipeline/deploy.yml.hbs");
-    const filled = raw.replace(/__DEFAULT_BRANCH__/g, input.defaultBranch);
-    write(DEPLOY_WORKFLOW_PATH, filled, state.hasDeployWorkflow);
+    // `context:` on every build-push step. `.` for root-level builds
+    // (matches the historical default); the posix-slashed subdir
+    // otherwise so docker only sends that subtree to BuildKit and the
+    // workflow's docker build command sees the right files.
+    const subdirContext = subdir ? subdir : ".";
+    const filled = raw
+      .replace(/__DEFAULT_BRANCH__/g, input.defaultBranch)
+      .replace(/__SUBDIR_CONTEXT__/g, subdirContext);
+    write(DEPLOY_WORKFLOW_PATH, filled, workflowExistedBefore, repoRoot);
   } else {
     skipped.push(DEPLOY_WORKFLOW_PATH);
   }
@@ -466,7 +525,15 @@ export function scaffoldBuildPipeline(
   const dockerignoreResult = ensureDockerignoreAllowsEnvProduction(input.projectDir);
   const dockerignorePatched = dockerignoreResult.modified ? ".dockerignore" : undefined;
 
-  return { written, created, overwritten, skipped, dockerignorePatched };
+  return {
+    written,
+    created,
+    overwritten,
+    createdAbs,
+    overwrittenAbs,
+    skipped,
+    dockerignorePatched,
+  };
 }
 
 function writeProjectFile(projectDir: string, relPath: string, content: string): void {

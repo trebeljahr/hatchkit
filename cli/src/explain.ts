@@ -47,7 +47,7 @@ const MODEL: ExplainModel = {
     {
       name: "Manifest",
       description:
-        ".hatchkit.json at the project root. Records which features were scaffolded so `hatchkit update` knows what's already there.",
+        ".hatchkit.json at the project root (= the enclosing git root). Records which features were scaffolded so `hatchkit update` knows what's already there. When the deployable lives in a subfolder of a larger repo (CLI + sibling marketing site, monorepo apps/<app>), the optional `projectSubdir` field captures that path — Coolify's Base Directory, the GitHub Actions workflow's `context:`, and every later `keys push` / `sync` / `regen-infra` then resolve relative to that subdir.",
     },
     {
       name: "dotenvx key",

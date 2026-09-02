@@ -110,8 +110,26 @@ import {
 import { getCliVersion } from "./utils/version.js";
 
 export interface DetectedState {
-  /** Absolute path to the project root. */
+  /** Absolute path to the project root — when adopt is invoked from a
+   *  buildable subdir of a larger repo, this is set to the SUBDIR
+   *  (where the deployable lives), NOT the enclosing git root. The
+   *  enclosing git root is exposed separately as {@link repoRoot} so
+   *  callers that need to read/write files relative to git root (e.g.
+   *  the `.hatchkit.json` manifest, GH Actions workflows, the upstream
+   *  `.dockerignore`) know which path to use. */
   projectDir: string;
+  /** Absolute path to the enclosing git repo root. Identical to
+   *  `projectDir` for single-package-at-root projects (the legacy
+   *  default). Differs when the deployable lives in a subfolder of a
+   *  larger repo — found via `git rev-parse --show-toplevel`. */
+  repoRoot: string;
+  /** Repo-root-relative subdir where the deployable lives, posix
+   *  slashes. Empty / undefined means the deployable IS the repo root
+   *  (the default). Computed from `relative(repoRoot, projectDir)`
+   *  when adopt is run from a subdir, or picked from
+   *  `standaloneBuildCandidates` when adopt is run from the root of a
+   *  repo whose root-level package.json isn't itself buildable. */
+  projectSubdir?: string;
   /** package.json `name` if any. */
   packageName?: string;
   /** package.json `description` if any. Used as the default for the
@@ -185,6 +203,13 @@ type AdoptDeploymentMode = DeploymentMode;
 export interface AdoptPlan {
   name: string;
   domain: string;
+  /** Subdir of the enclosing repo where the deployable lives, posix
+   *  slashes (e.g. `"site"`, `"apps/web"`). Empty / undefined means
+   *  the deployable IS the repo root — the historical default. Drives
+   *  Coolify's Base Directory + the GitHub Actions workflow's
+   *  `context:` line. Stored verbatim in the manifest's
+   *  `projectSubdir` field. */
+  projectSubdir?: string;
   /** One-liner that ends up on the Coolify project + application
    *  pages (instead of the generic "Adopted by hatchkit" blurb).
    *  Empty string means "no override" — wireProjectIntoCoolify will
@@ -323,6 +348,14 @@ export async function runAdopt(
   let plan: AdoptPlan = {
     name: m?.name ?? state.packageName ?? "",
     domain: m?.domain ?? "",
+    // Subdir resolution order:
+    //   1. Existing manifest (`--resume` recovery — the user already
+    //      settled on a subdir choice in a prior run).
+    //   2. Detection (state.projectSubdir is populated when adopt was
+    //      invoked from a sub-folder of the repo, or when the root
+    //      itself isn't buildable and exactly one candidate was found).
+    //   3. undefined — single-package-at-root layout, the default.
+    projectSubdir: m?.projectSubdir ?? state.projectSubdir,
     deploymentMode: inferredDeploymentMode,
     // Description resolution order:
     //   1. Persisted manifest value (`--resume` recovery — a previous
@@ -444,9 +477,74 @@ export async function runAdopt(
 // Detection
 // ---------------------------------------------------------------------------
 
-export async function detectProject(projectDir: string): Promise<DetectedState> {
-  const hasManifest = existsSync(join(projectDir, MANIFEST_FILENAME));
-  const existingManifest = hasManifest ? (readManifest(projectDir) ?? undefined) : undefined;
+export async function detectProject(invokedFromDir: string): Promise<DetectedState> {
+  // ── 1. Find the enclosing git root. Falls back to invokedFromDir
+  //    when there's no git repo (the historical greenfield case). ──
+  let repoRoot = invokedFromDir;
+  try {
+    const res = await exec("git", ["rev-parse", "--show-toplevel"], {
+      cwd: invokedFromDir,
+      silent: true,
+    });
+    if (res.exitCode === 0) {
+      const top = res.stdout.trim();
+      if (top && existsSync(top)) repoRoot = top;
+    }
+  } catch {
+    // git not installed / not in a repo — leave repoRoot = invokedFromDir.
+  }
+
+  // ── 2. Decide where the deployable lives. Two regimes:
+  //    A. user invoked from a subdir of the repo (`cd /repo/site &&
+  //       hatchkit adopt`) → projectSubdir = relative path,
+  //       projectDir = invokedFromDir.
+  //    B. user invoked from the repo root (`hatchkit adopt` at /repo)
+  //       → if the root itself is buildable, projectDir = repoRoot,
+  //         projectSubdir = undefined (single-package-at-root layout);
+  //         otherwise scan for standalone-buildable subdirs, and if
+  //         exactly one exists, pre-select it. Multiple → leave undef
+  //         so the stepper prompts; none → fall through to the
+  //         unknown-workspace-layout hint path. ──
+  let projectDir = invokedFromDir;
+  let projectSubdir: string | undefined;
+  let rootLevelCandidates: Array<{ dir: string; hasIgnoreWorkspace: boolean }> = [];
+  if (repoRoot !== invokedFromDir) {
+    projectSubdir = relative(repoRoot, invokedFromDir);
+  } else if (!rootLooksBuildable(repoRoot)) {
+    rootLevelCandidates = findStandaloneBuildCandidates(repoRoot);
+    const wsCandidates = findWorkspaceBuildCandidates(repoRoot);
+    rootLevelCandidates = mergeBuildCandidates(rootLevelCandidates, wsCandidates);
+    if (rootLevelCandidates.length === 1) {
+      const sub = relative(repoRoot, rootLevelCandidates[0].dir);
+      projectSubdir = sub;
+      projectDir = rootLevelCandidates[0].dir;
+    }
+  }
+
+  // ── 3. Manifest lives at repoRoot in the new model, but tolerate a
+  //    stray manifest at projectDir (older adopt runs). Prefer the
+  //    root manifest when both exist. ──
+  const repoRootManifestPath = join(repoRoot, MANIFEST_FILENAME);
+  const projectDirManifestPath = join(projectDir, MANIFEST_FILENAME);
+  let hasManifest = false;
+  let existingManifest: ProjectManifest | undefined;
+  if (existsSync(repoRootManifestPath)) {
+    hasManifest = true;
+    existingManifest = readManifest(repoRoot) ?? undefined;
+  } else if (
+    repoRootManifestPath !== projectDirManifestPath &&
+    existsSync(projectDirManifestPath)
+  ) {
+    hasManifest = true;
+    existingManifest = readManifest(projectDir) ?? undefined;
+  }
+
+  // ── 4. Manifest's recorded projectSubdir wins on resume when
+  //    detection didn't already pin one from an explicit cd. ──
+  if (existingManifest?.projectSubdir && !projectSubdir) {
+    projectSubdir = existingManifest.projectSubdir;
+    projectDir = join(repoRoot, projectSubdir);
+  }
 
   let packageName: string | undefined;
   let packageDescription: string | undefined;
@@ -479,12 +577,15 @@ export async function detectProject(projectDir: string): Promise<DetectedState> 
     "lerna.json",
     "rush.json",
   ];
-  let hasWorkspaceMarker = workspaceMarkers.some((f) => existsSync(join(projectDir, f)));
+  // ALWAYS checked at repoRoot, not projectDir: workspace markers
+  // live at git root, so even a project that lives in a subdir is
+  // governed by its enclosing workspace's marker (if any).
+  let hasWorkspaceMarker = workspaceMarkers.some((f) => existsSync(join(repoRoot, f)));
   if (!hasWorkspaceMarker) {
     // npm/yarn workspaces live as a `workspaces` field inside the root
     // package.json (string array or { packages: [...] } object).
     try {
-      const rootPkg = JSON.parse(readFileSync(join(projectDir, "package.json"), "utf-8")) as {
+      const rootPkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf-8")) as {
         workspaces?: unknown;
       };
       if (rootPkg.workspaces) hasWorkspaceMarker = true;
@@ -569,13 +670,15 @@ export async function detectProject(projectDir: string): Promise<DetectedState> 
 
   // Git state — is this a repo? Does it already have an origin remote?
   // We only auto-init + create a remote when the user opts in via the
-  // stepper; here we just gather state for the summary.
-  const isGitRepo = existsSync(join(projectDir, ".git"));
+  // stepper; here we just gather state for the summary. The repoRoot
+  // check at the top already found a `.git` (file or dir) when one
+  // exists — `isGitRepo` reuses that signal instead of re-probing.
+  const isGitRepo = repoRoot !== invokedFromDir || existsSync(join(repoRoot, ".git"));
   let gitRemoteUrl: string | undefined;
   if (isGitRepo) {
     try {
       const res = await exec("git", ["remote", "get-url", "origin"], {
-        cwd: projectDir,
+        cwd: repoRoot,
         // No spinner — this is a sub-second silent check.
       });
       const url = res.stdout.trim();
@@ -596,7 +699,7 @@ export async function detectProject(projectDir: string): Promise<DetectedState> 
   if (gitRemoteUrl) {
     try {
       const res = await exec("gh", ["repo", "view", "--json", "visibility", "-q", ".visibility"], {
-        cwd: projectDir,
+        cwd: repoRoot,
         silent: true,
       });
       if (res.exitCode === 0) {
@@ -613,13 +716,25 @@ export async function detectProject(projectDir: string): Promise<DetectedState> 
     }
   }
 
-  const unknownWorkspaceLayout = hasWorkspaceMarker && !serverDir && !clientDir;
-  const standaloneBuildCandidates = unknownWorkspaceLayout
-    ? findStandaloneBuildCandidates(projectDir)
-    : [];
+  // `unknownWorkspaceLayout` stays FALSE when detection already
+  // resolved to a subdir — the layout is no longer "unknown", it's
+  // just subdir-deployed.
+  const unknownWorkspaceLayout = hasWorkspaceMarker && !serverDir && !clientDir && !projectSubdir;
+  const standaloneBuildCandidates =
+    rootLevelCandidates.length > 0
+      ? rootLevelCandidates
+      : unknownWorkspaceLayout
+        ? findStandaloneBuildCandidates(projectDir)
+        : [];
+
+  const normalizedSubdir = projectSubdir
+    ? projectSubdir.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "")
+    : undefined;
 
   return {
     projectDir,
+    repoRoot,
+    projectSubdir: normalizedSubdir || undefined,
     packageName,
     packageDescription,
     hasManifest,
@@ -650,6 +765,174 @@ export async function detectProject(projectDir: string): Promise<DetectedState> 
  *  Returns first-level matches only; we don't recurse because the
  *  intent is "show the user a starting point", not enumerate every
  *  buildable subtree. */
+/** Test whether a directory looks like it can be built/deployed as-is.
+ *  Signals: a `build` script in package.json, a `next.config.*` /
+ *  `vite.config.*` / `astro.config.*` file at the root, or a hand-
+ *  authored Dockerfile.
+ *
+ *  When this returns false at the repo root, `detectProject` looks for
+ *  a sibling subdir that IS buildable and pre-selects it as the
+ *  project subdir. The result is the difference between "this CLI
+ *  monorepo with a marketing site at site/" producing a Coolify app
+ *  that builds the CLI (broken) vs. one that builds the site
+ *  (correct). */
+function rootLooksBuildable(dir: string): boolean {
+  if (existsSync(join(dir, "Dockerfile"))) return true;
+  for (const name of [
+    "next.config.ts",
+    "next.config.js",
+    "next.config.mjs",
+    "next.config.cjs",
+    "vite.config.ts",
+    "vite.config.js",
+    "vite.config.mjs",
+    "astro.config.ts",
+    "astro.config.mjs",
+    "astro.config.js",
+  ]) {
+    if (existsSync(join(dir, name))) return true;
+  }
+  const pkgPath = join(dir, "package.json");
+  if (!existsSync(pkgPath)) return false;
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
+      scripts?: Record<string, string>;
+    };
+    if (pkg.scripts?.build) return true;
+  } catch {
+    // Malformed package.json — fall through; "not buildable" is the
+    // safe default that nudges the user to pick a subdir explicitly.
+  }
+  return false;
+}
+
+/** Walk pnpm-workspace.yaml + package.json workspaces globs and return
+ *  the directories that look like a standalone build target — own
+ *  `package.json` with a `build` script OR a framework config file.
+ *  This complements `findStandaloneBuildCandidates` (which requires an
+ *  own lockfile) for the typical monorepo case where every workspace
+ *  package shares the root lockfile but ships its own build. */
+function findWorkspaceBuildCandidates(
+  repoRoot: string,
+): Array<{ dir: string; hasIgnoreWorkspace: boolean }> {
+  const out: Array<{ dir: string; hasIgnoreWorkspace: boolean }> = [];
+  const globs: string[] = [];
+  const wsPath = join(repoRoot, "pnpm-workspace.yaml");
+  if (existsSync(wsPath)) {
+    try {
+      const lines = readFileSync(wsPath, "utf-8").split(/\r?\n/);
+      let inPackages = false;
+      for (const line of lines) {
+        if (/^packages\s*:\s*$/.test(line)) {
+          inPackages = true;
+          continue;
+        }
+        if (!inPackages) continue;
+        if (/^\s*(#.*)?$/.test(line)) continue;
+        const m = line.match(/^\s*-\s*["']?([^"'#\s][^"'#]*?)["']?\s*(#.*)?$/);
+        if (m) {
+          globs.push(m[1].trim());
+          continue;
+        }
+        break;
+      }
+    } catch {
+      // Malformed YAML — skip.
+    }
+  }
+  try {
+    const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf-8")) as {
+      workspaces?: string[] | { packages?: string[] };
+    };
+    if (Array.isArray(pkg.workspaces)) globs.push(...pkg.workspaces);
+    else if (pkg.workspaces && Array.isArray(pkg.workspaces.packages)) {
+      globs.push(...pkg.workspaces.packages);
+    }
+  } catch {
+    // No / unparseable package.json — fine.
+  }
+  for (const glob of globs) {
+    for (const dir of expandWorkspaceGlobForCandidates(repoRoot, glob)) {
+      const full = join(repoRoot, dir);
+      if (!existsSync(join(full, "package.json"))) continue;
+      try {
+        const sub = JSON.parse(readFileSync(join(full, "package.json"), "utf-8")) as {
+          scripts?: Record<string, string>;
+        };
+        const hasBuildScript = !!sub.scripts?.build;
+        const hasFrameworkConfig = [
+          "next.config.ts",
+          "next.config.js",
+          "next.config.mjs",
+          "next.config.cjs",
+          "vite.config.ts",
+          "vite.config.js",
+          "astro.config.ts",
+          "astro.config.mjs",
+        ].some((n) => existsSync(join(full, n)));
+        if (!hasBuildScript && !hasFrameworkConfig) continue;
+        out.push({ dir: full, hasIgnoreWorkspace: false });
+      } catch {
+        // Skip a single bad sub-package; keep walking.
+      }
+    }
+  }
+  return out;
+}
+
+function expandWorkspaceGlobForCandidates(repoRoot: string, glob: string): string[] {
+  const parts = glob.split("/").filter(Boolean);
+  let candidates: string[] = [""];
+  for (const part of parts) {
+    const next: string[] = [];
+    if (part === "*" || part === "**") {
+      for (const c of candidates) {
+        const base = c ? join(repoRoot, c) : repoRoot;
+        if (!existsSync(base)) continue;
+        let entries: string[];
+        try {
+          entries = readdirSync(base);
+        } catch {
+          continue;
+        }
+        for (const e of entries) {
+          if (e.startsWith(".") || e === "node_modules") continue;
+          try {
+            if (!statSync(join(base, e)).isDirectory()) continue;
+          } catch {
+            continue;
+          }
+          next.push(c ? `${c}/${e}` : e);
+        }
+      }
+    } else {
+      for (const c of candidates) {
+        const sub = c ? `${c}/${part}` : part;
+        if (existsSync(join(repoRoot, sub))) next.push(sub);
+      }
+    }
+    candidates = next;
+    if (candidates.length === 0) break;
+  }
+  return candidates;
+}
+
+/** Merge two candidate arrays, deduping by directory path. Keeps the
+ *  `hasIgnoreWorkspace=true` flag preferred (stronger signal) when
+ *  both arrays carry the same dir. */
+function mergeBuildCandidates(
+  a: Array<{ dir: string; hasIgnoreWorkspace: boolean }>,
+  b: Array<{ dir: string; hasIgnoreWorkspace: boolean }>,
+): Array<{ dir: string; hasIgnoreWorkspace: boolean }> {
+  const byDir = new Map<string, { dir: string; hasIgnoreWorkspace: boolean }>();
+  for (const c of [...a, ...b]) {
+    const prev = byDir.get(c.dir);
+    if (!prev) byDir.set(c.dir, c);
+    else if (c.hasIgnoreWorkspace) byDir.set(c.dir, c);
+  }
+  return Array.from(byDir.values());
+}
+
 function findStandaloneBuildCandidates(
   projectDir: string,
 ): Array<{ dir: string; hasIgnoreWorkspace: boolean }> {
@@ -792,6 +1075,14 @@ function printDetected(state: DetectedState): void {
 
   lines.push(chalk.bold("\n  Detected:\n"));
   lines.push(row("project dir", chalk.cyan(relativeTo(state.projectDir))));
+  if (state.projectSubdir) {
+    lines.push(
+      row(
+        "repo root",
+        `${chalk.cyan(relativeTo(state.repoRoot))}  ${chalk.dim(`(subdir: ${state.projectSubdir})`)}`,
+      ),
+    );
+  }
   if (state.packageName) lines.push(row("package.json", chalk.cyan(state.packageName)));
   if (state.packageDescription) {
     lines.push(row("description", chalk.dim(`"${truncate(state.packageDescription, 60)}"`)));
@@ -885,6 +1176,17 @@ function printDetected(state: DetectedState): void {
 type AdoptStep = OnboardingStep;
 type AdoptStepGroup = OnboardingStepGroup;
 
+/** Decide whether the "Project subdir" row should appear in the
+ *  Layout group. Worth showing when detection resolved a subdir, when
+ *  root-level candidates exist, or when the existing manifest already
+ *  records one on resume. Flat single-package repos → row omitted. */
+function shouldShowSubdirRow(state: DetectedState): boolean {
+  if (state.projectSubdir) return true;
+  if (state.standaloneBuildCandidates.length > 0) return true;
+  if (state.existingManifest?.projectSubdir) return true;
+  return false;
+}
+
 async function reviewLoop(state: DetectedState, initial: AdoptPlan): Promise<AdoptPlan> {
   let latestPlan = initial;
   const reviewedPlan = await runProjectOnboardingReview({
@@ -944,6 +1246,36 @@ function buildAdoptGroups(
     {
       title: "Layout",
       steps: [
+        // Project subdir row only renders when there's actually a
+        // choice to make — detection found candidates, the user cd'd
+        // into a subdir, or a resume manifest has one set. Flat
+        // single-package repos have nothing to ask.
+        ...(shouldShowSubdirRow(state)
+          ? [
+              ((): AdoptStep => {
+                const candidateCount = state.standaloneBuildCandidates.length;
+                const currentSubdir = onboarding.layout.projectSubdir;
+                const ambiguous = candidateCount >= 2 && !state.existingManifest?.projectSubdir;
+                const summary = currentSubdir
+                  ? `${chalk.cyan(`${currentSubdir}/`)}  ${chalk.dim(
+                      candidateCount > 1
+                        ? `(${candidateCount} candidates — change to switch)`
+                        : "(auto-picked)",
+                    )}`
+                  : chalk.dim(
+                      candidateCount > 0
+                        ? `repo root (${candidateCount} subdir${candidateCount === 1 ? "" : "s"} available)`
+                        : "repo root",
+                    );
+                return {
+                  key: "projectSubdir",
+                  label: "Project subdir",
+                  set: !ambiguous,
+                  summary,
+                };
+              })(),
+            ]
+          : []),
         // The Surfaces choice has three confidence levels:
         //   · manifest persisted   → user already confirmed it once
         //   · disk layout obvious  → detection found server/ or
@@ -1216,6 +1548,67 @@ async function editAdoptStep(
       })
     ).trim();
     return { ...plan, description };
+  }
+  if (step === "projectSubdir") {
+    // Build the choice list: each detected candidate, plus "Repo root"
+    // (flip back when adopt auto-suggested a subdir the user didn't
+    // want) plus "Other" for a free-form path.
+    const candidates = state.standaloneBuildCandidates;
+    const currentSubdir = plan.projectSubdir;
+    type SubdirChoice = string | "__root__" | "__other__";
+    const choices: Array<{ name: string; value: SubdirChoice }> = [];
+    for (const c of candidates) {
+      const rel = relative(state.repoRoot, c.dir) || ".";
+      const tag = c.hasIgnoreWorkspace ? chalk.green("  (ignore-workspace)") : "";
+      choices.push({ name: `${rel}/${tag}`, value: rel });
+    }
+    choices.push({ name: "Repo root (build at /)", value: "__root__" });
+    choices.push({ name: "Other (type a path)", value: "__other__" });
+    const defaultChoice: SubdirChoice = currentSubdir ?? "__root__";
+    const picked = await select<SubdirChoice>({
+      message: "Which subfolder of the repo is the deployable?",
+      choices,
+      default: defaultChoice,
+    });
+    let nextSubdir: string | undefined;
+    if (picked === "__root__") {
+      nextSubdir = undefined;
+    } else if (picked === "__other__") {
+      const typed = (
+        await input({
+          message: "Subfolder path (relative to repo root, posix slashes):",
+          default: currentSubdir ?? "",
+          validate: (v) => {
+            const trimmed = v.trim();
+            if (!trimmed) return true;
+            if (trimmed.startsWith("/") || trimmed.includes("..")) {
+              return "Must be a relative path inside the repo (no leading / or .. segments).";
+            }
+            const abs = join(state.repoRoot, trimmed);
+            return existsSync(abs) ? true : `No such directory: ${abs}`;
+          },
+        })
+      ).trim();
+      nextSubdir = typed === "" ? undefined : typed.replace(/\\/g, "/").replace(/\/+$/, "");
+    } else {
+      nextSubdir = picked;
+    }
+    // Recompute server/client dir defaults against the new subdir.
+    const newProjectDir = nextSubdir ? join(state.repoRoot, nextSubdir) : state.repoRoot;
+    return {
+      ...plan,
+      projectSubdir: nextSubdir,
+      serverDir:
+        plan.surfaces === "static"
+          ? undefined
+          : (firstExisting(newProjectDir, ["packages/server", "apps/server", "server"]) ??
+            newProjectDir),
+      clientDir:
+        plan.surfaces === "backend"
+          ? undefined
+          : (firstExisting(newProjectDir, ["packages/client", "apps/web", "client"]) ??
+            newProjectDir),
+    };
   }
   if (step === "surfaces") {
     const next = await select<AdoptSurface>({
@@ -1619,9 +2012,12 @@ async function executePlan(
     // Step 2: write the manifest. Done after key import so a partial
     // failure doesn't leave a manifest pointing at no key. The
     // manifest lives at the project ROOT (not under packages/server).
-    const manifestPath = join(state.projectDir, MANIFEST_FILENAME);
-    writeAdoptManifest(state.projectDir, plan, state);
-    console.log(chalk.green(`  ✓ Wrote ${MANIFEST_FILENAME} at ${relativeTo(state.projectDir)}`));
+    // Manifest lives at the REPO root — equals projectDir for
+    // single-package-at-root, differs for subdir-deployed projects
+    // (so a fresh checkout always finds it at the top of the tree).
+    const manifestPath = join(state.repoRoot, MANIFEST_FILENAME);
+    writeAdoptManifest(state.repoRoot, plan, state);
+    console.log(chalk.green(`  ✓ Wrote ${MANIFEST_FILENAME} at ${relativeTo(state.repoRoot)}`));
     if (!state.hasManifest) {
       // Only on first-time adopt — `--resume` reuses the manifest the
       // earlier run created, so that earlier run's ledger (if any) is
@@ -1638,7 +2034,11 @@ async function executePlan(
       // deleted first — the local .git would still exist long enough
       // for the user to read the recipe / abort if they want.
       if (ghResult.gitInitialized) {
-        ledger.record({ kind: "gitInit", path: join(state.projectDir, ".git") });
+        // .git lives at the REPO root, never inside the subdir. For
+        // single-package-at-root state.repoRoot === state.projectDir
+        // so behaviour is unchanged; for subdir builds this is the
+        // only correct location.
+        ledger.record({ kind: "gitInit", path: join(state.repoRoot, ".git") });
       }
       if (ghResult.repoSlug) {
         ledger.record({ kind: "github", repo: ghResult.repoSlug });
@@ -1766,6 +2166,13 @@ async function executePlan(
           // build with a deploy of stale-or-absent images. Source-build
           // projects (when this is false) keep the Coolify default.
           scaffoldBuildPipeline: plan.scaffoldBuildPipeline,
+          // Coolify's `base_directory` — the repo-relative path
+          // Coolify clones the build context at. Set when the
+          // deployable lives in a subfolder of the enclosing repo so
+          // Coolify picks up the Dockerfile / docker-compose.yml that
+          // scaffoldBuildPipelineNow just wrote inside the subdir,
+          // rather than the (probably-unbuildable) repo root.
+          baseDirectory: plan.projectSubdir || undefined,
         });
         // Record only the bits we actually created. wireProjectIntoCoolify
         // returns explicit `*Created` flags exactly so adopt can guard
@@ -2066,7 +2473,10 @@ async function executePlan(
     let pushedThisRun = false;
     if (remoteUrl) {
       if (plan.setupGitHub && !state.gitRemoteUrl) {
-        pushedThisRun = await pushInitialBranch(state.projectDir);
+        // Push from the REPO root so the whole tree (manifest at
+        // root + the deployable subdir) goes up in one shot. Single-
+        // package layouts have repoRoot === projectDir so unchanged.
+        pushedThisRun = await pushInitialBranch(state.repoRoot);
       } else if (state.gitRemoteUrl) {
         const result = await commitAndPushScaffold(state, {
           scaffoldedAbsPaths,
@@ -3268,10 +3678,19 @@ async function setupGitHubRemote(
 
   console.log(chalk.bold("\n  ── GitHub ────────────────────────────────────────────────\n"));
 
+  // Every git operation targets the REPO root, not the deployable
+  // subdir. For single-package-at-root state.repoRoot === state.projectDir
+  // so behaviour is unchanged; for subdir-deployed projects this is
+  // the only sane choice — git belongs at the enclosing tree so the
+  // manifest at the root + the subdir contents land in the same repo
+  // + commit, and `.git` ends up where the user (and the rollback
+  // ledger) expect it.
+  const gitCwd = state.repoRoot;
+
   let gitInitialized = false;
   if (!state.isGitRepo) {
     await exec("git", ["init"], {
-      cwd: state.projectDir,
+      cwd: gitCwd,
       spinner: "Initializing git repo...",
     });
     gitInitialized = true;
@@ -3280,19 +3699,13 @@ async function setupGitHubRemote(
   //   `git diff --cached --quiet` exits 0 → no diff (nothing staged)
   //                                 1 → diff present (commit needed)
   // execOk returns true on exit 0, so the inverse is "something to commit".
-  await exec("git", ["add", "-A"], { cwd: state.projectDir });
+  await exec("git", ["add", "-A"], { cwd: gitCwd });
 
   // Defensive last-mile check: refuse to commit anything that smells
   // like a dotenvx private key, regardless of whether `.gitignore` is
-  // up to date. Catches the bug we shipped once where `.env.keys` was
-  // generated into a repo whose pre-existing `.gitignore` didn't cover
-  // it; bootstrapDotenvxNow now appends `.env.keys` to `.gitignore`
-  // BEFORE writing the file, but this guard is the cheap second line
-  // of defence — it would have caught that bug too. See looksLikeDotenvxPrivateKey.
-  const stagedFiles = await listStagedFiles(state.projectDir);
-  const leaks = stagedFiles.filter((rel) =>
-    looksLikeDotenvxPrivateKey(join(state.projectDir, rel)),
-  );
+  // up to date.
+  const stagedFiles = await listStagedFiles(gitCwd);
+  const leaks = stagedFiles.filter((rel) => looksLikeDotenvxPrivateKey(join(gitCwd, rel)));
   if (leaks.length > 0) {
     throw new Error(
       `Refusing to commit — staged files look like dotenvx private keys:\n` +
@@ -3304,11 +3717,11 @@ async function setupGitHubRemote(
   }
 
   const cleanIndex = await execOk("git", ["diff", "--cached", "--quiet"], {
-    cwd: state.projectDir,
+    cwd: gitCwd,
   });
   if (!cleanIndex) {
     await exec("git", ["commit", "-m", "Adopt under hatchkit management"], {
-      cwd: state.projectDir,
+      cwd: gitCwd,
       spinner: "Creating commit...",
     });
   }
@@ -3321,17 +3734,17 @@ async function setupGitHubRemote(
   // executePlan, once setCoolifyDeploySecrets has run.
   const visibilityFlag = plan.isPrivate ? "--private" : "--public";
   const create = await exec("gh", ["repo", "create", plan.name, visibilityFlag, "--source=."], {
-    cwd: state.projectDir,
+    cwd: gitCwd,
     spinner: `Creating GitHub repo: ${plan.name} (${plan.isPrivate ? "private" : "public"})...`,
   });
   if (create.exitCode !== 0) {
     console.log(chalk.yellow("  Could not create GitHub repo. Push manually once it exists:"));
-    console.log(chalk.dim(`    cd ${state.projectDir}`));
+    console.log(chalk.dim(`    cd ${gitCwd}`));
     console.log(chalk.dim(`    gh repo create ${plan.name} ${visibilityFlag} --source=. --push`));
     return { gitInitialized };
   }
   const urlRes = await exec("gh", ["repo", "view", "--json", "url", "-q", ".url"], {
-    cwd: state.projectDir,
+    cwd: gitCwd,
   });
   const url = urlRes.stdout.trim();
   console.log(chalk.green(`  ✓ GitHub repo: ${url}`));
@@ -3506,6 +3919,13 @@ export function buildAdoptManifest(
     ...(existing?.gpuPlatforms ? { gpuPlatforms: existing.gpuPlatforms } : {}),
     ...(existing?.customHfModelId ? { customHfModelId: existing.customHfModelId } : {}),
     ...(existing?.customHfGpuType ? { customHfGpuType: existing.customHfGpuType } : {}),
+    // Persist the subdir choice so every subsequent command (sync /
+    // keys push / regen-infra / destroy) resolves paths against the
+    // same dir adopt wired up. Omitted from the manifest when absent —
+    // single-package-at-root projects shouldn't carry the field at all
+    // so a future `hatchkit set-subdir`-style fix can distinguish
+    // "not set" from "explicitly set to repo root".
+    ...(plan.projectSubdir ? { projectSubdir: plan.projectSubdir } : {}),
   };
 }
 
@@ -3659,9 +4079,14 @@ async function scaffoldBuildPipelineNow(
   // can't tell — the scaffolded compose still works once the user
   // edits it, and they get a clear hint in the summary.
   const owner = ownerFromRemote(remoteUrl) ?? "OWNER";
-  const defaultBranch = await detectDefaultBranch(state.projectDir);
+  const defaultBranch = await detectDefaultBranch(state.repoRoot);
   const result = scaffoldBuildPipeline({
     projectDir: state.projectDir,
+    repoRoot: state.repoRoot,
+    // Pass the manifest-shape subdir (posix-slashed, no leading "./")
+    // so the workflow's `context:` line matches Coolify's
+    // `base_directory` and the build context lines up across both.
+    projectSubdir: plan.projectSubdir || undefined,
     projectName: plan.name,
     ghOwner: owner,
     entrypoint: plan.surfaces === "static" ? "" : "dist/index.js",
@@ -3694,11 +4119,12 @@ async function scaffoldBuildPipelineNow(
       ),
     );
   }
-  // Promote project-relative paths to absolute so the caller doesn't
-  // need to know the project root for ledger entries / dedup.
+  // Use the absolute paths the scaffolder returned directly — they
+  // already account for per-file baseDir (Dockerfile / compose at
+  // projectDir, GH Actions workflow at repoRoot).
   return {
-    createdAbsPaths: result.created.map((rel) => join(state.projectDir, rel)),
-    overwrittenAbsPaths: result.overwritten.map((rel) => join(state.projectDir, rel)),
+    createdAbsPaths: result.createdAbs,
+    overwrittenAbsPaths: result.overwrittenAbs,
   };
 }
 

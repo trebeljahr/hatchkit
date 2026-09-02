@@ -29,7 +29,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { localDevDomainFromProjectDomain } from "@hatchkit/dev-shared";
 import {
   type Topology,
@@ -191,6 +191,31 @@ export interface ProjectManifest {
    *  it has to be chosen explicitly. See `inferTopology` in
    *  deploy/routing.ts. */
   topology?: Topology;
+  /** Path from the repo root to the deployable subdir, posix-slashed,
+   *  no leading "./", no trailing slash. Absent / undefined means the
+   *  deployable lives at the repo root (the historical default).
+   *
+   *  Drives where `hatchkit` reads files from for this project:
+   *    · scaffolded Dockerfile / docker-compose.yml live under the
+   *      subdir; Coolify's Base Directory is set to the same path so
+   *      its build context matches what the templates expect;
+   *    · `.github/workflows/*` scaffolded by hatchkit run their
+   *      build steps with `context: <subdir>` so the docker build
+   *      only sees the subdir tree;
+   *    · `hatchkit keys push` / `add` / `sync` / `regen-infra` /
+   *      `rename-domain` / `destroy` all resolve project-relative
+   *      paths against `<repoRoot>/<projectSubdir>`.
+   *
+   *  The manifest itself ALWAYS lives at the repo root, even when
+   *  `projectSubdir` is set — that way `git rev-parse --show-toplevel`
+   *  + manifest lookup composes cleanly from any cwd inside the repo.
+   *
+   *  Set by `hatchkit adopt` (auto-detected when a sibling docs/site
+   *  package is the obvious deployable) and `hatchkit create` (when
+   *  the user picks "subfolder of current repo"). Optional for
+   *  back-compat: existing manifests without this field keep working;
+   *  the path resolution falls back to repo-root behavior. */
+  projectSubdir?: string;
   /** Captured email-intent for this project, independent of the
    *  current `provisionServices` list. Two needs (transactional and
    *  mailing list) can be answered independently; each carries a
@@ -418,6 +443,7 @@ export function toManifest(
     surfaces: config.surfaces,
     publicService: config.publicService ?? defaultPublicServiceForSurfaces(config.surfaces),
     topology: config.topology ?? "single-origin",
+    projectSubdir: config.projectSubdir || undefined,
     gpuPlatforms: config.gpuPlatforms,
     customHfModelId: config.customHfModelId,
     customHfGpuType: config.customHfGpuType,
@@ -590,4 +616,63 @@ export function readManifestWithMigrationInfo(projectDir: string): ReadManifestR
     migrated: migrationNotes.length > 0,
     migrationNotes,
   };
+}
+
+/** Normalize a `projectSubdir` candidate into the canonical manifest
+ *  shape: posix slashes, no leading `./`, no leading or trailing `/`,
+ *  collapsed `..` segments rejected (the subdir must be inside the repo).
+ *  Returns `undefined` for empty/`.`/`./` inputs — those signal "repo
+ *  root", which is the manifest default and recorded as the field
+ *  being absent rather than an empty string.
+ *
+ *  Throws on inputs that would escape the repo root or that contain
+ *  characters that don't compose into a single relative path. Callers
+ *  validate at the prompt boundary so a bad value never reaches disk. */
+export function normalizeProjectSubdir(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  let trimmed = raw.replace(/\\/g, "/").trim();
+  while (trimmed.startsWith("./")) trimmed = trimmed.slice(2);
+  trimmed = trimmed.replace(/^\/+/, "").replace(/\/+$/, "");
+  if (trimmed === "" || trimmed === "." || trimmed === "./") return undefined;
+  const segments = trimmed.split("/");
+  if (segments.some((s) => s === "" || s === "..")) {
+    throw new Error(
+      `Invalid projectSubdir "${raw}": must be a single relative path inside the repo (no empty / ".." segments).`,
+    );
+  }
+  return segments.join("/");
+}
+
+/** Resolve where this project's deployable lives on disk. When
+ *  `manifest.projectSubdir` is set, returns `<repoRoot>/<subdir>`;
+ *  otherwise returns `repoRoot` itself. Callers should always reach
+ *  for this helper instead of joining manually so the back-compat
+ *  default (subdir absent → repo root) is in one place. */
+export function resolveProjectDir(repoRoot: string, manifest: ProjectManifest | undefined): string {
+  if (!manifest?.projectSubdir) return repoRoot;
+  return join(repoRoot, manifest.projectSubdir);
+}
+
+/** Walk up from `cwd` until we find a directory containing
+ *  `.hatchkit.json`. Returns that directory (the repo root, by
+ *  convention) or `undefined` if no manifest was found within 12
+ *  levels. Subdir-deployed projects keep the manifest at the
+ *  enclosing repo root, so a user running `cd /repo/site && hatchkit
+ *  rename-domain ...` from inside the subdir still finds the project
+ *  via this helper. Callers that need the manifest itself should
+ *  follow up with `readManifest()` on the returned directory.
+ *
+ *  We deliberately don't shell out to git here — a plain existsSync
+ *  scan up the tree is enough, faster, and works in test fixtures
+ *  that don't initialize git. The 12-level cap is a generous
+ *  filesystem-loop / pathological-symlink backstop. */
+export function findManifestDirUpward(cwd: string): string | undefined {
+  let dir = cwd;
+  for (let i = 0; i < 12; i++) {
+    if (existsSync(join(dir, MANIFEST_FILENAME))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+  return undefined;
 }

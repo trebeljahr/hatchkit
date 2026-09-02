@@ -17,6 +17,7 @@
 import {
   cpSync,
   existsSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -514,8 +515,31 @@ async function runScaffoldSteps(
   // Write the sanitized manifest so `hatchkit update` can diff
   // against this scaffold's choices later. See manifest.ts for the
   // strict list of fields that are safe to persist.
-  writeManifest(outputDir, toManifest(config, ports, getCliVersion()));
+  //
+  // For projects scaffolded into a sub-folder of an existing repo
+  // (config.projectSubdir set), the manifest lives at the ENCLOSING
+  // REPO ROOT, not the scaffolded subdir — so a fresh checkout's git
+  // toplevel always carries the manifest, and downstream tooling
+  // (sync, keys push, regen-infra) finds it without knowing about
+  // the subdir. For the historical single-package-at-root layout the
+  // two dirs are the same, so this is a no-op for existing projects.
+  const manifestDir = config.projectSubdir
+    ? resolve(outputDir, ...config.projectSubdir.split("/").map(() => ".."))
+    : outputDir;
+  writeManifest(manifestDir, toManifest(config, ports, getCliVersion()));
   modifications.push(".hatchkit.json (project manifest)");
+
+  // Subdir-deployed scaffold: relocate the starter's GitHub Actions
+  // workflows from inside the subdir up to the enclosing repo's
+  // .github/workflows/. Actions only reads workflows from the repo-
+  // root location, so a workflow that lands at
+  // `/repo/<name>/.github/workflows/build-and-deploy.yml` is silently
+  // ignored. Move + patch the `context: .` lines (used by
+  // docker/build-push-action) to point at the subdir instead. No-op
+  // for single-package-at-root (outputDir === manifestDir).
+  if (config.projectSubdir && manifestDir !== outputDir) {
+    relocateWorkflowsForSubdir(outputDir, manifestDir, config.projectSubdir, modifications);
+  }
 
   // Seed .env.production via dotenvx: encrypt supplied values, mint a
   // keypair, mirror the private key into the OS keychain. Unsupplied
@@ -586,6 +610,76 @@ function stripNewsletterFromServerApp(outputDir: string): void {
   // Defensive fallback for the bare line if the comment shape ever drifts.
   content = content.replace(/\n\s*registerNewsletterRoutes\(app\);\n/, "\n");
   writeFileSync(path, content, "utf-8");
+}
+
+/** Move the starter's `.github/workflows/*.yml` from the scaffolded
+ *  subdir up to the enclosing repo's `.github/workflows/`, patching
+ *  any `context: .` line on docker/build-push-action steps to point
+ *  at the subdir so the build still sees the right files.
+ *
+ *  Conflict policy: if the repo root already has a workflow with the
+ *  same name, leave it alone (the user's), drop the starter's, and
+ *  surface a hint in the modifications list. No merge — workflow YAML
+ *  semantics are too varied to merge safely. */
+function relocateWorkflowsForSubdir(
+  outputDir: string,
+  manifestDir: string,
+  projectSubdir: string,
+  modifications: string[],
+): void {
+  const srcDir = join(outputDir, ".github/workflows");
+  if (!existsSync(srcDir)) return;
+  const destDir = join(manifestDir, ".github/workflows");
+  let entries: string[];
+  try {
+    entries = readdirSync(srcDir);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (!/\.ya?ml$/i.test(name)) continue;
+    const srcPath = join(srcDir, name);
+    const destPath = join(destDir, name);
+    if (existsSync(destPath)) {
+      modifications.push(
+        `workflow ${name} already at repo root — left existing file untouched, dropped starter copy`,
+      );
+      try {
+        rmSync(srcPath, { force: true });
+      } catch {
+        /* best effort */
+      }
+      continue;
+    }
+    let body: string;
+    try {
+      body = readFileSync(srcPath, "utf-8");
+    } catch {
+      continue;
+    }
+    // Patch `context: .` (docker/build-push-action) to point at the
+    // subdir. The starter's workflow assumes single-package-at-root.
+    const patched = body.replace(/^(\s*context:\s*)\.\s*$/gm, `$1${projectSubdir}`);
+    if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true });
+    writeFileSync(destPath, patched, "utf-8");
+    try {
+      rmSync(srcPath, { force: true });
+    } catch {
+      /* best effort */
+    }
+    modifications.push(
+      `relocated ${name}: ${join(".github/workflows", name)} (now at repo root, context → ${projectSubdir})`,
+    );
+  }
+  try {
+    if (readdirSync(srcDir).length === 0) rmSync(srcDir, { recursive: true, force: true });
+    const subdirGithub = join(outputDir, ".github");
+    if (existsSync(subdirGithub) && readdirSync(subdirGithub).length === 0) {
+      rmSync(subdirGithub, { recursive: true, force: true });
+    }
+  } catch {
+    /* best effort */
+  }
 }
 
 /** Dry run — list what would happen without touching disk. */

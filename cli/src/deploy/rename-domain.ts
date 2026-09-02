@@ -30,7 +30,7 @@ import {
   CLIENT_WORKFLOW_REL_PATH,
   setWorkflowClientBuildArgUrls,
 } from "../scaffold/client-build-args.js";
-import { type ProjectManifest, readManifest } from "../scaffold/manifest.js";
+import { type ProjectManifest, findManifestDirUpward, readManifest } from "../scaffold/manifest.js";
 import { parseDomain, validateDomain } from "../utils/validate.js";
 
 // ---------------------------------------------------------------------------
@@ -51,13 +51,17 @@ export interface RenameDomainOptions {
 }
 
 export async function runRenameDomain(opts: RenameDomainOptions): Promise<void> {
-  const { projectDir, monorepoRoot } = opts;
+  const { monorepoRoot } = opts;
 
-  // 1. Manifest
+  // 1. Manifest — walk up from the supplied `projectDir` so users
+  // running this from a sub-folder of a subdir-deployed project still
+  // resolve to the repo-root manifest. Single-package-at-root projects
+  // resolve identically to the historical behaviour.
+  const projectDir = findManifestDirUpward(opts.projectDir) ?? opts.projectDir;
   const manifest = readManifest(projectDir);
   if (!manifest) {
     throw new Error(
-      `No .hatchkit.json found in ${projectDir}. Run rename-domain from the project root (or pass --dir).`,
+      `No .hatchkit.json found in ${opts.projectDir} (or any parent). Run rename-domain from inside a hatchkit-managed project (or pass --dir <repo-root>).`,
     );
   }
   const oldDomain = manifest.domain;
