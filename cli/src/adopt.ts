@@ -40,6 +40,8 @@ import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { ensureGhcrViaGh, ensureGitHub, getCoolifyConfig, getDefaultRootDomain } from "./config.js";
 import {
+  type CoolifyDeployApp,
+  coolifyDeploySecretNames,
   ghSecretExists,
   ownerFromRemote,
   repoSlugFromRemote,
@@ -1869,25 +1871,25 @@ async function executePlan(
         // contract `ghSecretExists` uses for the ledger-record gate
         // below. The user's recourse for a rotated Coolify token is
         // re-running adopt *without* --resume.
-        const coolifySecretNames = [
-          "COOLIFY_BASE_URL",
-          "COOLIFY_API_TOKEN",
-          "COOLIFY_TOKEN",
-          "COOLIFY_WEBHOOK_URL",
-          "COOLIFY_RESOURCE_UUID",
-          // A `split` deployment needs a trigger per app. Without these
-          // in the list, a --resume on a split project would see the
-          // five single-app secrets present and skip the push, leaving
-          // the second app permanently untriggered.
-          ...(coolifyResult && coolifyResult.apps.length > 1
-            ? [
-                "COOLIFY_RESOURCE_UUID_CLIENT",
-                "COOLIFY_RESOURCE_UUID_SERVER",
-                "COOLIFY_WEBHOOK_URL_CLIENT",
-                "COOLIFY_WEBHOOK_URL_SERVER",
-              ]
-            : []),
-        ];
+        //
+        // `split` wires two apps, each with its own deploy trigger —
+        // passing only the primary would leave the other half stuck on
+        // a stale image forever. Falls back to the single-app shape
+        // when this run didn't create the apps (a --resume that matched
+        // an existing one by name). Routing's `compose` role means the
+        // one app of a single-origin deployment, which carries no role
+        // in the secret names.
+        const deployApps: CoolifyDeployApp[] =
+          coolifyResult && coolifyResult.apps.length > 1
+            ? coolifyResult.apps.map((a) => ({
+                uuid: a.uuid,
+                role: a.role === "server" ? ("server" as const) : ("client" as const),
+              }))
+            : [{ uuid: appUuidForSecrets }];
+        // Derived from the push itself rather than hardcoded, so the
+        // gate and the push can't disagree about what "all present"
+        // means.
+        const coolifySecretNames = coolifyDeploySecretNames(deployApps);
         let skipCoolifySecrets = false;
         if (opts.resume) {
           const checks = await Promise.all(
@@ -1906,18 +1908,7 @@ async function executePlan(
           await setCoolifyDeploySecrets({
             projectDir: state.projectDir,
             repoSlug: slug,
-            // `split` wires two apps, each with its own deploy
-            // trigger — passing only the primary would leave the other
-            // half stuck on a stale image forever. Falls back to the
-            // single-app shape when this run didn't create the apps
-            // (a --resume that matched an existing one by name).
-            apps:
-              coolifyResult && coolifyResult.apps.length > 1
-                ? coolifyResult.apps.map((a) => ({
-                    uuid: a.uuid,
-                    role: a.role === "server" ? ("server" as const) : ("client" as const),
-                  }))
-                : [{ uuid: appUuidForSecrets }],
+            apps: deployApps,
           });
         }
       } else {

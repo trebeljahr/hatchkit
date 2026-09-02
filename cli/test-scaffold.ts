@@ -3378,6 +3378,145 @@ results.clientBuildArgUpgrades = await (async () => {
   return ok;
 })();
 
+// Coolify deploy-secret naming, split vs single-origin. A split project
+// has TWO Coolify apps to redeploy and one uuid can only trigger one of
+// them, so the paired names have to come back — but the two sets must
+// stay mutually exclusive, or an older checked-in workflow (whose
+// single-app step is NOT gated on the paired secrets) fires an extra
+// deploy.
+console.log("\n── deploy secrets: split vs single-origin ─────────────────────────────");
+{
+  const { computeCoolifyDeploySecrets, coolifyDeploySecretNames, resourceUuidSecretName } =
+    await import("./src/deploy/gh-actions-secrets.js");
+  const checks: Check[] = [];
+  const base = { coolifyUrl: "https://coolify.example.com/", coolifyToken: "tok" };
+
+  checks.push([
+    "secret name: client",
+    resourceUuidSecretName("client") === "COOLIFY_CLIENT_RESOURCE_UUID",
+  ]);
+  checks.push([
+    "secret name: server",
+    resourceUuidSecretName("server") === "COOLIFY_SERVER_RESOURCE_UUID",
+  ]);
+
+  // Single-origin: one unlabelled app.
+  const single = computeCoolifyDeploySecrets({
+    ...base,
+    apps: [{ uuid: "uuid-single" }],
+  });
+  checks.push([
+    "single: COOLIFY_RESOURCE_UUID set",
+    single.secrets.COOLIFY_RESOURCE_UUID === "uuid-single",
+  ]);
+  checks.push([
+    "single: webhook points at the app, trailing slash trimmed",
+    single.secrets.COOLIFY_WEBHOOK_URL ===
+      "https://coolify.example.com/api/v1/deploy?uuid=uuid-single",
+  ]);
+  checks.push([
+    "single: no paired names emitted",
+    !("COOLIFY_CLIENT_RESOURCE_UUID" in single.secrets) &&
+      !("COOLIFY_SERVER_RESOURCE_UUID" in single.secrets),
+  ]);
+  checks.push([
+    "single: stale paired names queued for removal",
+    single.staleToRemove.includes("COOLIFY_CLIENT_RESOURCE_UUID") &&
+      single.staleToRemove.includes("COOLIFY_SERVER_RESOURCE_UUID"),
+  ]);
+  checks.push([
+    "single: keeps its own uuid out of the removal list",
+    !single.staleToRemove.includes("COOLIFY_RESOURCE_UUID"),
+  ]);
+
+  // Split: two roled apps.
+  const split = computeCoolifyDeploySecrets({
+    ...base,
+    apps: [
+      { uuid: "uuid-server", role: "server" },
+      { uuid: "uuid-client", role: "client" },
+    ],
+  });
+  checks.push([
+    "split: both paired uuids set",
+    split.secrets.COOLIFY_SERVER_RESOURCE_UUID === "uuid-server" &&
+      split.secrets.COOLIFY_CLIENT_RESOURCE_UUID === "uuid-client",
+  ]);
+  checks.push([
+    "split: no single-app uuid (would double-deploy on older workflows)",
+    !("COOLIFY_RESOURCE_UUID" in split.secrets) &&
+      !("COOLIFY_WEBHOOK_URL" in split.secrets),
+  ]);
+  checks.push([
+    "split: clears the single-app uuid so it can't double-deploy the client",
+    split.staleToRemove.includes("COOLIFY_RESOURCE_UUID") &&
+      split.staleToRemove.includes("COOLIFY_WEBHOOK_URL"),
+  ]);
+  checks.push([
+    "split: clears the superseded role-suffixed spelling",
+    split.staleToRemove.includes("COOLIFY_RESOURCE_UUID_CLIENT") &&
+      split.staleToRemove.includes("COOLIFY_RESOURCE_UUID_SERVER"),
+  ]);
+  checks.push([
+    "split: never emits the role-suffixed spelling",
+    !Object.keys(split.secrets).some((n) => /_(CLIENT|SERVER)$/.test(n)),
+  ]);
+  checks.push([
+    "split: emission order stable regardless of input order",
+    JSON.stringify(Object.keys(split.secrets)) ===
+      JSON.stringify(
+        Object.keys(
+          computeCoolifyDeploySecrets({
+            ...base,
+            apps: [
+              { uuid: "uuid-client", role: "client" },
+              { uuid: "uuid-server", role: "server" },
+            ],
+          }).secrets,
+        ),
+      ),
+  ]);
+
+  // Both flows always carry the API triple.
+  for (const [label, r] of [
+    ["single", single],
+    ["split", split],
+  ] as const) {
+    checks.push([
+      `${label}: base url + token triple present`,
+      r.secrets.COOLIFY_BASE_URL === "https://coolify.example.com" &&
+        r.secrets.COOLIFY_API_TOKEN === "tok" &&
+        r.secrets.COOLIFY_TOKEN === "tok",
+    ]);
+  }
+
+  // adopt's --resume gate asks "are all the names already on the repo?".
+  // It must be derived from the push, or a split project's gate sees the
+  // single-app names, skips, and leaves the second app untriggered.
+  checks.push([
+    "names helper matches what split actually pushes",
+    JSON.stringify(
+      coolifyDeploySecretNames([
+        { uuid: "a", role: "server" },
+        { uuid: "b", role: "client" },
+      ]),
+    ) === JSON.stringify(Object.keys(split.secrets)),
+  ]);
+  checks.push([
+    "names helper matches what single-origin actually pushes",
+    JSON.stringify(coolifyDeploySecretNames([{ uuid: "a" }])) ===
+      JSON.stringify(Object.keys(single.secrets)),
+  ]);
+  checks.push(["names helper: empty in, empty out", coolifyDeploySecretNames([]).length === 0]);
+
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  results.deploySecretTopology = ok;
+}
+
 // Clean up the isolated config dir + every keychain entry scoped to
 // the throwaway service.
 {
