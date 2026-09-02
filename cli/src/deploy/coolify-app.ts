@@ -231,6 +231,8 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       const sourcesUrl = `${cfg.url.replace(/\/$/, "")}/sources`;
       throw new Error(
         `Repo is private but no Coolify GitHub source is configured.\n` +
+          `  Coolify's built-in "Public GitHub" source doesn't count — it clones over\n` +
+          `  anonymous HTTPS and can't see a private repo.\n` +
           `  Install a GitHub App at ${sourcesUrl}, then re-run with \`hatchkit adopt --resume\`.`,
       );
     } else {
@@ -429,6 +431,21 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       createApp.succeed(`Coolify app created: ${routed.appName} (uuid: ${createdUuid})`);
     } catch (err) {
       createApp.fail();
+      const message = err instanceof Error ? err.message : String(err);
+      // Coolify answers a bare 500 when the github_app_uuid isn't a
+      // real GitHub App (no app_id / private key to mint an
+      // installation token with). The seeded "Public GitHub" source is
+      // the usual culprit; listGithubSources filters it out now, so a
+      // 500 here means the picked App is broken on the Coolify side.
+      if (/private-github-app failed:\s*5\d\d/.test(message)) {
+        const sourcesUrl = `${cfg.url.replace(/\/$/, "")}/sources`;
+        throw new Error(
+          `${message}\n` +
+            `  Coolify couldn't use GitHub source ${githubAppUuid} to clone a private repo.\n` +
+            `  Check the App at ${sourcesUrl} has an App ID + private key and is installed on GitHub,\n` +
+            `  or set the repo visibility row to public if the repo doesn't need auth.`,
+        );
+      }
       throw err;
     }
 

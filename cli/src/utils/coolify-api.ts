@@ -426,6 +426,7 @@ export class CoolifyApi {
       }>;
       return apps
         .filter((app) => typeof app.uuid === "string")
+        .filter((app) => !isPublicGithubSource(app))
         .map((app) => ({
           uuid: app.uuid as string,
           name: app.name || (app.organization ? `GitHub App (${app.organization})` : "GitHub App"),
@@ -442,8 +443,11 @@ export class CoolifyApi {
         name: string;
         type?: string;
         html_url?: string;
+        is_public?: boolean;
       }>;
-      return sources.filter((s) => !s.type || s.type === "github_app");
+      return sources
+        .filter((s) => !s.type || s.type === "github_app")
+        .filter((s) => !isPublicGithubSource(s));
     } catch {
       // Unknown/older builds: return [] so callers can raise a clear
       // "install a GitHub App source" error before app creation.
@@ -738,6 +742,41 @@ export interface ApplicationCreateInput {
   /** Repo-relative path to the compose file when buildPack is
    *  `dockercompose`. Defaults to `/docker-compose.yml`. */
   dockerComposeLocation?: string;
+}
+
+/** Is this `/github-apps` entry Coolify's built-in anonymous
+ *  github.com source rather than a real GitHub App?
+ *
+ *  Every Coolify install ships a seeded source named "Public GitHub"
+ *  with `is_public: true`, `html_url: https://github.com` and no
+ *  app_id/installation_id. It exists so the UI can offer public-repo
+ *  clones over HTTPS — it cannot clone a private repo, and passing its
+ *  uuid to `POST /applications/private-github-app` makes Coolify blow
+ *  up with a bare `500 Internal Server Error`. Filtering it out of the
+ *  source list turns that 500 into hatchkit's existing "install a
+ *  GitHub App" guidance, and stops `doctor` from reporting a usable
+ *  App source when there is none.
+ *
+ *  Deliberately conservative: a real App is only excluded if Coolify
+ *  explicitly flags it public or its URL is the bare github.com origin.
+ *  Builds that expose neither field keep every source, so the worst
+ *  case stays today's behaviour instead of an empty list. */
+export function isPublicGithubSource(app: {
+  name?: string;
+  html_url?: string;
+  api_url?: string;
+  is_public?: boolean;
+}): boolean {
+  if (app.is_public === true) return true;
+  const url = app.html_url || app.api_url;
+  if (!url) return false;
+  try {
+    // A GitHub App source always carries an `/apps/<slug>` path (on
+    // github.com or a GHE host). A bare origin is the seeded source.
+    return new URL(url).pathname.replace(/\/+$/, "") === "";
+  } catch {
+    return false;
+  }
 }
 
 /** Pull the linked server UUID out of an /applications/{uuid} raw

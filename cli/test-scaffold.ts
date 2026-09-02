@@ -1582,15 +1582,38 @@ console.log("\n── coolify api: dockercompose domains payload ─────
   results.coolifyDockerComposeDomains = ok;
 }
 
+// Coolify API: /github-apps discovery, and the filter that keeps the
+// seeded "Public GitHub" entry out of the results.
+//
+// Every Coolify install ships that seeded source (is_public: true,
+// html_url: https://github.com, no app_id/private key). It exists so
+// the UI can clone public repos over anonymous HTTPS — it cannot see a
+// private repo, and passing its uuid to
+// POST /applications/private-github-app makes Coolify answer a bare
+// `500 Internal Server Error`. That's exactly what broke `hatchkit
+// adopt` on a private repo whose Coolify install had no real App: the
+// seeded row was the only "source", so adopt offered it, the user
+// picked it, and Coolify 500'd. Filtering it out turns that into the
+// existing "install a GitHub App" guidance, and stops `doctor` from
+// reporting a usable App source when there is none.
 console.log("\n── coolify api: github app source discovery ─────────────");
 {
-  const { CoolifyApi } = await import("./src/utils/coolify-api.js");
+  const { CoolifyApi, isPublicGithubSource } = await import("./src/utils/coolify-api.js");
   const calls: string[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: string | URL | Request) => {
     calls.push(String(url));
     return new Response(
       JSON.stringify([
+        // Coolify returns the seeded public source first on a stock
+        // install — the ordering that made adopt auto-pick it.
+        {
+          uuid: "public-github-uuid",
+          name: "Public GitHub",
+          html_url: "https://github.com",
+          api_url: "https://api.github.com",
+          is_public: true,
+        },
         {
           uuid: "gh-app-uuid",
           name: "Personal GitHub App",
@@ -1611,8 +1634,47 @@ console.log("\n── coolify api: github app source discovery ─────�
 
   const checks: Check[] = [
     ["source discovery uses /github-apps", calls[0]?.endsWith("/github-apps")],
+    ["seeded 'Public GitHub' source filtered out", sources.length === 1],
     ["source uuid returned", sources[0]?.uuid === "gh-app-uuid"],
     ["source name returned", sources[0]?.name === "Personal GitHub App"],
+    // The predicate itself. Two positive shapes (Coolify's flag, and a
+    // bare-origin URL for builds that don't send the flag) and the
+    // negatives that must survive — including the two "we can't tell"
+    // cases, where keeping the source is strictly better than
+    // reporting an empty list.
+    [
+      "isPublicGithubSource: is_public flag",
+      isPublicGithubSource({ name: "Public GitHub", html_url: "https://github.com", is_public: true }),
+    ],
+    [
+      "isPublicGithubSource: bare origin without the flag",
+      isPublicGithubSource({ name: "Public GitHub", html_url: "https://github.com" }),
+    ],
+    [
+      "isPublicGithubSource: bare origin with a trailing slash",
+      isPublicGithubSource({ name: "Public GitHub", html_url: "https://github.com/" }),
+    ],
+    [
+      "isPublicGithubSource: keeps a real App on github.com",
+      !isPublicGithubSource({ html_url: "https://github.com/apps/coolify-personal" }),
+    ],
+    [
+      "isPublicGithubSource: keeps a real App on a GHE host",
+      !isPublicGithubSource({ html_url: "https://gh.acme.internal/apps/acme-coolify" }),
+    ],
+    [
+      "isPublicGithubSource: falls back to api_url",
+      !isPublicGithubSource({ api_url: "https://api.github.com/apps/legacy" }),
+    ],
+    ["isPublicGithubSource: keeps a source with no URL", !isPublicGithubSource({ name: "opaque" })],
+    [
+      "isPublicGithubSource: keeps a source with an unparseable URL",
+      !isPublicGithubSource({ name: "opaque", html_url: "not a url" }),
+    ],
+    [
+      "isPublicGithubSource: keeps an explicitly non-public source",
+      !isPublicGithubSource({ html_url: "https://github.com/apps/acme", is_public: false }),
+    ],
   ];
   let ok = true;
   for (const [n, c] of checks) {
