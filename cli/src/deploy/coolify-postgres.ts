@@ -19,6 +19,7 @@ import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
+import { joinProjectAppsToDatabaseNetwork } from "./coolify-db-network.js";
 
 export interface PostgresProvisionResult {
   /** Coolify uuid of the new database — useful for later teardown. */
@@ -112,6 +113,19 @@ export async function provisionCoolifyPostgres(
   console.log(
     chalk.green(`  ✓ POSTGRES_URL encrypted into ${prodEnvPath} ${chalk.dim("(dotenvx)")}`),
   );
+
+  // The URL we just wrote names the DATABASE CONTAINER's hostname, and
+  // that hostname only resolves on Coolify's shared `coolify` network —
+  // a dockercompose app is deployed onto a network named after its own
+  // uuid instead. Join the app(s) to the shared one now, or the very
+  // first deploy crash-loops with `getaddrinfo ENOTFOUND <db-uuid>`
+  // while Coolify reports `running:healthy`. See deploy/coolify-db-network.ts.
+  await joinProjectAppsToDatabaseNetwork({
+    api,
+    coolifyUrl: cfg.url,
+    projectName: config.name,
+    topology: config.topology,
+  });
 
   return { databaseUuid, internalUrl };
 }

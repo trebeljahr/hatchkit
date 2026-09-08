@@ -22,6 +22,7 @@ import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
+import { joinProjectAppsToDatabaseNetwork } from "./coolify-db-network.js";
 
 export interface RedisProvisionResult {
   /** Coolify uuid of the new database — recorded in the run ledger so a
@@ -118,6 +119,19 @@ export async function provisionCoolifyRedis(
   const prodEnvPath = join(serverEnvDir, ".env.production");
   dotenvxSet("REDIS_URL", internalUrl, { path: prodEnvPath, encrypt: true });
   console.log(chalk.green(`  ✓ REDIS_URL encrypted into ${prodEnvPath} ${chalk.dim("(dotenvx)")}`));
+
+  // The URL we just wrote names the DATABASE CONTAINER's hostname, and
+  // that hostname only resolves on Coolify's shared `coolify` network —
+  // a dockercompose app is deployed onto a network named after its own
+  // uuid instead. Join the app(s) to the shared one now, or the very
+  // first deploy crash-loops with `getaddrinfo ENOTFOUND <db-uuid>`
+  // while Coolify reports `running:healthy`. See deploy/coolify-db-network.ts.
+  await joinProjectAppsToDatabaseNetwork({
+    api,
+    coolifyUrl: cfg.url,
+    projectName: config.name,
+    topology: config.topology,
+  });
 
   return { databaseUuid, internalUrl };
 }

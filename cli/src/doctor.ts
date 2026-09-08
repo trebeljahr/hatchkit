@@ -906,6 +906,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of routingChecks) results.push(r);
   const autoDeployChecks = await checkProjectCoolifyAutoDeployState(process.cwd());
   for (const r of autoDeployChecks) results.push(r);
+  const appHealthChecks = await checkProjectCoolifyAppHealthState(process.cwd());
+  for (const r of appHealthChecks) results.push(r);
   const deployedRefChecks = await checkProjectDeployedRefState(process.cwd());
   for (const r of deployedRefChecks) results.push(r);
   const dnsResolveChecks = await checkProjectDnsResolveState(process.cwd());
@@ -2096,6 +2098,148 @@ export async function checkProjectCoolifyAutoDeployState(
       `Or open the Coolify app's Configuration → Source → toggle "Auto Deploy on Git Push" OFF.`,
     ],
   });
+  return out;
+}
+
+/** Verify a Coolify app can actually reach the Coolify-managed database
+ *  its env points at, and lead with the container log whenever the app
+ *  isn't healthy.
+ *
+ *  Emits up to two checks for one app, from a single pair of API reads:
+ *
+ *    · `(Coolify app health)` — fires for any app Coolify doesn't
+ *      report as running, or that is restarting because it CRASHED.
+ *      The hint's first line is the log command. That ordering is the
+ *      whole point of the check: on tracktime the container log said
+ *      `getaddrinfo ENOTFOUND <db-uuid>` from the first deploy onward
+ *      and nobody read it for months, because the public symptom was a
+ *      `503 no available server` from caddy-docker-proxy — the exact
+ *      response an unknown hostname gets — and Coolify's own status
+ *      field said `running:healthy` the entire time.
+ *
+ *    · `(Coolify DB network)` — fires when a `dockercompose` app whose
+ *      env names a managed database ALSO shows crash restarts. That
+ *      pairing is the signature of a missing
+ *      `connect_to_docker_network`: the app sits on a network named
+ *      after its own uuid, the database sits on the shared `coolify`
+ *      network, and the hostname Coolify handed us cannot resolve.
+ *      deploy/coolify-db-network.ts has the full story.
+ *
+ *  The two conditions are deliberately joined by AND. The setting is
+ *  WRITE-ONLY — Coolify never returns it on GET — so there is no way to
+ *  ask an app whether it has it. Crash restarts are the only evidence
+ *  available, and reporting "might be missing the setting" for every
+ *  healthy app that happens to use a managed database would be noise
+ *  with no way to clear it. */
+export async function checkProjectCoolifyAppHealthState(
+  projectDir: string,
+): Promise<CheckResult[]> {
+  const out: CheckResult[] = [];
+  const { existsSync, readFileSync } = await import("node:fs");
+  const manifestPath = `${projectDir}/.hatchkit.json`;
+  if (!existsSync(manifestPath)) return out;
+
+  let manifest: { name?: string; deploymentMode?: string };
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  } catch {
+    return out;
+  }
+  if (!manifest.name || manifest.deploymentMode !== "coolify") return out;
+
+  // Same resolution path as the auto-deploy check: the per-project
+  // ledger is where adopt/create record the app uuid(s). Split
+  // topologies record two, and either half can be the broken one.
+  const ledgers = loadAllLedgers();
+  const ourLedger = ledgers.find((l) => l.name === manifest.name);
+  const appSteps = (ourLedger?.steps ?? []).filter(
+    (s): s is LedgerStep & { kind: "coolifyApp" } => s.kind === "coolifyApp",
+  );
+  if (appSteps.length === 0) return out;
+
+  const cfg = await getCoolifyConfig();
+  if (!cfg) return out;
+  const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+
+  const {
+    appLooksUnhealthy,
+    appShowsCrashSymptoms,
+    connectToDockerNetworkRecipe,
+    findCoolifyDbReferences,
+    needsDockerNetwork,
+    readTheLogRecipe,
+  } = await import("./deploy/coolify-db-network.js");
+
+  for (const step of appSteps) {
+    let app: Awaited<ReturnType<CoolifyApi["getApplication"]>>;
+    try {
+      app = await api.getApplication(step.uuid);
+    } catch (err) {
+      out.push({
+        name: `Project ${manifest.name} (Coolify app health)`,
+        status: "fail",
+        detail: `couldn't read app ${step.uuid}: ${(err as Error).message.split("\n")[0]}`,
+        hint: ["Confirm the Coolify app still exists and the token is valid:", "  hatchkit doctor"],
+      });
+      continue;
+    }
+    const label = app.name || step.uuid;
+    const crashing = appShowsCrashSymptoms(app);
+    const unhealthy = appLooksUnhealthy(app);
+
+    if (unhealthy) {
+      const restarts =
+        app.restartCount === undefined
+          ? "restart count not reported"
+          : `${app.restartCount} restart(s), last type "${app.lastRestartType ?? "unknown"}"`;
+      out.push({
+        name: `Project ${manifest.name} (Coolify app health)`,
+        status: "fail",
+        detail:
+          `"${label}" reports status "${app.status ?? "unknown"}" with ${restarts}` +
+          (crashing
+            ? " — Coolify calls a crash-looping container healthy, so read the log, not the status."
+            : ""),
+        hint: [
+          ...readTheLogRecipe(cfg.url, step.uuid),
+          "",
+          "A container that keeps dying gets no proxy site registered, so the public symptom",
+          "is `503 no available server` — identical to an unconfigured hostname. Don't start",
+          "with the proxy labels; start with the log above.",
+        ],
+      });
+    } else {
+      out.push({
+        name: `Project ${manifest.name} (Coolify app health)`,
+        status: "ok",
+        detail: `"${label}" ${app.status ?? "running"}, ${app.restartCount ?? 0} restart(s)`,
+      });
+    }
+
+    // Only worth two more API calls when there is a fault to explain.
+    if (!crashing) continue;
+    const references = await findCoolifyDbReferences(api, step.uuid);
+    if (!needsDockerNetwork(app, references)) continue;
+    const keys = references.map((r) => r.key).join(", ");
+    const dbs = [...new Set(references.map((r) => r.database))].join(", ");
+    out.push({
+      name: `Project ${manifest.name} (Coolify DB network)`,
+      status: "fail",
+      detail:
+        `"${label}" is a dockercompose app whose ${keys} points at Coolify-managed ${dbs}, ` +
+        "and it is crash-restarting — the signature of a missing `connect_to_docker_network`.",
+      hint: [
+        `Expect \`getaddrinfo ENOTFOUND ${references[0].host}\` in the log:`,
+        ...readTheLogRecipe(cfg.url, step.uuid).slice(1),
+        "",
+        "A dockercompose app runs on a Docker network named after its own uuid; a",
+        "Coolify-managed database runs on the shared `coolify` network. They are isolated,",
+        "so the app cannot resolve the hostname Coolify itself put in the connection string.",
+        "",
+        ...connectToDockerNetworkRecipe(cfg.url, step.uuid),
+      ],
+    });
+  }
   return out;
 }
 

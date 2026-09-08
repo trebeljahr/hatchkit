@@ -64,6 +64,17 @@
  *     strips `/api` and Express 404s every API call. Write-only in this
  *     Coolify build (the app-settings relation isn't serialized on GET),
  *     so it never drives `changed` — it is pushed with every update.
+ *   · connect_to_docker_network — must be true on a `dockercompose` app
+ *     whose env names a Coolify-MANAGED database. The app is deployed
+ *     onto a network called after its own uuid; the database sits on
+ *     the shared `coolify` network; without the join the app cannot
+ *     resolve the hostname Coolify itself wrote into the connection
+ *     string, and crash-loops with ENOTFOUND while Coolify keeps
+ *     reporting `running:healthy`. Also write-only, so it cannot drive
+ *     `changed` by diffing either. It rides along on any PATCH sync is
+ *     already making, and forces one of its own ONLY when the app shows
+ *     crash restarts — the single piece of evidence the API does give
+ *     us. deploy/coolify-db-network.ts has the failure in full.
  *
  * Env deserves a note. Coolify's environment is the RUNTIME source of
  * truth and the dotenvx-encrypted `.env.production` is the at-rest store
@@ -97,6 +108,13 @@ import {
 import { discoverPublicIps } from "../utils/coolify-server-ips.js";
 import { exec } from "../utils/exec.js";
 import { normalizeCoolifyGitRepository, wireDns } from "./coolify-app.js";
+import {
+  type CoolifyDbReference,
+  appShowsCrashSymptoms,
+  connectToDockerNetworkRecipe,
+  findCoolifyDbReferences,
+  needsDockerNetwork,
+} from "./coolify-db-network.js";
 import { provisionRoutedApp } from "./coolify.js";
 import {
   type DeployedRefReport,
@@ -199,6 +217,22 @@ export interface AppSyncPlan {
    *  (the default). Sent to Coolify as `base_directory: <value>` —
    *  empty string resets back to `/`. */
   desiredBaseDirectory?: string;
+  /** Push `connect_to_docker_network: true`? Set when this is a
+   *  `dockercompose` app whose Coolify env points at a Coolify-managed
+   *  database. Write-only in Coolify's API, so it is never diffed —
+   *  see {@link dbNetworkRepair} for when it forces a PATCH. */
+  desiredConnectToDockerNetwork?: boolean;
+  /** Env var names on this app that point at a Coolify-managed database
+   *  host, with the database each names. Values are never carried —
+   *  they are connection strings with credentials in them. */
+  coolifyDbReferences?: CoolifyDbReference[];
+  /** True when this app both needs the network join AND is
+   *  crash-restarting, i.e. we have evidence it is broken in exactly
+   *  the way the missing setting breaks things. This is what makes the
+   *  field drive `changed`: a write-only setting can't be diffed, so
+   *  without an evidence gate sync would either PATCH every healthy app
+   *  on every run or never repair a broken one. */
+  dbNetworkRepair?: boolean;
   /** Snapshot of the same fields as Coolify currently reports them. */
   current: {
     fqdn: string | null;
@@ -208,6 +242,13 @@ export interface AppSyncPlan {
     /** Coolify's reported `base_directory`. Leading-slash form
      *  (`"/site"`) or `"/"` for repo root. */
     baseDirectory?: string;
+    /** Coolify's status string. Read it with suspicion — it says
+     *  `running:healthy` for a container that is crash-looping. */
+    status?: string;
+    /** Restart count and reason. The only signal in the API record
+     *  that separates a healthy app from a crash loop. */
+    restartCount?: number;
+    lastRestartType?: string;
   };
   /** Whether a PATCH is needed to converge — false means everything
    *  already matches, sync skips the API call. */
@@ -540,11 +581,20 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
       continue;
     }
 
+    // Read the app's Coolify env and the managed-database list so the
+    // plan knows whether this app has to be joined to the shared
+    // `coolify` network. Best-effort by construction — the helper
+    // swallows API failures and returns [] — because a project that
+    // uses no managed database must not have its routing sync blocked
+    // by an env read it never needed.
+    const dbReferences = await findCoolifyDbReferences(api, found.uuid);
+
     const plan = buildPlan(
       routed,
       current,
       composeForApp(opts.projectDir, routed, compose),
       manifest.projectSubdir || undefined,
+      dbReferences,
     );
     apps.push(plan);
     if (!opts.json) renderPlan(plan);
@@ -564,6 +614,12 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
         ...(plan.buildPack === "dockercompose" ? {} : { portsExposes: plan.desiredPortsExposes }),
         ...(plan.desiredStripPrefix !== undefined
           ? { isStripprefixEnabled: plan.desiredStripPrefix }
+          : {}),
+        // Rides along on every PATCH for an app that needs it, and is
+        // the reason for the PATCH when `dbNetworkRepair` forced one.
+        // Never diffed: Coolify does not return the field on GET.
+        ...(plan.desiredConnectToDockerNetwork
+          ? { connectToDockerNetwork: plan.desiredConnectToDockerNetwork }
           : {}),
         // Push the manifest's `projectSubdir` onto Coolify's
         // `base_directory`. Empty string resets to repo root — the
@@ -598,6 +654,20 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
       const message = (err as Error).message;
       patch.fail(`Coolify: PATCH failed: ${message}`);
       routingFailed.push(plan.name);
+      // When this PATCH existed to repair the database network, saying
+      // "routing failed" alone buries the thing the user came for. The
+      // app is still crash-looping, and Coolify will still call it
+      // healthy, so hand over the standalone repair.
+      if (plan.dbNetworkRepair && !opts.json) {
+        console.log(
+          chalk.yellow(
+            `    "${plan.name}" is still not on its database's network — it will keep crash-looping.`,
+          ),
+        );
+        for (const line of connectToDockerNetworkRecipe(cfg.url, plan.uuid)) {
+          console.log(chalk.dim(`      ${line}`));
+        }
+      }
       if (/409|conflict|already/i.test(message)) {
         console.log(
           chalk.dim(
@@ -1240,6 +1310,10 @@ function buildPlan(
   current: CoolifyApplication,
   compose: ReturnType<typeof readComposeFile>,
   desiredBaseDirectory: string | undefined,
+  /** Env vars on this app that name a Coolify-managed database host,
+   *  read from Coolify before the plan is built (the lookup is async;
+   *  everything else here is pure). Empty for apps that don't use one. */
+  coolifyDbReferences: CoolifyDbReference[] = [],
 ): AppSyncPlan {
   const isCompose = current.buildPack === "dockercompose";
   // dockercompose apps use docker_compose_domains; everything else uses
@@ -1313,6 +1387,20 @@ function buildPlan(
   const currentBaseDirCanonical = current.baseDirectory?.trim() || "/";
   const baseDirectoryChanged = desiredBaseDirCanonical !== currentBaseDirCanonical;
 
+  // `connect_to_docker_network`. Also write-only, so like strip_prefix
+  // it cannot be diffed — but unlike strip_prefix, getting it wrong is
+  // a total outage disguised as a healthy app, so it needs a way to
+  // force a PATCH of its own rather than only riding along on one.
+  //
+  // The gate is EVIDENCE, not desire: crash restarts on an app that
+  // uses a managed database. Forcing the PATCH whenever the app merely
+  // uses a database would make every such project permanently
+  // "out of sync" and every sync run a no-op write; never forcing it
+  // would leave every app broken before this change unrepairable by
+  // sync, which is the case this exists for.
+  const wantsDbNetwork = needsDockerNetwork(current, coolifyDbReferences);
+  const dbNetworkRepair = wantsDbNetwork && appShowsCrashSymptoms(current);
+
   return {
     uuid: current.uuid,
     name: current.name || routed.appName,
@@ -1331,8 +1419,17 @@ function buildPlan(
         ? { stripPrefix: current.isStripprefixEnabled }
         : {}),
       ...(current.baseDirectory !== undefined ? { baseDirectory: current.baseDirectory } : {}),
+      ...(current.status !== undefined ? { status: current.status } : {}),
+      ...(current.restartCount !== undefined ? { restartCount: current.restartCount } : {}),
+      ...(current.lastRestartType !== undefined
+        ? { lastRestartType: current.lastRestartType }
+        : {}),
     },
-    changed: portsChanged || domainsChanged || stripChanged || baseDirectoryChanged,
+    ...(wantsDbNetwork ? { desiredConnectToDockerNetwork: true } : {}),
+    ...(coolifyDbReferences.length > 0 ? { coolifyDbReferences } : {}),
+    ...(dbNetworkRepair ? { dbNetworkRepair: true } : {}),
+    changed:
+      portsChanged || domainsChanged || stripChanged || baseDirectoryChanged || dbNetworkRepair,
     ...(blocked ? { blocked } : {}),
   };
 }
@@ -1422,6 +1519,43 @@ function renderPlan(plan: AppSyncPlan): void {
     console.log(chalk.yellow("    · strip_prefix:"));
     console.log(chalk.dim(`        before: ${plan.current.stripPrefix}`));
     console.log(chalk.dim(`        after:  ${plan.desiredStripPrefix}`));
+  }
+
+  renderDbNetwork(plan);
+}
+
+/** The `connect_to_docker_network` line of a plan.
+ *
+ *  There is no "before" to print — Coolify never returns the field —
+ *  so this reports the app's DATABASE REFERENCES and its restart
+ *  evidence instead, which is the only honest way to say what sync
+ *  knows. Silent for apps that use no Coolify-managed database: they
+ *  neither need the join nor benefit from being told about it. */
+function renderDbNetwork(plan: AppSyncPlan): void {
+  if (!plan.desiredConnectToDockerNetwork) return;
+  const refs = plan.coolifyDbReferences ?? [];
+  const keys = refs.map((r) => r.key).join(", ");
+  const dbs = [...new Set(refs.map((r) => r.database))].join(", ");
+  if (plan.dbNetworkRepair) {
+    console.log(
+      chalk.yellow(
+        `    · connect_to_docker_network → true (REPAIR: ${plan.current.restartCount} crash restart(s))`,
+      ),
+    );
+    console.log(
+      chalk.dim(
+        `        ${keys} points at Coolify-managed ${dbs}, which lives on the shared \`coolify\`\n` +
+          "        network. This app is on a network named after its own uuid, so it cannot resolve\n" +
+          "        that host — expect `getaddrinfo ENOTFOUND` in the container log.",
+      ),
+    );
+  } else {
+    console.log(
+      chalk.dim(
+        `    · connect_to_docker_network → true (write-only in Coolify's API; pushed with this update)`,
+      ),
+    );
+    console.log(chalk.dim(`        ${keys} → Coolify-managed ${dbs}`));
   }
 }
 

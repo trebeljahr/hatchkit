@@ -57,6 +57,55 @@ export interface CoolifyApiOptions {
 //   · `source_id` / `source_type` — REJECTED on this build, though both
 //     come back on GET. Source is chosen at creation time; hatchkit
 //     re-points a repo via `git_repository` / `github_app_uuid`.
+//   · `connect_to_docker_network` — ACCEPTED on PATCH, and WRITE-ONLY:
+//     it never comes back on GET, and the `settings` relation it lives
+//     in serializes as `null`. Do not try to read it back — see the
+//     block below.
+//
+// ---------------------------------------------------------------------------
+// `connect_to_docker_network`, and the crash loop it prevents
+// ---------------------------------------------------------------------------
+//
+// A `dockercompose` application is deployed onto a Docker network named
+// after its OWN uuid — Coolify appends this to the generated compose:
+//
+//   networks:
+//     <app-uuid>:
+//       name: <app-uuid>
+//       external: true
+//
+// Coolify-MANAGED databases (anything created through `/databases/*`,
+// which is every datastore `hatchkit add` provisions) live on the shared
+// `coolify` network instead. The two are isolated, so an app cannot
+// resolve its own database by the container hostname Coolify itself
+// handed us in `internal_db_url`. "Connect to Predefined Network" —
+// `connect_to_docker_network` — is what joins the app to `coolify`.
+//
+// Without it, the app crash-loops from its very first deploy:
+//
+//   [server] Failed to start: MongooseServerSelectionError:
+//     getaddrinfo ENOTFOUND x3rnoe4qdk846u4q3wjw2fw0
+//
+// Two things kept that undiagnosed on tracktime for months, and are the
+// reason doctor now has a check for it (2026-09-08):
+//
+//   1. Coolify reports `status: "running:healthy"` for a crash-looping
+//      app. The only signal in the record is `restart_count` climbing
+//      with `last_restart_type: "crash"` — visible only by diffing the
+//      app against a working sibling.
+//   2. The proxy makes it read as a routing bug. caddy-docker-proxy
+//      registers no site for a container that keeps dying, so the public
+//      symptom is `503 no available server` — byte-identical to the
+//      response for a hostname nobody has ever configured. Hours went
+//      into Traefik/Caddy label ordering before anyone read the
+//      container log.
+//
+// Because the field is write-only, hatchkit CANNOT verify it by reading
+// the record back, and no code here should try: a GET round-trip will
+// report `undefined` on a correctly-configured app and there is no way
+// to tell that apart from "never set". Verify by EFFECT instead —
+// `restart_count` / `last_restart_type` on the next deploy — which is
+// exactly what `checkProjectCoolifyAppHealthState` in doctor.ts does.
 
 /** Fields hatchkit will silently drop and retry without when Coolify
  *  rejects them. Everything NOT listed here is essential: rejecting one
@@ -122,6 +171,14 @@ export function describeCoolifyPatchLimit(field: string): string | undefined {
         "successful deploy, so an app that has NEVER deployed cannot be given a domain over the " +
         "API. Deploy the app once (Coolify dashboard → Deploy, or push a commit), then re-run " +
         "`hatchkit sync` to attach the domains."
+      );
+    case "connect_to_docker_network":
+      return (
+        "This Coolify build rejects `connect_to_docker_network` on PATCH. A dockercompose app " +
+        "runs on a network named after its own uuid, while Coolify-managed databases sit on the " +
+        "shared `coolify` network, so without this setting the app cannot resolve its database " +
+        "host and crash-loops with ENOTFOUND. Turn it on by hand: the app's Configuration → " +
+        'Advanced → "Connect to Predefined Network" → ON, then redeploy.'
       );
     case "source_id":
     case "source_type":
@@ -691,6 +748,20 @@ export class CoolifyApi {
        *  BEST-EFFORT: a rejection drops it and retries rather than
        *  failing the domains it travelled with. */
       isStripprefixEnabled?: boolean;
+      /** Coolify's `connect_to_docker_network` ("Connect to Predefined
+       *  Network"). MUST be true on any app whose env points at a
+       *  Coolify-MANAGED database: the app runs on a network named
+       *  after its own uuid, the database sits on the shared `coolify`
+       *  network, and without this the app cannot resolve the very
+       *  hostname Coolify handed us in `internal_db_url`. The symptom
+       *  is a crash loop Coolify still reports as `running:healthy`.
+       *
+       *  WRITE-ONLY on every build tested — it never comes back on GET,
+       *  so there is nothing to diff and nothing to assert. Treated as
+       *  ESSENTIAL rather than best-effort: dropping it would leave the
+       *  app broken in exactly the way that is hard to see, so a
+       *  rejection throws and the caller surfaces the manual toggle. */
+      connectToDockerNetwork?: boolean;
       /** Coolify rejects a domain already claimed by another resource
        *  (409) or repeated inside one request (422) unless this is set.
        *  Only pass true when the conflicting resource is one hatchkit
@@ -725,6 +796,9 @@ export class CoolifyApi {
     }
     if (fields.isStripprefixEnabled !== undefined) {
       body.is_stripprefix_enabled = fields.isStripprefixEnabled;
+    }
+    if (fields.connectToDockerNetwork !== undefined) {
+      body.connect_to_docker_network = fields.connectToDockerNetwork;
     }
     if (fields.forceDomainOverride) {
       body.force_domain_override = true;
@@ -799,7 +873,15 @@ export class CoolifyApi {
    *  builds is a comma-joined string for non-dockercompose apps, or
    *  null for dockercompose; `docker_compose_domains` on newer builds
    *  is an array of `{ name, domain }` entries. We accept both and
-   *  return them unchanged for the caller to interpret per build pack. */
+   *  return them unchanged for the caller to interpret per build pack.
+   *
+   *  Deliberately absent from the result: `connect_to_docker_network`.
+   *  It is write-only (see the known-limits block at the top of this
+   *  file) — the API never echoes it and the `settings` relation it
+   *  belongs to serializes as `null`. Adding a field for it here would
+   *  read `undefined` on a correctly-configured app, which is the same
+   *  thing it reads on a broken one. `restartCount` + `lastRestartType`
+   *  below are the observable proxy. */
   async getApplication(uuid: string): Promise<CoolifyApplication> {
     const raw = (await this.request("GET", `/applications/${uuid}`)) as Record<string, unknown>;
     const buildPack = (raw.build_pack as CoolifyApplication["buildPack"]) ?? undefined;
@@ -828,7 +910,31 @@ export class CoolifyApi {
       isAutoDeployEnabled:
         typeof raw.is_auto_deploy_enabled === "boolean" ? raw.is_auto_deploy_enabled : undefined,
       baseDirectory: typeof raw.base_directory === "string" ? raw.base_directory : undefined,
+      status: typeof raw.status === "string" ? raw.status : undefined,
+      restartCount: coerceCount(raw.restart_count),
+      lastRestartType:
+        typeof raw.last_restart_type === "string" ? raw.last_restart_type : undefined,
     };
+  }
+
+  /** Read an application's environment variables.
+   *
+   *  Values are PRODUCTION SECRETS. The only in-tree consumer is
+   *  `deploy/coolify-db-network.ts`, which answers "does this app point
+   *  at a Coolify-managed database?" and returns keys and hostnames
+   *  only. Anything else reading this must not print, log or persist a
+   *  value. */
+  async listAppEnvs(uuid: string): Promise<Array<{ key: string; value: string }>> {
+    const raw = await this.request<unknown>("GET", `/applications/${uuid}/envs`);
+    const rows = Array.isArray(raw) ? raw : [];
+    const out: Array<{ key: string; value: string }> = [];
+    for (const r of rows) {
+      if (!r || typeof r !== "object") continue;
+      const e = r as Record<string, unknown>;
+      if (typeof e.key !== "string") continue;
+      out.push({ key: e.key, value: typeof e.value === "string" ? e.value : "" });
+    }
+    return out;
   }
 
   /** Trigger a deploy of an existing application. Useful after we've
@@ -947,6 +1053,20 @@ export interface CoolifyApplication {
    *  (`/site`, `/apps/web`) or `"/"` for the repo-root default. Used
    *  by `hatchkit sync` to diff against the manifest's `projectSubdir`. */
   baseDirectory?: string;
+  /** Coolify's own status string, e.g. `running:healthy`,
+   *  `exited:unhealthy`. Read it with suspicion: a container that
+   *  crash-loops on startup is still reported as `running:healthy`,
+   *  which is most of why the missing-docker-network bug survived
+   *  months of looking at dashboards. */
+  status?: string;
+  /** How many times Coolify has restarted this app's container.
+   *  Together with `lastRestartType` this is the ONLY signal in the
+   *  API record that separates a healthy app from a crash loop. */
+  restartCount?: number;
+  /** Why the last restart happened — `"crash"` is the one that matters.
+   *  A redeploy or a manual restart sets something else, so
+   *  `restartCount > 0` on its own is not evidence of a fault. */
+  lastRestartType?: string;
 }
 
 /** One Coolify deployment record, trimmed to the fields that answer
@@ -1079,6 +1199,16 @@ function extractServerUuid(raw: Record<string, unknown>): string | undefined {
     const uuid = (server as { uuid?: unknown }).uuid;
     if (typeof uuid === "string") return uuid;
   }
+  return undefined;
+}
+
+/** Read a counter Coolify may return as a number or as a numeric
+ *  string. Anything that isn't a finite non-negative number becomes
+ *  `undefined` — "the API didn't say" has to stay distinguishable from
+ *  "it said zero", because only the latter is evidence of health. */
+function coerceCount(raw: unknown): number | undefined {
+  if (typeof raw === "number") return Number.isFinite(raw) && raw >= 0 ? raw : undefined;
+  if (typeof raw === "string" && /^\d+$/.test(raw.trim())) return Number(raw.trim());
   return undefined;
 }
 
