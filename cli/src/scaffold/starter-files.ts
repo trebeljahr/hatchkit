@@ -99,7 +99,17 @@ export function stripMobileBridgeFromLayout(outputDir: string): void {
 /** Overwrite `packages/client/next.config.ts` with a known-good
  *  static-export config. `transpilePackages` is populated from the
  *  actual workspace package names so a starter rename doesn't break
- *  the exported client build. */
+ *  the exported client build.
+ *
+ *  The generated config keeps the starter's NEXT_PUBLIC_API_URL guard
+ *  (see starter/packages/client/next.config.ts). It has to: this file
+ *  REPLACES the starter's, and a static export has no runtime env and no
+ *  usable same-origin fallback (the desktop shell serves the export from
+ *  `file://`, whose origin is opaque). Without the guard `pnpm
+ *  build:desktop` succeeds with no API URL and ships a binary that fails
+ *  on its first request — a build-time error turned into a runtime one.
+ *  The guard is skipped under `next dev`, where the dev server proxies
+ *  `/api` and the export path is never taken. */
 export function flipNextConfigToStaticExport(outputDir: string): void {
   const path = join(outputDir, "packages/client/next.config.ts");
   if (!existsSync(path)) return;
@@ -107,6 +117,27 @@ export function flipNextConfigToStaticExport(outputDir: string): void {
   const transpile = readWorkspacePackageNames(outputDir).filter((n) => n !== clientName);
   const transpileList = transpile.map((n) => `"${n}"`).join(", ");
   const staticExportConfig = `import type { NextConfig } from "next";
+
+const isDev = process.env.NODE_ENV === "development";
+
+// This client always builds as a static export: the bundle ships inside the
+// desktop/mobile shell and the Express server is always remote. Next.js
+// inlines NEXT_PUBLIC_* at BUILD time, and a shell loading the export from
+// file:// has an opaque origin — there is no same-origin fallback and no
+// container env to repair the value later. A build without NEXT_PUBLIC_API_URL
+// therefore produces a binary that installs fine and fails on every request,
+// so fail loudly here instead. Set it as env on the build step in
+// .github/workflows/desktop-release.yml / tauri-release.yml /
+// mobile-release.yml (and on any local \`pnpm build:desktop\`).
+// \`next dev\` is exempt: it proxies /api to the dev server.
+if (!isDev && !process.env.NEXT_PUBLIC_API_URL) {
+  throw new Error(
+    "NEXT_PUBLIC_API_URL is not set. This is a static-export build whose " +
+      "output ships to users, and Next.js bakes NEXT_PUBLIC_* values in at " +
+      "build time. Pass it as env on the build step (desktop/mobile release " +
+      "workflows in .github/workflows/). Runtime env cannot fix this.",
+  );
+}
 
 const nextConfig: NextConfig = {
   output: "export",
@@ -121,10 +152,21 @@ export default nextConfig;
   writeFileSync(path, staticExportConfig, "utf-8");
 }
 
+/** The exact FRONTEND_URL that the starter template ships in
+ *  `packages/server/.env.development`. Doubles as a "this line is still
+ *  pristine" sentinel: `applyPorts` retargets FRONTEND_URL only when it
+ *  still holds this value, which is true on a first scaffold (the file was
+ *  just copied out of `starter/`) and false for any project whose owner has
+ *  touched it. Keep in sync with starter/packages/server/.env.development. */
+const STARTER_DEFAULT_FRONTEND_URL = "http://localhost:3000";
+
 /** Rewrite every file in the starter that hard-codes the old default
  *  ports (3000/5000) so each scaffolded project has its own coherent
  *  port set. Targets covered:
- *    • packages/server/.env.development       (PORT + URLs)
+ *    • packages/server/.env.development       (PORT + BETTER_AUTH_URL → server;
+ *                                               FRONTEND_URL → client, but only
+ *                                               while it still holds the starter
+ *                                               default — see below)
  *    • packages/server/.env.example           (PORT line added)
  *    • packages/client/.env.development       (PORT + API + WS URLs)
  *    • packages/client/.env.example           (PORT line added)
@@ -153,6 +195,37 @@ export function applyPorts(
       out = `PORT=${server}\n${out}`;
     }
     out = out.replace(/localhost:5000/g, `localhost:${server}`);
+    // FRONTEND_URL is the *client* origin, so the localhost:5000 sweep above
+    // never touches it, and left at the starter's 3000 it names a port no
+    // scaffolded project runs Next on.
+    //
+    // Where it actually matters: only when the server is started on its own
+    // (`pnpm --filter @starter/server dev`, or any `tsx src/index.ts`).
+    // `scripts/dev.mjs` already passes FRONTEND_URL=http://127.0.0.1:<client>
+    // in the child's env, and dotenvx does not overload keys already present
+    // in process.env — so under `pnpm dev` the value in this file is never
+    // consulted. Standalone, getTrustedOrigins()
+    // (packages/server/src/config/env.ts) feeds it straight to better-auth and
+    // CORS, and a stale 3000 rejects the real dev client as an untrusted
+    // origin.
+    //
+    // Host is `localhost`, deliberately not the `127.0.0.1` dev.mjs uses:
+    // browsers treat the two as distinct origins, and `localhost:<port>` is
+    // what `next dev` prints and what a developer actually opens. (The two
+    // therefore stay divergent between the two dev modes; dev.mjs supplies its
+    // own value in the mode it owns.)
+    //
+    // Rewrite ONLY when the line still holds the untouched starter default.
+    // applyPorts also runs from `hatchkit server add` and `hatchkit update`,
+    // against repos that already exist and may have been hand-edited (or may
+    // not be Hatchkit-shaped at all). Any other value is a user decision and
+    // is left alone; when the key is absent nothing is injected, for the same
+    // reason. On a first scaffold the file was just copied out of `starter/`,
+    // so the sentinel always matches and the allocated client port lands.
+    const frontendUrl = /^FRONTEND_URL=(.*)$/m.exec(out);
+    if (frontendUrl?.[1].trim() === STARTER_DEFAULT_FRONTEND_URL) {
+      out = out.replace(/^FRONTEND_URL=.*$/m, `FRONTEND_URL=http://localhost:${client}`);
+    }
     return out;
   });
 
