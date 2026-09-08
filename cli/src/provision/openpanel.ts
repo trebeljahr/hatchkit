@@ -99,7 +99,12 @@ export async function adoptOpenpanelClient(args: {
   const cachedSecret = await getSecret(SECRET_KEYS.openpanelClientSecret(clientName));
   const cachedId = await getSecret(clientIdKey(clientName));
   if (cachedSecret && cachedId) {
-    return { projectName: clientName, clientId: cachedId, clientSecret: cachedSecret, apiUrl: manageBase };
+    return {
+      projectName: clientName,
+      clientId: cachedId,
+      clientSecret: cachedSecret,
+      apiUrl: manageBase,
+    };
   }
 
   const headers = buildHeaders(cfg.rootClientId, cfg.rootClientSecret, { jsonBody: true });

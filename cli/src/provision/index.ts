@@ -80,16 +80,16 @@ import {
   provisionOpenpanelClient,
 } from "./openpanel.js";
 import {
-  type ProjectMatch,
-  resolveGlitchtipProjects,
-  resolveOpenpanelProjects,
-} from "./project-lookup.js";
-import {
   type PlausibleSite,
   deletePlausibleSite,
   plausibleSiteExists,
   provisionPlausibleSite,
 } from "./plausible.js";
+import {
+  type ProjectMatch,
+  resolveGlitchtipProjects,
+  resolveOpenpanelProjects,
+} from "./project-lookup.js";
 import {
   type ProvisionR2TokensResult,
   provisionR2BucketTokens,

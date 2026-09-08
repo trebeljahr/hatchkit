@@ -45,7 +45,13 @@ export interface ProjectMatch extends RemoteProject {
  *  is significant — it is what the "no project matching …" message
  *  lists, and the first match wins when several candidates hit. */
 export function projectNameCandidates(baseName: string): string[] {
-  return [baseName, `${baseName}-server`, `${baseName}-client`, `${baseName}-web`, `${baseName}-api`];
+  return [
+    baseName,
+    `${baseName}-server`,
+    `${baseName}-client`,
+    `${baseName}-web`,
+    `${baseName}-api`,
+  ];
 }
 
 function normalize(value: string | undefined): string | undefined {
