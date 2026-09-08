@@ -263,10 +263,16 @@ async function runScaffoldSteps(
   // Feature-flag removal
   if (!config.features.includes("websocket")) {
     removeIfExists(join(outputDir, "packages/server/src/ws"));
+    // Deleting ws/ alone leaves `index.ts` importing ./ws/handler.js —
+    // a hard TS2307 on the first `pnpm run build`. Strip the call sites too.
+    stripWebSocketFromServerIndex(outputDir);
     modifications.push("removed: ws/ (WebSocket not selected)");
   }
   if (!config.features.includes("stripe")) {
     removeIfExists(join(outputDir, "packages/server/src/services/stripe.ts"));
+    // Same class of bug as ws/: `app.ts` (webhook mount) and `index.ts`
+    // (startup warning) both import ./services/stripe.js unconditionally.
+    stripStripeFromServer(outputDir);
     modifications.push("removed: stripe service (Stripe not selected)");
   }
 
@@ -444,6 +450,15 @@ async function runScaffoldSteps(
     stripNewsletterFromServerApp(outputDir);
     modifications.push("removed: newsletter (Listmonk + SES) scaffolding");
   }
+
+  // Runs after every strip that can delete a numbered block out of the two
+  // server entrypoints (ws/, stripe, newsletter). Each strip takes its
+  // comment banner with it, which left the survivors reading 0,1,3,4,5…
+  // — a scaffold that looks half-edited. Renumbering is purely cosmetic,
+  // so it is deliberately generic (see renumberStepComments) rather than a
+  // per-feature mapping that would need touching for every future strip.
+  renumberStepComments(outputDir, "packages/server/src/app.ts");
+  renumberStepComments(outputDir, "packages/server/src/index.ts");
 
   // ML playground prune — remove unselected service pages.
   const allMlServices: MlService[] = [
@@ -689,6 +704,170 @@ function relocateWorkflowsForSubdir(
   } catch {
     /* best effort */
   }
+}
+
+/** Edit packages/server/src/{app,index}.ts to drop everything that reaches
+ *  into `./services/stripe.js`, which `removeIfExists` just deleted:
+ *
+ *    app.ts    — the `handleStripeWebhook` import + the raw-body webhook
+ *                mount at POST /api/stripe/webhook.
+ *    index.ts  — the `warnStripeStatus` import + the startup call.
+ *
+ *  Only the Stripe step disappears; every other middleware keeps its
+ *  relative position, so the load-bearing ordering documented in
+ *  starter/CLAUDE.md ("Critical Middleware Ordering" — better-auth first,
+ *  then express.json(), then helmet/cors/morgan/tRPC, error handlers last)
+ *  still holds. The tRPC billing router is deliberately left in place: it
+ *  duplicates the `CHANGE_ME_` sentinel check locally instead of importing
+ *  the service, precisely so it survives this strip.
+ *
+ *  Every replace is a no-op when the text isn't there, so this is safe to
+ *  call on an already-stripped copy (idempotent) and is never called at all
+ *  when Stripe IS selected. */
+function stripStripeFromServer(outputDir: string): void {
+  const appPath = join(outputDir, "packages/server/src/app.ts");
+  if (existsSync(appPath)) {
+    let content = readFileSync(appPath, "utf-8");
+    content = content.replace(
+      /import\s+{\s*handleStripeWebhook\s*}\s+from\s+"\.\/services\/stripe\.js";\n/,
+      "",
+    );
+    // Swallow the blank line ahead of the block plus any comment banner
+    // directly above it, so the surrounding sections stay one blank line
+    // apart instead of collecting a stray gap.
+    content = content.replace(
+      /\n[ \t]*\n(?:[ \t]*\/\/[^\n]*\n)*[ \t]*app\.post\([\s\S]*?"\/api\/stripe\/webhook"[\s\S]*?\n[ \t]*\);\n/,
+      "\n",
+    );
+    // Defensive fallback for the bare mount if the comment shape drifts.
+    content = content.replace(
+      /\n\s*app\.post\([\s\S]*?"\/api\/stripe\/webhook"[\s\S]*?\n[ \t]*\);\n/,
+      "\n",
+    );
+    writeFileSync(appPath, content, "utf-8");
+  }
+
+  const indexPath = join(outputDir, "packages/server/src/index.ts");
+  if (existsSync(indexPath)) {
+    let content = readFileSync(indexPath, "utf-8");
+    content = content.replace(
+      /import\s+{\s*warnStripeStatus\s*}\s+from\s+"\.\/services\/stripe\.js";\n/,
+      "",
+    );
+    content = content.replace(
+      /\n[ \t]*\n(?:[ \t]*\/\/[^\n]*\n)*[ \t]*warnStripeStatus\(\);\n/,
+      "\n",
+    );
+    // Defensive fallback for the bare call if the comment shape drifts.
+    content = content.replace(/\n\s*warnStripeStatus\(\);\n/, "\n");
+    writeFileSync(indexPath, content, "utf-8");
+  }
+}
+
+/** Edit packages/server/src/index.ts to drop the WebSocket wiring after
+ *  `removeIfExists` deleted packages/server/src/ws/. Three sites:
+ *  the `setupWebSocket` import, the `const wss = setupWebSocket(server)`
+ *  binding, and the "close all clients" loop in `shutdown()` (which is the
+ *  only other reference to `wss`, so leaving it would trade TS2307 for
+ *  TS2304). Idempotent, and only called when websocket is unselected. */
+function stripWebSocketFromServerIndex(outputDir: string): void {
+  const path = join(outputDir, "packages/server/src/index.ts");
+  if (!existsSync(path)) return;
+  let content = readFileSync(path, "utf-8");
+  content = content.replace(
+    /import\s+{\s*setupWebSocket\s*}\s+from\s+"\.\/ws\/handler\.js";\n/,
+    "",
+  );
+  content = content.replace(/[ \t]*const\s+wss\s*=\s*setupWebSocket\(server\);\n/, "");
+  content = content.replace(
+    /\n[ \t]*\n(?:[ \t]*\/\/[^\n]*\n)*[ \t]*for\s*\(const client of wss\.clients\)\s*{[\s\S]*?\n[ \t]*}\n/,
+    "\n",
+  );
+  writeFileSync(path, content, "utf-8");
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Generated-CLAUDE.md upkeep
+//
+// starter/CLAUDE.md is copied verbatim into every scaffold and is the file
+// a coding agent reads first to learn the project's invariants. When a
+// feature strip deletes the code a section describes, the prose has to go
+// with it — otherwise the agent's ground truth documents a subsystem that
+// isn't there, and it will try to preserve (or worse, restore) it.
+//
+// Precedent: applyPostgresOverlay does the same thing for the Mongo→PG
+// swap (scaffold/postgres-overlay.ts). Same rules apply here:
+//   - conditional — only runs on the strip path, never when the feature
+//     is selected;
+//   - text-absent-safe — every edit is a no-op when the phrase isn't
+//     there, so a hand-edited or future CLAUDE.md just doesn't match;
+//   - idempotent — re-running finds nothing left to remove;
+//   - scoped — targeted phrases and one named section, never a blanket
+//     rewrite of unrelated prose.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Renumber the "N." step comments in a generated server file so the
+ *  sequence stays contiguous after a strip deleted one of the numbered
+ *  blocks along with its comment (stripping Stripe left app.ts reading
+ *  0,1,3,4,5… and index.ts's start() reading 1,2,4).
+ *
+ *  Deliberately generic — it renumbers whatever numbered comments are
+ *  still in the file instead of mapping known section titles, so a future
+ *  strip needs no change here. Details:
+ *
+ *  - Two shapes are recognised: the banner form `// ── 2. Title ────` used
+ *    in app.ts and the plain form `// 2. Title` used inside index.ts's
+ *    start(). The captured prefix (indentation + slashes + optional rule)
+ *    is the sequence key, so the two shapes are renumbered independently
+ *    and an unrelated numbered comment at a different indent can't be
+ *    folded into a section list.
+ *  - The first comment of a sequence keeps its original number, so a
+ *    0-based file stays 0-based and a 1-based one stays 1-based.
+ *  - A lettered step ("5b." — the newsletter sub-step) is a sub-step of
+ *    the step above it: it inherits that step's new number and does not
+ *    consume one of its own.
+ *  - The trailing "─" rule is trimmed/padded by the digit-count delta so
+ *    the banners stay aligned on the same column.
+ *
+ *  No-op when the file is missing or has no numbered comments, and a fixed
+ *  point on an already-contiguous file — so it is safe to run
+ *  unconditionally, including on scaffolds where nothing was stripped. */
+function renumberStepComments(outputDir: string, rel: string): void {
+  const path = join(outputDir, rel);
+  if (!existsSync(path)) return;
+
+  const stepComment = /^([ \t]*\/\/ (?:── )?)(\d+)([a-z]*)(\. .*?)(─*)$/;
+  const content = readFileSync(path, "utf-8");
+  const nextNumber = new Map<string, number>();
+  const lastMajor = new Map<string, number>();
+
+  const rewritten = content
+    .split("\n")
+    .map((line) => {
+      const match = stepComment.exec(line);
+      if (!match) return line;
+      const [, prefix = "", digits = "", suffix = "", title = "", rule = ""] = match;
+
+      if (!nextNumber.has(prefix)) nextNumber.set(prefix, Number(digits));
+      const next = nextNumber.get(prefix) ?? Number(digits);
+
+      let assigned: number;
+      if (suffix) {
+        assigned = lastMajor.get(prefix) ?? next;
+      } else {
+        assigned = next;
+        lastMajor.set(prefix, next);
+        nextNumber.set(prefix, next + 1);
+      }
+
+      const label = `${assigned}${suffix}`;
+      const delta = label.length - (digits.length + suffix.length);
+      const padded = delta >= 0 ? rule.slice(delta) : rule + "─".repeat(-delta);
+      return `${prefix}${label}${title}${padded}`;
+    })
+    .join("\n");
+
+  if (rewritten !== content) writeFileSync(path, rewritten, "utf-8");
 }
 
 /** Dry run — list what would happen without touching disk. */

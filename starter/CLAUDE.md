@@ -376,16 +376,16 @@ packages/shared/src/
 
 The order in `app.ts` is load-bearing. Do not rearrange:
 
+1. `cors()` — CORS with credentials, before every route so preflight succeeds
 1. `better-auth` handler at `/api/auth/*` — BEFORE express.json (it handles its own body parsing)
-2. Stripe webhook at `/api/stripe/webhook` with `express.raw()` — needs raw body for signature verification
-3. `express.json()` + `express.urlencoded()` — JSON parsing for everything else
-4. `helmet()` — security headers
-5. `cors()` — CORS with credentials
-6. `morgan()` — HTTP logging
-7. tRPC middleware at `/api/trpc`
-8. Health endpoint at `/api/health`
-9. Error handlers (404 + 500) — must be last
+<!-- hatchkit:if stripe -->
+1. Stripe webhook at `/api/stripe/webhook` with `express.raw()` — needs raw body for signature verification
 <!-- hatchkit:endif -->
+1. `express.json()` + `express.urlencoded()` — JSON parsing for everything else
+1. `helmet()` + `morgan()` — security headers and HTTP logging
+1. tRPC middleware at `/api/trpc`
+1. Health endpoint at `/api/health`
+1. Error handlers (404 + 500) — must be last
 
 ## Environment Variables
 
