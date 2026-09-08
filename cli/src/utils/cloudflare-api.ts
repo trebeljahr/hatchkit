@@ -904,6 +904,38 @@ export class CloudflareApi {
     return { ...res, existed: false };
   }
 
+  /** Detach a custom domain from an R2 bucket.
+   *
+   *  The counterpart of {@link addR2CustomDomain}, needed by the
+   *  cleanup phase of `hatchkit migrate-domain`: a bucket can carry the
+   *  old and the new hostname at once, which is what lets a migration
+   *  be additive, but the old one has to come off eventually.
+   *
+   *  404-tolerant like the other delete helpers here — re-running a
+   *  cleanup that already succeeded is a no-op, not an error.
+   *
+   *  Note the resource path takes the DOMAIN, not a record id: R2
+   *  addresses custom domains by hostname. Cloudflare also removes the
+   *  proxied CNAME it created in the zone as part of this call, so
+   *  there is no second DNS delete to issue afterwards. */
+  async deleteR2CustomDomain(
+    accountId: string,
+    bucket: string,
+    domain: string,
+  ): Promise<"deleted" | "not-found"> {
+    try {
+      await this.request(
+        "DELETE",
+        `/accounts/${accountId}/r2/buckets/${bucket}/domains/custom/${encodeURIComponent(domain)}`,
+      );
+      return "deleted";
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (/404|not\s*found|10006/i.test(msg)) return "not-found";
+      throw err;
+    }
+  }
+
   async enableEdgeHardening(zoneId: string): Promise<{
     changed: Array<{ id: string; from: unknown; to: unknown }>;
     kept: string[];

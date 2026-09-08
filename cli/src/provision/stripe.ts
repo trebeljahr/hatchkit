@@ -582,3 +582,61 @@ export async function deleteStripeProjectWebhook(
   }
   return "deleted";
 }
+
+/**
+ * Repoint the webhook endpoint hatchkit registered for `project` in
+ * `mode` at a new URL. Used by the cutover phase of
+ * `hatchkit migrate-domain`.
+ *
+ * The important property, and the reason this is an update rather than
+ * a delete-and-recreate: Stripe keeps the endpoint's `whsec_` signing
+ * secret across a URL change. Recreating the endpoint would mint a new
+ * secret, which means `STRIPE_WEBHOOK_SECRET` in `.env.production` goes
+ * stale the instant the new endpoint exists — every event between the
+ * swap and the redeploy fails signature verification. Updating in place
+ * has no such window and needs no env rewrite.
+ *
+ * Returns "not-found" when the master key for the mode isn't configured
+ * or the endpoint id isn't in the keychain (nothing hatchkit created,
+ * nothing hatchkit should move), and "unchanged" when Stripe already
+ * holds the target URL — so re-running a cutover is free.
+ */
+export async function updateStripeProjectWebhookUrl(
+  project: string,
+  mode: StripeMode,
+  url: string,
+): Promise<{ result: "updated" | "unchanged" | "not-found"; endpointId?: string }> {
+  const master = await ensureStripe();
+  const masterKey = mode === "test" ? master.testSecretKey : master.liveSecretKey;
+  if (!masterKey) return { result: "not-found" };
+
+  const endpointId = await getSecret(SECRET_KEYS.stripeProjectWebhookId(project, mode));
+  if (!endpointId) return { result: "not-found" };
+
+  const current = await fetch(`https://api.stripe.com/v1/webhook_endpoints/${endpointId}`, {
+    headers: { Authorization: `Bearer ${masterKey}` },
+  });
+  if (current.status === 404) return { result: "not-found", endpointId };
+  if (!current.ok) {
+    const text = await current.text().catch(() => "");
+    throw new Error(`Stripe read webhook failed (${mode}): HTTP ${current.status} ${text}`);
+  }
+  const existing = (await current.json()) as { url?: string };
+  if (existing.url === url) return { result: "unchanged", endpointId };
+
+  const body = new URLSearchParams();
+  body.set("url", url);
+  const res = await fetch(`https://api.stripe.com/v1/webhook_endpoints/${endpointId}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${masterKey}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Stripe update webhook failed (${mode}): HTTP ${res.status} ${text}`);
+  }
+  return { result: "updated", endpointId };
+}

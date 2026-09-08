@@ -63,6 +63,7 @@ const DANGEROUS_ARGV: string[][] = [
   ["remove", "demo", "--help"],
   ["server", "add", "--help"],
   ["gh-pages", "--undo", "--help"],
+  ["migrate-domain", "--to", "example.com", "--phase", "cutover", "--help"],
 ];
 
 for (const argv of DANGEROUS_ARGV) {

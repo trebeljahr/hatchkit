@@ -208,6 +208,11 @@ async function main(): Promise<void> {
       await runRenameDomainCli(args.slice(1), MONOREPO_ROOT);
       break;
     }
+    case "migrate-domain": {
+      const { runMigrateDomainCli } = await import("./migrate/index.js");
+      await runMigrateDomainCli(args.slice(1), MONOREPO_ROOT);
+      break;
+    }
     case "set-description": {
       const { runSetDescriptionCli } = await import("./deploy/set-description.js");
       await runSetDescriptionCli(args.slice(1));
@@ -4129,6 +4134,65 @@ function printHelp(topic?: HelpTopic): void {
 `);
     return;
   }
+  if (topic === "migrate-domain") {
+    console.log(`
+  ${chalk.bold("hatchkit migrate-domain")} — move a LIVE project to a new domain
+
+  ${chalk.bold("Usage:")}
+    cd <project-dir> && hatchkit migrate-domain --to <new-domain> --dry-run
+    hatchkit migrate-domain --to <new-domain>                     ${chalk.dim("# prepare")}
+    hatchkit migrate-domain --to <new-domain> --phase cutover
+    hatchkit migrate-domain --to <new-domain> --phase cleanup
+
+  ${chalk.bold("How it differs from rename-domain:")}
+    ${chalk.cyan("rename-domain")} rewrites local files and stops. ${chalk.cyan("migrate-domain")} runs that
+    rewrite as its first step, then moves the provider identities that
+    carry the domain and cannot simply be renamed — the SES sending
+    identity, the R2 assets custom domain, the Search Console property,
+    the Stripe webhook URL, the Coolify routing.
+
+  ${chalk.bold("Three phases, and why:")}
+    ${chalk.green("prepare")}  Additive. Creates the new SES identity beside the old one,
+             attaches the new R2 custom domain beside the old one, adds
+             the new Search Console property, publishes DNS. Nothing
+             that works today stops working. This is the default.
+    ${chalk.yellow("cutover")}  Moves the pointers: FROM address, assets URL, webhook URL,
+             Coolify FQDN. Every step re-checks a gate first (is SES
+             verified? is the certificate issued?) and refuses rather
+             than half-moving.
+    ${chalk.red("cleanup")}  Retires the old identities. Explicitly invoked, never
+             implied — run it after you have watched the new domain work.
+
+  ${chalk.bold("Options:")}
+    --to <domain>     Target domain (prompted if omitted).
+    --from <domain>   Override the inferred old domain.
+    --phase <p>       prepare ${chalk.dim("(default)")} | cutover | cleanup
+    --only <provider> Retry one provider: files, dns, coolify, ses,
+                      listmonk, r2, plausible, search-console, stripe.
+    --dir <path>      Project dir (defaults to cwd).
+    --dry-run         Print the full plan for every phase; write nothing.
+    --yes, -y         Skip the confirmation prompt.
+
+  ${chalk.bold("What it can't do (printed as a checklist each run):")}
+    - Create the Cloudflare zone. There is no API path for it with a
+      standard hatchkit token; add the zone in the dashboard first.
+    - OAuth redirect URIs at Google / GitHub / Discord.
+    - A www → apex redirect rule (needs Rulesets:Edit).
+
+  ${chalk.bold("Resuming:")}
+    A gated or failed step lands in ${chalk.cyan(".hatchkit.json")} under ${chalk.cyan("deferred[]")} with
+    the exact retry command. Re-running any phase re-plans from current
+    state, so a half-migrated project only gets the parts still behind.
+
+  ${chalk.bold("Example:")}
+    cd ~/src/tracktime
+    hatchkit migrate-domain --to trackyourtime.dev --dry-run
+    hatchkit migrate-domain --to trackyourtime.dev
+    ${chalk.dim("# ...wait for SES to verify + the R2 cert to issue...")}
+    hatchkit migrate-domain --to trackyourtime.dev --phase cutover
+`);
+    return;
+  }
   if (topic === "rename-project") {
     console.log(`
   ${chalk.bold("hatchkit rename-project")} — change a scaffolded project's slug
@@ -4444,6 +4508,7 @@ function printHelp(topic?: HelpTopic): void {
     remove          Delete the -dev/-prod clients created by 'add' (inverse of add)
     destroy         Roll back everything ${chalk.cyan("hatchkit create")} did for a project
     rename-domain   Move a scaffolded project to a new domain (rewrites tfvars/env/manifest)
+    migrate-domain  Move a LIVE project to a new domain (files + SES/R2/DNS/Coolify/Stripe)
     rename-project  Change a scaffolded project's slug (rewrites manifest/pkg.json/tfvars/env/ledger)
     set-description Update a project's description across manifest, package.json, Coolify, GitHub
     sync            Push the manifest's domain/ports onto the matching Coolify app(s)
