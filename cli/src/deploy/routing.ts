@@ -374,7 +374,17 @@ function splitPlan(input: RoutingInput): RoutingPlan {
   const apiHost = `api.${input.domain}`;
   // Hostname aliases ride the user-facing app (client); the API app
   // stays primary-only.
-  const publics = publicUrls(input);
+  //
+  // The API host is subtracted from the client's set. A manifest that
+  // lists `api.<domain>` in `aliases[]` is describing a hostname the
+  // project serves — which under `split` is served by the SERVER app,
+  // not the client. Leaving it on both makes two applications claim one
+  // FQDN: Coolify refuses the second (409), and if it didn't, Traefik
+  // would have two routers for one host and the winner would be
+  // whichever deployed last. Under single-origin there is only one app,
+  // so the same alias is harmless there and stays.
+  const apiUrl = `https://${apiHost}`;
+  const publics = publicUrls(input).filter((u) => u !== apiUrl);
   const clientApp: RoutedApp = {
     appName: `${input.name}-client`,
     aliases: CLIENT_APP_SUFFIXES.slice(1).map((s) => `${input.name}${s}`),

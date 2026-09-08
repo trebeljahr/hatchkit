@@ -445,6 +445,46 @@ check("single-origin builds from the root compose", () => {
   assert.equal(plan.apps[0].composeLocation, "/docker-compose.yml");
 });
 
+// A manifest that lists `api.<domain>` in aliases[] is naming a host the
+// project serves. Under `split` the SERVER app serves it, so it must not
+// also land on the client — two Coolify apps claiming one FQDN is a 409,
+// and if it weren't, Traefik would route it to whichever deployed last.
+check("split: the api host never lands on the client app", () => {
+  const plan = computeRoutingPlan({
+    ...fullstack,
+    topology: "split",
+    domain: "example.com",
+    hostnameAliases: ["api.example.com", "www.example.com"],
+  });
+  const client = plan.apps.find((a) => a.role === "client");
+  const server = plan.apps.find((a) => a.role === "server");
+  assert.ok(client && server);
+  const clientHosts = client.composeDomains.flatMap((d) => d.domain.split(","));
+  assert.ok(
+    !clientHosts.includes("https://api.example.com"),
+    `client claimed the api host: ${clientHosts.join(", ")}`,
+  );
+  // The genuine user-facing alias still rides the client.
+  assert.ok(clientHosts.includes("https://www.example.com"));
+  assert.ok(clientHosts.includes("https://example.com"));
+  assert.ok(!client.flatDomains.includes("https://api.example.com"));
+  // And the server still owns it, exactly once.
+  assert.deepEqual(server.flatDomains, ["https://api.example.com"]);
+});
+
+// Single-origin has one app, so the same alias is harmless there and
+// must survive — the filter above is split-specific.
+check("single-origin keeps an api.<domain> alias on its one app", () => {
+  const plan = computeRoutingPlan({
+    ...fullstack,
+    topology: "single-origin",
+    domain: "example.com",
+    hostnameAliases: ["api.example.com"],
+  });
+  const hosts = plan.apps[0].composeDomains.flatMap((d) => d.domain.split(","));
+  assert.ok(hosts.includes("https://api.example.com"), hosts.join(", "));
+});
+
 if (failures.length > 0) {
   console.log("\nRouting test failures:");
   for (const f of failures) console.log(f);
