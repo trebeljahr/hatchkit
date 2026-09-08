@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-export const dynamic = "force-dynamic";
-
 export const metadata: Metadata = {
   title: "Subscription confirmed",
   robots: { index: false, follow: false },
