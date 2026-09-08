@@ -2,17 +2,33 @@
  * @hatchkit/dev-plugin-next — Next.js integration for hatchkit's
  * Tailscale-served dev URL flow.
  *
- * Usage:
+ * Usage — load this package LAZILY and only in the dev-server phase.
+ * It is ESM-only, while Next loads next.config.ts through a
+ * CJS-flavoured loader: a top-level `import` of it makes `next build`
+ * fail with ERR_PACKAGE_PATH_NOT_EXPORTED before the config is even
+ * read. Everything below is a `next dev` concern anyway, so gate it:
  *
  *   // next.config.ts
- *   import { withLocalDev } from "@hatchkit/dev-plugin-next";
+ *   import { PHASE_DEVELOPMENT_SERVER } from "next/constants";
  *
- *   export default withLocalDev({
+ *   const nextConfig = {
  *     reactStrictMode: true,
  *     // ...your normal Next config
- *   }, {
- *     slug: "raptor-runner", // optional override
- *   });
+ *   };
+ *
+ *   export default async function config(phase: string) {
+ *     if (phase !== PHASE_DEVELOPMENT_SERVER) return nextConfig;
+ *     try {
+ *       const { withLocalDev } = await import("@hatchkit/dev-plugin-next");
+ *       return withLocalDev(nextConfig, { slug: "raptor-runner" });
+ *     } catch {
+ *       // Plugin missing or unresolvable — local dev is a convenience,
+ *       // never a hard dependency of the config.
+ *       return nextConfig;
+ *     }
+ *   }
+ *
+ * `hatchkit dev-setup enable` writes exactly this shape for you.
  *
  * What it does on `next dev` startup (only — `next build` / `next start`
  * are pass-through no-ops):

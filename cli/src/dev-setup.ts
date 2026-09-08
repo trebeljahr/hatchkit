@@ -1031,6 +1031,10 @@ export interface EnableProjectLocalDevResult {
   framework: "next" | "vite" | "none";
   patchedConfig:
     | "added"
+    /** Legacy top-level-import wrapper rewritten to the phase-gated
+     *  shape. Only reachable on projects scaffolded before the gating
+     *  landed. */
+    | "migrated"
     | "already-wrapped"
     | "no-file"
     | "unsupported-shape"
@@ -1185,27 +1189,162 @@ function findViteConfig(projectDir: string): string | null {
   return null;
 }
 
-/** Wrap the project's Next config with `withLocalDev` from
- *  @hatchkit/dev-plugin-next. Idempotent: detects an existing import
- *  and bails before touching the file.
+/** Marker comment emitted with the phase-gated wrapper. Doubles as the
+ *  idempotency probe: a config that mentions the plugin *and* carries
+ *  this marker already has the current shape and is left alone, while a
+ *  config that mentions the plugin *without* it is the legacy
+ *  top-level-import shape (hatchkit <= 0.2.18) that we migrate. Keep the
+ *  string free of `withLocalDev` / package-name substrings so the
+ *  counting assertions in test-scaffold.ts stay meaningful. */
+const LOCAL_DEV_MARKER = "hatchkit local-dev (phase-gated)";
+
+/** Import injected at the top of the patched config. `next/constants`
+ *  ships with Next itself and resolves under both `require` and
+ *  `import`, so hoisting *this* one is safe — unlike the plugin.
  *
- *  Strategy is intentionally surgical — replace the
- *  `export default nextConfig;` line with the wrap + add a top-of-file
- *  import. We do NOT try to handle exotic config shapes
- *  (functional configs, conditional defaults). Returns `"no-file"`
- *  when no next.config can be located (backend surfaces, unusual
- *  layouts) and `"unsupported-shape"` when the file exists but doesn't
- *  match an ESM `export default` pattern — most commonly CJS
+ *  ESM `import` syntax is valid in `.ts` and `.mjs` unconditionally, and
+ *  in `.js` exactly when the file is already ESM. We only ever reach the
+ *  write after matching an `export default …` (and after bailing out on
+ *  `module.exports =`), so a `.js` config we patch is ESM by
+ *  construction — a CJS `.js` config could not carry `export default`
+ *  in the first place. */
+const LOCAL_DEV_PHASE_IMPORT = `import { PHASE_DEVELOPMENT_SERVER } from "next/constants";\n`;
+
+/** True when the config at `path` is TypeScript, i.e. when the emitted
+ *  block may carry type annotations. Everything else `findNextConfig`
+ *  can return (`.mjs`, `.js`) is plain JavaScript, where an annotation
+ *  is a SyntaxError rather than a no-op. */
+function isTypeScriptConfig(path: string): boolean {
+  return /\.[cm]?ts$/.test(path);
+}
+
+/** Render the phase-gated default export.
+ *
+ *  `@hatchkit/dev-plugin-next` is published as `"type": "module"` with
+ *  an exports map that offers only an `import` condition, and Next loads
+ *  `next.config.ts` through a CJS-flavoured loader. A top-level
+ *  `import { withLocalDev } from "@hatchkit/dev-plugin-next"` therefore
+ *  kills `next build` outright with ERR_PACKAGE_PATH_NOT_EXPORTED —
+ *  before the config is ever evaluated. The plugin's entire job (Caddy
+ *  fragment + Tailscale banner) is a `next dev` concern, so we load it
+ *  dynamically, only in the dev-server phase, and degrade to the bare
+ *  config when the import throws (plugin not installed yet, pruned out
+ *  of a production image, broken build).
+ *
+ *  The emitted function deliberately carries NO return-type annotation:
+ *  the generated config may or may not import `NextConfig`, and
+ *  `withLocalDev` is generic over the config type, so inference is both
+ *  correct and portable across every shape this patcher accepts.
+ *
+ *  `typed` controls the ONE piece of TypeScript-only syntax in the
+ *  emitted block: the `phase: string` parameter annotation.
+ *  `findNextConfig` also matches `next.config.mjs` / `next.config.js`,
+ *  and a type annotation in those is a hard SyntaxError that kills both
+ *  `next dev` and `next build`. Callers pass `isTypeScriptConfig(path)`
+ *  so this function stays the single source of truth for the emitted
+ *  shape across the identifier, hoisted-inline and legacy-migration
+ *  branches. In the untyped (.mjs/.js) case the parameter is simply
+ *  unannotated, which is what those files' runtimes want and what the
+ *  pre-0.2.19 emitter produced. We do NOT drop the annotation
+ *  everywhere: the starter typechecks `next.config.ts` under
+ *  `noImplicitAny`, where a bare `phase` is an error. */
+function renderLocalDevExport(expression: string, optionsLiteral: string, typed: boolean): string {
+  const phaseParam = typed ? "phase: string" : "phase";
+  return `
+// ${LOCAL_DEV_MARKER} — do NOT hoist the plugin import to the top level.
+// @hatchkit/dev-plugin-next is ESM-only and Next loads this file through
+// a CJS loader, so a static import breaks \`next build\` before the config
+// is ever read. The plugin only does work during \`next dev\`.
+export default async function hatchkitLocalDevConfig(${phaseParam}) {
+  if (phase !== PHASE_DEVELOPMENT_SERVER) return ${expression};
+  try {
+    const { withLocalDev } = await import("@hatchkit/dev-plugin-next");
+    return withLocalDev(${expression}, ${optionsLiteral});
+  } catch (error) {
+    console.warn(
+      \`[hatchkit] local-dev plugin unavailable (\${
+        error instanceof Error ? error.message : String(error)
+      }); continuing without it.\`,
+    );
+    return ${expression};
+  }
+}
+`;
+}
+
+/** Migrate a config still carrying the legacy shape — a top-level
+ *  `import { withLocalDev } from "@hatchkit/dev-plugin-next"` plus
+ *  `export default withLocalDev(cfg, { … });` — to the phase-gated
+ *  form. Preserves the existing options literal so hand-tuned
+ *  `localDevDomain` / `defaultPort` overrides survive. Returns null when
+ *  the file has been reshaped beyond what we can rewrite safely; the
+ *  caller then reports `already-wrapped` and leaves it untouched.
+ *
+ *  `typed` is threaded straight through to `renderLocalDevExport` — a
+ *  legacy `.mjs`/`.js` config must migrate to JavaScript, not to TS. */
+function migrateLegacyLocalDevConfig(content: string, typed: boolean): string | null {
+  const importMatch = content.match(
+    /^[ \t]*import\s*\{\s*withLocalDev\s*\}\s*from\s*["']@hatchkit\/dev-plugin-next["'];?[ \t]*\r?\n/m,
+  );
+  const exportMatch = content.match(
+    /^[ \t]*export\s+default\s+withLocalDev\(\s*([A-Za-z_$][\w$]*)\s*,\s*(\{[\s\S]*?\})\s*\);?[ \t]*$/m,
+  );
+  if (!importMatch || !exportMatch) return null;
+  return (
+    content
+      .replace(importMatch[0], "")
+      .replace(exportMatch[0], renderLocalDevExport(exportMatch[1], exportMatch[2].trim(), typed))
+      // Removing the old import line and swapping a one-liner export for a
+      // block leaves ragged blank runs; normalise them so the migrated file
+      // reads like a freshly patched one.
+      .replace(/^(\r?\n)+/, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/\n+$/, "\n")
+  );
+}
+
+/** Wrap the project's Next config with `withLocalDev` from
+ *  @hatchkit/dev-plugin-next, via a phase-gated async default export
+ *  (see `renderLocalDevExport` for why the plugin must not be imported
+ *  at the top level).
+ *
+ *  Idempotent: a config already carrying `LOCAL_DEV_MARKER` comes back
+ *  as `"already-wrapped"` with no write. A config carrying the legacy
+ *  top-level-import shape is rewritten in place and reported as
+ *  `"migrated"` — `dev-setup enable` / `hatchkit update` is the only
+ *  repair path those projects have.
+ *
+ *  Strategy is otherwise intentionally surgical — replace the
+ *  `export default nextConfig;` line with the gated export + add a
+ *  top-of-file `next/constants` import. We do NOT try to handle exotic
+ *  config shapes (functional configs, conditional defaults). Returns
+ *  `"no-file"` when no next.config can be located (backend surfaces,
+ *  unusual layouts) and `"unsupported-shape"` when the file exists but
+ *  doesn't match an ESM `export default` pattern — most commonly CJS
  *  `module.exports = …`. */
 function patchNextConfigWithLocalDev(
   projectDir: string,
   slug: string,
-): "added" | "already-wrapped" | "no-file" | "unsupported-shape" {
+): "added" | "migrated" | "already-wrapped" | "no-file" | "unsupported-shape" {
   const path = findNextConfig(projectDir);
   if (!path) return "no-file";
 
   const content = readFileSync(path, "utf-8");
-  if (content.includes("@hatchkit/dev-plugin-next")) return "already-wrapped";
+  // Drives the one TS-only token in the emitted block. Computed from the
+  // located file, not assumed: `findNextConfig` matches .mjs and .js too.
+  const typed = isTypeScriptConfig(path);
+  if (content.includes("@hatchkit/dev-plugin-next")) {
+    if (content.includes(LOCAL_DEV_MARKER)) return "already-wrapped";
+    const migrated = migrateLegacyLocalDevConfig(content, typed);
+    if (!migrated) return "already-wrapped";
+    writeFileSync(
+      path,
+      migrated.includes(LOCAL_DEV_PHASE_IMPORT.trim())
+        ? migrated
+        : `${LOCAL_DEV_PHASE_IMPORT}${migrated}`,
+    );
+    return "migrated";
+  }
 
   // CJS configs use `module.exports = …`; we can't add a top-of-file
   // ESM `import` to those. Caller surfaces the gap so the user can
@@ -1221,21 +1360,23 @@ function patchNextConfigWithLocalDev(
 
   const expression = exportMatch[1].trim();
   const isIdentifier = /^[a-zA-Z_$][\w$]*$/.test(expression);
-  const importLine = `import { withLocalDev } from "@hatchkit/dev-plugin-next";\n`;
+  const optionsLiteral = `{ slug: "${slug}" }`;
   let next = content;
   if (isIdentifier) {
-    next = next.replace(
-      exportMatch[0],
-      `\nexport default withLocalDev(${expression}, { slug: "${slug}" });\n`,
-    );
+    next = next.replace(exportMatch[0], renderLocalDevExport(expression, optionsLiteral, typed));
   } else {
-    // Inline expression — hoist into a const so we can wrap it cleanly.
+    // Inline expression — hoist into a const so the gated export can
+    // reference it from all three branches without re-evaluating it.
     next = next.replace(
       exportMatch[0],
-      `\nconst __hatchkitLocalDevConfig = ${expression};\nexport default withLocalDev(__hatchkitLocalDevConfig, { slug: "${slug}" });\n`,
+      `\nconst __hatchkitLocalDevConfig = ${expression};\n${renderLocalDevExport(
+        "__hatchkitLocalDevConfig",
+        optionsLiteral,
+        typed,
+      )}`,
     );
   }
-  next = `${importLine}${next}`;
+  next = `${LOCAL_DEV_PHASE_IMPORT}${next}`;
   writeFileSync(path, next);
   return "added";
 }
@@ -1776,13 +1917,26 @@ async function runDevSetupEnableCli(args: string[]): Promise<void> {
     );
   }
   if (result.patchedConfig === "unsupported-shape") {
+    // Mirror the shape the patcher emits: the plugin is ESM-only, so it
+    // must be loaded lazily and only in the dev-server phase — a
+    // top-level `require`/`import` of it breaks `next build`.
     console.log(chalk.bold("\n  Next config wiring (CJS / non-standard shape):"));
-    console.log(chalk.dim('    const { withLocalDev } = require("@hatchkit/dev-plugin-next");'));
+    console.log(chalk.dim('    const { PHASE_DEVELOPMENT_SERVER } = require("next/constants");'));
+    console.log(chalk.dim("    module.exports = async (phase) => {"));
+    console.log(chalk.dim("      if (phase !== PHASE_DEVELOPMENT_SERVER) return nextConfig;"));
+    console.log(chalk.dim("      try {"));
+    console.log(
+      chalk.dim('        const { withLocalDev } = await import("@hatchkit/dev-plugin-next");'),
+    );
     console.log(
       chalk.dim(
-        `    module.exports = withLocalDev(nextConfig, { slug: "${slug}", localDevDomain: "${localDevDomain}" });`,
+        `        return withLocalDev(nextConfig, { slug: "${slug}", localDevDomain: "${localDevDomain}" });`,
       ),
     );
+    console.log(chalk.dim("      } catch {"));
+    console.log(chalk.dim("        return nextConfig;"));
+    console.log(chalk.dim("      }"));
+    console.log(chalk.dim("    };"));
   }
   console.log(
     chalk.dim(`\n  Verify with: \`hatchkit doctor\` (or \`hatchkit dev-setup status\`).`),
@@ -1842,6 +1996,7 @@ async function runDevSetupDisableCli(args: string[]): Promise<void> {
 function formatPatch(
   state:
     | "added"
+    | "migrated"
     | "already-wrapped"
     | "already-present"
     | "no-file"
@@ -1857,6 +2012,8 @@ function formatPatch(
   switch (state) {
     case "added":
       return green("patched");
+    case "migrated":
+      return green("migrated to the phase-gated wrapper");
     case "already-wrapped":
     case "already-present":
       return dim("already present");
