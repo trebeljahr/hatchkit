@@ -17,12 +17,13 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 // Isolate the test from the real user config. ESM hoists static
@@ -147,6 +148,8 @@ results.minimal = await run("minimal (no flags)", "plain-app", [], (d) => {
   const serverEnv = readFileSync(join(d, "packages/server/.env.example"), "utf-8");
   const clientEnv = readFileSync(join(d, "packages/client/.env.example"), "utf-8");
   const serverEnvDev = readFileSync(join(d, "packages/server/.env.development"), "utf-8");
+  const clientEnvDev = readFileSync(join(d, "packages/client/.env.development"), "utf-8");
+  const manifest = JSON.parse(readFileSync(join(d, ".hatchkit.json"), "utf-8"));
   const ciWorkflow = readFileSync(join(d, ".github/workflows/build-and-deploy.yml"), "utf-8");
   const clientDockerfile = readFileSync(join(d, "packages/client/Dockerfile"), "utf-8");
   const compose = readFileSync(join(d, "docker-compose.yml"), "utf-8");
@@ -186,9 +189,69 @@ results.minimal = await run("minimal (no flags)", "plain-app", [], (d) => {
       "client .env.example NEXT_PUBLIC_WS_URL uses wss on bare domain",
       /^NEXT_PUBLIC_WS_URL=wss:\/\/plain-app\.example\.com$/m.test(clientEnv),
     ],
+    // `.env.development` stays on localhost (only `.env.example` gets the
+    // production domain) — but the ports in it are per-project, so the
+    // assertion has to follow the manifest's allocation, not the starter's
+    // hardcoded 3000/5000. FRONTEND_URL points at the CLIENT port because
+    // getTrustedOrigins() feeds it to better-auth and CORS; before the fix it
+    // stayed pinned at :3000 while scripts/dev.mjs booted the client
+    // somewhere in the 6000s, so local auth broke on every fresh scaffold.
+    // Assert on VALUE lines only: the file's comments legitimately mention
+    // https:// when contrasting local dev with production.
     [
-      ".env.development untouched (still localhost)",
-      /FRONTEND_URL=http:\/\/localhost:3000/.test(serverEnvDev),
+      ".env.development stays on localhost",
+      !serverEnvDev
+        .split("\n")
+        .filter((l) => /^[A-Z0-9_]+=/.test(l))
+        .some((l) => l.includes("https://")),
+    ],
+    [
+      "server .env.development FRONTEND_URL → allocated client port",
+      new RegExp(`^FRONTEND_URL=http://localhost:${manifest.ports.client}$`, "m").test(
+        serverEnvDev,
+      ),
+    ],
+    [
+      "server .env.development PORT → allocated server port",
+      new RegExp(`^PORT=${manifest.ports.server}$`, "m").test(serverEnvDev),
+    ],
+    [
+      "server .env.development BETTER_AUTH_URL → allocated server port",
+      new RegExp(`^BETTER_AUTH_URL=http://localhost:${manifest.ports.server}$`, "m").test(
+        serverEnvDev,
+      ),
+    ],
+    [
+      "server .env.development has no stale localhost:3000",
+      !/localhost:3000/.test(serverEnvDev),
+    ],
+    [
+      "server .env.development has no stale localhost:5000",
+      !/localhost:5000/.test(serverEnvDev),
+    ],
+    [
+      "server .env.development has exactly one FRONTEND_URL line",
+      (serverEnvDev.match(/^FRONTEND_URL=/gm) ?? []).length === 1,
+    ],
+    [
+      "server .env.development sets a non-empty MONGODB_URI",
+      /^MONGODB_URI=mongodb(\+srv)?:\/\/\S+$/m.test(serverEnvDev),
+    ],
+    [
+      "server .env.development carries no private-key material",
+      !/DOTENV_PRIVATE_KEY|encrypted:/.test(serverEnvDev),
+    ],
+    // Cross-package coherence: the client actually boots on the port the
+    // server is configured to trust.
+    [
+      "client dev PORT === server FRONTEND_URL port",
+      clientEnvDev.match(/^PORT=(\d+)$/m)?.[1] ===
+        serverEnvDev.match(/^FRONTEND_URL=http:\/\/localhost:(\d+)$/m)?.[1],
+    ],
+    [
+      "client dev NEXT_PUBLIC_API_URL === allocated server port",
+      clientEnvDev.match(/^NEXT_PUBLIC_API_URL=http:\/\/localhost:(\d+)$/m)?.[1] ===
+        String(manifest.ports.server),
     ],
     [
       "TRUSTED_ORIGINS stays commented out (no native clients)",
@@ -3085,10 +3148,46 @@ console.log("\n── adopt: gitignore + private-key guard ───────
           fragment.includes(`@${slug} host ${slug}.local.example.com`),
         ],
         ["docs/dev-setup.md generated", existsSync(join(d, "docs/dev-setup.md"))],
+        // @hatchkit/dev-plugin-next is ESM-only and Next loads next.config.ts
+        // through a CJS loader, so a TOP-LEVEL import of it kills `next build`
+        // with ERR_PACKAGE_PATH_NOT_EXPORTED before the config is ever read.
+        // The wrapper must therefore be phase-gated and load the plugin via a
+        // dynamic import that only runs during `next dev`.
         [
-          "next.config wrapped with withLocalDev",
-          nextConfig.includes("import { withLocalDev }") &&
-            nextConfig.includes(`withLocalDev(nextConfig, { slug: "${slug}" })`),
+          "next.config has NO top-level @hatchkit/dev-plugin-next import",
+          !/^\s*import\s*\{[^}]*withLocalDev[^}]*\}\s*from\s*["']@hatchkit\/dev-plugin-next["']/m.test(
+            nextConfig,
+          ),
+        ],
+        [
+          "next.config imports PHASE_DEVELOPMENT_SERVER from next/constants",
+          nextConfig.includes('import { PHASE_DEVELOPMENT_SERVER } from "next/constants";'),
+        ],
+        [
+          "next.config default export is phase-gated",
+          /export default async function hatchkitLocalDevConfig\(phase: string\)/.test(
+            nextConfig,
+          ) && nextConfig.includes("if (phase !== PHASE_DEVELOPMENT_SERVER) return nextConfig;"),
+        ],
+        [
+          "next.config loads the plugin via dynamic import",
+          nextConfig.includes('await import("@hatchkit/dev-plugin-next")'),
+        ],
+        [
+          "next.config wraps with the project slug",
+          nextConfig.includes(`withLocalDev(nextConfig, { slug: "${slug}" })`),
+        ],
+        [
+          "next.config falls back when the plugin import throws",
+          nextConfig.includes("} catch (error) {") &&
+            nextConfig.includes("local-dev plugin unavailable"),
+        ],
+        // The load-bearing invariant: `next build` runs a non-dev phase, and
+        // that branch must return BEFORE anything imports the plugin.
+        [
+          "non-dev phase returns before the dynamic import",
+          nextConfig.indexOf("if (phase !== PHASE_DEVELOPMENT_SERVER) return") <
+            nextConfig.indexOf('await import("@hatchkit/dev-plugin-next")'),
         ],
         [
           "@hatchkit/dev-plugin-next added to client deps",
@@ -3158,16 +3257,24 @@ console.log("\n── adopt: gitignore + private-key guard ───────
 
       const nextConfig = readFileSync(join(d, "packages/client/next.config.ts"), "utf-8");
       const withLocalDevCount = (nextConfig.match(/withLocalDev/g) ?? []).length;
-      const importCount = (nextConfig.match(/from "@hatchkit\/dev-plugin-next"/g) ?? []).length;
+      const dynamicImportCount = (
+        nextConfig.match(/await import\("@hatchkit\/dev-plugin-next"\)/g) ?? []
+      ).length;
+      const phaseImportCount = (nextConfig.match(/from "next\/constants"/g) ?? []).length;
+      const defaultExportCount = (nextConfig.match(/^export default /gm) ?? []).length;
 
       const checks: Check[] = [
         ["second enable reports fragment unchanged", second.wroteFragment === "unchanged"],
         ["second enable reports next.config already-wrapped", second.patchedConfig === "already-wrapped"],
         ["second enable reports package.json already-present", second.patchedPackageJson === "already-present"],
-        // Two textual hits: the import line + the wrapped export.
-        // Three or more = duplicated wrapping.
+        // Two textual hits: the `const { withLocalDev } = await import(…)`
+        // destructure + the call site. Three or more = duplicated wrapping.
         ["next.config has exactly one wrap site", withLocalDevCount === 2],
-        ["next.config has exactly one plugin import", importCount === 1],
+        ["next.config has exactly one dynamic plugin import", dynamicImportCount === 1],
+        // The prepended `next/constants` import and the gated default export
+        // must not be duplicated by a re-enable either.
+        ["next.config has exactly one next/constants import", phaseImportCount === 1],
+        ["next.config has exactly one default export", defaultExportCount === 1],
       ];
       let ok = true;
       for (const [n, c] of checks) {
@@ -3260,9 +3367,13 @@ console.log("\n── adopt: gitignore + private-key guard ───────
 
       const checks: Check[] = [
         ["inline-export shape patched", inlineResult.patchedConfig === "added"],
+        // The hoisted const has to be referenced from all three branches of
+        // the gated export (early return, wrapped return, catch fallback) —
+        // four textual hits including the declaration itself. Re-evaluating
+        // the inline expression per branch would be a silent behaviour change.
         [
           "hoisted into a const before wrapping",
-          inlineConfig.includes("__hatchkitLocalDevConfig") &&
+          (inlineConfig.match(/__hatchkitLocalDevConfig/g) ?? []).length === 4 &&
             inlineConfig.includes(`withLocalDev(__hatchkitLocalDevConfig, { slug: "${slug}" })`),
         ],
         ["second enable detects existing wrap", guardResult.patchedConfig === "already-wrapped"],
@@ -3322,6 +3433,76 @@ console.log("\n── adopt: gitignore + private-key guard ───────
         ["Caddy fragment landed", existsSync(fragmentPath)],
         ["docs/dev-setup.md generated", existsSync(join(d, "docs/dev-setup.md"))],
         ["next.config wrapped with withLocalDev", nextConfig.includes("withLocalDev")],
+      ];
+      let ok = true;
+      for (const [n, c] of checks) {
+        console.log(`  ${c ? "✓" : "✗"} ${n}`);
+        if (!c) ok = false;
+      }
+      return ok;
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+      rmSync(join(fragmentDir, `${slug}.caddy`), { force: true });
+    }
+  })();
+
+  // Case 7: a project scaffolded by hatchkit <= 0.2.18 carries the LEGACY
+  // shape — a top-level `import { withLocalDev } from "@hatchkit/dev-plugin-next"`
+  // plus `export default withLocalDev(cfg, { … });`. That import is what broke
+  // `next build` outright, and re-running enable is the only repair path those
+  // projects have, so the patcher must rewrite them in place rather than
+  // reporting "already-wrapped" and walking away.
+  results.localDevLegacyMigration = await (async () => {
+    const d = mkdtempSync(join(tmpdir(), "scaffold-localdev-legacy-"));
+    const slug = `ld-legacy-${process.pid}`;
+    try {
+      console.log("\n── localDev: legacy top-level-import migration ────");
+      await scaffoldApp(cfg(slug, []), d);
+      const nextPath = join(d, "packages/client/next.config.ts");
+      writeFileSync(
+        nextPath,
+        [
+          'import { withLocalDev } from "@hatchkit/dev-plugin-next";',
+          'import type { NextConfig } from "next";',
+          "",
+          "const nextConfig: NextConfig = { trailingSlash: true };",
+          "",
+          'export default withLocalDev(nextConfig, { slug: "old-slug", localDevDomain: "local.foo.com" });',
+          "",
+        ].join("\n"),
+      );
+
+      const result = await enableProjectLocalDev({ projectDir: d, slug, devPort: 4322 });
+      const migrated = readFileSync(nextPath, "utf-8");
+
+      const second = await enableProjectLocalDev({ projectDir: d, slug, devPort: 4322 });
+      const afterSecond = readFileSync(nextPath, "utf-8");
+
+      const checks: Check[] = [
+        ["legacy shape reported as migrated", result.patchedConfig === "migrated"],
+        [
+          "top-level plugin import removed",
+          !/^\s*import\s*\{[^}]*withLocalDev[^}]*\}\s*from\s*["']@hatchkit\/dev-plugin-next["']/m.test(
+            migrated,
+          ),
+        ],
+        [
+          "next/constants import added exactly once",
+          (migrated.match(/from "next\/constants"/g) ?? []).length === 1,
+        ],
+        ["plugin now loaded dynamically", migrated.includes('await import("@hatchkit/dev-plugin-next")')],
+        // Hand-tuned options (localDevDomain, defaultPort) must survive the
+        // migration — clobbering them with the CLI-passed slug would silently
+        // repoint a user's existing Caddy fragment.
+        [
+          "existing options literal preserved verbatim",
+          migrated.includes(
+            'withLocalDev(nextConfig, { slug: "old-slug", localDevDomain: "local.foo.com" })',
+          ),
+        ],
+        ["no ragged blank runs left behind", !/\n{3,}/.test(migrated)],
+        ["second enable reports already-wrapped", second.patchedConfig === "already-wrapped"],
+        ["second enable left the file byte-identical", migrated === afterSecond],
       ];
       let ok = true;
       for (const [n, c] of checks) {
@@ -3622,6 +3803,517 @@ console.log("\n── deploy secrets: split vs single-origin ──────�
   }
   results.deploySecretTopology = ok;
 }
+
+// ---------------------------------------------------------------------------
+// Generated-project build regressions.
+//
+// Every assertion below guards a defect that shipped in a real scaffold and
+// broke `pnpm install` or `pnpm run build` in the USER's project rather than
+// anywhere in this repo — so they all assert on generated-file content, not on
+// scaffolder internals. Reported against hatchkit 0.2.17; see the fixes in
+// cli/src/scaffold/, cli/src/dev-setup.ts and starter/.
+// ---------------------------------------------------------------------------
+
+/** Recursively collect files under `dir` whose name ends with `ext`. */
+function walkFiles(dir: string, ext: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...walkFiles(p, ext));
+    else if (entry.name.endsWith(ext)) out.push(p);
+  }
+  return out;
+}
+
+/** Every relative import specifier in `srcDir` that does not resolve on disk.
+ *
+ *  This is the generic guard for the whole conditional-strip bug class: the
+ *  scaffolder deletes feature files (services/stripe.ts, ws/) but the modules
+ *  that imported them are hand-edited text, so a missed strip leaves a dangling
+ *  `./services/stripe.js` import that only surfaces when the user runs `tsc`.
+ *  NodeNext specifiers carry a `.js` extension that maps back to `.ts` source. */
+function danglingRelativeImports(srcDir: string): string[] {
+  const bad: string[] = [];
+  for (const file of walkFiles(srcDir, ".ts")) {
+    const content = readFileSync(file, "utf-8");
+    for (const m of content.matchAll(/\bfrom\s+"(\.[^"]*)"/g)) {
+      const spec = m[1];
+      const base = resolve(dirname(file), spec.replace(/\.js$/, ""));
+      const resolves = [`${base}.ts`, `${base}.tsx`, join(base, "index.ts"), base].some((c) =>
+        existsSync(c),
+      );
+      if (!resolves) bad.push(`${file.slice(srcDir.length + 1)} → ${spec}`);
+    }
+  }
+  return bad;
+}
+
+/** Structural problems with a pnpm-workspace.yaml `allowBuilds:` block.
+ *
+ *  pnpm 11 turns ERR_PNPM_IGNORED_BUILDS into a hard error and checks it before
+ *  every `pnpm run <script>`, so a missing block — or a prose placeholder where
+ *  a boolean belongs — breaks `install` AND every script in the scaffold.
+ *  Assumes `allowBuilds:` is the last top-level key, which is how both the
+ *  starter file and renderWorkspaceYaml() lay it out. */
+function workspaceAllowBuildsProblems(content: string): string[] {
+  const problems: string[] = [];
+  if (!/^allowBuilds:$/m.test(content)) {
+    problems.push("no top-level allowBuilds: block");
+    return problems;
+  }
+  if (/set this to/i.test(content)) problems.push("carries a prose placeholder value");
+  const block = content.slice(content.indexOf("allowBuilds:") + "allowBuilds:".length);
+  for (const line of block.split("\n")) {
+    if (!line.trim()) continue;
+    if (!/^ {2}(?:'[^']+'|[A-Za-z0-9@/._-]+): (?:true|false)$/.test(line)) {
+      problems.push(`non-boolean allowBuilds entry: ${JSON.stringify(line)}`);
+    }
+  }
+  return problems;
+}
+
+/** Exports-map problems in a generated workspace package.json.
+ *
+ *  A package with no `"type": "module"` emits CommonJS under tsconfig.base's
+ *  `module: NodeNext`, so an exports map offering only an `import` condition is
+ *  unresolvable from the Next.js client bundler (which resolves under
+ *  ["node","require"]) and dies with ERR_PACKAGE_PATH_NOT_EXPORTED. Condition
+ *  order matters too: `"types"` must be matched first. */
+function exportsMapProblems(pkgPath: string): string[] {
+  const problems: string[] = [];
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+  const map = pkg.exports;
+  if (!map || typeof map !== "object") return problems;
+  const isEsm = pkg.type === "module";
+  for (const [subpath, entry] of Object.entries(map as Record<string, unknown>)) {
+    if (!entry || typeof entry !== "object") continue;
+    const keys = Object.keys(entry as Record<string, unknown>);
+    if (keys.includes("types") && keys[0] !== "types") {
+      problems.push(`${pkg.name} "${subpath}": "types" must come first, got "${keys[0]}"`);
+    }
+    // A types-only subpath (e.g. @starter/server's "./trpc") never resolves at
+    // runtime — nothing to check.
+    const runtime = keys.filter((k) => k !== "types");
+    if (runtime.length === 0) continue;
+    const requireResolvable = runtime.some((k) => k === "require" || k === "default");
+    if (!isEsm && !requireResolvable) {
+      problems.push(
+        `${pkg.name} "${subpath}": CJS emit but conditions [${runtime.join(", ")}] — unresolvable under require`,
+      );
+    }
+  }
+  return problems;
+}
+
+// Stamp A — the exact feature combination from the bug report. Everything
+// asserted here is feature-independent except the stripe-OFF checks.
+results.buildRegressionsReported = await run(
+  "build regressions: reported combo (ws+s3+analytics+desktop+mobile)",
+  "stamp-a",
+  ["websocket", "s3", "analytics", "desktop", "mobile"],
+  (d) => {
+    const workspace = readFileSync(join(d, "pnpm-workspace.yaml"), "utf-8");
+    const globals = readFileSync(join(d, "packages/client/src/styles/globals.css"), "utf-8");
+    const authClient = readFileSync(join(d, "packages/client/src/lib/auth-client.ts"), "utf-8");
+    const serverApp = readFileSync(join(d, "packages/server/src/app.ts"), "utf-8");
+    const serverIndex = readFileSync(join(d, "packages/server/src/index.ts"), "utf-8");
+    const serverEnvDev = readFileSync(join(d, "packages/server/.env.development"), "utf-8");
+    const manifest = JSON.parse(readFileSync(join(d, ".hatchkit.json"), "utf-8"));
+
+    // Defect 4 — sweep every workspace package, not just @starter/shared, so a
+    // future package inherits the guard for free.
+    const pkgProblems = readdirSync(join(d, "packages"), { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => join(d, "packages", e.name, "package.json"))
+      .filter((p) => existsSync(p))
+      .flatMap(exportsMapProblems);
+
+    // Defect 5 — Tailwind v4 resolves `@plugin` specifiers under node/require,
+    // and tw-animate-css exports only a "style" condition, so `@plugin` there
+    // fails the CSS build outright. `@import` is the documented usage.
+    const atRules = globals
+      .split("\n")
+      .map((line, i) => [i, /^@([\w-]+)/.exec(line)?.[1]] as const)
+      .filter((pair): pair is readonly [number, string] => pair[1] !== undefined);
+    const firstNonImport = atRules.find(([, rule]) => rule !== "import" && rule !== "charset");
+    const lastImport = [...atRules].reverse().find(([, rule]) => rule === "import");
+
+    // Defect 6 — better-auth calls `new URL(baseURL)` at module scope, so a
+    // relative or empty origin throws during Next's Node prerender. Assert no
+    // branch of resolveAuthOrigin can yield one.
+    const originBody = /function resolveAuthOrigin\(\): string \{([\s\S]*?)\n\}/.exec(authClient);
+    const originReturns = [...(originBody?.[1] ?? "").matchAll(/return\s+([^;]+);/g)].map((m) =>
+      m[1].trim(),
+    );
+
+    // Defect 2 — a top-level import of the ESM-only dev plugin anywhere under
+    // packages/client/ kills `next build`, whatever wrote it.
+    const staticPluginImports = [
+      ...walkFiles(join(d, "packages/client"), ".ts"),
+      ...walkFiles(join(d, "packages/client"), ".tsx"),
+    ].filter((f) =>
+      /^\s*import\s[^\n]*from\s*["']@hatchkit\/dev-plugin-next["']/m.test(readFileSync(f, "utf-8")),
+    );
+
+    return [
+      // ── defect 1: pnpm-workspace.yaml ──────────────────────────────
+      ["pnpm-workspace.yaml allowBuilds is well-formed", workspaceAllowBuildsProblems(workspace).length === 0],
+      [
+        "allowBuilds lists unrs-resolver (arrives via eslint-config-next)",
+        /^\s{2}unrs-resolver: true$/m.test(workspace),
+      ],
+      ["allowBuilds quotes the scoped @sentry/cli key", workspace.includes("  '@sentry/cli': true")],
+
+      // ── defect 2: no ESM-only plugin import in the client ──────────
+      [
+        "no top-level @hatchkit/dev-plugin-next import under packages/client",
+        staticPluginImports.length === 0,
+      ],
+
+      // ── defect 3: stripe NOT selected ──────────────────────────────
+      ["stripe service removed", !existsSync(join(d, "packages/server/src/services/stripe.ts"))],
+      ["server app.ts drops the stripe import", !serverApp.includes("services/stripe.js")],
+      ["server app.ts drops handleStripeWebhook", !serverApp.includes("handleStripeWebhook")],
+      ["server app.ts drops the webhook mount", !serverApp.includes("/api/stripe/webhook")],
+      ["server index.ts drops the stripe import", !serverIndex.includes("services/stripe.js")],
+      ["server index.ts drops warnStripeStatus", !serverIndex.includes("warnStripeStatus")],
+      [
+        "billing router survives the stripe strip",
+        existsSync(join(d, "packages/server/src/trpc/routers/billing.ts")),
+      ],
+      [
+        "no dangling relative imports under packages/server/src",
+        danglingRelativeImports(join(d, "packages/server/src")).length === 0,
+      ],
+
+      // ── defect 4: exports maps ─────────────────────────────────────
+      ["every packages/* exports map is require-resolvable", pkgProblems.length === 0],
+      [
+        "@starter/shared exports map is exactly types→default",
+        (() => {
+          const shared = JSON.parse(
+            readFileSync(join(d, "packages/shared/package.json"), "utf-8"),
+          );
+          // If shared ever gains "type": "module" this assertion should fail
+          // loudly — the whole map has to be revisited, not just patched.
+          return (
+            shared.type === undefined &&
+            JSON.stringify(Object.keys(shared.exports["."])) === '["types","default"]' &&
+            JSON.stringify(Object.keys(shared.exports["./*"])) === '["types","default"]' &&
+            shared.main === shared.exports["."].default &&
+            shared.types === shared.exports["."].types
+          );
+        })(),
+      ],
+
+      // ── defect 5: globals.css ──────────────────────────────────────
+      ["globals.css has no @plugin directive", !/^@plugin\s/m.test(globals)],
+      ['globals.css imports "tw-animate-css"', /^@import\s+"tw-animate-css";$/m.test(globals)],
+      ['globals.css line 1 is @import "tailwindcss"', globals.split("\n")[0] === '@import "tailwindcss";'],
+      [
+        "globals.css keeps every @import ahead of other at-rules",
+        firstNonImport === undefined ||
+          lastImport === undefined ||
+          lastImport[0] < firstNonImport[0],
+      ],
+
+      // ── defect 6: auth-client baseURL ──────────────────────────────
+      ["auth-client has no empty-string fallback", !authClient.includes(': ""')],
+      [
+        "auth-client guards the browser branch",
+        authClient.includes('typeof window !== "undefined"') &&
+          authClient.includes("window.location.origin"),
+      ],
+      ["auth-client has an absolute prerender fallback", /return\s+"http:\/\/localhost";/.test(authClient)],
+      [
+        "every resolveAuthOrigin branch returns an absolute origin",
+        originReturns.length > 0 &&
+          originReturns.every(
+            (r) =>
+              r.includes("configured") ||
+              /^"https?:\/\/[^"]+"$/.test(r) ||
+              r.includes("window.location.origin") ||
+              // The browser branch binds window.location.origin to a local so
+              // it can reject the opaque `file://` origin (which serializes to
+              // the string "null") before returning it. Accept that shape only
+              // when both the binding and the guard are present — otherwise a
+              // bare `return someLocal;` would slip through.
+              (originBody?.[1]?.includes(`const ${r} = window.location.origin`) === true &&
+                originBody[1].includes(`${r} !== "null"`)),
+          ),
+      ],
+      [
+        "auth-client re-exports survive",
+        authClient.includes("export const { signIn, signUp, signOut, useSession } = authClient;"),
+      ],
+
+      // ── defect 7 (negative): no newsletter → no /sub routes at all ──
+      ["app/sub stripped when newsletter is unselected", !existsSync(join(d, "packages/client/src/app/sub"))],
+
+      // ── defect 8: server dev env ───────────────────────────────────
+      [".env.development exists", existsSync(join(d, "packages/server/.env.development"))],
+      [".env.development sets a non-empty MONGODB_URI", /^MONGODB_URI=mongodb(\+srv)?:\/\/\S+$/m.test(serverEnvDev)],
+      [
+        ".env.development FRONTEND_URL → allocated client port",
+        new RegExp(`^FRONTEND_URL=http://localhost:${manifest.ports.client}$`, "m").test(serverEnvDev),
+      ],
+      [
+        ".env.development PORT → allocated server port",
+        new RegExp(`^PORT=${manifest.ports.server}$`, "m").test(serverEnvDev),
+      ],
+    ];
+  },
+);
+
+// Stamp B — the opposite branch of the conditional codegen: stripe ON, plus a
+// listmonk mailing list (which keeps the /sub routes) AND desktop+mobile
+// (which flips next.config to a static export). That intersection is the one
+// that shipped an unbuildable project.
+results.buildRegressionsCommerce = await run(
+  "build regressions: commerce combo (stripe + listmonk + static export)",
+  "stamp-b",
+  ["websocket", "stripe", "desktop", "mobile"],
+  (d) => {
+    const serverApp = readFileSync(join(d, "packages/server/src/app.ts"), "utf-8");
+    const serverIndex = readFileSync(join(d, "packages/server/src/index.ts"), "utf-8");
+    const nextCfg = readFileSync(join(d, "packages/client/next.config.ts"), "utf-8");
+    const subDir = join(d, "packages/client/src/app/sub");
+    const errorPage = readFileSync(join(subDir, "error/page.tsx"), "utf-8");
+    const reasonMessage = readFileSync(join(subDir, "error/reason-message.tsx"), "utf-8");
+    const confirmed = readFileSync(join(subDir, "confirmed/page.tsx"), "utf-8");
+
+    // Under `output: "export"` every route prerenders, so a single page opting
+    // into dynamic rendering fails the whole build.
+    const isStaticExport = /output:\s*["']export["']/.test(nextCfg);
+    const forcedDynamic = walkFiles(join(d, "packages/client/src/app"), ".tsx").filter((f) =>
+      /dynamic\s*=\s*["']force-dynamic["']/.test(readFileSync(f, "utf-8")),
+    );
+
+    return [
+      // ── defect 3: stripe SELECTED — the wiring must survive ────────
+      ["stripe service kept", existsSync(join(d, "packages/server/src/services/stripe.ts"))],
+      [
+        "server app.ts keeps the stripe import",
+        serverApp.includes('import { handleStripeWebhook } from "./services/stripe.js";'),
+      ],
+      ["server index.ts keeps warnStripeStatus()", serverIndex.includes("warnStripeStatus();")],
+      // Load-bearing express ordering: the raw-body webhook must sit AFTER the
+      // better-auth handler (which parses its own body) and BEFORE
+      // express.json() (which would consume the body and break the signature).
+      [
+        "webhook mount sits between the auth handler and express.json()",
+        serverApp.indexOf('"/api/auth/{*any}"') > -1 &&
+          serverApp.indexOf('"/api/auth/{*any}"') < serverApp.indexOf('"/api/stripe/webhook"') &&
+          // Match the actual mount, not the comment above the auth handler
+          // that also spells `express.json()`.
+          serverApp.indexOf('"/api/stripe/webhook"') < serverApp.indexOf("app.use(express.json("),
+      ],
+      ["websocket wiring kept", serverIndex.includes("const wss = setupWebSocket(server);")],
+      [
+        "no dangling relative imports under packages/server/src",
+        danglingRelativeImports(join(d, "packages/server/src")).length === 0,
+      ],
+
+      // ── defect 7: /sub routes under a static export ────────────────
+      ["listmonk keeps the /sub routes", existsSync(join(subDir, "page.tsx"))],
+      ["desktop/mobile flips next.config to a static export", isStaticExport],
+      [
+        "no app/ page forces dynamic rendering under output: export",
+        !isStaticExport || forcedDynamic.length === 0,
+      ],
+      ["/sub/error/page.tsx does not await searchParams", !errorPage.includes("await searchParams")],
+      ["/sub/error/page.tsx is a sync server component", !/export default async function/.test(errorPage)],
+      [
+        "/sub/error/page.tsx suspends the client reason reader",
+        errorPage.includes('from "react"') &&
+          errorPage.includes("<Suspense") &&
+          errorPage.includes("<ReasonMessage"),
+      ],
+      [
+        "/sub/error/reason-message.tsx is a client component",
+        reasonMessage.split("\n")[0] === '"use client";' &&
+          reasonMessage.includes('from "next/navigation"') &&
+          reasonMessage.includes("useSearchParams"),
+      ],
+      [
+        "reason messages survived the move to the client module",
+        ["missing", "malformed", "bad_signature", "expired", "list_add_failed"].every((k) =>
+          reasonMessage.includes(`${k}:`),
+        ),
+      ],
+      [
+        "/sub/error keeps its noindex metadata and both links",
+        /robots:\s*\{\s*index:\s*false,\s*follow:\s*false\s*\}/.test(errorPage) &&
+          errorPage.includes('href="/sub"') &&
+          errorPage.includes('href="/"'),
+      ],
+      ["/sub/confirmed drops force-dynamic", !/dynamic\s*=\s*["']force-dynamic["']/.test(confirmed)],
+    ];
+  },
+  { email: { transactional: "none", mailingList: "listmonk-ses" } },
+);
+
+// Defect 1, the other half: `hatchkit server add` regenerates
+// pnpm-workspace.yaml when a client-only project has none. Before the fix that
+// path wrote a bare `packages:` list with no allowBuilds block, so the
+// retrofitted project inherited the exact ERR_PNPM_IGNORED_BUILDS failure the
+// starter was fixed to avoid.
+results.workspaceAllowBuildsFallback = await (async () => {
+  console.log("\n── workspace: allowBuilds fallback + drift guard ───");
+  const { runServerAdd, WORKSPACE_ALLOW_BUILDS, renderWorkspaceYaml } = await import(
+    "./src/scaffold/server-add.js"
+  );
+  const { readManifest, writeManifest } = await import("./src/scaffold/manifest.js");
+  const rendered = renderWorkspaceYaml(["packages/*"]);
+  const starterWorkspace = readFileSync(join(STARTER, "pnpm-workspace.yaml"), "utf-8");
+  const allowBuildsOf = (s: string): string => s.slice(s.indexOf("allowBuilds:"));
+
+  const missing = mkdtempSync(join(tmpdir(), "scaffold-ws-missing-"));
+  const partial = mkdtempSync(join(tmpdir(), "scaffold-ws-partial-"));
+  try {
+    // (a) file-missing branch.
+    await scaffoldApp(cfg("ws-missing", [], { surfaces: "static" }), missing);
+    rmSync(join(missing, "pnpm-workspace.yaml"), { force: true });
+    const addResult = await runServerAdd(missing, { yes: true, presets: { confirmAdd: true } });
+    const regenerated = readFileSync(join(missing, "pnpm-workspace.yaml"), "utf-8");
+    const lines = regenerated.split("\n");
+
+    // Re-running is a no-op: reset the manifest back to static so the second
+    // pass actually reaches ensureWorkspacePackages instead of early-returning
+    // on `surfaces: fullstack`.
+    const m = readManifest(missing);
+    if (m) writeManifest(missing, { ...m, surfaces: "static" });
+    await runServerAdd(missing, { yes: true, presets: { confirmAdd: true } });
+    const rerun = readFileSync(join(missing, "pnpm-workspace.yaml"), "utf-8");
+
+    // (b) file-exists branch: a `packages:` block without the glob. The new
+    // entry has to land INSIDE that block — appended at EOF it would parse as
+    // a member of the allowBuilds mapping.
+    await scaffoldApp(cfg("ws-partial", [], { surfaces: "static" }), partial);
+    writeFileSync(
+      join(partial, "pnpm-workspace.yaml"),
+      starterWorkspace.replace(/^\s*-\s*"packages\/\*"\n/m, ""),
+    );
+    await runServerAdd(partial, { yes: true, presets: { confirmAdd: true } });
+    const patched = readFileSync(join(partial, "pnpm-workspace.yaml"), "utf-8");
+    const patchedLines = patched.split("\n");
+    const globIdx = patchedLines.findIndex((l) => /^\s*-\s*"packages\/\*"$/.test(l));
+    const allowIdx = patchedLines.findIndex((l) => /^allowBuilds:$/.test(l));
+
+    const checks: Check[] = [
+      // The drift guard: the constant and the starter file must stay
+      // byte-identical, or a scaffold and a retrofit disagree about which
+      // packages may run build scripts.
+      [
+        "WORKSPACE_ALLOW_BUILDS matches starter/pnpm-workspace.yaml byte-for-byte",
+        allowBuildsOf(rendered) === allowBuildsOf(starterWorkspace),
+      ],
+      ["WORKSPACE_ALLOW_BUILDS is non-empty", WORKSPACE_ALLOW_BUILDS.length > 0],
+      ["WORKSPACE_ALLOW_BUILDS lists unrs-resolver", WORKSPACE_ALLOW_BUILDS.includes("unrs-resolver")],
+      ["rendered workspace has no prose placeholder", !/set this to true or false/.test(rendered)],
+      ["rendered workspace allowBuilds is well-formed", workspaceAllowBuildsProblems(rendered).length === 0],
+      ["rendered workspace quotes the scoped @sentry/cli key", rendered.includes("  '@sentry/cli': true")],
+
+      ["server add reports pnpm-workspace.yaml created", addResult.created.includes("pnpm-workspace.yaml")],
+      ["regenerated workspace equals renderWorkspaceYaml()", regenerated === rendered],
+      ["regenerated workspace lists packages/*", lines.some((l) => /^\s*-\s*"packages\/\*"$/.test(l))],
+      ["regenerated workspace has an allowBuilds block", /^allowBuilds:$/m.test(regenerated)],
+      ["regenerated workspace allowBuilds is well-formed", workspaceAllowBuildsProblems(regenerated).length === 0],
+      ["re-running server add leaves the workspace byte-identical", rerun === regenerated],
+      [
+        "re-running server add does not duplicate packages/*",
+        (rerun.match(/^\s*-\s*"packages\/\*"$/gm) ?? []).length === 1,
+      ],
+
+      ["existing workspace: packages/* appended inside the packages block", globIdx > -1 && allowIdx > globIdx],
+      [
+        "existing workspace: allowBuilds block left intact",
+        allowBuildsOf(patched) === allowBuildsOf(starterWorkspace),
+      ],
+    ];
+    let ok = true;
+    for (const [n, c] of checks) {
+      console.log(`  ${c ? "✓" : "✗"} ${n}`);
+      if (!c) ok = false;
+    }
+    return ok;
+  } finally {
+    rmSync(missing, { recursive: true, force: true });
+    rmSync(partial, { recursive: true, force: true });
+  }
+})();
+
+// The `stamp-build` CI job is what turns every assertion above into an actual
+// install+build gate — the static matrix in this file can only see file
+// content, never a compiler error. These are shape guards on that job so it
+// cannot silently narrow: a renamed script, a dropped `starter/**` path filter
+// or a folded-into-`check` job would all fail only on CI, or not at all.
+results.ciStampPresets = (() => {
+  console.log("\n── CI: stamp-build job cannot silently narrow ─────");
+  const repoRoot = resolve(import.meta.dirname, "..");
+  const stampScriptPath = resolve(import.meta.dirname, "scripts/ci-stamp.ts");
+  const workflowPath = join(repoRoot, ".github/workflows/ci.yml");
+  const stampScript = existsSync(stampScriptPath) ? readFileSync(stampScriptPath, "utf-8") : "";
+  const workflow = existsSync(workflowPath) ? readFileSync(workflowPath, "utf-8") : "";
+
+  const checks: Check[] = [
+    ["cli/scripts/ci-stamp.ts exists", existsSync(stampScriptPath)],
+    [
+      "ci-stamp keeps the reported preset (the exact bug-report combo)",
+      stampScript.includes('"websocket", "s3", "analytics", "desktop", "mobile"'),
+    ],
+    [
+      "ci-stamp keeps the commerce preset (opposite conditional-codegen branch)",
+      stampScript.includes('"websocket", "stripe", "desktop", "mobile"') &&
+        stampScript.includes('mailingList: "listmonk-ses"'),
+    ],
+    // Dropping starter/** re-opens the blind spot that let template-only
+    // regressions ship: the old filter only watched cli/**.
+    ['ci.yml paths still watch "starter/**"', workflow.includes('- "starter/**"')],
+    ["ci.yml has a standalone stamp-build job", /^ {2}stamp-build:$/m.test(workflow)],
+    [
+      "ci-stamp keeps the web preset (standalone build, no static export)",
+      stampScript.includes("web:"),
+    ],
+    // The point of a separate job is that it actually compiles the stamp.
+    // Assert on stamp-build's OWN step block — a check that "check:" and
+    // "stamp-build:" are different strings can never fail.
+    [
+      "stamp-build installs, builds and unit-tests the stamped project",
+      (() => {
+        const start = workflow.indexOf("\n  stamp-build:");
+        if (start === -1) return false;
+        // Slice to the next top-level job key, or EOF for the last job.
+        const rest = workflow.slice(start + 1);
+        const next = rest.slice(1).search(/^ {2}\S+:$/m);
+        const block = next === -1 ? rest : rest.slice(0, next + 1);
+        return (
+          block.includes("pnpm install --no-frozen-lockfile") &&
+          block.includes("pnpm run build") &&
+          block.includes("pnpm run test:unit")
+        );
+      })(),
+    ],
+    // NOT because of package renaming — cli/src/deploy/rename-project.ts
+    // deliberately leaves the @starter/* workspace names alone. The lockfile
+    // drifts because scaffolding PRUNES dependencies the chosen feature set
+    // doesn't need. pnpm defaults to frozen when CI=true, hence the flag.
+    [
+      "stamped install uses --no-frozen-lockfile",
+      workflow.includes("pnpm install --no-frozen-lockfile"),
+    ],
+    [
+      "stamp-build sets NEXT_PUBLIC_API_URL (next.config hard-fails without it)",
+      /^\s*NEXT_PUBLIC_API_URL:\s*\S+$/m.test(workflow),
+    ],
+  ];
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  return ok;
+})();
 
 // Clean up the isolated config dir + every keychain entry scoped to
 // the throwaway service.

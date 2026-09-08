@@ -1,16 +1,23 @@
 name: CLI CI
 
-# Runs typecheck, lint, the scaffold matrix, and a real build of a
-# scaffolded project on every push + PR.
+# Two independent jobs:
 #
-# `starter/` is tracked in this repo (it is NOT a submodule), so the
-# scaffold matrix runs here in full. The suite still skips those blocks
-# gracefully if `starter/package.json` is missing, which is what keeps a
-# partial checkout from failing the run.
+#   check        — fast static gates: JSON smoke tests, typecheck, lint, and
+#                  the scaffold matrix (file-presence assertions).
+#   stamp-build  — slow end-to-end gate: stamp a project out of `starter/`,
+#                  then `pnpm install && pnpm run build && pnpm run test:unit`
+#                  inside it. Kept separate from `check` on purpose — it takes
+#                  minutes and should fail on its own, without masking or
+#                  being masked by the static gates.
 #
-# `starter/**` is in the path filters because the scaffolder's output is
-# only as correct as its input — a broken CSS import or Next config in
-# the template ships to every generated project.
+# `starter/` is a plain directory tracked in this repo (there is no
+# .gitmodules), so a bare `actions/checkout` is enough to stamp a project.
+# It used to be a private submodule, which is why the scaffold matrix still
+# carries a graceful skip path — that skip no longer fires in CI.
+#
+# The paths filters cover `starter/**` as well as `cli/**`: the generator is
+# the template plus the codegen, and template-only regressions used to slip
+# through unbuilt because CI never ran on a starter-only change.
 
 on:
   push:
@@ -18,17 +25,24 @@ on:
     paths:
       - "cli/**"
       - "starter/**"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
       - "cli/**"
       - "starter/**"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -37,6 +51,10 @@ jobs:
 
       - uses: pnpm/action-setup@v4
 
+      # Deliberately left on 22 while stamp-build runs 24: this job exercises
+      # the *published CLI*, which declares no `engines` floor, so keeping it a
+      # major behind is a cheap check that hatchkit still runs for users on the
+      # previous LTS. Bump it only together with an explicit engines field.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -78,13 +96,6 @@ jobs:
       - name: Test (scaffold matrix)
         run: pnpm --filter hatchkit run test
 
-  # The scaffold matrix asserts on file CONTENTS. This job asserts the
-  # toolchain accepts them: scaffold a static, Coolify-mode project and
-  # run its real `pnpm build`, including the HATCHKIT_IMAGE_BUILD=1 pass
-  # the Coolify client image uses. Two blockers shipped that only a real
-  # build catches — a Tailwind `@plugin` directive pointing at a
-  # CSS-only package, and a next.config still referencing the pruned
-  # server package.
   scaffold-build:
     runs-on: ubuntu-latest
     steps:
@@ -130,3 +141,126 @@ jobs:
         env:
           HATCHKIT_IMAGE_BUILD: "1"
         run: pnpm --filter @starter/client run build
+
+  stamp-build:
+    name: stamp-build (${{ matrix.preset }})
+    runs-on: ubuntu-latest
+    # A hung `next build` should cost minutes, not hours.
+    timeout-minutes: 30
+    strategy:
+      # Every preset is informative on its own; don't cancel one because
+      # another broke.
+      fail-fast: false
+      matrix:
+        # Exactly three combinations, and no more — every entry costs a full
+        # install plus a Next build. The presets are defined in
+        # cli/scripts/ci-stamp.ts; these names must match its PRESETS keys.
+        #
+        # The axis that matters is whether a native shell was selected. With
+        # desktop/mobile/tauri, scaffoldApp calls flipNextConfigToStaticExport()
+        # and the client is rebuilt as `output: "export"`; without one, the
+        # starter's own next.config.ts survives and the client builds
+        # `output: "standalone"`. Both modes have to compile.
+        #
+        #   reported — static export. The feature set from the "fresh scaffold
+        #              won't build" report: websocket, s3, analytics, desktop,
+        #              mobile.
+        #   commerce — static export. stripe + listmonk-ses, the opposite
+        #              branch of the conditional codegen (Stripe service files
+        #              kept, newsletter pages kept inside a static-export
+        #              client — that combination is what surfaced the
+        #              useSearchParams/prerender breakage).
+        #   web      — standalone. No native shell, so the base next.config.ts
+        #              is left in place and the plain web deploy — the most
+        #              common configuration, and previously never built by CI
+        #              at all — gets compiled.
+        preset: [reported, commerce, web]
+    env:
+      # Every client next.config.ts throws by design when a production build
+      # whose output ships to users has no NEXT_PUBLIC_API_URL — Next inlines
+      # NEXT_PUBLIC_* at build time, so a missing value cannot be repaired at
+      # runtime. That guard lives both in the starter's next.config.ts (gated
+      # on NEXT_FILE_EXPORT / HATCHKIT_IMAGE_BUILD) and in the static-export
+      # config that flipNextConfigToStaticExport() writes, so it applies to the
+      # export presets here and is harmless for the standalone one. Any
+      # absolute URL satisfies it; nothing is ever fetched from this host.
+      NEXT_PUBLIC_API_URL: https://example.test
+      # NEXT_FILE_EXPORT is deliberately NOT set. The export presets don't read
+      # it — flipNextConfigToStaticExport() hardcodes `output: "export"`, so the
+      # env var was dead weight there — and setting it would flip the `web`
+      # preset out of the standalone path this matrix exists to cover.
+      STAMP_DIR: ${{ runner.temp }}/stamp
+      STAMP_PRESET: ${{ matrix.preset }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # libsecret is keytar's runtime dep; gnome-keyring + dbus-x11 give it a
+      # secret service to talk to. Scaffolding mints a dotenvx private key and
+      # stores it via keytar, which cannot work on a headless runner without
+      # one. The keyring below is created inside a throwaway D-Bus session and
+      # dies with the step — no persistent credential store is touched.
+      - name: Install libsecret + an ephemeral keyring (keytar runtime deps)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev gnome-keyring dbus-x11
+
+      - uses: pnpm/action-setup@v4
+
+      # 24, not 22: the stamped project's root package.json declares
+      # `engines: { node: ">=24" }`, so the build gate has to run on the version
+      # the starter actually asks for. (The stamped project also pins
+      # packageManager pnpm@11.x while this monorepo pins 10.x — pnpm
+      # self-switches when it enters the stamp dir, which is expected.)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The scaffolder's local-dev codegen imports @hatchkit/dev-shared from
+      # its build output, so the workspace package has to be compiled before
+      # scaffoldApp is loaded.
+      - name: Build dev-shared
+        run: pnpm --filter @hatchkit/dev-shared run build
+
+      - name: Stamp a project
+        shell: bash
+        run: |
+          set -euo pipefail
+          dbus-run-session -- bash -c '
+            set -euo pipefail
+            # The unlock passphrase is generated per run rather than written
+            # literally here: the keyring is ephemeral and dies with the D-Bus
+            # session, so the value is meaningless, but a plaintext password in
+            # a tracked file is a bad pattern to copy. It is never printed.
+            keyring_pass="$(openssl rand -hex 16)"
+            gnome-keyring-daemon --components=secrets --daemonize --unlock <<< "$keyring_pass" > /dev/null
+            unset keyring_pass
+            pnpm --filter hatchkit exec tsx scripts/ci-stamp.ts \
+              --preset "$STAMP_PRESET" --out "$STAMP_DIR"
+          '
+
+      # NOT --frozen-lockfile: scaffolding prunes dependencies the chosen
+      # feature set doesn't need (electron/electron-builder/icon-gen/wait-on,
+      # @tauri-apps/cli, the @capacitor/* set, client-side deps in
+      # scaffold/surfaces.ts) and can add others, so the lockfile copied out of
+      # starter/ no longer matches the stamped package.json manifests. The
+      # @starter/* workspace package names are NOT rewritten — rename-project.ts
+      # leaves them alone on purpose, and the generated root scripts still say
+      # `pnpm --filter @starter/shared run build` — so the drift is dependency
+      # pruning, not renaming. pnpm defaults to frozen when CI=true, hence the
+      # explicit opt-out.
+      - name: Install stamped project
+        working-directory: ${{ runner.temp }}/stamp
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build stamped project
+        working-directory: ${{ runner.temp }}/stamp
+        run: pnpm run build
+
+      - name: Unit tests in stamped project
+        working-directory: ${{ runner.temp }}/stamp
+        run: pnpm run test:unit
