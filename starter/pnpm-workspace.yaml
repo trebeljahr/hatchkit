@@ -1,6 +1,46 @@
 packages:
   - "packages/*"
   - "docs-site"
+
+# Keep this block in sync with WORKSPACE_OVERRIDES in
+# cli/src/scaffold/server-add.ts.
+#
+# Two majors of the Express type packages otherwise coexist in this workspace:
+# packages/server pulls @types/express@5 (it runs express 5), while docs-site
+# drags v4 in transitively via @docusaurus/core -> webpack-dev-server ->
+# @types/express@4. pnpm hoists the virtual store into
+# node_modules/.pnpm/node_modules/, and when two versions compete for that one
+# slot the winner falls out of the shape of the whole dependency graph — a
+# resolution detail, not something any manifest declares.
+#
+# That matters because @trpc/server takes express as an *optional peer*, so its
+# shipped adapters/express.d.ts has no express in its own node_modules and
+# resolves the type through the hoist dir. When v4 wins the slot, tRPC's
+# `Handler` carries an express-4 Request while packages/server's `RequestHandler`
+# carries an express-5 one, and the
+# `createExpressMiddleware(...) as RequestHandler` cast in
+# packages/server/src/app.ts fails to compile with TS2352 ("Property 'param' is
+# missing"). The committed lockfile happens to hoist v5, but any scaffold that
+# edits a root manifest — dropping @tauri-apps/cli, say — makes pnpm re-resolve
+# and can flip the slot to v4.
+#
+# Pinning both packages to v5 removes the ambiguity at the source: only one major
+# is ever installed, so the hoist has nothing left to choose between. Drop this
+# once nothing in the tree wants @types/express@4 any more (`pnpm why
+# @types/express`).
+overrides:
+  '@types/express': ^5.0.0
+  '@types/express-serve-static-core': ^5.1.1
+
+# Keep this list in sync with WORKSPACE_ALLOW_BUILDS in
+# cli/src/scaffold/server-add.ts — the CLI regenerates this file from that
+# constant when a project is missing it, and a missing entry here makes pnpm 11
+# fail `install` *and* every `pnpm run <script>` with ERR_PNPM_IGNORED_BUILDS.
+#
+# Keep this the last top-level key, and keep its name out of the prose above:
+# cli/test-scaffold.ts finds the block by plain string search and compares
+# everything from there to EOF byte-for-byte with renderWorkspaceYaml()'s
+# output, so an earlier textual mention would make it slice from the comment.
 allowBuilds:
   '@sentry/cli': true
   core-js: true
