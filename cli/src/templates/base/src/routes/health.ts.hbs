@@ -8,5 +8,12 @@ healthRouter.get("/", (_req, res) => {
     status: "ok",
     uptime: process.uptime(),
     mongo: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+    // The git commit this image was built from, baked in as a Docker
+    // build arg (see the Dockerfile). The deploy job polls this until it
+    // matches the commit it just pushed — without it, a deploy that
+    // silently kept the previous container reports success everywhere.
+    // Empty outside a CI image build, which is correct: a locally-run
+    // server has no commit it was built from.
+    version: process.env.COMMIT_SHA ?? "",
   });
 });

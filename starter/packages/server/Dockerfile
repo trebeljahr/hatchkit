@@ -35,6 +35,19 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 
+# The git commit this image was built from, surfaced by /api/health so
+# "is the deployed thing the thing I built?" is one HTTP request rather
+# than an archaeology session. The deploy job polls that field until it
+# matches the commit it just pushed — without it, a deploy that silently
+# kept the previous container reported success on every status surface.
+#
+# Runtime env is enough here (unlike the client's NEXT_PUBLIC_*, which
+# must be inlined at build time), so it lives in the runtime stage and
+# costs no rebuild. Empty outside a CI image build, which is correct —
+# a local `pnpm dev` has no commit it was built from.
+ARG COMMIT_SHA
+ENV COMMIT_SHA=$COMMIT_SHA
+
 # Self-contained prod bundle from `pnpm deploy` — dist + package.json +
 # node_modules (with @starter/shared materialised, no symlinks).
 COPY --from=build /prod/dist ./dist

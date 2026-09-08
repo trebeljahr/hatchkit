@@ -148,6 +148,13 @@ jobs:
           context: __SUBDIR_CONTEXT__
           file: packages/server/Dockerfile
           push: true
+          # Bakes the commit into the image so the deployed artefact can
+          # be asked what it is. The verify step below polls for exactly
+          # this sha — an HTTP 200 from the deploy POST only proves
+          # Coolify accepted the request, not that the new image is what
+          # ends up running.
+          build-args: |
+            COMMIT_SHA=${{ github.sha }}
           tags: |
             ghcr.io/${{ github.repository }}-server:__DEFAULT_BRANCH__
             ghcr.io/${{ github.repository }}-server:${{ github.sha }}
@@ -180,6 +187,8 @@ jobs:
           context: __SUBDIR_CONTEXT__
           file: packages/client/Dockerfile
           push: true
+          build-args: |
+            COMMIT_SHA=${{ github.sha }}
           tags: |
             ghcr.io/${{ github.repository }}-client:__DEFAULT_BRANCH__
             ghcr.io/${{ github.repository }}-client:${{ github.sha }}
@@ -207,3 +216,130 @@ jobs:
           COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK_URL }}
         if: env.COOLIFY_BASE_URL == '' && env.COOLIFY_WEBHOOK_URL != ''
         run: curl -fsSL "$COOLIFY_WEBHOOK_URL"
+
+      # NOTE: no image-pin step here, unlike the workflow `hatchkit
+      # create` generates. That one's compose reads its image from
+      # `${SERVER_IMAGE:-…}` / `${CLIENT_IMAGE:-…}`, so the deploy can
+      # repoint those at the immutable `:<sha>` tag before deploying.
+      # The compose scaffolded alongside THIS workflow names its image
+      # directly, so there is no variable to pin; `pull_policy: always`
+      # in that file is what stops a mutable tag serving the previous
+      # build. Switch the compose to a `${VAR:-…}` image ref if you want
+      # sha-pinned deploys and rollback-by-variable.
+
+      # Everything above only proves Coolify ACCEPTED a request. This
+      # proves the deployed artefacts are the ones this run built.
+      #
+      # Until this existed, the pipeline's final assertion was an HTTP 200
+      # from a POST. A deploy that kept the old container, an image built
+      # with an empty API URL, a container crash-looping behind a proxy
+      # that answers 503 — all three shipped green, and none of them was
+      # visible from CI, from ghcr, or from the Coolify dashboard.
+      #
+      # Deliberately polls: a Coolify deploy is asynchronous, the POST
+      # returns as soon as the deployment is QUEUED.
+      #
+      # Guarded on a deploy having been TRIGGERED, not on the URLs being
+      # set. A per-URL `if:` would let this step skip while the deploy
+      # steps above ran — a job that reports green having verified
+      # nothing, which is the exact failure mode this step exists to
+      # remove. When a deploy fired and there is no URL to check, the
+      # script fails and says so.
+      #
+      # HATCHKIT_WEB_URL / HATCHKIT_API_URL are written here as literals
+      # by hatchkit from the manifest's domain + topology (and kept
+      # current by `hatchkit rename-domain` / `hatchkit regen-infra`).
+      # The `vars.` reference is the fallback for a hand-managed repo.
+      # Leave one empty to skip that half: a backend-only project has no
+      # web URL, a static one has no API. When the two are equal the
+      # project is single-origin and the CORS check is skipped, because
+      # there is no cross-origin request to make.
+      - name: Verify the deployment is actually live
+        env:
+          COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
+          COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK_URL }}
+          HATCHKIT_WEB_URL: ${{ vars.HATCHKIT_WEB_URL }}
+          HATCHKIT_API_URL: ${{ vars.HATCHKIT_API_URL }}
+        if: env.COOLIFY_BASE_URL != '' || env.COOLIFY_WEBHOOK_URL != ''
+        run: |
+          set -uo pipefail
+          SHA='${{ github.sha }}'
+          # `:-` so a workflow whose env block was edited fails with the
+          # gate's own message rather than a bare "unbound variable".
+          WEB="${HATCHKIT_WEB_URL:-}"
+          API="${HATCHKIT_API_URL:-}"
+          WEB="${WEB%/}"
+          API="${API%/}"
+          checked=0
+
+          # `?hatchkit_cb=` on every request: the point is what the ORIGIN
+          # now serves, and a CDN hit would answer with exactly the stale
+          # copy being tested for.
+          poll() { # label url jq-expression
+            got=""
+            for i in $(seq 1 40); do
+              got=$(curl -fsSL --max-time 10 "$2?hatchkit_cb=$i$RANDOM" 2>/dev/null \
+                      | jq -r "$3" 2>/dev/null || true)
+              if [ "$got" = "$SHA" ]; then echo "✓ $1 reports $SHA"; return 0; fi
+              echo "  $1: ${got:-<no response>} — waiting ($i/40)"
+              sleep 15
+            done
+            echo "::error::$1 never reported $SHA — the deploy did not land."
+            echo "::error::last seen: ${got:-<no response>}"
+            echo "::error::an empty/null reading on the first run after upgrading means the"
+            echo "::error::artefact does not report a version yet: the server needs"
+            echo "::error::\`version: env.COMMIT_SHA\` on /api/health, the client needs"
+            echo "::error::version.json written by its Dockerfile. Both come from COMMIT_SHA."
+            return 1
+          }
+
+          if [ -n "$API" ]; then
+            poll "api $API/api/health" "$API/api/health" '.version' || exit 1
+            checked=$((checked + 1))
+          fi
+
+          if [ -n "$WEB" ]; then
+            poll "web $WEB/version.json" "$WEB/version.json" '.commit' || exit 1
+            checked=$((checked + 1))
+
+            # The client bakes its API origin in at build time, so a
+            # correct commit can still carry the wrong URL. Assert the
+            # pairing — this is the check that catches an image built
+            # against an unset repo variable.
+            if [ -n "$API" ]; then
+              baked=$(curl -fsSL --max-time 10 "$WEB/version.json?hatchkit_cb=$RANDOM" | jq -r '.apiUrl')
+              if [ "$baked" != "$API" ]; then
+                echo "::error::client was built against '${baked:-<empty>}', expected '$API'"
+                exit 1
+              fi
+              echo "✓ client is built against $baked"
+            fi
+          fi
+
+          # Cross-origin only. Under single-origin the API is same-origin
+          # with the web app, so CORS never enters the picture; under
+          # split it is load-bearing and nothing else exercises it — the
+          # e2e suite runs both halves on localhost.
+          if [ -n "$WEB" ] && [ -n "$API" ] && [ "$WEB" != "$API" ]; then
+            allow=$(curl -fsS --max-time 10 -o /dev/null -D - -X OPTIONS \
+                      -H "Origin: $WEB" \
+                      -H 'Access-Control-Request-Method: POST' \
+                      -H 'Access-Control-Request-Headers: content-type' \
+                      "$API/api/health" \
+                    | tr -d '\r' | awk -F': ' 'tolower($1)=="access-control-allow-origin"{print $2}')
+            if [ "$allow" != "$WEB" ]; then
+              echo "::error::CORS preflight returned '${allow:-<none>}', expected '$WEB'"
+              echo "::error::the server's FRONTEND_URL / TRUSTED_ORIGINS do not cover the web origin"
+              exit 1
+            fi
+            echo "✓ CORS allows $WEB"
+            checked=$((checked + 1))
+          fi
+
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::a deploy was triggered and nothing was verified."
+            echo "::error::set HATCHKIT_WEB_URL / HATCHKIT_API_URL in this workflow"
+            echo "::error::(or as repo variables), or run \`hatchkit regen-infra\`."
+            exit 1
+          fi
+

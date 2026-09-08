@@ -34,6 +34,7 @@ import {
   upgradeClientDockerfile,
   upgradeWorkflowClientBuildArgs,
 } from "./client-build-args.js";
+import { deployVerificationRetrofits } from "./deploy-verification.js";
 import {
   MANIFEST_FILENAME,
   type ProjectManifest,
@@ -181,6 +182,37 @@ export async function runUpdate(
       chalk.yellow(
         "  ⚠ Commit + push so CI rebuilds the client image — NEXT_PUBLIC_* values\n" +
           "    are baked into the browser bundle at image build time.",
+      ),
+    );
+  }
+
+  // Retrofit the post-deploy verification gate for projects scaffolded
+  // before it landed. Until it existed the pipeline's final assertion
+  // was an HTTP 200 from a deploy POST, so a stale container, an image
+  // built with an empty API URL, and a crash-looping server all reported
+  // success. Same no-flag rationale as the two retrofits above: the
+  // failure is silent, and every one of those shipped green.
+  let verificationRetrofitted = false;
+  for (const [label, rel, fn] of deployVerificationRetrofits(
+    manifest.domain,
+    manifest.topology,
+    manifest.surfaces,
+  )) {
+    const path = join(projectDir, rel);
+    if (!existsSync(path)) continue;
+    const before = readFileSync(path, "utf-8");
+    const after = fn(before);
+    if (after !== before) {
+      writeFileSync(path, after, "utf-8");
+      verificationRetrofitted = true;
+      console.log(chalk.green(`  ✓ ${label}: deploy verification wired`));
+    }
+  }
+  if (verificationRetrofitted) {
+    console.log(
+      chalk.dim(
+        "    The deploy job now polls /api/health and /version.json for the pushed\n" +
+          "    commit and fails the run when they disagree.",
       ),
     );
   }

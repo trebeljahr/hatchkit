@@ -69,6 +69,12 @@ export function createApp() {
     res.json({
       status: "ok",
       db: isDatabaseReady(),
+      // The commit this image was built from. The deploy pipeline polls
+      // this until it matches the commit it just pushed — without it, a
+      // deploy that silently kept the previous container reported success
+      // everywhere. Empty for a locally-run server, which has no build
+      // commit; consumers must treat the field as optional.
+      version: env.COMMIT_SHA,
       timestamp: new Date().toISOString(),
     });
   });

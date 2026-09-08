@@ -63,8 +63,20 @@ RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION
 # dotenvx decrypts .env.production in memory and re-exports each
 # KEY=VALUE for `pnpm build`. next build sees the plain values and
 # bakes NEXT_PUBLIC_* into the static client bundle.
+ARG COMMIT_SHA
+ENV COMMIT_SHA=$COMMIT_SHA
 RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION \
     pnpm dlx @dotenvx/dotenvx run -- pnpm build
+
+# Stamp the commit next to the export. Next serves `public/` verbatim,
+# so this lands at /version.json — which is what lets the deploy job ask
+# the DEPLOYED artefact what it is. Without it the pipeline's last
+# assertion is "Coolify accepted my POST", and a deploy that silently
+# kept the previous container reports success everywhere — ghcr, the
+# Coolify dashboard and the workflow all show the new commit while the
+# old bundle is still being served.
+RUN mkdir -p public \
+    && printf '{"commit":"%s"}\n' "$COMMIT_SHA" > public/version.json
 
 # ---------------------------------------------------------------------------
 # Runtime — `next start` on PORT={{port}}.

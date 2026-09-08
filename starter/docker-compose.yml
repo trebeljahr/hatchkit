@@ -5,6 +5,15 @@
 services:
   server:
     image: ${SERVER_IMAGE:-ghcr.io/OWNER/REPO-server:main}
+    # Always re-pull the tag before starting. Without this, Docker keeps
+    # the image it already has for a mutable tag like `:main` and a deploy
+    # silently runs the PREVIOUS build: the container comes up healthy,
+    # Coolify reports the new commit, ghcr's `main` points at the new
+    # digest, and the served code is still the old one. The deploy job
+    # also pins SERVER_IMAGE/CLIENT_IMAGE to the commit sha, which removes
+    # the ambiguity entirely — this covers the `:main` default that a
+    # hand-run `docker compose up` still uses.
+    pull_policy: always
     environment:
       PORT: "3000"
       MONGODB_URI: mongodb://mongo:27017/${DB_NAME:-app}
@@ -40,6 +49,15 @@ services:
 
   client:
     image: ${CLIENT_IMAGE:-ghcr.io/OWNER/REPO-client:main}
+    # Always re-pull the tag before starting. Without this, Docker keeps
+    # the image it already has for a mutable tag like `:main` and a deploy
+    # silently runs the PREVIOUS build: the container comes up healthy,
+    # Coolify reports the new commit, ghcr's `main` points at the new
+    # digest, and the served code is still the old one. The deploy job
+    # also pins SERVER_IMAGE/CLIENT_IMAGE to the commit sha, which removes
+    # the ambiguity entirely — this covers the `:main` default that a
+    # hand-run `docker compose up` still uses.
+    pull_policy: always
     environment:
       # Pin client port — Coolify's app-level PORT (set for the server)
       # would otherwise bleed into every service.

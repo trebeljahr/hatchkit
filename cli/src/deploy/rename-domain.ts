@@ -30,6 +30,7 @@ import {
   CLIENT_WORKFLOW_REL_PATH,
   setWorkflowClientBuildArgUrls,
 } from "../scaffold/client-build-args.js";
+import { setWorkflowDeployVerifyUrls } from "../scaffold/deploy-verification.js";
 import { type ProjectManifest, findManifestDirUpward, readManifest } from "../scaffold/manifest.js";
 import { parseDomain, validateDomain } from "../utils/validate.js";
 
@@ -181,14 +182,27 @@ export async function runRenameDomain(opts: RenameDomainOptions): Promise<void> 
       // Topology decides whether the client talks to the bare domain
       // or to api.<domain>; renaming must carry that choice across or
       // the next image build bakes in a host that doesn't answer.
-      const after = setWorkflowClientBuildArgUrls(before, newDomain, manifest.topology);
+      const withArgs = setWorkflowClientBuildArgUrls(before, newDomain, manifest.topology);
+      // The post-deploy gate probes the same two URLs. Renaming without
+      // carrying them across would leave it polling the OLD domain — it
+      // would fail the run on the very deploy that made the rename real.
+      const after = setWorkflowDeployVerifyUrls(
+        withArgs,
+        newDomain,
+        manifest.topology,
+        manifest.surfaces,
+      );
       if (after !== before) {
         const apiHost = manifest.topology === "split" ? `api.${newDomain}` : newDomain;
+        const changes = [`client build-args NEXT_PUBLIC_API_URL/WS_URL → https://${apiHost}`];
+        if (after !== withArgs) {
+          changes.push(`post-deploy verification URLs → https://${newDomain} + https://${apiHost}`);
+        }
         edits.push({
           label: CLIENT_WORKFLOW_REL_PATH,
           path: workflowPath,
           after,
-          changes: [`client build-args NEXT_PUBLIC_API_URL/WS_URL → https://${apiHost}`],
+          changes,
         });
       }
     }

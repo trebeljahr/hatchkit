@@ -49,8 +49,20 @@ RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION
       echo "ERROR: dotenvx_private_key build secret not supplied. The workflow at .github/workflows/deploy.yml should pass it via 'secrets:' from the GH Actions secret DOTENV_PRIVATE_KEY_PRODUCTION." >&2; \
       exit 1; \
     }
+ARG COMMIT_SHA
+ENV COMMIT_SHA=$COMMIT_SHA
 RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION \
     pnpm dlx @dotenvx/dotenvx run -- pnpm build
+
+# Stamp the commit next to the built bundle. nginx serves it as
+# /version.json like any other static file, which is what lets the
+# deploy job ask the DEPLOYED artefact what it is. Without it the
+# pipeline's last assertion is "Coolify accepted my POST", and a deploy
+# that silently kept the previous container reports success everywhere
+# — ghcr, the Coolify dashboard and the workflow all show the new
+# commit while the old bundle is still being served.
+RUN mkdir -p dist \
+    && printf '{"commit":"%s"}\n' "$COMMIT_SHA" > dist/version.json
 
 FROM nginx:alpine AS runner
 COPY --from=build /app/dist /usr/share/nginx/html

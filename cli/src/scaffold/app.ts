@@ -34,6 +34,7 @@ import { type ProjectPorts, pickProjectPorts } from "../utils/ports.js";
 import { getCliVersion } from "../utils/version.js";
 import { applyClaudeMd } from "./claude-md.js";
 import { applyWorkflowClientBuildArgUrls } from "./client-build-args.js";
+import { applyWorkflowDeployVerifyUrls } from "./deploy-verification.js";
 import { type DotenvxSeedResult, seedDotenvxProduction } from "./dotenvx.js";
 import { MANIFEST_FILENAME, toManifest, writeManifest } from "./manifest.js";
 import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
@@ -249,6 +250,14 @@ async function runScaffoldSteps(
     modifications.push(
       `build-and-deploy.yml: client build-args → https://${config.domain} (NEXT_PUBLIC_* baked at image build)`,
     );
+  }
+
+  // CI workflow: point the post-deploy gate at the same URLs. The gate
+  // polls both artefacts until they report the commit CI just pushed —
+  // without a URL it has nothing to poll and fails the run rather than
+  // reporting green having checked nothing.
+  if (applyWorkflowDeployVerifyUrls(outputDir, config.domain, config.topology, config.surfaces)) {
+    modifications.push("build-and-deploy.yml: post-deploy verification URLs set (web + api)");
   }
 
   // Feature-flag removal

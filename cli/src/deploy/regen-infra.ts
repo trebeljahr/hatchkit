@@ -41,6 +41,7 @@ import {
   upgradeClientDockerfile,
   upgradeWorkflowClientBuildArgs,
 } from "../scaffold/client-build-args.js";
+import { deployVerificationRetrofits } from "../scaffold/deploy-verification.js";
 import { generateCoolifyEnv, generateTfvars, resolveStackDir } from "../scaffold/infra.js";
 import { type ProjectManifest, findManifestDirUpward, readManifest } from "../scaffold/manifest.js";
 import { parseDomain } from "../utils/validate.js";
@@ -145,6 +146,12 @@ export async function runRegenInfra(opts: RegenArgs): Promise<void> {
       (c) => upgradeWorkflowClientBuildArgs(c, manifest.domain, manifest.topology),
     ],
     ["docker-compose.yml", "docker-compose.yml", stripComposeClientRuntimeNextPublic],
+    // Post-deploy verification: pull_policy, COMMIT_SHA build args, the
+    // version stamps and the gate itself. Shares one table with
+    // `hatchkit update` so the two can't retrofit different subsets —
+    // a project that got the gate but not the stamps would fail every
+    // deploy on a check its own images cannot satisfy.
+    ...deployVerificationRetrofits(manifest.domain, manifest.topology, manifest.surfaces),
   ];
   let projectFilesTouched = 0;
   for (const [label, relPath, fn] of projectFileUpgrades) {

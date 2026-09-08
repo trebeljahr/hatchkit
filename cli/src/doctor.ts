@@ -910,6 +910,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of appHealthChecks) results.push(r);
   const deployedRefChecks = await checkProjectDeployedRefState(process.cwd());
   for (const r of deployedRefChecks) results.push(r);
+  const deployedVersionChecks = await checkProjectDeployedVersionState(process.cwd());
+  for (const r of deployedVersionChecks) results.push(r);
   const dnsResolveChecks = await checkProjectDnsResolveState(process.cwd());
   for (const r of dnsResolveChecks) results.push(r);
   const prodEnvChecks = await checkProjectProdEnvState(process.cwd());
@@ -2240,6 +2242,110 @@ export async function checkProjectCoolifyAppHealthState(
       ],
     });
   }
+  return out;
+}
+
+/** Compare what is DEPLOYED against what the deployed branch is at.
+ *
+ *  `checkProjectDeployedRefState` above asks whether the commit Coolify
+ *  clones contains the compose file the app builds from. This asks the
+ *  question at the other end of the chain: is the artefact answering on
+ *  the public domain the thing that commit builds.
+ *
+ *  Both fail silently and independently. A deploy can be green in the
+ *  Actions tab, current on ghcr, and reported as the new commit by the
+ *  Coolify dashboard while the container serving traffic is the previous
+ *  build — Docker keeps the image it already has for a mutable tag. The
+ *  generated pipeline now gates on exactly this after every deploy; this
+ *  is the same check outside CI, which is what catches a deploy that
+ *  silently never ran at all (no failing run to look at, because no
+ *  run).
+ *
+ *  Read-only: two public HTTP GETs plus git plumbing. */
+export async function checkProjectDeployedVersionState(projectDir: string): Promise<CheckResult[]> {
+  const out: CheckResult[] = [];
+  const { existsSync, readFileSync } = await import("node:fs");
+  const manifestPath = `${projectDir}/.hatchkit.json`;
+  if (!existsSync(manifestPath)) return out;
+
+  let manifest: {
+    name?: string;
+    domain?: string;
+    surfaces?: string;
+    topology?: string;
+    deploymentMode?: string;
+  };
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  } catch {
+    return out;
+  }
+  if (!manifest.name || !manifest.domain) return out;
+  // Coolify only. gh-pages serves whatever the Pages build produced and
+  // has its own freshness story; scaffold-only projects aren't deployed.
+  if (manifest.deploymentMode !== "coolify") return out;
+
+  const { deployVerifyUrls } = await import("./scaffold/deploy-verification.js");
+  const { checkDeployedVersion, renderDeployedVersion, summarizeDeployedVersion } = await import(
+    "./deploy/deployed-version.js"
+  );
+
+  // Same two URLs the pipeline's post-deploy gate probes, derived the
+  // same way — a doctor that checked different endpoints than CI would
+  // be a second source of truth for "where does this project live".
+  const { webUrl, apiUrl } = deployVerifyUrls(
+    manifest.domain,
+    manifest.topology === "split" ? "split" : "single-origin",
+    (manifest.surfaces as "fullstack" | "split" | "backend" | "static" | undefined) ?? "fullstack",
+  );
+
+  // Prefer the branch the live app is actually configured with, the way
+  // the deployed-ref check does — a project on a non-`main` default
+  // branch would otherwise be compared against a ref nobody deploys.
+  let branch = "main";
+  const ledgers = loadAllLedgers();
+  const appStep = ledgers
+    .find((l) => l.name === manifest.name)
+    ?.steps.find((s): s is LedgerStep & { kind: "coolifyApp" } => s.kind === "coolifyApp");
+  if (appStep) {
+    const cfg = await getCoolifyConfig();
+    if (cfg) {
+      try {
+        const app = await new CoolifyApi({ url: cfg.url, token: cfg.token }).getApplication(
+          appStep.uuid,
+        );
+        branch = app.gitBranch?.trim() || branch;
+      } catch {
+        // Unreachable Coolify is another check's problem — fall back to
+        // the branch hatchkit configures.
+      }
+    }
+  }
+
+  const report = await checkDeployedVersion({ projectDir, apiUrl, webUrl, branch });
+  const name = `Project ${manifest.name} (deployed version)`;
+  if (!report.ran) {
+    out.push({ name, status: "skip", detail: report.skipped });
+    return out;
+  }
+  const drifted = report.stale.length > 0;
+  // Drift is a failure: something is serving code that is not the
+  // deployed branch. An artefact that reports NO commit is a `skip` —
+  // it is an image built before COMMIT_SHA was wired up, so the check
+  // could not run rather than ran and found a problem. Failing there
+  // would turn doctor red on every project that simply hasn't rebuilt
+  // yet. The hint rides along either way for `--json` consumers, which
+  // is what agents read.
+  out.push({
+    name,
+    status: drifted ? "fail" : report.unknown.length > 0 ? "skip" : "ok",
+    detail: drifted
+      ? summarizeDeployedVersion(report)
+      : report.unknown.length > 0
+        ? `${summarizeDeployedVersion(report)} — run \`hatchkit regen-infra\` then push to rebuild`
+        : summarizeDeployedVersion(report),
+    ...(drifted || report.unknown.length > 0 ? { hint: renderDeployedVersion(report) } : {}),
+  });
   return out;
 }
 

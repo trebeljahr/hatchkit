@@ -33,6 +33,7 @@ import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
+import { readImageEnvDefaults } from "../scaffold/deploy-verification.js";
 import { composeServicesOf, validateComposeServices } from "../utils/compose.js";
 import { type ApplicationCreateInput, CoolifyApi } from "../utils/coolify-api.js";
 import { repoSlugFromRemote } from "./gh-actions-secrets.js";
@@ -298,6 +299,15 @@ export async function runCoolifySetup(
           PORT: String(options.serverPort ?? 3000),
           FRONTEND_URL: `https://${config.domain}`,
         };
+  // Seed SERVER_IMAGE / CLIENT_IMAGE with the compose file's own
+  // defaults. The deploy job repoints these at the immutable `:<sha>`
+  // tag on every push, and Coolify's env API only UPDATES an existing
+  // variable — a PATCH naming a key that isn't there returns 200 and
+  // does nothing, so the pin silently no-ops and the app keeps running
+  // whatever `:main` resolved to. Seeding the same value the compose
+  // already defaults to changes nothing about what runs; it just makes
+  // the key exist.
+  Object.assign(envs, readImageEnvDefaults(options.projectDir));
   // Every app in the plan gets the same baseline. Under `split` the
   // client app has no use for PORT/FRONTEND_URL, but Coolify env is
   // additive and harmless, and keeping one code path means the two

@@ -201,3 +201,80 @@ image — runtime env on the deployed container cannot change it. If you switch
 topology, `hatchkit regen-infra` refreshes the build-args in
 `.github/workflows/build-and-deploy.yml`, and the next push rebuilds the image
 against the new API host.
+
+## Verifying that the deploy actually landed
+
+Every scaffolded pipeline ends with a step that proves the deployed artefacts
+are the ones the run built:
+
+```
+✓ api https://api.<domain>/api/health reports 4f2c9ab…
+✓ web https://<domain>/version.json reports 4f2c9ab…
+✓ client is built against https://api.<domain>
+✓ CORS allows https://<domain>
+```
+
+Before this existed, the pipeline's final assertion was an HTTP 200 from the
+Coolify deploy POST — an assertion about Coolify's *inbox*. It does not wait
+for the deployment (the POST returns as soon as the work is queued) and it
+never looks at what ends up running. Three real failures shipped green through
+that gap, none of them visible from CI, from GHCR, or from the Coolify
+dashboard: a container that kept the previous image because the compose file
+named a mutable tag, a client image built with an empty `NEXT_PUBLIC_API_URL`,
+and a server crash-looping behind a proxy that answered 503 while Coolify
+reported `running:healthy`.
+
+How it works: both images bake the commit in as a `COMMIT_SHA` build arg. The
+server reports it as `version` on `/api/health`; the client writes
+`/version.json` carrying `{"commit", "apiUrl"}`. The deploy job pins
+`SERVER_IMAGE` / `CLIENT_IMAGE` to the immutable `:<sha>` tag, deploys, then
+polls both artefacts (cache-busted — a CDN hit would return exactly the stale
+copy being tested for) until they report the pushed commit.
+
+The gate degrades with the project's shape. A `backend` project has no
+`version.json` to poll; a `static` one has no `/api/health`; a `single-origin`
+project is same-origin, so the CORS assertion is skipped. What it will not do
+is pass having checked nothing: if a deploy fired and both
+`HATCHKIT_WEB_URL` / `HATCHKIT_API_URL` are empty, the step fails and says so.
+
+### If the gate fails
+
+```
+::error::web https://<domain>/version.json never reported 4f2c9ab — the deploy did not land.
+::error::last seen: 8813def
+```
+
+The deploy was accepted and something older is still serving. In order of
+likelihood: the deploy never ran (check the Actions tab for a run on this
+commit), the deploy ran against a mutable tag and Docker reused the image it
+already had, or the deploy failed after being accepted (read the Coolify
+deployment log).
+
+```
+::error::client was built against 'https://old.example.com', expected 'https://api.example.com'
+```
+
+The image is the right commit with the wrong API host baked in. `NEXT_PUBLIC_*`
+is inlined at build time, so this is a build-args problem, not a runtime one —
+`hatchkit regen-infra` refreshes them and the next push rebuilds.
+
+### The same check outside CI
+
+`hatchkit doctor` runs it against `origin/<branch>`, which catches the case CI
+cannot: a deploy that silently never happened at all, so there is no failing
+run to look at.
+
+```
+✗ Project <name> (deployed version) — web @ 8813def — origin/main @ 4f2c9ab is not what is running
+```
+
+A project whose images predate `COMMIT_SHA` reports no version at all. That is
+a `skip`, not a failure — run `hatchkit regen-infra` and push to rebuild.
+
+### Retrofitting an older project
+
+`hatchkit update` and `hatchkit regen-infra` both add the whole set: the
+`pull_policy: always` lines, the `COMMIT_SHA` build args, the version stamps,
+and the gate itself. They share one table, so neither can retrofit a subset —
+a project that got the gate without the stamps would fail every deploy on a
+check its own images cannot satisfy.

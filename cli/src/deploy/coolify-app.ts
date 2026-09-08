@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig, getDnsConfig } from "../config.js";
+import { readImageEnvDefaults } from "../scaffold/deploy-verification.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { composeServicesOf, validateComposeServices } from "../utils/compose.js";
 import type { ApplicationCreateInput } from "../utils/coolify-api.js";
@@ -542,6 +543,15 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       await api.setAppEnv(appUuid, {
         DOTENV_PRIVATE_KEY_PRODUCTION: dotenvKey,
         GITHUB_REPO_URL: repoRef.webUrl ?? input.gitRepository,
+        // Seed SERVER_IMAGE / CLIENT_IMAGE with the compose file's own
+        // defaults. The deploy workflow repoints these at the immutable
+        // `:<sha>` tag on every push, and Coolify's env API only UPDATES
+        // an existing variable — a PATCH naming a key that isn't there
+        // returns 200 and does nothing, so the pin silently no-ops and
+        // the app keeps running whatever `:main` resolved to. Seeding the
+        // value the compose already defaults to changes nothing about
+        // what runs; it just makes the key exist.
+        ...readImageEnvDefaults(input.projectDir),
       });
       setEnv.succeed("Coolify: baseline env set");
     } catch (err) {

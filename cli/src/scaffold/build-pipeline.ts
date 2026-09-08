@@ -33,6 +33,7 @@ import {
 import { dirname, join } from "node:path";
 import { ensureDockerignoreAllowsEnvProduction } from "../utils/dockerignore.js";
 import { renderTemplate } from "../utils/template.js";
+import { setWorkflowVerifyUrlValues } from "./deploy-verification.js";
 
 /** Default Node major used when the project doesn't pin one via
  *  `engines.node`. Bumped to 24 (LTS since Oct 2025) to match what
@@ -328,6 +329,13 @@ export interface ScaffoldBuildPipelineInput {
   /** Surface from the AdoptPlan — picks the right Dockerfile flavour
    *  (fullstack/split/backend → Node runner; static → nginx). */
   surfaces: "fullstack" | "split" | "backend" | "static";
+  /** Public domain the deployed app answers on. Written into the
+   *  workflow's post-deploy verification step, which polls
+   *  `https://<domain>/version.json` until it reports the commit the run
+   *  just pushed. Leave undefined only when the project has no public
+   *  hostname yet — the gate then fails the deploy job with "nothing was
+   *  verified" rather than reporting green having checked nothing. */
+  domain?: string;
   /** Default branch used by the Actions workflow's `on: push: branches:`
    *  trigger. Detected from `git symbolic-ref refs/remotes/origin/HEAD`
    *  by the caller, with a `main` fallback. */
@@ -510,7 +518,18 @@ export function scaffoldBuildPipeline(
     const filled = raw
       .replace(/__DEFAULT_BRANCH__/g, input.defaultBranch)
       .replace(/__SUBDIR_CONTEXT__/g, subdirContext);
-    write(DEPLOY_WORKFLOW_PATH, filled, workflowExistedBefore, repoRoot);
+    // Point the post-deploy gate at this project's public URL. Only the
+    // web URL: every Dockerfile this scaffolder writes stamps
+    // /version.json, so that probe always has something to answer it.
+    // The API URL is deliberately left empty — an adopted repo's health
+    // endpoint (if it has one at all) is not something we can infer, and
+    // a gate polling a path that will never exist fails every deploy
+    // forever. Fill HATCHKIT_API_URL in by hand to turn that half on.
+    const verified = setWorkflowVerifyUrlValues(filled, {
+      webUrl: input.domain ? `https://${input.domain}` : "",
+      apiUrl: "",
+    });
+    write(DEPLOY_WORKFLOW_PATH, verified, workflowExistedBefore, repoRoot);
   } else {
     skipped.push(DEPLOY_WORKFLOW_PATH);
   }

@@ -35,8 +35,37 @@ ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
     NEXT_PUBLIC_SENTRY_DSN=$NEXT_PUBLIC_SENTRY_DSN \
     HATCHKIT_IMAGE_BUILD=1
 
+# The git commit this image was built from. Written next to the export as
+# version.json (below) so the deployed artefact can be asked what it is —
+# the deploy job polls it until it reports the commit CI just pushed.
+ARG COMMIT_SHA
+ENV COMMIT_SHA=$COMMIT_SHA
+
 RUN pnpm --filter @starter/shared run build
 RUN pnpm --filter @starter/client run build
+
+# Prove the API URL actually reached the browser bundle, and fail the
+# image if it did not.
+#
+# next.config.ts already refuses to build when NEXT_PUBLIC_API_URL is
+# unset (HATCHKIT_IMAGE_BUILD=1 turns that guard on), which catches a
+# missing build arg. This catches the case that guard cannot see: a value
+# that IS set and still never gets inlined — a renamed variable, a
+# reference that only exists in server code, an accidental runtime
+# `process.env` lookup. Next.js inlines NEXT_PUBLIC_* at build time, so
+# an image built that way builds perfectly, starts healthy, and talks to
+# the wrong API — or to nothing at all.
+RUN test -n "$NEXT_PUBLIC_API_URL" \
+      || (echo "NEXT_PUBLIC_API_URL build arg is empty" >&2; exit 1); \
+    grep -rqF "$NEXT_PUBLIC_API_URL" packages/client/.next/static \
+      || (echo "NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL never made it into the browser bundle" >&2; exit 1)
+
+# Stamp the commit and the baked API origin next to the export. `public/`
+# is copied into the runtime stage verbatim, so Next serves this as
+# /version.json like any other static file. Two facts, because a correct
+# commit can still carry the wrong API URL: the pipeline asserts both.
+RUN printf '{"commit":"%s","apiUrl":"%s"}\n' "$COMMIT_SHA" "$NEXT_PUBLIC_API_URL" \
+      > packages/client/public/version.json
 
 # ── Stage 3: Production runtime ─────────────────────────────────────
 FROM node:24-bookworm-slim AS runtime

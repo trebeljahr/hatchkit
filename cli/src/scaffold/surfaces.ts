@@ -28,6 +28,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProjectConfig, Surface } from "../prompts.js";
+import { stripClientDockerfileApiUrlAssertion } from "./deploy-verification.js";
 import { setPackageJsonScript, stripPackageJsonDeps, stripPackageJsonScripts } from "./pkg-json.js";
 import { removeIfExists, rewriteFile } from "./starter-files.js";
 
@@ -164,6 +165,7 @@ function pruneToClientOnly(outputDir: string, modifications: string[]): void {
   // build throws on the NEXT_PUBLIC_API_URL guard.
   patchNextConfigForClientOnly(outputDir, modifications);
   patchClientTsconfigForClientOnly(outputDir, modifications);
+  patchClientDockerfileForClientOnly(outputDir, modifications);
 
   // packages/client/package.json: drop the deps we no longer use. The
   // client still keeps Next.js, React, Sentry, OpenPanel, Tailwind,
@@ -292,6 +294,20 @@ function patchNextConfigForClientOnly(outputDir: string, modifications: string[]
   modifications.push(
     "static: patched next.config (dropped NEXT_PUBLIC_API_URL guard, /api rewrites, @starter/server)",
   );
+}
+
+/** Drop the client image's NEXT_PUBLIC_API_URL assertion.
+ *
+ *  Same reason `patchNextConfigForClientOnly` drops the build-time guard
+ *  from next.config.ts: a static project has no server half, so there is
+ *  no API URL to inline and a check demanding one fails every image
+ *  build. The `version.json` stamp stays — the deploy pipeline polls the
+ *  commit it records, and that works for a static project too. */
+function patchClientDockerfileForClientOnly(outputDir: string, modifications: string[]): void {
+  const path = join(outputDir, "packages/client/Dockerfile");
+  if (!existsSync(path)) return;
+  rewriteFile(path, stripClientDockerfileApiUrlAssertion);
+  modifications.push("static: patched client Dockerfile (dropped NEXT_PUBLIC_API_URL assertion)");
 }
 
 /** Drop the `@starter/server/trpc` path alias from the client's

@@ -73,6 +73,14 @@ FROM node:${NODE_VERSION}-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT={{port}}
+# The git commit this image was built from, passed by the workflow as a
+# build arg. Surface it from the app's health endpoint (the scaffolded
+# one already does) so the deploy job can poll the RUNNING container
+# until it reports this commit — an HTTP 200 from the deploy POST only
+# proves Coolify accepted the request, not that the new image is what
+# ends up running. Runtime env is enough, so this costs no rebuild.
+ARG COMMIT_SHA
+ENV COMMIT_SHA=$COMMIT_SHA
 # Copy the self-contained deploy bundle. dist/, package.json, and
 # node_modules (with workspace deps and all prod deps fully resolved —
 # no pnpm symlinks pointing outside the tree).

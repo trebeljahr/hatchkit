@@ -4093,6 +4093,7 @@ async function scaffoldBuildPipelineNow(
     entrypoint: plan.surfaces === "static" ? "" : "dist/index.js",
     port: Number(plan.appPort) || 3000,
     surfaces: plan.surfaces,
+    domain: plan.domain,
     defaultBranch,
     force: !!opts.force,
   });
