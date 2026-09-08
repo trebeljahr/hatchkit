@@ -107,6 +107,39 @@ async function run(
   }
 }
 
+// ── CI workflow helpers ──────────────────────────────────────────────
+// The surface prunes strip jobs out of build-and-deploy.yml (a backend
+// scaffold has no packages/client/Dockerfile to build, a static one has
+// no packages/server/Dockerfile). Removing a job without shrinking the
+// `needs:` lists that name it produces a workflow GitHub rejects
+// wholesale, so the checks below assert both halves.
+
+/** Top-level job names declared under `jobs:` (2-space indent). Slices
+ *  from the `jobs:` key first — `on:`'s `  push:` is also a bare
+ *  2-space key and would otherwise read as a job. */
+function ciJobNames(workflow: string): string[] {
+  const start = workflow.search(/^jobs:\s*$/m);
+  if (start < 0) return [];
+  return [...workflow.slice(start).matchAll(/^ {2}([A-Za-z0-9_-]+):\s*$/gm)].map((m) => m[1]);
+}
+
+/** Every job name referenced from a `needs: [...]` flow sequence. */
+function ciNeeds(workflow: string): string[] {
+  return [...workflow.matchAll(/^\s*needs:\s*\[([^\]]*)\]\s*$/gm)].flatMap((m) =>
+    m[1]
+      .split(",")
+      .map((n) => n.trim())
+      .filter(Boolean),
+  );
+}
+
+/** No `needs:` entry may name a job the prune deleted — that's the
+ *  failure mode that takes the whole workflow down, not just one job. */
+function ciNeedsAreResolvable(workflow: string): boolean {
+  const declared = new Set(ciJobNames(workflow));
+  return ciNeeds(workflow).every((n) => declared.has(n));
+}
+
 const results: Record<string, boolean> = {};
 
 results.minimal = await run("minimal (no flags)", "plain-app", [], (d) => {
@@ -182,6 +215,14 @@ results.minimal = await run("minimal (no flags)", "plain-app", [], (d) => {
       clientDockerfile.includes("HATCHKIT_IMAGE_BUILD=1"),
     ],
     ["docker-compose has no runtime NEXT_PUBLIC_*", !/^\s*NEXT_PUBLIC_/m.test(compose)],
+    // Fullstack keeps every job — the surface prunes must not reach it.
+    [
+      "CI workflow keeps all four jobs",
+      ["verify", "e2e", "build-server", "build-client", "deploy"].every((j) =>
+        ciJobNames(ciWorkflow).includes(j),
+      ),
+    ],
+    ["CI workflow needs: entries all resolve", ciNeedsAreResolvable(ciWorkflow)],
     // CLAUDE.md is the first file an agent reads in a generated project.
     // A fullstack scaffold keeps the server-side sections; the marker
     // syntax that drives the pruning must never survive.
@@ -361,6 +402,8 @@ results.serverOnly = await run(
       ? readFileSync(join(d, "docker-compose.yml"), "utf-8")
       : "";
     const manifest = JSON.parse(readFileSync(join(d, ".hatchkit.json"), "utf-8"));
+    const ci = readFileSync(join(d, ".github/workflows/build-and-deploy.yml"), "utf-8");
+    const ciJobs = ciJobNames(ci);
     return [
       ["packages/client/ removed", !existsSync(join(d, "packages/client"))],
       ["packages/server/ kept", existsSync(join(d, "packages/server"))],
@@ -375,6 +418,20 @@ results.serverOnly = await run(
       ["pkg.scripts has no build:client", !pkg.scripts?.["build:client"]],
       ["pkg.scripts has no test:e2e", !pkg.scripts?.["test:e2e"]],
       ["manifest persists surfaces=server-only", manifest.surfaces === "backend"],
+
+      // ── CI workflow: nothing may build the deleted client ──
+      ["ci: build-client job removed", !ciJobs.includes("build-client")],
+      ["ci: no packages/client/Dockerfile reference", !ci.includes("packages/client/Dockerfile")],
+      ["ci: e2e job removed (e2e/ is gone)", !ciJobs.includes("e2e")],
+      ["ci: no playwright steps survive", !/playwright/i.test(ci)],
+      ["ci: build-server job kept", ciJobs.includes("build-server")],
+      ["ci: verify job kept", ciJobs.includes("verify")],
+      ["ci: deploy job kept", ciJobs.includes("deploy")],
+      ["ci: verify drops the test:client step", !/pnpm run test:client/.test(ci)],
+      ["ci: verify keeps the test:unit step", /- run: pnpm run test:unit/.test(ci)],
+      ["ci: deploy needs only build-server", /^\s*needs: \[build-server\]$/m.test(ci)],
+      ["ci: every needs: entry resolves to a declared job", ciNeedsAreResolvable(ci)],
+      ["ci: no client build-args block left behind", !ci.includes("NEXT_PUBLIC_API_URL=")],
     ];
   },
   { surfaces: "backend" },
@@ -402,6 +459,8 @@ results.clientOnly = await run(
       join(d, "packages/shared/src/index.ts"),
       "utf-8",
     );
+    const ci = readFileSync(join(d, ".github/workflows/build-and-deploy.yml"), "utf-8");
+    const ciJobs = ciJobNames(ci);
     return [
       ["packages/server/ removed", !existsSync(join(d, "packages/server"))],
       ["packages/client/ kept", existsSync(join(d, "packages/client"))],
@@ -433,6 +492,24 @@ results.clientOnly = await run(
       [
         "no packages/server/.env.production (dotenvx skipped)",
         !existsSync(join(d, "packages/server/.env.production")),
+      ],
+
+      // ── CI workflow: nothing may build or test the deleted server ──
+      ["ci: build-server job removed", !ciJobs.includes("build-server")],
+      ["ci: no packages/server/Dockerfile reference", !ci.includes("packages/server/Dockerfile")],
+      ["ci: e2e job removed (e2e/ + playwright.config.ts are gone)", !ciJobs.includes("e2e")],
+      ["ci: no playwright steps survive", !/playwright/i.test(ci)],
+      ["ci: no mongo/redis/minio services survive", !/mongo|redis|minio/i.test(ci)],
+      ["ci: build-client job kept", ciJobs.includes("build-client")],
+      ["ci: verify job kept", ciJobs.includes("verify")],
+      ["ci: deploy job kept", ciJobs.includes("deploy")],
+      ["ci: verify drops the test:unit step", !/pnpm run test:unit/.test(ci)],
+      ["ci: verify keeps the test:client step", /- run: pnpm run test:client/.test(ci)],
+      ["ci: deploy needs only build-client", /^\s*needs: \[build-client\]$/m.test(ci)],
+      ["ci: every needs: entry resolves to a declared job", ciNeedsAreResolvable(ci)],
+      [
+        "ci: client build-args survive the prune (NEXT_PUBLIC_* bake at image build)",
+        /^\s*NEXT_PUBLIC_API_URL=https:\/\/static-site\.example\.com$/m.test(ci),
       ],
     ];
   },

@@ -28,6 +28,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProjectConfig, Surface } from "../prompts.js";
+import { CLIENT_WORKFLOW_REL_PATH } from "./client-build-args.js";
 import { stripClientDockerfileApiUrlAssertion } from "./deploy-verification.js";
 import { setPackageJsonScript, stripPackageJsonDeps, stripPackageJsonScripts } from "./pkg-json.js";
 import { removeIfExists, rewriteFile } from "./starter-files.js";
@@ -84,6 +85,19 @@ function pruneToServerOnly(outputDir: string, modifications: string[]): void {
   modifications.push("backend: removed client service from docker-compose");
 
   dropWorkspaceEntry(outputDir, "docs-site");
+
+  // CI workflow: the client image job builds `packages/client/Dockerfile`,
+  // which we just deleted, and the e2e job drives Playwright against a
+  // browser surface that no longer exists (its `e2e/` dir went with
+  // CLIENT_SIDE_TOP_LEVEL). Both fail on the first push. The `test:client`
+  // step goes too — the script is stripped from the root package.json
+  // below.
+  pruneCiWorkflow(outputDir, modifications, {
+    label: "backend",
+    jobs: ["build-client", "e2e"],
+    steps: [/^[ \t]*- run: pnpm run test:client[ \t]*\r?\n/m],
+    note: "dropped build-client + e2e jobs and the test:client step from build-and-deploy.yml",
+  });
 
   // Root package.json scripts: drop client/test/e2e/native targets and
   // rewrite the build/test/dev orchestrators to point at the server
@@ -199,6 +213,19 @@ function pruneToClientOnly(outputDir: string, modifications: string[]): void {
   removeIfExists(join(outputDir, "playwright.config.ts"));
   removeIfExists(join(outputDir, "seed"));
   dropWorkspaceEntry(outputDir, "docs-site");
+
+  // CI workflow: the server image job builds `packages/server/Dockerfile`,
+  // which we just deleted, and the e2e job spins up mongo/redis/MinIO to
+  // Playwright-test an API that isn't there (its `e2e/` dir and
+  // playwright.config.ts went above). The `test:unit` step is the
+  // server's Vitest run — the script is stripped from the root
+  // package.json below.
+  pruneCiWorkflow(outputDir, modifications, {
+    label: "static",
+    jobs: ["build-server", "e2e"],
+    steps: [/^[ \t]*- run: pnpm run test:unit[ \t]*\r?\n/m],
+    note: "dropped build-server + e2e jobs and the test:unit step from build-and-deploy.yml",
+  });
 
   // Root package.json scripts: drop the server / e2e / docs targets
   // and point dev/build/test at the client filter.
@@ -345,6 +372,109 @@ function rewriteLandingForClientOnly(outputDir: string): void {
 }
 `;
   writeFileSync(path, next, "utf-8");
+}
+
+// ── CI workflow helpers ────────────────────────────────────────────────
+
+interface CiWorkflowPrune {
+  /** Prefix for the `modifications` line ("backend" / "static"). */
+  label: string;
+  /** Top-level job names to drop from `jobs:`. */
+  jobs: string[];
+  /** Step lines to drop wholesale (each regex must match its own
+   *  trailing newline so no blank line is left behind). */
+  steps: RegExp[];
+  /** Human-readable summary for the spinner log. */
+  note: string;
+}
+
+/** Strip the jobs and steps of build-and-deploy.yml that reference a
+ *  package the surface prune just deleted. Without this the generated
+ *  workflow fails on its very first push: `docker/build-push-action`
+ *  gets a `file:` path that isn't in the repo. No-op when the workflow
+ *  is missing (adopted repos, hand-rolled CI). */
+function pruneCiWorkflow(outputDir: string, modifications: string[], opts: CiWorkflowPrune): void {
+  const path = join(outputDir, CLIENT_WORKFLOW_REL_PATH);
+  if (!existsSync(path)) return;
+  rewriteFile(path, (raw) => {
+    let out = stripWorkflowJobs(raw, opts.jobs);
+    for (const step of opts.steps) out = out.replace(step, "");
+    return out;
+  });
+  modifications.push(`${opts.label}: ${opts.note}`);
+}
+
+/** Drop top-level workflow jobs by name, then repair every `needs:`
+ *  list that referenced them. Removing a job without the second half
+ *  leaves an invalid workflow — GitHub rejects the whole file when a
+ *  `needs:` names a job that doesn't exist, so `deploy` (which is
+ *  `needs: [build-server, build-client]`) must shrink alongside. */
+function stripWorkflowJobs(content: string, names: string[]): string {
+  let out = content;
+  for (const name of names) out = stripOneWorkflowJob(out, name);
+  return dropFromNeeds(out, new Set(names));
+}
+
+/** Remove a single `  <name>:` block from under `jobs:`. Same
+ *  sibling-indent bounding as stripOneComposeService — a line back at
+ *  the 2-space job indent (a sibling job OR the comment block that
+ *  documents one) or at column 0 ends the block, so a following job's
+ *  leading comments survive. */
+function stripOneWorkflowJob(content: string, name: string): string {
+  const lines = content.split("\n");
+  const out: string[] = [];
+  let i = 0;
+  const header = new RegExp(`^ {2}${name}:\\s*$`);
+  while (i < lines.length) {
+    const line = lines[i];
+    if (header.test(line)) {
+      i += 1;
+      while (i < lines.length) {
+        const body = lines[i];
+        if (body === "") {
+          // Blank lines inside a job body (between steps) stay with the
+          // body we're deleting; the one separating this job from the
+          // next sibling goes too, so we don't leave a double blank.
+          const peek = lines.slice(i + 1).find((l) => l.trim() !== "");
+          if (!peek || /^ {2}\S/.test(peek) || /^\S/.test(peek)) {
+            i += 1;
+            break;
+          }
+          i += 1;
+          continue;
+        }
+        if (/^ {2}\S/.test(body) || /^\S/.test(body)) break;
+        i += 1;
+      }
+      continue;
+    }
+    out.push(line);
+    i += 1;
+  }
+  return out.join("\n");
+}
+
+/** Rewrite `needs: [a, b]` flow sequences to drop removed job names,
+ *  deleting the key outright when nothing is left (the job then runs
+ *  unconditioned rather than gating on a job that no longer exists).
+ *  The generated workflow only ever uses the flow form; a hand-edited
+ *  block sequence (`needs:` + `- a` lines) is left alone. */
+function dropFromNeeds(content: string, removed: Set<string>): string {
+  const out: string[] = [];
+  for (const line of content.split("\n")) {
+    const m = line.match(/^(\s*)needs:\s*\[([^\]]*)\]\s*$/);
+    if (!m) {
+      out.push(line);
+      continue;
+    }
+    const kept = m[2]
+      .split(",")
+      .map((n) => n.trim())
+      .filter((n) => n !== "" && !removed.has(n));
+    if (kept.length === 0) continue;
+    out.push(`${m[1]}needs: [${kept.join(", ")}]`);
+  }
+  return out.join("\n");
 }
 
 // ── compose helpers ────────────────────────────────────────────────────
