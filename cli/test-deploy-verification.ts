@@ -505,10 +505,102 @@ expect("adopt Dockerfile templates bake COMMIT_SHA and stamp version.json", () =
   assert.ok(monorepo.includes("COPY --from=build /app/{{monorepoPackage}}/public"));
 });
 
-expect("adopt workflow template carries the verify gate and both build args", () => {
+expect("adopt workflow template carries the verify gate and one build arg", () => {
   const wf = template("deploy.yml.hbs");
   assert.ok(wf.includes("- name: Verify the deployment is actually live"));
-  assert.equal(wf.split("COMMIT_SHA=${{ github.sha }}").length - 1, 2);
+  // ONE build job, because adopt scaffolds ONE Dockerfile. The template
+  // used to carry the starter's two (`packages/{server,client}/Dockerfile`)
+  // — paths this scaffolder never writes, pushing image names its compose
+  // never reads.
+  assert.equal(wf.split("COMMIT_SHA=${{ github.sha }}").length - 1, 1);
+  assert.ok(!wf.includes("packages/server/Dockerfile"), "references a path adopt never writes");
+  assert.ok(!wf.includes("packages/client/Dockerfile"), "references a path adopt never writes");
+  assert.equal(wf.split("uses: docker/build-push-action@v6").length - 1, 1);
+  assert.ok(wf.includes("    needs: [build]\n"), "deploy job should depend on the one build job");
+  // The tags CI pushes have to be the ones the compose default and the
+  // pin step name — an un-suffixed `ghcr.io/<repo>`.
+  assert.ok(wf.includes("ghcr.io/${{ github.repository }}:__DEFAULT_BRANCH__"));
+  assert.ok(wf.includes("ghcr.io/${{ github.repository }}:${{ github.sha }}"));
+  assert.ok(!/ghcr\.io\/\$\{\{ github\.repository \}\}-(server|client)/.test(wf));
+});
+
+expect("adopt workflow pins APP_IMAGE to the sha before deploying", () => {
+  const wf = template("deploy.yml.hbs");
+  assert.ok(wf.includes("- name: Pin the image tag to this commit"), "pin step missing");
+  // POST then PATCH: Coolify's env API accepts a PATCH for a key it does
+  // not have with a 200 and silently does nothing, and POST fails once
+  // the key exists — so both run and the right one wins.
+  const pin = wf.slice(
+    wf.indexOf("- name: Pin the image tag to this commit"),
+    wf.indexOf("- name: Deploy via Coolify API"),
+  );
+  assert.ok(pin.indexOf("-X POST") < pin.indexOf("-X PATCH"), "POST must precede PATCH");
+  assert.ok(pin.includes("/api/v1/applications/$COOLIFY_RESOURCE_UUID/envs"));
+  assert.ok(!pin.includes("is_build_time"), "is_build_time is rejected on POST");
+  assert.ok(pin.includes('APP_IMAGE="ghcr.io/${{ github.repository }}:${{ github.sha }}"'));
+  // Pinning after the deploy fired would pin the NEXT deploy's image.
+  assert.ok(
+    wf.indexOf("- name: Pin the image tag to this commit") <
+      wf.indexOf("- name: Deploy via Coolify API"),
+    "pin step must come before the deploy step",
+  );
+  // The note this step replaced said adopt's compose had no variable to
+  // pin. It has one now; the note must not linger and contradict it.
+  assert.ok(!wf.includes("no image-pin step here"));
+});
+
+expect("adopt compose reads APP_IMAGE, and hatchkit seeds it from that default", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hk-appimg-"));
+  try {
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "demo" }));
+    scaffoldBuildPipeline({
+      projectDir: dir,
+      projectName: "demo",
+      ghOwner: "acme",
+      ghRepoSlug: "acme/demo-site",
+      entrypoint: "dist/index.js",
+      port: 3000,
+      surfaces: "fullstack",
+      domain: "demo.example.com",
+      defaultBranch: "main",
+    });
+    const compose = readFileSync(join(dir, "docker-compose.yml"), "utf-8");
+    // The repo slug, not `<owner>/<projectName>` — the workflow tags by
+    // `${{ github.repository }}`, so a project whose hatchkit name differs
+    // from its repo name would otherwise default to an image nothing pushes.
+    assert.ok(compose.includes("image: ${APP_IMAGE:-ghcr.io/acme/demo-site:main}"), compose);
+    // Provisioning reads the default straight back out, which is what
+    // makes the deploy job's PATCH land on a key that exists.
+    assert.deepEqual(readImageEnvDefaults(dir), {
+      APP_IMAGE: "ghcr.io/acme/demo-site:main",
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+expect("adopt compose falls back to <owner>/<name> without a repo slug", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hk-appimg-fb-"));
+  try {
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "demo" }));
+    scaffoldBuildPipeline({
+      projectDir: dir,
+      projectName: "demo",
+      ghOwner: "acme",
+      entrypoint: "dist/index.js",
+      port: 3000,
+      surfaces: "fullstack",
+      domain: "demo.example.com",
+      defaultBranch: "trunk",
+    });
+    const compose = readFileSync(join(dir, "docker-compose.yml"), "utf-8");
+    // Default tag tracks the branch the workflow triggers on, not `latest`
+    // — `latest` was pushed by nothing.
+    assert.ok(compose.includes("image: ${APP_IMAGE:-ghcr.io/acme/demo:trunk}"), compose);
+    assert.ok(!compose.includes(":latest"), "latest is a tag CI never pushes");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 expect("scaffoldBuildPipeline fills in the web URL and leaves the API one blank", () => {

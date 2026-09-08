@@ -543,8 +543,10 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       await api.setAppEnv(appUuid, {
         DOTENV_PRIVATE_KEY_PRODUCTION: dotenvKey,
         GITHUB_REPO_URL: repoRef.webUrl ?? input.gitRepository,
-        // Seed SERVER_IMAGE / CLIENT_IMAGE with the compose file's own
-        // defaults. The deploy workflow repoints these at the immutable
+        // Seed the compose file's image variables (APP_IMAGE for an
+        // adopted single-service project, SERVER_IMAGE / CLIENT_IMAGE
+        // for a two-package one) with its own defaults. The deploy
+        // workflow repoints these at the immutable
         // `:<sha>` tag on every push, and Coolify's env API only UPDATES
         // an existing variable — a PATCH naming a key that isn't there
         // returns 200 and does nothing, so the pin silently no-ops and

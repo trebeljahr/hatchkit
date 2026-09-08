@@ -274,6 +274,13 @@ expect("scaffoldBuildPipeline: subdir build → deploy.yml at repoRoot, Dockerfi
       /context:\s*site\b/.test(workflow),
       `workflow should set context: site, got:\n${workflow.slice(0, 500)}`,
     );
+    // `file:` resolves against the workspace, not against `context:`, so
+    // it needs the subdir prefix too — `file: Dockerfile` here would make
+    // the build read the repo root and fail with "Dockerfile not found".
+    assert.ok(
+      /^\s*file:\s*site\/Dockerfile\s*$/m.test(workflow),
+      `workflow should set file: site/Dockerfile, got:\n${workflow.slice(0, 500)}`,
+    );
     // The absolute paths in result.createdAbs should reflect the
     // per-file baseDir (subdir for Dockerfile, repoRoot for workflow).
     const absSet = new Set(result.createdAbs);
@@ -308,6 +315,10 @@ expect("scaffoldBuildPipeline: no subdir → all files at projectDir, deploy.yml
     assert.ok(
       /^\s*context:\s*\.\s*$/m.test(workflow),
       `workflow should set context: . for root build, got:\n${workflow.slice(0, 500)}`,
+    );
+    assert.ok(
+      /^\s*file:\s*Dockerfile\s*$/m.test(workflow),
+      `workflow should set file: Dockerfile for root build, got:\n${workflow.slice(0, 500)}`,
     );
   } finally {
     rmSync(projectDir, { recursive: true, force: true });

@@ -1,18 +1,36 @@
 # Coolify reads this file (build pack: dockercompose) to deploy
 # {{name}}. The image is built by .github/workflows/deploy.yml and
 # pushed to GHCR; Coolify pulls it and (re)starts the service when
-# the workflow's deploy webhook fires.
-#
-# To pin a specific version, change the tag below from `latest` to a
-# git sha, semver tag, or whatever your release process uses.
+# the workflow's deploy step fires.
 services:
   app:
-    image: ghcr.io/{{owner}}/{{name}}:latest
+    # `${APP_IMAGE:-…}` rather than a literal ref, so the pipeline can
+    # pin what actually runs. The deploy job sets APP_IMAGE on the
+    # Coolify app to the IMMUTABLE `ghcr.io/<repo>:<sha>` tag before it
+    # triggers the deploy, which makes "is the running container this
+    # commit's build?" answerable and makes rollback "set APP_IMAGE to
+    # an older sha". hatchkit seeds the variable with the default below
+    # when it provisions the app — Coolify's env API only UPDATES an
+    # existing key, so a pin naming a key that was never created is
+    # accepted with a 200 and silently does nothing.
+    #
+    # The default is what a plain `docker compose up` (or a Coolify app
+    # that never got the variable) resolves to: the branch tag CI also
+    # pushes on every build.
+    #
+    # Rendered whole from one variable rather than assembled from a repo
+    # and a tag here: a template expression immediately followed by the
+    # shell default's closing brace reads as a Handlebars
+    # unescaped-close and fails to compile. build-pipeline.ts builds the
+    # string.
+    image: {{imageRef}}
     # Force a registry pull on every `docker compose up`. Without this,
     # Compose happily reuses whichever digest the local engine cached the
-    # last time it saw the `:latest` tag, so Coolify's redeploy webhook
+    # last time it saw the `:{{defaultBranch}}` tag, so Coolify's redeploy
     # fires after each CI build but the running container keeps serving
-    # stale code. `always` makes the floating tag actually float.
+    # stale code. `always` makes the floating tag actually float. The
+    # APP_IMAGE pin removes the ambiguity for CI deploys; this covers the
+    # mutable default that everything else uses.
     pull_policy: always
     restart: unless-stopped
     # Coolify's Traefik reverse-proxy already owns host ports 80/443 and

@@ -314,11 +314,20 @@ export interface ScaffoldBuildPipelineInput {
    *  Docker only sends the subdir subtree to BuildKit. */
   projectSubdir?: string;
   projectName: string;
-  /** GitHub `<owner>/<repo>` slug — owner is what GHCR images get
-   *  scoped under (`ghcr.io/<owner>/<name>`). Inferred from the
+  /** GitHub owner segment alone (`trebeljahr`), inferred from the
    *  `git@github.com:owner/repo.git` or `https://github.com/owner/repo`
-   *  remote URL by the caller. */
+   *  remote URL by the caller. Only used to build the fallback GHCR
+   *  image ref when {@link ghRepoSlug} is unavailable. */
   ghOwner: string;
+  /** Full `<owner>/<repo>` slug. This is what the generated compose's
+   *  image default has to be scoped under, because the workflow tags by
+   *  `${{ github.repository }}` — which is the REPO name, not the
+   *  hatchkit project name. The two diverge often enough to matter
+   *  (project `ricos-labs` living in repo `ricoslabs.com`), and when
+   *  they do, a compose defaulting to `<owner>/<projectName>` points at
+   *  an image nothing ever pushes. Falls back to
+   *  `<ghOwner>/<projectName>` when the caller has no remote to read. */
+  ghRepoSlug?: string;
   /** Project-relative entrypoint script for the runtime CMD. Server-
    *  bearing layouts default to `dist/index.js`; static is irrelevant
    *  (nginx serves static files). */
@@ -489,7 +498,21 @@ export function scaffoldBuildPipeline(
       framework === "nextjs" ? input.port : input.surfaces === "static" ? 80 : input.port;
     const out = renderTemplate("build-pipeline/docker-compose.yml.hbs", {
       name: input.projectName,
-      owner: input.ghOwner,
+      // The service's whole `image:` value, assembled here because a
+      // template expression immediately followed by the shell default's
+      // closing brace won't compile as Handlebars — the run of three
+      // closing braces reads as an unescaped-close.
+      //
+      // The repo half must match the workflow's
+      // `ghcr.io/${{ github.repository }}` tags exactly — see
+      // ghRepoSlug's docs for why the project name is not a safe
+      // stand-in for the repo name. The tag half is the mutable branch
+      // tag CI pushes alongside the immutable `:<sha>` one, so it has
+      // to be the branch the workflow triggers on.
+      imageRef: `\${APP_IMAGE:-ghcr.io/${
+        input.ghRepoSlug ?? `${input.ghOwner}/${input.projectName}`
+      }:${input.defaultBranch}}`,
+      defaultBranch: input.defaultBranch,
       port: servicePort,
       isNextjs: framework === "nextjs",
     });
@@ -515,9 +538,15 @@ export function scaffoldBuildPipeline(
     // otherwise so docker only sends that subtree to BuildKit and the
     // workflow's docker build command sees the right files.
     const subdirContext = subdir ? subdir : ".";
+    // `file:` on docker/build-push-action resolves against the WORKSPACE,
+    // not against `context:`, so it needs its own subdir-prefixed value.
+    // Points at the Dockerfile written above, which lives in projectDir
+    // next to the compose file.
+    const subdirDockerfile = subdir ? `${subdir}/Dockerfile` : "Dockerfile";
     const filled = raw
       .replace(/__DEFAULT_BRANCH__/g, input.defaultBranch)
-      .replace(/__SUBDIR_CONTEXT__/g, subdirContext);
+      .replace(/__SUBDIR_CONTEXT__/g, subdirContext)
+      .replace(/__SUBDIR_DOCKERFILE__/g, subdirDockerfile);
     // Point the post-deploy gate at this project's public URL. Only the
     // web URL: every Dockerfile this scaffolder writes stamps
     // /version.json, so that probe always has something to answer it.

@@ -4090,6 +4090,11 @@ async function scaffoldBuildPipelineNow(
     projectSubdir: plan.projectSubdir || undefined,
     projectName: plan.name,
     ghOwner: owner,
+    // The compose image default has to match what CI actually tags
+    // (`ghcr.io/${{ github.repository }}`), which is the REPO slug —
+    // a project whose hatchkit name differs from its repo name would
+    // otherwise deploy from an image nobody pushes.
+    ghRepoSlug: repoSlugFromRemote(remoteUrl),
     entrypoint: plan.surfaces === "static" ? "" : "dist/index.js",
     port: Number(plan.appPort) || 3000,
     surfaces: plan.surfaces,

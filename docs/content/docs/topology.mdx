@@ -231,6 +231,10 @@ server reports it as `version` on `/api/health`; the client writes
 polls both artefacts (cache-busted — a CDN hit would return exactly the stale
 copy being tested for) until they report the pushed commit.
 
+A project brought in with `hatchkit adopt` builds one image, not two, so its
+compose reads a single `APP_IMAGE` and its deploy job pins that one variable.
+Everything else about the gate is the same.
+
 The gate degrades with the project's shape. A `backend` project has no
 `version.json` to poll; a `static` one has no `/api/health`; a `single-origin`
 project is same-origin, so the CORS assertion is skipped. What it will not do

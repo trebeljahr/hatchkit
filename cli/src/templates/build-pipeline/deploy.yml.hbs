@@ -1,15 +1,19 @@
 # Build → push → deploy pipeline scaffolded by hatchkit.
 #
-#   1. verify        — install deps, build, run unit + client tests.
-#   2. e2e           — full Playwright E2E run against Docker services.
-#   3. build-server  — build packages/server image, push to GHCR as
-#                       `ghcr.io/<owner>/<repo>-server:<branch>` +
-#                       `:<sha>`.
-#   4. build-client  — build packages/client image, push to GHCR as
-#                       `ghcr.io/<owner>/<repo>-client:<branch>` +
-#                       `:<sha>`.
-#   5. deploy        — after BOTH image jobs succeed, trigger Coolify
-#                       to redeploy via its API (or webhook fallback).
+#   1. verify  — install deps, build, run unit + client tests.
+#   2. e2e     — full Playwright E2E run against Docker services.
+#   3. build   — build the project's Dockerfile, push to GHCR as
+#                 `ghcr.io/<owner>/<repo>:<branch>` + `:<sha>`.
+#   4. deploy  — pin the app to the `:<sha>` tag, trigger Coolify to
+#                 redeploy via its API (or webhook fallback), then
+#                 verify the deployed artefact reports that same sha.
+#
+# ONE image, because `hatchkit adopt` scaffolds one Dockerfile and one
+# compose service. (`hatchkit create` scaffolds a two-package project
+# and its workflow has a build job per half.) If you split this project
+# into separate server/client images later, add the second build job
+# here, give the compose a second service reading `${SERVER_IMAGE:-…}` /
+# `${CLIENT_IMAGE:-…}`, and pin both in the deploy job below.
 #
 # Required repo secrets (hatchkit sets these via `gh secret set`
 # during adopt / create; rotate via the GitHub UI / `gh` whenever
@@ -128,7 +132,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: minioadmin
           AWS_REGION: us-east-1
 
-  build-server:
+  build:
     runs-on: ubuntu-latest
     needs: [verify]
     steps:
@@ -143,10 +147,13 @@ jobs:
           # Build context — points at the project's deployable directory.
           # `.` for single-package-at-root projects; the repo-relative
           # subdir (e.g. `site` or `apps/web`) when the deployable
-          # lives inside a larger repo. hatchkit's adopt / create flow
+          # lives inside a larger repo. hatchkit's adopt flow
           # substitutes the right value at scaffold time.
           context: __SUBDIR_CONTEXT__
-          file: packages/server/Dockerfile
+          # Workspace-relative, NOT context-relative — so this carries
+          # the subdir prefix when `context:` does. It is the Dockerfile
+          # hatchkit scaffolds next to the compose file.
+          file: __SUBDIR_DOCKERFILE__
           push: true
           # Bakes the commit into the image so the deployed artefact can
           # be asked what it is. The verify step below polls for exactly
@@ -155,9 +162,12 @@ jobs:
           # ends up running.
           build-args: |
             COMMIT_SHA=${{ github.sha }}
+          # Both tags on every build: the branch tag is what the compose
+          # defaults to (and what a hand-run `docker compose up` gets),
+          # the sha tag is the immutable one the deploy job pins.
           tags: |
-            ghcr.io/${{ github.repository }}-server:__DEFAULT_BRANCH__
-            ghcr.io/${{ github.repository }}-server:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:__DEFAULT_BRANCH__
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
           # BuildKit secret for decrypting .env.production at build
           # time. Mounted as tmpfs inside the Dockerfile's RUN step,
           # never written to a layer or `docker history`. The Dockerfile
@@ -167,38 +177,50 @@ jobs:
           secrets: |
             dotenvx_private_key=${{ secrets.DOTENV_PRIVATE_KEY_PRODUCTION }}
 
-  build-client:
-    runs-on: ubuntu-latest
-    needs: [verify]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
-        with:
-          # Build context — points at the project's deployable directory.
-          # `.` for single-package-at-root projects; the repo-relative
-          # subdir (e.g. `site` or `apps/web`) when the deployable
-          # lives inside a larger repo. hatchkit's adopt / create flow
-          # substitutes the right value at scaffold time.
-          context: __SUBDIR_CONTEXT__
-          file: packages/client/Dockerfile
-          push: true
-          build-args: |
-            COMMIT_SHA=${{ github.sha }}
-          tags: |
-            ghcr.io/${{ github.repository }}-client:__DEFAULT_BRANCH__
-            ghcr.io/${{ github.repository }}-client:${{ github.sha }}
-          secrets: |
-            dotenvx_private_key=${{ secrets.DOTENV_PRIVATE_KEY_PRODUCTION }}
-
   deploy:
     runs-on: ubuntu-latest
-    needs: [build-server, build-client]
+    needs: [build]
     steps:
+      # Pin the app to the IMMUTABLE tag before deploying it.
+      #
+      # The compose defaults to `:__DEFAULT_BRANCH__`, and Docker keeps
+      # whatever image it already has for a mutable tag. That means
+      # Coolify can start the PREVIOUS build while ghcr's branch tag, the
+      # Coolify dashboard and this workflow all report the new commit —
+      # every status surface says the deploy succeeded and the served
+      # code is still the old one. `pull_policy: always` in the compose
+      # covers the mutable default; pinning the sha tag here removes the
+      # ambiguity entirely, and makes rollback "set this variable to an
+      # older sha".
+      #
+      # POST *and* PATCH, in that order: Coolify's env API only UPDATES
+      # an existing variable — a PATCH for a key that does not exist is
+      # accepted with a 200 and silently does nothing. POST creates it
+      # and fails once it exists. Neither alone is enough, so both run
+      # and the right one wins. (`is_build_time` is rejected on POST with
+      # "This field is not allowed"; key/value/is_preview is accepted.)
+      # hatchkit seeds APP_IMAGE when it provisions the app, so in
+      # practice the PATCH is the one that does the work.
+      - name: Pin the image tag to this commit
+        env:
+          COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          COOLIFY_RESOURCE_UUID: ${{ secrets.COOLIFY_RESOURCE_UUID }}
+        if: env.COOLIFY_BASE_URL != '' && env.COOLIFY_RESOURCE_UUID != ''
+        run: |
+          set -euo pipefail
+          APP_IMAGE="ghcr.io/${{ github.repository }}:${{ github.sha }}"
+          BODY="{\"key\":\"APP_IMAGE\",\"value\":\"$APP_IMAGE\",\"is_preview\":false}"
+          curl -fsS -o /dev/null -X POST \
+            "$COOLIFY_BASE_URL/api/v1/applications/$COOLIFY_RESOURCE_UUID/envs" \
+            -H "Authorization: Bearer $COOLIFY_API_TOKEN" \
+            -H 'Content-Type: application/json' -d "$BODY" || true
+          curl -fsSL -o /dev/null -X PATCH \
+            "$COOLIFY_BASE_URL/api/v1/applications/$COOLIFY_RESOURCE_UUID/envs" \
+            -H "Authorization: Bearer $COOLIFY_API_TOKEN" \
+            -H 'Content-Type: application/json' -d "$BODY"
+          echo "pinned APP_IMAGE=$APP_IMAGE on $COOLIFY_RESOURCE_UUID"
+
       - name: Deploy via Coolify API
         env:
           COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
@@ -216,16 +238,6 @@ jobs:
           COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK_URL }}
         if: env.COOLIFY_BASE_URL == '' && env.COOLIFY_WEBHOOK_URL != ''
         run: curl -fsSL "$COOLIFY_WEBHOOK_URL"
-
-      # NOTE: no image-pin step here, unlike the workflow `hatchkit
-      # create` generates. That one's compose reads its image from
-      # `${SERVER_IMAGE:-…}` / `${CLIENT_IMAGE:-…}`, so the deploy can
-      # repoint those at the immutable `:<sha>` tag before deploying.
-      # The compose scaffolded alongside THIS workflow names its image
-      # directly, so there is no variable to pin; `pull_policy: always`
-      # in that file is what stops a mutable tag serving the previous
-      # build. Switch the compose to a `${VAR:-…}` image ref if you want
-      # sha-pinned deploys and rollback-by-variable.
 
       # Everything above only proves Coolify ACCEPTED a request. This
       # proves the deployed artefacts are the ones this run built.
