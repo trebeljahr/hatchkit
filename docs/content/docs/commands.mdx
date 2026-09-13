@@ -388,7 +388,44 @@ looks like a successful sync.
 | `--deploy` | Redeploy each changed app so the new labels go live. |
 | `--force` | Push through a Coolify domain-conflict (409). |
 | `--no-preflight` | Skip the deployed-ref check. For a repo git can't answer for (a shallow clone, a remote only Coolify can reach) — not for pushing past a finding. |
+| `--yes`, `-y` | Accept the `TRUSTED_ORIGINS` diff without a prompt. |
+| `--no-native-origins` | Skip the native-client origins pass. |
 | `--json` | Machine-readable output. |
+
+### Native clients and `TRUSTED_ORIGINS`
+
+A project with the `mobile`, `desktop` or `desktop-tauri` feature ships a shell
+that loads the client from its own origin. better-auth answers
+`403 INVALID_ORIGIN` to an origin that is not in `TRUSTED_ORIGINS`, before it
+checks the password.
+
+| Feature | Origins |
+|---|---|
+| `mobile` (Capacitor) | `capacitor://localhost` (iOS), `https://localhost` (Android) |
+| `desktop` (Electron) | `app://-` |
+| `desktop-tauri` | `tauri://localhost`, `http://tauri.localhost` (Windows) |
+
+`hatchkit create`, `adopt`, `update` (after it adds a native feature) and `sync`
+merge these into `TRUSTED_ORIGINS` on the **server** Coolify app. The client
+app is never touched.
+
+- Existing entries keep their order. Missing origins are appended. Nothing is
+  removed.
+- The before/after list is shown, and the write waits for a yes. `--dry-run`
+  stops after the diff.
+- The value is read back from Coolify after the write. A write that did not
+  land is an error.
+- If the Coolify token cannot read env values (no `read:sensitive`), nothing is
+  written.
+- The server reads the list at boot. Use `--deploy`, or redeploy by hand.
+
+Trusting `https://localhost` in production means a page served from
+`https://localhost` on a user's machine also passes the origin check. Capacitor
+on Android needs that origin.
+
+Do not test this with a bare curl. better-auth only enforces the origin check on
+a cookieless sign-in when the request carries `Sec-Fetch-*` headers. The deploy
+workflow's "Verify native clients can sign in" step sends them.
 
 See [Deployment topology](/docs/topology) for what the two topologies route,
 and for repairing a project deployed before 0.2.19.

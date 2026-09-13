@@ -2174,6 +2174,10 @@ async function executePlan(
           // scaffoldBuildPipelineNow just wrote inside the subdir,
           // rather than the (probably-unbuildable) repo root.
           baseDirectory: plan.projectSubdir || undefined,
+          // Native shells detected (or curated) for this project need
+          // their origins in TRUSTED_ORIGINS on the server app. A static
+          // adopt has no server to trust anything, so it passes none.
+          nativeClientFeatures: plan.surfaces === "static" ? [] : plan.features,
         });
         // Record only the bits we actually created. wireProjectIntoCoolify
         // returns explicit `*Created` flags exactly so adopt can guard

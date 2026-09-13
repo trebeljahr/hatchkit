@@ -10,6 +10,7 @@ import { type PublicIps, discoverPublicIps } from "../utils/coolify-server-ips.j
 import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
 import { type CoolifyDeployApp, repoSlugFromRemote } from "./gh-actions-secrets.js";
 import { type RoutedApp, type RoutingPlan, type Topology, computeRoutingPlan } from "./routing.js";
+import { pushNativeOriginsToServerApps } from "./trusted-origins.js";
 
 export interface WireUpInput {
   projectName: string;
@@ -77,6 +78,12 @@ export interface WireUpInput {
    *  for the historical single-package-at-root layout. Passed
    *  verbatim to Coolify as `base_directory` on every create + PATCH. */
   baseDirectory?: string;
+  /** Project features, read ONLY for their native-client origins
+   *  (mobile / desktop / desktop-tauri). When any are present they are
+   *  merged into TRUSTED_ORIGINS on the server app after the baseline
+   *  env, with the same diff + confirmation `hatchkit sync` shows.
+   *  Omit (or pass `[]`) for a project with no server. */
+  nativeClientFeatures?: readonly string[];
 }
 
 /** Structural shape of a "do this next" hint that `wireProjectIntoCoolify`
@@ -571,6 +578,26 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
           "  Run `hatchkit keys push <project>` once one's available.",
       ),
     );
+  }
+
+  // ── 5b. Native-client origins. better-auth rejects a Capacitor /
+  //        Electron / Tauri shell's origin with 403 INVALID_ORIGIN
+  //        unless TRUSTED_ORIGINS names it, and an adopted project's
+  //        production env may live entirely in Coolify. Merged, confirmed
+  //        and read back on the server app — deploy/trusted-origins.ts.
+  const nativeOrigins = await pushNativeOriginsToServerApps({
+    api,
+    apps: provisioned,
+    features: input.nativeClientFeatures ?? [],
+  });
+  for (const o of nativeOrigins) {
+    if (o.status === "failed" || o.status === "unreadable" || o.status === "needs-confirmation") {
+      caveats.push({
+        title: `TRUSTED_ORIGINS not updated on ${o.app} — native clients will get 403 INVALID_ORIGIN`,
+        reason: o.detail ?? `missing ${o.added.join(", ")} (${o.status})`,
+        recovery: ["hatchkit sync --dry-run   # review the diff", "hatchkit sync --deploy"],
+      });
+    }
   }
 
   // ── 6. DNS — pull the box's public IP(s) from Coolify and upsert records.

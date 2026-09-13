@@ -40,6 +40,7 @@ import {
   CLIENT_DOCKERFILE_VERSION_STAMP_BLOCK,
   COMPOSE_PULL_POLICY_BLOCK,
   SERVER_DOCKERFILE_COMMIT_SHA_BLOCK,
+  WORKFLOW_NATIVE_ORIGIN_STEP,
   WORKFLOW_PIN_STEP,
   WORKFLOW_VERIFY_STEP,
   addWorkflowCommitShaBuildArg,
@@ -48,12 +49,14 @@ import {
   imageEnvDefaultsFromCompose,
   readImageEnvDefaults,
   setWorkflowDeployVerifyUrls,
+  setWorkflowNativeOriginsValue,
   setWorkflowVerifyUrlValues,
   stripClientDockerfileApiUrlAssertion,
   upgradeClientDockerfileVersionStamp,
   upgradeComposePullPolicy,
   upgradeServerDockerfileCommitSha,
   upgradeWorkflowDeployVerification,
+  upgradeWorkflowNativeOriginCheck,
 } from "./src/scaffold/deploy-verification.js";
 
 const failures: string[] = [];
@@ -119,6 +122,19 @@ if (!starterPresent) {
     const wf = read(WORKFLOW_REL);
     assert.ok(wf.includes(WORKFLOW_PIN_STEP.trimEnd()), "pin step missing");
     assert.ok(wf.includes(WORKFLOW_VERIFY_STEP.trimEnd()), "verify step missing");
+    // The shipped starter keeps the repo-variable fallback; hatchkit
+    // writes the literal per project.
+    const shipped = setWorkflowNativeOriginsValue(WORKFLOW_NATIVE_ORIGIN_STEP, "").replace(
+      'HATCHKIT_NATIVE_ORIGINS: ""',
+      "HATCHKIT_NATIVE_ORIGINS: ${{ vars.HATCHKIT_NATIVE_ORIGINS }}",
+    );
+    assert.equal(shipped, WORKFLOW_NATIVE_ORIGIN_STEP);
+    assert.ok(wf.includes(WORKFLOW_NATIVE_ORIGIN_STEP.trimEnd()), "native-origin step missing");
+    assert.ok(
+      wf.indexOf("- name: Verify native clients can sign in") >
+        wf.indexOf("- name: Verify the deployment is actually live"),
+      "native-origin check must run after the deploy is proven live",
+    );
   });
 
   // ------------------------------------------------------------------
@@ -188,6 +204,41 @@ if (!starterPresent) {
     assert.ok(!/if:.*HATCHKIT_(WEB|API)_URL/.test(WORKFLOW_VERIFY_STEP));
   });
 
+  expect("native-origin step is gated on a deploy firing, like the verify step", () => {
+    const guard = WORKFLOW_NATIVE_ORIGIN_STEP.match(/^\s*if: (.+)$/m)?.[1];
+    assert.equal(guard, "env.COOLIFY_BASE_URL != '' || env.COOLIFY_WEBHOOK_URL != ''");
+  });
+
+  expect("native-origin probe takes the path a WebView takes, and can actually fail", () => {
+    const step = WORKFLOW_NATIVE_ORIGIN_STEP;
+    assert.ok(step.includes('-X POST "$API/api/auth/sign-in/email"'));
+    assert.ok(step.includes('-H "Origin: $origin"'));
+    // Without Sec-Fetch-*, better-auth never validates Origin on a
+    // cookieless sign-in: the probe would pass against a server that
+    // rejects every phone.
+    assert.ok(step.includes("-H 'Sec-Fetch-Mode: cors'"));
+    assert.ok(step.includes("-H 'content-type: application/json'"));
+    // better-call validates the body BEFORE the sign-in route's origin
+    // check, so `{}` answers 400 for trusted and untrusted origins alike
+    // (verified against better-auth 1.6.11 / better-call 1.3.5). The
+    // body must be schema-valid so the origin check is reached.
+    const data = step.match(/--data '([^']*)'/)?.[1] ?? "";
+    assert.notEqual(data, "{}");
+    const parsed = JSON.parse(data) as Record<string, unknown>;
+    assert.equal(typeof parsed.email, "string");
+    assert.equal(typeof parsed.password, "string");
+    assert.ok(
+      String(parsed.email).endsWith(".invalid"),
+      "probe must use an address that cannot exist",
+    );
+    // 403 / INVALID_ORIGIN fails; only the credential check's 401 passes.
+    assert.ok(
+      step.includes('[ "$status" = "403" ] || printf \'%s\' "$body" | grep -q INVALID_ORIGIN'),
+    );
+    assert.ok(step.includes('elif [ "$status" = "401" ]'));
+    assert.ok(step.includes('exit "$failed"'));
+  });
+
   expect("verify step fails when it ends up checking nothing", () => {
     assert.ok(WORKFLOW_VERIFY_STEP.includes('if [ "$checked" -eq 0 ]'));
     assert.ok(WORKFLOW_VERIFY_STEP.includes("a deploy was triggered and nothing was verified."));
@@ -219,6 +270,7 @@ if (!starterPresent) {
     const current = read(WORKFLOW_REL);
     // Reconstruct what the file looked like before the gate existed.
     const before = current
+      .replace(`\n${WORKFLOW_NATIVE_ORIGIN_STEP}`, "")
       .replace(`${WORKFLOW_PIN_STEP}\n`, "")
       .replace(`\n\n${WORKFLOW_VERIFY_STEP.replace(/\n+$/, "")}\n`, "")
       .replace(
@@ -229,17 +281,52 @@ if (!starterPresent) {
     assert.notEqual(before, current, "failed to construct a pre-gate fixture");
     assert.ok(!before.includes("Pin image tags"), "pin step not stripped");
     assert.ok(!before.includes("COMMIT_SHA"), "build args not stripped");
+    assert.ok(!before.includes("Verify native clients"), "native-origin step not stripped");
 
     let after = addWorkflowCommitShaBuildArg(before, "packages/server/Dockerfile");
     after = addWorkflowCommitShaBuildArg(after, "packages/client/Dockerfile");
     after = upgradeWorkflowDeployVerification(after, "example.com", "split", "split");
-    // Only the URL literals differ from the shipped starter, which
-    // leaves them blank for hatchkit to fill per project.
+    after = upgradeWorkflowNativeOriginCheck(after, ["mobile"]);
+    // Only the literals differ from the shipped starter, which leaves
+    // them blank for hatchkit to fill per project.
     const normalized = setWorkflowVerifyUrlValues(after, {
       webUrl: "${{ vars.HATCHKIT_WEB_URL }}",
       apiUrl: "${{ vars.HATCHKIT_API_URL }}",
-    });
+    }).replace(
+      'HATCHKIT_NATIVE_ORIGINS: "capacitor://localhost,https://localhost"',
+      "HATCHKIT_NATIVE_ORIGINS: ${{ vars.HATCHKIT_NATIVE_ORIGINS }}",
+    );
     assert.equal(normalized, current);
+  });
+
+  expect("native-origin literal follows features; rename-domain's URL rewrite leaves it", () => {
+    const wf = read(WORKFLOW_REL);
+    const tauri = upgradeWorkflowNativeOriginCheck(wf, ["desktop-tauri"]);
+    assert.ok(
+      tauri.includes('HATCHKIT_NATIVE_ORIGINS: "tauri://localhost,http://tauri.localhost"'),
+    );
+    assert.equal(
+      upgradeWorkflowNativeOriginCheck(tauri, ["desktop-tauri"]),
+      tauri,
+      "not idempotent",
+    );
+    const none = upgradeWorkflowNativeOriginCheck(wf, []);
+    assert.ok(none.includes('HATCHKIT_NATIVE_ORIGINS: ""'), "empty list must be quoted");
+    const renamed = setWorkflowDeployVerifyUrls(tauri, "renamed.example.com", "split", "split");
+    assert.ok(
+      renamed.includes('HATCHKIT_NATIVE_ORIGINS: "tauri://localhost,http://tauri.localhost"'),
+    );
+  });
+
+  expect("retrofit tables leave the native check alone when features are unknown", () => {
+    const wf = upgradeWorkflowNativeOriginCheck(read(WORKFLOW_REL), ["mobile"]);
+    const fn = deployVerificationRetrofits("example.com", "split", "split").find(
+      ([, rel]) => rel === WORKFLOW_REL,
+    )?.[2];
+    assert.ok(fn);
+    assert.ok(
+      fn(wf).includes('HATCHKIT_NATIVE_ORIGINS: "capacitor://localhost,https://localhost"'),
+    );
   });
 
   expect("retrofits are idempotent against the current starter", () => {
@@ -447,6 +534,39 @@ expect("COMMIT_SHA build arg stays inside its own step", () => {
 expect("workflow gate insertion no-ops without its anchors", () => {
   const wf = "jobs:\n  deploy:\n    steps:\n      - run: echo hand-rolled\n";
   assert.equal(upgradeWorkflowDeployVerification(wf, "example.com"), wf);
+});
+
+expect("native-origin check: inserted right after the verify step, before any later step", () => {
+  const wf = [
+    "jobs:",
+    "  deploy:",
+    "    steps:",
+    "      - name: Verify the deployment is actually live",
+    "        run: |",
+    "          echo verify",
+    "",
+    "      # a later step the user added",
+    "      - name: Notify",
+    "        run: echo done",
+    "",
+  ].join("\n");
+  const out = upgradeWorkflowNativeOriginCheck(wf, ["mobile"]);
+  const verifyAt = out.indexOf("echo verify");
+  const nativeAt = out.indexOf("- name: Verify native clients can sign in");
+  const notifyAt = out.indexOf("# a later step the user added");
+  assert.ok(verifyAt < nativeAt && nativeAt < notifyAt, "step landed in the wrong place");
+  assert.ok(out.includes('HATCHKIT_NATIVE_ORIGINS: "capacitor://localhost,https://localhost"'));
+  assert.equal(upgradeWorkflowNativeOriginCheck(out, ["mobile"]), out, "not idempotent");
+});
+
+expect("native-origin check: no-ops without native features or without the verify anchor", () => {
+  const pre =
+    "jobs:\n  deploy:\n    steps:\n      - name: Verify the deployment is actually live\n        run: echo v\n";
+  // An older project with no native client doesn't get a step that can
+  // only say "nothing to check".
+  assert.equal(upgradeWorkflowNativeOriginCheck(pre, []), pre);
+  const handRolled = "jobs:\n  deploy:\n    steps:\n      - run: echo hand-rolled\n";
+  assert.equal(upgradeWorkflowNativeOriginCheck(handRolled, ["mobile"]), handRolled);
 });
 
 // ---------------------------------------------------------------------------

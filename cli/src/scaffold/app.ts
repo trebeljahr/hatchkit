@@ -34,7 +34,10 @@ import { type ProjectPorts, pickProjectPorts } from "../utils/ports.js";
 import { getCliVersion } from "../utils/version.js";
 import { applyClaudeMd } from "./claude-md.js";
 import { applyWorkflowClientBuildArgUrls } from "./client-build-args.js";
-import { applyWorkflowDeployVerifyUrls } from "./deploy-verification.js";
+import {
+  applyWorkflowDeployVerifyUrls,
+  applyWorkflowNativeOrigins,
+} from "./deploy-verification.js";
 import { type DotenvxSeedResult, seedDotenvxProduction } from "./dotenvx.js";
 import { MANIFEST_FILENAME, toManifest, writeManifest } from "./manifest.js";
 import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
@@ -258,6 +261,11 @@ async function runScaffoldSteps(
   // reporting green having checked nothing.
   if (applyWorkflowDeployVerifyUrls(outputDir, config.domain, config.topology, config.surfaces)) {
     modifications.push("build-and-deploy.yml: post-deploy verification URLs set (web + api)");
+  }
+  // …and the native-client sign-in probe at the origins the selected
+  // features ship (empty → the step reports nothing to check).
+  if (applyWorkflowNativeOrigins(outputDir, config.features)) {
+    modifications.push("build-and-deploy.yml: native-client sign-in check origins set");
   }
 
   // Feature-flag removal

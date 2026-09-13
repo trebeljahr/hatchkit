@@ -17,7 +17,8 @@
  *   4. Multi-domain routing (frontend + api subdomain + path-based API
  *      and websocket — the same five-host strategy the old script used).
  *   5. Minimal env vars on the application (NODE_ENV / PORT /
- *      FRONTEND_URL). App secrets and DB URLs go into encrypted
+ *      FRONTEND_URL), plus the native clients' origins merged into
+ *      TRUSTED_ORIGINS on the server app (deploy/trusted-origins.ts). App secrets and DB URLs go into encrypted
  *      .env.production via dotenvx — not directly onto the Coolify app
  *      — so the keyholder is the only one who sees plaintext, and
  *      redeploys don't require touching the Coolify UI.
@@ -43,6 +44,7 @@ import {
   installUrlForSlug,
 } from "./github-app-access.js";
 import { type RoutedApp, computeRoutingPlan } from "./routing.js";
+import { type NativeOriginsOutcome, pushNativeOriginsToServerApps } from "./trusted-origins.js";
 
 export interface RunCoolifySetupOptions {
   /** GitHub repository URL — required when creating a new application
@@ -71,6 +73,11 @@ export interface RunCoolifySetupOptions {
    *  isn't in the compose is accepted by Coolify with a 200 and then
    *  produces no Traefik labels at all. */
   projectDir?: string;
+  /** `hatchkit create --yes`: accept the native-client TRUSTED_ORIGINS
+   *  diff without a prompt. Without it the diff is shown and confirmed
+   *  interactively, and skipped (with the command to finish it) when
+   *  there is no terminal to ask on. */
+  assumeYes?: boolean;
 }
 
 export interface RunCoolifySetupResult {
@@ -105,6 +112,9 @@ export interface RunCoolifySetupResult {
    *  (`api.<domain>` under `split`). Terraform owns the bare domain's
    *  record on the create path; anything listed here still needs one. */
   extraDnsHostnames: string[];
+  /** What happened to TRUSTED_ORIGINS on each server app. Empty for a
+   *  project with no native client. */
+  nativeOrigins: NativeOriginsOutcome[];
 }
 
 /** Create the Coolify project + application for this hatchkit project,
@@ -321,6 +331,21 @@ export async function runCoolifySetup(
     ),
   );
 
+  // Native shells (Capacitor / Electron / Tauri) load the client from
+  // their own document origin, which better-auth rejects with 403
+  // INVALID_ORIGIN unless TRUSTED_ORIGINS names it. The minimal env
+  // above can't carry it: projects whose production env lives in
+  // Coolify rather than a committed .env.production would never see the
+  // value the scaffold wrote into .env.example. Merged, confirmed and
+  // read back — see deploy/trusted-origins.ts. Server app only.
+  const nativeOrigins = await pushNativeOriginsToServerApps({
+    api,
+    apps: provisioned,
+    features: config.features,
+    surfaces,
+    yes: options.assumeYes,
+  });
+
   console.log(chalk.green("\n  ✓ Coolify app stack created"));
 
   return {
@@ -330,6 +355,7 @@ export async function runCoolifySetup(
     appCreated,
     apps: provisioned,
     extraDnsHostnames: plan.extraDnsHostnames,
+    nativeOrigins,
   };
 }
 

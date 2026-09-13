@@ -2470,6 +2470,8 @@ async function handleCreate(): Promise<void> {
         // ever name services that exist — a phantom service name is
         // accepted by Coolify and then 503s every request.
         projectDir: appDir,
+        // `--yes` accepts the native-client TRUSTED_ORIGINS diff too.
+        assumeYes: nonInteractive,
       });
       // Order matters: rollback iterates the ledger in REVERSE, so we
       // record parent-before-child (project before app). Otherwise
@@ -2853,12 +2855,12 @@ async function handleCreate(): Promise<void> {
   ) {
     console.log(
       chalk.yellow(
-        "\n  Server CORS: TRUSTED_ORIGINS is already set in .env.example for native clients.",
+        "\n  Server CORS: native-client origins are in .env.example and, on a Coolify deploy,",
       ),
     );
     console.log(
       chalk.dim(
-        "  Make sure the same values land in your production env (Coolify / secret store).",
+        "  merged into TRUSTED_ORIGINS on the server app. `hatchkit sync --dry-run` shows the live diff.",
       ),
     );
     // Note: file:// sends Origin: null — not safe with credentials. A
@@ -3441,6 +3443,12 @@ function printHelp(topic?: HelpTopic): void {
     Currently supported additions: ${chalk.cyan("desktop")}, ${chalk.cyan("desktop-tauri")}, ${chalk.cyan("mobile")}.
     The two desktop wrappers are mutually exclusive — pick Electron
     (${chalk.cyan("desktop")}) or Tauri + Steamworks (${chalk.cyan("desktop-tauri")}, for games).
+
+    A native shell loads the client from its own origin, which the
+    deployed server rejects (${chalk.dim("403 INVALID_ORIGIN")}) until ${chalk.dim("TRUSTED_ORIGINS")}
+    on its Coolify server app names it. After adding one, update shows
+    the merge diff and asks before writing it (same as ${chalk.cyan("hatchkit sync")});
+    the server then needs a redeploy (${chalk.cyan("hatchkit sync --deploy")}).
 
   ${chalk.bold("Removal is not supported.")} Removing features could delete
     user code — remove manually + edit the manifest.
@@ -4343,6 +4351,19 @@ function printHelp(topic?: HelpTopic): void {
     --no-preflight Skip the deployed-ref check. For a repo git here
                    can't answer for (a shallow clone, a remote only
                    Coolify can reach) — not for pushing past a finding.
+    --yes, -y      Accept the TRUSTED_ORIGINS diff below without a prompt.
+    --no-native-origins
+                   Skip the native-client origins pass.
+
+  ${chalk.bold("Native clients (mobile / desktop / desktop-tauri):")}
+    Capacitor, Electron and Tauri load the client from their own origin
+    (${chalk.dim("capacitor://localhost")}, ${chalk.dim("https://localhost")}, ${chalk.dim("app://-")}, ${chalk.dim("tauri://localhost")},
+    ${chalk.dim("http://tauri.localhost")}). better-auth rejects an untrusted one with
+    ${chalk.dim("403 INVALID_ORIGIN")} before checking the password. Sync MERGES the ones
+    your features need into ${chalk.dim("TRUSTED_ORIGINS")} on the server app: existing
+    entries keep their order, nothing is removed, the diff is confirmed
+    first and read back after. The server reads the list at boot, so pair
+    it with ${chalk.cyan("--deploy")} (or redeploy by hand).
     --json         Emit ${chalk.dim("{ ok, topology, apps, deployed, deployedRef, dryRun, error? }")}
                    to stdout (suppresses the human-readable rendering).
 

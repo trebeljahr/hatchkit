@@ -50,8 +50,10 @@
  *                  same `provisionRoutedApp` that `create` uses
  *   3. routing     PATCH domain / ports_exposes / stripprefix
  *   4. env         push the resolved production env (see below)
- *   5. dns         upsert an A record per hostname the topology needs
- *   6. secrets     push the paired GitHub Actions deploy secrets
+ *   5. origins     merge the native clients' origins into TRUSTED_ORIGINS
+ *                  on the server app (deploy/trusted-origins.ts)
+ *   6. dns         upsert an A record per hostname the topology needs
+ *   7. secrets     push the paired GitHub Actions deploy secrets
  *
  * Fields pushed in the routing pass, and their caveats:
  *   · domain (`docker_compose_domains` for compose apps; `domains` for
@@ -98,6 +100,7 @@ import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import { manifestHostnames, readManifestWithMigrationInfo } from "../scaffold/manifest.js";
+import { hasNativeClient } from "../scaffold/native-origins.js";
 import { listComposeServices, readComposeFile } from "../utils/compose.js";
 import {
   CoolifyApi,
@@ -137,6 +140,13 @@ import {
   computeRoutingPlan,
   inferTopology,
 } from "./routing.js";
+import {
+  type NativeOriginsOutcome,
+  TRUSTED_ORIGINS_KEY,
+  mergePushedTrustedOrigins,
+  pushNativeOriginsToServerApps,
+  redeployNotice,
+} from "./trusted-origins.js";
 
 export interface SyncOptions {
   /** Project root containing `.hatchkit.json`. */
@@ -183,6 +193,15 @@ export interface SyncOptions {
    *  authentication problem that does not exist (deploy/deployed-ref.ts
    *  has the full story). `--no-preflight` proceeds anyway. */
   preflight?: boolean;
+  /** Merge the native clients' origins (mobile / desktop / desktop-tauri
+   *  features) into TRUSTED_ORIGINS on the server app. Default ON; a
+   *  no-op for projects without a native client. `--no-native-origins`
+   *  skips it. */
+  nativeOrigins?: boolean;
+  /** Accept the TRUSTED_ORIGINS diff without a prompt. Without it the
+   *  diff is confirmed interactively, and left unwritten when there is
+   *  no terminal to ask on. */
+  yes?: boolean;
 }
 
 /** What sync intends to do for one Coolify application — surfaces both
@@ -309,6 +328,9 @@ export interface SyncResult {
    *  carry their previous domains — none, for an app this run created —
    *  no matter what the rest of the passes reported. */
   routingFailed: string[];
+  /** TRUSTED_ORIGINS outcome per server app. Empty when the project has
+   *  no native client or `--no-native-origins` was given. */
+  nativeOrigins: NativeOriginsOutcome[];
   /** When dryRun, no PATCH was made even if `changed` was true. */
   dryRun: boolean;
 }
@@ -396,6 +418,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   const dnsUpserted: string[] = [];
   let secretsPushed: string[] = [];
   let secretsRemoved: string[] = [];
+  let nativeOrigins: NativeOriginsOutcome[] = [];
 
   // ── Pass 1: locate, then CREATE whatever the topology requires and
   //    Coolify doesn't have.
@@ -743,6 +766,37 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
         // Each half binds its own port. Without this the client app
         // inherits the server's PORT and Traefik reaches nothing.
         if (routed.role !== "compose") values.PORT = routed.portsExposes;
+        // TRUSTED_ORIGINS is a list the dashboard adds to by hand (a
+        // pinned browser-extension id, say). Pushing the file's value
+        // verbatim would silently drop those, so merge it into the live
+        // one instead: live entries keep their order, the file's missing
+        // ones are appended, nothing is removed.
+        if (TRUSTED_ORIGINS_KEY in values && !opts.dryRun) {
+          try {
+            const merged = await mergePushedTrustedOrigins(
+              api,
+              found.uuid,
+              values[TRUSTED_ORIGINS_KEY],
+            );
+            if (merged === null) {
+              delete values[TRUSTED_ORIGINS_KEY];
+              if (!opts.json) {
+                console.log(
+                  chalk.yellow(
+                    `    · env → ${found.name}: ${TRUSTED_ORIGINS_KEY} not pushed — this token can't read the live value to merge into.`,
+                  ),
+                );
+              }
+            } else {
+              values[TRUSTED_ORIGINS_KEY] = merged;
+            }
+          } catch (err) {
+            delete values[TRUSTED_ORIGINS_KEY];
+            errors.push(
+              `env ${found.name}: couldn't read live ${TRUSTED_ORIGINS_KEY} to merge — not pushed: ${(err as Error).message}`,
+            );
+          }
+        }
         if (opts.dryRun) {
           if (!opts.json) {
             console.log(
@@ -770,7 +824,45 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     }
   }
 
-  // ── Pass 4: DNS. `split` needs a second record for api.<domain>;
+  // ── Pass 4: native-client origins. A Capacitor / Electron / Tauri
+  //    shell loads the client from its own document origin, and
+  //    better-auth answers 403 INVALID_ORIGIN for any origin not in
+  //    TRUSTED_ORIGINS. Runs after the env pass so it merges into what
+  //    that pass just wrote. Server app only, chosen by routing role.
+  if (opts.nativeOrigins !== false && hasNativeClient(manifest.features)) {
+    const serverCandidates = routing.apps
+      .map((routed) => {
+        const found = locations.get(routed.appName);
+        return found
+          ? { ...found, role: routed.role, created: created.includes(found.name) }
+          : null;
+      })
+      .filter((a): a is NonNullable<typeof a> => a !== null);
+    nativeOrigins = await pushNativeOriginsToServerApps({
+      api,
+      apps: serverCandidates,
+      features: manifest.features,
+      surfaces: manifest.surfaces,
+      dryRun: opts.dryRun,
+      yes: opts.yes,
+      json: opts.json,
+      // `--deploy` redeploys the changed server below; otherwise say so.
+      printRedeployNotice: !opts.deploy,
+    });
+    for (const o of nativeOrigins) {
+      if (o.status === "failed" || o.status === "unreadable") {
+        errors.push(`${TRUSTED_ORIGINS_KEY} ${o.app}: ${o.detail ?? o.status}`);
+      } else if (o.status === "needs-confirmation") {
+        // Unattended run, nothing written. A script must not read this
+        // as a converged project: native sign-in is still broken.
+        errors.push(
+          `${TRUSTED_ORIGINS_KEY} ${o.app}: missing ${o.added.join(", ")} — not written without confirmation; re-run with --yes to accept the diff`,
+        );
+      }
+    }
+  }
+
+  // ── Pass 5: DNS. `split` needs a second record for api.<domain>;
   //    without it the API host simply doesn't resolve, which is the
   //    state tracktime was left in.
   const dnsHostnames = [manifest.domain, ...routing.extraDnsHostnames];
@@ -800,7 +892,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     }
   }
 
-  // ── Pass 5: GitHub Actions deploy secrets, paired under `split` so
+  // ── Pass 6: GitHub Actions deploy secrets, paired under `split` so
   //    CI can trigger BOTH apps. See deploy/gh-actions-secrets.ts.
   if (opts.secrets !== false && locations.size > 0) {
     const deployApps: CoolifyDeployApp[] = routing.apps
@@ -851,6 +943,14 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
       ...patched,
       ...apps.filter((a) => created.includes(a.name) && !patched.includes(a)),
     ];
+    // A server whose TRUSTED_ORIGINS just changed still holds the list
+    // it read at boot; only a redeploy makes the new one live.
+    for (const o of nativeOrigins) {
+      if (o.status !== "updated" || !o.needsRedeploy) continue;
+      if (toDeploy.some((p) => p.uuid === o.uuid)) continue;
+      const plan = apps.find((a) => a.uuid === o.uuid);
+      if (plan) toDeploy.push(plan);
+    }
     // What the deploy will actually build. Printed with the trigger
     // rather than left to be inferred, because the single most
     // expensive mistake around a Coolify deploy is assuming it ships
@@ -874,6 +974,13 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
         errors.push(`deploy ${plan.name}: ${(err as Error).message}`);
       }
     }
+    // A changed server this run couldn't redeploy (its app record was
+    // unreadable, or the trigger failed) still runs the old list.
+    const deployedUuids = new Set(
+      toDeploy.filter((p) => deployed.includes(p.name)).map((p) => p.uuid),
+    );
+    const stillStale = nativeOrigins.filter((o) => !deployedUuids.has(o.uuid));
+    if (!opts.json) for (const line of redeployNotice(stillStale)) console.log(chalk.yellow(line));
   } else if (patched.length > 0 && !opts.json) {
     console.log(
       chalk.yellow(
@@ -899,6 +1006,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     composeServices: compose?.services ?? null,
     apps,
     routingFailed,
+    nativeOrigins,
     dryRun: !!opts.dryRun,
   };
 
@@ -976,6 +1084,19 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
         );
       }
     }
+    // An "in sync" headline above must not read as "native sign-in works"
+    // when the origins it needs were left unwritten.
+    const pendingOrigins = nativeOrigins.filter(
+      (o) => o.status === "declined" || o.status === "needs-confirmation",
+    );
+    if (pendingOrigins.length > 0 && !opts.dryRun) {
+      console.log(
+        chalk.yellow(
+          `\n  ⚠ ${TRUSTED_ORIGINS_KEY} NOT updated on ${pendingOrigins.map((o) => `"${o.app}"`).join(", ")} — ` +
+            "native clients still get 403 INVALID_ORIGIN on sign-in.",
+        ),
+      );
+    }
     if (errors.length > 0) {
       console.log(chalk.yellow("\n  Errors:"));
       for (const e of errors) console.log(chalk.yellow(`    · ${e}`));
@@ -998,6 +1119,7 @@ function emptyResult(opts: SyncOptions): SyncResult {
     composeServices: null,
     apps: [],
     routingFailed: [],
+    nativeOrigins: [],
     deployed: [],
     created: [],
     envPushed: {},
@@ -1631,6 +1753,8 @@ export async function runSyncCli(args: string[]): Promise<void> {
   // clone, a repo Coolify reaches and this machine doesn't), not for
   // pushing past a finding.
   const preflight = !args.includes("--no-preflight");
+  const nativeOrigins = !args.includes("--no-native-origins");
+  const yes = args.includes("--yes") || args.includes("-y");
   const dirArg = ((): string | undefined => {
     const i = args.findIndex((a) => a === "--dir");
     if (i >= 0 && args[i + 1]) return args[i + 1];
@@ -1649,6 +1773,8 @@ export async function runSyncCli(args: string[]): Promise<void> {
     dns,
     secrets,
     preflight,
+    nativeOrigins,
+    yes,
   });
   if (json) {
     console.log(JSON.stringify(result, null, 2));

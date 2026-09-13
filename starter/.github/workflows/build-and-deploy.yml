@@ -387,3 +387,75 @@ jobs:
             echo "::error::(or as repo variables), or run \`hatchkit regen-infra\`."
             exit 1
           fi
+
+      # Native shells (Capacitor, Electron, Tauri) load the client from their
+      # own document origin, and better-auth rejects an origin missing from
+      # TRUSTED_ORIGINS with 403 INVALID_ORIGIN before it checks the
+      # password. The web-origin CORS check above cannot see that.
+      #
+      # Two details decide whether this probe can fail at all:
+      #   · `Sec-Fetch-Mode: cors`. better-auth only force-validates Origin
+      #     on a cookieless sign-in when Sec-Fetch-* headers are present,
+      #     which every browser and WebView sends and curl does not.
+      #   · A body that PASSES schema validation. better-call validates the
+      #     body before the sign-in route's origin check runs, so `{}`
+      #     answers 400 for a trusted and an untrusted origin alike.
+      # With both, an untrusted origin gets 403 INVALID_ORIGIN and a trusted
+      # one reaches the credential check and gets 401 for an address that
+      # cannot exist (`.invalid` is reserved). Nothing ever signs in.
+      #
+      # Sign-in is rate-limited (3 per 10s per IP in production), hence the
+      # spacing and the retry on 429.
+      #
+      # HATCHKIT_NATIVE_ORIGINS is written here as a literal by hatchkit from
+      # the manifest's features (mobile / desktop / desktop-tauri) and kept
+      # current by `hatchkit update` / `hatchkit regen-infra`. Empty means
+      # the project ships no native client and there is nothing to check.
+      - name: Verify native clients can sign in
+        env:
+          COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
+          COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK_URL }}
+          HATCHKIT_API_URL: ${{ vars.HATCHKIT_API_URL }}
+          HATCHKIT_NATIVE_ORIGINS: ${{ vars.HATCHKIT_NATIVE_ORIGINS }}
+        if: env.COOLIFY_BASE_URL != '' || env.COOLIFY_WEBHOOK_URL != ''
+        run: |
+          set -uo pipefail
+          API="${HATCHKIT_API_URL:-}"
+          API="${API%/}"
+          NATIVE="${HATCHKIT_NATIVE_ORIGINS:-}"
+          if [ -z "$NATIVE" ]; then
+            echo "· no native clients in this project — nothing to check"
+            exit 0
+          fi
+          if [ -z "$API" ]; then
+            echo "::error::HATCHKIT_NATIVE_ORIGINS is set but HATCHKIT_API_URL is empty — nothing to probe."
+            exit 1
+          fi
+          out=$(mktemp)
+          failed=0
+          for origin in $(printf '%s' "$NATIVE" | tr ',' ' '); do
+            for attempt in 1 2 3; do
+              status=$(curl -sS --max-time 10 -o "$out" -w '%{http_code}' \
+                         -X POST "$API/api/auth/sign-in/email" \
+                         -H "Origin: $origin" \
+                         -H 'Sec-Fetch-Mode: cors' \
+                         -H 'content-type: application/json' \
+                         --data '{"email":"hatchkit-origin-probe@example.invalid","password":"hatchkit-origin-probe"}')
+              [ "$status" = "429" ] || break
+              echo "  $origin: rate-limited, retrying ($attempt/3)"
+              sleep 11
+            done
+            body=$(head -c 300 "$out" 2>/dev/null || true)
+            if [ "$status" = "403" ] || printf '%s' "$body" | grep -q INVALID_ORIGIN; then
+              echo "::error::$origin is NOT trusted: sign-in answered $status $body"
+              echo "::error::add it to TRUSTED_ORIGINS on the server app (\`hatchkit sync --deploy\`)"
+              failed=1
+            elif [ "$status" = "401" ]; then
+              echo "✓ $origin is trusted (sign-in reached the credential check: 401)"
+            else
+              echo "::error::$origin: expected 401 from the credential check, got ${status:-<none>} $body"
+              failed=1
+            fi
+            sleep 4
+          done
+          exit "$failed"

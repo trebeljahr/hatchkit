@@ -71,6 +71,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Topology } from "../deploy/routing.js";
 import { clientBuildArgUrls } from "./client-build-args.js";
+import { nativeClientOrigins } from "./native-origins.js";
 
 /** Project shape, as recorded in the manifest's `surfaces`. Decides
  *  which halves of the gate can run at all. */
@@ -359,6 +360,82 @@ export const WORKFLOW_VERIFY_STEP = `      # Everything above only proves Coolif
           fi
 `;
 
+/** Deploy-job step that proves each native shell's origin is trusted by
+ *  the deployed server. Runs after {@link WORKFLOW_VERIFY_STEP}, once the
+ *  new build is known to be live. */
+export const WORKFLOW_NATIVE_ORIGIN_STEP = `      # Native shells (Capacitor, Electron, Tauri) load the client from their
+      # own document origin, and better-auth rejects an origin missing from
+      # TRUSTED_ORIGINS with 403 INVALID_ORIGIN before it checks the
+      # password. The web-origin CORS check above cannot see that.
+      #
+      # Two details decide whether this probe can fail at all:
+      #   · \`Sec-Fetch-Mode: cors\`. better-auth only force-validates Origin
+      #     on a cookieless sign-in when Sec-Fetch-* headers are present,
+      #     which every browser and WebView sends and curl does not.
+      #   · A body that PASSES schema validation. better-call validates the
+      #     body before the sign-in route's origin check runs, so \`{}\`
+      #     answers 400 for a trusted and an untrusted origin alike.
+      # With both, an untrusted origin gets 403 INVALID_ORIGIN and a trusted
+      # one reaches the credential check and gets 401 for an address that
+      # cannot exist (\`.invalid\` is reserved). Nothing ever signs in.
+      #
+      # Sign-in is rate-limited (3 per 10s per IP in production), hence the
+      # spacing and the retry on 429.
+      #
+      # HATCHKIT_NATIVE_ORIGINS is written here as a literal by hatchkit from
+      # the manifest's features (mobile / desktop / desktop-tauri) and kept
+      # current by \`hatchkit update\` / \`hatchkit regen-infra\`. Empty means
+      # the project ships no native client and there is nothing to check.
+      - name: Verify native clients can sign in
+        env:
+          COOLIFY_BASE_URL: \${{ secrets.COOLIFY_BASE_URL }}
+          COOLIFY_WEBHOOK_URL: \${{ secrets.COOLIFY_WEBHOOK_URL }}
+          HATCHKIT_API_URL: \${{ vars.HATCHKIT_API_URL }}
+          HATCHKIT_NATIVE_ORIGINS: \${{ vars.HATCHKIT_NATIVE_ORIGINS }}
+        if: env.COOLIFY_BASE_URL != '' || env.COOLIFY_WEBHOOK_URL != ''
+        run: |
+          set -uo pipefail
+          API="\${HATCHKIT_API_URL:-}"
+          API="\${API%/}"
+          NATIVE="\${HATCHKIT_NATIVE_ORIGINS:-}"
+          if [ -z "$NATIVE" ]; then
+            echo "· no native clients in this project — nothing to check"
+            exit 0
+          fi
+          if [ -z "$API" ]; then
+            echo "::error::HATCHKIT_NATIVE_ORIGINS is set but HATCHKIT_API_URL is empty — nothing to probe."
+            exit 1
+          fi
+          out=$(mktemp)
+          failed=0
+          for origin in $(printf '%s' "$NATIVE" | tr ',' ' '); do
+            for attempt in 1 2 3; do
+              status=$(curl -sS --max-time 10 -o "$out" -w '%{http_code}' \\
+                         -X POST "$API/api/auth/sign-in/email" \\
+                         -H "Origin: $origin" \\
+                         -H 'Sec-Fetch-Mode: cors' \\
+                         -H 'content-type: application/json' \\
+                         --data '{"email":"hatchkit-origin-probe@example.invalid","password":"hatchkit-origin-probe"}')
+              [ "$status" = "429" ] || break
+              echo "  $origin: rate-limited, retrying ($attempt/3)"
+              sleep 11
+            done
+            body=$(head -c 300 "$out" 2>/dev/null || true)
+            if [ "$status" = "403" ] || printf '%s' "$body" | grep -q INVALID_ORIGIN; then
+              echo "::error::$origin is NOT trusted: sign-in answered $status $body"
+              echo "::error::add it to TRUSTED_ORIGINS on the server app (\\\`hatchkit sync --deploy\\\`)"
+              failed=1
+            elif [ "$status" = "401" ]; then
+              echo "✓ $origin is trusted (sign-in reached the credential check: 401)"
+            else
+              echo "::error::$origin: expected 401 from the credential check, got \${status:-<none>} $body"
+              failed=1
+            fi
+            sleep 4
+          done
+          exit "$failed"
+`;
+
 // ---------------------------------------------------------------------------
 // Pure content transforms
 // ---------------------------------------------------------------------------
@@ -536,6 +613,61 @@ export function setWorkflowVerifyUrlValues(content: string, urls: DeployVerifyUr
     .replace(/^(\s*HATCHKIT_API_URL:).*$/m, `$1 ${urls.apiUrl || '""'}`);
 }
 
+/** Write the native-origin probe list into the workflow. Anchors on the
+ *  `HATCHKIT_NATIVE_ORIGINS:` env line, so nothing else can match; no-op
+ *  when the step is absent. Always quoted: an empty value must not read
+ *  as YAML null.
+ *
+ *  Deliberately NOT part of {@link setWorkflowDeployVerifyUrls}: that one
+ *  runs from `hatchkit rename-domain`, and these origins have nothing to
+ *  do with the domain — a rename must neither add nor strip them. */
+export function setWorkflowNativeOriginsValue(content: string, value: string): string {
+  return content.replace(/^(\s*HATCHKIT_NATIVE_ORIGINS:).*$/m, `$1 "${value}"`);
+}
+
+/** Bring the native-origin sign-in check in line with a feature set.
+ *
+ *  Inserts {@link WORKFLOW_NATIVE_ORIGIN_STEP} right after the verify
+ *  step when the project has a native client and the workflow predates
+ *  the check, then writes the literal origin list. A workflow without
+ *  the check is left alone for a project with no native client — adding
+ *  a step that can only print "nothing to check" is churn. Returns the
+ *  content unchanged when the verify step it anchors on is missing. */
+export function upgradeWorkflowNativeOriginCheck(
+  content: string,
+  features: readonly string[],
+): string {
+  const origins = nativeClientOrigins(features);
+  let out = content;
+  if (!out.includes("- name: Verify native clients can sign in")) {
+    if (origins.length === 0) return content;
+    const at = endOfWorkflowStep(out, "- name: Verify the deployment is actually live");
+    if (at === undefined) return content;
+    out = `${out.slice(0, at)}\n${WORKFLOW_NATIVE_ORIGIN_STEP}${out.slice(at)}`;
+  }
+  return setWorkflowNativeOriginsValue(out, origins.join(","));
+}
+
+/** Offset just past the last non-blank line of the workflow step whose
+ *  `- name:` line contains `marker` — where a following step belongs.
+ *  The step ends at the first later line indented no deeper than its
+ *  `- name:` (a sibling step, its leading comment, or the next job). */
+function endOfWorkflowStep(content: string, marker: string): number | undefined {
+  const lines = content.split("\n");
+  const start = lines.findIndex((l) => l.includes(marker));
+  if (start === -1) return undefined;
+  const indent = lines[start].length - lines[start].trimStart().length;
+  let last = start;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (!lines[i].trim()) continue;
+    if (lines[i].length - lines[i].trimStart().length <= indent) break;
+    last = i;
+  }
+  let offset = 0;
+  for (let i = 0; i <= last; i++) offset += lines[i].length + 1;
+  return Math.min(offset, content.length);
+}
+
 /** Insert the pin + verify steps into a deploy job that predates them,
  *  then point them at this project's URLs.
  *
@@ -573,6 +705,21 @@ export function upgradeWorkflowDeployVerification(
 // ---------------------------------------------------------------------------
 // Write-through wrappers
 // ---------------------------------------------------------------------------
+
+/** Scaffold-time hook: stamp the native-origin probe list into the
+ *  generated workflow. Returns true when written. */
+export function applyWorkflowNativeOrigins(
+  outputDir: string,
+  features: readonly string[],
+): boolean {
+  const path = join(outputDir, DEPLOY_WORKFLOW_REL_PATH);
+  if (!existsSync(path)) return false;
+  const before = readFileSync(path, "utf-8");
+  const after = upgradeWorkflowNativeOriginCheck(before, features);
+  if (after === before) return false;
+  writeFileSync(path, after, "utf-8");
+  return true;
+}
 
 /** Scaffold-time hook: stamp the project's literal probe URLs into the
  *  generated workflow. No-op when the workflow is absent (e.g.
@@ -612,6 +759,10 @@ export function deployVerificationRetrofits(
   domain: string,
   topology: Topology = "single-origin",
   surfaces: VerifySurfaces = "fullstack",
+  /** Manifest features, for the native-origin sign-in check. Omitted
+   *  means "unknown" and leaves that check exactly as found — never
+   *  stripped for want of an argument. */
+  features?: readonly string[],
 ): Array<[label: string, relPath: string, fn: (c: string) => string]> {
   return [
     ["docker-compose.yml", "docker-compose.yml", upgradeComposePullPolicy],
@@ -625,7 +776,8 @@ export function deployVerificationRetrofits(
       (c) => {
         let out = addWorkflowCommitShaBuildArg(c, "packages/server/Dockerfile");
         out = addWorkflowCommitShaBuildArg(out, "packages/client/Dockerfile");
-        return upgradeWorkflowDeployVerification(out, domain, topology, surfaces);
+        out = upgradeWorkflowDeployVerification(out, domain, topology, surfaces);
+        return features === undefined ? out : upgradeWorkflowNativeOriginCheck(out, features);
       },
     ],
   ];

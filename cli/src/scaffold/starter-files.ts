@@ -10,6 +10,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProjectConfig } from "../prompts.js";
 import type { ProjectPorts } from "../utils/ports.js";
+import { nativeClientOrigins } from "./native-origins.js";
 import { readPackageName, readWorkspacePackageNames, setPackageJsonScript } from "./pkg-json.js";
 
 /** Literal string replacement across a file. Safe for any content —
@@ -65,17 +66,12 @@ export function updateEnvExample(outputDir: string, relPath: string, config: Pro
 
   // Pre-populate TRUSTED_ORIGINS for native clients so the commented
   // guidance in the starter's .env.example is replaced with a working
-  // default the user only has to uncomment.
-  const wantsDesktop = config.features.includes("desktop");
-  const wantsTauri = config.features.includes("desktop-tauri");
-  const wantsMobile = config.features.includes("mobile");
-  if ((wantsDesktop || wantsTauri || wantsMobile) && /^#\s*TRUSTED_ORIGINS=/m.test(content)) {
-    const origins: string[] = [];
-    if (wantsMobile) origins.push("capacitor://localhost", "https://localhost");
-    if (wantsDesktop) origins.push("app://-");
-    // Tauri serves the bundled frontend from tauri://localhost on
-    // macOS/Linux and http://tauri.localhost on Windows.
-    if (wantsTauri) origins.push("tauri://localhost", "http://tauri.localhost");
+  // default. The list comes from `nativeClientOrigins`, the same function
+  // deploy/trusted-origins.ts merges onto the server's Coolify app — this
+  // file is documentation for local setups, Coolify is what production
+  // reads, and the two must not drift.
+  const origins = nativeClientOrigins(config.features);
+  if (origins.length > 0 && /^#\s*TRUSTED_ORIGINS=/m.test(content)) {
     content = content.replace(/^#\s*TRUSTED_ORIGINS=.*$/m, `TRUSTED_ORIGINS=${origins.join(",")}`);
   }
 

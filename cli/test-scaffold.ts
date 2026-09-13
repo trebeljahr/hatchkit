@@ -257,6 +257,12 @@ results.minimal = await run("minimal (no flags)", "plain-app", [], (d) => {
       "TRUSTED_ORIGINS stays commented out (no native clients)",
       /^#\s*TRUSTED_ORIGINS=/m.test(serverEnv),
     ],
+    [
+      "deploy workflow: native sign-in check present with an empty origin list",
+      readFileSync(join(d, ".github/workflows/build-and-deploy.yml"), "utf-8").includes(
+        'HATCHKIT_NATIVE_ORIGINS: ""',
+      ),
+    ],
     // The client image bakes NEXT_PUBLIC_* at BUILD time — the CI
     // workflow must carry the literal production URLs as build args,
     // the Dockerfile must accept them, and the compose file must NOT
@@ -354,6 +360,12 @@ results.mobile = await run("mobile only", "my-cool-app", ["mobile"], (d) => {
     [
       "TRUSTED_ORIGINS includes https://localhost",
       /^TRUSTED_ORIGINS=.*https:\/\/localhost/m.test(serverEnv),
+    ],
+    [
+      "deploy workflow probes the same origins .env.example trusts",
+      readFileSync(join(d, ".github/workflows/build-and-deploy.yml"), "utf-8").includes(
+        `HATCHKIT_NATIVE_ORIGINS: "${/^TRUSTED_ORIGINS=(.*)$/m.exec(serverEnv)?.[1]}"`,
+      ),
     ],
     ["capacitor.config.ts kept", existsSync(join(d, "capacitor.config.ts"))],
     ["mobile bridge kept", existsSync(join(d, "packages/client/src/mobile/bridge.ts"))],

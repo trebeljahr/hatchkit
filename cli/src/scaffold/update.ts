@@ -23,6 +23,7 @@ import { join, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
 import { addUsedPorts, getUsedPorts } from "../config.js";
+import { pushNativeOriginsForProject } from "../deploy/trusted-origins.js";
 import type { Feature } from "../prompts.js";
 import { multiselect } from "../utils/multiselect.js";
 import { PORT_RANGES, pickPort } from "../utils/ports.js";
@@ -34,7 +35,11 @@ import {
   upgradeClientDockerfile,
   upgradeWorkflowClientBuildArgs,
 } from "./client-build-args.js";
-import { deployVerificationRetrofits } from "./deploy-verification.js";
+import {
+  DEPLOY_WORKFLOW_REL_PATH,
+  deployVerificationRetrofits,
+  upgradeWorkflowNativeOriginCheck,
+} from "./deploy-verification.js";
 import {
   MANIFEST_FILENAME,
   type ProjectManifest,
@@ -42,6 +47,7 @@ import {
   readManifestWithMigrationInfo,
   writeManifest,
 } from "./manifest.js";
+import { hasNativeClient } from "./native-origins.js";
 import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
 import { setPackageJsonScript } from "./pkg-json.js";
 import { applyPorts, rewriteFile } from "./starter-files.js";
@@ -75,6 +81,10 @@ export interface UpdateOptions {
     confirmAddFeatures?: boolean;
     enableLocalDev?: boolean;
     localDevSlug?: string;
+    /** Check TRUSTED_ORIGINS on Coolify after a native feature is added.
+     *  Preset runs skip it unless this is true, so a headless test can
+     *  never reach a real Coolify through the user's keychain. */
+    pushNativeOrigins?: boolean;
   };
 }
 
@@ -197,6 +207,7 @@ export async function runUpdate(
     manifest.domain,
     manifest.topology,
     manifest.surfaces,
+    manifest.features,
   )) {
     const path = join(projectDir, rel);
     if (!existsSync(path)) continue;
@@ -404,6 +415,36 @@ export async function runUpdate(
       localDev: localDevEnabled ?? manifest.localDev,
     };
     writeManifest(manifestDir, updatedManifest);
+  }
+
+  // A native shell added here loads the client from its own origin, and
+  // the deployed server answers its sign-in with 403 INVALID_ORIGIN until
+  // TRUSTED_ORIGINS on the server's Coolify app names it. The files above
+  // don't carry that anywhere production reads, so offer the same merge
+  // `hatchkit sync` does: diff, confirm, write, read back, and a redeploy
+  // notice. Skipped (with the command to run later) when the project
+  // isn't on Coolify yet.
+  const addedNative = actuallyAdded.filter((f) => hasNativeClient([f]));
+  if (addedNative.length > 0) {
+    const features = [...updatedFeatures];
+    setWorkflowNativeOriginsIn(projectDir, features);
+    if (options.presets === undefined || options.presets.pushNativeOrigins === true) {
+      try {
+        await pushNativeOriginsForProject({
+          projectDir,
+          manifest: { ...manifest, features },
+        });
+      } catch (err) {
+        console.log(
+          chalk.yellow(`\n  Couldn't check TRUSTED_ORIGINS on Coolify: ${(err as Error).message}`),
+        );
+        console.log(
+          chalk.dim(
+            "  Run `hatchkit sync --dry-run` to see the diff, then `hatchkit sync --deploy`.",
+          ),
+        );
+      }
+    }
   }
 
   // SES Custom MAIL FROM retrofit. Pre-existing projects (provisioned
@@ -687,4 +728,20 @@ function readJson(path: string): Record<string, unknown> & {
   build?: unknown;
 } {
   return JSON.parse(readFileSync(path, "utf-8"));
+}
+
+/** Point the deploy workflow's native-origin sign-in check at the
+ *  project's current feature set, inserting the step when a native
+ *  feature was just added to a workflow that predates it. */
+function setWorkflowNativeOriginsIn(projectDir: string, features: readonly string[]): void {
+  const path = join(projectDir, DEPLOY_WORKFLOW_REL_PATH);
+  rewriteFile(path, (c) => {
+    const after = upgradeWorkflowNativeOriginCheck(c, features);
+    if (after !== c) {
+      console.log(
+        chalk.green("  ✓ deploy workflow: native-client sign-in check targets the new origins"),
+      );
+    }
+    return after;
+  });
 }

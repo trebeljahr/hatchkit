@@ -151,7 +151,12 @@ export async function runRegenInfra(opts: RegenArgs): Promise<void> {
     // `hatchkit update` so the two can't retrofit different subsets —
     // a project that got the gate but not the stamps would fail every
     // deploy on a check its own images cannot satisfy.
-    ...deployVerificationRetrofits(manifest.domain, manifest.topology, manifest.surfaces),
+    ...deployVerificationRetrofits(
+      manifest.domain,
+      manifest.topology,
+      manifest.surfaces,
+      manifest.features,
+    ),
   ];
   let projectFilesTouched = 0;
   for (const [label, relPath, fn] of projectFileUpgrades) {

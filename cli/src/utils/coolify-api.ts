@@ -354,8 +354,16 @@ export class CoolifyApi {
     return { uuid: match.uuid, name: match.name };
   }
 
-  /** Upsert an env variable on a Coolify application. The Coolify API
-   *  accepts multiple envs in one call so this is idempotent. */
+  /** Upsert env variables on a Coolify application in one call.
+   *
+   *  `PATCH /envs/bulk` CREATES a key that doesn't exist and updates one
+   *  that does (`create_bulk_envs` in ApplicationsController, verified at
+   *  v4.0.0-beta.469 and v4.x). That is not true of the single-key
+   *  `PATCH /envs`, which never creates a missing key — the "PATCH
+   *  only updates" warnings elsewhere in this repo are about that
+   *  endpoint.
+   *  A caller that must know the value landed should still read it back:
+   *  see deploy/trusted-origins.ts. */
   async setAppEnv(
     appUuid: string,
     envs: Record<string, string>,
@@ -925,16 +933,53 @@ export class CoolifyApi {
    *  only. Anything else reading this must not print, log or persist a
    *  value. */
   async listAppEnvs(uuid: string): Promise<Array<{ key: string; value: string }>> {
+    const rows = await this.listAppEnvRows(uuid);
+    return rows.map((r) => ({ key: r.key, value: r.value ?? "" }));
+  }
+
+  /** Read an application's environment variables, keeping the two facts
+   *  `listAppEnvs` flattens away:
+   *
+   *    · `isPreview` — GET /envs returns production AND preview rows in
+   *      one list, and the same key can appear in both.
+   *    · `value: undefined` — Coolify strips `value` from every row when
+   *      the token lacks `read:sensitive` (`removeSensitiveData` in
+   *      ApplicationsController, verified at v4.0.0-beta.469). That is
+   *      NOT an empty value, and a caller that merges into the live value
+   *      must refuse to write rather than treat it as one.
+   *
+   *  Same secrecy rule as `listAppEnvs`: never print a value. */
+  async listAppEnvRows(
+    uuid: string,
+  ): Promise<Array<{ key: string; value: string | undefined; isPreview: boolean }>> {
     const raw = await this.request<unknown>("GET", `/applications/${uuid}/envs`);
     const rows = Array.isArray(raw) ? raw : [];
-    const out: Array<{ key: string; value: string }> = [];
+    const out: Array<{ key: string; value: string | undefined; isPreview: boolean }> = [];
     for (const r of rows) {
       if (!r || typeof r !== "object") continue;
       const e = r as Record<string, unknown>;
       if (typeof e.key !== "string") continue;
-      out.push({ key: e.key, value: typeof e.value === "string" ? e.value : "" });
+      out.push({
+        key: e.key,
+        value: typeof e.value === "string" ? e.value : e.value === null ? "" : undefined,
+        isPreview: e.is_preview === true || e.is_preview === 1,
+      });
     }
     return out;
+  }
+
+  /** Create ONE production env variable. `POST /applications/{uuid}/envs`
+   *  creates and answers 409 once the key exists; `setAppEnv`'s bulk
+   *  PATCH upserts on every build hatchkit supports. This exists for the
+   *  callers that confirm a write by reading it back and must have a
+   *  second, explicit way to make a missing key exist. */
+  async createAppEnv(uuid: string, key: string, value: string): Promise<void> {
+    await this.request("POST", `/applications/${uuid}/envs`, {
+      key,
+      value,
+      is_preview: false,
+      is_literal: true,
+    });
   }
 
   /** Trigger a deploy of an existing application. Useful after we've
