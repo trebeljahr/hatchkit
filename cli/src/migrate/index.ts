@@ -68,6 +68,7 @@ import {
   MIGRATION_PROVIDERS,
   type MigrationAction,
   type MigrationPhase,
+  type MigrationPlan,
   type MigrationProvider,
   inferOldDomain,
   planDomainMigration,
@@ -148,13 +149,32 @@ export async function runMigrateDomain(opts: MigrateDomainOptions): Promise<void
   const valid = validateDomain(newDomain);
   if (valid !== true) throw new Error(`--to invalid: ${valid}`);
 
+  if (opts.fromDomain !== undefined) {
+    const from = opts.fromDomain.trim().toLowerCase();
+    const fromValid = validateDomain(from);
+    if (fromValid !== true) throw new Error(`--from invalid: ${fromValid}`);
+    if (from === newDomain) {
+      throw new Error(
+        `--from and --to are both ${newDomain} — --from names the domain you are leaving.`,
+      );
+    }
+  }
+
   const inferred = opts.fromDomain
     ? { domain: opts.fromDomain.trim().toLowerCase(), source: "--from" }
     : inferOldDomain(manifest, newDomain);
   if (!inferred) {
     console.log(
       chalk.green(
-        `\n  ${manifest.name} is already fully on ${newDomain} — manifest, SES identity and assets bucket all agree.\n`,
+        `\n  ${manifest.name} is already fully on ${newDomain} — manifest, SES identity and assets bucket all agree.`,
+      ),
+    );
+    // After cutover nothing recorded names the old domain any more, so
+    // it can't be inferred — but the old identities still exist until
+    // cleanup retires them. Say how to get there instead of stopping.
+    console.log(
+      chalk.dim(
+        `  Still to retire the old side? Name it: ${chalk.cyan(`hatchkit migrate-domain --to ${newDomain} --from <old-domain> --phase cleanup`)}\n`,
       ),
     );
     return;
@@ -179,7 +199,7 @@ export async function runMigrateDomain(opts: MigrateDomainOptions): Promise<void
   if (opts.dryRun) {
     console.log(chalk.yellow("  [dry-run] Nothing was written."));
     console.log(renderManualChecklist(plan));
-    printNextCommand(plan.newDomain, phase);
+    printNextCommand(plan, phase);
     return;
   }
 
@@ -190,7 +210,7 @@ export async function runMigrateDomain(opts: MigrateDomainOptions): Promise<void
         `  Nothing to do in the ${chalk.bold(phase)} phase${opts.only ? ` for ${opts.only}` : ""}.`,
       ),
     );
-    printNextCommand(plan.newDomain, phase);
+    printNextCommand(plan, phase);
     return;
   }
 
@@ -227,7 +247,7 @@ export async function runMigrateDomain(opts: MigrateDomainOptions): Promise<void
     } catch (err) {
       const reason = (err as Error).message.split("\n")[0];
       console.log(chalk.red(`    ✗ ${reason}`));
-      deferred.push(deferralFor(action, plan.newDomain, reason));
+      deferred.push(deferralFor(action, plan, reason));
       continue;
     }
 
@@ -238,7 +258,7 @@ export async function runMigrateDomain(opts: MigrateDomainOptions): Promise<void
       // deferral all the same, because what an operator needs is a
       // durable note carrying the retry command, and `deferred[]` is
       // where the rest of hatchkit already looks for those.
-      deferred.push(deferralFor(action, plan.newDomain, outcome.message));
+      deferred.push(deferralFor(action, plan, outcome.message));
       continue;
     }
 
@@ -269,28 +289,49 @@ export async function runMigrateDomain(opts: MigrateDomainOptions): Promise<void
   }
 
   console.log(renderManualChecklist(plan));
-  printNextCommand(plan.newDomain, phase);
+  printNextCommand(plan, phase);
 }
 
 function deferralKey(action: MigrationAction): string {
   return `migrate:${action.id}`;
 }
 
-function deferralFor(action: MigrationAction, newDomain: string, reason: string): DeferredStep {
+/** The command that runs `phase` of this migration again.
+ *
+ *  Always carries `--from`. The old domain is only inferable while some
+ *  recorded field still names it; prepare moves `manifest.domain` and
+ *  cutover moves the SES identity and assets URL, so by cleanup there
+ *  is nothing left to infer from. A retry or next-phase command without
+ *  `--from` would report "already fully migrated" and never reach the
+ *  old identities it was printed to retire. */
+export function migrateCommand(
+  plan: Pick<MigrationPlan, "oldDomain" | "newDomain">,
+  phase: MigrationPhase,
+  only?: MigrationProvider,
+): string {
+  return [
+    `hatchkit migrate-domain --to ${plan.newDomain} --from ${plan.oldDomain} --phase ${phase}`,
+    only ? `--only ${only}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function deferralFor(action: MigrationAction, plan: MigrationPlan, reason: string): DeferredStep {
   return deferralForStep({
     key: deferralKey(action),
     label: `migrate-domain / ${action.provider} (${action.phase})`,
     kind: "failed",
     reason,
-    command: `hatchkit migrate-domain --to ${newDomain} --phase ${action.phase} --only ${action.provider}`,
+    command: migrateCommand(plan, action.phase, action.provider),
     hint: action.gate ? [`waiting on: ${action.gate}`] : undefined,
   });
 }
 
-function printNextCommand(newDomain: string, phase: MigrationPhase): void {
+function printNextCommand(plan: MigrationPlan, phase: MigrationPhase): void {
   const next: Partial<Record<MigrationPhase, string>> = {
-    prepare: `hatchkit migrate-domain --to ${newDomain} --phase cutover`,
-    cutover: `hatchkit migrate-domain --to ${newDomain} --phase cleanup`,
+    prepare: migrateCommand(plan, "cutover"),
+    cutover: migrateCommand(plan, "cleanup"),
   };
   const cmd = next[phase];
   if (!cmd) return;

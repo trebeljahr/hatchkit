@@ -928,6 +928,38 @@ export function buildDesiredCors(args: {
   };
 }
 
+/** Normalise an origin for comparison: trimmed, lower-cased, no
+ *  trailing slash. Browsers send `Origin` without one, and a stray
+ *  `https://x.com/` in a recorded list must still match `https://x.com`. */
+function normalizeOrigin(origin: string): string {
+  return origin.trim().replace(/\/+$/, "").toLowerCase();
+}
+
+/** The caller-supplied extras a reconcile should apply: the ones the
+ *  manifest already records, plus `add`, minus `remove`.
+ *
+ *  `migrate-domain` is the reason `add`/`remove` exist. Its prepare
+ *  phase rewrites `manifest.domain` to the new domain, and the desired
+ *  set is built from `manifest.domain` — so without help the reconcile
+ *  would drop the OLD live origin from the bucket days before cutover,
+ *  and the site still serving there would lose its assets. Recording
+ *  the old origin as an extra keeps it through every reconcile in
+ *  between (`provision s3`, the cutover step) until cleanup removes it.
+ *  Pure — no API calls. */
+export function resolveCorsExtras(
+  recorded: string[],
+  opts: { add?: string[]; remove?: string[] } = {},
+): string[] {
+  const removed = new Set((opts.remove ?? []).map(normalizeOrigin));
+  const out = new Map<string, string>();
+  for (const origin of [...recorded, ...(opts.add ?? [])]) {
+    const key = normalizeOrigin(origin);
+    if (!key || removed.has(key) || out.has(key)) continue;
+    out.set(key, origin.trim().replace(/\/+$/, ""));
+  }
+  return [...out.values()].sort();
+}
+
 /** GET → diff → PUT. Returns the BucketCors entry to record in the
  *  manifest. Surfaces progress via ora — the caller has a spinner
  *  context (provisionS3ForProject) where one extra line slots in
@@ -1007,6 +1039,13 @@ function normalizeCorsRule(r: R2CorsRule): R2CorsRule {
  *  whole rename because the keychain is empty would be over-eager. */
 export async function reconcileAssetsCorsFromManifest(
   projectDir: string,
+  opts: {
+    /** Origins to keep on the bucket (and record as extras) on top of
+     *  what the manifest implies. See `resolveCorsExtras`. */
+    addOrigins?: string[];
+    /** Recorded extras to drop — the inverse, used by migrate cleanup. */
+    removeOrigins?: string[];
+  } = {},
 ): Promise<BucketCors | null> {
   const manifest = readManifest(projectDir);
   if (!manifest?.s3Buckets?.assets?.name) return null;
@@ -1030,7 +1069,10 @@ export async function reconcileAssetsCorsFromManifest(
   if (!adminToken) return null;
 
   const cf = new CloudflareApi({ token: adminToken });
-  const extras = manifest.s3Buckets.assets.cors?.extraOrigins ?? [];
+  const extras = resolveCorsExtras(manifest.s3Buckets.assets.cors?.extraOrigins ?? [], {
+    add: opts.addOrigins,
+    remove: opts.removeOrigins,
+  });
   const desired = buildDesiredCors({ manifest, extras });
   const applied = await reconcileBucketCors(
     cf,

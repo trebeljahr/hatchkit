@@ -64,6 +64,16 @@
  * only the parts that are still behind. `oldDomain` is used for two
  * things and no more — the file-rewrite phase, and naming the cleanup
  * targets.
+ *
+ * The cleanup targets are the exception to "compare current against
+ * desired". After cutover every recorded field already names the new
+ * domain, so current == desired and a planner that only looked at that
+ * would conclude there is nothing left to retire — while `mail.<old>`
+ * and `assets.<old>` are still very much alive. Nothing in the manifest
+ * remembers them at that point, so the operator names the old domain
+ * with `--from`, and the retire actions are planned from `oldDomain`
+ * alone. Their executors are idempotent (an already-deleted identity is
+ * a skip), so planning them on every `--from` run costs nothing.
  */
 
 import { sesSendingSubdomain } from "../provision/listmonk-ses.js";
@@ -213,6 +223,13 @@ export function inferOldDomain(
   }
 
   return null;
+}
+
+/** True when this plan moves between two different domains. False for
+ *  a settled project re-planned without `--from`, where `oldDomain`
+ *  falls back to `manifest.domain` — which is already the target. */
+function isMigrating(input: MigrationPlanInput): boolean {
+  return input.oldDomain.trim().toLowerCase() !== input.newDomain.trim().toLowerCase();
 }
 
 // ---------------------------------------------------------------------------
@@ -368,8 +385,24 @@ export function planSes(input: MigrationPlanInput): MigrationAction[] {
 
   const current = input.manifest.ses?.identity ?? sesSendingSubdomain(input.manifest.domain);
   const desired = sesSendingSubdomain(input.newDomain);
+  const oldIdentity = sesSendingSubdomain(input.oldDomain);
+  const retire: MigrationAction = {
+    provider: "ses",
+    id: "ses:retire",
+    phase: "cleanup",
+    kind: "retire",
+    summary: `delete SES identity ${oldIdentity}`,
+    detail: [
+      "also deletes the DKIM CNAMEs and the MAIL FROM MX/SPF rows",
+      "hatchkit published for it (matched by content, not just name)",
+      "in-flight bounces addressed to the old MAIL FROM stop being",
+      "delivered — leave a few days between cutover and this",
+      "refuses while SES_FROM_EMAIL / LISTMONK_FROM still name it",
+    ],
+  };
+
   if (current.toLowerCase() === desired.toLowerCase()) {
-    return [
+    const actions: MigrationAction[] = [
       {
         provider: "ses",
         id: "ses:identity",
@@ -378,6 +411,24 @@ export function planSes(input: MigrationPlanInput): MigrationAction[] {
         summary: `SES identity already ${desired}`,
       },
     ];
+    // Cut over already — but only in the manifest, as far as a pure
+    // planner can tell. The env files the app sends from may still name
+    // the old identity (older hatchkit moved only the manifest), so a
+    // `--from` run re-checks them. Idempotent: nothing left to move is
+    // a skip.
+    if (isMigrating(input)) {
+      actions.push({
+        provider: "ses",
+        id: "ses:cutover",
+        phase: "cutover",
+        kind: "update",
+        summary: `make sure the app's from-address is on ${desired}`,
+        detail: [`SES_FROM_EMAIL / LISTMONK_FROM: @${oldIdentity} → @${desired}, if still there`],
+        gate: `SES reports VerifiedForSendingStatus=true for ${desired}`,
+      });
+      if (input.includeCleanup) actions.push(retire);
+    }
+    return actions;
   }
 
   const label = input.manifest.ses?.mailFromLabel ?? "bounce";
@@ -405,26 +456,15 @@ export function planSes(input: MigrationPlanInput): MigrationAction[] {
       phase: "cutover",
       kind: "update",
       summary: `switch the sending identity to ${desired}`,
-      detail: [`manifest.ses.identity: ${current} → ${desired}`],
+      detail: [
+        `manifest.ses.identity: ${current} → ${desired}`,
+        `SES_FROM_EMAIL / LISTMONK_FROM in the env files: @${current} → @${desired}`,
+      ],
       gate: `SES reports VerifiedForSendingStatus=true for ${desired}`,
     },
   ];
 
-  if (input.includeCleanup) {
-    actions.push({
-      provider: "ses",
-      id: "ses:retire",
-      phase: "cleanup",
-      kind: "retire",
-      summary: `delete SES identity ${current}`,
-      detail: [
-        "also deletes the DKIM CNAMEs and the MAIL FROM MX/SPF rows",
-        "hatchkit published for it (matched by content, not just name)",
-        "in-flight bounces addressed to the old MAIL FROM stop being",
-        "delivered — leave a few days between cutover and this",
-      ],
-    });
-  }
+  if (input.includeCleanup) actions.push(retire);
   return actions;
 }
 
@@ -515,6 +555,9 @@ export function planR2(input: MigrationPlanInput): MigrationAction[] {
 
   const currentHost = existingCustomHostname(input.manifest as ProjectManifest);
   const desiredHost = defaultBucketHostname(input.newDomain);
+  const oldHost = defaultBucketHostname(input.oldDomain);
+  const cleanup = input.includeCleanup && isMigrating(input);
+  const corsCleanup = cleanup ? planR2CorsCleanup(input) : [];
 
   if (!currentHost) {
     return [
@@ -526,6 +569,7 @@ export function planR2(input: MigrationPlanInput): MigrationAction[] {
         summary: `${assets.name} serves from a managed r2.dev URL — no custom domain to move`,
         detail: [`attach one with \`hatchkit provision s3\` if you want ${desiredHost}`],
       },
+      ...corsCleanup,
     ];
   }
 
@@ -538,6 +582,11 @@ export function planR2(input: MigrationPlanInput): MigrationAction[] {
         kind: "noop",
         summary: `assets bucket already on ${desiredHost}`,
       },
+      ...corsCleanup,
+      // publicUrl already moved, so nothing recorded names the old host
+      // any more — it is derived from `--from`. The executor treats a
+      // host that isn't attached as a skip.
+      ...(cleanup ? [r2RetireAction(assets.name, oldHost)] : []),
     ];
   }
 
@@ -565,27 +614,67 @@ export function planR2(input: MigrationPlanInput): MigrationAction[] {
       summary: `assets publicUrl → https://${desiredHost}`,
       detail: [
         "rewrites the manifest and the *_ASSETS_BASE_URL env entry",
-        `CORS origins recomputed for https://${input.newDomain}`,
+        `CORS origins recomputed for https://${input.newDomain} (https://${input.oldDomain} kept until cleanup)`,
         "the client image must be rebuilt for this to reach browsers",
       ],
       gate: `Cloudflare reports the certificate for ${desiredHost} as active`,
     },
   ];
 
-  if (input.includeCleanup) {
-    actions.push({
+  actions.push(...corsCleanup);
+  if (input.includeCleanup) actions.push(r2RetireAction(assets.name, oldHost));
+  return actions;
+}
+
+function r2RetireAction(bucket: string, oldHost: string): MigrationAction {
+  return {
+    provider: "r2",
+    id: "r2:retire",
+    phase: "cleanup",
+    kind: "retire",
+    summary: `detach ${oldHost} from bucket ${bucket}`,
+    detail: [
+      "any client bundle still baked with the old URL 404s from here on",
+      "wait until the rebuilt image is live everywhere",
+    ],
+  };
+}
+
+/** The old web origin on the assets bucket's CORS rule. Prepare and
+ *  cutover keep it there on purpose, so the old site keeps loading its
+ *  assets until the operator retires it. A no-op when the recorded rule
+ *  shows it already gone, or when CORS is not hatchkit's to manage. */
+function planR2CorsCleanup(input: MigrationPlanInput): MigrationAction[] {
+  const assets = input.manifest.s3Buckets?.assets;
+  const cors = assets?.cors;
+  if (!assets?.name || cors?.skipped === true) return [];
+  const oldOrigin = `https://${input.oldDomain.trim().toLowerCase()}`;
+  const names = (list?: string[]) =>
+    (list ?? []).some((o) => o.trim().replace(/\/+$/, "").toLowerCase() === oldOrigin);
+  // No recorded origin list means hatchkit never saw the live rule —
+  // plan the reconcile rather than guess it is clean.
+  const recorded = cors?.origins !== undefined || cors?.extraOrigins !== undefined;
+  if (recorded && !names(cors?.origins) && !names(cors?.extraOrigins)) {
+    return [
+      {
+        provider: "r2",
+        id: "r2:cors-retire",
+        phase: "cleanup",
+        kind: "noop",
+        summary: `bucket CORS no longer lists ${oldOrigin}`,
+      },
+    ];
+  }
+  return [
+    {
       provider: "r2",
-      id: "r2:retire",
+      id: "r2:cors-retire",
       phase: "cleanup",
       kind: "retire",
-      summary: `detach ${currentHost} from bucket ${assets.name}`,
-      detail: [
-        "any client bundle still baked with the old URL 404s from here on",
-        "wait until the rebuilt image is live everywhere",
-      ],
-    });
-  }
-  return actions;
+      summary: `remove ${oldOrigin} from ${assets.name} CORS origins`,
+      detail: ["the old site can no longer fetch assets cross-origin from here on"],
+    },
+  ];
 }
 
 /** Plausible. The one provider with a real rename: a PUT on the site

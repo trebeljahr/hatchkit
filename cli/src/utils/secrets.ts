@@ -129,16 +129,60 @@ export const SECRET_KEYS = {
   ghcrPullToken: "ghcr:pull-token",
 } as const;
 
+/**
+ * Turn a raw keytar failure into one that names the secret and the
+ * likely cause.
+ *
+ * keytar's native layer collapses most macOS Security framework errors
+ * into "An unknown error occurred.", with no key name attached. Seen on
+ * its own, halfway through a multi-provider command, that says nothing
+ * about which credential failed or why. The usual why on macOS is not a
+ * missing item but a refused read: the keychain item's access list
+ * trusts the binary that created it, and a different `node` asking
+ * non-interactively gets denied without a prompt.
+ */
+export function describeKeychainError(
+  op: "read" | "write" | "delete",
+  key: string,
+  err: unknown,
+  platform: NodeJS.Platform = process.platform,
+): Error {
+  const reason = err instanceof Error ? err.message : String(err);
+  const lines = [`Keychain ${op} failed for secret "${key}" (service "${SERVICE}"): ${reason}`];
+  if (platform === "darwin") {
+    lines.push(
+      "  → macOS denies non-interactive keychain reads when the `node` on PATH is ad-hoc",
+      "    signed (e.g. Homebrew node) rather than the Node.js-team-signed build the",
+      "    keychain items trust, or when the process is sandboxed.",
+      '  → Check: codesign -dv "$(command -v node)" — "Signature=adhoc" is the Homebrew case.',
+      "    Run hatchkit with the nodejs.org build, or from an unsandboxed terminal, then retry.",
+    );
+  }
+  return new Error(lines.join("\n"), { cause: err });
+}
+
 export async function getSecret(key: string): Promise<string | null> {
-  return keytar.getPassword(SERVICE, key);
+  try {
+    return await keytar.getPassword(SERVICE, key);
+  } catch (err) {
+    throw describeKeychainError("read", key, err);
+  }
 }
 
 export async function setSecret(key: string, value: string): Promise<void> {
-  await keytar.setPassword(SERVICE, key, value);
+  try {
+    await keytar.setPassword(SERVICE, key, value);
+  } catch (err) {
+    throw describeKeychainError("write", key, err);
+  }
 }
 
 export async function deleteSecret(key: string): Promise<boolean> {
-  return keytar.deletePassword(SERVICE, key);
+  try {
+    return await keytar.deletePassword(SERVICE, key);
+  } catch (err) {
+    throw describeKeychainError("delete", key, err);
+  }
 }
 
 /** Wipe every secret belonging to this CLI from the keychain. */

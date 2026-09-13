@@ -4149,8 +4149,8 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Usage:")}
     cd <project-dir> && hatchkit migrate-domain --to <new-domain> --dry-run
     hatchkit migrate-domain --to <new-domain>                     ${chalk.dim("# prepare")}
-    hatchkit migrate-domain --to <new-domain> --phase cutover
-    hatchkit migrate-domain --to <new-domain> --phase cleanup
+    hatchkit migrate-domain --to <new-domain> --from <old-domain> --phase cutover
+    hatchkit migrate-domain --to <new-domain> --from <old-domain> --phase cleanup
 
   ${chalk.bold("How it differs from rename-domain:")}
     ${chalk.cyan("rename-domain")} rewrites local files and stops. ${chalk.cyan("migrate-domain")} runs that
@@ -4162,9 +4162,11 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Three phases, and why:")}
     ${chalk.green("prepare")}  Additive. Creates the new SES identity beside the old one,
              attaches the new R2 custom domain beside the old one, adds
-             the new Search Console property, publishes DNS. Nothing
+             the new Search Console property, publishes DNS, and keeps
+             the old origin on the assets bucket's CORS rule. Nothing
              that works today stops working. This is the default.
-    ${chalk.yellow("cutover")}  Moves the pointers: FROM address, assets URL, webhook URL,
+    ${chalk.yellow("cutover")}  Moves the pointers: FROM address (manifest + SES_FROM_EMAIL /
+             LISTMONK_FROM in the env files), assets URL, webhook URL,
              Coolify FQDN. Every step re-checks a gate first (is SES
              verified? is the certificate issued?) and refuses rather
              than half-moving.
@@ -4173,7 +4175,9 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Options:")}
     --to <domain>     Target domain (prompted if omitted).
-    --from <domain>   Override the inferred old domain.
+    --from <domain>   The domain you are leaving. Inferred while the manifest
+                      still names it; required once cutover has moved every
+                      recorded field (i.e. for cleanup).
     --phase <p>       prepare ${chalk.dim("(default)")} | cutover | cleanup
     --only <provider> Retry one provider: files, dns, coolify, ses,
                       listmonk, r2, plausible, search-console, stripe.
@@ -4197,7 +4201,9 @@ function printHelp(topic?: HelpTopic): void {
     hatchkit migrate-domain --to trackyourtime.dev --dry-run
     hatchkit migrate-domain --to trackyourtime.dev
     ${chalk.dim("# ...wait for SES to verify + the R2 cert to issue...")}
-    hatchkit migrate-domain --to trackyourtime.dev --phase cutover
+    hatchkit migrate-domain --to trackyourtime.dev --from tracktime.trebeljahr.com --phase cutover
+    ${chalk.dim("# ...watch the new domain work for a few days...")}
+    hatchkit migrate-domain --to trackyourtime.dev --from tracktime.trebeljahr.com --phase cleanup
 `);
     return;
   }

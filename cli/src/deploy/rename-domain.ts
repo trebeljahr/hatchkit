@@ -49,6 +49,11 @@ export interface RenameDomainOptions {
   dryRun?: boolean;
   /** Skip the final confirmation prompt. */
   yes?: boolean;
+  /** Origins to keep on the assets bucket's CORS rule alongside the new
+   *  domain. A plain rename moves the origin outright; `migrate-domain`
+   *  passes `https://<oldDomain>` here because its prepare phase
+   *  promises the old site keeps working until cleanup. */
+  keepCorsOrigins?: string[];
 }
 
 export async function runRenameDomain(opts: RenameDomainOptions): Promise<void> {
@@ -250,8 +255,8 @@ export async function runRenameDomain(opts: RenameDomainOptions): Promise<void> 
   }
 
   // 7. Reconcile bucket CORS if this project has an assets bucket. The
-  //    old origin (https://<oldDomain>) belongs out of the rule and the
-  //    new one in. Best-effort: only runs when (a) assets bucket exists
+  //    new origin goes in; the old one (https://<oldDomain>) comes out
+  //    unless the caller asked to keep it (`keepCorsOrigins`). Best-effort: only runs when (a) assets bucket exists
   //    in the manifest, (b) R2 admin token is in the keychain, and
   //    (c) CORS wasn't opted out via `--no-cors`. Anything else is a
   //    skip with a one-liner — rename-domain is otherwise non-network
@@ -259,11 +264,13 @@ export async function runRenameDomain(opts: RenameDomainOptions): Promise<void> 
   if (manifest.s3Buckets?.assets?.name && !manifest.s3Buckets.assets.cors?.skipped) {
     const { reconcileAssetsCorsFromManifest } = await import("../provision/s3-buckets.js");
     try {
-      const applied = await reconcileAssetsCorsFromManifest(projectDir);
+      const keep = opts.keepCorsOrigins ?? [];
+      const applied = await reconcileAssetsCorsFromManifest(projectDir, { addOrigins: keep });
       if (applied?.origins?.length) {
+        const kept = keep.length > 0 ? ` (kept ${keep.join(", ")})` : "";
         console.log(
           chalk.green(
-            `  ✓ reconciled bucket CORS — ${applied.origins.length} origin(s) including https://${newDomain}`,
+            `  ✓ reconciled bucket CORS — ${applied.origins.length} origin(s) including https://${newDomain}${kept}`,
           ),
         );
       } else if (applied === null) {

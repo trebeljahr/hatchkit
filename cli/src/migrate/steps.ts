@@ -44,6 +44,7 @@ import {
 import { type ProjectManifest, readManifest, writeManifest } from "../scaffold/manifest.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
+import { readSesFromEnv, rewriteFromAddress, rewriteSesFromEnv } from "./ses-env.js";
 
 // ---------------------------------------------------------------------------
 // Step contract
@@ -83,6 +84,19 @@ function manifestOf(ctx: StepContext): ProjectManifest {
   return manifest;
 }
 
+/** The old web origin, for as long as the old site is still live.
+ *  Every CORS reconcile before cleanup keeps it on the assets bucket:
+ *  prepare rewrites `manifest.domain`, and the desired origin set is
+ *  derived from that field, so without this the old site would lose
+ *  its assets days before cutover. Cleanup removes it. */
+export function transitionalCorsOrigins(
+  ctx: Pick<StepContext, "oldDomain" | "newDomain">,
+): string[] {
+  const oldDomain = ctx.oldDomain.trim().toLowerCase();
+  if (!oldDomain || oldDomain === ctx.newDomain.trim().toLowerCase()) return [];
+  return [`https://${oldDomain}`];
+}
+
 async function cloudflareForDns(): Promise<CloudflareApi> {
   const dns = await getDnsConfig();
   if (!dns?.apiToken) {
@@ -116,6 +130,9 @@ export const stepFilesRewrite: StepFn = async (ctx) => {
     monorepoRoot: ctx.monorepoRoot,
     newDomain: ctx.newDomain,
     yes: true,
+    // prepare is additive: the old site is still live, so its origin
+    // stays on the bucket's CORS rule until cleanup.
+    keepCorsOrigins: transitionalCorsOrigins(ctx),
   });
   return { status: "done", message: `local files rewritten to ${ctx.newDomain}` };
 };
@@ -231,11 +248,11 @@ export const stepSesCutover: StepFn = async (ctx) => {
   const manifest = manifestOf(ctx);
   const auth = await sesAuth();
   const identityName = sesSendingSubdomain(ctx.newDomain);
+  const oldIdentity = sesSendingSubdomain(ctx.oldDomain);
 
-  if (manifest.ses?.identity === identityName) {
-    return { status: "skipped", message: `manifest already records ${identityName}` };
-  }
-
+  // Gate both branches: a manifest that already records the new
+  // identity may have been hand-edited, and pointing the env at an
+  // identity SES won't send from is the outage this gate exists for.
   const identity = await getSesDomain(identityName, auth);
   if (identity.verifiedForSendingStatus !== true) {
     return {
@@ -249,10 +266,47 @@ export const stepSesCutover: StepFn = async (ctx) => {
     };
   }
 
+  if (manifest.ses?.identity === identityName) {
+    // The manifest moved on an earlier run, but the env files are what
+    // the app actually sends from — and older hatchkit versions moved
+    // only the manifest. Re-check them. Unreadable (encrypted, no key
+    // here) entries are left alone: this is a re-run, and writing a
+    // recomputed default every time would churn committed ciphertext.
+    const env = await rewriteSesFromEnv({
+      projectDir: ctx.projectDir,
+      projectName: manifest.name,
+      prevIdentity: oldIdentity,
+      newIdentity: identityName,
+      defaultsWhenUnreadable: false,
+    });
+    return {
+      status: env.rewritten.length > 0 ? "done" : "skipped",
+      message:
+        env.rewritten.length > 0
+          ? `manifest already records ${identityName}; moved ${env.rewritten.length} env from-address entr${env.rewritten.length === 1 ? "y" : "ies"}`
+          : `manifest already records ${identityName}`,
+      detail: env.detail,
+    };
+  }
+
   const label = manifest.ses?.mailFromLabel ?? "bounce";
   const behavior = manifest.ses?.mailFromBehaviorOnMxFailure ?? "UseDefaultValue";
   const mailFrom = sesMailFromSubdomain(identityName, label);
   const previous = manifest.ses?.identity ?? "(none)";
+
+  // Env first. It is what the running app sends from, and if the
+  // rewrite fails the manifest must not already claim the move — a
+  // re-run would then take the "already recorded" branch above and
+  // report success over env files that still name the old identity.
+  const env = await rewriteSesFromEnv({
+    projectDir: ctx.projectDir,
+    projectName: manifest.name,
+    prevIdentity: manifest.ses?.identity ?? oldIdentity,
+    newIdentity: identityName,
+    // First cutover: an entry we can't decrypt was written by
+    // provisioning as exactly this default, so recomputing it is safe.
+    defaultsWhenUnreadable: true,
+  });
 
   writeManifest(ctx.projectDir, {
     ...manifest,
@@ -268,10 +322,20 @@ export const stepSesCutover: StepFn = async (ctx) => {
     },
   });
 
+  const detail =
+    env.detail.length > 0
+      ? env.detail
+      : [
+          "no SES_FROM_EMAIL / LISTMONK_FROM in .env.production or .env.development —",
+          `set the app's from-address to an @${identityName} address yourself`,
+        ];
+  if (env.rewritten.length > 0) {
+    detail.push("run `hatchkit sync` (or redeploy) so the running app picks up the new env");
+  }
   return {
     status: "done",
     message: `sending identity ${previous} → ${identityName}`,
-    detail: [`from address is now noreply@${identityName}`],
+    detail,
   };
 };
 
@@ -286,9 +350,27 @@ export const stepSesCutover: StepFn = async (ctx) => {
  * manifest's `ses` block with the new identity's records.
  */
 export const stepSesRetire: StepFn = async (ctx) => {
+  const manifest = manifestOf(ctx);
   const auth = await sesAuth();
   const oldIdentity = sesSendingSubdomain(ctx.oldDomain);
   const detail: string[] = [];
+
+  // Deleting the identity the app still sends from turns every email
+  // into an SES rejection. Refuse while any readable from-address entry
+  // names it; the SES cutover step is what moves them.
+  const stillOld = (await readSesFromEnv(ctx.projectDir, manifest.name)).filter(
+    (e) => e.value !== null && rewriteFromAddress(e.value, oldIdentity, oldIdentity) !== null,
+  );
+  if (stillOld.length > 0) {
+    return {
+      status: "gated",
+      message: `the app still sends from @${oldIdentity}`,
+      detail: [
+        ...stillOld.map((e) => `${e.relPath} ${e.key} = ${e.value}`),
+        `move them first: hatchkit migrate-domain --to ${ctx.newDomain} --from ${ctx.oldDomain} --phase cutover --only ses`,
+      ],
+    };
+  }
 
   let dkimNames: string[] = [];
   try {
@@ -516,11 +598,16 @@ export const stepR2Cutover: StepFn = async (ctx) => {
 
   // CORS lists who may FETCH, so it follows the web origin, not the
   // bucket hostname. The manifest is already on the new domain by now,
-  // so the existing reconciler computes the right set.
+  // so the existing reconciler computes the right set — plus the old
+  // origin, which stays until cleanup: the old site may still be up.
   try {
-    const applied = await reconcileAssetsCorsFromManifest(ctx.projectDir);
+    const keep = transitionalCorsOrigins(ctx);
+    const applied = await reconcileAssetsCorsFromManifest(ctx.projectDir, { addOrigins: keep });
     if (applied?.origins?.length) {
-      detail.push(`CORS: ${applied.origins.length} origin(s), including https://${ctx.newDomain}`);
+      detail.push(
+        `CORS: ${applied.origins.length} origin(s), including https://${ctx.newDomain}` +
+          (keep.length > 0 ? ` (${keep.join(", ")} kept until cleanup)` : ""),
+      );
     }
   } catch (err) {
     detail.push(`CORS reconcile failed: ${(err as Error).message.split("\n")[0]}`);
@@ -531,6 +618,28 @@ export const stepR2Cutover: StepFn = async (ctx) => {
     status: "done",
     message: `assets publicUrl ${currentHost ? `https://${currentHost}` : "(managed)"} → ${publicUrl}`,
     detail,
+  };
+};
+
+/** Drop the old web origin from the bucket's CORS rule. Cleanup only:
+ *  until now it was kept on purpose (see `transitionalCorsOrigins`). */
+export const stepR2CorsRetire: StepFn = async (ctx) => {
+  const manifest = manifestOf(ctx);
+  const [oldOrigin] = transitionalCorsOrigins(ctx);
+  if (!oldOrigin) return { status: "skipped", message: "old and new domain are the same" };
+
+  const applied = await reconcileAssetsCorsFromManifest(ctx.projectDir, {
+    removeOrigins: [oldOrigin],
+  });
+  if (applied === null) {
+    throw new Error(
+      `could not reconcile CORS on ${manifest.s3Buckets?.assets?.name ?? "the assets bucket"} — R2 admin token or account id missing. Run \`hatchkit config add s3 r2\`.`,
+    );
+  }
+  return {
+    status: "done",
+    message: `removed ${oldOrigin} from bucket CORS`,
+    detail: [`origins now: ${(applied.origins ?? []).join(", ")}`],
   };
 };
 
@@ -656,6 +765,7 @@ export const STEPS: Record<string, StepFn> = {
   "listmonk:from": stepListmonkFrom,
   "r2:custom-domain": stepR2Prepare,
   "r2:publicurl": stepR2Cutover,
+  "r2:cors-retire": stepR2CorsRetire,
   "r2:retire": stepR2Retire,
   "plausible:rename": stepPlausibleRename,
   "search-console:create": stepSearchConsoleCreate,
