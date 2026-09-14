@@ -30,6 +30,7 @@ import {
   type CfEmailDestination,
   CloudflareApi,
 } from "../utils/cloudflare-api.js";
+import { assertEmailRoutingAccess } from "./routing-access.js";
 import { buildDmarcRecord, buildSpfRecord, parseSpfIncludes } from "./spf.js";
 
 /** Cloudflare-published MX hosts for Email Routing. Verified against
@@ -77,6 +78,9 @@ export interface EmailSetupOptions {
    *  Override when you want CF Email Routing's reports forwarded to
    *  a known inbox without relying on catch-all. */
   dmarcRua?: string;
+  /** Leave an existing `_dmarc` record untouched instead of replacing
+   *  it with {@link dmarcPolicy}. For additive callers (migrate-domain). */
+  preserveExistingDmarc?: boolean;
 }
 
 /** Per-resource report returned by {@link runEmailSetup}. The caller
@@ -138,6 +142,10 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
   // current settings on re-enable. We still record whether *this* call
   // flipped enabled=false → true so the rollback ledger doesn't yank
   // a routing setup the user enabled by hand earlier.
+  //
+  // Preflight the token's Email Routing scopes first: without them the
+  // GET below fails with a bare "10000: Authentication error".
+  await assertEmailRoutingAccess(cf, opts.domain, { accountId });
   const beforeRouting = await cf.getEmailRouting(zone.id);
   if (!beforeRouting?.enabled) {
     await cf.enableEmailRouting(zone.id);
@@ -191,23 +199,23 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
 
   // Step 4 — SPF. Merge Cloudflare's include with whatever's already on
   // the zone (Resend, SES, etc.) and any caller-supplied includes.
-  const existingSpf = await findApexSpf(cf, zone.id, opts.domain);
+  const existingSpf = await findApexTxt(cf, zone.id, opts.domain, SPF_RE);
   const mergedIncludes = new Set<string>(["_spf.mx.cloudflare.net"]);
   for (const inc of opts.extraSpfIncludes ?? []) mergedIncludes.add(inc);
   if (existingSpf) {
     for (const inc of parseSpfIncludes(existingSpf.content)) mergedIncludes.add(inc);
   }
   const spfContent = buildSpfRecord({ includes: [...mergedIncludes] });
-  // Delete any *other* SPF TXT records first — exactly one SPF record
-  // per zone per RFC 7208. The upsert below patches `existingSpf` in
-  // place; stale duplicates (zone moved between providers, etc.) get
-  // removed here.
-  await deleteStaleSpfRecords(cf, zone.id, opts.domain, existingSpf?.id);
+  // TXT upserts match on content, so a merged record that differs from
+  // the one on the zone is a NEW row. Write it first, then drop every
+  // other SPF TXT at the name — exactly one SPF record per name per
+  // RFC 7208; two is a PermError at every receiver.
   const spfRes = await cf.upsertRecord(zone.id, {
     type: "TXT",
     name: opts.domain,
     content: spfContent,
   });
+  await deleteOtherTxtRecords(cf, zone.id, opts.domain, SPF_RE, spfRes.id);
   dnsRecords.push({
     id: spfRes.id,
     name: opts.domain,
@@ -217,25 +225,40 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
     updated: spfRes.updated,
   });
 
-  // Step 5 — DMARC.
+  // Step 5 — DMARC. Same one-record rule as SPF. A caller doing an
+  // additive run (migrate-domain) keeps a DMARC policy already in place
+  // rather than loosening or tightening someone's deliberate choice.
   const dmarcName = `_dmarc.${opts.domain}`;
-  const dmarcContent = buildDmarcRecord({
-    rua: opts.dmarcRua ?? `dmarc@${opts.domain}`,
-    policy: opts.dmarcPolicy ?? "quarantine",
-  });
-  const dmarcRes = await cf.upsertRecord(zone.id, {
-    type: "TXT",
-    name: dmarcName,
-    content: dmarcContent,
-  });
-  dnsRecords.push({
-    id: dmarcRes.id,
-    name: dmarcName,
-    type: "TXT",
-    content: dmarcContent,
-    created: dmarcRes.created,
-    updated: dmarcRes.updated,
-  });
+  const existingDmarc = await findApexTxt(cf, zone.id, dmarcName, DMARC_RE);
+  if (existingDmarc && opts.preserveExistingDmarc) {
+    dnsRecords.push({
+      id: existingDmarc.id,
+      name: dmarcName,
+      type: "TXT",
+      content: existingDmarc.content,
+      created: false,
+      updated: false,
+    });
+  } else {
+    const dmarcContent = buildDmarcRecord({
+      rua: opts.dmarcRua ?? `dmarc@${opts.domain}`,
+      policy: opts.dmarcPolicy ?? "quarantine",
+    });
+    const dmarcRes = await cf.upsertRecord(zone.id, {
+      type: "TXT",
+      name: dmarcName,
+      content: dmarcContent,
+    });
+    await deleteOtherTxtRecords(cf, zone.id, dmarcName, DMARC_RE, dmarcRes.id);
+    dnsRecords.push({
+      id: dmarcRes.id,
+      name: dmarcName,
+      type: "TXT",
+      content: dmarcContent,
+      created: dmarcRes.created,
+      updated: dmarcRes.updated,
+    });
+  }
 
   // Step 6 — per-address forwarding rules.
   const rules: EmailSetupResult["rules"] = [];
@@ -282,31 +305,34 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
   };
 }
 
-/** Find the apex SPF TXT record (one starting with `v=spf1`). Returns
- *  null when no SPF record exists yet. There MAY be other TXT records
- *  at the apex (verification tokens, etc.) — they're left alone. */
-async function findApexSpf(
+const SPF_RE = /^"?v=spf1\b/i;
+const DMARC_RE = /^"?v=DMARC1\b/i;
+
+/** Find the TXT record at `name` whose content matches `pattern` (SPF or
+ *  DMARC). Returns null when none exists yet. Other TXT records at the
+ *  name (verification tokens, etc.) are left alone. */
+async function findApexTxt(
   cf: CloudflareApi,
   zoneId: string,
-  domain: string,
+  name: string,
+  pattern: RegExp,
 ): Promise<CfDnsRecord | null> {
-  const all = await cf.findRecordsByName(zoneId, domain, "TXT");
-  return all.find((r) => /^"?v=spf1\b/i.test(r.content)) ?? null;
+  const all = await cf.findRecordsByName(zoneId, name, "TXT");
+  return all.find((r) => pattern.test(r.content)) ?? null;
 }
 
-/** Delete every *other* SPF TXT at the apex except the one we're about
- *  to upsert. Multiple SPF records cause receivers to PermError per
- *  RFC 7208, so a clean zone has exactly one. Skips the record we're
- *  keeping (identified by id). */
-async function deleteStaleSpfRecords(
+/** Delete every TXT at `name` matching `pattern` except `keepId`. Used
+ *  right after upserting the one record that should remain. */
+async function deleteOtherTxtRecords(
   cf: CloudflareApi,
   zoneId: string,
-  domain: string,
-  keepId: string | undefined,
+  name: string,
+  pattern: RegExp,
+  keepId: string,
 ): Promise<void> {
-  const all = await cf.findRecordsByName(zoneId, domain, "TXT");
+  const all = await cf.findRecordsByName(zoneId, name, "TXT");
   for (const rec of all) {
-    if (!/^"?v=spf1\b/i.test(rec.content)) continue;
+    if (!pattern.test(rec.content)) continue;
     if (rec.id === keepId) continue;
     await cf.deleteRecord(zoneId, rec.id);
   }

@@ -12,6 +12,11 @@
  *                   registrar alerts, dotenvx/Github billing receipts)
  *   · support@    — customer-facing support inbox
  *   · hi@         — short personal alternative to hello@
+ *   · imprint@    — the contact a legal notice (Impressum) names. Ticked
+ *                   by default: a legal contact that bounces is a legal
+ *                   problem, and relying on the catch-all for it breaks
+ *                   the day someone turns the catch-all off.
+ *   · privacy@    — data-protection contact for a privacy policy.
  *   · <personal>@ — optional, injected by {@link buildForwardPresets}
  *                   when the user has saved a personal alias in
  *                   `hatchkit setup` (or one is detected from git).
@@ -37,6 +42,8 @@ export const STATIC_FORWARD_PRESETS: EmailAddressPreset[] = [
   { localPart: "admin", description: "infrastructure / system alerts", defaultChecked: true },
   { localPart: "support", description: "customer-facing support", defaultChecked: true },
   { localPart: "hi", description: "short personal alias", defaultChecked: false },
+  { localPart: "imprint", description: "legal notice / Impressum contact", defaultChecked: true },
+  { localPart: "privacy", description: "privacy-policy / GDPR contact", defaultChecked: false },
 ];
 
 /** Build the full preset list, optionally prepending a personal alias
@@ -64,3 +71,45 @@ export function buildForwardPresets(
  *  default. Catch-all is a safety net for anything not matched by an
  *  explicit rule — recommended for personal/operator domains. */
 export const DEFAULT_CATCH_ALL = true;
+
+/** Where {@link resolveCarriedForwarding} found the address list. */
+export type CarriedForwardingSource = "manifest" | "old-domain-rules" | "defaults";
+
+/**
+ * Decide which forwarding rules a domain migration recreates on the new
+ * domain. Nothing prompts during a migration, so this is the whole
+ * decision, in precedence order:
+ *
+ *   1. What the manifest recorded when forwarding was last set up
+ *      (`integrations.email.addresses` / `.catchAll`).
+ *   2. The local parts that had literal rules on the OLD domain — the
+ *      operator's own earlier choice, read back from Cloudflare.
+ *   3. The default-ticked presets (plus the saved personal alias).
+ *
+ * Catch-all follows the manifest when recorded, and is otherwise the
+ * usual default (on).
+ */
+export function resolveCarriedForwarding(input: {
+  recorded?: { addresses?: string[]; catchAll?: boolean };
+  oldDomainLocalParts?: string[] | null;
+  personalLocalPart?: string | null;
+}): { addresses: string[]; catchAll: boolean; source: CarriedForwardingSource } {
+  const clean = (list: string[]) => [
+    ...new Set(list.map((a) => a.trim().toLowerCase()).filter(Boolean)),
+  ];
+  const catchAll = input.recorded?.catchAll ?? DEFAULT_CATCH_ALL;
+  if (input.recorded?.addresses !== undefined) {
+    return { addresses: clean(input.recorded.addresses), catchAll, source: "manifest" };
+  }
+  const carried = clean(input.oldDomainLocalParts ?? []);
+  if (carried.length > 0) {
+    return { addresses: carried, catchAll, source: "old-domain-rules" };
+  }
+  return {
+    addresses: buildForwardPresets(input.personalLocalPart)
+      .filter((p) => p.defaultChecked)
+      .map((p) => p.localPart),
+    catchAll,
+    source: "defaults",
+  };
+}

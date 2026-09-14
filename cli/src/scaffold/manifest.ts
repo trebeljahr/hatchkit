@@ -130,7 +130,17 @@ export interface ProjectManifest {
   /** Provider integrations that don't write runtime env, but should
    *  still be treated as already added for project-level menus. */
   integrations?: {
-    email?: { domain: string; configuredAt: string; destinationEmail?: string };
+    /** Cloudflare Email Routing (inbound forwarding). `addresses` are
+     *  local parts with their own rule; `migrate-domain` recreates them
+     *  on the new domain. Absent on manifests written before they were
+     *  recorded. */
+    email?: {
+      domain: string;
+      configuredAt: string;
+      destinationEmail?: string;
+      addresses?: string[];
+      catchAll?: boolean;
+    };
     searchConsole?: { domain: string; siteUrl: string; verifiedAt: string };
   };
   /** What kind of project this is — fullstack / split / backend /

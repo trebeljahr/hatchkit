@@ -19,7 +19,15 @@
  * execute exactly the same code.
  */
 
-import { getDnsConfig, getListmonkConfig, getSesConfig } from "../config.js";
+import {
+  getDefaultForwardingEmail,
+  getDnsConfig,
+  getListmonkConfig,
+  getPersonalEmailLocalPart,
+  getSesConfig,
+} from "../config.js";
+import { resolveCarriedForwarding } from "../email/presets.js";
+import { probeEmailRouting, summarizeEmailRoutingProbe } from "../email/routing-access.js";
 import { publishDnsRecordsToCloudflare } from "../provision/cloudflare-dns-publish.js";
 import { sesSendingSubdomain } from "../provision/listmonk-ses.js";
 import { setListmonkFromEmail } from "../provision/listmonk.js";
@@ -422,6 +430,146 @@ export const stepSesRetire: StepFn = async (ctx) => {
 };
 
 // ---------------------------------------------------------------------------
+// Email Routing (inbound)
+// ---------------------------------------------------------------------------
+
+/** Local parts with a literal forwarding rule on `domain` — i.e. what the
+ *  operator chose to forward on the old domain. Null when it can't be
+ *  read; the caller then falls back to the defaults. */
+async function forwardedLocalParts(cf: CloudflareApi, domain: string): Promise<string[] | null> {
+  try {
+    const zone = await cf.resolveZoneForName(domain);
+    if (!zone) return null;
+    const suffix = `@${domain.trim().toLowerCase()}`;
+    const rules = await cf.listEmailRoutingRules(zone.id);
+    return rules.flatMap((r) =>
+      (r.matchers ?? [])
+        .filter((m) => m.type === "literal" && m.field === "to" && m.value)
+        .map((m) => (m.value as string).toLowerCase())
+        .filter((to) => to.endsWith(suffix))
+        .map((to) => to.slice(0, -suffix.length)),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `hatchkit email setup`, non-interactively, for the new domain.
+ *
+ * Re-probes before writing: the plan may be minutes old, and the two
+ * cases that must stop it — another provider's MX on the new domain, a
+ * token without the Email Routing scopes — are both live facts. A scope
+ * failure throws {@link EmailRoutingScopeError}, whose `hint` names the
+ * exact permissions; the orchestrator prints it and records a deferral.
+ */
+export const stepEmailRoutingSetup: StepFn = async (ctx) => {
+  const manifest = manifestOf(ctx);
+  const dns = await getDnsConfig();
+  if (!dns?.apiToken) {
+    throw new Error("Cloudflare DNS not configured. Run `hatchkit config add dns` first.");
+  }
+  const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
+
+  const probe = await probeEmailRouting(cf, ctx.newDomain, { accountId: dns.accountId });
+  if (probe.access === "no-zone") {
+    return {
+      status: "gated",
+      message: `no Cloudflare zone covers ${ctx.newDomain}`,
+      detail: ["add the zone in the Cloudflare dashboard first, then re-run this phase"],
+    };
+  }
+  if (probe.access === "unauthorized") throw probe.error;
+
+  const facts = summarizeEmailRoutingProbe(probe);
+  if (facts.state === "foreign-mx") {
+    return {
+      status: "skipped",
+      message: `inbound mail for ${ctx.newDomain} already goes to ${facts.mxHosts.join(", ")}`,
+      detail: ["left alone — Cloudflare MX beside another provider's would split delivery"],
+    };
+  }
+
+  const recorded = manifest.integrations?.email;
+  const destination = recorded?.destinationEmail ?? getDefaultForwardingEmail();
+  if (!destination) {
+    return {
+      status: "gated",
+      message: "no forwarding destination saved on this machine",
+      detail: [
+        "save one under Defaults in `hatchkit setup` (Default forwarding email),",
+        `or run \`hatchkit email setup --domain ${ctx.newDomain} --to <you@example.com>\``,
+      ],
+    };
+  }
+
+  const forwarding = resolveCarriedForwarding({
+    recorded,
+    oldDomainLocalParts:
+      recorded?.addresses === undefined ? await forwardedLocalParts(cf, ctx.oldDomain) : null,
+    personalLocalPart: getPersonalEmailLocalPart(),
+  });
+
+  const { detectExtraSpfIncludes } = await import("../email/index.js");
+  const { runEmailSetup } = await import("../email/setup.js");
+  const result = await runEmailSetup({
+    token: dns.apiToken,
+    accountId: probe.accountId,
+    domain: ctx.newDomain,
+    destination,
+    addresses: forwarding.addresses,
+    catchAll: forwarding.catchAll,
+    extraSpfIncludes: await detectExtraSpfIncludes(dns.apiToken, probe.zone.id, ctx.newDomain),
+    // Additive: a DMARC policy already on the new zone is someone's choice.
+    preserveExistingDmarc: true,
+  });
+
+  // Re-read: runEmailSetup is slow, and the manifest is shared state.
+  const fresh = manifestOf(ctx);
+  writeManifest(ctx.projectDir, {
+    ...fresh,
+    integrations: {
+      ...fresh.integrations,
+      email: {
+        domain: result.domain,
+        configuredAt: new Date().toISOString(),
+        destinationEmail: result.destination.record.email,
+        addresses: forwarding.addresses,
+        catchAll: forwarding.catchAll,
+      },
+    },
+  });
+
+  const changed =
+    result.routingEnabledThisRun ||
+    result.destination.createdThisRun ||
+    result.dnsRecords.some((r) => r.created || r.updated) ||
+    result.rules.some((r) => r.created || r.updated) ||
+    result.catchAll?.changed === true;
+  const sourceNote: Record<typeof forwarding.source, string> = {
+    manifest: "as recorded in .hatchkit.json",
+    "old-domain-rules": `carried over from @${ctx.oldDomain}`,
+    defaults: "default presets",
+  };
+  const detail = [
+    `rules: ${forwarding.addresses.length > 0 ? forwarding.addresses.map((a) => `${a}@`).join(", ") : "(none)"} (${sourceNote[forwarding.source]}); catch-all ${forwarding.catchAll ? "on" : "off"}`,
+    `MX/SPF/DMARC: ${result.dnsRecords.filter((r) => r.created).length} created, ${result.dnsRecords.filter((r) => r.updated).length} updated`,
+  ];
+  if (result.destination.verified !== "active") {
+    detail.push(
+      `${result.destination.record.email} must click Cloudflare's verification email before forwards deliver`,
+    );
+  }
+  return {
+    status: changed ? "done" : "skipped",
+    message: changed
+      ? `mail to @${ctx.newDomain} now forwards to ${destination}`
+      : `Email Routing for ${ctx.newDomain} was already in place`,
+    detail,
+  };
+};
+
+// ---------------------------------------------------------------------------
 // Listmonk
 // ---------------------------------------------------------------------------
 
@@ -762,6 +910,7 @@ export const STEPS: Record<string, StepFn> = {
   "ses:identity": stepSesPrepare,
   "ses:cutover": stepSesCutover,
   "ses:retire": stepSesRetire,
+  "email-routing:setup": stepEmailRoutingSetup,
   "listmonk:from": stepListmonkFrom,
   "r2:custom-domain": stepR2Prepare,
   "r2:publicurl": stepR2Cutover,

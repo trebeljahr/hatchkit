@@ -30,6 +30,7 @@ import { readManifest } from "../scaffold/manifest.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { multiselect } from "../utils/multiselect.js";
 import { DEFAULT_CATCH_ALL, buildForwardPresets } from "./presets.js";
+import { probeEmailRouting } from "./routing-access.js";
 import {
   type EmailSetupOptions,
   type EmailSetupResult,
@@ -142,7 +143,7 @@ async function resolveAddresses(
  *  `_spf.resend.com` to the merged SPF when present. Returns the include
  *  list to merge (empty when no Resend in evidence). Cheap one-call probe;
  *  if it fails (token lacks read perm, zone not in account), returns []. */
-async function detectExtraSpfIncludes(
+export async function detectExtraSpfIncludes(
   token: string,
   zoneId: string,
   domain: string,
@@ -247,6 +248,13 @@ export async function runEmailStatus(
     return;
   }
   const accountId = dns.accountId ?? zone.account?.id;
+  const probe = await probeEmailRouting(cf, domain, { accountId });
+  if (probe.access === "unauthorized") {
+    console.log(chalk.red(`\n  ✗ ${probe.error.message}`));
+    for (const line of probe.error.hint) console.log(chalk.dim(`    ${line}`));
+    process.exitCode = 1;
+    return;
+  }
   const routing = await cf.getEmailRouting(zone.id);
   const rules = routing?.enabled ? await cf.listEmailRoutingRules(zone.id) : [];
   const destinations = accountId ? await cf.listEmailDestinations(accountId) : [];

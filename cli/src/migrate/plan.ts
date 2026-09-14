@@ -76,6 +76,8 @@
  * a skip), so planning them on every `--from` run costs nothing.
  */
 
+import { STATIC_FORWARD_PRESETS } from "../email/presets.js";
+import type { EmailRoutingFacts } from "../email/routing-access.js";
 import { sesSendingSubdomain } from "../provision/listmonk-ses.js";
 import { defaultBucketHostname, existingCustomHostname } from "../provision/s3-buckets.js";
 import { sesMailFromSubdomain } from "../provision/ses.js";
@@ -94,6 +96,7 @@ export type MigrationProvider =
   | "dns"
   | "coolify"
   | "ses"
+  | "email-routing"
   | "listmonk"
   | "r2"
   | "plausible"
@@ -156,6 +159,11 @@ export interface MigrationPlanInput {
   /** Plan the cleanup phase too. Off by default — retiring the old side
    *  is a separate, explicitly-invoked decision. */
   includeCleanup?: boolean;
+  /** Live Email Routing state for both sides, read (GET-only) by the
+   *  orchestrator before planning. Absent when nothing was probed — the
+   *  planner then plans the step and lets the idempotent executor find
+   *  out. */
+  emailRouting?: { newDomain?: EmailRoutingFacts; oldDomain?: EmailRoutingFacts };
 }
 
 // ---------------------------------------------------------------------------
@@ -525,6 +533,116 @@ export function planListmonk(input: MigrationPlanInput): MigrationAction[] {
 }
 
 /**
+ * Cloudflare Email Routing — inbound mail on the new domain.
+ *
+ * The SES steps move OUTBOUND mail. Nothing else makes `@<new>` able to
+ * RECEIVE mail, and a migrated site whose legal notice names
+ * `imprint@<new>` is advertising an address that bounces (the
+ * collection-of-beauty migration shipped exactly that: no MX at all on
+ * the new apex). So this plans the same work `hatchkit email setup`
+ * does, non-interactively, on the new domain.
+ *
+ * Additive: it only adds MX/SPF/DMARC and rules on the NEW zone, and it
+ * stands down when the new domain's MX already points at another mail
+ * provider — Cloudflare MX next to Google's would split delivery. There
+ * is deliberately no retire step: the old side is often a subdomain of
+ * a shared zone (`beauty.trebeljahr.com` lives in `trebeljahr.com`)
+ * whose routing serves far more than this project.
+ *
+ * When to plan it rather than no-op:
+ *   · the manifest records forwarding (`integrations.email`), or
+ *   · Email Routing is on for the old domain's zone, or
+ *   · the state can't be read (token scope, not probed) — the executor
+ *     re-probes and either skips or fails with the fix, which beats
+ *     silently deciding a legal contact doesn't need to work.
+ */
+export function planEmailRouting(input: MigrationPlanInput): MigrationAction[] {
+  const newDomain = input.newDomain.trim().toLowerCase();
+  const facts: EmailRoutingFacts = input.emailRouting?.newDomain ?? {
+    state: "unknown",
+    reason: "not probed",
+  };
+  const old = input.emailRouting?.oldDomain;
+  const recorded = input.manifest.integrations?.email;
+  const base = { provider: "email-routing", id: "email-routing:setup", phase: "prepare" } as const;
+
+  if (facts.state === "receiving") {
+    return [
+      { ...base, kind: "noop", summary: `Email Routing already receives mail for ${newDomain}` },
+    ];
+  }
+  if (facts.state === "foreign-mx") {
+    return [
+      {
+        ...base,
+        kind: "noop",
+        summary: `inbound mail for ${newDomain} already goes to ${facts.mxHosts.join(", ")}`,
+        detail: [
+          "Email Routing left alone — Cloudflare MX beside another provider's splits delivery",
+        ],
+      },
+    ];
+  }
+
+  const oldUsesRouting =
+    old?.state === "receiving" || (old?.state === "not-receiving" && old.enabled);
+  const unreadable = facts.state === "unauthorized" || facts.state === "unknown";
+  if (!recorded && !oldUsesRouting && !unreadable) {
+    return [
+      {
+        ...base,
+        kind: "noop",
+        summary: `no inbound mail to carry over — ${input.oldDomain} has no Email Routing`,
+        detail: [
+          `mail to @${newDomain} bounces until you run \`hatchkit email setup --domain ${newDomain}\``,
+        ],
+      },
+    ];
+  }
+
+  const why = recorded
+    ? `forwarding recorded for ${recorded.domain} in .hatchkit.json`
+    : oldUsesRouting && old && "zone" in old
+      ? `Email Routing is on for ${old.zone}, which serves ${input.oldDomain}`
+      : facts.state === "unauthorized"
+        ? `could not read Email Routing on ${facts.zone} — the DNS token lacks the scopes`
+        : "Email Routing state not read — the step checks the zone first";
+  const rules = recorded?.addresses
+    ? recorded.addresses.length > 0
+      ? recorded.addresses.map((a) => `${a}@`).join(", ")
+      : "(none)"
+    : `those on @${input.oldDomain}, else the defaults (${STATIC_FORWARD_PRESETS.filter(
+        (p) => p.defaultChecked,
+      )
+        .map((p) => `${p.localPart}@`)
+        .join(", ")})`;
+  const detail = [
+    why,
+    `enables routing, verifies ${recorded?.destinationEmail ?? "the saved forwarding destination"}`,
+    "MX + SPF (existing includes kept) + DMARC (an existing one is kept)",
+    `rules: ${rules}; catch-all ${(recorded?.catchAll ?? true) ? "on" : "off"}`,
+  ];
+  if (facts.state === "unauthorized") {
+    detail.push(
+      "needs Zone → Email Routing Rules → Edit + Account → Email Routing Addresses → Edit on the DNS token",
+    );
+  }
+
+  return [
+    gatedOnCredential(
+      {
+        ...base,
+        kind: "create",
+        summary: `set up Cloudflare Email Routing so mail to @${newDomain} is forwarded`,
+        detail,
+      },
+      input.configured.dns,
+      "hatchkit config add dns",
+    ),
+  ];
+}
+
+/**
  * R2 assets bucket custom domain.
  *
  * R2 allows several custom domains on one bucket, which is what makes
@@ -875,6 +993,7 @@ const PLANNERS: Array<(input: MigrationPlanInput) => MigrationAction[]> = [
   planManual,
   planDns,
   planSes,
+  planEmailRouting,
   planR2,
   planCoolify,
   planListmonk,
@@ -922,6 +1041,7 @@ export const MIGRATION_PROVIDERS: MigrationProvider[] = [
   "dns",
   "coolify",
   "ses",
+  "email-routing",
   "listmonk",
   "r2",
   "plausible",

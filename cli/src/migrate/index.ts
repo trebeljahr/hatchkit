@@ -57,11 +57,17 @@ import {
   getStripeConfig,
 } from "../config.js";
 import {
+  type EmailRoutingFacts,
+  probeEmailRouting,
+  summarizeEmailRoutingProbe,
+} from "../email/routing-access.js";
+import {
   type DeferredStep,
   deferralForStep,
   persistDeferredSteps,
 } from "../provision/deferrals.js";
 import { findManifestDirUpward, readManifest } from "../scaffold/manifest.js";
+import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { validateDomain } from "../utils/validate.js";
 import {
   type ConfiguredProviders,
@@ -69,6 +75,7 @@ import {
   type MigrationAction,
   type MigrationPhase,
   type MigrationPlan,
+  type MigrationPlanInput,
   type MigrationProvider,
   inferOldDomain,
   planDomainMigration,
@@ -117,6 +124,29 @@ async function detectConfigured(): Promise<ConfiguredProviders> {
     "search-console": !!searchConsole,
     stripe: !!stripe,
   };
+}
+
+/** Read (GET-only) Email Routing state for both sides so the plan can
+ *  tell "already receiving" from "needs setup" from "token can't see
+ *  it". Any failure degrades to `unknown` — the executor re-probes. */
+async function probeEmailRoutingFacts(
+  newDomain: string,
+  oldDomain: string,
+): Promise<MigrationPlanInput["emailRouting"]> {
+  const dns = await getDnsConfig();
+  if (!dns?.apiToken) return undefined;
+  const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
+  const read = async (domain: string): Promise<EmailRoutingFacts> => {
+    try {
+      return summarizeEmailRoutingProbe(
+        await probeEmailRouting(cf, domain, { accountId: dns.accountId }),
+      );
+    } catch (err) {
+      return { state: "unknown", reason: (err as Error).message.split("\n")[0] };
+    }
+  };
+  const [newFacts, oldFacts] = await Promise.all([read(newDomain), read(oldDomain)]);
+  return { newDomain: newFacts, oldDomain: oldFacts };
 }
 
 const PHASE_BLURB: Record<MigrationPhase, string> = {
@@ -188,6 +218,7 @@ export async function runMigrateDomain(opts: MigrateDomainOptions): Promise<void
     oldDomain: inferred.domain,
     oldDomainSource: inferred.source,
     configured,
+    emailRouting: await probeEmailRoutingFacts(newDomain, inferred.domain),
     // Cleanup actions are always planned so the table shows the whole
     // arc — what will eventually be retired is part of the blast radius
     // an operator needs to see before starting.
@@ -247,7 +278,11 @@ export async function runMigrateDomain(opts: MigrateDomainOptions): Promise<void
     } catch (err) {
       const reason = (err as Error).message.split("\n")[0];
       console.log(chalk.red(`    ✗ ${reason}`));
-      deferred.push(deferralFor(action, plan, reason));
+      // Errors that know their fix (a token missing scopes) carry it.
+      const hint = (err as { hint?: unknown }).hint;
+      const fix = Array.isArray(hint) ? (hint as string[]) : undefined;
+      for (const line of fix ?? []) console.log(chalk.dim(`      ${line}`));
+      deferred.push(deferralFor(action, plan, reason, fix));
       continue;
     }
 
@@ -317,14 +352,20 @@ export function migrateCommand(
     .join(" ");
 }
 
-function deferralFor(action: MigrationAction, plan: MigrationPlan, reason: string): DeferredStep {
+function deferralFor(
+  action: MigrationAction,
+  plan: MigrationPlan,
+  reason: string,
+  fix?: string[],
+): DeferredStep {
+  const hint = [...(action.gate ? [`waiting on: ${action.gate}`] : []), ...(fix ?? [])];
   return deferralForStep({
     key: deferralKey(action),
     label: `migrate-domain / ${action.provider} (${action.phase})`,
     kind: "failed",
     reason,
     command: migrateCommand(plan, action.phase, action.provider),
-    hint: action.gate ? [`waiting on: ${action.gate}`] : undefined,
+    hint: hint.length > 0 ? hint : undefined,
   });
 }
 

@@ -900,6 +900,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of credChecks) results.push(r);
   const mailFromChecks = await checkProjectSesMailFromState(process.cwd());
   for (const r of mailFromChecks) results.push(r);
+  const emailRoutingChecks = await checkProjectEmailRoutingState(process.cwd());
+  for (const r of emailRoutingChecks) results.push(r);
   const publicSvcChecks = await checkProjectPublicServiceState(process.cwd());
   for (const r of publicSvcChecks) results.push(r);
   const routingChecks = await checkProjectRoutingState(process.cwd());
@@ -1209,6 +1211,111 @@ export function checkProjectDeferredSteps(projectDir: string): CheckResult[] {
     detail: `${step.reason} (deferred ${step.deferredAt.slice(0, 10)})`,
     hint: [`Finish it: ${step.command}`, ...(step.hint ?? []).map((h) => `Prerequisite: ${h}`)],
   }));
+}
+
+/**
+ * Inbound mail for the project's domain (Cloudflare Email Routing).
+ *
+ * Two failure modes worth a red row:
+ *   · the DNS token lacks the Email Routing scopes — Cloudflare answers
+ *     every Email Routing call with a bare `10000: Authentication
+ *     error`, which reads like an expired token and isn't one;
+ *   · the manifest records forwarding for this domain but the zone no
+ *     longer receives (routing off, or its MX gone).
+ * A project that never set up forwarding and has no MX is reported as
+ * not configured, not failing — plenty of projects send without
+ * receiving — but the detail says that mail to it bounces.
+ */
+export async function checkProjectEmailRoutingState(
+  projectDir: string,
+  deps: {
+    readManifest?: typeof import("./scaffold/manifest.js").readManifest;
+    getDnsConfig?: typeof getDnsConfig;
+    makeClient?: (
+      token: string,
+      accountId?: string,
+    ) => import("./email/routing-access.js").EmailRoutingReader;
+  } = {},
+): Promise<CheckResult[]> {
+  const { existsSync } = await import("node:fs");
+  if (!existsSync(`${projectDir}/.hatchkit.json`)) return [];
+  const readManifest = deps.readManifest ?? (await import("./scaffold/manifest.js")).readManifest;
+  let manifest: ReturnType<typeof readManifest>;
+  try {
+    manifest = readManifest(projectDir);
+  } catch {
+    return [];
+  }
+  const domain = manifest?.domain?.trim().toLowerCase();
+  if (!manifest || !domain) return [];
+  const dns = await (deps.getDnsConfig ?? getDnsConfig)();
+  if (!dns?.apiToken) return [];
+
+  const { probeEmailRouting, summarizeEmailRoutingProbe } = await import(
+    "./email/routing-access.js"
+  );
+  const cf =
+    deps.makeClient?.(dns.apiToken, dns.accountId) ??
+    new (await import("./utils/cloudflare-api.js")).CloudflareApi({
+      token: dns.apiToken,
+      accountId: dns.accountId,
+    });
+  const name = `Email Routing (${domain})`;
+  const recorded = manifest.integrations?.email;
+  const recordedHere = recorded?.domain?.trim().toLowerCase() === domain;
+
+  let probe: Awaited<ReturnType<typeof probeEmailRouting>>;
+  try {
+    probe = await probeEmailRouting(cf, domain, { accountId: dns.accountId });
+  } catch (err) {
+    return [
+      {
+        name,
+        status: "fail",
+        detail: (err as Error).message.split("\n")[0],
+        hint: ["Re-run once Cloudflare is reachable: `hatchkit email status`"],
+      },
+    ];
+  }
+  if (probe.access === "unauthorized") {
+    return [{ name, status: "fail", detail: probe.error.message, hint: probe.error.hint }];
+  }
+  const facts = summarizeEmailRoutingProbe(probe);
+  switch (facts.state) {
+    case "no-zone":
+      return [];
+    case "receiving":
+      return [{ name, status: "ok", detail: `receiving via Cloudflare (${facts.zone})` }];
+    case "foreign-mx":
+      return [{ name, status: "ok", detail: `MX → ${facts.mxHosts.join(", ")} (not Cloudflare)` }];
+    case "not-receiving": {
+      const why = facts.enabled
+        ? `routing is on for ${facts.zone} but ${domain} has no Cloudflare MX`
+        : `routing is off for ${facts.zone} and ${domain} has no MX`;
+      if (recordedHere) {
+        return [
+          {
+            name,
+            status: "fail",
+            detail: `${why} — mail to @${domain} bounces`,
+            hint: [
+              ".hatchkit.json records forwarding for this domain, but the zone doesn't receive.",
+              `Repair (idempotent): hatchkit email setup --domain ${domain}`,
+            ],
+          },
+        ];
+      }
+      return [
+        {
+          name,
+          status: "skip",
+          detail: `${why} — mail to @${domain} bounces; \`hatchkit email setup\` to forward it`,
+        },
+      ];
+    }
+    default:
+      return [];
+  }
 }
 
 /**

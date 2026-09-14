@@ -1120,6 +1120,8 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
               domain: result.domain,
               configuredAt: new Date().toISOString(),
               destinationEmail: result.destination.record.email,
+              addresses: result.rules.map((r) => r.address.split("@")[0]),
+              catchAll: result.catchAll?.enabled ?? false,
             },
           },
         });

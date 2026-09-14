@@ -3631,7 +3631,9 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Prerequisites:")}
     DNS must be on Cloudflare (${chalk.cyan("hatchkit config add dns")}). The token
     needs Zone:DNS:Edit + Zone:Email Routing Rules:Edit +
-    Account:Email Routing Addresses:Edit.
+    Account:Email Routing Addresses:Edit. Without the two Email Routing
+    groups Cloudflare answers "10000: Authentication error"; hatchkit
+    checks for that first and names the missing permissions.
 `);
     return;
   }
@@ -4162,8 +4164,10 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Three phases, and why:")}
     ${chalk.green("prepare")}  Additive. Creates the new SES identity beside the old one,
              attaches the new R2 custom domain beside the old one, adds
-             the new Search Console property, publishes DNS, and keeps
-             the old origin on the assets bucket's CORS rule. Nothing
+             the new Search Console property, publishes DNS, sets up
+             Cloudflare Email Routing on the new domain (inbound mail such
+             as imprint@<new>), and keeps the old origin on the assets
+             bucket's CORS rule. Nothing
              that works today stops working. This is the default.
     ${chalk.yellow("cutover")}  Moves the pointers: FROM address (manifest + SES_FROM_EMAIL /
              LISTMONK_FROM in the env files), assets URL, webhook URL,
@@ -4180,7 +4184,8 @@ function printHelp(topic?: HelpTopic): void {
                       recorded field (i.e. for cleanup).
     --phase <p>       prepare ${chalk.dim("(default)")} | cutover | cleanup
     --only <provider> Retry one provider: files, dns, coolify, ses,
-                      listmonk, r2, plausible, search-console, stripe.
+                      email-routing, listmonk, r2, plausible,
+                      search-console, stripe.
     --dir <path>      Project dir (defaults to cwd).
     --dry-run         Print the full plan for every phase; write nothing.
     --yes, -y         Skip the confirmation prompt.
@@ -4590,5 +4595,12 @@ function printHelp(topic?: HelpTopic): void {
 
 main().catch((error) => {
   console.error(chalk.red(`\n  Error: ${error.message}\n`));
+  // Errors that know their own fix (e.g. a Cloudflare token missing the
+  // Email Routing scopes) carry it as `hint: string[]`.
+  const hint = (error as { hint?: unknown }).hint;
+  if (Array.isArray(hint)) {
+    for (const line of hint) console.error(chalk.dim(`  ${line}`));
+    console.error("");
+  }
   process.exit(1);
 });
