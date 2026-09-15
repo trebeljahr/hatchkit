@@ -737,6 +737,179 @@ results.postgres = await run(
   { dbEngine: "postgres", dbProvider: "external", mongodbProvider: "external" },
 );
 
+// ── E2E local S3 ─────────────────────────────────────────────────────
+// Docker Hub no longer serves minio/minio, so the old CI step failed the
+// e2e job before any test ran. CI now starts the same pinned SeaweedFS
+// image as e2e/start-server.sh, creating the one bucket
+// playwright.config.ts names — and only for projects with S3 code.
+const { SEAWEEDFS_IMAGE, seaweedfsCiStep, upgradeWorkflowE2eS3 } = await import(
+  "./src/scaffold/e2e-s3.js"
+);
+
+/** Every file under `dir` whose content mentions MinIO. */
+function filesMentioningMinio(dir: string): string[] {
+  const hits: string[] = [];
+  const walk = (p: string): void => {
+    for (const entry of readdirSync(p, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name === ".git") continue;
+      const full = join(p, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (/minio/i.test(readFileSync(full, "utf-8"))) hits.push(full.slice(dir.length + 1));
+    }
+  };
+  walk(dir);
+  return hits;
+}
+
+/** Lines of the `e2e:` job only. */
+function e2eJob(workflow: string): string {
+  const m = /^ {2}e2e:\s*\n([\s\S]*?)(?=^ {2}[A-Za-z0-9_-]+:\s*$)/m.exec(workflow);
+  return m ? m[1] : "";
+}
+
+results.e2eS3Enabled = await run("e2e local S3: s3 feature", "bucket-app", ["s3"], (d) => {
+  const ci = readFileSync(join(d, ".github/workflows/build-and-deploy.yml"), "utf-8");
+  const startServer = readFileSync(join(d, "e2e/start-server.sh"), "utf-8");
+  const playwright = readFileSync(join(d, "playwright.config.ts"), "utf-8");
+  const job = e2eJob(ci);
+  return [
+    ["no file in the project mentions MinIO", filesMentioningMinio(d).length === 0],
+    ["ci: SeaweedFS step creates bucket-app-e2e", ci.includes(seaweedfsCiStep("bucket-app-e2e"))],
+    ["ci: e2e job sets no S3_* / AWS_* env", !/^\s+(S3_|AWS_)/m.test(job)],
+    ["playwright: bucket is bucket-app-e2e", playwright.includes('S3_BUCKET_NAME: "bucket-app-e2e"')],
+    ["playwright: public URL uses the same bucket", playwright.includes("127.0.0.1:9002/bucket-app-e2e")],
+    ["start-server.sh: creates bucket-app-e2e", startServer.includes("S3_BUCKET=bucket-app-e2e")],
+    ["start-server.sh: waits on bucket-app-e2e", startServer.includes("9002/bucket-app-e2e &&")],
+    ["start-server.sh: pinned image", startServer.includes(SEAWEEDFS_IMAGE)],
+    // global-teardown.ts removes containers by these literal names.
+    ["start-server.sh: container names unchanged", startServer.includes("starter-e2e-seaweedfs")],
+    ["ci: needs: entries all resolve", ciNeedsAreResolvable(ci)],
+  ];
+});
+
+results.e2eS3Disabled = await run("e2e local S3: no S3 code", "no-bucket-app", [], (d) => {
+  const ci = readFileSync(join(d, ".github/workflows/build-and-deploy.yml"), "utf-8");
+  const startServer = readFileSync(join(d, "e2e/start-server.sh"), "utf-8");
+  const playwright = readFileSync(join(d, "playwright.config.ts"), "utf-8");
+  const job = e2eJob(ci);
+  return [
+    ["no file in the project mentions MinIO", filesMentioningMinio(d).length === 0],
+    ["ci: e2e job kept", ciJobNames(ci).includes("e2e")],
+    ["ci: no SeaweedFS step", !/seaweedfs/i.test(ci)],
+    ["ci: e2e job sets no S3_* / AWS_* env", !/^\s+(S3_|AWS_)/m.test(job)],
+    ["ci: e2e job still runs playwright", job.includes("npx playwright test")],
+    ["start-server.sh: no SeaweedFS block", !/seaweedfs/i.test(startServer)],
+    ["start-server.sh: Mongo + Redis kept", /Wait for MongoDB/.test(startServer) && /Wait for Redis/.test(startServer)],
+    ["playwright: no S3 / AWS env", !/S3_|AWS_/.test(playwright)],
+    ["playwright: server env kept", /BETTER_AUTH_SECRET/.test(playwright) && /FRONTEND_URL/.test(playwright)],
+  ];
+});
+
+// ML services import storage.ts, so they keep the container even
+// without the `s3` feature.
+results.e2eS3Ml = await run(
+  "e2e local S3: ML service",
+  "ml-app",
+  [],
+  (d) => {
+    const ci = readFileSync(join(d, ".github/workflows/build-and-deploy.yml"), "utf-8");
+    return [["ci: SeaweedFS step kept", ci.includes(seaweedfsCiStep("ml-app-e2e"))]];
+  },
+  { mlServices: ["background-removal"] },
+);
+
+console.log("\n── e2e local S3: pinned image + workflow retrofit ─────────────");
+{
+  const checks: Check[] = [];
+  const read = (rel: string) => readFileSync(join(STARTER, "..", rel), "utf-8");
+  for (const rel of [
+    "starter/e2e/start-server.sh",
+    "starter/docker-compose.dev.yml",
+    "starter/.github/workflows/build-and-deploy.yml",
+    "cli/src/templates/build-pipeline/deploy.yml.hbs",
+  ]) {
+    const content = read(rel);
+    checks.push([`${rel}: uses ${SEAWEEDFS_IMAGE}`, content.includes(SEAWEEDFS_IMAGE)]);
+    checks.push([
+      `${rel}: no other seaweedfs tag`,
+      content.split("chrislusf/seaweedfs:").length === content.split(SEAWEEDFS_IMAGE).length,
+    ]);
+    checks.push([`${rel}: no MinIO`, !/minio/i.test(content)]);
+  }
+  checks.push([
+    "starter workflow step == seaweedfsCiStep(starter-e2e)",
+    read("starter/.github/workflows/build-and-deploy.yml").includes(seaweedfsCiStep("starter-e2e")),
+  ]);
+  checks.push([
+    "adopt template step == seaweedfsCiStep(starter-e2e)",
+    read("cli/src/templates/build-pipeline/deploy.yml.hbs").includes(seaweedfsCiStep("starter-e2e")),
+  ]);
+
+  // The workflow an existing project was generated with.
+  const legacy = [
+    "jobs:",
+    "  e2e:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - run: pnpm run build",
+    "",
+    "      - name: Start MinIO",
+    "        run: |",
+    "          docker run -d --name e2e-minio -p 9002:9000 \\",
+    "            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \\",
+    "            --tmpfs /data minio/minio:latest server /data",
+    "          docker run --rm --network host \\",
+    "            --entrypoint sh minio/mc:latest -c \\",
+    '            "mc alias set local http://127.0.0.1:9002 minioadmin minioadmin && \\',
+    '             mc mb --ignore-existing local/starter-e2e"',
+    "",
+    "      - run: npx playwright install --with-deps chromium",
+    "",
+    "      - name: Run E2E tests",
+    "        run: npx playwright test",
+    "        env:",
+    '          CI: "true"',
+    "          S3_ENDPOINT: http://127.0.0.1:9002",
+    "          S3_BUCKET_NAME: starter-e2e",
+    "          AWS_ACCESS_KEY_ID: minioadmin",
+    "          AWS_SECRET_ACCESS_KEY: minioadmin",
+    "          AWS_REGION: us-east-1",
+    "",
+    "  build-server:",
+    "    runs-on: ubuntu-latest",
+    "    env:",
+    "      AWS_REGION: eu-central-1",
+    "",
+  ].join("\n");
+
+  const pw = upgradeWorkflowE2eS3(legacy, { enabled: true, s3Env: "playwright", bucket: "tyt-e2e" });
+  checks.push(["retrofit (playwright): no MinIO left", !/minio/i.test(pw)]);
+  checks.push(["retrofit (playwright): SeaweedFS step for the playwright bucket", pw.includes(seaweedfsCiStep("tyt-e2e"))]);
+  checks.push(["retrofit (playwright): e2e S3/AWS env dropped", !/^\s+(S3_|AWS_)/m.test(e2eJob(pw))]);
+  checks.push(["retrofit (playwright): other jobs' env untouched", pw.includes("      AWS_REGION: eu-central-1")]);
+  checks.push(["retrofit (playwright): playwright install step kept", pw.includes("      - run: npx playwright install --with-deps chromium")]);
+  checks.push([
+    "retrofit (playwright): idempotent",
+    upgradeWorkflowE2eS3(pw, { enabled: true, s3Env: "playwright", bucket: "tyt-e2e" }) === pw,
+  ]);
+
+  const wf = upgradeWorkflowE2eS3(legacy, { enabled: true, s3Env: "workflow", bucket: "starter-e2e" });
+  checks.push(["retrofit (workflow): no MinIO left", !/minio/i.test(wf)]);
+  checks.push(["retrofit (workflow): job env keeps the bucket", wf.includes("          S3_BUCKET_NAME: starter-e2e")]);
+  checks.push(["retrofit (workflow): placeholder credentials", wf.includes("          AWS_ACCESS_KEY_ID: hatchkit-dev")]);
+
+  const off = upgradeWorkflowE2eS3(legacy, { enabled: false, s3Env: "playwright", bucket: "tyt-e2e" });
+  checks.push(["retrofit (no S3 code): no MinIO / SeaweedFS step", !/minio|seaweedfs/i.test(off)]);
+  checks.push(["retrofit (no S3 code): steps either side kept", off.includes("      - run: pnpm run build\n\n      - run: npx playwright install")]);
+
+  let ok = true;
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  results.e2eS3PinAndRetrofit = ok;
+}
+
 results.both = await run("desktop + mobile", "my-cool-app", ["desktop", "mobile"], (d) => {
   const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
   const nextCfg = readFileSync(join(d, "packages/client/next.config.ts"), "utf-8");
@@ -1540,6 +1713,26 @@ console.log("\n── build pipeline: engines.node detection + created/overwritt
     "force=true: created list empty (everything pre-existed)",
     r2.created.length === 0,
   ]);
+
+  // 4. The adopt workflow's E2E S3 container follows the `s3` input.
+  const withS3 = readFileSync(join(tmp, ".github/workflows/deploy.yml"), "utf-8");
+  checks.push(["deploy.yml (default): SeaweedFS step", withS3.includes("- name: Start SeaweedFS")]);
+  checks.push(["deploy.yml (default): no MinIO", !/minio/i.test(withS3)]);
+  scaffoldBuildPipeline({
+    projectDir: tmp,
+    projectName: "test-app",
+    ghOwner: "owner",
+    entrypoint: "dist/index.js",
+    port: 3000,
+    surfaces: "static",
+    defaultBranch: "main",
+    force: true,
+    s3: false,
+  });
+  const noS3 = readFileSync(join(tmp, ".github/workflows/deploy.yml"), "utf-8");
+  checks.push(["deploy.yml (s3: false): no SeaweedFS step", !/seaweedfs/i.test(noS3)]);
+  checks.push(["deploy.yml (s3: false): no S3_* / AWS_* env", !/^\s+(S3_|AWS_)/m.test(noS3)]);
+  checks.push(["deploy.yml (s3: false): E2E run kept", noS3.includes("npx playwright test")]);
 
   let ok = true;
   for (const [n, c] of checks) {

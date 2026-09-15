@@ -19,7 +19,7 @@ services:
     restart: unless-stopped
 
   seaweedfs:
-    image: chrislusf/seaweedfs:latest
+    image: chrislusf/seaweedfs:4.47
     ports:
       - "9000:8333"
     environment:

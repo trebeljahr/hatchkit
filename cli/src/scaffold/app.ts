@@ -39,6 +39,7 @@ import {
   applyWorkflowNativeOrigins,
 } from "./deploy-verification.js";
 import { type DotenvxSeedResult, seedDotenvxProduction } from "./dotenvx.js";
+import { applyE2eS3Gate } from "./e2e-s3.js";
 import { MANIFEST_FILENAME, toManifest, writeManifest } from "./manifest.js";
 import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
 import {
@@ -521,6 +522,10 @@ async function runScaffoldSteps(
 
     modifications.push("removed: ML playground, ML router, ML types, ML navbar link");
   }
+
+  // E2E local S3: only projects with code that talks to S3 get the
+  // SeaweedFS container (CI step, start-server.sh, playwright env).
+  applyE2eS3Gate(outputDir, config, modifications);
 
   // Postgres overlay. Runs AFTER feature-flag strips and applyProjectName
   // (so the dev DB name is already substituted) but BEFORE pruneToSurface

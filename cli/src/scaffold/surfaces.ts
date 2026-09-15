@@ -215,7 +215,7 @@ function pruneToClientOnly(outputDir: string, modifications: string[]): void {
   dropWorkspaceEntry(outputDir, "docs-site");
 
   // CI workflow: the server image job builds `packages/server/Dockerfile`,
-  // which we just deleted, and the e2e job spins up mongo/redis/MinIO to
+  // which we just deleted, and the e2e job spins up mongo/redis/SeaweedFS to
   // Playwright-test an API that isn't there (its `e2e/` dir and
   // playwright.config.ts went above). The `test:unit` step is the
   // server's Vitest run — the script is stripped from the root

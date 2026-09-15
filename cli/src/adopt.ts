@@ -80,6 +80,7 @@ import { readDeferredSteps } from "./provision/deferrals.js";
 import { type ProvisionService, runProvision } from "./provision/index.js";
 import { readEnvKeys } from "./provision/write-env.js";
 import { detectBuildPipeline, scaffoldBuildPipeline } from "./scaffold/build-pipeline.js";
+import { needsLocalS3 } from "./scaffold/e2e-s3.js";
 import {
   MANIFEST_FILENAME,
   MANIFEST_VERSION,
@@ -4105,6 +4106,7 @@ async function scaffoldBuildPipelineNow(
     domain: plan.domain,
     defaultBranch,
     force: !!opts.force,
+    s3: needsLocalS3({ features: plan.features }),
   });
   if (result.created.length > 0) {
     console.log(chalk.green(`  ✓ Scaffolded: ${result.created.join(", ")}`));

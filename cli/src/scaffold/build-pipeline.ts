@@ -34,6 +34,7 @@ import { dirname, join } from "node:path";
 import { ensureDockerignoreAllowsEnvProduction } from "../utils/dockerignore.js";
 import { renderTemplate } from "../utils/template.js";
 import { setWorkflowVerifyUrlValues } from "./deploy-verification.js";
+import { stripWorkflowE2eS3 } from "./e2e-s3.js";
 
 /** Default Node major used when the project doesn't pin one via
  *  `engines.node`. Bumped to 24 (LTS since Oct 2025) to match what
@@ -362,6 +363,10 @@ export interface ScaffoldBuildPipelineInput {
    *  --regenerate-pipeline` for adopted projects that need to pick up
    *  template fixes (e.g. the Node 22 → 24 base-image bump). */
   force?: boolean;
+  /** Whether the project has S3 code (the `s3` feature or an ML
+   *  service). False drops the workflow's SeaweedFS step and the S3 env
+   *  on its E2E run. Defaults to true, the template as written. */
+  s3?: boolean;
 }
 
 export interface ScaffoldBuildPipelineResult {
@@ -554,7 +559,9 @@ export function scaffoldBuildPipeline(
     // endpoint (if it has one at all) is not something we can infer, and
     // a gate polling a path that will never exist fails every deploy
     // forever. Fill HATCHKIT_API_URL in by hand to turn that half on.
-    const verified = setWorkflowVerifyUrlValues(filled, {
+    // No S3 code → no SeaweedFS container on the E2E run.
+    const gated = input.s3 === false ? stripWorkflowE2eS3(filled) : filled;
+    const verified = setWorkflowVerifyUrlValues(gated, {
       webUrl: input.domain ? `https://${input.domain}` : "",
       apiUrl: "",
     });

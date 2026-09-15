@@ -344,6 +344,14 @@ export function applyPorts(
  *    · packages/server/.env.example            (same three keys)
  *    · playwright.config.ts                    (E2E DB + bucket + public URL)
  *    · packages/server/src/config/env.ts       (Zod fallback default for S3_BUCKET_NAME)
+ *    · .github/workflows/build-and-deploy.yml  (E2E bucket + DB, whole-word only)
+ *    · e2e/start-server.sh                     (E2E bucket, whole-word only)
+ *
+ *  The last two also name containers `starter-e2e-<svc>`, and the
+ *  postgres overlay writes those names after this pass, so a bare
+ *  `starter-e2e` followed by `-` stays as it is there. The bucket must
+ *  match playwright.config.ts, or the E2E server writes to a bucket
+ *  the SeaweedFS container never created.
  *
  *  Idempotent — after the first run the literal `starter-` prefix is
  *  gone, so re-runs (e.g. through `hatchkit update`) are no-ops. */
@@ -367,5 +375,10 @@ export function applyProjectName(outputDir: string, projectName: string): void {
       for (const [from, to] of replacements) out = out.replaceAll(from, to);
       return out;
     });
+  }
+  for (const rel of [".github/workflows/build-and-deploy.yml", "e2e/start-server.sh"]) {
+    rewriteFile(join(outputDir, rel), (content) =>
+      content.replace(/\bstarter-e2e\b(?!-)/g, `${projectName}-e2e`),
+    );
   }
 }

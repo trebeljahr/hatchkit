@@ -98,20 +98,21 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
 
-      - name: Start MinIO
+      # Local S3 for the app's storage client. `S3_BUCKET` creates the
+      # bucket on startup, and with no credentials configured SeaweedFS
+      # accepts any signature, so the AWS_* values below are placeholders.
+      - name: Start SeaweedFS
         run: |
-          docker run -d --name e2e-minio -p 9002:9000 \
-            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-            --tmpfs /data minio/minio:latest server /data
-          for i in $(seq 1 30); do
-            curl -sf http://127.0.0.1:9002/minio/health/live && break
+          docker run -d --name e2e-seaweedfs -p 9002:8333 \
+            -e S3_BUCKET=starter-e2e \
+            --tmpfs /data chrislusf/seaweedfs:4.47
+          for i in $(seq 1 60); do
+            curl -sf -o /dev/null http://127.0.0.1:9002/starter-e2e && exit 0
             sleep 1
           done
-          docker run --rm --network host \
-            --entrypoint sh minio/mc:latest -c \
-            "mc alias set local http://127.0.0.1:9002 minioadmin minioadmin && \
-             mc mb --ignore-existing local/starter-e2e && \
-             mc anonymous set download local/starter-e2e"
+          echo "SeaweedFS did not serve bucket starter-e2e within 60s" >&2
+          docker logs e2e-seaweedfs >&2
+          exit 1
 
       - run: npx playwright install --with-deps chromium
 
@@ -128,8 +129,8 @@ jobs:
           S3_FORCE_PATH_STYLE: "true"
           S3_BUCKET_NAME: starter-e2e
           S3_PUBLIC_URL: http://127.0.0.1:9002/starter-e2e
-          AWS_ACCESS_KEY_ID: minioadmin
-          AWS_SECRET_ACCESS_KEY: minioadmin
+          AWS_ACCESS_KEY_ID: hatchkit-dev
+          AWS_SECRET_ACCESS_KEY: hatchkit-dev
           AWS_REGION: us-east-1
 
   build:

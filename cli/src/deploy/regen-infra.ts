@@ -24,6 +24,9 @@
  *   · docker-compose.yml — drops dead NEXT_PUBLIC_* runtime env from
  *     the client service (it never reached the prebuilt bundle and
  *     misleads readers into thinking runtime env works).
+ *   · build-and-deploy.yml / deploy.yml — swaps the E2E job's MinIO
+ *     step (its Docker Hub image is gone) for SeaweedFS, or drops the
+ *     step when the project has no S3 code.
  *
  * Intentionally does NOT run `terraform apply` or touch Coolify. The
  * user runs `terraform apply -var-file=<name>.tfvars` themselves once
@@ -42,6 +45,7 @@ import {
   upgradeWorkflowClientBuildArgs,
 } from "../scaffold/client-build-args.js";
 import { deployVerificationRetrofits } from "../scaffold/deploy-verification.js";
+import { e2eS3Retrofits } from "../scaffold/e2e-s3.js";
 import { generateCoolifyEnv, generateTfvars, resolveStackDir } from "../scaffold/infra.js";
 import { type ProjectManifest, findManifestDirUpward, readManifest } from "../scaffold/manifest.js";
 import { parseDomain } from "../utils/validate.js";
@@ -157,6 +161,7 @@ export async function runRegenInfra(opts: RegenArgs): Promise<void> {
       manifest.surfaces,
       manifest.features,
     ),
+    ...e2eS3Retrofits(projectDir, manifest),
   ];
   let projectFilesTouched = 0;
   for (const [label, relPath, fn] of projectFileUpgrades) {
