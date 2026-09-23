@@ -3570,6 +3570,10 @@ function printHelp(topic?: HelpTopic): void {
     Run ${chalk.cyan("hatchkit config add dns")} (Cloudflare-only). ${chalk.dim("link-to-cloudflare")}
     additionally needs INWX registrar credentials — answer ${chalk.cyan("yes")} to
     "Is INWX your domain registrar?" when prompted.
+
+    ${chalk.bold("INWX with 2FA:")} store the base32 TOTP secret at the same prompt
+    (or set ${chalk.dim("INWX_TOTP_SECRET")}); hatchkit runs account.unlock for you.
+    One-off: ${chalk.dim("INWX_TOTP")}=<current 6-digit code>.
 `);
     return;
   }

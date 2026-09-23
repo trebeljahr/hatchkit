@@ -24,6 +24,10 @@
  */
 import assert from "node:assert/strict";
 import { InwxApi } from "./src/utils/inwx-api.js";
+import { generateTotp } from "./src/utils/totp.js";
+
+// base32 of ASCII "12345678901234567890" (the RFC 6238 SHA-1 seed).
+const RFC_SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
 
 interface RecordedCall {
   method: string;
@@ -74,7 +78,11 @@ function stubFetch(replies: Record<string, FakeReply>): {
 const failures: string[] = [];
 
 async function expect(label: string, fn: () => Promise<void>): Promise<void> {
-  const savedTotp = process.env.INWX_TOTP;
+  // Keep cases isolated from each other's env mutation, and from any real
+  // INWX_TOTP* the developer has exported.
+  const saved = { code: process.env.INWX_TOTP, secret: process.env.INWX_TOTP_SECRET };
+  delete process.env.INWX_TOTP;
+  delete process.env.INWX_TOTP_SECRET;
   try {
     await fn();
     console.log(`  ✓ ${label}`);
@@ -82,9 +90,13 @@ async function expect(label: string, fn: () => Promise<void>): Promise<void> {
     failures.push(`${label}: ${(err as Error).message}`);
     console.log(`  ✗ ${label}`);
   } finally {
-    // Keep cases isolated from each other's env mutation.
-    if (savedTotp === undefined) delete process.env.INWX_TOTP;
-    else process.env.INWX_TOTP = savedTotp;
+    for (const [key, value] of [
+      ["INWX_TOTP", saved.code],
+      ["INWX_TOTP_SECRET", saved.secret],
+    ] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 }
 
@@ -147,17 +159,17 @@ await expect("throws the guard error when login sets no session cookie", async (
   }
 });
 
-await expect("2FA account without INWX_TOTP throws a clear, actionable error", async () => {
-  delete process.env.INWX_TOTP;
-  const { calls, restore } = stubFetch({
-    "account.login": {
-      resData: { tfa: "GOOGLE-AUTH" },
-      setCookies: ["domrobot=SESS2FA; path=/"],
-    },
-  });
+/** Reusable login reply for a 2FA-enabled account. */
+const login2fa: FakeReply = {
+  resData: { tfa: "GOOGLE-AUTH" },
+  setCookies: ["domrobot=SESS2FA; path=/"],
+};
+
+await expect("2FA account with no TOTP configured throws a clear, actionable error", async () => {
+  const { calls, restore } = stubFetch({ "account.login": login2fa });
   try {
     const api = new InwxApi({ username: "user", password: "pw" });
-    await assert.rejects(() => api.login(), /2FA enabled.*INWX_TOTP/s);
+    await assert.rejects(() => api.login(), /2FA enabled but no TOTP is configured/);
   } finally {
     restore();
   }
@@ -167,17 +179,10 @@ await expect("2FA account without INWX_TOTP throws a clear, actionable error", a
   );
 });
 
-await expect("2FA account with INWX_TOTP performs account.unlock with the TOTP", async () => {
-  process.env.INWX_TOTP = "123456";
-  const { calls, restore } = stubFetch({
-    "account.login": {
-      resData: { tfa: "GOOGLE-AUTH" },
-      setCookies: ["domrobot=SESS2FA; path=/"],
-    },
-    "account.unlock": { resData: {} },
-  });
+await expect("2FA: a literal totpCode option is sent verbatim to account.unlock", async () => {
+  const { calls, restore } = stubFetch({ "account.login": login2fa, "account.unlock": {} });
   try {
-    const api = new InwxApi({ username: "user", password: "pw" });
+    const api = new InwxApi({ username: "user", password: "pw", totpCode: "123456" });
     await api.login(); // must NOT throw
   } finally {
     restore();
@@ -186,6 +191,52 @@ await expect("2FA account with INWX_TOTP performs account.unlock with the TOTP",
   assert.ok(unlock, "account.unlock should have been called");
   assert.equal(unlock?.params.tan, "123456");
   assert.equal(unlock?.cookie, "domrobot=SESS2FA", "unlock must carry the session cookie");
+});
+
+await expect("2FA: INWX_TOTP env (literal code) still works (backward compat)", async () => {
+  process.env.INWX_TOTP = "654321";
+  const { calls, restore } = stubFetch({ "account.login": login2fa, "account.unlock": {} });
+  try {
+    const api = new InwxApi({ username: "user", password: "pw" });
+    await api.login();
+  } finally {
+    restore();
+  }
+  assert.equal(calls.find((c) => c.method === "account.unlock")?.params.tan, "654321");
+});
+
+await expect("2FA: a totpSecret option derives a current 6-digit code for unlock", async () => {
+  const { calls, restore } = stubFetch({ "account.login": login2fa, "account.unlock": {} });
+  const before = generateTotp(RFC_SECRET);
+  try {
+    const api = new InwxApi({ username: "user", password: "pw", totpSecret: RFC_SECRET });
+    await api.login();
+  } finally {
+    restore();
+  }
+  const after = generateTotp(RFC_SECRET);
+  const tan = calls.find((c) => c.method === "account.unlock")?.params.tan as string;
+  assert.match(tan, /^\d{6}$/, "must be a 6-digit code");
+  // Deterministic despite Date.now(): the code is the one for this 30s
+  // window, so it equals the value computed just before or just after login
+  // (covers the rare boundary crossing during the call).
+  assert.ok([before, after].includes(tan), `tan ${tan} not in {${before}, ${after}}`);
+});
+
+await expect("2FA: a literal totpCode takes precedence over a totpSecret", async () => {
+  const { calls, restore } = stubFetch({ "account.login": login2fa, "account.unlock": {} });
+  try {
+    const api = new InwxApi({
+      username: "user",
+      password: "pw",
+      totpCode: "111111",
+      totpSecret: RFC_SECRET,
+    });
+    await api.login();
+  } finally {
+    restore();
+  }
+  assert.equal(calls.find((c) => c.method === "account.unlock")?.params.tan, "111111");
 });
 
 if (failures.length > 0) {

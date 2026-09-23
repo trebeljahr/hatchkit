@@ -16,6 +16,8 @@
 // follow-up request. When 2FA is enabled, login also requires an
 // `account.unlock` with a TOTP before any command works.
 
+import { generateTotp } from "./totp.js";
+
 const PROD_URL = "https://api.domrobot.com/jsonrpc/";
 const OTE_URL = "https://api.ote.domrobot.com/jsonrpc/";
 
@@ -24,6 +26,14 @@ export interface InwxApiOptions {
   password: string;
   /** Use the OTE sandbox instead of production. Set via INWX_SANDBOX=1. */
   sandbox?: boolean;
+  /** Base32 TOTP shared secret for a 2FA-enabled account. When login
+   *  reports 2FA is on, a current code is derived from this for
+   *  `account.unlock`. Falls back to the INWX_TOTP_SECRET env var. */
+  totpSecret?: string;
+  /** A literal current 6-digit TOTP code. Takes precedence over
+   *  `totpSecret` (a code can't be stored — it expires in 30s — so this is
+   *  for one-shot runs). Falls back to the INWX_TOTP env var. */
+  totpCode?: string;
 }
 
 interface JsonRpcResponse<T> {
@@ -44,6 +54,8 @@ export class InwxApi {
   private url: string;
   private username: string;
   private password: string;
+  private totpSecret?: string;
+  private totpCode?: string;
   /** Session cookie jar (name → value). INWX sets one session cookie on
    *  login; we replay whatever it sends on every follow-up call. */
   private cookies = new Map<string, string>();
@@ -52,6 +64,8 @@ export class InwxApi {
     this.url = options.sandbox ? OTE_URL : PROD_URL;
     this.username = options.username;
     this.password = options.password;
+    this.totpSecret = options.totpSecret;
+    this.totpCode = options.totpCode;
   }
 
   private async request<T>(method: string, params: Record<string, unknown>): Promise<T> {
@@ -137,16 +151,28 @@ export class InwxApi {
     // path instead of an opaque downstream "Authentication error".
     const tfa = data?.tfa;
     if (tfa && tfa !== "0") {
-      const tan = process.env.INWX_TOTP?.trim();
+      const tan = this.resolveTotp();
       if (!tan) {
         throw new Error(
-          "INWX account has 2FA enabled but no TOTP was provided. Set INWX_TOTP " +
-            "to a current 6-digit code and re-run, or use an API sub-account " +
-            "without 2FA for automation.",
+          "INWX account has 2FA enabled but no TOTP is configured. Store the " +
+            "base32 secret via `hatchkit config add dns` (INWX 2FA prompt), or " +
+            "set INWX_TOTP_SECRET, or pass a current 6-digit code in INWX_TOTP.",
         );
       }
       await this.request("account.unlock", { tan });
     }
+  }
+
+  /** Resolve the 6-digit TOTP to send to account.unlock, or null when none
+   *  is available. A literal code (option or INWX_TOTP env) wins; otherwise
+   *  a current code is derived from the base32 secret (option or
+   *  INWX_TOTP_SECRET env). Throws only if a secret is present but invalid. */
+  private resolveTotp(): string | null {
+    const literal = this.totpCode?.trim() || process.env.INWX_TOTP?.trim();
+    if (literal) return literal;
+    const secret = this.totpSecret?.trim() || process.env.INWX_TOTP_SECRET?.trim();
+    if (secret) return generateTotp(secret);
+    return null;
   }
 
   /** Log out and drop the session cookie. */

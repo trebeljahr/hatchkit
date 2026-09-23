@@ -29,6 +29,10 @@ export const SECRET_KEYS = {
    *  registered at INWX. Used by the post-apply NS flip in deploy/terraform
    *  and by `hatchkit dns link-to-cloudflare`. */
   dnsInwxRegistrarPassword: "dns:inwx-registrar:password",
+  /** Base32 TOTP shared secret for an INWX account with 2FA enabled.
+   *  Optional — only set when the registrar account uses 2FA. The NS-flip
+   *  paths compute a current code from it and run `account.unlock`. */
+  dnsInwxRegistrarTotpSecret: "dns:inwx-registrar:totp-secret",
   /** @deprecated Account-wide S3 access/secret pair. Used by the
    *  legacy single-project flow where every hatchkit-managed app
    *  shared one credential against all buckets — bad blast radius

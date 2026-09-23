@@ -353,6 +353,10 @@ export interface DnsConfig extends DnsMeta {
   /** Paired with `registrarUsername` — from the keychain. Present only
    *  when the user told us INWX is their registrar during onboarding. */
   registrarPassword?: string;
+  /** Base32 TOTP shared secret from the keychain. Present only when the
+   *  INWX registrar account has 2FA enabled and the user configured it.
+   *  The NS-flip paths turn it into a current code for `account.unlock`. */
+  registrarTotpSecret?: string;
 }
 export interface S3ProviderConfig extends S3ProviderMeta {
   accessKey: string;
@@ -789,11 +793,13 @@ async function migrateLegacyDnsProvider(
   store.set("providers.dns", meta);
   await setSecret(SECRET_KEYS.dnsCloudflareToken, preservedCfToken);
   const registrarPassword = await getSecret(SECRET_KEYS.dnsInwxRegistrarPassword);
+  const registrarTotpSecret = await getSecret(SECRET_KEYS.dnsInwxRegistrarTotpSecret);
   console.log(chalk.dim("    · Existing Cloudflare token preserved (verified)."));
   return {
     ...meta,
     apiToken: preservedCfToken,
     registrarPassword: registrarPassword ?? undefined,
+    registrarTotpSecret: registrarTotpSecret ?? undefined,
   };
 }
 
@@ -816,11 +822,13 @@ export async function ensureDns(): Promise<DnsConfig> {
   if (existing?.status === "configured") {
     const apiToken = await getSecret(SECRET_KEYS.dnsCloudflareToken);
     const registrarPassword = await getSecret(SECRET_KEYS.dnsInwxRegistrarPassword);
+    const registrarTotpSecret = await getSecret(SECRET_KEYS.dnsInwxRegistrarTotpSecret);
     return {
       ...existing,
       provider: "cloudflare",
       apiToken: apiToken ?? undefined,
       registrarPassword: registrarPassword ?? undefined,
+      registrarTotpSecret: registrarTotpSecret ?? undefined,
     };
   }
 
@@ -836,6 +844,7 @@ export async function ensureDns(): Promise<DnsConfig> {
     wireInwx: boolean;
     registrarUsername: string;
     registrarPassword: string;
+    registrarTotpSecret: string;
   }
 
   const dnsSteps: Step<DnsSetupState>[] = [
@@ -892,6 +901,22 @@ export async function ensureDns(): Promise<DnsConfig> {
         registrarPassword: await confirmPastedSecret("INWX password (registrar)"),
       }),
     },
+    {
+      name: "INWX 2FA TOTP secret",
+      skip: (s) => !s.wireInwx,
+      run: async (s) => ({
+        ...s,
+        // Optional: only accounts with 2FA enabled need it. Blank = no 2FA.
+        // Store the base32 shared secret (from INWX → Settings → 2FA setup,
+        // the "manual entry" key), NOT a 6-digit code — codes expire.
+        registrarTotpSecret: (
+          await input({
+            message: "INWX 2FA TOTP secret (optional — base32 key, blank if no 2FA):",
+            default: "",
+          })
+        ).trim(),
+      }),
+    },
   ];
 
   const dns = await runSteps(dnsSteps, {
@@ -900,6 +925,7 @@ export async function ensureDns(): Promise<DnsConfig> {
     wireInwx: false,
     registrarUsername: "",
     registrarPassword: "",
+    registrarTotpSecret: "",
   });
 
   const meta: DnsMeta = {
@@ -913,14 +939,22 @@ export async function ensureDns(): Promise<DnsConfig> {
   if (dns.wireInwx && dns.registrarPassword) {
     await setSecret(SECRET_KEYS.dnsInwxRegistrarPassword, dns.registrarPassword);
   }
+  if (dns.wireInwx && dns.registrarTotpSecret) {
+    await setSecret(SECRET_KEYS.dnsInwxRegistrarTotpSecret, dns.registrarTotpSecret);
+  }
   console.log(chalk.green("  ✓ Cloudflare DNS configured"));
   if (dns.wireInwx) {
     console.log(chalk.green("  ✓ INWX registrar wired for auto-NS updates"));
+    if (dns.registrarTotpSecret) {
+      console.log(chalk.green("  ✓ INWX 2FA TOTP secret stored (account.unlock on NS flips)"));
+    }
   }
   return {
     ...meta,
     apiToken: dns.apiToken,
     registrarPassword: dns.wireInwx ? dns.registrarPassword : undefined,
+    registrarTotpSecret:
+      dns.wireInwx && dns.registrarTotpSecret ? dns.registrarTotpSecret : undefined,
   };
 }
 
@@ -1064,7 +1098,7 @@ export async function promptAndSaveInwxRegistrarCreds(): Promise<{
 }> {
   console.log(chalk.dim("\n  → Find these at: https://www.inwx.com → My Account"));
 
-  const inwxSteps: Step<{ username: string; password: string }>[] = [
+  const inwxSteps: Step<{ username: string; password: string; totpSecret: string }>[] = [
     {
       name: "INWX username",
       run: async (s) => ({
@@ -1082,15 +1116,35 @@ export async function promptAndSaveInwxRegistrarCreds(): Promise<{
         password: await confirmPastedSecret("INWX password (registrar)"),
       }),
     },
+    {
+      name: "INWX 2FA TOTP secret",
+      run: async (s) => ({
+        ...s,
+        // Optional — only accounts with 2FA need it. Base32 key, not a code.
+        totpSecret: (
+          await input({
+            message: "INWX 2FA TOTP secret (optional — base32 key, blank if no 2FA):",
+            default: "",
+          })
+        ).trim(),
+      }),
+    },
   ];
 
-  const { username, password: pwd } = await runSteps(inwxSteps, { username: "", password: "" });
+  const {
+    username,
+    password: pwd,
+    totpSecret,
+  } = await runSteps(inwxSteps, { username: "", password: "", totpSecret: "" });
 
   const meta = store.get("providers.dns") as DnsMeta | undefined;
   if (meta) {
     store.set("providers.dns", { ...meta, registrarUsername: username });
   }
   await setSecret(SECRET_KEYS.dnsInwxRegistrarPassword, pwd);
+  if (totpSecret) {
+    await setSecret(SECRET_KEYS.dnsInwxRegistrarTotpSecret, totpSecret);
+  }
   console.log(chalk.green("  ✓ INWX registrar credentials saved"));
   return { username, password: pwd };
 }
@@ -1105,11 +1159,13 @@ export async function getDnsConfig(): Promise<DnsConfig | null> {
   if (meta.provider !== "cloudflare") return null;
   const apiToken = await getSecret(SECRET_KEYS.dnsCloudflareToken);
   const registrarPassword = await getSecret(SECRET_KEYS.dnsInwxRegistrarPassword);
+  const registrarTotpSecret = await getSecret(SECRET_KEYS.dnsInwxRegistrarTotpSecret);
   return {
     ...meta,
     provider: "cloudflare",
     apiToken: apiToken ?? undefined,
     registrarPassword: registrarPassword ?? undefined,
+    registrarTotpSecret: registrarTotpSecret ?? undefined,
   };
 }
 

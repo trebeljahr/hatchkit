@@ -90,6 +90,7 @@ export async function runDnsLinkToCloudflare(options: DnsLinkOptions): Promise<v
     username: dns.registrarUsername,
     password: dns.registrarPassword,
     sandbox: process.env.INWX_SANDBOX === "1",
+    totpSecret: dns.registrarTotpSecret,
   });
 
   if (options.dryRun) {

@@ -387,10 +387,15 @@ async function updateInwxNameserversFromTfOutput(
   console.log(chalk.dim(`  Domain:  ${domain}`));
   console.log(chalk.dim(`  New NS:  ${nameservers.join(", ")}`));
 
+  // The 2FA TOTP secret (if any) is written to the keychain by both creds
+  // paths above (pre-configured and just-prompted), so read it here rather
+  // than threading it through the plan — a 2FA account then account.unlocks.
+  const totpSecret = (await getDnsConfig())?.registrarTotpSecret;
   const inwx = new InwxApi({
     username: registrarCreds.username,
     password: registrarCreds.password,
     sandbox: process.env.INWX_SANDBOX === "1",
+    totpSecret,
   });
 
   try {
