@@ -28,12 +28,17 @@ export class PlausibleSitesApiUnavailableError extends Error {
     readonly baseUrl: string,
     readonly status: number,
     detail?: string,
+    /** Overrides the default "create the site manually" remedy with a
+     *  caller-specific one (e.g. the rename path points at the dashboard
+     *  rename instead). */
+    action?: string,
   ) {
     super(
-      `Plausible Sites API is not available at ${baseUrl}. ` +
+      `Plausible Sites API is not available at ${baseUrl} (HTTP ${status}). ` +
         "Plausible Community Edition/self-hosted does not include the Sites API, " +
         "and Plausible Cloud requires Sites API access. " +
-        "Create/confirm the site manually in Plausible, or configure Hatchkit with a Sites API-capable Plausible account." +
+        (action ??
+          "Create/confirm the site manually in Plausible, or configure Hatchkit with a Sites API-capable Plausible account.") +
         (detail ? ` Response: ${detail}` : ""),
     );
     this.name = "PlausibleSitesApiUnavailableError";
@@ -66,6 +71,41 @@ function isSitesApiUnavailableStatus(status: number): boolean {
 
 function isCreateSitesApiUnavailableStatus(status: number): boolean {
   return status === 404 || isSitesApiUnavailableStatus(status);
+}
+
+/** Ask the Plausible Stats API whether a site exists on this instance,
+ *  independent of the Sites provisioning API.
+ *
+ *  This is the disambiguator for self-hosted / Community Edition: CE
+ *  serves the Stats API but NOT `/api/v1/sites/*`, so a site route that
+ *  answers 404 or 406 there is a *missing API*, not a missing site —
+ *  yet by status alone that is indistinguishable from Cloud's genuine
+ *  "no such site" 404. The Stats API breaks the tie because CE still
+ *  resolves the domain through it.
+ *
+ *  Returns `true` when the Stats API resolves the domain, `false` when a
+ *  live Stats API reports the site is unknown (404), and `null` when the
+ *  probe can't decide (auth failure, server or network error) so the
+ *  caller keeps its status-based default. */
+async function statsApiSeesSite(
+  baseUrl: string,
+  apiKey: string,
+  domain: string,
+): Promise<boolean | null> {
+  const url =
+    `${baseUrl.replace(/\/$/, "")}/api/v1/stats/aggregate` +
+    `?site_id=${encodeURIComponent(domain)}&period=7d&metrics=visitors`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+    });
+  } catch {
+    return null;
+  }
+  if (res.ok) return true;
+  if (res.status === 404) return false;
+  return null;
 }
 
 function makeSite(
@@ -101,13 +141,32 @@ async function getSite(baseUrl: string, apiKey: string, domain: string): Promise
 
 export async function plausibleSiteExists(domain: string): Promise<boolean> {
   const cfg = await ensurePlausible();
-  const baseUrl = cfg.url.replace(/\/$/, "");
+  return siteExists(cfg.url.replace(/\/$/, ""), cfg.apiKey, domain);
+}
+
+/** Core of {@link plausibleSiteExists}, split out for testing with an
+ *  explicit base URL / key.
+ *
+ *  The Sites API is authoritative on Plausible Cloud (200 ⇒ exists, 404
+ *  ⇒ absent), but on Community Edition it is absent: `getSite` sees a
+ *  406 and throws {@link PlausibleSitesApiUnavailableError}, and some CE
+ *  builds answer the item route with a 404 that `getSite` reports as a
+ *  plain "not found". Either way the Sites API can't confirm existence
+ *  on CE, so whenever it does not positively say "yes" we fall back to
+ *  the Stats API — which CE does serve — instead of reporting a false
+ *  negative. */
+export async function siteExists(
+  baseUrl: string,
+  apiKey: string,
+  domain: string,
+): Promise<boolean> {
+  const normalized = domain.trim().toLowerCase();
   try {
-    return await getSite(baseUrl, cfg.apiKey, domain.trim().toLowerCase());
+    if (await getSite(baseUrl, apiKey, normalized)) return true;
   } catch (err) {
-    if (err instanceof PlausibleSitesApiUnavailableError) return false;
-    throw err;
+    if (!(err instanceof PlausibleSitesApiUnavailableError)) throw err;
   }
+  return (await statsApiSeesSite(baseUrl, apiKey, normalized)) === true;
 }
 
 export async function provisionPlausibleSite(
@@ -206,7 +265,17 @@ export async function renamePlausibleSite(
   newDomain: string,
 ): Promise<PlausibleRenameResult> {
   const cfg = await ensurePlausible();
-  const baseUrl = cfg.url.replace(/\/$/, "");
+  return renameSite(cfg.url.replace(/\/$/, ""), cfg.apiKey, oldDomain, newDomain);
+}
+
+/** Core of {@link renamePlausibleSite}, split out for testing with an
+ *  explicit base URL / key. */
+export async function renameSite(
+  baseUrl: string,
+  apiKey: string,
+  oldDomain: string,
+  newDomain: string,
+): Promise<PlausibleRenameResult> {
   const from = oldDomain.trim().toLowerCase();
   const to = newDomain.trim().toLowerCase();
   if (!from || !to) throw new Error("Both the old and the new domain are required.");
@@ -214,24 +283,55 @@ export async function renamePlausibleSite(
 
   const res = await fetch(siteUrl(baseUrl, from), {
     method: "PUT",
-    headers: authHeaders(cfg.apiKey),
+    headers: authHeaders(apiKey),
     body: JSON.stringify({ domain: to }),
   });
-  if (!res.ok) {
-    const text = await responseText(res);
-    if (isSitesApiUnavailableStatus(res.status)) {
-      throw new PlausibleSitesApiUnavailableError(baseUrl, res.status, text);
-    }
-    if (res.status === 404) {
-      throw new Error(
-        `Plausible has no site for "${from}" at ${baseUrl} — check the domain (or create the site first).`,
+  if (res.ok) return { oldDomain: from, newDomain: to, baseUrl };
+
+  const text = await responseText(res);
+
+  // A 406 is an unambiguous "this route is not a JSON API here" — Cloud
+  // never answers a missing site with 406, so this is always CE/self-
+  // hosted without the Sites API.
+  if (isSitesApiUnavailableStatus(res.status)) {
+    throw new PlausibleSitesApiUnavailableError(
+      baseUrl,
+      res.status,
+      text,
+      renameElsewhereHint(from, to),
+    );
+  }
+
+  // A 404 is ambiguous: Cloud returns it for a genuinely missing site,
+  // while CE returns it because `/api/v1/sites/*` is not served at all.
+  // The Stats API — which CE does serve — tells the two apart: if it can
+  // still see the site, the site exists and only the Sites API is
+  // missing, so surface the accurate CE guidance instead of the
+  // misleading "no site for X".
+  if (res.status === 404) {
+    if ((await statsApiSeesSite(baseUrl, apiKey, from)) === true) {
+      throw new PlausibleSitesApiUnavailableError(
+        baseUrl,
+        res.status,
+        text,
+        renameElsewhereHint(from, to),
       );
     }
     throw new Error(
-      `Plausible rename site failed: ${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`,
+      `Plausible has no site for "${from}" at ${baseUrl} — check the domain (or create the site first).`,
     );
   }
-  return { oldDomain: from, newDomain: to, baseUrl };
+
+  throw new Error(
+    `Plausible rename site failed: ${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`,
+  );
+}
+
+function renameElsewhereHint(from: string, to: string): string {
+  return (
+    `This instance does not expose the Sites API, so "${from}" cannot be renamed programmatically. ` +
+    `Rename it to "${to}" in the Plausible dashboard instead — stats history is preserved.`
+  );
 }
 
 /** Point the per-project domain cache at the renamed site. Only
