@@ -11,8 +11,10 @@
 // Endpoints: https://api.domrobot.com/jsonrpc/  (OTE sandbox on api.ote)
 //
 // The API is JSON-RPC 2.0 over HTTPS, session-cookie authenticated. Call
-// `account.login` once, capture the PHPSESSID cookie, include it on every
-// follow-up request.
+// `account.login` once, capture the session cookie it sets (named
+// `domrobot` as of 2026, `PHPSESSID` before that), include it on every
+// follow-up request. When 2FA is enabled, login also requires an
+// `account.unlock` with a TOTP before any command works.
 
 const PROD_URL = "https://api.domrobot.com/jsonrpc/";
 const OTE_URL = "https://api.ote.domrobot.com/jsonrpc/";
@@ -30,12 +32,21 @@ interface JsonRpcResponse<T> {
   resData?: T;
 }
 
+/** Fields of `account.login`'s resData we care about. INWX returns `tfa`
+ *  = the enabled 2FA method (e.g. "GOOGLE-AUTH"), or "0" when 2FA is off.
+ *  When on, no command works until `account.unlock` consumes a TOTP. */
+interface InwxLoginResData {
+  tfa?: string;
+}
+
 /** INWX JSON-RPC API client. */
 export class InwxApi {
   private url: string;
   private username: string;
   private password: string;
-  private cookie: string | null = null;
+  /** Session cookie jar (name → value). INWX sets one session cookie on
+   *  login; we replay whatever it sends on every follow-up call. */
+  private cookies = new Map<string, string>();
 
   constructor(options: InwxApiOptions) {
     this.url = options.sandbox ? OTE_URL : PROD_URL;
@@ -48,7 +59,8 @@ export class InwxApi {
       "Content-Type": "application/json",
       Accept: "application/json",
     };
-    if (this.cookie) headers.Cookie = this.cookie;
+    const cookieHeader = this.cookieHeader();
+    if (cookieHeader) headers.Cookie = cookieHeader;
 
     const res = await fetch(this.url, {
       method: "POST",
@@ -60,13 +72,12 @@ export class InwxApi {
       throw new Error(`INWX API ${method} failed: HTTP ${res.status} ${res.statusText}`);
     }
 
-    // Capture the session cookie from the response on login. INWX sets
-    // PHPSESSID; we pass it back on every subsequent call.
-    const setCookie = res.headers.get("set-cookie");
-    if (setCookie) {
-      const match = setCookie.match(/(PHPSESSID=[^;]+)/);
-      if (match) this.cookie = match[1];
-    }
+    // Capture whatever session cookie INWX sets on login and replay it on
+    // every follow-up call. INWX used `PHPSESSID` for years then renamed it
+    // to `domrobot` in 2026; matching one hard-coded name silently dropped
+    // the session and broke auth ("login succeeded but no session cookie
+    // was set"). Parse by name so a future rename can't regress this again.
+    this.captureCookies(res);
 
     const json = (await res.json()) as JsonRpcResponse<T>;
 
@@ -81,15 +92,60 @@ export class InwxApi {
     return json.resData as T;
   }
 
+  /** Serialize the cookie jar into a `Cookie:` header, or null when empty. */
+  private cookieHeader(): string | null {
+    if (this.cookies.size === 0) return null;
+    return [...this.cookies].map(([name, value]) => `${name}=${value}`).join("; ");
+  }
+
+  /** Merge any `Set-Cookie` headers from a response into the jar. Uses
+   *  `getSetCookie()` (the only correct way to read multiple Set-Cookie
+   *  headers — `get("set-cookie")` comma-joins them, which corrupts the
+   *  Expires date), with a single-header fallback for exotic runtimes. */
+  private captureCookies(res: Response): void {
+    const raw: string[] =
+      typeof res.headers.getSetCookie === "function"
+        ? res.headers.getSetCookie()
+        : (() => {
+            const single = res.headers.get("set-cookie");
+            return single ? [single] : [];
+          })();
+    for (const line of raw) {
+      // Take the `name=value` pair before the first `;`; ignore attributes
+      // (Path, HttpOnly, Secure, …).
+      const pair = line.split(";", 1)[0]?.trim();
+      if (!pair) continue;
+      const eq = pair.indexOf("=");
+      if (eq <= 0) continue;
+      this.cookies.set(pair.slice(0, eq), pair.slice(eq + 1));
+    }
+  }
+
   /** Log in and capture the session cookie. Must be called before any
    *  other method. Idempotent — safe to call twice. */
   async login(): Promise<void> {
-    await this.request("account.login", {
+    const data = await this.request<InwxLoginResData>("account.login", {
       user: this.username,
       pass: this.password,
     });
-    if (!this.cookie) {
+    if (!this.cookieHeader()) {
       throw new Error("INWX login succeeded but no session cookie was set");
+    }
+    // When 2FA is enabled, account.login reports the method in `tfa` ("0"
+    // means off) and every subsequent command fails until account.unlock
+    // consumes a TOTP. Handle it explicitly so a 2FA account gets a clear
+    // path instead of an opaque downstream "Authentication error".
+    const tfa = data?.tfa;
+    if (tfa && tfa !== "0") {
+      const tan = process.env.INWX_TOTP?.trim();
+      if (!tan) {
+        throw new Error(
+          "INWX account has 2FA enabled but no TOTP was provided. Set INWX_TOTP " +
+            "to a current 6-digit code and re-run, or use an API sub-account " +
+            "without 2FA for automation.",
+        );
+      }
+      await this.request("account.unlock", { tan });
     }
   }
 
@@ -98,7 +154,7 @@ export class InwxApi {
     try {
       await this.request("account.logout", {});
     } finally {
-      this.cookie = null;
+      this.cookies.clear();
     }
   }
 
