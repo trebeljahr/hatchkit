@@ -4594,12 +4594,35 @@ function printHelp(topic?: HelpTopic): void {
 // ---------------------------------------------------------------------------
 
 main().catch((error) => {
-  console.error(chalk.red(`\n  Error: ${error.message}\n`));
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(chalk.red(`\n  Error: ${message}\n`));
   // Errors that know their own fix (e.g. a Cloudflare token missing the
   // Email Routing scopes) carry it as `hint: string[]`.
   const hint = (error as { hint?: unknown }).hint;
   if (Array.isArray(hint)) {
     for (const line of hint) console.error(chalk.dim(`  ${line}`));
+    console.error("");
+  }
+  // The message alone often can't say where a failure came from — a bare
+  // keytar "An unknown error occurred.", a null-deref in one provider's
+  // planner — names neither the call site nor the wrapped `cause`. Set
+  // HATCHKIT_DEBUG=1 (or DEBUG) to print the stack and the full cause
+  // chain so failures like that are diagnosable instead of opaque.
+  if (process.env.HATCHKIT_DEBUG || process.env.DEBUG) {
+    const seen = new Set<unknown>();
+    let current: unknown = error;
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      if (current instanceof Error && current.stack) {
+        console.error(chalk.dim(current.stack));
+      } else {
+        console.error(chalk.dim(String(current)));
+      }
+      const cause = (current as { cause?: unknown }).cause;
+      if (cause === undefined || cause === null) break;
+      console.error(chalk.dim("  caused by ↓"));
+      current = cause;
+    }
     console.error("");
   }
   process.exit(1);

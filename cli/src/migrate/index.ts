@@ -98,21 +98,79 @@ export interface MigrateDomainOptions {
   yes?: boolean;
 }
 
+/** The credential readers `detectConfigured` consults, one per provider.
+ *  Injectable so the failure-degradation behaviour can be unit-tested
+ *  without a keychain that throws on demand; production uses the real
+ *  `config.ts` getters. Return type is deliberately loose — the only
+ *  thing the detector needs from a value is truthiness (and `apiToken`
+ *  for DNS). */
+export interface ProviderConfigReaders {
+  dns: () => Promise<{ apiToken?: string } | null | undefined>;
+  coolify: () => Promise<unknown>;
+  ses: () => Promise<unknown>;
+  listmonk: () => Promise<unknown>;
+  r2: () => Promise<unknown>;
+  plausible: () => Promise<unknown>;
+  searchConsole: () => Promise<unknown>;
+  stripe: () => Promise<unknown>;
+}
+
+const DEFAULT_PROVIDER_READERS: ProviderConfigReaders = {
+  dns: getDnsConfig,
+  coolify: getCoolifyConfig,
+  ses: getSesConfig,
+  listmonk: getListmonkConfig,
+  r2: () => getS3Config("r2"),
+  plausible: getPlausibleConfig,
+  searchConsole: getGoogleSearchConsoleConfig,
+  stripe: getStripeConfig,
+};
+
 /** Which global providers have credentials here. Read once, up front,
  *  so the plan can mark an unconfigured provider's step as `manual`
  *  instead of failing halfway through the run with a credential prompt
- *  the operator wasn't expecting. */
-async function detectConfigured(): Promise<ConfiguredProviders> {
+ *  the operator wasn't expecting.
+ *
+ *  Each read is independent and MUST NOT be allowed to abort the whole
+ *  command. A single unreadable credential — a keychain item this `node`
+ *  build can't read, a provider left half-configured — used to take the
+ *  entire plan down before it ever printed, even for a client-only
+ *  static project that touches none of these identities. So a failed
+ *  read degrades to "not configured" (the planners then emit `manual`
+ *  or `noop` from the manifest alone, which is exactly right for a
+ *  provider the project doesn't use) and is surfaced as a dim warning so
+ *  a provider that IS in use isn't silently mis-planned. */
+export async function detectConfigured(
+  readers: ProviderConfigReaders = DEFAULT_PROVIDER_READERS,
+): Promise<ConfiguredProviders> {
+  const warnings: string[] = [];
+  const probe = async <T>(name: string, read: () => Promise<T>): Promise<T | null> => {
+    try {
+      return await read();
+    } catch (err) {
+      warnings.push(
+        `${name}: ${(err instanceof Error ? err.message : String(err)).split("\n")[0]}`,
+      );
+      return null;
+    }
+  };
   const [dns, coolify, ses, listmonk, r2, plausible, searchConsole, stripe] = await Promise.all([
-    getDnsConfig(),
-    getCoolifyConfig(),
-    getSesConfig(),
-    getListmonkConfig(),
-    getS3Config("r2"),
-    getPlausibleConfig(),
-    getGoogleSearchConsoleConfig(),
-    getStripeConfig(),
+    probe("dns", readers.dns),
+    probe("coolify", readers.coolify),
+    probe("ses", readers.ses),
+    probe("listmonk", readers.listmonk),
+    probe("r2", readers.r2),
+    probe("plausible", readers.plausible),
+    probe("search-console", readers.searchConsole),
+    probe("stripe", readers.stripe),
   ]);
+  if (warnings.length > 0) {
+    console.log(
+      chalk.dim("  Some provider credentials could not be read — treating them as not configured:"),
+    );
+    for (const w of warnings) console.log(chalk.dim(`    · ${w}`));
+    console.log(chalk.dim("    (Set HATCHKIT_DEBUG=1 for the full stack.)"));
+  }
   return {
     files: true,
     dns: !!dns?.apiToken,
@@ -133,7 +191,15 @@ async function probeEmailRoutingFacts(
   newDomain: string,
   oldDomain: string,
 ): Promise<MigrationPlanInput["emailRouting"]> {
-  const dns = await getDnsConfig();
+  // A DNS credential that can't be read must not abort the plan any more
+  // than a missing one does — degrade to "not read" and let the executor
+  // re-probe at cutover.
+  let dns: Awaited<ReturnType<typeof getDnsConfig>>;
+  try {
+    dns = await getDnsConfig();
+  } catch {
+    return undefined;
+  }
   if (!dns?.apiToken) return undefined;
   const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
   const read = async (domain: string): Promise<EmailRoutingFacts> => {

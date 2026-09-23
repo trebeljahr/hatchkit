@@ -40,7 +40,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as dotenvxParse, set as dotenvxSet } from "@dotenvx/dotenvx";
 import keytar from "keytar";
-import { migrateCommand } from "./src/migrate/index.js";
+import {
+  type ProviderConfigReaders,
+  detectConfigured,
+  migrateCommand,
+} from "./src/migrate/index.js";
 import {
   MIGRATION_PROVIDERS,
   type MigrationPlanInput,
@@ -774,6 +778,111 @@ await expect("getSecret wraps a keytar failure instead of rethrowing it bare", a
   } finally {
     keytar.getPassword = original;
   }
+});
+
+console.log(
+  "\ndetectConfigured resilience (client-only migration must not die on an unrelated credential):",
+);
+
+// A reader bag where everything is configured; individual tests override
+// one or two entries. `truthy` stands in for "provider is configured".
+const truthy = async () => ({}) as unknown;
+const allConfigured = (): ProviderConfigReaders => ({
+  dns: async () => ({ apiToken: "token" }),
+  coolify: truthy,
+  ses: truthy,
+  listmonk: truthy,
+  r2: truthy,
+  plausible: truthy,
+  searchConsole: truthy,
+  stripe: truthy,
+});
+
+await expect(
+  "a credential read that throws degrades to not-configured instead of aborting the whole plan",
+  async () => {
+    const readers = allConfigured();
+    // The exact failure that used to take migrate-domain down on a
+    // client-only project: one unreadable keychain secret, wrapped the
+    // way getSecret wraps a native keytar error.
+    readers.searchConsole = async () => {
+      throw describeKeychainError(
+        "read",
+        "google-search-console:refresh-token",
+        new Error("An unknown error occurred."),
+      );
+    };
+    const configured = await detectConfigured(readers);
+    assert.equal(
+      configured["search-console"],
+      false,
+      "the provider whose read threw must read as not-configured",
+    );
+    // Every other provider is untouched — one failure does not poison the batch.
+    assert.equal(configured.dns, true);
+    assert.equal(configured.coolify, true);
+    assert.equal(configured.ses, true);
+    assert.equal(configured.stripe, true);
+    assert.equal(configured.files, true);
+  },
+);
+
+await expect(
+  "every reader still throwing yields an all-false detection, never an exception",
+  async () => {
+    const boom = async (): Promise<never> => {
+      throw new Error("An unknown error occurred.");
+    };
+    const configured = await detectConfigured({
+      dns: boom,
+      coolify: boom,
+      ses: boom,
+      listmonk: boom,
+      r2: boom,
+      plausible: boom,
+      searchConsole: boom,
+      stripe: boom,
+    });
+    for (const p of MIGRATION_PROVIDERS) {
+      if (p === "files" || p === "manual" || p === "email-routing") continue;
+      assert.equal(
+        configured[p as keyof typeof configured],
+        false,
+        `${p} must read as not-configured when its read throws`,
+      );
+    }
+    assert.equal(configured.files, true, "files is always available");
+  },
+);
+
+await expect("detectConfigured maps each reader's truthiness independently", async () => {
+  const yes = async () => ({}) as unknown;
+  const no = async () => null;
+  const configured = await detectConfigured({
+    dns: async () => ({ apiToken: "token" }),
+    coolify: no,
+    ses: yes,
+    listmonk: no,
+    r2: yes,
+    plausible: no,
+    searchConsole: yes,
+    stripe: no,
+  });
+  assert.equal(configured.dns, true);
+  assert.equal(configured.coolify, false);
+  assert.equal(configured.ses, true);
+  assert.equal(configured.listmonk, false);
+  assert.equal(configured.r2, true);
+  assert.equal(configured.plausible, false);
+  assert.equal(configured["search-console"], true);
+  assert.equal(configured.stripe, false);
+});
+
+await expect("dns needs an apiToken, not merely a truthy config object", async () => {
+  const readers = allConfigured();
+  readers.dns = async () => ({}); // truthy, but no apiToken
+  const configured = await detectConfigured(readers);
+  assert.equal(configured.dns, false, "a DNS config without an apiToken is not usable");
 });
 
 if (failures.length > 0) {
