@@ -1214,6 +1214,102 @@ console.log("\n── update: manifest round-trip for web-only project ───
   }
 }
 
+// Update: add workspaces to a scaffolded project. This is the real
+// `hatchkit update` dispatch, not applyWorkspacesFeature in isolation —
+// cli/test-workspaces.ts covers the feature module itself, while this
+// checks that update's manifest round-trip and re-run guarantees hold
+// for a feature whose files live in cli/src/templates/ rather than in
+// starter/.
+console.log("\n── update: add workspaces (+ idempotent re-run) ──────────────────────────────");
+{
+  const { runUpdate } = await import("./src/scaffold/update.js");
+  const { readManifest } = await import("./src/scaffold/manifest.js");
+  const d = mkdtempSync(join(tmpdir(), "scaffold-update-workspaces-"));
+  try {
+    await scaffoldApp(cfg("workspaces-add-test", ["websocket"]), d);
+
+    const first = await runUpdate(d, {
+      presets: {
+        desiredFeatures: ["websocket", "workspaces"],
+        confirmAddFeatures: true,
+        enableLocalDev: false,
+      },
+    });
+    const m1 = readManifest(d);
+    const routerAfterFirst = readFileSync(
+      join(d, "packages/server/src/trpc/router.ts"),
+      "utf-8",
+    );
+    const auth = readFileSync(join(d, "packages/server/src/auth/auth.ts"), "utf-8");
+
+    // A second run with the same desired set must change nothing.
+    const second = await runUpdate(d, {
+      presets: {
+        desiredFeatures: ["websocket", "workspaces"],
+        confirmAddFeatures: true,
+        enableLocalDev: false,
+      },
+    });
+    const routerAfterSecond = readFileSync(
+      join(d, "packages/server/src/trpc/router.ts"),
+      "utf-8",
+    );
+
+    const checks: Check[] = [
+      ["first run reports workspaces added", first.added.includes("workspaces")],
+      ["manifest gains workspaces", m1?.features.includes("workspaces") === true],
+      [
+        "membership service written",
+        existsSync(join(d, "packages/server/src/services/membership/index.ts")),
+      ],
+      [
+        "membership contract written",
+        existsSync(join(d, "packages/shared/src/membership.ts")),
+      ],
+      [
+        "organization lockdown written",
+        existsSync(join(d, "packages/server/src/auth/organization-lockdown.ts")),
+      ],
+      [
+        "lockdown pinned by a generated test",
+        existsSync(join(d, "packages/server/src/tests/organization-http-lockdown.test.ts")),
+      ],
+      [
+        "invite page sits OUTSIDE the protected tree",
+        existsSync(join(d, "packages/client/src/app/invite/page.tsx")) &&
+          !existsSync(join(d, "packages/client/src/app/(protected)/invite/page.tsx")),
+      ],
+      [
+        "members screen sits INSIDE the protected tree",
+        existsSync(join(d, "packages/client/src/app/(protected)/members/page.tsx")),
+      ],
+      [
+        "websocket on → per-recipient fan-out written",
+        existsSync(join(d, "packages/server/src/ws/membership-sync.ts")),
+      ],
+      ["routers registered", routerAfterFirst.includes("workspaces: workspacesRouter")],
+      ["shared re-export wired", readFileSync(join(d, "packages/shared/src/index.ts"), "utf-8").includes("./membership.js")],
+      ["organization plugin installed", auth.includes("organization(")],
+      ["lockdown wired as the before-hook", auth.includes("hooks: { before: organizationLockdown }")],
+      ["organization deletion disabled server-side", auth.includes("disableOrganizationDeletion: true")],
+      ["re-run adds nothing", second.added.length === 0],
+      ["re-run does not double the router registration", routerAfterFirst === routerAfterSecond],
+      [
+        "no placeholder survived into the project",
+        !readFileSync(join(d, "packages/shared/src/membership.ts"), "utf-8").includes("__HATCHKIT_"),
+      ],
+    ];
+    let ok = true;
+    for (const [n, c] of checks) {
+      console.log(`  ${c ? "✓" : "✗"} ${n}`);
+      if (!c) ok = false;
+    }
+    results.updateWorkspaces = ok;
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+}
+
 // Update: add desktop to a web-only project, then verify the re-run is
 // a no-op. `update` re-applies every selected feature on every run, so a
 // feature that is not idempotent corrupts the project a little each time.

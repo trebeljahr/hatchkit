@@ -1,0 +1,67 @@
+/*
+ * WorkspaceMember.ts — the app's own membership mirror.
+ *
+ * This collection, and nothing else, is what the app authorizes from.
+ * better-auth's `member` collection stays the plugin's business; a row
+ * here is what grants a person access to a workspace's data. That is why
+ * every write path adds this row LAST and deletes it FIRST: a crash
+ * between the two records then always leaves LESS access than intended,
+ * and re-running the operation finishes it.
+ *
+ * `email` and `name` are snapshots, not joins. A record authored by
+ * somebody who has since left still needs a label, and re-reading the
+ * `user` collection on every row render would turn one query into many.
+ */
+
+import mongoose, { Schema, type Document } from "mongoose";
+import { WORKSPACE_ROLES, type WorkspaceRole } from "@starter/shared";
+
+export interface IWorkspaceMember extends Document {
+  workspaceId: string;
+  userId: string;
+  email: string;
+  name: string;
+  role: WorkspaceRole;
+  canViewOthersRecords: boolean;
+  canViewOthersSensitive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const workspaceMemberSchema = new Schema<IWorkspaceMember>(
+  {
+    // Indexed separately on purpose: the realtime fan-out and the members
+    // screen read every row of one workspace, while the per-request tenant
+    // resolver reads every row of one user. A single compound index serves
+    // the first query but not the second.
+    workspaceId: { type: String, required: true, index: true },
+    userId: { type: String, required: true, index: true },
+    email: { type: String, required: true, maxlength: 320 },
+    name: { type: String, default: "", maxlength: 200 },
+    role: {
+      type: String,
+      // The closed set lives in the shared contract. Widening it here
+      // without widening it there is how a role nobody can name ends up
+      // stored, and `normalizeRole()` reads it back as "member".
+      enum: [...WORKSPACE_ROLES],
+      default: "member",
+    },
+    // Flags follow the role and are recomputed by the service on every
+    // change. They are stored so a read path never has to ask better-auth
+    // anything to decide what one member may see of another's work.
+    canViewOthersRecords: { type: Boolean, default: false },
+    canViewOthersSensitive: { type: Boolean, default: false },
+  },
+  { timestamps: true },
+);
+
+// One membership per person per workspace. The unique index is the last
+// line of defence behind the service: two rows for the same pair would
+// let a stale duplicate keep granting access after a removal deleted the
+// row the service knew about.
+workspaceMemberSchema.index({ workspaceId: 1, userId: 1 }, { unique: true });
+
+export const WorkspaceMember = mongoose.model<IWorkspaceMember>(
+  "WorkspaceMember",
+  workspaceMemberSchema,
+);

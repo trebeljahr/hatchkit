@@ -1,0 +1,94 @@
+/*
+ * permissions.ts — the matrix, asked by name.
+ *
+ * Every question a caller may ask about an actor lives here as one
+ * assertion, and each one delegates to the shared contract's pure
+ * predicate. Inlining `actor.role === "admin"` at a call site is how two
+ * surfaces end up disagreeing about the same question: the tRPC router
+ * refuses what the REST route allows, and only one of them is right.
+ *
+ * `Actor` is always the RESOLVED membership of the caller, so
+ * `actor.workspaceId` is authoritative here and is never re-derived from
+ * a session, a header or a request body.
+ */
+
+import {
+  MEMBERSHIP_REFUSALS,
+  canAdministerWorkspace,
+  canInvite,
+  canManageMembers,
+  canTransferOwnership,
+  canUsePrivilegedSurface,
+  type WorkspaceMembership,
+} from "@starter/shared";
+import { forbidden, notFound } from "./errors.js";
+import { getMembership } from "./mirror.js";
+
+/** The caller's resolved membership — the only actor the service knows. */
+export type Actor = WorkspaceMembership;
+
+/** May the actor change who is in the workspace, and with what role? */
+export function assertCanManageMembers(actor: Actor): void {
+  if (!canManageMembers(actor.role)) {
+    throw forbidden(MEMBERSHIP_REFUSALS.manageRequired);
+  }
+}
+
+/** May the actor send invitations? */
+export function assertCanInvite(actor: Actor): void {
+  if (!canInvite(actor.role)) {
+    throw forbidden(MEMBERSHIP_REFUSALS.inviteRequired);
+  }
+}
+
+/** May the actor rename or otherwise configure the workspace? */
+export function assertCanAdminister(actor: Actor): void {
+  if (!canAdministerWorkspace(actor.role)) {
+    // Same refusal as member management: both mean "admin or better",
+    // and a second code for the same floor would only invite clients to
+    // translate the two differently.
+    throw forbidden(MEMBERSHIP_REFUSALS.manageRequired);
+  }
+}
+
+/** Only an owner hands the workspace on. */
+export function assertIsOwner(actor: Actor): void {
+  if (!canTransferOwnership(actor.role)) {
+    throw forbidden(MEMBERSHIP_REFUSALS.ownerRequired);
+  }
+}
+
+/**
+ * A cross-member surface — an aggregate, a billing screen, an export —
+ * needs admin AND both visibility flags. Ask it per RECIPIENT, before the
+ * query runs. Checking it after the fact means the rows were already read
+ * and are one careless log line away from leaving the process.
+ */
+export function assertCanUsePrivilegedSurface(actor: Actor): void {
+  if (!canUsePrivilegedSurface(actor)) {
+    throw forbidden(MEMBERSHIP_REFUSALS.privilegedSurface);
+  }
+}
+
+/**
+ * Find a member of the ACTOR'S OWN workspace, or throw NOT_FOUND.
+ *
+ * Rule 4 lives in this function. The query carries `actor.workspaceId`,
+ * so a user id from another tenant — or one that exists nowhere — finds
+ * nothing and is refused as NOT_FOUND before any permission is consulted.
+ * Only a real row of the caller's own workspace can go on to earn a
+ * FORBIDDEN, because a FORBIDDEN confirms the id exists.
+ *
+ * Do NOT "simplify" this into an unscoped lookup followed by a
+ * `workspaceId` comparison. The two return the same verdict to a legitimate
+ * caller and different verdicts to somebody enumerating ids, which is
+ * precisely the difference that turns this API into an existence oracle.
+ */
+export async function requireMemberOfActorWorkspace(
+  actor: Actor,
+  targetUserId: string,
+): Promise<WorkspaceMembership> {
+  const target = await getMembership(actor.workspaceId, targetUserId);
+  if (!target) throw notFound();
+  return target;
+}

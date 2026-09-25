@@ -1,0 +1,215 @@
+"use client";
+
+/*
+ * invite-form.tsx — sends an invitation to an email address.
+ *
+ * The one thing this form must get right beyond the obvious: a
+ * self-hosted __HATCHKIT_PROJECT_NAME__ often has no mail transport. The
+ * server still creates the invitation and hands the link back with
+ * `emailSent: false`; this form has to SHOW that link, because otherwise
+ * the invitation exists, counts against the pending cap, and nobody can
+ * ever open it.
+ */
+
+import { useState } from "react";
+import {
+  ASSIGNABLE_ROLES,
+  MEMBERSHIP_REFUSALS,
+  type AssignableRole,
+} from "@starter/shared";
+import { trpc } from "@/lib/trpc";
+import { stillInWorkspace } from "@/lib/active-workspace";
+
+export interface InviteFormProps {
+  /** The switcher's active workspace. Sent on the mutation, explicitly. */
+  workspaceId: string;
+  /**
+   * Whether to render the form at all. COSMETIC ONLY: the server checks
+   * `assertCanInvite` on every call and refuses with
+   * `invite-permission-required` regardless of what the client renders.
+   * Hiding the form is a courtesy to the person, not a control.
+   */
+  canInvite: boolean;
+  onInvited: () => void;
+}
+
+interface CreatedInvitation {
+  email: string;
+  url: string;
+  emailSent: boolean;
+}
+
+function refusalMessage(message: string): string {
+  switch (message) {
+    case MEMBERSHIP_REFUSALS.alreadyMember:
+      return "That address already belongs to a member of this workspace.";
+    case MEMBERSHIP_REFUSALS.pendingInviteCap:
+      return "This workspace has reached its limit of pending invitations. Cancel one first.";
+    case MEMBERSHIP_REFUSALS.inviteRateLimit:
+      return "Too many invitations sent in the last hour. Try again later.";
+    case MEMBERSHIP_REFUSALS.inviteRequired:
+      return "You do not have permission to invite people to this workspace.";
+    case MEMBERSHIP_REFUSALS.ownerNotAssignable:
+      return "Owner cannot be invited. Invite an admin, then transfer ownership.";
+    default:
+      return message;
+  }
+}
+
+export function InviteForm({ workspaceId, canInvite, onInvited }: InviteFormProps) {
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<AssignableRole>("member");
+  const [error, setError] = useState<string | null>(null);
+  const [created, setCreated] = useState<CreatedInvitation | null>(null);
+  const [copied, setCopied] = useState(false);
+  const utils = trpc.useUtils();
+
+  const createInvitation = trpc.invitations.create.useMutation({
+    onSuccess: (result) => {
+      setEmail("");
+      setCreated({
+        email: result.invitation.email,
+        url: result.url,
+        emailSent: result.emailSent,
+      });
+      // A create started here can settle after a workspace switch. Guard
+      // the cache write: the tenant is not part of the React Query key on
+      // its own, so an unguarded invalidate hits the new tenant.
+      if (!stillInWorkspace(workspaceId)) return;
+      void utils.invitations.list.invalidate({ workspaceId });
+      onInvited();
+    },
+    onError: (err) => setError(refusalMessage(err.message)),
+  });
+
+  if (!canInvite) return null;
+
+  function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError(null);
+    setCreated(null);
+    setCopied(false);
+    const trimmed = email.trim();
+    if (trimmed.length === 0) return;
+    // `workspaceId` is passed explicitly, like every other call. Without
+    // it the server falls back to the session default and the invitation
+    // is created in whichever workspace that happens to name.
+    createInvitation.mutate({ workspaceId, email: trimmed, role });
+  }
+
+  async function copyLink(url: string) {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+    } catch {
+      // Clipboard access is refused in some embeddings and on insecure
+      // origins. The link stays selectable in the field either way.
+      setCopied(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <form onSubmit={onSubmit} className="flex flex-col gap-2 sm:flex-row">
+        <label htmlFor="invite-email" className="sr-only">
+          Email address to invite
+        </label>
+        <input
+          id="invite-email"
+          type="email"
+          required
+          autoComplete="off"
+          placeholder="colleague@example.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          disabled={createInvitation.isPending}
+          className="h-10 flex-1 rounded-md border border-input bg-background px-3 text-sm"
+          data-testid="invite-email"
+        />
+        <label htmlFor="invite-role" className="sr-only">
+          Role
+        </label>
+        <select
+          id="invite-role"
+          value={role}
+          onChange={(e) => setRole(e.target.value as AssignableRole)}
+          disabled={createInvitation.isPending}
+          className="h-10 rounded-md border border-input bg-background px-2 text-sm"
+          data-testid="invite-role"
+        >
+          {/*
+           * ASSIGNABLE_ROLES only. `owner` is absent on purpose: an
+           * invitation that granted ownership would create an owner nobody
+           * handed the workspace to, and the workspace would have two. The
+           * only route to owner is "Transfer ownership" on a member row,
+           * which promotes before it demotes.
+           */}
+          {ASSIGNABLE_ROLES.map((value: AssignableRole) => (
+            <option key={value} value={value}>
+              {value === "admin" ? "Admin" : "Member"}
+            </option>
+          ))}
+        </select>
+        <button
+          type="submit"
+          disabled={createInvitation.isPending || email.trim().length === 0}
+          className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          data-testid="invite-submit"
+        >
+          {createInvitation.isPending ? "Inviting…" : "Send invitation"}
+        </button>
+      </form>
+
+      {error && (
+        <p role="alert" className="text-sm text-destructive" data-testid="invite-form-error">
+          {error}
+        </p>
+      )}
+
+      {created?.emailSent && (
+        <p role="status" className="text-sm text-muted-foreground">
+          Invitation sent to {created.email}.
+        </p>
+      )}
+
+      {created && !created.emailSent && (
+        /*
+         * No mail transport, or the send failed. The invitation EXISTS —
+         * say so plainly and hand the link over, or the inviter assumes it
+         * was mailed and the invitee waits for an email that never comes.
+         */
+        <div
+          role="status"
+          className="space-y-2 rounded-md border p-3 text-sm"
+          data-testid="invite-manual-link"
+        >
+          <p className="font-medium">
+            Invitation created, but not emailed.
+          </p>
+          <p className="text-muted-foreground">
+            This server has no working mail transport. Send this link to{" "}
+            {created.email} yourself — it is the invitation.
+          </p>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              readOnly
+              value={created.url}
+              onFocus={(e) => e.currentTarget.select()}
+              className="h-9 flex-1 rounded-md border border-input bg-muted px-2 font-mono text-xs"
+              aria-label="Invitation link"
+              data-testid="invite-link"
+            />
+            <button
+              type="button"
+              onClick={() => void copyLink(created.url)}
+              className="h-9 rounded-md border border-input px-3 text-xs font-medium hover:bg-muted"
+              data-testid="invite-copy"
+            >
+              {copied ? "Copied" : "Copy link"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

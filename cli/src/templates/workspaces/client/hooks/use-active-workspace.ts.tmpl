@@ -1,0 +1,132 @@
+"use client";
+
+/*
+ * use-active-workspace.ts — resolves the workspace THIS SCREEN is showing.
+ *
+ * ── The rule every caller must follow ────────────────────────────────
+ *
+ * Every tRPC call the client makes passes this hook's `workspaceId`
+ * explicitly, in the procedure's input object. Every query. Every
+ * mutation. No exceptions.
+ *
+ * A call that omits it is not an error — the server falls back to the
+ * session's `activeOrganizationId` (rule 6), and the request succeeds.
+ * That is exactly what makes the omission dangerous: the screen manages
+ * the workspace the switcher is pointing at, while the request addresses
+ * whatever workspace the session last stored, which another client may
+ * have changed minutes ago. Nothing fails, nothing logs, and a member is
+ * added to the wrong tenant.
+ *
+ * So: `{ workspaceId }` in every input. If you are writing a call that
+ * does not have a `workspaceId` to pass, you are calling it too early —
+ * gate it on `workspaceId` being defined, the way this file's consumers do.
+ *
+ * ── How the workspace is chosen ──────────────────────────────────────
+ *
+ * The stored per-device choice wins, but only if the person is still a
+ * member of it: a choice survives being removed from a workspace, and a
+ * stale id would otherwise make every request NOT_FOUND with no way back.
+ * Otherwise the first membership the server returns.
+ */
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import type { WorkspaceRole } from "@starter/shared";
+import { trpc } from "@/lib/trpc";
+import {
+  chooseWorkspaceForNextLoad,
+  clearWorkspaceCache,
+  enterWorkspace,
+  readStoredWorkspaceId,
+} from "@/lib/active-workspace";
+
+/** Mirrors `WorkspaceSummary` from the server's membership service. */
+export interface WorkspaceOption {
+  id: string;
+  name: string;
+  slug: string;
+  role: WorkspaceRole;
+  memberCount: number;
+  createdAt: string;
+}
+
+export interface ActiveWorkspace {
+  /** Undefined until memberships have loaded, or when there are none. */
+  workspaceId: string | undefined;
+  workspaces: WorkspaceOption[];
+  isLoading: boolean;
+  /** Store the choice and reload the app under the new tenant. */
+  switchWorkspace: (workspaceId: string) => void;
+}
+
+export function useActiveWorkspace(): ActiveWorkspace {
+  const queryClient = useQueryClient();
+  const workspacesQuery = trpc.workspaces.list.useQuery();
+
+  /*
+   * The stored choice is read AFTER mount, never during the first render.
+   * Next prerenders this tree during `next build` (and `output: "export"`
+   * prerenders every page), where there is no storage — reading during
+   * render would make the server's HTML and the client's first render
+   * disagree and React would throw away the hydrated tree.
+   */
+  const [storedId, setStoredId] = useState<string | null>(null);
+  const [storageRead, setStorageRead] = useState(false);
+
+  useEffect(() => {
+    setStoredId(readStoredWorkspaceId());
+    setStorageRead(true);
+  }, []);
+
+  const workspaces = useMemo<WorkspaceOption[]>(
+    () => workspacesQuery.data ?? [],
+    [workspacesQuery.data],
+  );
+
+  const workspaceId = useMemo(() => {
+    if (workspaces.length === 0) return undefined;
+    // Honour the stored choice only while it is still a membership.
+    if (storedId && workspaces.some((w) => w.id === storedId)) return storedId;
+    return workspaces[0].id;
+  }, [storedId, workspaces]);
+
+  /*
+   * Write the resolved id back. Two reasons, both load-bearing:
+   *
+   * 1. A first visit, or a visit after the stored workspace went away,
+   *    otherwise re-derives the fallback on every load — and "the first
+   *    membership" can change when an older workspace is joined.
+   * 2. `stillInWorkspace()` compares a mutation's tenant against the
+   *    STORED id. If the resolved id were never stored, that guard would
+   *    reject every callback on a freshly resolved fallback.
+   */
+  useEffect(() => {
+    if (!storageRead || !workspaceId) return;
+    if (storedId === workspaceId) return;
+    chooseWorkspaceForNextLoad(workspaceId);
+    setStoredId(workspaceId);
+  }, [storageRead, storedId, workspaceId]);
+
+  const switchWorkspace = useCallback(
+    (nextWorkspaceId: string) => {
+      if (nextWorkspaceId === workspaceId) return;
+      // Drop the previous tenant's cached rows before leaving, for the
+      // shells whose webview survives the navigation.
+      clearWorkspaceCache(queryClient);
+      // Full page load, deliberately — see enterWorkspace()'s comment.
+      // Stay on the current screen, under the new tenant.
+      enterWorkspace(
+        nextWorkspaceId,
+        typeof window === "undefined" ? undefined : window.location.pathname,
+      );
+    },
+    [queryClient, workspaceId],
+  );
+
+  return {
+    workspaceId,
+    workspaces,
+    isLoading: workspacesQuery.isPending || !storageRead,
+    switchWorkspace,
+  };
+}

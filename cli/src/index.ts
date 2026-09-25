@@ -2837,6 +2837,28 @@ async function handleCreate(): Promise<void> {
     console.log(chalk.dim("    pnpm cap:add:android   # requires Android Studio / SDK"));
   }
 
+  if (config.features.includes("workspaces")) {
+    console.log(chalk.yellow("\n  Next (workspaces): tenants, members, roles and invitations."));
+    console.log(
+      chalk.dim("    Members screen at /members; the invite page is the public /invite/?id=<id>."),
+    );
+    console.log(
+      chalk.dim(
+        "    better-auth's /api/auth/organization/* endpoints answer 404 on purpose — the app's",
+      ),
+    );
+    console.log(
+      chalk.dim(
+        "    own API over packages/server/src/services/membership/ is the only way membership changes.",
+      ),
+    );
+    console.log(
+      chalk.dim(
+        "    With no mail transport, an invitation still works: the UI shows a copyable link.",
+      ),
+    );
+  }
+
   if (config.features.includes("desktop")) {
     console.log(
       chalk.yellow("\n  Next (desktop): replace build/icon.png with a 512×512 logo, then:"),
@@ -3435,7 +3457,11 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("What it does:")}
     Reads the project's .hatchkit.json manifest, lets you pick a new
     feature set, and copies the additive pieces from the starter.
-    Currently supported additions: ${chalk.cyan("desktop")}, ${chalk.cyan("mobile")}.
+    Currently supported additions: ${chalk.cyan("workspaces")}, ${chalk.cyan("desktop")}, ${chalk.cyan("mobile")}.
+
+    ${chalk.cyan("workspaces")} adds tenants, members, roles and invitations. It only
+    writes new files and wires them in; it never rewrites your own code,
+    and a file you have edited is left alone and reported.
 
     A native shell loads the client from its own origin, which the
     deployed server rejects (${chalk.dim("403 INVALID_ORIGIN")}) until ${chalk.dim("TRUSTED_ORIGINS")}

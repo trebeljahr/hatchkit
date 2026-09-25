@@ -1,0 +1,299 @@
+"use client";
+
+/*
+ * member-row.tsx — one person in the members table, with the controls
+ * that change what they may do and what they may see.
+ *
+ * Everything here goes through the app's OWN typed API. See the note in
+ * members-screen.tsx: `authClient.organization.*` is not an option.
+ */
+
+import { useState } from "react";
+import {
+  ASSIGNABLE_ROLES,
+  isAssignableRole,
+  MEMBERSHIP_REFUSALS,
+  type AssignableRole,
+  type WorkspaceRole,
+} from "@starter/shared";
+import { trpc } from "@/lib/trpc";
+import { stillInWorkspace } from "@/lib/active-workspace";
+
+/** Mirrors `MemberView` from the server's membership service. */
+export interface MemberView {
+  userId: string;
+  workspaceId: string;
+  email: string;
+  name: string;
+  role: WorkspaceRole;
+  canViewOthersRecords: boolean;
+  canViewOthersSensitive: boolean;
+  createdAt: string;
+  isSelf: boolean;
+}
+
+export interface MemberRowProps {
+  member: MemberView;
+  /**
+   * The switcher's active workspace, threaded down from the screen. Never
+   * `member.workspaceId` from the row itself: that is data the server
+   * echoed back, so using it would let a stale row address a workspace the
+   * person is no longer looking at.
+   */
+  workspaceId: string;
+  viewerRole: WorkspaceRole;
+  /** Whether the viewer may manage members at all. Cosmetic — see below. */
+  canManage: boolean;
+  /** How many owners the workspace has right now. */
+  ownerCount: number;
+  onChanged: () => void;
+}
+
+/** Turn a refusal code from the server into something a person can read. */
+function refusalMessage(message: string): string {
+  switch (message) {
+    case MEMBERSHIP_REFUSALS.cannotDemoteLastOwner:
+      return "This is the last owner. Transfer ownership before changing their role.";
+    case MEMBERSHIP_REFUSALS.cannotRemoveLastOwner:
+      return "This is the last owner. Transfer ownership before removing them.";
+    case MEMBERSHIP_REFUSALS.ownerNotAssignable:
+      return "Owner is only granted by transferring ownership.";
+    case MEMBERSHIP_REFUSALS.cannotTargetSelf:
+      return "Use “Leave workspace” to remove yourself.";
+    case MEMBERSHIP_REFUSALS.manageRequired:
+      return "You do not have permission to manage members.";
+    case MEMBERSHIP_REFUSALS.ownerRequired:
+      return "Only the owner can do that.";
+    default:
+      return message;
+  }
+}
+
+export function MemberRow({
+  member,
+  workspaceId,
+  viewerRole,
+  canManage,
+  ownerCount,
+  onChanged,
+}: MemberRowProps) {
+  const [error, setError] = useState<string | null>(null);
+  const utils = trpc.useUtils();
+
+  /*
+   * A mutation started in this workspace can settle after the person
+   * switched to another one — the request was already on the wire. Without
+   * this guard the callback invalidates the NEW tenant's cache using the
+   * OLD tenant's response. A React Query key does not carry the tenant on
+   * its own, which is why the check is explicit.
+   */
+  function afterWrite() {
+    if (!stillInWorkspace(workspaceId)) return;
+    void utils.members.list.invalidate({ workspaceId });
+    onChanged();
+  }
+
+  function onError(err: { message: string }) {
+    setError(refusalMessage(err.message));
+  }
+
+  const updateRole = trpc.members.updateRole.useMutation({
+    onSuccess: afterWrite,
+    onError,
+  });
+  const updateCapabilities = trpc.members.updateCapabilities.useMutation({
+    onSuccess: afterWrite,
+    onError,
+  });
+  const removeMember = trpc.members.remove.useMutation({
+    onSuccess: afterWrite,
+    onError,
+  });
+  const transferOwnership = trpc.workspaces.transferOwnership.useMutation({
+    onSuccess: afterWrite,
+    onError,
+  });
+
+  const busy =
+    updateRole.isPending ||
+    updateCapabilities.isPending ||
+    removeMember.isPending ||
+    transferOwnership.isPending;
+
+  /*
+   * The last owner's controls are disabled, and the row SAYS why — a
+   * control that silently does nothing reads as a broken app, and the
+   * person retries instead of transferring ownership. The server refuses
+   * this independently (`last-owner-cannot-be-demoted` /
+   * `last-owner-cannot-be-removed`); this is the explanation, not the
+   * enforcement.
+   */
+  const isLastOwner = member.role === "owner" && ownerCount <= 1;
+  const lastOwnerNote = isLastOwner
+    ? "Last owner — transfer ownership first."
+    : null;
+
+  // Self-targeting is refused server side (`cannot-target-self`); leaving
+  // is a separate action on the screen.
+  const canEditThisRow = canManage && !member.isSelf && !isLastOwner;
+
+  function changeRole(value: string) {
+    setError(null);
+    if (!isAssignableRole(value)) {
+      // `owner` never reaches here — it is not in the picker, and the
+      // server refuses it as an assignable role. Belt and braces.
+      setError(refusalMessage(MEMBERSHIP_REFUSALS.ownerNotAssignable));
+      return;
+    }
+    // `workspaceId` on EVERY mutation. Omitting it lets the server fall
+    // back to the session's active workspace, which another client may
+    // have changed — and the role change lands in the wrong tenant.
+    updateRole.mutate({ workspaceId, targetUserId: member.userId, role: value });
+  }
+
+  function toggleCapability(
+    key: "canViewOthersRecords" | "canViewOthersSensitive",
+    next: boolean,
+  ) {
+    setError(null);
+    // Written out rather than with a computed key so the input keeps the
+    // router's exact optional-field shape: only the flag being changed is
+    // sent, and the other one is left as it is on the server.
+    updateCapabilities.mutate(
+      key === "canViewOthersRecords"
+        ? { workspaceId, targetUserId: member.userId, canViewOthersRecords: next }
+        : { workspaceId, targetUserId: member.userId, canViewOthersSensitive: next },
+    );
+  }
+
+  function onRemove() {
+    setError(null);
+    const confirmed = window.confirm(
+      `Remove ${member.name || member.email} from this workspace?`,
+    );
+    if (!confirmed) return;
+    removeMember.mutate({ workspaceId, targetUserId: member.userId });
+  }
+
+  function onTransfer() {
+    setError(null);
+    /*
+     * Owner is reachable ONLY here. It is absent from the role picker on
+     * purpose (see ASSIGNABLE_ROLES in the shared contract), and it is a
+     * confirmed action because it demotes the person clicking it.
+     */
+    const confirmed = window.confirm(
+      `Make ${member.name || member.email} the owner of this workspace? ` +
+        "You will become an admin.",
+    );
+    if (!confirmed) return;
+    transferOwnership.mutate({ workspaceId, targetUserId: member.userId });
+  }
+
+  return (
+    <tr className="border-b align-top" data-testid={`member-${member.userId}`}>
+      <td className="py-3 pr-4">
+        <div className="text-sm font-medium">
+          {member.name || member.email}
+          {member.isSelf && (
+            <span className="ml-2 text-xs text-muted-foreground">(you)</span>
+          )}
+        </div>
+        <div className="text-xs text-muted-foreground">{member.email}</div>
+        {lastOwnerNote && (
+          <div className="mt-1 text-xs text-muted-foreground">{lastOwnerNote}</div>
+        )}
+        {error && (
+          <div className="mt-1 text-xs text-destructive" role="alert">
+            {error}
+          </div>
+        )}
+      </td>
+
+      <td className="py-3 pr-4">
+        {member.role === "owner" ? (
+          /*
+           * No dropdown for an owner. `owner` is not an assignable role,
+           * so there is nothing to select TO except a demotion, and a
+           * demotion of the only owner would leave the workspace ownerless.
+           */
+          <span className="text-sm font-medium">Owner</span>
+        ) : (
+          <select
+            value={member.role}
+            disabled={!canEditThisRow || busy}
+            onChange={(e) => changeRole(e.target.value)}
+            className="h-9 rounded-md border border-input bg-background px-2 text-sm disabled:opacity-50"
+            aria-label={`Role for ${member.email}`}
+            data-testid={`member-role-${member.userId}`}
+          >
+            {/*
+             * ASSIGNABLE_ROLES only — "admin" and "member". `owner` is
+             * deliberately absent: adding it here would create a second
+             * owner nobody handed the workspace to.
+             */}
+            {ASSIGNABLE_ROLES.map((role: AssignableRole) => (
+              <option key={role} value={role}>
+                {role === "admin" ? "Admin" : "Member"}
+              </option>
+            ))}
+          </select>
+        )}
+      </td>
+
+      <td className="py-3 pr-4">
+        {/*
+         * Flags follow the role: an owner's two flags are forced on by the
+         * contract, so the checkboxes are read-only for an owner rather
+         * than lying about being changeable.
+         */}
+        <label className="flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={member.canViewOthersRecords}
+            disabled={!canManage || member.role === "owner" || busy}
+            onChange={(e) => toggleCapability("canViewOthersRecords", e.target.checked)}
+            data-testid={`member-records-${member.userId}`}
+          />
+          Sees others&apos; records
+        </label>
+        <label className="mt-1 flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={member.canViewOthersSensitive}
+            disabled={!canManage || member.role === "owner" || busy}
+            onChange={(e) => toggleCapability("canViewOthersSensitive", e.target.checked)}
+            data-testid={`member-sensitive-${member.userId}`}
+          />
+          Sees sensitive fields
+        </label>
+      </td>
+
+      <td className="py-3 text-right">
+        <div className="flex flex-col items-end gap-1">
+          {viewerRole === "owner" && !member.isSelf && (
+            <button
+              type="button"
+              onClick={onTransfer}
+              disabled={busy}
+              className="text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+              data-testid={`member-transfer-${member.userId}`}
+            >
+              Transfer ownership
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onRemove}
+            disabled={!canEditThisRow || busy}
+            title={lastOwnerNote ?? undefined}
+            className="text-xs text-destructive hover:underline disabled:opacity-50"
+            data-testid={`member-remove-${member.userId}`}
+          >
+            Remove
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+}

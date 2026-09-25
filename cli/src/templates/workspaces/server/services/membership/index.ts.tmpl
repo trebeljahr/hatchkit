@@ -1,0 +1,78 @@
+/*
+ * index.ts — the membership service's public surface.
+ *
+ * Everything outside this directory imports from here and from nowhere
+ * else inside it. The re-exports are explicit rather than a `export *`
+ * so adding a function to a module is a deliberate act: a helper that
+ * writes `WorkspaceMember`, `member`, `organization` or `invitation` is
+ * not supposed to become reachable from a router by accident.
+ *
+ * Nothing outside `services/membership/` writes those four collections.
+ * That is the whole reason this directory exists.
+ */
+
+export {
+  MembershipError,
+  badRequest,
+  forbidden,
+  notFound,
+  tooManyRequests,
+  type MembershipErrorCode,
+} from "./errors.js";
+
+export {
+  countOwners,
+  getMembership,
+  invitationsCollection,
+  listMemberships,
+  listMembershipsForUser,
+  membersCollection,
+  organizationsCollection,
+} from "./mirror.js";
+
+export {
+  assertCanAdminister,
+  assertCanInvite,
+  assertCanManageMembers,
+  assertCanUsePrivilegedSurface,
+  assertIsOwner,
+  requireMemberOfActorWorkspace,
+  type Actor,
+} from "./permissions.js";
+
+export {
+  createWorkspace,
+  leaveWorkspace,
+  listWorkspaces,
+  renameWorkspace,
+  resolveWorkspaceForRequest,
+  setActiveWorkspace,
+  transferOwnership,
+  type WorkspaceSummary,
+} from "./workspaces.js";
+
+export {
+  listMembers,
+  removeMember,
+  updateMemberCapabilities,
+  updateMemberRole,
+  type MemberView,
+} from "./members.js";
+
+export {
+  acceptInvitation,
+  cancelInvitation,
+  createInvitation,
+  getInvitationPreview,
+  listInvitations,
+  type InvitationView,
+  type PublicInvitationView,
+} from "./invitations.js";
+
+export { assertInviteRateLimit } from "./rate-limit.js";
+
+export {
+  publishMembershipEvent,
+  setMembershipPublisher,
+  type MembershipEvent,
+} from "./events.js";

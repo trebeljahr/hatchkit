@@ -1,0 +1,239 @@
+"use client";
+
+/*
+ * app/invite/page.tsx — the page an invitee opens from their email.
+ *
+ * ── Why this file is NOT under app/(protected)/ ──────────────────────
+ *
+ * 1. A signed-out invitee must be able to READ the invitation before
+ *    signing in. Under the protected layout, `isAuthenticated === false`
+ *    bounces them to /login before this page renders a single word — so
+ *    they arrive at a login form with no idea which workspace invited
+ *    them, who invited them, or which address to sign up with. Most
+ *    people do not have an account yet at that moment; that redirect is
+ *    where invitations go to die. Here the page renders first, says whose
+ *    workspace this is, and only then offers the sign-in link — with
+ *    `?next=` carrying them back to this exact invitation.
+ *
+ * 2. The id is a QUERY PARAMETER, not a path segment. `output: "export"`
+ *    (every desktop and mobile build — see next.config.ts) prerenders a
+ *    fixed set of files. A dynamic `/invite/[id]` route has no known
+ *    params at build time, so it either fails the export or emits nothing,
+ *    and the shell serves a 404 for every real invitation. `/invite/` is
+ *    one static file that reads `?id=` at runtime. `invitationUrl()` in
+ *    the shared contract builds exactly this shape; keep the two in step.
+ *
+ * Moving this file under (protected), or turning `?id=` into `[id]`,
+ * breaks invitations silently — the build still succeeds.
+ */
+
+import { Suspense, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { emailsMatch, invitationUrl } from "@starter/shared";
+import { trpc } from "@/lib/trpc";
+import { useAuth } from "@/hooks/use-auth";
+import { signOut } from "@/lib/auth-client";
+import { enterWorkspace } from "@/lib/active-workspace";
+import { withNextParam } from "@/lib/safe-next";
+
+export default function InvitePage() {
+  /*
+   * `useSearchParams()` opts the subtree out of prerendering, so it MUST
+   * sit inside a <Suspense> boundary or `next build` fails the page. With
+   * `output: "export"` that failure takes the whole export down.
+   */
+  return (
+    <Suspense fallback={<InviteShell>Loading invitation…</InviteShell>}>
+      <InviteScreen />
+    </Suspense>
+  );
+}
+
+function InviteShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex min-h-screen items-center justify-center p-8">
+      <div className="mx-auto w-full max-w-sm space-y-6">{children}</div>
+    </div>
+  );
+}
+
+function InviteScreen() {
+  const params = useSearchParams();
+  const invitationId = params.get("id") ?? "";
+  const { user, isLoading: authLoading } = useAuth();
+  const [acceptError, setAcceptError] = useState<string | null>(null);
+
+  const previewQuery = trpc.invitations.preview.useQuery(
+    { invitationId },
+    {
+      enabled: invitationId.length > 0,
+      // A refused or expired invitation will not become valid by asking
+      // again, and each retry is another lookup on an unauthenticated
+      // endpoint.
+      retry: false,
+    },
+  );
+
+  const acceptMutation = trpc.invitations.accept.useMutation({
+    onSuccess: (result) => {
+      // Full page load into the new workspace. The app was rendered with
+      // no tenant at all (this page sits outside the protected tree), and
+      // every cached query belongs to whatever the person was looking at
+      // before. See enterWorkspace().
+      enterWorkspace(result.workspaceId);
+    },
+    onError: (error) => setAcceptError(error.message),
+  });
+
+  if (invitationId.length === 0) {
+    return (
+      <InviteShell>
+        <Heading title="Invitation link incomplete" />
+        <p className="text-sm text-muted-foreground">
+          This link is missing its invitation id. Ask whoever invited you to send
+          the link again, unedited.
+        </p>
+      </InviteShell>
+    );
+  }
+
+  if (previewQuery.isPending || authLoading) {
+    return <InviteShell>Loading invitation…</InviteShell>;
+  }
+
+  if (previewQuery.isError || !previewQuery.data) {
+    /*
+     * One message for every failure. The server already refuses to say
+     * whether an id exists, is pending, expired or was cancelled; spelling
+     * the difference out here would hand that back to anyone who guesses
+     * at ids.
+     */
+    return (
+      <InviteShell>
+        <Heading title="This invitation cannot be opened" />
+        <p className="text-sm text-muted-foreground">
+          The link may have been used already, withdrawn, or it may have
+          expired. Ask for a new invitation.
+        </p>
+        <p className="text-center text-sm">
+          <Link href="/login/" className="text-primary hover:underline">
+            Go to sign in
+          </Link>
+        </p>
+      </InviteShell>
+    );
+  }
+
+  const invitation = previewQuery.data;
+
+  /* ── Signed out: say whose workspace this is, then offer sign-in ──── */
+  if (!user) {
+    // `invitationUrl("")` yields the site-relative "/invite/?id=…", the
+    // same shape the emailed link uses. `withNextParam` validates it
+    // through lib/safe-next.ts — the ONLY validator in the app — before
+    // it is written into a link pointing at the login page.
+    const backHere = invitationUrl("", invitation.id);
+    return (
+      <InviteShell>
+        <Heading
+          title={`Join ${invitation.workspaceName}`}
+          subtitle={`${invitation.inviterName} invited ${invitation.email} to join as ${invitation.role}.`}
+        />
+        <p className="text-sm text-muted-foreground">
+          Sign in with <strong className="text-foreground">{invitation.email}</strong>{" "}
+          to accept. The invitation only works for that address.
+        </p>
+        <div className="space-y-3">
+          <Link
+            href={withNextParam("/signup/", backHere)}
+            className="inline-flex h-10 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            Create an account
+          </Link>
+          <Link
+            href={withNextParam("/login/", backHere)}
+            className="inline-flex h-10 w-full items-center justify-center rounded-md border border-input text-sm font-medium hover:bg-muted"
+          >
+            I already have an account
+          </Link>
+        </div>
+      </InviteShell>
+    );
+  }
+
+  /* ── Signed in as somebody else ───────────────────────────────────── */
+  if (!emailsMatch(user.email, invitation.email)) {
+    /*
+     * Deliberately vague about the invitation itself. The wrong account
+     * learns only that THIS account is not the invited one — not whether
+     * the invitation is still live, nor which address it was sent to.
+     * `emailsMatch` (shared contract) is the same comparison the server
+     * makes, and the server makes it before it checks the status, so a
+     * forwarded link tells a stranger nothing either way.
+     */
+    return (
+      <InviteShell>
+        <Heading title="This invitation is for a different address" />
+        <p className="text-sm text-muted-foreground">
+          You are signed in as{" "}
+          <strong className="text-foreground">{user.email}</strong>. This
+          invitation was sent to another address, so it cannot be accepted from
+          this account.
+        </p>
+        <button
+          type="button"
+          onClick={() => void signOut()}
+          className="inline-flex h-10 w-full items-center justify-center rounded-md border border-input text-sm font-medium hover:bg-muted"
+          data-testid="invite-sign-out"
+        >
+          Sign out
+        </button>
+      </InviteShell>
+    );
+  }
+
+  /* ── Signed in as the invitee ─────────────────────────────────────── */
+  return (
+    <InviteShell>
+      <Heading
+        title={`Join ${invitation.workspaceName}`}
+        subtitle={`${invitation.inviterName} invited you to join as ${invitation.role}.`}
+      />
+      {acceptError && (
+        <div
+          className="rounded-md bg-destructive/10 p-3 text-sm text-destructive"
+          data-testid="invite-error"
+        >
+          {acceptError}
+        </div>
+      )}
+      <button
+        type="button"
+        disabled={acceptMutation.isPending}
+        onClick={() => {
+          setAcceptError(null);
+          acceptMutation.mutate({ invitationId });
+        }}
+        className="inline-flex h-10 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+        data-testid="invite-accept"
+      >
+        {acceptMutation.isPending ? "Joining…" : `Join ${invitation.workspaceName}`}
+      </button>
+      <p className="text-center text-sm">
+        <Link href="/dashboard/" className="text-muted-foreground hover:underline">
+          Not now
+        </Link>
+      </p>
+    </InviteShell>
+  );
+}
+
+function Heading({ title, subtitle }: { title: string; subtitle?: string }) {
+  return (
+    <div className="text-center">
+      <h1 className="text-2xl font-bold">{title}</h1>
+      {subtitle && <p className="mt-2 text-sm text-muted-foreground">{subtitle}</p>}
+    </div>
+  );
+}

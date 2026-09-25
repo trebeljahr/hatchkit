@@ -1,0 +1,175 @@
+/*
+ * organization-http-lockdown.test.ts — the pin.
+ *
+ * `src/auth/organization-lockdown.ts` is the single line of defence
+ * between the network and better-auth's parallel implementation of
+ * membership. If it stops working, nothing throws and nothing logs: the
+ * routes simply start answering, writing better-auth's `member` rows
+ * that the app's `WorkspaceMember` mirror knows nothing about. So this
+ * file drives every one of those routes against the REAL better-auth
+ * library — no mock of the plugin, no mock of the router — and fails if
+ * one of them answers anything but 404.
+ *
+ * NO DATABASE IS NEEDED. better-auth ships a memory adapter
+ * (`better-auth/adapters/memory`, a dependency of better-auth itself),
+ * so a full instance can be built from a plain object. That is on
+ * purpose: a lockdown test guarded behind `if (!process.env.MONGODB_URI)
+ * skip` is a lockdown test that never runs in CI.
+ *
+ * The instance under test enables `teams` and `dynamicAccessControl`,
+ * which the app does not. Without them the plugin does not mount its
+ * team and role routes at all, and they would 404 whether or not the
+ * lockdown exists — the assertion would pass for the wrong reason. With
+ * them on, every path below is a real route, and the "without the
+ * lockdown" control test proves it.
+ */
+
+import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import test from "node:test";
+import { betterAuth } from "better-auth";
+import { memoryAdapter } from "better-auth/adapters/memory";
+import { organization } from "better-auth/plugins";
+import {
+  ORGANIZATION_ENDPOINT_PATHS,
+  isOrganizationPath,
+  organizationLockdown,
+} from "../auth/organization-lockdown.js";
+
+const BASE_URL = "http://localhost";
+
+/** Every route the plugin can mount, so a 404 proves the hook, not a gap. */
+const ORGANIZATION_PLUGIN_OPTIONS = {
+  teams: { enabled: true },
+  dynamicAccessControl: { enabled: true },
+} as const;
+
+/**
+ * The memory adapter refuses a model it has no array for, so every
+ * collection better-auth or the plugin may touch starts as an empty one.
+ */
+function emptyDatabase(): Record<string, Record<string, unknown>[]> {
+  return {
+    user: [],
+    session: [],
+    account: [],
+    verification: [],
+    organization: [],
+    member: [],
+    invitation: [],
+    team: [],
+    teamMember: [],
+    organizationRole: [],
+  };
+}
+
+function makeAuth(options: { withLockdown: boolean }) {
+  return betterAuth({
+    database: memoryAdapter(emptyDatabase()),
+    // A real random secret, not a fixed string: better-auth warns loudly
+    // about low-entropy secrets and the warning drowns the test output.
+    secret: randomBytes(32).toString("hex"),
+    baseURL: BASE_URL,
+    emailAndPassword: { enabled: true },
+    plugins: [organization(ORGANIZATION_PLUGIN_OPTIONS)],
+    ...(options.withLockdown ? { hooks: { before: organizationLockdown } } : {}),
+  });
+}
+
+const locked = makeAuth({ withLockdown: true });
+const bare = makeAuth({ withLockdown: false });
+
+async function status(
+  auth: ReturnType<typeof makeAuth>,
+  path: string,
+  method: "GET" | "POST",
+): Promise<number> {
+  const url = `${BASE_URL}/api/auth${path}`;
+  const request =
+    method === "POST"
+      ? new Request(url, {
+          method,
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        })
+      : new Request(url, { method });
+  const response = await auth.handler(request);
+  return response.status;
+}
+
+test("ORGANIZATION_ENDPOINT_PATHS still matches the installed better-auth", () => {
+  // The lockdown matches a PREFIX, so a new endpoint in a better-auth
+  // upgrade is refused whether or not it is listed. This assertion is
+  // the drift alarm: it fails on the upgrade that adds one, so the list
+  // — and the reader's picture of what is being refused — stays true.
+  const mounted = Object.values(organization(ORGANIZATION_PLUGIN_OPTIONS).endpoints)
+    .map((endpoint) => endpoint.path)
+    .filter((path): path is string => typeof path === "string" && path.length > 0);
+
+  assert.ok(mounted.length > 0, "the organization plugin mounted no endpoints at all");
+  assert.deepEqual(
+    [...new Set(mounted)].sort(),
+    [...ORGANIZATION_ENDPOINT_PATHS].sort(),
+    "better-auth's organization routes changed — update ORGANIZATION_ENDPOINT_PATHS",
+  );
+});
+
+test("every organization endpoint answers 404 over HTTP", async () => {
+  for (const path of ORGANIZATION_ENDPOINT_PATHS) {
+    for (const method of ["GET", "POST"] as const) {
+      assert.equal(
+        await status(locked, path, method),
+        404,
+        `${method} ${path} must not be reachable`,
+      );
+    }
+  }
+});
+
+test("without the lockdown those same routes are real and reachable", async () => {
+  // The control. A route that does not exist 404s on its own, so without
+  // this test the assertion above would pass on an empty router.
+  for (const path of ORGANIZATION_ENDPOINT_PATHS) {
+    const statuses = [await status(bare, path, "GET"), await status(bare, path, "POST")];
+    assert.ok(
+      statuses.some((code) => code !== 404),
+      `${path} 404s without the lockdown too — it is not a mounted route (${statuses.join("/")})`,
+    );
+  }
+});
+
+test("the lockdown leaves every other auth route alone", async () => {
+  // Proof that the refusal is narrow. `get-session` is unauthenticated
+  // and answers 200 with a null session; `sign-up/email` rejects the
+  // empty body with a 400. Either turning into a 404 means the matcher
+  // has grown past the organization plugin.
+  assert.equal(await status(locked, "/get-session", "GET"), 200);
+  assert.equal(await status(locked, "/sign-up/email", "POST"), 400);
+});
+
+test("a path that merely starts with the same letters is not matched", () => {
+  assert.equal(isOrganizationPath("/organization"), true);
+  assert.equal(isOrganizationPath("/organization/create"), true);
+  assert.equal(isOrganizationPath("/organizations"), false);
+  assert.equal(isOrganizationPath("/organization-invites"), false);
+  assert.equal(isOrganizationPath("/org"), false);
+  assert.equal(isOrganizationPath("/get-session"), false);
+});
+
+test("the server side still reaches the plugin, so signup can bootstrap", async () => {
+  // The other half of the lockdown's contract: it gates on `ctx.request`
+  // so direct `auth.api.*` calls pass. `workspace-bootstrap.ts` swallows
+  // its own failures, so if this ever broke, signup would keep working
+  // and every new account would quietly have no workspace. This is the
+  // only place that would notice.
+  const signUp = await locked.api.signUpEmail({
+    body: { email: "bootstrap@example.test", password: "correct-horse-battery", name: "Boot" },
+  });
+
+  const created = await locked.api.createOrganization({
+    body: { name: "Boot's Workspace", slug: "boots-workspace", userId: signUp.user.id },
+  });
+
+  assert.ok(created, "auth.api.createOrganization returned nothing");
+  assert.equal(created.name, "Boot's Workspace");
+});

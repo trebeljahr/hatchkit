@@ -1,0 +1,16 @@
+/*
+ * app/(protected)/members/page.tsx — the route. Nothing but the route.
+ *
+ * All of the behaviour lives in components/members/members-screen.tsx so
+ * the native shells (which render their own navigation) can mount the
+ * same screen without going through Next's router.
+ */
+
+import type { Metadata } from "next";
+import { MembersScreen } from "@/components/members/members-screen";
+
+export const metadata: Metadata = { title: "Members" };
+
+export default function MembersPage() {
+  return <MembersScreen />;
+}

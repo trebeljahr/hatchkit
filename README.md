@@ -59,7 +59,7 @@ New to the CLI? Run `hatchkit explain` for a one-page mental model covering ever
 | `hatchkit doctor` | Health-check every configured provider with a read-only API call + contextual fix hints on failures. |
 | `hatchkit explain` | Print the one-page mental model (concepts, commands, workflow). |
 | `hatchkit create` | Scaffold a new project and optionally deploy it end-to-end. Interactive by default; every prompt has a matching flag, and `--yes` makes it fully non-interactive. |
-| `hatchkit update` | Add features (desktop, mobile, …) to a project already scaffolded. |
+| `hatchkit update` | Add features (workspaces, desktop, mobile, …) to a project already scaffolded. |
 | `hatchkit add <project> [services]` | Provision GlitchTip / OpenPanel / Plausible / Listmonk + SES / email / search clients for an existing project. |
 | `hatchkit signing org-init` | One-time per dev machine — collect Apple Distribution .p12 / App Store Connect API key, Google Play service account JSON, Azure Trusted Signing service principal. |
 | `hatchkit signing apply [project-dir]` | Wire signed installers + store uploads: writes `build-{windows,ios,android}.yml`, rewrites bundle ID in `package.json` (electron-builder `build`) / `capacitor.config.ts` / `android/app/build.gradle` / `strings.xml` / `MainActivity.java` / `project.pbxproj`, mints the Apple Bundle ID + App record + provisioning profile via the ASC API, generates an Android upload keystore, pushes ~20 GitHub Actions secrets. Idempotent. Same flow runs via `hatchkit add <project> signing`. |

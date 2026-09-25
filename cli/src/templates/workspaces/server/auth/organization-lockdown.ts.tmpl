@@ -1,0 +1,161 @@
+/*
+ * organization-lockdown.ts — better-auth's organization plugin stays
+ * installed, but not one byte of it is reachable over HTTP.
+ *
+ * WHY THE PLUGIN STAYS
+ * The plugin owns the tables this app's multi-tenancy is built on: the
+ * `organization`, `member` and `invitation` collections, and the
+ * `activeOrganizationId` column it adds to `session`. The signup hook in
+ * `workspace-bootstrap.ts` also reaches the plugin server side, through
+ * `auth.api.createOrganization`, to make a new person's first workspace.
+ * Uninstalling it would take the schema and that call with it.
+ *
+ * WHY EVERY HTTP ROUTE OF IT ANSWERS 404
+ * Each of the 35 routes below is a second, parallel implementation of
+ * membership that knows nothing about this app's rules:
+ *
+ *   - It writes better-auth's `member` row and never the app's
+ *     `WorkspaceMember` mirror. The app authorizes from the mirror alone
+ *     (rule 1), so a `POST /api/auth/organization/update-member-role`
+ *     changes a role the app never reads, or — worse, via
+ *     `invite-member` + `accept-invitation` — puts somebody in `member`
+ *     with no mirror row at all, which reads as "not in this workspace"
+ *     until somebody re-runs the operation through the service.
+ *   - Its role field is a free-form, comma-joined string: `parseRoles()`
+ *     turns `["admin", "owner"]` into the literal `"admin,owner"`. The
+ *     app's role set is closed and exactly `owner|admin|member` (rule 3),
+ *     and `normalizeRole()` reads `"admin,owner"` as `member` — so the
+ *     plugin can store a role the app cannot see, and `owner` becomes
+ *     reachable without a transfer.
+ *   - Its refusals are 403/400 on ids it looked up UNSCOPED, which
+ *     confirms a foreign workspace's member id exists (rule 4).
+ *   - `DELETE`-ing an organization through `organization/delete` would
+ *     drop the tenant row and orphan the mirror rows that still grant
+ *     access to it (rule 2 and rule 6).
+ *
+ * So every route here was a way around the six rules. It is not a matter
+ * of tightening them: membership changes happen in
+ * `src/services/membership/` and nowhere else.
+ *
+ * WHY 404 AND NOT 403
+ * A 403 says "this exists, and you may not use it", which is a lie — the
+ * endpoints are not a feature of this app at all. A 404 is the honest
+ * answer and it tells a scanner nothing about what is installed.
+ *
+ * IF YOU CHANGE THIS FILE
+ * Weakening the matcher re-opens the parallel implementation, and it
+ * fails silently: nothing errors, the mirror just stops agreeing with
+ * `member` and people see workspaces they are not in.
+ * `src/tests/organization-http-lockdown.test.ts` drives every path below
+ * against the real library and fails if one of them stops answering 404.
+ */
+
+import { APIError, createAuthMiddleware } from "better-auth/api";
+
+/**
+ * Every HTTP path better-auth 1.6.x's organization plugin mounts, as the
+ * plugin declares them — plugin-relative, so the served URL is
+ * `${basePath}${path}`, i.e. `/api/auth/organization/create`.
+ *
+ * This list exists so the test can iterate a named surface and so a
+ * reader can see what is being refused. It is NOT what the matcher
+ * consults — see `isOrganizationPath` below. The team routes and the
+ * dynamic-access-control routes are included even though this app does
+ * not enable `teams` or `dynamicAccessControl`: an unmounted route 404s
+ * on its own today, and would stop doing so the moment somebody turns
+ * the option on.
+ *
+ * The plugin's `addMember` endpoint is deliberately absent: it is
+ * declared without a path, so it exists only as `auth.api.addMember` and
+ * has no HTTP surface to lock.
+ */
+export const ORGANIZATION_ENDPOINT_PATHS: readonly string[] = [
+  /* ── organizations ─────────────────────────────────────────────── */
+  "/organization/create",
+  "/organization/update",
+  "/organization/delete",
+  "/organization/set-active",
+  "/organization/get-full-organization",
+  "/organization/list",
+  "/organization/check-slug",
+  /* ── invitations ───────────────────────────────────────────────── */
+  "/organization/invite-member",
+  "/organization/accept-invitation",
+  "/organization/reject-invitation",
+  "/organization/cancel-invitation",
+  "/organization/get-invitation",
+  "/organization/list-invitations",
+  "/organization/list-user-invitations",
+  /* ── members ───────────────────────────────────────────────────── */
+  "/organization/remove-member",
+  "/organization/update-member-role",
+  "/organization/get-active-member",
+  "/organization/get-active-member-role",
+  "/organization/list-members",
+  "/organization/leave",
+  "/organization/has-permission",
+  /* ── teams (mounted only with `teams.enabled`) ─────────────────── */
+  "/organization/create-team",
+  "/organization/update-team",
+  "/organization/remove-team",
+  "/organization/list-teams",
+  "/organization/set-active-team",
+  "/organization/list-user-teams",
+  "/organization/list-team-members",
+  "/organization/add-team-member",
+  "/organization/remove-team-member",
+  /* ── dynamic access control (only with `dynamicAccessControl`) ─── */
+  "/organization/create-role",
+  "/organization/update-role",
+  "/organization/delete-role",
+  "/organization/get-role",
+  "/organization/list-roles",
+];
+
+/**
+ * The matcher: a path PREFIX, never an allowlist of the paths above.
+ *
+ * A better-auth upgrade that adds `/organization/whatever-next` must be
+ * locked down by DEFAULT. Matching the list would silently open each new
+ * endpoint on the day the dependency bumps, and nothing would fail — the
+ * route would simply start working, writing `member` behind the mirror's
+ * back. Closed by default, listed for the test.
+ *
+ * The trailing slash is load-bearing. `startsWith("/organization")`
+ * alone would also swallow a future first-party route such as
+ * `/organization-invites` or `/organizations`, and refusing an app route
+ * with a 404 is just as quiet a failure in the other direction. The bare
+ * `/organization` is matched exactly, so a root endpoint added later is
+ * covered without catching its neighbours.
+ */
+export function isOrganizationPath(path: string): boolean {
+  return path === "/organization" || path.startsWith("/organization/");
+}
+
+/**
+ * The instance's one before-hook. Wire it as:
+ *
+ *   betterAuth({ ..., hooks: { before: organizationLockdown } })
+ *
+ * better-auth runs the top-level `hooks.before` with a matcher of
+ * `() => true`, so the path test lives in the body rather than in a
+ * matcher argument. Returning `undefined` lets the request continue;
+ * throwing an `APIError` short-circuits it, and better-auth renders the
+ * throw as the response — which is why a 404 is thrown here rather than
+ * a `Response` being returned. `NOT_FOUND` maps to status 404.
+ *
+ * THE `ctx.request` CHECK IS NOT OPTIONAL. This same hook runs for
+ * direct `auth.api.*` calls, where `ctx.request` is undefined. Drop the
+ * check and the server-side `auth.api.createOrganization` that
+ * `workspace-bootstrap.ts` makes a new person's first workspace with
+ * starts throwing NOT_FOUND — the bootstrap swallows it by design, so
+ * signup keeps working and every new account quietly has no workspace.
+ */
+export const organizationLockdown = createAuthMiddleware(async (ctx) => {
+  // Not an HTTP request: a server-side `auth.api.*` call from our own
+  // service layer, which is the only sanctioned way in. Let it through.
+  if (!(ctx.request instanceof Request)) return;
+  if (!isOrganizationPath(ctx.path)) return;
+
+  throw new APIError("NOT_FOUND", { message: "Not Found" });
+});

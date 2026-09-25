@@ -1,0 +1,291 @@
+/*
+ * membership.ts — the multi-tenancy contract, shared by every surface.
+ *
+ * The server authorizes from `WorkspaceMember` (the app's own mirror of
+ * better-auth's `member` collection) and nothing else. This file holds the
+ * vocabulary all three surfaces agree on: the closed role set, the
+ * capability flags that follow a role, the stable refusal codes, and the
+ * projection helpers that decide what one member may see of another's work.
+ *
+ * Nothing here talks to a database. The rules are pure functions so the
+ * tRPC router, the REST router and the realtime fan-out all reach the same
+ * verdict from the same inputs.
+ */
+
+/* ── Roles ──────────────────────────────────────────────────────────── */
+
+/** The closed set. A stored value outside it reads as "member". */
+export const WORKSPACE_ROLES = ["owner", "admin", "member"] as const;
+export type WorkspaceRole = (typeof WORKSPACE_ROLES)[number];
+
+/**
+ * Roles an invitation or a role update may name. `owner` is absent on
+ * purpose — it is reachable only by `workspaces.transferOwnership`, which
+ * promotes before it demotes. Letting an invite or an update grant it is
+ * how a workspace ends up with two owners nobody meant to create, or with
+ * an owner who was never handed the workspace.
+ */
+export const ASSIGNABLE_ROLES = ["admin", "member"] as const;
+export type AssignableRole = (typeof ASSIGNABLE_ROLES)[number];
+
+/** A stored role that is not in the closed set reads as the weakest one. */
+export function normalizeRole(value: unknown): WorkspaceRole {
+  return (WORKSPACE_ROLES as readonly string[]).includes(value as string)
+    ? (value as WorkspaceRole)
+    : "member";
+}
+
+export function isAssignableRole(value: unknown): value is AssignableRole {
+  return (ASSIGNABLE_ROLES as readonly string[]).includes(value as string);
+}
+
+const ROLE_RANK: Record<WorkspaceRole, number> = { owner: 3, admin: 2, member: 1 };
+
+export function roleAtLeast(role: WorkspaceRole, floor: WorkspaceRole): boolean {
+  return ROLE_RANK[role] >= ROLE_RANK[floor];
+}
+
+/* ── Capability flags ───────────────────────────────────────────────── */
+
+/**
+ * Two flags, stored per membership, decided server side on every surface.
+ *
+ * - `canViewOthersRecords` — may see that a colleague's row exists at all.
+ * - `canViewOthersSensitive` — may see the withheld fields inside a row
+ *   they are already allowed to see. Implies nothing on its own.
+ *
+ * Rename these to your domain's words, but keep the shape: one flag for
+ * the row's existence, one for the sensitive field inside it. Collapsing
+ * them into a single flag is how a report that should hide amounts starts
+ * hiding the rows as well, or worse, stops hiding either.
+ */
+export interface MemberCapabilityFlags {
+  canViewOthersRecords: boolean;
+  canViewOthersSensitive: boolean;
+}
+
+export const CLOSED_CAPABILITIES: MemberCapabilityFlags = {
+  canViewOthersRecords: false,
+  canViewOthersSensitive: false,
+};
+
+export const OPEN_CAPABILITIES: MemberCapabilityFlags = {
+  canViewOthersRecords: true,
+  canViewOthersSensitive: true,
+};
+
+/**
+ * Flags follow the role. An owner's flags are forced on; everybody else,
+ * an invited admin included, starts closed. A role change never grants a
+ * flag except by making somebody an owner — so promoting a member to
+ * admin widens what they may DO, never what they may SEE. Widening
+ * visibility stays a separate, deliberate call.
+ */
+export function capabilitiesForRole(
+  role: WorkspaceRole,
+  current: Partial<MemberCapabilityFlags> = {},
+): MemberCapabilityFlags {
+  if (role === "owner") return { ...OPEN_CAPABILITIES };
+  return {
+    canViewOthersRecords: current.canViewOthersRecords === true,
+    canViewOthersSensitive: current.canViewOthersSensitive === true,
+  };
+}
+
+/** The flags a freshly accepted invitation starts with. Always closed. */
+export function capabilitiesForNewMember(role: WorkspaceRole): MemberCapabilityFlags {
+  return capabilitiesForRole(role, CLOSED_CAPABILITIES);
+}
+
+/* ── The membership record the app authorizes from ──────────────────── */
+
+export interface WorkspaceMembership extends MemberCapabilityFlags {
+  workspaceId: string;
+  userId: string;
+  /** Snapshot for labelling rows whose author has since left. */
+  email: string;
+  name: string;
+  role: WorkspaceRole;
+  createdAt: string;
+}
+
+/* ── Capability questions, asked by name and never re-derived ───────── */
+
+/** May this member manage other people at all? */
+export function canManageMembers(role: WorkspaceRole): boolean {
+  return roleAtLeast(role, "admin");
+}
+
+/** May this member send invitations? */
+export function canInvite(role: WorkspaceRole): boolean {
+  return roleAtLeast(role, "admin");
+}
+
+/** May this member rename or configure the workspace? */
+export function canAdministerWorkspace(role: WorkspaceRole): boolean {
+  return roleAtLeast(role, "admin");
+}
+
+/** Only an owner hands the workspace on, and only to somebody already in it. */
+export function canTransferOwnership(role: WorkspaceRole): boolean {
+  return role === "owner";
+}
+
+/**
+ * A privileged, cross-member surface (an aggregate report, a billing
+ * screen, an export) needs BOTH flags plus admin. Ask this per RECIPIENT,
+ * before the query runs — never recompute it from a result set.
+ */
+export function canUsePrivilegedSurface(m: WorkspaceMembership): boolean {
+  return (
+    canManageMembers(m.role) && m.canViewOthersRecords && m.canViewOthersSensitive
+  );
+}
+
+/* ── Projection: honest where it can be, refused where it cannot ────── */
+
+/**
+ * Does `viewer` get to see a record authored by `authorId` at all?
+ * Own rows always. Otherwise the records flag decides.
+ */
+export function canSeeRecordOf(m: WorkspaceMembership, authorId: string): boolean {
+  return m.userId === authorId || m.canViewOthersRecords;
+}
+
+/** Does `viewer` get the sensitive fields of `authorId`'s record? */
+export function canSeeSensitiveOf(m: WorkspaceMembership, authorId: string): boolean {
+  return m.userId === authorId || m.canViewOthersSensitive;
+}
+
+/**
+ * A withheld sensitive slot is `null`, never `0` or `""`. Zero is a real
+ * value some record legitimately carries; a caller cannot tell the two
+ * apart, and a blank column sums to zero in a spreadsheet.
+ */
+export type Withheld<T> = T | null;
+
+/**
+ * Strip the sensitive fields from one record when the viewer may see the
+ * row but not its inside. `sensitiveKeys` names the fields to null out.
+ */
+export function projectRecord<T extends { authorId: string }>(
+  m: WorkspaceMembership,
+  record: T,
+  sensitiveKeys: readonly (keyof T)[],
+): T | null {
+  if (!canSeeRecordOf(m, record.authorId)) return null;
+  if (canSeeSensitiveOf(m, record.authorId)) return record;
+  const projected = { ...record };
+  for (const key of sensitiveKeys) {
+    (projected as Record<string, unknown>)[key as string] = null;
+  }
+  return projected;
+}
+
+/**
+ * An aggregate is one document: when the viewer may not see sensitive
+ * data for everybody in it, EVERY sensitive figure is withheld, their own
+ * included, and the document says so. A partial sum is a number the
+ * reader will trust and act on, and it is wrong.
+ */
+export function sensitiveVisibleInAggregate(m: WorkspaceMembership): boolean {
+  return m.canViewOthersSensitive;
+}
+
+/* ── Stable refusal codes ───────────────────────────────────────────── */
+
+/**
+ * A FORBIDDEN confirms the id exists somewhere, so it is only ever
+ * reached after the row was found inside the caller's OWN workspace. The
+ * messages are codes, not prose: clients switch on them and translations
+ * live in the client.
+ */
+export const MEMBERSHIP_REFUSALS = {
+  notAMember: "workspace-membership-required",
+  manageRequired: "member-management-required",
+  inviteRequired: "invite-permission-required",
+  ownerRequired: "workspace-owner-required",
+  lastOwner: "last-owner-cannot-leave",
+  cannotDemoteLastOwner: "last-owner-cannot-be-demoted",
+  cannotRemoveLastOwner: "last-owner-cannot-be-removed",
+  soleMemberCannotLeave: "sole-member-cannot-leave",
+  ownerNotAssignable: "owner-role-not-assignable",
+  cannotTargetSelf: "cannot-target-self",
+  alreadyMember: "already-a-member",
+  invitationEmailMismatch: "invitation-email-mismatch",
+  invitationNotPending: "invitation-not-pending",
+  invitationExpired: "invitation-expired",
+  pendingInviteCap: "workspace-pending-invite-cap",
+  inviteRateLimit: "invite-rate-limit",
+  privilegedSurface: "privileged-surface-permission-required",
+} as const;
+
+export type MembershipRefusal =
+  (typeof MEMBERSHIP_REFUSALS)[keyof typeof MEMBERSHIP_REFUSALS];
+
+/* ── Invitations ────────────────────────────────────────────────────── */
+
+export const INVITATION_STATUSES = ["pending", "accepted", "rejected", "canceled"] as const;
+export type InvitationStatus = (typeof INVITATION_STATUSES)[number];
+
+/** A workspace holds at most this many pending invitations. */
+export const PENDING_INVITE_CAP = __HATCHKIT_PENDING_INVITE_CAP__;
+
+/** One inviter sends at most this many invitations per rolling hour. */
+export const INVITES_PER_INVITER_PER_HOUR = __HATCHKIT_INVITES_PER_HOUR__;
+
+/** How long a pending invitation stays acceptable. */
+export const INVITATION_TTL_MS = __HATCHKIT_INVITE_TTL_DAYS__ * 24 * 60 * 60 * 1000;
+
+/**
+ * The one comparison that stops a forwarded link being accepted under
+ * somebody else's account. Case-insensitive, trimmed — an address is not
+ * case-sensitive in its domain part and mail clients vary in the local
+ * part, so a strict compare would reject real invitees.
+ */
+export function emailsMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/**
+ * The link the invitee opens. A QUERY PARAMETER, not a path segment: a
+ * static export cannot serve `/invite/<id>`, and `/invite` must sit
+ * outside the protected route tree or a signed-out invitee is bounced to
+ * the login page before it can say whose workspace they were invited to.
+ */
+export function invitationUrl(frontendUrl: string, invitationId: string): string {
+  const base = frontendUrl.replace(/\/+$/, "");
+  return `${base}/invite/?id=${encodeURIComponent(invitationId)}`;
+}
+
+/* ── Per-request tenant id ──────────────────────────────────────────── */
+
+/**
+ * Every first-party client names the workspace it means on EVERY request.
+ * A request that names one explicitly never falls back: naming a
+ * workspace the caller is not in is NOT_FOUND, because a replayed offline
+ * row must never land in a different workspace than it was queued for.
+ *
+ * A request that names none falls back to the session's stored default,
+ * and a default pointing at a workspace the person has left falls back
+ * again to their oldest membership.
+ */
+export interface WorkspaceScopedInput {
+  workspaceId?: string;
+}
+
+export function pickFallbackWorkspace(
+  memberships: readonly WorkspaceMembership[],
+  sessionDefault: string | null | undefined,
+): WorkspaceMembership | null {
+  if (memberships.length === 0) return null;
+  if (sessionDefault) {
+    const named = memberships.find((m) => m.workspaceId === sessionDefault);
+    if (named) return named;
+    // A stale default — the person left that workspace. Fall back rather
+    // than refuse: the session row is only refreshed on the next sign-in
+    // and the cookie cache can hide a change for minutes.
+  }
+  return [...memberships].sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+}

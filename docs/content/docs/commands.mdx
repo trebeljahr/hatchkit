@@ -84,7 +84,7 @@ prompting. That makes `create` CI-safe.
 
 | Flag | Values / effect |
 |---|---|
-| `--features <list>` | `websocket`, `stripe`, `analytics`, `s3`, `desktop`, `mobile`. Comma-separated; pass empty for none. |
+| `--features <list>` | `websocket`, `stripe`, `analytics`, `s3`, `workspaces`, `desktop`, `mobile`. Comma-separated; pass empty for none. |
 | `--analytics-providers <list>` | `glitchtip`, `openpanel`, `plausible` |
 | `--services <list>` | `glitchtip`, `openpanel`, `plausible`, `listmonk-ses`, `s3`, `email`, `search-console` |
 | `--db-engine <value>` | `mongodb` · `postgres` |
@@ -169,7 +169,54 @@ cd my-app
 hatchkit update
 ```
 
-Reads `.hatchkit.json`, lets you pick a new feature set, copies additive pieces from the starter. **Supported additions today:** `desktop` (Electron), `mobile` (Capacitor). Removal is not supported — removing a feature could delete user code. Remove manually and update the manifest.
+Reads `.hatchkit.json`, lets you pick a new feature set, copies additive pieces from the starter. **Supported additions today:** `workspaces` (tenants, members, roles, invitations), `desktop` (Electron), `mobile` (Capacitor). Removal is not supported — removing a feature could delete user code. Remove manually and update the manifest.
+
+### The `workspaces` feature
+
+Adds tenants, members, roles and invitations to a scaffolded app. Additive: it
+writes new files and wires them into your router, auth config and Express app.
+It never rewrites code you wrote, and a file you have edited is left alone and
+named in the output.
+
+What lands in the project:
+
+| Path | Job |
+|---|---|
+| `packages/shared/src/membership.ts` | The contract: the closed role set, the capability flags, the refusal codes, the projection helpers. |
+| `packages/server/src/models/WorkspaceMember.ts` | The app's own membership mirror — the only thing that grants access. |
+| `packages/server/src/services/membership/` | The service layer. Every membership change goes through it. |
+| `packages/server/src/auth/organization-lockdown.ts` | Answers 404 to every `/api/auth/organization/*` request. |
+| `packages/server/src/trpc/routers/{workspaces,members,invitations}.ts` | The typed API — one line per procedure over the service. |
+| `packages/server/src/rest/workspaces.ts` | The REST surface, over the same service. |
+| `packages/server/src/ws/membership-sync.ts` | The realtime fan-out, projected per recipient. Written only with `websocket`. |
+| `packages/client/src/app/invite/page.tsx` | The public invite page, at `/invite/?id=<id>`. |
+| `packages/client/src/app/(protected)/members/page.tsx` | The members screen. |
+
+Design points worth knowing before you change any of it:
+
+- **better-auth's organization plugin stays installed** for its tables and for
+  the server-side `auth.api.createOrganization` the signup hook calls, but every
+  one of its HTTP endpoints answers **404**. Those endpoints write better-auth's
+  `member` row and never the app's mirror, and they accept roles the app's own
+  rules refuse — each was a way around those rules. A generated test hits all of
+  them against the real library.
+- **The mirror grants access. It is written last and deleted first**, so a crash
+  mid-operation always leaves *less* access than intended, and re-running the
+  operation finishes the job.
+- **`owner` is reachable only by transfer** — never by an invitation or a role
+  update — and a workspace can never be left with zero owners.
+- **A foreign or cross-tenant id answers 404 before any permission is checked.**
+  A 403 would confirm the id exists somewhere.
+- **Invitations carry 96 CSPRNG bits** and are accepted on an email match rather
+  than a verified address, so a self-host with no mail transport can still
+  invite people — the UI shows a copyable link when a send fails.
+- **Every request names its tenant.** An explicit tenant the caller is not in is
+  404 and never falls back; a stale session default does fall back. Switching
+  tenants in the client is a full page load, and everything cached is keyed by
+  tenant.
+
+With `websocket` off the membership events publish into a no-op, and the members
+screen will not live-refresh. Everything else works.
 
 ---
 

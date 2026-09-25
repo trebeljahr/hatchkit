@@ -1,0 +1,312 @@
+/*
+ * ws/membership-sync.ts — the realtime fan-out, projected per recipient.
+ *
+ * Rule 7 lives here. Every other surface (the tRPC routers, the REST
+ * routes) projects a response for the one caller that asked for it. A
+ * broadcast has many recipients at once, so the projection has to run
+ * once per recipient or the least privileged socket in the room receives
+ * the most privileged payload. One `JSON.stringify` reused across a room
+ * is the single most tempting optimisation in this file and the one that
+ * breaks it.
+ *
+ * This module owns no socket layer of its own. It rides on the starter's
+ * `RoomManager`: `attachMembershipSync()` hooks the same `WebSocketServer`
+ * `setupWebSocket()` returns, the sockets it registers are the ones the
+ * upgrade handler already stamped with `userId`, and every send goes out
+ * through `roomManager.send()` so the readyState check stays in one place.
+ * Envelopes travel as the protocol's existing `state-update` frame, so an
+ * older client that does not know this channel ignores them instead of
+ * erroring.
+ */
+
+import type { WebSocket, WebSocketServer } from "ws";
+import {
+  canSeeRecordOf,
+  projectRecord,
+  type WorkspaceMembership,
+} from "@starter/shared";
+import {
+  setMembershipPublisher,
+  type MembershipEvent,
+} from "../services/membership/events.js";
+import { listMemberships } from "../services/membership/mirror.js";
+import { roomManager } from "./handler.js";
+
+/* ── What travels ───────────────────────────────────────────────────── */
+
+/**
+ * The record half of an event. `authorId` is mandatory because it is the
+ * only thing the contract's projection helpers can key on — a record
+ * without one cannot be judged and must be addressed explicitly instead
+ * (see `SyncAudience`).
+ */
+export interface SyncRecord {
+  authorId: string;
+  [key: string]: unknown;
+}
+
+/**
+ * The fields nulled out for a viewer who may see the row but not its
+ * inside. Rename these to your domain's sensitive fields — this list and
+ * the one the REST/tRPC read paths use must name the same fields, or the
+ * live update will show what the page load hid.
+ *
+ * Withheld means `null`, never `0`: the contract's `projectRecord()`
+ * enforces that, which is why this file never nulls a field by hand.
+ */
+export const SENSITIVE_RECORD_KEYS: readonly string[] = ["amount", "notes"];
+
+/**
+ * An event is an open set on purpose: an app adds its own kinds. The
+ * `default` arm of `projectSyncEventFor()` decides what happens to a kind
+ * this file has never heard of, and it fails closed.
+ */
+export interface WorkspaceSyncEvent {
+  readonly kind: string;
+  /** Present when the event carries the record itself. */
+  readonly record?: SyncRecord;
+  /** Present when the event names its author without carrying the record. */
+  readonly authorId?: string;
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Who an author-less event is about. A bulk import and a deletion whose
+ * row is already gone both have nobody to read an `authorId` off, so the
+ * caller states it here.
+ *
+ * Omitting it is not an error — it just means the event reaches only the
+ * members who may see everybody's records. That is the safe default: the
+ * opposite default (reach everybody when the author is unknown) turns
+ * every forgotten `audience` argument into a silent leak of a colleague's
+ * row to somebody whose `canViewOthersRecords` is false, and nothing in
+ * the app would ever report it.
+ */
+export interface SyncAudience {
+  authorId?: string;
+}
+
+/**
+ * Every envelope names its workspace. A client that switched tenants
+ * between the publish and the delivery can drop what it no longer wants;
+ * without this field it would merge another workspace's row into the
+ * screen it is looking at.
+ */
+export type WorkspaceSyncEnvelope = {
+  channel: "workspace-sync";
+  workspaceId: string;
+  event: WorkspaceSyncEvent;
+};
+
+/* ── The per-recipient projection ───────────────────────────────────── */
+
+/** The author this event is about, or `null` when nothing names one. */
+function authorOf(event: WorkspaceSyncEvent, audience?: SyncAudience): string | null {
+  const fromRecord = event.record?.authorId;
+  if (typeof fromRecord === "string" && fromRecord !== "") return fromRecord;
+  if (typeof event.authorId === "string" && event.authorId !== "") return event.authorId;
+  if (typeof audience?.authorId === "string" && audience.authorId !== "") {
+    return audience.authorId;
+  }
+  return null;
+}
+
+/**
+ * What `member` gets of `event`, or `null` when they get nothing at all.
+ *
+ * Three outcomes, in the order the contract defines them:
+ *   - the author themselves, and anybody with `canViewOthersSensitive`,
+ *     get the event unchanged;
+ *   - a member with `canViewOthersRecords` but not the sensitive flag
+ *     gets it with the sensitive fields nulled;
+ *   - a member with neither gets `null`, and is never sent anything —
+ *     not an empty row, not a tombstone. Delivering a stripped shell
+ *     would still tell them that somebody else did something just now.
+ */
+export function projectSyncEventFor(
+  member: WorkspaceMembership,
+  event: WorkspaceSyncEvent,
+  audience?: SyncAudience,
+): WorkspaceSyncEvent | null {
+  switch (event.kind) {
+    case "record.created":
+    case "record.updated":
+    case "record.deleted": {
+      const authorId = authorOf(event, audience);
+      if (authorId === null) {
+        // Nobody named an author. Reach only the members who may see
+        // everybody's records — see `SyncAudience` for why this is the
+        // default rather than reaching everybody.
+        return member.canViewOthersRecords ? event : null;
+      }
+      if (!canSeeRecordOf(member, authorId)) return null;
+      const record = event.record;
+      // A deletion carries no fields to strip, so there is nothing to
+      // project once the row's existence is allowed through.
+      if (!record) return event;
+      const projected = projectRecord(member, record, SENSITIVE_RECORD_KEYS);
+      if (!projected) return null;
+      return { ...event, record: projected };
+    }
+
+    case "membership.changed":
+    case "membership.removed":
+      // Roster events name no record. Everybody in the workspace already
+      // sees the member list, so these go out unprojected.
+      return event;
+
+    default:
+      // An unknown kind reaches only members with FULL visibility. Do not
+      // "improve" this to a pass-through: an event added later that
+      // carries a record would then reach every socket in the workspace
+      // unprojected, and the leak would look exactly like it working.
+      //
+      // A new kind that carries a record MUST be added to the first arm
+      // of this switch. Until it is, it under-delivers — which shows up
+      // as a missing live update somebody reports, not as a disclosure
+      // nobody ever notices.
+      return member.canViewOthersRecords && member.canViewOthersSensitive ? event : null;
+  }
+}
+
+/* ── The socket registry ────────────────────────────────────────────── */
+
+type IdentifiedSocket = WebSocket & { userId?: string; displayName?: string };
+
+/**
+ * userId -> sockets. Keyed by user rather than by workspace on purpose:
+ * membership is read fresh from the mirror on every publish, so this map
+ * must never become a second, stale answer to "who is in this workspace".
+ */
+const socketsByUser = new Map<string, Set<IdentifiedSocket>>();
+
+export function registerSyncSocket(userId: string, socket: WebSocket): void {
+  let sockets = socketsByUser.get(userId);
+  if (!sockets) {
+    sockets = new Set<IdentifiedSocket>();
+    socketsByUser.set(userId, sockets);
+  }
+  sockets.add(socket as IdentifiedSocket);
+}
+
+export function unregisterSyncSocket(userId: string, socket: WebSocket): void {
+  const sockets = socketsByUser.get(userId);
+  if (!sockets) return;
+  sockets.delete(socket as IdentifiedSocket);
+  if (sockets.size === 0) socketsByUser.delete(userId);
+}
+
+/**
+ * Wire this fan-out onto the server the starter already built:
+ *
+ *   const wss = setupWebSocket(server);
+ *   attachMembershipSync(wss);
+ *   installMembershipPublisher();
+ *
+ * A second `connection` listener is additive, so the room protocol keeps
+ * working untouched. Anonymous sockets are skipped — an unauthenticated
+ * connection has no membership to project against and must never be
+ * registered under a guessed id.
+ */
+export function attachMembershipSync(wss: WebSocketServer): void {
+  wss.on("connection", (socket: WebSocket) => {
+    const userId = (socket as IdentifiedSocket).userId;
+    if (!userId) return;
+    registerSyncSocket(userId, socket);
+    socket.on("close", () => {
+      unregisterSyncSocket(userId, socket);
+    });
+  });
+}
+
+function deliver(userId: string, envelope: WorkspaceSyncEnvelope): void {
+  const sockets = socketsByUser.get(userId);
+  if (!sockets) return;
+  for (const socket of sockets) {
+    // Through the RoomManager, not `socket.send`: it owns the readyState
+    // check, and a send to a half-closed socket throws.
+    roomManager.send(socket, { type: "state-update", payload: { ...envelope } });
+  }
+}
+
+/* ── Publishing ─────────────────────────────────────────────────────── */
+
+/**
+ * Fan `event` out to one workspace, projected per recipient.
+ *
+ * The membership list is read FRESH on every publish and never cached. A
+ * removal that landed a second ago has already deleted the mirror row
+ * (Rule 1 deletes the mirror first, precisely so that it stops granting
+ * access first), so re-reading here is what stops the removed person's
+ * still-open socket receiving the next event. A module-level member cache
+ * — even a one-second one — reopens exactly that window.
+ */
+export async function publishToWorkspace(
+  workspaceId: string,
+  event: WorkspaceSyncEvent,
+  audience?: SyncAudience,
+): Promise<void> {
+  const members = await listMemberships(workspaceId);
+  for (const member of members) {
+    const sockets = socketsByUser.get(member.userId);
+    if (!sockets || sockets.size === 0) continue;
+    const projected = projectSyncEventFor(member, event, audience);
+    if (!projected) continue;
+    deliver(member.userId, { channel: "workspace-sync", workspaceId, event: projected });
+  }
+}
+
+/**
+ * Address one person directly, bypassing the workspace fan-out.
+ *
+ * Unprojected on purpose: the only caller is a `membership.removed`, and
+ * an event about somebody's own membership carries nothing of anybody
+ * else's. Do not reach for this to "make sure a member gets an update" —
+ * anything about a record goes through `publishToWorkspace`.
+ */
+export function publishToUser(
+  userId: string,
+  workspaceId: string,
+  event: WorkspaceSyncEvent,
+): void {
+  deliver(userId, { channel: "workspace-sync", workspaceId, event });
+}
+
+function fanOut(workspaceId: string, event: WorkspaceSyncEvent): void {
+  // The publisher signature is synchronous: the service must not wait on
+  // a socket write, and a failed fan-out must not roll back a membership
+  // change that is already committed.
+  void publishToWorkspace(workspaceId, event).catch((error: unknown) => {
+    console.error("[membership-sync] fan-out failed", error);
+  });
+}
+
+/**
+ * Hand the membership service its publisher. Call once at boot, after
+ * `attachMembershipSync()`. Until this runs, `publishMembershipEvent()`
+ * is a no-op — which is what keeps the service free of any `ws/` import
+ * on a project scaffolded without the websocket feature.
+ */
+export function installMembershipPublisher(): void {
+  setMembershipPublisher((event: MembershipEvent) => {
+    if (event.kind === "membership.removed") {
+      // Addressed DIRECTLY, and first. The workspace fan-out reads the
+      // mirror, and the removed person's row is already gone from it, so
+      // a `publishToWorkspace` would never reach them. They are the one
+      // client that most needs to hear this: their open screens are
+      // still showing a workspace they no longer belong to.
+      publishToUser(event.userId, event.workspaceId, {
+        kind: "membership.removed",
+        userId: event.userId,
+      });
+      // Everybody still in the workspace needs their member list redrawn.
+      fanOut(event.workspaceId, {
+        kind: "membership.changed",
+        actorId: event.userId,
+      });
+      return;
+    }
+
+    fanOut(event.workspaceId, { kind: "membership.changed", actorId: event.actorId });
+  });
+}

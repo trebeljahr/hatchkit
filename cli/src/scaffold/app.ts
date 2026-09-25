@@ -442,6 +442,30 @@ async function runScaffoldSteps(
     modifications.push("next.config.ts: output 'standalone' → 'export'");
   }
 
+  // Workspaces — tenants, members, roles, invitations. Purely ADDITIVE:
+  // nothing in the starter imports it, so an unselected project has
+  // nothing to strip. That is why this is an `if selected → write`
+  // rather than the `if !selected → remove` shape every feature above
+  // uses, and why it cannot leave a dangling import behind. The same
+  // applyWorkspacesFeature runs from `hatchkit update`, so the two
+  // paths produce byte-identical files.
+  if (config.features.includes("workspaces")) {
+    const { applyWorkspacesFeature, detectTargets } = await import(
+      "../features/workspaces/index.js"
+    );
+    const result = applyWorkspacesFeature({
+      projectDir: outputDir,
+      projectName: config.name,
+      targets: detectTargets(outputDir, config.features),
+    });
+    modifications.push(
+      `workspaces: ${result.written.length} file(s), wired ${result.patched.length} existing file(s)`,
+    );
+    for (const step of result.nextSteps) {
+      modifications.push(`workspaces next step: ${step}`);
+    }
+  }
+
   // Newsletter scaffolding — Listmonk+SES subscribe/confirm pipeline,
   // /sub pages, and CLI sender scripts. Kept by default; stripped
   // when the user didn't opt into the mailing-list intent.

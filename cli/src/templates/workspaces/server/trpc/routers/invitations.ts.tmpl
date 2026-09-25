@@ -1,0 +1,92 @@
+/*
+ * invitations.ts — the typed API for inviting people into a workspace.
+ *
+ * One line per procedure over `services/membership`. Two of the five are
+ * deliberately NOT workspace-scoped; each says why below, and both are
+ * load-bearing: scope them like the rest and the invite link stops
+ * working for exactly the people it was mailed to.
+ */
+
+import { z } from "zod";
+import { ASSIGNABLE_ROLES } from "@starter/shared";
+import { protectedProcedure, publicProcedure, router } from "../trpc.js";
+import { toTRPCError, workspaceInput, workspaceProcedure } from "../workspace-procedure.js";
+import { env } from "../../config/env.js";
+import {
+  acceptInvitation,
+  cancelInvitation,
+  createInvitation,
+  getInvitationPreview,
+  listInvitations,
+} from "../../services/membership/index.js";
+
+/** `owner` is unreachable by invitation — ownership moves only by transfer. */
+const assignableRole = z.enum(ASSIGNABLE_ROLES);
+
+const invitationIdInput = z.object({ invitationId: z.string() });
+
+export const invitationsRouter = router({
+  list: workspaceProcedure
+    .input(workspaceInput)
+    .query(({ ctx }) => listInvitations(ctx.actor).catch(toTRPCError)),
+
+  create: workspaceProcedure
+    .input(workspaceInput.extend({ email: z.email(), role: assignableRole }))
+    .mutation(({ ctx, input }) =>
+      createInvitation({
+        actor: ctx.actor,
+        email: input.email,
+        role: input.role,
+        // The link's host comes from the SERVER's own configuration, never
+        // from client input. A client-supplied frontend URL lets anybody
+        // who may invite send a genuine invitation — from your domain,
+        // naming your workspace — whose link points at a host they
+        // control, and the invitee has no way to tell. Read it here and
+        // the value cannot be influenced by the request at all.
+        frontendUrl: env.FRONTEND_URL,
+      }).catch(toTRPCError),
+    ),
+
+  cancel: workspaceProcedure
+    .input(workspaceInput.extend({ invitationId: z.string() }))
+    .mutation(({ ctx, input }) =>
+      cancelInvitation({ actor: ctx.actor, invitationId: input.invitationId }).catch(
+        toTRPCError,
+      ),
+    ),
+
+  /**
+   * PUBLIC on purpose: the invite page is reached signed out, from a
+   * link in an email, and it has to be able to say whose workspace the
+   * link is for before the visitor has an account. The service decides
+   * what a signed-out or wrong-account visitor may learn — this
+   * procedure hands it the viewer's email when there is one and returns
+   * whatever it allows.
+   */
+  preview: publicProcedure
+    .input(invitationIdInput)
+    .query(({ ctx, input }) =>
+      getInvitationPreview({
+        invitationId: input.invitationId,
+        viewerEmail: ctx.user?.email ?? null,
+      }).catch(toTRPCError),
+    ),
+
+  /**
+   * Signed in, but NOT workspace-scoped: the accepter is not a member of
+   * the workspace yet, so resolving a membership first would refuse the
+   * one call whose whole job is to create that membership. The proof
+   * here is possession of the invitation id plus a case-insensitive
+   * match against the invited address (rule 5) — both checked inside the
+   * service, which also owns the write order that keeps a crash on the
+   * safe side (rule 1).
+   */
+  accept: protectedProcedure
+    .input(invitationIdInput)
+    .mutation(({ ctx, input }) =>
+      acceptInvitation({
+        invitationId: input.invitationId,
+        user: { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name },
+      }).catch(toTRPCError),
+    ),
+});

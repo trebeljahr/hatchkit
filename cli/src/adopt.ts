@@ -1740,6 +1740,11 @@ async function editAdoptStep(
         { name: "stripe", value: "stripe", checked: plan.features.includes("stripe") },
         { name: "analytics", value: "analytics", checked: plan.features.includes("analytics") },
         { name: "s3", value: "s3", checked: plan.features.includes("s3") },
+        {
+          name: "workspaces",
+          value: "workspaces",
+          checked: plan.features.includes("workspaces"),
+        },
         { name: "desktop", value: "desktop", checked: plan.features.includes("desktop") },
         { name: "mobile", value: "mobile", checked: plan.features.includes("mobile") },
       ],

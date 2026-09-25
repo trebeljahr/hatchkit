@@ -1,0 +1,75 @@
+/*
+ * members.ts — the typed API for the people in a workspace.
+ *
+ * One line per procedure over `services/membership`. In particular the
+ * target of every one of these calls is looked up INSIDE the actor's own
+ * workspace by the service, so a foreign or cross-tenant user id is
+ * NOT_FOUND before any permission is considered (rule 4). Adding a
+ * lookup here — finding the member first and checking the workspace
+ * afterwards — is how a FORBIDDEN starts confirming that an id exists in
+ * somebody else's workspace.
+ */
+
+import { z } from "zod";
+import { ASSIGNABLE_ROLES } from "@starter/shared";
+import { router } from "../trpc.js";
+import { toTRPCError, workspaceInput, workspaceProcedure } from "../workspace-procedure.js";
+import {
+  listMembers,
+  removeMember,
+  updateMemberCapabilities,
+  updateMemberRole,
+} from "../../services/membership/index.js";
+
+/**
+ * `owner` is absent from `ASSIGNABLE_ROLES` on purpose, so this schema
+ * rejects it at the edge: ownership moves only through
+ * `workspaces.transferOwnership`, which promotes before it demotes and
+ * therefore never leaves a workspace with zero owners (rule 2).
+ */
+const assignableRole = z.enum(ASSIGNABLE_ROLES);
+
+const targetInput = workspaceInput.extend({ targetUserId: z.string() });
+
+export const membersRouter = router({
+  list: workspaceProcedure
+    .input(workspaceInput)
+    .query(({ ctx }) => listMembers(ctx.actor).catch(toTRPCError)),
+
+  updateRole: workspaceProcedure
+    .input(targetInput.extend({ role: assignableRole }))
+    .mutation(({ ctx, input }) =>
+      updateMemberRole({
+        actor: ctx.actor,
+        targetUserId: input.targetUserId,
+        role: input.role,
+      }).catch(toTRPCError),
+    ),
+
+  /**
+   * Separate from `updateRole` because a role change never grants a
+   * visibility flag (rule 3). Widening what somebody may SEE is always a
+   * deliberate second call, never a side effect of promoting them.
+   */
+  updateCapabilities: workspaceProcedure
+    .input(
+      targetInput.extend({
+        canViewOthersRecords: z.boolean().optional(),
+        canViewOthersSensitive: z.boolean().optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) =>
+      updateMemberCapabilities({
+        actor: ctx.actor,
+        targetUserId: input.targetUserId,
+        canViewOthersRecords: input.canViewOthersRecords,
+        canViewOthersSensitive: input.canViewOthersSensitive,
+      }).catch(toTRPCError),
+    ),
+
+  remove: workspaceProcedure
+    .input(targetInput)
+    .mutation(({ ctx, input }) =>
+      removeMember({ actor: ctx.actor, targetUserId: input.targetUserId }).catch(toTRPCError),
+    ),
+});

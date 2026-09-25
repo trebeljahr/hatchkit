@@ -1,0 +1,244 @@
+/*
+ * members.ts — reading and changing who is in a workspace.
+ *
+ * Four operations, each one the single place its change happens. The
+ * tRPC router and the REST route are one line each over these functions,
+ * so a rule enforced here cannot be skipped by picking the other
+ * transport.
+ *
+ * Two orderings in this file are load-bearing and commented where they
+ * happen: the mirror is written LAST on a grant and deleted FIRST on a
+ * removal, and every last-owner question is asked before the write, never
+ * after it.
+ */
+
+import {
+  MEMBERSHIP_REFUSALS,
+  capabilitiesForRole,
+  isAssignableRole,
+  type AssignableRole,
+  type WorkspaceMembership,
+  type WorkspaceRole,
+} from "@starter/shared";
+import { WorkspaceMember } from "../../models/WorkspaceMember.js";
+import { badRequest, forbidden } from "./errors.js";
+import { publishMembershipEvent } from "./events.js";
+import { countOwners, idMatches, listMemberships, membersCollection } from "./mirror.js";
+import {
+  assertCanManageMembers,
+  requireMemberOfActorWorkspace,
+  type Actor,
+} from "./permissions.js";
+
+export interface MemberView {
+  userId: string;
+  workspaceId: string;
+  email: string;
+  name: string;
+  role: WorkspaceRole;
+  canViewOthersRecords: boolean;
+  canViewOthersSensitive: boolean;
+  createdAt: string;
+  isSelf: boolean;
+}
+
+function toMemberView(m: WorkspaceMembership, actor: Actor): MemberView {
+  return {
+    userId: m.userId,
+    workspaceId: m.workspaceId,
+    email: m.email,
+    name: m.name,
+    role: m.role,
+    canViewOthersRecords: m.canViewOthersRecords,
+    canViewOthersSensitive: m.canViewOthersSensitive,
+    createdAt: m.createdAt,
+    // The client renders the row differently for the caller — no "remove"
+    // button, a "leave workspace" action instead — and deciding that here
+    // keeps every surface's answer identical.
+    isSelf: m.userId === actor.userId,
+  };
+}
+
+/**
+ * The roster of the actor's own workspace.
+ *
+ * Open to every member on purpose. The roster is who you share a tenant
+ * with, not somebody's work: `canViewOthersRecords` gates the RECORDS a
+ * colleague authored, and conflating the two would leave a plain member
+ * unable to see who they are about to hand a record to.
+ */
+export async function listMembers(actor: Actor): Promise<MemberView[]> {
+  const memberships = await listMemberships(actor.workspaceId);
+  return memberships.map((m) => toMemberView(m, actor));
+}
+
+/**
+ * Change somebody's role inside the actor's workspace.
+ *
+ * `owner` is not reachable from here at any cost — it is handed over by
+ * `transferOwnership`, which promotes before it demotes so the workspace
+ * is never without an owner.
+ */
+export async function updateMemberRole(input: {
+  actor: Actor;
+  targetUserId: string;
+  role: AssignableRole;
+}): Promise<MemberView> {
+  const { actor, targetUserId } = input;
+  assertCanManageMembers(actor);
+
+  // The static type says `AssignableRole`, but a REST caller sends JSON
+  // and a tRPC client can be a curl command. Validate at runtime or the
+  // string "owner" walks straight into `$set` and creates a second owner
+  // nobody handed the workspace to (Rule 3).
+  if (!isAssignableRole(input.role)) {
+    throw badRequest(MEMBERSHIP_REFUSALS.ownerNotAssignable);
+  }
+  const role: AssignableRole = input.role;
+
+  // Rule 4: scoped lookup first. A foreign id is NOT_FOUND here, before
+  // any permission or state check can confirm that it exists.
+  const target = await requireMemberOfActorWorkspace(actor, targetUserId);
+
+  if (target.role === "owner") {
+    // Asked BEFORE the write. Counting afterwards and rolling back leaves
+    // a window in which the workspace has no owner at all (Rule 2).
+    const owners = await countOwners(actor.workspaceId);
+    if (owners <= 1) {
+      throw forbidden(MEMBERSHIP_REFUSALS.cannotDemoteLastOwner);
+    }
+  }
+
+  // Flags follow the role. `capabilitiesForRole()` carries the stored
+  // flags forward and can only ever force flags ON for an owner — which
+  // this function cannot produce. So a promotion to admin widens what
+  // somebody may DO and never what they may SEE; widening visibility
+  // stays the separate, deliberate call below.
+  const flags = capabilitiesForRole(role, target);
+
+  // better-auth's record first, the mirror second: the mirror is what
+  // grants access, so a crash between the two leaves the OLD access in
+  // place rather than a role the app cannot see (Rule 1).
+  await membersCollection().updateMany(
+    {
+      organizationId: idMatches(actor.workspaceId),
+      userId: idMatches(targetUserId),
+    },
+    { $set: { role } },
+  );
+  await WorkspaceMember.updateOne(
+    { workspaceId: actor.workspaceId, userId: targetUserId },
+    { $set: { role, ...flags } },
+  );
+
+  publishMembershipEvent({
+    kind: "membership.changed",
+    workspaceId: actor.workspaceId,
+    actorId: actor.userId,
+  });
+
+  return toMemberView({ ...target, role, ...flags }, actor);
+}
+
+/**
+ * Widen or close what one member may see of another's work.
+ *
+ * The only place a flag is ever granted deliberately. An owner's flags
+ * stay forced on whatever is passed, because `capabilitiesForRole()`
+ * decides them from the role.
+ */
+export async function updateMemberCapabilities(input: {
+  actor: Actor;
+  targetUserId: string;
+  canViewOthersRecords?: boolean;
+  canViewOthersSensitive?: boolean;
+}): Promise<MemberView> {
+  const { actor, targetUserId } = input;
+  assertCanManageMembers(actor);
+
+  const target = await requireMemberOfActorWorkspace(actor, targetUserId);
+
+  // An omitted flag keeps its stored value; only a flag the caller named
+  // moves. A missing key must never read as `false` — that would let a
+  // form that posts one checkbox silently close the other.
+  const flags = capabilitiesForRole(target.role, {
+    canViewOthersRecords:
+      input.canViewOthersRecords ?? target.canViewOthersRecords,
+    canViewOthersSensitive:
+      input.canViewOthersSensitive ?? target.canViewOthersSensitive,
+  });
+
+  await WorkspaceMember.updateOne(
+    { workspaceId: actor.workspaceId, userId: targetUserId },
+    { $set: flags },
+  );
+
+  publishMembershipEvent({
+    kind: "membership.changed",
+    workspaceId: actor.workspaceId,
+    actorId: actor.userId,
+  });
+
+  return toMemberView({ ...target, ...flags }, actor);
+}
+
+/**
+ * Take somebody out of the actor's workspace.
+ *
+ * Their own records stay. A record belongs to the workspace that paid for
+ * the work, not to the account that typed it in, and deleting a person's
+ * rows on the way out would silently rewrite last quarter's numbers.
+ */
+export async function removeMember(input: {
+  actor: Actor;
+  targetUserId: string;
+}): Promise<void> {
+  const { actor, targetUserId } = input;
+  assertCanManageMembers(actor);
+
+  if (targetUserId === actor.userId) {
+    // Leaving is `leaveWorkspace`, which has its own rules — the sole
+    // member may not leave, the last owner may not leave while anybody
+    // else remains. Removing yourself here would route around both.
+    throw forbidden(MEMBERSHIP_REFUSALS.cannotTargetSelf);
+  }
+
+  const target = await requireMemberOfActorWorkspace(actor, targetUserId);
+
+  if (target.role === "owner") {
+    const owners = await countOwners(actor.workspaceId);
+    if (owners <= 1) {
+      throw forbidden(MEMBERSHIP_REFUSALS.cannotRemoveLastOwner);
+    }
+  }
+
+  // Rule 1, the removal half: the MIRROR goes first, because the mirror
+  // is what grants access. A crash after this line leaves a better-auth
+  // `member` row that authorizes nothing, and re-running the removal
+  // finishes the job. Delete `member` first instead and a crash leaves a
+  // mirror row that still grants access to a workspace the person was
+  // just removed from.
+  await WorkspaceMember.deleteOne({
+    workspaceId: actor.workspaceId,
+    userId: targetUserId,
+  });
+  await membersCollection().deleteMany({
+    organizationId: idMatches(actor.workspaceId),
+    userId: idMatches(targetUserId),
+  });
+
+  publishMembershipEvent({
+    kind: "membership.changed",
+    workspaceId: actor.workspaceId,
+    actorId: actor.userId,
+  });
+  // Addressed to the removed person directly: the workspace fan-out is
+  // keyed on current memberships and no longer reaches them, so without
+  // this second event their open tab keeps showing a workspace it can no
+  // longer read.
+  publishMembershipEvent({
+    kind: "membership.removed",
+    workspaceId: actor.workspaceId,
+    userId: targetUserId,
+  });
+}

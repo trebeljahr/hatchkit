@@ -1,0 +1,841 @@
+/*
+ * tests/support/memory-membership.ts — an in-memory stand-in for the four
+ * collections the membership service writes.
+ *
+ * The point of this file is that the tests around it drive the REAL
+ * service functions. Rules 1 and 2 are entirely about the ORDER of two
+ * writes and about what a crash between them leaves behind; a test
+ * against a hand-rolled fake service would assert the fake's ordering and
+ * pass forever while the real one regressed. So the seam is placed as
+ * deep as it can go — underneath `mirror.ts`, at the two places it
+ * actually reaches storage:
+ *
+ *   1. `mongoose.connection.db.collection(name)`, for better-auth's
+ *      `member`, `organization`, `invitation`, `session` and `user` rows.
+ *   2. The `WorkspaceMember` model's statics, for the app's own mirror.
+ *
+ * Everything above those two lines — every query, every filter, every
+ * write order, every last-owner count — is the shipped code being
+ * evaluated for real, with no database and no network.
+ *
+ * Three things the tests need and a database would not give them:
+ *
+ *   - an operation LOG, in order, so "mirror last on a grant, mirror
+ *     first on a removal" is a direct assertion rather than an inference;
+ *   - `failWriteAt(n)`, which makes any single write throw, so a test can
+ *     crash the process mid-operation at every step in turn;
+ *   - `reseed()`, so each of those crash runs starts from the same state.
+ *
+ * An unmodelled query operator or update operator throws instead of being
+ * ignored. A fake that quietly returns "no match" for a filter it does not
+ * understand turns a real permission bug into a green test.
+ */
+
+import mongoose from "mongoose";
+import {
+  capabilitiesForRole,
+  normalizeRole,
+  type WorkspaceMembership,
+} from "@starter/shared";
+import { WorkspaceMember } from "../../models/WorkspaceMember.js";
+
+/* ── The seeded fixture ─────────────────────────────────────────────── */
+
+/** The shared workspace almost every case acts in. */
+export const WORKSPACE_ID = "ws-alpha";
+/** A second workspace `MEMBER` also belongs to, joined later than alpha. */
+export const SECOND_WORKSPACE_ID = "ws-beta";
+/** A workspace nobody from alpha is in — the cross-tenant fixture. */
+export const FOREIGN_WORKSPACE_ID = "ws-gamma";
+
+export interface FixtureUser {
+  id: string;
+  email: string;
+  name: string;
+}
+
+export const OWNER: FixtureUser = {
+  id: "user-owner",
+  email: "Olivia@Example.test",
+  name: "Olivia Owner",
+};
+export const ADMIN: FixtureUser = {
+  id: "user-admin",
+  email: "adrian@example.test",
+  name: "Adrian Admin",
+};
+export const MEMBER: FixtureUser = {
+  id: "user-member",
+  email: "mina@example.test",
+  name: "Mina Member",
+};
+/** Belongs to `FOREIGN_WORKSPACE_ID` only. */
+export const OUTSIDER: FixtureUser = {
+  id: "user-outsider",
+  email: "otto@example.test",
+  name: "Otto Outsider",
+};
+/** Belongs to nothing at all. */
+export const LONER: FixtureUser = {
+  id: "user-loner",
+  email: "lena@example.test",
+  name: "Lena Loner",
+};
+/** Invited to alpha, not yet a member. */
+export const INVITEE: FixtureUser = {
+  id: "user-invitee",
+  email: "ivan@example.test",
+  name: "Ivan Invitee",
+};
+
+/** A live invitation to alpha, addressed to `INVITEE`. */
+export const PENDING_INVITATION_ID = "invitation-alpha-pending";
+/** A live invitation to gamma — an id the alpha callers must never reach. */
+export const FOREIGN_INVITATION_ID = "invitation-gamma-pending";
+
+/**
+ * Fixed timestamps, because two of the rules are about order and a
+ * `new Date()` fixture would make "oldest membership" flap under a fast
+ * machine. Alpha is older than beta for everybody.
+ */
+const T_ALPHA_OWNER = new Date("2024-01-01T09:00:00.000Z");
+const T_ALPHA_ADMIN = new Date("2024-01-02T09:00:00.000Z");
+const T_ALPHA_MEMBER = new Date("2024-01-03T09:00:00.000Z");
+const T_BETA = new Date("2024-03-01T09:00:00.000Z");
+const T_GAMMA = new Date("2024-02-01T09:00:00.000Z");
+
+const HOUR_MS = 60 * 60 * 1000;
+
+/* ── Types ──────────────────────────────────────────────────────────── */
+
+export type Row = Record<string, unknown>;
+
+export type CollectionName =
+  | "member"
+  | "organization"
+  | "invitation"
+  | "session"
+  | "user"
+  | "item";
+
+/** "mirror" is the app's own `WorkspaceMember` collection. */
+export type Target = CollectionName | "mirror";
+
+export interface LoggedOperation {
+  target: Target;
+  op: string;
+  /** Reads never fail and never matter to the ordering rules. */
+  kind: "read" | "write";
+  filter?: unknown;
+  update?: unknown;
+}
+
+export interface MemorySnapshot {
+  [key: string]: Row[];
+}
+
+/* ── Query and update evaluation ────────────────────────────────────── */
+
+function clone(row: Row): Row {
+  return { ...row };
+}
+
+/** ObjectId, Date and primitive equality, as the driver would compare. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a instanceof Date || b instanceof Date) {
+    const at = a instanceof Date ? a.getTime() : a;
+    const bt = b instanceof Date ? b.getTime() : b;
+    return at === bt;
+  }
+  if (a === null || b === null || a === undefined || b === undefined) return a === b;
+  if (typeof a === "object" || typeof b === "object") {
+    // `idMatches()` may hand us a `mongoose.Types.ObjectId` alongside the
+    // plain string form of the same id. Compare them the way the driver
+    // does rather than by reference.
+    return String(a) === String(b);
+  }
+  return a === b;
+}
+
+function isOperatorObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !(value instanceof Date) &&
+    Object.keys(value).some((key) => key.startsWith("$"))
+  );
+}
+
+function matchesFilter(row: Row, filter: Row | undefined): boolean {
+  if (!filter) return true;
+  for (const [field, condition] of Object.entries(filter)) {
+    const value = row[field];
+    if (isOperatorObject(condition)) {
+      for (const [operator, operand] of Object.entries(condition)) {
+        switch (operator) {
+          case "$in": {
+            const list = Array.isArray(operand) ? operand : [];
+            if (!list.some((candidate) => sameValue(candidate, value))) return false;
+            break;
+          }
+          case "$ne":
+            if (sameValue(operand, value)) return false;
+            break;
+          case "$exists":
+            if ((value !== undefined) !== Boolean(operand)) return false;
+            break;
+          default:
+            // Loud on purpose. Silently ignoring an operator the service
+            // relies on would widen the filter, and a widened filter in a
+            // tenant-scoped query is exactly the bug these tests exist for.
+            throw new Error(
+              `[memory-membership] unmodelled query operator "${operator}" on "${field}"`,
+            );
+        }
+      }
+      continue;
+    }
+    if (!sameValue(condition, value)) return false;
+  }
+  return true;
+}
+
+function applyUpdate(row: Row, update: Row): void {
+  for (const [operator, operand] of Object.entries(update)) {
+    if (operator === "$set" || operator === "$setOnInsert") {
+      // `$setOnInsert` on an existing row is a no-op, which is what the
+      // driver does too.
+      if (operator === "$setOnInsert") continue;
+      Object.assign(row, operand as Row);
+      continue;
+    }
+    if (operator === "$unset") {
+      for (const key of Object.keys(operand as Row)) delete row[key];
+      continue;
+    }
+    throw new Error(`[memory-membership] unmodelled update operator "${operator}"`);
+  }
+}
+
+/** The document an upsert inserts: the filter's equalities, then the update. */
+function upsertDocument(filter: Row, update: Row): Row {
+  const row: Row = {};
+  for (const [field, condition] of Object.entries(filter)) {
+    if (!isOperatorObject(condition)) row[field] = condition;
+  }
+  Object.assign(row, (update.$setOnInsert as Row) ?? {});
+  Object.assign(row, (update.$set as Row) ?? {});
+  return row;
+}
+
+function compareValues(a: unknown, b: unknown): number {
+  const av = a instanceof Date ? a.getTime() : a;
+  const bv = b instanceof Date ? b.getTime() : b;
+  if (av === bv) return 0;
+  if (av === undefined) return -1;
+  if (bv === undefined) return 1;
+  return (av as number) < (bv as number) ? -1 : 1;
+}
+
+function sortRows(rows: Row[], spec: Record<string, 1 | -1> | undefined): Row[] {
+  if (!spec) return rows;
+  const entries = Object.entries(spec);
+  return [...rows].sort((a, b) => {
+    for (const [field, direction] of entries) {
+      const verdict = compareValues(a[field], b[field]) * direction;
+      if (verdict !== 0) return verdict;
+    }
+    return 0;
+  });
+}
+
+/* ── The store ──────────────────────────────────────────────────────── */
+
+class MemoryStore {
+  readonly log: LoggedOperation[] = [];
+  private writeCount = 0;
+  private failAt: number | null = null;
+  private failMessage = "injected write failure";
+
+  /**
+   * Called before every operation touches data, so an armed failure means
+   * the write never lands — which is what a crashed process looks like.
+   * The entry is logged either way, so a test can see where it died.
+   */
+  record(entry: LoggedOperation): void {
+    this.log.push(entry);
+    if (entry.kind !== "write") return;
+    const index = this.writeCount++;
+    if (this.failAt !== null && index === this.failAt) {
+      throw new Error(
+        `[memory-membership] ${entry.target}.${entry.op} (write #${index}) ${this.failMessage}`,
+      );
+    }
+  }
+
+  armFailure(index: number, message?: string): void {
+    this.failAt = index;
+    if (message) this.failMessage = message;
+  }
+
+  clearFailure(): void {
+    this.failAt = null;
+  }
+
+  resetLog(): void {
+    this.log.length = 0;
+    this.writeCount = 0;
+  }
+}
+
+/* ── One collection ─────────────────────────────────────────────────── */
+
+export class MemoryCollection {
+  private docs: Row[] = [];
+
+  constructor(
+    private readonly store: MemoryStore,
+    readonly target: Target,
+  ) {}
+
+  /* Test-facing helpers — never logged, never failable. */
+
+  rows(): Row[] {
+    return this.docs.map(clone);
+  }
+
+  seed(rows: readonly Row[]): void {
+    this.docs = rows.map(clone);
+  }
+
+  findSync(filter: Row): Row[] {
+    return this.docs.filter((row) => matchesFilter(row, filter)).map(clone);
+  }
+
+  snapshot(): Row[] {
+    return this.docs.map(clone);
+  }
+
+  restore(rows: readonly Row[]): void {
+    this.docs = rows.map(clone);
+  }
+
+  /* Driver-shaped surface, which is what the service actually calls. */
+
+  find(filter?: Row): { toArray: () => Promise<Row[]> } {
+    this.store.record({ target: this.target, op: "find", kind: "read", filter });
+    const found = this.docs.filter((row) => matchesFilter(row, filter)).map(clone);
+    return { toArray: async () => found };
+  }
+
+  async findOne(filter?: Row): Promise<Row | null> {
+    this.store.record({ target: this.target, op: "findOne", kind: "read", filter });
+    const found = this.docs.find((row) => matchesFilter(row, filter));
+    return found ? clone(found) : null;
+  }
+
+  async countDocuments(filter?: Row): Promise<number> {
+    this.store.record({
+      target: this.target,
+      op: "countDocuments",
+      kind: "read",
+      filter,
+    });
+    return this.docs.filter((row) => matchesFilter(row, filter)).length;
+  }
+
+  async insertOne(doc: Row): Promise<{ acknowledged: true; insertedId: unknown }> {
+    this.store.record({ target: this.target, op: "insertOne", kind: "write" });
+    this.docs.push(clone(doc));
+    return { acknowledged: true, insertedId: doc._id };
+  }
+
+  async updateOne(
+    filter: Row,
+    update: Row,
+    options?: { upsert?: boolean },
+  ): Promise<{ matchedCount: number; upsertedCount: number }> {
+    this.store.record({
+      target: this.target,
+      op: "updateOne",
+      kind: "write",
+      filter,
+      update,
+    });
+    const found = this.docs.find((row) => matchesFilter(row, filter));
+    if (found) {
+      applyUpdate(found, update);
+      return { matchedCount: 1, upsertedCount: 0 };
+    }
+    if (options?.upsert) {
+      const inserted = upsertDocument(filter, update);
+      // `timestamps: true` on the mirror schema means a real upsert stamps
+      // `createdAt`. Several rules read it — "oldest membership" is a
+      // fallback that a missing timestamp would answer wrongly.
+      if (this.target === "mirror" && inserted.createdAt === undefined) {
+        inserted.createdAt = new Date();
+      }
+      this.docs.push(inserted);
+      return { matchedCount: 0, upsertedCount: 1 };
+    }
+    return { matchedCount: 0, upsertedCount: 0 };
+  }
+
+  async updateMany(filter: Row, update: Row): Promise<{ matchedCount: number }> {
+    this.store.record({
+      target: this.target,
+      op: "updateMany",
+      kind: "write",
+      filter,
+      update,
+    });
+    const found = this.docs.filter((row) => matchesFilter(row, filter));
+    for (const row of found) applyUpdate(row, update);
+    return { matchedCount: found.length };
+  }
+
+  async deleteOne(filter: Row): Promise<{ deletedCount: number }> {
+    this.store.record({ target: this.target, op: "deleteOne", kind: "write", filter });
+    const index = this.docs.findIndex((row) => matchesFilter(row, filter));
+    if (index < 0) return { deletedCount: 0 };
+    this.docs.splice(index, 1);
+    return { deletedCount: 1 };
+  }
+
+  async deleteMany(filter: Row): Promise<{ deletedCount: number }> {
+    this.store.record({ target: this.target, op: "deleteMany", kind: "write", filter });
+    const before = this.docs.length;
+    this.docs = this.docs.filter((row) => !matchesFilter(row, filter));
+    return { deletedCount: before - this.docs.length };
+  }
+
+  aggregateCount(match: Row, groupField: string): { _id: string; count: number }[] {
+    const counts = new Map<string, number>();
+    for (const row of this.docs) {
+      if (!matchesFilter(row, match)) continue;
+      const key = String(row[groupField] ?? "");
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return [...counts].map(([id, count]) => ({ _id: id, count }));
+  }
+}
+
+/* ── The mirror's chainable query ───────────────────────────────────── */
+
+class MemoryQuery<T> implements PromiseLike<T> {
+  private sortSpec: Record<string, 1 | -1> | undefined;
+
+  constructor(private readonly resolveRows: (spec?: Record<string, 1 | -1>) => T) {}
+
+  sort(spec?: Record<string, 1 | -1>): this {
+    this.sortSpec = spec;
+    return this;
+  }
+
+  /** `.lean()`, `.select()` and `.limit()` do not change what a test sees. */
+  lean(): this {
+    return this;
+  }
+
+  select(): this {
+    return this;
+  }
+
+  limit(): this {
+    return this;
+  }
+
+  exec(): Promise<T> {
+    return Promise.resolve(this.resolveRows(this.sortSpec));
+  }
+
+  then<R1 = T, R2 = never>(
+    onFulfilled?: ((value: T) => R1 | PromiseLike<R1>) | null,
+    onRejected?: ((reason: unknown) => R2 | PromiseLike<R2>) | null,
+  ): PromiseLike<R1 | R2> {
+    return this.exec().then(onFulfilled, onRejected);
+  }
+}
+
+/* ── The installed seam ─────────────────────────────────────────────── */
+
+const RAW_COLLECTIONS: readonly CollectionName[] = [
+  "member",
+  "organization",
+  "invitation",
+  "session",
+  "user",
+  "item",
+];
+
+/** The mirror model statics the service and `mirror.ts` actually call. */
+const PATCHED_STATICS = [
+  "find",
+  "findOne",
+  "countDocuments",
+  "updateOne",
+  "deleteOne",
+  "deleteMany",
+  "create",
+  "aggregate",
+] as const;
+
+export interface MemoryMembership {
+  /** Every operation performed since the last `reseed()`, oldest first. */
+  readonly log: readonly LoggedOperation[];
+  /** `"mirror.deleteOne"`, `"member.deleteMany"`, … in order. */
+  operations(): string[];
+  /** Only the operations that CHANGE data. Rules 1 and 2 read this. */
+  writes(): string[];
+  /**
+   * Make the write at `index` (into `writes()`) throw instead of landing.
+   * The crash happens BEFORE the mutation, so the state afterwards is
+   * exactly what a process killed at that instant would leave.
+   */
+  failWriteAt(index: number, message?: string): void;
+  clearFailure(): void;
+  /** Back to the seeded fixture; clears the log and any armed failure. */
+  reseed(): void;
+  snapshot(): MemorySnapshot;
+  restore(snapshot: MemorySnapshot): void;
+  /** The app's own `WorkspaceMember` rows. */
+  mirror(): MemoryCollection;
+  collection(name: CollectionName): MemoryCollection;
+  /** Put mongoose and the model back the way they were. */
+  uninstall(): void;
+}
+
+/**
+ * Install the seam. Call this BEFORE importing the service modules, and
+ * import them dynamically, so nothing can capture a real collection
+ * handle on the way in.
+ */
+export function installMemoryMembership(): MemoryMembership {
+  const store = new MemoryStore();
+  const collections = new Map<Target, MemoryCollection>();
+  for (const name of RAW_COLLECTIONS) {
+    collections.set(name, new MemoryCollection(store, name));
+  }
+  const mirror = new MemoryCollection(store, "mirror");
+  collections.set("mirror", mirror);
+
+  const collectionOf = (name: CollectionName): MemoryCollection => {
+    const found = collections.get(name);
+    if (!found) {
+      // A collection the service reaches for that this fake never seeded
+      // would otherwise silently answer "empty" to every query.
+      throw new Error(`[memory-membership] unmodelled collection "${name}"`);
+    }
+    return found;
+  };
+
+  /* mongoose.connection.db — what `mirror.ts`'s `database()` returns. */
+  const databaseFake = {
+    collection(name: string) {
+      return collectionOf(name as CollectionName);
+    },
+  };
+  const connection = mongoose.connection as unknown as Record<string, unknown>;
+  const originalDbDescriptor = Object.getOwnPropertyDescriptor(connection, "db");
+  Object.defineProperty(connection, "db", {
+    value: databaseFake,
+    configurable: true,
+    writable: true,
+  });
+
+  /* The WorkspaceMember model's statics. */
+  const model = WorkspaceMember as unknown as Record<string, unknown>;
+  const originalStatics = new Map<string, unknown>();
+  for (const name of PATCHED_STATICS) originalStatics.set(name, model[name]);
+
+  model.find = (filter?: Row) =>
+    new MemoryQuery<Row[]>((spec) => {
+      store.record({ target: "mirror", op: "find", kind: "read", filter });
+      return sortRows(mirror.findSync(filter ?? {}), spec);
+    });
+
+  model.findOne = (filter?: Row) =>
+    new MemoryQuery<Row | null>(() => {
+      store.record({ target: "mirror", op: "findOne", kind: "read", filter });
+      return mirror.findSync(filter ?? {})[0] ?? null;
+    });
+
+  model.countDocuments = async (filter?: Row) => mirror.countDocuments(filter);
+
+  model.updateOne = async (filter: Row, update: Row, options?: { upsert?: boolean }) =>
+    mirror.updateOne(filter, update, options);
+
+  model.deleteOne = async (filter: Row) => mirror.deleteOne(filter);
+
+  model.deleteMany = async (filter: Row) => mirror.deleteMany(filter);
+
+  model.create = async (doc: Row) => {
+    store.record({ target: "mirror", op: "create", kind: "write" });
+    mirror.seed([...mirror.rows(), doc]);
+    return clone(doc);
+  };
+
+  model.aggregate = async (pipeline: Row[]) => {
+    store.record({ target: "mirror", op: "aggregate", kind: "read" });
+    const match = (pipeline.find((stage) => "$match" in stage)?.$match as Row) ?? {};
+    const group = pipeline.find((stage) => "$group" in stage)?.$group as Row | undefined;
+    if (!group) {
+      throw new Error("[memory-membership] unmodelled aggregate pipeline");
+    }
+    const field = String(group._id ?? "").replace(/^\$/, "");
+    return mirror.aggregateCount(match, field);
+  };
+
+  const api: MemoryMembership = {
+    log: store.log,
+    operations: () => store.log.map((entry) => `${entry.target}.${entry.op}`),
+    writes: () =>
+      store.log
+        .filter((entry) => entry.kind === "write")
+        .map((entry) => `${entry.target}.${entry.op}`),
+    failWriteAt: (index, message) => store.armFailure(index, message),
+    clearFailure: () => store.clearFailure(),
+    reseed: () => {
+      store.clearFailure();
+      store.resetLog();
+      seedFixture(collections);
+    },
+    snapshot: () => {
+      const snapshot: MemorySnapshot = {};
+      for (const [name, collection] of collections) snapshot[name] = collection.snapshot();
+      return snapshot;
+    },
+    restore: (snapshot) => {
+      for (const [name, collection] of collections) collection.restore(snapshot[name] ?? []);
+      store.clearFailure();
+      store.resetLog();
+    },
+    mirror: () => mirror,
+    collection: collectionOf,
+    uninstall: () => {
+      for (const [name, value] of originalStatics) model[name] = value;
+      if (originalDbDescriptor) {
+        Object.defineProperty(connection, "db", originalDbDescriptor);
+      } else {
+        delete connection.db;
+      }
+    },
+  };
+
+  api.reseed();
+  return api;
+}
+
+/* ── The fixture itself ─────────────────────────────────────────────── */
+
+function mirrorRow(args: {
+  workspaceId: string;
+  user: FixtureUser;
+  role: string;
+  canViewOthersRecords?: boolean;
+  canViewOthersSensitive?: boolean;
+  createdAt: Date;
+}): Row {
+  return {
+    workspaceId: args.workspaceId,
+    userId: args.user.id,
+    email: args.user.email,
+    name: args.user.name,
+    role: args.role,
+    canViewOthersRecords: args.canViewOthersRecords ?? false,
+    canViewOthersSensitive: args.canViewOthersSensitive ?? false,
+    createdAt: args.createdAt,
+  };
+}
+
+function authMemberRow(workspaceId: string, user: FixtureUser, role: string): Row {
+  return {
+    _id: `member-${workspaceId}-${user.id}`,
+    organizationId: workspaceId,
+    userId: user.id,
+    role,
+    createdAt: new Date("2024-01-01T09:00:00.000Z"),
+  };
+}
+
+/**
+ * Alpha holds one owner, one admin and one plain member, with the flags
+ * each rule expects at rest:
+ *
+ *   - the owner's two flags are stored CLOSED on purpose, so a test can
+ *     prove `capabilitiesForRole()` forces them open on read rather than
+ *     trusting the document;
+ *   - the admin is closed, because an invited admin starts closed and a
+ *     promotion never opens anything;
+ *   - the member is closed.
+ */
+function seedFixture(collections: Map<Target, MemoryCollection>): void {
+  const mirror = collections.get("mirror");
+  const member = collections.get("member");
+  const organization = collections.get("organization");
+  const invitation = collections.get("invitation");
+  const session = collections.get("session");
+  const user = collections.get("user");
+  const item = collections.get("item");
+  if (!mirror || !member || !organization || !invitation || !session || !user || !item) {
+    throw new Error("[memory-membership] fixture is missing a collection");
+  }
+
+  mirror.seed([
+    // Stored closed; `capabilitiesForRole()` opens them on every read.
+    mirrorRow({
+      workspaceId: WORKSPACE_ID,
+      user: OWNER,
+      role: "owner",
+      createdAt: T_ALPHA_OWNER,
+    }),
+    mirrorRow({
+      workspaceId: WORKSPACE_ID,
+      user: ADMIN,
+      role: "admin",
+      createdAt: T_ALPHA_ADMIN,
+    }),
+    mirrorRow({
+      workspaceId: WORKSPACE_ID,
+      user: MEMBER,
+      role: "member",
+      createdAt: T_ALPHA_MEMBER,
+    }),
+    // MEMBER is the sole member of beta, and its owner. Beta is JOINED
+    // LATER than alpha, which is what makes "oldest membership" a real
+    // assertion rather than a coin flip.
+    mirrorRow({
+      workspaceId: SECOND_WORKSPACE_ID,
+      user: MEMBER,
+      role: "owner",
+      createdAt: T_BETA,
+    }),
+    mirrorRow({
+      workspaceId: FOREIGN_WORKSPACE_ID,
+      user: OUTSIDER,
+      role: "owner",
+      createdAt: T_GAMMA,
+    }),
+  ]);
+
+  member.seed([
+    authMemberRow(WORKSPACE_ID, OWNER, "owner"),
+    authMemberRow(WORKSPACE_ID, ADMIN, "admin"),
+    authMemberRow(WORKSPACE_ID, MEMBER, "member"),
+    authMemberRow(SECOND_WORKSPACE_ID, MEMBER, "owner"),
+    authMemberRow(FOREIGN_WORKSPACE_ID, OUTSIDER, "owner"),
+  ]);
+
+  organization.seed([
+    { _id: WORKSPACE_ID, name: "Alpha", slug: "alpha", createdAt: T_ALPHA_OWNER },
+    { _id: SECOND_WORKSPACE_ID, name: "Beta", slug: "beta", createdAt: T_BETA },
+    { _id: FOREIGN_WORKSPACE_ID, name: "Gamma", slug: "gamma", createdAt: T_GAMMA },
+  ]);
+
+  const future = new Date(Date.now() + 24 * HOUR_MS);
+  invitation.seed([
+    {
+      _id: PENDING_INVITATION_ID,
+      organizationId: WORKSPACE_ID,
+      email: INVITEE.email,
+      role: "admin",
+      status: "pending",
+      inviterId: ADMIN.id,
+      expiresAt: future,
+      createdAt: new Date("2024-04-01T09:00:00.000Z"),
+    },
+    {
+      _id: FOREIGN_INVITATION_ID,
+      organizationId: FOREIGN_WORKSPACE_ID,
+      email: "someone@gamma.test",
+      role: "member",
+      status: "pending",
+      inviterId: OUTSIDER.id,
+      expiresAt: future,
+      createdAt: new Date("2024-04-01T09:00:00.000Z"),
+    },
+  ]);
+
+  session.seed([
+    {
+      _id: "session-member",
+      userId: MEMBER.id,
+      token: "token-member",
+      activeOrganizationId: WORKSPACE_ID,
+    },
+  ]);
+
+  user.seed(
+    [OWNER, ADMIN, MEMBER, OUTSIDER, LONER, INVITEE].map((u) => ({
+      _id: u.id,
+      email: u.email,
+      name: u.name,
+    })),
+  );
+
+  // Not a membership collection at all. It stands in for the app's own
+  // records, so a test can prove that removing somebody leaves what they
+  // authored exactly where it was.
+  item.seed([
+    { _id: "item-1", workspaceId: WORKSPACE_ID, authorId: MEMBER.id, title: "Mina's first" },
+    { _id: "item-2", workspaceId: WORKSPACE_ID, authorId: MEMBER.id, title: "Mina's second" },
+    { _id: "item-3", workspaceId: WORKSPACE_ID, authorId: ADMIN.id, title: "Adrian's" },
+  ]);
+}
+
+/* ── Helpers the cases use ──────────────────────────────────────────── */
+
+/**
+ * A membership built straight from values, for the pure permission-matrix
+ * cases that have no row to read. It goes through the contract's own two
+ * normalisers, so a synthetic actor can never hold a combination the real
+ * read path would refuse to produce.
+ */
+export function syntheticMembership(args: {
+  workspaceId?: string;
+  userId?: string;
+  role: string;
+  canViewOthersRecords?: boolean;
+  canViewOthersSensitive?: boolean;
+  email?: string;
+  name?: string;
+  createdAt?: string;
+}): WorkspaceMembership {
+  const role = normalizeRole(args.role);
+  return {
+    workspaceId: args.workspaceId ?? WORKSPACE_ID,
+    userId: args.userId ?? "user-synthetic",
+    email: args.email ?? "synthetic@example.test",
+    name: args.name ?? "Synthetic",
+    role,
+    createdAt: args.createdAt ?? T_ALPHA_OWNER.toISOString(),
+    ...capabilitiesForRole(role, {
+      canViewOthersRecords: args.canViewOthersRecords === true,
+      canViewOthersSensitive: args.canViewOthersSensitive === true,
+    }),
+  };
+}
+
+/**
+ * Does a mirror row exist without better-auth's `member` row behind it?
+ *
+ * The one invariant that covers both halves of Rule 1. The app authorizes
+ * from the mirror alone, so a mirror row with no `member` row behind it is
+ * access nobody finished granting — or access a removal failed to take
+ * away. The reverse (a `member` row with no mirror row) is the SAFE side
+ * of every crash and is expected to happen.
+ */
+export function orphanedMirrorRows(memory: MemoryMembership): Row[] {
+  const authRows = memory.collection("member").rows();
+  return memory
+    .mirror()
+    .rows()
+    .filter(
+      (row) =>
+        !authRows.some(
+          (auth) =>
+            auth.organizationId === row.workspaceId && auth.userId === row.userId,
+        ),
+    );
+}

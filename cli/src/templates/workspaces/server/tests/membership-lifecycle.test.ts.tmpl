@@ -1,0 +1,411 @@
+/*
+ * membership-lifecycle.test.ts — Rules 1 and 2, pinned.
+ *
+ * Both rules are about ORDER, and both fail silently. Nothing throws when
+ * a removal deletes better-auth's `member` row before the mirror; the
+ * only symptom is a person who was removed and can still read the
+ * workspace until the second delete lands — or forever, if the process
+ * died in between. Nothing throws when a transfer demotes before it
+ * promotes either; the workspace simply has no owner, and no surface in
+ * the app can give it one back.
+ *
+ * So these cases drive the REAL service functions over an in-memory
+ * stand-in (`support/memory-membership.ts`) that records every operation
+ * in order and can make any single write fail. The queries, the filters,
+ * the last-owner counts and the write order are all the shipped code.
+ *
+ * The invariant every crash case asserts is one sentence: a mirror row
+ * never exists without better-auth's `member` row behind it. The app
+ * authorizes from the mirror alone, so that is precisely "less access
+ * than intended, never more" — for a grant (the mirror is written last)
+ * and for a removal (the mirror is deleted first) alike.
+ */
+
+import assert from "node:assert/strict";
+import test, { beforeEach } from "node:test";
+import type { WorkspaceMembership } from "@starter/shared";
+import {
+  ADMIN,
+  INVITEE,
+  MEMBER,
+  OWNER,
+  PENDING_INVITATION_ID,
+  SECOND_WORKSPACE_ID,
+  WORKSPACE_ID,
+  installMemoryMembership,
+  orphanedMirrorRows,
+} from "./support/memory-membership.js";
+
+const memory = installMemoryMembership();
+
+// Imported AFTER the seam is installed, so nothing can capture a real
+// collection handle on the way in.
+const { countOwners, getMembership } = await import("../services/membership/mirror.js");
+const { removeMember, updateMemberRole } = await import(
+  "../services/membership/members.js"
+);
+const { leaveWorkspace, transferOwnership } = await import(
+  "../services/membership/workspaces.js"
+);
+const { acceptInvitation } = await import("../services/membership/invitations.js");
+
+beforeEach(() => {
+  memory.reseed();
+});
+
+/* ── Helpers ────────────────────────────────────────────────────────── */
+
+async function actorFor(
+  userId: string,
+  workspaceId: string = WORKSPACE_ID,
+): Promise<WorkspaceMembership> {
+  const membership = await getMembership(workspaceId, userId);
+  // `throw`, not `assert.ok`: an assertion signature only narrows when
+  // the call target carries an explicit type annotation, which a default
+  // import of `node:assert` does not.
+  if (!membership) throw new Error(`fixture is missing ${userId} in ${workspaceId}`);
+  return membership;
+}
+
+/**
+ * Put the invitee into better-auth's `member` collection without a mirror
+ * row — exactly the state a crash between the two writes of an accept
+ * leaves behind.
+ *
+ * It is also the only way to drive the accept path without a database:
+ * the service hands the `member` write to better-auth's own server API
+ * (`getAuth().api.addMember`), which needs a live MongoClient. The
+ * service checks for an existing `member` row first — the check that
+ * makes a half-finished accept resumable — so seeding the row takes that
+ * branch. The case below ("a failed better-auth half...") covers the
+ * other direction: when the better-auth half cannot run, no mirror row
+ * is written at all.
+ */
+function seedAuthMemberForInvitee(): void {
+  const member = memory.collection("member");
+  member.seed([
+    ...member.rows(),
+    {
+      _id: `member-${WORKSPACE_ID}-${INVITEE.id}`,
+      organizationId: WORKSPACE_ID,
+      userId: INVITEE.id,
+      role: "admin",
+      createdAt: new Date("2024-04-02T09:00:00.000Z"),
+    },
+  ]);
+}
+
+/* ── Rule 1: the mirror is written last and deleted first ───────────── */
+
+test("a role grant writes better-auth's member row before the mirror", async () => {
+  await updateMemberRole({
+    actor: await actorFor(OWNER.id),
+    targetUserId: MEMBER.id,
+    role: "admin",
+  });
+
+  // The mirror is what grants access, so it goes LAST. Reversed, a crash
+  // between the two leaves the app believing in a role better-auth never
+  // recorded.
+  assert.deepEqual(memory.writes(), ["member.updateMany", "mirror.updateOne"]);
+});
+
+test("removing somebody deletes the mirror before better-auth's member row", async () => {
+  await removeMember({
+    actor: await actorFor(OWNER.id),
+    targetUserId: MEMBER.id,
+  });
+
+  assert.deepEqual(memory.writes(), ["mirror.deleteOne", "member.deleteMany"]);
+});
+
+test("leaving deletes the mirror before better-auth's member row", async () => {
+  await leaveWorkspace({ actor: await actorFor(MEMBER.id) });
+
+  assert.deepEqual(memory.writes(), ["mirror.deleteOne", "member.deleteMany"]);
+});
+
+test("accepting an invitation writes the mirror after better-auth's half", async () => {
+  seedAuthMemberForInvitee();
+
+  await acceptInvitation({
+    invitationId: PENDING_INVITATION_ID,
+    user: INVITEE,
+  });
+
+  const operations = memory.operations();
+  const authHalf = operations.indexOf("member.findOne");
+  const mirrorWrite = operations.indexOf("mirror.updateOne");
+  assert.ok(authHalf >= 0, "the accept must consult better-auth's member row");
+  assert.ok(
+    authHalf < mirrorWrite,
+    "the mirror must be written only after better-auth's half is settled",
+  );
+  assert.deepEqual(memory.writes(), ["mirror.updateOne", "invitation.updateOne"]);
+});
+
+test("a failed better-auth half of an accept leaves no mirror row behind", async () => {
+  // No `member` row seeded, so the service calls better-auth's server
+  // API — which throws here because no auth instance was initialised.
+  // That stands in for any failure of the first write.
+  await assert.rejects(
+    acceptInvitation({ invitationId: PENDING_INVITATION_ID, user: INVITEE }),
+  );
+
+  assert.equal(
+    await getMembership(WORKSPACE_ID, INVITEE.id),
+    null,
+    "a mirror row written before better-auth's would grant access to a membership that was never created",
+  );
+  assert.deepEqual(memory.writes(), []);
+});
+
+/* ── Rule 1: crash at every write, in turn ──────────────────────────── */
+
+interface CrashCase {
+  name: string;
+  /** Extra fixture state this operation needs. Re-applied on every run. */
+  prepare?: () => void;
+  /** Idempotent: a re-run of an already-finished operation is a no-op. */
+  run: () => Promise<void>;
+  /** The state the operation exists to reach, after the retry. */
+  settled: () => Promise<void>;
+  /** Extra invariant checked at each crash point. */
+  invariant?: () => Promise<void>;
+}
+
+const CRASH_CASES: CrashCase[] = [
+  {
+    name: "removeMember",
+    run: async () => {
+      const target = await getMembership(WORKSPACE_ID, MEMBER.id);
+      if (!target) return; // access is already revoked — nothing left to do
+      await removeMember({ actor: await actorFor(OWNER.id), targetUserId: MEMBER.id });
+    },
+    settled: async () => {
+      assert.equal(
+        await getMembership(WORKSPACE_ID, MEMBER.id),
+        null,
+        "the retry must finish revoking access",
+      );
+    },
+  },
+  {
+    name: "leaveWorkspace",
+    run: async () => {
+      const actor = await getMembership(WORKSPACE_ID, MEMBER.id);
+      if (!actor) return;
+      await leaveWorkspace({ actor });
+    },
+    settled: async () => {
+      assert.equal(await getMembership(WORKSPACE_ID, MEMBER.id), null);
+    },
+  },
+  {
+    name: "updateMemberRole",
+    run: async () => {
+      await updateMemberRole({
+        actor: await actorFor(OWNER.id),
+        targetUserId: MEMBER.id,
+        role: "admin",
+      });
+    },
+    settled: async () => {
+      const target = await actorFor(MEMBER.id);
+      assert.equal(target.role, "admin");
+    },
+    invariant: async () => {
+      // A grant writes better-auth first, so at any crash point the
+      // mirror — the thing that actually authorizes — is never ahead of
+      // better-auth's record of the same person.
+      const target = await getMembership(WORKSPACE_ID, MEMBER.id);
+      const stored = memory
+        .collection("member")
+        .findSync({ organizationId: WORKSPACE_ID, userId: MEMBER.id })[0];
+      if (!target || !stored) return;
+      assert.ok(
+        rank(target.role) <= rank(String(stored.role)),
+        "the mirror granted a higher role than better-auth ever recorded",
+      );
+    },
+  },
+  {
+    name: "acceptInvitation",
+    prepare: seedAuthMemberForInvitee,
+    run: async () => {
+      await acceptInvitation({ invitationId: PENDING_INVITATION_ID, user: INVITEE });
+    },
+    settled: async () => {
+      const joined = await getMembership(WORKSPACE_ID, INVITEE.id);
+      if (!joined) throw new Error("the retry must finish granting access");
+      assert.equal(joined.role, "admin");
+      const invitation = memory
+        .collection("invitation")
+        .findSync({ _id: PENDING_INVITATION_ID })[0];
+      assert.equal(invitation?.status, "accepted");
+    },
+  },
+  {
+    name: "transferOwnership",
+    run: async () => {
+      const actor = await getMembership(WORKSPACE_ID, OWNER.id);
+      if (!actor || actor.role !== "owner") return;
+      await transferOwnership({ actor, targetUserId: ADMIN.id });
+    },
+    settled: async () => {
+      assert.equal((await actorFor(ADMIN.id)).role, "owner");
+      assert.equal((await actorFor(OWNER.id)).role, "admin");
+      assert.equal(await countOwners(WORKSPACE_ID), 1);
+    },
+    invariant: async () => {
+      // Rule 2. Promote-then-demote means a crash can leave TWO owners,
+      // which the next successful transfer resolves. Zero owners is the
+      // state no surface in this app can undo.
+      assert.ok(
+        (await countOwners(WORKSPACE_ID)) >= 1,
+        "a crashed transfer left the workspace with no owner",
+      );
+    },
+  },
+];
+
+const ROLE_RANK: Record<string, number> = { owner: 3, admin: 2, member: 1 };
+function rank(role: string): number {
+  return ROLE_RANK[role] ?? 0;
+}
+
+for (const testCase of CRASH_CASES) {
+  test(`${testCase.name}: failing each write in turn never grants more access`, async () => {
+    memory.reseed();
+    testCase.prepare?.();
+    await testCase.run();
+    const writeCount = memory.writes().length;
+    assert.ok(writeCount > 0, "the clean run performed no writes at all");
+
+    for (let index = 0; index < writeCount; index += 1) {
+      memory.reseed();
+      testCase.prepare?.();
+      memory.failWriteAt(index);
+
+      // Not `assert.rejects` with a message: a bare string as its second
+      // argument is ambiguous and Node may read it as an error matcher.
+      let crashed = false;
+      await testCase.run().catch(() => {
+        crashed = true;
+      });
+      assert.ok(
+        crashed,
+        `write #${index} was armed to fail but the operation reported success`,
+      );
+
+      // The one invariant that covers both halves of Rule 1.
+      assert.deepEqual(
+        orphanedMirrorRows(memory),
+        [],
+        `crashing at write #${index} left a mirror row with no better-auth row behind it`,
+      );
+      await testCase.invariant?.();
+
+      // Re-running finishes the job. Where the crash already achieved the
+      // operation's purpose — a removal whose mirror delete landed — the
+      // retry refuses or returns early, and the leftover better-auth row
+      // is the harmless residue: it authorizes nothing.
+      memory.clearFailure();
+      await testCase.run();
+      await testCase.settled();
+    }
+  });
+}
+
+/* ── Rule 2: the workspace always keeps an owner ────────────────────── */
+
+test("a transfer promotes in both records before it demotes", async () => {
+  await transferOwnership({
+    actor: await actorFor(OWNER.id),
+    targetUserId: ADMIN.id,
+  });
+
+  // Promote (member, then mirror), only then demote (member, then mirror).
+  assert.deepEqual(memory.writes(), [
+    "member.updateMany",
+    "mirror.updateOne",
+    "member.updateMany",
+    "mirror.updateOne",
+  ]);
+});
+
+test("the last owner cannot leave while anybody else remains", async () => {
+  await assert.rejects(leaveWorkspace({ actor: await actorFor(OWNER.id) }), {
+    code: "FORBIDDEN",
+    message: "last-owner-cannot-leave",
+  });
+  assert.equal(await countOwners(WORKSPACE_ID), 1);
+});
+
+test("the last owner cannot be demoted", async () => {
+  await assert.rejects(
+    updateMemberRole({
+      actor: await actorFor(OWNER.id),
+      targetUserId: OWNER.id,
+      role: "admin",
+    }),
+    { code: "FORBIDDEN", message: "last-owner-cannot-be-demoted" },
+  );
+  assert.equal(await countOwners(WORKSPACE_ID), 1);
+});
+
+test("the last owner cannot be removed by an admin", async () => {
+  await assert.rejects(
+    removeMember({ actor: await actorFor(ADMIN.id), targetUserId: OWNER.id }),
+    { code: "FORBIDDEN", message: "last-owner-cannot-be-removed" },
+  );
+  assert.equal(await countOwners(WORKSPACE_ID), 1);
+  assert.ok(await getMembership(WORKSPACE_ID, OWNER.id));
+});
+
+test("an owner who has handed the workspace on may then leave", async () => {
+  const owner = await actorFor(OWNER.id);
+  await transferOwnership({ actor: owner, targetUserId: ADMIN.id });
+
+  await leaveWorkspace({ actor: await actorFor(OWNER.id) });
+
+  assert.equal(await getMembership(WORKSPACE_ID, OWNER.id), null);
+  assert.equal(await countOwners(WORKSPACE_ID), 1);
+});
+
+test("the sole member of a workspace cannot leave at all", async () => {
+  // MEMBER is the only person in the second workspace, and its owner.
+  await assert.rejects(
+    leaveWorkspace({ actor: await actorFor(MEMBER.id, SECOND_WORKSPACE_ID) }),
+    { code: "FORBIDDEN", message: "sole-member-cannot-leave" },
+  );
+  assert.ok(await getMembership(SECOND_WORKSPACE_ID, MEMBER.id));
+});
+
+/* ── Records outlive their author's membership ──────────────────────── */
+
+test("removing somebody keeps the records they authored", async () => {
+  const before = memory.collection("item").rows();
+  assert.ok(before.length > 0, "the fixture has no records to keep");
+
+  await removeMember({ actor: await actorFor(OWNER.id), targetUserId: MEMBER.id });
+
+  assert.deepEqual(
+    memory.collection("item").rows(),
+    before,
+    "a record belongs to the workspace that paid for the work, not to the account that typed it in",
+  );
+  assert.ok(
+    !memory.operations().some((operation) => operation.startsWith("item.")),
+    "the membership service must never touch the app's own records",
+  );
+});
+
+test("leaving keeps the records the departing person authored", async () => {
+  const before = memory.collection("item").rows();
+
+  await leaveWorkspace({ actor: await actorFor(MEMBER.id) });
+
+  assert.deepEqual(memory.collection("item").rows(), before);
+  assert.ok(!memory.operations().some((operation) => operation.startsWith("item.")));
+});

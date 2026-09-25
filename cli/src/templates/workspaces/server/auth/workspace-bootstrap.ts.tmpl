@@ -1,0 +1,133 @@
+/*
+ * workspace-bootstrap.ts — everybody lands in a workspace of their own.
+ *
+ * Every authorization decision in this app reads a `WorkspaceMember` row
+ * (rule 1). A signed-in person with no membership therefore has no
+ * tenant to be in: their first request resolves to nothing and the app
+ * has to either refuse them or invent a fallback. So the workspace is
+ * made once, server side, at the moment the user row appears.
+ *
+ * Wire it into the better-auth instance like this:
+ *
+ *   betterAuth({
+ *     ...,
+ *     plugins: [organization({ disableOrganizationDeletion: true })],
+ *     hooks: { before: organizationLockdown },
+ *     databaseHooks: {
+ *       user: { create: { after: bootstrapWorkspaceOnUserCreate } },
+ *     },
+ *   });
+ *
+ * WHY `disableOrganizationDeletion: true` EVEN THOUGH THE HTTP ROUTE IS
+ * ALREADY 404
+ * `organization-lockdown.ts` closes `/api/auth/organization/delete` to
+ * the network, but the plugin option closes `auth.api.deleteOrganization`
+ * as well — the same code path from inside this process, which the
+ * lockdown deliberately lets through. That matters because deleting an
+ * organization drops the tenant row and its `member` rows while the
+ * app's `WorkspaceMember` mirror stays behind. The mirror is what grants
+ * access (rule 1), so the orphans keep authorizing people into a
+ * workspace that no longer exists, and every scoped query runs against a
+ * `workspaceId` nothing owns. Removing a workspace has to delete the
+ * mirror first, which is the service layer's job, not the plugin's.
+ *
+ * WHAT MUST NOT CHANGE HERE
+ * This hook never throws. better-auth runs `user.create.after` inside
+ * the signup transaction path, and an exception out of it turns a
+ * successful account creation into a failed signup — the user row is
+ * already written, so the person cannot retry with the same address
+ * either. A workspace is recoverable (they can make one from the UI, or
+ * the next sign-in calls `ensureWorkspaceForUser`); a broken signup is
+ * not. Log and move on.
+ */
+
+import { createWorkspace, listMembershipsForUser } from "../services/membership/index.js";
+
+/**
+ * The slice of better-auth's `User` this file needs. Kept structural on
+ * purpose: the hook signature better-auth expects passes
+ * `User & Record<string, unknown>`, which satisfies this, and declaring
+ * only the three fields keeps the bootstrap from drifting when the
+ * library's user shape gains columns.
+ */
+export interface BootstrapUser {
+  id: string;
+  email: string;
+  name?: string | null;
+}
+
+/**
+ * The name a personal workspace gets. The person renames it later; this
+ * only has to be recognisable in a workspace switcher. Falls back to the
+ * local part of the address when a provider gives no name, and to a
+ * fixed word when even that is empty, because an empty workspace name
+ * renders as a blank row nobody can click.
+ */
+export function personalWorkspaceName(user: BootstrapUser): string {
+  const named = user.name?.trim();
+  if (named) return `${named}'s Workspace`;
+
+  const localPart = user.email.split("@")[0]?.trim();
+  if (localPart) return `${localPart}'s Workspace`;
+
+  return "My Workspace";
+}
+
+/**
+ * Make sure `user` is in at least one workspace, and do nothing if they
+ * already are.
+ *
+ * Safe to call again, and meant to be: a user created before this
+ * feature shipped has no membership, and calling this on sign-in gives
+ * them one without a migration. The existence check reads the mirror
+ * through the service (`listMembershipsForUser`) rather than better-auth's
+ * `member`, for the same reason everything else does — the mirror is
+ * what grants access, so the mirror is what "has a workspace" means.
+ *
+ * Returns the workspace id when it created one, `null` when it did not.
+ * Throws whatever the service throws; the hook below is the layer that
+ * swallows.
+ */
+export async function ensureWorkspaceForUser(user: BootstrapUser): Promise<string | null> {
+  const existing = await listMembershipsForUser(user.id);
+  if (existing.length > 0) return null;
+
+  // `createWorkspace` is the only sanctioned way a workspace comes into
+  // being: it writes better-auth's `organization` and `member` rows AND
+  // the `WorkspaceMember` mirror, in that order, and makes the creator
+  // the owner with both capability flags forced on (rule 3). Writing the
+  // collections here instead would produce a workspace the app cannot
+  // authorize anybody into.
+  const workspace = await createWorkspace({
+    userId: user.id,
+    name: personalWorkspaceName(user),
+  });
+
+  return workspace.id;
+}
+
+/**
+ * `databaseHooks.user.create.after`. Creates the new account's personal
+ * workspace and never lets a failure reach the signup.
+ *
+ * No active workspace is stored on the session here: the session row is
+ * written after this hook, and a stale or absent `activeOrganizationId`
+ * is already handled — `resolveWorkspaceForRequest` falls back to the
+ * person's oldest membership (rule 6), which on a fresh account is the
+ * workspace this just made.
+ */
+export async function bootstrapWorkspaceOnUserCreate(user: BootstrapUser): Promise<void> {
+  try {
+    const workspaceId = await ensureWorkspaceForUser(user);
+    if (workspaceId) {
+      console.log(`[workspaces] Created workspace ${workspaceId} for user ${user.id}`);
+    }
+  } catch (error) {
+    // Deliberately swallowed. See the file header: a throw here fails an
+    // otherwise-complete signup, and the person cannot retry with the
+    // same address because their user row already exists. They can make
+    // a workspace from the UI, and the next sign-in retries this through
+    // `ensureWorkspaceForUser`.
+    console.error(`[workspaces] Failed to bootstrap a workspace for user ${user.id}:`, error);
+  }
+}

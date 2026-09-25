@@ -1,0 +1,176 @@
+/*
+ * safe-next.ts — the `?next=` validator, and the ONLY place in the app
+ * that is allowed to decide whether a redirect target is acceptable.
+ *
+ * Why this file exists at all:
+ *
+ * The login page is the one page in __HATCHKIT_PROJECT_NAME__ that every
+ * person trusts by reflex. It is the page they were taught to check the
+ * padlock on, the page their password manager fills, the page they reach
+ * by typing the domain. An invitation link therefore hands the invitee to
+ * `/login/?next=/invite/?id=...` so they land back on the invitation after
+ * signing in — and the moment the login page forwards to whatever `next`
+ * says, that reflex becomes the attack. A link to
+ * `https://your-real-domain/login/?next=https://evil.example/login` is a
+ * phishing page the victim opened from YOUR domain, after YOUR sign-in
+ * form, with YOUR padlock in the bar. It is an open redirect, and an open
+ * redirect on a login page is a credential-harvesting funnel.
+ *
+ * So: every `?next=` in the app is read through `safeNext()` here, and
+ * nothing else validates one. If you find a second `next` check anywhere
+ * in the client, delete it and call this instead — two validators drift,
+ * and the weaker one is the one that gets exploited.
+ *
+ * The rule is an ALLOWLIST of path prefixes, not a blocklist of hostile
+ * shapes. Blocklists lose: `//evil.example`, `/\evil.example`,
+ * `/%2f%2fevil.example`, `https:/evil.example`, a tab inside the scheme —
+ * browsers normalize more spellings than any regex enumerates.
+ */
+
+/**
+ * The prefixes the workspaces feature owns. A test asserts this exact
+ * list, so adding to it here is a deliberate change with a diff to review.
+ * Extend the app's own surface through `EXTRA_SAFE_NEXT_PREFIXES` below.
+ */
+export const SAFE_NEXT_PREFIXES = [
+  "/invite",
+  "/app/members",
+  "/app/settings",
+] as const;
+
+/**
+ * ── EXTEND THE APP'S ALLOWLIST HERE ──────────────────────────────────
+ *
+ * Add your own post-login destinations to this array — for example
+ * "/members" or "/dashboard" if your routes do not sit under /app. Add
+ * only paths that are safe to land on straight after authentication:
+ * never a page that performs a side effect on load, and never a path
+ * whose own job is to redirect somewhere else (that just moves the open
+ * redirect one hop away).
+ *
+ * Keep entries without a trailing slash. Matching accepts the prefix
+ * itself, the prefix with a trailing slash, and anything below it, which
+ * covers `trailingSlash: true` in next.config.ts.
+ */
+export const EXTRA_SAFE_NEXT_PREFIXES: readonly string[] = [];
+
+/** The prefixes actually checked. Feature-owned first, app's own after. */
+export function safeNextPrefixes(): readonly string[] {
+  return [...SAFE_NEXT_PREFIXES, ...EXTRA_SAFE_NEXT_PREFIXES];
+}
+
+/** Where a `next` that fails validation lands instead. */
+export const DEFAULT_NEXT_PATH = "/dashboard/";
+
+/*
+ * A fixed, syntactically valid base for `new URL()`. It is never fetched
+ * and never rendered — it exists so the parse behaves identically during
+ * Next's Node prerender (no `window`) and in the browser. What matters is
+ * only whether the candidate STAYS on this origin once parsed; if it can
+ * move off a known-good base it can move off the real one too.
+ */
+const PARSE_BASE = "http://safe-next.invalid";
+
+/** Whitespace (including the Unicode kinds), C0 and C1 control characters. */
+const FORBIDDEN_CHARS = /[\s\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * Is this string a redirect target the app will follow?
+ *
+ * Every clause below has a browser behind it. Deleting one does not break
+ * a test that exists today — it opens a redirect that no test covers.
+ */
+export function isSafeNext(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0) return false;
+
+  // Must be a rooted path on this site. A bare "evil.example/x" is a
+  // relative path today and an absolute URL the moment anything prepends
+  // a scheme to it.
+  if (!value.startsWith("/")) return false;
+
+  // "//host" is a PROTOCOL-RELATIVE URL: the browser reads it as
+  // "https://host". It starts with "/" and it leaves the site.
+  if (value.startsWith("//")) return false;
+
+  // Backslashes: browsers normalize "\" to "/" in URLs, so "/\evil.example"
+  // and "/\\evil.example" resolve as protocol-relative. A path on this app
+  // never legitimately contains one.
+  if (value.includes("\\")) return false;
+
+  // Whitespace and control characters are stripped or ignored by URL
+  // parsers, which lets "/\tjavascript:alert(1)" and friends survive a
+  // naive prefix check and then execute after normalization.
+  if (FORBIDDEN_CHARS.test(value)) return false;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(value, PARSE_BASE);
+  } catch {
+    // An unparseable target is not one we hand to the browser.
+    return false;
+  }
+
+  // The parse is the real guard: if the candidate carried a scheme, an
+  // authority, or an escape the checks above did not spell out, the origin
+  // moved. This catches every encoding trick without enumerating them.
+  if (parsed.origin !== new URL(PARSE_BASE).origin) return false;
+
+  // Credentials in the target ("/@evil.example") would mislead a reader
+  // even on this origin.
+  if (parsed.username !== "" || parsed.password !== "") return false;
+
+  // Match on the PARSED pathname, never on the raw string: "/invite/../../x"
+  // passes a naive `startsWith("/invite")` and resolves to "/x".
+  return isAllowedPath(parsed.pathname);
+}
+
+/**
+ * Prefix match against the allowlist, tolerant of `trailingSlash: true`.
+ * "/invite" matches "/invite", "/invite/" and "/invite/anything", but NOT
+ * "/invited" — a prefix test without the boundary check below would let
+ * "/invite-attacker-page" through.
+ */
+function isAllowedPath(pathname: string): boolean {
+  return safeNextPrefixes().some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+}
+
+/**
+ * The function every caller uses. Returns the validated target, or the
+ * fallback when the candidate is missing or rejected. It never throws, so
+ * there is no reason for a caller to "just use the raw value" in a catch.
+ */
+export function safeNext(
+  value: string | null | undefined,
+  fallback: string = DEFAULT_NEXT_PATH,
+): string {
+  return isSafeNext(value) ? value : fallback;
+}
+
+/**
+ * Read `?next=` out of a query source and validate it. Accepts anything
+ * with a `get` method, so a `URLSearchParams` and Next's
+ * `ReadonlyURLSearchParams` both work without a cast.
+ */
+export function safeNextFrom(
+  params: { get(name: string): string | null } | null | undefined,
+  fallback: string = DEFAULT_NEXT_PATH,
+): string {
+  return safeNext(params?.get("next"), fallback);
+}
+
+/**
+ * Build a link that carries a `next` target — e.g.
+ * `withNextParam("/login/", "/invite/?id=abc")`.
+ *
+ * The target is validated HERE as well as on the way back out. Writing an
+ * unvalidated value into the link is how an attacker-controlled string
+ * gets stored in a database row, an email body or a QR code and comes back
+ * later through a code path that forgot to check it.
+ */
+export function withNextParam(basePath: string, target: string): string {
+  const validated = safeNext(target);
+  const separator = basePath.includes("?") ? "&" : "?";
+  return `${basePath}${separator}next=${encodeURIComponent(validated)}`;
+}

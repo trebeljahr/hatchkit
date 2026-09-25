@@ -1,0 +1,64 @@
+/*
+ * errors.ts — the refusals the membership service throws.
+ *
+ * The service is transport-free: it knows nothing about tRPC or Express.
+ * Each surface maps `MembershipError.code` onto its own status vocabulary
+ * and passes `refusal` through untouched, so a client switches on a
+ * stable string instead of parsing prose.
+ *
+ * The codes are the whole point. A FORBIDDEN confirms the id exists
+ * somewhere; a NOT_FOUND says nothing at all. Swapping one for the other
+ * at a call site turns a lookup into a cross-tenant existence oracle.
+ */
+
+import type { MembershipRefusal } from "@starter/shared";
+
+export type MembershipErrorCode =
+  | "NOT_FOUND"
+  | "FORBIDDEN"
+  | "UNAUTHORIZED"
+  | "BAD_REQUEST"
+  | "TOO_MANY_REQUESTS";
+
+export class MembershipError extends Error {
+  readonly code: MembershipErrorCode;
+  readonly refusal?: MembershipRefusal;
+
+  constructor(code: MembershipErrorCode, refusal?: MembershipRefusal) {
+    // The message is the refusal code when there is one, so a log line
+    // carries the same string the client switched on.
+    super(refusal ?? code);
+    this.name = "MembershipError";
+    this.code = code;
+    this.refusal = refusal;
+  }
+}
+
+/**
+ * A row that is not in the caller's own workspace — or not anywhere.
+ *
+ * Deliberately carries NO refusal. A refusal code on a NOT_FOUND would
+ * leak which of "no such id" and "not your workspace" happened, and that
+ * difference is exactly what an attacker probing ids wants to learn.
+ */
+export function notFound(): MembershipError {
+  return new MembershipError("NOT_FOUND");
+}
+
+/**
+ * A real row of the caller's OWN workspace that the caller may not act
+ * on. Only reachable after a workspace-scoped lookup succeeded.
+ */
+export function forbidden(refusal: MembershipRefusal): MembershipError {
+  return new MembershipError("FORBIDDEN", refusal);
+}
+
+/** Input the service will not act on, whatever the caller's permissions. */
+export function badRequest(refusal: MembershipRefusal): MembershipError {
+  return new MembershipError("BAD_REQUEST", refusal);
+}
+
+/** A rate limit the caller will pass again later. */
+export function tooManyRequests(refusal: MembershipRefusal): MembershipError {
+  return new MembershipError("TOO_MANY_REQUESTS", refusal);
+}

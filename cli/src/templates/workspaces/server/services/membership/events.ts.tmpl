@@ -1,0 +1,74 @@
+/*
+ * events.ts — the one seam between the membership service and the
+ * realtime fan-out.
+ *
+ * The websocket feature is optional: a project scaffolded without it has
+ * no `src/ws/` directory at all. So the service must never `import` from
+ * `ws/` — it would stop compiling the moment somebody scaffolds without
+ * realtime. Instead the ws layer reaches IN, calling
+ * `setMembershipPublisher()` at boot. With no ws layer installed the
+ * publisher stays a no-op and every membership write still lands.
+ *
+ * If you replace this indirection with a direct import of the ws module,
+ * the non-websocket build breaks at compile time, and the websocket build
+ * gains an import cycle (ws → service → ws).
+ */
+
+/**
+ * What the fan-out is told. Deliberately thin: an id and a workspace, no
+ * member payload. Rule 7 says the fan-out projects PER RECIPIENT from
+ * memberships read fresh on each publish, so shipping a rendered member
+ * list through this event would hand every recipient the same rows —
+ * including the ones some of them may not see.
+ */
+export type MembershipEvent =
+  | {
+      kind: "membership.changed";
+      workspaceId: string;
+      actorId: string;
+      /**
+       * Optional direct addressee. A workspace-wide fan-out reaches the
+       * sockets that are already subscribed to `workspaceId`; somebody
+       * who has just joined (or is about to be dropped) may not be on
+       * that list yet. When this is set, deliver to this user's sockets
+       * as well, whatever they are subscribed to.
+       */
+      recipientId?: string;
+    }
+  | { kind: "membership.removed"; workspaceId: string; userId: string };
+
+export type MembershipPublisher = (event: MembershipEvent) => void;
+
+/** With no ws layer installed, publishing is a no-op — never an error. */
+const NO_PUBLISHER: MembershipPublisher = () => {};
+
+let publisher: MembershipPublisher = NO_PUBLISHER;
+
+/**
+ * Installed once, at boot, by `src/ws/membership-sync.ts` when the
+ * websocket feature is present. Calling it again replaces the publisher,
+ * which is what the tests rely on to capture events.
+ */
+export function setMembershipPublisher(fn: MembershipPublisher): void {
+  publisher = fn;
+}
+
+/** Test-only. Puts the no-op publisher back so cases cannot leak. */
+export function resetMembershipPublisher(): void {
+  publisher = NO_PUBLISHER;
+}
+
+/**
+ * Announce a membership change. The write it describes has ALREADY
+ * landed in the database by the time this is called, so a subscriber
+ * that throws must not turn a successful change into a failed request —
+ * the caller would retry an operation that already succeeded. Log and
+ * carry on; the client reconciles on its next query either way.
+ */
+export function publishMembershipEvent(event: MembershipEvent): void {
+  try {
+    publisher(event);
+  } catch (error) {
+    console.error("[membership] event publisher threw, event dropped:", error);
+  }
+}

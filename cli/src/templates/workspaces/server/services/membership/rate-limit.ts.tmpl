@@ -1,0 +1,127 @@
+/*
+ * rate-limit.ts — how many invitations one person may send per hour.
+ *
+ * An invitation is an unauthenticated bearer link that lands in somebody
+ * else's inbox. Without a ceiling, one compromised admin account turns
+ * the instance into a spam relay sending mail that carries the
+ * workspace's own From address. The cap is per INVITER, not per
+ * workspace: a workspace cap would let one bad account spread its sends
+ * across workspaces, and would let one noisy colleague lock out everyone
+ * else in the same workspace.
+ *
+ * Redis is optional in this starter (`getRedis()` returns null when
+ * REDIS_URL is unset), so there are two counters. The Redis one is
+ * shared by every process behind the load balancer; the in-process one
+ * is a fallback that still stops the obvious abuse on a single-container
+ * self-host. Removing the fallback would make the limit vanish entirely
+ * on exactly the deployments that have no mail transport to notice.
+ */
+
+import type { Redis } from "ioredis";
+import { INVITES_PER_INVITER_PER_HOUR, MEMBERSHIP_REFUSALS } from "@starter/shared";
+import { getRedis } from "../../db/redis.js";
+import { tooManyRequests } from "./errors.js";
+
+const WINDOW_MS = 60 * 60 * 1000;
+const WINDOW_SECONDS = WINDOW_MS / 1000;
+
+const REDIS_KEY_PREFIX = "membership:invites:";
+
+/** Sweep the fallback map once it holds more inviters than this. */
+const SWEEP_THRESHOLD = 512;
+
+/** inviterId → send timestamps inside the current window. */
+const sends = new Map<string, number[]>();
+
+/**
+ * Throws `tooManyRequests(inviteRateLimit)` when the inviter has already
+ * sent `INVITES_PER_INVITER_PER_HOUR` invitations in the last hour.
+ * Call it BEFORE any write: a refused invitation must leave no row
+ * behind, or the pending cap fills up with invitations nobody sent.
+ */
+export async function assertInviteRateLimit(inviterId: string): Promise<void> {
+  const redis = getRedis();
+  if (redis) {
+    const count = await countWithRedis(redis, inviterId);
+    if (count !== null) {
+      if (count > INVITES_PER_INVITER_PER_HOUR) {
+        throw tooManyRequests(MEMBERSHIP_REFUSALS.inviteRateLimit);
+      }
+      return;
+    }
+    // Redis is configured but unreachable. Fall through to the
+    // per-process counter rather than returning: an infra blip must not
+    // silently lift the limit.
+  }
+  assertWithMemory(inviterId);
+}
+
+/**
+ * Test-only. Clears the in-process window so one case cannot rate-limit
+ * the next. It does NOT clear Redis — tests run without REDIS_URL.
+ */
+export function __resetInviteRateLimit(): void {
+  sends.clear();
+}
+
+/**
+ * Returns the inviter's count for the current window, or null when Redis
+ * could not answer.
+ *
+ * INCR then EXPIRE, and the EXPIRE only on the first increment: renewing
+ * the TTL on every call would push the window forward with each send and
+ * the limit would never fire. The window therefore starts at the first
+ * invitation and runs an hour from there.
+ */
+async function countWithRedis(redis: Redis, inviterId: string): Promise<number | null> {
+  const key = `${REDIS_KEY_PREFIX}${inviterId}`;
+  try {
+    const count = await redis.incr(key);
+    if (count === 1) {
+      await redis.expire(key, WINDOW_SECONDS);
+    } else if ((await redis.ttl(key)) < 0) {
+      // Self-heal. A crash between the INCR and the EXPIRE above leaves a
+      // key with no TTL, and without this the inviter would be locked out
+      // permanently once the count passed the cap.
+      await redis.expire(key, WINDOW_SECONDS);
+    }
+    return count;
+  } catch (error) {
+    console.error("[membership] invite rate limit: Redis unavailable:", error);
+    return null;
+  }
+}
+
+/**
+ * The single-process fallback: a rolling hour of timestamps, pruned on
+ * every read. Pruning on read (rather than on a timer) is what keeps the
+ * map bounded — an entry whose timestamps have all aged out is deleted,
+ * so a long-lived process does not accumulate one array per person who
+ * ever sent an invitation.
+ */
+function assertWithMemory(inviterId: string): void {
+  const now = Date.now();
+  const cutoff = now - WINDOW_MS;
+
+  if (sends.size > SWEEP_THRESHOLD) sweep(cutoff);
+
+  const recent = (sends.get(inviterId) ?? []).filter((at) => at > cutoff);
+  if (recent.length >= INVITES_PER_INVITER_PER_HOUR) {
+    // Keep the pruned array so the window keeps rolling forward while
+    // the inviter is being refused.
+    sends.set(inviterId, recent);
+    throw tooManyRequests(MEMBERSHIP_REFUSALS.inviteRateLimit);
+  }
+
+  recent.push(now);
+  sends.set(inviterId, recent);
+}
+
+/** Drop every inviter whose sends have all aged out of the window. */
+function sweep(cutoff: number): void {
+  for (const [inviterId, timestamps] of sends) {
+    const recent = timestamps.filter((at) => at > cutoff);
+    if (recent.length === 0) sends.delete(inviterId);
+    else sends.set(inviterId, recent);
+  }
+}

@@ -1,0 +1,319 @@
+"use client";
+
+/*
+ * members-screen.tsx — the workspace's people: who is in it, what they
+ * may do, what they may see, and who has been invited.
+ *
+ * ── Three things here fail QUIETLY if they are changed ───────────────
+ *
+ * 1. THE APP'S OWN TYPED API, NEVER `authClient.organization.*`.
+ *    better-auth's organization plugin stays installed — the server uses
+ *    its collections — but its HTTP surface is locked down and answers
+ *    404 (see the server's auth/organization-lockdown.ts). A call to
+ *    `authClient.organization.listMembers()` therefore fails at runtime
+ *    with a 404 that looks like a routing mistake, and it would bypass
+ *    the app's permission matrix even if it worked, because the plugin
+ *    does not know about `WorkspaceMember` or the capability flags. Every
+ *    read and write on this screen goes through `trpc.*`.
+ *
+ * 2. THE SCREEN'S WORKSPACE IS THE SWITCHER'S, NOT THE SESSION'S.
+ *    `workspaceId` comes from `useActiveWorkspace()`. It is not the
+ *    session's `activeOrganizationId`, which is one value per sign-in and
+ *    is changed by any other client sharing it. If this screen read the
+ *    session default instead, the switcher could say "Acme" while every
+ *    request on the page addressed "Globex" — and removing a member would
+ *    remove the wrong person from the wrong workspace, with no error.
+ *
+ * 3. EVERY QUERY AND MUTATION PASSES `workspaceId` EXPLICITLY.
+ *    An omitted `workspaceId` is not rejected: the server falls back to
+ *    the session default (rule 6). Omitting it is how the screen and its
+ *    requests drift apart.
+ *
+ * Nav gating on this screen — hiding the invite form, disabling a
+ * control — is COSMETIC. The server checks `assertCanManageMembers` /
+ * `assertCanInvite` on every call and refuses either way. Nothing here is
+ * a security boundary; it is an explanation of one.
+ */
+
+import { useState } from "react";
+import {
+  canInvite as roleCanInvite,
+  canManageMembers,
+  MEMBERSHIP_REFUSALS,
+  normalizeRole,
+  type AssignableRole,
+  type InvitationStatus,
+  type WorkspaceRole,
+} from "@starter/shared";
+import { trpc } from "@/lib/trpc";
+import { stillInWorkspace } from "@/lib/active-workspace";
+import { useActiveWorkspace } from "@/hooks/use-active-workspace";
+import { MemberRow, type MemberView } from "@/components/members/member-row";
+import { InviteForm } from "@/components/members/invite-form";
+import { WorkspaceSwitcher } from "@/components/members/workspace-switcher";
+
+/** Mirrors `InvitationView` from the server's membership service. */
+interface InvitationView {
+  id: string;
+  workspaceId: string;
+  email: string;
+  role: AssignableRole;
+  status: InvitationStatus;
+  inviterId: string;
+  expiresAt: string;
+  createdAt: string;
+}
+
+function formatDate(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleDateString();
+}
+
+export function MembersScreen() {
+  const { workspaceId, workspaces, isLoading, switchWorkspace } = useActiveWorkspace();
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <h1 className="text-2xl font-bold">Members</h1>
+        <p className="text-muted-foreground">
+          Who belongs to this workspace, and what they can do in it.
+        </p>
+      </div>
+
+      <WorkspaceSwitcher
+        workspaces={workspaces}
+        workspaceId={workspaceId}
+        isLoading={isLoading}
+        onSwitch={switchWorkspace}
+      />
+
+      {!isLoading && !workspaceId && (
+        <p className="text-sm text-muted-foreground">
+          You are not a member of any workspace yet. Create one above, or ask
+          somebody to invite you.
+        </p>
+      )}
+
+      {/*
+       * Keyed by workspace so a switch that does NOT reload the page (a
+       * native shell keeping its webview) remounts the whole subtree
+       * instead of re-rendering the previous tenant's state into it.
+       */}
+      {workspaceId && (
+        <WorkspaceMembers key={workspaceId} workspaceId={workspaceId} />
+      )}
+    </div>
+  );
+}
+
+function WorkspaceMembers({ workspaceId }: { workspaceId: string }) {
+  const [leaveError, setLeaveError] = useState<string | null>(null);
+  const utils = trpc.useUtils();
+
+  // `workspaceId` in the input on every call — see note 3 in the header.
+  const membersQuery = trpc.members.list.useQuery({ workspaceId });
+
+  const members: MemberView[] = membersQuery.data ?? [];
+  const viewer = members.find((m) => m.isSelf) ?? null;
+  const viewerRole: WorkspaceRole = normalizeRole(viewer?.role);
+  const canManage = viewer !== null && canManageMembers(viewerRole);
+  const canSendInvites = viewer !== null && roleCanInvite(viewerRole);
+  const ownerCount = members.filter((m) => m.role === "owner").length;
+
+  /*
+   * Only fetched when the viewer may manage members. The gate is a
+   * courtesy — the server refuses `invitations.list` for everybody else —
+   * but asking for something you will be refused paints an error on a
+   * screen that is otherwise working.
+   */
+  const invitationsQuery = trpc.invitations.list.useQuery(
+    { workspaceId },
+    { enabled: canManage },
+  );
+
+  const allInvitations: InvitationView[] = invitationsQuery.data ?? [];
+  const pending = allInvitations.filter((invitation) => invitation.status === "pending");
+
+  const cancelInvitation = trpc.invitations.cancel.useMutation({
+    onSuccess: () => {
+      // The cancel may settle after a workspace switch; the React Query
+      // key does not carry the tenant by itself.
+      if (!stillInWorkspace(workspaceId)) return;
+      void utils.invitations.list.invalidate({ workspaceId });
+    },
+  });
+
+  const leaveWorkspace = trpc.workspaces.leave.useMutation({
+    onSuccess: () => {
+      // Leaving changes which workspaces exist for this person, so the
+      // safest next state is a fresh load with no stale tenant in memory.
+      window.location.assign("/dashboard/");
+    },
+    onError: (err) => {
+      switch (err.message) {
+        case MEMBERSHIP_REFUSALS.lastOwner:
+          setLeaveError(
+            "You are the last owner. Transfer ownership to somebody else first.",
+          );
+          break;
+        case MEMBERSHIP_REFUSALS.soleMemberCannotLeave:
+          setLeaveError(
+            "You are the only member. Delete the workspace instead of leaving it.",
+          );
+          break;
+        default:
+          setLeaveError(err.message);
+      }
+    },
+  });
+
+  if (membersQuery.isPending) {
+    return <p className="text-sm text-muted-foreground">Loading members…</p>;
+  }
+
+  if (membersQuery.isError) {
+    return (
+      <p role="alert" className="text-sm text-destructive">
+        {membersQuery.error.message === MEMBERSHIP_REFUSALS.notAMember
+          ? "You are not a member of this workspace."
+          : membersQuery.error.message}
+      </p>
+    );
+  }
+
+  const isLastOwner = viewerRole === "owner" && ownerCount <= 1;
+  const isSoleMember = members.length <= 1;
+  const leaveBlockedReason = isSoleMember
+    ? "You are the only member of this workspace."
+    : isLastOwner
+      ? "You are the last owner. Transfer ownership first."
+      : null;
+
+  return (
+    <div className="space-y-8">
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold">
+          People ({members.length})
+        </h2>
+        <table className="w-full text-left">
+          <thead>
+            <tr className="border-b text-xs uppercase text-muted-foreground">
+              <th className="py-2 pr-4 font-medium">Person</th>
+              <th className="py-2 pr-4 font-medium">Role</th>
+              <th className="py-2 pr-4 font-medium">Can see</th>
+              <th className="py-2 text-right font-medium">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {members.map((member) => (
+              <MemberRow
+                key={member.userId}
+                member={member}
+                // The switcher's id, threaded down. Not member.workspaceId.
+                workspaceId={workspaceId}
+                viewerRole={viewerRole}
+                canManage={canManage}
+                ownerCount={ownerCount}
+                onChanged={() => void membersQuery.refetch()}
+              />
+            ))}
+          </tbody>
+        </table>
+      </section>
+
+      {canManage && (
+        <section className="space-y-3">
+          <h2 className="text-lg font-semibold">
+            Pending invitations ({pending.length})
+          </h2>
+          {invitationsQuery.isPending ? (
+            <p className="text-sm text-muted-foreground">Loading invitations…</p>
+          ) : pending.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No invitations are waiting to be accepted.
+            </p>
+          ) : (
+            <ul className="divide-y">
+              {pending.map((invitation) => (
+                <li
+                  key={invitation.id}
+                  className="flex items-center justify-between py-2"
+                  data-testid={`invitation-${invitation.id}`}
+                >
+                  <div>
+                    <div className="text-sm font-medium">{invitation.email}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {invitation.role} · expires {formatDate(invitation.expiresAt)}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={cancelInvitation.isPending}
+                    onClick={() =>
+                      cancelInvitation.mutate({
+                        // Explicit tenant, as everywhere else.
+                        workspaceId,
+                        invitationId: invitation.id,
+                      })
+                    }
+                    className="text-xs text-destructive hover:underline disabled:opacity-50"
+                    data-testid={`invitation-cancel-${invitation.id}`}
+                  >
+                    Cancel
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold">Invite somebody</h2>
+        {/*
+         * `canInvite` only decides whether the form is drawn. The server
+         * checks the same thing on every create and refuses with
+         * `invite-permission-required`; this is not the control.
+         */}
+        <InviteForm
+          workspaceId={workspaceId}
+          canInvite={canSendInvites}
+          onInvited={() => void invitationsQuery.refetch()}
+        />
+        {!canSendInvites && (
+          <p className="text-sm text-muted-foreground">
+            Only admins and the owner can invite people to this workspace.
+          </p>
+        )}
+      </section>
+
+      <section className="space-y-2 border-t pt-6">
+        <h2 className="text-lg font-semibold">Leave this workspace</h2>
+        <p className="text-sm text-muted-foreground">
+          {leaveBlockedReason ??
+            "You will lose access to everything in this workspace."}
+        </p>
+        <button
+          type="button"
+          disabled={leaveBlockedReason !== null || leaveWorkspace.isPending}
+          title={leaveBlockedReason ?? undefined}
+          onClick={() => {
+            setLeaveError(null);
+            if (!window.confirm("Leave this workspace?")) return;
+            leaveWorkspace.mutate({ workspaceId });
+          }}
+          className="inline-flex h-9 items-center justify-center rounded-md border border-input px-3 text-sm font-medium text-destructive hover:bg-muted disabled:opacity-50"
+          data-testid="workspace-leave"
+        >
+          {leaveWorkspace.isPending ? "Leaving…" : "Leave workspace"}
+        </button>
+        {leaveError && (
+          <p role="alert" className="text-sm text-destructive">
+            {leaveError}
+          </p>
+        )}
+      </section>
+    </div>
+  );
+}

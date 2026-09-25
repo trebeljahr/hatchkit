@@ -1,0 +1,411 @@
+/*
+ * workspaces.ts — the workspaces themselves, and which one a request means.
+ *
+ * Three jobs live here: the lifecycle of a workspace (create, rename,
+ * hand over, leave), the session's stored default, and the resolver that
+ * every workspace-scoped procedure calls to turn a request into an
+ * `Actor`.
+ *
+ * The resolver is the file's sharpest edge. A request that NAMES a
+ * workspace never falls back to another one, however convenient that
+ * would be for the caller. See `resolveWorkspaceForRequest()`.
+ */
+
+import { randomBytes } from "node:crypto";
+import {
+  MEMBERSHIP_REFUSALS,
+  capabilitiesForRole,
+  pickFallbackWorkspace,
+  type MemberCapabilityFlags,
+  type WorkspaceRole,
+} from "@starter/shared";
+import { getAuth } from "../../auth/auth.js";
+import { WorkspaceMember } from "../../models/WorkspaceMember.js";
+import { forbidden, notFound } from "./errors.js";
+import { publishMembershipEvent } from "./events.js";
+import {
+  countMemberships,
+  countOwners,
+  getMembership,
+  getUserIdentity,
+  idMatches,
+  idsMatch,
+  listMembershipsForUser,
+  membersCollection,
+  organizationsCollection,
+  rowId,
+  rowString,
+  sessionsCollection,
+  type AuthRow,
+} from "./mirror.js";
+import {
+  assertCanAdminister,
+  assertIsOwner,
+  requireMemberOfActorWorkspace,
+  type Actor,
+} from "./permissions.js";
+
+export interface WorkspaceSummary {
+  id: string;
+  name: string;
+  slug: string;
+  role: WorkspaceRole;
+  memberCount: number;
+  createdAt: string;
+}
+
+/* ── Reads ──────────────────────────────────────────────────────────── */
+
+/** Every workspace this person belongs to, with their role in each. */
+export async function listWorkspaces(userId: string): Promise<WorkspaceSummary[]> {
+  const memberships = await listMembershipsForUser(userId);
+  if (memberships.length === 0) return [];
+
+  const ids = memberships.map((m) => m.workspaceId);
+  const rows = await organizationsCollection()
+    .find({ _id: idsMatch(ids) })
+    .toArray();
+  const byId = new Map(rows.map((row) => [rowId(row), row]));
+
+  const counts = await WorkspaceMember.aggregate<{ _id: string; count: number }>([
+    { $match: { workspaceId: { $in: ids } } },
+    { $group: { _id: "$workspaceId", count: { $sum: 1 } } },
+  ]);
+  const countById = new Map(counts.map((c) => [c._id, c.count]));
+
+  return memberships.map((m) => {
+    const row = byId.get(m.workspaceId) ?? null;
+    return {
+      id: m.workspaceId,
+      name: rowString(row, "name"),
+      slug: rowString(row, "slug"),
+      role: m.role,
+      // At least one: the caller's own membership is in the mirror, so a
+      // count of zero would mean the aggregate and the mirror disagree.
+      memberCount: countById.get(m.workspaceId) ?? 1,
+      createdAt: rowDate(row, "createdAt") ?? m.createdAt,
+    };
+  });
+}
+
+/* ── Lifecycle ──────────────────────────────────────────────────────── */
+
+/**
+ * Create a workspace and make the caller its owner.
+ *
+ * The `organization` and `member` rows are made by better-auth's
+ * SERVER-side API. Its HTTP surface is deliberately 404'd — the app owns
+ * membership — but the plugin still owns its own two collections, and
+ * inserting into them by hand is how a row ends up in a shape the next
+ * better-auth release stops recognising.
+ */
+export async function createWorkspace(input: {
+  userId: string;
+  name: string;
+  slug?: string;
+}): Promise<WorkspaceSummary> {
+  const name = input.name.trim();
+  const slug = input.slug ? sanitizeSlug(input.slug) : deriveSlug(name);
+
+  const auth = getAuth();
+  const organization = await auth.api.createOrganization({
+    // `userId` is what makes this a server-side creation: no session is
+    // involved, and the named user becomes the organization's owner.
+    body: { name, slug, userId: input.userId },
+  });
+  if (!organization?.id) {
+    throw new Error("[membership] better-auth did not return the new organization");
+  }
+  const workspaceId = String(organization.id);
+
+  const identity = await getUserIdentity(input.userId);
+  // Rule 1: the mirror is written LAST. Until this row exists the person
+  // cannot read the workspace at all, which is the safe half of a crash;
+  // re-running the create finishes it. Writing the mirror first would
+  // grant access to a workspace better-auth may never have created.
+  await WorkspaceMember.updateOne(
+    { workspaceId, userId: input.userId },
+    {
+      $set: {
+        email: identity.email,
+        name: identity.name,
+        role: "owner",
+        ...capabilitiesForRole("owner"),
+      },
+    },
+    { upsert: true },
+  );
+
+  publishMembershipEvent({
+    kind: "membership.changed",
+    workspaceId,
+    actorId: input.userId,
+  });
+
+  return {
+    id: workspaceId,
+    name,
+    slug,
+    role: "owner",
+    memberCount: 1,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+/** Rename the actor's workspace. The slug does not move with the name. */
+export async function renameWorkspace(input: {
+  actor: Actor;
+  name: string;
+}): Promise<WorkspaceSummary> {
+  const { actor } = input;
+  assertCanAdminister(actor);
+  const name = input.name.trim();
+
+  // Deliberately leaves `slug` alone: the slug is in links people have
+  // already shared, and rewriting it on every rename breaks them.
+  await organizationsCollection().updateOne(
+    { _id: idMatches(actor.workspaceId) },
+    { $set: { name } },
+  );
+
+  const row = await organizationsCollection().findOne({
+    _id: idMatches(actor.workspaceId),
+  });
+  const memberCount = await countMemberships(actor.workspaceId);
+
+  publishMembershipEvent({
+    kind: "membership.changed",
+    workspaceId: actor.workspaceId,
+    actorId: actor.userId,
+  });
+
+  return {
+    id: actor.workspaceId,
+    name: rowString(row, "name") || name,
+    slug: rowString(row, "slug"),
+    role: actor.role,
+    memberCount,
+    createdAt: rowDate(row, "createdAt") ?? actor.createdAt,
+  };
+}
+
+/**
+ * Store the workspace a session falls back to when a request names none.
+ *
+ * Note what this does NOT do: it is not how a client selects a tenant.
+ * better-auth caches the session in a signed cookie for minutes, so a
+ * request made right after this write can still carry the old default.
+ * That lag is exactly why every first-party client sends `workspaceId`
+ * explicitly on every workspace-scoped call, and why the stored value is
+ * only ever a FALLBACK.
+ */
+export async function setActiveWorkspace(input: {
+  userId: string;
+  workspaceId: string;
+  sessionToken?: string;
+}): Promise<void> {
+  // Scoped lookup: a workspace the caller is not in is NOT_FOUND, so a
+  // stolen or guessed id cannot be parked in somebody's session as their
+  // default tenant.
+  const membership = await getMembership(input.workspaceId, input.userId);
+  if (!membership) throw notFound();
+
+  const filter = input.sessionToken
+    ? { userId: idMatches(input.userId), token: input.sessionToken }
+    : { userId: idMatches(input.userId) };
+
+  await sessionsCollection().updateMany(filter, {
+    $set: { activeOrganizationId: input.workspaceId },
+  });
+}
+
+/**
+ * Hand the workspace to somebody already in it.
+ *
+ * Rule 2 lives in the ordering below: promote, then demote. A retry of a
+ * transfer that died halfway still finds an owner — at worst two, which
+ * the next successful demotion resolves. Demoting first would leave a
+ * workspace with zero owners, a state no surface in this app can undo.
+ */
+export async function transferOwnership(input: {
+  actor: Actor;
+  targetUserId: string;
+}): Promise<void> {
+  const { actor, targetUserId } = input;
+  assertIsOwner(actor);
+
+  if (targetUserId === actor.userId) {
+    throw forbidden(MEMBERSHIP_REFUSALS.cannotTargetSelf);
+  }
+
+  // Rule 4: scoped. Somebody who is not in this workspace — including a
+  // real user of another tenant — is NOT_FOUND, never "you may not".
+  const target = await requireMemberOfActorWorkspace(actor, targetUserId);
+
+  // 1. Promote the target: better-auth's `member` first, then the mirror
+  //    the app authorizes from.
+  await setRoleEverywhere(
+    actor.workspaceId,
+    target.userId,
+    "owner",
+    capabilitiesForRole("owner"),
+  );
+
+  // 2. Only now demote the previous owner. Their visibility flags are
+  //    carried forward rather than closed: a role change never widens
+  //    what somebody may see, and narrowing it is a separate, deliberate
+  //    call to `updateMemberCapabilities`.
+  await setRoleEverywhere(
+    actor.workspaceId,
+    actor.userId,
+    "admin",
+    capabilitiesForRole("admin", actor),
+  );
+
+  publishMembershipEvent({
+    kind: "membership.changed",
+    workspaceId: actor.workspaceId,
+    actorId: actor.userId,
+  });
+}
+
+/**
+ * Leave the workspace. The person's own records stay behind — they
+ * belong to the workspace, and deleting them on the way out would
+ * silently rewrite work other people are still reading.
+ */
+export async function leaveWorkspace(input: { actor: Actor }): Promise<void> {
+  const { actor } = input;
+
+  const memberCount = await countMemberships(actor.workspaceId);
+  if (memberCount <= 1) {
+    // The sole member cannot leave: the workspace would keep existing
+    // with nobody able to reach it, its data included.
+    throw forbidden(MEMBERSHIP_REFUSALS.soleMemberCannotLeave);
+  }
+
+  if (actor.role === "owner") {
+    const owners = await countOwners(actor.workspaceId);
+    if (owners <= 1) {
+      // Rule 2: transfer first, then leave.
+      throw forbidden(MEMBERSHIP_REFUSALS.lastOwner);
+    }
+  }
+
+  // Rule 1: mirror first. A crash after this line leaves a better-auth
+  // `member` row that grants nothing, and re-running the departure
+  // finishes it.
+  await WorkspaceMember.deleteOne({
+    workspaceId: actor.workspaceId,
+    userId: actor.userId,
+  });
+  await membersCollection().deleteMany({
+    organizationId: idMatches(actor.workspaceId),
+    userId: idMatches(actor.userId),
+  });
+
+  publishMembershipEvent({
+    kind: "membership.changed",
+    workspaceId: actor.workspaceId,
+    actorId: actor.userId,
+  });
+  // The workspace fan-out reads memberships fresh and no longer reaches
+  // the person who just left, so they are told directly.
+  publishMembershipEvent({
+    kind: "membership.removed",
+    workspaceId: actor.workspaceId,
+    userId: actor.userId,
+  });
+}
+
+/* ── Which workspace does this request mean? ────────────────────────── */
+
+/**
+ * Turn a request into the caller's resolved membership. Rule 6.
+ *
+ * An EXPLICIT `requestedWorkspaceId` the caller is not in is NOT_FOUND
+ * and never falls back to another workspace. This is the line that keeps
+ * a replayed offline row out of the wrong tenant: a client that queued a
+ * write for workspace A while offline sends A when it reconnects, and if
+ * the person has since left A, the only honest answer is to refuse.
+ * Falling back would file their row in workspace B, where it would look
+ * like a legitimate record and be impossible to spot afterwards.
+ *
+ * Only the ABSENT case consults the session's stored default, and a stale
+ * default — pointing at a workspace the person has left — falls back
+ * through the contract's `pickFallbackWorkspace()`, because the session
+ * row is refreshed on the next sign-in and its cookie cache can hide a
+ * change for minutes.
+ */
+export async function resolveWorkspaceForRequest(input: {
+  userId: string;
+  requestedWorkspaceId?: string;
+  sessionActiveId?: string | null;
+}): Promise<Actor> {
+  if (input.requestedWorkspaceId) {
+    const named = await getMembership(input.requestedWorkspaceId, input.userId);
+    if (!named) throw notFound();
+    return named;
+  }
+
+  const memberships = await listMembershipsForUser(input.userId);
+  const picked = pickFallbackWorkspace(memberships, input.sessionActiveId ?? null);
+  if (!picked) {
+    // No memberships at all. NOT_FOUND rather than FORBIDDEN: there is no
+    // workspace here to be refused access to.
+    throw notFound();
+  }
+  return picked;
+}
+
+/* ── Internals ──────────────────────────────────────────────────────── */
+
+/**
+ * Write a role to both records, better-auth's first and the mirror
+ * second. The mirror is what grants access, so this order means a crash
+ * between the two never leaves somebody holding a permission the app
+ * believes it withdrew.
+ */
+async function setRoleEverywhere(
+  workspaceId: string,
+  userId: string,
+  role: WorkspaceRole,
+  flags: MemberCapabilityFlags,
+): Promise<void> {
+  await membersCollection().updateMany(
+    { organizationId: idMatches(workspaceId), userId: idMatches(userId) },
+    { $set: { role } },
+  );
+  await WorkspaceMember.updateOne(
+    { workspaceId, userId },
+    { $set: { role, ...flags } },
+  );
+}
+
+function rowDate(row: AuthRow | null, key: string): string | null {
+  const value = row?.[key];
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string" && value) return value;
+  return null;
+}
+
+/** Lowercase, alphanumerics and dashes only, never empty. */
+function sanitizeSlug(value: string): string {
+  const slug = value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  return slug || "workspace";
+}
+
+/**
+ * A slug derived from the name plus a short random suffix. Two people
+ * naming their workspace "Acme" is ordinary; better-auth rejects the
+ * second one outright if the slugs collide, so the suffix is what keeps
+ * an unremarkable name from failing to create.
+ */
+function deriveSlug(name: string): string {
+  return `${sanitizeSlug(name)}-${randomBytes(3).toString("hex")}`;
+}

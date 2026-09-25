@@ -1,0 +1,614 @@
+/*
+ * invitations.ts — Rule 5, whole and entire.
+ *
+ * An invitation is an unauthenticated bearer link. Whoever opens it is,
+ * by construction, not signed in as anybody this server knows yet. So
+ * three things carry the whole design:
+ *
+ *   1. The id is the proof — 96 CSPRNG bits minted here, never an
+ *      adapter-generated ObjectId.
+ *   2. The invited address, compared case-insensitively, is what stops a
+ *      forwarded link being redeemed under somebody else's account. It is
+ *      checked BEFORE the status, so a wrong account learns nothing about
+ *      whether the link is live.
+ *   3. Accepting needs the invited address, NOT a verified one. A
+ *      self-hosted instance with no mail transport has no way to verify
+ *      an address, and requiring verification would make invitations
+ *      unusable on exactly the deployments this feature is for.
+ *
+ * Rows live in better-auth's own `invitation` collection, under the
+ * organization plugin's field names, so better-auth's account-deletion
+ * cleanup sweeps them along with everything else it owns. A private
+ * collection here would leave invitations behind pointing at a user row
+ * that no longer exists.
+ */
+
+import { randomBytes } from "node:crypto";
+import {
+  INVITATION_STATUSES,
+  INVITATION_TTL_MS,
+  MEMBERSHIP_REFUSALS,
+  PENDING_INVITE_CAP,
+  capabilitiesForNewMember,
+  emailsMatch,
+  invitationUrl,
+  isAssignableRole,
+  type AssignableRole,
+  type InvitationStatus,
+} from "@starter/shared";
+import { getAuth } from "../../auth/auth.js";
+import { env } from "../../config/env.js";
+import { WorkspaceMember } from "../../models/WorkspaceMember.js";
+import { sendEmail } from "../email.js";
+import { badRequest, forbidden, notFound } from "./errors.js";
+import { publishMembershipEvent } from "./events.js";
+import {
+  getMembership,
+  idMatches,
+  invitationsCollection,
+  listMemberships,
+  membersCollection,
+  organizationsCollection,
+  rowId,
+  rowString,
+  toStoredId,
+  type AuthRow,
+} from "./mirror.js";
+import { assertCanInvite, type Actor } from "./permissions.js";
+import { assertInviteRateLimit } from "./rate-limit.js";
+
+/* ── Views ──────────────────────────────────────────────────────────── */
+
+export interface InvitationView {
+  id: string;
+  workspaceId: string;
+  email: string;
+  role: AssignableRole;
+  status: InvitationStatus;
+  inviterId: string;
+  expiresAt: string;
+  createdAt: string;
+}
+
+/**
+ * What a signed-out (or wrong-account) visitor may learn from the link.
+ *
+ * Note what is absent: the STATUS. The preview never says whether the
+ * invitation is still live, because the page that renders it is public.
+ * Only `acceptInvitation`, which has already matched the address, gives
+ * a precise refusal.
+ */
+export interface PublicInvitationView {
+  id: string;
+  workspaceName: string;
+  inviterName: string;
+  email: string;
+  role: AssignableRole;
+}
+
+/** One `invitation` row, read out of the plugin's loose document shape. */
+interface StoredInvitation {
+  id: string;
+  workspaceId: string;
+  email: string;
+  role: AssignableRole;
+  status: string;
+  inviterId: string;
+  expiresAt: Date;
+  createdAt: Date;
+}
+
+/**
+ * 96 bits from the CSPRNG, base64url so it survives a query string
+ * untouched.
+ *
+ * Rule 5: this code mints the id and writes it explicitly. Delete the
+ * `_id` from the insert below and let the driver (or better-auth's
+ * adapter) mint an ObjectId instead, and the invitation link becomes
+ * guessable: an ObjectId is a 4-byte timestamp, a 5-byte per-process
+ * value and a 3-byte counter, so one link handed to an attacker exposes
+ * every neighbouring invitation minted by the same process.
+ */
+function newInvitationId(): string {
+  return randomBytes(12).toString("base64url");
+}
+
+/* ── List ───────────────────────────────────────────────────────────── */
+
+/**
+ * Pending invitations of the actor's OWN workspace. Rule 4: the
+ * workspace id is in the query, not in a comparison afterwards.
+ *
+ * Only pending rows: this is the management surface, and a canceled or
+ * accepted row is nothing anybody can act on. The rows stay in the
+ * database either way, so a spent id stays spent.
+ */
+export async function listInvitations(actor: Actor): Promise<InvitationView[]> {
+  assertCanInvite(actor);
+
+  const rows = await invitationsCollection()
+    .find({ organizationId: idMatches(actor.workspaceId), status: "pending" })
+    .toArray();
+
+  return rows
+    .map(toStored)
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .map(toView);
+}
+
+/* ── Create ─────────────────────────────────────────────────────────── */
+
+export async function createInvitation(input: {
+  actor: Actor;
+  email: string;
+  role: AssignableRole;
+  frontendUrl: string;
+}): Promise<{ invitation: InvitationView; url: string; emailSent: boolean }> {
+  const { actor, frontendUrl } = input;
+  assertCanInvite(actor);
+
+  const email = input.email.trim();
+
+  /*
+   * Rule 3, checked at RUNTIME and not only in the router's zod schema:
+   * this service is also reached from the REST surface and from tests.
+   * `owner` is reachable only by transfer, which promotes before it
+   * demotes — an invitation that could name it would hand out a second
+   * owner nobody meant to create.
+   */
+  if (!isAssignableRole(input.role)) {
+    throw badRequest(MEMBERSHIP_REFUSALS.ownerNotAssignable);
+  }
+  const role: AssignableRole = input.role;
+
+  /*
+   * Somebody already in the workspace is refused rather than invited:
+   * accepting would be a no-op, and the pending row would sit in the
+   * list looking like work nobody has done.
+   */
+  const memberships = await listMemberships(actor.workspaceId);
+  if (memberships.some((m) => emailsMatch(m.email, email))) {
+    throw badRequest(MEMBERSHIP_REFUSALS.alreadyMember);
+  }
+
+  /*
+   * Before ANY write. A refused send must leave no row behind, or a
+   * rate-limited inviter would still fill the workspace's pending cap
+   * with invitations that were never delivered.
+   */
+  await assertInviteRateLimit(actor.userId);
+
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + INVITATION_TTL_MS);
+
+  const pending = (
+    await invitationsCollection()
+      .find({ organizationId: idMatches(actor.workspaceId), status: "pending" })
+      .toArray()
+  ).map(toStored);
+
+  /*
+   * Re-inviting an address REFRESHES the row it already has instead of
+   * adding a second one. Two live invitations for one address mean two
+   * working links: the inviter cancels the one they can see and believes
+   * access is closed. Matched with the contract's own comparison, so
+   * `Sam@x.com` and `sam@x.com` are the same person here and at accept
+   * time.
+   */
+  const existing = pending.find((row) => emailsMatch(row.email, email));
+
+  let stored: StoredInvitation;
+  if (existing) {
+    await invitationsCollection().updateOne(
+      { _id: idMatches(existing.id) },
+      {
+        $set: {
+          role,
+          status: "pending",
+          inviterId: toStoredId(actor.userId),
+          expiresAt,
+        },
+      },
+    );
+    stored = { ...existing, role, status: "pending", inviterId: actor.userId, expiresAt };
+  } else {
+    /*
+     * The cap counts only invitations that are still acceptable. An
+     * expired row is not a live link, and counting it would let a
+     * workspace wedge itself shut until somebody cancelled rows by hand.
+     */
+    const live = pending.filter((row) => row.expiresAt.getTime() > now.getTime());
+    if (live.length >= PENDING_INVITE_CAP) {
+      throw badRequest(MEMBERSHIP_REFUSALS.pendingInviteCap);
+    }
+
+    const id = newInvitationId();
+    await invitationsCollection().insertOne({
+      // Rule 5: the id IS the bearer token. Minted here, never delegated.
+      _id: id,
+      // The plugin's own field names, and its own id shape — a reference
+      // written as a plain string is invisible to better-auth's cleanup.
+      organizationId: toStoredId(actor.workspaceId),
+      email,
+      role,
+      status: "pending",
+      inviterId: toStoredId(actor.userId),
+      expiresAt,
+      createdAt: now,
+    });
+    stored = {
+      id,
+      workspaceId: actor.workspaceId,
+      email,
+      role,
+      status: "pending",
+      inviterId: actor.userId,
+      expiresAt,
+      createdAt: now,
+    };
+  }
+
+  const url = invitationUrl(frontendUrl, stored.id);
+
+  /*
+   * The send happens AFTER the row is committed and its outcome never
+   * rolls the row back. A self-hosted instance with no mail transport is
+   * the case this whole design exists for: the invitation stands, the
+   * link is logged, `emailSent: false` comes back, and the inviter hands
+   * the link over themselves. Deleting the row on a failed send would
+   * make invitations impossible without SMTP.
+   */
+  const emailSent = await deliverInvitation({
+    to: email,
+    url,
+    workspaceName: await workspaceName(actor.workspaceId),
+    inviterName: actor.name,
+  });
+
+  return { invitation: toView(stored), url, emailSent };
+}
+
+/* ── Cancel ─────────────────────────────────────────────────────────── */
+
+export async function cancelInvitation(input: {
+  actor: Actor;
+  invitationId: string;
+}): Promise<void> {
+  const { actor, invitationId } = input;
+
+  /*
+   * Rule 4: the scoped find comes FIRST. An id belonging to another
+   * workspace is NOT_FOUND here, before the invite permission is
+   * consulted — a FORBIDDEN would confirm that the id exists somewhere,
+   * which is exactly what somebody probing ids wants to learn.
+   */
+  const row = await invitationsCollection().findOne({
+    _id: idMatches(invitationId),
+    organizationId: idMatches(actor.workspaceId),
+  });
+  if (!row) throw notFound();
+
+  assertCanInvite(actor);
+
+  const stored = toStored(row);
+  if (stored.status !== "pending") {
+    throw badRequest(MEMBERSHIP_REFUSALS.invitationNotPending);
+  }
+
+  /*
+   * Marked, not deleted. The row keeps the id permanently spent, so a
+   * link that already went out cannot come back to life, and the
+   * workspace keeps a record that somebody was invited and cut off.
+   */
+  await invitationsCollection().updateOne(
+    { _id: idMatches(stored.id), organizationId: idMatches(actor.workspaceId) },
+    { $set: { status: "canceled" } },
+  );
+}
+
+/* ── Public preview ─────────────────────────────────────────────────── */
+
+/**
+ * What the public `/invite/` page renders, possibly with nobody signed
+ * in. Enough to say whose workspace this is and which address was
+ * invited — no status, no member list, no workspace contents.
+ */
+export async function getInvitationPreview(input: {
+  invitationId: string;
+  viewerEmail?: string | null;
+}): Promise<PublicInvitationView> {
+  const row = await invitationsCollection().findOne({
+    _id: idMatches(input.invitationId),
+  });
+  if (!row) throw notFound();
+
+  const stored = toStored(row);
+
+  /*
+   * A signed-in viewer whose address does not match gets NOT_FOUND, not
+   * FORBIDDEN: a refusal that distinguishes the two tells the wrong
+   * account that this id is real. When no viewer email is supplied the
+   * visitor is signed out and the preview IS returned — the id itself
+   * was the proof, and the page has to be able to say whose workspace
+   * this is before it asks anybody to sign in.
+   */
+  if (input.viewerEmail && !emailsMatch(stored.email, input.viewerEmail)) {
+    throw notFound();
+  }
+
+  const [name, inviter] = await Promise.all([
+    workspaceName(stored.workspaceId),
+    getMembership(stored.workspaceId, stored.inviterId),
+  ]);
+
+  return {
+    id: stored.id,
+    workspaceName: name,
+    // Empty when the inviter has since left: their mirror row went with
+    // them. The page falls back to the workspace name alone.
+    inviterName: inviter?.name ?? "",
+    email: stored.email,
+    role: stored.role,
+  };
+}
+
+/* ── Accept ─────────────────────────────────────────────────────────── */
+
+export async function acceptInvitation(input: {
+  invitationId: string;
+  user: { id: string; email: string; name: string };
+}): Promise<{ workspaceId: string; workspaceName: string }> {
+  const { invitationId, user } = input;
+
+  const row = await invitationsCollection().findOne({
+    _id: idMatches(invitationId),
+  });
+  if (!row) throw notFound();
+
+  const invitation = toStored(row);
+
+  /*
+   * Rule 5, and the ORDER is the point.
+   *
+   * The address is matched BEFORE the status and BEFORE the expiry. A
+   * wrong account — somebody the link was forwarded to — gets the same
+   * answer whether the invitation is live, spent or long expired, so the
+   * refusal leaks nothing about the workspace. Reorder these three
+   * checks and this endpoint becomes an oracle for guessed ids.
+   *
+   * Note what is NOT checked: whether `user.email` is verified. An
+   * instance with no mail transport can never verify an address, and
+   * demanding it would lock invitations out of exactly the self-hosted
+   * deployments this feature is for. Possession of the id plus a session
+   * on the invited address is the proof.
+   */
+  if (!emailsMatch(invitation.email, user.email)) {
+    throw forbidden(MEMBERSHIP_REFUSALS.invitationEmailMismatch);
+  }
+  if (invitation.status !== "pending") {
+    throw badRequest(MEMBERSHIP_REFUSALS.invitationNotPending);
+  }
+  if (invitation.expiresAt.getTime() <= Date.now()) {
+    throw badRequest(MEMBERSHIP_REFUSALS.invitationExpired);
+  }
+
+  const workspaceId = invitation.workspaceId;
+  const name = await workspaceName(workspaceId);
+
+  /*
+   * Already a member — a double-clicked button, a retried request, or a
+   * link opened twice. Mark the invitation spent and return success. An
+   * `alreadyMember` refusal here would show somebody an error for an
+   * operation that, from their side, has plainly worked.
+   */
+  const existing = await getMembership(workspaceId, user.id);
+  if (existing) {
+    await markAccepted(invitation.id);
+    return { workspaceId, workspaceName: name };
+  }
+
+  /*
+   * Rule 1: better-auth's `member` row FIRST, the app's mirror LAST.
+   *
+   * The app authorizes from `WorkspaceMember` alone, so the mirror is
+   * what actually grants access. Writing it last means a crash between
+   * the two leaves a `member` row that grants nothing — less access than
+   * intended, never more — and re-running the accept finishes the job.
+   * Swap the order and a crash hands out access to a workspace whose
+   * membership record was never completed.
+   *
+   * The row goes through better-auth's server-side API rather than a
+   * hand-written insert, so the plugin owns the shape of its own
+   * collection. The existence check in front of it is what keeps the
+   * retry above working: `addMember` refuses an existing member, and
+   * without this a crash between the two writes would leave the person
+   * permanently unable to finish accepting.
+   */
+  const alreadyInAuth = await membersCollection().findOne({
+    organizationId: idMatches(workspaceId),
+    userId: idMatches(user.id),
+  });
+  if (!alreadyInAuth) {
+    await getAuth().api.addMember({
+      body: { userId: user.id, role: invitation.role, organizationId: workspaceId },
+    });
+  }
+
+  /*
+   * Rule 3: an invited member starts CLOSED — an invited admin included.
+   * Accepting widens what they may DO, never what they may SEE;
+   * somebody has to grant visibility deliberately afterwards.
+   */
+  const flags = capabilitiesForNewMember(invitation.role);
+  await WorkspaceMember.updateOne(
+    { workspaceId, userId: user.id },
+    {
+      $set: {
+        email: user.email,
+        name: user.name,
+        role: invitation.role,
+        canViewOthersRecords: flags.canViewOthersRecords,
+        canViewOthersSensitive: flags.canViewOthersSensitive,
+      },
+    },
+    { upsert: true },
+  );
+
+  await markAccepted(invitation.id);
+
+  // The workspace's own people learn that somebody joined.
+  publishMembershipEvent({
+    kind: "membership.changed",
+    workspaceId,
+    actorId: user.id,
+  });
+  /*
+   * And the joiner, addressed directly. A moment ago they were not a
+   * member, so the workspace fan-out — which reads memberships fresh on
+   * each publish — had no reason to reach their socket. Without this
+   * second event their own screen keeps showing the workspace they were
+   * in before, until they reload.
+   */
+  publishMembershipEvent({
+    kind: "membership.changed",
+    workspaceId,
+    actorId: user.id,
+    recipientId: user.id,
+  });
+
+  return { workspaceId, workspaceName: name };
+}
+
+/* ── Internals ──────────────────────────────────────────────────────── */
+
+async function markAccepted(invitationId: string): Promise<void> {
+  await invitationsCollection().updateOne(
+    { _id: idMatches(invitationId) },
+    { $set: { status: "accepted" } },
+  );
+}
+
+/** The workspace's display name, or "" when the row has gone. */
+async function workspaceName(workspaceId: string): Promise<string> {
+  const row = await organizationsCollection().findOne({ _id: idMatches(workspaceId) });
+  return rowString(row, "name");
+}
+
+/**
+ * Deliver the link, and report honestly whether it went out.
+ *
+ * `sendEmail` logs and returns when no transport is configured, so the
+ * transport is checked here as well — otherwise every self-host would
+ * report `emailSent: true` for mail that was never sent, and the inviter
+ * would never think to pass the link on.
+ *
+ * The body is plain text only. `sendEmail` escapes a text body itself;
+ * handing it HTML here would mean escaping a user-supplied workspace
+ * name by hand, and one missed escape puts markup from a workspace name
+ * into somebody else's inbox.
+ */
+async function deliverInvitation(args: {
+  to: string;
+  url: string;
+  workspaceName: string;
+  inviterName: string;
+}): Promise<boolean> {
+  const place = args.workspaceName || "a workspace";
+  const who = args.inviterName ? `${args.inviterName} invited you` : "You are invited";
+
+  if (!mailTransportConfigured()) {
+    logInvitationLink(args.to, args.url, "no mail transport configured");
+    return false;
+  }
+
+  const text = [
+    `${who} to join ${place}.`,
+    "",
+    "Open this link to accept:",
+    args.url,
+    "",
+    `The link only works for ${args.to}.`,
+    "If you did not expect this, ignore this message.",
+  ].join("\n");
+
+  try {
+    await sendEmail({ to: args.to, subject: `${who} to join ${place}`, text });
+    return true;
+  } catch (error) {
+    // The invitation stays. Only the delivery failed.
+    console.error(`[membership] Invitation email to ${args.to} failed:`, error);
+    logInvitationLink(args.to, args.url, "send failed");
+    return false;
+  }
+}
+
+/**
+ * The same pair `auth.ts` checks before it tries to mail a reset link.
+ * Kept to those two values on purpose: they are the ones without which
+ * `sendEmail` cannot even build a request.
+ */
+function mailTransportConfigured(): boolean {
+  return Boolean(env.LISTMONK_URL && env.LISTMONK_TX_TEMPLATE_ID);
+}
+
+function logInvitationLink(to: string, url: string, reason: string): void {
+  console.log(`[membership] Invitation link for ${to} (${reason}): ${url}`);
+}
+
+/** Read one loose plugin row into the shape the rest of this file uses. */
+function toStored(row: AuthRow): StoredInvitation {
+  return {
+    id: rowId(row),
+    workspaceId: refString(row, "organizationId"),
+    email: rowString(row, "email"),
+    // A stored role outside the assignable set reads as the weakest one.
+    role: isAssignableRole(row.role) ? row.role : "member",
+    status: rowString(row, "status"),
+    inviterId: refString(row, "inviterId"),
+    expiresAt: dateOf(row.expiresAt),
+    createdAt: dateOf(row.createdAt),
+  };
+}
+
+/**
+ * A reference field as the app speaks it. `toStoredId()` may have written
+ * an ObjectId, so `rowString()` alone would read it as "" and the
+ * invitation would point at no workspace at all.
+ */
+function refString(row: AuthRow, key: string): string {
+  const value = row[key];
+  return value === null || value === undefined ? "" : String(value);
+}
+
+/** An unreadable timestamp reads as the epoch — expired, never live. */
+function dateOf(value: unknown): Date {
+  if (value instanceof Date) return value;
+  if (typeof value === "string" || typeof value === "number") {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return new Date(0);
+}
+
+/**
+ * A stored status outside the closed set never reads as `pending`. An
+ * unreadable row must not show up in the UI as a live invitation.
+ */
+function statusOf(value: string): InvitationStatus {
+  return (INVITATION_STATUSES as readonly string[]).includes(value)
+    ? (value as InvitationStatus)
+    : "canceled";
+}
+
+function toView(stored: StoredInvitation): InvitationView {
+  return {
+    id: stored.id,
+    workspaceId: stored.workspaceId,
+    email: stored.email,
+    role: stored.role,
+    status: statusOf(stored.status),
+    inviterId: stored.inviterId,
+    expiresAt: stored.expiresAt.toISOString(),
+    createdAt: stored.createdAt.toISOString(),
+  };
+}

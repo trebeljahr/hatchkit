@@ -86,6 +86,7 @@ export type Feature =
   | "stripe"
   | "analytics"
   | "s3"
+  | "workspaces"
   | "desktop"
   | "mobile"
   /** Release coordination across every surface the project ships from
@@ -977,6 +978,11 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
               name: "Analytics / observability providers",
               value: "analytics",
               checked: c.features.includes("analytics"),
+            },
+            {
+              name: "Workspaces (tenants, members, roles, invitations)",
+              value: "workspaces",
+              checked: c.features.includes("workspaces"),
             },
             {
               name: "Desktop app (Electron + itch.io release)",

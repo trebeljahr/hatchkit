@@ -1,0 +1,301 @@
+/*
+ * rest/workspaces.ts — the plain-HTTP surface over the membership
+ * service, registered by `registerWorkspaceRoutes(app)` from `app.ts`
+ * (after `express.json()`, which these handlers need for their bodies).
+ *
+ * This file exists to make one thing true: a workspace rule is enforced
+ * in ONE place and every surface inherits it. Every handler below is one
+ * call into `services/membership` — the same call the matching tRPC
+ * procedure makes. That is what makes the two surfaces agree about who
+ * may do what, about NOT_FOUND arriving before FORBIDDEN, and about the
+ * order writes happen in. A second implementation here — a lookup, a
+ * role comparison, a "just this once" shortcut — is precisely how the
+ * two drift apart, and the drift shows up as a permission hole on
+ * whichever surface nobody is testing.
+ *
+ * Use it for the callers tRPC does not fit: a mobile client, a webhook,
+ * a script, curl.
+ */
+
+import type { Express, NextFunction, Request, Response } from "express";
+import { fromNodeHeaders } from "better-auth/node";
+import { z } from "zod";
+import { ASSIGNABLE_ROLES } from "@starter/shared";
+import { getAuth } from "../auth/auth.js";
+import { env } from "../config/env.js";
+import {
+  cancelInvitation,
+  createInvitation,
+  createWorkspace,
+  listInvitations,
+  listMembers,
+  listWorkspaces,
+  MembershipError,
+  removeMember,
+  resolveWorkspaceForRequest,
+  updateMemberCapabilities,
+  updateMemberRole,
+} from "../services/membership/index.js";
+import type {
+  Actor,
+  MemberView,
+  MembershipErrorCode,
+} from "../services/membership/index.js";
+
+/* ── Refusal → HTTP status, in exactly one place ────────────────────── */
+
+const HTTP_STATUS: Record<MembershipErrorCode, number> = {
+  NOT_FOUND: 404,
+  FORBIDDEN: 403,
+  BAD_REQUEST: 400,
+  UNAUTHORIZED: 401,
+  TOO_MANY_REQUESTS: 429,
+};
+
+/**
+ * The service's refusal codes are stable strings clients switch on, so
+ * they travel in the body as `{ error: <refusal code> }`.
+ *
+ * A 404 carries no refusal, and that is deliberate: `notFound()` is what
+ * a foreign or cross-tenant id produces, and any code in that body would
+ * tell the caller *why* — which is to say, that the id exists somewhere.
+ * A bare 404 is indistinguishable from "no such thing".
+ *
+ * Anything that is not a `MembershipError` goes to Express's error
+ * handler untouched rather than being dressed up as a tidy 4xx.
+ */
+function sendRefusal(res: Response, next: NextFunction, err: unknown): void {
+  if (!(err instanceof MembershipError)) {
+    next(err);
+    return;
+  }
+  res.status(HTTP_STATUS[err.code]).json(err.refusal ? { error: err.refusal } : {});
+}
+
+/* ── Session, read the same way the tRPC context reads it ───────────── */
+
+interface SessionUser {
+  id: string;
+  email: string;
+  name: string;
+}
+
+async function sessionUser(req: Request): Promise<SessionUser | null> {
+  const auth = getAuth();
+  const session = await auth.api.getSession({ headers: fromNodeHeaders(req.headers) });
+  const user = session?.user;
+  if (!user?.id) return null;
+  return {
+    id: String(user.id),
+    email: String(user.email ?? ""),
+    name: String(user.name ?? ""),
+  };
+}
+
+type AuthedHandler = (args: {
+  req: Request;
+  res: Response;
+  user: SessionUser;
+}) => Promise<void>;
+
+/** Authenticate, or 401. Same session, same cookie, same answer as tRPC. */
+function authed(handle: AuthedHandler) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const user = await sessionUser(req);
+      if (!user) {
+        res.status(401).json({ error: "authentication-required" });
+        return;
+      }
+      await handle({ req, res, user });
+    } catch (err) {
+      sendRefusal(res, next, err);
+    }
+  };
+}
+
+type ScopedHandler = (args: {
+  req: Request;
+  res: Response;
+  user: SessionUser;
+  actor: Actor;
+}) => Promise<void>;
+
+/**
+ * The REST half of rule 6. The tenant id comes from the PATH — REST has
+ * no session-scoped "current workspace" and should not invent one — and
+ * it is resolved through the SAME `resolveWorkspaceForRequest` the tRPC
+ * middleware calls. That shared call is why a REST caller naming a
+ * workspace they are not in gets the identical NOT_FOUND-before-
+ * FORBIDDEN behaviour, with no second copy of the rule to keep in sync.
+ *
+ * `sessionActiveId` is left out on purpose: the id here is always
+ * explicit, and an explicit id never falls back.
+ */
+function scoped(handle: ScopedHandler) {
+  return authed(async ({ req, res, user }) => {
+    const actor = await resolveWorkspaceForRequest({
+      userId: user.id,
+      requestedWorkspaceId: req.params.workspaceId,
+    });
+    await handle({ req, res, user, actor });
+  });
+}
+
+/* ── Bodies ─────────────────────────────────────────────────────────── */
+
+const createWorkspaceBody = z.object({
+  name: z.string().trim().min(1).max(100),
+  slug: z.string().trim().min(1).max(64).optional(),
+});
+
+/**
+ * Role and flags are separate fields because they are separate service
+ * calls: a role change never grants a visibility flag (rule 3), so a
+ * request carrying both performs both, in that order, rather than one
+ * merged write that would blur the two.
+ */
+const updateMemberBody = z.object({
+  role: z.enum(ASSIGNABLE_ROLES).optional(),
+  canViewOthersRecords: z.boolean().optional(),
+  canViewOthersSensitive: z.boolean().optional(),
+});
+
+const createInvitationBody = z.object({
+  email: z.email(),
+  role: z.enum(ASSIGNABLE_ROLES),
+});
+
+/** Parse a body or answer 400. Returns `null` when it has already replied. */
+function parseBody<T extends z.ZodType>(schema: T, req: Request, res: Response): z.infer<T> | null {
+  const parsed = schema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({
+      error: "invalid-request",
+      issues: parsed.error.issues.map((issue) => ({
+        path: issue.path.join("."),
+        message: issue.message,
+      })),
+    });
+    return null;
+  }
+  return parsed.data;
+}
+
+/* ── Routes ─────────────────────────────────────────────────────────── */
+
+export function registerWorkspaceRoutes(app: Express): void {
+  // GET /api/workspaces — every workspace the caller belongs to. Not
+  // workspace-scoped: the question spans all of them.
+  app.get(
+    "/api/workspaces",
+    authed(async ({ res, user }) => {
+      res.json({ workspaces: await listWorkspaces(user.id) });
+    }),
+  );
+
+  // POST /api/workspaces
+  app.post(
+    "/api/workspaces",
+    authed(async ({ req, res, user }) => {
+      const body = parseBody(createWorkspaceBody, req, res);
+      if (!body) return;
+      const workspace = await createWorkspace({
+        userId: user.id,
+        name: body.name,
+        slug: body.slug,
+      });
+      res.status(201).json({ workspace });
+    }),
+  );
+
+  // GET /api/workspaces/:workspaceId/members
+  app.get(
+    "/api/workspaces/:workspaceId/members",
+    scoped(async ({ res, actor }) => {
+      res.json({ members: await listMembers(actor) });
+    }),
+  );
+
+  // PATCH /api/workspaces/:workspaceId/members/:userId
+  app.patch(
+    "/api/workspaces/:workspaceId/members/:userId",
+    scoped(async ({ req, res, actor }) => {
+      const body = parseBody(updateMemberBody, req, res);
+      if (!body) return;
+
+      const targetUserId = req.params.userId;
+      let member: MemberView | null = null;
+
+      if (body.role !== undefined) {
+        member = await updateMemberRole({ actor, targetUserId, role: body.role });
+      }
+      if (
+        body.canViewOthersRecords !== undefined ||
+        body.canViewOthersSensitive !== undefined
+      ) {
+        member = await updateMemberCapabilities({
+          actor,
+          targetUserId,
+          canViewOthersRecords: body.canViewOthersRecords,
+          canViewOthersSensitive: body.canViewOthersSensitive,
+        });
+      }
+
+      // An empty patch is a malformed request, not a silent success —
+      // answering 200 would tell a client its change had been applied.
+      if (!member) {
+        res.status(400).json({ error: "invalid-request" });
+        return;
+      }
+      res.json({ member });
+    }),
+  );
+
+  // DELETE /api/workspaces/:workspaceId/members/:userId
+  app.delete(
+    "/api/workspaces/:workspaceId/members/:userId",
+    scoped(async ({ req, res, actor }) => {
+      await removeMember({ actor, targetUserId: req.params.userId });
+      res.status(204).end();
+    }),
+  );
+
+  // GET /api/workspaces/:workspaceId/invitations
+  app.get(
+    "/api/workspaces/:workspaceId/invitations",
+    scoped(async ({ res, actor }) => {
+      res.json({ invitations: await listInvitations(actor) });
+    }),
+  );
+
+  // POST /api/workspaces/:workspaceId/invitations
+  app.post(
+    "/api/workspaces/:workspaceId/invitations",
+    scoped(async ({ req, res, actor }) => {
+      const body = parseBody(createInvitationBody, req, res);
+      if (!body) return;
+      const result = await createInvitation({
+        actor,
+        email: body.email,
+        role: body.role,
+        // Server configuration, never request input — same reason as the
+        // tRPC procedure: a client-supplied host turns a genuine
+        // invitation into a link to somewhere the attacker controls.
+        frontendUrl: env.FRONTEND_URL,
+      });
+      // `emailSent: false` with the url still present is the no-transport
+      // case: the invitation is real and the inviter hands the link over.
+      res.status(201).json(result);
+    }),
+  );
+
+  // DELETE /api/workspaces/:workspaceId/invitations/:invitationId
+  app.delete(
+    "/api/workspaces/:workspaceId/invitations/:invitationId",
+    scoped(async ({ req, res, actor }) => {
+      await cancelInvitation({ actor, invitationId: req.params.invitationId });
+      res.status(204).end();
+    }),
+  );
+}

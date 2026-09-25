@@ -1,0 +1,232 @@
+/*
+ * mirror.ts — the only module in the app that reaches a raw collection.
+ *
+ * Two halves:
+ *
+ *  - Accessors for better-auth's own collections (`organization`,
+ *    `member`, `invitation`, plus `session` and `user` for the two facts
+ *    the plugin keeps there). Everything else in the codebase goes
+ *    through this module, so there is exactly one place to look when the
+ *    plugin renames a collection or changes how it stores an id.
+ *
+ *  - Read helpers over `WorkspaceMember`, the app's own mirror. The app
+ *    authorizes from the mirror and never from better-auth's `member`:
+ *    the mirror is written last and deleted first, so a half-finished
+ *    change always leaves less access than intended.
+ *
+ * Every stored row is DATA. The rules are CODE. A row is turned into a
+ * `WorkspaceMembership` through `normalizeRole()` and
+ * `capabilitiesForRole()`, so a row that somehow holds an owner with a
+ * closed flag still reads as open, and a role nobody can name reads as
+ * "member". Skipping those two calls is how a hand-edited document, a
+ * bad migration or a restored backup becomes a permission.
+ */
+
+import mongoose, { Types } from "mongoose";
+import {
+  capabilitiesForRole,
+  normalizeRole,
+  type WorkspaceMembership,
+} from "@starter/shared";
+import { WorkspaceMember } from "../../models/WorkspaceMember.js";
+
+/* ── better-auth's collections ──────────────────────────────────────── */
+
+/**
+ * A better-auth row as it sits on disk. The adapter owns the shape, so we
+ * read it loosely and convert at the edge rather than pretending to a
+ * type the plugin never promised us.
+ */
+export interface AuthRow {
+  _id?: Types.ObjectId | string;
+  [key: string]: unknown;
+}
+
+function database() {
+  const db = mongoose.connection.db;
+  if (!db) {
+    // Reaching a collection before `mongoose.connect()` resolved would
+    // otherwise fail deep inside the driver with a null dereference.
+    throw new Error(
+      "[membership] Mongoose is not connected — connect the database before using the membership service.",
+    );
+  }
+  return db;
+}
+
+/** better-auth's `member` rows. The plugin's record, not the app's. */
+export function membersCollection() {
+  return database().collection<AuthRow>("member");
+}
+
+/** better-auth's `organization` rows — a workspace's name and slug. */
+export function organizationsCollection() {
+  return database().collection<AuthRow>("organization");
+}
+
+/** better-auth's `invitation` rows. */
+export function invitationsCollection() {
+  return database().collection<AuthRow>("invitation");
+}
+
+/** Sessions, where the organization plugin keeps `activeOrganizationId`. */
+export function sessionsCollection() {
+  return database().collection<AuthRow>("session");
+}
+
+/** Accounts, for the email and name a fresh mirror row snapshots. */
+export function usersCollection() {
+  return database().collection<AuthRow>("user");
+}
+
+/* ── Ids, as the adapter stores them ────────────────────────────────── */
+
+const OBJECT_ID_PATTERN = /^[0-9a-f]{24}$/i;
+
+/**
+ * The mongodb adapter writes id references as ObjectIds. Write them the
+ * same way, or a row inserted by this service is invisible to the plugin.
+ */
+export function toStoredId(value: string): Types.ObjectId | string {
+  return OBJECT_ID_PATTERN.test(value) ? new Types.ObjectId(value) : value;
+}
+
+/**
+ * A filter fragment that matches an id however it was stored. Older rows,
+ * seeded fixtures and hand-written documents keep ids as plain strings;
+ * matching only one shape silently returns zero rows, which reads to the
+ * caller as "not a member" and quietly denies real access.
+ */
+export function idMatches(value: string): {
+  $in: (Types.ObjectId | string)[];
+} {
+  return { $in: idVariants(value) };
+}
+
+/** The same, for a set of ids. */
+export function idsMatch(values: readonly string[]): {
+  $in: (Types.ObjectId | string)[];
+} {
+  return { $in: values.flatMap(idVariants) };
+}
+
+function idVariants(value: string): (Types.ObjectId | string)[] {
+  return OBJECT_ID_PATTERN.test(value)
+    ? [new Types.ObjectId(value), value]
+    : [value];
+}
+
+/** The string form of an `_id`, whatever the adapter wrote there. */
+export function rowId(row: AuthRow): string {
+  return String(row._id ?? "");
+}
+
+/** A string field of a loose row, or "" — never `undefined` downstream. */
+export function rowString(row: AuthRow | null, key: string): string {
+  const value = row?.[key];
+  return typeof value === "string" ? value : "";
+}
+
+/* ── Reads over the app's own mirror ────────────────────────────────── */
+
+interface StoredMemberRow {
+  workspaceId: string;
+  userId: string;
+  email?: string;
+  name?: string;
+  role?: unknown;
+  canViewOthersRecords?: boolean;
+  canViewOthersSensitive?: boolean;
+  createdAt?: Date | string;
+}
+
+/**
+ * The one conversion from a stored row to an authorization decision.
+ *
+ * `normalizeRole()` closes the role set and `capabilitiesForRole()` forces
+ * an owner's two flags on, so the rule wins over whatever the document
+ * happens to hold. Read the fields straight off the row instead and a
+ * stored `canViewOthersSensitive: false` would take an owner's own data
+ * away from them — or, the other way round, a stored `true` on a plain
+ * member would hand out a permission nobody granted.
+ */
+export function toMembership(row: StoredMemberRow): WorkspaceMembership {
+  const role = normalizeRole(row.role);
+  const flags = capabilitiesForRole(role, {
+    canViewOthersRecords: row.canViewOthersRecords === true,
+    canViewOthersSensitive: row.canViewOthersSensitive === true,
+  });
+  const createdAt =
+    row.createdAt instanceof Date
+      ? row.createdAt.toISOString()
+      : typeof row.createdAt === "string"
+        ? row.createdAt
+        : new Date(0).toISOString();
+
+  return {
+    workspaceId: row.workspaceId,
+    userId: row.userId,
+    email: row.email ?? "",
+    name: row.name ?? "",
+    role,
+    createdAt,
+    ...flags,
+  };
+}
+
+/** Every workspace this person belongs to, oldest membership first. */
+export async function listMembershipsForUser(
+  userId: string,
+): Promise<WorkspaceMembership[]> {
+  const rows = await WorkspaceMember.find({ userId }).sort({ createdAt: 1 }).lean();
+  return rows.map(toMembership);
+}
+
+/**
+ * One membership, looked up by BOTH ids. Callers pass the workspace they
+ * are acting in, so a foreign user id simply finds nothing — the lookup
+ * itself is the tenant boundary (Rule 4).
+ */
+export async function getMembership(
+  workspaceId: string,
+  userId: string,
+): Promise<WorkspaceMembership | null> {
+  const row = await WorkspaceMember.findOne({ workspaceId, userId }).lean();
+  return row ? toMembership(row) : null;
+}
+
+/** Everybody in one workspace, oldest membership first. */
+export async function listMemberships(
+  workspaceId: string,
+): Promise<WorkspaceMembership[]> {
+  const rows = await WorkspaceMember.find({ workspaceId })
+    .sort({ createdAt: 1 })
+    .lean();
+  return rows.map(toMembership);
+}
+
+/**
+ * How many owners a workspace has. Every demotion, removal and departure
+ * asks this first: the count reaching zero is unrecoverable through the
+ * app's own surfaces (Rule 2).
+ */
+export async function countOwners(workspaceId: string): Promise<number> {
+  return WorkspaceMember.countDocuments({ workspaceId, role: "owner" });
+}
+
+/** How many people a workspace has, owners included. */
+export async function countMemberships(workspaceId: string): Promise<number> {
+  return WorkspaceMember.countDocuments({ workspaceId });
+}
+
+/**
+ * The email and name a new mirror row snapshots. Read from better-auth's
+ * `user` collection because the mirror is the app's copy of it, and the
+ * copy has to start from somewhere.
+ */
+export async function getUserIdentity(
+  userId: string,
+): Promise<{ email: string; name: string }> {
+  const row = await usersCollection().findOne({ _id: idMatches(userId) });
+  return { email: rowString(row, "email"), name: rowString(row, "name") };
+}

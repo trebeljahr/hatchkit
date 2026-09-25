@@ -1,0 +1,88 @@
+/*
+ * workspaces.ts — the typed API for the workspaces themselves.
+ *
+ * One line per procedure over `services/membership`. No permission
+ * check, no collection access and no ordering rule lives here: the same
+ * calls are made by `rest/workspaces.ts`, and a rule implemented in a
+ * router is a rule the other surface does not have. Every refusal the
+ * service raises goes through the shared `toTRPCError`.
+ */
+
+import { z } from "zod";
+import { protectedProcedure, router } from "../trpc.js";
+import {
+  sessionTokenFrom,
+  toTRPCError,
+  workspaceInput,
+  workspaceProcedure,
+} from "../workspace-procedure.js";
+import {
+  createWorkspace,
+  leaveWorkspace,
+  listWorkspaces,
+  renameWorkspace,
+  setActiveWorkspace,
+  transferOwnership,
+} from "../../services/membership/index.js";
+
+const nameInput = z.string().trim().min(1).max(100);
+
+export const workspacesRouter = router({
+  /**
+   * Listing your OWN workspaces cannot be workspace-scoped: the answer
+   * spans every workspace you belong to, and resolving one membership
+   * first would pick an arbitrary tenant to scope an unscoped question.
+   * It is also what the client calls when it has no active workspace at
+   * all — after leaving the last one, for instance.
+   */
+  list: protectedProcedure.query(({ ctx }) => listWorkspaces(ctx.user.id).catch(toTRPCError)),
+
+  /** Creating a workspace has no workspace to be scoped to yet. */
+  create: protectedProcedure
+    .input(
+      z.object({
+        name: nameInput,
+        slug: z.string().trim().min(1).max(64).optional(),
+      }),
+    )
+    .mutation(({ ctx, input }) =>
+      createWorkspace({ userId: ctx.user.id, name: input.name, slug: input.slug }).catch(
+        toTRPCError,
+      ),
+    ),
+
+  rename: workspaceProcedure
+    .input(workspaceInput.extend({ name: nameInput }))
+    .mutation(({ ctx, input }) =>
+      renameWorkspace({ actor: ctx.actor, name: input.name }).catch(toTRPCError),
+    ),
+
+  /**
+   * Naming a workspace is the whole point of this call, so `workspaceId`
+   * is required here. It still goes through `workspaceProcedure`, which
+   * means the id is resolved before anything is written: asking to make
+   * a workspace you are not in your default is NOT_FOUND, not a session
+   * row quietly pointing somewhere you cannot read.
+   */
+  setActive: workspaceProcedure
+    .input(workspaceInput.extend({ workspaceId: z.string() }))
+    .mutation(({ ctx }) =>
+      setActiveWorkspace({
+        userId: ctx.user.id,
+        workspaceId: ctx.actor.workspaceId,
+        sessionToken: sessionTokenFrom(ctx.session),
+      }).catch(toTRPCError),
+    ),
+
+  transferOwnership: workspaceProcedure
+    .input(workspaceInput.extend({ targetUserId: z.string() }))
+    .mutation(({ ctx, input }) =>
+      transferOwnership({ actor: ctx.actor, targetUserId: input.targetUserId }).catch(
+        toTRPCError,
+      ),
+    ),
+
+  leave: workspaceProcedure
+    .input(workspaceInput)
+    .mutation(({ ctx }) => leaveWorkspace({ actor: ctx.actor }).catch(toTRPCError)),
+});

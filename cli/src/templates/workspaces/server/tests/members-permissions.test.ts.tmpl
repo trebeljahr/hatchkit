@@ -1,0 +1,444 @@
+/*
+ * members-permissions.test.ts — Rules 3 and 4, pinned.
+ *
+ * Rule 3 is the closed role set and the flags that follow it. Its failure
+ * mode is a workspace with a second owner nobody handed it to, or a
+ * promotion that quietly hands somebody a view of every colleague's work.
+ *
+ * Rule 4 is subtler and matters more: the ORDER of the scoped lookup and
+ * the permission check. A FORBIDDEN confirms that an id exists somewhere,
+ * so a surface that checks permission first — or that looks a row up
+ * unscoped and compares `workspaceId` afterwards — answers differently
+ * for a real id of another tenant than for an id that exists nowhere.
+ * That difference is an existence oracle, and it is invisible to every
+ * legitimate caller. Nothing about it shows up in a happy-path test.
+ *
+ * So the cases below assert both the verdict AND that the lookup carried
+ * the actor's workspace id in the query itself.
+ */
+
+import assert from "node:assert/strict";
+import test, { beforeEach } from "node:test";
+import {
+  MEMBERSHIP_REFUSALS,
+  type AssignableRole,
+  type WorkspaceMembership,
+} from "@starter/shared";
+import {
+  ADMIN,
+  FOREIGN_INVITATION_ID,
+  INVITEE,
+  MEMBER,
+  OUTSIDER,
+  OWNER,
+  PENDING_INVITATION_ID,
+  WORKSPACE_ID,
+  installMemoryMembership,
+  syntheticMembership,
+} from "./support/memory-membership.js";
+
+const memory = installMemoryMembership();
+
+const { getMembership } = await import("../services/membership/mirror.js");
+const { MembershipError } = await import("../services/membership/errors.js");
+const {
+  assertCanAdminister,
+  assertCanInvite,
+  assertCanManageMembers,
+  assertCanUsePrivilegedSurface,
+  assertIsOwner,
+  requireMemberOfActorWorkspace,
+} = await import("../services/membership/permissions.js");
+const { listMembers, removeMember, updateMemberCapabilities, updateMemberRole } =
+  await import("../services/membership/members.js");
+const { acceptInvitation, cancelInvitation, createInvitation } = await import(
+  "../services/membership/invitations.js"
+);
+
+beforeEach(() => {
+  memory.reseed();
+});
+
+/* ── Helpers ────────────────────────────────────────────────────────── */
+
+const REFUSAL_CODES = new Set<string>(Object.values(MEMBERSHIP_REFUSALS));
+
+async function actorFor(userId: string): Promise<WorkspaceMembership> {
+  const membership = await getMembership(WORKSPACE_ID, userId);
+  // `throw`, not `assert.ok`: an assertion signature only narrows when
+  // the call target carries an explicit type annotation, which a default
+  // import of `node:assert` does not.
+  if (!membership) throw new Error(`fixture is missing ${userId}`);
+  return membership;
+}
+
+/** The refusal a call produced, or a failed assertion if it succeeded. */
+async function refusalFrom(promise: Promise<unknown>): Promise<InstanceType<typeof MembershipError>> {
+  try {
+    await promise;
+  } catch (error) {
+    // Rethrown rather than asserted on: anything that is not a service
+    // refusal is a bug, and swallowing it here would hide it.
+    if (!(error instanceof MembershipError)) throw error;
+    return error;
+  }
+  throw new Error("expected the call to be refused, but it succeeded");
+}
+
+function allows(assertion: (actor: WorkspaceMembership) => void, role: string): boolean {
+  try {
+    assertion(syntheticMembership({ role }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The filter of the last lookup against one collection. */
+function lastLookupFilter(target: string, op: string): Record<string, unknown> {
+  const entry = [...memory.log].reverse().find((e) => e.target === target && e.op === op);
+  if (!entry) throw new Error(`no ${target}.${op} was performed`);
+  return (entry.filter ?? {}) as Record<string, unknown>;
+}
+
+/* ── Rule 3: the role matrix ────────────────────────────────────────── */
+
+test("the role matrix answers the same way for every question asked by name", () => {
+  const expected = [
+    { role: "owner", invite: true, manage: true, administer: true, transfer: true },
+    { role: "admin", invite: true, manage: true, administer: true, transfer: false },
+    { role: "member", invite: false, manage: false, administer: false, transfer: false },
+  ];
+
+  for (const row of expected) {
+    assert.equal(allows(assertCanInvite, row.role), row.invite, `invite / ${row.role}`);
+    assert.equal(
+      allows(assertCanManageMembers, row.role),
+      row.manage,
+      `manage / ${row.role}`,
+    );
+    assert.equal(
+      allows(assertCanAdminister, row.role),
+      row.administer,
+      `administer / ${row.role}`,
+    );
+    assert.equal(allows(assertIsOwner, row.role), row.transfer, `transfer / ${row.role}`);
+  }
+});
+
+test("a privileged surface needs admin AND both visibility flags", () => {
+  const open = { canViewOthersRecords: true, canViewOthersSensitive: true };
+
+  // An owner's flags are forced on, so the role alone is enough.
+  assert.doesNotThrow(() => assertCanUsePrivilegedSurface(syntheticMembership({ role: "owner" })));
+  assert.doesNotThrow(() =>
+    assertCanUsePrivilegedSurface(syntheticMembership({ role: "admin", ...open })),
+  );
+  // Admin without the flags, and a fully open plain member, are both out.
+  assert.throws(() => assertCanUsePrivilegedSurface(syntheticMembership({ role: "admin" })), {
+    message: MEMBERSHIP_REFUSALS.privilegedSurface,
+  });
+  assert.throws(
+    () => assertCanUsePrivilegedSurface(syntheticMembership({ role: "member", ...open })),
+    { message: MEMBERSHIP_REFUSALS.privilegedSurface },
+  );
+});
+
+/* ── Rule 3: `owner` is reachable only by transfer ──────────────────── */
+
+test("a role update refuses `owner`", async () => {
+  const refusal = await refusalFrom(
+    updateMemberRole({
+      actor: await actorFor(OWNER.id),
+      targetUserId: MEMBER.id,
+      // A REST caller sends JSON and a tRPC client can be a curl command,
+      // so the runtime check is the one that matters — not this cast.
+      role: "owner" as unknown as AssignableRole,
+    }),
+  );
+
+  assert.equal(refusal.code, "BAD_REQUEST");
+  assert.equal(refusal.refusal, MEMBERSHIP_REFUSALS.ownerNotAssignable);
+  assert.equal((await actorFor(MEMBER.id)).role, "member");
+  assert.deepEqual(memory.writes(), [], "a refused role update must write nothing");
+});
+
+test("an invitation refuses `owner`", async () => {
+  const refusal = await refusalFrom(
+    createInvitation({
+      actor: await actorFor(OWNER.id),
+      email: "newcomer@example.test",
+      role: "owner" as unknown as AssignableRole,
+      frontendUrl: "http://localhost:3000",
+    }),
+  );
+
+  assert.equal(refusal.code, "BAD_REQUEST");
+  assert.equal(refusal.refusal, MEMBERSHIP_REFUSALS.ownerNotAssignable);
+  assert.deepEqual(memory.writes(), []);
+});
+
+/* ── Rule 3: flags follow the role ──────────────────────────────────── */
+
+test("an owner's flags are forced on however the row was stored", async () => {
+  // The fixture stores the owner with BOTH flags false on purpose — a
+  // hand-edited document, a bad migration or a restored backup all look
+  // like this. The rule has to win over the row.
+  const stored = memory.mirror().findSync({ workspaceId: WORKSPACE_ID, userId: OWNER.id })[0];
+  assert.equal(stored?.canViewOthersRecords, false);
+  assert.equal(stored?.canViewOthersSensitive, false);
+
+  const owner = await actorFor(OWNER.id);
+  assert.equal(owner.canViewOthersRecords, true);
+  assert.equal(owner.canViewOthersSensitive, true);
+
+  const view = (await listMembers(owner)).find((m) => m.userId === OWNER.id);
+  assert.equal(view?.canViewOthersRecords, true);
+  assert.equal(view?.canViewOthersSensitive, true);
+});
+
+test("an invited admin starts with both flags closed", async () => {
+  // The `member` row stands in for better-auth's half of the accept,
+  // which needs a live auth instance; the service skips its own write
+  // when the row is already there.
+  const member = memory.collection("member");
+  member.seed([
+    ...member.rows(),
+    {
+      _id: `member-${WORKSPACE_ID}-${INVITEE.id}`,
+      organizationId: WORKSPACE_ID,
+      userId: INVITEE.id,
+      role: "admin",
+      createdAt: new Date("2024-04-02T09:00:00.000Z"),
+    },
+  ]);
+
+  await acceptInvitation({ invitationId: PENDING_INVITATION_ID, user: INVITEE });
+
+  const joined = await getMembership(WORKSPACE_ID, INVITEE.id);
+  assert.equal(joined?.role, "admin");
+  assert.equal(joined?.canViewOthersRecords, false);
+  assert.equal(joined?.canViewOthersSensitive, false);
+});
+
+test("a role change never grants a flag", async () => {
+  const owner = await actorFor(OWNER.id);
+
+  const promoted = await updateMemberRole({
+    actor: owner,
+    targetUserId: MEMBER.id,
+    role: "admin",
+  });
+  assert.equal(promoted.role, "admin");
+  assert.equal(promoted.canViewOthersRecords, false);
+  assert.equal(promoted.canViewOthersSensitive, false);
+});
+
+test("a role change carries a granted flag forward without widening it", async () => {
+  const owner = await actorFor(OWNER.id);
+
+  // Widening visibility is always a separate, deliberate call.
+  await updateMemberCapabilities({
+    actor: owner,
+    targetUserId: MEMBER.id,
+    canViewOthersRecords: true,
+  });
+
+  const promoted = await updateMemberRole({
+    actor: owner,
+    targetUserId: MEMBER.id,
+    role: "admin",
+  });
+  assert.equal(promoted.canViewOthersRecords, true, "the granted flag must survive");
+  assert.equal(
+    promoted.canViewOthersSensitive,
+    false,
+    "the promotion must not open the second flag",
+  );
+});
+
+test("an omitted capability keeps its stored value", async () => {
+  const owner = await actorFor(OWNER.id);
+  await updateMemberCapabilities({
+    actor: owner,
+    targetUserId: MEMBER.id,
+    canViewOthersRecords: true,
+    canViewOthersSensitive: true,
+  });
+
+  const updated = await updateMemberCapabilities({
+    actor: owner,
+    targetUserId: MEMBER.id,
+    canViewOthersSensitive: false,
+  });
+
+  assert.equal(updated.canViewOthersRecords, true, "a form posting one checkbox must not close the other");
+  assert.equal(updated.canViewOthersSensitive, false);
+});
+
+test("an unrecognised stored role reads as `member`", async () => {
+  memory.mirror().seed([
+    ...memory.mirror().rows(),
+    {
+      workspaceId: WORKSPACE_ID,
+      userId: "user-strange",
+      email: "strange@example.test",
+      name: "Stored Strangely",
+      role: "superuser",
+      canViewOthersRecords: true,
+      canViewOthersSensitive: true,
+      createdAt: new Date("2024-01-04T09:00:00.000Z"),
+    },
+  ]);
+
+  const strange = await getMembership(WORKSPACE_ID, "user-strange");
+  if (!strange) throw new Error("the row must still read as a membership");
+  assert.equal(strange.role, "member", "a role nobody can name must not be a permission");
+  // The row's own flags still apply — visibility is granted per person,
+  // not derived from the role. What the unreadable role costs is every
+  // capability the matrix answers, which is the half that matters.
+  assert.equal(strange.canViewOthersRecords, true);
+  assert.throws(() => assertCanManageMembers(strange), {
+    message: MEMBERSHIP_REFUSALS.manageRequired,
+  });
+  assert.throws(() => assertIsOwner(strange), {
+    message: MEMBERSHIP_REFUSALS.ownerRequired,
+  });
+});
+
+/* ── Rule 4: NOT_FOUND before any permission check ──────────────────── */
+
+test("a cross-tenant member id is NOT_FOUND, with no refusal code", async () => {
+  const admin = await actorFor(ADMIN.id);
+
+  const refusal = await refusalFrom(requireMemberOfActorWorkspace(admin, OUTSIDER.id));
+
+  assert.equal(refusal.code, "NOT_FOUND");
+  assert.equal(
+    refusal.refusal,
+    undefined,
+    "a refusal code on a NOT_FOUND would leak which of `no such id` and `not your workspace` happened",
+  );
+  // And the lookup was scoped in the QUERY, not compared afterwards.
+  assert.equal(lastLookupFilter("mirror", "findOne").workspaceId, WORKSPACE_ID);
+});
+
+test("a member id that exists nowhere is NOT_FOUND too, and looks identical", async () => {
+  const admin = await actorFor(ADMIN.id);
+
+  const foreign = await refusalFrom(requireMemberOfActorWorkspace(admin, OUTSIDER.id));
+  const nonexistent = await refusalFrom(
+    requireMemberOfActorWorkspace(admin, "user-does-not-exist"),
+  );
+
+  // Identical, deliberately: any difference between these two is an
+  // oracle for enumerating ids of other tenants.
+  assert.equal(foreign.code, nonexistent.code);
+  assert.equal(foreign.refusal, nonexistent.refusal);
+  assert.equal(foreign.message, nonexistent.message);
+});
+
+test("every member-facing operation refuses a cross-tenant id as NOT_FOUND", async () => {
+  const admin = await actorFor(ADMIN.id);
+
+  for (const call of [
+    () => updateMemberRole({ actor: admin, targetUserId: OUTSIDER.id, role: "member" }),
+    () =>
+      updateMemberCapabilities({
+        actor: admin,
+        targetUserId: OUTSIDER.id,
+        canViewOthersRecords: true,
+      }),
+    () => removeMember({ actor: admin, targetUserId: OUTSIDER.id }),
+  ]) {
+    const refusal = await refusalFrom(call());
+    assert.equal(refusal.code, "NOT_FOUND");
+    assert.equal(refusal.refusal, undefined);
+  }
+
+  assert.deepEqual(memory.writes(), [], "a NOT_FOUND must never write anything");
+});
+
+test("a cross-tenant invitation id is NOT_FOUND before the invite permission is consulted", async () => {
+  // The actor is a plain MEMBER, who may not invite at all. If the
+  // permission were checked first this would be FORBIDDEN — and that
+  // FORBIDDEN would confirm the id exists in somebody else's workspace.
+  const plainMember = await actorFor(MEMBER.id);
+
+  const refusal = await refusalFrom(
+    cancelInvitation({ actor: plainMember, invitationId: FOREIGN_INVITATION_ID }),
+  );
+
+  assert.equal(refusal.code, "NOT_FOUND");
+  assert.equal(refusal.refusal, undefined);
+  assert.ok(
+    "organizationId" in lastLookupFilter("invitation", "findOne"),
+    "the invitation lookup must carry the actor's workspace id in the query",
+  );
+});
+
+test("an invitation id of the caller's own workspace that does not exist is NOT_FOUND", async () => {
+  const admin = await actorFor(ADMIN.id);
+
+  const refusal = await refusalFrom(
+    cancelInvitation({ actor: admin, invitationId: "invitation-does-not-exist" }),
+  );
+
+  assert.equal(refusal.code, "NOT_FOUND");
+  assert.equal(refusal.refusal, undefined);
+});
+
+/* ── Rule 4: FORBIDDEN only for a real row of the caller's workspace ── */
+
+test("a FORBIDDEN is reached only for a real row of the caller's own workspace", async () => {
+  const plainMember = await actorFor(MEMBER.id);
+
+  // Same caller, same call, same lack of permission — the only
+  // difference is that this invitation really is in their workspace.
+  const refusal = await refusalFrom(
+    cancelInvitation({ actor: plainMember, invitationId: PENDING_INVITATION_ID }),
+  );
+
+  assert.equal(refusal.code, "FORBIDDEN");
+  assert.equal(refusal.refusal, MEMBERSHIP_REFUSALS.inviteRequired);
+  assert.deepEqual(memory.writes(), []);
+});
+
+test("every FORBIDDEN carries a stable code from MEMBERSHIP_REFUSALS as its message", async () => {
+  const plainMember = await actorFor(MEMBER.id);
+  const admin = await actorFor(ADMIN.id);
+  const owner = await actorFor(OWNER.id);
+
+  const refusals = [
+    await refusalFrom(
+      updateMemberRole({ actor: plainMember, targetUserId: ADMIN.id, role: "member" }),
+    ),
+    await refusalFrom(
+      cancelInvitation({ actor: plainMember, invitationId: PENDING_INVITATION_ID }),
+    ),
+    await refusalFrom(removeMember({ actor: admin, targetUserId: OWNER.id })),
+    await refusalFrom(removeMember({ actor: owner, targetUserId: OWNER.id })),
+  ];
+
+  for (const refusal of refusals) {
+    assert.equal(refusal.code, "FORBIDDEN");
+    assert.ok(
+      refusal.refusal !== undefined,
+      "a FORBIDDEN without a refusal code leaves the client nothing to switch on",
+    );
+    assert.ok(
+      REFUSAL_CODES.has(refusal.message),
+      `"${refusal.message}" is prose, not a code from MEMBERSHIP_REFUSALS`,
+    );
+  }
+
+  assert.deepEqual(
+    refusals.map((r) => r.refusal),
+    [
+      MEMBERSHIP_REFUSALS.manageRequired,
+      MEMBERSHIP_REFUSALS.inviteRequired,
+      MEMBERSHIP_REFUSALS.cannotRemoveLastOwner,
+      MEMBERSHIP_REFUSALS.cannotTargetSelf,
+    ],
+  );
+});

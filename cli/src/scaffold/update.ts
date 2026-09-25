@@ -80,6 +80,7 @@ function identifiersFor(manifest: ProjectManifest): ProjectIdentifiers {
 
 /** Features that `update` knows how to layer onto an existing project. */
 const SUPPORTED_ADDITIONS: readonly Feature[] = [
+  "workspaces",
   "desktop",
   "mobile",
   "release",
@@ -266,6 +267,7 @@ export async function runUpdate(
     "stripe",
     "analytics",
     "s3",
+    "workspaces",
     "desktop",
     "mobile",
     "release",
@@ -361,7 +363,10 @@ export async function runUpdate(
     if (ok) {
       const resolvedStarter = realpathSync(STARTER_ROOT);
       for (const feature of added) {
-        if (feature === "desktop") {
+        if (feature === "workspaces") {
+          await addWorkspaces(projectDir, manifest);
+          updatedFeatures.add("workspaces");
+        } else if (feature === "desktop") {
           await addDesktop(projectDir, resolvedStarter, manifest);
           updatedFeatures.add("desktop");
         } else if (feature === "mobile") {
@@ -721,6 +726,38 @@ async function addMobile(
       content = content.replace(/(<body[^>]*>)\s*/, `$1\n        <MobileBridgeLoader />\n        `);
       writeFileSync(layoutPath, content, "utf-8");
     }
+  }
+}
+
+/**
+ * Layer the `workspaces` feature (tenants, members, roles, invitations)
+ * onto an existing project.
+ *
+ * Unlike the native wrappers above, this one copies nothing out of
+ * `starter/`: the feature is purely additive, so its source lives under
+ * cli/src/templates/workspaces/ and is rendered straight into the
+ * project by the same `applyWorkspacesFeature` the create path calls.
+ * One code path means `create --features workspaces` and `update` cannot
+ * produce different projects.
+ */
+async function addWorkspaces(projectDir: string, manifest: ProjectManifest): Promise<void> {
+  const { applyWorkspacesFeature, detectTargets } = await import("../features/workspaces/index.js");
+  const targets = detectTargets(projectDir, manifest.features);
+  const result = applyWorkspacesFeature({
+    projectDir,
+    projectName: manifest.name,
+    targets,
+  });
+
+  console.log(chalk.dim(`  workspaces: ${result.written.length} file(s) written`));
+  for (const file of result.patched) {
+    console.log(chalk.dim(`  workspaces: wired ${file}`));
+  }
+  for (const note of result.notes) {
+    console.log(chalk.dim(`  workspaces: ${note}`));
+  }
+  for (const step of result.nextSteps) {
+    console.log(chalk.yellow(`  workspaces: ${step}`));
   }
 }
 

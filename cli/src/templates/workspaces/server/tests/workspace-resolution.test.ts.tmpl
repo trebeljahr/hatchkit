@@ -1,0 +1,256 @@
+/*
+ * workspace-resolution.test.ts — Rule 6, pinned from both ends.
+ *
+ * The first half drives the real resolver. Its failure mode is the
+ * quietest in the whole feature: a request that names workspace A is
+ * answered about workspace B, nothing throws, and the rows that come
+ * back look entirely plausible. A client that queued a write offline for
+ * a workspace the person has since left would file it in the wrong
+ * tenant, where it is indistinguishable from a legitimate record.
+ *
+ * The second half walks the tRPC routers themselves. The resolver only
+ * ever sees a `workspaceId` if the procedure's input schema has a place
+ * to put one: a procedure declared `.input(z.string())` compiles, runs,
+ * and silently loses the tenant id — the middleware finds nothing on the
+ * raw input, falls back to the session default, and answers about
+ * whatever workspace the session happened to point at. So the test
+ * introspects every procedure's input schema and fails on a bare scalar,
+ * which means a procedure added months from now cannot regress this
+ * without somebody noticing.
+ */
+
+import assert from "node:assert/strict";
+import test, { beforeEach } from "node:test";
+import {
+  FOREIGN_WORKSPACE_ID,
+  LONER,
+  MEMBER,
+  SECOND_WORKSPACE_ID,
+  WORKSPACE_ID,
+  installMemoryMembership,
+} from "./support/memory-membership.js";
+
+const memory = installMemoryMembership();
+
+const { MembershipError } = await import("../services/membership/errors.js");
+const { resolveWorkspaceForRequest } = await import(
+  "../services/membership/workspaces.js"
+);
+
+beforeEach(() => {
+  memory.reseed();
+});
+
+async function refusalFrom(
+  promise: Promise<unknown>,
+): Promise<InstanceType<typeof MembershipError>> {
+  try {
+    await promise;
+  } catch (error) {
+    // Rethrown rather than asserted on: anything that is not a service
+    // refusal is a bug, and swallowing it here would hide it.
+    if (!(error instanceof MembershipError)) throw error;
+    return error;
+  }
+  throw new Error("expected the call to be refused, but it succeeded");
+}
+
+/* ── Rule 6: an explicit tenant id never falls back ─────────────────── */
+
+test("an explicit workspace the caller is not in is NOT_FOUND", async () => {
+  const refusal = await refusalFrom(
+    resolveWorkspaceForRequest({
+      userId: MEMBER.id,
+      requestedWorkspaceId: FOREIGN_WORKSPACE_ID,
+      // A perfectly good session default sits right here. It must not be
+      // reached for: falling back would answer about a workspace the
+      // request never named.
+      sessionActiveId: WORKSPACE_ID,
+    }),
+  );
+
+  assert.equal(refusal.code, "NOT_FOUND");
+  assert.equal(refusal.refusal, undefined);
+  assert.ok(
+    !memory.operations().includes("mirror.find"),
+    "the resolver listed the caller's memberships, which is the first half of a fallback",
+  );
+});
+
+test("an explicit workspace the caller IS in wins over the session default", async () => {
+  const actor = await resolveWorkspaceForRequest({
+    userId: MEMBER.id,
+    requestedWorkspaceId: SECOND_WORKSPACE_ID,
+    sessionActiveId: WORKSPACE_ID,
+  });
+
+  assert.equal(actor.workspaceId, SECOND_WORKSPACE_ID);
+  assert.equal(actor.userId, MEMBER.id);
+  assert.equal(actor.role, "owner");
+});
+
+/* ── Rule 6: an absent id falls back, a stale default falls back again ─ */
+
+test("an absent workspace id uses the session default", async () => {
+  // MEMBER's OLDEST membership is the first workspace, so a resolver that
+  // ignored the session default would still answer — with the wrong one.
+  const actor = await resolveWorkspaceForRequest({
+    userId: MEMBER.id,
+    sessionActiveId: SECOND_WORKSPACE_ID,
+  });
+
+  assert.equal(actor.workspaceId, SECOND_WORKSPACE_ID);
+});
+
+test("a session default pointing at a workspace the person left falls back to their oldest membership", async () => {
+  const actor = await resolveWorkspaceForRequest({
+    userId: MEMBER.id,
+    sessionActiveId: FOREIGN_WORKSPACE_ID,
+  });
+
+  assert.equal(
+    actor.workspaceId,
+    WORKSPACE_ID,
+    "a stale default must fall back rather than refuse: the session row is only refreshed on the next sign-in",
+  );
+});
+
+test("no session default at all falls back to the oldest membership", async () => {
+  const actor = await resolveWorkspaceForRequest({
+    userId: MEMBER.id,
+    sessionActiveId: null,
+  });
+
+  assert.equal(actor.workspaceId, WORKSPACE_ID);
+});
+
+test("somebody with no memberships at all is NOT_FOUND", async () => {
+  const refusal = await refusalFrom(resolveWorkspaceForRequest({ userId: LONER.id }));
+
+  assert.equal(
+    refusal.code,
+    "NOT_FOUND",
+    "there is no workspace here to be refused access to, so FORBIDDEN would be a lie",
+  );
+  assert.equal(refusal.refusal, undefined);
+});
+
+/* ── Rule 6: every workspace-scoped procedure can carry the tenant id ── */
+
+const { workspacesRouter } = await import("../trpc/routers/workspaces.js");
+const { membersRouter } = await import("../trpc/routers/members.js");
+const { invitationsRouter } = await import("../trpc/routers/invitations.js");
+
+/**
+ * The procedures that deliberately do NOT carry a workspace id, each with
+ * the reason it cannot. A new procedure is scoped unless it is added
+ * here, and a renamed one fails the "still exists" check below — so this
+ * list has to be revisited rather than drifting out of date.
+ */
+const UNSCOPED: Record<string, string> = {
+  "workspaces.list": "spans every workspace you belong to; scoping it would pick one arbitrarily",
+  "workspaces.create": "there is no workspace to be scoped to yet",
+  "invitations.preview": "public: reached signed out, from a link, before any membership exists",
+  "invitations.accept": "the accepter is not a member yet, so resolving one first would refuse it",
+};
+
+interface ZodLike {
+  safeParse?: (value: unknown) => { success: boolean; error?: { issues: { path: PropertyKey[] }[] } };
+  shape?: unknown;
+  def?: { shape?: unknown };
+  _def?: { shape?: unknown };
+}
+
+function proceduresOf(router: unknown): Record<string, unknown> {
+  const def = (router as { _def?: Record<string, unknown> })._def;
+  const procedures = (def?.procedures ?? def?.record) as Record<string, unknown> | undefined;
+  if (!procedures || Object.keys(procedures).length === 0) {
+    // Loud on purpose: if a tRPC upgrade moves this, the walk below would
+    // iterate nothing and pass vacuously forever.
+    throw new Error("could not read the router's procedures");
+  }
+  return procedures;
+}
+
+function inputsOf(procedure: unknown): ZodLike[] {
+  const def = (procedure as { _def?: { inputs?: unknown } })._def;
+  const inputs = def?.inputs;
+  return Array.isArray(inputs) ? (inputs as ZodLike[]) : [];
+}
+
+/** The object shape of a zod schema, or `null` when it is not an object. */
+function shapeOf(schema: ZodLike): Record<string, unknown> | null {
+  const candidates = [schema.shape, schema.def?.shape, schema._def?.shape];
+  for (const candidate of candidates) {
+    const resolved = typeof candidate === "function" ? (candidate as () => unknown)() : candidate;
+    if (resolved && typeof resolved === "object") return resolved as Record<string, unknown>;
+  }
+  return null;
+}
+
+const ROUTERS: [string, unknown][] = [
+  ["workspaces", workspacesRouter],
+  ["members", membersRouter],
+  ["invitations", invitationsRouter],
+];
+
+test("every workspace-scoped procedure takes an object input that allows workspaceId", () => {
+  const seen: string[] = [];
+
+  for (const [routerName, router] of ROUTERS) {
+    for (const procedureName of Object.keys(proceduresOf(router))) {
+      const path = `${routerName}.${procedureName}`;
+      seen.push(path);
+
+      const inputs = inputsOf(proceduresOf(router)[procedureName]);
+      if (path in UNSCOPED) continue;
+
+      assert.ok(
+        inputs.length > 0,
+        `${path} takes no input, so it cannot carry a workspace id — add it to UNSCOPED with a reason, or give it workspaceInput`,
+      );
+
+      for (const schema of inputs) {
+        const shape = shapeOf(schema);
+        if (!shape) {
+          throw new Error(
+            `${path} takes a bare scalar input. The middleware reads workspaceId off the RAW input object, so this procedure silently answers about the session's default workspace.`,
+          );
+        }
+        assert.ok(
+          "workspaceId" in shape,
+          `${path} has an object input without a workspaceId field — extend workspaceInput instead of declaring a fresh z.object()`,
+        );
+
+        // Declared is not the same as accepted: a `z.never()` or a
+        // narrowed literal would still show up in the shape.
+        const parsed = schema.safeParse?.({ workspaceId: WORKSPACE_ID });
+        const rejectedTheTenantId =
+          parsed?.success === false &&
+          (parsed.error?.issues ?? []).some((issue) => issue.path[0] === "workspaceId");
+        assert.equal(
+          rejectedTheTenantId,
+          false,
+          `${path} declares workspaceId but refuses a plain string id`,
+        );
+      }
+    }
+  }
+
+  for (const path of Object.keys(UNSCOPED)) {
+    assert.ok(
+      seen.includes(path),
+      `${path} is listed as unscoped but no longer exists — the exemption list has to be revisited, not left behind`,
+    );
+  }
+});
+
+test("the unscoped procedures are the only ones without a tenant id", () => {
+  const scopedCount = ROUTERS.flatMap(([routerName, router]) =>
+    Object.keys(proceduresOf(router)).map((name) => `${routerName}.${name}`),
+  ).filter((path) => !(path in UNSCOPED)).length;
+
+  // A sanity floor: if the walk above ever stops finding procedures it
+  // would pass by iterating nothing at all.
+  assert.ok(scopedCount >= 8, `only ${scopedCount} workspace-scoped procedures were found`);
+});

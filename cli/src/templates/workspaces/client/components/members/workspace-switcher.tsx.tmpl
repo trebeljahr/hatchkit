@@ -1,0 +1,135 @@
+"use client";
+
+/*
+ * workspace-switcher.tsx — picks which workspace the app is looking at.
+ *
+ * The id this control sets is the app's tenant for every subsequent
+ * request. It is stored per DEVICE (lib/active-workspace.ts), never read
+ * back from the session: one sign-in is shared by several clients, and a
+ * switch on the phone must not retarget a write the laptop is composing.
+ */
+
+import { useState } from "react";
+import { enterWorkspace } from "@/lib/active-workspace";
+import type { WorkspaceOption } from "@/hooks/use-active-workspace";
+import { trpc } from "@/lib/trpc";
+
+export interface WorkspaceSwitcherProps {
+  workspaces: WorkspaceOption[];
+  workspaceId: string | undefined;
+  isLoading: boolean;
+  /** Stores the choice and reloads the app. See useActiveWorkspace(). */
+  onSwitch: (workspaceId: string) => void;
+}
+
+export function WorkspaceSwitcher({
+  workspaces,
+  workspaceId,
+  isLoading,
+  onSwitch,
+}: WorkspaceSwitcherProps) {
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const utils = trpc.useUtils();
+
+  const createWorkspace = trpc.workspaces.create.useMutation({
+    onSuccess: (workspace) => {
+      void utils.workspaces.list.invalidate();
+      // Enter the new workspace through a FULL PAGE LOAD. A client-side
+      // route change would keep every cached query and every socket built
+      // for the previous tenant's permissions.
+      enterWorkspace(workspace.id);
+    },
+    onError: (err) => setError(err.message),
+  });
+
+  const active = workspaces.find((w) => w.id === workspaceId) ?? null;
+
+  if (isLoading) {
+    return <p className="text-sm text-muted-foreground">Loading workspaces…</p>;
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <label htmlFor="workspace-switcher" className="text-sm font-medium">
+          Workspace
+        </label>
+        <select
+          id="workspace-switcher"
+          value={workspaceId ?? ""}
+          onChange={(e) => onSwitch(e.target.value)}
+          disabled={workspaces.length === 0 || createWorkspace.isPending}
+          className="h-9 rounded-md border border-input bg-background px-2 text-sm disabled:opacity-50"
+          data-testid="workspace-switcher"
+        >
+          {workspaces.length === 0 && <option value="">No workspaces</option>}
+          {workspaces.map((workspace) => (
+            <option key={workspace.id} value={workspace.id}>
+              {workspace.name}
+            </option>
+          ))}
+        </select>
+        {active && (
+          <span className="text-xs text-muted-foreground">
+            You are {active.role} · {active.memberCount}{" "}
+            {active.memberCount === 1 ? "member" : "members"}
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            setError(null);
+            setCreating((open) => !open);
+          }}
+          className="text-xs text-muted-foreground hover:text-foreground"
+          data-testid="workspace-create-toggle"
+        >
+          {creating ? "Cancel" : "New workspace"}
+        </button>
+      </div>
+
+      {creating && (
+        <form
+          className="flex flex-col gap-2 sm:flex-row"
+          onSubmit={(e) => {
+            e.preventDefault();
+            setError(null);
+            const trimmed = name.trim();
+            if (trimmed.length === 0) return;
+            createWorkspace.mutate({ name: trimmed });
+          }}
+        >
+          <label htmlFor="workspace-name" className="sr-only">
+            New workspace name
+          </label>
+          <input
+            id="workspace-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Workspace name"
+            required
+            disabled={createWorkspace.isPending}
+            className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm"
+            data-testid="workspace-name"
+          />
+          <button
+            type="submit"
+            disabled={createWorkspace.isPending || name.trim().length === 0}
+            className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            data-testid="workspace-create"
+          >
+            {createWorkspace.isPending ? "Creating…" : "Create"}
+          </button>
+        </form>
+      )}
+
+      {error && (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}

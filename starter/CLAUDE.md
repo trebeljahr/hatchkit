@@ -211,6 +211,103 @@ it (e.g. `app://-`) instead.
   is set in `next.config.ts`.
 <!-- hatchkit:endif -->
 
+<!-- hatchkit:if workspaces -->
+## Workspaces, members and invitations
+
+Membership changes go through the app's own API only — `workspaces`,
+`members` and `invitations`, one line each over `services/membership/`.
+better-auth's organization plugin stays installed for its tables
+(`organization`, `member`, `invitation`, the session's
+`activeOrganizationId`) and for the server-side `auth.api.createOrganization`
+the signup hook calls, but **every `/api/auth/organization/*` request that
+arrives over HTTP answers 404** (`auth/organization-lockdown.ts`, wired as
+the instance's one `hooks.before`). Those endpoints write `member` and never
+`WorkspaceMember`, and they accept roles this app's rules refuse — each one
+was a way around the rules below. `tests/organization-http-lockdown.test.ts`
+hits all of them against the real library.
+
+Six rules, each of which fails quietly if broken:
+
+- **The mirror grants access; it is written last and deleted first.** The app
+  authorizes from `WorkspaceMember` alone. Add writes `member` then the
+  mirror; remove deletes the mirror then `member`. A crash in between always
+  leaves less access, and re-running the operation finishes it. Remove and
+  leave keep the person's own records.
+- **Never zero owners.** Transfer promotes the target in both records first,
+  then demotes the previous owner — `member` before the mirror, so somebody
+  who retries a half-finished transfer is still an owner. The last owner
+  cannot leave, be demoted or removed while anybody else remains; the sole
+  member cannot leave at all. `tests/membership-lifecycle.test.ts` fails
+  every write in turn.
+- **Roles are exactly `owner|admin|member`; flags follow the role.** An
+  owner's two visibility flags are forced on; everybody else, invited admins
+  included, starts closed; a role change never grants a flag. Owner is
+  reachable only by transfer — never by invitation or a role update. A stored
+  unrecognised role reads as `member`.
+- **Foreign ids are NOT_FOUND before any permission is consulted.** Every
+  member/invitation lookup carries the actor's `workspaceId` in the query;
+  only a real row of the caller's own workspace can earn FORBIDDEN, whose
+  message is a stable code from `MEMBERSHIP_REFUSALS`. The matrix is in
+  `services/membership/permissions.ts` and
+  `tests/members-permissions.test.ts`.
+- **Accepting an invitation needs the invited email, not a verified one.**
+  The proof is possession of the id — 96 CSPRNG bits, never an adapter
+  ObjectId, which is guessable — delivered to that inbox, or handed over by
+  the inviter from the link the UI shows when no mail transport is
+  configured. Requiring verification would make invitations unusable on
+  exactly the self-hosted instances with no mail to verify with. The
+  case-insensitive email match is what stops a forwarded link being accepted
+  under somebody else's account, and it is checked before the status, so a
+  wrong account learns nothing about whether the link is live. The link is
+  `${FRONTEND_URL}/invite/?id=<id>` — a query parameter, because a static
+  export cannot serve `/invite/<id>`.
+- **An explicit `workspaceId` never falls back; a stale session default
+  does.** A request naming a workspace the caller is not in is NOT_FOUND — a
+  replayed offline row must never land in another workspace. A session whose
+  `activeOrganizationId` points at a workspace the person left falls back to
+  their oldest membership. `workspaces.setActive` writes the session row,
+  which the five-minute cookie cache can hide for that long; first-party
+  clients therefore send `workspaceId` explicitly, and every
+  `workspaceProcedure` takes an object input that allows it
+  (`tests/workspace-resolution.test.ts` walks the router).
+
+Invitations are rows in better-auth's `invitation` collection with the
+plugin's field names, so account deletion's invitation cleanup covers them.
+A re-invite of a pending address refreshes and re-sends the same row; a
+workspace holds at most 50 pending, and an inviter sends at most 20 per hour
+(Redis when present, per process otherwise). With no transport, or a failed
+send, the invitation is kept, the URL is logged, and `emailSent: false` tells
+the inviter to share the link.
+
+### Members screen, invite page and visibility
+
+- **`/invite` lives outside the protected tree and reads a query
+  parameter.** Under a protected layout a signed-out invitee is bounced to
+  /login before the page can say whose workspace invited them, and an
+  `/invite/[id]` segment 404s under `output: "export"`.
+- **`?next=` goes through `lib/safe-next.ts` and nothing else.** It accepts
+  only a single-`/` path with no backslash, whitespace or control character,
+  still on this origin after URL parsing, under an allowlisted prefix. The
+  login page is the one everybody trusts, which makes an unvalidated `next` a
+  phishing redirect.
+- **Switching workspaces is a full page load** (`enterWorkspace`). A
+  client-side route change keeps every cached query and socket built for the
+  previous workspace's permissions. Anything cached is keyed by workspace.
+  The screens' own workspace is the switcher's active id, not the session
+  default — otherwise Members manages one workspace while requests address
+  another.
+- **Cross-member visibility is decided server side**, projected where that is
+  honest and refused where it is not. A withheld sensitive slot is `null`,
+  never `0`. An aggregate withholds every sensitive figure rather than a
+  partial sum and says so.<!-- hatchkit:if websocket --> The sync fan-out is
+  per recipient: `ws/membership-sync.ts` reads memberships fresh on every
+  publish and projects the event for each member. A new event kind that
+  carries a record must be added to its switch.<!-- hatchkit:endif -->
+
+The screens call the app's own typed API only — never
+`authClient.organization.*`, whose HTTP endpoints answer 404.
+<!-- hatchkit:endif -->
+
 <!-- hatchkit:if server -->
 ## Environment & Secrets (dotenvx)
 

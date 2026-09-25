@@ -1,0 +1,159 @@
+/*
+ * workspace-procedure.ts — the tRPC base every workspace-scoped procedure
+ * is built on, and the one place a service refusal becomes a tRPC error.
+ *
+ * Three things live here and nowhere else:
+ *
+ *   1. `workspaceInput` — the shared object input that carries the
+ *      per-request tenant id. Routers `.extend({...})` it.
+ *   2. `workspaceProcedure` — `protectedProcedure` plus a middleware that
+ *      resolves the caller's membership for THIS request and hands it to
+ *      the handler as `ctx.actor`.
+ *   3. `toTRPCError` — the single translation from `MembershipError` to
+ *      `TRPCError`, used by all three routers.
+ *
+ * If the middleware stops resolving per request and the routers start
+ * reading a workspace id out of the session instead, rule 6 is gone and
+ * a request that names a workspace explicitly silently answers about a
+ * different one. Nothing throws; the wrong rows just come back.
+ */
+
+import { TRPCError } from "@trpc/server";
+import { z } from "zod";
+import { protectedProcedure } from "./trpc.js";
+import {
+  assertCanUsePrivilegedSurface,
+  MembershipError,
+  resolveWorkspaceForRequest,
+} from "../services/membership/index.js";
+
+/* ── Refusal → transport error, in exactly one place ────────────────── */
+
+/**
+ * The one translation from the service's vocabulary to tRPC's. The
+ * service's codes are deliberately the same five names tRPC uses, so the
+ * mapping is code→code and the stable refusal code travels in the
+ * message — clients switch on it.
+ *
+ * Anything that is not a `MembershipError` is rethrown untouched: a bug
+ * in a service must not be laundered into a tidy 403 that a client will
+ * render as "you may not do that".
+ *
+ * Declared `never` so `promise.catch(toTRPCError)` keeps the promise's
+ * own type, which is what lets the routers stay one line each.
+ */
+export function toTRPCError(err: unknown): never {
+  if (err instanceof MembershipError) {
+    throw new TRPCError({ code: err.code, message: err.refusal });
+  }
+  throw err;
+}
+
+/* ── The shared object input ────────────────────────────────────────── */
+
+/**
+ * Every workspace-scoped procedure takes an OBJECT that allows an
+ * optional `workspaceId`, and gets it by extending this schema:
+ *
+ *     .input(workspaceInput.extend({ targetUserId: z.string() }))
+ *
+ * A procedure that takes a bare scalar instead — `.input(z.string())` —
+ * still compiles, still runs, and silently loses the per-request tenant
+ * id: `getRawInput()` below finds no `workspaceId`, the middleware falls
+ * back to the session default, and the caller is answered about whatever
+ * workspace their session happened to point at. That is rule 6 broken
+ * with no error anywhere, which is why the base object exists and why
+ * routers extend it rather than writing their own.
+ */
+export const workspaceInput = z.object({
+  workspaceId: z.string().optional(),
+});
+
+export type WorkspaceInput = z.infer<typeof workspaceInput>;
+
+/* ── Session reads, defensive because the session row is loosely typed ─ */
+
+interface SessionEnvelope {
+  session?: {
+    token?: string;
+    activeOrganizationId?: string | null;
+  } | null;
+}
+
+/**
+ * The session's stored default workspace. Only ever a FALLBACK: it is
+ * used when the request named no workspace, and a default pointing at a
+ * workspace the person has left falls back again inside the service
+ * (`pickFallbackWorkspace`). The session row is refreshed on sign-in and
+ * the cookie cache can hide a change for minutes, so it is never
+ * authoritative.
+ */
+export function activeWorkspaceIdFrom(session: unknown): string | null {
+  const active = (session as SessionEnvelope | null)?.session?.activeOrganizationId;
+  return typeof active === "string" && active.length > 0 ? active : null;
+}
+
+/** The current session's token, so a default change can be written to it. */
+export function sessionTokenFrom(session: unknown): string | undefined {
+  const token = (session as SessionEnvelope | null)?.session?.token;
+  return typeof token === "string" && token.length > 0 ? token : undefined;
+}
+
+/**
+ * Pull `workspaceId` off the RAW input. Raw, because a middleware runs
+ * before the procedure's own parser has produced typed input — and
+ * because this base must work for every router's extended shape without
+ * knowing any of them.
+ */
+function readWorkspaceId(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const value = (raw as { workspaceId?: unknown }).workspaceId;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/* ── The base procedure ─────────────────────────────────────────────── */
+
+/**
+ * `protectedProcedure` plus the resolved membership.
+ *
+ * `ctx.actor` is the caller's membership OF THE WORKSPACE THIS REQUEST
+ * MEANS, resolved fresh on every call. Handlers pass it straight to the
+ * service and never re-derive a workspace id from the session — inside
+ * the service `actor.workspaceId` is the authoritative tenant id and it
+ * goes into every query.
+ *
+ * `resolveWorkspaceForRequest` is where rule 6 is enforced: an explicit
+ * id the caller is not a member of is NOT_FOUND and never falls back, so
+ * a replayed offline row cannot land in a workspace it was not queued
+ * for; an absent id uses the session default, and a stale default falls
+ * back to the oldest membership rather than refusing.
+ */
+export const workspaceProcedure = protectedProcedure.use(
+  async ({ ctx, next, getRawInput }) => {
+    const raw = await getRawInput();
+    const actor = await resolveWorkspaceForRequest({
+      userId: ctx.user.id,
+      requestedWorkspaceId: readWorkspaceId(raw),
+      sessionActiveId: activeWorkspaceIdFrom(ctx.session),
+    }).catch(toTRPCError);
+
+    return next({ ctx: { ...ctx, actor } });
+  },
+);
+
+/**
+ * The base for this app's own cross-member surfaces — an aggregate
+ * report, a billing screen, an export. `canUsePrivilegedSurface` wants
+ * admin AND both visibility flags, asked per recipient BEFORE the query
+ * runs. Build those procedures on this rather than checking flags inside
+ * a handler: a check that happens after the query has already read every
+ * member's rows is a check that has already leaked them.
+ */
+export const privilegedProcedure = workspaceProcedure.use(({ ctx, next }) => {
+  try {
+    assertCanUsePrivilegedSurface(ctx.actor);
+  } catch (err) {
+    toTRPCError(err);
+  }
+  return next();
+});

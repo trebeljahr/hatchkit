@@ -71,6 +71,7 @@ function activeConditions(config: ProjectConfig): Set<string> {
     native: desktop || mobile,
     websocket: config.features.includes("websocket"),
     stripe: config.features.includes("stripe"),
+    workspaces: config.features.includes("workspaces"),
   };
   return new Set(Object.keys(on).filter((k) => on[k]));
 }

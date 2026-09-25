@@ -1,0 +1,218 @@
+/*
+ * active-workspace.ts — the CLIENT's own choice of which workspace this
+ * installation is looking at, and the cache discipline that choice needs.
+ *
+ * ── Why the client keeps its own choice ──────────────────────────────
+ *
+ * better-auth stores an `activeOrganizationId` on the SESSION. It is
+ * tempting to treat that as "the current workspace" and save a field on
+ * every request. Do not.
+ *
+ * That value is one per sign-in, and one sign-in is routinely shared by
+ * several clients at once: the web app in two browser tabs, the desktop
+ * shell, the phone. When the phone switches to workspace B, the session
+ * row changes underneath the laptop — which is still showing workspace A,
+ * still has workspace A's rows on screen, and whose next write carries no
+ * workspace id because "the session knows". That write lands in B. The
+ * person sees no error; they see a record that quietly went to the wrong
+ * tenant, which is the single worst failure a multi-tenant app has.
+ *
+ * So the tenant is a per-CLIENT choice, stored on this device, and it is
+ * named explicitly on every request. The session default is only ever a
+ * fallback for a client that named nothing — see rule 6 in the contract.
+ */
+
+import type { QueryClient } from "@tanstack/react-query";
+
+/** Where this device's choice is stored. */
+export const ACTIVE_WORKSPACE_STORAGE_KEY = "__HATCHKIT_PROJECT_NAME__.activeWorkspaceId";
+
+/**
+ * Where a switch lands when the caller names no destination. The invite
+ * page uses this after an accept: the page it is standing on
+ * (`/invite/?id=…`) is meaningless once the invitation is consumed.
+ */
+export const WORKSPACE_HOME_PATH = "/dashboard/";
+
+/* ── The storage seam ─────────────────────────────────────────────────
+ *
+ * The native shells do not all have a usable `localStorage`. The Capacitor
+ * build reads and writes through `@capacitor/preferences`; the Electron
+ * shell may prefer its own store; Next's Node prerender has no `window` at
+ * all. So no call site touches `localStorage` directly — they go through
+ * this seam, and a shell swaps the implementation once, at startup, before
+ * the first render.
+ *
+ * Note the seam is synchronous on purpose: the resolved workspace id is
+ * needed while rendering, and an async read would mean a frame rendered
+ * against no tenant, which is a frame of somebody else's data if the
+ * fallback guesses wrong.  A shell with an async native store should
+ * hydrate its values into a synchronous in-memory map at boot and set a
+ * seam backed by that map.
+ */
+
+export interface WorkspaceChoiceStorage {
+  get(key: string): string | null;
+  set(key: string, value: string): void;
+  remove(key: string): void;
+}
+
+/** A store that forgets everything — prerender, and shells with no store. */
+const memoryStorage = (): WorkspaceChoiceStorage => {
+  const map = new Map<string, string>();
+  return {
+    get: (key) => map.get(key) ?? null,
+    set: (key, value) => void map.set(key, value),
+    remove: (key) => void map.delete(key),
+  };
+};
+
+/**
+ * `localStorage` access throws outright in a few real configurations —
+ * Safari's private mode historically, and any embedding that blocks
+ * third-party storage. Every call is wrapped, and a failure degrades to
+ * "no stored choice", which resolves to the person's first membership
+ * rather than to an error screen.
+ */
+const browserStorage = (): WorkspaceChoiceStorage => ({
+  get(key) {
+    try {
+      return window.localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  },
+  set(key, value) {
+    try {
+      window.localStorage.setItem(key, value);
+    } catch {
+      /* A device that cannot remember re-picks on every load. */
+    }
+  },
+  remove(key) {
+    try {
+      window.localStorage.removeItem(key);
+    } catch {
+      /* ignore */
+    }
+  },
+});
+
+let storage: WorkspaceChoiceStorage =
+  typeof window === "undefined" ? memoryStorage() : browserStorage();
+
+/**
+ * Swap the store. Call once, at shell startup, BEFORE the first render —
+ * a swap after mount leaves whatever was already resolved pointing at the
+ * old store's answer.
+ */
+export function setWorkspaceChoiceStorage(next: WorkspaceChoiceStorage): void {
+  storage = next;
+}
+
+export function getWorkspaceChoiceStorage(): WorkspaceChoiceStorage {
+  return storage;
+}
+
+/* ── Reading and writing the choice ──────────────────────────────────── */
+
+export function readStoredWorkspaceId(): string | null {
+  const value = storage.get(ACTIVE_WORKSPACE_STORAGE_KEY);
+  return value && value.length > 0 ? value : null;
+}
+
+export function storeWorkspaceId(workspaceId: string): void {
+  storage.set(ACTIVE_WORKSPACE_STORAGE_KEY, workspaceId);
+}
+
+export function clearStoredWorkspaceId(): void {
+  storage.remove(ACTIVE_WORKSPACE_STORAGE_KEY);
+}
+
+/**
+ * Record the choice without navigating. Use this when the next load is
+ * about to happen anyway — after accepting an invitation, or when the
+ * resolver had to fall back and wants the fallback to be sticky.
+ */
+export function chooseWorkspaceForNextLoad(workspaceId: string): void {
+  storeWorkspaceId(workspaceId);
+}
+
+/**
+ * Switch tenant: store the choice, then leave through a FULL PAGE LOAD.
+ *
+ * `window.location.assign()`, not `router.push()`, and this is the whole
+ * point of the function.
+ *
+ * A client-side route change keeps the JavaScript context alive, and with
+ * it: every cached React Query entry fetched under the old tenant's
+ * permissions, every in-flight request already on the wire for the old
+ * tenant, the websocket subscribed to the old workspace's fan-out, and any
+ * module-level state that read the tenant once at import time. The new
+ * screen then renders the old tenant's rows, and a socket message
+ * projected for the old tenant's permissions arrives in the new tenant's
+ * UI. That is not a cosmetic glitch — it is cross-tenant data on screen.
+ *
+ * A full load throws all of it away. The cost is one reload per switch,
+ * which happens a handful of times a day at most. `clearWorkspaceCache()`
+ * exists for the shells that keep a webview alive across the navigation.
+ */
+export function enterWorkspace(workspaceId: string, destination?: string): void {
+  chooseWorkspaceForNextLoad(workspaceId);
+  if (typeof window === "undefined") return;
+  // An app-internal path, never a `?next=` value — anything that comes
+  // from a query string goes through lib/safe-next.ts first.
+  window.location.assign(destination ?? WORKSPACE_HOME_PATH);
+}
+
+/* ── Cache keyed by tenant ───────────────────────────────────────────── */
+
+/**
+ * Build a React Query key that carries the tenant.
+ *
+ * EVERYTHING the app caches is keyed this way. React Query keys are
+ * structural: two screens that both ask for `["members"]` share one cache
+ * entry, and nothing in the key says which workspace filled it. Key by
+ * tenant and the collision cannot happen — the old tenant's entry is a
+ * different key, so it can neither be read nor overwritten by mistake.
+ *
+ * tRPC's own hooks build their keys from the procedure path plus the
+ * input, so passing `workspaceId` in the input (which the app does on
+ * every call) gives them the same property for free. Use this helper for
+ * the queries the app writes by hand.
+ */
+export function workspaceQueryKey(
+  workspaceId: string,
+  ...rest: readonly unknown[]
+): unknown[] {
+  return ["workspace", workspaceId, ...rest];
+}
+
+/**
+ * Drop every cached entry. Called on switch, before the reload, so a shell
+ * that survives the navigation (Capacitor keeps the webview) does not
+ * repaint the previous tenant's rows for the instant before the new data
+ * lands. Removing rather than invalidating matters: an invalidated entry
+ * is still SERVED from cache while it refetches.
+ */
+export function clearWorkspaceCache(queryClient: QueryClient): void {
+  queryClient.removeQueries();
+}
+
+/**
+ * Is `workspaceId` still the tenant this client is looking at?
+ *
+ * Call it in a mutation's `onSuccess`/`onSettled` before touching the
+ * cache. A write started in workspace A can settle after the person
+ * switched to B — the request was already on the wire, and its callback
+ * does not know the world moved. Without this guard the callback
+ * invalidates or writes into B's cache using A's response.
+ *
+ * The reason a guard is needed at all: a React Query key does not carry
+ * the tenant by itself, and neither does a mutation callback's closure.
+ * The key helper above fixes the read side; this fixes the write side.
+ */
+export function stillInWorkspace(workspaceId: string | null | undefined): boolean {
+  if (!workspaceId) return false;
+  return readStoredWorkspaceId() === workspaceId;
+}
