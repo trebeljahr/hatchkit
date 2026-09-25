@@ -38,10 +38,18 @@ import { dirname, join, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
 import { addUsedPorts, getUsedPorts } from "../config.js";
+import { repoSlugFromRemote } from "../deploy/gh-actions-secrets.js";
 import { pushNativeOriginsForProject } from "../deploy/trusted-origins.js";
 import type { AuthSecurityOption } from "../features/auth-account-security/types.js";
+import { BUILD_COMMIT_ENV_VAR, BUILD_INFO_PATH } from "../features/deploy-recovery/index.js";
+import { upgradeNextConfig } from "../features/deploy-recovery/serving.js";
 import { extensionPrerequisiteProblem } from "../features/extension/index.js";
 import type { RunI18nSetupOptions } from "../features/i18n/index.js";
+import {
+  applyOperationalLayer,
+  operationalProjectFromManifest,
+  renderOperationalLayer,
+} from "../features/operational.js";
 import {
   SERVER_FEATURE_IDS,
   applyServerFeatures,
@@ -49,6 +57,7 @@ import {
   printServerFeatureResults,
 } from "../features/server-platform/index.js";
 import type { Feature } from "../prompts.js";
+import { exec } from "../utils/exec.js";
 import { KNOWN_FEATURES } from "../utils/flags.js";
 import { multiselect } from "../utils/multiselect.js";
 import { PORT_RANGES, pickPort } from "../utils/ports.js";
@@ -844,6 +853,67 @@ export async function runUpdate(
     }
   }
 
+  // The operational layer, retrofitted. Same no-flag rationale as the
+  // retrofits above: every one of these closes a failure that is silent
+  // by nature — a deploy that cannot undo itself, a store client that
+  // cannot sign in, a tab that white-screens after a deploy, an API
+  // origin two places disagree about. A project that predates them has
+  // all four and no way to know.
+  //
+  // LAST, after the feature additions above. Several modules read the
+  // project's feature set and the files those additions write — the
+  // native origins a store client signs in from, the platform list a
+  // crash report carries, the static-export flip a shell needs. Run
+  // before them, this wrote the layer for the feature set the project
+  // had on the way in, and the NEXT `update` rewrote all of it for the
+  // set it has now: a second run that changed five files while
+  // reporting nothing added.
+  //
+  // Unlike the retrofits above, this one runs in a dry run too: every
+  // write goes through a FeatureLedger, which is where `--dry-run` is
+  // decided, so the modules describe the whole change without touching
+  // the tree instead of being skipped wholesale.
+  //
+  // Nothing a user has tuned is overwritten: the layer owns the files
+  // it regenerates and uses managed blocks or fixed-point edits for the
+  // ones it shares. `force` is the caller's decision, and `update`
+  // never makes it.
+  //
+  // The repository slug has to be resolved here, exactly as `create`
+  // resolves it. Several generated artefacts name a registry image
+  // built from it, and a run that cannot answer "which repository?"
+  // writes a placeholder owner over a correct one — the self-host
+  // compose would go from the project's real image to `ghcr.io/OWNER/…`
+  // on every update, which pulls nothing and says nothing about why.
+  const operationalRepoSlug = await detectRepoSlug(projectDir);
+  const operational = applyOperationalLayer({
+    projectDir,
+    // `updatedFeatures`, not `manifest.features`: the additions above
+    // have already run, and several modules read the feature set to
+    // decide what exists — which native origins a store client signs in
+    // from, which platforms a crash report can name. Handed the set the
+    // project had on the way IN, this writes for a project that no
+    // longer exists and the next `update` rewrites all of it.
+    project: {
+      ...operationalProjectFromManifest(manifest, operationalRepoSlug),
+      features: [...updatedFeatures],
+    },
+    mode: "update",
+    dryRun,
+  });
+  const operationalLines = renderOperationalLayer(operational);
+  if (operationalLines.length > 0) {
+    console.log(chalk.bold("\n  Operational layer"));
+    for (const line of operationalLines) {
+      console.log(line.endsWith(":") ? chalk.cyan(`  ${line}`) : chalk.dim(`  ${line}`));
+    }
+  }
+  const operationalSteps = operational.manualSteps;
+  if (operationalSteps.length > 0) {
+    console.log(chalk.dim("\n  Left for you:"));
+    for (const step of operationalSteps) console.log(`  ${chalk.yellow("·")} ${step}`);
+  }
+
   return {
     added: actuallyAdded,
     skipped: [...skippedAdditions, ...prerequisiteSkipped],
@@ -957,8 +1027,19 @@ function ensureStaticExportForNativeShell(projectDir: string, resolvedStarter: s
   const current = readFileSync(path, "utf-8");
   if (current.includes(STATIC_EXPORT_MARKER)) return;
 
+  // "Untouched" means the USER has not edited it — not that nothing has.
+  // The operational layer retrofits this same file (the build-info route
+  // has to go out uncached), so a byte comparison against the pristine
+  // starter reports every scaffolded project as hand-edited and refuses
+  // the flip on all of them. Comparing against the starter WITH
+  // hatchkit's own transform applied asks the question that was meant:
+  // the transform is idempotent and is the only other thing that writes
+  // here, so anything else in the file came from a person.
   const pristine = join(resolvedStarter, rel);
-  const untouched = existsSync(pristine) && readFileSync(pristine, "utf-8") === current;
+  const pristineBody = existsSync(pristine) ? readFileSync(pristine, "utf-8") : undefined;
+  const untouched =
+    pristineBody !== undefined &&
+    (pristineBody === current || nextConfigAsHatchkitWritesIt(pristineBody) === current);
   if (!untouched) {
     console.log(
       chalk.yellow(
@@ -1392,4 +1473,30 @@ async function addAuthAccountSecurity(
   console.log(chalk.dim("    See docs/account-security.md in the project."));
 
   return audit.options;
+}
+
+/** The project's `owner/repo` on GitHub, read from its git remote.
+ *
+ *  `undefined` when there is no remote, no repository, or a remote this
+ *  cannot parse — every consumer treats that as "unknown" and leaves
+ *  whatever is already written alone rather than substituting a
+ *  placeholder. */
+async function detectRepoSlug(projectDir: string): Promise<string | undefined> {
+  const res = await exec("git", ["-C", projectDir, "remote", "get-url", "origin"], {
+    silent: true,
+  });
+  if (res.exitCode !== 0) return undefined;
+  return repoSlugFromRemote(res.stdout.trim());
+}
+
+/** The starter's next.config.ts as the operational layer leaves it.
+ *
+ *  Used only to tell hatchkit's own edit apart from a person's — see
+ *  {@link ensureStaticExportForNativeShell}. Mirrors the arguments
+ *  `deploy-recovery` applies, so the two cannot answer differently. */
+function nextConfigAsHatchkitWritesIt(pristine: string): string {
+  return upgradeNextConfig(pristine, {
+    buildInfoPath: BUILD_INFO_PATH,
+    commitEnvVar: BUILD_COMMIT_ENV_VAR,
+  }).content;
 }

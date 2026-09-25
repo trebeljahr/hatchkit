@@ -235,7 +235,10 @@ const portMode = fixedMode
 console.log(`\n  Mode:     ${portMode}`);
 console.log(`  Client:   http://${WEB_HOST}:${clientPort}`);
 if (includeDocs) {
-  console.log(`  Docs:     http://${WEB_HOST}:${docsPort}`);
+  // Under /docs/, because that is where the docs are published in
+  // production (docs-site/docusaurus.config.ts sets `baseUrl` to it) and the
+  // dev server honours the same base path. The bare port serves nothing.
+  console.log(`  Docs:     http://${WEB_HOST}:${docsPort}/docs/`);
 }
 console.log(`  Server:   http://${WEB_HOST}:${apiPort}`);
 console.log(`  Trusts:   ${trustedOrigins.length > 0 ? trustedOrigins.join(", ") : "(same-origin only)"}`);

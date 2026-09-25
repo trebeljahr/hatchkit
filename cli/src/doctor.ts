@@ -922,6 +922,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of deferredChecks) results.push(r);
   const subdirChecks = await checkProjectSubdirState(process.cwd());
   for (const r of subdirChecks) results.push(r);
+  const operationalChecks = await checkProjectOperationalState(process.cwd());
+  for (const r of operationalChecks) results.push(r);
   return results;
 }
 
@@ -2593,4 +2595,156 @@ export async function runDoctor(opts: { json?: boolean } = {}): Promise<void> {
     console.log();
     process.exit(1);
   }
+}
+
+/**
+ * The operational layer's read-only checks, run against a project on
+ * disk: does everything that carries the API origin carry the same one,
+ * does production environment actually reach the container, and is this
+ * project's domain layout one its proxy and its certificate can serve?
+ *
+ * All three are pure functions over files; nothing here talks to a
+ * platform, so `hatchkit doctor` stays safe to run anywhere. They return
+ * `[]` outside a hatchkit-managed project, so doctor from $HOME is
+ * unaffected.
+ *
+ * Why these are worth a doctor check rather than a scaffold-time one:
+ * each fails SILENTLY and each drifts. A domain rename, a new native
+ * surface, a value edited on the platform instead of in the repo — all
+ * of them can put two places out of step months after the files were
+ * written, and every one of those failures looks like a working deploy
+ * right up until a person cannot sign in.
+ */
+export async function checkProjectOperationalState(projectDir: string): Promise<CheckResult[]> {
+  const out: CheckResult[] = [];
+  const { readManifest } = await import("./scaffold/manifest.js");
+  const manifest = readManifest(projectDir);
+  if (!manifest?.name) return out;
+  // gh-pages and scaffold-only projects have no server half and no
+  // platform to disagree with.
+  if (manifest.deploymentMode === "gh-pages" || manifest.deploymentMode === "scaffold-only") {
+    return out;
+  }
+
+  const { operationalProjectFromManifest } = await import("./features/operational.js");
+  const project = operationalProjectFromManifest(manifest);
+
+  // ── everything that carries the default API origin ──────────────────
+  const { checkApiOriginAgreement, projectFileReader } = await import(
+    "./features/env-agreement/index.js"
+  );
+  try {
+    const agreement = checkApiOriginAgreement({
+      project,
+      readFile: projectFileReader(projectDir),
+    });
+    // `enforced` is not a disagreement: a release workflow whose plan job
+    // refuses the run when its secret is empty, or one carrying a poison
+    // default so a build with no variable fails loudly, has declined to
+    // guess an origin. That is the correct behaviour, not a finding.
+    const wrong = agreement.sites.filter(
+      (s) => s.status === "differs" || s.status === "missing" || s.status === "unreadable",
+    );
+    out.push({
+      name: `Project ${manifest.name} (API origin agreement)`,
+      status: wrong.length === 0 ? "ok" : "fail",
+      detail:
+        wrong.length === 0
+          ? `${agreement.expected} — every applicable place agrees`
+          : `${wrong.length} of ${agreement.sites.length} disagree with ${agreement.expected}`,
+      hint:
+        wrong.length === 0
+          ? undefined
+          : [
+              ...wrong.map(
+                (s) => `${s.label} (${s.path}): ${s.status}${s.found ? ` — ${s.found}` : ""}`,
+              ),
+              "",
+              "The client bundle inlines its API origin when the IMAGE is built, so a",
+              "wrong value there builds green and points the browser at a dead API;",
+              "runtime env on the container cannot change it, only a rebuild can.",
+              "A native surface's value is baked into a store binary, which needs a",
+              "new build and a new review to correct.",
+              "",
+              "`hatchkit update` rewrites the ones hatchkit owns.",
+            ],
+    });
+  } catch (err) {
+    out.push({
+      name: `Project ${manifest.name} (API origin agreement)`,
+      status: "skip",
+      detail: `could not read the project: ${(err as Error).message}`,
+    });
+  }
+
+  // ── where production environment actually lives ─────────────────────
+  const { checkRuntimeEnvSource } = await import("./features/env-agreement/index.js");
+  const { existsSync, readFileSync } = await import("node:fs");
+  const read = (rel: string): string | undefined => {
+    const path = `${projectDir}/${rel}`;
+    return existsSync(path) ? readFileSync(path, "utf-8") : undefined;
+  };
+  const envProd = "packages/server/.env.production";
+  const envProdPath = `${projectDir}/${envProd}`;
+  const envProdBody = existsSync(envProdPath) ? readFileSync(envProdPath, "utf-8") : undefined;
+  const composeFiles = [
+    "docker-compose.yml",
+    "docker-compose.server.yml",
+    "docker-compose.client.yml",
+  ]
+    .map((path) => ({ path, content: read(path) }))
+    .filter((f): f is { path: string; content: string } => f.content !== undefined);
+
+  const envSource = checkRuntimeEnvSource({
+    dockerfile: read("packages/server/Dockerfile"),
+    gitignore: read(".gitignore"),
+    composeFiles,
+    expectedKeys: [],
+    envFile:
+      envProdBody === undefined
+        ? undefined
+        : {
+            path: envProd,
+            exists: true,
+            // dotenvx ciphertext is what the encrypted-file mechanism
+            // produces; a plain file is a local convenience and not the
+            // failure this check is about.
+            encrypted: envProdBody.includes("encrypted:"),
+          },
+  });
+  if (envSource.findings.length > 0) {
+    out.push({
+      name: `Project ${manifest.name} (production env source)`,
+      status: envSource.ok ? "ok" : "fail",
+      detail: envSource.findings.map((f) => f.code).join(", "),
+      hint: [
+        ...envSource.findings.map((f) => `${f.code}: ${f.message}`),
+        "",
+        "Production environment lives in the platform's environment fields.",
+        "A value written to an encrypted file the runtime image never copies",
+        "deploys green and leaves the server on its old values, with nothing",
+        "in the diff to point at.",
+      ],
+    });
+  }
+
+  // ── the domain layout the proxy and the certificate can serve ───────
+  const { topologyAdvice } = await import("./features/topology-guidance/index.js");
+  const advice = topologyAdvice({
+    domain: project.domain,
+    aliases: project.aliases,
+    topology: project.topology,
+    surfaces: project.surfaces,
+  });
+  const actionable = advice.findings.filter((f) => f.severity !== "info");
+  if (actionable.length > 0) {
+    out.push({
+      name: `Project ${manifest.name} (deployment topology)`,
+      status: advice.ok ? "ok" : "fail",
+      detail: actionable.map((f) => f.code).join(", "),
+      hint: actionable.flatMap((f) => [`${f.code}: ${f.message}`, `  → ${f.fix}`]),
+    });
+  }
+
+  return out;
 }

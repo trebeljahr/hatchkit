@@ -110,10 +110,30 @@ export function wireAuthPlugin(ctx: FeatureContext): void {
           `import { bootstrapWorkspaceOnUserCreate } from "./workspace-bootstrap.js";\n`,
       );
 
-      const configAnchor = /(\n {4}trustedOrigins: getTrustedOrigins\(\),\n)/;
-      if (!configAnchor.test(out)) return null;
+      // Anchor on `baseURL`, not on `trustedOrigins`.
+      //
+      // This used to match the literal line `trustedOrigins:
+      // getTrustedOrigins(),`, which broke the moment another feature
+      // made that option a per-request function (the store-client trust
+      // switch did exactly that). The failure was the quiet kind: the
+      // patch reported a conflict, the organization plugin was never
+      // installed, and the project looked scaffolded.
+      //
+      // `baseURL: env.BETTER_AUTH_URL` is the stable line in this
+      // config — better-auth cannot work without it and nothing else
+      // has a reason to rewrite it. The older shape is still accepted
+      // so a project scaffolded before that change can still add
+      // workspaces.
+      const configAnchor = /(\n {4}baseURL: env\.BETTER_AUTH_URL,\n)/;
+      const legacyAnchor = /(\n {4}trustedOrigins: getTrustedOrigins\(\),\n)/;
+      const anchor = configAnchor.test(out)
+        ? configAnchor
+        : legacyAnchor.test(out)
+          ? legacyAnchor
+          : null;
+      if (anchor === null) return null;
       out = out.replace(
-        configAnchor,
+        anchor,
         `$1
     // The organization plugin stays installed for its tables and for the
     // server-side auth.api.createOrganization the signup hook calls — but

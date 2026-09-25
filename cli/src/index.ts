@@ -2841,6 +2841,19 @@ async function handleCreate(): Promise<void> {
     uninstallCancelHandler();
   }
 
+  // What the operational features wrote but could not finish: a
+  // repository variable to set, an image-pin variable to create once on
+  // the platform, a DNS record for the API host. Printed as its own
+  // block because each one is a thing that makes a generated file work,
+  // and the per-file lines they came from scrolled off long ago.
+  if (scaffoldResult && scaffoldResult.manualSteps.length > 0) {
+    console.log(chalk.bold(`\n  Operational layer — ${config.name}`));
+    console.log(chalk.dim("  Generated and wired up. These are the parts only you can do:\n"));
+    for (const step of scaffoldResult.manualSteps) {
+      console.log(`  ${chalk.yellow("·")} ${step}`);
+    }
+  }
+
   // Final summary. The deferral block goes first so "what's still
   // outstanding" isn't buried under the next-steps hints — and so a run
   // that skipped three optional steps still reads as a success with a

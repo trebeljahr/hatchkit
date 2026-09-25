@@ -30,6 +30,7 @@ import ora from "ora";
 import { addUsedPorts, getUsedPorts, removeUsedPorts } from "../config.js";
 import { expandFeatureSelection } from "../features/all.js";
 import { extensionPrerequisiteProblem } from "../features/extension/index.js";
+import { applyOperationalLayer, renderOperationalLayer } from "../features/operational.js";
 import {
   applyServerFeatures,
   isServerFeature,
@@ -110,6 +111,11 @@ export interface ScaffoldResult {
    *  (config.localDev was set). The caller uses `slug` to record the
    *  ledger step so `hatchkit destroy` cleans up the Caddy fragment. */
   localDev?: { slug: string; domain?: string };
+  /** What the operational features could not do for the user: a secret
+   *  to set, a variable to create once on the platform, a DNS record to
+   *  add. Repeated at the end of the run, because the per-modification
+   *  lines scroll off a long scaffold long before anyone reads them. */
+  manualSteps: string[];
 }
 
 /** Scaffold a new app by copying the starter template and customizing it. */
@@ -131,6 +137,8 @@ export async function scaffoldApp(
       ports: await pickProjectPorts(getUsedPorts(), {
         nativeHmr: config.features.includes("desktop") || config.features.includes("mobile"),
       }),
+      // A dry run writes nothing, so it owes nobody a manual step.
+      manualSteps: [],
     };
   }
 
@@ -924,7 +932,41 @@ async function runScaffoldSteps(
     );
   }
 
-  return { modifications, ports, dotenvx, localDev };
+  // The operational layer: verified deploy + rollback, the topology
+  // write-up, the API-origin agreement, the self-host path, the docs in
+  // the client image, deploy recovery in an open tab, and client error
+  // reporting. Last, deliberately — every one of them reads or retrofits
+  // something the steps above have already written (the deploy workflow,
+  // the client Dockerfile, the client source tree), so running them
+  // earlier would anchor on files that are not in their final shape yet.
+  //
+  // Each module decides for itself whether it applies to this project
+  // and skips with a reason otherwise, so there is no shape test here.
+  //
+  // Every write goes through a FeatureLedger, so the report below is the
+  // ledger's own account of what changed rather than a parallel list
+  // maintained by hand — and `--dry-run` is handled in one place.
+  const operational = applyOperationalLayer({
+    projectDir: outputDir,
+    project: {
+      name: config.name,
+      domain: config.domain,
+      topology: config.topology ?? "single-origin",
+      surfaces: config.surfaces ?? "fullstack",
+      features: config.features,
+      repoSlug: ghOwner ? `${ghOwner}/${config.name}` : undefined,
+    },
+    mode: "create",
+    dryRun: false,
+  });
+  for (const line of renderOperationalLayer(operational)) modifications.push(line);
+  // The manual steps are repeated at the end of a long run, because the
+  // per-module lines above scroll off. They are the part a person still
+  // has to do: a secret to set, a variable to create once on the
+  // platform, a DNS record to add.
+  const manualSteps = operational.manualSteps;
+
+  return { modifications, ports, dotenvx, localDev, manualSteps };
 }
 
 /** Generate the i18n tree during `hatchkit create`.

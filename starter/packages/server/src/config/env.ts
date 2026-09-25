@@ -59,6 +59,36 @@ export const env = {
   // credentials:true — register a custom protocol in the main process
   // and list it here instead.
   TRUSTED_ORIGINS: getOptional("TRUSTED_ORIGINS"),
+  // The origins of the published store clients: the phone shells
+  // (capacitor://localhost on iOS, https://localhost on Android), the
+  // desktop shell (app://-) and a published browser extension
+  // (chrome-extension://<id>). Comma-separated, and parsed exactly like
+  // TRUSTED_ORIGINS above. The self-host compose file fills this in from
+  // the project's own features, so a self-hoster can read off which
+  // clients their instance accepts instead of guessing. Empty on a deploy
+  // that ships no store client, which makes TRUST_STORE_APPS below a
+  // no-op there.
+  STORE_CLIENT_ORIGINS: getOptional("STORE_CLIENT_ORIGINS"),
+  // Whether STORE_CLIENT_ORIGINS is appended to the trusted list. ON
+  // unless it is explicitly false, and that default is deliberate: a
+  // person who installs the published apps and points them at their own
+  // server expects them to work, and the alternative is a silent refusal
+  // they cannot diagnose — a same-origin 403 INVALID_ORIGIN with no CORS
+  // message in the console, which curl cannot even reproduce (better-auth
+  // only force-validates Origin for requests carrying Sec-Fetch-*
+  // headers, which browsers and WebViews send and curl does not). It
+  // costs nothing on a deploy that ships no store client, because the
+  // list it turns on is then empty. Set it to false to accept the web app
+  // only.
+  TRUST_STORE_APPS: getOptional("TRUST_STORE_APPS"),
+  // Trust moz-extension://<uuid> and safari-web-extension://<uuid>
+  // origins for requests that carry no session cookie — the only way an
+  // extension whose origin is a fresh identifier per install can be
+  // trusted at all, since nobody can list it in advance. The rule and
+  // what narrows it are in auth/extension-origins.ts. Unset follows
+  // TRUST_STORE_APPS, because a server that accepts the store clients
+  // means to accept that one too; an explicit value wins either way.
+  TRUST_EXTENSION_ORIGINS: getOptional("TRUST_EXTENSION_ORIGINS"),
 
   // The git commit this image was built from, baked in as a Docker build
   // arg (see packages/server/Dockerfile). Reported by /api/health so the
@@ -126,12 +156,107 @@ export const env = {
   isTest: getOptional("NODE_ENV") === "test",
 } as const;
 
+/** Read one of the origin CSVs the way better-auth needs them: split on
+ *  commas, each entry trimmed, empties dropped. Order is preserved —
+ *  better-auth matches these VERBATIM, so this is a reading and never a
+ *  normalisation: a trailing slash left here is a silent 403 later, and
+ *  quietly stripping it would hide the typo instead of the mismatch. */
+function parseOriginList(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Values that turn a switch on and off. Written out rather than a bare
+ *  `=== "true"` because these are typed by hand into a .env file. */
+const TRUE_FLAGS = ["true", "1", "yes", "on"];
+const FALSE_FLAGS = ["false", "0", "no", "off"];
+
+/**
+ * Whether the store clients' origins are trusted. ON unless explicitly
+ * off.
+ *
+ * A pure function of the raw value so the switch can be asserted without
+ * rebooting the env module — the `env` object snapshots process.env once,
+ * at import time.
+ */
+export function resolveTrustStoreApps(raw: string): boolean {
+  return !FALSE_FLAGS.includes(raw.trim().toLowerCase());
+}
+
+/**
+ * Whether extension-scheme origins (`moz-extension://<uuid>`,
+ * `safari-web-extension://<uuid>`) are trusted for cookie-less requests.
+ *
+ * Unset follows TRUST_STORE_APPS; an explicit value wins either way, so a
+ * server can accept the store clients and still refuse this rule, or
+ * accept this rule while listing its other origins by hand.
+ */
+export function resolveTrustExtensionOrigins(
+  raw: string,
+  trustStoreApps: boolean,
+): boolean {
+  const value = raw.trim().toLowerCase();
+  if (TRUE_FLAGS.includes(value)) return true;
+  if (FALSE_FLAGS.includes(value)) return false;
+  return trustStoreApps;
+}
+
+/** Everything {@link buildTrustedOrigins} reads, as raw values. */
+export interface TrustedOriginSource {
+  frontendUrl: string;
+  /** The raw TRUSTED_ORIGINS CSV. */
+  trustedOrigins: string;
+  /** The raw STORE_CLIENT_ORIGINS CSV. */
+  storeClientOrigins: string;
+  trustStoreApps: boolean;
+}
+
+/**
+ * The trusted-origin rule, as a pure function of its inputs so that the
+ * TRUST_STORE_APPS switch can be asserted without rebooting the env
+ * module.
+ *
+ * FRONTEND_URL leads, the hand-written CSV follows, and the store clients
+ * come last. A duplicate — somebody who listed capacitor://localhost by
+ * hand and also left the switch on — is kept once.
+ */
+export function buildTrustedOrigins(source: TrustedOriginSource): string[] {
+  const extras = parseOriginList(source.trustedOrigins);
+  const listed = source.frontendUrl
+    ? [source.frontendUrl, ...extras]
+    : extras;
+  const store = source.trustStoreApps
+    ? parseOriginList(source.storeClientOrigins)
+    : [];
+  return [...new Set([...listed, ...store])];
+}
+
+/** {@link resolveTrustStoreApps} for this process's environment. */
+export function trustsStoreApps(): boolean {
+  return resolveTrustStoreApps(env.TRUST_STORE_APPS);
+}
+
+/** {@link resolveTrustExtensionOrigins} for this process's environment. */
+export function trustsExtensionOrigins(): boolean {
+  return resolveTrustExtensionOrigins(
+    env.TRUST_EXTENSION_ORIGINS,
+    trustsStoreApps(),
+  );
+}
+
 /** All origins trusted for CORS + better-auth. Merges FRONTEND_URL with
  *  the optional TRUSTED_ORIGINS CSV so native shells (Capacitor, custom
- *  Electron protocols) can authenticate against the same API. */
+ *  Electron protocols) can authenticate against the same API, plus the
+ *  published store clients when TRUST_STORE_APPS is on. Extension-scheme
+ *  origins are NOT in this list — they are per-request, because each
+ *  install has its own (auth/extension-origins.ts). */
 export function getTrustedOrigins(): string[] {
-  const extras = env.TRUSTED_ORIGINS
-    ? env.TRUSTED_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean)
-    : [];
-  return env.FRONTEND_URL ? [env.FRONTEND_URL, ...extras] : extras;
+  return buildTrustedOrigins({
+    frontendUrl: env.FRONTEND_URL,
+    trustedOrigins: env.TRUSTED_ORIGINS,
+    storeClientOrigins: env.STORE_CLIENT_ORIGINS,
+    trustStoreApps: trustsStoreApps(),
+  });
 }
