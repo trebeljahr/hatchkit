@@ -100,7 +100,12 @@ export type Feature =
   /** Sign-in methods and account controls on top of the starter's
    *  better-auth instance, which registers no plugins of its own.
    *  Purely additive — see cli/src/features/auth-account-security/. */
-  | "auth-account-security";
+  | "auth-account-security"
+  /** Host-free client kit: a typed API client, a one-way sync client, an
+   *  offline mutation queue with a single replay classifier, and the
+   *  client/server version handshake. Scaffolds `packages/core`, which every
+   *  additional surface (extension, launcher, native shell) is built on. */
+  | "client-core";
 
 export type AnalyticsProvider = "glitchtip" | "openpanel" | "plausible";
 
@@ -1003,6 +1008,11 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
               name: "Account security (2FA, account controls, extra sign-in methods)",
               value: "auth-account-security",
               checked: c.features.includes("auth-account-security"),
+            },
+            {
+              name: "Shared client core (offline queue, sync client, version handshake)",
+              value: "client-core",
+              checked: c.features.includes("client-core"),
             },
           ],
         });
@@ -2043,6 +2053,11 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
           name: "auth-account-security (2FA, account controls, extra sign-in methods)",
           value: "auth-account-security",
           checked: cfg.features.includes("auth-account-security"),
+        },
+        {
+          name: "client-core (offline queue, sync client, version handshake)",
+          value: "client-core",
+          checked: cfg.features.includes("client-core"),
         },
       ],
     });

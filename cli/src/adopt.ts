@@ -1046,6 +1046,13 @@ function detectFeatures(projectDir: string, serverDir: string | undefined): Feat
     if ("@capacitor/core" in deps || "@capacitor/cli" in deps) found.add("mobile");
   }
 
+  // The shared client kit is a workspace package, not a dependency of the
+  // root manifest, so the directory is the signal. `packages/core/src` rather
+  // than `packages/core` alone: an empty leftover directory is not a feature.
+  if (existsSync(join(projectDir, "packages", "core", "src", "offline-queue.ts"))) {
+    found.add("client-core");
+  }
+
   // .env.production / .env.example as a hint when package.json is sparse.
   const envHints = [
     serverDir ? join(serverDir, ".env.production") : undefined,
@@ -1747,6 +1754,11 @@ async function editAdoptStep(
         },
         { name: "desktop", value: "desktop", checked: plan.features.includes("desktop") },
         { name: "mobile", value: "mobile", checked: plan.features.includes("mobile") },
+        {
+          name: "client-core",
+          value: "client-core",
+          checked: plan.features.includes("client-core"),
+        },
       ],
     });
     return { ...plan, features };

@@ -1,6 +1,9 @@
 import { WebSocketServer, type WebSocket } from "ws";
 import type { Server } from "http";
 import type { ClientToServerMessage } from "@starter/shared";
+// ── client-core ──────────────────────────────────────────────────
+import { SYNC_PATH } from "@starter/shared";
+// ── end client-core ──────────────────────────────────────────────
 import { authenticateUpgrade } from "./auth.js";
 import { RoomManager } from "./rooms.js";
 import { env, getTrustedOrigins } from "../config/env.js";
@@ -17,6 +20,24 @@ export function setupWebSocket(server: Server): WebSocketServer {
   server.on("upgrade", async (req, socket, head) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
     const path = url.pathname;
+
+    // ── client-core ──────────────────────────────────────────────────
+    // The sync feed owns `/api/sync` and sets itself up on the same HTTP
+    // server (sync/handler.ts). EVERY `upgrade` listener runs for EVERY
+    // upgrade, and the first one to `socket.destroy()` wins — so this listener
+    // has to yield a path that is not its own rather than reject it as unknown.
+    //
+    // It is not symmetric, and that is the whole bug: this check is synchronous
+    // while the sync feed awaits authentication, so without this line every
+    // `/api/sync` upgrade is destroyed before the feed ever sees it. The
+    // symptom is a socket that connects and closes immediately with no close
+    // code, and it points at neither feature.
+    //
+    // A `return` rather than deleting the `destroy()` below: a genuinely
+    // unknown path should still be refused promptly instead of hanging until
+    // the client times out.
+    if (path === SYNC_PATH) return;
+    // ── end client-core ──────────────────────────────────────────────
 
     // Only accept WS connections on known paths
     if (path !== "/ws" && path !== "/api/ws") {

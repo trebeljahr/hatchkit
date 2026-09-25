@@ -72,6 +72,7 @@ function activeConditions(config: ProjectConfig): Set<string> {
     websocket: config.features.includes("websocket"),
     stripe: config.features.includes("stripe"),
     workspaces: config.features.includes("workspaces"),
+    "client-core": config.features.includes("client-core"),
   };
   return new Set(Object.keys(on).filter((k) => on[k]));
 }

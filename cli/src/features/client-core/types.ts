@@ -1,0 +1,104 @@
+/*
+ * cli/src/features/client-core/types.ts — the inventory of what the
+ * `client-core` feature owns in the starter.
+ *
+ * One list, read by both directions. `strip.ts` deletes these paths when the
+ * feature was not selected at create time; `add.ts` copies the same paths in
+ * when `hatchkit update` layers the feature onto an already-scaffolded project.
+ * Keeping it in one place is the point: a file added to the starter and to only
+ * one of the two lists is either a scaffold that ships code the user did not
+ * ask for, or an `update` that leaves the kit half-installed.
+ */
+
+/** The feature id, as it appears in the manifest and in `--features`. */
+export const CLIENT_CORE_FEATURE = "client-core";
+
+/**
+ * Paths the feature owns outright — created by it, removed with it. Relative
+ * to the deployable directory (the repo root, or `projectSubdir` when the
+ * project was scaffolded into a subfolder). Directories are removed
+ * recursively.
+ *
+ * `packages/server/contract` is on the list although the starter does not ship
+ * it: it is where `pnpm run contract:emit` writes the committed snapshot, so a
+ * project that ran the script once and later strips the feature by hand has
+ * somewhere for the strip to look.
+ */
+export const CLIENT_CORE_OWNED_PATHS: readonly string[] = [
+  "packages/core",
+  "packages/shared/src/api-level.ts",
+  "packages/shared/src/sync-protocol.ts",
+  "packages/server/src/auth/client-version.ts",
+  "packages/server/src/sync",
+  "packages/server/src/contract",
+  "packages/server/contract",
+  "packages/server/src/tests/version-handshake.test.ts",
+  "packages/server/src/tests/api-level.test.ts",
+  "packages/server/src/tests/trpc-contract.test.ts",
+  "packages/client/src/lib/query-client.ts",
+  "docs/versioning.md",
+];
+
+/**
+ * Files the starter always ships that carry `// ── client-core ──` blocks.
+ *
+ * These are the ones the handshake cannot avoid touching: a floor that refuses
+ * a request lives in the tRPC init, a level a client can read lives in
+ * `/api/health`, and a feed has to be attached to the HTTP server that is
+ * already listening. See `markers.ts` for why the blocks are marked rather
+ * than matched by regex from here.
+ */
+export const CLIENT_CORE_MARKED_FILES: readonly string[] = [
+  "packages/shared/src/index.ts",
+  "packages/server/src/app.ts",
+  "packages/server/src/index.ts",
+  "packages/server/src/trpc/trpc.ts",
+  "packages/server/src/trpc/routers/health.ts",
+  "packages/server/src/trpc/routers/items.ts",
+  "packages/server/src/trpc/routers/profile.ts",
+  // Not a file the feature adds anything to functionally — it yields
+  // `/api/sync` to the sync feed's own upgrade listener. Every `upgrade`
+  // listener on an HTTP server runs for every upgrade and the first one to
+  // destroy the socket wins, so without that block the room socket kills every
+  // sync connection before the feed sees it.
+  "packages/server/src/ws/handler.ts",
+];
+
+/** Root `package.json` scripts the feature adds. */
+export const CLIENT_CORE_ROOT_SCRIPTS: readonly string[] = ["contract:emit"];
+
+/**
+ * Manifests whose scripts chain `@starter/core`'s build, and the scripts in
+ * each. The workspace resolves the package through `dist/`, so anything that
+ * imports it has to build it first — and a filter matching no package is an
+ * error, not a skip, so the same list drives the removal.
+ */
+export const CLIENT_CORE_CHAINED_SCRIPTS: Readonly<Record<string, readonly string[]>> = {
+  "package.json": ["build", "typecheck"],
+  "packages/server/package.json": ["test"],
+};
+
+/**
+ * Workspace packages that depend on `@starter/core`, by the manifest that
+ * declares the dependency.
+ */
+export const CLIENT_CORE_PACKAGE_DEPENDENTS: readonly string[] = [
+  "packages/server/package.json",
+  "packages/client/package.json",
+];
+
+/** The workspace name of the kit itself. */
+export const CORE_PACKAGE_NAME = "@starter/core";
+
+/**
+ * The segment `@starter/core` occupies in the root `build` and `typecheck`
+ * scripts.
+ *
+ * Both scripts build `@starter/shared` before anything that imports it,
+ * because the workspace resolves it through `dist/`. `@starter/core` is the
+ * same shape and needs the same treatment — and the same removal, or a
+ * stripped scaffold's `pnpm run build` fails on a filter that matches no
+ * package (`ERR_PNPM_NO_MATCHING_PACKAGE`), which reads as a broken template
+ * rather than a missing feature.
+ */
+export const CORE_BUILD_SEGMENT = "pnpm --filter @starter/core run build";

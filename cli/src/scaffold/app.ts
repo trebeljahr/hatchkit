@@ -322,6 +322,17 @@ async function runScaffoldSteps(
     modifications.push("removed: stripe service (Stripe not selected)");
   }
 
+  // client-core adds a workspace PACKAGE (packages/core) that three other
+  // manifests reference, so the strip has to take the references with it —
+  // a dangling `workspace:*` fails the very first `pnpm install` with
+  // ERR_PNPM_WORKSPACE_PKG_NOT_FOUND, before anything is compiled. It also
+  // removes the marked handshake blocks from the files the starter always
+  // ships (see features/client-core/markers.ts).
+  if (!config.features.includes("client-core")) {
+    const { stripClientCore } = await import("../features/client-core/index.js");
+    modifications.push(...stripClientCore(outputDir));
+  }
+
   const wantsDesktop = config.features.includes("desktop");
   const wantsMobile = config.features.includes("mobile");
 
@@ -1011,6 +1022,9 @@ function scaffoldDryRun(config: ProjectConfig, outputDir: string): string[] {
   if (!config.features.includes("stripe")) actions.push("Remove Stripe integration");
   if (!config.features.includes("desktop")) actions.push("Remove desktop (Electron) scaffolding");
   if (!config.features.includes("mobile")) actions.push("Remove mobile (Capacitor) scaffolding");
+  if (!config.features.includes("client-core")) {
+    actions.push("Remove client-core (shared client kit + version handshake)");
+  }
   if (config.features.includes("desktop") || config.features.includes("mobile")) {
     actions.push("Flip next.config.ts to output: 'export' (static)");
   }

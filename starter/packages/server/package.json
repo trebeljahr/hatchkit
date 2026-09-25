@@ -12,13 +12,14 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx watch --clear-screen=false src/index.ts",
-    "test": "node --import tsx --test src/tests/*.test.ts",
+    "test": "pnpm --filter @starter/core run build && node --import tsx --test src/tests/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1048.0",
     "@aws-sdk/s3-request-presigner": "^3.1048.0",
     "@sentry/node": "^10.53.1",
+    "@starter/core": "workspace:*",
     "@starter/shared": "workspace:*",
     "@trpc/server": "^11.17.0",
     "@dotenvx/dotenvx": "^1.66.0",

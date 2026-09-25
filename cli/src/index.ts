@@ -3457,11 +3457,15 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("What it does:")}
     Reads the project's .hatchkit.json manifest, lets you pick a new
     feature set, and copies the additive pieces from the starter.
-    Currently supported additions: ${chalk.cyan("workspaces")}, ${chalk.cyan("desktop")}, ${chalk.cyan("mobile")}.
+    Currently supported additions: ${chalk.cyan("workspaces")}, ${chalk.cyan("desktop")}, ${chalk.cyan("mobile")}, ${chalk.cyan("client-core")}.
 
     ${chalk.cyan("workspaces")} adds tenants, members, roles and invitations. It only
     writes new files and wires them in; it never rewrites your own code,
     and a file you have edited is left alone and reported.
+
+    ${chalk.cyan("client-core")} adds packages/core: the offline queue, the sync
+    client and the client/server version handshake. Files it cannot place
+    safely are listed in .hatchkit/post-client-core.md rather than guessed at.
 
     A native shell loads the client from its own origin, which the
     deployed server rejects (${chalk.dim("403 INVALID_ORIGIN")}) until ${chalk.dim("TRUSTED_ORIGINS")}

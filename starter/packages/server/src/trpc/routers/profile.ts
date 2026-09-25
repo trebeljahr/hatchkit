@@ -1,6 +1,9 @@
 import { router, protectedProcedure } from "../trpc.js";
 import { updateProfileSchema } from "@starter/shared";
 import { Profile } from "../../models/Profile.js";
+// ── client-core ──────────────────────────────────────────────────
+import { publishSync } from "../../sync/feed.js";
+// ── end client-core ──────────────────────────────────────────────
 
 export const profileRouter = router({
   get: protectedProcedure.query(async ({ ctx }) => {
@@ -39,6 +42,14 @@ export const profileRouter = router({
         { $set: update },
         { new: true, upsert: true },
       );
+
+      // ── client-core ──────────────────────────────────────────────
+      // `profile.changed` carries no id: there is one profile per account, so
+      // the kind alone says everything a listener needs. Published with the
+      // user id the mutation RAN AS, never a value off the input — the feed's
+      // room is the authenticated user and nothing else (sync/feed.ts).
+      publishSync(ctx.user.id, { kind: "profile.changed" });
+      // ── end client-core ──────────────────────────────────────────
 
       return {
         userId: profile.userId,

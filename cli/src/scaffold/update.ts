@@ -104,6 +104,7 @@ const SUPPORTED_ADDITIONS: readonly Feature[] = [
   // idempotently, and never removes anything. That is what makes it safe
   // to layer onto a project that has been running for months.
   "auth-account-security",
+  "client-core",
 ];
 
 export interface UpdateResult {
@@ -288,6 +289,7 @@ export async function runUpdate(
     "mobile",
     "release",
     "auth-account-security",
+    "client-core",
   ];
   const desired =
     options.presets?.desiredFeatures ??
@@ -401,6 +403,9 @@ export async function runUpdate(
             presetOptions: options.presets?.authSecurityOptions,
           });
           updatedFeatures.add("auth-account-security");
+        } else if (feature === "client-core") {
+          await addClientCoreFeature(projectDir, resolvedStarter);
+          updatedFeatures.add("client-core");
         }
       }
       actuallyAdded = added;
@@ -692,6 +697,24 @@ async function addDesktop(
       `${projectPkg.scripts.typecheck} && pnpm typecheck:electron`,
     );
   }
+}
+
+/**
+ * Copy the shared client kit in and wire the version handshake.
+ *
+ * Unlike the native wrappers this does not add a shell around the client — it
+ * adds a workspace PACKAGE the client and server both depend on, plus blocks
+ * inside files the user has been editing since scaffold. Anything that could
+ * not be placed safely lands in `.hatchkit/post-client-core.md` rather than
+ * being guessed at; see features/client-core/add.ts for why.
+ */
+async function addClientCoreFeature(projectDir: string, resolvedStarter: string): Promise<void> {
+  const { addClientCore, reportAddClientCore, writeClientCoreChecklist } = await import(
+    "../features/client-core/index.js"
+  );
+  const result = addClientCore(projectDir, resolvedStarter);
+  const checklist = writeClientCoreChecklist(projectDir, result.manual);
+  reportAddClientCore(result, checklist);
 }
 
 /** Bring the mobile (Capacitor) feature up to date in a project, and wire

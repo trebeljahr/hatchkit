@@ -13,6 +13,7 @@
   "dependencies": {
     "@openpanel/nextjs": "^1.5.1",
     "@sentry/nextjs": "^10.53.1",
+    "@starter/core": "workspace:*",
     "@starter/shared": "workspace:*",
     "@tanstack/react-query": "^5.100.10",
     "@trpc/client": "^11.17.0",

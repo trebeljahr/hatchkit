@@ -138,6 +138,143 @@ pnpm run build                        # build all packages
 ```
 <!-- hatchkit:endif -->
 
+<!-- hatchkit:if client-core -->
+## Shared Client Core
+
+`packages/core` (`@starter/core`) is host-free: no React, no Next, no DOM
+assumption, and nothing in it opens a store or a socket on its own. Every
+surface beyond the web app — a browser extension's service worker, a launcher
+extension, an Electron renderer, a phone WebView — binds its own storage and
+uses the same kit, so a mutation queued on one surface is a row any of them can
+describe.
+
+```bash
+pnpm --filter @starter/core run test        # node:test suites
+pnpm --filter @starter/core run typecheck
+pnpm run contract:emit                      # rewrite the tRPC contract snapshot
+```
+
+`docs/versioning.md` is the client/server compatibility contract. The rules
+below fail quietly when broken — each one shipped green somewhere before it was
+written down.
+
+### Three stores, and they answer different questions
+
+- The **session token** belongs in real secret storage (Keychain, the Android
+  keystore, `chrome.storage.session`). It is a credential. Capacitor
+  Preferences is plain `UserDefaults` and is readable from an unencrypted
+  backup.
+- The **offline queue** belongs in a platform store — Capacitor Preferences,
+  `chrome.storage.local`, a file beside Electron's userData. What is in it is
+  work the person did that no server has ever seen, and WKWebView classifies
+  `localStorage` as *non-critical web data* and reclaims it after low disk or
+  roughly a week of not opening the app. `webStorage()` swallows every throw,
+  so that loss would be silent.
+- Everything else — a remembered filter, the theme — stays in `localStorage`,
+  where eviction costs nothing.
+
+Moving a store is `migrateStore()`: once, behind its own marker key, never over
+a value already at the target, and the source is left in place so a rollback
+still finds it. Without that step, *changing the address is the data loss*.
+
+### The queue owns the work; the overlay owns the screen
+
+`offline-queue.ts` is the durable FIFO of what still has to be sent.
+`offline-overlay.ts` is its visible consequence — without it, a record created
+with no signal is a row in storage and nothing on screen. `local-cache.ts` is
+the last good answer to every read, which is what lets a surface with no
+rendered state work offline.
+
+- **The stored queue is `{ v: 1, data: rows }`.** A bare array still reads as
+  v1. An unreadable value is copied to `starter.offline-queue.corrupt.<ms>`
+  before the reset. A `v` newer than `QUEUE_FORMAT_VERSION` LOCKS the queue:
+  its rows are held `unknown-op`, `enqueue`/`remove` throw
+  `OfflineQueueLockedError`, and `clear` and adoption do nothing. Never read it
+  through `decodeVersioned` — whose answer to a newer version is a miss, i.e.
+  an empty queue the next enqueue overwrites.
+- **Every row is stamped** with the account (`owner`), the server origin
+  (`server`), the tenant (`tenantId`) and the writing build's `apiLevel`. Each
+  stamp is optional forever, because rows written before it existed are
+  somebody's work. The next account cannot replay the previous one's rows
+  (`isReplayableBy`), and a row queued in one tenant is not retargeted at
+  another after a switch (`isReplayableIn`).
+- **Held rows are kept, counted, explained and only discarded deliberately** —
+  never on a timer, never age-based. `HoldReason` is a union that will grow;
+  `HOLD_RELEASE` makes forgetting a new member a type error. `unknown-op` is
+  never written onto a row, so a newer build that can decode it releases it;
+  `server-too-old` is decided by the server's level, not the clock.
+- **One classifier.** `classifyReplayOutcome` turns a failed replay into
+  `retry-later` / `hold` / `drop` for every surface. A host supplies only its
+  transport test and its membership re-check. A row refused for version skew
+  comes back 412, which is deliberately not a permanent rejection — a 400, 403,
+  404, 409, 410 or 422 drops a row, and version skew must never delete work.
+- **Holds and drops follow the temp-id chain.** A row that depends on a
+  `items.create` which has not landed is held with it; replaying it alone would
+  address the wrong record or nothing at all.
+- **The queue drains from the reads** where there is no long-lived process to
+  own a loop (`drainThenRead`), and writes drain first and then queue if
+  anything is still waiting (`writingThroughQueue`) — sending a new mutation
+  ahead of older queued ones lands it out of order. Reads fall back to the
+  cache on a TRANSPORT failure only: a 401 is a real answer and has to reach
+  the sign-in handling.
+
+### Network truth comes from the radio, not the browser
+
+`navigator.onLine` reports `true` on a dead radio in a WKWebView and never
+fires for airplane mode, so a host installs its platform probe with
+`setNetworkProbe()` and everything reads one verdict through `isOnline()`.
+
+**The mutations the offline queue owns run in `networkMode: "always"`** — and
+only those (`OFFLINE_QUEUED_MUTATION` in
+`packages/client/src/lib/query-client.ts`). React Query otherwise *pauses* a
+mutation while it believes the device is offline: `mutationFn` never runs,
+`onError` never fires, and `onError` is where the offline work is queued. The
+queue is this app's pause mechanism and it needs the failure to happen. It is
+deliberately NOT a `defaultOptions.mutations`, which would take pause-and-resume
+away from every mutation that queues nothing — on the web as much as on a phone.
+
+### The sync feed is one-way, and its room is the session
+
+`packages/server/src/sync/` and `packages/core/src/sync-client.ts`.
+
+- **A subscriber's room is its authenticated user id and nothing else.** No
+  query parameter, no first frame, no path segment picks it. A room a client can
+  name is a room a client can name somebody else's, and the feed carries every
+  change to that account's data.
+- **The server never reads a frame from the socket.** There is no `send` on
+  `SyncClient`. A socket that accepts commands is a second, unaudited write path
+  beside tRPC with its own parsing and authorisation bugs.
+- An unknown event kind or scope means **refetch**, never ignore. Keep the
+  `never` defaults — they fail the build — but let them fall through to the
+  refetch at runtime.
+- `SESSION_REVOKED_CLOSE_CODE` (4401) latches: reconnection stops and stays
+  stopped, because the credential this client was built with will never be
+  accepted again. Clearing it is the host's job.
+
+### Client/server version handshake
+
+Self-hosted servers lag, store clients lead, desktop builds and open tabs
+trail. `docs/versioning.md` is the contract.
+
+- **Bump `API_LEVEL` whenever a tRPC procedure, input field, enum value or sync
+  event kind is added**, with a row in `API_LEVEL_CHANGES`. Never lower it.
+- **No header is legacy, never level 0.** The floor refuses only a request that
+  DECLARES a lower level, as 412 (`data.versionRefusal`). `health.*` is never
+  refused, so a refused client can still learn which side is too old.
+- **Never add the handshake headers to `/api/health`**: a custom header forces a
+  preflight that an untrusted origin fails, which reads as "unreachable".
+- **`x-starter-client` is untouched** by the handshake — it is a label, never a
+  permission.
+- **The tRPC contract is a committed snapshot.** `pnpm run contract:emit` writes
+  `packages/server/contract/trpc-contract.json`;
+  `packages/server/src/tests/trpc-contract.test.ts` fails when it is stale and
+  says whether the change is breaking (raise `MIN_CLIENT_API_LEVEL` and
+  `API_LEVEL`), additive (bump `API_LEVEL`) or neither.
+- A sync kind is added in three places: the `SyncEvent` union,
+  `SYNC_EVENT_KIND_SET`, and `contract/sync-events.ts` — `tsc` enforces the
+  last two.
+
+<!-- hatchkit:endif -->
 <!-- hatchkit:if native -->
 ## Native Shells
 
@@ -687,6 +824,23 @@ packages/server/src/
   services/     — external service integrations (Stripe, email, S3)
   middleware/   — Express middleware (error handler, etc.)
   tests/        — server unit tests
+```
+<!-- hatchkit:endif -->
+
+<!-- hatchkit:if client-core -->
+```
+packages/core/src/
+  storage.ts          — the key/value seam each host binds to its own store
+  versioned-storage.ts— the { v, data } envelope for anything persisted
+  api-client.ts       — typed caller + the permanent-rejection set
+  network.ts          — platform-radio truth, origin comparison, health probe
+  server-level.ts     — what each server said about its API level
+  sync-client.ts      — the one-way feed subscription
+  offline-ops.ts      — the shared op contract and the hold vocabulary
+  offline-queue.ts    — the durable, versioned, stamped FIFO
+  offline-replay.ts   — the single replay classifier
+  offline-overlay.ts  — the optimistic overlay (separate from the queue)
+  local-cache.ts      — the read cache + drain-on-read
 ```
 <!-- hatchkit:endif -->
 

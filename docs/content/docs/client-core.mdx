@@ -1,0 +1,77 @@
+---
+title: Client Core
+description: The opt-in client-core feature scaffolds a host-free client package with an offline mutation queue, a one-way sync client and the client/server version handshake.
+---
+
+The starter ships three packages: `client`, `server` and `shared`. That is enough for one web app and no more. The moment a project grows a second surface — a browser extension, a launcher extension, a desktop shell, a phone build — each one needs its own copy of "how do I call the API", "what do I do when the network is gone", and "what happens when this build is newer than the server". Written per surface, those three answers drift, and the ways they drift lose data.
+
+`client-core` scaffolds the fourth package, `packages/core`, and the server-side contract it talks to.
+
+## What you get
+
+```bash
+hatchkit create --features client-core
+# or, on an existing project:
+cd <project> && hatchkit update      # tick client-core
+```
+
+`packages/core` is host-free: no React, no Next, no DOM assumption, and nothing in it opens a store or a socket by itself. A host passes its storage in and gets the kit.
+
+| Module | What it owns |
+| --- | --- |
+| `api-client.ts` | Typed caller over the tRPC HTTP endpoints, plus the set of statuses that mean "this request can never succeed" |
+| `network.ts` | The network verdict, taken from the platform radio; origin comparison; the `/api/health` probe |
+| `server-level.ts` | What each server has said about its API level, per origin |
+| `sync-client.ts` | A subscription to the one-way realtime feed |
+| `storage.ts` | The key/value seam each host binds, and the one-time store migration |
+| `versioned-storage.ts` | The `{ v, data }` envelope for anything persisted on a device |
+| `offline-ops.ts` | The shared op contract and the hold vocabulary |
+| `offline-queue.ts` | The durable, versioned, stamped FIFO of unsent mutations |
+| `offline-replay.ts` | The single classifier that turns a failed replay into retry / hold / drop |
+| `offline-overlay.ts` | The optimistic overlay — what the screen should show, kept separate from the queue |
+| `local-cache.ts` | The read cache, and the drain-on-read pattern |
+
+On the server side it adds the version handshake (`auth/client-version.ts`, a floor on every procedure but `health.*`, `apiLevel` on `/api/health`), the sync feed (`sync/`), and the committed tRPC contract snapshot with its emit script and classifying test (`contract/`). The generated project gets `docs/versioning.md`, which is the contract in prose.
+
+## Three stores, and they answer different questions
+
+The kit does not choose your storage, but it is opinionated about where things belong, because the wrong choice fails silently.
+
+- **The session token is a credential.** It belongs in real secret storage: Keychain, the Android keystore, `chrome.storage.session`. Capacitor Preferences is plain `UserDefaults` and is readable from an unencrypted device backup.
+- **The offline queue has no other copy.** It belongs in a platform store — Capacitor Preferences, `chrome.storage.local`, a file beside Electron's userData. WKWebView classifies `localStorage` as non-critical web data and reclaims it after low disk or roughly a week of not opening the app, and the web-storage adapter swallows every throw, so that loss would be silent.
+- **Everything else** — a remembered filter, the theme — stays in `localStorage`, where eviction costs nothing.
+
+Moving a store later is `migrateStore()`: once, behind its own marker key, never over a value already at the target, and the source is left in place so a rollback still finds it. Without that step, changing the address *is* the data loss.
+
+## What the offline queue guarantees
+
+- **The stored queue is `{ v: 1, data: rows }`.** A bare array still reads as v1. An unreadable value is copied aside before the reset. A version newer than this build's locks the queue: its rows are held, writes throw, and nothing overwrites them.
+- **Every row is stamped** with the account, the server origin, the tenant and the writing build's API level. Each stamp is optional forever, because rows written before it existed are somebody's work. The next account cannot replay the previous one's rows, and a row queued in one tenant is never retargeted at another after a switch.
+- **A row this build cannot handle is held** — kept, counted, explained, and discarded only when a person decides. Never on a timer, never by age. A hold that can end on the server's side is re-asked on a schedule; a hold that only a newer build can release is recomputed on every read, so installing that build releases it.
+- **Holds and drops follow the chain.** A row that depends on a create which has not landed yet is held with it, because replaying it alone would address the wrong record.
+- **One classifier for every surface.** A host supplies its transport test and its membership re-check; everything else is the same code, so a 404 means the same thing in the extension, on the phone and in the launcher.
+
+## Two rules that are easy to get wrong
+
+**The mutations the queue owns must run in `networkMode: "always"`.** React Query otherwise *pauses* a mutation while it believes the device is offline: `mutationFn` never runs, `onError` never fires, and `onError` is where the work is queued. With the radio's real answer wired in, the default makes those mutations do nothing at all in airplane mode. The scaffold exports `OFFLINE_QUEUED_MUTATION` for exactly those mutations and deliberately does **not** make it a default — that would take pause-and-resume away from every mutation that queues nothing.
+
+**The sync feed's room comes from the session.** No query parameter, no first frame and no path segment picks it, and the server never reads a frame from the socket. A room a client can name is a room a client can name somebody else's, and a socket that accepts commands is a second, unaudited write path beside your API.
+
+## The version handshake
+
+Self-hosted servers lag. Store clients update themselves and are often newer than the server they talk to. A desktop build or a tab left open is older. A release number cannot say whether two of them understand each other, so each side declares an integer API level.
+
+- Bump `API_LEVEL` whenever a procedure, input field, enum value or sync event kind is **added**, with a row in `API_LEVEL_CHANGES`.
+- `MIN_CLIENT_API_LEVEL` is the floor. A request that declares a lower level is refused as **412** with `data.versionRefusal`. 412 is deliberate: the offline queue drops a row on 400, 403, 404, 409, 410 and 422, and version skew must never delete queued work. `health.*` is never refused, so a refused client can still learn which side is too old.
+- Never send the handshake headers to `/api/health`. A custom header forces a CORS preflight that an untrusted origin fails, which a client reads as "unreachable".
+- `pnpm run contract:emit` writes the committed snapshot; its test fails when the snapshot is stale and says whether the change is **breaking** (raise the floor and the level), **additive** (bump the level) or **neither**.
+
+## Adding it to an existing project
+
+`hatchkit update` copies the package in, adds the `workspace:*` references and wires the handshake. Six files the starter always ships carry marked blocks — the tRPC init, `/api/health`, the server entrypoint and the items router — because a floor has to live where requests are handled.
+
+If you have edited one of those files since scaffolding, `update` inserts the block next to the line it follows in the starter. If that line is gone, the block is written to `.hatchkit/post-client-core.md` with the exact text to paste rather than guessed at: a misplaced block either fails to compile or leaves a version floor that silently never refuses anything.
+
+Afterwards, run `pnpm install` for the new workspace package and `pnpm run contract:emit` once, then commit the snapshot.
+
+Removal is not supported by `update`, as for every other feature — delete `packages/core`, the marked blocks and the `workspace:*` references by hand, and update the manifest.

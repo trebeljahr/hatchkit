@@ -84,7 +84,7 @@ prompting. That makes `create` CI-safe.
 
 | Flag | Values / effect |
 |---|---|
-| `--features <list>` | `websocket`, `stripe`, `analytics`, `s3`, `workspaces`, `desktop`, `mobile`. Comma-separated; pass empty for none. |
+| `--features <list>` | `websocket`, `stripe`, `analytics`, `s3`, `workspaces`, `desktop`, `mobile`, `client-core`. Comma-separated; pass empty for none. See [Client Core](./client-core) for what `client-core` scaffolds. |
 | `--analytics-providers <list>` | `glitchtip`, `openpanel`, `plausible` |
 | `--services <list>` | `glitchtip`, `openpanel`, `plausible`, `listmonk-ses`, `s3`, `email`, `search-console` |
 | `--db-engine <value>` | `mongodb` · `postgres` |
@@ -169,7 +169,7 @@ cd my-app
 hatchkit update
 ```
 
-Reads `.hatchkit.json`, lets you pick a new feature set, copies additive pieces from the starter. **Supported additions today:** `workspaces` (tenants, members, roles, invitations), `desktop` (Electron), `mobile` (Capacitor). Removal is not supported — removing a feature could delete user code. Remove manually and update the manifest.
+Reads `.hatchkit.json`, lets you pick a new feature set, copies additive pieces from the starter. **Supported additions today:** `workspaces` (tenants, members, roles, invitations), `desktop` (Electron), `mobile` (Capacitor), `client-core` (the shared client kit — see [Client Core](./client-core)). Removal is not supported — removing a feature could delete user code. Remove manually and update the manifest.
 
 ### The `workspaces` feature
 
