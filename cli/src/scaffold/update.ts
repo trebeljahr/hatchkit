@@ -18,8 +18,17 @@
  * doesn't exist yet. Users can cherry-pick files from the starter.
  */
 
-import { cpSync, existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
 import { addUsedPorts, getUsedPorts } from "../config.js";
@@ -53,6 +62,13 @@ import {
   readManifestWithMigrationInfo,
   writeManifest,
 } from "./manifest.js";
+import {
+  MOBILE_DEPS,
+  MOBILE_PATHS,
+  MOBILE_SCRIPTS,
+  NATIVE_GENERATED_TRACKED,
+  NATIVE_GENERATED_UNTRACKED,
+} from "./mobile-feature.js";
 import { hasNativeClient } from "./native-origins.js";
 import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
 import { setPackageJsonScript } from "./pkg-json.js";
@@ -350,6 +366,10 @@ export async function runUpdate(
   let actuallyAdded: Feature[] = [];
   let skippedAdditions: Feature[] = [];
   let authSecurityOptions: string[] | undefined;
+  /** What the mobile refresh below actually wrote, if anything. Feeds the
+   *  "did this run change the project?" decision at the end, so a pure
+   *  refresh still persists the manifest's cliVersion. */
+  let mobileRefreshed: string[] = [];
   const updatedFeatures = new Set(manifest.features);
   let updatedPorts = manifest.ports;
 
@@ -370,7 +390,8 @@ export async function runUpdate(
           await addDesktop(projectDir, resolvedStarter, manifest);
           updatedFeatures.add("desktop");
         } else if (feature === "mobile") {
-          await addMobile(projectDir, resolvedStarter, manifest);
+          console.log(chalk.dim("\n  Adding mobile (Capacitor)..."));
+          await ensureMobile(projectDir, resolvedStarter, manifest);
           updatedFeatures.add("mobile");
         } else if (feature === "release") {
           await addRelease(projectDir, manifestDir, manifest, [...updatedFeatures, ...added]);
@@ -416,6 +437,29 @@ export async function runUpdate(
     await addRelease(projectDir, manifestDir, manifest, [...updatedFeatures]);
   }
 
+  // Refresh a mobile feature the project ALREADY has.
+  //
+  // This is the only path that reaches an existing Capacitor project. The
+  // block above adds FEATURES, and `mobile` is already in the manifest, so
+  // nothing there fires — yet a project scaffolded before
+  // scripts/build-mobile.mjs, the storage tiers or the native stylesheets
+  // existed is missing all of them, permanently. Unconditional, like the
+  // docker-compose image-ref and deploy-workflow retrofits above, and for
+  // the same reason: the gap shipped, and there is no opt-in that fixes it.
+  //
+  // Additive and idempotent — a file that exists is never overwritten, so
+  // a project whose owner has edited the bridge keeps their version and
+  // still gains the files they were missing.
+  if (updatedFeatures.has("mobile") && !actuallyAdded.includes("mobile")) {
+    const resolvedStarter = realpathSync(STARTER_ROOT);
+    const refreshed = await ensureMobile(projectDir, resolvedStarter, manifest);
+    if (refreshed.length > 0) {
+      mobileRefreshed = refreshed;
+      console.log(chalk.green("\n  ✓ mobile (Capacitor) brought up to date:"));
+      for (const change of refreshed) console.log(chalk.dim(`      · ${change}`));
+    }
+  }
+
   // Apply local-dev opt-in (if user said yes earlier). Calls the same
   // surface scaffold uses, so the on-disk shape (Caddy fragment, docs,
   // next.config wrap, package.json dep) is identical regardless of
@@ -441,7 +485,12 @@ export async function runUpdate(
   // no local-dev opt-in) — keeps the file mtime stable for the no-op
   // case so update-then-doctor doesn't re-read a touched-but-identical
   // manifest.
-  if (actuallyAdded.length > 0 || localDevEnabled || manifestRead?.migrated) {
+  if (
+    actuallyAdded.length > 0 ||
+    mobileRefreshed.length > 0 ||
+    localDevEnabled ||
+    manifestRead?.migrated
+  ) {
     const updatedManifest: ProjectManifest = {
       ...manifest,
       version: manifest.version,
@@ -645,61 +694,75 @@ async function addDesktop(
   }
 }
 
-/** Copy mobile (Capacitor) scaffolding + wire MobileBridgeLoader
- *  into the client layout. Assumes the feature isn't already present. */
-async function addMobile(
+/** Bring the mobile (Capacitor) feature up to date in a project, and wire
+ *  the three things that live in files the feature does not own: the
+ *  bridge loader and the pre-paint root marker in the client layout, and
+ *  the two stylesheet imports in globals.css.
+ *
+ *  Called on the way IN, when `mobile` is newly added, and again on every
+ *  later `hatchkit update` of a project that already has it. The second
+ *  call is the one that matters in practice: a project scaffolded before
+ *  scripts/build-mobile.mjs existed has `packages/client/src/mobile` and
+ *  no `scripts/lib/`, and there is no other path that would ever complete
+ *  it — `update` adds FEATURES, and mobile is already in the manifest. A
+ *  half-upgraded project is worse than either end: globals.css imports a
+ *  stylesheet that is not there, and the layout imports a module that is
+ *  not there.
+ *
+ *  So every step is idempotent and additive: a file that already exists is
+ *  never overwritten, and each wiring edit is a no-op when already
+ *  present. Returns what actually changed, so a run that changed nothing
+ *  can stay silent. */
+async function ensureMobile(
   projectDir: string,
   resolvedStarter: string,
   manifest: ProjectManifest,
-): Promise<void> {
-  console.log(chalk.dim("\n  Adding mobile (Capacitor)..."));
-  copyFromStarter(resolvedStarter, projectDir, "capacitor.config.ts");
-  copyFromStarter(resolvedStarter, projectDir, "packages/client/src/mobile");
-  copyFromStarter(resolvedStarter, projectDir, "resources");
-  copyFromStarter(resolvedStarter, projectDir, "scripts/android-dev.sh");
-  copyFromStarter(resolvedStarter, projectDir, "scripts/android-env.sh");
-  copyFromStarter(resolvedStarter, projectDir, "scripts/ios-dev.sh");
-  copyFromStarter(resolvedStarter, projectDir, ".github/workflows/mobile-release.yml");
+): Promise<string[]> {
+  const changes: string[] = [];
+
+  // MOBILE_PATHS is the single manifest of what the feature consists of —
+  // the same list scaffold/app.ts strips. The two must never disagree, or
+  // a file reaches new scaffolds and no updated project, or the reverse.
+  // `ios` / `android` are skipped: they are generated per machine by
+  // `pnpm cap:add:*` and then committed, so the starter has no copy to
+  // hand over.
+  for (const rel of MOBILE_PATHS) {
+    if (rel === "ios" || rel === "android") continue;
+    if (copyFromStarter(resolvedStarter, projectDir, rel) > 0) changes.push(rel);
+  }
 
   // Substitute project identifiers into capacitor.config.ts.
+  //
+  // Only here, and only on the way in. Once `cap add` has run, the native
+  // trees hold their own copies of the identifier and `cap sync` never
+  // revisits them — so a LATER rename has to go through
+  // `hatchkit rename-project`, which rewrites the native trees too, and
+  // scripts/build-mobile.mjs fails the build when the two disagree.
   const capPath = join(projectDir, "capacitor.config.ts");
-  rewriteFile(capPath, (c) => substituteIdentifierTokens(c, identifiersFor(manifest)));
+  rewriteFile(capPath, (c) => {
+    const out = substituteIdentifierTokens(c, identifiersFor(manifest));
+    if (out !== c) changes.push("capacitor.config.ts identifiers");
+    return out;
+  });
 
-  // Merge package.json scripts + deps.
+  // Merge package.json scripts + deps from the starter, so the versions
+  // and command lines can only ever come from one place.
   const starterPkg = readJson(join(resolvedStarter, "package.json"));
   const projectPkgPath = join(projectDir, "package.json");
   const projectPkg = readJson(projectPkgPath);
-  const MOBILE_SCRIPTS = [
-    "dev:android",
-    "dev:ios",
-    "build:mobile",
-    "cap:add:ios",
-    "cap:add:android",
-    "cap:sync",
-    "cap:run:ios",
-    "cap:run:android",
-    "build:ios:release",
-    "build:android:release",
-    "build:android:apk",
-    "mobile:assets",
-  ];
-  const MOBILE_DEPS = [
-    "@capacitor/core",
-    "@capacitor/cli",
-    "@capacitor/ios",
-    "@capacitor/android",
-    "@capacitor/splash-screen",
-    "@capacitor/status-bar",
-    "@capacitor/screen-orientation",
-    "@capacitor/preferences",
-    "@capacitor/app",
-    "@capacitor/assets",
-  ];
+  const pkgBefore = JSON.stringify(projectPkg);
 
   projectPkg.scripts = projectPkg.scripts ?? {};
   for (const name of MOBILE_SCRIPTS) {
     if (starterPkg.scripts?.[name]) projectPkg.scripts[name] = starterPkg.scripts[name];
   }
+  // A project scaffolded before build-mobile.mjs existed has
+  // `"cap:sync": "cap sync"`. The starter no longer defines it, so the
+  // merge above cannot overwrite it — and a bare `cap sync` skips the API
+  // URL check, the chunk assertion, the identifier drift check and the
+  // dev-server guard, while still producing an app that installs. Remove
+  // it outright.
+  if (!starterPkg.scripts?.["cap:sync"]) delete projectPkg.scripts["cap:sync"];
 
   projectPkg.dependencies = projectPkg.dependencies ?? {};
   projectPkg.devDependencies = projectPkg.devDependencies ?? {};
@@ -711,22 +774,67 @@ async function addMobile(
     }
   }
 
-  writeFileSync(projectPkgPath, JSON.stringify(projectPkg, null, 2) + "\n", "utf-8");
+  if (JSON.stringify(projectPkg) !== pkgBefore) {
+    writeFileSync(projectPkgPath, JSON.stringify(projectPkg, null, 2) + "\n", "utf-8");
+    changes.push("package.json scripts + dependencies");
+  }
 
-  // Wire MobileBridgeLoader into the client layout if not already there.
+  if (wireMobileIntoLayout(projectDir)) changes.push("client layout (bridge loader, root marker)");
+  if (wireNativeStylesIntoGlobals(projectDir)) changes.push("globals.css stylesheet imports");
+  if (ignoreNativeGeneratedPaths(projectDir)) changes.push(".gitignore native-tree holes");
+  return changes;
+}
+
+/** Add the bridge loader and the pre-paint root marker to the client
+ *  layout. Both are inserted only when absent, so a hand-edited layout
+ *  that already mounts them is left alone. */
+function wireMobileIntoLayout(projectDir: string): boolean {
   const layoutPath = join(projectDir, "packages/client/src/app/layout.tsx");
-  if (existsSync(layoutPath)) {
-    let content = readFileSync(layoutPath, "utf-8");
-    if (!content.includes("MobileBridgeLoader")) {
-      // Insert the import + mount in well-known positions.
+  if (!existsSync(layoutPath)) return false;
+  let content = readFileSync(layoutPath, "utf-8");
+  const before = content;
+
+  if (!content.includes("MobileBridgeLoader")) {
+    content = content.replace(
+      /(import[^\n]+"@\/styles\/globals\.css";\n)/,
+      `$1import { MobileBridgeLoader } from "@/mobile/MobileBridgeLoader";\n`,
+    );
+    content = content.replace(/(<body[^>]*>)\s*/, `$1\n        <MobileBridgeLoader />\n        `);
+  }
+
+  // The pre-paint marker. It sets `html.cap` before the first paint, which
+  // is what matters on a WebView reload — there is no splash screen to
+  // hide the unpadded frame. It goes on <html>, never <body>: a pre-paint
+  // script that mutates <body> makes the served HTML and the hydrated DOM
+  // disagree about body's attributes, and the only way to silence that is
+  // `suppressHydrationWarning` on <body>, which then silences every other
+  // body-level mismatch for the web app forever.
+  if (!content.includes("ROOT_MARKER_SCRIPT")) {
+    content = content.replace(
+      /(import[^\n]+"@\/styles\/globals\.css";\n)/,
+      `import { ROOT_MARKER_SCRIPT } from "@/mobile/platform";\n$1`,
+    );
+    if (/<head>/.test(content)) {
       content = content.replace(
-        /(import[^\n]+"@\/styles\/globals\.css";\n)/,
-        `$1import { MobileBridgeLoader } from "@/mobile/MobileBridgeLoader";\n`,
+        /(<head>)\s*\n/,
+        `$1\n        <script dangerouslySetInnerHTML={{ __html: ROOT_MARKER_SCRIPT }} />\n`,
       );
-      content = content.replace(/(<body[^>]*>)\s*/, `$1\n        <MobileBridgeLoader />\n        `);
-      writeFileSync(layoutPath, content, "utf-8");
+    } else {
+      // No <head> to hang it on. Say so rather than silently shipping a
+      // layout whose native padding lands one frame late on every reload.
+      console.log(
+        chalk.yellow(
+          "  ! layout.tsx has no <head> — add the ROOT_MARKER_SCRIPT <script> tag by hand\n" +
+            "    (see starter/packages/client/src/app/layout.tsx). Without it the app paints\n" +
+            "    one unpadded frame on every WebView reload.",
+        ),
+      );
     }
   }
+
+  if (content === before) return false;
+  writeFileSync(layoutPath, content, "utf-8");
+  return true;
 }
 
 /**
@@ -771,15 +879,153 @@ async function addWorkspaces(
   }
 }
 
-function copyFromStarter(starter: string, outputDir: string, rel: string): void {
+/** Import native.css + standalone.css from globals.css.
+ *
+ *  CSS requires `@import` to precede every other rule, so these go
+ *  directly after the last existing import rather than at the end. Both
+ *  are unlayered while Tailwind's utilities sit in `@layer utilities`, so
+ *  they still win the cascade — source order is not what decides it. */
+function wireNativeStylesIntoGlobals(projectDir: string): boolean {
+  const path = join(projectDir, "packages/client/src/styles/globals.css");
+  if (!existsSync(path)) return false;
+  const content = readFileSync(path, "utf-8");
+  if (content.includes('@import "./native.css"')) return false;
+
+  const imports = [...content.matchAll(/^@import\s+[^\n]*;\n/gm)];
+  const block =
+    "\n/*\n" +
+    " * Native and installed-web-app chrome.\n" +
+    " *\n" +
+    " *   native.css      every selector under `html.cap`, so it is inert on web\n" +
+    " *                   BY CONSTRUCTION. A rule that would also be right on web\n" +
+    " *                   belongs in this file, not there.\n" +
+    " *   standalone.css  `@media (display-mode: standalone)` copies of the\n" +
+    " *                   safe-area rules, scoped `html:not(.cap)`. NOT inert by\n" +
+    " *                   construction — `viewport-fit=cover` ships to every host,\n" +
+    " *                   and an installed web app gets the real insets with none\n" +
+    " *                   of native.css applying to it.\n" +
+    " */\n" +
+    '@import "./native.css";\n' +
+    '@import "./standalone.css";\n';
+
+  let out: string;
+  if (imports.length > 0) {
+    const last = imports[imports.length - 1];
+    const at = (last.index ?? 0) + last[0].length;
+    out = content.slice(0, at) + block + content.slice(at);
+  } else {
+    out = block.replace(/^\n/, "") + content;
+  }
+  writeFileSync(path, out, "utf-8");
+  return true;
+}
+
+/** Un-ignore the native trees and punch the generated holes into
+ *  .gitignore.
+ *
+ *  A project scaffolded before this feature has a flat `ios/` and
+ *  `android/` in .gitignore, which means the hand edits that live only in
+ *  those trees — the ATS exception, the orientation set, the debug-only
+ *  cleartext config, the version wiring and the signing config — are on
+ *  exactly one machine, and the release workflow (which never runs
+ *  `cap add`) has nothing to build. */
+function ignoreNativeGeneratedPaths(projectDir: string): boolean {
+  const path = join(projectDir, ".gitignore");
+  if (!existsSync(path)) return false;
+  let content = readFileSync(path, "utf-8");
+  const before = content;
+
+  // Drop the blanket ignores. Anchored to a whole line so a path like
+  // `vendor/ios/` is untouched.
+  content = content.replace(/^(ios|android)\/\s*$\n?/gm, "");
+
+  if (!content.includes("ios/App/App/public/")) {
+    content = `${content.trimEnd()}\n
+# Capacitor native projects: COMMITTED, with holes.
+#
+# The ATS exception, the orientation set, the Android debug-only cleartext
+# config, the version wiring and the optional signing config are hand edits
+# that live only in these trees, and a fresh checkout must build the real app
+# without a generator run. scripts/cap-add.mjs applies them; you commit them.
+#
+# Rewritten by every \`pnpm build:mobile\` but still TRACKED (a diff after a
+# build is normal — commit it when the plugin set changed):
+${NATIVE_GENERATED_TRACKED.map((p) => `#   ${p}`).join("\n")}
+#
+# Generated and NOT tracked — the holes below. A checkout that has never run
+# \`pnpm build:mobile\` has none of them and cannot be opened in Xcode or
+# Gradle at all. Build first.
+${NATIVE_GENERATED_UNTRACKED.map((p) => p).join("\n")}
+ios/App/build/
+ios/App/DerivedData/
+ios/App/.swiftpm/
+ios/App/CapApp-SPM/.build/
+ios/App/App.xcodeproj/xcuserdata/
+ios/App/App.xcodeproj/project.xcworkspace/xcuserdata/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+# A credential. Signing is environment-driven and optional, so a checkout
+# without this file still builds — unsigned.
+android/app/release.keystore
+
+# The mobile export has its own directory. A shared one means a Playwright
+# run can silently be installed as the app.
+packages/client/out-mobile/
+`;
+  }
+
+  if (content === before) return false;
+  writeFileSync(path, content, "utf-8");
+  console.log(chalk.green("  ✓ .gitignore: native trees are tracked; generated paths ignored"));
+  return true;
+}
+
+/** Copy one starter path into the project, MERGING directories.
+ *
+ *  A file that already exists is never overwritten — `update` layers a
+ *  feature on, it does not reset the project, and the destination may
+ *  carry edits nobody wants back. But a DIRECTORY that already exists is
+ *  descended into rather than skipped: a project scaffolded before
+ *  `scripts/lib/` or `packages/client/src/mobile/network.ts` existed has
+ *  the parent directory and not the new files, and a whole-directory skip
+ *  would leave it half-upgraded — with a globals.css importing a
+ *  stylesheet that is not there and a layout importing a module that is
+ *  not there. Half is worse than either end.
+ *
+ *  Returns the number of files written, so the caller can stay silent
+ *  when a run changed nothing. */
+function copyFromStarter(starter: string, outputDir: string, rel: string): number {
   const src = join(starter, rel);
   const dst = join(outputDir, rel);
-  if (!existsSync(src)) return;
-  if (existsSync(dst)) {
-    // Already present — skip to avoid clobbering user edits.
-    return;
+  if (!existsSync(src)) return 0;
+
+  if (!statSync(src).isDirectory()) {
+    // Already present — leave it, to avoid clobbering user edits.
+    if (existsSync(dst)) return 0;
+    mkdirSync(dirname(dst), { recursive: true });
+    cpSync(src, dst);
+    return 1;
   }
-  cpSync(src, dst, { recursive: true });
+
+  if (!existsSync(dst)) {
+    cpSync(src, dst, { recursive: true });
+    return countFiles(src);
+  }
+  let written = 0;
+  for (const entry of readdirSync(src)) {
+    written += copyFromStarter(starter, outputDir, join(rel, entry));
+  }
+  return written;
+}
+
+function countFiles(dir: string): number {
+  let n = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    n += entry.isDirectory() ? countFiles(join(dir, entry.name)) : 1;
+  }
+  return n;
 }
 
 function readJson(path: string): Record<string, unknown> & {

@@ -48,6 +48,7 @@ import {
   substituteIdentifierTokens,
 } from "./identifiers.js";
 import { MANIFEST_FILENAME, toManifest, writeManifest } from "./manifest.js";
+import { MOBILE_DEPS, MOBILE_PATHS, MOBILE_SCRIPTS } from "./mobile-feature.js";
 import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
 import {
   setPackageJsonDescription,
@@ -65,6 +66,7 @@ import {
   replaceInFile,
   rewriteFile,
   stripMobileBridgeFromLayout,
+  stripNativeStylesFromGlobals,
   updateEnvExample,
 } from "./starter-files.js";
 import { pruneToSurface } from "./surfaces.js";
@@ -394,42 +396,14 @@ async function runScaffoldSteps(
 
   // Mobile (Capacitor) strip / substitute
   if (!wantsMobile) {
-    removeIfExists(join(outputDir, "ios"));
-    removeIfExists(join(outputDir, "android"));
-    removeIfExists(join(outputDir, "capacitor.config.ts"));
-    removeIfExists(join(outputDir, "packages/client/src/mobile"));
-    removeIfExists(join(outputDir, "scripts/android-dev.sh"));
-    removeIfExists(join(outputDir, "scripts/android-env.sh"));
-    removeIfExists(join(outputDir, "scripts/ios-dev.sh"));
-    removeIfExists(join(outputDir, ".github/workflows/mobile-release.yml"));
-    removeIfExists(join(outputDir, "resources"));
+    for (const rel of MOBILE_PATHS) removeIfExists(join(outputDir, rel));
     stripMobileBridgeFromLayout(outputDir);
-    stripPackageJsonScripts(outputDir, [
-      "dev:android",
-      "dev:ios",
-      "build:mobile",
-      "cap:add:ios",
-      "cap:add:android",
-      "cap:sync",
-      "cap:run:ios",
-      "cap:run:android",
-      "build:ios:release",
-      "build:android:release",
-      "build:android:apk",
-      "mobile:assets",
-    ]);
-    stripPackageJsonDeps(outputDir, [
-      "@capacitor/core",
-      "@capacitor/cli",
-      "@capacitor/ios",
-      "@capacitor/android",
-      "@capacitor/splash-screen",
-      "@capacitor/status-bar",
-      "@capacitor/screen-orientation",
-      "@capacitor/preferences",
-      "@capacitor/app",
-      "@capacitor/assets",
-    ]);
+    // globals.css imports native.css + standalone.css, and both ship with
+    // the feature. Left behind, the very first `next build` fails on a
+    // missing module.
+    stripNativeStylesFromGlobals(outputDir);
+    stripPackageJsonScripts(outputDir, [...MOBILE_SCRIPTS]);
+    stripPackageJsonDeps(outputDir, [...MOBILE_DEPS]);
     modifications.push("removed: mobile (Capacitor) scaffolding");
   } else {
     rewriteFile(join(outputDir, "capacitor.config.ts"), (c) =>
@@ -438,7 +412,7 @@ async function runScaffoldSteps(
   }
 
   if (wantsDesktop || wantsMobile) {
-    flipNextConfigToStaticExport(outputDir);
+    flipNextConfigToStaticExport(outputDir, { wantsMobile });
     modifications.push("next.config.ts: output 'standalone' → 'export'");
   }
 

@@ -78,8 +78,16 @@ export function updateEnvExample(outputDir: string, relPath: string, config: Pro
   writeFileSync(path, content, "utf-8");
 }
 
-/** Strip the MobileBridgeLoader import + mount from the client layout
- *  when mobile isn't selected. Leaves the rest of the layout alone. */
+/** Strip every mobile hook out of the client layout when mobile isn't
+ *  selected: the MobileBridgeLoader import + mount, and the pre-paint
+ *  root-marker script that sets `html.cap`.
+ *
+ *  The `viewport` export STAYS. `viewport-fit=cover` is not a mobile
+ *  setting — one static export serves the browser and an installed web
+ *  app, and the installed web app is the host that gets real insets.
+ *  styles/standalone.css goes with mobile (it arrives with the feature),
+ *  so a stripped scaffold keeps a harmless meta tag and no inset rules,
+ *  which is exactly where it was before the feature existed. */
 export function stripMobileBridgeFromLayout(outputDir: string): void {
   const path = join(outputDir, "packages/client/src/app/layout.tsx");
   if (!existsSync(path)) return;
@@ -89,7 +97,36 @@ export function stripMobileBridgeFromLayout(outputDir: string): void {
     "",
   );
   content = content.replace(/\s*<MobileBridgeLoader\s*\/>\n/, "\n");
+  content = content.replace(
+    /import\s*\{\s*ROOT_MARKER_SCRIPT\s*\}\s*from\s*["']@\/mobile\/platform["'];\n/,
+    "",
+  );
+  // The pre-paint <script> and the block comment above it. Anchored on the
+  // dangerouslySetInnerHTML payload so a hand-edited layout that moved the
+  // tag is still matched, and a layout that never had it is untouched.
+  content = content.replace(
+    /\n[ \t]*\{\/\*\s*\n(?:[^\n]*\n)*?[ \t]*\*\/\}\n[ \t]*<script\b[^>]*?ROOT_MARKER_SCRIPT[^>]*?\/>\n/,
+    "\n",
+  );
+  content = content.replace(/\n[ \t]*<script\b[^>]*?ROOT_MARKER_SCRIPT[^>]*?\/>\n/, "\n");
   writeFileSync(path, content, "utf-8");
+}
+
+/** Remove the `native.css` / `standalone.css` imports (and the comment
+ *  block introducing them) from globals.css. Both files ship with the
+ *  mobile feature, so a stripped scaffold that kept the imports would
+ *  fail its very first `next build` on a missing module. */
+export function stripNativeStylesFromGlobals(outputDir: string): void {
+  const path = join(outputDir, "packages/client/src/styles/globals.css");
+  if (!existsSync(path)) return;
+  let content = readFileSync(path, "utf-8");
+  content = content.replace(
+    /\n\/\*\n \* Native and installed-web-app chrome\.\n(?:[^\n]*\n)*? \*\/\n/,
+    "\n",
+  );
+  content = content.replace(/^@import "\.\/native\.css";\n/m, "");
+  content = content.replace(/^@import "\.\/standalone\.css";\n/m, "");
+  writeFileSync(path, content.replace(/\n{3,}/g, "\n\n"), "utf-8");
 }
 
 /** Overwrite `packages/client/next.config.ts` with a known-good
@@ -106,15 +143,56 @@ export function stripMobileBridgeFromLayout(outputDir: string): void {
  *  on its first request — a build-time error turned into a runtime one.
  *  The guard is skipped under `next dev`, where the dev server proxies
  *  `/api` and the export path is never taken. */
-export function flipNextConfigToStaticExport(outputDir: string): void {
+export function flipNextConfigToStaticExport(
+  outputDir: string,
+  opts: { wantsMobile?: boolean } = {},
+): void {
   const path = join(outputDir, "packages/client/next.config.ts");
   if (!existsSync(path)) return;
   const clientName = readPackageName(join(outputDir, "packages/client"));
   const transpile = readWorkspacePackageNames(outputDir).filter((n) => n !== clientName);
   const transpileList = transpile.map((n) => `"${n}"`).join(", ");
+  // Only a Capacitor scaffold carries the live-reload dev-origin merge —
+  // it exists for `pnpm dev:android`, which Electron and Tauri have no
+  // equivalent of, and an unused knob in a generated config is a question
+  // the project's owner has to answer later.
+  const allowedDevOrigins = opts.wantsMobile
+    ? `
+  // Android live reload: Next 16 blocks cross-origin requests for /_next dev
+  // resources, and under \`pnpm dev:android\` the document is served from the
+  // emulator's view of the host (http://10.0.2.2:<port>), which is
+  // cross-origin to the dev server. Without this the document loads, every
+  // chunk is blocked, and the app sits on a splash that
+  // \`launchAutoHide: false\` never hides. scripts/android-dev.sh exports
+  // NEXT_DEV_ORIGINS.
+  allowedDevOrigins: (process.env.NEXT_DEV_ORIGINS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),`
+    : "";
   const staticExportConfig = `import type { NextConfig } from "next";
 
 const isDev = process.env.NODE_ENV === "development";
+// Electron resolves the export through its own app:// scheme and is happy
+// with a relative asset prefix; Capacitor is not (see assetPrefix below).
+const isElectronBuild = process.env.ELECTRON_BUILD === "1";
+
+// Each native shell gets its OWN export directory, named by the build script
+// that writes it:
+//
+//   out          web / Playwright (Playwright bakes a throwaway loopback API
+//                port into its build)
+//   out-desktop  Electron
+//   out-mobile   scripts/build-mobile.mjs (Capacitor)
+//
+// A shared directory means a test run can silently be installed as the app —
+// \`cap run\` syncs implicitly, so nothing would say so.
+//
+// Under \`output: "export"\` Next treats \`distDir\` as the OUT directory and
+// forces the build directory back to \`.next\`. That is also why a production
+// export cannot share a checkout with a running dev server, and why
+// scripts/build-mobile.mjs refuses to start while one holds \`.next\`.
+const exportDir = process.env.NEXT_EXPORT_DIR || "out";
 
 // This client always builds as a static export: the bundle ships inside the
 // desktop/mobile shell and the Express server is always remote. Next.js
@@ -136,10 +214,17 @@ if (!isDev && !process.env.NEXT_PUBLIC_API_URL) {
 
 const nextConfig: NextConfig = {
   output: "export",
-  assetPrefix: "./",
+  distDir: exportDir,
+  // A relative asset prefix rewrites every \`/_next/...\` reference to
+  // \`./_next/...\`, which resolves against the CURRENT path. It works for a
+  // single-page load and breaks every nested route the moment the WebView is
+  // at \`/app/settings/\`. Electron's app:// handler resolves relative paths
+  // itself, so it can keep it; Capacitor cannot, and scripts/build-mobile.mjs
+  // fails the build when it finds \`"./_next\` in any emitted HTML.
+  ...(isElectronBuild ? { assetPrefix: "./" as const } : {}),
   trailingSlash: true,
   images: { unoptimized: true },
-  transpilePackages: [${transpileList}],
+  transpilePackages: [${transpileList}],${allowedDevOrigins}
 };
 
 export default nextConfig;

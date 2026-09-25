@@ -1,0 +1,125 @@
+/*
+ * Phone-shell chrome. EVERY SELECTOR IN THIS FILE IS UNDER `html.cap`.
+ *
+ * That is what makes the file inert on web BY CONSTRUCTION rather than by
+ * discipline: the marker class is only ever added by the native shell (see
+ * mobile/platform.ts), so nothing here can reach a browser, and nobody has to
+ * remember a rule. A declaration that would ALSO be right on web does not
+ * belong here — put it in globals.css, where it applies to everyone.
+ *
+ * ---------------------------------------------------------------------------
+ * CASCADE NOTE 1 — undoing a Tailwind translate.
+ *
+ * Tailwind v4 compiles `-translate-y-1/2` to the `translate` PROPERTY, not to
+ * `transform`:
+ *     translate: var(--tw-translate-x) var(--tw-translate-y);
+ * So a `transform: none` here does NOT undo it. `transform` and `translate`
+ * are separate properties and both apply — the element ends up displaced by
+ * the translate anyway, and the "fix" reads as if it should work.
+ * The way to undo it is to change the variable the utility reads:
+ *     --tw-translate-y: 0;
+ *
+ * CASCADE NOTE 2 — no `!important` anywhere in this file.
+ *
+ * Tailwind's utilities live in `@layer utilities`. This file is imported
+ * unlayered, and unlayered rules beat every layered rule regardless of
+ * specificity, so these declarations already win. Adding `!important` would
+ * change nothing except to hide the fact that the cascade is doing the work —
+ * and the next person would copy it into a rule where it matters.
+ * ---------------------------------------------------------------------------
+ */
+
+/*
+ * Safe areas. The viewport is `viewport-fit=cover`, so content is laid out
+ * edge to edge and the notch, the status bar and the home indicator sit on top
+ * of it. env() returns the size of each intrusion; 0 where there is none.
+ * `max()` keeps a sane gutter on the edges that have no inset.
+ */
+html.cap header {
+  padding-top: calc(env(safe-area-inset-top) + 0.5rem);
+  padding-left: max(env(safe-area-inset-left), 0.75rem);
+  padding-right: max(env(safe-area-inset-right), 0.75rem);
+}
+
+html.cap main {
+  padding-left: max(env(safe-area-inset-left), 0px);
+  padding-right: max(env(safe-area-inset-right), 0px);
+  /*
+   * Bottom inset is the home indicator. Without this, the last row of a
+   * scrolled list sits under it and cannot be tapped — the system swallows the
+   * touch.
+   */
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+html.cap footer,
+html.cap [data-native-bottom-bar] {
+  padding-bottom: calc(env(safe-area-inset-bottom) + 0.5rem);
+}
+
+/*
+ * 16px is the threshold below which iOS Safari/WKWebView zooms the page when a
+ * field takes focus. The page never zooms back, so the user is left on a
+ * sideways-scrollable layout.
+ *
+ * The other fix — `maximumScale: 1` / `userScalable: false` in the viewport
+ * meta — is not a fix, it is TAKING PINCH-ZOOM AWAY FROM EVERYONE, permanently
+ * and app-wide, to work around a font size. It breaks the primary
+ * accessibility affordance for low-vision users and, because the meta tag
+ * ships in one static export, it would break it for the web app too.
+ * Set the font size instead.
+ */
+html.cap input,
+html.cap select,
+html.cap textarea {
+  font-size: 16px;
+}
+
+/*
+ * 44pt is Apple's minimum target and roughly Android's 48dp. Opt-in utility
+ * rather than a blanket rule on every button: applying it globally inflates
+ * dense UI (table rows, inline icon buttons) on the one device where vertical
+ * space is scarcest.
+ */
+html.cap .cap-touch {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/*
+ * Top-anchored dialogs.
+ *
+ * A vertically centred dialog on a phone is pushed off the top of the screen
+ * the moment the keyboard opens, and there is nowhere to scroll it back to.
+ * Anchor it below the status bar instead and let it grow downwards.
+ *
+ * Note `--tw-translate-y: 0` rather than a `transform` — see CASCADE NOTE 1.
+ * The horizontal centring is left alone, so `--tw-translate-x` is untouched.
+ */
+html.cap [role="dialog"] {
+  top: calc(env(safe-area-inset-top) + 1rem);
+  --tw-translate-y: 0;
+  max-height: calc(
+    100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 2rem
+  );
+}
+
+/*
+ * Native shells have no browser chrome, so an accidental text selection or an
+ * overscroll bounce reads as a broken app rather than a web page.
+ * Inputs and anything explicitly marked selectable keep normal behaviour.
+ */
+html.cap body {
+  overscroll-behavior-y: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html.cap input,
+html.cap textarea,
+html.cap [contenteditable="true"],
+html.cap .cap-selectable {
+  -webkit-user-select: text;
+  user-select: text;
+}

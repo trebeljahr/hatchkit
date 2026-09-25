@@ -85,6 +85,18 @@ function cfg(
 
 type Check = [string, boolean];
 
+/** Source with comments removed, for assertions that count occurrences of
+ *  a config key. Generated files document the rules they implement, so a
+ *  raw substring count reads the prose as code. */
+function stripComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .filter((l) => !/^\s*\/\//.test(l))
+    .join("\n");
+}
+
+
 async function run(
   label: string,
   name: string,
@@ -434,9 +446,14 @@ results.desktopMobile = await run(
       ["next.config flipped to export", nextCfg.includes('output: "export"')],
       // Two native features both ask for the static-export flip; the
       // rewrite must be a fixed point, not run once per feature.
+      //
+      // Comments are stripped first: the generated config EXPLAINS
+      // `output: "export"` in prose (why distDir is the out dir, why a
+      // dev server holding .next blocks a build), and a raw count reads
+      // those mentions as a second flip.
       [
         "next.config flipped exactly once",
-        (nextCfg.match(/output:\s*["']export["']/g) || []).length === 1,
+        (stripComments(nextCfg).match(/output:\s*["']export["']/g) || []).length === 1,
       ],
       ["resources/icon.png kept (mobile assets)", existsSync(join(d, "resources/icon.png"))],
       [

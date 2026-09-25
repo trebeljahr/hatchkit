@@ -121,10 +121,18 @@ elif adb devices | awk 'NR>1 && $2 == "unauthorized" { found=1 } END { exit !fou
   exit 1
 else
   echo "No device attached — booting emulator: $AVD_NAME"
+  # Headless by default: an emulator window pops to the front on every
+  # boot and steals focus. ANDROID_SHOW_WINDOW=1 opts back in.
+  EMU_WINDOW_FLAG="-no-window"
+  EMU_GPU="swiftshader_indirect"
+  if [ "${ANDROID_SHOW_WINDOW:-0}" = "1" ]; then EMU_WINDOW_FLAG=""; EMU_GPU="host"; fi
+  # shellcheck disable=SC2086
   nohup emulator -avd "$AVD_NAME" \
+      $EMU_WINDOW_FLAG \
       -no-boot-anim \
+      -no-audio \
       -memory 2048 \
-      -gpu host \
+      -gpu "$EMU_GPU" \
       -netdelay none -netspeed full \
     > /tmp/starter-emulator.log 2>&1 &
   disown
@@ -148,6 +156,17 @@ fi
 # ── Next.js dev server ────────────────────────────────────
 CAP_DEV_URL="${CAP_DEV_URL:-http://$DEV_HOST:$NEXT_PORT}"
 echo "Starting Next.js dev server at $CAP_DEV_URL"
+# Next 16 blocks cross-origin requests for /_next dev resources, and the
+# document here is served from the emulator's view of the host
+# (http://10.0.2.2:<port>), which is cross-origin to the dev server.
+# Without this the document loads, every chunk is blocked, and the app sits
+# on a splash that `launchAutoHide: false` never hides. next.config.ts
+# merges NEXT_DEV_ORIGINS into `allowedDevOrigins`.
+CAP_DEV_ORIGIN="$(printf %s "$CAP_DEV_URL" | sed -E 's#^(https?://[^/]+).*#\1#')"
+export NEXT_DEV_ORIGINS="${NEXT_DEV_ORIGINS:+$NEXT_DEV_ORIGINS,}$CAP_DEV_ORIGIN"
+echo "   allowedDevOrigins: $NEXT_DEV_ORIGINS"
+echo "   server must trust this origin too:"
+echo "     TRUSTED_ORIGINS=$CAP_DEV_ORIGIN pnpm run dev"
 (cd "$REPO/packages/client" && npx next dev --hostname 0.0.0.0 --port "$NEXT_PORT") &
 NEXT_PID=$!
 
@@ -166,12 +185,14 @@ echo "Next.js ready"
 
 # ── Fallback bundle ───────────────────────────────────────
 # cap sync needs an existing assets/public tree; build once on first run.
-if [ ! -d "$REPO/android/app/src/main/assets" ] || [ ! -d "$REPO/packages/client/out" ]; then
+if [ ! -d "$REPO/android/app/src/main/assets" ] || [ ! -d "$REPO/packages/client/out-mobile" ]; then
   echo "Building fallback static export (first run)..."
-  (cd "$REPO" && pnpm build:mobile)
+  (cd "$REPO" && NEXT_PUBLIC_API_URL="${NEXT_PUBLIC_API_URL:-http://10.0.2.2:3000}" pnpm build:mobile android)
 fi
 
 # ── Capacitor sync + deploy ───────────────────────────────
+# A bare `cap sync` is correct HERE and nowhere else — see scripts/ios-dev.sh.
+# Live reload is not the app: the document origin is the dev server's.
 echo "Syncing Capacitor (server.url = $CAP_DEV_URL)"
 export CAP_DEV_URL
 (cd "$REPO" && npx cap sync android)

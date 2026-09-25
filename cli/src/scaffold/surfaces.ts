@@ -30,6 +30,7 @@ import { join } from "node:path";
 import type { ProjectConfig, Surface } from "../prompts.js";
 import { CLIENT_WORKFLOW_REL_PATH } from "./client-build-args.js";
 import { stripClientDockerfileApiUrlAssertion } from "./deploy-verification.js";
+import { MOBILE_SCRIPTS } from "./mobile-feature.js";
 import { setPackageJsonScript, stripPackageJsonDeps, stripPackageJsonScripts } from "./pkg-json.js";
 import { removeIfExists, rewriteFile } from "./starter-files.js";
 
@@ -567,8 +568,23 @@ const CLIENT_SIDE_TOP_LEVEL = [
   "playwright.config.ts",
   ".github/workflows/desktop-release.yml",
   ".github/workflows/mobile-release.yml",
+  // The mobile build/release tooling. Every one of these drives a
+  // `next build` of packages/client, which a backend-only surface has
+  // just deleted — left behind they are scripts that can only fail.
+  "scripts/build-mobile.mjs",
+  "scripts/cap-add.mjs",
+  "scripts/mobile-headless.sh",
+  "scripts/android-dev.sh",
+  "scripts/android-env.sh",
+  "scripts/ios-dev.sh",
+  "scripts/lib/mobile-build.mjs",
+  "scripts/lib/mobile-release.mjs",
+  "scripts/lib/native-overlay.mjs",
 ];
 
+/** Native wrapper scripts a backend-only surface has no use for. The
+ *  mobile half is sourced from the feature manifest so a new script can
+ *  never be added in one place and forgotten here. */
 const NATIVE_SCRIPTS = [
   "dev:desktop",
   "dev:electron",
@@ -581,18 +597,7 @@ const NATIVE_SCRIPTS = [
   "itch:push:mac",
   "itch:push:win",
   "itch:push:linux",
-  "dev:android",
-  "dev:ios",
-  "build:mobile",
-  "cap:add:ios",
-  "cap:add:android",
-  "cap:sync",
-  "cap:run:ios",
-  "cap:run:android",
-  "build:ios:release",
-  "build:android:release",
-  "build:android:apk",
-  "mobile:assets",
+  ...MOBILE_SCRIPTS,
 ];
 
 /** Tiny export so callers (tests, future surface kinds) can ask "does

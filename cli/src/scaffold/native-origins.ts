@@ -34,6 +34,13 @@ const ORIGINS_BY_FEATURE: Record<(typeof NATIVE_CLIENT_FEATURES)[number], readon
   // Capacitor: iOS serves the bundle from capacitor://localhost. Android
   // serves it from https://localhost — `androidScheme` defaults to
   // https, and an `http://localhost` entry would never match.
+  //
+  // THE SCHEME IS THE ORIGIN. Never set a custom `iosScheme` /
+  // `androidScheme` in capacitor.config.ts: the document origin keys the
+  // platform preference store, the WebView's own storage and this trust
+  // list, so changing it later orphans every stored preference and
+  // invalidates the trust list at once, in one step, with no migration
+  // path for either.
   mobile: ["capacitor://localhost", "https://localhost"],
   // Electron: the custom `app` protocol registered in electron/main.ts.
   // file:// sends `Origin: null`, which must never be trusted.
@@ -51,6 +58,42 @@ export function nativeClientOrigins(features: readonly string[]): string[] {
       if (!out.includes(origin)) out.push(origin);
     }
   }
+  return out;
+}
+
+/** The Android emulator's NAT alias for the host loopback. The emulator
+ *  cannot reach the host as `localhost` — that is the emulated device. */
+export const ANDROID_EMULATOR_HOST = "10.0.2.2";
+
+/** Origins a Capacitor LIVE-RELOAD session signs in from.
+ *
+ *  Under `pnpm dev:ios` / `pnpm dev:android` the WebView loads the Next
+ *  dev server instead of the bundle, so the document origin is the DEV
+ *  SERVER'S — not `capacitor://localhost` and not `https://localhost`.
+ *  The API has to trust *that*, which is why these are separate from
+ *  `nativeClientOrigins` and belong only in a dev trust list.
+ *
+ *  The consequence is worth stating plainly, because it is the one that
+ *  costs real time: LIVE RELOAD NEVER EXERCISES THE REAL ORIGIN. Neither
+ *  the bundle's origin nor its place in the production trust list is
+ *  touched by a live-reload run, so an auth change that works under
+ *  `dev:ios` can still fail on the first install. Verify against a real
+ *  `pnpm build:mobile` bundle.
+ *
+ *  Only the emulator alias and loopback are returned. A physical device
+ *  on the LAN, or a non-default port, needs its own entry — pass `lanIp`,
+ *  or set TRUSTED_ORIGINS explicitly. */
+export function mobileLiveReloadOrigins(opts: {
+  port: number;
+  lanIp?: string;
+}): string[] {
+  const out = [
+    // iOS Simulator shares the Mac's network namespace.
+    `http://localhost:${opts.port}`,
+    // Android emulator.
+    `http://${ANDROID_EMULATOR_HOST}:${opts.port}`,
+  ];
+  if (opts.lanIp) out.push(`http://${opts.lanIp}:${opts.port}`);
   return out;
 }
 

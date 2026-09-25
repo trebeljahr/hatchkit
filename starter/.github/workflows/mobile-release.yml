@@ -1,18 +1,170 @@
 name: Mobile Release
 
-# Triggered by pushing a tag like v0.1.0 or manual dispatch.
-# Builds an Android AAB and an iOS archive. Store uploads are gated
-# on secrets — without them the jobs just produce artifacts.
+# Builds and (optionally) ships the mobile apps for a `v*` tag.
+#
+# The contract, in one sentence: nothing is built unless the credentials to
+# sign it are complete, and nothing is uploaded or attached unless it is
+# signed.
+#
+# On a checkout with NO credentials at all — the state this template ships in —
+# this workflow still runs green: the `plan` job succeeds, writes "Nothing to
+# build" into the job summary, and both build jobs are skipped. That is the
+# baseline behaviour, and it is deliberate: a red release workflow on every tag
+# trains people to ignore it.
+#
+# The decisions live in scripts/lib/mobile-release.mjs, not in `if:`
+# expressions, for three reasons:
+#   * `if: env.X != ''` cannot see env declared on the same step. Gates written
+#     that way are dead — always-true or always-false. The previous version of
+#     this file had four of them.
+#   * YAML cannot express "all four of these secrets or none of them". A
+#     keystore with no password, or an API key with no issuer id, is the case
+#     that produces a broken or unsigned build, and it must be a hard failure.
+#   * The plan module is a pure function with no imports, so it can be unit
+#     tested with fixture objects.
 
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: Which platforms to build
+        type: choice
+        default: both
+        options: [both, ios, android]
+      track:
+        description: >-
+          Google Play track. Ignored for a prerelease tag, which is always
+          forced to `internal`.
+        type: string
+        default: internal
+
+permissions:
+  contents: read
 
 jobs:
-  android:
+  # ---------------------------------------------------------------------
+  # Decide everything first, alone, before any runner minutes are spent.
+  # ---------------------------------------------------------------------
+  plan:
     runs-on: ubuntu-latest
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Plan
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          RUN_NUMBER: ${{ github.run_number }}
+          INPUT_PLATFORMS: ${{ inputs.platforms }}
+          INPUT_TRACK: ${{ inputs.track }}
+          # BOOLEANS ONLY. `secrets.X != ''` is evaluated by Actions itself and
+          # renders as the literal string "true" or "false", so no secret VALUE
+          # ever enters this step's environment. That matters: this step writes
+          # a JSON blob to an output and markdown to the job summary, and both
+          # are readable by anyone who can see the run. A plan step that took
+          # real secrets could leak one through a stringified object or a stack
+          # trace. It cannot leak what it was never given.
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD != '' }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS != '' }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD != '' }}
+          ANDROID_PACKAGE_NAME: ${{ secrets.ANDROID_PACKAGE_NAME != '' }}
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON != '' }}
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 != '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID != '' }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 != '' }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID != '' }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID != '' }}
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL != '' }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from "node:fs";
+          import { pathToFileURL } from "node:url";
+
+          // Resolved against the checkout root rather than imported by a bare
+          // relative specifier, because stdin input has no file of its own.
+          const url = pathToFileURL("scripts/lib/mobile-release.mjs").href;
+          const { planMobileRelease, formatPlanSummary } = await import(url);
+
+          const SECRETS = [
+            "ANDROID_KEYSTORE_BASE64",
+            "ANDROID_KEYSTORE_PASSWORD",
+            "ANDROID_KEY_ALIAS",
+            "ANDROID_KEY_PASSWORD",
+            "ANDROID_PACKAGE_NAME",
+            "PLAY_SERVICE_ACCOUNT_JSON",
+            "APPLE_CERTIFICATE_BASE64",
+            "APPLE_CERTIFICATE_PASSWORD",
+            "APPLE_TEAM_ID",
+            "APPLE_API_KEY_BASE64",
+            "APPLE_API_KEY_ID",
+            "APPLE_API_ISSUER_ID",
+            "NEXT_PUBLIC_API_URL",
+          ];
+          const secretsPresent = Object.fromEntries(
+            SECRETS.map((name) => [name, process.env[name] === "true"]),
+          );
+
+          const plan = planMobileRelease({
+            ref: process.env.REF ?? "",
+            eventName: process.env.EVENT_NAME ?? "push",
+            inputs: {
+              platforms: process.env.INPUT_PLATFORMS || undefined,
+              track: process.env.INPUT_TRACK || undefined,
+            },
+            secretsPresent,
+            runNumber: Number(process.env.RUN_NUMBER ?? 0),
+          });
+
+          // Single-line JSON: a step output cannot contain a raw newline.
+          appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `plan=${JSON.stringify(plan)}\n`,
+          );
+          appendFileSync(
+            process.env.GITHUB_STEP_SUMMARY,
+            formatPlanSummary(plan) + "\n",
+          );
+          console.log(JSON.stringify(plan, null, 2));
+
+          if (plan.errors.length > 0) {
+            for (const error of plan.errors) {
+              console.log(`::error::${error}`);
+            }
+            // Fail here, before a runner is even allocated for a build. The
+            // dependent jobs are skipped automatically when this job fails.
+            process.exit(1);
+          }
+          NODE
+
+  # ---------------------------------------------------------------------
+  # Android
+  # ---------------------------------------------------------------------
+  android:
+    needs: plan
+    # The `needs.plan.outputs.plan &&` half guards against an empty output —
+    # fromJSON('') is an error, not false.
+    if: needs.plan.outputs.plan && fromJSON(needs.plan.outputs.plan).android.build
+    runs-on: ubuntu-latest
+    env:
+      PLAN_VERSION: ${{ fromJSON(needs.plan.outputs.plan).version || '0.0.0' }}
+      PLAN_BUILD_NUMBER: ${{ fromJSON(needs.plan.outputs.plan).buildNumber }}
+      KEYSTORE_PATH: android/app/release.keystore
     steps:
       - uses: actions/checkout@v4
 
@@ -33,46 +185,113 @@ jobs:
       - name: Install deps
         run: pnpm install --frozen-lockfile
 
-      - name: Build static export
-        run: pnpm build:mobile
+      - name: Build static export and sync Capacitor
+        run: node scripts/build-mobile.mjs android
         env:
+          # Baked into the bundle at build time. The plan job already refused
+          # the run if this was unset.
           NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
 
       - name: Decode signing keystore
-        if: env.ANDROID_KEYSTORE_BASE64 != ''
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
-          mkdir -p android/app
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/release.keystore
+          set -euo pipefail
+          mkdir -p "$(dirname "$KEYSTORE_PATH")"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
+          # A truncated or mis-pasted base64 secret decodes to something that
+          # is not a keystore; catch it here rather than inside Gradle.
+          test -s "$KEYSTORE_PATH"
 
       - name: Build AAB
         working-directory: android
         env:
+          # Relative to the `android/` project dir, where Gradle resolves it.
+          KEYSTORE_PATH: release.keystore
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew bundleRelease
+          # versionCode comes from the plan, i.e. from run_number. Play rejects
+          # a versionCode it has already accepted, forever, so it must never be
+          # derived from the package version.
+          ANDROID_VERSION_CODE: ${{ fromJSON(needs.plan.outputs.plan).buildNumber }}
+          ANDROID_VERSION_NAME: ${{ fromJSON(needs.plan.outputs.plan).version || '0.0.0' }}
+        run: |
+          chmod +x ./gradlew
+          ./gradlew bundleRelease --no-daemon
 
-      - name: Upload AAB
+      - name: Verify the bundle is signed
+        id: aab
+        run: |
+          set -euo pipefail
+          AAB=$(find android/app/build/outputs/bundle/release -name '*.aab' | head -n1)
+          if [ -z "$AAB" ]; then
+            echo "::error::No .aab was produced."
+            exit 1
+          fi
+          echo "path=$AAB" >> "$GITHUB_OUTPUT"
+
+          # This is the step that stops an unsigned AAB passing quietly. Gradle
+          # happily emits an unsigned bundle when the signingConfig does not
+          # resolve, and every later step — artifact upload, Play upload —
+          # would accept it. `jar verified` in the jarsigner output is the only
+          # positive proof that the signature is actually there.
+          #
+          # jarsigner's own exit code is not usable as the gate: `-strict`
+          # returns non-zero for a self-signed certificate chain, which is
+          # exactly what a normal Play upload key is. So capture the output,
+          # ignore the status, and assert on the text.
+          set +e
+          OUT=$(jarsigner -verify -strict -verbose "$AAB" 2>&1)
+          set -e
+          echo "$OUT" | tail -n 40
+          if ! echo "$OUT" | grep -q 'jar verified'; then
+            echo "::error::$AAB is not signed — refusing to publish or attach it."
+            exit 1
+          fi
+
+      # Guarded by the plan: `artifact` is true only when `sign` is true, so an
+      # unsigned bundle can never be attached to a run that people read as a
+      # release download.
+      - name: Upload AAB artifact
+        if: fromJSON(needs.plan.outputs.plan).android.artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-aab
-          path: android/app/build/outputs/bundle/release/*.aab
+          name: android-aab-${{ env.PLAN_VERSION }}-${{ env.PLAN_BUILD_NUMBER }}
+          path: ${{ steps.aab.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
 
-      - name: Upload to Play Store (internal track)
-        if: env.PLAY_SERVICE_ACCOUNT_JSON != ''
+      # Guarded by the plan: upload is true only with a complete Play
+      # credential set AND a signed bundle. The track is decided in the plan,
+      # where a prerelease tag is forced to `internal`.
+      - name: Upload to Google Play
+        if: fromJSON(needs.plan.outputs.plan).android.upload
         uses: r0adkll/upload-google-play@v1
-        env:
-          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: ${{ secrets.ANDROID_PACKAGE_NAME }}
-          releaseFiles: android/app/build/outputs/bundle/release/*.aab
-          track: internal
+          releaseFiles: ${{ steps.aab.outputs.path }}
+          track: ${{ fromJSON(needs.plan.outputs.plan).android.track }}
+          status: completed
 
+      # The keystore is a private key sitting in the workspace, readable by
+      # every later step and by any action this job runs. Delete it even when
+      # the build failed.
+      - name: Remove decoded keystore
+        if: always()
+        run: rm -f "$KEYSTORE_PATH"
+
+  # ---------------------------------------------------------------------
+  # iOS
+  # ---------------------------------------------------------------------
   ios:
+    needs: plan
+    if: needs.plan.outputs.plan && fromJSON(needs.plan.outputs.plan).ios.build
     runs-on: macos-latest
+    env:
+      PLAN_VERSION: ${{ fromJSON(needs.plan.outputs.plan).version || '0.0.0' }}
+      PLAN_BUILD_NUMBER: ${{ fromJSON(needs.plan.outputs.plan).buildNumber }}
     steps:
       - uses: actions/checkout@v4
 
@@ -88,68 +307,169 @@ jobs:
       - name: Install deps
         run: pnpm install --frozen-lockfile
 
-      - name: Build static export + sync
-        run: pnpm build:mobile
+      - name: Build static export and sync Capacitor
+        run: node scripts/build-mobile.mjs ios
         env:
           NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
 
-      - name: CocoaPods install
-        working-directory: ios/App
-        run: pod install
+      # No `pod install` step. Capacitor 8 resolves iOS dependencies with Swift
+      # Package Manager (ios/App/CapApp-SPM/Package.swift) and generates no
+      # Podfile and no .xcworkspace, so the old CocoaPods step failed on a
+      # clean checkout and the archive has to target the .xcodeproj directly.
 
       - name: Import signing certificate
-        if: env.APPLE_CERTIFICATE_BASE64 != ''
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ci-temp-password
         run: |
-          echo "$APPLE_CERTIFICATE_BASE64" | base64 -d > /tmp/cert.p12
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security import /tmp/cert.p12 -k build.keychain \
-            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: \
-            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          # Generated per run and never written to a file, an output, or the
+          # environment. A hardcoded password (the old "ci-temp-password") is a
+          # published password: anything running in the job — a postinstall
+          # script, a third-party action — could unlock the keychain and export
+          # the distribution private key. The value stays inside this step;
+          # later steps need the keychain unlocked, not the password.
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+
+          printf '%s' "$APPLE_CERTIFICATE_BASE64" | base64 -d > "$CERT_PATH"
+          test -s "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          # No auto-relock mid-archive; a long build would otherwise fail at
+          # the signing phase with an opaque error.
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" > /dev/null
+          # Prepend to the search list so xcodebuild finds the identity, while
+          # keeping the existing keychains so system roots still resolve.
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | tr -d '"')
+
+          rm -f "$CERT_PATH"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Write ExportOptions.plist
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          # Generated here rather than read from the repo. A committed
+          # ExportOptions.plist would carry one team's id into every checkout
+          # of this template, and a fresh `cap add ios` does not produce one at
+          # all — so a checkout with no signing config would fail at export
+          # instead of simply not building.
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>teamID</key><string>${APPLE_TEAM_ID}</string>
+            <key>destination</key><string>export</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>uploadSymbols</key><true/>
+          </dict>
+          </plist>
+          PLIST
 
       - name: Archive
-        working-directory: ios/App
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          xcodebuild -workspace App.xcworkspace \
+          set -euo pipefail
+          # -project, not -workspace: SPM, no CocoaPods (see above).
+          xcodebuild archive \
+            -project ios/App/App.xcodeproj \
             -scheme App \
             -configuration Release \
-            -archivePath $PWD/build/App.xcarchive \
             -destination 'generic/platform=iOS' \
-            archive
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -allowProvisioningUpdates \
+            MARKETING_VERSION="$PLAN_VERSION" \
+            CURRENT_PROJECT_VERSION="$PLAN_BUILD_NUMBER" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic
+
+      - name: Verify the archive is signed
+        run: |
+          set -euo pipefail
+          APP=$(find "$RUNNER_TEMP/App.xcarchive/Products/Applications" \
+            -maxdepth 1 -name '*.app' | head -n1)
+          if [ -z "$APP" ]; then
+            echo "::error::No .app inside the archive."
+            exit 1
+          fi
+          # The iOS counterpart of the jarsigner check: xcodebuild can produce
+          # an archive with no usable signature and still exit 0. codesign
+          # exits non-zero when the requirement is not satisfied, which fails
+          # the job before anything is attached or uploaded.
+          codesign --verify --deep --strict --verbose=2 "$APP"
 
       - name: Export IPA
-        if: env.APPLE_CERTIFICATE_BASE64 != ''
-        working-directory: ios/App
         run: |
+          set -euo pipefail
           xcodebuild -exportArchive \
-            -archivePath $PWD/build/App.xcarchive \
-            -exportPath $PWD/build/ipa \
-            -exportOptionsPlist ExportOptions.plist
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -allowProvisioningUpdates
+          IPA=$(find "$RUNNER_TEMP/export" -maxdepth 1 -name '*.ipa' | head -n1)
+          if [ -z "$IPA" ]; then
+            echo "::error::No .ipa was exported."
+            exit 1
+          fi
+          echo "IPA_PATH=$IPA" >> "$GITHUB_ENV"
 
-      - name: Upload archive
+      # Guarded by the plan: `artifact` is true only when the build was signed.
+      - name: Upload IPA artifact
+        if: fromJSON(needs.plan.outputs.plan).ios.artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ios-archive
-          path: ios/App/build/App.xcarchive
+          name: ios-ipa-${{ env.PLAN_VERSION }}-${{ env.PLAN_BUILD_NUMBER }}
+          path: ${{ env.IPA_PATH }}
+          if-no-files-found: error
+          retention-days: 14
 
+      # Guarded by the plan: upload is true only with the complete App Store
+      # Connect API key set (key + key id + issuer id) AND a signed build.
       - name: Upload to TestFlight
-        if: env.APPLE_API_KEY_BASE64 != ''
+        if: fromJSON(needs.plan.outputs.plan).ios.upload
         env:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
-          mkdir -p ~/.appstoreconnect/private_keys
-          echo "$APPLE_API_KEY_BASE64" | base64 -d \
-            > ~/.appstoreconnect/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8
+          set -euo pipefail
+          # altool resolves the key by id inside this directory; there is no
+          # flag for "the key is at this path".
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          printf '%s' "$APPLE_API_KEY_BASE64" | base64 -d \
+            > "$HOME/.appstoreconnect/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8"
           xcrun altool --upload-app \
-            --file ios/App/build/ipa/*.ipa \
+            --file "$IPA_PATH" \
             --type ios \
             --apiKey "$APPLE_API_KEY_ID" \
             --apiIssuer "$APPLE_API_ISSUER_ID"
+
+      # The API key can create, expire and release builds for the whole team.
+      # Remove it whether or not the upload worked.
+      - name: Remove App Store Connect API key
+        if: always()
+        run: rm -f "$HOME/.appstoreconnect/private_keys/"*.p8
+
+      # The temporary keychain holds the distribution private key, unlocked.
+      # A leftover keychain on a reused runner is a signing identity the next
+      # job can use. This cleanup must never be skipped by an earlier failure,
+      # hence `if: always()`.
+      - name: Delete temporary keychain
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+          fi

@@ -1,0 +1,58 @@
+/*
+ * Safe-area rules for an INSTALLED WEB APP (iOS "Add to Home Screen", an
+ * installed PWA on Android).
+ *
+ * WHY THIS IS A SEPARATE FILE, AND WHY IT IS NOT INERT BY CONSTRUCTION THE WAY
+ * native.css IS:
+ *
+ *   `viewport-fit=cover` ships to EVERY host, web included. There is one
+ *   static export, and it serves the browser, the installed web app and both
+ *   native shells from the same HTML — there is no build in which the meta tag
+ *   can be left out for web only.
+ *
+ *   In a normal mobile browser that is harmless: the browser's own chrome
+ *   occupies the intrusions, every env(safe-area-inset-*) resolves to 0, and
+ *   nothing moves.
+ *
+ *   An INSTALLED web app has no browser chrome. It gets the real insets — and
+ *   none of native.css applies to it, because `html.cap` is only ever set by a
+ *   Capacitor shell. So without this file the header sits under the notch and
+ *   the last row of content sits under the home indicator, on the one host
+ *   nobody tests.
+ *
+ * EVERY SELECTOR IS SCOPED `html:not(.cap)`. A native shell can also report
+ * `display-mode: standalone`, and without that scope both files would apply and
+ * the paddings would DOUBLE — a visible band of dead space at the top of every
+ * screen on device, and nothing at all in the simulator's browser.
+ *
+ * Unlayered like native.css, so no `!important` is needed; see the cascade
+ * notes there.
+ */
+
+@media (display-mode: standalone) {
+  html:not(.cap) header {
+    padding-top: calc(env(safe-area-inset-top) + 0.5rem);
+    padding-left: max(env(safe-area-inset-left), 0.75rem);
+    padding-right: max(env(safe-area-inset-right), 0.75rem);
+  }
+
+  html:not(.cap) main {
+    padding-left: max(env(safe-area-inset-left), 0px);
+    padding-right: max(env(safe-area-inset-right), 0px);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  html:not(.cap) footer,
+  html:not(.cap) [data-native-bottom-bar] {
+    padding-bottom: calc(env(safe-area-inset-bottom) + 0.5rem);
+  }
+
+  /* Same top-anchoring, same reason, same --tw-translate-y caveat. */
+  html:not(.cap) [role="dialog"] {
+    top: calc(env(safe-area-inset-top) + 1rem);
+    --tw-translate-y: 0;
+    max-height: calc(
+      100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 2rem
+    );
+  }
+}

@@ -57,7 +57,15 @@ else
     exit 1
   fi
   xcrun simctl boot "$UDID"
-  open -a Simulator
+  # `-g` opens Simulator.app in the BACKGROUND. A plain `open -a`
+  # activates it and takes keyboard focus from whoever is using the Mac —
+  # on every run of this script. Set IOS_NO_WINDOW=1 to skip it entirely
+  # (simctl drives a booted device with no GUI at all); note that the
+  # software keyboard then never appears, because the Simulator counts the
+  # Mac's keyboard as connected until Simulator.app has read the default
+  # below. scripts/mobile-headless.sh is the fully headless loop.
+  defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false || true
+  if [ "${IOS_NO_WINDOW:-0}" != "1" ]; then open -g -a Simulator; fi
   until xcrun simctl list devices | grep -F "$UDID" | grep -q "Booted"; do
     sleep 1
   done
@@ -65,9 +73,9 @@ else
 fi
 
 # ── Fallback bundle ───────────────────────────────────────
-if [ ! -d "$REPO/packages/client/out" ] || [ ! -d "$REPO/ios/App/App/public" ]; then
+if [ ! -d "$REPO/packages/client/out-mobile" ] || [ ! -d "$REPO/ios/App/App/public" ]; then
   echo "Building fallback static export (first run)..."
-  (cd "$REPO" && pnpm build:mobile)
+  (cd "$REPO" && NEXT_PUBLIC_API_URL="${NEXT_PUBLIC_API_URL:-http://localhost:3000}" pnpm build:mobile ios)
 fi
 
 # ── Next.js dev server ────────────────────────────────────
@@ -90,6 +98,15 @@ done
 echo "Next.js ready"
 
 # ── Capacitor sync + deploy ───────────────────────────────
+# A bare `cap sync` is correct HERE and nowhere else: under live reload the
+# WebView loads the dev server, so no bundle is being produced and there is
+# nothing for scripts/build-mobile.mjs to verify. Everything that ships goes
+# through that script.
+#
+# Live reload is not the app. The document origin here is the DEV SERVER'S,
+# not capacitor://localhost, so neither the real origin nor its place in the
+# server's trusted-origin list is exercised. Verify auth changes against a
+# real `pnpm build:mobile` bundle.
 echo "Syncing Capacitor (server.url = $CAP_DEV_URL)"
 export CAP_DEV_URL
 (cd "$REPO" && npx cap sync ios)

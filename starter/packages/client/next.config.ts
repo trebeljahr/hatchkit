@@ -3,6 +3,26 @@ import type { NextConfig } from "next";
 
 const isDev = process.env.NODE_ENV === "development";
 const isExport = process.env.NEXT_FILE_EXPORT === "1";
+// Electron resolves the export through a custom app:// scheme and is happy
+// with a relative asset prefix; Capacitor is not (see below).
+const isElectronBuild = process.env.ELECTRON_BUILD === "1";
+
+// Each native shell gets its OWN export directory, named by the build
+// script that writes it:
+//
+//   out          web / Playwright (Playwright bakes a throwaway loopback
+//                API port into its build)
+//   out-desktop  scripts/build-desktop.mjs  (Electron)
+//   out-mobile   scripts/build-mobile.mjs   (Capacitor)
+//
+// A shared directory means a test run can silently be installed as the
+// app — `cap run` syncs implicitly, so nothing would say so.
+//
+// Under `output: "export"` Next treats `distDir` as the OUT directory and
+// forces the build directory back to `.next`. That is also why a dev
+// server holding `.next` blocks a production export: build-mobile.mjs
+// refuses to run while one is live rather than racing it.
+const exportDir = process.env.NEXT_EXPORT_DIR || "out";
 
 // Deployable production builds — the web client image (Dockerfile sets
 // HATCHKIT_IMAGE_BUILD=1) and native static exports (NEXT_FILE_EXPORT=1)
@@ -29,9 +49,17 @@ const nextConfig: NextConfig = {
     ? {}
     : isExport
       ? {
-          // Static export for desktop (Electron) + mobile (Capacitor) shells.
+          // Static export for the native shells.
           output: "export" as const,
-          assetPrefix: "./",
+          distDir: exportDir,
+          // A relative asset prefix rewrites every `/_next/...` reference
+          // to `./_next/...`, which resolves against the CURRENT path. It
+          // works for a single-page load and breaks every nested route the
+          // moment the WebView is at `/app/settings/`. Electron's app://
+          // handler resolves relative paths itself, so it can keep it;
+          // Capacitor cannot, and build-mobile.mjs fails the build when it
+          // finds `"./_next` in any emitted HTML.
+          ...(isElectronBuild ? { assetPrefix: "./" } : {}),
         }
       : {
           // Standalone build for the web server image (Coolify Dockerfile).
@@ -44,6 +72,17 @@ const nextConfig: NextConfig = {
   trailingSlash: true,
   images: { unoptimized: true },
   transpilePackages: ["@starter/shared", "@starter/server"],
+  // Android live reload: Next 16 blocks cross-origin requests for /_next
+  // dev resources, and under `pnpm dev:android` the document is served
+  // from the emulator's view of the host (http://10.0.2.2:<port>), which
+  // is cross-origin to the dev server. Without this the document loads,
+  // every chunk is blocked, and the app sits on a splash that
+  // `launchAutoHide: false` never hides. scripts/android-dev.sh exports
+  // NEXT_DEV_ORIGINS.
+  allowedDevOrigins: (process.env.NEXT_DEV_ORIGINS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
   // Proxy API and WS requests to Express server in development
   async rewrites() {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:5000";

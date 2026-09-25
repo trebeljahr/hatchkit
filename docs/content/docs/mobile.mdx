@@ -1,0 +1,252 @@
+---
+title: Mobile (Capacitor)
+description: The committed native trees, the one build entry point, origin and storage rules, and the release pipeline.
+---
+
+Pick `mobile` at `hatchkit create`, or add it later:
+
+```bash
+hatchkit update
+```
+
+`update` is also the repair path. It is additive and idempotent: it copies files
+the project is missing, never overwrites one that exists, and re-runs the
+wiring. A project scaffolded before the build script or the storage modules
+existed gets them on the next `hatchkit update`, whether or not any feature was
+added.
+
+## One build entry point
+
+```bash
+NEXT_PUBLIC_API_URL=https://api.example.com pnpm build:mobile [ios|android]
+```
+
+`scripts/build-mobile.mjs` is the only supported way to produce a mobile build.
+Never a bare `cap sync`, `cap run ios` or `cap run android` — each skips every
+check below and still produces an app that installs and launches.
+
+The script:
+
+- **Requires `NEXT_PUBLIC_API_URL`, then proves it landed.** Next inlines
+  `NEXT_PUBLIC_*` at build time. Unset, the bundle resolves every request
+  against its own document origin, fails on device, and builds green. So the
+  script also asserts the literal appears in an emitted chunk, and that no
+  emitted HTML carries a relative `"./_next` prefix — a relative prefix loads at
+  `/` and breaks every nested route.
+- **Preflights the toolchain**, including that `cap ls` loads the config and
+  every plugin ships a `Package.swift` (SPM resolution otherwise fails later
+  with a far worse message).
+- **Asserts the native identifiers and versions.** `cap add` writes the bundle
+  id, display name, `namespace` and `applicationId` once; `cap sync` never
+  revisits them. A later change to `appId` or `appName` in
+  `capacitor.config.ts` silently never reaches the native trees. The script
+  compares both platforms against the config and the root `package.json`
+  version and lists every mismatch with both values and the file to change.
+- **Syncs only what this machine can build.** A platform named on the command
+  line is a demand: a missing toolchain is an error, and naming one narrows the
+  run so the other tree is not swept in and re-synced. An auto-detected platform
+  is an offer: a missing toolchain is a skip with a note. Both native trees are
+  committed, so every checkout has an `android/` whether or not it has a JDK —
+  a Mac with no Android SDK and a Linux runner with no Xcode must both survive a
+  bare `pnpm build:mobile`.
+- **Refuses to run while a dev server owns `packages/client/.next`.** Under
+  `output: "export"` a custom `distDir` is the *out* directory and the build
+  directory is forced back to `.next`, which the dev server also holds.
+- **Deletes `CAP_DEV_URL` from the sync's environment**, so a value left in a
+  shell by `pnpm dev:android` cannot bake a dev-server URL into a bundle.
+
+### Its own export directory
+
+`packages/client/out-mobile`, and `capacitor.config.ts` points `webDir` there.
+`out/` belongs to the web build and Playwright, which bakes a throwaway loopback
+API port into it; `out-desktop/` belongs to Electron. `cap run` syncs
+implicitly, so a shared directory means a test run can silently be installed as
+the app.
+
+## The native trees are committed
+
+`ios/` and `android/` are tracked, not ignored. The ATS exception, the
+orientation set, the Android debug-only cleartext config, the version wiring and
+the signing config are hand edits that live only there, a fresh checkout must
+build the real app without a generator run, and the release workflow assumes
+both trees exist while never running `cap add`.
+
+```bash
+pnpm cap:add:ios        # cap add, then apply the overlay
+pnpm cap:add:android
+pnpm cap:overlay        # re-apply to both trees — idempotent, the repair path
+```
+
+`scripts/cap-add.mjs` runs `cap add` (only when the tree is absent — it never
+re-extracts over a committed tree) and then applies the overlay, so nobody has
+to remember the edits.
+
+**Generated but tracked** — rewritten by every sync, so a diff after a build is
+normal; commit it when the plugin set changed:
+
+- `ios/App/CapApp-SPM/Package.swift`
+- `android/capacitor.settings.gradle`
+- `android/app/capacitor.build.gradle`
+- the `Assets.xcassets` catalog and the Android `res/` icon and splash sets
+  (`pnpm mobile:assets`, from `resources/`)
+
+**Generated and not tracked** — the holes in `.gitignore`:
+
+- `ios/App/App/public/`
+- `android/app/src/main/assets/public/`
+- `android/capacitor-cordova-android-plugins/`
+
+A checkout that has never run `pnpm build:mobile` has none of these and
+**cannot open in Xcode or Gradle at all**. Build first. `Package.swift` also
+hardcodes the package manager's content-addressed store paths, so any lockfile
+refresh renames those directories — re-run the build after an install and before
+opening the iOS project directly.
+
+## Origins
+
+| Host | Document origin |
+| --- | --- |
+| iOS bundle | `capacitor://localhost` |
+| Android bundle | `https://localhost` |
+| iOS live reload | `http://localhost:<port>` (the dev server's) |
+| Android live reload | `http://10.0.2.2:<port>` (the dev server's) |
+
+The bundle origins go into the server's `TRUSTED_ORIGINS`; hatchkit writes them
+into `.env.example` and merges them onto the Coolify app. `androidScheme`
+defaults to https, so an `http://localhost` entry would never match.
+
+**Never set a custom `iosScheme` or `androidScheme`.** The scheme *is* the
+origin, and the origin keys the platform preference store, the WebView's own
+storage and the trust list. Changing it later orphans every stored preference
+and invalidates the trust list at once, with no migration path for either.
+
+**Live reload never exercises the real origin.** Under `dev:ios` / `dev:android`
+the WebView loads the dev server, so the document origin is the dev server's and
+the API must trust that instead — which means neither the bundle's origin nor
+its place in the production trust list is touched by a live-reload run. Verify
+any auth change against a real `pnpm build:mobile` bundle.
+
+## Storage durability
+
+Three stores, and which one a value belongs in is a durability decision:
+
+1. **Credentials** — the platform keychain
+   (`packages/client/src/lib/native-session.ts`). The preference store is plain
+   `UserDefaults` and readable from an unencrypted backup.
+2. **Anything the app cannot afford to lose** — the platform preference store
+   (`mobile/preferences-storage.ts`). iOS WKWebView classifies `localStorage`
+   as *non-critical web data* and reclaims it after low disk or roughly a week
+   of not opening the app. Every web-storage accessor swallows its throws, so
+   that loss is silent.
+3. **Disposable conveniences** — web storage, where eviction costs nothing.
+
+`handOverLegacyWebStorage(keys)` moves what an earlier build left in
+`localStorage` into the preference store once, behind a marker. Without that
+hand-over, changing the address *is* the data loss.
+
+## Network and lifecycle
+
+`navigator.onLine` reports `true` on a dead radio in WKWebView and never fires
+for airplane mode, so `mobile/network.ts` reads the platform radio and feeds one
+verdict to the app. The resume order that follows is reconnect, tick, flush the
+queue, and refetch only when nothing was queued — refetching first asks a server
+that has never heard of work done with no signal, gets an empty answer, and
+blanks local state until the flush lands.
+
+## Release
+
+`.github/workflows/mobile-release.yml` runs on every `v*` tag. A `plan` job
+decides every job before anything is built, and the build jobs are gated on it:
+
+- a tag with **no** signing credentials builds nothing and uploads no artifact —
+  an unsigned `.aab` on a public tag run reads as a release download;
+- a **partial** credential set fails;
+- a **prerelease** tag goes to the internal track only, whatever a dispatch
+  input asks for;
+- CI runs `jarsigner -verify` and `codesign --verify` on the artifact, because
+  CI is where an unsigned build must not pass quietly;
+- secrets reach the plan as booleans (`secrets.X != ''`), never as values, so
+  nothing can leak into the plan JSON or the job summary.
+
+Build numbers come from the run number. Both stores permanently reject a number
+they have already seen, so it must never be derived from the package version.
+
+Signing is environment-driven and optional: `android/app/build.gradle` builds a
+release config only when the keystore file exists *and* all three environment
+variables are set, so `./gradlew bundleRelease` works on a checkout with no key.
+
+### One-time credential setup
+
+Android:
+
+1. Generate a keystore and keep it out of the repo:
+
+   ```bash
+   keytool -genkeypair -v -keystore release.keystore -alias upload \
+     -keyalg RSA -keysize 2048 -validity 10000
+   ```
+
+2. Base64-encode it for the secret store:
+
+   ```bash
+   base64 -i release.keystore | tr -d '\n' | pbcopy
+   ```
+
+3. Set the repository secrets `ANDROID_KEYSTORE_BASE64`,
+   `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`.
+   All four or none — three of four fails the plan by design.
+4. For Play uploads, add `PLAY_SERVICE_ACCOUNT_JSON` (a service account with
+   release permissions) and `ANDROID_PACKAGE_NAME`.
+
+Apple:
+
+1. Export a Distribution certificate as a `.p12`, then set
+   `APPLE_CERTIFICATE_BASE64`, `APPLE_CERTIFICATE_PASSWORD` and
+   `APPLE_TEAM_ID`.
+2. For TestFlight uploads, create an App Store Connect API key and set
+   `APPLE_API_KEY_BASE64`, `APPLE_API_KEY_ID` and `APPLE_API_ISSUER_ID`.
+
+Also set `NEXT_PUBLIC_API_URL`. With signing credentials present and no API URL,
+the plan fails rather than shipping a bundle that builds green and dies on
+device.
+
+Store identifiers are effectively permanent — an App ID, an App Store Connect
+record and a Play package name cannot be renamed once registered. Settle the
+bundle id before the first upload; `hatchkit rename-project` can move it while
+it is still only in the repo.
+
+## Verifying from a shell
+
+```bash
+NEXT_PUBLIC_API_URL=http://localhost:5159 pnpm mobile:headless:ios
+API_PORT=5159 NEXT_PUBLIC_API_URL=http://localhost:5159 pnpm mobile:headless:android
+```
+
+`scripts/mobile-headless.sh` builds, installs, launches and screenshots without
+bringing a window forward: the emulator boots `-no-window`, and Simulator.app is
+opened with `open -g`, because a plain `open -a` activates it and takes keyboard
+focus from whoever is at the machine.
+
+Traps in that loop, each of which produces a working-looking app that is quietly
+wrong:
+
+- **Do not pass `CODE_SIGNING_ALLOWED=NO`.** Without the ad-hoc signature Xcode
+  applies for the simulator SDK, every Keychain call fails with
+  `errSecMissingEntitlement` (`-34018`). The token is never stored, the app
+  falls back to a cookie, and the bearer path looks fine while being untested.
+- **The Simulator's WKWebView sends cookies to `http://localhost:<port>`**, and
+  its cookie store survives `simctl uninstall`. Cookie auth then appears to work
+  and masks a broken bearer path. `xcrun simctl erase` is the only reliable
+  clean slate.
+- **`simctl` alone never shows the software keyboard**, so a headless loop
+  screenshots a focused field with no keyboard under it.
+- **On Android, bake a loopback API URL and `adb reverse` it.** A bundled
+  build's origin is `https://localhost`, and an https document fetching plain
+  http is blocked as mixed content unless the target is loopback. `10.0.2.2`
+  works for live reload, where the document is itself http, but not for the
+  bundle.
+- **`adb shell input text` is split by the device's shell** — use `%s` for
+  spaces, or only the first word arrives.
+- **The first back press with a dialog open is eaten by the IME** whenever a
+  field is focused, even with no visible keyboard. That is Android's ordering,
+  not a bug in the overlay stack.

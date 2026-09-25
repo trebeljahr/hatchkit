@@ -1,6 +1,27 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/*
+ * Native and installed-web-app chrome.
+ *
+ * Imported at the top (CSS requires @import before any other rule)
+ * and left unlayered on purpose. Tailwind's utilities sit in
+ * `@layer utilities`, so an unlayered rule already beats them — no
+ * `!important` is needed anywhere in either file, and adding one would
+ * only hide the fact that the cascade is doing the work.
+ *
+ *   native.css      every selector under `html.cap`, so it is inert on web
+ *                   BY CONSTRUCTION. A rule that would also be right on web
+ *                   belongs above, in this file, not there.
+ *   standalone.css  `@media (display-mode: standalone)` copies of the
+ *                   safe-area rules, scoped `html:not(.cap)`. NOT inert by
+ *                   construction — it exists because `viewport-fit=cover`
+ *                   ships to every host, and an installed web app gets the
+ *                   real insets with none of native.css applying to it.
+ */
+@import "./native.css";
+@import "./standalone.css";
+
 /* Dark mode via .dark class on a parent (matches shadcn convention). */
 @custom-variant dark (&:is(.dark *));
 
