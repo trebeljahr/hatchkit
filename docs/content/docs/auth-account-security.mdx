@@ -1,0 +1,177 @@
+---
+title: Account security
+description: Two-factor, account controls and extra sign-in methods on top of the starter's better-auth instance — including which of them a native shell can actually complete.
+---
+
+The starter ships better-auth with email and password and nothing else: no plugins, no
+account controls beyond a password reset. The `auth-account-security` feature adds the
+rest, and it is purely additive — it writes new files and patches the auth wiring
+idempotently, so it can be taken at `create` or layered onto a project that has been
+running for months.
+
+```bash
+hatchkit update
+```
+
+Tick **auth-account-security**, then pick the parts you want. Re-run it later to add
+more; files that already exist are skipped rather than overwritten, and every patch
+detects its own previous output.
+
+## What you can switch on
+
+| Option | What it is |
+| --- | --- |
+| `two-factor` | TOTP with ten single-use backup codes, stored encrypted |
+| `email-verification` | Verification required **only where mail can be delivered**, plus the backfill script |
+| `credentials` | Change password and change email, without signing the caller out |
+| `google-oauth` | A Google button that renders in every build and decides after mount |
+| `account-deletion` | Password-confirmed, with an idempotent cascade and a second pass |
+| `profile-pictures` | Squared in the browser, magic-number checked on the server |
+| `email-otp` | Sign in with a code mailed to the address |
+| `magic-link` | Sign in by following a mailed link |
+| `passkeys` | WebAuthn as an additional method |
+
+The last three are **off by default**. Each one is another way into the account, and a
+template should not widen that for every project scaffolded from it.
+
+Redirect validation for `?next=` is not an option — it is written whenever the feature
+is enabled at all. See below.
+
+## The question to ask before offering a sign-in method
+
+Hatchkit projects can ship a web app, an Electron shell and a Capacitor shell from one
+client build. The two shells are **stored-token clients**: they authenticate with a
+bearer token because they have no usable cookie jar for the API's origin. Such a client
+can neither read `set-cookie` nor send `Cookie`, so any step whose state lives in a
+cookie is unreachable for it.
+
+A method that silently cannot be completed there is worse than one that is absent: the
+user gets a form that accepts input and then fails, the shell has no console, and the
+server logs a perfectly ordinary request. So every method carries an answer, checked
+against the shipped source of better-auth 1.6.11 rather than its docs:
+
+| Method | Stored-token client? | Why |
+| --- | --- | --- |
+| Two-factor | **No** | The challenge is the signed cookie `better-auth.two_factor`, and `/two-factor/verify-totp` reads nothing else. The sign-in body is `{ twoFactorRedirect, twoFactorMethods }` — no token a client could hold. |
+| Google OAuth | **No** | The redirect must return to the origin that started it, and `capacitor://localhost` or `app://-` can never be that origin. |
+| Email one-time code | **Yes** | Sending sets no cookie, and `/sign-in/email-otp` takes `{ email, otp }` in the body and creates the session inside the handler — so `bearer` emits `set-auth-token`. **This is the method to offer on native.** |
+| Magic link | **Only with extra work** | `/magic-link/verify` answers JSON when no `callbackURL` is given, so the endpoint cooperates. The link is opened by a mail client in the system browser, which is not the shell — so the shell needs a deep-link handler to capture the token and call verify itself. |
+| Passkeys | **No** | WebAuthn binds a credential to an RP ID, which must be a registered domain. A shell origin is not a domain and cannot be one. |
+
+Each generated project gets this table in `docs/account-security.md`, filled in for the
+options it actually took, so the answer travels with the code rather than living here.
+
+Where the answer is "no", the UI says so rather than hiding the control: a missing
+button is a bug report, an explained one is an answer.
+
+## Rules that fail quietly
+
+### better-auth plugin order
+
+better-auth runs plugin `after` hooks in **registration order**, and `bearer()` emits
+`set-auth-token` for whatever session cookie the response carries — skipping only a
+cookie with `max-age=0`. Every plugin ahead of it can replace the session that sign-in
+just created; the two-factor hook deletes it outright.
+
+Register `bearer()` first and a token client stores a credential for a session that is
+deleted a moment later: every later request answers 401, the client believes it is
+signed in, and nothing anywhere logs a reason.
+
+So `bearer()` goes last, after every plugin that can swap the session out:
+
+```
+twoFactorPlugin → emailOtpPlugin → magicLinkPlugin → passkeyPlugin → bearer
+```
+
+No runtime test catches a wrong order, so the CLI's test suite **reads the generated
+`auth.ts` back off disk** and fails on it.
+
+### Email verification is conditional, and creates a backfill obligation
+
+`requireEmailVerification` follows `isEmailDeliveryConfigured()` rather than being
+hardcoded — a self-host with no transport would otherwise lock every new account out
+behind a link that only reaches the server log.
+
+The consequence: the first deploy that configures mail would refuse every existing
+account, because every account created while verification was off has
+`emailVerified: false`. Run the backfill once, straight after that deploy:
+
+```bash
+pnpm --filter @starter/server run backfill:email-verified -- --before 2026-01-31T09:00:00Z
+```
+
+It is idempotent and never un-verifies, so a second run reports 0.
+
+Note that `sendVerificationEmail` belongs in the `emailVerification` block. Under
+`emailAndPassword` better-auth never calls it, and nothing logs that it was skipped.
+
+### Changing a password must not sign the caller out
+
+"Sign out other devices" is two requests, not `changePassword`'s own
+`revokeOtherSessions` flag. That flag deletes **this** session too and issues a new one;
+anything watching sessions then sees the caller's own credential revoked and signs the
+app out — every tab of the browser, since they share the new cookie.
+
+Calling `changePassword` without the flag and then `revokeOtherSessions()` keeps the
+current session, so the caller's credential never changes.
+
+Two-factor toggles genuinely do replace the session. `lib/session-revoked.ts` therefore
+asks `getSession` with the cookie cache disabled before concluding that a closed socket
+means "signed out", and resumes instead when the session turns out to be live.
+
+### Deletion converges on a retry
+
+Every cascade step is a delete by filter, so a step that already ran matches nothing the
+second time. There is no progress marker and no resume point. That is what makes a
+failure in `beforeDelete` safe — better-auth stops before removing the user row, and the
+person simply tries again — and why `afterDelete` runs the cascade a **second** time: a
+request from another of the person's devices can recreate a row between the two passes.
+
+A password account must send its password. better-auth alone would delete on a merely
+fresh session, and a browser session lasts far longer than that.
+
+### Profile-picture bytes are public, at an unguessable address
+
+An `<img>` sends no bearer token and, cross-origin, no cookie — so the route has to be
+unauthenticated or the picture renders nowhere but the web app. What keeps it private
+enough is the URL: the key is 128 random bits and changes on every upload.
+
+The route overrides helmet's `Cross-Origin-Resource-Policy` with `cross-origin` for
+itself only; without that, no other origin can load it at all. The content type comes
+from the bytes, never from the client, and SVG is refused because it can carry script.
+
+### `?next=` is validated, always
+
+The login page is the page everybody trusts, which is exactly what makes an unvalidated
+`next` a working phishing redirect — with your own domain in the address bar while it
+happens.
+
+`packages/client/src/lib/safe-next.ts` accepts a value only when it is unmistakably a
+path on this origin: exactly one leading slash, no backslash, whitespace or control
+character anywhere, still same-origin once parsed, and under an allowlisted prefix.
+Every one of those rules exists because some string that starts with `/` reaches another
+origin without it — `//evil.com`, `/\evil.com`, `/<tab>/evil.com`.
+
+`authPageHref` also **drops** an unsafe value rather than forwarding it, so it cannot
+survive the hop between login and signup. That is how an allowlist gets bypassed in
+practice: nobody attacks the page that validates, they attack the link that passes the
+value along.
+
+Add a screen to `SAFE_NEXT_PREFIXES` when it needs a return trip. Do not replace the
+list with a "starts with `/`" check.
+
+## Manual steps
+
+Hatchkit prints these after a run:
+
+- **Google sign-in** — create an OAuth client, then set `GOOGLE_CLIENT_ID` and
+  `GOOGLE_CLIENT_SECRET`. Until both are set the button renders disabled with a note.
+- **Email verification** — run the backfill once after the first deploy with mail.
+- **Passkeys** — `@better-auth/passkey` is added to `package.json` but not installed;
+  run your package manager. It is not part of better-auth core.
+
+## Rotating `BETTER_AUTH_SECRET`
+
+TOTP secrets and backup codes are encrypted with a key derived from
+`BETTER_AUTH_SECRET`. **Rotating it invalidates every stored second factor.** Plan that
+as an event that signs everybody's authenticator out, not as a routine key change.

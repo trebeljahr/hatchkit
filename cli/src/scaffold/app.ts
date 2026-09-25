@@ -577,8 +577,42 @@ async function runScaffoldSteps(
   const manifestDir = config.projectSubdir
     ? resolve(outputDir, ...config.projectSubdir.split("/").map(() => ".."))
     : outputDir;
+
+  // Account security. Applied here rather than as a strip, because the
+  // starter's better-auth instance registers no plugins at all — there is
+  // nothing to remove, only things to add. Same entrypoint `hatchkit
+  // update` uses, so a project that takes it now and a project that takes
+  // it in six months end up with the same files.
+  let authSecurityOptions: string[] | undefined;
+  if (config.features.includes("auth-account-security")) {
+    const { AUTH_SECURITY_DEFAULT_OPTIONS, applyAuthAccountSecurity } = await import(
+      "../features/auth-account-security/index.js"
+    );
+    const audit = await applyAuthAccountSecurity({
+      projectDir: outputDir,
+      // The frozen identifier set, never a name derived here: this ends up
+      // as the TOTP issuer, which is the label an authenticator app shows
+      // forever after somebody enrols.
+      projectName: identifiers.productName,
+      options: config.authSecurityOptions ?? [...AUTH_SECURITY_DEFAULT_OPTIONS],
+      hasNativeClient: wantsDesktop || wantsMobile,
+      hasEmailTransport:
+        config.email?.transactional === "listmonk-ses" ||
+        config.email?.mailingList === "listmonk-ses",
+      domain: config.domain,
+    });
+    authSecurityOptions = audit.options;
+    modifications.push(`account security: ${audit.options.join(", ")}`);
+    for (const warning of audit.warnings) modifications.push(`account security: ${warning}`);
+  }
+
   const manifest = toManifest({ ...config, identifiers }, ports, getCliVersion());
-  writeManifest(manifestDir, manifest);
+  writeManifest(
+    manifestDir,
+    authSecurityOptions
+      ? { ...manifest, authSecurity: { options: authSecurityOptions } }
+      : manifest,
+  );
   modifications.push(".hatchkit.json (project manifest)");
 
   // Features whose files are NOT in the starter have to be applied here.

@@ -24,6 +24,7 @@ import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
 import { addUsedPorts, getUsedPorts } from "../config.js";
 import { pushNativeOriginsForProject } from "../deploy/trusted-origins.js";
+import type { AuthSecurityOption } from "../features/auth-account-security/types.js";
 import type { Feature } from "../prompts.js";
 import { multiselect } from "../utils/multiselect.js";
 import { PORT_RANGES, pickPort } from "../utils/ports.js";
@@ -78,7 +79,15 @@ function identifiersFor(manifest: ProjectManifest): ProjectIdentifiers {
 }
 
 /** Features that `update` knows how to layer onto an existing project. */
-const SUPPORTED_ADDITIONS: readonly Feature[] = ["desktop", "mobile", "release"];
+const SUPPORTED_ADDITIONS: readonly Feature[] = [
+  "desktop",
+  "mobile",
+  "release",
+  // Purely additive: it writes new files, patches the auth wiring
+  // idempotently, and never removes anything. That is what makes it safe
+  // to layer onto a project that has been running for months.
+  "auth-account-security",
+];
 
 export interface UpdateResult {
   added: Feature[];
@@ -101,6 +110,10 @@ export interface UpdateOptions {
     confirmAddFeatures?: boolean;
     enableLocalDev?: boolean;
     localDevSlug?: string;
+    /** Account-security sub-options for a headless run. Undefined means
+     *  the interactive multiselect runs (or, in a preset run, the
+     *  documented defaults apply). */
+    authSecurityOptions?: string[];
     /** Check TRUSTED_ORIGINS on Coolify after a native feature is added.
      *  Preset runs skip it unless this is true, so a headless test can
      *  never reach a real Coolify through the user's keychain. */
@@ -256,6 +269,7 @@ export async function runUpdate(
     "desktop",
     "mobile",
     "release",
+    "auth-account-security",
   ];
   const desired =
     options.presets?.desiredFeatures ??
@@ -333,6 +347,7 @@ export async function runUpdate(
   // the declined-add list so the result still reports it.
   let actuallyAdded: Feature[] = [];
   let skippedAdditions: Feature[] = [];
+  let authSecurityOptions: string[] | undefined;
   const updatedFeatures = new Set(manifest.features);
   let updatedPorts = manifest.ports;
 
@@ -355,6 +370,11 @@ export async function runUpdate(
         } else if (feature === "release") {
           await addRelease(projectDir, manifestDir, manifest, [...updatedFeatures, ...added]);
           updatedFeatures.add("release");
+        } else if (feature === "auth-account-security") {
+          authSecurityOptions = await addAuthAccountSecurity(projectDir, manifest, {
+            presetOptions: options.presets?.authSecurityOptions,
+          });
+          updatedFeatures.add("auth-account-security");
         }
       }
       actuallyAdded = added;
@@ -425,6 +445,7 @@ export async function runUpdate(
       features: [...updatedFeatures] as Feature[],
       ports: updatedPorts,
       localDev: localDevEnabled ?? manifest.localDev,
+      authSecurity: authSecurityOptions ? { options: authSecurityOptions } : manifest.authSecurity,
     };
     writeManifest(manifestDir, updatedManifest);
   }
@@ -737,4 +758,97 @@ function setWorkflowNativeOriginsIn(projectDir: string, features: readonly strin
     }
     return after;
   });
+}
+
+/**
+ * Layer the account-security feature onto an existing project.
+ *
+ * Unlike the native-wrapper additions above, this one does not copy a
+ * directory from the starter — the starter's better-auth instance
+ * registers no plugins, so there is nothing there to copy. The feature
+ * owns its own templates and patches the auth wiring in place, which is
+ * why it is safe to run against a project that has been live for months:
+ * files that already exist are skipped rather than overwritten, and every
+ * patch detects its own previous output.
+ *
+ * Returns the sub-options that ended up switched on, so `runUpdate` can
+ * record them in the manifest.
+ */
+async function addAuthAccountSecurity(
+  projectDir: string,
+  manifest: ProjectManifest,
+  opts: { presetOptions?: string[] } = {},
+): Promise<string[]> {
+  console.log(chalk.dim("\n  Adding account security..."));
+
+  const {
+    AUTH_SECURITY_OPTIONS,
+    AUTH_SECURITY_DEFAULT_OPTIONS,
+    AUTH_SECURITY_SPECS,
+    applyAuthAccountSecurity,
+  } = await import("../features/auth-account-security/index.js");
+
+  // Anything already recorded stays on: this path adds, it never removes.
+  const already = new Set(manifest.authSecurity?.options ?? []);
+
+  let chosen: string[];
+  if (opts.presetOptions !== undefined) {
+    chosen = opts.presetOptions;
+  } else {
+    chosen = await multiselect<string>({
+      message: "Account security — which parts?",
+      choices: AUTH_SECURITY_OPTIONS.map((option) => {
+        const spec = AUTH_SECURITY_SPECS[option];
+        // Say up front which methods a native shell cannot finish. The
+        // symptom otherwise is a form on the device that accepts input
+        // and then fails with nothing useful in any log.
+        const shell =
+          spec.tokenShell === "no"
+            ? " [web only]"
+            : spec.tokenShell === "partial"
+              ? " [needs extra shell work]"
+              : "";
+        const mail = spec.needsEmail ? " [needs a mail transport]" : "";
+        return {
+          name: `${spec.label}${shell}${mail}`,
+          value: option as string,
+          checked:
+            already.has(option) ||
+            (already.size === 0 &&
+              (AUTH_SECURITY_DEFAULT_OPTIONS as readonly string[]).includes(option)),
+        };
+      }),
+    });
+  }
+
+  const selected = [...new Set([...already, ...chosen])] as AuthSecurityOption[];
+
+  const audit = await applyAuthAccountSecurity({
+    projectDir,
+    // The frozen identifier set rather than the raw project name: this
+    // becomes the TOTP issuer, which is the label an authenticator app
+    // shows forever after somebody enrols.
+    projectName: identifiersFor(manifest).productName,
+    options: selected,
+    hasNativeClient: hasNativeClient(manifest.features),
+    hasEmailTransport:
+      manifest.email?.transactional === "listmonk-ses" ||
+      manifest.email?.mailingList === "listmonk-ses",
+    domain: manifest.domain,
+  });
+
+  for (const warning of audit.warnings) console.log(chalk.yellow(`  ⚠ ${warning}`));
+  if (audit.written.length > 0) {
+    console.log(chalk.green(`  ✓ wrote ${audit.written.length} file(s)`));
+  }
+  if (audit.skipped.length > 0) {
+    console.log(chalk.dim(`    ${audit.skipped.length} file(s) already present — left alone`));
+  }
+  if (audit.rewritten.length > 0) {
+    console.log(chalk.green(`  ✓ patched ${audit.rewritten.length} existing file(s)`));
+  }
+  for (const step of audit.manualResidue) console.log(chalk.yellow(`  → ${step}`));
+  console.log(chalk.dim("    See docs/account-security.md in the project."));
+
+  return audit.options;
 }

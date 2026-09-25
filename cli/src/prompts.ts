@@ -9,6 +9,7 @@ import {
 } from "./config.js";
 import type { Topology } from "./deploy/routing.js";
 import { DEFAULT_CATCH_ALL, buildForwardPresets } from "./email/presets.js";
+import type { AuthSecurityOption } from "./features/auth-account-security/types.js";
 import {
   type ProjectOnboardingPlan,
   onboardingPlanToProjectConfig,
@@ -94,7 +95,11 @@ export type Feature =
    *  cross-version compatibility workflow, and generated credential
    *  docs. Purely additive — it reads the other features to decide
    *  which channels exist, and adds nothing to the runtime. */
-  | "release";
+  | "release"
+  /** Sign-in methods and account controls on top of the starter's
+   *  better-auth instance, which registers no plugins of its own.
+   *  Purely additive — see cli/src/features/auth-account-security/. */
+  | "auth-account-security";
 
 export type AnalyticsProvider = "glitchtip" | "openpanel" | "plausible";
 
@@ -222,6 +227,12 @@ export interface ProjectConfig {
   serverLocation?: string;
 
   features: Feature[];
+  /** Which parts of the `auth-account-security` feature to switch on.
+   *  Undefined means the documented defaults, which leave the three
+   *  net-new sign-in methods (email codes, magic links, passkeys) OFF:
+   *  each one is another way into the account, and a template should not
+   *  widen that for every project scaffolded from it. */
+  authSecurityOptions?: AuthSecurityOption[];
   /** Project-scoped observability providers to provision during create
    *  when the `analytics` feature is selected. Defaults to the legacy
    *  create behavior (`glitchtip` only) unless the user opts into more. */
@@ -981,6 +992,11 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
               name: "Release coordination (one version across every surface)",
               value: "release",
               checked: c.features.includes("release"),
+            },
+            {
+              name: "Account security (2FA, account controls, extra sign-in methods)",
+              value: "auth-account-security",
+              checked: c.features.includes("auth-account-security"),
             },
           ],
         });
@@ -2011,6 +2027,11 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
           name: "release (one version across every surface)",
           value: "release",
           checked: cfg.features.includes("release"),
+        },
+        {
+          name: "auth-account-security (2FA, account controls, extra sign-in methods)",
+          value: "auth-account-security",
+          checked: cfg.features.includes("auth-account-security"),
         },
       ],
     });

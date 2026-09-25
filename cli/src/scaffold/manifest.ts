@@ -115,6 +115,13 @@ export interface ProjectManifest {
   identifiers?: ProjectIdentifiers;
   /** Feature flags selected at scaffold. */
   features: Feature[];
+  /** Which account-security sub-options are switched on, when the
+   *  `auth-account-security` feature is. Persisted because `hatchkit
+   *  update` layers additional ones on later and has to know what is
+   *  already there — the files on disk are the other source of truth, but
+   *  a file the user deleted should not be silently rewritten. Absent
+   *  when the feature was never taken. */
+  authSecurity?: { options: string[] };
   /** ML services wired into the backend. */
   mlServices: MlService[];
   /** S3 provider name (`hetzner` / `aws` / `r2` / `existing` / `none`).

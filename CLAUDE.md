@@ -39,7 +39,7 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
 
 - `hatchkit setup` / `init`: interactive credential onboarding.
 - `hatchkit create`: interactive scaffold/deploy flow.
-- `hatchkit update`: add supported features to an existing project.
+- `hatchkit update`: add supported features to an existing project (`desktop`, `desktop-tauri`, `mobile`, `auth-account-security`).
 - `hatchkit add <project> [services]`: provision GlitchTip/OpenPanel/Resend/S3/email.
 - `hatchkit keys show|push|rotate <project>`: manage dotenvx private keys.
 - `hatchkit gh-pages`: configure GitHub Pages for the current repo.
@@ -103,6 +103,12 @@ Key paths:
 - `cli/src/doctor.ts`: health checks and hints.
 - `cli/src/explain.ts`: mental model.
 - `cli/src/scaffold/`: scaffolding.
+- `cli/src/features/auth-account-security/`: opt-in account-security feature
+  (two-factor, account controls, extra sign-in methods). Additive via
+  `hatchkit update`. `plugin-order.ts` holds the one rule that fails
+  silently — `bearer()` must be registered after every plugin that can
+  replace the session — and `cli/test-auth-account-security.ts` pins it by
+  reading the GENERATED `auth.ts`.
 - `cli/src/deploy/`: Coolify, Terraform, GitHub, keys, pages, rollback.
 - `cli/src/provision/`: provider/client provisioning.
 - `starter/`: scaffold template.
