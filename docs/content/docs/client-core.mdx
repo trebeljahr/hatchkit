@@ -15,6 +15,16 @@ hatchkit create --features client-core
 cd <project> && hatchkit update      # tick client-core
 ```
 
+It applies to the `fullstack` and `split` surfaces. The kit is a client kit whose
+server half is a floor on every tRPC procedure and a WebSocket feed, so it needs
+both halves present: a `static` surface has no server to declare an API level,
+and a `backend` surface has no client package to hold the query-client wiring.
+
+The storage keys and the two handshake header names carry your project's own
+identifier, taken from the manifest rather than derived — `acmetracker.offline-queue`,
+`x-acmetracker-api-level`. They are contracts from the first write and the first
+request, so renaming a project later does not silently move them.
+
 `packages/core` is host-free: no React, no Next, no DOM assumption, and nothing in it opens a store or a socket by itself. A host passes its storage in and gets the kit.
 
 | Module | What it owns |

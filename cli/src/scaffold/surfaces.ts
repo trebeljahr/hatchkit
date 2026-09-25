@@ -229,12 +229,16 @@ function pruneToClientOnly(outputDir: string, modifications: string[]): void {
   });
 
   // Root package.json scripts: drop the server / e2e / docs targets
-  // and point dev/build/test at the client filter.
+  // and point dev/build/test at the client filter. `contract:emit`
+  // (client-core) goes with them — it runs `tsx` inside
+  // `@starter/server`, so it would filter the package this prune just
+  // deleted (ERR_PNPM_NO_MATCHING_PACKAGE).
   stripPackageJsonScripts(outputDir, [
     "dev:fixed",
     "dev:docs",
     "dev:docs:fixed",
     "build:server",
+    "contract:emit",
     "test:unit",
     "test:e2e",
     "seed:assets",

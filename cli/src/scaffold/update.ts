@@ -404,7 +404,7 @@ export async function runUpdate(
           });
           updatedFeatures.add("auth-account-security");
         } else if (feature === "client-core") {
-          await addClientCoreFeature(projectDir, resolvedStarter);
+          await addRegisteredFeature("client-core", projectDir, manifestDir, manifest);
           updatedFeatures.add("client-core");
         }
       }
@@ -700,21 +700,39 @@ async function addDesktop(
 }
 
 /**
- * Copy the shared client kit in and wire the version handshake.
+ * Add a feature that is registered in `features/contract.ts`.
  *
- * Unlike the native wrappers this does not add a shell around the client — it
- * adds a workspace PACKAGE the client and server both depend on, plus blocks
- * inside files the user has been editing since scaffold. Anything that could
- * not be placed safely lands in `.hatchkit/post-client-core.md` rather than
- * being guessed at; see features/client-core/add.ts for why.
+ * The registry is where every new feature goes (docs/feature-authoring.md), and
+ * this is the seam that lets one live beside the three hand-written `add*`
+ * helpers below rather than waiting for all of them to be converted. The ledger
+ * is what makes it worth doing: the feature never asks whether this is a dry
+ * run, and re-applying it on a project that already has it writes nothing —
+ * `update` re-applies every selected feature on every run, so a feature that is
+ * not idempotent corrupts the project a little more each time.
  */
-async function addClientCoreFeature(projectDir: string, resolvedStarter: string): Promise<void> {
-  const { addClientCore, reportAddClientCore, writeClientCoreChecklist } = await import(
-    "../features/client-core/index.js"
-  );
-  const result = addClientCore(projectDir, resolvedStarter);
-  const checklist = writeClientCoreChecklist(projectDir, result.manual);
-  reportAddClientCore(result, checklist);
+async function addRegisteredFeature(
+  feature: Feature,
+  projectDir: string,
+  manifestDir: string,
+  manifest: ProjectManifest,
+): Promise<void> {
+  const { FeatureLedger, applyFeatures } = await import("../features/contract.js");
+  // Importing the module is what registers it.
+  await import("../features/client-core/index.js");
+  const ledger = new FeatureLedger(projectDir, false);
+  await applyFeatures([feature], {
+    projectDir,
+    manifestDir,
+    manifest,
+    identifiers: identifiersFor(manifest),
+    mode: "update",
+    ledger,
+    log: (message) => console.log(chalk.dim(message)),
+  });
+  const summary = ledger.summary();
+  if (summary.written.length > 0) {
+    console.log(chalk.green(`  ✓ wrote ${summary.written.length} file(s)`));
+  }
 }
 
 /** Bring the mobile (Capacitor) feature up to date in a project, and wire

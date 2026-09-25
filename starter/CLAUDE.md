@@ -186,7 +186,7 @@ the last good answer to every read, which is what lets a surface with no
 rendered state work offline.
 
 - **The stored queue is `{ v: 1, data: rows }`.** A bare array still reads as
-  v1. An unreadable value is copied to `starter.offline-queue.corrupt.<ms>`
+  v1. An unreadable value is copied to `<storagePrefix>.offline-queue.corrupt.<ms>`
   before the reset. A `v` newer than `QUEUE_FORMAT_VERSION` LOCKS the queue:
   its rows are held `unknown-op`, `enqueue`/`remove` throw
   `OfflineQueueLockedError`, and `clear` and adoption do nothing. Never read it
@@ -263,7 +263,7 @@ trail. `docs/versioning.md` is the contract.
   refused, so a refused client can still learn which side is too old.
 - **Never add the handshake headers to `/api/health`**: a custom header forces a
   preflight that an untrusted origin fails, which reads as "unreachable".
-- **`x-starter-client` is untouched** by the handshake — it is a label, never a
+- **The client-label header is untouched** by the handshake (`CLIENT_ID_HEADER`) — it is a label, never a
   permission.
 - **The tRPC contract is a committed snapshot.** `pnpm run contract:emit` writes
   `packages/server/contract/trpc-contract.json`;

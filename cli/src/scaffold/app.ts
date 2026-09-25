@@ -331,6 +331,14 @@ async function runScaffoldSteps(
   if (!config.features.includes("client-core")) {
     const { stripClientCore } = await import("../features/client-core/index.js");
     modifications.push(...stripClientCore(outputDir));
+  } else {
+    // Selected: put the project's own names into the kit's storage keys and the
+    // handshake's headers. They are literals in the starter rather than `{{…}}`
+    // tokens — a brace in an HTTP header name makes `new Headers()` throw, and
+    // the starter has to be runnable before it is ever scaffolded — so they get
+    // their own rename pass. See features/client-core/rename.ts.
+    const { renameClientCoreIdentifiers } = await import("../features/client-core/index.js");
+    modifications.push(...renameClientCoreIdentifiers(outputDir, identifiers));
   }
 
   const wantsDesktop = config.features.includes("desktop");
@@ -1022,6 +1030,11 @@ function scaffoldDryRun(config: ProjectConfig, outputDir: string): string[] {
   if (!config.features.includes("stripe")) actions.push("Remove Stripe integration");
   if (!config.features.includes("desktop")) actions.push("Remove desktop (Electron) scaffolding");
   if (!config.features.includes("mobile")) actions.push("Remove mobile (Capacitor) scaffolding");
+  // docs/feature-authoring.md says not to add to this list and to use the
+  // ledger instead. It cannot serve here: a create-time dry run returns before
+  // the starter is copied, so there is no tree for a ledger to record against
+  // and nothing would mention the feature at all. The `update` path, where a
+  // tree exists, does go through the ledger.
   if (!config.features.includes("client-core")) {
     actions.push("Remove client-core (shared client kit + version handshake)");
   }

@@ -21,6 +21,7 @@
 import {
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -29,25 +30,93 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const {
   CLIENT_CORE_MARKED_FILES,
   CLIENT_CORE_OWNED_PATHS,
   CLIENT_CORE_ROOT_SCRIPTS,
   CORE_PACKAGE_NAME,
+  IDENTIFIER_RENAMES,
   UnbalancedMarkerError,
-  addClientCore,
   anchoredBlocks,
+  applyClientCore,
+  clientCoreFeature,
   hasMarkedBlocks,
   insertAfter,
   readMarkedBlocks,
   stripClientCore,
   stripMarkedBlocks,
   unchainSegment,
-  writeClientCoreChecklist,
+  findStarterIdentifierLiterals,
+  renameClientCoreIdentifiers,
+  renderClientCoreChecklist,
 } = await import("./src/features/client-core/index.js");
+const { FeatureLedger, expandFeatureSelection } = await import("./src/features/contract.js");
+const { findUnsubstitutedIdentifierTokens, resolveIdentifiers } = await import(
+  "./src/scaffold/identifiers.js"
+);
 const { KNOWN_FEATURES } = await import("./src/utils/flags.js");
+
+type Ledger = InstanceType<typeof FeatureLedger>;
+
+/**
+ * Apply the feature to `projectDir` through a real ledger, as `update` does.
+ *
+ * The context is the minimum `applyClientCore` reads. It is deliberately not a
+ * full manifest: the feature must not reach for anything but `identifiers`, and
+ * a narrow fake is what makes that a test rather than a convention.
+ */
+function apply(
+  projectDir: string,
+  opts: { dryRun?: boolean; name?: string } = {},
+): { ledger: Ledger; manual: number; logs: string[] } {
+  const ledger = new FeatureLedger(projectDir, opts.dryRun ?? false);
+  const logs: string[] = [];
+  const identifiers = resolveIdentifiers({ name: opts.name ?? "acme-tracker" });
+  const { manual } = applyClientCore(
+    {
+      projectDir,
+      manifestDir: projectDir,
+      manifest: { name: opts.name ?? "acme-tracker", identifiers } as never,
+      identifiers,
+      mode: "update",
+      ledger,
+      log: (m: string) => logs.push(m),
+    },
+    STARTER,
+  );
+  return { ledger, manual: manual.length, logs };
+}
+
+/** Every file under `dir` with its contents, for a byte-for-byte comparison. */
+function snapshot(dir: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const walk = (current: string): void => {
+    for (const entry of readdirSync(current)) {
+      if (entry === "node_modules" || entry === ".git") continue;
+      const path = join(current, entry);
+      if (statSync(path).isDirectory()) walk(path);
+      else out.set(path.slice(dir.length + 1), readFileSync(path, "utf-8"));
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+function sameSnapshot(a: Map<string, string>, b: Map<string, string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [path, content] of a) if (b.get(path) !== content) return false;
+  return true;
+}
+
+/** A stripped copy of the real starter, i.e. a project scaffolded without the feature. */
+function strippedProject(prefix: string): string {
+  const out = join(tempDir(prefix), "project");
+  cpSync(STARTER, out, { recursive: true, filter: notNodeModules });
+  stripClientCore(out);
+  return out;
+}
 
 const STARTER = resolve(join(import.meta.dirname, "..", "starter"));
 const results: Record<string, boolean> = {};
@@ -412,128 +481,289 @@ if (!existsSync(join(STARTER, "package.json"))) {
     ];
   });
 
-  group("add restores the feature", () => {
-    const dir = tempDir("client-core-add-");
-    const out = join(dir, "project");
-    cpSync(STARTER, out, { recursive: true, filter: notNodeModules });
-    stripClientCore(out);
-    const result = addClientCore(out, STARTER);
+  group("apply restores the feature", () => {
+    const out = strippedProject("client-core-apply-");
+    const { ledger, manual } = apply(out);
 
-    const serverPkg = JSON.parse(
-      readFileSync(join(out, "packages/server/package.json"), "utf-8"),
-    ) as { dependencies?: Record<string, string> };
-    const clientPkg = JSON.parse(
-      readFileSync(join(out, "packages/client/package.json"), "utf-8"),
-    ) as { dependencies?: Record<string, string> };
-    const rootPkg = JSON.parse(readFileSync(join(out, "package.json"), "utf-8")) as {
-      scripts?: Record<string, string>;
-    };
+    const serverPkg = readJsonAt(out, "packages/server/package.json");
+    const clientPkg = readJsonAt(out, "packages/client/package.json");
+    const rootPkg = readJsonAt(out, "package.json");
 
     const restored = CLIENT_CORE_MARKED_FILES.filter((rel) => existsSync(join(STARTER, rel))).map(
       (rel) =>
         [
-          `${rel} matches the starter again`,
-          sameCode(
-            readFileSync(join(out, rel), "utf-8"),
-            readFileSync(join(STARTER, rel), "utf-8"),
-          ),
+          `${rel} carries the handshake again`,
+          hasMarkedBlocks(readFileSync(join(out, rel), "utf-8")),
         ] as [string, boolean],
     );
 
     return [
       ["packages/core is back", existsSync(join(out, "packages/core/src/offline-queue.ts"))],
-      ["nothing needed a human", result.manual.length === 0 || failWith("manual", result.manual.map((m) => m.file))],
+      ["nothing needed a human", manual === 0],
       ...restored,
-      ["the server depends on @starter/core", serverPkg.dependencies?.[CORE_PACKAGE_NAME] === "workspace:*"],
-      ["the client depends on @starter/core", clientPkg.dependencies?.[CORE_PACKAGE_NAME] === "workspace:*"],
-      ["contract:emit is back", (rootPkg.scripts?.["contract:emit"] ?? "").length > 0],
       [
-        "the server's test script builds @starter/core again",
-        (
-          (
-            JSON.parse(readFileSync(join(out, "packages/server/package.json"), "utf-8")) as {
-              scripts?: Record<string, string>;
-            }
-          ).scripts?.test ?? ""
-        ).includes(CORE_PACKAGE_NAME),
+        "the server depends on @starter/core",
+        serverPkg.dependencies?.[CORE_PACKAGE_NAME] === "workspace:*",
       ],
+      [
+        "the client depends on @starter/core",
+        clientPkg.dependencies?.[CORE_PACKAGE_NAME] === "workspace:*",
+      ],
+      ["contract:emit is back", (rootPkg.scripts?.["contract:emit"] ?? "").length > 0],
       [
         "build and typecheck build @starter/core again",
         (rootPkg.scripts?.build ?? "").includes(CORE_PACKAGE_NAME) &&
           (rootPkg.scripts?.typecheck ?? "").includes(CORE_PACKAGE_NAME),
       ],
-      ["adding twice is a no-op", (() => {
-        const before = CLIENT_CORE_MARKED_FILES.map((rel) =>
-          existsSync(join(out, rel)) ? readFileSync(join(out, rel), "utf-8") : "",
-        );
-        addClientCore(out, STARTER);
-        const after = CLIENT_CORE_MARKED_FILES.map((rel) =>
-          existsSync(join(out, rel)) ? readFileSync(join(out, rel), "utf-8") : "",
-        );
-        return before.every((content, index) => content === after[index]);
-      })()],
+      [
+        "the server's test script builds @starter/core again",
+        (readJsonAt(out, "packages/server/package.json").scripts?.test ?? "").includes(
+          CORE_PACKAGE_NAME,
+        ),
+      ],
+      ["the ledger reports written files", ledger.summary().written.length > 0],
+      ["the ledger reports no conflict", ledger.conflicts().length === 0],
     ];
   });
 
-  group("add never overwrites a user's edits", () => {
-    const dir = tempDir("client-core-edits-");
-    const out = join(dir, "project");
+  // ── the four checks docs/feature-authoring.md requires ─────────────
+
+  group("idempotency", () => {
+    const out = strippedProject("client-core-idem-");
+    apply(out);
+    const after = snapshot(out);
+    const second = apply(out);
+
+    return [
+      [
+        "a second apply writes nothing",
+        second.ledger.summary().written.length === 0 ||
+          failWith("written again", second.ledger.summary().written),
+      ],
+      ["a second apply reports nothing as touched", !second.ledger.touched],
+      ["the tree is byte-identical after the second apply", sameSnapshot(after, snapshot(out))],
+      ["a second apply needs no human", second.manual === 0],
+    ];
+  });
+
+  group("dry run", () => {
+    const out = strippedProject("client-core-dry-");
+    const before = snapshot(out);
+    const { ledger } = apply(out, { dryRun: true });
+    const summary = ledger.summary();
+
+    return [
+      [
+        "the disk is byte-identical afterwards",
+        sameSnapshot(before, snapshot(out)) || failWith("changed", [...snapshot(out).keys()]),
+      ],
+      ["the ledger reports would-write", summary["would-write"].length > 0],
+      ["and reports nothing as written", summary.written.length === 0],
+      ["the run still reports itself as touching the project", ledger.touched],
+      [
+        "no checklist file is written in a dry run",
+        !existsSync(join(out, ".hatchkit", "post-client-core.md")),
+      ],
+    ];
+  });
+
+  group("user edits survive", () => {
+    const out = strippedProject("client-core-edits-");
+
+    // A line the user added to a file the feature inserts blocks into.
+    const marked = CLIENT_CORE_MARKED_FILES.find((rel) => existsSync(join(out, rel))) as string;
+    const markedPath = join(out, marked);
+    writeFileSync(
+      markedPath,
+      `${readFileSync(markedPath, "utf-8")}\n// a line the user added\n`,
+      "utf-8",
+    );
+
+    // A script the user rewrote. mergePackageJson must report, not revert.
+    const rootPath = join(out, "package.json");
+    const rootPkg = JSON.parse(readFileSync(rootPath, "utf-8")) as {
+      scripts: Record<string, string>;
+    };
+    rootPkg.scripts["contract:emit"] = "echo mine";
+    writeFileSync(rootPath, `${JSON.stringify(rootPkg, null, 2)}\n`, "utf-8");
+
+    // A kit file the user already has. Copy-if-absent must leave it alone.
+    const ownedPath = join(out, "packages/core/src/offline-queue.ts");
+    mkdirSync(dirname(ownedPath), { recursive: true });
+    writeFileSync(ownedPath, "// mine, not the starter's\n", "utf-8");
+
+    const { ledger } = apply(out);
+    const conflicts = ledger.conflicts();
+
+    return [
+      [`${marked}: the user's line survived`, readFileSync(markedPath, "utf-8").includes("// a line the user added")],
+      [`${marked}: the blocks were still wired in`, hasMarkedBlocks(readFileSync(markedPath, "utf-8"))],
+      [
+        "a rewritten script is kept, not reverted",
+        readJsonAt(out, "package.json").scripts?.["contract:emit"] === "echo mine",
+      ],
+      [
+        "and the conflict is reported rather than silent",
+        conflicts.some((c) => c.file === "package.json" && (c.detail ?? "").includes("contract:emit")),
+      ],
+      [
+        "an existing kit file is not overwritten",
+        readFileSync(ownedPath, "utf-8") === "// mine, not the starter's\n",
+      ],
+    ];
+  });
+
+  group("names come from the manifest", () => {
+    const out = strippedProject("client-core-names-");
+    apply(out, { name: "acme-tracker" });
+
+    // Both directions. The starter must still carry each literal — otherwise the
+    // rename table has drifted away from the files it renames and nothing else
+    // would notice — and nothing the feature applied may still carry one.
+    const starterCarries: string[] = [];
+    const applied: string[] = [];
+    for (const rel of [...CLIENT_CORE_OWNED_PATHS, ...CLIENT_CORE_MARKED_FILES]) {
+      const starterAbs = join(STARTER, rel);
+      if (existsSync(starterAbs)) {
+        for (const [, content] of filesUnder(starterAbs, STARTER)) {
+          starterCarries.push(...findStarterIdentifierLiterals(content));
+        }
+      }
+      const abs = join(out, rel);
+      if (!existsSync(abs)) continue;
+      for (const [file, content] of filesUnder(abs, out)) {
+        const left = findStarterIdentifierLiterals(content);
+        if (left.length > 0) applied.push(`${file}: ${left.join(", ")}`);
+      }
+    }
+
+    // Every `{{…}}` token must be gone too — a literal `{{bundleId}}` in a
+    // user's repo is a template that outgrew its token list.
+    const leftoverTokens: string[] = [];
+    for (const rel of [...CLIENT_CORE_OWNED_PATHS, ...CLIENT_CORE_MARKED_FILES]) {
+      const abs = join(out, rel);
+      if (!existsSync(abs)) continue;
+      for (const [file, content] of filesUnder(abs, out)) {
+        const tokens = findUnsubstitutedIdentifierTokens(content);
+        if (tokens.length > 0) leftoverTokens.push(`${file}: ${tokens.join(", ")}`);
+      }
+    }
+
+    const ops = readFileSync(join(out, "packages/core/src/offline-ops.ts"), "utf-8");
+    const apiLevel = readFileSync(join(out, "packages/shared/src/api-level.ts"), "utf-8");
+
+    return [
+      [
+        "every rename in the table is exercised by the starter",
+        new Set(starterCarries).size === IDENTIFIER_RENAMES.length ||
+          failWith(
+            "starter is missing",
+            IDENTIFIER_RENAMES.map((r) => r.from).filter((f) => !starterCarries.includes(f)),
+          ),
+      ],
+      [
+        "no starter literal survives the apply",
+        applied.length === 0 || failWith("left", applied),
+      ],
+      [
+        "no identifier token survives the apply",
+        leftoverTokens.length === 0 || failWith("left", leftoverTokens),
+      ],
+      [
+        "the storage prefix comes from the identifiers",
+        ops.includes('"acmetracker.offline-queue"'),
+      ],
+      [
+        "so do the handshake headers",
+        apiLevel.includes('"x-acmetracker-client-version"') &&
+          apiLevel.includes('"x-acmetracker-api-level"') &&
+          apiLevel.includes('"x-acmetracker-client"'),
+      ],
+      [
+        "a header name is still a legal header name",
+        (() => {
+          try {
+            new Headers({ "x-acmetracker-api-level": "2" });
+            return true;
+          } catch {
+            return false;
+          }
+        })(),
+      ],
+    ];
+  });
+
+  group("create renames in place", () => {
+    // `create` copies the whole starter and mutates the copy, so the rename runs
+    // as one pass over what is on disk rather than per rendered file. Distinct
+    // code path from `apply`, and the only one a scaffolded project ever sees.
+    const out = join(tempDir("client-core-create-"), "project");
     cpSync(STARTER, out, { recursive: true, filter: notNodeModules });
-    stripClientCore(out);
+    const ids = resolveIdentifiers({ name: "acme-tracker" });
+    const first = renameClientCoreIdentifiers(out, ids);
+    const after = snapshot(out);
+    const second = renameClientCoreIdentifiers(out, ids);
 
-    // Pick a marked file and edit it the way a user would: add a line that has
-    // nothing to do with the feature. The anchors must still be found.
-    const rel = CLIENT_CORE_MARKED_FILES.find((candidate) =>
-      existsSync(join(out, candidate)),
-    ) as string;
+    const leftovers: string[] = [];
+    for (const rel of [...CLIENT_CORE_OWNED_PATHS, ...CLIENT_CORE_MARKED_FILES]) {
+      const abs = join(out, rel);
+      if (!existsSync(abs)) continue;
+      for (const [file, content] of filesUnder(abs, out)) {
+        const left = findStarterIdentifierLiterals(content);
+        if (left.length > 0) leftovers.push(`${file}: ${left.join(", ")}`);
+      }
+    }
+
+    return [
+      ["it reports what it renamed", first.length === 1 && first[0]?.includes("file(s)")],
+      ["no starter literal is left", leftovers.length === 0 || failWith("left", leftovers)],
+      [
+        "the storage prefix is the project's",
+        readFileSync(join(out, "packages/core/src/offline-ops.ts"), "utf-8").includes(
+          '"acmetracker.offline-queue"',
+        ),
+      ],
+      ["a second pass renames nothing", second.length === 0],
+      ["and changes no bytes", sameSnapshot(after, snapshot(out))],
+    ];
+  });
+
+  group("manual wiring when an anchor is gone", () => {
+    const out = strippedProject("client-core-noanchor-");
+    const rel = CLIENT_CORE_MARKED_FILES.find((c) => existsSync(join(out, c))) as string;
     const path = join(out, rel);
-    const edited = `${readFileSync(path, "utf-8")}\n// a line the user added\n`;
-    writeFileSync(path, edited, "utf-8");
 
-    const result = addClientCore(out, STARTER);
-    const after = readFileSync(path, "utf-8");
-
-    // Now the hostile case: an anchor the user deleted. The block must land in
-    // the checklist rather than be guessed at.
-    const dir2 = tempDir("client-core-noanchor-");
-    const out2 = join(dir2, "project");
-    cpSync(STARTER, out2, { recursive: true, filter: notNodeModules });
-    stripClientCore(out2);
-    const rel2 = rel;
-    const path2 = join(out2, rel2);
+    // Delete every line the starter's anchors rely on. The blocks then have no
+    // unambiguous home, and must be handed over rather than guessed at.
     const anchorLines = new Set(
-      anchoredBlocks(readFileSync(join(STARTER, rel2), "utf-8")).flatMap(({ anchor }) =>
+      anchoredBlocks(readFileSync(join(STARTER, rel), "utf-8")).flatMap(({ anchor }) =>
         anchor.map((line) => line.trim()),
       ),
     );
-    const gutted = readFileSync(path2, "utf-8")
-      .split("\n")
-      .filter((line) => !anchorLines.has(line.trim()))
-      .join("\n");
-    writeFileSync(path2, gutted, "utf-8");
-    const result2 = addClientCore(out2, STARTER);
-    const checklist = writeClientCoreChecklist(out2, result2.manual);
+    writeFileSync(
+      path,
+      readFileSync(path, "utf-8")
+        .split("\n")
+        .filter((line) => !anchorLines.has(line.trim()))
+        .join("\n"),
+      "utf-8",
+    );
+
+    const { manual, logs } = apply(out);
+    const checklist = join(out, ".hatchkit", "post-client-core.md");
 
     return [
-      [`${rel}: the user's line survived`, after.includes("// a line the user added")],
-      [`${rel}: the blocks were still wired in`, hasMarkedBlocks(after)],
-      [`${rel}: no manual step was needed`, result.manual.length === 0],
-      [`${rel2}: a missing anchor produced a manual step`, result2.manual.length > 0],
-      [
-        `${rel2}: nothing was guessed into the file`,
-        !hasMarkedBlocks(readFileSync(path2, "utf-8")),
-      ],
-      [
-        "the checklist is written to .hatchkit/post-client-core.md",
-        checklist !== null && existsSync(checklist),
-      ],
+      [`${rel}: a missing anchor produced a manual step`, manual > 0],
+      [`${rel}: nothing was guessed into the file`, !hasMarkedBlocks(readFileSync(path, "utf-8"))],
+      ["the checklist is written", existsSync(checklist)],
       [
         "the checklist names the file and shows the block",
-        checklist !== null &&
-          readFileSync(checklist, "utf-8").includes(rel2) &&
+        existsSync(checklist) &&
+          readFileSync(checklist, "utf-8").includes(rel) &&
           readFileSync(checklist, "utf-8").includes("── client-core ──"),
       ],
-      ["no checklist when nothing is left to do", writeClientCoreChecklist(out, []) === null],
+      ["the run says so out loud", logs.some((line) => line.includes("need you"))],
+      ["no checklist when nothing is left to do", renderClientCoreChecklist([]) === null],
     ];
   });
 }
@@ -543,6 +773,20 @@ if (!existsSync(join(STARTER, "package.json"))) {
 group("feature plumbing", () => {
   return [
     ["client-core is a known --features value", KNOWN_FEATURES.includes("client-core")],
+    ["it is registered in the feature registry", clientCoreFeature.id === "client-core"],
+    ["it is addable after scaffold", clientCoreFeature.addableAfterScaffold],
+    [
+      "it declares the surfaces that have both halves",
+      (clientCoreFeature.surfaces ?? []).join(",") === "fullstack,split",
+    ],
+    [
+      "selecting it alone is a valid selection",
+      expandFeatureSelection(["client-core"]).errors.length === 0,
+    ],
+    [
+      "and pulls in no prerequisite it does not declare",
+      expandFeatureSelection(["client-core"]).implied.length === 0,
+    ],
     [
       "the owned paths and the marked files do not overlap",
       !CLIENT_CORE_OWNED_PATHS.some((owned) => CLIENT_CORE_MARKED_FILES.includes(owned)),
@@ -551,6 +795,26 @@ group("feature plumbing", () => {
 });
 
 // ── helpers ──────────────────────────────────────────────────────────
+
+function readJsonAt(
+  dir: string,
+  rel: string,
+): { scripts?: Record<string, string>; dependencies?: Record<string, string> } {
+  return JSON.parse(readFileSync(join(dir, rel), "utf-8"));
+}
+
+/** `abs` and everything under it, as [projectRelativePath, contents]. */
+function filesUnder(abs: string, projectDir: string): Array<[string, string]> {
+  if (!statSync(abs).isDirectory()) {
+    return [[abs.slice(projectDir.length + 1), readFileSync(abs, "utf-8")]];
+  }
+  const out: Array<[string, string]> = [];
+  for (const entry of readdirSync(abs)) {
+    if (entry === "node_modules" || entry === "dist") continue;
+    out.push(...filesUnder(join(abs, entry), projectDir));
+  }
+  return out;
+}
 
 function notNodeModules(source: string): boolean {
   return !source.includes("/node_modules") && !source.includes("/.git");

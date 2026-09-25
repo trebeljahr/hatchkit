@@ -102,3 +102,37 @@ export const CORE_PACKAGE_NAME = "@starter/core";
  * rather than a missing feature.
  */
 export const CORE_BUILD_SEGMENT = "pnpm --filter @starter/core run build";
+
+/**
+ * The identifier-bearing names the starter ships as literals, and where each
+ * one's real value comes from.
+ *
+ * These are the names that become contracts the moment anything is stored or
+ * sent — a storage key already written in somebody's browser, a header a
+ * receiver matches on — so they are read from the manifest's identifiers and
+ * never derived here (docs/feature-authoring.md → "Never derive a name").
+ *
+ * They are literals in the starter rather than `{{…}}` tokens, which is the
+ * exception to that file's usual convention and worth the sentence: a `{{` in an
+ * HTTP header NAME makes `new Headers()` throw, so a tokenised
+ * `x-{{identifierToken}}-api-level` would leave the starter unable to make a
+ * single API request until it had been scaffolded — and the starter is meant to
+ * be a monorepo a person can clone and run first. The same applies to the
+ * storage keys for consistency, so one table covers both.
+ *
+ * `test-client-core.ts` asserts both directions: the starter still contains each
+ * literal, and nothing the feature applied still does. That is what keeps this
+ * table from drifting away from the files it renames.
+ */
+export const IDENTIFIER_RENAMES: readonly {
+  /** The literal the starter ships. */
+  from: string;
+  /** Which identifier supplies the replacement. */
+  to: "clientVersionHeader" | "apiLevelHeader" | "clientHeader" | "storagePrefix";
+}[] = [
+  // Longest first: `x-starter-client` must not eat `x-starter-client-version`.
+  { from: "x-starter-client-version", to: "clientVersionHeader" },
+  { from: "x-starter-api-level", to: "apiLevelHeader" },
+  { from: "x-starter-client", to: "clientHeader" },
+  { from: '"starter.', to: "storagePrefix" },
+];
