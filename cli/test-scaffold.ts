@@ -331,8 +331,11 @@ results.desktop = await run("desktop only", "my-cool-app", ["desktop"], (d) => {
   const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
   const nextCfg = readFileSync(join(d, "packages/client/next.config.ts"), "utf-8");
   const claudeMd = readFileSync(join(d, "CLAUDE.md"), "utf-8");
+  const builderCfg = readFileSync(join(d, "electron-builder.config.mjs"), "utf-8");
   return [
-    ["electron/main.ts kept", existsSync(join(d, "electron/main.ts"))],
+    ["electron/src/main.ts kept", existsSync(join(d, "electron/src/main.ts"))],
+    ["electron-builder.config.mjs kept", existsSync(join(d, "electron-builder.config.mjs"))],
+    ["build-desktop.mjs kept", existsSync(join(d, "scripts/build-desktop.mjs"))],
     ["build/icon.png placeholder kept", statSync(join(d, "build/icon.png")).size > 1000],
     ["desktop workflow kept", existsSync(join(d, ".github/workflows/desktop-release.yml"))],
     ["mobile workflow removed", !existsSync(join(d, ".github/workflows/mobile-release.yml"))],
@@ -340,14 +343,26 @@ results.desktop = await run("desktop only", "my-cool-app", ["desktop"], (d) => {
     ["electron dep present", !!pkg.devDependencies?.electron],
     ["icon-gen dep present", !!pkg.devDependencies?.["icon-gen"]],
     ["no capacitor deps", !pkg.dependencies?.["@capacitor/core"]],
-    ["bundleId sanitized (no hyphens)", pkg.build?.appId === "com.example.mycoolapp"],
-    // The display name is a real name, not the slug: `name` is what npm
-    // and the image registry use, `productName` is what a person reads.
-    ["productName is the display name, not the slug", pkg.build?.productName === "My Cool App"],
+    // electron-builder reads electron-builder.config.mjs, which
+    // scripts/build-desktop.mjs passes with an explicit --config. The `build`
+    // block in package.json is gone; a project that kept one would be editing
+    // a file the build never reads.
+    ["no stale electron-builder block in package.json", pkg.build === undefined],
+    ["bundleId sanitized (no hyphens)", builderCfg.includes('appId: "com.example.mycoolapp"')],
+    // The display name is a real name, not the slug: `name` is what npm and
+    // the image registry use, `productName` is what a person reads.
+    [
+      "productName is the display name, not the slug",
+      builderCfg.includes('productName: "My Cool App"'),
+    ],
     ["package.json name stays the slug", pkg.name === "my-cool-app"],
+    ["no identifier token left in the builder config", !/\{\{[a-zA-Z]+\}\}/.test(builderCfg)],
     ["typecheck chains electron", pkg.scripts?.typecheck?.includes("typecheck:electron")],
     ["next.config flipped to export", nextCfg.includes('output: "export"')],
-    ["next.config has assetPrefix", nextCfg.includes('assetPrefix: "./"')],
+    // No assetPrefix: every shell serves the export from an origin with a real
+    // root, and a relative prefix resolves against the current directory, so
+    // nested routes look for their chunks in the wrong place and render blank.
+    ["next.config has no assetPrefix", !nextCfg.includes("assetPrefix")],
     ["next.config has trailingSlash", nextCfg.includes("trailingSlash: true")],
     ["scripts/icons-desktop.mjs kept", existsSync(join(d, "scripts/icons-desktop.mjs"))],
     // Nested conditionals: the native section survives, but only the
@@ -410,7 +425,7 @@ results.desktopMobile = await run(
     const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
     const manifest = JSON.parse(readFileSync(join(d, ".hatchkit.json"), "utf-8"));
     const capCfgRaw = readFileSync(join(d, "capacitor.config.ts"), "utf-8");
-    const electronMain = readFileSync(join(d, "electron/main.ts"), "utf-8");
+    const builderCfg = readFileSync(join(d, "electron-builder.config.mjs"), "utf-8");
     const serverEnv = readFileSync(join(d, "packages/server/.env.example"), "utf-8");
     const nextCfg = readFileSync(join(d, "packages/client/next.config.ts"), "utf-8");
     const nativeHmr = manifest.ports?.nativeHmr;
@@ -425,13 +440,17 @@ results.desktopMobile = await run(
       // The two wrappers write the same bundle id from the same source.
       // A divergence here is exactly what the identifier-agreement check
       // exists to catch, and it must not be reachable from a clean scaffold.
-      ["electron appId sanitized", pkg.build?.appId === "com.example.dinogame"],
+      ["electron appId sanitized", builderCfg.includes('appId: "com.example.dinogame"')],
       ["capacitor appId agrees with electron appId", capCfgRaw.includes('appId: "com.example.dinogame"')],
-      ["electron productName is the display name", pkg.build?.productName === "Dino Game"],
+      ["electron productName is the display name", builderCfg.includes('productName: "Dino Game"')],
       ["nativeHmr port assigned", typeof nativeHmr === "number"],
+      // Electron has no dev URL of its own any more: the main process reads
+      // ELECTRON_DEV_URL, which only `dev:desktop` sets.
       [
-        "electron DEV_URL retargeted at nativeHmr port",
-        electronMain.includes(`http://localhost:${nativeHmr}`),
+        "dev:desktop retargeted at the nativeHmr port",
+        pkg.scripts?.["dev:desktop"]?.includes(
+          `ELECTRON_DEV_URL=http://localhost:${nativeHmr}`,
+        ),
       ],
       ["electron deps present", !!pkg.devDependencies?.electron],
       ["capacitor deps present", !!pkg.dependencies?.["@capacitor/core"]],
@@ -959,7 +978,6 @@ console.log("\n── ports: desktop + mobile (native HMR port) ─────�
   const d = mkdtempSync(join(tmpdir(), "scaffold-ports-native-"));
   try {
     const { ports } = await scaffoldApp(cfg("port-test-native", ["desktop", "mobile"]), d);
-    const electronMain = readFileSync(join(d, "electron/main.ts"), "utf-8");
     const androidDev = readFileSync(join(d, "scripts/android-dev.sh"), "utf-8");
     const iosDev = readFileSync(join(d, "scripts/ios-dev.sh"), "utf-8");
     const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
@@ -969,10 +987,22 @@ console.log("\n── ports: desktop + mobile (native HMR port) ─────�
       ["nativeHmrPort in 7000-7999", ports.nativeHmr! >= 7000 && ports.nativeHmr! <= 7999],
       ["nativeHmrPort != serverPort", ports.nativeHmr !== ports.server],
       ["nativeHmrPort != clientPort", ports.nativeHmr !== ports.client],
-      [`electron DEV_URL uses native port`, electronMain.includes(`"http://localhost:${ports.nativeHmr}"`)],
+      // Electron itself has no port to rewrite any more: the main process
+      // reads ELECTRON_DEV_URL and nothing else, and `dev:desktop` is the one
+      // place that sets it (checked below).
       [`android-dev.sh NEXT_PORT default = ${ports.nativeHmr}`, androidDev.includes(`NEXT_PORT:-${ports.nativeHmr}`)],
       [`ios-dev.sh NEXT_PORT default = ${ports.nativeHmr}`, iosDev.includes(`NEXT_PORT:-${ports.nativeHmr}`)],
       [`dev:desktop uses native port`, pkg.scripts["dev:desktop"]?.includes(`http://localhost:${ports.nativeHmr}`)],
+      [
+        `dev:desktop sets ELECTRON_DEV_URL to it`,
+        pkg.scripts["dev:desktop"]?.includes(
+          `ELECTRON_DEV_URL=http://localhost:${ports.nativeHmr}`,
+        ),
+      ],
+      [
+        `dev:desktop runs the bundled main`,
+        pkg.scripts["dev:desktop"]?.includes("electron/dist/main.js"),
+      ],
     ];
     let ok = true;
     for (const [n, c] of checks) {
@@ -1347,8 +1377,9 @@ console.log("\n── update: add desktop (+ idempotent re-run) ─────�
     });
     const m1 = readManifest(d);
     const pkg1 = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
-    const electronMain = readFileSync(join(d, "electron/main.ts"), "utf-8");
+    const builderCfg = readFileSync(join(d, "electron-builder.config.mjs"), "utf-8");
     const pkgRaw = readFileSync(join(d, "package.json"), "utf-8");
+    const mainTs1 = readFileSync(join(d, "electron/src/main.ts"), "utf-8");
 
     // Second run with the same desired set must be a no-op.
     const second = await runUpdate(d, {
@@ -1359,25 +1390,32 @@ console.log("\n── update: add desktop (+ idempotent re-run) ─────�
       },
     });
     const pkgRaw2 = readFileSync(join(d, "package.json"), "utf-8");
-    const electronMain2 = readFileSync(join(d, "electron/main.ts"), "utf-8");
+    const mainTs2 = readFileSync(join(d, "electron/src/main.ts"), "utf-8");
 
     const checks: Check[] = [
       ["first run reports desktop added", first.added.includes("desktop")],
-      ["electron/ copied", existsSync(join(d, "electron/main.ts"))],
+      ["electron/src copied", existsSync(join(d, "electron/src/main.ts"))],
+      ["the build script came with it", existsSync(join(d, "scripts/build-desktop.mjs"))],
+      ["the builder config came with it", existsSync(join(d, "electron-builder.config.mjs"))],
       ["desktop workflow copied", existsSync(join(d, ".github/workflows/desktop-release.yml"))],
       ["manifest gains desktop", m1?.features.includes("desktop") === true],
       ["manifest gains nativeHmr port", typeof m1?.ports.nativeHmr === "number"],
       ["placeholders substituted", !pkgRaw.includes("{{")],
-      ["productName substituted", pkg1.build?.productName === "Desktop Add Test"],
-      ["appId sanitized", pkg1.build?.appId === "com.example.desktopaddtest"],
+      ["productName substituted", builderCfg.includes('productName: "Desktop Add Test"')],
+      ["appId sanitized", builderCfg.includes('appId: "com.example.desktopaddtest"')],
+      ["no identifier token left in the builder config", !builderCfg.includes("{{")],
+      // Electron reads ELECTRON_DEV_URL and nothing else; only `dev:desktop`
+      // sets it.
       [
-        "electron DEV_URL retargeted at nativeHmr port",
-        electronMain.includes(`http://localhost:${m1?.ports.nativeHmr}`),
+        "dev:desktop retargeted at the nativeHmr port",
+        pkg1.scripts?.["dev:desktop"]?.includes(
+          `ELECTRON_DEV_URL=http://localhost:${m1?.ports.nativeHmr}`,
+        ),
       ],
       ["electron devDep merged", !!pkg1.devDependencies?.electron],
       ["re-run adds nothing", second.added.length === 0],
       ["re-run leaves package.json untouched", pkgRaw2 === pkgRaw],
-      ["re-run leaves electron/main.ts untouched", electronMain2 === electronMain],
+      ["re-run leaves electron/src/main.ts untouched", mainTs2 === mainTs1],
     ];
     let ok = true;
     for (const [n, c] of checks) {

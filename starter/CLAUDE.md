@@ -287,15 +287,107 @@ The Express server is always remote — the client talks to it over HTTPS.
 ### Desktop (Electron)
 
 ```bash
-pnpm dev:desktop                      # Next dev + Electron window, HMR recovery
-pnpm build:desktop                    # static export + compile electron/
-pnpm electron:build                   # electron-builder → dmg/zip/exe/AppImage
-pnpm icons:desktop                    # regenerate icns/ico/png set (electron-icon-builder; cross-platform)
+NEXT_PUBLIC_API_URL=… pnpm build:desktop     # export (out-desktop) + electron/dist, no packaging
+NEXT_PUBLIC_API_URL=… pnpm electron:preview  # the same, then an unpacked app in release/
+NEXT_PUBLIC_API_URL=… pnpm electron:build    # the same, then electron-builder → dmg/zip/exe/AppImage
+pnpm dev:desktop                             # Next dev server + a window (UI iteration only)
+pnpm electron:ensure                         # download the Electron binary if it is missing
+pnpm test:electron                           # node:test over electron/src
+pnpm test:e2e:desktop                        # Playwright harness, its own API
+pnpm test:desktop:linux                      # containerised smoke test under Xvfb
+pnpm icons:desktop                           # regenerate icns/ico from build/icon.png
+pnpm desktop:rollout v1.4.0 25               # offer a published release to 25 % of installs
 ```
 
 Replace `build/icon.png` with a 512×512 logo before shipping.
-Bundle config lives in root `package.json` `"build"` (electron-builder).
-Electron IPC bridge: `electron/preload.ts` exposes `window.electronAPI`.
+
+What is built, and the rules that fail quietly if broken:
+
+- **The packaged app serves the export from `app://-`** (`electron/src/protocol.ts`,
+  a privileged standard scheme), resolving paths in `resolve-app-path.ts`.
+  Never `file://`: that origin is the string `null`, so sign-in is refused and
+  every route but `/` blanks. **Never change the scheme or the host** — the
+  origin keys `localStorage`, IndexedDB and every server's `TRUSTED_ORIGINS`.
+  The profile directory name (`electron/src/profile.ts`) is permanent for the
+  same reason.
+- **Its own export directory, `packages/client/out-desktop`,** written only by
+  `scripts/build-desktop.mjs`, which requires `NEXT_PUBLIC_API_URL`, asserts the
+  literal reached an emitted chunk, refuses `"./_next` in any HTML and refuses
+  to run while a dev server owns `packages/client/.next`. There is no
+  `assetPrefix` anywhere.
+- **Main and preload are esbuild bundles in `electron/dist/`.** The package
+  holds only those, the export and package.json (`electron-builder.config.mjs`
+  `files`, with `!node_modules/**` — electron-builder otherwise packs the root
+  `dependencies`). The build lists the asar and fails on anything else.
+- **`window.electronAPI`'s type is `DesktopBridge` in
+  `packages/shared/src/desktop-bridge.ts`**, imported by the preload and by
+  `packages/client/src/types/electron.d.ts`, with the IPC channel names beside it.
+- **Every IPC handler registers through `handle()` in `ipc.ts`,** which refuses
+  a sender frame outside `app://-` (or the dev URL, unpackaged only). A packaged
+  app ignores `ELECTRON_DEV_URL`.
+- **Security baseline** (`security.ts`, decisions in `security-model.ts`):
+  navigation and `window.open` never leave the app origin (http(s) goes to the
+  OS browser), no `<webview>`, every permission denied but notifications; a CSP
+  response header on HTML (`csp.ts`, so the web export is untouched);
+  `devTools: false` and no Reload/DevTools menu items outside dev; fuses
+  (RunAsNode, NODE_OPTIONS and `--inspect` off, asar integrity and
+  only-load-from-asar on). The inspector fuse means Playwright's
+  `_electron.launch` cannot drive a **packaged** build; drive it with
+  `--remote-debugging-port` and `chromium.connectOverCDP`, or use the harness,
+  which runs the same `electron/dist/main.js` unpackaged.
+- **Tests and agents run headless** (`electron/src/headless.ts`). The window is
+  never shown or focused, and on macOS the app takes the accessory activation
+  policy with no Dock icon, so a launch never steals focus from whoever is using
+  the machine. Headless also creates no tray, registers no OS shortcut, posts no
+  notification, touches no login item, appends `use-mock-keychain` so no real
+  credential item is created, records external opens instead of performing them,
+  and uses its own profile. Each effect is recorded on
+  `globalThis.__desktopTestHooks` for the specs. A hidden window keeps painting,
+  but reading a frame back OUT of one is per platform: on macOS
+  `page.screenshot()` works; on X11 an unmapped window has no surface to copy
+  from and the capture hangs, so the paint assertion is skipped on Linux and the
+  Linux smoke test runs the window shown instead.
+- **One instance per profile** (`requestSingleInstanceLock`); a second launch
+  focuses the first and exits. The profile is pinned by name in `profile.ts`,
+  never derived from package.json, and the unpackaged run gets its own so
+  `dev:desktop` never shares the installed app's lock. The user-data-dir
+  environment variable moves it — the harness uses it.
+- **The tray and global shortcuts are views of renderer state.** The renderer
+  publishes a `DesktopTrayState` (including every already-translated string) and
+  commands come back through the bridge. The accelerator grammar is shared in
+  `packages/shared/src/desktop-shortcuts.ts`, with one default
+  (`CommandOrControl+Alt+Shift+Space`).
+- **Only direct downloads update themselves** (`updater-model.ts`, `updater.ts`):
+  the signed mac build, the NSIS installer and the AppImage, and only with an
+  `app-update.yml`. The stores, Snap, Flatpak, deb, rpm and tar.gz never load
+  electron-updater. The feed comes from `updateFeedFor` in
+  `scripts/lib/desktop-release.mjs` and is **explicitly null** where there is
+  none — left undefined, electron-builder guesses a GitHub feed from `GH_TOKEN`,
+  which every CI runner has. electron-updater is bundled into `main.js` by
+  esbuild, never packed as a dependency.
+- **Never restart for an update on the person's behalf.** A download installs on
+  quit; `quitAndInstall` has exactly one call site, and `updater-model.test.ts`
+  greps the source to keep it that way.
+- **One workflow builds every channel, and signing fails closed**
+  (`.github/workflows/desktop-release.yml`, `scripts/lib/desktop-release.mjs`).
+  No secrets for a channel builds files named `-unsigned`; a partial set refuses
+  before the build. A tag builds a DRAFT release a person publishes —
+  electron-updater reads only published releases, so publishing is the release
+  decision — and every file a feed names is checked against its sha512 and size.
+- **A staged rollout is one line in each feed.** `stagingPercentage` is rewritten
+  as text by `scripts/lib/desktop-rollout.mjs`, which refuses if anything else
+  changed, so the feed's hash and size stay byte-identical. `100` removes the key.
+- **The renderer is not wired to the shell yet.** Sign-in must read the bearer
+  token from `electronAPI.secureStore` and send `credentials: "omit"`; the tray
+  must be fed with `electronAPI.desktop.publishTrayState`; the server needs
+  `app://-` in `TRUSTED_ORIGINS` and a bearer plugin. Until then
+  `e2e/desktop/shell.spec.ts` passes and `sign-in.spec.ts` and `tray.spec.ts`
+  fail — they are the specification of what to build, not a regression.
+- **The harness proves auth from the server side.**
+  `e2e/desktop/record-requests.mjs` is preloaded into the harness API and logs
+  every request's origin, client header, auth scheme and whether a Cookie was
+  present; the harness's own Node calls carry a distinct user-agent so they are
+  excluded.
 <!-- hatchkit:endif -->
 
 
@@ -602,9 +694,10 @@ TRUSTED_ORIGINS=capacitor://localhost,https://localhost
 ```
 
 <!-- hatchkit:if desktop -->
-Electron `file://` sends `Origin: null` and can't be trusted with
-credentials. Register a custom protocol in `electron/main.ts` and add
-it (e.g. `app://-`) instead.
+Electron serves the export from `app://-`, the privileged scheme
+registered in `electron/src/protocol.ts`, so `app://-` must be in
+`TRUSTED_ORIGINS`. `file://` sends `Origin: null`, which no trust list can
+match — a file:// shell cannot be fixed from the server side.
 <!-- hatchkit:endif -->
 
 <!-- hatchkit:endif -->

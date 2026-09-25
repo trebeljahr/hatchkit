@@ -281,9 +281,16 @@ try {
 
     const nextConfig = read(d, "packages/client/next.config.ts");
     assert(nextConfig.includes("NEXT_EXPORT_DIR"), "the generated config honours the export dir");
+    // No `assetPrefix`, for either shell. A relative prefix resolves against
+    // the CURRENT path, so under `trailingSlash: true` a document at
+    // /app/settings/ asks for /app/settings/_next/… and every chunk 404s.
+    // Electron is not an exception: `app://-` is a standard origin with a
+    // root, and electron/src/resolve-app-path.ts resolves a request path
+    // literally — it does not re-resolve a relative one. The prefix was only
+    // ever needed while the shell loaded index.html off file://.
     assert(
-      /isElectronBuild\s*\?\s*\{\s*assetPrefix/.test(nextConfig),
-      "assetPrefix is Electron-only — a relative prefix breaks every nested route under Capacitor",
+      !nextConfig.includes("assetPrefix"),
+      "no assetPrefix — a relative prefix breaks every nested route in both shells",
     );
     assert(
       nextConfig.includes("allowedDevOrigins"),

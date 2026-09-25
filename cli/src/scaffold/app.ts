@@ -38,6 +38,12 @@ import {
   applyWorkflowDeployVerifyUrls,
   applyWorkflowNativeOrigins,
 } from "./deploy-verification.js";
+import {
+  DESKTOP_DEV_DEPS,
+  DESKTOP_FILES,
+  DESKTOP_SCRIPTS_TO_STRIP,
+  substituteDesktopFiles,
+} from "./desktop.js";
 import { type DotenvxSeedResult, seedDotenvxProduction } from "./dotenvx.js";
 import { applyE2eS3Gate } from "./e2e-s3.js";
 import { collectIdentifierMismatches, formatIdentifierMismatches } from "./identifier-agreement.js";
@@ -55,6 +61,7 @@ import {
   stripPackageJsonBuildBlock,
   stripPackageJsonDeps,
   stripPackageJsonScripts,
+  unchainScriptSegment,
   unchainTypecheckScript,
 } from "./pkg-json.js";
 import { writeSplitComposeFiles } from "./split-compose.js";
@@ -385,32 +392,37 @@ async function runScaffoldSteps(
 
   // Desktop (Electron) strip / substitute
   if (!wantsDesktop) {
-    removeIfExists(join(outputDir, "electron"));
-    removeIfExists(join(outputDir, ".github/workflows/desktop-release.yml"));
-    // build/icon.png is the icon source `icons:desktop` reads; Electron
-    // is the only wrapper that uses it.
+    // Every path the feature owns, from scaffold/desktop.ts — the same list
+    // `hatchkit update` copies in, so the strip and the add cannot disagree.
+    for (const rel of DESKTOP_FILES) removeIfExists(join(outputDir, rel));
+    // build/icon.png is the icon source `icons:desktop` reads; Electron is the
+    // only wrapper that uses it.
     removeIfExists(join(outputDir, "build"));
-    removeIfExists(join(outputDir, "packages/client/src/types/electron.d.ts"));
-    removeIfExists(join(outputDir, "scripts/icons-desktop.mjs"));
-    stripPackageJsonScripts(outputDir, [
-      "dev:desktop",
-      "dev:electron",
-      "build:desktop",
-      "electron:compile",
-      "electron:build",
-      "electron:preview",
-      "typecheck:electron",
-      "icons:desktop",
-      "itch:push:mac",
-      "itch:push:win",
-      "itch:push:linux",
-    ]);
+    stripPackageJsonScripts(outputDir, [...DESKTOP_SCRIPTS_TO_STRIP]);
     unchainTypecheckScript(outputDir);
+    // `test:unit` chains the two desktop suites, which have just been deleted.
+    // `pnpm run test:electron` against a script that no longer exists exits
+    // non-zero, so leaving the chain turns `pnpm test` red on a project that
+    // has no desktop at all.
+    for (const segment of ["test:electron", "test:desktop:release"]) {
+      unchainScriptSegment(outputDir, "test:unit", segment);
+    }
     stripPackageJsonBuildBlock(outputDir);
-    stripPackageJsonDeps(outputDir, ["electron", "electron-builder", "icon-gen", "wait-on"]);
+    stripPackageJsonDeps(outputDir, [...DESKTOP_DEV_DEPS]);
     modifications.push("removed: desktop (Electron) scaffolding");
   } else {
     rewriteFile(join(outputDir, "package.json"), (c) => substituteIdentifierTokens(c, identifiers));
+    // The shell itself carries the frozen names in a dozen files — the profile
+    // directory, the env-var prefix, the bundle id, the client header. A token
+    // that survives into a generated project is not cosmetic: `{{envPrefix}}`
+    // becomes an environment variable name no shell can set, so the headless
+    // contract never engages and a test run opens windows on the person's
+    // screen.
+    substituteDesktopFiles(outputDir, identifiers);
+    const origin = `${identifiers.desktopOrigin.scheme}://${identifiers.desktopOrigin.host}`;
+    modifications.push(
+      `desktop: origin ${origin}, profile "${identifiers.slug}", env ${identifiers.envPrefix}_* (permanent once released)`,
+    );
   }
 
   // Mobile (Capacitor) strip / substitute

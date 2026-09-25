@@ -30,8 +30,14 @@ import { join } from "node:path";
 import type { ProjectConfig, Surface } from "../prompts.js";
 import { CLIENT_WORKFLOW_REL_PATH } from "./client-build-args.js";
 import { stripClientDockerfileApiUrlAssertion } from "./deploy-verification.js";
+import { DESKTOP_FILES, DESKTOP_SCRIPTS_TO_STRIP } from "./desktop.js";
 import { MOBILE_SCRIPTS } from "./mobile-feature.js";
-import { setPackageJsonScript, stripPackageJsonDeps, stripPackageJsonScripts } from "./pkg-json.js";
+import {
+  setPackageJsonScript,
+  stripPackageJsonDeps,
+  stripPackageJsonScripts,
+  unchainScriptSegment,
+} from "./pkg-json.js";
 import { removeIfExists, rewriteFile } from "./starter-files.js";
 
 /** Apply surface-aware pruning to a freshly-copied starter. Mutates
@@ -112,6 +118,13 @@ function pruneToServerOnly(outputDir: string, modifications: string[]): void {
     "test:e2e",
     ...NATIVE_SCRIPTS,
   ]);
+  // `test:unit` chains the desktop suites, whose scripts the strip above just
+  // removed. `pnpm run test:electron` against a missing script exits non-zero,
+  // which would make a backend-only project's `pnpm test` fail on a suite it
+  // does not have.
+  for (const segment of ["test:electron", "test:desktop:release"]) {
+    unchainScriptSegment(outputDir, "test:unit", segment);
+  }
   setPackageJsonScript(outputDir, "dev", "pnpm --filter @starter/server dev");
   setPackageJsonScript(
     outputDir,
@@ -561,7 +574,10 @@ const NEXT_CONFIG_CANDIDATES = [
 ];
 
 const CLIENT_SIDE_TOP_LEVEL = [
-  "electron",
+  // Every path the desktop feature owns, so a backend-only project keeps none
+  // of it. Sourced from scaffold/desktop.ts rather than re-listed here: the
+  // two lists drifted the last time the desktop shell grew files.
+  ...DESKTOP_FILES,
   "ios",
   "android",
   "capacitor.config.ts",
@@ -570,7 +586,6 @@ const CLIENT_SIDE_TOP_LEVEL = [
   "resources",
   "e2e",
   "playwright.config.ts",
-  ".github/workflows/desktop-release.yml",
   ".github/workflows/mobile-release.yml",
   // The mobile build/release tooling. Every one of these drives a
   // `next build` of packages/client, which a backend-only surface has
@@ -590,14 +605,7 @@ const CLIENT_SIDE_TOP_LEVEL = [
  *  mobile half is sourced from the feature manifest so a new script can
  *  never be added in one place and forgotten here. */
 const NATIVE_SCRIPTS = [
-  "dev:desktop",
-  "dev:electron",
-  "build:desktop",
-  "electron:compile",
-  "electron:build",
-  "electron:preview",
-  "typecheck:electron",
-  "icons:desktop",
+  ...DESKTOP_SCRIPTS_TO_STRIP,
   "itch:push:mac",
   "itch:push:win",
   "itch:push:linux",

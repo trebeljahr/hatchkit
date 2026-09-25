@@ -15,7 +15,7 @@
     "build:server": "pnpm --filter @starter/shared run build && pnpm --filter @starter/server run build",
     "build:client": "pnpm --filter @starter/shared run build && pnpm --filter @starter/client run build",
     "test": "pnpm run test:unit && pnpm run test:client && pnpm run test:e2e",
-    "test:unit": "pnpm --filter @starter/server run test",
+    "test:unit": "pnpm --filter @starter/server run test && pnpm run test:electron && pnpm run test:desktop:release",
     "test:client": "pnpm --filter @starter/client run test",
     "test:e2e": "npx playwright test",
     "contract:emit": "pnpm --filter @starter/shared run build && pnpm --filter @starter/server exec tsx src/contract/emit-trpc-contract.ts",
@@ -27,11 +27,11 @@
     "assets:pull": "hatchkit assets pull",
     "typecheck": "pnpm --filter @starter/shared run build && pnpm --filter @starter/core run build && pnpm -r --filter '!@starter/shared' run typecheck && pnpm typecheck:electron",
     "typecheck:electron": "tsc -p electron --noEmit",
-    "dev:desktop": "concurrently -k -n next,electron -c blue,magenta \"pnpm --filter @starter/client dev\" \"wait-on http://localhost:3000 && pnpm electron:compile && electron electron/main.js\"",
-    "build:desktop": "pnpm build:client && pnpm electron:compile",
-    "electron:compile": "tsc -p electron",
-    "electron:build": "pnpm build:desktop && electron-builder",
-    "electron:preview": "pnpm build:desktop && electron-builder --dir",
+    "dev:desktop": "concurrently -k -n next,electron -c blue,magenta \"pnpm --filter @starter/client dev\" \"wait-on http://localhost:3000 && node scripts/ensure-electron.mjs && pnpm electron:compile && ELECTRON_DEV_URL=http://localhost:3000 electron electron/dist/main.js\"",
+    "build:desktop": "node scripts/build-desktop.mjs",
+    "electron:compile": "node scripts/build-desktop.mjs --electron-only",
+    "electron:build": "node scripts/build-desktop.mjs --package",
+    "electron:preview": "node scripts/build-desktop.mjs --package --dir",
     "icons:desktop": "node scripts/icons-desktop.mjs",
     "dev:android": "bash scripts/android-dev.sh",
     "dev:ios": "bash scripts/ios-dev.sh",
@@ -51,18 +51,28 @@
     "newsletter:draft": "tsx scripts/newsletter-draft.ts",
     "newsletter:test-tx": "tsx scripts/newsletter-test-tx.ts",
     "newsletter:welcome": "tsx scripts/newsletter-welcome.ts",
-    "newsletter:verify": "tsx scripts/newsletter-verify.ts"
+    "newsletter:verify": "tsx scripts/newsletter-verify.ts",
+    "electron:ensure": "node scripts/ensure-electron.mjs",
+    "test:electron": "node --import tsx --test \"electron/src/**/*.test.ts\"",
+    "test:desktop:release": "node --test scripts/lib/desktop-release.test.mjs scripts/lib/desktop-rollout.test.mjs",
+    "test:e2e:desktop": "npx playwright test --config e2e/desktop/playwright.config.ts",
+    "test:desktop:linux": "node scripts/desktop-linux-smoke.mjs",
+    "desktop:rollout": "node scripts/desktop-rollout.mjs"
   },
   "devDependencies": {
     "@capacitor/assets": "^3.0.5",
     "@capacitor/cli": "^8.3.4",
+    "@electron/asar": "^3.4.1",
     "@playwright/test": "^1.60.0",
     "@types/node": "^25.8.0",
     "concurrently": "^9.2.1",
     "electron": "^42.1.0",
     "electron-builder": "^26.8.1",
+    "electron-updater": "6.8.9",
+    "esbuild": "^0.28.0",
     "icon-gen": "^5.0.0",
     "mongodb": "^7.2.0",
+    "sharp": "^0.34.5",
     "tsx": "^4.22.0",
     "typescript": "^6.0.3",
     "wait-on": "^9.0.10"
@@ -78,40 +88,5 @@
     "@capacitor/screen-orientation": "^8.0.1",
     "@capacitor/splash-screen": "^8.0.1",
     "@capacitor/status-bar": "^8.0.2"
-  },
-  "build": {
-    "appId": "{{bundleId}}",
-    "productName": "{{productName}}",
-    "directories": {
-      "output": "release",
-      "buildResources": "build"
-    },
-    "files": [
-      "packages/client/out/**/*",
-      "electron/main.js",
-      "electron/preload.js",
-      "electron/package.json"
-    ],
-    "mac": {
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "icon": "build/icon.icns",
-      "category": "public.app-category.utilities"
-    },
-    "win": {
-      "target": [
-        "nsis"
-      ],
-      "icon": "build/icon.ico"
-    },
-    "linux": {
-      "target": [
-        "AppImage"
-      ],
-      "icon": "build/icon.png",
-      "category": "Utility"
-    }
   }
 }

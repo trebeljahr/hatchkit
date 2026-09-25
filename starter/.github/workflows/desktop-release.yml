@@ -1,34 +1,307 @@
 name: Desktop Release
 
-# Triggered by pushing a tag like v0.1.0 or manual dispatch.
-# Each platform job builds an Electron app and uploads the installer as
-# a workflow artifact. Attach those artifacts to a GitHub release, or add
-# a distribution step of your own here.
+# Builds every desktop artifact in one matrix, one leg per channel:
+#
+#   mac          dmg + zip, arm64 and x64, hardened runtime, notarized
+#   win          NSIS installer, x64 + arm64 in one exe
+#   linux-x64    AppImage, deb, rpm and tar.gz
+#   linux-arm64  the same on an arm64 runner
+#
+# Signing fails closed (scripts/lib/desktop-release.mjs, resolveSigning): no
+# secrets for a channel builds an artifact whose file name says -unsigned; a
+# complete set signs and the signature is verified; anything in between fails
+# the leg before the export is built. Every secret below is optional, so a repo
+# that has set none of them still gets a green run and four unsigned builds to
+# test with.
+#
+# A dispatch keeps everything as Actions artifacts. A `v*` tag also runs the
+# `draft-release` job: it attaches the signed downloads and their update feeds
+# (latest-mac.yml, latest.yml, latest-linux*.yml) to a DRAFT GitHub Release.
+# Nothing is published here. Installed apps see a release only once a person
+# publishes the draft, because electron-updater reads the latest PUBLISHED
+# release — publishing is the release decision. Nothing is ever attached to a
+# release that is already published; a rebuild needs a new tag.
+#
+# Staged rollout: the feeds can carry `stagingPercentage`, so only that share of
+# installs is offered the release (docs/desktop.md → "Staged rollout"). The
+# value is the dispatch input, else the repository variable
+# DESKTOP_STAGING_PERCENTAGE, else nothing — every install. It only matters on a
+# tag (a push, or a dispatch run from the tag), because only then is a draft
+# written. `pnpm desktop:rollout` changes it after publishing.
 
 on:
+  # build-desktop.mjs refuses a tag that does not match package.json's version.
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      staging_percentage:
+        description: "Share of installs offered the update, 0-100 (empty: the DESKTOP_STAGING_PERCENTAGE variable, else everybody). Used when run from a v* tag."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+# The API origin the static export is built against: a repository VARIABLE,
+# never a secret. An unset secret expands to "" and would ship an app that talks
+# to no API; the build refuses an empty value instead.
+env:
+  NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
 
 jobs:
+  # Validates the staging percentage in seconds, before the builds: a typo
+  # ("1O") fails here and nothing is built, rather than an hour later in
+  # draft-release. Empty is not a problem; it is a full rollout, and says so in
+  # a notice.
+  rollout:
+    name: staging percentage
+    runs-on: ubuntu-24.04
+    outputs:
+      percentage: ${{ steps.check.outputs.percentage }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # Through the environment, never interpolated into the script: a dispatch
+      # input is free text.
+      - name: Check the staging percentage
+        id: check
+        env:
+          RAW: ${{ inputs.staging_percentage || vars.DESKTOP_STAGING_PERCENTAGE }}
+        run: node scripts/desktop-rollout.mjs --check "$RAW"
+
   build:
+    name: ${{ matrix.channel }}
+    needs: rollout
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            target: mac
-            artifact-glob: "release/*.zip"
-          - os: windows-latest
-            target: win
-            artifact-glob: "release/*.exe"
-          - os: ubuntu-latest
-            target: linux
-            artifact-glob: "release/*.AppImage"
+          - channel: mac
+            signing-channel: mac
+            os: macos-latest
+            builder: --mac --arm64 --x64
+            artifacts: |
+              release/*.dmg
+              release/*.zip
+              release/*.blockmap
+              release/latest-mac.yml
+          - channel: win
+            signing-channel: win
+            os: windows-latest
+            builder: --win --x64 --arm64
+            artifacts: |
+              release/*.exe
+              release/*.blockmap
+              release/latest.yml
+          - channel: linux-x64
+            signing-channel: linux
+            os: ubuntu-24.04
+            builder: --linux --x64
+            artifacts: |
+              release/*.AppImage
+              release/*.deb
+              release/*.rpm
+              release/*.tar.gz
+              release/latest-linux.yml
+          - channel: linux-arm64
+            signing-channel: linux
+            os: ubuntu-24.04-arm
+            builder: --linux --arm64
+            artifacts: |
+              release/*.AppImage
+              release/*.deb
+              release/*.rpm
+              release/*.tar.gz
+              release/latest-linux-arm64.yml
 
     runs-on: ${{ matrix.os }}
 
+    # Job-level, so a step's `if:` can read them (a step's own `env:` is not in
+    # scope for its `if:`). Each channel sees only its own certificate:
+    # electron-builder reads CSC_LINK on macOS and falls back to it on Windows.
+    # The names on the right are the repository secrets; every one of them may
+    # be unset, which builds -unsigned (docs/desktop.md → "Desktop release").
+    env:
+      CSC_LINK: ${{ matrix.channel == 'mac' && secrets.MAC_CSC_LINK || '' }}
+      CSC_KEY_PASSWORD: ${{ matrix.channel == 'mac' && secrets.MAC_CSC_KEY_PASSWORD || '' }}
+      # The App Store Connect API key the iOS release uses notarizes too. It is
+      # decoded to a file below; APPLE_API_KEY is that file's path.
+      APPLE_API_KEY_BASE64: ${{ matrix.channel == 'mac' && secrets.APPLE_API_KEY_BASE64 || '' }}
+      APPLE_API_KEY_ID: ${{ matrix.channel == 'mac' && secrets.APPLE_API_KEY_ID || '' }}
+      APPLE_API_ISSUER: ${{ matrix.channel == 'mac' && secrets.APPLE_API_ISSUER_ID || '' }}
+      WIN_CSC_LINK: ${{ matrix.channel == 'win' && secrets.WIN_CSC_LINK || '' }}
+      WIN_CSC_KEY_PASSWORD: ${{ matrix.channel == 'win' && secrets.WIN_CSC_KEY_PASSWORD || '' }}
+      AZURE_TENANT_ID: ${{ matrix.channel == 'win' && secrets.AZURE_TENANT_ID || '' }}
+      AZURE_CLIENT_ID: ${{ matrix.channel == 'win' && secrets.AZURE_CLIENT_ID || '' }}
+      AZURE_CLIENT_SECRET: ${{ matrix.channel == 'win' && secrets.AZURE_CLIENT_SECRET || '' }}
+      AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ matrix.channel == 'win' && secrets.AZURE_TRUSTED_SIGNING_ENDPOINT || '' }}
+      AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ matrix.channel == 'win' && secrets.AZURE_TRUSTED_SIGNING_ACCOUNT || '' }}
+      AZURE_TRUSTED_SIGNING_PROFILE: ${{ matrix.channel == 'win' && secrets.AZURE_TRUSTED_SIGNING_PROFILE || '' }}
+      AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ matrix.channel == 'win' && secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME || '' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # No `version:` input: pnpm/action-setup reads `packageManager` from
+      # package.json, and refuses a run that names the version twice.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Node 26's electron download leaves a truncated binary.
+          node-version: 24
+          cache: pnpm
+
+      - name: Check the API origin
+        shell: bash
+        run: |
+          if [ -z "${NEXT_PUBLIC_API_URL:-}" ]; then
+            echo "::error::Set the NEXT_PUBLIC_API_URL repository variable (gh variable set NEXT_PUBLIC_API_URL)."
+            echo "::error::Next inlines it at build time; an empty value ships an app that reaches no API."
+            exit 1
+          fi
+
+      - name: Decode the Apple API key
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          if [ -n "$APPLE_API_KEY_BASE64" ]; then
+            printf '%s' "$APPLE_API_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+            echo "APPLE_API_KEY=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+          fi
+
+      # Decides signed or unsigned before anything slow runs, with the same
+      # function build-desktop.mjs calls. A partial set fails here.
+      - name: Check the signing secrets
+        id: signing
+        shell: bash
+        run: node scripts/desktop-signing-mode.mjs ${{ matrix.signing-channel }}
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      # rpm packages need rpmbuild. AppImage, deb and tar.gz need nothing.
+      - name: Install Linux packaging tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+
+      # One script, the same one `pnpm electron:build` runs: export into
+      # out-desktop (the API URL is asserted in a chunk), bundle electron/src,
+      # icons, electron-builder with --publish never, then the asar listing and
+      # the version inside every package against package.json — and, on a tag,
+      # the tag against package.json.
+      - name: Build and package
+        shell: bash
+        run: node scripts/build-desktop.mjs --package ${{ matrix.builder }}
+
+      # An unsigned leg must say so in every file a person could download, and a
+      # signed leg must not. The names come from DESKTOP_TARGET, which
+      # build-desktop.mjs sets from the same decision as the step above.
+      - name: Check the artifact names match the signing
+        if: matrix.signing-channel != 'linux'
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(release/*.dmg release/*.zip release/*.exe)
+          [ ${#files[@]} -gt 0 ] || { echo "::error::No installer was written."; exit 1; }
+          for f in "${files[@]}"; do
+            case "$f" in
+              *-unsigned.*)
+                [ "${{ steps.signing.outputs.mode }}" = "unsigned" ] || {
+                  echo "::error::$f is named unsigned in a signed build"; exit 1; } ;;
+              *)
+                [ "${{ steps.signing.outputs.mode }}" = "signed" ] || {
+                  echo "::error::$f is not named -unsigned but nothing signed it"; exit 1; } ;;
+            esac
+          done
+
+      # ── Signature verification ─────────────────────────────────────
+      - name: Verify the Developer ID signature and notarization
+        if: matrix.channel == 'mac' && steps.signing.outputs.mode == 'signed'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # -print0, because productName may contain a space.
+          find release -maxdepth 2 -type d -name "*.app" -path "release/mac*" -print0 |
+            while IFS= read -r -d "" app; do
+              codesign --verify --deep --strict --verbose=2 "$app"
+              codesign -dv "$app" 2>&1 | grep -q "flags=0x10000(runtime)"
+              spctl --assess --type execute --verbose=2 "$app"
+              xcrun stapler validate "$app"
+            done
+          # The dmg itself is not signed (electron-builder's dmg.sign defaults to
+          # false); what Gatekeeper checks is the stapled app inside it.
+
+      - name: Verify the Windows signature
+        if: matrix.channel == 'win' && steps.signing.outputs.mode == 'signed'
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -Last 1
+          if (-not $signtool) { throw "signtool.exe not found" }
+          $files = @(Get-ChildItem release -Filter *.exe) +
+            @(Get-ChildItem release -Recurse -Filter *.exe | Where-Object { $_.Directory.Name -like "*unpacked" })
+          foreach ($f in $files) {
+            & $signtool.FullName verify /pa /v $f.FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool verify failed for $($f.FullName)" }
+          }
+
+      # ── Checksums and upload ───────────────────────────────────────
+      - name: Write checksums
+        shell: bash
+        run: |
+          shopt -s nullglob
+          cd release
+          files=(*.dmg *.zip *.exe *.AppImage *.deb *.rpm *.tar.gz)
+          if [ ${#files[@]} -gt 0 ]; then
+            if command -v sha256sum >/dev/null; then
+              sha256sum "${files[@]}" > SHA256SUMS-${{ matrix.channel }}.txt
+            else
+              shasum -a 256 "${files[@]}" > SHA256SUMS-${{ matrix.channel }}.txt
+            fi
+            cat SHA256SUMS-${{ matrix.channel }}.txt
+          fi
+
+      # The name is what desktop-release-draft.mjs reads the leg's channel and
+      # mode from: desktop-<channel>-<mode>.
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.channel }}-${{ steps.signing.outputs.mode }}
+          path: |
+            ${{ matrix.artifacts }}
+            release/SHA256SUMS-${{ matrix.channel }}.txt
+          if-no-files-found: error
+
+  # ── Draft GitHub Release (tags only) ─────────────────────────────────
+  # Runs only when every leg succeeded. scripts/desktop-release-draft.mjs
+  # decides what is attached (lib/desktop-release.mjs → releasePlan): signed mac
+  # and win downloads, every Linux download, and each feed, after checking that
+  # every file a feed names is attached with the sha512 and the size it states.
+  # `-unsigned` files and store packages are never attached; an unsigned mac or
+  # win leg is a warning on the run, so the person publishing sees which
+  # platform has no download this time.
+  draft-release:
+    name: draft release
+    if: github.ref_type == 'tag'
+    needs: [rollout, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+      # Normalised by the rollout job: a number from 0 to 99, or empty for every
+      # install (100 is written as no key; scripts/lib/desktop-rollout.mjs).
+      STAGING_PERCENTAGE: ${{ needs.rollout.outputs.percentage }}
     steps:
       - uses: actions/checkout@v4
 
@@ -39,24 +312,50 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      # For electron-updater's js-yaml, which reads the feeds as the app does.
       - name: Install deps
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
-      - name: Build client static export
-        run: pnpm build:client
-        env:
-          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
-
-      - name: Compile Electron
-        run: pnpm electron:compile
-
-      - name: Package (electron-builder)
-        run: pnpm exec electron-builder --${{ matrix.target }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: desktop-${{ matrix.target }}
-          path: ${{ matrix.artifact-glob }}
+          pattern: desktop-*
+          path: artifacts
+
+      # Writes stagingPercentage into each feed, then checks the rewritten feeds
+      # against the attached files the same way as the originals.
+      - name: Collect the release files
+        run: node scripts/desktop-release-draft.mjs --artifacts artifacts --out release-files --staging-percentage "$STAGING_PERCENTAGE"
+
+      - name: Refuse a release that is already published
+        shell: bash
+        run: |
+          if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$draft" != "true" ]; then
+              echo "::error::$TAG is already published. Tag a new version instead of rebuilding a published release."
+              exit 1
+            fi
+            echo "exists=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Create or update the draft
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          name=$(node -p "require('./package.json').productName || require('./package.json').name")
+          if [ -n "$STAGING_PERCENTAGE" ]; then
+            offered="$STAGING_PERCENTAGE % of the installed copies that update themselves (a staged rollout; \`pnpm desktop:rollout $TAG <percent>\` changes it)"
+          else
+            offered="every installed copy that updates itself"
+          fi
+          printf '%s %s.\n\nSee CHANGELOG.md for what changed. Publishing this release offers it to %s.\n' \
+            "$name" "$version" "$offered" > notes.md
+          if [ "${exists:-}" = "true" ]; then
+            # A re-dispatch with another staging percentage rewrites the feeds;
+            # the notes must name the same share.
+            gh release upload "$TAG" release-files/* --clobber
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" release-files/* --draft --verify-tag --title "$name $version" --notes-file notes.md
+          fi
+          echo "Draft: $(gh release view "$TAG" --json url --jq .url)"

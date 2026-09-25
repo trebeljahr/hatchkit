@@ -42,8 +42,10 @@ const ORIGINS_BY_FEATURE: Record<(typeof NATIVE_CLIENT_FEATURES)[number], readon
   // invalidates the trust list at once, in one step, with no migration
   // path for either.
   mobile: ["capacitor://localhost", "https://localhost"],
-  // Electron: the custom `app` protocol registered in electron/main.ts.
-  // file:// sends `Origin: null`, which must never be trusted.
+  // Electron: the privileged `app` scheme registered in
+  // electron/src/protocol.ts, whose host is `-`. file:// sends
+  // `Origin: null`, which must never be trusted — and which no trust list
+  // can match anyway, so a file:// shell cannot be fixed from this side.
   desktop: ["app://-"],
 };
 

@@ -2864,6 +2864,23 @@ async function handleCreate(): Promise<void> {
       chalk.yellow("\n  Next (desktop): replace build/icon.png with a 512×512 logo, then:"),
     );
     console.log(chalk.dim("    pnpm icons:desktop     # cross-platform (icon-gen)"));
+    console.log(
+      chalk.dim("    NEXT_PUBLIC_API_URL=… pnpm electron:preview   # unpacked app in release/"),
+    );
+    const ids = config.identifiers;
+    if (ids) {
+      const origin = `${ids.desktopOrigin.scheme}://${ids.desktopOrigin.host}`;
+      console.log(
+        chalk.yellow("\n  Desktop names that are permanent once you ship a version to anyone:"),
+      );
+      console.log(
+        chalk.dim(
+          `    origin ${origin}, profile directory "${ids.slug}", env vars ${ids.envPrefix}_*.\n` +
+            "    They key local storage, the single-instance lock and the server's TRUSTED_ORIGINS,\n" +
+            "    so changing one later strands every installed copy. See docs: Desktop App.",
+        ),
+      );
+    }
   }
 
   if (config.features.includes("desktop") || config.features.includes("mobile")) {

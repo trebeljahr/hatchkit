@@ -1,0 +1,246 @@
+---
+title: Desktop App
+description: The Electron shell hatchkit scaffolds — its permanent origin, its build, its headless contract, and how it releases and updates.
+---
+
+`hatchkit create --features desktop` (or `hatchkit update` on an existing
+project) adds an Electron shell around the Next.js client's static export. The
+Express server stays remote; the app talks to it over HTTPS.
+
+Everything below is generated into the project. Read
+[Signing](/docs/signing) for the credential side, which is a separate command.
+
+## Two names you can never change again
+
+Two identifiers are resolved once at scaffold time — with every other project
+identifier, and frozen in `.hatchkit.json` (see
+[the identifier block](/docs/commands)) — and become part of the app's contract
+the moment a version reaches anyone.
+
+| identifier | example | what it keys |
+| --- | --- | --- |
+| app origin | `app://-` | `localStorage`, IndexedDB, cookies, and every server's `TRUSTED_ORIGINS` entry |
+| profile directory | the project slug, under the OS app-data path | the on-disk profile and the single-instance lock |
+
+Changing either one after a release orphans both sides at once: installed
+copies wake up with an empty store, and the server answers their sign-in with
+403 because the origin it trusts no longer exists. There is no migration —
+the old data is under a different origin, which the new build cannot read.
+
+The origin is `app://-` for every hatchkit project and lives in
+`packages/shared/src/desktop-bridge.ts`. The profile directory is the project
+slug, written into `electron/src/profile.ts` rather than left to Electron,
+which derives it from `productName` else `name` — so adding a `productName`
+later would move every installed copy to an empty profile on its own.
+
+The environment-variable prefix (`<PREFIX>_HEADLESS`,
+`<PREFIX>_USER_DATA_DIR`, `<PREFIX>_DISABLE_UPDATES`) comes from the same
+frozen block and is likewise part of the contract, because scripts, CI and
+agents set it by name. Hatchkit stamps all of them in; nothing is re-derived at
+a later call site, because two rules for one permanent name is how a signing
+step ends up offering a bundle id that disagrees with the project's own files.
+
+### Why not `file://`
+
+A `file://` document's origin is the string `null`. No trust list can match
+it, so sign-in fails; and it has no root, so root-absolute `/_next/...`
+resolves against the filesystem root and every route but the first renders
+blank. The scaffold therefore registers `app` as a privileged standard scheme
+and serves the export from it.
+
+`app://-` is added to the server's `TRUSTED_ORIGINS` automatically — see
+[Native client origins](/docs/commands#native-client-origins).
+
+## Building
+
+```bash
+NEXT_PUBLIC_API_URL=https://api.example.com pnpm build:desktop     # export + bundles
+NEXT_PUBLIC_API_URL=https://api.example.com pnpm electron:preview  # + unpacked app in release/
+pnpm dev:desktop                                                   # Next dev server + a window
+pnpm electron:ensure                                               # download the Electron binary
+```
+
+One script, `scripts/build-desktop.mjs`, does the whole desktop build, and it
+refuses rather than producing an app that fails later:
+
+- `NEXT_PUBLIC_API_URL` is required. Next.js inlines `NEXT_PUBLIC_*` at build
+  time and a static export has no runtime environment, so a missing value
+  builds green and ships a binary pointing at nothing.
+- The URL literal must actually appear in an emitted chunk. A value that was
+  read but inlined nowhere is the same dead binary with a passing build log.
+- No HTML may contain `"./_next`. A relative asset prefix resolves against the
+  current directory, so nested routes look for their chunks in the wrong place.
+- It will not run while a dev server owns the client build directory.
+
+The desktop export has its own directory, `packages/client/out-desktop`, so a
+web or mobile build can never be packaged by mistake.
+
+## What is in the package
+
+`electron/src` is bundled by esbuild into `electron/dist/main.js` and
+`preload.js`. The packaged file list is exactly `package.json`,
+`electron/dist/` and `packages/client/out-desktop/`, with an explicit
+`!node_modules/**`: electron-builder adds production dependencies whatever the
+`files` list says. The build lists the archive afterwards and fails on
+anything unexpected.
+
+## The security baseline
+
+All of it is in `electron/src/security.ts`, and each rule fails quietly if it
+is removed:
+
+- navigation and `window.open` never leave the app origin; http(s) goes to the
+  OS browser,
+- no embedded web views,
+- every permission request is denied except notifications,
+- a Content-Security-Policy **response header** on HTML only, so the web
+  export's HTML stays byte-identical,
+- dev tools off, and no Reload or Toggle DevTools menu item, outside dev,
+- the runtime fuses set: `RunAsNode`, `NODE_OPTIONS` and CLI `--inspect` off,
+  asar integrity and load-only-from-asar on.
+
+Every IPC handler is registered through one helper that refuses a sender frame
+outside the app origin. The preload is attached per window, not per URL, so a
+window that ever showed another page would otherwise still hold a working
+bridge.
+
+**The inspector fuse blocks the usual test launcher.** The CLI-inspect fuse means Playwright's `_electron.launch` **cannot drive a
+packaged build** — it needs `--inspect` and times out. Drive a packaged build
+with `--remote-debugging-port` and `chromium.connectOverCDP`, or use the
+end-to-end harness, which runs the same `electron/dist/main.js` unpackaged.
+
+## The headless contract
+
+Tests and agents set `<PREFIX>_HEADLESS=1`. The app then runs, loads and
+answers IPC, and touches nothing the person at the keyboard would notice:
+
+- the window is never shown and never focused, and on macOS there is no Dock
+  icon and no activation,
+- no tray icon, no OS-level global shortcut, no notification, no login item,
+- Chromium's mock keychain, so no real credential item is created,
+- external opens are recorded instead of performed,
+- a separate profile, so a test run cannot touch the installed app's data.
+
+Every refused effect is recorded on `globalThis.__desktopTestHooks` — a
+refusal that leaves no trace is indistinguishable from a feature that silently
+stopped working, and a packaged build has no inspector to ask.
+
+**Reading a frame back out of a hidden window is per platform.** On macOS the
+window keeps a compositor surface whatever its ordering, so `page.screenshot()`
+and `capturePage()` work in a headless run. On X11 an unmapped window has no
+surface to copy from: the capture is queued, never answered, and the caller
+hangs until it times out. So the paint assertion is skipped on Linux, and the
+containerised Linux smoke test runs the window **shown** under Xvfb instead —
+which is what proves the app renders there at all.
+
+## One instance per profile
+
+`requestSingleInstanceLock`: a second launch focuses the first and exits. The
+lock lives in the profile, so an unpackaged dev run gets its own
+(`<slug>-dev`) and never fights the installed app. `<PREFIX>_USER_DATA_DIR`
+moves the profile and the lock together; the end-to-end harness gives every
+launch a fresh one through it.
+
+## Tray and global shortcuts
+
+Both are views of renderer state. The renderer publishes what the tray should
+draw — including every already-translated string — and commands come back the
+same way. A main-process copy of the app's state drifts the moment a renderer
+action fails, and the menu bar keeps showing the old answer.
+
+The accelerator grammar is shared between the main process and the settings
+screen (`packages/shared/src/desktop-shortcuts.ts`), so a chord the recorder
+produces is exactly a chord the main process accepts. One default ships,
+`CommandOrControl+Alt+Shift+Space`; the other actions start unbound, because a
+global shortcut is taken from every other application on the machine.
+
+## Updates
+
+Only direct downloads update themselves: the signed macOS build, the NSIS
+installer and the AppImage, and only when the build carries an
+`app-update.yml`. The stores, Snap, Flatpak, deb, rpm and tar.gz never load
+electron-updater at all — their package manager owns the files.
+
+The feed is **explicitly `null`** wherever there is none. Left undefined,
+electron-builder guesses a GitHub feed from `GH_TOKEN`, which every CI runner
+has.
+
+Nothing ever restarts on the person's behalf. A download installs on quit, and
+`quitAndInstall` has exactly one call site, reached only from a click. A unit
+test greps the source to keep it that way — a restart nobody asked for loses
+whatever they were typing.
+
+`<PREFIX>_DISABLE_UPDATES=1` turns the updater off for a managed machine.
+
+## Releasing
+
+```bash
+pnpm desktop:rollout v1.4.0 25   # offer a published release to 25% of installs
+```
+
+One workflow, `.github/workflows/desktop-release.yml`, builds every channel.
+
+- **Signing fails closed.** No credentials for a channel produces files marked
+  `-unsigned`; a *partial* credential set refuses before the build rather than
+  emitting something half-signed.
+- **A tag produces a draft release, and a person publishes it.** electron-updater
+  reads only published releases, so publishing is the release decision. Every
+  file a feed names is checked against its sha512 and its size before it is
+  attached, and `-unsigned` files and store packages never are.
+- **A staged rollout is one rewritten line per feed.** `stagingPercentage` is
+  edited as text and the rewrite refuses if anything else changed, so the feed's
+  hash and size stay byte-identical. `100` removes the key — an explicit 100
+  excludes one installation id in 2^32.
+
+Nothing rolls an update back. Fix forward.
+
+## Proving it runs
+
+```bash
+pnpm test:electron        # unit tests over electron/src
+pnpm test:e2e:desktop     # Playwright harness, own API
+pnpm test:desktop:linux   # containerised smoke test under Xvfb
+```
+
+The Linux smoke test is the proof that the app renders on Linux: it builds for
+the Docker daemon's architecture, starts the app in a container under Xvfb and
+saves a screenshot.
+
+The end-to-end harness proves authentication from the **server** side. A
+recorder preloaded into the harness API logs every request's origin, client
+header, authentication scheme and whether a cookie was present. That is how
+"the desktop app signs in with a bearer token and no cookie" stays a fact
+rather than an intention — the harness's own calls carry a distinct
+user-agent, so they are excluded from the assertions.
+
+## What the renderer still has to do
+
+The shell is complete; the page inside it is not wired to the shell, because
+the generated app has no opinion about what its tray items or its primary
+action mean. Three pieces belong to the project:
+
+- **Sign-in** reads the bearer token from `electronAPI.secureStore` and sends
+  `credentials: "omit"` from the desktop shell, so the API's cookie never lands
+  in Chromium's jar. A second, silent credential would mask a broken bearer
+  path — the harness asserts no cookie was sent precisely to catch that.
+- **Tray state** is published with `electronAPI.desktop.publishTrayState(...)`
+  whenever it changes, with every label already translated, and commands come
+  back through `onCommand`.
+- **The server** needs `app://-` in `TRUSTED_ORIGINS` and a bearer plugin on
+  its auth handler.
+
+Until that lands, `e2e/desktop/shell.spec.ts` passes — it proves the app boots,
+serves from `app://-` and honours the headless contract — while
+`sign-in.spec.ts` and `tray.spec.ts` fail, because there is nothing on the page
+for them to drive. They ship as the specification of what to build.
+
+## Adding it to an existing project
+
+```bash
+hatchkit update
+```
+
+Pick `desktop` from the feature list. The add is additive: files already in
+the project are never overwritten, so a customised `electron/` survives. The
+run also offers to add `app://-` to `TRUSTED_ORIGINS` on the server's Coolify
+application, which is where production actually reads it.

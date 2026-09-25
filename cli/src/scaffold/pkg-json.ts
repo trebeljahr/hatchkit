@@ -66,6 +66,29 @@ export function unchainTypecheckScript(outputDir: string): void {
   writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
 }
 
+/** Drop a `pnpm run <name>` segment from another script's `&&` chain.
+ *
+ *  A chained script that calls one the strip removed does not fail quietly:
+ *  `pnpm run test:electron` on a project with no such script exits non-zero,
+ *  so a backend-only scaffold's `pnpm test` is red on a suite it was never
+ *  meant to run. Deletes the host script outright when nothing is left. */
+export function unchainScriptSegment(outputDir: string, host: string, segment: string): void {
+  const path = join(outputDir, "package.json");
+  if (!existsSync(path)) return;
+  const pkg = JSON.parse(readFileSync(path, "utf-8"));
+  if (!pkg.scripts?.[host]) return;
+  const seg = `\\s*pnpm\\s+run\\s+${segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*`;
+  let script: string = pkg.scripts[host];
+  script = script
+    .replace(new RegExp(`&&${seg}`), "")
+    .replace(new RegExp(`${seg}&&`), "")
+    .replace(new RegExp(seg), "")
+    .trim();
+  if (script) pkg.scripts[host] = script;
+  else delete pkg.scripts[host];
+  writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
+}
+
 /** Set (or clear) the `description` field on the root `package.json`.
  *  Passing an empty string deletes the field so we don't ship an empty
  *  description through to npm metadata. */

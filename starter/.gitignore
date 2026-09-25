@@ -6,10 +6,9 @@ dist/
 .next/
 .turbo/
 
-# Electron compiled output (source is electron/*.ts; compiled JS is generated)
-electron/main.js
-electron/preload.js
-electron/*.js.map
+# Electron bundle: esbuild turns electron/src/*.ts into electron/dist/main.js
+# and electron/dist/preload.js (scripts/build-desktop.mjs). Covered by the
+# `dist/` rule above, which matches at any depth.
 
 # Electron-builder release artifacts
 release/
@@ -66,11 +65,16 @@ android/local.properties
 # still builds — unsigned.
 android/app/release.keystore
 
-# Next.js static export output. One directory per shell on purpose — a
-# shared one means a Playwright run can silently be installed as the app.
+# Next.js static export output. One directory per shell on purpose — a shared
+# one means a Playwright run can silently be installed as the app, and each
+# export bakes in its own NEXT_PUBLIC_API_URL, so packaging whatever happens to
+# be in out/ ships an app bound to the wrong server.
+# out/         — the web build (`pnpm build:client`) and Playwright
+# out-desktop/ — the Electron export (`pnpm build:desktop`)
+# out-mobile/  — the Capacitor export (`pnpm build:mobile`)
 packages/client/out/
-packages/client/out-mobile/
 packages/client/out-desktop/
+packages/client/out-mobile/
 
 # Environment (committed: .env.example, .env.development, AND
 #              .env.production — because production values are

@@ -136,13 +136,21 @@ export function stripNativeStylesFromGlobals(outputDir: string): void {
  *
  *  The generated config keeps the starter's NEXT_PUBLIC_API_URL guard
  *  (see starter/packages/client/next.config.ts). It has to: this file
- *  REPLACES the starter's, and a static export has no runtime env and no
- *  usable same-origin fallback (the desktop shell serves the export from
- *  `file://`, whose origin is opaque). Without the guard `pnpm
- *  build:desktop` succeeds with no API URL and ships a binary that fails
- *  on its first request — a build-time error turned into a runtime one.
- *  The guard is skipped under `next dev`, where the dev server proxies
- *  `/api` and the export path is never taken. */
+ *  REPLACES the starter's, and a static export has no runtime env — the
+ *  value is inlined by `next build` and nothing downstream can repair it.
+ *  Without the guard `pnpm build:desktop` succeeds with no API URL and
+ *  ships a binary that installs fine and fails on its first request — a
+ *  build-time error turned into a runtime one. The guard is skipped under
+ *  `next dev`, where the dev server proxies `/api` and the export path is
+ *  never taken.
+ *
+ *  There is deliberately no `assetPrefix`, for either shell. Every native
+ *  shell serves the export from an origin with a real root (`app://-` for
+ *  Electron, `capacitor://localhost` and `https://localhost` for Capacitor),
+ *  so root-absolute `/_next/...` resolves. A relative `"./"` prefix resolves
+ *  against the current directory instead, so a nested route looks for its
+ *  chunks under that route's folder and renders blank. Both build scripts
+ *  refuse any emitted HTML containing `"./_next`. */
 export function flipNextConfigToStaticExport(
   outputDir: string,
   opts: { wantsMobile?: boolean } = {},
@@ -173,9 +181,6 @@ export function flipNextConfigToStaticExport(
   const staticExportConfig = `import type { NextConfig } from "next";
 
 const isDev = process.env.NODE_ENV === "development";
-// Electron resolves the export through its own app:// scheme and is happy
-// with a relative asset prefix; Capacitor is not (see assetPrefix below).
-const isElectronBuild = process.env.ELECTRON_BUILD === "1";
 
 // Each native shell gets its OWN export directory, named by the build script
 // that writes it:
@@ -196,11 +201,11 @@ const exportDir = process.env.NEXT_EXPORT_DIR || "out";
 
 // This client always builds as a static export: the bundle ships inside the
 // desktop/mobile shell and the Express server is always remote. Next.js
-// inlines NEXT_PUBLIC_* at BUILD time, and a shell loading the export from
-// file:// has an opaque origin — there is no same-origin fallback and no
-// container env to repair the value later. A build without NEXT_PUBLIC_API_URL
-// therefore produces a binary that installs fine and fails on every request,
-// so fail loudly here instead. Set it as env on the build step in
+// inlines NEXT_PUBLIC_* at BUILD time, and the shell serves the export from
+// its own origin (app://- for Electron), so there is no same-origin fallback
+// and no container env to repair the value later. A build without
+// NEXT_PUBLIC_API_URL therefore produces a binary that installs fine and
+// fails on every request, so fail loudly here instead. Set it as env on the build step in
 // .github/workflows/desktop-release.yml / mobile-release.yml (and on any local \`pnpm build:desktop\`).
 // \`next dev\` is exempt: it proxies /api to the dev server.
 if (!isDev && !process.env.NEXT_PUBLIC_API_URL) {
@@ -215,13 +220,6 @@ if (!isDev && !process.env.NEXT_PUBLIC_API_URL) {
 const nextConfig: NextConfig = {
   output: "export",
   distDir: exportDir,
-  // A relative asset prefix rewrites every \`/_next/...\` reference to
-  // \`./_next/...\`, which resolves against the CURRENT path. It works for a
-  // single-page load and breaks every nested route the moment the WebView is
-  // at \`/app/settings/\`. Electron's app:// handler resolves relative paths
-  // itself, so it can keep it; Capacitor cannot, and scripts/build-mobile.mjs
-  // fails the build when it finds \`"./_next\` in any emitted HTML.
-  ...(isElectronBuild ? { assetPrefix: "./" as const } : {}),
   trailingSlash: true,
   images: { unoptimized: true },
   transpilePackages: [${transpileList}],${allowedDevOrigins}
@@ -254,7 +252,6 @@ const STARTER_DEFAULT_FRONTEND_URL = "http://localhost:3000";
  *    • packages/client/Dockerfile             (ENV PORT, EXPOSE)
  *    • docker-compose.yml                      (server PORT env)
  *    • scripts/dev.mjs                         (fixed-mode defaults)
- *    • electron/main.ts                        (DEV_URL fallback)
  *    • scripts/android-dev.sh + ios-dev.sh    (NEXT_PORT default)
  *    • package.json dev:desktop script        (Next port + wait-on)
  */
@@ -372,12 +369,15 @@ export function applyPorts(
   // Native HMR port — only wired when desktop or mobile is selected.
   if (nativeHmr === undefined) return;
 
-  rewriteFile(join(outputDir, "electron/main.ts"), (c) =>
-    c.replace(
-      /const DEV_URL = process\.env\.ELECTRON_DEV_URL \|\| "http:\/\/localhost:\d+"/,
-      `const DEV_URL = process.env.ELECTRON_DEV_URL || "http://localhost:${nativeHmr}"`,
-    ),
-  );
+  // Electron has no port of its own to rewrite. The main process reads
+  // ELECTRON_DEV_URL and nothing else (electron/src/main.ts), and a packaged
+  // app ignores even that, so the only place the dev port appears is the
+  // `dev:desktop` script set at the end of this function.
+
+  // Electron has no port of its own to rewrite. The main process reads
+  // ELECTRON_DEV_URL and nothing else (electron/src/main.ts), and a packaged
+  // app ignores even that, so the only place the dev port appears is the
+  // `dev:desktop` script set at the end of this function.
 
   for (const script of ["scripts/android-dev.sh", "scripts/ios-dev.sh"]) {
     rewriteFile(join(outputDir, script), (c) =>
@@ -394,8 +394,9 @@ export function applyPorts(
       "dev:desktop",
       `concurrently -k -n next,electron -c blue,magenta ` +
         `"PORT=${nativeHmr} pnpm --filter ${clientPkgName} dev" ` +
-        `"wait-on http://localhost:${nativeHmr} && pnpm electron:compile && ` +
-        `ELECTRON_DEV_URL=http://localhost:${nativeHmr} electron electron/main.js"`,
+        `"wait-on http://localhost:${nativeHmr} && node scripts/ensure-electron.mjs && ` +
+        `pnpm electron:compile && ` +
+        `ELECTRON_DEV_URL=http://localhost:${nativeHmr} electron electron/dist/main.js"`,
     );
   }
 }

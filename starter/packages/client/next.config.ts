@@ -3,10 +3,6 @@ import type { NextConfig } from "next";
 
 const isDev = process.env.NODE_ENV === "development";
 const isExport = process.env.NEXT_FILE_EXPORT === "1";
-// Electron resolves the export through a custom app:// scheme and is happy
-// with a relative asset prefix; Capacitor is not (see below).
-const isElectronBuild = process.env.ELECTRON_BUILD === "1";
-
 // Each native shell gets its OWN export directory, named by the build
 // script that writes it:
 //
@@ -52,14 +48,15 @@ const nextConfig: NextConfig = {
           // Static export for the native shells.
           output: "export" as const,
           distDir: exportDir,
-          // A relative asset prefix rewrites every `/_next/...` reference
-          // to `./_next/...`, which resolves against the CURRENT path. It
-          // works for a single-page load and breaks every nested route the
-          // moment the WebView is at `/app/settings/`. Electron's app://
-          // handler resolves relative paths itself, so it can keep it;
-          // Capacitor cannot, and build-mobile.mjs fails the build when it
-          // finds `"./_next` in any emitted HTML.
-          ...(isElectronBuild ? { assetPrefix: "./" } : {}),
+          // No `assetPrefix`, for either shell. A relative prefix rewrites
+          // every `/_next/...` reference to `./_next/...`, which resolves
+          // against the CURRENT path: it works for a single-page load and
+          // breaks every nested route the moment the WebView sits at
+          // `/app/settings/`. Electron is not exempt — `app://-` has a real
+          // root and `electron/src/resolve-app-path.ts` resolves a request
+          // path literally, so `./_next/...` from a nested route would be
+          // looked up under that route's own folder and 404. Both build
+          // scripts refuse any emitted HTML containing `"./_next`.
         }
       : {
           // Standalone build for the web server image (Coolify Dockerfile).

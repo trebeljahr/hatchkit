@@ -17,15 +17,18 @@ import { createAuthClient } from "better-auth/react";
 //   3. window.location.origin — the browser same-origin case. This preserves
 //      the intent of the old "" fallback (same-origin /api paths, matching
 //      trpc.ts) for web deploys that front client and API with one proxy.
-//      Skipped when the document has an OPAQUE origin: the desktop shell
-//      loads the static export with `win.loadFile()` (electron/main.ts), so
-//      the document is `file://` and `window.location.origin` is the literal
-//      string "null". That is not a usable base — `${"null"}/api/auth` is
-//      relative and better-auth's `new URL()` rejects it — and no server
-//      would trust `Origin: null` with credentials anyway. Such a build is
-//      already broken (it shipped without NEXT_PUBLIC_API_URL, which
-//      next.config.ts fails the build over); falling through keeps the
-//      failure a plain unreachable-host error instead of a URL parse throw.
+//      Skipped when the document has an OPAQUE origin, which serializes to
+//      the literal string "null". That is not a usable base —
+//      `${"null"}/api/auth` is relative and better-auth's `new URL()` rejects
+//      it — and no server would trust `Origin: null` with credentials anyway.
+//      Falling through keeps the failure a plain unreachable-host error
+//      instead of a URL parse throw.
+//
+//      The desktop shell never reaches this step. It serves the export from
+//      `app://-` (electron/src/protocol.ts), whose origin is real but hosts no
+//      API, and the export is built with NEXT_PUBLIC_API_URL — which
+//      `scripts/build-desktop.mjs` requires and next.config.ts fails the build
+//      over — so step 1 answers first.
 //   4. A throwaway absolute origin for Node prerender, where `window` is
 //      undefined (and for the opaque-origin case above). Nothing ever fetches
 //      from it during prerender: rendering produces markup only, and no auth

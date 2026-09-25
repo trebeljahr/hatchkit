@@ -51,6 +51,12 @@ import {
   upgradeWorkflowNativeOriginCheck,
 } from "./deploy-verification.js";
 import {
+  DESKTOP_DEV_DEPS,
+  DESKTOP_FILES,
+  DESKTOP_SCRIPTS,
+  substituteDesktopFiles,
+} from "./desktop.js";
+import {
   type ProjectIdentifiers,
   legacyIdentifiers,
   substituteIdentifierTokens,
@@ -638,30 +644,24 @@ async function addDesktop(
   manifest: ProjectManifest,
 ): Promise<void> {
   console.log(chalk.dim("\n  Adding desktop (Electron)..."));
-  copyFromStarter(resolvedStarter, projectDir, "electron");
+  // One list, shared with the scaffold's strip branch (scaffold/desktop.ts),
+  // so a file added to the starter reaches `hatchkit update` too. It used to
+  // reach only a fresh `hatchkit create`, and the gap showed up as a build
+  // that failed on somebody else's machine.
+  for (const rel of DESKTOP_FILES) copyFromStarter(resolvedStarter, projectDir, rel);
   copyFromStarter(resolvedStarter, projectDir, "build");
-  copyFromStarter(resolvedStarter, projectDir, "packages/client/src/types/electron.d.ts");
-  copyFromStarter(resolvedStarter, projectDir, ".github/workflows/desktop-release.yml");
 
-  // Merge package.json: pick up desktop scripts + build block + deps.
+  // The manifest's frozen identifiers, never a fresh derivation: the profile
+  // directory, the env-var prefix and the bundle id are contracts the moment
+  // anything is stored or published, so an older project keeps the names it
+  // already has (scaffold/identifiers.ts).
+  const identifiers = identifiersFor(manifest);
+  substituteDesktopFiles(projectDir, identifiers);
+
+  // Merge package.json: pick up the desktop scripts and dev dependencies.
   const starterPkg = readJson(join(resolvedStarter, "package.json"));
   const projectPkgPath = join(projectDir, "package.json");
   const projectPkg = readJson(projectPkgPath);
-  const identifiers = identifiersFor(manifest);
-  const DESKTOP_SCRIPTS = [
-    "dev:desktop",
-    "dev:electron",
-    "build:desktop",
-    "electron:compile",
-    "electron:build",
-    "electron:preview",
-    "typecheck:electron",
-    "icons:desktop",
-    "itch:push:mac",
-    "itch:push:win",
-    "itch:push:linux",
-  ];
-  const DESKTOP_DEPS = ["electron", "electron-builder", "icon-gen", "wait-on"];
 
   projectPkg.scripts = projectPkg.scripts ?? {};
   for (const name of DESKTOP_SCRIPTS) {
@@ -669,21 +669,41 @@ async function addDesktop(
   }
 
   projectPkg.devDependencies = projectPkg.devDependencies ?? {};
-  for (const name of DESKTOP_DEPS) {
+  for (const name of DESKTOP_DEV_DEPS) {
     if (starterPkg.devDependencies?.[name]) {
       projectPkg.devDependencies[name] = starterPkg.devDependencies[name];
     }
   }
 
-  // electron-builder `build` block — only adopt it if the project
-  // doesn't already have one the user may have edited.
-  if (!projectPkg.build && starterPkg.build) {
-    projectPkg.build = JSON.parse(
-      substituteIdentifierTokens(JSON.stringify(starterPkg.build), identifiers),
+  writeFileSync(projectPkgPath, JSON.stringify(projectPkg, null, 2) + "\n", "utf-8");
+
+  // The electron-builder configuration is `electron-builder.config.mjs`, and
+  // `scripts/build-desktop.mjs` passes it with an explicit `--config`. A
+  // project scaffolded before that file existed also carries a `build` block in
+  // its package.json, which the build no longer reads. Left unmentioned it is
+  // the worst kind of stale config: someone edits the icon or the targets
+  // there and the packaged app does not change. It is not removed here — it
+  // may have been hand-edited, and that is the owner's to move.
+  if (projectPkg.build) {
+    console.log(chalk.yellow("\n  This project still has a `build` block in package.json."));
+    console.log(
+      chalk.dim(
+        "    electron-builder now reads electron-builder.config.mjs, which the build\n" +
+          "    passes with --config, so that block is ignored. Move anything you changed\n" +
+          "    in it into the new file, then delete it.",
+      ),
     );
   }
 
-  writeFileSync(projectPkgPath, JSON.stringify(projectPkg, null, 2) + "\n", "utf-8");
+  console.log(
+    chalk.dim(
+      `    Profile directory "${identifiers.slug}", origin ` +
+        `${identifiers.desktopOrigin.scheme}://${identifiers.desktopOrigin.host} and the ` +
+        `${identifiers.envPrefix}_* environment\n` +
+        "    variables are part of this app's contract from the first release: they key\n" +
+        "    local storage, the single-instance lock and the server's TRUSTED_ORIGINS.",
+    ),
+  );
 
   // Chain electron typecheck into the root `typecheck` if present
   // and not already chained.
