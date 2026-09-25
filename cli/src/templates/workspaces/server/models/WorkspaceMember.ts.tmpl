@@ -14,7 +14,7 @@
  */
 
 import mongoose, { Schema, type Document } from "mongoose";
-import { WORKSPACE_ROLES, type WorkspaceRole } from "@starter/shared";
+import { WORKSPACE_ROLES, type WorkspaceRole } from "@starter/shared/membership.js";
 
 export interface IWorkspaceMember extends Document {
   workspaceId: string;

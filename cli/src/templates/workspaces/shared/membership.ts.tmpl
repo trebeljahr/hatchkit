@@ -10,6 +10,16 @@
  * Nothing here talks to a database. The rules are pure functions so the
  * tRPC router, the REST router and the realtime fan-out all reach the same
  * verdict from the same inputs.
+ *
+ * IMPORT THIS MODULE DIRECTLY — `@starter/shared/membership.js`, never the
+ * `@starter/shared` barrel. The shared package has no `"type": "module"`,
+ * so tsc emits CommonJS and tsx transpiles its sources the same way; a
+ * name re-exported through the barrel's `export *` then arrives as a
+ * CommonJS star re-export, which Node cannot analyse statically. The
+ * import compiles, and fails at RUN time with "does not provide an export
+ * named ..." — under `node --import tsx --test`, which is how the server's
+ * own tests run. A deep import is one module with its own exports and has
+ * no such problem. `cli/test-workspaces.ts` pins this.
  */
 
 /* ── Roles ──────────────────────────────────────────────────────────── */

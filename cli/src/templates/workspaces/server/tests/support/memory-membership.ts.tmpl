@@ -36,7 +36,7 @@ import {
   capabilitiesForRole,
   normalizeRole,
   type WorkspaceMembership,
-} from "@starter/shared";
+} from "@starter/shared/membership.js";
 import { WorkspaceMember } from "../../models/WorkspaceMember.js";
 
 /* ── The seeded fixture ─────────────────────────────────────────────── */
@@ -538,11 +538,22 @@ export function installMemoryMembership(): MemoryMembership {
   };
   const connection = mongoose.connection as unknown as Record<string, unknown>;
   const originalDbDescriptor = Object.getOwnPropertyDescriptor(connection, "db");
-  Object.defineProperty(connection, "db", {
-    value: databaseFake,
-    configurable: true,
-    writable: true,
-  });
+  try {
+    // `defineProperty` rather than assignment, so this works whether
+    // mongoose exposes `db` as a plain field or as an accessor.
+    Object.defineProperty(connection, "db", {
+      value: databaseFake,
+      configurable: true,
+      writable: true,
+    });
+  } catch {
+    connection.db = databaseFake;
+  }
+  if (connection.db !== databaseFake) {
+    throw new Error(
+      "[memory-membership] could not substitute mongoose.connection.db — the tests would silently run against a real connection",
+    );
+  }
 
   /* The WorkspaceMember model's statics. */
   const model = WorkspaceMember as unknown as Record<string, unknown>;

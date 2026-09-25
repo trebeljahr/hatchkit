@@ -18,7 +18,7 @@
  */
 
 import type { Redis } from "ioredis";
-import { INVITES_PER_INVITER_PER_HOUR, MEMBERSHIP_REFUSALS } from "@starter/shared";
+import { INVITES_PER_INVITER_PER_HOUR, MEMBERSHIP_REFUSALS } from "@starter/shared/membership.js";
 import { getRedis } from "../../db/redis.js";
 import { tooManyRequests } from "./errors.js";
 

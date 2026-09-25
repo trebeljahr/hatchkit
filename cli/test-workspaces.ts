@@ -783,6 +783,28 @@ await test("safe-next is the only thing that validates a redirect target", () =>
   }
 });
 
+await test("the contract is imported deep, never through the shared barrel", () => {
+  const offenders: string[] = [];
+  for (const [dest, body] of rendered) {
+    if (/from "@starter\/shared";/.test(code(body))) offenders.push(dest);
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "these import the @starter/shared BARREL:\n  " +
+      offenders.join("\n  ") +
+      "\nThe shared package emits CommonJS, so a name re-exported through the barrel's " +
+      "`export *` is not statically analysable. The import compiles and then fails at run " +
+      'time with "does not provide an export named ..." under `node --import tsx --test`, ' +
+      "which is how the generated server's own tests run. Import " +
+      '"@starter/shared/membership.js" instead.',
+  );
+
+  // …and the contract must actually be reachable at that specifier.
+  const contract = WORKSPACE_FILES.find((f) => f.dest.endsWith("shared/src/membership.ts"));
+  assert.ok(contract, "the contract must ship as packages/shared/src/membership.ts");
+});
+
 /* ── Summary ─────────────────────────────────────────────────────────── */
 
 console.log("\n=== SUMMARY (workspaces) ===");

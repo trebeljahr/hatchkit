@@ -24,7 +24,7 @@ import {
   canSeeRecordOf,
   projectRecord,
   type WorkspaceMembership,
-} from "@starter/shared";
+} from "@starter/shared/membership.js";
 import {
   setMembershipPublisher,
   type MembershipEvent,
@@ -307,6 +307,16 @@ export function installMembershipPublisher(): void {
       return;
     }
 
-    fanOut(event.workspaceId, { kind: "membership.changed", actorId: event.actorId });
+    const changed = { kind: "membership.changed", actorId: event.actorId };
+    fanOut(event.workspaceId, changed);
+
+    // A direct addressee, when the service named one. Somebody who has
+    // just accepted an invitation was not in the workspace a moment ago,
+    // so the fan-out above — which reads memberships fresh — may have
+    // been computed before their row existed. Without this their own
+    // screen keeps showing the workspace they were in before.
+    if (event.recipientId) {
+      publishToUser(event.recipientId, event.workspaceId, changed);
+    }
   });
 }

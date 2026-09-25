@@ -20,7 +20,7 @@
 import type { Express, NextFunction, Request, Response } from "express";
 import { fromNodeHeaders } from "better-auth/node";
 import { z } from "zod";
-import { ASSIGNABLE_ROLES } from "@starter/shared";
+import { ASSIGNABLE_ROLES } from "@starter/shared/membership.js";
 import { getAuth } from "../auth/auth.js";
 import { env } from "../config/env.js";
 import {
@@ -122,6 +122,19 @@ type ScopedHandler = (args: {
 }) => Promise<void>;
 
 /**
+ * Express 5 types a route parameter as `string | string[]` — a wildcard
+ * segment can legitimately match several. None of these routes use a
+ * wildcard, so the array case cannot arise, but reading `req.params.x`
+ * raw would either not compile or need a cast at five call sites. Take
+ * the first value: an id is one value, and an array here would be a
+ * routing mistake, not input worth honouring.
+ */
+function param(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) return value[0] ?? "";
+  return value ?? "";
+}
+
+/**
  * The REST half of rule 6. The tenant id comes from the PATH — REST has
  * no session-scoped "current workspace" and should not invent one — and
  * it is resolved through the SAME `resolveWorkspaceForRequest` the tRPC
@@ -136,7 +149,7 @@ function scoped(handle: ScopedHandler) {
   return authed(async ({ req, res, user }) => {
     const actor = await resolveWorkspaceForRequest({
       userId: user.id,
-      requestedWorkspaceId: req.params.workspaceId,
+      requestedWorkspaceId: param(req.params.workspaceId),
     });
     await handle({ req, res, user, actor });
   });
@@ -224,7 +237,7 @@ export function registerWorkspaceRoutes(app: Express): void {
       const body = parseBody(updateMemberBody, req, res);
       if (!body) return;
 
-      const targetUserId = req.params.userId;
+      const targetUserId = param(req.params.userId);
       let member: MemberView | null = null;
 
       if (body.role !== undefined) {
@@ -256,7 +269,7 @@ export function registerWorkspaceRoutes(app: Express): void {
   app.delete(
     "/api/workspaces/:workspaceId/members/:userId",
     scoped(async ({ req, res, actor }) => {
-      await removeMember({ actor, targetUserId: req.params.userId });
+      await removeMember({ actor, targetUserId: param(req.params.userId) });
       res.status(204).end();
     }),
   );
@@ -294,7 +307,7 @@ export function registerWorkspaceRoutes(app: Express): void {
   app.delete(
     "/api/workspaces/:workspaceId/invitations/:invitationId",
     scoped(async ({ req, res, actor }) => {
-      await cancelInvitation({ actor, invitationId: req.params.invitationId });
+      await cancelInvitation({ actor, invitationId: param(req.params.invitationId) });
       res.status(204).end();
     }),
   );
