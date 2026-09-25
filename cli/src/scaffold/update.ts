@@ -78,7 +78,7 @@ function identifiersFor(manifest: ProjectManifest): ProjectIdentifiers {
 }
 
 /** Features that `update` knows how to layer onto an existing project. */
-const SUPPORTED_ADDITIONS: readonly Feature[] = ["desktop", "mobile"];
+const SUPPORTED_ADDITIONS: readonly Feature[] = ["desktop", "mobile", "release"];
 
 export interface UpdateResult {
   added: Feature[];
@@ -248,7 +248,15 @@ export async function runUpdate(
     );
   }
 
-  const allOptions: Feature[] = ["websocket", "stripe", "analytics", "s3", "desktop", "mobile"];
+  const allOptions: Feature[] = [
+    "websocket",
+    "stripe",
+    "analytics",
+    "s3",
+    "desktop",
+    "mobile",
+    "release",
+  ];
   const desired =
     options.presets?.desiredFeatures ??
     (await multiselect<Feature>({
@@ -344,6 +352,9 @@ export async function runUpdate(
         } else if (feature === "mobile") {
           await addMobile(projectDir, resolvedStarter, manifest);
           updatedFeatures.add("mobile");
+        } else if (feature === "release") {
+          await addRelease(projectDir, manifestDir, manifest, [...updatedFeatures, ...added]);
+          updatedFeatures.add("release");
         }
       }
       actuallyAdded = added;
@@ -366,6 +377,18 @@ export async function runUpdate(
     }
   } else {
     console.log(chalk.dim("\n  No new features to add."));
+  }
+
+  // A project that already had `release` and gained a surface in this
+  // run needs its channels re-derived — the whole point of the feature
+  // is that it knows which surfaces the project has. Re-running is safe
+  // (see features/release/writer.ts), so this needs no confirmation.
+  if (
+    updatedFeatures.has("release") &&
+    !actuallyAdded.includes("release") &&
+    actuallyAdded.length > 0
+  ) {
+    await addRelease(projectDir, manifestDir, manifest, [...updatedFeatures]);
   }
 
   // Apply local-dev opt-in (if user said yes earlier). Calls the same
@@ -471,6 +494,51 @@ export async function runUpdate(
     removed,
     localDevEnabled,
   };
+}
+
+/** Apply the `release` feature through the feature contract.
+ *
+ *  Safe to call on a project that already has it: every write goes
+ *  through {@link FeatureLedger}, which compares before it writes, so a
+ *  re-run on an unchanged project reports nothing as written. That is
+ *  what lets this also run when some OTHER feature was added — the
+ *  release config has to be re-derived then, because the whole point of
+ *  the feature is that it knows which surfaces the project has.
+ *
+ *  `features` is passed in rather than read from the manifest because
+ *  the manifest is not written until later in the run, and re-deriving
+ *  channels from a stale feature list would miss the surface that was
+ *  just added. */
+async function addRelease(
+  projectDir: string,
+  manifestDir: string,
+  manifest: ProjectManifest,
+  features: readonly Feature[],
+): Promise<void> {
+  console.log(chalk.dim("\n  Adding release coordination..."));
+  const { FeatureLedger } = await import("../features/contract.js");
+  const { releaseFeature, configFor, releaseAudit } = await import("../features/release/index.js");
+
+  const ledger = new FeatureLedger(projectDir, false);
+  ledger.scopeTo("release");
+  const ctx = {
+    projectDir,
+    manifestDir,
+    manifest: { ...manifest, features: [...features] as Feature[] },
+    identifiers: identifiersFor(manifest),
+    mode: "update" as const,
+    ledger,
+    log: (message: string) => console.log(chalk.dim(message)),
+  };
+
+  await releaseFeature.apply(ctx);
+
+  const audit = releaseAudit(ctx, configFor(ctx));
+  for (const file of audit.written) console.log(chalk.green(`    \u2713 ${file}`));
+  for (const conflict of audit.conflicts) {
+    console.log(chalk.yellow(`    \u21bb ${conflict}`));
+  }
+  for (const note of audit.manualResidue) console.log(chalk.dim(`    \u2022 ${note}`));
 }
 
 /** True when the project's recorded email intent points at the

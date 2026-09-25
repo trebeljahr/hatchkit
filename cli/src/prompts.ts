@@ -80,7 +80,21 @@ export type GpuPlatform = "modal" | "runpod" | "hf" | "replicate";
  *                  server to consume them. */
 export type Surface = "fullstack" | "split" | "backend" | "static";
 
-export type Feature = "websocket" | "stripe" | "analytics" | "s3" | "desktop" | "mobile";
+export type Feature =
+  | "websocket"
+  | "stripe"
+  | "analytics"
+  | "s3"
+  | "desktop"
+  | "mobile"
+  /** Release coordination across every surface the project ships from
+   *  one version tag: one version with a test that every copy matches,
+   *  a cut command, a status table, a policy check that refuses the
+   *  combinations known to ship something wrong, a summary workflow, a
+   *  cross-version compatibility workflow, and generated credential
+   *  docs. Purely additive — it reads the other features to decide
+   *  which channels exist, and adds nothing to the runtime. */
+  | "release";
 
 export type AnalyticsProvider = "glitchtip" | "openpanel" | "plausible";
 
@@ -962,6 +976,11 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
               name: "Mobile app (Capacitor / iOS + Android)",
               value: "mobile",
               checked: c.features.includes("mobile"),
+            },
+            {
+              name: "Release coordination (one version across every surface)",
+              value: "release",
+              checked: c.features.includes("release"),
             },
           ],
         });
@@ -1987,6 +2006,11 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
           name: "mobile (Capacitor wrapper)",
           value: "mobile",
           checked: cfg.features.includes("mobile"),
+        },
+        {
+          name: "release (one version across every surface)",
+          value: "release",
+          checked: cfg.features.includes("release"),
         },
       ],
     });

@@ -20,6 +20,7 @@ const TOP_LEVEL = [
   "server",
   "add",
   "assets",
+  "release",
   "keys",
   "config",
   "completion",
@@ -46,6 +47,7 @@ const CONFIG_ADD = [
   "stripe",
 ] as const;
 
+const RELEASE_SUB = ["plan", "cut", "status", "check"] as const;
 const CONFIG_SUB = ["add", "reset"] as const;
 const KEYS_SUB = ["show", "set", "rotate", "push"] as const;
 const SERVER_SUB = ["add"] as const;
@@ -94,6 +96,9 @@ ${TOP_LEVEL.map((c) => `    '${c}:${topDesc(c)}'`).join("\n")}
         assets)
           _values 'assets subcommand' ${ASSETS_SUB.map((s) => `'${s}'`).join(" ")}
           ;;
+        release)
+          _values 'release subcommand' ${RELEASE_SUB.map((s) => `'${s}'`).join(" ")}
+          ;;
         completion)
           _values 'shell' ${SHELLS.map((s) => `'${s}'`).join(" ")}
           ;;
@@ -131,6 +136,7 @@ _hatchkit_complete() {
   local keys_sub="${KEYS_SUB.join(" ")}"
   local server_sub="${SERVER_SUB.join(" ")}"
   local assets_sub="${ASSETS_SUB.join(" ")}"
+  local release_sub="${RELEASE_SUB.join(" ")}"
   local shells="${SHELLS.join(" ")}"
   local providers="${CONFIG_ADD.join(" ")}"
 
@@ -160,6 +166,11 @@ _hatchkit_complete() {
     assets)
       if [[ $cword -eq 2 ]]; then
         COMPREPLY=( $(compgen -W "$assets_sub" -- "$cur") )
+      fi
+      ;;
+    release)
+      if [[ $cword -eq 2 ]]; then
+        COMPREPLY=( $(compgen -W "$release_sub" -- "$cur") )
       fi
       ;;
     completion)
@@ -207,6 +218,9 @@ function fish(): string {
   for (const s of ASSETS_SUB) {
     lines.push(`complete -c hatchkit -n "__fish_seen_subcommand_from assets" -a "${s}"`);
   }
+  for (const s of RELEASE_SUB) {
+    lines.push(`complete -c hatchkit -n "__fish_seen_subcommand_from release" -a "${s}"`);
+  }
   for (const s of SHELLS) {
     lines.push(`complete -c hatchkit -n "__fish_seen_subcommand_from completion" -a "${s}"`);
   }
@@ -240,6 +254,8 @@ function topDesc(cmd: string): string {
       return "Provision GlitchTip / OpenPanel / Plausible / Resend / email / search services";
     case "assets":
       return "Move bytes between local S3 and prod buckets";
+    case "release":
+      return "Coordinate one version across every surface";
     case "keys":
       return "Manage per-project dotenvx private keys";
     case "config":

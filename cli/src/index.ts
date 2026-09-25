@@ -32,6 +32,7 @@ import {
 } from "./deploy/keys.js";
 import { handleCreateFailure, runRollback } from "./deploy/rollback.js";
 import { requireCloudflareZoneForTerraform, runTerraform } from "./deploy/terraform.js";
+import { printReleaseUsage } from "./features/release/command.js";
 import { type HelpTopic, helpTopicForCommand, isHelpRequest } from "./help-routing.js";
 import {
   type GpuPlatform,
@@ -333,6 +334,12 @@ async function main(): Promise<void> {
     }
     case "dns": {
       await handleDns();
+      break;
+    }
+    case "release": {
+      const { handleReleaseCommand } = await import("./features/release/command.js");
+      const code = await handleReleaseCommand(args.slice(1));
+      if (code !== 0) process.exit(code);
       break;
     }
     case "plausible": {
@@ -3109,6 +3116,9 @@ function printCommandHelp(cmd: string | undefined): void {
     case "signing":
       printSigningUsage();
       return;
+    case "release":
+      printReleaseUsage();
+      return;
     case "ses":
       printSesUsage();
       return;
@@ -4531,6 +4541,7 @@ function printHelp(topic?: HelpTopic): void {
     rename-project  Change a scaffolded project's slug (rewrites manifest/pkg.json/tfvars/env/ledger)
     set-description Update a project's description across manifest, package.json, Coolify, GitHub
     sync            Push the manifest's domain/ports onto the matching Coolify app(s)
+    release         Coordinate one version across every surface (plan/cut/status/check)
     gh-pages        Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
     dns             DNS reconciliation helpers (publish, link-to-cloudflare)
     plausible       Plausible site helpers (rename — domain change with history kept)

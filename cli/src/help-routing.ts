@@ -63,8 +63,8 @@ export function isHelpRequest(argv: readonly string[]): boolean {
   return argv.some((arg) => arg === "--help" || arg === "-h");
 }
 
-/* Commands whose help is a `printHelp` topic. `provision`, `signing`
- * and `ses` are absent deliberately: they print their own usage blocks,
+/* Commands whose help is a `printHelp` topic. `provision`, `signing`,
+ * `release` and `ses` are absent deliberately: they print their own usage blocks,
  * which `index.ts` routes to. Anything unmapped falls back to the root
  * help, which is the right answer for a typo'd command. */
 const HELP_TOPIC_BY_COMMAND: Readonly<Record<string, HelpTopic>> = {

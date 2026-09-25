@@ -577,8 +577,40 @@ async function runScaffoldSteps(
   const manifestDir = config.projectSubdir
     ? resolve(outputDir, ...config.projectSubdir.split("/").map(() => ".."))
     : outputDir;
-  writeManifest(manifestDir, toManifest({ ...config, identifiers }, ports, getCliVersion()));
+  const manifest = toManifest({ ...config, identifiers }, ports, getCliVersion());
+  writeManifest(manifestDir, manifest);
   modifications.push(".hatchkit.json (project manifest)");
+
+  // Features whose files are NOT in the starter have to be applied here.
+  // `create` works by copying the starter and subtracting, which covers
+  // every feature that ships source; `release` ships none — it generates
+  // a picture of the surfaces this project ended up with, which cannot
+  // exist in a template because it depends on the answers given above.
+  //
+  // It runs last on purpose: by this point the strip phase has settled
+  // which surfaces are really present, so what it derives matches the
+  // tree that was actually written.
+  if (config.features.includes("release")) {
+    const { FeatureLedger } = await import("../features/contract.js");
+    const { releaseFeature } = await import("../features/release/index.js");
+    const ledger = new FeatureLedger(outputDir, false);
+    ledger.scopeTo("release");
+    await releaseFeature.apply({
+      projectDir: outputDir,
+      manifestDir,
+      manifest,
+      identifiers,
+      mode: "create",
+      ledger,
+      log: () => {},
+    });
+    for (const file of ledger.summary().written) modifications.push(file);
+    for (const conflict of ledger.conflicts()) {
+      modifications.push(
+        `release: not applied — ${conflict.file}: ${conflict.detail ?? "conflict"}`,
+      );
+    }
+  }
 
   // Read every identifier copy back off disk and check it agrees with
   // the manifest. The bundle id and the launcher label each live in up
@@ -941,6 +973,15 @@ function scaffoldDryRun(config: ProjectConfig, outputDir: string): string[] {
   if (!config.features.includes("mobile")) actions.push("Remove mobile (Capacitor) scaffolding");
   if (config.features.includes("desktop") || config.features.includes("mobile")) {
     actions.push("Flip next.config.ts to output: 'export' (static)");
+  }
+  // One line rather than the twelve files the feature writes: this list
+  // is the hand-maintained parallel the feature contract warns about, so
+  // it says that the feature runs and leaves the file-by-file account to
+  // the ledger, which is derived from the real apply.
+  if (config.features.includes("release")) {
+    actions.push(
+      "Apply release coordination (release config, scripts, summary + compat workflows, docs)",
+    );
   }
   if (config.mlServices.length === 0) {
     actions.push("Remove ML playground, router, types");

@@ -67,6 +67,7 @@ export const KNOWN_FEATURES: readonly Feature[] = [
   "s3",
   "desktop",
   "mobile",
+  "release",
 ];
 export const KNOWN_ML_SERVICES: readonly MlService[] = [
   "3d-sam-objects",
