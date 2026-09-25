@@ -40,6 +40,13 @@ import {
 } from "./deploy-verification.js";
 import { type DotenvxSeedResult, seedDotenvxProduction } from "./dotenvx.js";
 import { applyE2eS3Gate } from "./e2e-s3.js";
+import { collectIdentifierMismatches, formatIdentifierMismatches } from "./identifier-agreement.js";
+import {
+  type ProjectIdentifiers,
+  assertIdentifiers,
+  resolveIdentifiers,
+  substituteIdentifierTokens,
+} from "./identifiers.js";
 import { MANIFEST_FILENAME, toManifest, writeManifest } from "./manifest.js";
 import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
 import {
@@ -56,6 +63,7 @@ import {
   flipNextConfigToStaticExport,
   removeIfExists,
   replaceInFile,
+  rewriteFile,
   stripMobileBridgeFromLayout,
   updateEnvExample,
 } from "./starter-files.js";
@@ -192,6 +200,33 @@ async function runScaffoldSteps(
 ): Promise<ScaffoldResult> {
   const modifications: string[] = [];
 
+  // Resolve the project's permanent identifiers ONCE, before anything is
+  // written. Every name that ends up in a bundle id, a storage key, a
+  // header, a client id, a database or an env var comes from here — see
+  // `cli/src/scaffold/identifiers.ts` for why re-deriving them at each
+  // use site is the bug this replaced.
+  const identifiers: ProjectIdentifiers =
+    config.identifiers ??
+    resolveIdentifiers({
+      name: config.name,
+      productName: config.productName,
+      shortName: config.shortName,
+      orgDomain: config.orgDomain,
+    });
+  for (const warning of assertIdentifiers(identifiers)) {
+    modifications.push(`identifiers: ${warning.field} — ${warning.message}`);
+  }
+
+  // The web app manifest carries the two display names the browser and
+  // the "add to home screen" flow read. It is also one of the four
+  // places the launcher label lives (with the Capacitor config and the
+  // two native trees), which is why the agreement check below reads it
+  // back rather than trusting this write.
+  rewriteFile(join(outputDir, "packages/client/public/manifest.json"), (c) =>
+    substituteIdentifierTokens(c, identifiers),
+  );
+  modifications.push("packages/client/public/manifest.json (display names)");
+
   // Rename the project in package.json
   replaceInFile(join(outputDir, "package.json"), "node-realtime-starter", config.name);
   modifications.push("package.json (renamed project)");
@@ -286,21 +321,19 @@ async function runScaffoldSteps(
   }
 
   const wantsDesktop = config.features.includes("desktop");
-  const wantsTauri = config.features.includes("desktop-tauri");
   const wantsMobile = config.features.includes("mobile");
-  const bundleId = config.name.replace(/[^a-z0-9]/gi, "").toLowerCase();
 
   // Port assignment — tested-free via isPortFree + persisted into the
   // CLI registry so subsequent scaffolds can't collide.
   const ports = await pickProjectPorts(getUsedPorts(), {
-    nativeHmr: wantsDesktop || wantsTauri || wantsMobile,
+    nativeHmr: wantsDesktop || wantsMobile,
   });
   const claimed = [ports.server, ports.client, ports.nativeHmr].filter(
     (p): p is number => p !== undefined,
   );
   addUsedPorts(claimed);
   reservedPorts.push(...claimed);
-  applyPorts(outputDir, ports, { wantsDesktop, wantsTauri, wantsMobile });
+  applyPorts(outputDir, ports, { wantsDesktop, wantsMobile });
   modifications.push(
     `assigned ports: server=${ports.server} client=${ports.client}` +
       (ports.nativeHmr ? ` native=${ports.nativeHmr}` : ""),
@@ -333,15 +366,10 @@ async function runScaffoldSteps(
   if (!wantsDesktop) {
     removeIfExists(join(outputDir, "electron"));
     removeIfExists(join(outputDir, ".github/workflows/desktop-release.yml"));
-    // build/icon.png is the shared icon source: Electron's `icons:desktop` and
-    // Tauri's `icons:tauri` both read it, so it only goes when neither wrapper
-    // is selected.
-    if (!wantsTauri) {
-      removeIfExists(join(outputDir, "build"));
-    }
+    // build/icon.png is the icon source `icons:desktop` reads; Electron
+    // is the only wrapper that uses it.
+    removeIfExists(join(outputDir, "build"));
     removeIfExists(join(outputDir, "packages/client/src/types/electron.d.ts"));
-    // The icon generator is only wired to `icons:desktop` (Electron);
-    // Tauri regenerates from build/icon.png via its own CLI.
     removeIfExists(join(outputDir, "scripts/icons-desktop.mjs"));
     stripPackageJsonScripts(outputDir, [
       "dev:desktop",
@@ -361,22 +389,7 @@ async function runScaffoldSteps(
     stripPackageJsonDeps(outputDir, ["electron", "electron-builder", "icon-gen", "wait-on"]);
     modifications.push("removed: desktop (Electron) scaffolding");
   } else {
-    replaceInFile(join(outputDir, "package.json"), "{{projectName}}", config.name);
-    replaceInFile(join(outputDir, "package.json"), "{{bundleId}}", bundleId);
-  }
-
-  // Desktop (Tauri) strip / substitute
-  if (!wantsTauri) {
-    removeIfExists(join(outputDir, "src-tauri"));
-    removeIfExists(join(outputDir, ".github/workflows/tauri-release.yml"));
-    stripPackageJsonScripts(outputDir, ["tauri", "dev:tauri", "build:tauri", "icons:tauri"]);
-    stripPackageJsonDeps(outputDir, ["@tauri-apps/cli"]);
-    modifications.push("removed: desktop (Tauri) scaffolding");
-  } else {
-    for (const rel of ["src-tauri/tauri.conf.json", "src-tauri/Cargo.toml"]) {
-      replaceInFile(join(outputDir, rel), "{{projectName}}", config.name);
-      replaceInFile(join(outputDir, rel), "{{bundleId}}", bundleId);
-    }
+    rewriteFile(join(outputDir, "package.json"), (c) => substituteIdentifierTokens(c, identifiers));
   }
 
   // Mobile (Capacitor) strip / substitute
@@ -419,11 +432,12 @@ async function runScaffoldSteps(
     ]);
     modifications.push("removed: mobile (Capacitor) scaffolding");
   } else {
-    replaceInFile(join(outputDir, "capacitor.config.ts"), "{{projectName}}", config.name);
-    replaceInFile(join(outputDir, "capacitor.config.ts"), "{{bundleId}}", bundleId);
+    rewriteFile(join(outputDir, "capacitor.config.ts"), (c) =>
+      substituteIdentifierTokens(c, identifiers),
+    );
   }
 
-  if (wantsDesktop || wantsTauri || wantsMobile) {
+  if (wantsDesktop || wantsMobile) {
     flipNextConfigToStaticExport(outputDir);
     modifications.push("next.config.ts: output 'standalone' → 'export'");
   }
@@ -563,8 +577,22 @@ async function runScaffoldSteps(
   const manifestDir = config.projectSubdir
     ? resolve(outputDir, ...config.projectSubdir.split("/").map(() => ".."))
     : outputDir;
-  writeManifest(manifestDir, toManifest(config, ports, getCliVersion()));
+  writeManifest(manifestDir, toManifest({ ...config, identifiers }, ports, getCliVersion()));
   modifications.push(".hatchkit.json (project manifest)");
+
+  // Read every identifier copy back off disk and check it agrees with
+  // the manifest. The bundle id and the launcher label each live in up
+  // to four files; a strip or a rewrite that misses one produces a
+  // project that builds and then fails at store-upload time with a
+  // message that does not name the file. Reported, not thrown: the
+  // scaffold is already on disk and a warning the user can act on beats
+  // rolling back a working tree.
+  const agreement = collectIdentifierMismatches(outputDir, identifiers);
+  if (agreement.mismatches.length > 0) {
+    for (const line of formatIdentifierMismatches(agreement.mismatches)) {
+      modifications.push(`identifier mismatch: ${line}`);
+    }
+  }
 
   // Subdir-deployed scaffold: relocate the starter's GitHub Actions
   // workflows from inside the subdir up to the enclosing repo's
@@ -910,15 +938,8 @@ function scaffoldDryRun(config: ProjectConfig, outputDir: string): string[] {
   if (!config.features.includes("websocket")) actions.push("Remove WebSocket support");
   if (!config.features.includes("stripe")) actions.push("Remove Stripe integration");
   if (!config.features.includes("desktop")) actions.push("Remove desktop (Electron) scaffolding");
-  if (!config.features.includes("desktop-tauri")) {
-    actions.push("Remove desktop (Tauri) scaffolding");
-  }
   if (!config.features.includes("mobile")) actions.push("Remove mobile (Capacitor) scaffolding");
-  if (
-    config.features.includes("desktop") ||
-    config.features.includes("desktop-tauri") ||
-    config.features.includes("mobile")
-  ) {
+  if (config.features.includes("desktop") || config.features.includes("mobile")) {
     actions.push("Flip next.config.ts to output: 'export' (static)");
   }
   if (config.mlServices.length === 0) {

@@ -79,7 +79,7 @@ export interface WireUpInput {
    *  verbatim to Coolify as `base_directory` on every create + PATCH. */
   baseDirectory?: string;
   /** Project features, read ONLY for their native-client origins
-   *  (mobile / desktop / desktop-tauri). When any are present they are
+   *  (mobile / desktop). When any are present they are
    *  merged into TRUSTED_ORIGINS on the server app after the baseline
    *  env, with the same diff + confirmation `hatchkit sync` shows.
    *  Omit (or pass `[]`) for a project with no server. */
@@ -581,7 +581,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
   }
 
   // ── 5b. Native-client origins. better-auth rejects a Capacitor /
-  //        Electron / Tauri shell's origin with 403 INVALID_ORIGIN
+  //        Electron shell's origin with 403 INVALID_ORIGIN
   //        unless TRUSTED_ORIGINS names it, and an adopted project's
   //        production env may live entirely in Coolify. Merged, confirmed
   //        and read back on the server app — deploy/trusted-origins.ts.

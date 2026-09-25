@@ -11,6 +11,7 @@ import { join } from "node:path";
 import chalk from "chalk";
 import ora from "ora";
 import { ownerFromRemote, repoSlugFromRemote } from "../../deploy/gh-actions-secrets.js";
+import { readManifest } from "../../scaffold/manifest.js";
 import { exec } from "../../utils/exec.js";
 import { provisionAppleForProject } from "./apple.js";
 import { resolveAzureValues, verifyAzureCanList } from "./azure.js";
@@ -69,6 +70,7 @@ export async function runSigningSetup(opts: RunSigningSetupOptions): Promise<Sig
   const stepper = await runSigningStepper({
     projectDir: opts.projectDir,
     projectName: opts.projectName,
+    identifiers: readManifest(opts.projectDir)?.identifiers,
     prefill: {
       ...existingProject,
       bundleId: opts.bundleId ?? existingProject?.bundleId,
@@ -130,7 +132,7 @@ export async function runSigningSetup(opts: RunSigningSetupOptions): Promise<Sig
   }
 
   // 5. Native config rewrites — runs in-place against the user's
-  //    already-scaffolded tauri/capacitor/android/ios files.
+  //    already-scaffolded electron/capacitor/android/ios files.
   const rewrite = rewriteNativeConfigs({
     projectDir: opts.projectDir,
     bundleId: project.bundleId,

@@ -21,7 +21,7 @@ packages:
 # `createExpressMiddleware(...) as RequestHandler` cast in
 # packages/server/src/app.ts fails to compile with TS2352 ("Property 'param' is
 # missing"). The committed lockfile happens to hoist v5, but any scaffold that
-# edits a root manifest — dropping @tauri-apps/cli, say — makes pnpm re-resolve
+# edits a root manifest — dropping @capacitor/cli, say — makes pnpm re-resolve
 # and can flip the slot to v4.
 #
 # Pinning both packages to v5 removes the ambiguity at the source: only one major

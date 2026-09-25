@@ -20,6 +20,7 @@ import {
 } from "./onboarding/plan.js";
 import { type OnboardingStepGroup, runProjectOnboardingReview } from "./onboarding/review.js";
 import type { ProvisionService } from "./provision/index.js";
+import type { ProjectIdentifiers } from "./scaffold/identifiers.js";
 import { CoolifyApi, type CoolifyServer } from "./utils/coolify-api.js";
 import { discoverPublicIps } from "./utils/coolify-server-ips.js";
 import { multiselect } from "./utils/multiselect.js";
@@ -79,25 +80,8 @@ export type GpuPlatform = "modal" | "runpod" | "hf" | "replicate";
  *                  server to consume them. */
 export type Surface = "fullstack" | "split" | "backend" | "static";
 
-export type Feature =
-  | "websocket"
-  | "stripe"
-  | "analytics"
-  | "s3"
-  | "desktop"
-  | "desktop-tauri"
-  | "mobile";
+export type Feature = "websocket" | "stripe" | "analytics" | "s3" | "desktop" | "mobile";
 
-/** The two desktop wrappers are mutually exclusive — both wrap the same
- *  static client export, so stacking two release pipelines on one client
- *  buys nothing. Shared by the interactive flows, the non-interactive
- *  validator, and `hatchkit update`. */
-export function hasConflictingDesktopWrappers(features: readonly Feature[]): boolean {
-  return features.includes("desktop") && features.includes("desktop-tauri");
-}
-
-export const DESKTOP_WRAPPER_CONFLICT_MSG =
-  "Pick one desktop wrapper: desktop (Electron) or desktop-tauri (Tauri + Steamworks), not both.";
 export type AnalyticsProvider = "glitchtip" | "openpanel" | "plausible";
 
 /** Provider for transactional sends (signup confirmations, password
@@ -138,6 +122,27 @@ export type MlService =
 
 export interface ProjectConfig {
   name: string;
+  /** The project's permanent identifier set. Resolved once, by
+   *  `resolveIdentifiers`, and then persisted to the manifest — no
+   *  downstream code re-derives a bundle id, storage prefix or env
+   *  prefix of its own. See `cli/src/scaffold/identifiers.ts`.
+   *
+   *  Optional on the way in: `scaffoldApp` resolves it from `name` +
+   *  the three display/organisation decisions below when a caller did
+   *  not supply one. */
+  identifiers?: ProjectIdentifiers;
+  /** Human display name, e.g. "Track Your Time". Defaults to a
+   *  title-cased `name`. `name` is a slug and is the wrong thing to
+   *  show a user. */
+  productName?: string;
+  /** Home-screen / launcher label, e.g. "Track Time". A separate
+   *  decision from `productName`: launchers elide past ~12 characters,
+   *  so a long product name renders truncated on every device. */
+  shortName?: string;
+  /** Organisation domain in normal order, e.g. "ricoslabs.com". Only
+   *  used to build the reverse-DNS bundle id. Defaults to the
+   *  deliberately-obvious `example.com` placeholder. */
+  orgDomain?: string;
   /** Human-readable one-liner. Written to the root `package.json` and
    *  used as the Coolify project + application description. Empty falls
    *  back to Coolify's built-in default ("Adopted by hatchkit") and
@@ -672,10 +677,6 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
   const nonInteractive = options.nonInteractive ?? false;
   const dryRun = options.dryRun || false;
 
-  if (presets.features && hasConflictingDesktopWrappers(presets.features)) {
-    throw new Error(`--features invalid: ${DESKTOP_WRAPPER_CONFLICT_MSG}`);
-  }
-
   if (!nonInteractive) {
     console.log(chalk.bold("\n  ── New Project ─────────────────────────────────────────────\n"));
   }
@@ -964,38 +965,6 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
             },
           ],
         });
-        // `desktop-tauri` isn't a checkbox here — it's offered by the
-        // follow-up step below when mobile is picked. Carry an earlier
-        // selection through, unless the user just picked the Electron
-        // wrapper (the two are mutually exclusive).
-        const keepTauri = c.features.includes("desktop-tauri") && !features.includes("desktop");
-        const merged: Feature[] = keepTauri ? [...features, "desktop-tauri"] : features;
-        return { ...c, features: merged };
-      },
-    },
-    {
-      name: "Desktop (Tauri) for games",
-      // Offered when mobile (Capacitor) is selected — games on hatchkit
-      // pair the mobile wrapper with a Tauri desktop target (much smaller
-      // binaries than Electron + Steamworks via the Rust side). Skipped
-      // when the Electron wrapper was picked: one desktop wrapper per
-      // project.
-      skip: (c) =>
-        c.deploymentMode === "gh-pages" ||
-        presets.features !== undefined ||
-        !c.features.includes("mobile") ||
-        c.features.includes("desktop"),
-      run: async (c) => {
-        const wantsTauri = await confirm({
-          message:
-            "Add a desktop app via Tauri + Steamworks (smaller binaries than Electron — for games)?",
-          default: c.features.includes("desktop-tauri"),
-        });
-        const features: Feature[] = wantsTauri
-          ? c.features.includes("desktop-tauri")
-            ? c.features
-            : [...c.features, "desktop-tauri"]
-          : c.features.filter((f) => f !== "desktop-tauri");
         return { ...c, features };
       },
     },
@@ -1466,9 +1435,6 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
   }
 
   const features = presets.features ?? [];
-  if (hasConflictingDesktopWrappers(features)) {
-    throw new Error(`--features invalid: ${DESKTOP_WRAPPER_CONFLICT_MSG}`);
-  }
   const analyticsProviders =
     presets.analyticsProviders ??
     (features.includes("analytics") ? ["glitchtip" as const] : undefined);
@@ -1997,45 +1963,33 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     };
   }
   if (section === "features") {
-    let next: Feature[];
-    // Re-prompt until the selection doesn't contain both desktop
-    // wrappers — they're mutually exclusive.
-    for (;;) {
-      next = await multiselect<Feature>({
-        message: "Features:",
-        choices: [
-          {
-            name: "websocket (real-time)",
-            value: "websocket",
-            checked: cfg.features.includes("websocket"),
-          },
-          { name: "stripe (payments)", value: "stripe", checked: cfg.features.includes("stripe") },
-          {
-            name: "analytics (GlitchTip + OpenPanel)",
-            value: "analytics",
-            checked: cfg.features.includes("analytics"),
-          },
-          { name: "s3 (object storage)", value: "s3", checked: cfg.features.includes("s3") },
-          {
-            name: "desktop (Electron wrapper)",
-            value: "desktop",
-            checked: cfg.features.includes("desktop"),
-          },
-          {
-            name: "desktop-tauri (Tauri + Steamworks — for games, pairs with mobile)",
-            value: "desktop-tauri",
-            checked: cfg.features.includes("desktop-tauri"),
-          },
-          {
-            name: "mobile (Capacitor wrapper)",
-            value: "mobile",
-            checked: cfg.features.includes("mobile"),
-          },
-        ],
-      });
-      if (!hasConflictingDesktopWrappers(next)) break;
-      console.log(chalk.yellow(`  ${DESKTOP_WRAPPER_CONFLICT_MSG}`));
-    }
+    const next = await multiselect<Feature>({
+      message: "Features:",
+      choices: [
+        {
+          name: "websocket (real-time)",
+          value: "websocket",
+          checked: cfg.features.includes("websocket"),
+        },
+        { name: "stripe (payments)", value: "stripe", checked: cfg.features.includes("stripe") },
+        {
+          name: "analytics (GlitchTip + OpenPanel)",
+          value: "analytics",
+          checked: cfg.features.includes("analytics"),
+        },
+        { name: "s3 (object storage)", value: "s3", checked: cfg.features.includes("s3") },
+        {
+          name: "desktop (Electron wrapper)",
+          value: "desktop",
+          checked: cfg.features.includes("desktop"),
+        },
+        {
+          name: "mobile (Capacitor wrapper)",
+          value: "mobile",
+          checked: cfg.features.includes("mobile"),
+        },
+      ],
+    });
     let analyticsProviders = cfg.analyticsProviders;
     let provisionServices = cfg.provisionServices;
     if (!next.includes("analytics")) {

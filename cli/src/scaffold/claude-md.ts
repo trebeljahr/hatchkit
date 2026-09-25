@@ -55,7 +55,6 @@ function activeConditions(config: ProjectConfig): Set<string> {
   const server = surfaceHasServer(config.surfaces);
   const client = surfaceHasClient(config.surfaces);
   const desktop = config.features.includes("desktop");
-  const tauri = config.features.includes("desktop-tauri");
   const mobile = config.features.includes("mobile");
   const on: Record<string, boolean> = {
     server,
@@ -68,9 +67,8 @@ function activeConditions(config: ProjectConfig): Set<string> {
     // scripts go regardless of the email choice.
     newsletter: config.email?.mailingList === "listmonk-ses" && config.surfaces !== "static",
     desktop,
-    "desktop-tauri": tauri,
     mobile,
-    native: desktop || tauri || mobile,
+    native: desktop || mobile,
     websocket: config.features.includes("websocket"),
     stripe: config.features.includes("stripe"),
   };

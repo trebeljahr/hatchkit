@@ -12,7 +12,7 @@
 
 Hatchkit turns the messy 2-week ritual of *"start a new product"* into a single guided command. It:
 
-- **Scaffolds** a production-ready full-stack TypeScript app from a batteries-included starter (websockets, Stripe, analytics, S3, native desktop (Electron or Tauri + Steamworks for games) / mobile, auth — pick what you need).
+- **Scaffolds** a production-ready full-stack TypeScript app from a batteries-included starter (websockets, Stripe, analytics, S3, native desktop (Electron) / mobile (Capacitor), auth — pick what you need).
 - **Provisions** observability, email, and analytics clients (GlitchTip, OpenPanel, Plausible, Listmonk + SES) paired per environment.
 - **Deploys** DNS, a VPS, and a Coolify app via Terraform — or pushes to an existing server you already own.
 - **Ships ML** by deploying pre-built GPU services (subtitles, image recognition, background removal, 3D extraction) to Modal, RunPod, Hugging Face, or Replicate.
@@ -59,10 +59,10 @@ New to the CLI? Run `hatchkit explain` for a one-page mental model covering ever
 | `hatchkit doctor` | Health-check every configured provider with a read-only API call + contextual fix hints on failures. |
 | `hatchkit explain` | Print the one-page mental model (concepts, commands, workflow). |
 | `hatchkit create` | Scaffold a new project and optionally deploy it end-to-end. Interactive by default; every prompt has a matching flag, and `--yes` makes it fully non-interactive. |
-| `hatchkit update` | Add features (desktop, desktop-tauri, mobile, …) to a project already scaffolded. |
+| `hatchkit update` | Add features (desktop, mobile, …) to a project already scaffolded. |
 | `hatchkit add <project> [services]` | Provision GlitchTip / OpenPanel / Plausible / Listmonk + SES / email / search clients for an existing project. |
 | `hatchkit signing org-init` | One-time per dev machine — collect Apple Distribution .p12 / App Store Connect API key, Google Play service account JSON, Azure Trusted Signing service principal. |
-| `hatchkit signing apply [project-dir]` | Wire signed installers + store uploads: writes `build-{windows,ios,android}.yml`, rewrites bundle ID in `src-tauri/tauri.conf.json` / `capacitor.config.ts` / `android/app/build.gradle` / `strings.xml` / `MainActivity.java` / `project.pbxproj`, mints the Apple Bundle ID + App record + provisioning profile via the ASC API, generates an Android upload keystore, pushes ~20 GitHub Actions secrets. Idempotent. Same flow runs via `hatchkit add <project> signing`. |
+| `hatchkit signing apply [project-dir]` | Wire signed installers + store uploads: writes `build-{windows,ios,android}.yml`, rewrites bundle ID in `package.json` (electron-builder `build`) / `capacitor.config.ts` / `android/app/build.gradle` / `strings.xml` / `MainActivity.java` / `project.pbxproj`, mints the Apple Bundle ID + App record + provisioning profile via the ASC API, generates an Android upload keystore, pushes ~20 GitHub Actions secrets. Idempotent. Same flow runs via `hatchkit add <project> signing`. |
 | `hatchkit gh-pages` | Wire GitHub Pages for the current repo (static / Vite / Jekyll) with optional custom domain + DNS. |
 | `hatchkit keys show/push <project>` | Read or push the dotenvx private key to Coolify. |
 | `hatchkit config [add/reset]` | Inspect or modify stored provider credentials. |

@@ -2837,22 +2837,7 @@ async function handleCreate(): Promise<void> {
     console.log(chalk.dim("    pnpm icons:desktop     # cross-platform (icon-gen)"));
   }
 
-  if (config.features.includes("desktop-tauri")) {
-    console.log(
-      chalk.yellow("\n  Next (desktop-tauri): replace build/icon.png with a 512×512 logo, then:"),
-    );
-    console.log(chalk.dim("    pnpm icons:tauri       # regenerate src-tauri/icons/"));
-    console.log(chalk.dim("    pnpm dev:tauri         # needs the Rust toolchain (rustup.rs)"));
-    console.log(
-      chalk.dim("  Steam builds: pnpm tauri build -- --features steam  (see src-tauri/README.md)"),
-    );
-  }
-
-  if (
-    config.features.includes("desktop") ||
-    config.features.includes("desktop-tauri") ||
-    config.features.includes("mobile")
-  ) {
+  if (config.features.includes("desktop") || config.features.includes("mobile")) {
     console.log(
       chalk.yellow(
         "\n  Server CORS: native-client origins are in .env.example and, on a Coolify deploy,",
@@ -3440,9 +3425,7 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("What it does:")}
     Reads the project's .hatchkit.json manifest, lets you pick a new
     feature set, and copies the additive pieces from the starter.
-    Currently supported additions: ${chalk.cyan("desktop")}, ${chalk.cyan("desktop-tauri")}, ${chalk.cyan("mobile")}.
-    The two desktop wrappers are mutually exclusive — pick Electron
-    (${chalk.cyan("desktop")}) or Tauri + Steamworks (${chalk.cyan("desktop-tauri")}, for games).
+    Currently supported additions: ${chalk.cyan("desktop")}, ${chalk.cyan("mobile")}.
 
     A native shell loads the client from its own origin, which the
     deployed server rejects (${chalk.dim("403 INVALID_ORIGIN")}) until ${chalk.dim("TRUSTED_ORIGINS")}
@@ -4370,10 +4353,10 @@ function printHelp(topic?: HelpTopic): void {
     --no-native-origins
                    Skip the native-client origins pass.
 
-  ${chalk.bold("Native clients (mobile / desktop / desktop-tauri):")}
-    Capacitor, Electron and Tauri load the client from their own origin
-    (${chalk.dim("capacitor://localhost")}, ${chalk.dim("https://localhost")}, ${chalk.dim("app://-")}, ${chalk.dim("tauri://localhost")},
-    ${chalk.dim("http://tauri.localhost")}). better-auth rejects an untrusted one with
+  ${chalk.bold("Native clients (mobile / desktop):")}
+    Capacitor and Electron load the client from their own origin
+    (${chalk.dim("capacitor://localhost")}, ${chalk.dim("https://localhost")}, ${chalk.dim("app://-")}).
+    better-auth rejects an untrusted one with
     ${chalk.dim("403 INVALID_ORIGIN")} before checking the password. Sync MERGES the ones
     your features need into ${chalk.dim("TRUSTED_ORIGINS")} on the server app: existing
     entries keep their order, nothing is removed, the diff is confirmed

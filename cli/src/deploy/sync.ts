@@ -193,7 +193,7 @@ export interface SyncOptions {
    *  authentication problem that does not exist (deploy/deployed-ref.ts
    *  has the full story). `--no-preflight` proceeds anyway. */
   preflight?: boolean;
-  /** Merge the native clients' origins (mobile / desktop / desktop-tauri
+  /** Merge the native clients' origins (mobile / desktop
    *  features) into TRUSTED_ORIGINS on the server app. Default ON; a
    *  no-op for projects without a native client. `--no-native-origins`
    *  skips it. */
@@ -824,7 +824,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     }
   }
 
-  // ── Pass 4: native-client origins. A Capacitor / Electron / Tauri
+  // ── Pass 4: native-client origins. A Capacitor / Electron
   //    shell loads the client from its own document origin, and
   //    better-auth answers 403 INVALID_ORIGIN for any origin not in
   //    TRUSTED_ORIGINS. Runs after the env pass so it merges into what

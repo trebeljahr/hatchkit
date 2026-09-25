@@ -84,7 +84,7 @@ prompting. That makes `create` CI-safe.
 
 | Flag | Values / effect |
 |---|---|
-| `--features <list>` | `websocket`, `stripe`, `analytics`, `s3`, `desktop`, `desktop-tauri`, `mobile`. Comma-separated; pass empty for none. The two desktop wrappers are mutually exclusive. |
+| `--features <list>` | `websocket`, `stripe`, `analytics`, `s3`, `desktop`, `mobile`. Comma-separated; pass empty for none. |
 | `--analytics-providers <list>` | `glitchtip`, `openpanel`, `plausible` |
 | `--services <list>` | `glitchtip`, `openpanel`, `plausible`, `listmonk-ses`, `s3`, `email`, `search-console` |
 | `--db-engine <value>` | `mongodb` · `postgres` |
@@ -169,7 +169,7 @@ cd my-app
 hatchkit update
 ```
 
-Reads `.hatchkit.json`, lets you pick a new feature set, copies additive pieces from the starter. **Supported additions today:** `desktop` (Electron), `desktop-tauri` (Tauri + Steamworks — for games, offered alongside mobile), `mobile` (Capacitor). The two desktop wrappers are mutually exclusive — pick one. Removal is not supported — removing a feature could delete user code. Remove manually and update the manifest.
+Reads `.hatchkit.json`, lets you pick a new feature set, copies additive pieces from the starter. **Supported additions today:** `desktop` (Electron), `mobile` (Capacitor). Removal is not supported — removing a feature could delete user code. Remove manually and update the manifest.
 
 ---
 
@@ -394,7 +394,7 @@ looks like a successful sync.
 
 ### Native clients and `TRUSTED_ORIGINS`
 
-A project with the `mobile`, `desktop` or `desktop-tauri` feature ships a shell
+A project with the `mobile` or `desktop` feature ships a shell
 that loads the client from its own origin. better-auth answers
 `403 INVALID_ORIGIN` to an origin that is not in `TRUSTED_ORIGINS`, before it
 checks the password.
@@ -403,7 +403,6 @@ checks the password.
 |---|---|
 | `mobile` (Capacitor) | `capacitor://localhost` (iOS), `https://localhost` (Android) |
 | `desktop` (Electron) | `app://-` |
-| `desktop-tauri` | `tauri://localhost`, `http://tauri.localhost` (Windows) |
 
 `hatchkit create`, `adopt`, `update` (after it adds a native feature) and `sync`
 merge these into `TRUSTED_ORIGINS` on the **server** Coolify app. The client

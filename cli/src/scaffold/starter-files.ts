@@ -123,8 +123,7 @@ const isDev = process.env.NODE_ENV === "development";
 // container env to repair the value later. A build without NEXT_PUBLIC_API_URL
 // therefore produces a binary that installs fine and fails on every request,
 // so fail loudly here instead. Set it as env on the build step in
-// .github/workflows/desktop-release.yml / tauri-release.yml /
-// mobile-release.yml (and on any local \`pnpm build:desktop\`).
+// .github/workflows/desktop-release.yml / mobile-release.yml (and on any local \`pnpm build:desktop\`).
 // \`next dev\` is exempt: it proxies /api to the dev server.
 if (!isDev && !process.env.NEXT_PUBLIC_API_URL) {
   throw new Error(
@@ -171,14 +170,13 @@ const STARTER_DEFAULT_FRONTEND_URL = "http://localhost:3000";
  *    • docker-compose.yml                      (server PORT env)
  *    • scripts/dev.mjs                         (fixed-mode defaults)
  *    • electron/main.ts                        (DEV_URL fallback)
- *    • src-tauri/tauri.conf.json              (build.devUrl + beforeDevCommand PORT)
  *    • scripts/android-dev.sh + ios-dev.sh    (NEXT_PORT default)
  *    • package.json dev:desktop script        (Next port + wait-on)
  */
 export function applyPorts(
   outputDir: string,
   ports: ProjectPorts,
-  opts: { wantsDesktop: boolean; wantsTauri?: boolean; wantsMobile: boolean },
+  opts: { wantsDesktop: boolean; wantsMobile: boolean },
 ): void {
   const { server, client, nativeHmr } = ports;
 
@@ -296,15 +294,6 @@ export function applyPorts(
     ),
   );
 
-  // Tauri: the dev URL + the PORT the beforeDevCommand starts the Next
-  // dev server on both live in tauri.conf.json. Same nativeHmr port as
-  // the electron DEV_URL rewrite above.
-  rewriteFile(join(outputDir, "src-tauri/tauri.conf.json"), (c) =>
-    c
-      .replace(/"devUrl":\s*"http:\/\/localhost:\d+"/, `"devUrl": "http://localhost:${nativeHmr}"`)
-      .replace(/"beforeDevCommand":\s*"PORT=\d+ /, `"beforeDevCommand": "PORT=${nativeHmr} `),
-  );
-
   for (const script of ["scripts/android-dev.sh", "scripts/ios-dev.sh"]) {
     rewriteFile(join(outputDir, script), (c) =>
       c.replace(/NEXT_PORT="\$\{NEXT_PORT:-\d+\}"/, `NEXT_PORT="\${NEXT_PORT:-${nativeHmr}}"`),
@@ -367,6 +356,12 @@ export function applyProjectName(outputDir: string, projectName: string): void {
     "packages/server/.env.example",
     "playwright.config.ts",
     "packages/server/src/config/env.ts",
+    // e2e/db-utils.ts hardcodes the same E2E database playwright.config.ts
+    // names. Left out of this list it kept the literal `starter-e2e`
+    // while the config got the project's name, so the spec helpers read
+    // a different database than the server under test wrote to — two
+    // projects on one machine then also shared it.
+    "e2e/db-utils.ts",
   ];
   for (const rel of targets) {
     const path = join(outputDir, rel);

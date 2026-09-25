@@ -66,7 +66,6 @@ export const KNOWN_FEATURES: readonly Feature[] = [
   "analytics",
   "s3",
   "desktop",
-  "desktop-tauri",
   "mobile",
 ];
 export const KNOWN_ML_SERVICES: readonly MlService[] = [

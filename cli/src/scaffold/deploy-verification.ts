@@ -363,7 +363,7 @@ export const WORKFLOW_VERIFY_STEP = `      # Everything above only proves Coolif
 /** Deploy-job step that proves each native shell's origin is trusted by
  *  the deployed server. Runs after {@link WORKFLOW_VERIFY_STEP}, once the
  *  new build is known to be live. */
-export const WORKFLOW_NATIVE_ORIGIN_STEP = `      # Native shells (Capacitor, Electron, Tauri) load the client from their
+export const WORKFLOW_NATIVE_ORIGIN_STEP = `      # Native shells (Capacitor, Electron) load the client from their
       # own document origin, and better-auth rejects an origin missing from
       # TRUSTED_ORIGINS with 403 INVALID_ORIGIN before it checks the
       # password. The web-origin CORS check above cannot see that.
@@ -383,7 +383,7 @@ export const WORKFLOW_NATIVE_ORIGIN_STEP = `      # Native shells (Capacitor, El
       # spacing and the retry on 429.
       #
       # HATCHKIT_NATIVE_ORIGINS is written here as a literal by hatchkit from
-      # the manifest's features (mobile / desktop / desktop-tauri) and kept
+      # the manifest's features (mobile / desktop) and kept
       # current by \`hatchkit update\` / \`hatchkit regen-infra\`. Empty means
       # the project ships no native client and there is nothing to check.
       - name: Verify native clients can sign in

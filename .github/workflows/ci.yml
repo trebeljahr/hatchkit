@@ -157,7 +157,7 @@ jobs:
         # cli/scripts/ci-stamp.ts; these names must match its PRESETS keys.
         #
         # The axis that matters is whether a native shell was selected. With
-        # desktop/mobile/tauri, scaffoldApp calls flipNextConfigToStaticExport()
+        # desktop/mobile, scaffoldApp calls flipNextConfigToStaticExport()
         # and the client is rebuilt as `output: "export"`; without one, the
         # starter's own next.config.ts survives and the client builds
         # `output: "standalone"`. Both modes have to compile.
@@ -245,7 +245,7 @@ jobs:
 
       # NOT --frozen-lockfile: scaffolding prunes dependencies the chosen
       # feature set doesn't need (electron/electron-builder/icon-gen/wait-on,
-      # @tauri-apps/cli, the @capacitor/* set, client-side deps in
+      # the @capacitor/* set, client-side deps in
       # scaffold/surfaces.ts) and can add others, so the lockfile copied out of
       # starter/ no longer matches the stamped package.json manifests. The
       # @starter/* workspace package names are NOT rewritten — rename-project.ts

@@ -7,11 +7,12 @@
  * already at the target state is a no-op (rewrittenFiles excludes it).
  *
  * Tolerant of missing files. A desktop-only project lacks ios/ and
- * android/; the rewriters skip those silently. Same for tauri-less
- * mobile projects.
+ * android/; the rewriters skip those silently. Same for a mobile-only
+ * project with no Electron shell.
  *
  * Files handled:
- *   · src-tauri/tauri.conf.json     — `identifier`, `productName`
+ *   · package.json                  — `build.appId`, `build.productName`
+ *                                     (electron-builder's desktop identity)
  *   · capacitor.config.ts           — `appId`, `appName`
  *   · android/app/build.gradle      — `namespace`, `applicationId`
  *   · android/app/src/main/res/values/strings.xml
@@ -57,49 +58,44 @@ interface FileRewriter {
   apply(projectDir: string, input: RewriteInput): boolean;
 }
 
-const tauriConfRewriter: FileRewriter = {
-  relPath: "src-tauri/tauri.conf.json",
-  applies: (p) => existsSync(join(p, "src-tauri/tauri.conf.json")),
-  apply: (p, input) => {
-    const path = join(p, "src-tauri/tauri.conf.json");
-    const raw = readFileSync(path, "utf-8");
-    let json: Record<string, unknown>;
+const electronBuildRewriter: FileRewriter = {
+  relPath: "package.json",
+  // electron-builder reads its identity from the root package.json's
+  // `build` block. A project with no `build` block has no desktop
+  // shell to sign, so there is nothing to rewrite.
+  applies: (p) => {
+    const path = join(p, "package.json");
+    if (!existsSync(path)) return false;
     try {
-      json = JSON.parse(raw) as Record<string, unknown>;
+      const pkg = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+      return typeof pkg.build === "object" && pkg.build !== null;
+    } catch {
+      return false;
+    }
+  },
+  apply: (p, input) => {
+    const path = join(p, "package.json");
+    const raw = readFileSync(path, "utf-8");
+    let pkg: Record<string, unknown>;
+    try {
+      pkg = JSON.parse(raw) as Record<string, unknown>;
     } catch {
       // Not valid JSON — surface as a note via apply returning false.
       return false;
     }
+    const build = pkg.build as Record<string, unknown> | undefined;
+    if (!build) return false;
     let changed = false;
-    const previousProductName = typeof json.productName === "string" ? json.productName : undefined;
-    if (json.identifier !== input.bundleId) {
-      json.identifier = input.bundleId;
+    if (build.appId !== input.bundleId) {
+      build.appId = input.bundleId;
       changed = true;
     }
-    if (json.productName !== input.appName) {
-      json.productName = input.appName;
+    if (build.productName !== input.appName) {
+      build.productName = input.appName;
       changed = true;
-    }
-    // Sync window titles that still match the old productName, leaving
-    // user-customized titles untouched. Skip when productName didn't
-    // actually change this run — otherwise re-runs flip `changed` true
-    // for a no-op assignment.
-    const app = (json.app as Record<string, unknown> | undefined) ?? undefined;
-    if (
-      app &&
-      Array.isArray(app.windows) &&
-      previousProductName &&
-      previousProductName !== input.appName
-    ) {
-      for (const w of app.windows as Array<Record<string, unknown>>) {
-        if (typeof w.title === "string" && w.title === previousProductName) {
-          w.title = input.appName;
-          changed = true;
-        }
-      }
     }
     if (!changed) return false;
-    writeFileSync(path, JSON.stringify(json, null, 2) + "\n", "utf-8");
+    writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
     return true;
   },
 };
@@ -260,7 +256,7 @@ const pbxprojRewriter: FileRewriter = {
 };
 
 const REWRITERS: FileRewriter[] = [
-  tauriConfRewriter,
+  electronBuildRewriter,
   capacitorConfigRewriter,
   buildGradleRewriter,
   stringsXmlRewriter,

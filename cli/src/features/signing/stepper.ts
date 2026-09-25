@@ -17,6 +17,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { confirm, input } from "@inquirer/prompts";
+import type { ProjectIdentifiers } from "../../scaffold/identifiers.js";
 import { multiselect } from "../../utils/multiselect.js";
 import { getSigningOrgConfig } from "./org-config.js";
 import { projectKebab, suggestBundleId, validateBundleId } from "./project-config.js";
@@ -25,6 +26,16 @@ import type { SigningPlatform, SigningProjectConfig } from "./types.js";
 export interface SigningStepperInput {
   projectDir: string;
   projectName: string;
+  /** The project's frozen identifier set, from `.hatchkit.json`.
+   *
+   *  When present it supplies the bundle-id and app-name defaults
+   *  instead of the stepper deriving its own. The two derivations were
+   *  not the same rule — signing built its slug from a kebab-cased name
+   *  and the scaffold stripped non-alphanumerics directly — so a project
+   *  could be offered a bundle id that differed from the one already in
+   *  its `package.json` and `capacitor.config.ts`, and accepting the
+   *  default silently split the two. */
+  identifiers?: ProjectIdentifiers;
   /** When provided, the stepper uses these as defaults / pre-fills
    *  instead of asking. */
   prefill?: Partial<SigningProjectConfig>;
@@ -39,10 +50,20 @@ export interface SigningStepperResult {
 export async function runSigningStepper(args: SigningStepperInput): Promise<SigningStepperResult> {
   const org = getSigningOrgConfig();
   const detected = detectPlatforms(args.projectDir);
-  const defaultName = args.prefill?.appName ?? readPackageName(args.projectDir) ?? args.projectName;
-  const slug = projectKebab(args.prefill?.appSlug ?? args.projectName);
+  const defaultName =
+    args.prefill?.appName ??
+    args.identifiers?.shortName ??
+    readPackageName(args.projectDir) ??
+    args.projectName;
+  const slug = args.prefill?.appSlug
+    ? projectKebab(args.prefill.appSlug)
+    : (args.identifiers?.slug ?? projectKebab(args.projectName));
+  // The manifest wins over the org package prefix: the bundle id it
+  // records is the one already written into the project's files.
   const defaultBundleId =
-    args.prefill?.bundleId ?? suggestBundleId(org.google?.packagePrefix, args.projectName);
+    args.prefill?.bundleId ??
+    args.identifiers?.bundleId ??
+    suggestBundleId(org.google?.packagePrefix, args.projectName);
 
   const enabled = await confirm({
     message: "Wire signing pipelines (build-{windows,ios,android}.yml + push secrets)?",
@@ -75,7 +96,7 @@ export async function runSigningStepper(args: SigningStepperInput): Promise<Sign
     message: "Platforms:",
     choices: [
       {
-        name: `windows — Tauri / MSI + EXE${detected.includes("windows") ? "  (detected: src-tauri/)" : ""}`,
+        name: `windows — Electron / NSIS installer${detected.includes("windows") ? "  (detected: electron/)" : ""}`,
         value: "windows",
         checked: args.prefill?.platforms?.includes("windows") ?? detected.includes("windows"),
       },
@@ -123,11 +144,11 @@ export async function runSigningStepper(args: SigningStepperInput): Promise<Sign
   };
 }
 
-/** Heuristic: a project has the `windows` platform if it has
- *  src-tauri/, `ios` if it has ios/, `android` if it has android/. */
+/** Heuristic: a project has the `windows` platform if it has an
+ *  electron/ shell, `ios` if it has ios/, `android` if it has android/. */
 export function detectPlatforms(projectDir: string): SigningPlatform[] {
   const out: SigningPlatform[] = [];
-  if (existsSync(join(projectDir, "src-tauri"))) out.push("windows");
+  if (existsSync(join(projectDir, "electron"))) out.push("windows");
   if (existsSync(join(projectDir, "ios"))) out.push("ios");
   if (existsSync(join(projectDir, "android"))) out.push("android");
   return out;

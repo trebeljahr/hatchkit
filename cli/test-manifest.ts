@@ -26,6 +26,7 @@ import {
   readManifestWithMigrationInfo,
   writeManifest,
 } from "./src/scaffold/manifest.js";
+import { legacyIdentifiers, resolveIdentifiers } from "./src/scaffold/identifiers.js";
 
 type ManifestSurfaces = NonNullable<
   ReturnType<typeof readManifestWithMigrationInfo>
@@ -215,14 +216,14 @@ for (const c of CASES) {
   }
 }
 
-// v4 read: an explicit `topology` is never overwritten, and a
+// v5 read: an explicit `topology` is never overwritten, and a
 // current-version manifest reports no migration at all.
 {
   const dir = mkdtempSync(join(tmpdir(), `hatchkit-manifest-v4-topology-`));
   try {
     const path = join(dir, MANIFEST_FILENAME);
-    const v4 = {
-      version: 4,
+    const v5 = {
+      version: 5,
       cliVersion: "test",
       scaffoldedAt: "2025-01-01T00:00:00.000Z",
       name: "test-app",
@@ -235,22 +236,99 @@ for (const c of CASES) {
       ports: { server: 3000, client: 5173 },
       email: { transactional: "none", mailingList: "none" },
       topology: "split",
+      publicService: "client",
+      identifiers: resolveIdentifiers({ name: "test-app" }),
     };
-    writeFileSync(path, JSON.stringify(v4, null, 2), "utf-8");
+    writeFileSync(path, JSON.stringify(v5, null, 2), "utf-8");
 
     const result = readManifestWithMigrationInfo(dir);
-    assert.ok(result, "v4 read returned null");
+    assert.ok(result, "v5 read returned null");
     assert.equal(result.manifest.topology, "split", "explicit topology survives the read");
-    assert.equal(result.manifest.publicService, undefined, "v4 files are left exactly as written");
+    assert.equal(result.manifest.publicService, "client", "v5 files are left exactly as written");
     assert.equal(
       result.migrated,
       false,
       `expected migrated=false for current-version manifest. notes: ${JSON.stringify(result.migrationNotes)}`,
     );
 
-    console.log("  ✓ v4 read: explicit topology preserved, no migration triggered");
+    console.log("  ✓ v5 read: explicit topology preserved, no migration triggered");
   } catch (err) {
-    failures.push(`  ✗ v4 topology preservation: ${(err as Error).message}`);
+    failures.push(`  ✗ v5 topology preservation: ${(err as Error).message}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// v4 -> v5: the identifier block is seeded from the rule the pre-v5 CLI
+// actually used, and the removed Tauri wrapper is dropped.
+{
+  const dir = mkdtempSync(join(tmpdir(), "hatchkit-manifest-v4-to-v5-"));
+  try {
+    const path = join(dir, MANIFEST_FILENAME);
+    const v4 = {
+      version: 4,
+      cliVersion: "test",
+      scaffoldedAt: "2025-01-01T00:00:00.000Z",
+      name: "My Cool App",
+      domain: "test.example.com",
+      features: ["websocket", "desktop-tauri", "mobile"],
+      mlServices: [],
+      s3Provider: "none",
+      deployTarget: "existing",
+      surfaces: "fullstack",
+      publicService: "client",
+      ports: { server: 3000, client: 5173 },
+      email: { transactional: "none", mailingList: "none" },
+      topology: "single-origin",
+    };
+    writeFileSync(path, JSON.stringify(v4, null, 2), "utf-8");
+
+    const result = readManifestWithMigrationInfo(dir);
+    assert.ok(result, "v4 read returned null");
+    assert.equal(result.migrated, true, "a v4 file migrates");
+
+    // The seed must reproduce the OLD derivation. A project scaffolded
+    // before v5 has `com.example.mycoolapp` in its package.json and
+    // possibly a registered App ID to match; proposing the current
+    // derivation's value here would rename something that cannot be
+    // renamed.
+    assert.deepEqual(
+      result.manifest.identifiers,
+      legacyIdentifiers("My Cool App"),
+      "identifiers seeded from the pre-v5 rule",
+    );
+    assert.equal(
+      result.manifest.identifiers?.bundleId,
+      "com.example.mycoolapp",
+      "seeded bundle id matches what the pre-v5 CLI wrote",
+    );
+    // The two rules genuinely differ: today's derivation title-cases a
+    // slug, the pre-v5 one used the raw name. `legacyIdentifiers` must
+    // stay the old rule even as the current one changes.
+    assert.equal(legacyIdentifiers("my-cool-app").productName, "my-cool-app");
+    assert.equal(resolveIdentifiers({ name: "my-cool-app" }).productName, "My Cool App");
+
+    assert.deepEqual(
+      result.manifest.features,
+      ["websocket", "mobile"],
+      "the removed desktop-tauri wrapper is dropped",
+    );
+    assert.equal(result.manifest.version, MANIFEST_VERSION, "version bumped in memory");
+
+    // An already-v5 manifest must not be re-seeded — that would let a
+    // later run silently replace a pinned identifier.
+    writeManifest(dir, result.manifest);
+    const second = readManifestWithMigrationInfo(dir);
+    assert.equal(second?.migrated, false, "the rewritten manifest needs no further migration");
+    assert.deepEqual(
+      second?.manifest.identifiers,
+      result.manifest.identifiers,
+      "a second read does not re-derive",
+    );
+
+    console.log("  ✓ v4 → v5: identifiers seeded from the old rule, desktop-tauri dropped");
+  } catch (err) {
+    failures.push(`  ✗ v4 → v5 identifiers: ${(err as Error).message}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

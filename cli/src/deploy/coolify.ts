@@ -331,7 +331,7 @@ export async function runCoolifySetup(
     ),
   );
 
-  // Native shells (Capacitor / Electron / Tauri) load the client from
+  // Native shells (Capacitor / Electron) load the client from
   // their own document origin, which better-auth rejects with 403
   // INVALID_ORIGIN unless TRUSTED_ORIGINS names it. The minimal env
   // above can't carry it: projects whose production env lives in

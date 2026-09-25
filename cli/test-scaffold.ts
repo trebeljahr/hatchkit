@@ -329,7 +329,10 @@ results.desktop = await run("desktop only", "my-cool-app", ["desktop"], (d) => {
     ["icon-gen dep present", !!pkg.devDependencies?.["icon-gen"]],
     ["no capacitor deps", !pkg.dependencies?.["@capacitor/core"]],
     ["bundleId sanitized (no hyphens)", pkg.build?.appId === "com.example.mycoolapp"],
-    ["productName has display name", pkg.build?.productName === "my-cool-app"],
+    // The display name is a real name, not the slug: `name` is what npm
+    // and the image registry use, `productName` is what a person reads.
+    ["productName is the display name, not the slug", pkg.build?.productName === "My Cool App"],
+    ["package.json name stays the slug", pkg.name === "my-cool-app"],
     ["typecheck chains electron", pkg.scripts?.typecheck?.includes("typecheck:electron")],
     ["next.config flipped to export", nextCfg.includes('output: "export"')],
     ["next.config has assetPrefix", nextCfg.includes('assetPrefix: "./"')],
@@ -380,92 +383,75 @@ results.mobile = await run("mobile only", "my-cool-app", ["mobile"], (d) => {
     ["cap:add:ios + cap:add:android present", !!pkg.scripts?.["cap:add:ios"] && !!pkg.scripts?.["cap:add:android"]],
     ["capacitor deps present", !!pkg.dependencies?.["@capacitor/core"]],
     ["appId sanitized in capacitor.config.ts", capCfg.includes('appId: "com.example.mycoolapp"')],
-    ["appName has display name", capCfg.includes('appName: "my-cool-app"')],
+    // Capacitor's appName is the LAUNCHER label — the short name, which
+    // `cap add` copies into CFBundleDisplayName and the Android app_name.
+    ["appName is the launcher short name", capCfg.includes('appName: "My Cool App"')],
     ["layout mounts MobileBridgeLoader", layout.includes("MobileBridgeLoader")],
   ];
 });
 
-results.desktopTauri = await run(
-  "desktop-tauri + mobile (game stack)",
+results.desktopMobile = await run(
+  "desktop + mobile (both native wrappers)",
   "dino-game",
-  ["mobile", "desktop-tauri"],
+  ["mobile", "desktop"],
   (d) => {
     const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
     const manifest = JSON.parse(readFileSync(join(d, ".hatchkit.json"), "utf-8"));
-    const tauriConfRaw = readFileSync(join(d, "src-tauri/tauri.conf.json"), "utf-8");
-    const cargoToml = readFileSync(join(d, "src-tauri/Cargo.toml"), "utf-8");
-    const mainRs = readFileSync(join(d, "src-tauri/src/main.rs"), "utf-8");
+    const capCfgRaw = readFileSync(join(d, "capacitor.config.ts"), "utf-8");
+    const electronMain = readFileSync(join(d, "electron/main.ts"), "utf-8");
     const serverEnv = readFileSync(join(d, "packages/server/.env.example"), "utf-8");
     const nextCfg = readFileSync(join(d, "packages/client/next.config.ts"), "utf-8");
-    let tauriConf: Record<string, any> | undefined;
-    try {
-      tauriConf = JSON.parse(tauriConfRaw);
-    } catch {
-      tauriConf = undefined;
-    }
     const nativeHmr = manifest.ports?.nativeHmr;
     return [
-      ["src-tauri/ kept", existsSync(join(d, "src-tauri"))],
+      ["electron/ kept", existsSync(join(d, "electron"))],
+      ["capacitor.config.ts kept", existsSync(join(d, "capacitor.config.ts"))],
       ["build/icon.png kept", statSync(join(d, "build/icon.png")).size > 1000],
-      ["tauri workflow kept", existsSync(join(d, ".github/workflows/tauri-release.yml"))],
-      ["electron/ removed (tauri is the desktop wrapper)", !existsSync(join(d, "electron"))],
-      ["desktop workflow removed", !existsSync(join(d, ".github/workflows/desktop-release.yml"))],
-      ["tauri.conf.json is valid JSON", tauriConf !== undefined],
-      ["tauri.conf.json placeholders substituted", !tauriConfRaw.includes("{{")],
-      ["productName has display name", tauriConf?.productName === "dino-game"],
-      ["identifier sanitized (no hyphens)", tauriConf?.identifier === "com.example.dinogame"],
-      ["window title matches productName", tauriConf?.app?.windows?.[0]?.title === "dino-game"],
+      ["desktop workflow kept", existsSync(join(d, ".github/workflows/desktop-release.yml"))],
+      ["mobile workflow kept", existsSync(join(d, ".github/workflows/mobile-release.yml"))],
+      ["capacitor.config.ts placeholders substituted", !capCfgRaw.includes("{{")],
+      ["package.json placeholders substituted", !readFileSync(join(d, "package.json"), "utf-8").includes("{{")],
+      // The two wrappers write the same bundle id from the same source.
+      // A divergence here is exactly what the identifier-agreement check
+      // exists to catch, and it must not be reachable from a clean scaffold.
+      ["electron appId sanitized", pkg.build?.appId === "com.example.dinogame"],
+      ["capacitor appId agrees with electron appId", capCfgRaw.includes('appId: "com.example.dinogame"')],
+      ["electron productName is the display name", pkg.build?.productName === "Dino Game"],
       ["nativeHmr port assigned", typeof nativeHmr === "number"],
       [
-        "devUrl retargeted at nativeHmr port",
-        tauriConf?.build?.devUrl === `http://localhost:${nativeHmr}`,
+        "electron DEV_URL retargeted at nativeHmr port",
+        electronMain.includes(`http://localhost:${nativeHmr}`),
+      ],
+      ["electron deps present", !!pkg.devDependencies?.electron],
+      ["capacitor deps present", !!pkg.dependencies?.["@capacitor/core"]],
+      [
+        "TRUSTED_ORIGINS includes the Electron origin",
+        /^TRUSTED_ORIGINS=.*app:\/\/-/m.test(serverEnv),
       ],
       [
-        "beforeDevCommand PORT retargeted at nativeHmr port",
-        typeof tauriConf?.build?.beforeDevCommand === "string" &&
-          tauriConf.build.beforeDevCommand.startsWith(`PORT=${nativeHmr} `),
-      ],
-      ["frontendDist points at client static export", tauriConf?.build?.frontendDist === "../packages/client/out"],
-      ["Cargo.toml crate named after project", /^name = "dino-game"$/m.test(cargoToml)],
-      ["Cargo.toml has optional steamworks dep", /steamworks = \{[^}]*optional = true/.test(cargoToml)],
-      ["Cargo.toml steam feature off by default", /^default = \["custom-protocol"\]$/m.test(cargoToml)],
-      ["main.rs gates Steam init behind cfg(feature)", mainRs.includes('#[cfg(feature = "steam")]')],
-      ["main.rs has STEAM_APP_ID placeholder", mainRs.includes("STEAM_APP_ID")],
-      ["icons shipped (icon.icns)", statSync(join(d, "src-tauri/icons/icon.icns")).size > 1000],
-      ["entitlements.plist shipped", existsSync(join(d, "src-tauri/entitlements.plist"))],
-      ["capabilities/default.json shipped", existsSync(join(d, "src-tauri/capabilities/default.json"))],
-      ["dev:tauri script present", pkg.scripts?.["dev:tauri"] === "tauri dev"],
-      ["build:tauri script present", pkg.scripts?.["build:tauri"] === "tauri build"],
-      ["icons:tauri script present", !!pkg.scripts?.["icons:tauri"]],
-      ["@tauri-apps/cli devDep present", !!pkg.devDependencies?.["@tauri-apps/cli"]],
-      ["no electron deps", !pkg.devDependencies?.electron],
-      ["capacitor deps present (mobile selected)", !!pkg.dependencies?.["@capacitor/core"]],
-      [
-        "TRUSTED_ORIGINS includes tauri://localhost",
-        /^TRUSTED_ORIGINS=.*tauri:\/\/localhost/m.test(serverEnv),
-      ],
-      [
-        "TRUSTED_ORIGINS includes http://tauri.localhost (Windows)",
-        /^TRUSTED_ORIGINS=.*http:\/\/tauri\.localhost/m.test(serverEnv),
+        "TRUSTED_ORIGINS includes the Capacitor origins",
+        /^TRUSTED_ORIGINS=.*capacitor:\/\/localhost/m.test(serverEnv),
       ],
       ["next.config flipped to export", nextCfg.includes('output: "export"')],
+      // Two native features both ask for the static-export flip; the
+      // rewrite must be a fixed point, not run once per feature.
       [
-        "manifest records desktop-tauri feature",
-        Array.isArray(manifest.features) && manifest.features.includes("desktop-tauri"),
+        "next.config flipped exactly once",
+        (nextCfg.match(/output:\s*["']export["']/g) || []).length === 1,
       ],
+      ["resources/icon.png kept (mobile assets)", existsSync(join(d, "resources/icon.png"))],
+      [
+        "manifest records both native features",
+        Array.isArray(manifest.features) &&
+          manifest.features.includes("desktop") &&
+          manifest.features.includes("mobile"),
+      ],
+      ["no tauri scripts survive", !pkg.scripts?.["dev:tauri"] && !pkg.scripts?.tauri],
+      ["no itch scripts survive", !pkg.scripts?.["itch:push:mac"]],
+      ["src-tauri/ is gone from the starter", !existsSync(join(d, "src-tauri"))],
     ];
   },
 );
 
-results.tauriStripped = await run("web-only strips tauri", "no-tauri-app", ["websocket"], (d) => {
-  const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
-  return [
-    ["src-tauri/ removed", !existsSync(join(d, "src-tauri"))],
-    ["tauri workflow removed", !existsSync(join(d, ".github/workflows/tauri-release.yml"))],
-    ["no tauri scripts", !pkg.scripts?.["dev:tauri"] && !pkg.scripts?.["build:tauri"] && !pkg.scripts?.tauri],
-    ["no @tauri-apps/cli devDep", !pkg.devDependencies?.["@tauri-apps/cli"]],
-  ];
-});
 
 results.serverOnly = await run(
   "surfaces: server-only",
@@ -910,19 +896,6 @@ console.log("\n── e2e local S3: pinned image + workflow retrofit ───�
   results.e2eS3PinAndRetrofit = ok;
 }
 
-results.both = await run("desktop + mobile", "my-cool-app", ["desktop", "mobile"], (d) => {
-  const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
-  const nextCfg = readFileSync(join(d, "packages/client/next.config.ts"), "utf-8");
-  const capCfg = readFileSync(join(d, "capacitor.config.ts"), "utf-8");
-  return [
-    ["both workflows kept", existsSync(join(d, ".github/workflows/desktop-release.yml")) && existsSync(join(d, ".github/workflows/mobile-release.yml"))],
-    ["both asset source dirs kept", existsSync(join(d, "build/icon.png")) && existsSync(join(d, "resources/icon.png"))],
-    ["bundle IDs sanitized in both configs", pkg.build?.appId === "com.example.mycoolapp" && capCfg.includes("com.example.mycoolapp")],
-    ["next.config flipped exactly once", (nextCfg.match(/output:\s*["']export["']/g) || []).length === 1],
-    ["both dep trees present", !!pkg.devDependencies?.electron && !!pkg.dependencies?.["@capacitor/core"]],
-  ];
-});
-
 // Existing-dir guard: scaffold into a non-empty directory should throw.
 // Ports: confirm every file that references ports is rewritten
 // coherently, and that two scaffolds don't collide.
@@ -1241,105 +1214,67 @@ console.log("\n── update: manifest round-trip for web-only project ───
   }
 }
 
-// Update: add desktop-tauri to a web-only project, then verify the
-// re-run is a no-op and the Electron/Tauri conflict is rejected.
-console.log("\n── update: add desktop-tauri (+ idempotent re-run, wrapper conflict) ─────────");
+// Update: add desktop to a web-only project, then verify the re-run is
+// a no-op. `update` re-applies every selected feature on every run, so a
+// feature that is not idempotent corrupts the project a little each time.
+console.log("\n── update: add desktop (+ idempotent re-run) ─────────");
 {
   const { runUpdate } = await import("./src/scaffold/update.js");
   const { readManifest } = await import("./src/scaffold/manifest.js");
-  const d = mkdtempSync(join(tmpdir(), "scaffold-update-tauri-"));
+  const d = mkdtempSync(join(tmpdir(), "scaffold-update-desktop-"));
   try {
-    await scaffoldApp(cfg("tauri-add-test", ["websocket"]), d);
+    await scaffoldApp(cfg("desktop-add-test", ["websocket"]), d);
 
     const first = await runUpdate(d, {
       presets: {
-        desiredFeatures: ["websocket", "desktop-tauri"],
+        desiredFeatures: ["websocket", "desktop"],
         confirmAddFeatures: true,
         enableLocalDev: false,
       },
     });
     const m1 = readManifest(d);
     const pkg1 = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
-    const tauriConfRaw = readFileSync(join(d, "src-tauri/tauri.conf.json"), "utf-8");
-    const tauriConf = JSON.parse(tauriConfRaw);
-    const cargoToml = readFileSync(join(d, "src-tauri/Cargo.toml"), "utf-8");
+    const electronMain = readFileSync(join(d, "electron/main.ts"), "utf-8");
+    const pkgRaw = readFileSync(join(d, "package.json"), "utf-8");
 
     // Second run with the same desired set must be a no-op.
     const second = await runUpdate(d, {
       presets: {
-        desiredFeatures: ["websocket", "desktop-tauri"],
+        desiredFeatures: ["websocket", "desktop"],
         confirmAddFeatures: true,
         enableLocalDev: false,
       },
     });
-    const tauriConfRaw2 = readFileSync(join(d, "src-tauri/tauri.conf.json"), "utf-8");
-
-    // Conflict: Electron on top of Tauri must be rejected, not added.
-    const conflict = await runUpdate(d, {
-      presets: {
-        desiredFeatures: ["websocket", "desktop-tauri", "desktop"],
-        confirmAddFeatures: true,
-        enableLocalDev: false,
-      },
-    });
-    const m3 = readManifest(d);
+    const pkgRaw2 = readFileSync(join(d, "package.json"), "utf-8");
+    const electronMain2 = readFileSync(join(d, "electron/main.ts"), "utf-8");
 
     const checks: Check[] = [
-      ["first run reports desktop-tauri added", first.added.includes("desktop-tauri")],
-      ["src-tauri/ copied", existsSync(join(d, "src-tauri/tauri.conf.json"))],
-      ["tauri workflow copied", existsSync(join(d, ".github/workflows/tauri-release.yml"))],
-      ["manifest gains desktop-tauri", m1?.features.includes("desktop-tauri") === true],
+      ["first run reports desktop added", first.added.includes("desktop")],
+      ["electron/ copied", existsSync(join(d, "electron/main.ts"))],
+      ["desktop workflow copied", existsSync(join(d, ".github/workflows/desktop-release.yml"))],
+      ["manifest gains desktop", m1?.features.includes("desktop") === true],
       ["manifest gains nativeHmr port", typeof m1?.ports.nativeHmr === "number"],
-      ["placeholders substituted", !tauriConfRaw.includes("{{")],
-      ["productName substituted", tauriConf.productName === "tauri-add-test"],
-      ["identifier sanitized", tauriConf.identifier === "com.example.tauriaddtest"],
+      ["placeholders substituted", !pkgRaw.includes("{{")],
+      ["productName substituted", pkg1.build?.productName === "Desktop Add Test"],
+      ["appId sanitized", pkg1.build?.appId === "com.example.desktopaddtest"],
       [
-        "devUrl retargeted at nativeHmr port",
-        tauriConf.build?.devUrl === `http://localhost:${m1?.ports.nativeHmr}`,
+        "electron DEV_URL retargeted at nativeHmr port",
+        electronMain.includes(`http://localhost:${m1?.ports.nativeHmr}`),
       ],
-      ["Cargo.toml crate renamed", /^name = "tauri-add-test"$/m.test(cargoToml)],
-      ["dev:tauri script merged", pkg1.scripts?.["dev:tauri"] === "tauri dev"],
-      ["@tauri-apps/cli devDep merged", !!pkg1.devDependencies?.["@tauri-apps/cli"]],
+      ["electron devDep merged", !!pkg1.devDependencies?.electron],
       ["re-run adds nothing", second.added.length === 0],
-      ["re-run leaves tauri.conf.json untouched", tauriConfRaw2 === tauriConfRaw],
-      ["conflict run adds nothing", conflict.added.length === 0],
-      ["conflict run reports desktop skipped", conflict.skipped.includes("desktop")],
-      ["electron/ not copied by conflict run", !existsSync(join(d, "electron"))],
-      ["manifest keeps desktop-tauri only", m3?.features.includes("desktop") === false],
+      ["re-run leaves package.json untouched", pkgRaw2 === pkgRaw],
+      ["re-run leaves electron/main.ts untouched", electronMain2 === electronMain],
     ];
     let ok = true;
     for (const [n, c] of checks) {
       console.log(`  ${c ? "✓" : "✗"} ${n}`);
       if (!c) ok = false;
     }
-    results.updateDesktopTauri = ok;
+    results.updateDesktop = ok;
   } finally {
     rmSync(d, { recursive: true, force: true });
   }
-}
-
-// Non-interactive create: both desktop wrappers in --features must be
-// rejected before any scaffolding happens.
-console.log("\n── create: desktop + desktop-tauri preset conflict rejected ─────────");
-{
-  const { collectProjectConfig } = await import("./src/prompts.js");
-  let threw = false;
-  try {
-    await collectProjectConfig({
-      nonInteractive: true,
-      presets: {
-        name: "conflict-app",
-        domain: "conflict-app.example.com",
-        features: ["desktop", "desktop-tauri"],
-        createGithubRepo: false,
-        runDeployment: false,
-      },
-    });
-  } catch (err) {
-    threw = (err as Error).message.includes("Pick one desktop wrapper");
-  }
-  console.log(`  ${threw ? "✓" : "✗"} non-interactive conflict throws`);
-  results.desktopWrapperConflict = threw;
 }
 
 // Server add: retrofit a client-only scaffold back to full-stack
@@ -1471,18 +1406,27 @@ console.log("\n── ports: avoids already-bound ports on the host ────
 {
   const { createServer } = await import("node:net");
   const { PORT_RANGES, isPortFree } = await import("./src/utils/ports.js");
-  const { addUsedPorts } = await import("./src/config.js");
+  const { addUsedPorts, getUsedPorts } = await import("./src/config.js");
 
   const [serverMin, serverMax] = PORT_RANGES.server;
-  // Find two adjacent free ports in the server range so we can bind
-  // one and leave the other as the only valid pick.
-  let bound = -1, sparePort = -1;
+  // Find two adjacent ports that are free on the host AND unclaimed in
+  // the CLI registry. Earlier scaffolds in this file have already
+  // registered ports without binding them, so an OS-only check picks a
+  // pair the picker would refuse anyway — and the reservation below then
+  // leaves it nothing at all to choose. That made this test depend on
+  // how many scaffolds happened to run before it.
+  const alreadyUsed = new Set(getUsedPorts());
+  let bound = -1;
+  let sparePort = -1;
   for (let p = serverMin; p <= serverMax - 1; p++) {
+    if (alreadyUsed.has(p) || alreadyUsed.has(p + 1)) continue;
     if ((await isPortFree(p)) && (await isPortFree(p + 1))) {
-      bound = p; sparePort = p + 1; break;
+      bound = p;
+      sparePort = p + 1;
+      break;
     }
   }
-  if (bound === -1) throw new Error("no adjacent free ports in server range for test");
+  if (bound === -1) throw new Error("no adjacent unclaimed free ports in server range for test");
 
   const blocker = createServer();
   await new Promise<void>((resolve, reject) => {
@@ -1497,6 +1441,7 @@ console.log("\n── ports: avoids already-bound ports on the host ────
   for (let p = serverMin; p <= serverMax; p++) {
     if (p !== bound && p !== sparePort) reserved.push(p);
   }
+  // sparePort must be the ONLY pickable port when the picker runs.
   addUsedPorts(reserved);
 
   const d = mkdtempSync(join(tmpdir(), "scaffold-ports-busy-"));

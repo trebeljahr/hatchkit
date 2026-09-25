@@ -301,21 +301,17 @@ if (!starterPresent) {
 
   expect("native-origin literal follows features; rename-domain's URL rewrite leaves it", () => {
     const wf = read(WORKFLOW_REL);
-    const tauri = upgradeWorkflowNativeOriginCheck(wf, ["desktop-tauri"]);
-    assert.ok(
-      tauri.includes('HATCHKIT_NATIVE_ORIGINS: "tauri://localhost,http://tauri.localhost"'),
-    );
+    const desktop = upgradeWorkflowNativeOriginCheck(wf, ["desktop"]);
+    assert.ok(desktop.includes('HATCHKIT_NATIVE_ORIGINS: "app://-"'));
     assert.equal(
-      upgradeWorkflowNativeOriginCheck(tauri, ["desktop-tauri"]),
-      tauri,
+      upgradeWorkflowNativeOriginCheck(desktop, ["desktop"]),
+      desktop,
       "not idempotent",
     );
     const none = upgradeWorkflowNativeOriginCheck(wf, []);
     assert.ok(none.includes('HATCHKIT_NATIVE_ORIGINS: ""'), "empty list must be quoted");
-    const renamed = setWorkflowDeployVerifyUrls(tauri, "renamed.example.com", "split", "split");
-    assert.ok(
-      renamed.includes('HATCHKIT_NATIVE_ORIGINS: "tauri://localhost,http://tauri.localhost"'),
-    );
+    const renamed = setWorkflowDeployVerifyUrls(desktop, "renamed.example.com", "split", "split");
+    assert.ok(renamed.includes('HATCHKIT_NATIVE_ORIGINS: "app://-"'));
   });
 
   expect("retrofit tables leave the native check alone when features are unknown", () => {

@@ -155,25 +155,17 @@ const COMBOS: Array<[string[], string[]]> = [
   [["websocket", "stripe"], []],
   [["mobile"], ["capacitor://localhost", "https://localhost"]],
   [["desktop"], ["app://-"]],
-  [["desktop-tauri"], ["tauri://localhost", "http://tauri.localhost"]],
   [
     ["desktop", "mobile"],
     ["capacitor://localhost", "https://localhost", "app://-"],
   ],
   [
-    ["desktop-tauri", "mobile"],
-    ["capacitor://localhost", "https://localhost", "tauri://localhost", "http://tauri.localhost"],
+    ["desktop", "mobile", "s3"],
+    ["capacitor://localhost", "https://localhost", "app://-"],
   ],
-  [
-    ["desktop-tauri", "desktop", "mobile", "s3"],
-    [
-      "capacitor://localhost",
-      "https://localhost",
-      "app://-",
-      "tauri://localhost",
-      "http://tauri.localhost",
-    ],
-  ],
+  // An unknown feature contributes no origins, which is what makes a
+  // manifest that still lists a removed wrapper harmless on read.
+  [["mobile", "desktop-tauri"], ["capacitor://localhost", "https://localhost"]],
 ];
 for (const [features, expected] of COMBOS) {
   await check(`[${features.join(", ") || "none"}] → ${expected.join(", ") || "(none)"}`, () => {
@@ -185,7 +177,7 @@ for (const [features, expected] of COMBOS) {
 await check("every origin is an exact scheme://host — no path, no trailing slash", () => {
   // better-auth matches verbatim in production; `https://localhost/` is
   // a silent 403.
-  const all = nativeClientOrigins(["mobile", "desktop", "desktop-tauri"]);
+  const all = nativeClientOrigins(["mobile", "desktop"]);
   assert.deepEqual(malformedOrigins(all), []);
   for (const o of all) assert.ok(!o.endsWith("/"), o);
 });
@@ -225,8 +217,8 @@ await check("never removes an origin, whatever it is", () => {
 });
 
 await check("de-duplicates, keeping first occurrence order", () => {
-  const m = mergeTrustedOrigins("app://-,https://a.example,app://-", ["tauri://localhost"]);
-  assert.deepEqual(m.after, ["app://-", "https://a.example", "tauri://localhost"]);
+  const m = mergeTrustedOrigins("app://-,https://a.example,app://-", ["capacitor://localhost"]);
+  assert.deepEqual(m.after, ["app://-", "https://a.example", "capacitor://localhost"]);
 });
 
 await check("a duplicate alone is not a reason to write", () => {
@@ -568,7 +560,7 @@ function functionBody(rel: string, name: string): string {
   return text.slice(start, next === -1 ? undefined : next);
 }
 
-for (const features of [["mobile"], ["desktop"], ["desktop-tauri", "mobile"]]) {
+for (const features of [["mobile"], ["desktop"], ["desktop", "mobile"]]) {
   await check(`.env.example and the Coolify push write the same list [${features}]`, async () => {
     const dir = mkdtempSync(join(tmpdir(), "trusted-origins-env-"));
     try {
@@ -632,7 +624,7 @@ await check("the .env.example rewrite uses the shared mapping, not its own liter
 
 await check("no module but native-origins.ts spells an origin out", () => {
   for (const rel of ["deploy/trusted-origins.ts", "deploy/sync.ts", "deploy/coolify.ts"]) {
-    assert.ok(!source(rel).includes('"tauri://localhost"'), `${rel} carries a literal`);
+    assert.ok(!source(rel).includes('"app://-"'), `${rel} carries a literal`);
     assert.ok(!source(rel).includes('"capacitor://localhost"'), `${rel} carries a literal`);
   }
 });

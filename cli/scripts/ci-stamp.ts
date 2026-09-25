@@ -80,7 +80,7 @@ const LISTMONK_SES: EmailIntent = { transactional: "none", mailingList: "listmon
  *  two mutually exclusive client build modes plus the conditional codegen
  *  branches that actually produced the reported breakage.
  *
- *  The split that matters is `wantsDesktop || wantsTauri || wantsMobile` in
+ *  The split that matters is `wantsDesktop || wantsMobile` in
  *  cli/src/scaffold/app.ts: when any native shell is selected, scaffoldApp
  *  calls `flipNextConfigToStaticExport()` and the client's next.config.ts is
  *  replaced with a hardcoded `output: "export"` config. Without a native

@@ -5,7 +5,7 @@ description: Wire code-signed desktop installers + TestFlight + Play Console int
 
 `hatchkit signing` takes a desktop/mobile project from "freshly scaffolded" to "signed installer on Windows + TestFlight build queued + Play Console internal track upload" with one command, plus the unavoidable vendor-side manual clicks.
 
-Templates and CI workflows are byte-for-byte the same shape that ships [mesozoic-protocol](https://github.com/RicoTrebeljahr/mesozoic-protocol) (Tauri + Capacitor + Azure Trusted Signing + Apple App Store Connect + Google Play Console).
+Templates and CI workflows are byte-for-byte the same shape that ships [mesozoic-protocol](https://github.com/RicoTrebeljahr/mesozoic-protocol) (Electron + Capacitor + Azure Trusted Signing + Apple App Store Connect + Google Play Console).
 
 ## Mental model — three tiers
 
@@ -34,7 +34,7 @@ Hatchkit never tries to enroll developer programs or create the Trusted Signing 
 - Android upload keystore generation (`keytool`)
 - 20 GitHub Actions repo secrets (`gh secret set` via stdin)
 - 3 workflow files (`.github/workflows/build-{windows,ios,android}.yml`)
-- Bundle ID + app name rewritten in `src-tauri/tauri.conf.json`, `capacitor.config.ts`, `android/app/build.gradle`, `strings.xml`, `MainActivity.java` (+ Java package dir move), `ios/App/App.xcodeproj/project.pbxproj`
+- Bundle ID + app name rewritten in `package.json` (electron-builder `build`), `capacitor.config.ts`, `android/app/build.gradle`, `strings.xml`, `MainActivity.java` (+ Java package dir move), `ios/App/App.xcodeproj/project.pbxproj`
 
 Idempotent: re-runs GET-before-POST on Apple resources and diff-before-write on every file. Resource IDs persist into the project manifest so subsequent runs reuse rather than duplicate.
 
@@ -68,7 +68,7 @@ hatchkit add my-app signing
 
 | Flag | What it does |
 |---|---|
-| `--platforms windows,ios,android` | Limit to a subset. Defaults derived from `src-tauri/`, `ios/`, `android/` presence. |
+| `--platforms windows,ios,android` | Limit to a subset. Defaults derived from `electron/`, `ios/`, `android/` presence. |
 | `--bundle-id com.example.app` | Skip the bundle-ID prompt. |
 | `--app-name "My App"` | Skip the app-name prompt. |
 | `--repo owner/repo` | Override the GitHub repo slug detected from `git remote`. |
@@ -102,7 +102,7 @@ Run BEFORE any mutation. If any fail, the run aborts with all errors listed so y
 
 The three workflow files are byte-for-byte copies of mesozoic-protocol's reference impl with two Hatchkit-time token swaps:
 
-- `build-windows.yml` — Tauri build → Azure Trusted Signing → MSI + EXE artifact upload. Driven entirely by secrets.
+- `build-windows.yml` — electron-builder NSIS build → Azure Trusted Signing → installer artifact upload. Driven entirely by secrets.
 - `build-ios.yml` — `cap sync ios` → `xcodebuild archive` → `xcodebuild -exportArchive` → TestFlight upload via App Store Connect API. The `__APPLE_TEAM_ID__` and `__APPLE_PROVISIONING_PROFILE_NAME__` placeholders in `ExportOptions.plist.template` are substituted by `sed` at workflow runtime — Hatchkit only substitutes `__HATCHKIT_BUNDLE_ID__`.
 - `build-android.yml` — `cap sync android` → `gradle bundleRelease` (reads keystore.properties at runtime, never committed) → Play Console upload via service account JSON.
 

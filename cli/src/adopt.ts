@@ -1043,14 +1043,7 @@ function detectFeatures(projectDir: string, serverDir: string | undefined): Feat
     }
     if ("@aws-sdk/client-s3" in deps || "minio" in deps) found.add("s3");
     if ("electron" in deps || "electron-builder" in deps) found.add("desktop");
-    if ("@tauri-apps/cli" in deps || "@tauri-apps/api" in deps) found.add("desktop-tauri");
     if ("@capacitor/core" in deps || "@capacitor/cli" in deps) found.add("mobile");
-  }
-
-  // A src-tauri/ dir is the strongest Tauri signal — the crate exists
-  // even when @tauri-apps/cli was installed globally.
-  if (existsSync(join(projectDir, "src-tauri", "tauri.conf.json"))) {
-    found.add("desktop-tauri");
   }
 
   // .env.production / .env.example as a hint when package.json is sparse.
@@ -1748,11 +1741,6 @@ async function editAdoptStep(
         { name: "analytics", value: "analytics", checked: plan.features.includes("analytics") },
         { name: "s3", value: "s3", checked: plan.features.includes("s3") },
         { name: "desktop", value: "desktop", checked: plan.features.includes("desktop") },
-        {
-          name: "desktop-tauri",
-          value: "desktop-tauri",
-          checked: plan.features.includes("desktop-tauri"),
-        },
         { name: "mobile", value: "mobile", checked: plan.features.includes("mobile") },
       ],
     });

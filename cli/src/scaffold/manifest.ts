@@ -46,9 +46,10 @@ import type {
 } from "../prompts.js";
 import type { DeferredStep } from "../provision/deferrals.js";
 import type { ProjectPorts } from "../utils/ports.js";
+import { type ProjectIdentifiers, legacyIdentifiers } from "./identifiers.js";
 
 export const MANIFEST_FILENAME = ".hatchkit.json";
-export const MANIFEST_VERSION = 4;
+export const MANIFEST_VERSION = 5;
 /** Every schema version readManifest knows how to migrate FROM. The
  *  reader transparently upgrades v1 manifests (3-value surfaces enum:
  *  server-only / client-only / both, plus the unstable
@@ -56,9 +57,11 @@ export const MANIFEST_VERSION = 4;
  *  manifests (no `email` intent field — adopted as
  *  `{ transactional: "none", mailingList: "none" }`) and v3 manifests
  *  (no `topology` field — adopted as `single-origin`, the shape every
- *  pre-topology `create` run actually produced) on read, and the next
- *  write bumps the file's version field to {@link MANIFEST_VERSION}. */
-const MIGRATABLE_VERSIONS = new Set<number>([1, 2, 3, 4]);
+ *  pre-topology `create` run actually produced) and v4 manifests (no
+ *  `identifiers` block, and possibly a `desktop-tauri` feature flag) on
+ *  read, and the next write bumps the file's version field to
+ *  {@link MANIFEST_VERSION}. */
+const MIGRATABLE_VERSIONS = new Set<number>([1, 2, 3, 4, 5]);
 
 export interface ProjectManifest {
   /** Schema version. Increment when the shape changes incompatibly. */
@@ -89,6 +92,27 @@ export interface ProjectManifest {
    *  "Adopted by hatchkit" blurb on create, and leaves the field alone
    *  on subsequent updates. */
   description?: string;
+  /** The project's permanent identifier set — bundle id, product and
+   *  short name, storage / secret-store prefixes, header names, client
+   *  ids, database name, export prefix, env-var prefix.
+   *
+   *  Resolved ONCE at scaffold time and read from here forever after.
+   *  Nothing downstream re-derives one: before this field existed, four
+   *  call sites each recomputed the bundle id from the project name and
+   *  the signing feature computed a fifth, with a different rule. Once a
+   *  value here has reached a store record, a user's browser or a
+   *  self-hoster's `.env`, changing it is a breaking change — see
+   *  `cli/src/scaffold/identifiers.ts`.
+   *
+   *  Public-safe: every field is a name that appears in the shipped app,
+   *  the web manifest or the repo already.
+   *
+   *  Optional for back-compat. A manifest written before v5 is seeded on
+   *  read with {@link legacyIdentifiers}, which reproduces the OLD
+   *  derivation rather than the current one — a migration that proposed
+   *  a different bundle id for a project with a registered App ID would
+   *  be the exact failure this field exists to prevent. */
+  identifiers?: ProjectIdentifiers;
   /** Feature flags selected at scaffold. */
   features: Feature[];
   /** ML services wired into the backend. */
@@ -443,6 +467,7 @@ export function toManifest(
     cliVersion,
     scaffoldedAt: new Date().toISOString(),
     name: config.name,
+    identifiers: config.identifiers,
     description: config.description?.trim() || undefined,
     domain: config.domain,
     features: [...config.features],
@@ -612,6 +637,35 @@ export function readManifestWithMigrationInfo(projectDir: string): ReadManifestR
   if (fileVersion !== undefined && fileVersion < 4 && obj.topology === undefined) {
     obj.topology = "single-origin";
     migrationNotes.push('Seeded topology: "single-origin" (matches what pre-v4 hatchkit deployed)');
+  }
+
+  // v4 -> v5: the Tauri desktop wrapper was removed. Strip the flag so
+  // `hatchkit update` stops offering to remove a feature it can no
+  // longer add, and so the next write does not re-persist a value the
+  // CLI no longer understands. Nothing is deleted from the project:
+  // trusted origins are merge-only, so a deployed app keeps trusting
+  // the origins it already trusts.
+  if (fileVersion !== undefined && fileVersion < 5 && Array.isArray(obj.features)) {
+    const before = obj.features as string[];
+    if (before.includes("desktop-tauri")) {
+      obj.features = before.filter((f) => f !== "desktop-tauri");
+      migrationNotes.push(
+        'Dropped the removed "desktop-tauri" feature (Electron is the only desktop wrapper)',
+      );
+    }
+  }
+
+  // v4 -> v5: `identifiers` appears. Seed it from the derivation the
+  // pre-v5 CLI actually used, NOT the current one — see the field's
+  // doc comment. A project whose bundle id is already registered must
+  // keep the id it registered.
+  if (fileVersion !== undefined && fileVersion < 5 && obj.identifiers === undefined) {
+    if (typeof obj.name === "string") {
+      obj.identifiers = legacyIdentifiers(obj.name);
+      migrationNotes.push(
+        `Seeded identifiers from the pre-v5 rule (bundle id ${(obj.identifiers as ProjectIdentifiers).bundleId})`,
+      );
+    }
   }
 
   // Schema-version bump (in memory only — the file is rewritten on

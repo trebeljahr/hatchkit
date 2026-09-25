@@ -137,7 +137,7 @@ export interface RunSigningSetupOptions {
   projectDir: string;
   projectName: string;
   /** Explicit platform set. When omitted, the stepper asks (defaults
-   *  derived from detection of src-tauri / ios / android dirs). */
+   *  derived from detection of electron / ios / android dirs). */
   platforms?: SigningPlatform[];
   /** Skip signing entirely. Honored from the `--no-signing` CLI flag. */
   skip?: boolean;

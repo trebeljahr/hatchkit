@@ -2,7 +2,7 @@
  * Native config rewriter unit tests.
  *
  * Builds a scratch project tree that mirrors what mesozoic-protocol
- * looks like (build.gradle, strings.xml, MainActivity.java, tauri.conf.json,
+ * looks like (build.gradle, strings.xml, MainActivity.java, package.json,
  * capacitor.config.ts, pbxproj), runs the rewriter with a new bundle ID
  * + app name, and asserts:
  *
@@ -38,21 +38,19 @@ function assert(cond: unknown, msg: string): void {
 
 const root = mkdtempSync(join(tmpdir(), "signing-rewriter-"));
 try {
-  // 1. Seed a fake mesozoic-protocol project.
-  //    src-tauri/tauri.conf.json
-  mkdirSync(join(root, "src-tauri"), { recursive: true });
+  // 1. Seed a fake native project.
+  //    package.json — electron-builder's desktop identity lives in `build`.
   writeFileSync(
-    join(root, "src-tauri", "tauri.conf.json"),
+    join(root, "package.json"),
     JSON.stringify(
       {
-        $schema: "https://schema.tauri.app/config/2",
-        productName: "Mesozoic Protocol",
+        name: "mesozoic-protocol",
         version: "0.1.0",
-        identifier: "com.mesozoicprotocol.app",
-        app: {
-          windows: [
-            { label: "main", title: "Mesozoic Protocol", width: 1280, height: 800 },
-          ],
+        scripts: { "electron:build": "electron-builder" },
+        build: {
+          appId: "com.mesozoicprotocol.app",
+          productName: "Mesozoic Protocol",
+          directories: { output: "release" },
         },
       },
       null,
@@ -140,7 +138,7 @@ public class MainActivity extends BridgeActivity {}
 
   // 3. Assert every file was rewritten.
   const expectedRewritten = [
-    "src-tauri/tauri.conf.json",
+    "package.json",
     "capacitor.config.ts",
     "android/app/build.gradle",
     "android/app/src/main/res/values/strings.xml",
@@ -151,15 +149,15 @@ public class MainActivity extends BridgeActivity {}
     assert(result.rewritten.includes(f), `expected ${f} in rewritten list (got ${JSON.stringify(result.rewritten)})`);
   }
 
-  // 4. Verify tauri.conf.json content.
-  const tauri = JSON.parse(
-    readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf-8"),
-  );
-  assert(tauri.identifier === "com.example.tiao", `tauri identifier: ${tauri.identifier}`);
-  assert(tauri.productName === "Tiao", `tauri productName: ${tauri.productName}`);
+  // 4. Verify the electron-builder block, and that nothing else in the
+  //    package.json was disturbed — it is the user's file, not ours.
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf-8"));
+  assert(pkg.build.appId === "com.example.tiao", `electron appId: ${pkg.build.appId}`);
+  assert(pkg.build.productName === "Tiao", `electron productName: ${pkg.build.productName}`);
+  assert(pkg.name === "mesozoic-protocol", "package.json name must not be touched");
   assert(
-    tauri.app.windows[0].title === "Tiao",
-    `tauri window.title should sync: ${tauri.app.windows[0].title}`,
+    pkg.build.directories?.output === "release",
+    "unrelated build fields must survive",
   );
 
   // 5. Verify capacitor.config.ts content.

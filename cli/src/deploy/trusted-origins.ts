@@ -6,7 +6,7 @@
  * The failure this closes
  * ---------------------------------------------------------------------
  *
- * A Capacitor / Electron / Tauri client loads the web bundle from its
+ * A Capacitor / Electron client loads the web bundle from its
  * own document origin (`capacitor://localhost`, `https://localhost`,
  * `app://-`, …). better-auth answers `403 INVALID_ORIGIN` for any origin
  * not in its trusted list, before it checks the password. hatchkit

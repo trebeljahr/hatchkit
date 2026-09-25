@@ -555,15 +555,6 @@ await test("--yes fails on a missing required value, naming its flag", async () 
       }),
     "requires --surfaces static",
   );
-  await rejectsWith(
-    () =>
-      nonInteractive({
-        name: "blog",
-        domain: "blog.example.com",
-        features: ["desktop", "desktop-tauri"],
-      }),
-    "--features invalid",
-  );
 });
 
 await test("--yes resolves defaults for everything left unspecified", async () => {

@@ -3,8 +3,8 @@
 <!-- hatchkit:doc cli/src/scaffold/claude-md.ts. Markers also work inline, spanning part -->
 <!-- hatchkit:doc of a line. Every hatchkit marker is stripped from generated projects, so -->
 <!-- hatchkit:doc what ships is plain Markdown. Conditions: server, client, fullstack, -->
-<!-- hatchkit:doc static, backend, newsletter, native, desktop, desktop-tauri, mobile, -->
-<!-- hatchkit:doc websocket, stripe. -->
+<!-- hatchkit:doc static, backend, newsletter, native, desktop, mobile, websocket, -->
+<!-- hatchkit:doc stripe. -->
 
 # node-realtime-starter
 
@@ -161,23 +161,6 @@ Bundle config lives in root `package.json` `"build"` (electron-builder).
 Electron IPC bridge: `electron/preload.ts` exposes `window.electronAPI`.
 <!-- hatchkit:endif -->
 
-<!-- hatchkit:if desktop-tauri -->
-### Desktop (Tauri + Steamworks)
-
-Requires the Rust toolchain (https://rustup.rs).
-
-```bash
-pnpm dev:tauri                        # Next dev + Tauri window, HMR
-pnpm build:tauri                      # static export + native bundle (dmg/msi/AppImage)
-pnpm icons:tauri                      # regenerate src-tauri/icons/ from build/icon.png
-pnpm tauri build -- --features steam  # Steam-enabled build (needs Steamworks SDK redistributable)
-```
-
-Bundle config lives in `src-tauri/tauri.conf.json` (strict JSON — no
-comments; caveats documented in `src-tauri/README.md`). Steam init is
-gated behind the `steam` cargo feature in `src-tauri/src/main.rs` — set
-`STEAM_APP_ID` there before shipping.
-<!-- hatchkit:endif -->
 
 <!-- hatchkit:if mobile -->
 ### Mobile
@@ -213,11 +196,6 @@ credentials. Register a custom protocol in `electron/main.ts` and add
 it (e.g. `app://-`) instead.
 <!-- hatchkit:endif -->
 
-<!-- hatchkit:if desktop-tauri -->
-Tauri serves the bundled frontend from `tauri://localhost` (macOS/Linux)
-and `http://tauri.localhost` (Windows) — both must be in
-`TRUSTED_ORIGINS` for cookie auth to work.
-<!-- hatchkit:endif -->
 <!-- hatchkit:endif -->
 
 ### Static export caveats

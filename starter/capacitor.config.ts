@@ -15,8 +15,11 @@ import type { CapacitorConfig } from "@capacitor/cli";
  * of the bundled export.
  */
 const config: CapacitorConfig = {
-  appId: "com.example.{{bundleId}}",
-  appName: "{{projectName}}",
+  appId: "{{bundleId}}",
+  // The LAUNCHER label, not the product name. `cap add` copies this
+  // verbatim into CFBundleDisplayName and the Android app_name, and a
+  // launcher elides past about twelve characters.
+  appName: "{{shortName}}",
   webDir: "packages/client/out",
 
   android: {

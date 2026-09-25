@@ -26,7 +26,7 @@
 
 /** Features that ship a native shell loading the client from its own
  *  document origin. */
-export const NATIVE_CLIENT_FEATURES = ["mobile", "desktop", "desktop-tauri"] as const;
+export const NATIVE_CLIENT_FEATURES = ["mobile", "desktop"] as const;
 
 /** The origins each native feature needs trusted, in the order they are
  *  appended. */
@@ -38,13 +38,10 @@ const ORIGINS_BY_FEATURE: Record<(typeof NATIVE_CLIENT_FEATURES)[number], readon
   // Electron: the custom `app` protocol registered in electron/main.ts.
   // file:// sends `Origin: null`, which must never be trusted.
   desktop: ["app://-"],
-  // Tauri serves the bundled frontend from tauri://localhost on
-  // macOS/Linux and http://tauri.localhost on Windows.
-  "desktop-tauri": ["tauri://localhost", "http://tauri.localhost"],
 };
 
 /** Origins the project's native shells need in TRUSTED_ORIGINS, deduped,
- *  in a stable order (mobile, desktop, desktop-tauri). Empty when the
+ *  in a stable order (mobile, desktop). Empty when the
  *  project has no native client. */
 export function nativeClientOrigins(features: readonly string[]): string[] {
   const out: string[] = [];
