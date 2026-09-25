@@ -35,6 +35,7 @@ import { requireCloudflareZoneForTerraform, runTerraform } from "./deploy/terraf
 import { printReleaseUsage } from "./features/release/command.js";
 import { type HelpTopic, helpTopicForCommand, isHelpRequest } from "./help-routing.js";
 import {
+  type Feature,
   type GpuPlatform,
   type ProjectConfig,
   collectProjectConfig,
@@ -60,7 +61,7 @@ import { scaffoldApp } from "./scaffold/app.js";
 import { scaffoldInfra } from "./scaffold/infra.js";
 import { MANIFEST_FILENAME, type ProjectManifest, readManifest } from "./scaffold/manifest.js";
 import { mlEnvVarName, printMlSummary, resolveMlServices } from "./scaffold/ml-client.js";
-import { runUpdate } from "./scaffold/update.js";
+import { SUPPORTED_ADDITIONS, runUpdate } from "./scaffold/update.js";
 import {
   installCancelHandler,
   isCancelInProgress,
@@ -2911,9 +2912,59 @@ async function handleCreate(): Promise<void> {
 
 async function handleUpdate(): Promise<void> {
   const projectDir = resolve(".");
-  // `--force` only widens what a feature ADD may replace in package.json
-  // (scripts, dependency pins). Files are never overwritten either way.
-  const result = await runUpdate(projectDir, { force: args.includes("--force") });
+  const dryRun = args.includes("--dry-run");
+  const json = args.includes("--json");
+
+  // `--features` makes the one question `update` asks answerable from
+  // the command line, the way `hatchkit create --features` already is,
+  // so the stepper and the flags can describe the same feature set.
+  // Unset means "prompt". An empty value is rejected rather than read as
+  // "remove everything" — update never removes.
+  const featuresArg = flagValue("--features");
+  let desiredFeatures: Feature[] | undefined;
+  if (featuresArg !== undefined) {
+    const parts = featuresArg
+      .split(",")
+      .map((f) => f.trim())
+      .filter(Boolean);
+    const unknown = parts.filter((f) => !KNOWN_FEATURES.includes(f as Feature));
+    if (unknown.length > 0) {
+      console.error(
+        chalk.red(
+          `Unknown --features value(s): ${unknown.join(", ")}. Known: ${KNOWN_FEATURES.join(", ")}`,
+        ),
+      );
+      process.exit(1);
+    }
+    desiredFeatures = parts as Feature[];
+  }
+
+  const yes = args.includes("--yes") || args.includes("-y");
+  // Presets suppress the prompts. `--yes` on its own still needs a
+  // feature set to act on, so it keeps the project's current one — a
+  // no-op addition that still applies the unconditional retrofits.
+  const presets =
+    desiredFeatures !== undefined || yes
+      ? {
+          ...(desiredFeatures !== undefined ? { desiredFeatures } : {}),
+          confirmAddFeatures: true,
+          ...(yes ? { enableLocalDev: false } : {}),
+        }
+      : undefined;
+
+  const result = await runUpdate(projectDir, {
+    dryRun,
+    // `--force` only widens what a feature ADD may replace in package.json
+    // (scripts, dependency pins). Files are never overwritten either way.
+    force: args.includes("--force"),
+    ...(presets ? { presets } : {}),
+  });
+
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  if (result.dryRun) return;
   if (result.added.length > 0) {
     console.log(chalk.green(`\n  ✓ Added features: ${result.added.join(", ")}`));
     console.log(chalk.yellow("  Run `pnpm install` to pick up the new dependencies."));
@@ -2927,6 +2978,13 @@ async function handleUpdate(): Promise<void> {
         "  Run `pnpm install` to pick up @hatchkit/dev-plugin-next, then `hatchkit doctor` to confirm host plumbing.",
       ),
     );
+  }
+  // The same pointer `hatchkit create` prints for the same feature set.
+  // A wrapper reached through `update` ships the identical unsigned
+  // release workflow, so it needs the identical next step.
+  if (result.added.some((f) => f === "desktop" || f === "mobile")) {
+    console.log(chalk.bold("\n  Next (signing): wire installers + store uploads"));
+    console.log(chalk.dim("    hatchkit signing apply"));
   }
 }
 
@@ -3471,7 +3529,17 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("hatchkit update")} — add features to an already-scaffolded project
 
   ${chalk.bold("Usage:")}
-    cd <project-dir> && hatchkit update [--force]
+    cd <project-dir> && hatchkit update [flags]
+
+  ${chalk.bold("Flags:")}
+    ${chalk.cyan("--features <list>")}  ${FEATURE_VALUES}
+                       The feature set you want the project to have.
+                       Comma-separated. Skips the interactive picker.
+    ${chalk.cyan("--dry-run")}          Print what would be added and change nothing.
+    ${chalk.cyan("--yes")}, ${chalk.cyan("-y")}          Don't prompt; accept the additions.
+    ${chalk.cyan("--json")}             Print the result as JSON.
+    ${chalk.cyan("--force")}            Replace package.json scripts / dependency pins the
+                       project has changed. Never replaces a file.
 
   ${chalk.bold("What it does:")}
     Reads the project's .hatchkit.json manifest, lets you pick a new
@@ -3482,6 +3550,8 @@ function printHelp(topic?: HelpTopic): void {
     (never files) with the starter's current versions.
     Currently supported additions: ${chalk.cyan("workspaces")}, ${chalk.cyan("desktop")}, ${chalk.cyan("mobile")}, ${chalk.cyan("client-core")},
     ${chalk.cyan("extension")}, ${chalk.cyan("release")}.
+
+    Currently supported additions: ${chalk.cyan(SUPPORTED_ADDITIONS.join(", "))}.
 
     ${chalk.cyan("workspaces")} adds tenants, members, roles and invitations. It only
     writes new files and wires them in; it never rewrites your own code,
@@ -3520,6 +3590,11 @@ function printHelp(topic?: HelpTopic): void {
     A server platform feature needs a server package — it reports
     ${chalk.dim("skipped")} on a ${chalk.cyan("static")} surface and is not recorded in the manifest,
     so ${chalk.cyan("hatchkit server add")} then ${chalk.cyan("hatchkit update")} picks it up.
+
+    Adding a native shell also flips ${chalk.dim("packages/client/next.config.ts")} to
+    ${chalk.dim('output: "export"')} — the shell loads ${chalk.dim("packages/client/out")}, which a
+    standalone build never writes. A config you've edited is left alone
+    with a note saying what to add.
 
     A native shell loads the client from its own origin, which the
     deployed server rejects (${chalk.dim("403 INVALID_ORIGIN")}) until ${chalk.dim("TRUSTED_ORIGINS")}

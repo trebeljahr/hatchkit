@@ -152,9 +152,15 @@ jobs:
       # another broke.
       fail-fast: false
       matrix:
-        # Exactly three combinations, and no more — every entry costs a full
+        # Five combinations, and no more — every entry costs a full
         # install plus a Next build. The presets are defined in
         # cli/scripts/ci-stamp.ts; these names must match its PRESETS keys.
+        #
+        # This matrix BUILDS a few representative combinations. The cheap
+        # structural sweep over all of them — bare, each feature alone,
+        # the full set and the interacting pairs — is
+        # cli/test-feature-matrix.ts, which runs in `pnpm test` without
+        # installing anything.
         #
         # The axis that matters is whether a native shell was selected. With
         # desktop/mobile, scaffoldApp calls flipNextConfigToStaticExport()
@@ -174,7 +180,12 @@ jobs:
         #              is left in place and the plain web deploy — the most
         #              common configuration, and previously never built by CI
         #              at all — gets compiled.
-        preset: [reported, commerce, web]
+        #   bare     — standalone, nothing selected. Every feature
+        #              conditional takes its "remove" arm, which is where
+        #              a missed strip shows up as a build error.
+        #   full     — static export, every feature at once: the
+        #              opposite end of the same axis.
+        preset: [reported, commerce, web, bare, full]
     env:
       # Every client next.config.ts throws by design when a production build
       # whose output ships to users has no NEXT_PUBLIC_API_URL — Next inlines

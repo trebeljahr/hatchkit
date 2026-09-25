@@ -74,6 +74,13 @@ export const KNOWN_FEATURES: readonly Feature[] = [
   "server-migrations",
   "scheduler",
   "public-api",
+  // `auth-account-security` was in the `Feature` union and in
+  // SUPPORTED_ADDITIONS but not here, so `hatchkit create --features
+  // auth-account-security` was rejected as an unknown value while
+  // `hatchkit update` offered it — the same feature describable on one
+  // surface and not another. test-feature-matrix.ts now asserts every
+  // addable feature is in this list, so the gap cannot reopen.
+  "auth-account-security",
 ];
 export const KNOWN_ML_SERVICES: readonly MlService[] = [
   "3d-sam-objects",

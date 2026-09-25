@@ -156,6 +156,12 @@ export function stripNativeStylesFromGlobals(outputDir: string): void {
  *  against the current directory instead, so a nested route looks for its
  *  chunks under that route's folder and renders blank. Both build scripts
  *  refuse any emitted HTML containing `"./_next`. */
+
+/** Distinctive line of the generated static-export config. Lets the
+ *  retrofit path tell "already flipped" (no-op) from "still the
+ *  starter's config" (safe to replace) from "the user rewrote it"
+ *  (leave alone and say so). */
+export const STATIC_EXPORT_MARKER = "This client always builds as a static export";
 export function flipNextConfigToStaticExport(
   outputDir: string,
   opts: { wantsMobile?: boolean } = {},

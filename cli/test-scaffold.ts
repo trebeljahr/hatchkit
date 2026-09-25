@@ -551,7 +551,15 @@ results.serverOnly = await run(
       ["compose: client service stripped", !/^\s{2}client:/m.test(compose)],
       ["compose: server service kept", /^\s{2}server:/m.test(compose)],
       ["compose: mongo service kept", /^\s{2}mongo:/m.test(compose)],
-      ["compose: redis service kept", /^\s{2}redis:/m.test(compose)],
+      // This case scaffolds with NO features, and redis exists only for
+      // `websocket`. It used to survive anyway — the server waited on a
+      // container nothing talked to, while infra.ts derived
+      // `redisEnabled: false` from the same feature. The surface prune
+      // removed it for `static` only, so every other featureless
+      // scaffold shipped the stray service.
+      ["compose: redis service stripped (websocket not selected)", !/^\s{2}redis:/m.test(compose)],
+      ["compose: no dangling `- redis` depends_on", !/^\s*- redis\s*$/m.test(compose)],
+      ["compose: no REDIS_URL env for a redis that isn't there", !/REDIS_URL:/.test(compose)],
       ["pkg.scripts.dev targets server only", pkg.scripts?.dev === "pnpm --filter @starter/server dev"],
       ["pkg.scripts has no build:client", !pkg.scripts?.["build:client"]],
       ["pkg.scripts has no test:e2e", !pkg.scripts?.["test:e2e"]],

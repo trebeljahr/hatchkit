@@ -166,7 +166,9 @@ Run **inside an already-scaffolded project** to add features additively.
 
 ```bash
 cd my-app
-hatchkit update
+hatchkit update --dry-run           # what would change
+hatchkit update                     # pick interactively
+hatchkit update --features desktop,mobile --yes
 ```
 
 Reads `.hatchkit.json`, lets you pick a new feature set, copies additive pieces from the starter. **Supported additions today:** `workspaces` (tenants, members, roles, invitations), `desktop` (Electron), `mobile` (Capacitor), `client-core` (the shared client kit — see [Client Core](./client-core)), `extension` (an MV3 browser extension), `release` (release coordination), and the three server platform features below. Removal is not supported — removing a feature could delete user code. Remove manually and update the manifest.
@@ -253,6 +255,16 @@ and run the same writer `hatchkit create` runs, so a project that skipped one at
 scaffold picks it up here. Re-running is a no-op: a file whose contents already
 match is left alone, and a file you have edited is reported and left untouched.
 See [Server Platform](./server-platform).
+| Flag | Effect |
+| --- | --- |
+| `--features <list>` | The feature set you want, comma-separated. Skips the picker. |
+| `--dry-run` | Print the plan — the files each addition would copy — and write nothing. |
+| `--yes`, `-y` | Don't prompt; accept the additions. |
+| `--json` | Print the result as JSON. |
+
+Adding a native shell also flips `packages/client/next.config.ts` to `output: "export"`. The shell loads `packages/client/out`, and a standalone build never writes that directory. If you have edited the config yourself, `update` leaves it alone and prints the one line you need to add.
+
+Run it twice and the second run does nothing: files that already exist are never overwritten, so your edits survive.
 
 ---
 

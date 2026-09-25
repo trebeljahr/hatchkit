@@ -37,6 +37,59 @@ Tick a row only when the work is merged into `main` **and** the invariant has a
 test. An untested implementation is `[~]`: these invariants all describe silent
 failures, so "it seemed to work" is not evidence.
 
+## Landing status
+
+Audited against `main` on 2026-09-25, by reading the four surfaces a feature has
+to appear in — the interactive stepper, the create flags, `hatchkit update`, and
+the read-only state surface (`status` / `explain` / MCP) — plus what the
+scaffolder writes.
+
+Three have landed: `release`, `auth-account-security` and `workspaces`, each a
+real member of the `Feature` union with scaffolding behind it. The other nine
+have not — there is no i18n, extension, Raycast, token-auth, client-core,
+public-API, dev-infra or self-host identifier on any branch. The *partial*
+markers on rows 7–11 reflect pre-existing starter machinery, not a follow-up
+session's work.
+
+Sessions are landing while this is written, so re-read the `Feature` union in
+`cli/src/prompts.ts` rather than trusting this paragraph's count.
+
+So most rows here stay open, and cross-feature reconciliation has barely begun.
+The mechanism is ready for it: `cli/src/features/contract.ts` for registration,
+prerequisites and the ledger, and `cli/src/scaffold/identifiers.ts` for names.
+
+The first reconciliation defect has already appeared and is fixed:
+`auth-account-security` was in the `Feature` union and in `hatchkit update`'s
+picker but not in `KNOWN_FEATURES`, so `hatchkit create --features
+auth-account-security` rejected it as unknown while `update` offered it. **When
+you add a feature, add it in all three places** — the union, `KNOWN_FEATURES`
+(which is what `--features` and the `create --help` text read), and the stepper
+— and confirm the read-only surface reports it. A feature reachable on one
+surface and not another is the failure mode to watch for here.
+
+### What a feature author already inherits
+
+These are enforced for the six existing features and apply to every new one, so
+a feature does not have to re-solve them:
+
+- **A dry run that reaches the command line.** `hatchkit update --dry-run`
+  reports the plan and writes nothing; `--features`, `--yes` and `--json` make
+  the command scriptable. New writes should go through `FeatureLedger`, which
+  makes the dry run a property of the writer rather than a flag each call site
+  remembers.
+- **Off-state coherence, checked mechanically.**
+  `cli/test-feature-matrix.ts` scaffolds a combination matrix — bare, each
+  feature alone, the full set, and the pairs that touch the same files — and
+  asserts no dangling imports, no script pointing at a file that was not
+  scaffolded, no release workflow for an absent shell, and no env var or compose
+  service for an absent service. Add a row to its `expectations` table when a
+  feature introduces an env var or a service.
+- **A retrofit contract.** `cli/test-update-flags.ts` pins it: a dry run writes
+  nothing, a second run is a no-op, and a hand-edited file is never overwritten.
+- **Project state is reported.** `hatchkit status --json` carries
+  `project.features`, `project.addableFeatures` and `project.signing`, so an
+  agent reads the feature set instead of guessing at it.
+
 ## Prerequisites
 
 The dependency order below is what the survey found, normalised onto the twelve

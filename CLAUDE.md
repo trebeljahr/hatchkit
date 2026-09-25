@@ -39,7 +39,13 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
 
 - `hatchkit setup` / `init`: interactive credential onboarding.
 - `hatchkit create`: interactive scaffold/deploy flow.
-- `hatchkit update`: add supported features to an existing project (`desktop`, `mobile`, `release`, `auth-account-security`, `client-core`).
+- `hatchkit update`: add supported features to an existing project
+  (`workspaces`, `desktop`, `mobile`, `release`, `auth-account-security`,
+  `client-core`). `--features <list>` answers the picker, `--dry-run` reports
+  what would change without writing, `--json` prints the result. Never removes
+  a feature. The list lives in `SUPPORTED_ADDITIONS`
+  (`cli/src/scaffold/update.ts`) — read it rather than this line, which has
+  gone stale before.
 - `hatchkit add <project> [services]`: provision GlitchTip/OpenPanel/Resend/S3/email.
 - `hatchkit keys show|push|rotate <project>`: manage dotenvx private keys.
 - `hatchkit gh-pages`: configure GitHub Pages for the current repo.

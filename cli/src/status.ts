@@ -9,6 +9,7 @@
 
 import chalk from "chalk";
 import { getConfig, getConfigPath, getMlServices } from "./config.js";
+import type { Feature } from "./prompts.js";
 import { type DeferredStep, readDeferredSteps } from "./provision/deferrals.js";
 import { readManifest } from "./scaffold/manifest.js";
 import { getCliVersion } from "./utils/version.js";
@@ -34,8 +35,24 @@ export interface StatusSnapshot {
   suggestions: Array<{ command: string; why: string }>;
   /** Project whose `.hatchkit.json` supplied `deferredSteps`. Null when
    *  status ran outside a Hatchkit project — the provider rows above
-   *  are global, these two fields are not. */
-  project: { name: string; dir: string } | null;
+   *  are global, these two fields are not.
+   *
+   *  `features` is the project's opt-in feature set and
+   *  `addableFeatures` the ones `hatchkit update` could still layer on.
+   *  Without them the read-only surface — and so `hatchkit_status` over
+   *  MCP — could say which PROVIDERS were configured but not which
+   *  FEATURES the project in front of it had; an agent had to open
+   *  `.hatchkit.json` by hand, and every feature answer it gave before
+   *  doing so was a guess. `signing` reports whether the installer and
+   *  store-upload pipeline has been wired, which was likewise recorded
+   *  in the manifest and surfaced nowhere. */
+  project: {
+    name: string;
+    dir: string;
+    features: Feature[];
+    addableFeatures: Feature[];
+    signing: boolean;
+  } | null;
   /** Optional steps the user skipped during create / adopt / add, each
    *  with the exact command that finishes it. Always an array (empty
    *  outside a project), so `--json` consumers never have to nullcheck. */
@@ -153,7 +170,16 @@ export function collectStatus(projectDir: string = process.cwd()): StatusSnapsho
   try {
     const manifest = readManifest(projectDir);
     if (manifest) {
-      project = { name: manifest.name, dir: projectDir };
+      const features = manifest.features ?? [];
+      project = {
+        name: manifest.name,
+        dir: projectDir,
+        features,
+        // Mirrors SUPPORTED_ADDITIONS in scaffold/update.ts — the other
+        // features' scaffold-time strip is too coarse to re-add cleanly.
+        addableFeatures: (["desktop", "mobile"] as Feature[]).filter((f) => !features.includes(f)),
+        signing: manifest.signing !== undefined,
+      };
       deferredSteps = readDeferredSteps(projectDir);
     }
   } catch {
@@ -272,7 +298,30 @@ export function renderStatusHuman(s: StatusSnapshot): string {
   for (const m of s.mlServices) {
     lines.push(chalk.dim(`    ${m.name}: ${m.endpoint} (${m.platform})`));
   }
-  lines.push("");
+  // The project's feature set, alongside the provider rows. Without it
+  // `hatchkit status` described the machine and said nothing about the
+  // project standing in front of it.
+  if (s.project) {
+    lines.push(`  ${chalk.bold("Project")}: ${s.project.name}`);
+    lines.push(
+      `    Features: ${
+        s.project.features.length > 0
+          ? chalk.green(s.project.features.join(", "))
+          : chalk.dim("none")
+      }`,
+    );
+    if (s.project.addableFeatures.length > 0) {
+      lines.push(
+        chalk.dim(
+          `    Can add:  ${s.project.addableFeatures.join(", ")}  (hatchkit update --dry-run)`,
+        ),
+      );
+    }
+    lines.push(
+      `    Signing:  ${s.project.signing ? chalk.green("configured") : chalk.dim("not configured")}`,
+    );
+    lines.push("");
+  }
   if (s.deferredSteps.length > 0) {
     lines.push(
       `  ${chalk.bold(chalk.yellow(`Deferred steps: ${s.deferredSteps.length}`))}${

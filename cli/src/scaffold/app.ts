@@ -83,7 +83,7 @@ import {
   stripNativeStylesFromGlobals,
   updateEnvExample,
 } from "./starter-files.js";
-import { pruneToSurface } from "./surfaces.js";
+import { pruneToSurface, stripRedisFromCompose } from "./surfaces.js";
 
 // Monorepo root → starter submodule
 const MONOREPO_ROOT = resolve(join(import.meta.dirname, "..", "..", ".."));
@@ -371,6 +371,16 @@ async function runScaffoldSteps(
     // Deleting ws/ alone leaves `index.ts` importing ./ws/handler.js —
     // a hard TS2307 on the first `pnpm run build`. Strip the call sites too.
     stripWebSocketFromServerIndex(outputDir);
+    // …and the Redis service that exists only to back the room socket.
+    // Leaving it declared made the server wait on a container nothing
+    // talks to, and contradicted infra.ts, which derives `redisEnabled`
+    // from this same feature. Only the `static` prune removed it, so
+    // every other scaffold without `websocket` shipped it.
+    for (const rel of ["docker-compose.yml", "docker-compose.dev.yml"]) {
+      const composePath = join(outputDir, rel);
+      if (existsSync(composePath)) rewriteFile(composePath, stripRedisFromCompose);
+    }
+    modifications.push("removed: the redis compose service (WebSocket not selected)");
   }
   if (!config.features.includes("stripe")) {
     removeIfExists(join(outputDir, "packages/server/src/services/stripe.ts"));

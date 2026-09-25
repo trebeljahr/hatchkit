@@ -48,6 +48,7 @@ import {
   printServerFeatureResults,
 } from "../features/server-platform/index.js";
 import type { Feature } from "../prompts.js";
+import { KNOWN_FEATURES } from "../utils/flags.js";
 import { multiselect } from "../utils/multiselect.js";
 import { PORT_RANGES, pickPort } from "../utils/ports.js";
 import { getCliVersion } from "../utils/version.js";
@@ -80,7 +81,12 @@ import {
 import { hasNativeClient } from "./native-origins.js";
 import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
 import { setPackageJsonScript } from "./pkg-json.js";
-import { applyPorts, rewriteFile } from "./starter-files.js";
+import {
+  STATIC_EXPORT_MARKER,
+  applyPorts,
+  flipNextConfigToStaticExport,
+  rewriteFile,
+} from "./starter-files.js";
 
 // Same derivation as scaffold/app.ts — STARTER_ROOT lives next to the
 // monorepo root, two hops up from this file's compiled location.
@@ -103,7 +109,7 @@ function identifiersFor(manifest: ProjectManifest): ProjectIdentifiers {
 }
 
 /** Features that `update` knows how to layer onto an existing project. */
-const SUPPORTED_ADDITIONS: readonly Feature[] = [
+export const SUPPORTED_ADDITIONS: readonly Feature[] = [
   "workspaces",
   "desktop",
   "mobile",
@@ -120,10 +126,39 @@ const SUPPORTED_ADDITIONS: readonly Feature[] = [
   ...SERVER_FEATURE_IDS,
 ];
 
+/**
+ * The starter paths each retrofit copies, declared once so `--dry-run`
+ * reports exactly what the add-path writes and cannot drift from it.
+ * (`scripts/icons-desktop.mjs` is in the desktop list because
+ * `icons:desktop` runs it and the scaffolder deletes it from a project
+ * that had no desktop wrapper — installing the script without its
+ * module is how that bug looked.)
+ */
+/**
+ * Starter paths the hand-written add-paths in this file would copy.
+ *
+ * Only `desktop` is left: mobile, client-core, workspaces, release and
+ * auth-account-security apply through the feature registry, where
+ * `FeatureLedger` is itself the dry run and reports its own plan. This
+ * table exists so `--dry-run` can describe the one add-path that still
+ * copies directly, and it reads `DESKTOP_FILES` rather than re-listing,
+ * so it cannot describe a different set from the one copied.
+ *
+ * When desktop moves onto the contract too, this and its call site go.
+ */
+function plannedFilesFor(feature: Feature): readonly string[] {
+  // `build/` is copied alongside DESKTOP_FILES — it holds the icon source
+  // the packager and `icons:desktop` read — so the plan has to name it.
+  return feature === "desktop" ? [...DESKTOP_FILES, "build"] : [];
+}
+
 export interface UpdateResult {
   added: Feature[];
   skipped: Feature[];
   removed: Feature[];
+  /** True when the run was a `--dry-run`: `added` then lists what WOULD
+   *  be added and nothing on disk was touched. */
+  dryRun?: boolean;
   /** Populated when this `update` run opted the project into the
    *  Tailscale-served local-dev integration. Distinct from a project
    *  that was already opted in — the latter shows up as `undefined`
@@ -132,6 +167,23 @@ export interface UpdateResult {
 }
 
 export interface UpdateOptions {
+  /**
+   * Report what would be added and change nothing.
+   *
+   * Every sibling retrofit command has one (`hatchkit server add
+   * --dry-run`, `hatchkit sync --dry-run`) and CLAUDE.md tells agents to
+   * prefer it, but `update` — which copies starter trees, rewrites
+   * package.json, edits the client layout and claims a port — had no way
+   * to look first.
+   *
+   * Checked before any write, including the unconditional retrofits at
+   * the top of `runUpdate`, so a dry run cannot touch the tree at all.
+   *
+   * A feature that applies itself through `FeatureLedger`
+   * (`cli/src/features/contract.ts`) gets this for free — the ledger is
+   * the choke point. This option covers the add-paths that predate it.
+   */
+  dryRun?: boolean;
   /** Overwrite root-package.json scripts and dependency pins that the
    *  project has changed away from the starter's, instead of keeping them.
    *  Off by default: those are the commands a shipping app owns. Files are
@@ -199,71 +251,117 @@ export async function runUpdate(
   console.log(chalk.dim(`  Current features: ${manifest.features.join(", ") || "(none)"}`));
   console.log(chalk.dim(`  Supported additions: ${SUPPORTED_ADDITIONS.join(", ")}`));
 
-  // Retrofit docker-compose.yml image refs for projects scaffolded
-  // before the OWNER/REPO substitution landed in scaffoldApp. Idempotent
-  // — only touches the file when the literal `OWNER/REPO` placeholder is
-  // still present, so projects that already have a real owner/repo (or
-  // any hand-edited image ref) are left alone. No flag, no opt-in: the
-  // bug shipped as a broken Coolify default, and the only path to a
-  // working first deploy is fixing the placeholder.
-  const ghOwner = await inferGhOwner({ projectDir });
-  const composeSub = substituteComposeImageRefs(projectDir, ghOwner, manifest.name);
-  if (composeSub.written) {
-    console.log(
-      ghOwner
-        ? chalk.green(
-            `  ✓ docker-compose.yml: image refs → ghcr.io/${ghOwner}/${manifest.name}-{server,client}:main`,
-          )
-        : chalk.yellow(
-            `  ↻ docker-compose.yml: substituted REPO=${manifest.name} (owner unresolved; left literal OWNER)`,
+  const dryRun = options.dryRun === true;
+  if (dryRun) {
+    console.log(chalk.yellow("  --dry-run — reporting the plan, changing nothing.\n"));
+  }
+
+  // Every retrofit below writes to the tree, so a dry run skips the
+  // lot rather than re-deriving each transform twice just to describe
+  // it. `update` without --dry-run applies them as before.
+  if (!dryRun) {
+    // Retrofit docker-compose.yml image refs for projects scaffolded
+    // before the OWNER/REPO substitution landed in scaffoldApp. Idempotent
+    // — only touches the file when the literal `OWNER/REPO` placeholder is
+    // still present, so projects that already have a real owner/repo (or
+    // any hand-edited image ref) are left alone. No flag, no opt-in: the
+    // bug shipped as a broken Coolify default, and the only path to a
+    // working first deploy is fixing the placeholder.
+    const ghOwner = await inferGhOwner({ projectDir });
+    const composeSub = substituteComposeImageRefs(projectDir, ghOwner, manifest.name);
+    if (composeSub.written) {
+      console.log(
+        ghOwner
+          ? chalk.green(
+              `  ✓ docker-compose.yml: image refs → ghcr.io/${ghOwner}/${manifest.name}-{server,client}:main`,
+            )
+          : chalk.yellow(
+              `  ↻ docker-compose.yml: substituted REPO=${manifest.name} (owner unresolved; left literal OWNER)`,
+            ),
+      );
+      if (!ghOwner) {
+        console.log(
+          chalk.yellow(
+            "  ⚠ Couldn't infer GitHub owner — edit `image: ghcr.io/OWNER/...`\n" +
+              "    in docker-compose.yml before pushing.",
           ),
-    );
-    if (!ghOwner) {
+        );
+      }
+    }
+
+    // Retrofit the client image's NEXT_PUBLIC_* build-arg wiring for
+    // projects scaffolded before it landed. Next.js inlines NEXT_PUBLIC_*
+    // at BUILD time; older scaffolds supplied them only as runtime env on
+    // the deployed container, which baked the localhost fallback into the
+    // shipped browser bundle (production auth silently pointed every
+    // visitor at their own machine). Same no-flag rationale as the
+    // OWNER/REPO retrofit above. Idempotent — all three transforms no-op
+    // once the files carry the current shape.
+    const buildArgRetrofits: Array<[rel: string, fn: (c: string) => string]> = [
+      [CLIENT_DOCKERFILE_REL_PATH, upgradeClientDockerfile],
+      [
+        CLIENT_WORKFLOW_REL_PATH,
+        (c) => upgradeWorkflowClientBuildArgs(c, manifest.domain, manifest.topology),
+      ],
+      ["docker-compose.yml", stripComposeClientRuntimeNextPublic],
+    ];
+    let buildArgsRetrofitted = false;
+    for (const [rel, fn] of buildArgRetrofits) {
+      const path = join(projectDir, rel);
+      if (!existsSync(path)) continue;
+      const before = readFileSync(path, "utf-8");
+      const after = fn(before);
+      if (after !== before) {
+        writeFileSync(path, after, "utf-8");
+        buildArgsRetrofitted = true;
+        console.log(chalk.green(`  ✓ ${rel}: client NEXT_PUBLIC_* build-arg wiring updated`));
+      }
+    }
+    if (buildArgsRetrofitted) {
       console.log(
         chalk.yellow(
-          "  ⚠ Couldn't infer GitHub owner — edit `image: ghcr.io/OWNER/...`\n" +
-            "    in docker-compose.yml before pushing.",
+          "  ⚠ Commit + push so CI rebuilds the client image — NEXT_PUBLIC_* values\n" +
+            "    are baked into the browser bundle at image build time.",
+        ),
+      );
+    }
+
+    // Retrofit the post-deploy verification gate for projects scaffolded
+    // before it landed. Until it existed the pipeline's final assertion
+    // was an HTTP 200 from a deploy POST, so a stale container, an image
+    // built with an empty API URL, and a crash-looping server all reported
+    // success. Same no-flag rationale as the two retrofits above: the
+    // failure is silent, and every one of those shipped green.
+    let verificationRetrofitted = false;
+    for (const [label, rel, fn] of deployVerificationRetrofits(
+      manifest.domain,
+      manifest.topology,
+      manifest.surfaces,
+      manifest.features,
+    )) {
+      const path = join(projectDir, rel);
+      if (!existsSync(path)) continue;
+      const before = readFileSync(path, "utf-8");
+      const after = fn(before);
+      if (after !== before) {
+        writeFileSync(path, after, "utf-8");
+        verificationRetrofitted = true;
+        console.log(chalk.green(`  ✓ ${label}: deploy verification wired`));
+      }
+    }
+    if (verificationRetrofitted) {
+      console.log(
+        chalk.dim(
+          "    The deploy job now polls /api/health and /version.json for the pushed\n" +
+            "    commit and fails the run when they disagree.",
         ),
       );
     }
   }
 
-  // Retrofit the client image's NEXT_PUBLIC_* build-arg wiring for
-  // projects scaffolded before it landed. Next.js inlines NEXT_PUBLIC_*
-  // at BUILD time; older scaffolds supplied them only as runtime env on
-  // the deployed container, which baked the localhost fallback into the
-  // shipped browser bundle (production auth silently pointed every
-  // visitor at their own machine). Same no-flag rationale as the
-  // OWNER/REPO retrofit above. Idempotent — all three transforms no-op
-  // once the files carry the current shape.
-  const buildArgRetrofits: Array<[rel: string, fn: (c: string) => string]> = [
-    [CLIENT_DOCKERFILE_REL_PATH, upgradeClientDockerfile],
-    [
-      CLIENT_WORKFLOW_REL_PATH,
-      (c) => upgradeWorkflowClientBuildArgs(c, manifest.domain, manifest.topology),
-    ],
-    ["docker-compose.yml", stripComposeClientRuntimeNextPublic],
-  ];
-  let buildArgsRetrofitted = false;
-  for (const [rel, fn] of buildArgRetrofits) {
-    const path = join(projectDir, rel);
-    if (!existsSync(path)) continue;
-    const before = readFileSync(path, "utf-8");
-    const after = fn(before);
-    if (after !== before) {
-      writeFileSync(path, after, "utf-8");
-      buildArgsRetrofitted = true;
-      console.log(chalk.green(`  ✓ ${rel}: client NEXT_PUBLIC_* build-arg wiring updated`));
-    }
-  }
-  if (buildArgsRetrofitted) {
-    console.log(
-      chalk.yellow(
-        "  ⚠ Commit + push so CI rebuilds the client image — NEXT_PUBLIC_* values\n" +
-          "    are baked into the browser bundle at image build time.",
-      ),
-    );
-  }
+  // Derived from KNOWN_FEATURES rather than re-listed, so a feature
+  // added to the create flags cannot go missing from the update picker.
+  const allOptions: readonly Feature[] = KNOWN_FEATURES;
 
   // Retrofit the post-deploy verification gate for projects scaffolded
   // before it landed. Until it existed the pipeline's final assertion
@@ -297,20 +395,6 @@ export async function runUpdate(
     );
   }
 
-  const allOptions: Feature[] = [
-    "websocket",
-    "stripe",
-    "analytics",
-    "s3",
-    "workspaces",
-    "desktop",
-    "mobile",
-    "release",
-    "auth-account-security",
-    "client-core",
-    "extension",
-    ...SERVER_FEATURE_IDS,
-  ];
   const desired =
     options.presets?.desiredFeatures ??
     (await multiselect<Feature>({
@@ -334,7 +418,7 @@ export async function runUpdate(
   // prompt again — the next update run skips it because manifest.localDev
   // is now set.
   let localDevEnabled: { slug: string; domain?: string } | undefined;
-  if (!manifest.localDev) {
+  if (!manifest.localDev && !dryRun) {
     const { localDevDomainFromProjectDomain, localDevUrl, sanitiseSlug } = await import(
       "@hatchkit/dev-shared"
     );
@@ -419,6 +503,25 @@ export async function runUpdate(
     );
   }
 
+  if (dryRun) {
+    console.log(
+      added.length > 0
+        ? chalk.bold(`\n  Would add: ${added.join(", ")}`)
+        : chalk.dim("\n  Would add: (nothing — the feature set is already what you asked for)"),
+    );
+    for (const feature of added) {
+      for (const rel of plannedFilesFor(feature)) console.log(chalk.dim(`    + ${rel}`));
+    }
+    if (added.some((f) => hasNativeClient([f]))) {
+      console.log(
+        chalk.dim('    ~ packages/client/next.config.ts (flip to `output: "export"`, if unedited)'),
+      );
+    }
+    console.log(chalk.dim(`    ~ ${MANIFEST_FILENAME} (features, cliVersion, ports)`));
+    console.log(chalk.yellow("\n  --dry-run — nothing was written."));
+    return { added, skipped: [], removed, dryRun: true };
+  }
+
   // The feature-add work runs only if there's something to add AND the
   // user confirms. The local-dev opt-in is independent — we apply it
   // even when the rest of the update is a no-op (this is the canonical
@@ -458,7 +561,13 @@ export async function runUpdate(
           await addExtension(projectDir, manifestDir, manifest);
           updatedFeatures.add("extension");
         } else if (feature === "release") {
-          await addRelease(projectDir, manifestDir, manifest, [...updatedFeatures, ...added]);
+          await addRelease(
+            projectDir,
+            manifestDir,
+            manifest,
+            [...updatedFeatures, ...added],
+            dryRun,
+          );
           updatedFeatures.add("release");
         } else if (feature === "auth-account-security") {
           authSecurityOptions = await addAuthAccountSecurity(projectDir, manifest, {
@@ -495,6 +604,13 @@ export async function runUpdate(
       actuallyAdded = added.filter((f) => !serverSkipped.has(f));
       skippedAdditions = added.filter((f) => serverSkipped.has(f));
 
+      // Every shell loads a static export; without this the retrofit
+      // produced a project whose `build:desktop` / `build:mobile` never
+      // wrote the directory the shell points at.
+      if (added.some((f) => hasNativeClient([f]))) {
+        ensureStaticExportForNativeShell(projectDir, resolvedStarter);
+      }
+
       // Pick a nativeHmr port if the project didn't have one and now needs one.
       const needsNative = updatedFeatures.has("desktop") || updatedFeatures.has("mobile");
       if (needsNative && updatedPorts.nativeHmr === undefined) {
@@ -526,7 +642,7 @@ export async function runUpdate(
     !actuallyAdded.includes("release") &&
     actuallyAdded.length > 0
   ) {
-    await addRelease(projectDir, manifestDir, manifest, [...updatedFeatures]);
+    await addRelease(projectDir, manifestDir, manifest, [...updatedFeatures], dryRun);
   }
 
   // Refresh a mobile feature the project ALREADY has.
@@ -718,12 +834,13 @@ async function addRelease(
   manifestDir: string,
   manifest: ProjectManifest,
   features: readonly Feature[],
+  dryRun: boolean,
 ): Promise<void> {
   console.log(chalk.dim("\n  Adding release coordination..."));
   const { FeatureLedger } = await import("../features/contract.js");
   const { releaseFeature, configFor, releaseAudit } = await import("../features/release/index.js");
 
-  const ledger = new FeatureLedger(projectDir, false);
+  const ledger = new FeatureLedger(projectDir, dryRun);
   ledger.scopeTo("release");
   const ctx = {
     projectDir,
@@ -743,6 +860,46 @@ async function addRelease(
     console.log(chalk.yellow(`    \u21bb ${conflict}`));
   }
   for (const note of audit.manualResidue) console.log(chalk.dim(`    \u2022 ${note}`));
+}
+
+/**
+ * A native shell loads the client from a static export —
+ * `capacitor.config.ts` points `webDir` at `packages/client/out`, and
+ * Electron's main process does `loadFile(.../out/index.html)`.
+ * `scaffoldApp` flips `next.config.ts` to `output: "export"` whenever a
+ * shell is selected, but `hatchkit update` never did, so a fullstack
+ * project that gained `desktop` or `mobile` later kept building
+ * `standalone`, never produced `out/`, and the shell had nothing to
+ * load. (The starter config only exports under `NEXT_FILE_EXPORT=1`,
+ * which nothing in the generated project sets.)
+ *
+ * The flip REPLACES the file, so this refuses to run over a config the
+ * user has edited: already-flipped is a silent no-op, an untouched
+ * starter config is rewritten, and anything else is reported with the
+ * one line the user has to add themselves.
+ */
+function ensureStaticExportForNativeShell(projectDir: string, resolvedStarter: string): void {
+  const rel = "packages/client/next.config.ts";
+  const path = join(projectDir, rel);
+  if (!existsSync(path)) return;
+  const current = readFileSync(path, "utf-8");
+  if (current.includes(STATIC_EXPORT_MARKER)) return;
+
+  const pristine = join(resolvedStarter, rel);
+  const untouched = existsSync(pristine) && readFileSync(pristine, "utf-8") === current;
+  if (!untouched) {
+    console.log(
+      chalk.yellow(
+        `\n  ! ${rel} has local edits, so it was left alone — but a native shell\n` +
+          "    loads packages/client/out, which only exists when the client builds\n" +
+          '    as a static export. Add `output: "export"` to your config, or the\n' +
+          "    shell will start with nothing to load.",
+      ),
+    );
+    return;
+  }
+  flipNextConfigToStaticExport(projectDir);
+  console.log(chalk.green(`  ✓ ${rel}: flipped to \`output: "export"\` for the native shell`));
 }
 
 /** True when the project's recorded email intent points at the

@@ -110,6 +110,19 @@ const PRESETS: Record<string, { name: string; features: Feature[]; email?: Email
     name: "ci-stamp-web",
     features: ["websocket", "stripe", "s3", "analytics"],
   },
+  // The two ends of the feature axis. `bare` takes every conditional's
+  // "remove" arm at once — the deepest strip the scaffolder performs,
+  // and the configuration most likely to be left holding a dangling
+  // reference. `full` takes almost none of them.
+  bare: {
+    name: "ci-stamp-bare",
+    features: [],
+  },
+  full: {
+    name: "ci-stamp-full",
+    features: ["websocket", "stripe", "s3", "analytics", "desktop", "mobile"],
+    email: LISTMONK_SES,
+  },
 };
 
 function arg(flag: string): string | undefined {

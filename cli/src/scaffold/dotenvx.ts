@@ -187,7 +187,12 @@ function candidateKeys(config: ProjectConfig): string[] {
       "AWS_SECRET_ACCESS_KEY",
     );
   }
-  if (config.features.includes("websocket")) {
+  // Redis is only wired into compose when there is a server to talk to
+  // it — scaffold/infra.ts gates `redisEnabled` on `surfaces !== "static"`.
+  // Seeding REDIS_URL regardless documented an env var for a service the
+  // scaffold never wrote, so a `websocket + static` project asked the user
+  // to fill in a URL for a container that does not exist.
+  if (config.features.includes("websocket") && config.surfaces !== "static") {
     base.push("REDIS_URL");
   }
   return base;
