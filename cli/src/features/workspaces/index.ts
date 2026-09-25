@@ -2,130 +2,134 @@
  * cli/src/features/workspaces/index.ts — the `workspaces` feature:
  * tenants, members, roles and invitations for a scaffolded app.
  *
- * ONE entry point, called by both paths:
- *   - `hatchkit create` when the feature is selected, and
- *   - `hatchkit update` when it is added to an existing project.
+ * The first feature written against `features/contract.ts`, so it is
+ * also the worked example the doc points at: every mutation goes
+ * through `ctx.ledger`, which means `--dry-run` works without this file
+ * knowing what a dry run is.
  *
- * The feature is purely ADDITIVE, which is why there is one function
- * rather than the usual copy-everything-then-strip pair. Nothing in the
- * starter imports these files, so a project without the feature has
- * nothing to remove and cannot fail to compile because a strip codemod
- * missed a call site — the failure mode that dogs every other feature
- * here. The cost is that the emitted source lives under
- * cli/src/templates/workspaces/ rather than in `starter/`, so it is not
- * exercised by the starter's own typecheck; `cli/test-workspaces.ts`
+ * It is purely ADDITIVE, which is why `create` and `update` share one
+ * `apply` instead of the usual write-at-create / copy-at-update pair.
+ * Nothing in `starter/` imports these files, so an unselected project
+ * has nothing to strip and cannot fail to build on a dangling import —
+ * the failure mode that gives every other feature here a paired
+ * call-site stripper. The cost is that the emitted source lives under
+ * `cli/src/templates/workspaces/` rather than in `starter/`, so it is
+ * not exercised by the starter's own typecheck; `cli/test-workspaces.ts`
  * covers it instead.
  */
 
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { type FeatureContext, registerFeature } from "../contract.js";
+import {
+  findUnrenderedTokens,
+  identifierTemplateTokens,
+  renderFeatureTemplate,
+} from "../templates.js";
 import { runWorkspaceCodemods } from "./codemods.js";
 import { filesFor } from "./file-map.js";
-import type { WorkspacesApplyInput, WorkspacesApplyResult, WorkspacesTargets } from "./types.js";
-import { writeWorkspaceFiles } from "./writer.js";
+import { INVITES_PER_HOUR, INVITE_TTL_DAYS, PENDING_INVITE_CAP } from "./limits.js";
+import type { WorkspacesTargets } from "./types.js";
 
 export { WORKSPACE_FILES, filesFor, enabledGroups } from "./file-map.js";
-export {
-  assertFullyRendered,
-  defaultTokens,
-  getWorkspacesTemplatesDir,
-  renderWorkspacesString,
-  renderWorkspacesTemplate,
-} from "./render.js";
 export { runWorkspaceCodemods } from "./codemods.js";
-export type { CodemodResult, CodemodOutcome } from "./codemods.js";
-export type {
-  WorkspacesApplyInput,
-  WorkspacesApplyResult,
-  WorkspacesTargets,
-} from "./types.js";
+export { PENDING_INVITE_CAP, INVITES_PER_HOUR, INVITE_TTL_DAYS } from "./limits.js";
+export type { WorkspacesTargets } from "./types.js";
+
+/** Template directory under `cli/src/templates/`. */
+export const WORKSPACES_TEMPLATE_DIR = "workspaces";
 
 /**
  * Work out which halves of a project exist. A `static` surface has no
  * server, a `backend` surface has no client, and the per-recipient
  * realtime fan-out only means anything with the websocket feature on.
+ *
+ * Read off the disk rather than off the manifest: `update` runs against
+ * a repository somebody has been working in, and the manifest records
+ * what was scaffolded, not what is there now.
  */
-export function detectTargets(projectDir: string, features: readonly string[]): WorkspacesTargets {
+export function detectTargets(
+  ledgerExists: (rel: string) => boolean,
+  features: readonly string[],
+): WorkspacesTargets {
   return {
-    server: existsSync(join(projectDir, "packages/server/src/trpc/router.ts")),
-    shared: existsSync(join(projectDir, "packages/shared/src/index.ts")),
-    client: existsSync(join(projectDir, "packages/client/src/app/layout.tsx")),
+    server: ledgerExists("packages/server/src/trpc/router.ts"),
+    shared: ledgerExists("packages/shared/src/index.ts"),
+    client: ledgerExists("packages/client/src/app/layout.tsx"),
     websocket: features.includes("websocket"),
   };
 }
 
+/** The tokens the feature's templates render with. */
+export function workspacesTokens(ctx: FeatureContext): Record<string, string> {
+  return {
+    // Never derived here — the frozen set, so the storage key this
+    // feature writes under agrees with every other one in the project.
+    ...(identifierTemplateTokens(ctx.identifiers) as Record<string, string>),
+    PENDING_INVITE_CAP: String(PENDING_INVITE_CAP),
+    INVITES_PER_HOUR: String(INVITES_PER_HOUR),
+    INVITE_TTL_DAYS: String(INVITE_TTL_DAYS),
+  };
+}
+
+export const workspacesFeature = registerFeature({
+  id: "workspaces",
+  title: "Workspaces (tenants, members, roles, invitations)",
+  summary:
+    "Multi-tenancy: an app-owned membership mirror, a typed API and a REST surface over one service layer, and invitations that work without a mail transport.",
+  // Every surface with a server. A `static` project has nothing to
+  // authorize from, so the picker should not offer it.
+  surfaces: ["fullstack", "split", "backend"],
+  addableAfterScaffold: true,
+
+  apply(ctx: FeatureContext) {
+    const targets = detectTargets((rel) => ctx.ledger.exists(rel), ctx.manifest.features);
+
+    if (!targets.server && !targets.client) {
+      ctx.log("  workspaces: no packages/server or packages/client found — nothing written.");
+      return;
+    }
+
+    const tokens = workspacesTokens(ctx);
+    const files = filesFor(targets);
+
+    for (const file of files) {
+      const rendered = renderFeatureTemplate(WORKSPACES_TEMPLATE_DIR, file.template, tokens);
+      // A template that outgrew its token list would otherwise ship a
+      // literal __HATCHKIT_FOO__ into the user's repo, hundreds of
+      // lines from anything they wrote.
+      const leftover = findUnrenderedTokens(rendered);
+      if (leftover.length > 0) {
+        throw new Error(
+          `Workspaces template ${file.template} still holds ${leftover.join(", ")} after rendering. Add the token in features/workspaces/index.ts.`,
+        );
+      }
+      ctx.ledger.writeIfChanged(file.dest, rendered);
+    }
+
+    runWorkspaceCodemods(ctx, targets);
+
+    if (targets.server && !targets.websocket) {
+      ctx.log(
+        "  workspaces: websocket is off — membership events publish into a no-op, so the members screen will not live-refresh.",
+      );
+    }
+    // The Postgres overlay rewrites the db layer to Drizzle; the mirror
+    // model and the collection accessors this feature ships are
+    // Mongoose/MongoDB. Say so rather than leaving the user to discover
+    // it at build time.
+    if (ctx.ledger.exists("packages/server/src/db/schema.ts")) {
+      ctx.log(
+        "  workspaces: this project uses the Postgres (Drizzle) overlay — port services/membership/mirror.ts before the server will build.",
+      );
+    }
+    if (files.length > 0) {
+      ctx.log(
+        "  workspaces: run `pnpm --filter @starter/shared run build` so the server and client pick up the membership contract.",
+      );
+    }
+  },
+});
+
 /** True when the project already carries the feature's files. */
-export function hasWorkspacesFeature(projectDir: string): boolean {
-  return existsSync(join(projectDir, "packages/server/src/services/membership/index.ts"));
-}
-
-export function applyWorkspacesFeature(input: WorkspacesApplyInput): WorkspacesApplyResult {
-  const { projectDir, projectName, targets, dryRun } = input;
-
-  if (!targets.server && !targets.client) {
-    return {
-      written: [],
-      unchanged: [],
-      skipped: [],
-      patched: [],
-      notes: [],
-      nextSteps: ["workspaces needs a server or a client package — nothing was written."],
-    };
-  }
-
-  const files = writeWorkspaceFiles({ projectDir, projectName, targets, dryRun });
-  const codemods = runWorkspaceCodemods({
-    projectDir,
-    server: targets.server,
-    shared: targets.shared,
-    client: targets.client,
-    websocket: targets.websocket,
-    dryRun,
-  });
-
-  const patched = codemods.filter((c) => c.outcome === "patched").map((c) => c.file);
-  const nextSteps: string[] = [];
-  for (const c of codemods) {
-    if (c.outcome === "manual" && c.hint) nextSteps.push(c.hint);
-  }
-
-  const notes: string[] = [];
-  if (targets.server && !targets.shared) {
-    notes.push(
-      "No packages/shared — the membership contract was not written; import it from wherever your app keeps shared types.",
-    );
-  }
-  if (targets.server && !targets.websocket) {
-    notes.push(
-      "websocket feature is off — membership events publish into a no-op. Add `websocket` to get the per-recipient fan-out.",
-    );
-  }
-
-  // The postgres overlay rewrites the db layer to Drizzle; the mirror
-  // model and the collection accessors here are Mongoose/MongoDB. Say so
-  // rather than emitting code that cannot compile against that project.
-  if (existsSync(join(projectDir, "packages/server/src/db/schema.ts"))) {
-    nextSteps.push(
-      "This project uses the Postgres (Drizzle) overlay. The membership mirror and the better-auth collection accessors in services/membership/mirror.ts are MongoDB — port them to Drizzle before the server will build.",
-    );
-  }
-
-  if (files.skipped.length > 0) {
-    nextSteps.push(
-      `Left alone because they already exist with different content: ${files.skipped.join(", ")}. Merge by hand if you want the new version.`,
-    );
-  }
-
-  if (files.written.length > 0) {
-    nextSteps.push(
-      "Run `pnpm --filter @starter/shared run build` so the server and client pick up the membership contract.",
-    );
-  }
-
-  return { ...files, patched, notes, nextSteps };
-}
-
-/** How many files the feature would write into this project. */
-export function workspacesFileCount(targets: WorkspacesTargets): number {
-  return filesFor(targets).length;
+export function hasWorkspacesFeature(exists: (rel: string) => boolean): boolean {
+  return exists("packages/server/src/services/membership/index.ts");
 }

@@ -364,7 +364,7 @@ export async function runUpdate(
       const resolvedStarter = realpathSync(STARTER_ROOT);
       for (const feature of added) {
         if (feature === "workspaces") {
-          await addWorkspaces(projectDir, manifest);
+          await addWorkspaces(projectDir, manifestDir, manifest);
           updatedFeatures.add("workspaces");
         } else if (feature === "desktop") {
           await addDesktop(projectDir, resolvedStarter, manifest);
@@ -735,29 +735,39 @@ async function addMobile(
  *
  * Unlike the native wrappers above, this one copies nothing out of
  * `starter/`: the feature is purely additive, so its source lives under
- * cli/src/templates/workspaces/ and is rendered straight into the
- * project by the same `applyWorkspacesFeature` the create path calls.
- * One code path means `create --features workspaces` and `update` cannot
- * produce different projects.
+ * cli/src/templates/workspaces/ and is applied through the feature
+ * contract's ledger — the same path `hatchkit create` takes. One code
+ * path means create and update cannot produce different projects, and
+ * the ledger is what makes the apply idempotent on a re-run.
  */
-async function addWorkspaces(projectDir: string, manifest: ProjectManifest): Promise<void> {
-  const { applyWorkspacesFeature, detectTargets } = await import("../features/workspaces/index.js");
-  const targets = detectTargets(projectDir, manifest.features);
-  const result = applyWorkspacesFeature({
+async function addWorkspaces(
+  projectDir: string,
+  manifestDir: string,
+  manifest: ProjectManifest,
+): Promise<void> {
+  const { FeatureLedger, applyFeatures } = await import("../features/contract.js");
+  // Importing the feature module is what registers it.
+  await import("../features/workspaces/index.js");
+
+  const ledger = new FeatureLedger(projectDir, false);
+  await applyFeatures(["workspaces"], {
     projectDir,
-    projectName: manifest.name,
-    targets,
+    manifestDir,
+    manifest,
+    identifiers: identifiersFor(manifest),
+    mode: "update",
+    ledger,
+    log: (message) => console.log(chalk.dim(message)),
   });
 
-  console.log(chalk.dim(`  workspaces: ${result.written.length} file(s) written`));
-  for (const file of result.patched) {
-    console.log(chalk.dim(`  workspaces: wired ${file}`));
-  }
-  for (const note of result.notes) {
-    console.log(chalk.dim(`  workspaces: ${note}`));
-  }
-  for (const step of result.nextSteps) {
-    console.log(chalk.yellow(`  workspaces: ${step}`));
+  const summary = ledger.summary();
+  console.log(
+    chalk.dim(
+      `  workspaces: ${summary.written.length} file(s) written, ${summary.unchanged.length} unchanged`,
+    ),
+  );
+  for (const entry of ledger.conflicts()) {
+    console.log(chalk.yellow(`  workspaces: ${entry.file} — ${entry.detail ?? "left alone"}`));
   }
 }
 

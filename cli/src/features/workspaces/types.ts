@@ -1,9 +1,13 @@
 /*
- * cli/src/features/workspaces/types.ts — shared shapes for the
- * `workspaces` feature (tenants, members, roles, invitations).
+ * cli/src/features/workspaces/types.ts — which halves of a project the
+ * `workspaces` feature can write into.
+ *
+ * Read off the disk at apply time rather than assumed from the
+ * manifest: `update` runs against a repository somebody has been
+ * working in, and the manifest records what was scaffolded, not what is
+ * there now.
  */
 
-/** Which halves of the project the feature may write into. */
 export interface WorkspacesTargets {
   /** `packages/server` exists — routers, services, the mirror model. */
   server: boolean;
@@ -14,38 +18,3 @@ export interface WorkspacesTargets {
   /** The `websocket` feature is on — the per-recipient fan-out is written. */
   websocket: boolean;
 }
-
-export interface WorkspacesApplyInput {
-  /** Directory holding `packages/`, i.e. the project root (or subdir). */
-  projectDir: string;
-  /** Project name, substituted into copy the user reads. */
-  projectName: string;
-  targets: WorkspacesTargets;
-  /** Report what would change without touching the disk. */
-  dryRun?: boolean;
-}
-
-export interface WorkspacesApplyResult {
-  /** Files created by this run, project-relative, forward slashes. */
-  written: string[];
-  /** Files already present with identical content — left alone. */
-  unchanged: string[];
-  /** Files present with DIFFERENT content — never clobbered. */
-  skipped: string[];
-  /** Existing files this run edited in place (router registration etc.). */
-  patched: string[];
-  /** Human-readable notes for the CLI to print. */
-  notes: string[];
-  /** Things the user must do by hand afterwards. */
-  nextSteps: string[];
-}
-
-export const WORKSPACES_DEPS: Readonly<Record<string, string>> = {};
-
-/**
- * better-auth's organization plugin ships inside `better-auth` itself, so
- * the feature adds no new runtime dependency. The constant stays as the
- * single place to declare one if a future addition needs it — an empty
- * map here is a deliberate answer, not an unfinished one.
- */
-export const WORKSPACES_SCRIPTS: Readonly<Record<string, string>> = {};

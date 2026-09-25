@@ -22,22 +22,83 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-
 import {
-  applyWorkspacesFeature,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, relative, sep } from "node:path";
+
+import { FeatureLedger, applyFeatures, expandFeatureSelection, getFeature } from "./src/features/contract.js";
+import { findUnrenderedTokens, renderFeatureTemplate } from "./src/features/templates.js";
+import {
+  WORKSPACE_FILES,
+  WORKSPACES_TEMPLATE_DIR,
   detectTargets,
   filesFor,
   hasWorkspacesFeature,
-  renderWorkspacesTemplate,
-  WORKSPACE_FILES,
+  workspacesFeature,
 } from "./src/features/workspaces/index.js";
-import { defaultTokens } from "./src/features/workspaces/render.js";
+import { legacyIdentifiers } from "./src/scaffold/identifiers.js";
+import type { ProjectManifest } from "./src/scaffold/manifest.js";
 import type { WorkspacesTargets } from "./src/features/workspaces/types.js";
 
 const results: Record<string, boolean> = {};
+
+/* ── Applying the feature the way the CLI does ───────────────────────── */
+
+const IDENTIFIERS = legacyIdentifiers("demo-app");
+
+function manifestFor(features: string[]): ProjectManifest {
+  return { name: "demo-app", features, identifiers: IDENTIFIERS } as unknown as ProjectManifest;
+}
+
+/** Run the real feature through the real ledger. Returns the ledger. */
+async function apply(
+  root: string,
+  opts: { features?: string[]; dryRun?: boolean } = {},
+): Promise<FeatureLedger> {
+  const ledger = new FeatureLedger(root, opts.dryRun ?? false);
+  await applyFeatures(["workspaces"], {
+    projectDir: root,
+    manifestDir: root,
+    manifest: manifestFor(opts.features ?? ["websocket", "workspaces"]),
+    identifiers: IDENTIFIERS,
+    mode: "update",
+    ledger,
+    log: () => {},
+  });
+  return ledger;
+}
+
+/** Every file on disk under `root`, as relative paths → contents. */
+function snapshot(root: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir)) {
+      const abs = join(dir, entry);
+      if (statSync(abs).isDirectory()) walk(abs);
+      else out.set(relative(root, abs).split(sep).join("/"), readFileSync(abs, "utf-8"));
+    }
+  };
+  walk(root);
+  return out;
+}
+
+const TOKENS: Record<string, string> = {
+  ...(await import("./src/features/templates.js")).identifierTemplateTokens(IDENTIFIERS),
+  PENDING_INVITE_CAP: "50",
+  INVITES_PER_HOUR: "20",
+  INVITE_TTL_DAYS: "7",
+} as Record<string, string>;
+
+
 
 function test(name: string, fn: () => void | Promise<void>): Promise<void> {
   return (async () => {
@@ -184,18 +245,17 @@ function read(root: string, rel: string): string {
   return readFileSync(join(root, rel), "utf-8");
 }
 
-/* ── 1. Packaging ────────────────────────────────────────────────────── */
+/* ── 1. Packaging: the four the feature contract requires ────────────── */
 
-await test("every template in the file map exists and renders fully", () => {
-  const tokens = defaultTokens("demo-app");
+await test("no unrendered tokens in any shipped template", () => {
   for (const file of WORKSPACE_FILES) {
-    const rendered = renderWorkspacesTemplate(file.template, tokens);
+    const rendered = renderFeatureTemplate(WORKSPACES_TEMPLATE_DIR, file.template, TOKENS);
     assert.ok(rendered.length > 0, `${file.template} rendered empty`);
-    const leftover = rendered.match(/__HATCHKIT_[A-Z0-9_]+__/);
-    assert.equal(
+    const leftover = findUnrenderedTokens(rendered);
+    assert.deepEqual(
       leftover,
-      null,
-      `${file.template} still holds ${leftover?.[0]} — add the token to WorkspacesTokens`,
+      [],
+      `${file.template} still holds ${leftover.join(", ")} — a literal __HATCHKIT_FOO__ in a user's repo means the template outgrew its token list`,
     );
   }
 });
@@ -210,24 +270,23 @@ await test("destinations are unique and project-relative", () => {
   }
 });
 
-await test("apply writes the files and wires the existing ones", () => {
+await test("apply writes the files and wires the existing ones", async () => {
   const root = makeProject();
   try {
-    const result = applyWorkspacesFeature({
-      projectDir: root,
-      projectName: "demo-app",
-      targets: ALL_TARGETS,
-    });
+    const ledger = await apply(root);
+    const summary = ledger.summary();
 
-    assert.equal(result.skipped.length, 0, "nothing should be skipped in a fresh project");
     assert.equal(
-      result.written.length,
-      filesFor(ALL_TARGETS).length,
-      "every file for these targets should be written",
+      summary.written.length,
+      filesFor(ALL_TARGETS).length + 7,
+      "every file for these targets, plus the seven wirings",
     );
-    assert.ok(hasWorkspacesFeature(root), "the feature should be detectable afterwards");
+    assert.deepEqual(ledger.conflicts(), [], "a fresh project should produce no conflicts");
+    assert.ok(
+      hasWorkspacesFeature((rel) => ledger.exists(rel)),
+      "the feature should be detectable afterwards",
+    );
 
-    // The four wirings.
     assert.match(read(root, "packages/shared/src/index.ts"), /export \* from "\.\/membership\.js";/);
 
     const router = read(root, "packages/server/src/trpc/router.ts");
@@ -252,63 +311,127 @@ await test("apply writes the files and wires the existing ones", () => {
   }
 });
 
-await test("a second apply is a no-op — update must be safe to re-run", () => {
+await test("idempotent: a second apply writes nothing", async () => {
   const root = makeProject();
   try {
-    applyWorkspacesFeature({ projectDir: root, projectName: "demo-app", targets: ALL_TARGETS });
-    const routerAfterFirst = read(root, "packages/server/src/trpc/router.ts");
+    await apply(root);
+    const after = snapshot(root);
 
-    const second = applyWorkspacesFeature({
-      projectDir: root,
-      projectName: "demo-app",
-      targets: ALL_TARGETS,
-    });
+    const second = await apply(root);
+    const summary = second.summary();
 
-    assert.equal(second.written.length, 0, `re-run wrote ${second.written.length} file(s)`);
-    assert.equal(second.skipped.length, 0, `re-run skipped ${second.skipped.length} file(s)`);
     assert.equal(
-      second.unchanged.length,
-      filesFor(ALL_TARGETS).length,
-      "every file should report unchanged",
+      summary.written.length,
+      0,
+      `re-run wrote ${summary.written.join(", ")} — update re-applies every selected feature on EVERY run, so a feature that is not idempotent corrupts the project a little more each time`,
     );
-    assert.equal(second.patched.length, 0, "no codemod should fire twice");
-    assert.equal(
-      read(root, "packages/server/src/trpc/router.ts"),
-      routerAfterFirst,
-      "a re-run must not double the router registration",
+    assert.deepEqual(second.conflicts(), [], "a clean re-run should report no conflicts");
+
+    const again = snapshot(root);
+    assert.deepEqual(
+      [...again.entries()].sort(),
+      [...after.entries()].sort(),
+      "the tree must be byte-identical after a second apply",
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-await test("a file the user edited is left alone and reported", () => {
+await test("dry run: the disk is untouched and the ledger says would-write", async () => {
   const root = makeProject();
   try {
-    applyWorkspacesFeature({ projectDir: root, projectName: "demo-app", targets: ALL_TARGETS });
+    const before = snapshot(root);
+    const ledger = await apply(root, { dryRun: true });
+    const summary = ledger.summary();
 
-    const edited = "packages/client/src/components/members/members-screen.tsx";
-    const mine = "// my own members screen\nexport function MembersScreen() { return null; }\n";
-    writeFileSync(join(root, edited), mine, "utf-8");
-
-    const again = applyWorkspacesFeature({
-      projectDir: root,
-      projectName: "demo-app",
-      targets: ALL_TARGETS,
-    });
-
-    assert.ok(again.skipped.includes(edited), "an edited file must be reported as skipped");
-    assert.equal(read(root, edited), mine, "an edited file must never be overwritten");
+    assert.equal(summary.written.length, 0, "a dry run must write nothing");
     assert.ok(
-      again.nextSteps.some((s) => s.includes(edited)),
-      "the user must be told which files were left alone",
+      summary["would-write"].length >= filesFor(ALL_TARGETS).length,
+      "a dry run must report what it would have written",
+    );
+
+    const after = snapshot(root);
+    assert.deepEqual(
+      [...after.entries()].sort(),
+      [...before.entries()].sort(),
+      "a dry run must leave the tree byte-identical — --dry-run is checked in the ledger and nowhere else, so a feature reaching around it breaks this silently",
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-await test("targets gate what is written", () => {
+await test("user edits to a shared file survive a re-apply", async () => {
+  const root = makeProject();
+  try {
+    await apply(root);
+
+    // The user adds their own router, next to ours, in a file we edit
+    // but do not own.
+    const rel = "packages/server/src/trpc/router.ts";
+    const mine = read(root, rel).replace(
+      "  items: itemsRouter,",
+      "  items: itemsRouter,\n  reports: reportsRouter,",
+    );
+    writeFileSync(join(root, rel), mine, "utf-8");
+
+    const second = await apply(root);
+
+    const after = read(root, rel);
+    assert.match(after, /reports: reportsRouter/, "the user's own router must survive");
+    assert.equal(
+      after.match(/workspaces: workspacesRouter/g)?.length,
+      1,
+      "ours must not be registered a second time",
+    );
+    assert.ok(
+      !second.summary().written.includes(rel),
+      "a file already carrying our edit must not be rewritten",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test("the feature's own files are owned, and say so", async () => {
+  const root = makeProject();
+  try {
+    await apply(root);
+
+    // writeIfChanged OVERWRITES — correct for a file the feature
+    // generates and regenerates, and the reason each one carries a
+    // header saying what it is for.
+    const rel = "packages/shared/src/membership.ts";
+    writeFileSync(join(root, rel), "// scratch\n", "utf-8");
+    const ledger = await apply(root);
+
+    assert.ok(
+      ledger.summary().written.includes(rel),
+      "a feature-owned file is regenerated, so a later CLI can change what the feature ships",
+    );
+    assert.match(read(root, rel), /membership\.ts — the multi-tenancy contract/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test("the registry entry is honest about what the feature needs", () => {
+  const def = getFeature("workspaces");
+  assert.ok(def, "workspaces must be registered in the feature registry");
+  assert.equal(def, workspacesFeature);
+  assert.equal(def.addableAfterScaffold, true, "workspaces is purely additive, so update can add it");
+  assert.ok(
+    !def.surfaces?.includes("static"),
+    "a static project has no server to authorize from, so the picker must not offer it",
+  );
+
+  const selection = expandFeatureSelection(["workspaces"]);
+  assert.deepEqual(selection.errors, [], "selecting workspaces alone must be valid");
+  assert.ok(selection.ordered.includes("workspaces"));
+});
+
+await test("targets gate what is written", async () => {
   const backendOnly: WorkspacesTargets = {
     server: true,
     shared: true,
@@ -317,62 +440,60 @@ await test("targets gate what is written", () => {
   };
   const paths = filesFor(backendOnly).map((f) => f.dest);
   assert.ok(
-    !paths.some((p) => p.startsWith("packages/client/")),
+    !paths.some((pth) => pth.startsWith("packages/client/")),
     "a backend surface must get no client files",
   );
   assert.ok(
-    !paths.some((p) => p.includes("membership-sync")),
+    !paths.some((pth) => pth.includes("membership-sync")),
     "the per-recipient fan-out needs the websocket feature",
   );
-  assert.ok(
-    paths.includes("packages/server/src/services/membership/index.ts"),
-    "the service layer is the point of the feature",
-  );
+  assert.ok(paths.includes("packages/server/src/services/membership/index.ts"));
 
-  const withWs = filesFor({ ...backendOnly, websocket: true }).map((f) => f.dest);
-  assert.ok(withWs.includes("packages/server/src/ws/membership-sync.ts"));
+  // And the real apply honours it: websocket off → no fan-out on disk.
+  const root = makeProject();
+  try {
+    await apply(root, { features: ["workspaces"] });
+    assert.ok(
+      !existsSync(join(root, "packages/server/src/ws/membership-sync.ts")),
+      "without the websocket feature the fan-out must not be written",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 await test("detectTargets reads the project rather than being told", () => {
   const root = makeProject();
   try {
-    const t = detectTargets(root, ["websocket"]);
+    const ledger = new FeatureLedger(root, true);
+    const t = detectTargets((rel) => ledger.exists(rel), ["websocket"]);
     assert.deepEqual(t, { server: true, shared: true, client: true, websocket: true });
 
     rmSync(join(root, "packages/client"), { recursive: true, force: true });
-    assert.equal(detectTargets(root, []).client, false, "a removed client must be detected");
-    assert.equal(detectTargets(root, []).websocket, false, "websocket comes from the feature list");
+    const t2 = detectTargets((rel) => ledger.exists(rel), []);
+    assert.equal(t2.client, false, "a removed client must be detected");
+    assert.equal(t2.websocket, false, "websocket comes from the feature list");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-await test("a project with neither server nor client is refused, not half-written", () => {
-  const root = mkdtempSync(join(tmpdir(), "hatchkit-workspaces-empty-"));
-  try {
-    const result = applyWorkspacesFeature({
-      projectDir: root,
-      projectName: "demo-app",
-      targets: { server: false, shared: false, client: false, websocket: false },
-    });
-    assert.equal(result.written.length, 0);
-    assert.ok(result.nextSteps.some((s) => s.includes("needs a server or a client")));
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-await test("a missing anchor becomes a next step, never a mangled file", () => {
+await test("a missing anchor is reported, never a mangled file", async () => {
   const root = makeProject();
   try {
-    // A user who moved createApp() elsewhere: app.ts no longer has the
-    // tRPC mount the codemod anchors on.
+    // A user who moved createApp() elsewhere.
     write(root, "packages/server/src/app.ts", "// moved to server/http/app.ts\n");
 
-    const result = applyWorkspacesFeature({
+    const messages: string[] = [];
+    const ledger = new FeatureLedger(root, false);
+    await applyFeatures(["workspaces"], {
       projectDir: root,
-      projectName: "demo-app",
-      targets: ALL_TARGETS,
+      manifestDir: root,
+      manifest: manifestFor(["websocket", "workspaces"]),
+      identifiers: IDENTIFIERS,
+      mode: "update",
+      ledger,
+      log: (m) => messages.push(m),
     });
 
     assert.equal(
@@ -381,8 +502,8 @@ await test("a missing anchor becomes a next step, never a mangled file", () => {
       "a file we could not understand must be left exactly as it was",
     );
     assert.ok(
-      result.nextSteps.some((s) => s.includes("registerWorkspaceRoutes")),
-      "the user must be told to wire the REST routes by hand",
+      messages.some((m) => m.includes("app.ts")),
+      `the user must be told to wire it by hand; got: ${messages.join(" | ")}`,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -391,10 +512,9 @@ await test("a missing anchor becomes a next step, never a mangled file", () => {
 
 /* ── 2. The rules, pinned in the rendered output ─────────────────────── */
 
-const tokens = defaultTokens("demo-app");
 const rendered = new Map<string, string>();
 for (const file of WORKSPACE_FILES) {
-  rendered.set(file.dest, renderWorkspacesTemplate(file.template, tokens));
+  rendered.set(file.dest, renderFeatureTemplate(WORKSPACES_TEMPLATE_DIR, file.template, TOKENS));
 }
 /** Every emitted server file, concatenated — for "nowhere does X" checks. */
 const allServer = [...rendered.entries()]
@@ -726,10 +846,10 @@ await test("nothing outside the membership service reaches the auth collections"
   }
 });
 
-await test("sign-in honours ?next= so an invitee returns to the invite page", () => {
+await test("sign-in honours ?next= so an invitee returns to the invite page", async () => {
   const root = makeProject();
   try {
-    applyWorkspacesFeature({ projectDir: root, projectName: "demo-app", targets: ALL_TARGETS });
+    await apply(root);
 
     for (const page of ["login", "signup"]) {
       const src = read(root, `packages/client/src/app/${page}/page.tsx`);
@@ -755,7 +875,7 @@ await test("sign-in honours ?next= so an invitee returns to the invite page", ()
     }
 
     // Re-running must not stack a second import or a second push.
-    applyWorkspacesFeature({ projectDir: root, projectName: "demo-app", targets: ALL_TARGETS });
+    await apply(root);
     const login = read(root, "packages/client/src/app/login/page.tsx");
     assert.equal(
       login.match(/import \{ safeNext \}/g)?.length,

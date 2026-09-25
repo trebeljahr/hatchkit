@@ -2,59 +2,60 @@
  * cli/src/features/workspaces/codemods.ts — the in-place edits that wire
  * the feature's new files into a project that already exists.
  *
- * Every rewriter here is a GET-then-diff: it looks for a marker it would
- * have written itself, returns "unchanged" when it finds one, and never
- * writes a file it did not change. That is what makes `hatchkit update`
- * safe to re-run, and what keeps a half-finished run from doubling a
- * router registration on the retry.
+ * Every rewriter is a FIXED POINT: it anchors on what the edit
+ * PRODUCES, not on where the edit goes, so running it twice is the same
+ * as running it once. `update` re-applies every selected feature on
+ * every run, and a rewriter that checked only for its insertion point
+ * would add a second router registration each time — silently, and
+ * cumulatively.
  *
- * These edits deliberately fail SOFT. A user who moved `createApp()` into
- * another file should get a "wire this up yourself" next-step, not a
- * mangled `app.ts`.
+ * They also fail SOFT. Returning the content unchanged tells the ledger
+ * "unchanged"; returning null means this file is not shaped the way we
+ * expect — a user who moved `createApp()` elsewhere gets a "wire this
+ * up yourself" line, not a mangled `app.ts`.
+ *
+ * Nothing here touches `node:fs`. Every write goes through
+ * `ctx.ledger`, which is what makes `--dry-run` correct for free.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import type { FeatureContext } from "../contract.js";
+import type { WorkspacesTargets } from "./types.js";
 
-export type CodemodOutcome = "patched" | "unchanged" | "missing" | "manual";
-
-export interface CodemodResult {
-  /** Project-relative path the rewriter targets. */
-  file: string;
-  outcome: CodemodOutcome;
-  /** Set when `outcome === "manual"` — what the user must do by hand. */
-  hint?: string;
-}
-
+/**
+ * Apply one rewriter. `fn` returns the new content, the SAME content
+ * when the edit is already present, or null when the file is not shaped
+ * the way the rewriter expects — which becomes a logged hint.
+ */
 function patch(
-  projectDir: string,
+  ctx: FeatureContext,
   rel: string,
   fn: (content: string) => string | null,
   hint: string,
-  dryRun = false,
-): CodemodResult {
-  const abs = join(projectDir, rel);
-  if (!existsSync(abs)) return { file: rel, outcome: "missing" };
-  const before = readFileSync(abs, "utf-8");
-  const after = fn(before);
-  if (after === null) return { file: rel, outcome: "manual", hint };
-  if (after === before) return { file: rel, outcome: "unchanged" };
-  if (!dryRun) writeFileSync(abs, after, "utf-8");
-  return { file: rel, outcome: "patched" };
+): void {
+  if (!ctx.ledger.exists(rel)) return;
+  let recognised = true;
+  ctx.ledger.edit(rel, (content) => {
+    const out = fn(content);
+    if (out === null) {
+      recognised = false;
+      return content;
+    }
+    return out;
+  });
+  if (!recognised) ctx.log(`  workspaces: ${hint}`);
 }
 
 /* ── shared: re-export the membership contract ──────────────────────── */
 
-export function wireSharedExport(projectDir: string, dryRun = false): CodemodResult {
-  return patch(
-    projectDir,
+export function wireSharedExport(ctx: FeatureContext): void {
+  patch(
+    ctx,
     "packages/shared/src/index.ts",
     (content) => {
       if (content.includes("./membership.js")) return content;
       return `${content.trimEnd()}\nexport * from "./membership.js";\n`;
     },
     'Add `export * from "./membership.js";` to packages/shared/src/index.ts.',
-    dryRun,
   );
 }
 
@@ -65,9 +66,9 @@ import { membersRouter } from "./routers/members.js";
 import { invitationsRouter } from "./routers/invitations.js";
 `;
 
-export function wireTrpcRouter(projectDir: string, dryRun = false): CodemodResult {
-  return patch(
-    projectDir,
+export function wireTrpcRouter(ctx: FeatureContext): void {
+  patch(
+    ctx,
     "packages/server/src/trpc/router.ts",
     (content) => {
       if (content.includes("workspacesRouter")) return content;
@@ -88,15 +89,14 @@ export function wireTrpcRouter(projectDir: string, dryRun = false): CodemodResul
       return out;
     },
     "Register workspacesRouter, membersRouter and invitationsRouter in packages/server/src/trpc/router.ts.",
-    dryRun,
   );
 }
 
 /* ── server: the organization plugin, locked down ───────────────────── */
 
-export function wireAuthPlugin(projectDir: string, dryRun = false): CodemodResult {
-  return patch(
-    projectDir,
+export function wireAuthPlugin(ctx: FeatureContext): void {
+  patch(
+    ctx,
     "packages/server/src/auth/auth.ts",
     (content) => {
       if (content.includes("organizationLockdown")) return content;
@@ -138,15 +138,14 @@ export function wireAuthPlugin(projectDir: string, dryRun = false): CodemodResul
       return out;
     },
     "Install better-auth's organization plugin with `hooks: { before: organizationLockdown }` in packages/server/src/auth/auth.ts.",
-    dryRun,
   );
 }
 
 /* ── server: mount the REST surface ─────────────────────────────────── */
 
-export function wireRestRoutes(projectDir: string, dryRun = false): CodemodResult {
-  return patch(
-    projectDir,
+export function wireRestRoutes(ctx: FeatureContext): void {
+  patch(
+    ctx,
     "packages/server/src/app.ts",
     (content) => {
       if (content.includes("registerWorkspaceRoutes")) return content;
@@ -174,15 +173,14 @@ export function wireRestRoutes(projectDir: string, dryRun = false): CodemodResul
       return out;
     },
     "Call registerWorkspaceRoutes(app) after the tRPC middleware in packages/server/src/app.ts.",
-    dryRun,
   );
 }
 
 /* ── server: install the per-recipient publisher (websocket only) ───── */
 
-export function wireMembershipPublisher(projectDir: string, dryRun = false): CodemodResult {
-  return patch(
-    projectDir,
+export function wireMembershipPublisher(ctx: FeatureContext): void {
+  patch(
+    ctx,
     "packages/server/src/index.ts",
     (content) => {
       if (content.includes("installMembershipPublisher")) return content;
@@ -209,7 +207,6 @@ export function wireMembershipPublisher(projectDir: string, dryRun = false): Cod
       return out;
     },
     "Call installMembershipPublisher() after initAuth() in packages/server/src/index.ts.",
-    dryRun,
   );
 }
 
@@ -234,10 +231,10 @@ export function wireMembershipPublisher(projectDir: string, dryRun = false): Cod
  * which is exactly what makes an unvalidated redirect target a phishing
  * vector.
  */
-function wireNextParam(projectDir: string, page: string, dryRun: boolean): CodemodResult {
+function wireNextParam(ctx: FeatureContext, page: string): void {
   const rel = `packages/client/src/app/${page}/page.tsx`;
-  return patch(
-    projectDir,
+  patch(
+    ctx,
     rel,
     (content) => {
       if (content.includes("safeNext")) return content;
@@ -261,67 +258,50 @@ function wireNextParam(projectDir: string, page: string, dryRun: boolean): Codem
       );
       return out;
     },
-    `Make packages/client/src/app/${page}/page.tsx honour ?next= through lib/safe-next.ts, or an invitee who signs in will land on /dashboard and lose the invitation.`,
-    dryRun,
+    `${rel} does not look like the starter's — make it honour ?next= through lib/safe-next.ts, or an invitee who signs in will land on /dashboard and lose the invitation.`,
   );
 }
 
-export function wireLoginNext(projectDir: string, dryRun = false): CodemodResult {
-  return wireNextParam(projectDir, "login", dryRun);
+export function wireLoginNext(ctx: FeatureContext): void {
+  wireNextParam(ctx, "login");
 }
 
-export function wireSignupNext(projectDir: string, dryRun = false): CodemodResult {
-  return wireNextParam(projectDir, "signup", dryRun);
+export function wireSignupNext(ctx: FeatureContext): void {
+  wireNextParam(ctx, "signup");
 }
 
 /* ── client: link the members screen from the protected nav ─────────── */
 
-/** Never writes, so it takes no `dryRun` — it only ever reports. */
-export function wireClientNav(projectDir: string): CodemodResult {
+/**
+ * Reports only — it never writes. The starter's protected layout has no
+ * nav list that can be extended reliably, and guessing at one produces
+ * broken JSX. The gating is cosmetic anyway: the server authorizes from
+ * the membership mirror either way.
+ */
+export function wireClientNav(ctx: FeatureContext): void {
   const rel = "packages/client/src/app/(protected)/layout.tsx";
-  const abs = join(projectDir, rel);
-  if (!existsSync(abs)) return { file: rel, outcome: "missing" };
-  const content = readFileSync(abs, "utf-8");
-  if (content.includes("/app/members") || content.includes('href="/members"')) {
-    return { file: rel, outcome: "unchanged" };
-  }
-  // The starter's protected layout has no nav list to extend reliably,
-  // and guessing at one would produce broken JSX. Hand this to the user:
-  // the gating is cosmetic anyway — the server refuses either way.
-  return {
-    file: rel,
-    outcome: "manual",
-    hint: "Add a link to /members in your protected layout's navigation (cosmetic — the server authorizes independently).",
-  };
+  const content = ctx.ledger.read(rel);
+  if (content === undefined) return;
+  if (content.includes("/app/members") || content.includes('href="/members"')) return;
+  ctx.log(
+    "  workspaces: add a link to /members in your protected layout's navigation (cosmetic — the server authorizes independently).",
+  );
 }
 
 /* ── the whole set ──────────────────────────────────────────────────── */
 
-export interface RunCodemodsInput {
-  projectDir: string;
-  server: boolean;
-  shared: boolean;
-  client: boolean;
-  websocket: boolean;
-  dryRun?: boolean;
-}
-
-export function runWorkspaceCodemods(input: RunCodemodsInput): CodemodResult[] {
-  const { projectDir, dryRun } = input;
-  const results: CodemodResult[] = [];
-  if (input.shared) results.push(wireSharedExport(projectDir, dryRun));
-  if (input.server) {
-    results.push(wireTrpcRouter(projectDir, dryRun));
-    results.push(wireAuthPlugin(projectDir, dryRun));
-    results.push(wireRestRoutes(projectDir, dryRun));
+export function runWorkspaceCodemods(ctx: FeatureContext, targets: WorkspacesTargets): void {
+  if (targets.shared) wireSharedExport(ctx);
+  if (targets.server) {
+    wireTrpcRouter(ctx);
+    wireAuthPlugin(ctx);
+    wireRestRoutes(ctx);
   }
-  if (input.server && input.websocket) {
-    results.push(wireMembershipPublisher(projectDir, dryRun));
+  // The publisher lives in ws/, which only exists with that feature on.
+  if (targets.server && targets.websocket) wireMembershipPublisher(ctx);
+  if (targets.client) {
+    wireLoginNext(ctx);
+    wireSignupNext(ctx);
+    wireClientNav(ctx);
   }
-  if (input.client) {
-    results.push(wireLoginNext(projectDir, dryRun));
-    results.push(wireSignupNext(projectDir, dryRun));
-    results.push(wireClientNav(projectDir));
-  }
-  return results;
 }

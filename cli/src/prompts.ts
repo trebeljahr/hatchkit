@@ -2020,6 +2020,11 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
         },
         { name: "s3 (object storage)", value: "s3", checked: cfg.features.includes("s3") },
         {
+          name: "workspaces (tenants, members, roles, invitations)",
+          value: "workspaces",
+          checked: cfg.features.includes("workspaces"),
+        },
+        {
           name: "desktop (Electron wrapper)",
           value: "desktop",
           checked: cfg.features.includes("desktop"),

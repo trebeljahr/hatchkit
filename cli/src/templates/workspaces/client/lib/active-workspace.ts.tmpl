@@ -25,7 +25,13 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 /** Where this device's choice is stored. */
-export const ACTIVE_WORKSPACE_STORAGE_KEY = "__HATCHKIT_PROJECT_NAME__.activeWorkspaceId";
+/**
+ * The stored key. It comes from the project's FROZEN storage prefix, not
+ * from the project name: a storage key is a contract the moment anything
+ * is written under it, and changing it silently forgets every user's
+ * workspace choice on their next visit. See cli/src/scaffold/identifiers.ts.
+ */
+export const ACTIVE_WORKSPACE_STORAGE_KEY = "__HATCHKIT_STORAGE_PREFIX__.activeWorkspaceId";
 
 /**
  * Where a switch lands when the caller names no destination. The invite

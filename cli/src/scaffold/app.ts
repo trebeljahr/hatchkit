@@ -442,27 +442,35 @@ async function runScaffoldSteps(
     modifications.push("next.config.ts: output 'standalone' → 'export'");
   }
 
-  // Workspaces — tenants, members, roles, invitations. Purely ADDITIVE:
+  // Workspaces — tenants, members, roles and invitations.
+  //
+  // Purely ADDITIVE, so this is an `if selected -> write` rather than
+  // the `if !selected -> remove` shape every feature above uses:
   // nothing in the starter imports it, so an unselected project has
-  // nothing to strip. That is why this is an `if selected → write`
-  // rather than the `if !selected → remove` shape every feature above
-  // uses, and why it cannot leave a dangling import behind. The same
-  // applyWorkspacesFeature runs from `hatchkit update`, so the two
-  // paths produce byte-identical files.
+  // nothing to strip and cannot be left with a dangling import.
+  //
+  // It runs through the feature contract's ledger, which is the same
+  // path `hatchkit update` takes, so create and update produce
+  // byte-identical files.
   if (config.features.includes("workspaces")) {
-    const { applyWorkspacesFeature, detectTargets } = await import(
-      "../features/workspaces/index.js"
-    );
-    const result = applyWorkspacesFeature({
+    const { FeatureLedger, applyFeatures } = await import("../features/contract.js");
+    await import("../features/workspaces/index.js");
+    const ledger = new FeatureLedger(outputDir, false);
+    await applyFeatures(["workspaces"], {
       projectDir: outputDir,
-      projectName: config.name,
-      targets: detectTargets(outputDir, config.features),
+      manifestDir: outputDir,
+      manifest: toManifest({ ...config, identifiers }, ports, getCliVersion()),
+      identifiers,
+      mode: "create",
+      ledger,
+      log: (message) => modifications.push(message.trim()),
     });
+    const summary = ledger.summary();
     modifications.push(
-      `workspaces: ${result.written.length} file(s), wired ${result.patched.length} existing file(s)`,
+      `workspaces: ${summary.written.length} file(s) written, ${summary.unchanged.length} unchanged`,
     );
-    for (const step of result.nextSteps) {
-      modifications.push(`workspaces next step: ${step}`);
+    for (const conflict of ledger.conflicts()) {
+      modifications.push(`workspaces conflict: ${conflict.file} — ${conflict.detail ?? ""}`);
     }
   }
 
