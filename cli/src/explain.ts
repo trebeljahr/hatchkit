@@ -37,7 +37,7 @@ const MODEL: ExplainModel = {
     {
       name: "Project",
       description:
-        "A scaffolded repo with a .hatchkit.json manifest. Has a name (kebab-case), a domain, a feature set (workspaces/desktop/mobile/client-core/s3/ml), and per-project ports.",
+        "A scaffolded repo with a .hatchkit.json manifest. Has a name (kebab-case), a domain, a feature set (workspaces/desktop/mobile/client-core/extension/s3/ml), and per-project ports.",
     },
     {
       name: "Client",
@@ -92,7 +92,7 @@ const MODEL: ExplainModel = {
     {
       name: "hatchkit update",
       summary:
-        "Add features (workspaces, desktop, mobile, client-core) to an already-scaffolded project.",
+        "Add features (workspaces, desktop, mobile, client-core, extension, release) to an already-scaffolded project.",
       when: "`cd <project-dir>` first; expands an existing scaffold.",
     },
     {

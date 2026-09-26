@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "ignore": ["dist", "node_modules", "test-scaffold.ts"]
+    "ignore": ["dist", "node_modules", "src/templates", "test-scaffold.ts"]
   },
   "formatter": {
     "enabled": true,

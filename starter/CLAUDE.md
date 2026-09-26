@@ -812,6 +812,55 @@ The screens call the app's own typed API only — never
 `authClient.organization.*`, whose HTTP endpoints answer 404.
 <!-- hatchkit:endif -->
 
+<!-- hatchkit:if extension -->
+## Browser Extension
+
+`packages/extension` is an MV3 extension with three build targets, no
+host permissions, and a bridge that keeps it signed in with the web app.
+
+```bash
+pnpm run build:extension          # dist/         -> the local API
+pnpm run build:extension:prod     # dist-prod/    -> the deployed API
+pnpm run build:extension:firefox  # dist-firefox/ -> the deployed API, Gecko rules
+pnpm run extension:id             # the chrome-extension:// origin to trust
+pnpm run test:extension           # the manifest, bridge and marker tests
+```
+
+Rules that fail quietly if broken — `packages/extension/README.md` has
+the long version, and each one is pinned by a test:
+
+- **A build IS a target.** The default API origin is baked in from
+  `manifest.config.ts`, never from `.env.*` (gitignored, so a fresh
+  clone would build a bundle with no URL and no error). Each Chromium
+  target carries its own name and `externally_connectable`, so the dev
+  build and the store build can be installed at once.
+- **The permission list is exactly what `src/manifest.test.ts` pins**,
+  with no `host_permissions` and no `cookies`. Every request is
+  therefore an ordinary cross-origin request, and the extension's origin
+  has to be in the server's trust list before it can make a single one —
+  a release prerequisite, not a sign-in detail.
+- **A refused origin looks exactly like being offline**: a CORS refusal
+  reaches `fetch` as a bare `TypeError`. The worker re-checks
+  `/api/health` (which answers `*`) at most once a minute and the popup
+  names the missing setting. Never treat that `TypeError` as a refusal.
+- **Firefox differs in five ways that all fail silently**: a
+  `background.scripts` array rather than a service worker, no
+  `externally_connectable` (so the bridge registers nothing), a random
+  per-install origin that only `TRUST_EXTENSION_ORIGINS` can trust, a
+  permanent add-on id, and a secure-context rule that blocks `http://`
+  and `ws://` from the extension document.
+- **The bridge is driven by the page**, never by the extension. Every
+  sender is checked three ways (origin allowlist, page-in-a-tab, the web
+  app of the server the extension points at), frames are refused on both
+  ends, no credential crosses it, and a token is adopted only after the
+  session names the expected user. `EXTENSION_BRIDGE_VERSION` is its
+  own number, separate from any API level.
+
+Set `NEXT_PUBLIC_EXTENSION_IDS` for the web app to message the
+extension, and `TRUST_EXTENSION_ORIGINS=true` on the server for the
+Firefox build.
+<!-- hatchkit:endif -->
+
 <!-- hatchkit:if server -->
 ## Environment & Secrets (dotenvx)
 

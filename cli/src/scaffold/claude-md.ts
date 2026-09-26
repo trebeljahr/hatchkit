@@ -73,6 +73,10 @@ function activeConditions(config: ProjectConfig): Set<string> {
     stripe: config.features.includes("stripe"),
     workspaces: config.features.includes("workspaces"),
     "client-core": config.features.includes("client-core"),
+    // The extension is written by its own feature module rather than
+    // pruned out of the starter, but its docs live in the same
+    // conditional CLAUDE.md as everything else.
+    extension: config.features.includes("extension"),
   };
   return new Set(Object.keys(on).filter((k) => on[k]));
 }

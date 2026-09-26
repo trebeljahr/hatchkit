@@ -1053,6 +1053,13 @@ function detectFeatures(projectDir: string, serverDir: string | undefined): Feat
     found.add("client-core");
   }
 
+  // The extension is its own workspace package with a manifest builder
+  // at a fixed path — a far stronger signal than a dependency name,
+  // since it brings none of its own beyond the shared package.
+  if (existsSync(join(projectDir, "packages", "extension", "manifest.config.ts"))) {
+    found.add("extension");
+  }
+
   // .env.production / .env.example as a hint when package.json is sparse.
   const envHints = [
     serverDir ? join(serverDir, ".env.production") : undefined,
@@ -1759,6 +1766,7 @@ async function editAdoptStep(
           value: "client-core",
           checked: plan.features.includes("client-core"),
         },
+        { name: "extension", value: "extension", checked: plan.features.includes("extension") },
       ],
     });
     return { ...plan, features };

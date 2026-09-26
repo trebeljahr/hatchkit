@@ -15,5 +15,6 @@
     "sourceMap": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "//exclude": "src/templates holds template ASSETS, not CLI source: the extension feature ships TypeScript the SCAFFOLDED project compiles (against vite, vitest, @types/chrome and its own workspace packages), none of which exist here. scripts/copy-templates.mjs copies the tree into dist/ verbatim; tsc must not try to compile it.",
+  "exclude": ["node_modules", "dist", "src/templates"]
 }

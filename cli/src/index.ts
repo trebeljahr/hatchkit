@@ -3480,7 +3480,8 @@ function printHelp(topic?: HelpTopic): void {
     package.json script or dependency pin it has changed — those are
     reported as kept. ${chalk.cyan("--force")} replaces the package.json pieces
     (never files) with the starter's current versions.
-    Currently supported additions: ${chalk.cyan("workspaces")}, ${chalk.cyan("desktop")}, ${chalk.cyan("mobile")}, ${chalk.cyan("client-core")}.
+    Currently supported additions: ${chalk.cyan("workspaces")}, ${chalk.cyan("desktop")}, ${chalk.cyan("mobile")}, ${chalk.cyan("client-core")},
+    ${chalk.cyan("extension")}, ${chalk.cyan("release")}.
 
     ${chalk.cyan("workspaces")} adds tenants, members, roles and invitations. It only
     writes new files and wires them in; it never rewrites your own code,
@@ -3489,6 +3490,15 @@ function printHelp(topic?: HelpTopic): void {
     ${chalk.cyan("client-core")} adds packages/core: the offline queue, the sync
     client and the client/server version handshake. Files it cannot place
     safely are listed in .hatchkit/post-client-core.md rather than guessed at.
+
+    ${chalk.cyan("extension")} writes an MV3 browser extension (a development, a
+    Chrome and a Firefox target), the web-app bridge that keeps it
+    signed in, and the two-store release workflow. It needs the shared
+    client core and a server runtime, so it is refused on a
+    ${chalk.cyan("static")} or ${chalk.cyan("backend")} surface. Its origin has to be in the
+    server's ${chalk.dim("TRUSTED_ORIGINS")} before it can make a single request
+    (${chalk.cyan("pnpm run extension:id")} prints it); the Firefox build's origin is
+    random per install, so that one needs ${chalk.dim("TRUST_EXTENSION_ORIGINS=true")}.
 
     A native shell loads the client from its own origin, which the
     deployed server rejects (${chalk.dim("403 INVALID_ORIGIN")}) until ${chalk.dim("TRUSTED_ORIGINS")}

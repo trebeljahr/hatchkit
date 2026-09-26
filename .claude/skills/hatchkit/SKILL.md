@@ -186,7 +186,7 @@ Flags, with their valid values:
 | `--server-size` | `cpx21` `cpx31` `cpx41` |
 | `--server-location` | `nbg1` `fsn1` `hel1` |
 | `--server-id`, `--server-ip` | required with `--deploy-target existing` |
-| `--features` | `websocket` `stripe` `analytics` `s3` `workspaces` `desktop` `mobile` `client-core` (comma-separated) |
+| `--features` | `websocket` `stripe` `analytics` `s3` `workspaces` `desktop` `mobile` `client-core` `extension` `release` (comma-separated; `extension` needs a `fullstack`/`split` surface) |
 | `--analytics-providers` | `glitchtip` `openpanel` `plausible` |
 | `--services` | `glitchtip` `openpanel` `plausible` `listmonk-ses` `s3` `email` `search-console` |
 | `--db-engine` | `mongodb` `postgres` |

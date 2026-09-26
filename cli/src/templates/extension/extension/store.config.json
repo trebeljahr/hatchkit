@@ -1,0 +1,5 @@
+{
+  "//": "Chrome Web Store identity. Empty until the listing exists. storeExtensionKey is the PUBLIC half of the signing key (see manifest.config.ts for how to generate one); storeExtensionId is the id that key produces, which the release workflow re-derives and refuses to upload without a match. Fill both in one commit, and put the same chrome-extension://<id> origin in the server's TRUSTED_ORIGINS.",
+  "storeExtensionKey": "",
+  "storeExtensionId": ""
+}

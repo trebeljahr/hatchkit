@@ -1,0 +1,405 @@
+name: Extension Release
+
+# Two store jobs, one per engine, from the same tag:
+#
+#  - `chrome-web-store` builds packages/extension/dist-prod, zips it and
+#    — when the store secrets are set — uploads it to the existing store
+#    item and submits it for review.
+#
+# Managed by hatchkit: `hatchkit update` regenerates this file. Put
+# project-specific steps in a workflow of your own rather than here.
+#  - `firefox-add-ons` builds packages/extension/dist-firefox and — when
+#    the AMO secrets are set — signs and submits it to
+#    addons.mozilla.org with `web-ext sign`.
+#
+# They are separate jobs, not steps of one, because either store can be
+# unconfigured, refuse an upload or be down without that saying anything
+# about the other one.
+#
+# Safe on a tag with nothing configured: the zip is the same unsigned
+# bundle anyone can build from the tagged source, and with no store
+# secrets the job stops after uploading it as an artifact, green, with a
+# notice saying why. Half a configuration is an ERROR on every event —
+# skipping it would hide the missing half behind a green run.
+#
+# Neither API can create the listing or edit its store copy; that stays
+# dashboard work. Fill in packages/extension/store.config.json once the
+# Chrome item exists.
+#
+# Modes:
+#   build    build, check, zip, upload the artifact. Nothing reaches a store.
+#   upload   also upload the package as a draft — NOT submitted for review.
+#   publish  also submit for review. A tag run is `publish` when the
+#            secrets exist and `build` when they do not.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "vX.Y.Z to build from. Required for upload/publish; empty builds the dispatched branch"
+        required: false
+        type: string
+        default: ""
+      mode:
+        description: "build: artifact only. upload: store draft, not submitted. publish: submit for review"
+        required: true
+        type: choice
+        options:
+          - build
+          - upload
+          - publish
+        default: build
+      amo-channel:
+        description: "firefox: listed (the public AMO listing) or unlisted (self-distributed, signed only)"
+        required: false
+        type: choice
+        options:
+          - listed
+          - unlisted
+        default: listed
+
+# One store submission at a time: a second upload while the first is
+# being processed is refused by the store anyway, and never cancelled
+# half-way, because a cancelled job can leave an upload the next run
+# trips on.
+concurrency:
+  group: extension-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  chrome-web-store:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Job-level, so the `if:` guards below can read them — a step's own
+    # `env:` is not in scope for that step's `if:`.
+    env:
+      CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+      CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+      CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+      CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+    steps:
+      # Decides tag, ref and mode before anything is checked out. Every
+      # input is read through env, never interpolated into the script.
+      - id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "push" ]; then
+            tag="$REF_NAME"
+            mode=publish
+          else
+            tag="${INPUT_TAG:-}"
+            mode="${INPUT_MODE:-build}"
+          fi
+
+          if [ -n "$tag" ] && ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$tag' is not a vX.Y.Z tag."
+            exit 1
+          fi
+
+          if [ "$mode" != "build" ] && [ -z "$tag" ]; then
+            echo "::error::mode '$mode' needs a tag: the store only gets packages whose version was checked against a release tag."
+            exit 1
+          fi
+
+          # The store has one public channel. A prerelease tag still
+          # builds and is checked, but never reaches it.
+          case "$tag" in
+            *-*)
+              if [ "$mode" != "build" ]; then
+                if [ "$EVENT" = "push" ]; then
+                  echo "::notice::$tag is a prerelease — built and zipped, not uploaded to the Chrome Web Store."
+                  mode=build
+                else
+                  echo "::error::$tag is a prerelease; prereleases are not uploaded to the Chrome Web Store."
+                  exit 1
+                fi
+              fi
+              ;;
+          esac
+
+          # All four store secrets or none of them. Half a set is an
+          # error on every event: skipping it would hide the missing
+          # half behind a green run that uploaded nothing.
+          set_count=0
+          for value in "${CHROME_CLIENT_ID:-}" "${CHROME_CLIENT_SECRET:-}" "${CHROME_REFRESH_TOKEN:-}" "${CHROME_EXTENSION_ID:-}"; do
+            if [ -n "$value" ]; then set_count=$((set_count + 1)); fi
+          done
+          if [ "$set_count" -gt 0 ] && [ "$set_count" -lt 4 ]; then
+            echo "::error::$set_count of 4 Chrome Web Store secrets are set. Set all of CHROME_CLIENT_ID, CHROME_CLIENT_SECRET, CHROME_REFRESH_TOKEN and CHROME_EXTENSION_ID, or none."
+            exit 1
+          fi
+          if [ "$set_count" -eq 0 ] && [ "$mode" != "build" ]; then
+            if [ "$EVENT" = "push" ]; then
+              echo "::notice::the Chrome Web Store secrets are not set — built and zipped, store upload skipped."
+              mode=build
+            else
+              echo "::error::mode '$mode' needs the CHROME_CLIENT_ID, CHROME_CLIENT_SECRET, CHROME_REFRESH_TOKEN and CHROME_EXTENSION_ID secrets."
+              exit 1
+            fi
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "mode=$mode"
+          } >> "$GITHUB_OUTPUT"
+          echo "tag=${tag:-none} mode=$mode"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.tag || github.ref }}
+
+      # No `version:` input: action-setup reads `packageManager` from
+      # package.json and throws on a differing pin.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: __HATCHKIT_NODE_VERSION__
+          cache: pnpm
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      # dist-prod pins the store key, so this is the id the servers
+      # trust. EXTENSION_KEY must NOT be set here: the package step
+      # refuses a build whose key does not pin the store item.
+      - name: Build (production target)
+        run: pnpm run build:extension:prod
+
+      # Checks the manifest version against the tag, checks the `key`
+      # pins the store item, strips it, and zips the directory contents
+      # with manifest.json at the root. Without a tag (a branch build) it
+      # checks against package.json's own version.
+      - id: package
+        name: Check version and zip
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAG" ]; then
+            TAG="v$(node -p 'require("./package.json").version')"
+          fi
+          version="${TAG#v}"
+          zip="$RUNNER_TEMP/__HATCHKIT_PROJECT_SLUG__-extension-$version.zip"
+          node scripts/extension-package.mjs package --tag "$TAG" --out "$zip"
+          {
+            echo "zip=$zip"
+            echo "tag=$TAG"
+            echo "name=chrome-extension-$version"
+          } >> "$GITHUB_OUTPUT"
+
+      # Before any store call, so the exact bytes sent are kept even
+      # when the upload or the review submission fails.
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ steps.package.outputs.zip }}
+          if-no-files-found: error
+
+      - name: Upload to the Chrome Web Store
+        if: steps.resolve.outputs.mode != 'build'
+        env:
+          TAG: ${{ steps.package.outputs.tag }}
+          ZIP: ${{ steps.package.outputs.zip }}
+          MODE: ${{ steps.resolve.outputs.mode }}
+        run: |
+          set -euo pipefail
+          args=(publish --tag "$TAG" --zip "$ZIP")
+          if [ "$MODE" = "upload" ]; then
+            args+=(--upload-only)
+          fi
+          node scripts/extension-package.mjs "${args[@]}"
+
+  # -- Firefox (addons.mozilla.org) ------------------------------------
+  #
+  # Same source, the `firefox` build target: an event-page background, a
+  # gecko add-on id, and no `key` or `externally_connectable`.
+  #
+  # Fails closed exactly like the Chrome job: both AMO secrets or
+  # neither, a tag run with no secrets stops after the artifact with a
+  # notice, and a dispatch that asked to submit with half a
+  # configuration is an error rather than a green run that uploaded
+  # nothing. AMO_JWT_ISSUER / AMO_JWT_SECRET come from an
+  # addons.mozilla.org account's API credentials; creating the account
+  # and the listing is manual, one-time work.
+  firefox-add-ons:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+      AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+    steps:
+      - id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "push" ]; then
+            tag="$REF_NAME"
+            mode=publish
+          else
+            tag="${INPUT_TAG:-}"
+            mode="${INPUT_MODE:-build}"
+          fi
+
+          if [ -n "$tag" ] && ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$tag' is not a vX.Y.Z tag."
+            exit 1
+          fi
+
+          if [ "$mode" != "build" ] && [ -z "$tag" ]; then
+            echo "::error::mode '$mode' needs a tag: AMO only gets packages whose version was checked against a release tag."
+            exit 1
+          fi
+
+          # AMO has one listing, like the Chrome item. A prerelease is
+          # built and checked, never submitted — the version it would
+          # claim there is permanent, and AMO refuses a version it has
+          # already seen.
+          case "$tag" in
+            *-*)
+              if [ "$mode" != "build" ]; then
+                if [ "$EVENT" = "push" ]; then
+                  echo "::notice::$tag is a prerelease — built, not submitted to addons.mozilla.org."
+                  mode=build
+                else
+                  echo "::error::$tag is a prerelease; prereleases are not submitted to addons.mozilla.org."
+                  exit 1
+                fi
+              fi
+              ;;
+          esac
+
+          if [ -n "${AMO_JWT_ISSUER:-}" ] && [ -z "${AMO_JWT_SECRET:-}" ]; then
+            echo "::error::AMO_JWT_ISSUER is set but AMO_JWT_SECRET is not."
+            exit 1
+          fi
+          if [ -z "${AMO_JWT_ISSUER:-}" ] && [ -n "${AMO_JWT_SECRET:-}" ]; then
+            echo "::error::AMO_JWT_SECRET is set but AMO_JWT_ISSUER is not."
+            exit 1
+          fi
+          if [ -z "${AMO_JWT_ISSUER:-}" ] && [ "$mode" != "build" ]; then
+            if [ "$EVENT" = "push" ]; then
+              echo "::notice::AMO_JWT_ISSUER and AMO_JWT_SECRET are not set — built, submission skipped."
+              mode=build
+            else
+              echo "::error::mode '$mode' needs the AMO_JWT_ISSUER and AMO_JWT_SECRET secrets."
+              exit 1
+            fi
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "mode=$mode"
+          } >> "$GITHUB_OUTPUT"
+          echo "tag=${tag:-none} mode=$mode"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.tag || github.ref }}
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: __HATCHKIT_NODE_VERSION__
+          cache: pnpm
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (firefox target)
+        run: pnpm run build:extension:firefox
+
+      # The same check the Chrome job makes, for the same reason: the
+      # manifest version comes from the root package.json, and a
+      # forgotten bump would otherwise only surface as AMO refusing the
+      # upload.
+      - id: check
+        name: Check the version against the tag
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAG" ]; then
+            TAG="v$(node -p 'require("./package.json").version')"
+          fi
+          version="${TAG#v}"
+          manifest="$(node -p 'const m=require("./packages/extension/dist-firefox/manifest.json"); m.version_name ?? m.version')"
+          if [ "$manifest" != "$version" ]; then
+            echo "::error::the Firefox manifest says $manifest but the tag says $version. Bump the root package.json version."
+            exit 1
+          fi
+          # AMO reviews minified code only with the sources beside it.
+          # `git archive` of the checked-out ref is exactly what the
+          # build ran on.
+          src="$RUNNER_TEMP/__HATCHKIT_PROJECT_SLUG__-source-$version.tar.gz"
+          git archive --format=tar.gz -o "$src" HEAD
+          {
+            echo "tag=$TAG"
+            echo "version=$version"
+            echo "source=$src"
+          } >> "$GITHUB_OUTPUT"
+
+      # Before any AMO call, so the exact bytes are kept even when the
+      # submission fails.
+      - name: Zip the unsigned bundle
+        run: |
+          set -euo pipefail
+          cd packages/extension/dist-firefox
+          zip -r -q "$RUNNER_TEMP/__HATCHKIT_PROJECT_SLUG__-firefox-${{ steps.check.outputs.version }}.zip" .
+
+      - name: Upload the unsigned artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firefox-extension-${{ steps.check.outputs.version }}
+          path: ${{ runner.temp }}/__HATCHKIT_PROJECT_SLUG__-firefox-${{ steps.check.outputs.version }}.zip
+          if-no-files-found: error
+
+      # `sign` is the submission: with --channel listed it uploads the
+      # version to the AMO listing and it goes to review.
+      # `--upload-source-code` is what keeps a bundled extension
+      # reviewable; without it AMO asks for the sources by email and the
+      # version waits.
+      - name: Sign and submit to addons.mozilla.org
+        if: steps.resolve.outputs.mode != 'build'
+        env:
+          CHANNEL: ${{ inputs.amo-channel || 'listed' }}
+          SOURCE: ${{ steps.check.outputs.source }}
+        run: |
+          set -euo pipefail
+          npx --yes web-ext@8 sign \
+            --source-dir packages/extension/dist-firefox \
+            --artifacts-dir "$RUNNER_TEMP/amo" \
+            --channel "$CHANNEL" \
+            --upload-source-code "$SOURCE" \
+            --api-key "$AMO_JWT_ISSUER" \
+            --api-secret "$AMO_JWT_SECRET" \
+            --no-input
+
+      # An unlisted submission is signed for self-distribution, so the
+      # signed .xpi is the deliverable and has to leave the runner. A
+      # listed one is distributed by AMO itself; the file is kept
+      # anyway, and costs nothing.
+      - name: Upload the signed add-on
+        if: steps.resolve.outputs.mode != 'build'
+        uses: actions/upload-artifact@v4
+        with:
+          name: firefox-extension-signed-${{ steps.check.outputs.version }}
+          path: ${{ runner.temp }}/amo/*.xpi
+          if-no-files-found: warn

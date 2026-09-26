@@ -599,6 +599,13 @@ const CLIENT_SIDE_TOP_LEVEL = [
   "scripts/lib/mobile-build.mjs",
   "scripts/lib/mobile-release.mjs",
   "scripts/lib/native-overlay.mjs",
+  // The browser extension is a client of the web app: with no client
+  // there is no bridge to drive it and no page to approve a device code
+  // on. `create` refuses the feature for this surface, so these entries
+  // only catch a project whose surface changed afterwards.
+  "packages/extension",
+  "scripts/extension-package.mjs",
+  ".github/workflows/extension-release.yml",
 ];
 
 /** Native wrapper scripts a backend-only surface has no use for. The
@@ -610,6 +617,11 @@ const NATIVE_SCRIPTS = [
   "itch:push:win",
   "itch:push:linux",
   ...MOBILE_SCRIPTS,
+  "build:extension",
+  "build:extension:prod",
+  "build:extension:firefox",
+  "test:extension",
+  "extension:id",
 ];
 
 /** Tiny export so callers (tests, future surface kinds) can ask "does

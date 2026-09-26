@@ -28,7 +28,9 @@ import { join, resolve } from "node:path";
 import chalk from "chalk";
 import ora from "ora";
 import { addUsedPorts, getUsedPorts, removeUsedPorts } from "../config.js";
-import type { MlService, ProjectConfig } from "../prompts.js";
+import { expandFeatureSelection } from "../features/all.js";
+import { extensionPrerequisiteProblem } from "../features/extension/index.js";
+import type { Feature, MlService, ProjectConfig } from "../prompts.js";
 import { explainFsError } from "../utils/errors.js";
 import { type ProjectPorts, pickProjectPorts } from "../utils/ports.js";
 import { getCliVersion } from "../utils/version.js";
@@ -96,9 +98,15 @@ export interface ScaffoldResult {
 
 /** Scaffold a new app by copying the starter template and customizing it. */
 export async function scaffoldApp(
-  config: ProjectConfig,
+  rawConfig: ProjectConfig,
   outputDir: string,
 ): Promise<ScaffoldResult> {
+  // Close the selection over prerequisites BEFORE anything reads it.
+  // `create` works by subtraction, so a feature that requires another
+  // one and does not get it is not a missing addition — it is a strip
+  // that deleted the package its dependant imports, and the failure is
+  // a TS2307 in the user's first build rather than anything here.
+  const config = withRequiredFeatures(rawConfig);
   if (config.dryRun) {
     return {
       modifications: scaffoldDryRun(config, outputDir),
@@ -192,6 +200,28 @@ export async function scaffoldApp(
     rollback();
     throw err;
   }
+}
+
+/**
+ * `config` with every prerequisite of a selected feature added.
+ *
+ * The registry is the one place that knows what a feature needs
+ * (`cli/src/features/contract.ts`), and its expansion is ordered and
+ * deterministic. Selection errors — an unknown id, a cycle — are
+ * reported rather than thrown: the scaffold that follows is the user's
+ * project, and refusing to write it over a feature-list problem the
+ * caller can still fix is worse than saying so and carrying on with
+ * what resolved.
+ */
+function withRequiredFeatures(config: ProjectConfig): ProjectConfig {
+  const { ordered, implied, errors } = expandFeatureSelection(config.features);
+  for (const error of errors) console.log(chalk.yellow(`  ${error}`));
+  if (implied.length === 0) return config;
+  console.log(chalk.dim(`  Also adding ${implied.join(", ")}: required by what you selected.`));
+  // `ordered` holds only registered features; anything not registered
+  // yet (most of the older feature ids) stays exactly as selected.
+  const expanded = new Set<Feature>([...config.features, ...ordered]);
+  return { ...config, features: [...expanded] };
 }
 
 /** Format ms-since-start as a compact "123ms" or "1.4s". */
@@ -315,11 +345,27 @@ async function runScaffoldSteps(
 
   // Feature-flag removal
   if (!config.features.includes("websocket")) {
-    removeIfExists(join(outputDir, "packages/server/src/ws"));
+    // `ws/auth.ts` authenticates an upgrade from the session cookie and
+    // does nothing else, and the client-core sync feed authenticates
+    // its own upgrade with it (`sync/handler.ts`). Deleting the whole
+    // directory while that feature is on leaves that import pointing at
+    // a file that is gone — a TS2307 on the user's first build, in a
+    // file neither feature's author touched.
+    if (config.features.includes("client-core")) {
+      for (const name of readdirSync(join(outputDir, "packages/server/src/ws"))) {
+        if (name === "auth.ts") continue;
+        removeIfExists(join(outputDir, "packages/server/src/ws", name));
+      }
+      modifications.push(
+        "removed: ws/ except auth.ts (WebSocket not selected; sync feed keeps it)",
+      );
+    } else {
+      removeIfExists(join(outputDir, "packages/server/src/ws"));
+      modifications.push("removed: ws/ (WebSocket not selected)");
+    }
     // Deleting ws/ alone leaves `index.ts` importing ./ws/handler.js —
     // a hard TS2307 on the first `pnpm run build`. Strip the call sites too.
     stripWebSocketFromServerIndex(outputDir);
-    modifications.push("removed: ws/ (WebSocket not selected)");
   }
   if (!config.features.includes("stripe")) {
     removeIfExists(join(outputDir, "packages/server/src/services/stripe.ts"));
@@ -661,6 +707,41 @@ async function runScaffoldSteps(
   // It runs last on purpose: by this point the strip phase has settled
   // which surfaces are really present, so what it derives matches the
   // tree that was actually written.
+  // The extension ships no starter source either — it is a whole
+  // package, off by default, so there would be nothing to subtract from
+  // a project that did not ask for it. It runs BEFORE `release`, whose
+  // channel derivation asks the disk whether
+  // `packages/extension/manifest.config.ts` exists.
+  if (config.features.includes("extension")) {
+    const problem = extensionPrerequisiteProblem(config.surfaces);
+    if (problem !== null) {
+      // Reported, never silently dropped: a project that asked for the
+      // extension and got none would only find out at release time.
+      console.log(chalk.yellow(`\n  Skipping the browser extension. ${problem}`));
+      modifications.push(`skipped: browser extension (${config.surfaces} surface)`);
+    } else {
+      const { FeatureLedger } = await import("../features/contract.js");
+      const { extensionFeature } = await import("../features/extension/index.js");
+      const ledger = new FeatureLedger(outputDir, false);
+      ledger.scopeTo("extension");
+      await extensionFeature.apply({
+        projectDir: outputDir,
+        manifestDir,
+        manifest,
+        identifiers,
+        mode: "create",
+        ledger,
+        log: (message: string) => console.log(chalk.dim(message)),
+      });
+      for (const file of ledger.summary().written) modifications.push(file);
+      for (const conflict of ledger.conflicts()) {
+        modifications.push(
+          `extension: not applied — ${conflict.file}: ${conflict.detail ?? "conflict"}`,
+        );
+      }
+    }
+  }
+
   if (config.features.includes("release")) {
     const { FeatureLedger } = await import("../features/contract.js");
     const { releaseFeature } = await import("../features/release/index.js");
@@ -1057,6 +1138,13 @@ function scaffoldDryRun(config: ProjectConfig, outputDir: string): string[] {
   // is the hand-maintained parallel the feature contract warns about, so
   // it says that the feature runs and leaves the file-by-file account to
   // the ledger, which is derived from the real apply.
+  if (config.features.includes("extension")) {
+    actions.push(
+      extensionPrerequisiteProblem(config.surfaces) === null
+        ? "Add browser extension (MV3: dev + Chrome + Firefox targets, web-app bridge, release workflow)"
+        : `Skip browser extension (${config.surfaces} surface)`,
+    );
+  }
   if (config.features.includes("release")) {
     actions.push(
       "Apply release coordination (release config, scripts, summary + compat workflows, docs)",

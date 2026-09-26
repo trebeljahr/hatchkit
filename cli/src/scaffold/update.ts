@@ -40,6 +40,7 @@ import chalk from "chalk";
 import { addUsedPorts, getUsedPorts } from "../config.js";
 import { pushNativeOriginsForProject } from "../deploy/trusted-origins.js";
 import type { AuthSecurityOption } from "../features/auth-account-security/types.js";
+import { extensionPrerequisiteProblem } from "../features/extension/index.js";
 import type { Feature } from "../prompts.js";
 import { multiselect } from "../utils/multiselect.js";
 import { PORT_RANGES, pickPort } from "../utils/ports.js";
@@ -106,6 +107,7 @@ const SUPPORTED_ADDITIONS: readonly Feature[] = [
   // to layer onto a project that has been running for months.
   "auth-account-security",
   "client-core",
+  "extension",
 ];
 
 export interface UpdateResult {
@@ -296,6 +298,7 @@ export async function runUpdate(
     "release",
     "auth-account-security",
     "client-core",
+    "extension",
   ];
   const desired =
     options.presets?.desiredFeatures ??
@@ -355,8 +358,47 @@ export async function runUpdate(
 
   const current = new Set(manifest.features);
   const next = new Set(desired);
-  const added: Feature[] = [...next].filter((f) => !current.has(f));
+  let added: Feature[] = [...next].filter((f) => !current.has(f));
   const removed: Feature[] = [...current].filter((f) => !next.has(f));
+  /** Asked for, and refused because the project cannot carry it. */
+  let prerequisiteSkipped: Feature[] = [];
+
+  // Close the selection over prerequisites, and apply in the registry's
+  // order so a feature that requires another one runs after it. A
+  // prerequisite pulled in this way is named: the user did not ask for
+  // it, and finding a new package in the diff with no explanation is
+  // how people stop trusting `update`.
+  if (added.length > 0) {
+    const { expandFeatureSelection } = await import("../features/all.js");
+    const expansion = expandFeatureSelection([...current, ...added]);
+    for (const error of expansion.errors) console.log(chalk.yellow(`  ${error}`));
+    const pulled = expansion.implied.filter((id) => !current.has(id) && !added.includes(id));
+    if (pulled.length > 0) {
+      console.log(
+        chalk.dim(`\n  Also adding ${pulled.join(", ")}: required by what you selected.`),
+      );
+      added = [...added, ...pulled];
+    }
+    const rank = (feature: Feature): number => {
+      const at = expansion.ordered.indexOf(feature);
+      // A feature the registry does not know about keeps its place at
+      // the end rather than jumping ahead of one that has an order.
+      return at === -1 ? Number.MAX_SAFE_INTEGER : at;
+    };
+    added = [...added].sort((a, b) => rank(a) - rank(b));
+  }
+
+  // The extension needs the shared client core and a server runtime. A
+  // project with neither is told why rather than handed a package that
+  // cannot talk to anything.
+  if (added.includes("extension")) {
+    const problem = extensionPrerequisiteProblem(manifest.surfaces ?? "fullstack");
+    if (problem !== null) {
+      prerequisiteSkipped = ["extension"];
+      added = added.filter((f) => f !== "extension");
+      console.log(chalk.yellow(`\n  ${problem}`));
+    }
+  }
 
   if (removed.length > 0) {
     console.log(
@@ -401,6 +443,9 @@ export async function runUpdate(
           console.log(chalk.dim("\n  Adding mobile (Capacitor)..."));
           await addRegisteredFeature("mobile", projectDir, manifestDir, manifest);
           updatedFeatures.add("mobile");
+        } else if (feature === "extension") {
+          await addExtension(projectDir, manifestDir, manifest);
+          updatedFeatures.add("extension");
         } else if (feature === "release") {
           await addRelease(projectDir, manifestDir, manifest, [...updatedFeatures, ...added]);
           updatedFeatures.add("release");
@@ -579,10 +624,46 @@ export async function runUpdate(
 
   return {
     added: actuallyAdded,
-    skipped: skippedAdditions,
+    skipped: [...skippedAdditions, ...prerequisiteSkipped],
     removed,
     localDevEnabled,
   };
+}
+
+/** Apply the `extension` feature through the feature contract.
+ *
+ *  The same `apply` `hatchkit create` runs — one definition of what the
+ *  feature is. Every write goes through the ledger, so a re-run on an
+ *  unchanged project reports nothing written, and the extension's own
+ *  source (which the project owns from the moment it lands) is kept
+ *  rather than overwritten. */
+async function addExtension(
+  projectDir: string,
+  manifestDir: string,
+  manifest: ProjectManifest,
+): Promise<void> {
+  console.log(chalk.dim("\n  Adding the browser extension (MV3)..."));
+  const { FeatureLedger } = await import("../features/contract.js");
+  const { extensionFeature, extensionResidue } = await import("../features/extension/index.js");
+
+  const ledger = new FeatureLedger(projectDir, false);
+  ledger.scopeTo("extension");
+  await extensionFeature.apply({
+    projectDir,
+    manifestDir,
+    manifest,
+    identifiers: identifiersFor(manifest),
+    mode: "update",
+    ledger,
+    log: (message: string) => console.log(chalk.dim(message)),
+  });
+
+  const summary = ledger.summary();
+  for (const file of summary.written) console.log(chalk.green(`    \u2713 ${file}`));
+  for (const conflict of ledger.conflicts()) {
+    console.log(chalk.yellow(`    \u21bb ${conflict.file}: ${conflict.detail ?? "conflict"}`));
+  }
+  for (const note of extensionResidue()) console.log(chalk.dim(`    \u2022 ${note}`));
 }
 
 /** Apply the `release` feature through the feature contract.

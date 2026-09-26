@@ -327,6 +327,47 @@ results.websocket = await run("websocket only", "rt-app", ["websocket"], (d) => 
   ];
 });
 
+results.extension = await run("browser extension", "ext-app", ["extension"], (d) => {
+  const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
+  const manifestConfig = readFileSync(join(d, "packages/extension/manifest.config.ts"), "utf-8");
+  const app = readFileSync(join(d, "packages/server/src/app.ts"), "utf-8");
+  const auth = readFileSync(join(d, "packages/server/src/auth/auth.ts"), "utf-8");
+  const layout = readFileSync(join(d, "packages/client/src/app/layout.tsx"), "utf-8");
+  const claudeMd = readFileSync(join(d, "CLAUDE.md"), "utf-8");
+  return [
+    ["extension package written", existsSync(join(d, "packages/extension/src/background/bridge.ts"))],
+    ["bridge protocol lands in the shared package", existsSync(join(d, "packages/shared/src/extension-bridge.ts"))],
+    ["web half written", existsSync(join(d, "packages/client/src/components/ExtensionBridge.tsx"))],
+    ["device approval page written", existsSync(join(d, "packages/client/src/app/device/page.tsx"))],
+    ["release workflow written", existsSync(join(d, ".github/workflows/extension-release.yml"))],
+    ["packaging script written", existsSync(join(d, "scripts/extension-package.mjs"))],
+    ["no placeholder survived rendering", !manifestConfig.includes("__HATCHKIT_")],
+    ["the dev target points at this project's server port", manifestConfig.includes("apiUrl: \"http://localhost:")],
+    ["build scripts added", pkg.scripts?.["build:extension:firefox"] === "pnpm --filter @starter/extension run build:firefox"],
+    // The wiring, which is what makes the extension able to talk at all.
+    ["server answers /api/health for every origin", app.includes('res.setHeader("Access-Control-Allow-Origin", "*")')],
+    ["server reports originTrusted", app.includes("originTrusted:")],
+    ["better-auth gets the bearer + device plugins", auth.includes("bearer(),") && auth.includes("deviceAuthorization({")],
+    ["the bridge is mounted once", layout.match(/<ExtensionBridge \/>/g)?.length === 1],
+    ["CLAUDE.md documents the extension", claudeMd.includes("## Browser Extension")],
+    ["CLAUDE.md leaves no hatchkit: markers", !claudeMd.includes("hatchkit:")],
+  ];
+});
+
+results.extensionRefused = await run(
+  "browser extension refused on a static surface",
+  "static-ext-app",
+  ["extension"],
+  (d) => [
+    // The feature needs the shared client core AND a server runtime.
+    // A static project has neither half of the trust decision, so the
+    // scaffold says so instead of writing files that cannot work.
+    ["no extension package", !existsSync(join(d, "packages/extension"))],
+    ["no release workflow", !existsSync(join(d, ".github/workflows/extension-release.yml"))],
+  ],
+  { surfaces: "static" },
+);
+
 results.desktop = await run("desktop only", "my-cool-app", ["desktop"], (d) => {
   const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
   const nextCfg = readFileSync(join(d, "packages/client/next.config.ts"), "utf-8");

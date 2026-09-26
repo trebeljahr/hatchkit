@@ -84,7 +84,7 @@ prompting. That makes `create` CI-safe.
 
 | Flag | Values / effect |
 |---|---|
-| `--features <list>` | `websocket`, `stripe`, `analytics`, `s3`, `workspaces`, `desktop`, `mobile`, `client-core`. Comma-separated; pass empty for none. See [Client Core](./client-core) for what `client-core` scaffolds. |
+| `--features <list>` | `websocket`, `stripe`, `analytics`, `s3`, `workspaces`, `desktop`, `mobile`, `client-core`, `extension`, `release`. Comma-separated; pass empty for none. `extension` needs a `fullstack` or `split` surface. See [Client Core](./client-core) for what `client-core` scaffolds. |
 | `--analytics-providers <list>` | `glitchtip`, `openpanel`, `plausible` |
 | `--services <list>` | `glitchtip`, `openpanel`, `plausible`, `listmonk-ses`, `s3`, `email`, `search-console` |
 | `--db-engine <value>` | `mongodb` · `postgres` |
@@ -169,7 +169,7 @@ cd my-app
 hatchkit update
 ```
 
-Reads `.hatchkit.json`, lets you pick a new feature set, copies additive pieces from the starter. **Supported additions today:** `workspaces` (tenants, members, roles, invitations), `desktop` (Electron), `mobile` (Capacitor), `client-core` (the shared client kit — see [Client Core](./client-core)). Removal is not supported — removing a feature could delete user code. Remove manually and update the manifest.
+Reads `.hatchkit.json`, lets you pick a new feature set, copies additive pieces from the starter. **Supported additions today:** `workspaces` (tenants, members, roles, invitations), `desktop` (Electron), `mobile` (Capacitor), `client-core` (the shared client kit — see [Client Core](./client-core)), `extension` (an MV3 browser extension), `release` (release coordination). Removal is not supported — removing a feature could delete user code. Remove manually and update the manifest.
 
 **Additive means additive.** A file the project already has is never overwritten, so a desktop shell whose main process moved into a bundler keeps it, and a hand-edited `desktop-release.yml` survives. The same holds inside `package.json`: a script or a dependency pin the project has changed away from the starter's shape is reported as kept, not replaced — including the `dev:desktop` command, which is only retargeted at a new native HMR port while it still has the generated shape. `hatchkit update --force` replaces those `package.json` pieces with the starter's current versions. It never overwrites files.
 
@@ -219,6 +219,32 @@ Design points worth knowing before you change any of it:
 
 With `websocket` off the membership events publish into a no-op, and the members
 screen will not live-refresh. Everything else works.
+
+### `extension`
+
+Writes `packages/extension` (a development, a Chrome and a Firefox
+build target declared in `manifest.config.ts`), the bridge that keeps
+the extension signed in with the web app (`packages/shared`, plus the
+page half and a `/device` approval page in the client), the server's
+origin-trust rule, and a release workflow that uploads to the Chrome
+Web Store and signs for addons.mozilla.org.
+
+It builds on the shared client core, so it is refused on a `static` or
+`backend` surface — there would be no page to drive the bridge, or no
+server to trust the extension's origin.
+
+Two things have to be set by hand after scaffolding, and nothing works
+until they are:
+
+- the extension's origin in the server's `TRUSTED_ORIGINS`
+  (`pnpm run extension:id` prints it). The Firefox build's origin is a
+  fresh random UUID per install, which no list can hold, so that one
+  needs `TRUST_EXTENSION_ORIGINS=true` instead.
+- `NEXT_PUBLIC_EXTENSION_IDS` in the web app's build env, or the bridge
+  has nobody to message.
+
+Re-running `hatchkit update` is safe: the extension's own source is
+kept once it exists, and the workflow it owns is regenerated.
 
 ---
 

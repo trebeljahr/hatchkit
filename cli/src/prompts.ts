@@ -11,6 +11,10 @@ import type { Topology } from "./deploy/routing.js";
 import { DEFAULT_CATCH_ALL, buildForwardPresets } from "./email/presets.js";
 import type { AuthSecurityOption } from "./features/auth-account-security/types.js";
 import {
+  EXTENSION_PREREQUISITE,
+  extensionPrerequisiteProblem,
+} from "./features/extension/index.js";
+import {
   type ProjectOnboardingPlan,
   onboardingPlanToProjectConfig,
   projectConfigToOnboardingPlan,
@@ -89,6 +93,12 @@ export type Feature =
   | "workspaces"
   | "desktop"
   | "mobile"
+  /** An MV3 browser extension for Chrome and Firefox, kept signed in
+   *  with the web app through a bridge the PAGE drives. It is the third
+   *  client of the shared client core, so it needs both
+   *  `packages/shared` and `packages/client` — see
+   *  `cli/src/features/extension/`. */
+  | "extension"
   /** Release coordination across every surface the project ships from
    *  one version tag: one version with a test that every copy matches,
    *  a cut command, a status table, a policy check that refuses the
@@ -1000,6 +1010,18 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
               checked: c.features.includes("mobile"),
             },
             {
+              // Builds on the shared client core: the protocol lives in
+              // packages/shared and the page half in packages/client, so
+              // a surface that ships neither cannot carry it.
+              name:
+                extensionPrerequisiteProblem(c.surfaces) === null
+                  ? "Browser extension (Chrome + Firefox, MV3)"
+                  : `Browser extension (needs ${EXTENSION_PREREQUISITE})`,
+              value: "extension",
+              checked: c.features.includes("extension"),
+              disabled: extensionPrerequisiteProblem(c.surfaces) !== null,
+            },
+            {
               name: "Release coordination (one version across every surface)",
               value: "release",
               checked: c.features.includes("release"),
@@ -1486,6 +1508,13 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
   }
 
   const features = presets.features ?? [];
+  if (features.includes("extension")) {
+    // A refusal, not a silent drop: a scripted create that asked for
+    // the extension and got a project without one would only find out
+    // at release time.
+    const problem = extensionPrerequisiteProblem(surfaces);
+    if (problem !== null) throw new Error(`--features invalid: ${problem}`);
+  }
   const analyticsProviders =
     presets.analyticsProviders ??
     (features.includes("analytics") ? ["glitchtip" as const] : undefined);
@@ -2043,6 +2072,15 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
           name: "mobile (Capacitor wrapper)",
           value: "mobile",
           checked: cfg.features.includes("mobile"),
+        },
+        {
+          name:
+            extensionPrerequisiteProblem(cfg.surfaces) === null
+              ? "extension (MV3 browser extension, Chrome + Firefox)"
+              : `extension (needs ${EXTENSION_PREREQUISITE})`,
+          value: "extension",
+          checked: cfg.features.includes("extension"),
+          disabled: extensionPrerequisiteProblem(cfg.surfaces) !== null,
         },
         {
           name: "release (one version across every surface)",

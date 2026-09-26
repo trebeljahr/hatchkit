@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>__HATCHKIT_PRODUCT_NAME__</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, sans-serif;
+        font-size: 14px;
+      }
+      body {
+        width: 320px;
+        margin: 0;
+        padding: 14px;
+      }
+      h1 {
+        font-size: 15px;
+        margin: 0 0 10px;
+      }
+      label {
+        display: block;
+        margin: 8px 0 2px;
+        font-size: 12px;
+        opacity: 0.8;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 6px 8px;
+      }
+      button {
+        margin-top: 10px;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .muted {
+        opacity: 0.7;
+        font-size: 12px;
+      }
+      .notice {
+        margin-top: 12px;
+        padding: 8px;
+        border: 1px solid currentColor;
+        border-radius: 4px;
+        font-size: 12px;
+      }
+      .error {
+        margin-top: 10px;
+        font-size: 12px;
+      }
+      code {
+        user-select: all;
+        word-break: break-all;
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>__HATCHKIT_PRODUCT_NAME__</h1>
+    <div id="app" class="muted">Loading…</div>
+
+    <section id="signed-out" hidden>
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="username" />
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" />
+      <div class="row">
+        <button id="sign-in">Sign in</button>
+        <button id="device-sign-in">Sign in with the web app</button>
+      </div>
+    </section>
+
+    <section id="signed-in" hidden>
+      <p class="muted" id="who"></p>
+      <button id="sign-out">Sign out</button>
+    </section>
+
+    <section id="server">
+      <label for="server-input">Server</label>
+      <div class="row">
+        <input id="server-input" type="url" spellcheck="false" />
+        <button id="server-save">Use</button>
+      </div>
+    </section>
+
+    <p id="error" class="error" hidden></p>
+
+    <div id="origin-notice" class="notice" hidden>
+      <strong>This server does not trust this extension.</strong>
+      <p>
+        Every request is refused before it is answered, which looks exactly like
+        being offline. Add this origin to the server's
+        <code>TRUSTED_ORIGINS</code>:
+      </p>
+      <p><code id="extension-origin"></code></p>
+      <p id="firefox-hint" hidden>
+        On Firefox this origin is a fresh random UUID on every install, so no
+        list can hold it — set <code>TRUST_EXTENSION_ORIGINS=true</code> on the
+        server instead.
+      </p>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
