@@ -1,0 +1,407 @@
+/**
+ * Signing in from a client that has no cookie jar — a CLI, a launcher
+ * extension, a browser extension popup, a native shell.
+ *
+ * There is no separate API-token type to mint or paste. A client signs in the
+ * ordinary way and keeps the resulting better-auth **session token**, which it
+ * sends as `Authorization: Bearer <token>` on every request (and as the
+ * `bearer.<token>` WebSocket subprotocol). The server's `bearer` plugin
+ * resolves it to the same session a browser cookie would, so by the time
+ * `getSession()` runs a token client and a cookie client are
+ * indistinguishable — exactly one auth path to reason about — and the session
+ * shows up in Settings → Devices like any other.
+ *
+ * Two ways in:
+ *
+ *  - {@link signInWithPassword} — the client can show an email/password form.
+ *    Right for a browser-extension popup or a desktop shell.
+ *  - {@link startDeviceAuthorization} + {@link pollForDeviceSession} — RFC 8628.
+ *    The client shows a short code the user approves in an already-signed-in
+ *    browser. Right for a CLI or a launcher, where asking for a password is
+ *    wrong, and for any client that cannot render a form at all.
+ *
+ * Persisting the returned token is the caller's job, and it deserves the
+ * platform's real secret storage (the Keychain, `chrome.storage.session`, the
+ * OS credential store) — never a plain config file.
+ *
+ * This module is isomorphic and dependency-free: it uses `fetch` and nothing
+ * else, so the same code runs in Node, in a service worker and in a WebView —
+ * which is why it lives in `@starter/core` rather than in the web client.
+ *
+ * It does NOT register the server plugins it talks to. The `bearer` plugin and
+ * the device-authorization endpoints are wired by the features that own them;
+ * this is the client half, and the errors below are what a caller sees when a
+ * server is missing one of them.
+ */
+import { CLIENT_HEADER, type ClientId } from "@starter/shared";
+
+/** Response header better-auth's bearer plugin returns the session token on. */
+const SESSION_TOKEN_HEADER = "set-auth-token";
+
+/** `AuthError.code` when a client cannot complete a second factor. */
+export const SECOND_FACTOR_UNSUPPORTED = "SECOND_FACTOR_UNSUPPORTED";
+
+/** Every failure here is one of these, with a machine-readable `code`. */
+export class AuthError extends Error {
+  readonly code: string;
+
+  constructor(message: string, code: string) {
+    super(message);
+    this.name = "AuthError";
+    this.code = code;
+  }
+}
+
+export type SessionAuthOptions = {
+  /** Server origin, e.g. `https://api.example.com`. */
+  baseUrl: string;
+  /** Identifies this client to the server. Names its row in the devices list. */
+  clientId: ClientId;
+  /** Injectable for tests and for hosts with a rebased `fetch`. */
+  fetchImpl?: typeof fetch;
+};
+
+/** A signed-in session. `token` is the credential — store it securely. */
+export type IssuedSession = {
+  token: string;
+  userId: string | null;
+  email: string | null;
+};
+
+const resolveFetch = (fetchImpl?: typeof fetch): typeof fetch => {
+  const impl =
+    fetchImpl ?? (globalThis as { fetch?: typeof fetch }).fetch?.bind(globalThis);
+  if (!impl) {
+    throw new AuthError(
+      "No fetch implementation available — pass `fetchImpl`.",
+      "NO_FETCH",
+    );
+  }
+  return impl;
+};
+
+const authUrl = (baseUrl: string, path: string): string =>
+  `${baseUrl.replace(/\/$/, "")}/api/auth${path}`;
+
+const readJson = async (response: Response): Promise<Record<string, unknown>> => {
+  try {
+    const body: unknown = await response.json();
+    return typeof body === "object" && body !== null
+      ? (body as Record<string, unknown>)
+      : {};
+  } catch {
+    // A proxy's HTML error page is not JSON, and must read as "no fields"
+    // rather than taking the whole sign-in down with a parse error.
+    return {};
+  }
+};
+
+const asString = (value: unknown): string | null =>
+  typeof value === "string" && value.length > 0 ? value : null;
+
+// ── password sign-in ─────────────────────────────────────────────────
+
+export type PasswordCredentials = { email: string; password: string };
+
+/**
+ * Sign in with email and password and return the session token.
+ *
+ * The token comes back on the `set-auth-token` response header rather than in
+ * the body. If it is missing, the server is not running the `bearer` plugin
+ * and there is nothing usable to store — that is an error, not a silent
+ * cookie-only success that leaves the caller holding no credential.
+ *
+ * **In a browser this needs the client's origin in `TRUSTED_ORIGINS`.**
+ * better-auth force-validates `Origin` on any request carrying `Sec-Fetch-*`
+ * headers — which every real browser fetch sends — and answers
+ * `403 INVALID_ORIGIN` *before* the password is checked. curl sends neither,
+ * which makes curl a misleading way to test this.
+ */
+export async function signInWithPassword(
+  options: SessionAuthOptions,
+  credentials: PasswordCredentials,
+): Promise<IssuedSession> {
+  return issueSession(options, "/sign-in/email", credentials, "Sign-in failed");
+}
+
+export type SignUpDetails = PasswordCredentials & { name: string };
+
+/**
+ * Create an account and return its session token, the same way
+ * {@link signInWithPassword} does — the server signs a new account straight
+ * in, and the bearer plugin hands the token back on the same header.
+ */
+export async function signUpWithPassword(
+  options: SessionAuthOptions,
+  details: SignUpDetails,
+): Promise<IssuedSession> {
+  return issueSession(
+    options,
+    "/sign-up/email",
+    details,
+    "Could not create the account",
+  );
+}
+
+async function issueSession(
+  options: SessionAuthOptions,
+  path: string,
+  payload: Record<string, string>,
+  failure: string,
+): Promise<IssuedSession> {
+  const doFetch = resolveFetch(options.fetchImpl);
+
+  const response = await doFetch(authUrl(options.baseUrl, path), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      [CLIENT_HEADER]: options.clientId,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const body = await readJson(response);
+  if (!response.ok) {
+    throw new AuthError(
+      asString(body.message) ?? failure,
+      asString(body.code) ?? `HTTP_${response.status}`,
+    );
+  }
+
+  // An account with a second factor answers a correct password with a
+  // challenge and no session. The challenge is carried by a cookie this
+  // helper has no jar for, so name the reason instead of reporting a missing
+  // token — the caller can then fall back to the device flow, which finishes
+  // the challenge in a real browser.
+  if (body.twoFactorRedirect === true) {
+    throw new AuthError(
+      "This account needs a second factor, which this client cannot show. Sign in with the device flow instead.",
+      SECOND_FACTOR_UNSUPPORTED,
+    );
+  }
+
+  const token = response.headers.get(SESSION_TOKEN_HEADER);
+  if (!token) {
+    throw new AuthError(
+      "Server did not return a session token — is the bearer plugin enabled?",
+      "NO_SESSION_TOKEN",
+    );
+  }
+
+  const user =
+    typeof body.user === "object" && body.user !== null
+      ? (body.user as Record<string, unknown>)
+      : {};
+
+  return { token, userId: asString(user.id), email: asString(user.email) };
+}
+
+// ── device flow (RFC 8628) ───────────────────────────────────────────
+
+/** What to show the user while the client waits to be approved. */
+export type DeviceAuthorization = {
+  deviceCode: string;
+  /** Short code the user types at `verificationUri`. */
+  userCode: string;
+  verificationUri: string;
+  /** The same page with the code prefilled — worth opening directly. */
+  verificationUriComplete: string;
+  expiresInSeconds: number;
+  /** Server-mandated minimum seconds between polls. */
+  intervalSeconds: number;
+};
+
+/**
+ * Ask the server for a pairing code.
+ *
+ * Show `userCode` and point the user at `verificationUri` (or open
+ * `verificationUriComplete`), then call {@link pollForDeviceSession} with the
+ * `deviceCode`.
+ *
+ * A client here needs **no origin at all**, and has none to give: a `fetch`
+ * outside a browser sends neither `Origin` nor `Sec-Fetch-*`, and better-auth
+ * skips origin validation for such a request. What guards this path instead is
+ * the approval step itself — a code a signed-in human types into a browser —
+ * plus the `client_id` allowlist on the server.
+ */
+export async function startDeviceAuthorization(
+  options: SessionAuthOptions,
+): Promise<DeviceAuthorization> {
+  const doFetch = resolveFetch(options.fetchImpl);
+
+  const response = await doFetch(authUrl(options.baseUrl, "/device/code"), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      [CLIENT_HEADER]: options.clientId,
+    },
+    body: JSON.stringify({ client_id: options.clientId }),
+  });
+
+  const body = await readJson(response);
+  if (!response.ok) {
+    throw new AuthError(
+      asString(body.error_description) ?? "Could not start device authorization",
+      asString(body.error) ?? `HTTP_${response.status}`,
+    );
+  }
+
+  const deviceCode = asString(body.device_code);
+  const userCode = asString(body.user_code);
+  if (!deviceCode || !userCode) {
+    throw new AuthError("Malformed device authorization response", "PARSE_ERROR");
+  }
+
+  return {
+    deviceCode,
+    userCode,
+    verificationUri: asString(body.verification_uri) ?? "",
+    verificationUriComplete: asString(body.verification_uri_complete) ?? "",
+    expiresInSeconds: typeof body.expires_in === "number" ? body.expires_in : 600,
+    intervalSeconds: typeof body.interval === "number" ? body.interval : 5,
+  };
+}
+
+export type PollOptions = {
+  /** Seconds between polls; the server may push this up via `slow_down`. */
+  intervalSeconds?: number;
+  /** Give up after this long. Defaults to the code's own lifetime. */
+  timeoutSeconds?: number;
+  /** Abort a wait the user cancelled. */
+  signal?: AbortSignal;
+  /** Injectable so a test need not actually sleep. */
+  sleepImpl?: (ms: number) => Promise<void>;
+};
+
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The answer to one `/device/token` exchange that did not end the flow. */
+export type DeviceTokenResult =
+  | { status: "approved"; session: IssuedSession }
+  | { status: "pending" }
+  | { status: "slow-down" };
+
+/**
+ * Exchange the device code for a session **once**.
+ *
+ * `pending` and `slow-down` are the RFC 8628 answers that mean "ask again
+ * later"; everything else the server refuses with is terminal and thrown as an
+ * {@link AuthError} carrying the RFC's own code (`access_denied`,
+ * `expired_token`, …).
+ *
+ * This exists separately from {@link pollForDeviceSession} for hosts whose
+ * worker is killed mid-poll — a browser extension's service worker is stopped
+ * when idle, so a long-running loop simply dies. Such a host calls this from
+ * whatever wakes it next and keeps the device code in storage between calls.
+ */
+export async function requestDeviceToken(
+  options: SessionAuthOptions,
+  deviceCode: string,
+): Promise<DeviceTokenResult> {
+  const doFetch = resolveFetch(options.fetchImpl);
+
+  const response = await doFetch(authUrl(options.baseUrl, "/device/token"), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      [CLIENT_HEADER]: options.clientId,
+    },
+    body: JSON.stringify({
+      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+      device_code: deviceCode,
+      client_id: options.clientId,
+    }),
+  });
+
+  const body = await readJson(response);
+
+  if (response.ok) {
+    // The device grant returns the session token as `access_token`, in the
+    // OAuth shape, and sets no `set-auth-token` header. The header is read
+    // first only so a future better-auth that does set it still works.
+    const token =
+      response.headers.get(SESSION_TOKEN_HEADER) ?? asString(body.access_token);
+    if (!token) {
+      throw new AuthError(
+        "Device approved but no session token was returned",
+        "NO_SESSION_TOKEN",
+      );
+    }
+    const user =
+      typeof body.user === "object" && body.user !== null
+        ? (body.user as Record<string, unknown>)
+        : {};
+    return {
+      status: "approved",
+      session: { token, userId: asString(user.id), email: asString(user.email) },
+    };
+  }
+
+  const error = asString(body.error) ?? `HTTP_${response.status}`;
+  if (error === "authorization_pending") return { status: "pending" };
+  if (error === "slow_down") return { status: "slow-down" };
+
+  throw new AuthError(
+    asString(body.error_description) ?? "Device authorization failed",
+    error,
+  );
+}
+
+/**
+ * Poll until the user approves the code, then return the session.
+ *
+ * Follows RFC 8628: `authorization_pending` means keep waiting, `slow_down`
+ * means back off by five seconds and keep waiting, anything else is terminal.
+ * Throws an {@link AuthError} with the RFC's own code on denial, expiry or
+ * timeout.
+ */
+export async function pollForDeviceSession(
+  options: SessionAuthOptions,
+  deviceCode: string,
+  poll: PollOptions = {},
+): Promise<IssuedSession> {
+  const sleep = poll.sleepImpl ?? defaultSleep;
+  const deadline = Date.now() + (poll.timeoutSeconds ?? 600) * 1000;
+
+  let intervalMs = Math.max(1, poll.intervalSeconds ?? 5) * 1000;
+
+  for (;;) {
+    if (poll.signal?.aborted) throw new AuthError("Cancelled", "CANCELLED");
+    if (Date.now() >= deadline) {
+      throw new AuthError("Timed out waiting for approval", "expired_token");
+    }
+
+    const result = await requestDeviceToken(options, deviceCode);
+    if (result.status === "approved") return result.session;
+    if (result.status === "slow-down") intervalMs += 5000;
+    await sleep(intervalMs);
+  }
+}
+
+/**
+ * Sign a stored session out from the client side. Idempotent by intent.
+ *
+ * A failed round trip is swallowed deliberately: dropping the local copy of
+ * the token is what actually ends the session for this device, and that is the
+ * caller's to do — a network error must not block it.
+ */
+export async function signOutSession(
+  options: SessionAuthOptions,
+  token: string,
+): Promise<void> {
+  const doFetch = resolveFetch(options.fetchImpl);
+  try {
+    await doFetch(authUrl(options.baseUrl, "/sign-out"), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+        [CLIENT_HEADER]: options.clientId,
+      },
+      body: "{}",
+    });
+  } catch {
+    // See above.
+  }
+}

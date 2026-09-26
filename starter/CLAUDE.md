@@ -337,6 +337,44 @@ trail. `docs/versioning.md` is the contract.
   last two.
 
 <!-- hatchkit:endif -->
+<!-- hatchkit:if token-client-auth -->
+## Session identity and lifetime
+
+Every client holds the same credential: a better-auth session. A browser keeps
+a cookie; everything else keeps the session token and sends it as
+`Authorization: Bearer <token>`. By the time `getSession()` runs the two are
+indistinguishable — one auth path, not two.
+
+Things that fail quietly if changed:
+
+- **The client header is cosmetic.** `client-kind.ts`'s `CLIENT_HEADER` is
+  self-reported, so it labels a session and picks its window and nothing else.
+  Never branch on it for authorization. It carries `input: false` on the
+  session field so a request body cannot forge it.
+- **Session lifetime is per client kind** (`auth/session-lifetime.ts`), and
+  BOTH database hooks enforce it. The create hook alone is a trap: better-auth
+  re-expires a session to the *global* `expiresIn`, so a shortened browser row
+  comes back long the first time it is used. The global must stay the LONG
+  value — the refresh trigger is computed against it.
+- **The refresh reads the client stamped on the session ROW**, never the
+  request that triggered it. A socket re-check carries no client header, so
+  deciding from the live request would demote a phone by its own socket.
+- **An update that is not moving `expiresAt` is left alone**, or every plugin
+  that writes a field to a session would silently extend it.
+- **`exposedHeaders: ["set-auth-token"]` in `app.ts` is load-bearing.** Without
+  it a cross-origin client signs in and can't read the token it was issued.
+- **Nothing here writes a `plugins:` key.** Three other features add one to
+  `betterAuth({ … })`, and a second is a duplicate object key.
+
+<!-- hatchkit:if client-core -->
+Sign-in helpers for a host with no cookie jar are in `@starter/core`'s
+`session-auth.ts` — nested here because that package is the client kit's, and
+prose naming a package that was stripped is worse than no prose.
+<!-- hatchkit:endif -->
+
+Full reasoning: `docs/token-client-auth.md`.
+<!-- hatchkit:endif -->
+
 <!-- hatchkit:if native -->
 ## Native Shells
 

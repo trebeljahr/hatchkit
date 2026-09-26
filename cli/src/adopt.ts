@@ -1053,6 +1053,14 @@ function detectFeatures(projectDir: string, serverDir: string | undefined): Feat
     found.add("client-core");
   }
 
+  // Session identity ships files rather than dependencies — the bearer and
+  // device-authorization plugins are subpaths of better-auth, which every
+  // project already has — so the module it writes into the shared package is
+  // the only reliable signal.
+  if (existsSync(join(projectDir, "packages", "shared", "src", "client-kind.ts"))) {
+    found.add("token-client-auth");
+  }
+
   // The extension is its own workspace package with a manifest builder
   // at a fixed path — a far stronger signal than a dependency name,
   // since it brings none of its own beyond the shared package.
@@ -1758,6 +1766,11 @@ async function editAdoptStep(
           name: "workspaces",
           value: "workspaces",
           checked: plan.features.includes("workspaces"),
+        },
+        {
+          name: "token-client-auth",
+          value: "token-client-auth",
+          checked: plan.features.includes("token-client-auth"),
         },
         { name: "desktop", value: "desktop", checked: plan.features.includes("desktop") },
         { name: "mobile", value: "mobile", checked: plan.features.includes("mobile") },

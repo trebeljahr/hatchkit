@@ -1,0 +1,99 @@
+---
+title: Session identity and lifetime
+description: The opt-in token-client-auth feature names every session after the client that made it, gives each client kind its own session window, ships the cookie-less sign-in helpers, and adds a devices list.
+---
+
+Every client of a scaffolded app ends up holding one credential: a better-auth session. A browser keeps it in a cookie; everything else — a native shell, a browser extension, a launcher, a CLI — keeps the session **token** and sends it as `Authorization: Bearer <token>`. By the time `getSession()` runs the two are indistinguishable, which is the point: one auth path to reason about, not two.
+
+`token-client-auth` answers three questions about that session.
+
+```bash
+hatchkit create --features token-client-auth
+# or, on an existing project:
+cd <project> && hatchkit update      # tick token-client-auth
+```
+
+It requires [`client-core`](/docs/client-core) — `packages/core` is where the host-free sign-in helper belongs, since the same code has to run in Node, in a service worker and in a WebView. Selecting this feature pulls that one in.
+
+## What it adds
+
+| File | What it is |
+| --- | --- |
+| `packages/shared/src/client-kind.ts` | The client header, the client kinds and their labels, and which kind each client id belongs to |
+| `packages/core/src/session-auth.ts` | Password sign-in, the device flow, a single-shot exchange, and sign-out — from a host with no cookie jar |
+| `packages/server/src/auth/session-lifetime.ts` | The two session windows, and the argument for both numbers |
+| `packages/server/src/auth/session-hooks.ts` | The decisions the two `databaseHooks.session` hooks make, as pure functions |
+| `packages/server/src/auth/client-label.ts` | Narrowing a self-reported client, and naming it in a devices list |
+| `packages/client/src/app/(protected)/settings/devices/page.tsx` | Every session on the account, each individually revocable |
+| `docs/token-client-auth.md` | The same reasoning, inside the generated project |
+
+Plus merges into `packages/shared/src/index.ts`, `packages/core/src/index.ts`, `packages/server/src/auth/auth.ts` and `packages/server/src/app.ts`.
+
+## What it deliberately does not own
+
+The pieces of one auth path that other features got to first:
+
+- **`bearer()` and plugin registration order** — [account security](/docs/auth-account-security), whose `plugin-order.ts` argues why `bearer` must be registered last, after anything that can replace the session a sign-in just made.
+- **The RFC 8628 endpoints and per-request trusted origins** — the browser-extension feature, which is what needs them first.
+- **The sync feed, its revoked-session close code and the client's reconnect latch** — [`client-core`](/docs/client-core).
+
+This feature is the session's own identity and lifetime, and the client-side helpers for reaching it without a cookie.
+
+## The client header is cosmetic. The window it picks is not.
+
+Clients send the project's `clientHeader` — `x-<token>-client`, frozen in `.hatchkit.json` — and the session row is stamped with it. The value is **self-reported**: a caller can claim to be the CLI when it is curl. So it labels a row in the devices list and selects that session's length, and nothing else. Never branch on it for authorization; the worst a liar can do is give its own session the window it would have got by signing in from a native client for real.
+
+The field carries `input: false`, so it cannot arrive in a request body. A field the body can write is a field a caller can forge to whatever the devices list will show — and, because the window is chosen from it, to whatever lifetime it prefers.
+
+## Two windows, and how the split is really enforced
+
+A long window for clients that store a token; a short one for browser cookie sessions. A device left untouched over a holiday should not come back to a session row the next lookup deletes; a laptop signed in once on a borrowed machine should not stay signed in for a month.
+
+better-auth's `session.expiresIn` is one global number, so the split needs **both** database hooks. Two things are load-bearing:
+
+- **The create hook alone is a trap.** better-auth's refresh re-expires a session *to the global*, so a shortened browser row comes back at the long value the first time it is used — scoped in appearance, global in behaviour. `session.update.before` is what makes it stick.
+- **The global has to be the long value.** The refresh-due trigger is computed against it, so a long row under a short global would not be refreshed until it was nearly expired, and a token client's real inactivity tolerance would collapse. The short window is applied by hook on top.
+
+And one that is easy to get backwards: **the refresh reads the client stamped on the session row, never the request that triggered it.** A socket liveness re-check replays the handshake's headers, and a browser's WebSocket handshake cannot carry a custom header at all — so deciding from the live request would let a phone be quietly demoted to the browser window by its own socket. Reading the row closes the reverse hole too: a browser cannot talk itself into the long window later by sending the header on a refresh.
+
+An update that is not already moving `expiresAt` is left alone. Other plugins write to a session row for their own reasons, and rewriting the expiry on every such write would turn each of them into a session extension.
+
+## Signing in without a cookie jar
+
+```ts
+import { signInWithPassword, startDeviceAuthorization, pollForDeviceSession }
+  from "@starter/core";
+
+// The client can show a form (an extension popup, a desktop shell):
+const { token } = await signInWithPassword(
+  { baseUrl, clientId: "myapp-extension" },
+  { email, password },
+);
+
+// The client cannot (a CLI, a launcher) — RFC 8628:
+const auth = await startDeviceAuthorization({ baseUrl, clientId: "myapp-cli" });
+// show auth.userCode, open auth.verificationUriComplete
+const { token } = await pollForDeviceSession(
+  { baseUrl, clientId: "myapp-cli" },
+  auth.deviceCode,
+  { intervalSeconds: auth.intervalSeconds },
+);
+```
+
+`requestDeviceToken` performs one exchange and returns `pending`, `slow-down` or `approved`. Reach for it instead of the polling loop when the host can be stopped mid-poll — a browser extension's service worker is killed when idle, so a long-running loop simply dies; such a host keeps the device code in storage and calls `requestDeviceToken` from whatever wakes it next.
+
+Three refusals are named rather than reported as a missing token, because each sends a debugger somewhere different: `NO_SESSION_TOKEN` (200 with no token header — the server is not running the bearer plugin, and a silent cookie-only success would leave the caller believing it is signed in), `SECOND_FACTOR_UNSUPPORTED` (a correct password met a challenge this helper has no cookie jar to carry — fall back to the device flow, which finishes it in a real browser), and the server's own code unchanged on anything else, including `INVALID_ORIGIN`.
+
+The client ids and the header name come from the project's frozen identifiers, not from a rule in this feature: both are contracts the moment a token is issued against them. See `cli/src/scaffold/identifiers.ts`.
+
+## The token header has to be exposed through CORS
+
+The bearer plugin returns the session token on the `set-auth-token` **response** header, and a cross-origin client cannot read a response header unless CORS lists it in `exposedHeaders`. Without that an extension popup signs in successfully and then finds no token to store — a failure that looks like a server misconfiguration from the client side and appears in no log. This feature adds it.
+
+## Composing with the other features that edit `auth.ts`
+
+`betterAuth({ … })` is shared ground: three other features add keys to it. A second `plugins:` key in one object literal is a duplicate property — TypeScript reports it, and at runtime the first is silently discarded.
+
+So this feature never inserts a key that might already be there. It **merges**: `session:` gains properties when it exists, `databaseHooks:` gains a `session` sub-object beside whatever `user` hooks are already declared, and both are created only when absent. It writes no `plugins:` key at all. The test suite asserts exactly one of each key after applying on top of a config another feature wrote first, in both orders.
+
+A file whose anchors have moved is left untouched and reported as a ledger **conflict**, with the block to paste. Nothing is half-written: a half-patched `auth.ts` does not compile.

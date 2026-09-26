@@ -123,6 +123,9 @@ function identifiersFor(manifest: ProjectManifest): ProjectIdentifiers {
 /** Features that `update` knows how to layer onto an existing project. */
 export const SUPPORTED_ADDITIONS: readonly Feature[] = [
   "workspaces",
+  // Purely additive: new files plus anchored merges into the auth wiring,
+  // each of which recognises its own output.
+  "token-client-auth",
   "desktop",
   "mobile",
   "release",
@@ -613,6 +616,10 @@ export async function runUpdate(
           console.log(chalk.dim("\n  Adding mobile (Capacitor)..."));
           await addRegisteredFeature("mobile", projectDir, manifestDir, manifest);
           updatedFeatures.add("mobile");
+        } else if (feature === "token-client-auth") {
+          console.log(chalk.dim("\n  Adding session identity, lifetime and devices..."));
+          await addRegisteredFeature("token-client-auth", projectDir, manifestDir, manifest);
+          updatedFeatures.add("token-client-auth");
         } else if (feature === "extension") {
           await addExtension(projectDir, manifestDir, manifest);
           updatedFeatures.add("extension");
@@ -1153,6 +1160,7 @@ async function addDesktop(
 const FEATURE_MODULES: Partial<Record<Feature, () => Promise<unknown>>> = {
   "client-core": () => import("../features/client-core/index.js"),
   mobile: () => import("../features/mobile/index.js"),
+  "token-client-auth": () => import("../features/token-client-auth/index.js"),
 };
 
 /**

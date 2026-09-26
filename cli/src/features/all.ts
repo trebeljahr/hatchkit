@@ -18,6 +18,7 @@
 import "./client-core/index.js";
 import "./workspaces/index.js";
 import "./auth-account-security/definition.js";
+import "./token-client-auth/index.js";
 import "./extension/index.js";
 import "./release/index.js";
 

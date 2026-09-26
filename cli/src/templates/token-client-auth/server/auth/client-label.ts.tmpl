@@ -1,0 +1,110 @@
+/**
+ * Naming the rows in a Settings → Devices list.
+ *
+ * Everything here is cosmetic. The client kind is self-reported — a caller can
+ * claim to be the CLI when it is curl — so it labels a row and decides that
+ * row's session window, and NOTHING else. Never branch on it for
+ * authorization.
+ */
+import {
+  CLIENT_HEADER,
+  CLIENT_ID_KINDS,
+  CLIENT_KINDS,
+  CLIENT_LABELS,
+  type ClientKind,
+} from "@starter/shared";
+
+export { CLIENT_HEADER, CLIENT_LABELS };
+
+/**
+ * Narrow an arbitrary self-reported string to a known client kind.
+ *
+ * Accepts either a kind (`"cli"`, what the header carries) or a device-flow
+ * `client_id` (`"<app>-cli"`, what the token request body carries), so one
+ * function answers for both entry points. Anything else is `"unknown"`, which
+ * is the short session window and the "Unknown client" label.
+ */
+export function normalizeClientKind(value: unknown): ClientKind {
+  if (typeof value !== "string") return "unknown";
+  const candidate = value.trim().toLowerCase();
+  const direct = CLIENT_KINDS.find((kind) => kind === candidate);
+  if (direct) return direct;
+  return CLIENT_ID_KINDS[candidate] ?? "unknown";
+}
+
+/**
+ * Best-effort platform out of a user agent — enough to tell two browsers on
+ * two machines apart, deliberately not fingerprinting.
+ */
+function platformFromUserAgent(userAgent: string): string | null {
+  const ua = userAgent.toLowerCase();
+  if (ua.includes("android")) return "Android";
+  if (/iphone|ipad|ipod/.test(ua)) return "iOS";
+  if (ua.includes("mac os") || ua.includes("macintosh") || ua.includes("darwin"))
+    return "macOS";
+  if (ua.includes("windows")) return "Windows";
+  if (ua.includes("linux")) return "Linux";
+  return null;
+}
+
+/** Browser name, for the common case of several browsers on one machine. */
+function browserFromUserAgent(userAgent: string): string | null {
+  const ua = userAgent.toLowerCase();
+  // Order matters: every Chromium UA also claims Safari, Edge and Opera also
+  // claim Chrome, and every iOS browser is WebKit claiming Safari with its own
+  // token beside it.
+  if (/edg(e|a|ios)?\//.test(ua)) return "Edge";
+  if (ua.includes("opr/") || ua.includes("opera")) return "Opera";
+  if (ua.includes("samsungbrowser/")) return "Samsung Internet";
+  if (ua.includes("firefox/") || ua.includes("fxios/")) return "Firefox";
+  if (ua.includes("chrome/") || ua.includes("chromium/") || ua.includes("crios/"))
+    return "Chrome";
+  if (ua.includes("safari/")) return "Safari";
+  return null;
+}
+
+/**
+ * The label a device row gets.
+ *
+ * A self-declared client wins ("Command line on macOS"). Otherwise fall back
+ * to reading the user agent, which is all a plain browser session gives us.
+ *
+ * An extension's requests come from its background page or worker, whose user
+ * agent is the browser's own, so its row names the browser too ("Firefox
+ * extension on Windows") — with the same extension installed in two browsers
+ * on one machine, "Browser extension on macOS" twice tells them apart not at
+ * all. Chromium browsers that send Chrome's user agent unchanged (Brave, Arc,
+ * Vivaldi) read as Chrome; that is the price of not fingerprinting.
+ */
+export function describeClient(
+  client: ClientKind,
+  userAgent: string | null,
+): string {
+  const platform = userAgent ? platformFromUserAgent(userAgent) : null;
+  const browser = userAgent ? browserFromUserAgent(userAgent) : null;
+
+  if (client === "web" || client === "unknown") {
+    if (browser && platform) return `${browser} on ${platform}`;
+    if (browser) return browser;
+    if (platform) return `${CLIENT_LABELS.web} on ${platform}`;
+    return CLIENT_LABELS[client];
+  }
+
+  const base =
+    client === "extension" && browser
+      ? `${browser} extension`
+      : CLIENT_LABELS[client];
+  return platform ? `${base} on ${platform}` : base;
+}
+
+/** Read the self-reported client kind off an incoming request's headers. */
+export function clientKindFromHeaders(
+  headers: Headers | undefined | null,
+): ClientKind {
+  if (!headers) return "unknown";
+  try {
+    return normalizeClientKind(headers.get(CLIENT_HEADER));
+  } catch {
+    return "unknown";
+  }
+}

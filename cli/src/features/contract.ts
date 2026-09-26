@@ -390,6 +390,23 @@ export class FeatureLedger {
     return this.record(rel, "written");
   }
 
+  /**
+   * Record that the feature deliberately did NOT change a file.
+   *
+   * `ensureManagedBlock` and `mergePackageJson` raise conflicts on their own,
+   * but a feature editing through {@link edit} can also find that a file is
+   * no longer one it knows how to edit — anchors moved, because the user
+   * rewrote it. Leaving that silent is the failure this class exists to
+   * prevent: `unchanged` would be indistinguishable from "already applied",
+   * and the user would never learn that a piece of the feature is missing
+   * from their project.
+   *
+   * `detail` is what they have to do by hand.
+   */
+  conflict(rel: string, detail: string): FileAction {
+    return this.record(rel, "conflict", detail);
+  }
+
   /** Entries grouped by action, for printing a run summary. */
   summary(): Record<FileAction, string[]> {
     const out = {

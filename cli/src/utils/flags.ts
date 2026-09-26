@@ -66,6 +66,7 @@ export const KNOWN_FEATURES: readonly Feature[] = [
   "analytics",
   "s3",
   "workspaces",
+  "token-client-auth",
   "desktop",
   "mobile",
   "release",

@@ -1,0 +1,146 @@
+"use client";
+
+/**
+ * Settings → Devices: every session on this account, and a way to end any one
+ * of them.
+ *
+ * This is what makes the client header worth sending. A session row carries
+ * the client that created it, so a list of opaque tokens becomes "Command
+ * line", "Firefox extension on macOS", "Chrome on Windows" — and each one can
+ * be signed out on its own instead of the all-or-nothing "sign out
+ * everywhere".
+ *
+ * Revoking here reaches more than HTTP: a socket opened by the revoked session
+ * is closed by the server's periodic re-check within a minute, and the client
+ * at the other end stops reconnecting for good.
+ *
+ * React Query rather than `useEffect` + `useState`, like the rest of this app:
+ * a fetch-then-setState effect is what React 19's `set-state-in-effect` rule
+ * exists to reject, and the refetch after a revoke comes for free.
+ */
+
+import { useMutation, useQuery } from "@tanstack/react-query";
+// The SUBPATH, not the barrel. `@starter/shared`'s index re-exports with
+// TypeScript's `./x.js` specifiers, which tsc rewrites and the client's
+// bundler does not — a value import of the barrel fails to resolve at build
+// time, while a type-only one is erased and never noticed. The starter
+// already imports `@starter/shared/ml-types` the same way.
+import { CLIENT_LABELS, type ClientKind } from "@starter/shared/client-kind";
+import { authClient } from "@/lib/auth-client";
+
+/** A session row as `/list-sessions` returns it, plus our stamped field. */
+type SessionRow = {
+  id: string;
+  token: string;
+  createdAt: string | Date;
+  updatedAt: string | Date;
+  expiresAt: string | Date;
+  userAgent?: string | null;
+  ipAddress?: string | null;
+  /** Stamped by the server's session create hook. Cosmetic — see below. */
+  client?: string | null;
+};
+
+/**
+ * Narrow the stamped value to a kind we have a label for.
+ *
+ * Self-reported, so this is a display decision and never an authorization
+ * one. A row that names something unrecognised reads as "Unknown client"
+ * rather than being hidden — a session nobody can see is a session nobody can
+ * revoke.
+ */
+function labelFor(row: SessionRow): string {
+  const kind = (row.client ?? "unknown") as ClientKind;
+  return CLIENT_LABELS[kind] ?? CLIENT_LABELS.unknown;
+}
+
+function formatDate(value: string | Date): string {
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
+}
+
+export default function DevicesPage() {
+  const { data: current } = authClient.useSession();
+
+  const sessions = useQuery({
+    queryKey: ["devices"],
+    queryFn: async (): Promise<SessionRow[]> => {
+      const result = await authClient.listSessions();
+      if (result.error) {
+        throw new Error(result.error.message ?? "Could not load your sessions.");
+      }
+      return (result.data ?? []) as unknown as SessionRow[];
+    },
+  });
+
+  const revoke = useMutation({
+    mutationFn: async (token: string) => {
+      const result = await authClient.revokeSession({ token });
+      if (result.error) {
+        throw new Error(result.error.message ?? "Could not sign that device out.");
+      }
+    },
+    onSuccess: () => sessions.refetch(),
+  });
+
+  const error = revoke.error ?? sessions.error;
+  const rows = sessions.data;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold">Devices</h1>
+        <p className="text-muted-foreground">
+          Everything signed in to this account. Signing a device out ends its
+          session immediately, including any live connection it holds.
+        </p>
+      </div>
+
+      {error ? (
+        <p className="text-sm text-destructive" data-testid="devices-error">
+          {error.message}
+        </p>
+      ) : null}
+
+      {rows === undefined ? (
+        <p className="text-muted-foreground">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="text-muted-foreground">No other sessions.</p>
+      ) : (
+        <ul className="divide-y rounded-md border" data-testid="devices-list">
+          {rows.map((row) => {
+            const isCurrent = current?.session?.token === row.token;
+            const busy = revoke.isPending && revoke.variables === row.token;
+            return (
+              <li key={row.id} className="flex items-center justify-between gap-4 p-4">
+                <div className="min-w-0">
+                  <p className="font-medium">
+                    {labelFor(row)}
+                    {isCurrent ? (
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        (this device)
+                      </span>
+                    ) : null}
+                  </p>
+                  <p className="truncate text-sm text-muted-foreground">
+                    Last used {formatDate(row.updatedAt)} · expires{" "}
+                    {formatDate(row.expiresAt)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => revoke.mutate(row.token)}
+                  className="inline-flex h-9 shrink-0 items-center rounded-md border border-input px-3 text-sm font-medium disabled:opacity-50"
+                  data-testid={`devices-revoke-${row.id}`}
+                >
+                  {busy ? "Signing out…" : "Sign out"}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,130 @@
+# Session identity, lifetime and devices
+
+Every client of this app — the web app, a native shell, a browser extension, a
+launcher, a CLI — ends up holding one credential: a better-auth session. A
+browser keeps it in a cookie; everything else keeps the session **token** and
+sends it as `Authorization: Bearer <token>`. By the time `getSession()` runs the
+two are indistinguishable, so there is exactly one auth path to reason about.
+
+This part of the scaffold answers three questions about that session:
+
+1. **Whose client is it?** Every first-party client sends
+   `__HATCHKIT_CLIENT_HEADER__`, and the session row is stamped with it.
+2. **How long does it live?** Per client kind, not one number for everyone.
+3. **How is it ended?** Settings → Devices, one session at a time.
+
+The `bearer` plugin, the RFC 8628 device flow and the socket feed are wired by
+the features that own them (account security, the browser extension, and the
+client kit respectively). This is the session's own identity and lifetime.
+
+## The client header is cosmetic. The window it picks is not.
+
+`__HATCHKIT_CLIENT_HEADER__` is self-reported — a caller can claim to be the
+CLI when it is curl. So it labels a row in the devices list and selects that
+session's length, and **nothing else**. Never branch on it for authorization:
+the worst a liar can do is give its own session the window it would have got by
+signing in from a native client for real.
+
+The stamp is written by a `session.create.before` hook with
+`input: false` on the field, so it cannot arrive in a request body. A field the
+body can write is a field a caller can forge to whatever the devices list will
+show — and, because the window is chosen from it, to whatever lifetime it
+prefers.
+
+## Two windows, and how the split is actually enforced
+
+A long window for clients that store a token; a short one for browser cookie
+sessions. The reasoning for both numbers is in
+`packages/server/src/auth/session-lifetime.ts`. Two things there are
+load-bearing:
+
+- **Both hooks, not just create.** better-auth's `session.expiresIn` is one
+  global number, and its refresh re-expires a session *to that global*. A split
+  enforced only at creation is scoped in appearance and global in behaviour: a
+  shortened browser row comes back at the long value the first time the browser
+  is used. `session.update.before` is what makes it stick.
+- **The global has to be the LONG value.** The refresh-due trigger is computed
+  against the global, so a long row under a short global would not be refreshed
+  until it was nearly expired — a token client's real inactivity tolerance
+  would collapse. The short window is applied by hook on top.
+
+And one that is easy to get backwards: **the refresh reads the client stamped
+on the session row, never the request that triggered it.** A WebSocket liveness
+re-check replays the handshake's headers, and a browser's WebSocket handshake
+cannot carry a custom header at all — so deciding from the live request would
+let a phone be quietly demoted to the browser window by its own socket. Reading
+the row closes the reverse hole too: a browser cannot talk itself into the long
+window later by sending the header on a refresh.
+
+An update that is not already moving `expiresAt` is left alone. Other plugins
+write to a session row for their own reasons, and rewriting the expiry on every
+such write would turn each of them into a session extension.
+
+## Signing in without a cookie jar
+
+`packages/core/src/session-auth.ts` is the client half, host-free so the same
+code runs in Node, in a service worker and in a WebView:
+
+```ts
+import { signInWithPassword, startDeviceAuthorization, pollForDeviceSession }
+  from "@starter/core";
+
+// The client can show a form (an extension popup, a desktop shell):
+const { token } = await signInWithPassword(
+  { baseUrl, clientId: "__HATCHKIT_CLIENT_ID_EXTENSION__" },
+  { email, password },
+);
+
+// The client cannot (a CLI, a launcher) — RFC 8628:
+const auth = await startDeviceAuthorization({
+  baseUrl,
+  clientId: "__HATCHKIT_CLIENT_ID_CLI__",
+});
+// show auth.userCode, open auth.verificationUriComplete
+const { token } = await pollForDeviceSession(
+  { baseUrl, clientId: "__HATCHKIT_CLIENT_ID_CLI__" },
+  auth.deviceCode,
+  { intervalSeconds: auth.intervalSeconds },
+);
+```
+
+`requestDeviceToken` performs one exchange and returns `pending`, `slow-down`
+or `approved`. Reach for it instead of the polling loop when the host can be
+stopped mid-poll — a browser extension's service worker is killed when idle, so
+a long-running loop simply dies; such a host keeps the device code in storage
+and calls `requestDeviceToken` from whatever wakes it next.
+
+Three refusals are named rather than reported as a missing token, because each
+sends a debugger somewhere different:
+
+- `NO_SESSION_TOKEN` — sign-in returned 200 and no token. The server is not
+  running the bearer plugin, and there is nothing usable to store. A silent
+  cookie-only success would leave the caller believing it is signed in.
+- `SECOND_FACTOR_UNSUPPORTED` — a correct password met a second-factor
+  challenge, which this helper has no cookie jar to carry. Fall back to the
+  device flow, which finishes the challenge in a real browser.
+- the server's own code, unchanged, on anything it refused — including
+  `INVALID_ORIGIN`.
+
+**Store the token in real secret storage** — the Keychain, the Android
+keystore, `chrome.storage.session`, a launcher's own credential store — never a
+plain config file.
+
+## The token header has to be exposed through CORS
+
+The bearer plugin returns the freshly issued session token on the
+`set-auth-token` **response** header, and a cross-origin client cannot read a
+response header unless CORS lists it in `exposedHeaders`. Without that an
+extension popup signs in successfully and then finds no token to store — a
+failure that looks like a server misconfiguration from the client side and
+shows up in no log.
+
+## Settings → Devices
+
+`listSessions` and `revokeSession` are better-auth's own endpoints; the stamped
+`client` field is what turns their output into something a person can read.
+Revoking there ends the session immediately for HTTP, and the sync feed's
+periodic re-check drops any socket that session still holds.
+
+A row whose stamp is unrecognised reads as "Unknown client" rather than being
+hidden. A session nobody can see is a session nobody can revoke.

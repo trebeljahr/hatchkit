@@ -582,6 +582,32 @@ async function runScaffoldSteps(
     }
   }
 
+  // Session identity and lifetime. Additive like workspaces above, and
+  // deliberately AFTER it: both merge into `betterAuth({ … })`, and a fixed
+  // order means a fixed diff. The merge itself tolerates either order —
+  // neither feature may assume it is the one that creates a key.
+  if (config.features.includes("token-client-auth")) {
+    const { FeatureLedger, applyFeatures } = await import("../features/contract.js");
+    await import("../features/token-client-auth/index.js");
+    const ledger = new FeatureLedger(outputDir, false);
+    await applyFeatures(["token-client-auth"], {
+      projectDir: outputDir,
+      manifestDir: outputDir,
+      manifest: toManifest({ ...config, identifiers }, ports, getCliVersion()),
+      identifiers,
+      mode: "create",
+      ledger,
+      log: (message) => modifications.push(message.trim()),
+    });
+    const summary = ledger.summary();
+    modifications.push(
+      `token-client-auth: ${summary.written.length} file(s) written, ${summary.unchanged.length} unchanged`,
+    );
+    for (const conflict of ledger.conflicts()) {
+      modifications.push(`token-client-auth conflict: ${conflict.file} — ${conflict.detail ?? ""}`);
+    }
+  }
+
   // Newsletter scaffolding — Listmonk+SES subscribe/confirm pipeline,
   // /sub pages, and CLI sender scripts. Kept by default; stripped
   // when the user didn't opt into the mailing-list intent.

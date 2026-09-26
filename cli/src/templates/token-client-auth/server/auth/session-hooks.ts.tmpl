@@ -1,0 +1,134 @@
+/**
+ * The decisions the two `databaseHooks.session` hooks in `auth/auth.ts` make,
+ * as pure functions over the endpoint context better-auth hands them.
+ *
+ * Split out for one reason: the interesting part is the branching, and the
+ * branching is what a unit test can reach. Constructing a better-auth instance
+ * to ask "which client is this?" would drag in an adapter and a database for a
+ * question answered from three fields on a request.
+ */
+import type { ClientKind } from "@starter/shared";
+import { clientKindFromHeaders, normalizeClientKind } from "./client-label.js";
+import { sessionExpiresAt } from "./session-lifetime.js";
+
+/**
+ * The shape of better-auth's `GenericEndpointContext` that these hooks read.
+ *
+ * Deliberately structural and deliberately all-optional: `auth.ts` builds the
+ * auth instance loosely typed (better-auth's inferred type is enormous and the
+ * adapter's generics do not survive the round trip), so nothing here gets a
+ * real type from upstream. Writing down exactly the fields that are read is
+ * the closest thing to a contract available.
+ */
+export type SessionHookContext = {
+  headers?: Headers | null;
+  request?: { headers?: Headers | null } | null;
+  body?: unknown;
+  /**
+   * better-auth's *auth* context, nested inside the endpoint context. The
+   * `/get-session` route assigns the session it just looked up to
+   * `ctx.context.session` before deciding whether to refresh it, which is what
+   * makes the session's own stamped `client` readable from the update hook.
+   */
+  context?: {
+    session?: { session?: SessionRowFields | null } | null;
+  } | null;
+};
+
+/**
+ * A session row as read back off the context — an index signature rather than
+ * `{ client?: unknown }` on purpose. The narrow shape is a *weak type*, and
+ * TypeScript refuses to assign better-auth's session to one it shares no
+ * declared property with (`client` is an `additionalFields` entry, so it is
+ * not on the base type). The index signature says what is true: a row of
+ * unknown fields, of which `client` is the one that is read.
+ */
+type SessionRowFields = Readonly<Record<string, unknown>>;
+
+/**
+ * better-auth hands the hook `GenericEndpointContext | null`, so every entry
+ * point here takes the `null` too rather than making each call site guard it.
+ */
+export type MaybeSessionHookContext = SessionHookContext | null | undefined;
+
+function headersOf(context: MaybeSessionHookContext): Headers | null {
+  return context?.headers ?? context?.request?.headers ?? null;
+}
+
+/**
+ * Which client is creating this session.
+ *
+ * Password sign-in carries the client header; the device flow carries
+ * `client_id` in the `/device/token` body and no header at all. The header
+ * wins when it names something, so a device-flow request that also labels
+ * itself is taken at its word.
+ */
+export function clientKindForNewSession(
+  context: MaybeSessionHookContext,
+): ClientKind {
+  const fromHeader = clientKindFromHeaders(headersOf(context));
+  if (fromHeader !== "unknown") return fromHeader;
+
+  const body: unknown = context?.body;
+  const clientId =
+    typeof body === "object" && body !== null
+      ? (body as { client_id?: unknown }).client_id
+      : undefined;
+  return normalizeClientKind(clientId);
+}
+
+/**
+ * Which client owns the session being refreshed.
+ *
+ * The **stamped** client on the session row wins, and that is the whole point
+ * of this function. A refresh is not always driven by a request that looks
+ * like the client that signed in: the WebSocket liveness re-check replays the
+ * handshake's headers, and a browser's WebSocket handshake cannot carry a
+ * custom header at all. Deciding from the live request would therefore let a
+ * mobile session be quietly demoted to the browser window by its own socket.
+ *
+ * Reading the row also closes the reverse hole: a browser session cannot talk
+ * itself into the long window later by sending the client header on a refresh.
+ * The window is fixed at sign-in, when the label is also what the devices list
+ * will show.
+ *
+ * The header fallback is for the case where better-auth ever refreshes a
+ * session without having put it on the context. It resolves to `unknown` for
+ * anything unlabelled, i.e. to the short window.
+ */
+export function clientKindForSessionRefresh(
+  context: MaybeSessionHookContext,
+): ClientKind {
+  const stamped = context?.context?.session?.session?.client;
+  if (stamped !== undefined && stamped !== null) {
+    return normalizeClientKind(stamped);
+  }
+  return clientKindFromHeaders(headersOf(context));
+}
+
+/** The `expiresAt` a session created by this request should get. */
+export function expiryForNewSession(
+  context: MaybeSessionHookContext,
+  now: number = Date.now(),
+): Date {
+  return sessionExpiresAt(clientKindForNewSession(context), now);
+}
+
+/**
+ * The `expiresAt` a session refresh should write, or `null` to leave the
+ * update alone.
+ *
+ * `null` is the common case and it matters: `updateSession` is how other
+ * plugins record things on a session row too, and rewriting the expiry on
+ * every such write would turn each of them into a session extension. Only an
+ * update that is already moving `expiresAt` — better-auth's own refresh — is
+ * re-aimed here.
+ */
+export function expiryForSessionRefresh(
+  update: SessionRowFields,
+  context: MaybeSessionHookContext,
+  now: number = Date.now(),
+): Date | null {
+  if (!update?.expiresAt) return null;
+  return sessionExpiresAt(clientKindForSessionRefresh(context), now);
+}

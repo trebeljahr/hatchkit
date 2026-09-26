@@ -1,0 +1,85 @@
+/**
+ * What a client calls itself.
+ *
+ * In the shared package rather than on the server because both ends read it:
+ * the server stamps a session with a {@link ClientKind} and names it in the
+ * devices list, and a client sends the matching {@link ClientId}.
+ *
+ * The names below are NOT derived here. They come from the project's frozen
+ * identifiers (`.hatchkit.json`), because a header name and a client id are
+ * contracts the moment a token is issued against them: changing one strands
+ * every stored session that carries it.
+ *
+ * Everything in this module is **cosmetic-adjacent**. The client kind is
+ * self-reported — a caller can claim to be the CLI when it is curl — so it
+ * labels a row in the devices list and decides that session's length, and
+ * nothing else. Never branch on it for authorization.
+ */
+
+/** Header a first-party client sets to name itself. */
+export const CLIENT_HEADER = "__HATCHKIT_CLIENT_HEADER__";
+
+/** The kinds of client a session can belong to. */
+export type ClientKind =
+  | "web"
+  | "desktop"
+  | "mobile"
+  | "extension"
+  | "raycast"
+  | "mcp"
+  | "cli"
+  | "unknown";
+
+/** Every kind, for narrowing an arbitrary string. */
+export const CLIENT_KINDS: readonly ClientKind[] = [
+  "web",
+  "desktop",
+  "mobile",
+  "extension",
+  "raycast",
+  "mcp",
+  "cli",
+  "unknown",
+];
+
+/** How each kind is named in a Settings → Devices list. */
+export const CLIENT_LABELS: Record<ClientKind, string> = {
+  web: "Web app",
+  desktop: "Desktop app",
+  mobile: "Mobile app",
+  extension: "Browser extension",
+  raycast: "Raycast",
+  mcp: "MCP client",
+  cli: "Command line",
+  unknown: "Unknown client",
+};
+
+/** The `client_id` values this app's non-browser clients sign in with. */
+export type ClientId =
+  | "__HATCHKIT_CLIENT_ID_DESKTOP__"
+  | "__HATCHKIT_CLIENT_ID_MOBILE__"
+  | "__HATCHKIT_CLIENT_ID_EXTENSION__"
+  | "__HATCHKIT_CLIENT_ID_RAYCAST__"
+  | "__HATCHKIT_CLIENT_ID_MCP__"
+  | "__HATCHKIT_CLIENT_ID_CLI__";
+
+/**
+ * Which kind each client id belongs to.
+ *
+ * Read when a session is created by the device-authorization flow, which
+ * carries `client_id` in the request body and no client header at all — so
+ * without this map every device-paired session would be labelled "Unknown
+ * client" and given the short window.
+ *
+ * This is a mapping, not an allowlist: whether the device flow will issue a
+ * code to a given `client_id` is the device flow's own decision, and lives
+ * with it.
+ */
+export const CLIENT_ID_KINDS: Record<string, ClientKind> = {
+  "__HATCHKIT_CLIENT_ID_DESKTOP__": "desktop",
+  "__HATCHKIT_CLIENT_ID_MOBILE__": "mobile",
+  "__HATCHKIT_CLIENT_ID_EXTENSION__": "extension",
+  "__HATCHKIT_CLIENT_ID_RAYCAST__": "raycast",
+  "__HATCHKIT_CLIENT_ID_MCP__": "mcp",
+  "__HATCHKIT_CLIENT_ID_CLI__": "cli",
+};

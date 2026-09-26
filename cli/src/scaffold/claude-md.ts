@@ -72,6 +72,7 @@ function activeConditions(config: ProjectConfig): Set<string> {
     websocket: config.features.includes("websocket"),
     stripe: config.features.includes("stripe"),
     workspaces: config.features.includes("workspaces"),
+    "token-client-auth": config.features.includes("token-client-auth"),
     "client-core": config.features.includes("client-core"),
     // The extension is written by its own feature module rather than
     // pruned out of the starter, but its docs live in the same

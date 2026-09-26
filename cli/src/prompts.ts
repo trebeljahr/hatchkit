@@ -91,6 +91,11 @@ export type Feature =
   | "analytics"
   | "s3"
   | "workspaces"
+  /** Session identity and lifetime: a named client on every session row,
+   *  per-client-kind windows enforced by both database hooks, the
+   *  cookie-less sign-in helpers, and a devices list. Purely additive —
+   *  see cli/src/features/token-client-auth/. */
+  | "token-client-auth"
   | "desktop"
   | "mobile"
   /** An MV3 browser extension for Chrome and Firefox, kept signed in
@@ -1010,6 +1015,11 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
               name: "Workspaces (tenants, members, roles, invitations)",
               value: "workspaces",
               checked: c.features.includes("workspaces"),
+            },
+            {
+              name: "Session identity, lifetime + devices list",
+              value: "token-client-auth",
+              checked: c.features.includes("token-client-auth"),
             },
             {
               name: "Desktop app (Electron + itch.io release)",
@@ -2094,6 +2104,11 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
           name: "workspaces (tenants, members, roles, invitations)",
           value: "workspaces",
           checked: cfg.features.includes("workspaces"),
+        },
+        {
+          name: "token-client-auth (named sessions, per-client lifetimes, devices)",
+          value: "token-client-auth",
+          checked: cfg.features.includes("token-client-auth"),
         },
         {
           name: "desktop (Electron wrapper)",

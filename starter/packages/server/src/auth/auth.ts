@@ -41,6 +41,13 @@ export async function initAuth(): Promise<void> {
           html: `<p>Click <a href="${url}">here</a> to reset your password.</p>`,
         });
       },
+    },
+
+    // `sendVerificationEmail` is an `emailVerification` option, NOT an
+    // `emailAndPassword` one. Nested under the wrong key it is silently
+    // ignored — better-auth reads the key it declares and nothing else — so
+    // verification mail would never be sent, and nothing would say so.
+    emailVerification: {
       async sendVerificationEmail({ user, url }: { user: { email: string }; url: string }) {
         if (!env.LISTMONK_URL || !env.LISTMONK_TX_TEMPLATE_ID) {
           console.log(`[auth] Verification URL for ${user.email}: ${url}`);

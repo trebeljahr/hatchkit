@@ -1,0 +1,127 @@
+/**
+ * How long a signed-in session lives — **per client kind**, not one number
+ * for everyone.
+ *
+ * Its own module so the numbers, the reasoning and the tests that pin them sit
+ * together, and so nothing has to construct a better-auth instance (and a
+ * database connection) to assert on them.
+ *
+ * ## Two windows, and why
+ *
+ * A short window is wrong for a stored-token client. A session is only
+ * extended when `getSession` runs, so a device left untouched over a holiday
+ * comes back to a session row the next lookup deletes — and a client that kept
+ * working offline against a stored token then replays genuinely-made work into
+ * 401s. Thirty days makes the ordinary gap survivable.
+ *
+ * A long window is wrong for a browser. A laptop signed in once on a borrowed
+ * machine and never touched again should not stay signed in for a month, and
+ * nothing about a browser needs it: a browser is opened by hand, and reaching
+ * the app at all means a `getSession` that rolls the window forward.
+ *
+ * ## How the split is enforced
+ *
+ * better-auth's `session.expiresIn` is a single global `number` — there is no
+ * function form. It is read in three places:
+ *
+ *  - the `expiresAt` of a newly created session row,
+ *  - whether a session is due for a refresh, and the `expiresAt` it is
+ *    refreshed to,
+ *  - the `max-age` of the browser session cookie at sign-in.
+ *
+ * The first two are overridable, and that is enough: better-auth merges
+ * whatever a `databaseHooks.session.{create,update}.before` hook returns over
+ * the row it was about to write — `expiresAt` included. So the create hook
+ * writes the window for the client that signed in, and the update hook writes
+ * it again on every refresh.
+ *
+ * **The create hook alone is a trap.** A shortened row comes back at the
+ * global value the first time it is used, because better-auth's refresh
+ * re-expires a session to the global `expiresIn`. A split enforced only at
+ * creation is scoped in appearance and global in behaviour.
+ *
+ * The global stays at the **long** value on purpose, and it is the one thing
+ * here that is not free to choose:
+ *
+ *  - the refresh trigger is `expiresAt - expiresIn + updateAge <= now`,
+ *    computed against the *global*. A 30-day row under a 7-day global would
+ *    not be refreshed until it had six days left, so a token client's real
+ *    inactivity tolerance would collapse from thirty days to six. With the
+ *    global at thirty, token clients behave as they would with no split at
+ *    all, and the shortened browser rows are the ones that always look due —
+ *    which is correct, since a rolling seven-day window is exactly what they
+ *    should have.
+ *  - `max-age` on the sign-in cookie is the global, so a browser's cookie
+ *    initially outlives its row. That direction is the safe one: the server
+ *    row is the authority, an expired row is deleted and its cookie cleared on
+ *    the next request, and the first refresh rewrites the cookie from the real
+ *    `expiresAt`. The reverse — a row outliving its cookie — is what would
+ *    leave a signed-out-looking browser holding a live session.
+ */
+import type { ClientKind } from "@starter/shared";
+
+/**
+ * Thirty days, for clients that carry their session as a stored token: the
+ * CLI, a launcher extension, a browser extension, the native shells. These are
+ * the clients that go unopened for a week and then expect to keep working
+ * rather than 401.
+ */
+export const TOKEN_CLIENT_SESSION_SECONDS = 60 * 60 * 24 * 30;
+
+/**
+ * Seven days — better-auth's own default — for browser cookie sessions, and
+ * for any session whose client did not identify itself.
+ *
+ * Unknown falls on this side deliberately: the short window is the
+ * conservative one, so a client that forgets to name itself loses convenience,
+ * never safety.
+ */
+export const BROWSER_SESSION_SECONDS = 60 * 60 * 24 * 7;
+
+/**
+ * How stale a session row may get before a request rewrites its expiry.
+ *
+ * It only bites the long window: a browser row is always shorter than the
+ * global `expiresIn`, so it is refreshed whenever a lookup reaches the
+ * database at all (the cookie cache is what keeps that from being every
+ * request). For a token client this is what it says — one write a day per
+ * active session rather than one per request.
+ */
+export const SESSION_UPDATE_AGE_SECONDS = 60 * 60 * 24;
+
+/** Client kinds that keep a session alive for {@link TOKEN_CLIENT_SESSION_SECONDS}. */
+const TOKEN_CLIENTS: ReadonlySet<ClientKind> = new Set<ClientKind>([
+  "desktop",
+  "mobile",
+  "extension",
+  "raycast",
+  "mcp",
+  "cli",
+]);
+
+/**
+ * Does this client carry its session as a stored token rather than a cookie?
+ *
+ * Self-reported, like every other use of `ClientKind`: the worst a caller can
+ * do by lying is give **its own** session a longer window than it needed — the
+ * same window it would have got by signing in from a native client for real.
+ * It is never an authorization decision.
+ */
+export function isTokenClient(client: ClientKind): boolean {
+  return TOKEN_CLIENTS.has(client);
+}
+
+/** The session window, in seconds, for a client of this kind. */
+export function sessionExpiresInSeconds(client: ClientKind): number {
+  return isTokenClient(client)
+    ? TOKEN_CLIENT_SESSION_SECONDS
+    : BROWSER_SESSION_SECONDS;
+}
+
+/** When a session created (or refreshed) now, by this client, should expire. */
+export function sessionExpiresAt(
+  client: ClientKind,
+  now: number = Date.now(),
+): Date {
+  return new Date(now + sessionExpiresInSeconds(client) * 1000);
+}
