@@ -41,6 +41,12 @@ import { addUsedPorts, getUsedPorts } from "../config.js";
 import { pushNativeOriginsForProject } from "../deploy/trusted-origins.js";
 import type { AuthSecurityOption } from "../features/auth-account-security/types.js";
 import { extensionPrerequisiteProblem } from "../features/extension/index.js";
+import {
+  SERVER_FEATURE_IDS,
+  applyServerFeatures,
+  isServerFeature,
+  printServerFeatureResults,
+} from "../features/server-platform/index.js";
 import type { Feature } from "../prompts.js";
 import { multiselect } from "../utils/multiselect.js";
 import { PORT_RANGES, pickPort } from "../utils/ports.js";
@@ -108,6 +114,10 @@ const SUPPORTED_ADDITIONS: readonly Feature[] = [
   "auth-account-security",
   "client-core",
   "extension",
+  // Additive by construction — they ship as templates rather than as
+  // starter files a scaffold strips, so `update` applies the exact same
+  // writer `create` does.
+  ...SERVER_FEATURE_IDS,
 ];
 
 export interface UpdateResult {
@@ -299,6 +309,7 @@ export async function runUpdate(
     "auth-account-security",
     "client-core",
     "extension",
+    ...SERVER_FEATURE_IDS,
   ];
   const desired =
     options.presets?.desiredFeatures ??
@@ -459,7 +470,30 @@ export async function runUpdate(
           updatedFeatures.add("client-core");
         }
       }
-      actuallyAdded = added;
+
+      // Server platform features run as one batch after the native
+      // shells, in registry order rather than selection order — see
+      // applyServerFeatures. A feature that can't find a server package
+      // reports `skipped` and is NOT recorded in the manifest, so a
+      // later run against a project that grew one picks it up.
+      const serverFeatures = added.filter(isServerFeature);
+      const serverSkipped = new Set<Feature>();
+      if (serverFeatures.length > 0) {
+        const results = applyServerFeatures(serverFeatures, {
+          projectDir,
+          projectName: manifest.name,
+        });
+        printServerFeatureResults(results);
+        for (const result of results) {
+          if (result.skipped) serverSkipped.add(result.id);
+          else updatedFeatures.add(result.id);
+        }
+      }
+      // A feature that reported `skipped` wrote nothing and is not in
+      // the manifest — reporting it as added would tell the user to
+      // look for files that aren't there.
+      actuallyAdded = added.filter((f) => !serverSkipped.has(f));
+      skippedAdditions = added.filter((f) => serverSkipped.has(f));
 
       // Pick a nativeHmr port if the project didn't have one and now needs one.
       const needsNative = updatedFeatures.has("desktop") || updatedFeatures.has("mobile");

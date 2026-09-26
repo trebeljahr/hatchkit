@@ -30,6 +30,11 @@ import ora from "ora";
 import { addUsedPorts, getUsedPorts, removeUsedPorts } from "../config.js";
 import { expandFeatureSelection } from "../features/all.js";
 import { extensionPrerequisiteProblem } from "../features/extension/index.js";
+import {
+  applyServerFeatures,
+  isServerFeature,
+  printServerFeatureResults,
+} from "../features/server-platform/index.js";
 import type { Feature, MlService, ProjectConfig } from "../prompts.js";
 import { explainFsError } from "../utils/errors.js";
 import { type ProjectPorts, pickProjectPorts } from "../utils/ports.js";
@@ -640,6 +645,30 @@ async function runScaffoldSteps(
   // safe no-op write. See scaffold/surfaces.ts for the per-surface
   // semantics.
   pruneToSurface(config, outputDir, modifications);
+
+  // Server platform features. These are the only additive features —
+  // nothing of theirs ships in `starter/`, so there is nothing to strip
+  // and the writer that runs here is byte-for-byte the one
+  // `hatchkit update` runs later. Placed after the prune so a `static`
+  // surface (no server package) makes every one of them report
+  // `skipped` rather than writing into a directory the prune removed,
+  // and before applyClaudeMd so the generated agent memory describes
+  // the files that are actually on disk.
+  const serverFeatures = config.features.filter(isServerFeature);
+  if (serverFeatures.length > 0) {
+    const results = applyServerFeatures(serverFeatures, {
+      projectDir: outputDir,
+      projectName: config.name,
+    });
+    printServerFeatureResults(results);
+    for (const result of results) {
+      modifications.push(
+        result.skipped
+          ? `${result.id}: skipped (${result.skipped})`
+          : `${result.id}: ${result.written.length} file(s) written`,
+      );
+    }
+  }
 
   // CLAUDE.md last: it documents what's left on disk, so it has to see
   // the post-prune, post-overlay world. Otherwise every scaffold ships

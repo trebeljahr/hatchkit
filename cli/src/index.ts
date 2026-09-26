@@ -3499,6 +3499,27 @@ function printHelp(topic?: HelpTopic): void {
     server's ${chalk.dim("TRUSTED_ORIGINS")} before it can make a single request
     (${chalk.cyan("pnpm run extension:id")} prints it); the Firefox build's origin is
     random per install, so that one needs ${chalk.dim("TRUST_EXTENSION_ORIGINS=true")}.
+    ${chalk.bold("Server platform:")} ${chalk.cyan("server-migrations")}, ${chalk.cyan("scheduler")}, ${chalk.cyan("public-api")}.
+    These write into ${chalk.dim("packages/server")} and are the same writer
+    ${chalk.cyan("hatchkit create")} runs, so a project that skipped one at scaffold
+    picks it up here with no diffing. Re-running is a no-op: a file whose
+    contents already match is left alone, and a file you have edited is
+    reported and NOT overwritten.
+
+      ${chalk.cyan("server-migrations")}  numbered, append-only migrations under a lease
+                         + index preparation, both before the server
+                         serves traffic. Adds an ${chalk.dim("admin migrate")} script.
+      ${chalk.cyan("scheduler")}          recurring jobs claimed by an atomic
+                         find-and-update, so N replicas run each job once
+                         per interval. Gated by ${chalk.dim("SCHEDULER_ENABLED")}.
+      ${chalk.cyan("public-api")}         token-authenticated ${chalk.dim("/api/v1")} that calls the
+                         same services the typed router does, an OpenAPI
+                         document generated from the same schemas the
+                         handlers validate with, and signed webhooks.
+
+    A server platform feature needs a server package — it reports
+    ${chalk.dim("skipped")} on a ${chalk.cyan("static")} surface and is not recorded in the manifest,
+    so ${chalk.cyan("hatchkit server add")} then ${chalk.cyan("hatchkit update")} picks it up.
 
     A native shell loads the client from its own origin, which the
     deployed server rejects (${chalk.dim("403 INVALID_ORIGIN")}) until ${chalk.dim("TRUSTED_ORIGINS")}

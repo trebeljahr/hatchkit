@@ -114,6 +114,13 @@ Key paths:
   `markers.ts` holds the convention that keeps the create-time strip from
   drifting, and `cli/test-client-core.ts` pins it by round-tripping the starter.
 - `cli/src/deploy/`: Coolify, Terraform, GitHub, keys, pages, rollback.
+- `cli/src/features/`: opt-in features. `signing/` provisions release
+  signing; `server-platform/` + `server-migrations/`, `scheduler/`,
+  `public-api/` write server infrastructure into an already-scaffolded
+  project. These are ADDITIVE — nothing of theirs ships in `starter/`, so
+  `create` and `update` run the same writer and re-running is a no-op.
+  Their file bodies live in `cli/src/templates/features/<id>/` as `.tpl`
+  (a `.ts` there would be typechecked by the CLI's own tsconfig).
 - `cli/src/provision/`: provider/client provisioning.
 - `starter/`: scaffold template.
 - `infra/`: Terraform/Coolify automation.

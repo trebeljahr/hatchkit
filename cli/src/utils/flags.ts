@@ -71,6 +71,9 @@ export const KNOWN_FEATURES: readonly Feature[] = [
   "release",
   "client-core",
   "extension",
+  "server-migrations",
+  "scheduler",
+  "public-api",
 ];
 export const KNOWN_ML_SERVICES: readonly MlService[] = [
   "3d-sam-objects",

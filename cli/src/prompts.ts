@@ -115,7 +115,14 @@ export type Feature =
    *  offline mutation queue with a single replay classifier, and the
    *  client/server version handshake. Scaffolds `packages/core`, which every
    *  additional surface (extension, launcher, native shell) is built on. */
-  | "client-core";
+  | "client-core"
+  // Server platform. Unlike the flags above — which ship in `starter/`
+  // and get stripped when unselected — these are additive: nothing is
+  // written until they are picked, and `hatchkit update` applies the
+  // identical writer later. See cli/src/features/server-platform/.
+  | "server-migrations"
+  | "scheduler"
+  | "public-api";
 
 export type AnalyticsProvider = "glitchtip" | "openpanel" | "plausible";
 
@@ -1035,6 +1042,21 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
               name: "Shared client core (offline queue, sync client, version handshake)",
               value: "client-core",
               checked: c.features.includes("client-core"),
+            },
+            {
+              name: "Migrations + index preparation at boot (server-migrations)",
+              value: "server-migrations",
+              checked: c.features.includes("server-migrations"),
+            },
+            {
+              name: "Scheduler — leased recurring jobs, safe across replicas",
+              value: "scheduler",
+              checked: c.features.includes("scheduler"),
+            },
+            {
+              name: "Public REST API + OpenAPI + signed webhooks (public-api)",
+              value: "public-api",
+              checked: c.features.includes("public-api"),
             },
           ],
         });

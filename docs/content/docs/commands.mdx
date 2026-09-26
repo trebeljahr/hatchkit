@@ -169,7 +169,7 @@ cd my-app
 hatchkit update
 ```
 
-Reads `.hatchkit.json`, lets you pick a new feature set, copies additive pieces from the starter. **Supported additions today:** `workspaces` (tenants, members, roles, invitations), `desktop` (Electron), `mobile` (Capacitor), `client-core` (the shared client kit — see [Client Core](./client-core)), `extension` (an MV3 browser extension), `release` (release coordination). Removal is not supported — removing a feature could delete user code. Remove manually and update the manifest.
+Reads `.hatchkit.json`, lets you pick a new feature set, copies additive pieces from the starter. **Supported additions today:** `workspaces` (tenants, members, roles, invitations), `desktop` (Electron), `mobile` (Capacitor), `client-core` (the shared client kit — see [Client Core](./client-core)), `extension` (an MV3 browser extension), `release` (release coordination), and the three server platform features below. Removal is not supported — removing a feature could delete user code. Remove manually and update the manifest.
 
 **Additive means additive.** A file the project already has is never overwritten, so a desktop shell whose main process moved into a bundler keeps it, and a hand-edited `desktop-release.yml` survives. The same holds inside `package.json`: a script or a dependency pin the project has changed away from the starter's shape is reported as kept, not replaced — including the `dev:desktop` command, which is only retargeted at a new native HMR port while it still has the generated shape. `hatchkit update --force` replaces those `package.json` pieces with the starter's current versions. It never overwrites files.
 
@@ -245,6 +245,14 @@ until they are:
 
 Re-running `hatchkit update` is safe: the extension's own source is
 kept once it exists, and the workflow it owns is regenerated.
+
+### The server platform features
+
+`server-migrations`, `scheduler` and `public-api` write into `packages/server`
+and run the same writer `hatchkit create` runs, so a project that skipped one at
+scaffold picks it up here. Re-running is a no-op: a file whose contents already
+match is left alone, and a file you have edited is reported and left untouched.
+See [Server Platform](./server-platform).
 
 ---
 

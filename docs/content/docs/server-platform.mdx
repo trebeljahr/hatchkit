@@ -1,0 +1,124 @@
+---
+title: Server Platform
+description: The three opt-in server features — migrations and indexes at boot, a leased job scheduler, and a token-authenticated public REST API with signed webhooks.
+---
+
+The starter's server ships models, a typed router and a websocket handler. Everything
+else a long-running server needs is opt-in, under three feature flags:
+
+| Feature | What it adds |
+|---|---|
+| `server-migrations` | Numbered, append-only migrations under a lease, then index preparation — both before the server serves traffic. |
+| `scheduler` | Recurring jobs claimed by an atomic find-and-update, so N replicas run each job once per interval. |
+| `public-api` | A token-authenticated `/api/v1`, an OpenAPI document generated from the handlers' own schemas, and signed webhooks. |
+
+Pick them at `hatchkit create`, or add them later:
+
+```bash
+cd my-app
+hatchkit update
+```
+
+## How these differ from the other feature flags
+
+`websocket`, `stripe` and `s3` ship inside the starter template. Scaffolding a project
+without them *strips* their files, and a strip has to know every import that pointed at
+the removed file — which is why `hatchkit update` refuses to re-add them.
+
+The server platform features are the other way round. Nothing of theirs is in the
+starter; they ship as templates and are written into an already-scaffolded project. So
+`create` and `update` run the same writer, and there is no diffing problem to solve.
+
+Re-running is safe. A file whose contents already match the template counts as
+unchanged. A file you have edited is reported and **not** overwritten. Every patch into
+your own source is guarded by a marker string, so a second `hatchkit update` inserts
+nothing.
+
+These features need a server package. On a `static` surface they report `skipped` and
+are not recorded in the manifest — run `hatchkit server add` first, then
+`hatchkit update`.
+
+## `server-migrations`
+
+`db/prepare.ts` runs right after the database connects and before anything else:
+migrations first, recorded in their own collection under a lease, then index
+preparation.
+
+- **Migrations are append-only, numbered 1…n, idempotent, and written against the raw
+  driver.** A process can die between running a migration and recording it, and a lease
+  can lapse mid-run. Both re-run the migration, so it has to be safe to run twice.
+  Today's models are not what an old database needs, which is why the raw driver and
+  not mongoose.
+- **Each migration carries a minimum-reader version.** It stays low unless an older
+  build would genuinely misread the result. Raising it makes every older build refuse to
+  start on that database — correct for a breaking change, an outage for an additive one.
+- **The readable check runs before the lock**, so a too-old build exits without touching
+  the database and without waiting on a newer build's lock.
+- **Indexes are never synced wholesale.** A wholesale sync drops indexes a newer release
+  added. A named critical set stops the boot when it fails; everything else warns. A
+  model registry is what lets both the boot and the doctor command know what to check —
+  a model that is not in the registry is checked by neither.
+- **No enums on a field a create copies from another stored document.** A newer release
+  may have written a value this build does not know. Normalise where the field is read.
+
+`admin` is a script on the server package, so from the repo root:
+
+```bash
+pnpm --filter <your-server-package> admin migrate --status
+pnpm --filter <your-server-package> admin migrate --dry-run
+```
+
+## `scheduler`
+
+Recurring jobs run inside the server process. One row per job name is shared by every
+replica on the database, and a job runs only after an atomic find-and-update claims it.
+
+- **The claim moves the next run forward, not the release.** That is what makes it once
+  per interval rather than once per free moment.
+- **The release filters on the holder.** A process whose lease lapsed and was taken over
+  must not clear its successor's lease on the way out.
+- **A process that dies mid-run loses that run** and frees the job when the lease
+  expires.
+
+Jobs register from one place, and the whole loop is gated by `SCHEDULER_ENABLED`. The
+database-backed tests skip when `TEST_MONGODB_URI` is unset and each use a throwaway
+database.
+
+## `public-api`
+
+`/api/v1` is the surface third parties integrate against.
+
+**REST never enters the typed API.** A request authenticates, builds a scope, and calls
+the same extracted services the typed resolvers call. That is what makes "a token can
+never name a tenant of its own" structural rather than a rule repeated in every handler:
+the request never reaches the place where a tenant id is read from input. It also means
+a REST write publishes the same realtime event and enqueues the same webhooks.
+
+- **One route table is the source of truth.** The app mounts from it, and the OpenAPI
+  document is generated from the same schemas the handlers validate with — natively,
+  with no extra dependency. A route not in the table is not mounted; a route in the
+  table with no handler throws at boot instead of 404-ing in production.
+- **The generated document and its rendered reference are committed**, with a test that
+  fails when either is stale. A spec regenerated at deploy time is a spec nobody reviews.
+- **Token permissions are live, intersected with a frozen ceiling.** Revoking narrows on
+  the next request; granting never widens a token minted earlier. A removed member's
+  token is dead, not forbidden.
+- **Cross-tenant and foreign ids answer 404, never 403.** A 403 confirms the id exists
+  somewhere.
+- Errors are RFC 9457 `application/problem+json`. Successes are enveloped, with a cursor
+  that is always present and null on the last page. Every server-error detail is the same
+  fixed string in every environment.
+
+Webhooks sign over a raw body computed **once** and handed to the request unchanged —
+stringify it twice and every receiver doing its job rejects the delivery as forged.
+Deliveries are projected at send time against the owner's live visibility, and the
+delivery target's DNS is re-resolved before every attempt, because a create-time check is
+decorative against rebinding. `WEBHOOK_ALLOW_PRIVATE_TARGETS=true` lifts the https and
+private-address rules for a local listener and belongs nowhere else.
+
+Rate limiting is a fixed 60s window per token, backed by Redis when there is one and
+per-process when there is not.
+
+```bash
+pnpm openapi:emit   # regenerate the committed OpenAPI artifacts
+```
