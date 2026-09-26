@@ -64,6 +64,30 @@ export const MOBILE_PATHS: readonly string[] = [
   "packages/client/src/styles/standalone.css",
 ];
 
+/**
+ * Paths whose files carry identifier-bearing literals — storage keys the
+ * project's own `storagePrefix` has to be written into.
+ *
+ * WHY A SECOND LIST, AND WHY A SHORT ONE. `MOBILE_PATHS` is what the feature
+ * consists of; this is the subset that says a name. The client runtime holds
+ * two keys that address storage outliving the app — the session token in the
+ * keychain (`native-session.ts`) and the hand-over marker in the durable store
+ * (`mobile/preferences-storage.ts`) — and both ship as `"starter.…"` literals
+ * rather than `{{storagePrefix}}` tokens, because the starter has to typecheck
+ * and run before it is ever scaffolded. The native trees, the build scripts and
+ * the stylesheets carry no storage key, so renaming across them would only
+ * widen the blast radius of a pass that rewrites string literals.
+ *
+ * `ios` / `android` are deliberately absent: `hatchkit rename-project` owns the
+ * native trees, for the reason `update.ts` gives at the capacitor.config.ts
+ * substitution — once `cap add` has run they hold their own copies.
+ */
+export const MOBILE_IDENTIFIER_RENAME_PATHS: readonly string[] = [
+  "packages/client/src/mobile",
+  "packages/client/src/lib/native-session.ts",
+  "packages/client/src/lib/native-session.test.ts",
+];
+
 /** Root package.json scripts the feature owns. */
 export const MOBILE_SCRIPTS: readonly string[] = [
   "dev:android",

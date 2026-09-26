@@ -64,8 +64,38 @@ export function findStarterIdentifierLiterals(content: string): string[] {
  * summary, and says nothing when nothing needed renaming.
  */
 export function renameClientCoreIdentifiers(projectDir: string, ids: ProjectIdentifiers): string[] {
+  const renamed = renameStarterIdentifiersAcross(projectDir, ids, [
+    ...CLIENT_CORE_OWNED_PATHS,
+    ...CLIENT_CORE_MARKED_FILES,
+  ]);
+  return renamed === 0
+    ? []
+    : [
+        `client-core: project identifiers written into ${renamed} file(s) (storage keys, handshake headers)`,
+      ];
+}
+
+/**
+ * Rename every identifier-bearing literal under `paths`, and report how many
+ * files changed. The one pass shared by every feature that ships starter source
+ * carrying a storage key — client-core's kit and the mobile client runtime.
+ *
+ * SAFE TO RUN OVER FILES THAT ARE ALREADY IN THE PROJECT, which is what lets
+ * `update` call it over a whole tree rather than only the files it just copied.
+ * Every rename matches a `starter.`-prefixed (or `x-starter-`-prefixed) literal,
+ * so a file the user has edited, and a file an earlier pass already renamed,
+ * both contain nothing to match and are left byte-identical. A project that was
+ * scaffolded before its keys were prefixed keeps the keys its shipped builds
+ * wrote — which is the point: rewriting those would strand live data rather than
+ * migrate it.
+ */
+export function renameStarterIdentifiersAcross(
+  projectDir: string,
+  ids: ProjectIdentifiers,
+  paths: readonly string[],
+): number {
   let renamed = 0;
-  for (const rel of [...CLIENT_CORE_OWNED_PATHS, ...CLIENT_CORE_MARKED_FILES]) {
+  for (const rel of paths) {
     for (const file of filesUnder(join(projectDir, rel))) {
       let content: string;
       try {
@@ -79,11 +109,7 @@ export function renameClientCoreIdentifiers(projectDir: string, ids: ProjectIden
       renamed += 1;
     }
   }
-  return renamed === 0
-    ? []
-    : [
-        `client-core: project identifiers written into ${renamed} file(s) (storage keys, handshake headers)`,
-      ];
+  return renamed;
 }
 
 /** `abs` if it is a file, otherwise every file beneath it. */

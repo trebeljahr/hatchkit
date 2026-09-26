@@ -54,11 +54,13 @@ import { join, posix, relative, resolve, sep } from "node:path";
 import { substituteIdentifierTokens } from "../../scaffold/identifiers.js";
 import {
   MOBILE_DEPS,
+  MOBILE_IDENTIFIER_RENAME_PATHS,
   MOBILE_PATHS,
   MOBILE_SCRIPTS,
   NATIVE_GENERATED_TRACKED,
   NATIVE_GENERATED_UNTRACKED,
 } from "../../scaffold/mobile-feature.js";
+import { renameStarterIdentifiers } from "../client-core/rename.js";
 import { type FeatureContext, registerFeature } from "../contract.js";
 
 /** Monorepo root → the starter template, four hops up from this file. */
@@ -110,6 +112,7 @@ export function applyMobile(ctx: FeatureContext, starterRoot: string = STARTER_R
 
   copyOwnedPaths(ctx, starterRoot);
   substituteCapacitorIdentifiers(ctx);
+  renameClientStorageKeys(ctx, starterRoot);
   mergeManifest(ctx, starterRoot);
   wireLayout(ctx);
   wireNativeStyles(ctx);
@@ -186,6 +189,31 @@ function substituteCapacitorIdentifiers(ctx: FeatureContext): void {
   // Fixed point: substitution consumes `{{token}}` and produces a
   // literal, so a second pass finds nothing left to replace.
   ctx.ledger.edit(CAP_CONFIG, (content) => substituteIdentifierTokens(content, ctx.identifiers));
+}
+
+/**
+ * Write the project's own `storagePrefix` into the client runtime's storage
+ * keys — the session token in the keychain and the hand-over marker in the
+ * durable store.
+ *
+ * These ship as `"starter.…"` literals rather than `{{…}}` tokens, for the
+ * reason `features/client-core/rename.ts` spells out: the starter is a real
+ * workspace that has to typecheck and run before it is ever scaffolded. So
+ * they need the rename pass, not the substitution pass.
+ *
+ * Fixed point, and safe on every `update`: each rename matches a `starter.`
+ * prefix, so a file this pass has already renamed and a file the user has
+ * edited both contain nothing to match. That is what makes it correct to run
+ * unconditionally — a project scaffolded before its keys were prefixed keeps
+ * the keys its shipped builds wrote, because rewriting those would strand a
+ * live keychain item and an undrained offline queue rather than migrate them.
+ */
+function renameClientStorageKeys(ctx: FeatureContext, starterRoot: string): void {
+  for (const rel of MOBILE_IDENTIFIER_RENAME_PATHS) {
+    for (const file of starterFilesUnder(starterRoot, rel)) {
+      ctx.ledger.edit(file, (content) => renameStarterIdentifiers(content, ctx.identifiers));
+    }
+  }
 }
 
 /* ================================================================== */

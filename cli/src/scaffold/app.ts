@@ -61,7 +61,12 @@ import {
   substituteIdentifierTokens,
 } from "./identifiers.js";
 import { MANIFEST_FILENAME, toManifest, writeManifest } from "./manifest.js";
-import { MOBILE_DEPS, MOBILE_PATHS, MOBILE_SCRIPTS } from "./mobile-feature.js";
+import {
+  MOBILE_DEPS,
+  MOBILE_IDENTIFIER_RENAME_PATHS,
+  MOBILE_PATHS,
+  MOBILE_SCRIPTS,
+} from "./mobile-feature.js";
 import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
 import {
   setPackageJsonDescription,
@@ -506,6 +511,22 @@ async function runScaffoldSteps(
     rewriteFile(join(outputDir, "capacitor.config.ts"), (c) =>
       substituteIdentifierTokens(c, identifiers),
     );
+    // The client runtime's storage keys. Same reasoning as the client-core pass
+    // above — they are `"starter.…"` literals rather than `{{storagePrefix}}`
+    // tokens so the starter runs unscaffolded — but they need their own call:
+    // mobile can be selected without client-core, and these files are not on
+    // client-core's path list.
+    const { renameStarterIdentifiersAcross } = await import("../features/client-core/index.js");
+    const renamed = renameStarterIdentifiersAcross(
+      outputDir,
+      identifiers,
+      MOBILE_IDENTIFIER_RENAME_PATHS,
+    );
+    if (renamed > 0) {
+      modifications.push(
+        `mobile: project identifiers written into ${renamed} file(s) (storage keys)`,
+      );
+    }
   }
 
   if (wantsDesktop || wantsMobile) {

@@ -190,9 +190,19 @@ export const durableStorage: DurableStorage = createDurableStorage();
 
 /**
  * Marker recorded in the DURABLE store once the hand-over has completed.
- * Versioned: a future migration adds `_v2` rather than re-running `_v1`.
+ * Versioned: a future migration adds `-v2` rather than re-running `-v1`.
+ *
+ * The `starter.` prefix is rewritten to the project's own `storagePrefix` at
+ * scaffold time — see `IDENTIFIER_RENAMES` in the CLI; it ships as a real
+ * literal, not a mustache placeholder, so the starter runs unscaffolded.
+ *
+ * It has to be namespaced because on web the durable store IS localStorage, and
+ * localStorage is scoped to an origin rather than to a path: every project a
+ * user publishes to GitHub Pages shares `https://<user>.github.io`, so an
+ * unprefixed marker written by one app tells a sibling app that its own
+ * hand-over had already run — and that app then skips the migration forever.
  */
-export const HANDOVER_MARKER_KEY = "__durable_handover_v1";
+export const HANDOVER_MARKER_KEY = "starter.durable-handover-v1";
 
 export interface HandoverResult {
   /** Keys actually moved out of web storage during this pass. */

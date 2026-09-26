@@ -71,6 +71,7 @@ export {
   findStarterIdentifierLiterals,
   renameClientCoreIdentifiers,
   renameStarterIdentifiers,
+  renameStarterIdentifiersAcross,
 } from "./rename.js";
 export { stripClientCore, unchainSegment } from "./strip.js";
 export {

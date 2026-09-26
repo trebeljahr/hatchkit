@@ -38,8 +38,17 @@
  * ---------------------------------------------------------------------------
  */
 
-/** Storage key. Single constant so a rename cannot orphan a live session. */
-export const SESSION_TOKEN_KEY = "session_token";
+/**
+ * Keychain key. Single constant so a rename cannot orphan a live session.
+ *
+ * The `starter.` prefix is rewritten to the project's own `storagePrefix` at
+ * scaffold time — see `IDENTIFIER_RENAMES` in the CLI. It ships as a real
+ * literal rather than a mustache placeholder because the starter has to
+ * typecheck and run before it is ever scaffolded, and because a keychain item
+ * outlives the app: a placeholder that escaped substitution would file the
+ * token under a key no later build ever reads again.
+ */
+export const SESSION_TOKEN_KEY = "starter.session-token";
 
 /** The plain-object surface callers get. Deliberately NOT the plugin handle. */
 export interface SecureStorageApi {
