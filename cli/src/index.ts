@@ -2911,7 +2911,9 @@ async function handleCreate(): Promise<void> {
 
 async function handleUpdate(): Promise<void> {
   const projectDir = resolve(".");
-  const result = await runUpdate(projectDir);
+  // `--force` only widens what a feature ADD may replace in package.json
+  // (scripts, dependency pins). Files are never overwritten either way.
+  const result = await runUpdate(projectDir, { force: args.includes("--force") });
   if (result.added.length > 0) {
     console.log(chalk.green(`\n  ✓ Added features: ${result.added.join(", ")}`));
     console.log(chalk.yellow("  Run `pnpm install` to pick up the new dependencies."));
@@ -3469,11 +3471,15 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("hatchkit update")} — add features to an already-scaffolded project
 
   ${chalk.bold("Usage:")}
-    cd <project-dir> && hatchkit update
+    cd <project-dir> && hatchkit update [--force]
 
   ${chalk.bold("What it does:")}
     Reads the project's .hatchkit.json manifest, lets you pick a new
     feature set, and copies the additive pieces from the starter.
+    A file the project already has is never overwritten, and neither is a
+    package.json script or dependency pin it has changed — those are
+    reported as kept. ${chalk.cyan("--force")} replaces the package.json pieces
+    (never files) with the starter's current versions.
     Currently supported additions: ${chalk.cyan("workspaces")}, ${chalk.cyan("desktop")}, ${chalk.cyan("mobile")}, ${chalk.cyan("client-core")}.
 
     ${chalk.cyan("workspaces")} adds tenants, members, roles and invitations. It only

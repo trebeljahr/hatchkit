@@ -1261,6 +1261,189 @@ console.log("\n── update: manifest round-trip for web-only project ───
   }
 }
 
+// Update: adding `desktop` to a project that already has its own Electron
+// shell must fill gaps, not take the shell over. A project ships, and then its
+// desktop half grows: its own build script, its own dev command, an Electron
+// major it was tested against. Every one of those used to be replaced by the
+// starter's version the moment `hatchkit update` added the feature — a break
+// with no diff left to read, because the overwritten command was the only
+// record of what the project did.
+console.log("\n── update: desktop add is additive over a project's own shell ────────────────");
+{
+  const { runUpdate } = await import("./src/scaffold/update.js");
+  const STARTER_PKG = JSON.parse(readFileSync(join(STARTER, "package.json"), "utf-8"));
+
+  /** A project that hand-rolled the desktop half before hatchkit offered it. */
+  function ownShell(d: string): void {
+    mkdirSync(join(d, "electron/src"), { recursive: true });
+    writeFileSync(join(d, "electron/src/main.ts"), "// my own main process\n");
+    writeFileSync(join(d, "electron-builder.config.mjs"), "export default { appId: 'mine' };\n");
+    mkdirSync(join(d, ".github/workflows"), { recursive: true });
+    writeFileSync(
+      join(d, ".github/workflows/desktop-release.yml"),
+      "name: desktop-release\n# hand-written\n",
+    );
+    const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
+    pkg.scripts["build:desktop"] = "node scripts/my-desktop-build.mjs";
+    pkg.scripts["dev:desktop"] = "node scripts/my-desktop-dev.mjs";
+    pkg.devDependencies = { ...pkg.devDependencies, electron: "^41.0.0" };
+    writeFileSync(join(d, "package.json"), JSON.stringify(pkg, null, 2) + "\n", "utf-8");
+  }
+
+  const presets = {
+    desiredFeatures: ["websocket", "desktop"] as Feature[],
+    confirmAddFeatures: true,
+    enableLocalDev: false,
+  };
+
+  const keep = mkdtempSync(join(tmpdir(), "scaffold-update-ownshell-"));
+  const forced = mkdtempSync(join(tmpdir(), "scaffold-update-forceshell-"));
+  try {
+    await scaffoldApp(cfg("own-shell", ["websocket"]), keep);
+    ownShell(keep);
+    const added = await runUpdate(keep, { presets });
+    const pkgKeep = JSON.parse(readFileSync(join(keep, "package.json"), "utf-8"));
+
+    await scaffoldApp(cfg("forced-shell", ["websocket"]), forced);
+    ownShell(forced);
+    await runUpdate(forced, { force: true, presets });
+    const pkgForced = JSON.parse(readFileSync(join(forced, "package.json"), "utf-8"));
+
+    const checks: Check[] = [
+      ["reports desktop added", added.added.includes("desktop")],
+      [
+        "own main process kept",
+        readFileSync(join(keep, "electron/src/main.ts"), "utf-8").includes("my own main process"),
+      ],
+      [
+        "own electron-builder config kept",
+        readFileSync(join(keep, "electron-builder.config.mjs"), "utf-8").includes("mine"),
+      ],
+      [
+        "hand-written desktop-release.yml kept",
+        readFileSync(join(keep, ".github/workflows/desktop-release.yml"), "utf-8").includes(
+          "hand-written",
+        ),
+      ],
+      [
+        "own build:desktop kept",
+        pkgKeep.scripts["build:desktop"] === "node scripts/my-desktop-build.mjs",
+      ],
+      [
+        "own dev:desktop kept (port pass too)",
+        pkgKeep.scripts["dev:desktop"] === "node scripts/my-desktop-dev.mjs",
+      ],
+      ["own electron pin kept", pkgKeep.devDependencies.electron === "^41.0.0"],
+      [
+        "missing script still filled in",
+        pkgKeep.scripts["electron:compile"] === STARTER_PKG.scripts["electron:compile"],
+      ],
+      [
+        "missing dev dep still filled in",
+        pkgKeep.devDependencies["electron-updater"] ===
+          STARTER_PKG.devDependencies["electron-updater"],
+      ],
+      [
+        "typecheck chains electron exactly once",
+        (pkgKeep.scripts.typecheck.match(/typecheck:electron/g) ?? []).length === 1,
+      ],
+      [
+        "--force takes the starter's build:desktop",
+        pkgForced.scripts["build:desktop"] === STARTER_PKG.scripts["build:desktop"],
+      ],
+      [
+        "--force takes the starter's electron pin",
+        pkgForced.devDependencies.electron === STARTER_PKG.devDependencies.electron,
+      ],
+      [
+        "--force still keeps the project's files",
+        readFileSync(join(forced, "electron-builder.config.mjs"), "utf-8").includes("mine"),
+      ],
+    ];
+    let ok = true;
+    for (const [n, c] of checks) {
+      console.log(`  ${c ? "✓" : "✗"} ${n}`);
+      if (!c) ok = false;
+    }
+    results.updateDesktopAdditive = ok;
+  } finally {
+    for (const d of [keep, forced]) rmSync(d, { recursive: true, force: true });
+  }
+}
+
+// applyPorts owns the `dev:desktop` script. It runs from `create`, where the
+// script is whatever the starter shipped a second earlier, AND from
+// `hatchkit update` / `server add` against repos that have reshaped it — so
+// the retarget is gated on the script still having a generated shape.
+console.log("\n── applyPorts: dev:desktop retargeted only while generated ──────────────────");
+{
+  const { applyPorts, isGeneratedDevDesktopScript } = await import(
+    "./src/scaffold/starter-files.js"
+  );
+  const STARTER_PKG = JSON.parse(readFileSync(join(STARTER, "package.json"), "utf-8"));
+  const starterDevDesktop: string = STARTER_PKG.scripts["dev:desktop"];
+  // The shape earlier starters generated, before the shell was bundled. An
+  // older project must still get its port retargeted.
+  const legacy =
+    'concurrently -k -n next,electron -c blue,magenta "PORT=7000 pnpm --filter ' +
+    '@starter/client dev" "wait-on http://localhost:7000 && pnpm electron:compile && ' +
+    'ELECTRON_DEV_URL=http://localhost:7000 electron electron/main.js"';
+  const custom = "node scripts/my-desktop-dev.mjs";
+  const d = mkdtempSync(join(tmpdir(), "scaffold-applyports-"));
+  try {
+    const write = (script: string | undefined): void => {
+      const scripts: Record<string, string> = {};
+      if (script !== undefined) scripts["dev:desktop"] = script;
+      writeFileSync(join(d, "package.json"), JSON.stringify({ name: "p", scripts }, null, 2));
+    };
+    const read = (): string | undefined =>
+      JSON.parse(readFileSync(join(d, "package.json"), "utf-8")).scripts["dev:desktop"];
+    const ports = { server: 5101, client: 6101, nativeHmr: 7101 };
+    const opts = { wantsDesktop: true, wantsMobile: false };
+
+    write(starterDevDesktop);
+    const keptStarter = applyPorts(d, ports, opts);
+    const afterStarter = read();
+
+    write(legacy);
+    applyPorts(d, ports, opts);
+    const afterLegacy = read();
+
+    write(custom);
+    const keptCustom = applyPorts(d, ports, opts);
+    const afterCustom = read();
+
+    write(custom);
+    applyPorts(d, ports, { ...opts, force: true });
+    const afterForced = read();
+
+    write(undefined);
+    applyPorts(d, ports, opts);
+    const afterMissing = read();
+
+    const checks: Check[] = [
+      ["starter shape recognised", isGeneratedDevDesktopScript(starterDevDesktop)],
+      ["pre-bundle shape recognised", isGeneratedDevDesktopScript(legacy)],
+      ["a project's own command is not", !isGeneratedDevDesktopScript(custom)],
+      ["starter script retargeted", afterStarter?.includes("localhost:7101") === true],
+      ["retarget reports nothing kept", keptStarter.length === 0],
+      ["pre-bundle script retargeted", afterLegacy?.includes("localhost:7101") === true],
+      ["own command left alone", afterCustom === custom],
+      ["own command reported as kept", keptCustom.some((k) => k.startsWith("dev:desktop"))],
+      ["--force retargets it", afterForced?.includes("localhost:7101") === true],
+      ["absent script is written", afterMissing?.includes("localhost:7101") === true],
+    ];
+    let ok = true;
+    for (const [n, c] of checks) {
+      console.log(`  ${c ? "✓" : "✗"} ${n}`);
+      if (!c) ok = false;
+    }
+    results.applyPortsDevDesktopGuard = ok;
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+}
+
 // Update: add workspaces to a scaffolded project. This is the real
 // `hatchkit update` dispatch, not applyWorkspacesFeature in isolation —
 // cli/test-workspaces.ts covers the feature module itself, while this

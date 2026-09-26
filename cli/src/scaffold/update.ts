@@ -11,6 +11,12 @@
  *     into the project and merge package.json edits.
  *   • Refresh the manifest.
  *
+ * Every write here is ADDITIVE. A file the project already has is never
+ * overwritten, and neither is a root-package.json script or a dependency pin
+ * it has changed away from the starter's shape. What was declined is
+ * reported; `--force` replaces the package.json pieces (never files) with the
+ * starter's current versions.
+ *
  * Currently supported additions: `desktop`, `mobile`.
  * `websocket` / `stripe` / `analytics` / `s3` additions are flagged
  * as "manual" — the scaffold-time strip for those is coarse-grained
@@ -125,6 +131,11 @@ export interface UpdateResult {
 }
 
 export interface UpdateOptions {
+  /** Overwrite root-package.json scripts and dependency pins that the
+   *  project has changed away from the starter's, instead of keeping them.
+   *  Off by default: those are the commands a shipping app owns. Files are
+   *  never overwritten, with or without this. */
+  force?: boolean;
   /** Skip every prompt and use the supplied answers. Used by the test
    *  suite to exercise the headless path without monkey-patching ESM
    *  read-only exports of @inquirer/prompts. Real CLI calls pass
@@ -395,7 +406,7 @@ export async function runUpdate(
           await addWorkspaces(projectDir, manifestDir, manifest);
           updatedFeatures.add("workspaces");
         } else if (feature === "desktop") {
-          await addDesktop(projectDir, resolvedStarter, manifest);
+          await addDesktop(projectDir, resolvedStarter, manifest, options.force === true);
           updatedFeatures.add("desktop");
         } else if (feature === "mobile") {
           console.log(chalk.dim("\n  Adding mobile (Capacitor)..."));
@@ -423,11 +434,13 @@ export async function runUpdate(
         const nativeHmr = await pickPort(PORT_RANGES.nativeHmr[0], PORT_RANGES.nativeHmr[1], used);
         addUsedPorts([nativeHmr]);
         updatedPorts = { ...updatedPorts, nativeHmr };
-        applyPorts(projectDir, updatedPorts, {
+        const keptByPorts = applyPorts(projectDir, updatedPorts, {
           wantsDesktop: updatedFeatures.has("desktop"),
           wantsMobile: updatedFeatures.has("mobile"),
+          force: options.force === true,
         });
         console.log(chalk.dim(`  Assigned native HMR port: ${nativeHmr}`));
+        for (const note of keptByPorts) reportKept(note);
       }
     } else {
       skippedAdditions = added;
@@ -642,6 +655,7 @@ async function addDesktop(
   projectDir: string,
   resolvedStarter: string,
   manifest: ProjectManifest,
+  force = false,
 ): Promise<void> {
   console.log(chalk.dim("\n  Adding desktop (Electron)..."));
   // One list, shared with the scaffold's strip branch (scaffold/desktop.ts),
@@ -663,17 +677,15 @@ async function addDesktop(
   const projectPkgPath = join(projectDir, "package.json");
   const projectPkg = readJson(projectPkgPath);
 
-  projectPkg.scripts = projectPkg.scripts ?? {};
-  for (const name of DESKTOP_SCRIPTS) {
-    if (starterPkg.scripts?.[name]) projectPkg.scripts[name] = starterPkg.scripts[name];
-  }
-
-  projectPkg.devDependencies = projectPkg.devDependencies ?? {};
-  for (const name of DESKTOP_DEV_DEPS) {
-    if (starterPkg.devDependencies?.[name]) {
-      projectPkg.devDependencies[name] = starterPkg.devDependencies[name];
-    }
-  }
+  // Additive, like the file copy above: a script or a pin the project already
+  // defines is left alone. `update` runs against repos that have shipped, and
+  // a desktop app that grew its own build step, watcher or Electron major is
+  // the normal case rather than the exception — the starter's command line
+  // replacing it breaks the next `pnpm build:desktop` with nothing left to
+  // diff. What is missing still lands, which is the point of the merge.
+  // `--force` takes the starter's versions.
+  mergeStarterScripts(projectPkg, starterPkg, DESKTOP_SCRIPTS, { force, label: "desktop" });
+  mergeStarterDeps(projectPkg, starterPkg, DESKTOP_DEV_DEPS, { force });
 
   writeFileSync(projectPkgPath, JSON.stringify(projectPkg, null, 2) + "\n", "utf-8");
 
@@ -705,17 +717,17 @@ async function addDesktop(
     ),
   );
 
-  // Chain electron typecheck into the root `typecheck` if present
-  // and not already chained.
+  // Chain electron typecheck into the root `typecheck` if present and not
+  // already chained. Gated on the electron script existing too: a project
+  // that keeps its own electron typecheck out of package.json must not end up
+  // with a root `typecheck` that calls a script nothing defines.
+  const rootTypecheck = projectPkg.scripts?.typecheck;
   if (
-    projectPkg.scripts.typecheck &&
-    !projectPkg.scripts.typecheck.includes("typecheck:electron")
+    rootTypecheck &&
+    projectPkg.scripts?.["typecheck:electron"] &&
+    !rootTypecheck.includes("typecheck:electron")
   ) {
-    setPackageJsonScript(
-      projectDir,
-      "typecheck",
-      `${projectPkg.scripts.typecheck} && pnpm typecheck:electron`,
-    );
+    setPackageJsonScript(projectDir, "typecheck", `${rootTypecheck} && pnpm typecheck:electron`);
   }
 }
 
@@ -1057,6 +1069,79 @@ packages/client/out-mobile/
  *
  *  Returns the number of files written, so the caller can stay silent
  *  when a run changed nothing. */
+/** Report an additive write this run declined to make. One shape for every
+ *  skip, so the summary reads the same wherever it comes from. */
+function reportKept(what: string, hint?: string): void {
+  console.log(chalk.dim(`    · kept the project's ${what}`));
+  if (hint) console.log(chalk.dim(`      ${hint}`));
+}
+
+type PkgJson = ReturnType<typeof readJson>;
+
+/** Merge a feature's scripts from the starter into the project's
+ *  package.json. A name the project already defines is kept and reported;
+ *  `force` takes the starter's version instead. */
+function mergeStarterScripts(
+  projectPkg: PkgJson,
+  starterPkg: PkgJson,
+  names: readonly string[],
+  opts: { force: boolean; label: string },
+): void {
+  projectPkg.scripts = projectPkg.scripts ?? {};
+  const diverged: string[] = [];
+  for (const name of names) {
+    const wanted = starterPkg.scripts?.[name];
+    if (!wanted) continue;
+    const have = projectPkg.scripts[name];
+    if (have === undefined || have === wanted || opts.force) {
+      projectPkg.scripts[name] = wanted;
+      continue;
+    }
+    diverged.push(name);
+  }
+  if (diverged.length > 0) {
+    reportKept(
+      `${opts.label} scripts: ${diverged.join(", ")}`,
+      "--force replaces them with the starter's versions",
+    );
+  }
+}
+
+/** Merge a feature's dependency entries from the starter. A name the project
+ *  already pins is kept: the pin is a decision (an Electron major the app was
+ *  tested against, a version its native modules build for), and moving it is
+ *  how a working desktop build starts failing for someone who only ran
+ *  `hatchkit update`. */
+function mergeStarterDeps(
+  projectPkg: PkgJson,
+  starterPkg: PkgJson,
+  names: readonly string[],
+  opts: { force: boolean },
+): void {
+  projectPkg.dependencies = projectPkg.dependencies ?? {};
+  projectPkg.devDependencies = projectPkg.devDependencies ?? {};
+  const kept: string[] = [];
+  for (const name of names) {
+    const wantedDep = starterPkg.dependencies?.[name];
+    const wantedDevDep = starterPkg.devDependencies?.[name];
+    const wanted = wantedDep ?? wantedDevDep;
+    if (wanted === undefined) continue;
+    const have = projectPkg.dependencies[name] ?? projectPkg.devDependencies[name];
+    if (have !== undefined && have !== wanted && !opts.force) {
+      kept.push(`${name}@${have}`);
+      continue;
+    }
+    if (wantedDep !== undefined) projectPkg.dependencies[name] = wantedDep;
+    else projectPkg.devDependencies[name] = wantedDevDep as string;
+  }
+  if (kept.length > 0) {
+    reportKept(
+      `dependency pins: ${kept.join(", ")}`,
+      "--force replaces them with the starter's versions",
+    );
+  }
+}
+
 function copyFromStarter(starter: string, outputDir: string, rel: string): number {
   const src = join(starter, rel);
   const dst = join(outputDir, rel);

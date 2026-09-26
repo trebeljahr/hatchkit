@@ -152,3 +152,19 @@ export function readWorkspacePackageNames(outputDir: string): string[] {
   }
   return names;
 }
+
+/** Read one script entry from the root `package.json`. `undefined` both
+ *  when the file is missing and when the script isn't defined — callers
+ *  here only ever ask "is this script still the generated one?", and both
+ *  answers are "no". */
+export function readPackageJsonScript(outputDir: string, name: string): string | undefined {
+  const path = join(outputDir, "package.json");
+  if (!existsSync(path)) return undefined;
+  try {
+    const pkg = JSON.parse(readFileSync(path, "utf-8"));
+    const value = pkg.scripts?.[name];
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}

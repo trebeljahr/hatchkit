@@ -11,7 +11,12 @@ import { join } from "node:path";
 import type { ProjectConfig } from "../prompts.js";
 import type { ProjectPorts } from "../utils/ports.js";
 import { nativeClientOrigins } from "./native-origins.js";
-import { readPackageName, readWorkspacePackageNames, setPackageJsonScript } from "./pkg-json.js";
+import {
+  readPackageJsonScript,
+  readPackageName,
+  readWorkspacePackageNames,
+  setPackageJsonScript,
+} from "./pkg-json.js";
 
 /** Literal string replacement across a file. Safe for any content —
  *  `replaceAll` is literal (no regex interpretation). */
@@ -258,9 +263,20 @@ const STARTER_DEFAULT_FRONTEND_URL = "http://localhost:3000";
 export function applyPorts(
   outputDir: string,
   ports: ProjectPorts,
-  opts: { wantsDesktop: boolean; wantsMobile: boolean },
-): void {
+  opts: {
+    wantsDesktop: boolean;
+    wantsMobile: boolean;
+    /** Rewrite `dev:desktop` even when the project has reshaped it. Off by
+     *  default — see {@link isGeneratedDevDesktopScript}. */
+    force?: boolean;
+  },
+): string[] {
   const { server, client, nativeHmr } = ports;
+  /** Edits this pass declined to make because the project had moved past
+   *  the generated shape. Returned so `hatchkit update` can report them;
+   *  a fresh scaffold has nothing to report, since the tree was copied
+   *  out of `starter/` a moment earlier. */
+  const kept: string[] = [];
 
   // .env.development (server) — set PORT + update URLs pointing at localhost:5000
   rewriteFile(join(outputDir, "packages/server/.env.development"), (c) => {
@@ -367,7 +383,7 @@ export function applyPorts(
   );
 
   // Native HMR port — only wired when desktop or mobile is selected.
-  if (nativeHmr === undefined) return;
+  if (nativeHmr === undefined) return kept;
 
   // Electron has no port of its own to rewrite. The main process reads
   // ELECTRON_DEV_URL and nothing else (electron/src/main.ts), and a packaged
@@ -387,18 +403,44 @@ export function applyPorts(
 
   // Root package.json: dev:desktop needs PORT + wait-on retargeted at
   // nativeHmr so web-dev and desktop-dev don't stomp each other.
+  //
+  // Only while the script is still the generated one. `applyPorts` also runs
+  // from `hatchkit update` and `hatchkit server add`, against repos whose
+  // desktop dev command has moved on — a different runner, a watcher, extra
+  // processes alongside Next — and replacing that with this one-liner breaks
+  // desktop dev with nothing left to diff. `--force` opts into the overwrite.
   if (opts.wantsDesktop) {
     const clientPkgName = readPackageName(join(outputDir, "packages/client")) ?? "@starter/client";
-    setPackageJsonScript(
-      outputDir,
-      "dev:desktop",
-      `concurrently -k -n next,electron -c blue,magenta ` +
-        `"PORT=${nativeHmr} pnpm --filter ${clientPkgName} dev" ` +
-        `"wait-on http://localhost:${nativeHmr} && node scripts/ensure-electron.mjs && ` +
-        `pnpm electron:compile && ` +
-        `ELECTRON_DEV_URL=http://localhost:${nativeHmr} electron electron/dist/main.js"`,
-    );
+    const existing = readPackageJsonScript(outputDir, "dev:desktop");
+    if (existing !== undefined && !opts.force && !isGeneratedDevDesktopScript(existing)) {
+      kept.push("dev:desktop (customised — native HMR port not retargeted)");
+    } else {
+      setPackageJsonScript(
+        outputDir,
+        "dev:desktop",
+        `concurrently -k -n next,electron -c blue,magenta ` +
+          `"PORT=${nativeHmr} pnpm --filter ${clientPkgName} dev" ` +
+          `"wait-on http://localhost:${nativeHmr} && node scripts/ensure-electron.mjs && ` +
+          `pnpm electron:compile && ` +
+          `ELECTRON_DEV_URL=http://localhost:${nativeHmr} electron electron/dist/main.js"`,
+      );
+    }
   }
+
+  return kept;
+}
+
+/** True while `dev:desktop` still has a shape this function wrote: concurrently,
+ *  a `wait-on http://localhost:<port>` gate, and Electron launched on the main
+ *  entry (`electron/dist/main.js` today, `electron/main.js` before the shell
+ *  was bundled — an older project must still get its port retargeted). Anything
+ *  else is the project's own command and is left exactly as found. */
+export function isGeneratedDevDesktopScript(script: string): boolean {
+  return (
+    /\bconcurrently\b/.test(script) &&
+    /wait-on http:\/\/localhost:\d+/.test(script) &&
+    /\belectron electron\/(?:dist\/)?main\.js\b/.test(script)
+  );
 }
 
 /** Rewrite the local-infra identifiers that the starter ships with
