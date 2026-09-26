@@ -51,6 +51,7 @@ import {
   DESKTOP_SCRIPTS_TO_STRIP,
   substituteDesktopFiles,
 } from "./desktop.js";
+import { applyDevLauncher } from "./dev-launcher.js";
 import { type DotenvxSeedResult, seedDotenvxProduction } from "./dotenvx.js";
 import { applyE2eS3Gate } from "./e2e-s3.js";
 import { collectIdentifierMismatches, formatIdentifierMismatches } from "./identifier-agreement.js";
@@ -437,6 +438,13 @@ async function runScaffoldSteps(
     `assigned ports: server=${ports.server} client=${ports.client}` +
       (ports.nativeHmr ? ` native=${ports.nativeHmr}` : ""),
   );
+
+  // The launcher's two project-specific facts: the pinned ports it defaults
+  // to, and the native shells' document origins it hands the dev server as
+  // TRUSTED_ORIGINS. Also writes `dev` / `dev:auto` / `dev:fixed` — three
+  // commands over one file, because a person wants the ports to hold still
+  // and an agent wants them out of the way.
+  applyDevLauncher(outputDir, ports, config.features);
 
   // split topology: each Coolify app builds from its own single-service
   // compose. Pointing both at the root file would run the whole stack

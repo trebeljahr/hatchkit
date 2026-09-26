@@ -1,0 +1,50 @@
+#!/bin/sh
+# Pre-push gate. Lint only — nothing else.
+#
+# The rule that keeps this hook alive: it must finish in seconds. A
+# pre-push hook that runs the build or the test suite costs a minute on
+# every push, and the first time someone is in a hurry they add
+# --no-verify to muscle memory and the gate is gone for good. Lint is
+# cheap (biome over the CLI and MCP sources), catches the class of
+# mistake that is embarrassing in review, and leaves the slow
+# checks to CI where they belong.
+#
+# Wired up by the root `prepare` script:
+#   git config core.hooksPath .githooks
+# so there is nothing to install per developer.
+
+set -u
+
+# Git runs hooks from the top level already, but not when the push comes
+# from a linked worktree or a submodule. Anchor explicitly so the root
+# `lint` script resolves.
+root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "pre-push: not inside a git work tree — skipping lint." >&2
+  exit 0
+}
+cd "$root" || exit 1
+
+# Without an install there is no linter to run, and failing here would
+# block perfectly ordinary pushes from a fresh clone. Say what is
+# missing and let the push through; CI runs the same command against a
+# real install.
+if [ ! -d node_modules ]; then
+  echo "pre-push: node_modules is missing — skipping lint (run \`pnpm install\`)." >&2
+  exit 0
+fi
+
+echo "pre-push: running \`pnpm run lint\`…"
+if pnpm run lint; then
+  exit 0
+fi
+
+cat >&2 <<'MSG'
+
+pre-push: lint failed — push aborted.
+
+  Fix the findings above, or push anyway with:
+
+      git push --no-verify
+
+MSG
+exit 1

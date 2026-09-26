@@ -19,6 +19,7 @@ import {
 import { dirname, join, relative, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import type { ProjectConfig } from "../prompts.js";
+import { DEV_LAUNCHER_LIB_FILES } from "./dev-launcher.js";
 import {
   MANIFEST_FILENAME,
   type ProjectManifest,
@@ -151,6 +152,18 @@ export async function runServerAdd(
     label: "scripts/wait-for-port.mjs",
     result,
   });
+  // dev.mjs imports three of these and spawns the fourth by path, so a repo
+  // that got the launcher without them dies on `pnpm dev` with
+  // ERR_MODULE_NOT_FOUND. They carry the process-group teardown and the
+  // watcher diagnostics — the launcher is not usable without them.
+  for (const libRel of DEV_LAUNCHER_LIB_FILES) {
+    copyFileIfMissing({
+      from: join(STARTER_ROOT, libRel),
+      to: join(root, libRel),
+      label: libRel,
+      result,
+    });
+  }
   ensureWorkspacePackages(root, result);
   restoreComposeIfClearlyClientOnly(root, "docker-compose.yml", result);
   restoreComposeIfClearlyClientOnly(root, "docker-compose.dev.yml", result);

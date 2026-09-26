@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "dev:auto": "node scripts/dev.mjs --auto",
     "dev:fixed": "node scripts/dev.mjs --fixed",
     "dev:docs": "node scripts/dev.mjs --docs",
     "dev:docs:fixed": "node scripts/dev.mjs --fixed --docs",
@@ -57,7 +58,11 @@
     "test:desktop:release": "node --test scripts/lib/desktop-release.test.mjs scripts/lib/desktop-rollout.test.mjs",
     "test:e2e:desktop": "npx playwright test --config e2e/desktop/playwright.config.ts",
     "test:desktop:linux": "node scripts/desktop-linux-smoke.mjs",
-    "desktop:rollout": "node scripts/desktop-rollout.mjs"
+    "prod:win": "node scripts/desktop-vm-drop.mjs",
+    "desktop:rollout": "node scripts/desktop-rollout.mjs",
+    "lint": "pnpm -r --if-present run lint",
+    "lint:fix": "pnpm -r --if-present run lint:fix",
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true"
   },
   "devDependencies": {
     "@capacitor/assets": "^3.0.5",

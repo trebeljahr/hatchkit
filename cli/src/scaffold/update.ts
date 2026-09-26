@@ -71,7 +71,9 @@ import {
   DESKTOP_SCRIPTS,
   substituteDesktopFiles,
 } from "./desktop.js";
+import { DEV_LAUNCHER_LIB_FILES, applyDevLauncher } from "./dev-launcher.js";
 import { type ProjectIdentifiers, legacyIdentifiers } from "./identifiers.js";
+import { LINT_GATE_FILES, applyLintGate } from "./lint-gate.js";
 import {
   MANIFEST_FILENAME,
   type ProjectManifest,
@@ -368,6 +370,39 @@ export async function runUpdate(
 
   // Derived from KNOWN_FEATURES rather than re-listed, so a feature
   // added to the create flags cannot go missing from the update picker.
+  // Base-infrastructure retrofit: the dev launcher's helper modules and the
+  // lint gate. No flag and no prompt, for the same reason as the retrofits
+  // around it — each one fixes a failure that is silent.
+  //
+  // The launcher's helpers are the sharpest of them. Without the process
+  // group and its reaper, a dev run killed with SIGKILL, crashed, or stopped
+  // by an agent harness leaves `tsx watch` and `next dev` running for days;
+  // each holds thousands of file watches, and once a fresh `next dev` cannot
+  // open any it never scans the app directory, so EVERY route answers 404
+  // while static files still load. Nothing about that points at the cause.
+  //
+  // `scripts/dev.mjs` itself is NOT overwritten: a project may have edited
+  // it, and this list is what the shipped launcher needs beside it.
+  const retrofittedTooling: string[] = [];
+  for (const rel of [...DEV_LAUNCHER_LIB_FILES, ...LINT_GATE_FILES]) {
+    if (existsSync(join(projectDir, rel))) continue;
+    copyFromStarter(STARTER_ROOT, projectDir, rel);
+    if (existsSync(join(projectDir, rel))) retrofittedTooling.push(rel);
+  }
+  const lintGate = applyLintGate(projectDir);
+  if (retrofittedTooling.length > 0) {
+    console.log(chalk.green(`  ✓ shared tooling: ${retrofittedTooling.join(", ")}`));
+  }
+  if (lintGate.changed) {
+    console.log(chalk.green(`  ✓ lint gate: root ${lintGate.wrote.join(", ")}`));
+    console.log(
+      chalk.dim(
+        "    `pnpm run lint` is the one command; .githooks/pre-push and the lint\n" +
+          "    CI job both call it. Run `pnpm install` once to activate the hook.",
+      ),
+    );
+  }
+
   const allOptions: readonly Feature[] = KNOWN_FEATURES;
 
   // Retrofit the post-deploy verification gate for projects scaffolded
@@ -655,6 +690,14 @@ export async function runUpdate(
         console.log(chalk.dim(`  Assigned native HMR port: ${nativeHmr}`));
         for (const note of keptByPorts) reportKept(note);
       }
+
+      // A shell added here loads the client from its own document origin, and
+      // the DEV server has to trust it too — better-auth validates Origin on
+      // any request carrying Sec-Fetch-* headers, which every real WebView
+      // fetch does, so without this sign-in answers 403 INVALID_ORIGIN
+      // locally before the password is ever checked. The Coolify side of the
+      // same list is merged further down.
+      applyDevLauncher(projectDir, updatedPorts, [...updatedFeatures]);
     } else {
       skippedAdditions = added;
     }

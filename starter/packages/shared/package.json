@@ -4,7 +4,7 @@
   "private": true,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "//exports": "This package has no \"type\": \"module\" and tsconfig.base.json sets module: NodeNext, so tsc emits CommonJS into dist/. The map must therefore resolve under \"require\" as well as \"import\" — an import-only map made the Next.js client (which resolves as [\"node\", \"require\"]) fail with \"not exported under the conditions\". \"default\" matches both, which is the honest description of a single CJS build. Keep \"types\" first: condition order is significant and TypeScript warns when types is not matched first.",
+  "//exports": "This package has no \"type\": \"module\" and tsconfig.base.json sets module: NodeNext, so tsc emits CommonJS into dist/. The map must therefore resolve under \"require\" as well as \"import\" \u2014 an import-only map made the Next.js client (which resolves as [\"node\", \"require\"]) fail with \"not exported under the conditions\". \"default\" matches both, which is the honest description of a single CJS build. Keep \"types\" first: condition order is significant and TypeScript warns when types is not matched first.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -18,12 +18,15 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check --error-on-warnings .",
+    "lint:fix": "biome check --write ."
   },
   "dependencies": {
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
     "typescript": "^6.0.3"
   }
 }

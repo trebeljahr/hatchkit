@@ -60,8 +60,16 @@ export interface NativeLifecycleCallbacks {
 export function useNativeLifecycle(callbacks: NativeLifecycleCallbacks): void {
   // Held in a ref so a caller passing inline closures (everyone) does not
   // re-register the bridge handler on every render.
+  //
+  // Assigned in an effect rather than during render: writing a ref while
+  // rendering is what `react-hooks/refs` refuses, and doing it after commit
+  // is safe here because `.current` is only read from the bridge handler
+  // below, which fires on a resume long after the first paint. The initial
+  // value already carries the first `callbacks`.
   const latest = useRef(callbacks);
-  latest.current = callbacks;
+  useEffect(() => {
+    latest.current = callbacks;
+  });
 
   useEffect(() => {
     let running = false;

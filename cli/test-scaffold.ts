@@ -24,6 +24,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { DEV_LAUNCHER_LIB_FILES } from "./src/scaffold/dev-launcher.js";
 import { tmpdir } from "node:os";
 
 // Isolate the test from the real user config. ESM hoists static
@@ -995,6 +996,9 @@ console.log("\n── ports: web-only ──────────────
     const clientDockerfile = readFileSync(join(d, "packages/client/Dockerfile"), "utf-8");
     const compose = readFileSync(join(d, "docker-compose.yml"), "utf-8");
     const devMjs = readFileSync(join(d, "scripts/dev.mjs"), "utf-8");
+    const pkgJson = JSON.parse(readFileSync(join(d, "package.json"), "utf-8")) as {
+      scripts: Record<string, string>;
+    };
 
     const checks: Check[] = [
       ["serverPort in 5000-5999", ports.server >= 5000 && ports.server <= 5999],
@@ -1007,8 +1011,19 @@ console.log("\n── ports: web-only ──────────────
       [`server Dockerfile has EXPOSE ${ports.server}`, serverDockerfile.includes(`EXPOSE ${ports.server}`)],
       [`client Dockerfile has EXPOSE ${ports.client}`, clientDockerfile.includes(`EXPOSE ${ports.client}`)],
       [`docker-compose server PORT=${ports.server}`, compose.includes(`PORT: "${ports.server}"`)],
-      [`dev.mjs fixed apiPort=${ports.server}`, devMjs.includes(`apiPort = ${ports.server}`)],
-      [`dev.mjs fixed clientPort=${ports.client}`, devMjs.includes(`clientPort = ${ports.client}`)],
+      [`dev.mjs pinned DEV_API_PORT=${ports.server}`, devMjs.includes(`const DEV_API_PORT = ${ports.server};`)],
+      [`dev.mjs pinned DEV_CLIENT_PORT=${ports.client}`, devMjs.includes(`const DEV_CLIENT_PORT = ${ports.client};`)],
+      // Three commands over one launcher: the default pins, because a port
+      // that moves per run breaks every client that bakes its API URL in.
+      ["dev/dev:auto/dev:fixed all point at scripts/dev.mjs", pkgJson.scripts.dev === "node scripts/dev.mjs" && pkgJson.scripts["dev:auto"] === "node scripts/dev.mjs --auto" && pkgJson.scripts["dev:fixed"] === "node scripts/dev.mjs --fixed"],
+      // The launcher imports three of these and spawns the fourth by path, so
+      // a missing one shows up as a launcher that dies on start.
+      ...DEV_LAUNCHER_LIB_FILES.map((rel): Check => [`${rel} shipped`, existsSync(join(d, rel))]),
+      // No native shell here, so nothing to trust.
+      ["dev.mjs NATIVE_ORIGINS empty", devMjs.includes("const NATIVE_ORIGINS = [];")],
+      // One root lint command, which the hook and the CI job both call.
+      ["root lint + prepare wired", pkgJson.scripts.lint === "pnpm -r --if-present run lint" && String(pkgJson.scripts.prepare ?? "").includes("core.hooksPath")],
+      ["pre-push hook + lint CI shipped", existsSync(join(d, ".githooks/pre-push")) && existsSync(join(d, ".github/workflows/lint.yml"))],
       ["no stray localhost:5000", !serverEnvDev.includes("localhost:5000") && !clientEnvDev.includes("localhost:5000")],
     ];
     let ok = true;

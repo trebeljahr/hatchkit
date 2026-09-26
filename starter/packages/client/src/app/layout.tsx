@@ -62,10 +62,7 @@ export default function RootLayout({
           `document.documentElement` exists during head parsing,
           `document.body` does not.
         */}
-        <script
-          // eslint-disable-next-line react/no-danger
-          dangerouslySetInnerHTML={{ __html: ROOT_MARKER_SCRIPT }}
-        />
+        <script dangerouslySetInnerHTML={{ __html: ROOT_MARKER_SCRIPT }} />
         {/* OpenPanel analytics — replace with your client ID */}
         {process.env.NEXT_PUBLIC_OPENPANEL_CLIENT_ID && (
           <script

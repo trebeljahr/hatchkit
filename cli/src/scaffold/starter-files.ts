@@ -10,6 +10,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProjectConfig } from "../prompts.js";
 import type { ProjectPorts } from "../utils/ports.js";
+import { DEV_LAUNCHER_REL_PATH, applyDevLauncherPorts } from "./dev-launcher.js";
 import { nativeClientOrigins } from "./native-origins.js";
 import {
   readPackageJsonScript,
@@ -262,7 +263,7 @@ const STARTER_DEFAULT_FRONTEND_URL = "http://localhost:3000";
  *    • packages/server/Dockerfile             (ENV PORT, EXPOSE)
  *    • packages/client/Dockerfile             (ENV PORT, EXPOSE)
  *    • docker-compose.yml                      (server PORT env)
- *    • scripts/dev.mjs                         (fixed-mode defaults)
+ *    • scripts/dev.mjs                         (pinned DEV_*_PORT constants)
  *    • scripts/android-dev.sh + ios-dev.sh    (NEXT_PORT default)
  *    • package.json dev:desktop script        (Next port + wait-on)
  */
@@ -378,14 +379,12 @@ export function applyPorts(
 
   // scripts/dev.mjs: bump fixed-mode defaults + the comment header
   // that documents the default ports.
-  rewriteFile(join(outputDir, "scripts/dev.mjs"), (c) =>
-    c
-      .replace(/clientPort = 3000/g, `clientPort = ${client}`)
-      .replace(/apiPort = 5000/g, `apiPort = ${server}`)
-      .replace(
-        /client 3000, docs 4000, server 5000/g,
-        `client ${client}, docs 4000, server ${server}`,
-      ),
+  // The pinned ports the launcher defaults to. It declares them as three
+  // anchored `const DEV_*_PORT = <n>;` lines precisely so this is one regex
+  // per port rather than a sweep for a number that also appears in the file's
+  // prose — see scaffold/dev-launcher.ts.
+  rewriteFile(join(outputDir, DEV_LAUNCHER_REL_PATH), (c) =>
+    applyDevLauncherPorts(c, { server, client, nativeHmr }),
   );
 
   // Native HMR port — only wired when desktop or mobile is selected.

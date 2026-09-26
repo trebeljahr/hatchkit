@@ -1,0 +1,37 @@
+name: lint
+
+# Lint runs on its own workflow, not as a step of build-and-deploy, for
+# two reasons: it must also run on pull requests (build-and-deploy only
+# runs on push to main, because it deploys), and it must report as its
+# own check so a red lint cannot be confused with a failed deploy.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# One lint run per ref. Pushing three times to a PR should not leave two
+# stale runs burning minutes and reporting outdated results.
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Same setup shape as build-and-deploy.yml: .nvmrc is the single
+      # source of truth for the Node version, and pnpm/action-setup reads
+      # the version from packageManager in package.json. Keep the two
+      # workflows identical here — a lint job that installs against a
+      # different Node than the build job can pass while the build fails.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint

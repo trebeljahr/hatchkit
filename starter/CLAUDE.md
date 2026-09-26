@@ -98,8 +98,9 @@ such as `hatchkit destroy <project> --recipe`, `hatchkit gh-pages --undo
 pnpm install                          # install all dependencies
 pnpm run dev:infra                    # start MongoDB, Redis, local S3 (Docker, one-time)
 pnpm run seed:assets                  # populate local S3 from seed/assets/ (idempotent)
-pnpm run dev                          # start server + client (random ports)
-pnpm run dev:fixed                    # start on fixed ports (client=3000, server=5000)
+pnpm run dev                          # client 3000, server 5000 — the pinned ports
+pnpm run dev:auto                     # the same, with every port auto-picked
+pnpm run dev:fixed                    # the pinned ports, or fail — never a fallback
 ```
 
 Drop fixtures into `seed/assets/` to have them auto-populate the
@@ -110,12 +111,73 @@ as production data — same handling rules apply).
 <!-- hatchkit:if static -->
 ```bash
 pnpm install                          # install all dependencies
-pnpm run dev                          # start the Next.js client
+pnpm run dev                          # the pinned client port
+pnpm run dev:auto                     # the same, with the port auto-picked
+pnpm run dev:fixed                    # the pinned port, or fail — never a fallback
 pnpm run build                        # production build
 ```
 <!-- hatchkit:endif -->
 
+Three commands, because the two callers want opposite things.
+
+- **`pnpm run dev`** pins the ports (`DEV_*_PORT` in `scripts/dev.mjs`). The
+  origins never move, so password managers, saved logins and bookmarks keep
+  working — and so does every client that bakes the API URL in at build time
+  (the browser extension, the desktop and mobile shells), none of which can
+  follow a port that changes per run.
+- **`pnpm run dev:auto`** auto-picks every port from 49152-65535. Use it for
+  agents and for any second instance, so nothing fights over the pinned ones.
+
+`pnpm run dev` inside a git worktree behaves like `dev:auto` automatically, so
+several agents can run side by side without stepping on the main checkout. A
+worktree therefore does NOT serve the ports a baked-in client expects — point
+it at the printed ports, or run `dev:fixed` there when the worktree is the
+thing being tested.
+
+`PORT`, `API_PORT` and `DOCS_PORT` pin individual ports, and `--fixed` wins
+over all of it, worktree included. If a pinned port is busy, `dev` warns and
+falls back to a random one for that run rather than refusing to start;
+`dev:fixed` exits instead, because "these exact ports" was the point.
+`node scripts/dev.mjs --dry-run` resolves and prints ports without starting
+anything.
+
+`dev` also hands the server the native shells' document origins and, when the
+project has an extension package, its `chrome-extension://<id>` dev origin —
+so no id is pasted by hand for local work. The id comes from
+`scripts/extension-package.mjs id`, never derived a second time here: a dev
+server that trusts a different id than Chrome assigns fails as a flat
+`403 INVALID_ORIGIN` with nothing on either side saying the two disagreed.
+Anything already in `TRUSTED_ORIGINS` in the environment is kept alongside it.
+
+**Every route answering 404 while `public/` files still load** means `next dev`
+could not open file watches (`EMFILE: too many open files, watch` in the client
+log): with no watcher it never scans `app/`. The cause is dev watchers from
+earlier runs that never died. `scripts/dev.mjs` leads its own process group and
+stops it on SIGINT/SIGTERM/SIGHUP, on a broken pipe and when reparented, and
+`scripts/lib/dev-reaper.mjs` stops it when `dev.mjs` dies any other way. `dev`
+warns at start about orphaned watchers of this repo and prints a boxed
+explanation on the first EMFILE/ENOSPC — but **it never kills them, and neither
+should you**. Stop only what you started, or run
+`WATCHPACK_POLLING=true pnpm run dev`.
+
 ## How to Test
+
+```bash
+pnpm run lint                         # every package, zero warnings tolerated
+pnpm run lint:fix                     # the fixable subset
+```
+
+One root command, and the pre-push hook and the `lint` CI job both call it, so
+there is a single definition of "lint passes". It runs at zero tolerance —
+eslint with `--max-warnings 0` on the client, biome on the server and shared
+packages — because a warning that never fails anything accumulates until the
+real one scrolls past. `pnpm install` points git at `.githooks/` through the
+root `prepare` script; `git push --no-verify` skips the hook, and CI catches
+what the hook missed.
+
+Keep the gate green. If a rule fires on code nobody intends to change, turn
+that rule off in the config with a reason next to it — a gate that ships red is
+switched off within a week.
 
 <!-- hatchkit:if fullstack -->
 ```bash

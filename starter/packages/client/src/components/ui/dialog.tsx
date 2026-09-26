@@ -49,12 +49,25 @@ export function Dialog({
    * mismatch to suppress.
    */
   const [mounted, setMounted] = useState(false);
+  // A mount flag is the one legitimate synchronous setState in an effect:
+  // there is nothing else to subscribe to, and the render it schedules is the
+  // point. `react-hooks/set-state-in-effect` cannot tell that apart.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMounted(true), []);
 
   // Kept in a ref so the overlay registration below does not have to re-run
   // whenever the parent passes a fresh closure.
+  //
+  // Assigned in an effect rather than during render: writing a ref while
+  // rendering is what `react-hooks/refs` refuses, and doing it after commit
+  // is safe here because `.current` is only ever dereferenced from a callback
+  // that runs later. The initial value already carries the first
+  // `onOpenChange`, so even an effect that runs before this one sees a live
+  // closure rather than undefined.
   const onOpenChangeRef = useRef(onOpenChange);
-  onOpenChangeRef.current = onOpenChange;
+  useEffect(() => {
+    onOpenChangeRef.current = onOpenChange;
+  });
 
   const controlled = onOpenChange !== undefined;
 

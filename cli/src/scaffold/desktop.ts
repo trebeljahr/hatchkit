@@ -66,6 +66,10 @@ export const DESKTOP_FILES: readonly string[] = [
   // Proof it runs: a container that renders the app on Linux, and an
   // end-to-end harness that proves auth from the server side.
   "scripts/desktop-linux-smoke.mjs",
+  // Windows cannot be proven the same way — there is no Windows container
+  // that runs a GUI app on a Mac — so the most this can do is stage a correct
+  // build one double-click away from a person in a VM.
+  "scripts/desktop-vm-drop.mjs",
   "scripts/crossplat",
   "e2e/desktop",
 ];
@@ -132,6 +136,7 @@ export const DESKTOP_SCRIPTS: readonly string[] = [
   "test:e2e:desktop",
   "test:desktop:linux",
   "test:desktop:release",
+  "prod:win",
   "icons:desktop",
   "desktop:rollout",
 ];

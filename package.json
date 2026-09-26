@@ -33,12 +33,16 @@
     "start": "pnpm --filter hatchkit run start",
     "create": "pnpm --filter hatchkit run start",
     "typecheck": "pnpm --filter hatchkit run typecheck",
+    "lint": "pnpm -r --if-present run lint",
+    "lint:fix": "pnpm -r --if-present run lint:fix",
+    "check": "pnpm --filter hatchkit run check",
     "install-local": "pnpm --filter hatchkit run install-local",
     "changelog": "pnpm --filter hatchkit run changelog",
     "release": "pnpm --filter hatchkit run release",
     "release:patch": "pnpm --filter hatchkit run release:patch",
     "release:minor": "pnpm --filter hatchkit run release:minor",
-    "release:major": "pnpm --filter hatchkit run release:major"
+    "release:major": "pnpm --filter hatchkit run release:major",
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
