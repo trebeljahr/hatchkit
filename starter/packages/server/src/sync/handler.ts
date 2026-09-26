@@ -18,7 +18,6 @@ import type { IncomingMessage, Server } from "http";
 import { fromNodeHeaders } from "better-auth/node";
 import { SESSION_REVOKED_CLOSE_CODE, SYNC_PATH } from "@starter/shared";
 import { getAuth } from "../auth/auth.js";
-import { authenticateUpgrade } from "../ws/auth.js";
 import { syncFeed } from "./feed.js";
 import { env, getTrustedOrigins } from "../config/env.js";
 
@@ -67,6 +66,27 @@ function bearerSubprotocolToken(req: IncomingMessage): string | null {
     return decodeURIComponent(token);
   } catch {
     // A token that is not valid percent-encoding is not a token.
+    return null;
+  }
+}
+
+/**
+ * Resolve the session cookie on an upgrade request into a session.
+ *
+ * The room socket in `ws/` has a function of exactly this shape, and this file
+ * deliberately does NOT import it. `ws/` belongs to the `websocket` feature and
+ * `sync/` belongs to `client-core`; the two are selected independently, so a
+ * project with the sync feed and no room socket has no `ws/` directory at all —
+ * and an import across that line is a TS2307 the moment somebody picks the one
+ * without the other. Fifteen lines of better-auth is a cheaper thing to own
+ * twice than a dependency between two features that are meant to be separable.
+ */
+async function sessionFromCookie(req: IncomingMessage): Promise<{ user: { id: string } } | null> {
+  try {
+    const session = await getAuth().api.getSession({ headers: fromNodeHeaders(req.headers) });
+    return session?.user?.id ? { user: { id: session.user.id } } : null;
+  } catch {
+    // A failed lookup is an unauthenticated upgrade, never a thrown request.
     return null;
   }
 }
@@ -173,10 +193,8 @@ export function setupSyncFeed(server: Server): WebSocketServer {
     //
     // The cookie path first (the web app), then the `bearer.<token>`
     // subprotocol for hosts with no cookie jar.
-    const cookieSession = await authenticateUpgrade(req);
-    const authenticated = cookieSession?.user?.id
-      ? { user: { id: cookieSession.user.id } }
-      : await sessionFromBearerSubprotocol(req);
+    const authenticated =
+      (await sessionFromCookie(req)) ?? (await sessionFromBearerSubprotocol(req));
 
     if (!authenticated) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");

@@ -31,8 +31,8 @@
  *                       both claim the nativeHmr port, both feed
  *                       TRUSTED_ORIGINS.
  *   s3+analytics      — both extend the env model and the Terraform vars.
- *   client-core+ws    — both run a WebSocket server in packages/server and
- *                       share ws/auth.ts.
+ *   client-core+ws    — both run a WebSocket server in packages/server, and
+ *                       each authenticates its own upgrade.
  *   static+analytics  — the surface prune and a feature that must
  *                       survive it (client-side SDKs, no server).
  *
@@ -264,11 +264,12 @@ const COMBOS: Combo[] = [
   { label: "ws+stripe", features: ["websocket", "stripe"], surfaces: "fullstack" },
   { label: "desktop+mobile", features: ["desktop", "mobile"], surfaces: "fullstack" },
   { label: "s3+analytics", features: ["s3", "analytics"], surfaces: "fullstack" },
-  // Both put a WebSocket server in packages/server and share
-  // `ws/auth.ts`: the room socket owns the directory, client-core's sync
-  // feed is its only importer. With websocket OFF the whole tree used to
-  // go, taking that helper with it — which `only-client-core` catches —
-  // and with both ON the two upgrade listeners have to coexist.
+  // Both put a WebSocket server in packages/server, and each resolves an
+  // upgrade's session itself — `sync/` deliberately does not import `ws/`,
+  // because the two features are selected independently and an import across
+  // that line is a TS2307 for whoever picks one without the other
+  // (`only-client-core` is the combination that catches it). With both ON the
+  // two upgrade listeners have to coexist on one HTTP server.
   { label: "client-core+websocket", features: ["client-core", "websocket"], surfaces: "fullstack" },
   { label: "static+analytics", features: ["analytics"], surfaces: "static" },
 ];

@@ -157,11 +157,9 @@ function mergeManifests(ctx: FeatureContext, starterRoot: string): void {
  * `content` with the core build chained into each named script.
  *
  * A fixed point: a script that already names the package is left alone, so a
- * second apply changes nothing. A script the user rewrote is also left alone —
- * only one that is exactly the starter's with the segment removed is restored,
- * which is precisely what the scaffold-time strip produces. Prepending a build
- * step to somebody's own command is not a call to make silently, and a missing
- * `dist/` reports itself on the first run with a message that names the package.
+ * second apply changes nothing. A script that is somebody's own command is left
+ * alone too — see `restoreCoreSegment` for where the line between the two is
+ * drawn, and why it is not simply "equal to the starter's minus this segment".
  */
 export function chainCoreBuild(
   content: string,
@@ -181,11 +179,61 @@ export function chainCoreBuild(
     const current = pkg.scripts[name];
     if (!starterScript || current === undefined) continue;
     if (current.includes(CORE_PACKAGE_NAME)) continue;
-    if (unchainSegment(starterScript, CORE_BUILD_SEGMENT) !== current) continue;
-    pkg.scripts[name] = starterScript;
+    const restored = restoreCoreSegment(starterScript, current);
+    if (restored === null) continue;
+    pkg.scripts[name] = restored;
     changed = true;
   }
   return changed ? `${JSON.stringify(pkg, null, 2)}\n` : content;
+}
+
+/** The `&&`-separated commands of a script, trimmed and without empties. */
+function scriptSegments(script: string): string[] {
+  return script
+    .split("&&")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment !== "");
+}
+
+/**
+ * `current` with the core build put back where the starter has it, or null when
+ * this cannot say where that is.
+ *
+ * The obvious rule — restore only a script that is EXACTLY the starter's with
+ * this one segment removed — is the rule this used to have, and it is too
+ * strict, because a scaffold strips one segment per feature the user did not
+ * select. A project without `desktop` has a root `typecheck` that is the
+ * starter's minus BOTH the core build and `pnpm typecheck:electron`, so it never
+ * matches, the build is never chained, and `pnpm run typecheck` then fails on
+ * `Cannot find module '@starter/core'` — the package resolves through `dist/`
+ * and nothing built it. That is a project hatchkit produced, failing its own
+ * typecheck after `hatchkit update`.
+ *
+ * So: exact match first, because the starter's whole script is strictly better
+ * when it applies (it carries any other change the starter made since).
+ * Otherwise place the segment after the one it follows in the starter, which is
+ * the only position that matters — `@starter/core` has to be built before
+ * anything that compiles against it, and after `@starter/shared`, which it
+ * imports. A script that no longer contains that preceding segment, or contains
+ * it more than once, is somebody's own command: prepending a build step to one
+ * silently is not a call to make, and a missing `dist/` reports itself on the
+ * first run with a message that names the package.
+ */
+function restoreCoreSegment(starterScript: string, current: string): string | null {
+  if (!starterScript.includes(CORE_BUILD_SEGMENT)) return null;
+  if (unchainSegment(starterScript, CORE_BUILD_SEGMENT) === current) return starterScript;
+
+  const starterSegments = scriptSegments(starterScript);
+  const at = starterSegments.indexOf(CORE_BUILD_SEGMENT);
+  if (at < 0) return null; // the segment is there but not as a whole command
+
+  const segments = scriptSegments(current);
+  if (at === 0) return [CORE_BUILD_SEGMENT, ...segments].join(" && ");
+
+  const precededBy = starterSegments[at - 1] as string;
+  if (segments.filter((segment) => segment === precededBy).length !== 1) return null;
+  segments.splice(segments.indexOf(precededBy) + 1, 0, CORE_BUILD_SEGMENT);
+  return segments.join(" && ");
 }
 
 /**

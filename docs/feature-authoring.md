@@ -266,6 +266,43 @@ edit **produces**, not on where it goes. Check for the result before inserting,
 not merely for the insertion point — otherwise the second run inserts a second
 copy.
 
+### An anchor must survive every OTHER feature's strip
+
+A block placed by an anchor — a managed block, or `client-core`'s marked blocks
+and their run of preceding lines — anchors on a line in a file the starter
+always ships. That file has also been through the strip of every feature the
+user did NOT select, and those strips delete lines.
+
+So the question is not "is this anchor unique in the starter", which a
+round-trip test over the starter answers. It is "is this anchor still THERE in
+the most-pruned project that can still take this feature". Three real cases,
+all found at once and all silent:
+
+- `client-core`'s block in `packages/shared/src/index.ts` anchored on
+  `export * from "./ml-types.js";`, which the ML prune removes from every
+  project with no ML service.
+- All three of its blocks in `packages/server/src/index.ts` anchored on
+  `./ws/handler.js` lines, which the `websocket` strip removes.
+
+Each one reached the user as a manual checklist entry for a project hatchkit
+had generated itself — and an unwired `setupSyncFeed` is a sync feed that never
+listens, with nothing failing to say so.
+
+Two rules follow. **Put the block where a prune cannot reach its anchor** —
+above the lines another feature owns, not below them, and after a line no strip
+removes. And **assert it on a scaffold, not on the starter**: `pnpm test`'s
+`update onto a scaffolded project` group in `cli/test-client-core.ts` scaffolds
+the bare fullstack project, applies the feature and requires zero manual steps.
+An anchor that regresses fails there.
+
+The same trap applies to a script segment. `chainCoreBuild` used to restore
+the core build only into a script that was EXACTLY the starter's minus its own
+segment — but a project without `desktop` is missing that segment *and*
+`pnpm typecheck:electron`, so it matched nothing, the build was never chained,
+and the project failed its own `pnpm run typecheck` on a package that resolves
+through `dist/`. Place a segment relative to the one it follows, and refuse
+only when that neighbour is genuinely gone.
+
 ### package.json
 
 `mergePackageJson` is add-only. Absent entries are added; identical ones are

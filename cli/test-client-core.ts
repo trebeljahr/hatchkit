@@ -32,7 +32,16 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
+// Same isolation contract as test-scaffold.ts and test-feature-matrix.ts: the
+// pruned-project group below runs a REAL scaffold, which mints a dotenvx key
+// and reads the user's config. Set before the first dynamic import, because
+// config.ts resolves these at module load.
+process.env.HATCHKIT_CONF_DIR ??= mkdtempSync(join(tmpdir(), "client-core-conf-"));
+process.env.HATCHKIT_KEYTAR_SERVICE ??= `hatchkit-client-core-${process.pid}`;
+process.env.HATCHKIT_DEV_CONFIG_DIR ??= mkdtempSync(join(tmpdir(), "client-core-devdir-"));
+
 const {
+  CLIENT_CORE_CHECKLIST_PATH,
   CLIENT_CORE_MARKED_FILES,
   CLIENT_CORE_OWNED_PATHS,
   CLIENT_CORE_ROOT_SCRIPTS,
@@ -41,6 +50,7 @@ const {
   UnbalancedMarkerError,
   anchoredBlocks,
   applyClientCore,
+  chainCoreBuild,
   clientCoreFeature,
   hasMarkedBlocks,
   insertAfter,
@@ -57,6 +67,7 @@ const { findUnsubstitutedIdentifierTokens, resolveIdentifiers } = await import(
   "./src/scaffold/identifiers.js"
 );
 const { KNOWN_FEATURES } = await import("./src/utils/flags.js");
+const { scaffoldApp } = await import("./src/scaffold/app.js");
 
 type Ledger = InstanceType<typeof FeatureLedger>;
 
@@ -277,6 +288,63 @@ group("unchainSegment", () => {
       unchainSegment("pnpm --filter @starter/shared run build && x", seg) ===
         "pnpm --filter @starter/shared run build && x",
     ],
+  ];
+});
+
+group("chainCoreBuild", () => {
+  const seg = "pnpm --filter @starter/core run build";
+  const shared = "pnpm --filter @starter/shared run build";
+  // The starter's real shapes: one script where the core build is in the middle
+  // of the chain, one where it leads.
+  const starter = {
+    typecheck: `${shared} && ${seg} && pnpm -r run typecheck && pnpm typecheck:electron`,
+    test: `${seg} && node --test`,
+  };
+  const chain = (scripts: Record<string, string>, names: string[] = ["typecheck", "test"]): Record<string, string> =>
+    (
+      JSON.parse(chainCoreBuild(JSON.stringify({ scripts }, null, 2), starter, names)) as {
+        scripts: Record<string, string>;
+      }
+    ).scripts;
+
+  // Exactly the starter's minus the core segment — the whole starter script
+  // comes back, so any other change it carries comes with it.
+  const exact = chain({ typecheck: `${shared} && pnpm -r run typecheck && pnpm typecheck:electron` });
+  // The shape a real scaffold produces: minus the core segment AND minus the
+  // Electron one, because `desktop` was not selected either.
+  const twoStripped = chain({ typecheck: `${shared} && pnpm -r run typecheck` });
+  // Already chained — a second apply must change nothing.
+  const already = chain({ typecheck: starter.typecheck });
+  // Leading position, where there is no preceding segment to place after.
+  const leading = chain({ test: "node --test" });
+  // Somebody's own command: the segment the core build follows is gone, so
+  // there is no position this can claim to know.
+  const rewritten = chain({ typecheck: "tsc -b" });
+  // …and one where it appears twice, which is equally unplaceable.
+  const ambiguous = chain({ typecheck: `${shared} && pnpm -r run typecheck && ${shared}` });
+
+  return [
+    ["the starter's script minus the segment is restored whole", exact.typecheck === starter.typecheck],
+    [
+      "a script missing a SECOND segment still gets the core build",
+      twoStripped.typecheck === `${shared} && ${seg} && pnpm -r run typecheck`,
+    ],
+    [
+      "and does not gain back the segment it had pruned",
+      !(twoStripped.typecheck ?? "").includes("typecheck:electron"),
+    ],
+    ["an already-chained script is untouched", already.typecheck === starter.typecheck],
+    ["a leading segment is prepended", leading.test === `${seg} && node --test`],
+    ["a rewritten script is left alone", rewritten.typecheck === "tsc -b"],
+    [
+      "an ambiguous position is refused rather than guessed",
+      ambiguous.typecheck === `${shared} && pnpm -r run typecheck && ${shared}`,
+    ],
+    [
+      "a script the starter does not have is left alone",
+      chain({ build: "x" }, ["build"]).build === "x",
+    ],
+    ["invalid JSON is returned unchanged", chainCoreBuild("{oops", starter, ["typecheck"]) === "{oops"],
   ];
 });
 
@@ -772,6 +840,149 @@ if (!existsSync(join(STARTER, "package.json"))) {
       ],
       ["the run says so out loud", logs.some((line) => line.includes("need you"))],
       ["no checklist when nothing is left to do", renderClientCoreChecklist([]) === null],
+    ];
+  });
+
+  // ── the kit does not reach into another feature's files ────────────
+
+  group("the kit owns its own upgrade authentication", () => {
+    // `sync/handler.ts` imported `authenticateUpgrade` from `../ws/auth.js`
+    // until the sync feed grew its own `sessionFromCookie`. `ws/` belongs to
+    // the `websocket` feature and `sync/` to this one, and the two are selected
+    // independently — so that import was a TS2307 in every project that picked
+    // the sync feed without the room socket. The create path papered over it by
+    // keeping `ws/auth.ts` behind when client-core was on; `update` had no such
+    // special case and shipped the broken import.
+    //
+    // Generalised, because the next such import would be just as invisible: no
+    // file this feature owns may import from a directory another feature owns.
+    const foreign: string[] = [];
+    for (const rel of CLIENT_CORE_OWNED_PATHS) {
+      const abs = join(STARTER, rel);
+      if (!existsSync(abs)) continue;
+      for (const [file, content] of filesUnder(abs, STARTER)) {
+        for (const match of content.matchAll(/from\s+"([^"]+)"/g)) {
+          const target = match[1] ?? "";
+          if (/(^|\/)ws\//.test(target)) foreign.push(`${file} -> ${target}`);
+        }
+      }
+    }
+
+    const syncHandler = readFileSync(join(STARTER, "packages/server/src/sync/handler.ts"), "utf-8");
+
+    return [
+      [
+        "no owned file imports out of packages/server/src/ws",
+        foreign.length === 0 || failWith("imports", foreign),
+      ],
+      ["the sync feed resolves the session cookie itself", syncHandler.includes("sessionFromCookie")],
+      ["and the bearer subprotocol path is still there", syncHandler.includes("sessionFromBearerSubprotocol")],
+    ];
+  });
+
+  // ── update onto a project hatchkit itself scaffolded ───────────────
+
+  // The scaffold itself, awaited out here: `group` takes a synchronous body,
+  // and this is the one group that needs a real `scaffoldApp` run first.
+  const scaffolded = join(tempDir("client-core-scaffolded-"), "project");
+  const scaffoldName = "acme-tracker";
+  console.log("\n(scaffolding a pruned project for the update group…)");
+  await scaffoldApp(
+    {
+      name: scaffoldName,
+      domain: `${scaffoldName}.example.com`,
+      baseDomain: "example.com",
+      subdomain: scaffoldName,
+      surfaces: "fullstack",
+      deploymentMode: "coolify",
+      deployTarget: "existing",
+      serverId: 1,
+      serverIp: "1.2.3.4",
+      features: [],
+      provisionServices: [],
+      s3Provider: "none",
+      mongodbProvider: "external",
+      mlServices: [],
+      forceRedeployMl: [],
+      scaffoldRepo: true,
+      createGithubRepo: false,
+      installDeps: false,
+      runDeployment: false,
+      dryRun: false,
+    } as never,
+    scaffolded,
+  );
+
+  group("update onto a scaffolded project", () => {
+    // The groups above start from `strippedProject`, which is the starter with
+    // only THIS feature stripped. A real project has been through every other
+    // strip as well, and two of those rewrite files this feature has blocks in:
+    // the `websocket` strip rewrites `packages/server/src/index.ts`, and the ML
+    // prune removes `export * from "./ml-types.js";` from
+    // `packages/shared/src/index.ts`. Both used to take an anchor with them, so
+    // `update` handed four of its own blocks to the manual checklist — for a
+    // project hatchkit had generated, which is the exact case the checklist was
+    // meant to be the exception for. A silently unwired `setupSyncFeed` is a
+    // sync feed that never listens.
+    //
+    // The project above is therefore the most-pruned one that can still take
+    // the feature: fullstack, because the kit needs both halves, and then
+    // nothing selected and no ML service, so every conditional strip takes its
+    // "remove" arm.
+    // Read before applying: these two assert what the SCAFFOLD did, and the
+    // apply is about to add a block whose own comment names `./ml-types.js`.
+    const prunedWs = !existsSync(join(scaffolded, "packages/server/src/ws"));
+    const prunedMlExport = !/^export \* from "\.\/ml-types\.js";$/m.test(
+      readFileSync(join(scaffolded, "packages/shared/src/index.ts"), "utf-8"),
+    );
+
+    const { manual, ledger } = apply(scaffolded, { name: scaffoldName });
+    const rootPkg = readJsonAt(scaffolded, "package.json");
+    const present = CLIENT_CORE_MARKED_FILES.filter((rel) => existsSync(join(scaffolded, rel)));
+    const unwired = present.filter(
+      (rel) => !hasMarkedBlocks(readFileSync(join(scaffolded, rel), "utf-8")),
+    );
+    const read = (rel: string): string => readFileSync(join(scaffolded, rel), "utf-8");
+
+    return [
+      // The scaffold really is the pruned shape this group is about. If a later
+      // change stops pruning either one, the assertions below quietly stop
+      // testing what they claim to.
+      ["the scaffold pruned ws/", prunedWs],
+      ["the scaffold pruned the ml-types re-export", prunedMlExport],
+      ["nothing was handed to the checklist", manual === 0 || failWith("manual steps", [String(manual)])],
+      ["no checklist file was written", !existsSync(join(scaffolded, CLIENT_CORE_CHECKLIST_PATH))],
+      [
+        "every marked file the project has was wired",
+        unwired.length === 0 || failWith("not wired", unwired),
+      ],
+      [
+        "the sync feed is actually registered on the server",
+        read("packages/server/src/index.ts").includes("setupSyncFeed(server)"),
+      ],
+      [
+        "the shared barrel re-exports the handshake",
+        read("packages/shared/src/index.ts").includes('./api-level.js"'),
+      ],
+      [
+        "the kit does not import the room socket's authenticator",
+        !read("packages/server/src/sync/handler.ts").includes("../ws/auth.js"),
+      ],
+      // The project's `typecheck` is the starter's minus TWO segments here (this
+      // feature's and the Electron one), which a whole-script equality test
+      // could never recognise. Left unchained, `pnpm run typecheck` fails on
+      // `Cannot find module '@starter/core'` — it resolves through `dist/` and
+      // nothing built it.
+      [
+        "typecheck builds @starter/core",
+        (rootPkg.scripts?.typecheck ?? "").includes(CORE_PACKAGE_NAME),
+      ],
+      [
+        "and did not gain back a script the project had pruned",
+        !(rootPkg.scripts?.typecheck ?? "").includes("typecheck:electron"),
+      ],
+      ["build builds @starter/core", (rootPkg.scripts?.build ?? "").includes(CORE_PACKAGE_NAME)],
+      ["the ledger reports no conflict", ledger.conflicts().length === 0],
     ];
   });
 }

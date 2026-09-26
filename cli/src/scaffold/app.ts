@@ -369,24 +369,13 @@ async function runScaffoldSteps(
 
   // Feature-flag removal
   if (!config.features.includes("websocket")) {
-    // `ws/auth.ts` authenticates an upgrade from the session cookie and
-    // does nothing else, and the client-core sync feed authenticates
-    // its own upgrade with it (`sync/handler.ts`). Deleting the whole
-    // directory while that feature is on leaves that import pointing at
-    // a file that is gone — a TS2307 on the user's first build, in a
-    // file neither feature's author touched.
-    if (config.features.includes("client-core")) {
-      for (const name of readdirSync(join(outputDir, "packages/server/src/ws"))) {
-        if (name === "auth.ts") continue;
-        removeIfExists(join(outputDir, "packages/server/src/ws", name));
-      }
-      modifications.push(
-        "removed: ws/ except auth.ts (WebSocket not selected; sync feed keeps it)",
-      );
-    } else {
-      removeIfExists(join(outputDir, "packages/server/src/ws"));
-      modifications.push("removed: ws/ (WebSocket not selected)");
-    }
+    // The whole directory goes, client-core selected or not. `sync/` used
+    // to import `authenticateUpgrade` from here, which made this strip
+    // depend on another feature's selection; it now carries its own
+    // (`sync/handler.ts` → `sessionFromCookie`), so there is nothing in
+    // `ws/` a project without the `websocket` feature still needs.
+    removeIfExists(join(outputDir, "packages/server/src/ws"));
+    modifications.push("removed: ws/ (WebSocket not selected)");
     // Deleting ws/ alone leaves `index.ts` importing ./ws/handler.js —
     // a hard TS2307 on the first `pnpm run build`. Strip the call sites too.
     stripWebSocketFromServerIndex(outputDir);

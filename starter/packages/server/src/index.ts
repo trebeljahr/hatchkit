@@ -6,16 +6,21 @@ import { createApp } from "./app.js";
 import { connectToDB, disconnectFromDB } from "./db/connection.js";
 import { connectRedis, disconnectRedis } from "./db/redis.js";
 import { initAuth, disconnectAuth } from "./auth/auth.js";
-import { setupWebSocket } from "./ws/handler.js";
 // ── client-core ──────────────────────────────────────────────────
+// Above the `./ws/handler.js` import, not below it, and the same goes for the
+// other two blocks in this file: `hatchkit update` puts a block back by
+// anchoring on the line above it, and a project without the `websocket`
+// feature has no `ws/` lines at all — every anchor below one would miss, and
+// the sync feed would be handed to a manual checklist for a project hatchkit
+// generated itself.
 import { setupSyncFeed } from "./sync/handler.js";
 // ── end client-core ──────────────────────────────────────────────
+import { setupWebSocket } from "./ws/handler.js";
 import { warnStripeStatus } from "./services/stripe.js";
 import { env } from "./config/env.js";
 
 const app = createApp();
 const server = createServer(app);
-const wss = setupWebSocket(server);
 // ── client-core ──────────────────────────────────────────────────
 // The one-way sync feed, on `/api/sync`, beside the interactive room socket on
 // `/ws` and `/api/ws`. Registered on the same HTTP server and set up the same
@@ -28,9 +33,11 @@ const wss = setupWebSocket(server);
 // than destroying it as "unknown". `setupSyncFeed` does that. A listener that
 // destroys unknown paths kills the other feature's sockets depending only on
 // which was registered first, and the symptom is a socket that connects and
-// closes immediately with no code.
+// closes immediately with no code. Which is also why registering BEFORE the
+// room socket costs nothing: neither listener may act on the other's path.
 const syncWss = setupSyncFeed(server);
 // ── end client-core ──────────────────────────────────────────────
+const wss = setupWebSocket(server);
 
 async function start(): Promise<void> {
   try {
@@ -62,13 +69,8 @@ async function start(): Promise<void> {
 async function shutdown(signal: string): Promise<void> {
   console.log(`\n[server] ${signal} received, shutting down gracefully...`);
 
-  // Close all WebSocket connections
-  for (const client of wss.clients) {
-    client.close(1001, "Server shutting down");
-  }
-
   // ── client-core ────────────────────────────────────────────────
-  // The sync feed's sockets too, with 1001 (going away) and NOT
+  // The sync feed's sockets, with 1001 (going away) and NOT
   // `SESSION_REVOKED_CLOSE_CODE`: a client latches on the revoked code and
   // stops reconnecting for good, so using it for a restart would leave every
   // device permanently disconnected from a server that came back seconds later.
@@ -76,6 +78,11 @@ async function shutdown(signal: string): Promise<void> {
     client.close(1001, "Server shutting down");
   }
   // ── end client-core ────────────────────────────────────────────
+
+  // Close all WebSocket connections
+  for (const client of wss.clients) {
+    client.close(1001, "Server shutting down");
+  }
 
   // Stop accepting new connections
   server.close();
