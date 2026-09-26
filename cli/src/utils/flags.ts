@@ -81,6 +81,7 @@ export const KNOWN_FEATURES: readonly Feature[] = [
   // surface and not another. test-feature-matrix.ts now asserts every
   // addable feature is in this list, so the gap cannot reopen.
   "auth-account-security",
+  "i18n",
 ];
 export const KNOWN_ML_SERVICES: readonly MlService[] = [
   "3d-sam-objects",

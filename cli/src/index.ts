@@ -120,9 +120,21 @@ async function main(): Promise<void> {
   }
 
   // Global --help / help subcommand (with optional topic).
+  //
+  // A named topic goes through printCommandHelp when it isn't in the
+  // HelpTopic table: `provision`, `signing`, `i18n` and `ses` are absent
+  // from that table on purpose (they own their own usage blocks), so
+  // handing their name straight to printHelp answered with the ROOT help
+  // — `hatchkit help signing` documented every other command instead.
+  // An unrecognised word still lands on the root help, which is what a
+  // typo deserves.
   if (command === "--help" || command === "-h" || command === "help") {
-    const topic = command === "help" ? (args[1] as HelpTopic | undefined) : undefined;
-    printHelp(topic);
+    const topic = command === "help" ? args[1] : undefined;
+    if (topic !== undefined && helpTopicForCommand(topic) === undefined) {
+      printCommandHelp(topic);
+      return;
+    }
+    printHelp(topic as HelpTopic | undefined);
     return;
   }
 
@@ -984,6 +996,8 @@ async function handleAdd(): Promise<void> {
   //   hatchkit add raptor-runner glitchtip,listmonk-ses
   //   hatchkit add signing                     (apply signing to cwd)
   //   hatchkit add <project> signing           (apply signing to project)
+  //   hatchkit add i18n                        (add a language to cwd)
+  //   hatchkit add <project> i18n              (add a language to project)
 
   // Signing has a totally different shape from the env-var-emitting
   // services routed through runProvision (workflow files, native
@@ -1059,6 +1073,44 @@ async function handleAdd(): Promise<void> {
       bundleId: flagValue("--bundle-id"),
       appName: flagValue("--app-name"),
       ghRepoSlug: flagValue("--repo"),
+    });
+    if (!audit.ok) process.exitCode = 1;
+    return;
+  }
+
+  // i18n is the same shape as signing — a feature generator, not an
+  // env-bucket provisioner — so it gets the same pre-dispatch
+  // special case. Unlike every other `add` target it touches NO
+  // provider: it writes files into the project and edits a handful of
+  // the ones the starter shipped. Nothing reaches DNS, Coolify,
+  // Terraform, GitHub or the keychain, so there is no rollback to
+  // arrange beyond `git checkout`.
+  const wantsI18n = positional0[0] === "i18n" || positional0[1] === "i18n";
+  if (wantsI18n) {
+    const { runI18nSetup } = await import("./features/i18n/index.js");
+    const projectDirArg = positional0[0] === "i18n" ? undefined : positional0[0];
+    const projectDir = projectDirArg ? resolve(projectDirArg) : resolve(".");
+    const source = flagValue("--source-locale");
+    const targets = flagValue("--target-locales");
+    const audit = await runI18nSetup({
+      projectDir,
+      mode: "add",
+      dryRun: args.includes("--dry-run"),
+      presets: {
+        ...(source ? { sourceLocale: source } : {}),
+        ...(targets
+          ? {
+              targetLocales: targets
+                .split(",")
+                .map((code) => code.trim())
+                .filter((code) => code.length > 0),
+            }
+          : {}),
+        ...(args.includes("--no-public-pages") ? { publicPages: false } : {}),
+        ...(args.includes("--no-server-catalogs") ? { serverCatalogs: false } : {}),
+        ...(args.includes("--no-pseudo-locale") ? { pseudoLocale: false } : {}),
+        ...(args.includes("--yes") || args.includes("-y") ? { confirm: true } : {}),
+      },
     });
     if (!audit.ok) process.exitCode = 1;
     return;
@@ -2907,6 +2959,18 @@ async function handleCreate(): Promise<void> {
     );
   }
 
+  if (config.features.includes("i18n")) {
+    console.log(chalk.yellow("\n  Next (i18n): the scaffold shipped English → German."));
+    console.log(
+      chalk.dim(
+        `    ${config.name}/packages/client/src/i18n/messages/de/ holds the German catalogs — read GLOSSARY.de.md first.`,
+      ),
+    );
+    console.log(chalk.dim(`    ${config.name}/docs/i18n.md — the first-paint gate, the`));
+    console.log(chalk.dim("    monolingual surfaces, and what never gets localised."));
+    console.log(chalk.dim(`    cd ${config.name} && hatchkit add i18n   # add another language`));
+  }
+
   console.log();
 }
 
@@ -3204,8 +3268,8 @@ const ML_SERVICE_VALUES = KNOWN_ML_SERVICES.join(", ");
 const GPU_PLATFORM_VALUES = KNOWN_GPU_PLATFORMS.join(", ");
 
 /** Help for whatever `command` is, without running any of it. Most
- *  commands are `printHelp` topics; `provision`, `signing` and `ses`
- *  own their usage text, so they are routed by hand. An unmapped
+ *  commands are `printHelp` topics; `provision`, `signing`, `i18n` and
+ *  `ses` own their usage text, so they are routed by hand. An unmapped
  *  command gets the root help, which is what a typo deserves. */
 function printCommandHelp(cmd: string | undefined): void {
   switch (cmd) {
@@ -3217,6 +3281,9 @@ function printCommandHelp(cmd: string | undefined): void {
       return;
     case "release":
       printReleaseUsage();
+      return;
+    case "i18n":
+      printI18nUsage();
       return;
     case "ses":
       printSesUsage();
@@ -3258,6 +3325,48 @@ function printSigningUsage(): void {
   console.log(
     "  hatchkit signing apply [project-dir] [--platforms windows,ios,android] [--bundle-id <id>] [--app-name <name>] [--repo <owner/repo>] [--no-signing] [--dry-run]",
   );
+}
+
+function printI18nUsage(): void {
+  console.log(`
+  ${chalk.bold("hatchkit add i18n")} — give a scaffolded project a second language
+
+  ${chalk.bold("Usage:")}
+    hatchkit add i18n [flags]                 ${chalk.dim("# current directory")}
+    hatchkit add <project-dir> i18n [flags]
+
+  ${chalk.bold("What it writes")} ${chalk.dim("(local files only — no provider, DNS, Coolify, Terraform or keychain call)")}:
+    packages/client/src/i18n/       locale store, useT, one formatting module,
+                                    typed catalogs per namespace per language
+    packages/client/src/app/        the pre-paint script + its agreement test
+    packages/shared/src/            the one locale resolver + the byte-stable
+                                    duration/number helpers
+    packages/server/src/i18n/       per-document catalogs for email + PDFs
+    docs/i18n.md                    the project's own long-form register
+    i18n/GLOSSARY.<locale>.md       voice, terms and false friends, per language
+
+  It also makes a handful of idempotent edits to files the starter ships:
+  the root layout (pre-paint script + gate wrapper), globals.css (the gate
+  rule), the shared barrel, and the profile schema/model/router so the
+  preference syncs per account. Each edit bails when its anchor is missing
+  and reports the file as skipped — a hand-edited project degrades to a
+  documented manual step, never a corrupted file.
+
+  ${chalk.bold("Flags:")}
+    --source-locale <code>       Language the code is written in (default en)
+    --target-locales <a,b>       Languages to add. Comma-separated.
+    --no-public-pages            Skip the per-language prerendered public pages
+    --no-server-catalogs         Skip the email / document catalogs
+    --no-pseudo-locale           Skip the development-only pseudo-locale
+    --dry-run                    Print the plan, write nothing
+    --yes, -y                    Take the defaults for anything not passed
+
+  ${chalk.bold("Safety:")} re-runs are diff-before-write, so a second run reports
+  everything unchanged. Your landing page is never overwritten — the
+  localised version lands beside it as \`page.i18n.tsx.example\` with a note.
+  ${chalk.cyan("docs/i18n.md")} in the generated project explains the first-paint gate,
+  which surfaces stay monolingual, and why.
+`);
 }
 
 function printSesUsage(): void {
@@ -3549,7 +3658,7 @@ function printHelp(topic?: HelpTopic): void {
     reported as kept. ${chalk.cyan("--force")} replaces the package.json pieces
     (never files) with the starter's current versions.
     Currently supported additions: ${chalk.cyan("workspaces")}, ${chalk.cyan("desktop")}, ${chalk.cyan("mobile")}, ${chalk.cyan("client-core")},
-    ${chalk.cyan("extension")}, ${chalk.cyan("release")}.
+    ${chalk.cyan("extension")}, ${chalk.cyan("release")}, ${chalk.cyan("i18n")}.
 
     Currently supported additions: ${chalk.cyan(SUPPORTED_ADDITIONS.join(", "))}.
 
@@ -3595,6 +3704,21 @@ function printHelp(topic?: HelpTopic): void {
     ${chalk.dim('output: "export"')} — the shell loads ${chalk.dim("packages/client/out")}, which a
     standalone build never writes. A config you've edited is left alone
     with a note saying what to add.
+
+    ${chalk.cyan("i18n")} writes a second language: typed catalogs per namespace
+    per language, one formatting module, the first-paint gate, the
+    per-language public pages and the per-document catalogs for email and
+    PDFs. It is the one addition that copies nothing out of the starter,
+    which is single-language. Alongside the new files it makes a handful of
+    idempotent edits to files you already have (the root layout, globals.css,
+    the shared barrel, the profile schema/model/router); each one bails and
+    reports the file as skipped when its anchor is missing, so a hand-edited
+    project degrades to a documented manual step rather than a corrupted
+    file. Your landing page is never overwritten. Needs a client surface.
+
+    ${chalk.cyan("i18n")} copies nothing from the starter — it generates a second
+    language and edits a few files the project already has. Run it
+    directly for the flags: ${chalk.cyan("hatchkit add i18n")} (${chalk.cyan("hatchkit help i18n")}).
 
     A native shell loads the client from its own origin, which the
     deployed server rejects (${chalk.dim("403 INVALID_ORIGIN")}) until ${chalk.dim("TRUSTED_ORIGINS")}
@@ -4021,6 +4145,9 @@ function printHelp(topic?: HelpTopic): void {
                 Same wiring \`hatchkit create\` runs, so it's the follow-up
                 for a Stripe step deferred during create.
     signing     Installer signing + store uploads (see \`hatchkit help signing\`).
+    i18n        A second language for the scaffolded app: typed catalogs, the
+                first-paint gate, per-language public pages (see
+                \`hatchkit help i18n\`). Local files only — no provider call.
 
   ${chalk.bold("Deferred steps:")}
     Every service above is optional. Declining its credential prompt — or a
@@ -4692,6 +4819,7 @@ function printHelp(topic?: HelpTopic): void {
     update          Add features to an already-scaffolded project (run in project dir)
     server add      Retrofit a server into a client-only project
     add             Create GlitchTip / OpenPanel / Plausible / Listmonk + SES / email / search clients for an existing project
+    add i18n        Give a scaffolded project a second language (writes local files only)
     assets          Move bytes between local S3 and prod buckets (seed/push/pull/migrate)
     remove          Delete the -dev/-prod clients created by 'add' (inverse of add)
     destroy         Roll back everything ${chalk.cyan("hatchkit create")} did for a project

@@ -77,6 +77,7 @@ function activeConditions(config: ProjectConfig): Set<string> {
     // pruned out of the starter, but its docs live in the same
     // conditional CLAUDE.md as everything else.
     extension: config.features.includes("extension"),
+    i18n: config.features.includes("i18n"),
   };
   return new Set(Object.keys(on).filter((k) => on[k]));
 }

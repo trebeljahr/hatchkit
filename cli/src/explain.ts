@@ -92,7 +92,7 @@ const MODEL: ExplainModel = {
     {
       name: "hatchkit update",
       summary:
-        "Add features (workspaces, desktop, mobile, client-core, extension, release) to an already-scaffolded project.",
+        "Add features (workspaces, desktop, mobile, client-core, extension, release, i18n) to an already-scaffolded project. `i18n` writes a second language into the client (and the server catalogs) without touching the existing features.",
       when: "`cd <project-dir>` first; expands an existing scaffold.",
     },
     {

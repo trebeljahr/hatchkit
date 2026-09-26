@@ -4,7 +4,7 @@
 <!-- hatchkit:doc of a line. Every hatchkit marker is stripped from generated projects, so -->
 <!-- hatchkit:doc what ships is plain Markdown. Conditions: server, client, fullstack, -->
 <!-- hatchkit:doc static, backend, newsletter, native, desktop, mobile, websocket, -->
-<!-- hatchkit:doc stripe. -->
+<!-- hatchkit:doc stripe, i18n. -->
 
 # node-realtime-starter
 
@@ -936,6 +936,60 @@ pnpm --filter @starter/server exec dotenvx rotate -f .env.production
 ```
 
 Keep `.env.keys` out of commits. `.gitignore` enforces this.
+<!-- hatchkit:endif -->
+
+<!-- hatchkit:if i18n -->
+## Internationalisation
+
+Everything lives in `packages/client/src/i18n/`. `docs/i18n.md` is the long
+form — read it before touching the first paint or adding a surface.
+
+```ts
+const t = useT("app");                  // client components
+t("dashboard.summary", { count });      // key AND ICU arguments typed
+translate("common")("errors.generic");  // non-component code, at call time
+const f = useFormat();                  // f.date / f.money / f.duration / …
+```
+
+- **`use-intl/core` only, never a routing i18n library.** `useT` is
+  `createTranslator` bound to a vanilla store, so there is no provider to
+  mount and every existing component test renders unchanged, in the source
+  language. A routing library needs `middleware.ts`, which this project's
+  static export cannot have.
+- **One catalog per namespace per locale.** `messages/<source>/<ns>.ts` is
+  `as const` and its literal types are what type-check keys and arguments;
+  each translation is `Translation<typeof source>`, so a missing, misspelled
+  or extra key fails `tsc`. `messages/index.ts` is the only file that lists
+  namespaces. `common` is shared vocabulary — edit it deliberately, never in
+  passing. `catalog-parity.test.ts` covers what types cannot see: renamed ICU
+  placeholders, broken ICU, and whole source sentences left untranslated.
+- **Hydration renders the SOURCE language, always.** `useLocale()` answers it
+  by construction (`useSyncExternalStore`'s server snapshot) and the store only
+  switches in `<LocaleRoot>`'s layout effect. Rendering the reader's language
+  during hydration is a text mismatch React reports once and then "fixes" by
+  throwing the served DOM away. Never read the locale during render from
+  anywhere else.
+- **The gate hides the app subtree, never `<body>`.** `app/pre-paint.ts`
+  resolves the same answer before paint, sets `<html lang>` + `data-locale`,
+  and marks `data-locale-pending`; the CSS rule in `globals.css` hides
+  `[data-locale-gate]` until `<LocaleRoot>` clears the attribute in the same
+  flush as the translated render. The script and the store must resolve
+  identically — `pre-paint.test.ts` runs both over the same inputs. A failsafe
+  lifts the gate anyway, because a source-language page beats an invisible one.
+- **All formatting goes through `i18n/format.ts`.** Never
+  `toLocaleString(undefined)`, never a bare `Intl.*` anywhere else. The shared
+  `formatDuration` / `formatDecimal` helpers are byte-identical to their
+  pre-i18n output when called with no locale — exports and the server rely on
+  that, so never pass a locale from a machine-readable path.
+- **Never localise what a machine reads:** exported data columns, the importer,
+  error codes, `problem+json` types, webhook payloads, API docs.
+- **Public pages are built once per language** under `/<locale>/`, as one-line
+  re-exports with the locale passed in. Not a `[locale]` segment at the root:
+  it would compete with the app routes and turn unknown paths into pages
+  instead of a not-found.
+- The preference is synced per account (`preferences.locale`), the language is
+  resolved per device. The server never resolves `"system"` — it has no device
+  to ask.
 <!-- hatchkit:endif -->
 
 ## Code Style

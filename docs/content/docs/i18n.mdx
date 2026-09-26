@@ -1,0 +1,237 @@
+---
+title: A second language
+description: Add a second language to a Hatchkit-scaffolded app without breaking its static export — typed catalogs, a first-paint gate, per-language public pages, and per-document locales.
+---
+
+`hatchkit add i18n` writes a second language into a scaffolded project: typed
+message catalogs, one formatting module, a locale store, the pre-paint gate, the
+prerendered per-language public pages, and the per-document catalogs for email
+and PDFs. It writes local files and edits a handful of the ones the starter
+shipped. No provider, DNS, Coolify, Terraform or keychain call happens — the
+only rollback you need is `git checkout`.
+
+```bash
+cd my-app
+hatchkit add i18n
+# or from outside the project:
+hatchkit add ./my-app i18n --target-locales de,fr
+```
+
+Picking the `i18n` feature during `hatchkit create` runs the same generator
+after the scaffold is on disk, with English as the source and German as the
+target — the language pair the shipped catalogs are written in.
+
+## Why no routing i18n library
+
+`next-intl` and everything shaped like it resolve the language in
+`middleware.ts`. A Hatchkit client builds with `output: "export"`, and a static
+export has no middleware — the file is not compiled, not shipped, and never
+runs. There is no server to negotiate `Accept-Language` with either. So the
+language has to be resolved in the browser, and a library whose routing is the
+point of it has nothing left to do.
+
+What Hatchkit generates instead is `use-intl/core`'s `createTranslator` bound to
+a vanilla store. `useT("app")` is a hook over that store, with no provider to
+mount. A component test in a generated project therefore keeps passing
+unchanged, rendering in the source language.
+
+## Catalogs the compiler checks
+
+One file per namespace per locale under
+`packages/client/src/i18n/messages/`. The source catalog is a `const` object
+`as const`, so its literal types are what type-check both the keys and each
+message's ICU arguments. Every translation is annotated
+`Translation<typeof source>`: a missing, misspelled or extra key is a `tsc`
+error that names the key.
+
+Three things the types cannot see, so `catalog-parity.test.ts` checks them:
+
+| What | Why it matters |
+|---|---|
+| Identical ICU argument and tag names per message | `{project}` renamed to `{projekt}` type-checks and renders as literal braces on the page. |
+| Valid ICU in both locales | An unbalanced brace in a translation throws at render, in that language only. |
+| No whole source sentence left in a translation | The commonest way a string ships untranslated is by being copied across and forgotten. An allow-list covers brand names and words like "OK". |
+
+`messages/index.ts` is the only file that lists namespaces. `common` is shared
+vocabulary — the generated header says to edit it deliberately, never in
+passing. Each target language also gets a `GLOSSARY.<locale>.md`: the voice
+decision, a term table, and a false-friend section to record every source term
+whose literal cognate means something else on screen.
+
+## The first paint, and the two ways it fails silently
+
+Every prerendered HTML file outside a language prefix contains the source
+language, and hydration has to match it. Two mechanisms run in parallel and
+must agree:
+
+1. **The React side renders the source language during hydration, by
+   construction.** `useLocale()` reads `useSyncExternalStore`'s server
+   snapshot, which is the source locale; the store only switches to the
+   reader's language in `<LocaleRoot>`'s layout effect, after hydration.
+2. **The pre-paint script resolves the same answer before paint.** It reads the
+   `localStorage` preference mirror, falls back to `navigator.languages`,
+   matches by primary subtag, sets `<html lang>` and `data-locale`, and sets
+   `data-locale-pending` when the answer is not the source language. The CSS
+   rule hides `[data-locale-gate]` — the app subtree, never `<body>` — until
+   `<LocaleRoot>` clears the attribute in the same flush as the translated
+   render.
+
+Failure direction one: render the other language during hydration. React
+reports one console message and then discards the whole served DOM and rebuilds
+it. The page still looks right, so nobody notices until the first paint gets
+slow.
+
+Failure direction two: let the script and the store disagree. They read the
+same inputs, so a divergence is invisible in one language and wrong in the
+other — the gate either lifts on the wrong language or waits for a switch that
+never arrives.
+
+Three generated tests pin this down: `pre-paint.test.ts` runs the script and
+the store over the same matrix of stored preference by `navigator.languages`
+and asserts they agree on every row; `locale-root.test.tsx` hydrates real
+prerendered markup and fails on any console error or warning; and a timed
+failsafe lifts the gate regardless after `gateFailsafeMs` (4 s by default),
+because a source-language page beats an invisible one when a chunk fails to
+load.
+
+Putting the gate on `<body>` instead of a wrapper inside it is the one edit
+that looks equivalent and is not: a hidden `<body>` hides the error page too.
+
+## Public pages: one build per language, not a `[locale]` segment
+
+Public pages are built once per language. The source language stays at `/`, and
+each target gets `app/<locale>/**/page.tsx` — one-line re-exports of shared
+page components with the locale passed in, rendered at build time so a crawler
+fetches translated markup. `marketingMetadata` adds the canonical link, the
+`hreflang` alternates with `x-default` on the source language, and `og:locale`.
+`localizedPath` keeps internal links inside the language.
+`<MarketingShell locale>` wraps the page in `<FixedLocale>`, which pins the
+language and exempts the page from the gate: a prerendered German page must not
+follow a stored English preference.
+
+A dynamic `[locale]` segment at the root is the obvious alternative and it is
+wrong here. At the root it competes with the app routes, and worse, it matches
+everything: `/pricnig` becomes a page request for locale `pricnig` instead of a
+not-found. Under a static export there is no runtime to reject the unknown
+value, so the build either emits a page per typo or the route answers with a
+half-rendered shell.
+
+Two smaller rules the generated files carry:
+
+- Only the language-prefixed pages get a real `lang` attribute in the served
+  markup. A second `<html lang>` means a second root layout, which means moving
+  every route into a group; the content wrapper carries `lang` and the pre-paint
+  script fixes `<html lang>` before paint.
+- Never put a date into an ICU argument on a prerendered page. The build
+  machine's time zone would be baked into the HTML.
+
+Auth routes are not prefixed. `/de/login/` does not exist, because mailed links
+point at `/login/` and a static export cannot redirect one to the other.
+
+## The preference is synced, the language is resolved per device
+
+`preferences.locale` is `"system" | <supported locale>`, stored beside `theme`
+and written through `profile.update`; `<LocaleSync>` carries it both ways inside
+the authenticated subtree. `matchLocaleList` in `@<scope>/shared` is the one
+resolver, and everything else calls it.
+
+The server never resolves `"system"`. It has no device to ask, so calling it
+with a `"system"` preference and no device list answers the source language —
+deliberately, and the shared resolver has no other branch that could guess. One
+account therefore reads German on a German phone and English on an English
+laptop, which is the behaviour people expect and the reason the preference alone
+is not the answer.
+
+The local mirror is `localStorage`, like the theme. Losing it costs one gated
+frame, not data.
+
+## Per-document locales
+
+A document somebody keeps is snapshotted in the language it was issued in.
+`resolveDocumentLocale` takes an explicit override, then the subject's
+preference, then the issuer's, then the source language; the result is written
+onto the row like every other figure on the document. A re-render must never
+change the language of a PDF a customer already holds.
+
+Email resolves in the recipient's explicit preference, then the sender's, then
+the source language — `resolveEmailLocale`. An address with no account has no
+preference, which is why the sender's is second rather than a device guess.
+
+Server strings live in `packages/server/src/i18n/` (`serverT(locale, "email" |
+"document")`) and are parity-tested in `src/tests/i18n-catalog.test.ts`. Skip
+the whole tree with `--no-server-catalogs`; a project with no server never gets
+it.
+
+## The pseudo-locale
+
+`?locale=pseudo` switches the app into a language derived from the source
+catalog at runtime: accented, bracketed, about 35% longer. `?locale=off` clears
+it.
+
+It exists to catch two things a translation review cannot. Text that was never
+extracted stays unaccented, so it is visible at a glance. Text that clips at
+35% will clip in a real translation, before a translator has written one.
+
+A production build contains no trace of it. `isPseudoAvailable()` is a
+condition on `process.env.NODE_ENV` in a position the bundler folds, the pseudo
+branch of the pre-paint script is concatenated only in a development build, and
+`cli/test-i18n-pseudo.ts` asserts the production shape of the script mentions no
+pseudo-locale at all. Drop it entirely with `--no-pseudo-locale`.
+
+## What stays monolingual, and why
+
+Localising a surface costs a translator forever. These deliberately do not get
+a language:
+
+- **Anything a machine reads.** Exported data columns and headers, the
+  importer, REST and tRPC error codes, `problem+json` types, webhook payloads,
+  OpenAPI docs. A localised error code is an error code nobody can match on.
+- **The shared duration and number helpers, when called with no locale.**
+  `formatDuration(ms)` and `formatDecimal(value)` are byte-identical to their
+  pre-i18n output — exports, the server and any CLI depend on that string. The
+  localised output is a second argument away, never a default.
+- **Auth routes and the app shell's URLs.** Mailed links point at them.
+- **Store-reviewed and single-locale distribution channels.** A store that
+  accepts one language, or a host with no locale API to follow, produces an
+  unpublishable build if you translate it. Record the decision next to the code
+  rather than leaving the next reader to rediscover it.
+
+Everything that does get a language goes through one formatting module,
+`packages/client/src/i18n/format.ts`: every `Intl.*` construction in the project
+is built there, with the rendered language and the device's region, so `en-GB`
+keeps "21 Aug" and `de-AT` keeps "Jänner". `format.test.ts` greps the client
+source for a bare `toLocale*` and fails on a new one.
+
+## Adding a surface later
+
+A surface that is not the client — a browser extension, a second app — carries
+its own catalog and resolves it from the synced preference with a synchronous
+local mirror, the same shape the client uses. Not the platform's own
+localisation API: `chrome.i18n` follows the browser's UI language and cannot
+honour an account preference, so the two would disagree on the same machine.
+The project's `docs/i18n.md` carries the recipe.
+
+## Flags
+
+| Flag | What it does |
+|---|---|
+| `--source-locale <code>` | Language the code is written in. Default `en`. |
+| `--target-locales <a,b>` | Languages to add, comma-separated. Prompted when omitted. |
+| `--no-public-pages` | Skip the prerendered per-language public pages. |
+| `--no-server-catalogs` | Skip the email + document catalogs. |
+| `--no-pseudo-locale` | Skip the development-only pseudo-locale. |
+| `--dry-run` | Print the plan, write nothing. |
+| `--yes`, `-y` | Take the defaults for anything not passed. |
+
+## Re-running it
+
+Every write is diff-before-write, so a second run reports everything unchanged.
+The edits to files the starter shipped — the root layout, `globals.css`, the
+shared barrel, the profile schema, model and router — each look for a
+distinctive anchor and a sentinel. A file whose shape the generator does not
+recognise is reported as skipped, with the manual step spelled out. It is never
+rewritten on a guess.
+
+Your landing page is the one file the generator refuses to touch. The localised
+version lands beside it as `page.i18n.tsx.example`, and the run tells you to
+swap it in yourself.

@@ -122,7 +122,12 @@ export type Feature =
   // identical writer later. See cli/src/features/server-platform/.
   | "server-migrations"
   | "scheduler"
-  | "public-api";
+  | "public-api"
+  /** A second language for the client (and the server catalogs that a
+   *  document or an email is snapshotted in). Purely additive, and never a
+   *  routing-based library: its middleware cannot exist under a static
+   *  export — see `cli/src/features/i18n/`. */
+  | "i18n";
 
 export type AnalyticsProvider = "glitchtip" | "openpanel" | "plausible";
 
@@ -1057,6 +1062,11 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
               name: "Public REST API + OpenAPI + signed webhooks (public-api)",
               value: "public-api",
               checked: c.features.includes("public-api"),
+            },
+            {
+              name: "Second language (typed catalogs, translated public pages, no routing library)",
+              value: "i18n",
+              checked: c.features.includes("i18n"),
             },
           ],
         });
@@ -2118,6 +2128,11 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
           name: "client-core (offline queue, sync client, version handshake)",
           value: "client-core",
           checked: cfg.features.includes("client-core"),
+        },
+        {
+          name: "i18n (second language — typed catalogs + per-language public pages)",
+          value: "i18n",
+          checked: cfg.features.includes("i18n"),
         },
       ],
     });

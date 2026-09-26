@@ -17,6 +17,7 @@
     "signing",
     "auth-account-security",
     "server-platform",
+    "i18n",
     "related-tools",
     "deployment",
     "architecture"

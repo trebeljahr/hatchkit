@@ -17,7 +17,7 @@
  * reported; `--force` replaces the package.json pieces (never files) with the
  * starter's current versions.
  *
- * Currently supported additions: `desktop`, `mobile`.
+ * Currently supported additions: `desktop`, `mobile`, `i18n`.
  * `websocket` / `stripe` / `analytics` / `s3` additions are flagged
  * as "manual" — the scaffold-time strip for those is coarse-grained
  * and re-adding them cleanly would need per-feature merge logic that
@@ -41,6 +41,7 @@ import { addUsedPorts, getUsedPorts } from "../config.js";
 import { pushNativeOriginsForProject } from "../deploy/trusted-origins.js";
 import type { AuthSecurityOption } from "../features/auth-account-security/types.js";
 import { extensionPrerequisiteProblem } from "../features/extension/index.js";
+import type { RunI18nSetupOptions } from "../features/i18n/index.js";
 import {
   SERVER_FEATURE_IDS,
   applyServerFeatures,
@@ -124,6 +125,7 @@ export const SUPPORTED_ADDITIONS: readonly Feature[] = [
   // starter files a scaffold strips, so `update` applies the exact same
   // writer `create` does.
   ...SERVER_FEATURE_IDS,
+  "i18n",
 ];
 
 /**
@@ -206,6 +208,11 @@ export interface UpdateOptions {
      *  Preset runs skip it unless this is true, so a headless test can
      *  never reach a real Coolify through the user's keychain. */
     pushNativeOrigins?: boolean;
+    /** Answers for the `i18n` addition (source/target locales, which
+     *  surfaces to generate). Passed straight through, so a headless
+     *  caller drives the whole feature without a prompt; omitted, the
+     *  feature asks. */
+    i18n?: RunI18nSetupOptions["presets"];
   };
 }
 
@@ -546,6 +553,11 @@ export async function runUpdate(
       }));
     if (ok) {
       const resolvedStarter = realpathSync(STARTER_ROOT);
+      // Additions that ran but refused to apply. They must not reach
+      // the manifest OR the "added" report — a feature recorded on a
+      // project that has none of its files is worse than an absent one,
+      // because the next `update` run treats it as already there.
+      const refused: Feature[] = [];
       for (const feature of added) {
         if (feature === "workspaces") {
           await addWorkspaces(projectDir, manifestDir, manifest);
@@ -577,6 +589,23 @@ export async function runUpdate(
         } else if (feature === "client-core") {
           await addRegisteredFeature("client-core", projectDir, manifestDir, manifest);
           updatedFeatures.add("client-core");
+        } else if (feature === "i18n") {
+          // i18n is the one addition that copies nothing out of the
+          // starter: the starter is single-language, so there is no
+          // feature directory to lift. The generator writes its own
+          // files and makes a handful of idempotent edits to files the
+          // project already has — see features/i18n/rewriter.ts.
+          const { runI18nSetup } = await import("../features/i18n/index.js");
+          const audit = await runI18nSetup({
+            projectDir,
+            mode: "update",
+            presets: options.presets?.i18n,
+          });
+          // A refusal (no packages/client) must not record the feature:
+          // the manifest would then claim a language the project has no
+          // files for, and the next `update` would treat it as present.
+          if (audit.ok) updatedFeatures.add("i18n");
+          else refused.push("i18n");
         }
       }
 
@@ -601,8 +630,8 @@ export async function runUpdate(
       // A feature that reported `skipped` wrote nothing and is not in
       // the manifest — reporting it as added would tell the user to
       // look for files that aren't there.
-      actuallyAdded = added.filter((f) => !serverSkipped.has(f));
-      skippedAdditions = added.filter((f) => serverSkipped.has(f));
+      actuallyAdded = added.filter((f) => !serverSkipped.has(f) && !refused.includes(f));
+      skippedAdditions = added.filter((f) => serverSkipped.has(f) || refused.includes(f));
 
       // Every shell loads a static export; without this the retrofit
       // produced a project whose `build:desktop` / `build:mobile` never

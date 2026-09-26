@@ -83,7 +83,12 @@ import {
   stripNativeStylesFromGlobals,
   updateEnvExample,
 } from "./starter-files.js";
-import { pruneToSurface, stripRedisFromCompose } from "./surfaces.js";
+import {
+  pruneToSurface,
+  stripRedisFromCompose,
+  surfaceHasClient,
+  surfaceHasServer,
+} from "./surfaces.js";
 
 // Monorepo root → starter submodule
 const MONOREPO_ROOT = resolve(join(import.meta.dirname, "..", "..", ".."));
@@ -680,6 +685,20 @@ async function runScaffoldSteps(
     }
   }
 
+  // i18n. Runs AFTER the prune so the generator sees the surfaces this
+  // project actually kept (no packages/server means no per-document
+  // catalogs), and BEFORE applyClaudeMd so the agent memory it prunes
+  // describes a project that already has the i18n tree on disk.
+  //
+  // Unlike every feature above, this one ADDS: the starter is
+  // single-language, so there is nothing to strip and the generator
+  // writes its own files plus a handful of idempotent edits to files the
+  // starter ships (root layout, globals.css, the profile schema/model/
+  // router, the shared barrel).
+  if (config.features.includes("i18n")) {
+    await applyI18n(config, outputDir, modifications);
+  }
+
   // CLAUDE.md last: it documents what's left on disk, so it has to see
   // the post-prune, post-overlay world. Otherwise every scaffold ships
   // agent memory describing the full starter.
@@ -877,6 +896,64 @@ async function runScaffoldSteps(
   }
 
   return { modifications, ports, dotenvx, localDev };
+}
+
+/** Generate the i18n tree during `hatchkit create`.
+ *
+ *  Headless by construction: a spinner owns the terminal for the whole
+ *  of `runScaffoldSteps`, so every answer is supplied as a preset and
+ *  nothing here may prompt. The language pair is the worked example the
+ *  templates ship (source English, target German) — the target catalogs
+ *  contain real German, so any other pair would land German strings
+ *  under the wrong language code. Re-run `hatchkit add i18n` in the
+ *  project to pick a different set; it is idempotent and additive.
+ *
+ *  Never throws: a create that already wrote 60 files must not roll the
+ *  whole scaffold back over a language. A refusal is recorded as a
+ *  modification note and the project ships single-language. */
+async function applyI18n(
+  config: ProjectConfig,
+  outputDir: string,
+  modifications: string[],
+): Promise<void> {
+  // The `backend` surface has no packages/client, and every surface the
+  // feature localises (the store, the pre-paint gate, the public pages)
+  // lives there. Recorded rather than silent: the user ticked a box.
+  if (!surfaceHasClient(config.surfaces)) {
+    modifications.push(
+      `i18n: skipped — surface \`${config.surfaces}\` has no client package to localise`,
+    );
+    return;
+  }
+  try {
+    const { DEFAULT_NAMESPACES, runI18nSetup } = await import("../features/i18n/index.js");
+    const audit = await runI18nSetup({
+      projectDir: outputDir,
+      mode: "create",
+      presets: {
+        sourceLocale: "en",
+        targetLocales: ["de"],
+        namespaces: [...DEFAULT_NAMESPACES],
+        gateFailsafeMs: 4000,
+        publicPages: true,
+        // Per-document catalogs (email, PDFs) need a server to issue
+        // the document in the first place.
+        serverCatalogs: surfaceHasServer(config.surfaces),
+        pseudoLocale: true,
+        confirm: true,
+      },
+    });
+    if (!audit.ok) {
+      modifications.push("i18n: generator declined — project ships single-language");
+      return;
+    }
+    modifications.push(
+      `i18n: en → de (${audit.written.length} files written, ${audit.rewritten.length} existing files edited)`,
+    );
+    for (const note of audit.manualResidue) modifications.push(`i18n (manual): ${note}`);
+  } catch (err) {
+    modifications.push(`i18n: skipped — ${(err as Error).message}`);
+  }
 }
 
 /** Edit packages/server/src/app.ts to drop the newsletter route import +
@@ -1169,6 +1246,15 @@ function scaffoldDryRun(config: ProjectConfig, outputDir: string): string[] {
   // tree exists, does go through the ledger.
   if (!config.features.includes("client-core")) {
     actions.push("Remove client-core (shared client kit + version handshake)");
+  }
+  // The only ADD in this list — the starter is single-language, so the
+  // dry-run cannot describe it as a strip.
+  if (config.features.includes("i18n")) {
+    actions.push(
+      surfaceHasClient(config.surfaces)
+        ? "Generate i18n: en → de catalogs, first-paint gate, per-language public pages"
+        : `Skip i18n (surface \`${config.surfaces}\` has no client package)`,
+    );
   }
   if (config.features.includes("desktop") || config.features.includes("mobile")) {
     actions.push("Flip next.config.ts to output: 'export' (static)");
