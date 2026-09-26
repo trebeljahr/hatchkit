@@ -42,6 +42,7 @@ overrides:
 # everything from there to EOF byte-for-byte with renderWorkspaceYaml()'s
 # output, so an earlier textual mention would make it slice from the comment.
 allowBuilds:
+  '@biomejs/biome': true
   '@sentry/cli': true
   core-js: true
   core-js-pure: true

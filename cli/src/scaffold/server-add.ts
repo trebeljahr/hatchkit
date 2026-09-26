@@ -274,6 +274,10 @@ function restoreSharedMlTypes(root: string, sharedDir: string, result: ServerAdd
  * project inherits the exact bug the starter was fixed to avoid.
  */
 export const WORKSPACE_ALLOW_BUILDS: readonly string[] = [
+  // biome ships its binary through an optional platform package that its own
+  // install script resolves, and every lint-gated package depends on it — so
+  // leaving it out fails `pnpm install` outright on pnpm 11.
+  "@biomejs/biome",
   "@sentry/cli",
   "core-js",
   "core-js-pure",
