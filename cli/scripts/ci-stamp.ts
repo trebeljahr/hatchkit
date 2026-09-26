@@ -11,7 +11,7 @@
  * This script exists so CI can stamp a project and then actually run
  * `pnpm install && pnpm run build && pnpm run test:unit` against it.
  *
- *   tsx scripts/ci-stamp.ts --preset <reported|commerce|web> --out <dir>
+ *   tsx scripts/ci-stamp.ts --preset <reported|commerce|web|bare|full|client-core> --out <dir>
  *
  * Host safety: nothing here talks to a provider, DNS, Coolify, Terraform or
  * S3. The config sets createGithubRepo/runDeployment/installDeps to false, so
@@ -122,6 +122,22 @@ const PRESETS: Record<string, { name: string; features: Feature[]; email?: Email
     name: "ci-stamp-full",
     features: ["websocket", "stripe", "s3", "analytics", "desktop", "mobile"],
     email: LISTMONK_SES,
+  },
+  // Standalone, and client-core on its own. The feature adds a workspace
+  // PACKAGE (`packages/core`) and a `@starter/shared` module the server imports
+  // by name, so it is the one feature whose failure mode is a module that will
+  // not LINK — and that is invisible to every presence check plus to a build,
+  // because `tsc` and Next resolve `@starter/shared` through its `.d.ts` while
+  // the generated server runs under `tsx`. `pnpm run test:unit` is the step
+  // that catches it, so the preset exists to get the generated server's own
+  // suite executed on a real install.
+  //
+  // Alone rather than bundled into `full`: `full` selects native shells, and
+  // client-core needs the server half present, so keeping it separate also
+  // keeps the `full` preset's static-export axis unchanged.
+  "client-core": {
+    name: "ci-stamp-client-core",
+    features: ["client-core", "websocket"],
   },
 };
 

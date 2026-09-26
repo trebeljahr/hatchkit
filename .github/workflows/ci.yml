@@ -152,7 +152,7 @@ jobs:
       # another broke.
       fail-fast: false
       matrix:
-        # Five combinations, and no more — every entry costs a full
+        # Six combinations, and no more — every entry costs a full
         # install plus a Next build. The presets are defined in
         # cli/scripts/ci-stamp.ts; these names must match its PRESETS keys.
         #
@@ -185,7 +185,18 @@ jobs:
         #              a missed strip shows up as a build error.
         #   full     — static export, every feature at once: the
         #              opposite end of the same axis.
-        preset: [reported, commerce, web, bare, full]
+        #   client-core
+        #            — standalone. The one preset whose reason to exist is the
+        #              LAST step rather than the build: client-core is the only
+        #              feature that makes the generated server import a
+        #              workspace package by name at runtime, under `tsx`, and a
+        #              named import that cannot link is invisible to `tsc` and
+        #              to `next build` (both read `@starter/shared` through its
+        #              `.d.ts`). v0.2.18 shipped exactly that — see
+        #              cli/test-client-core-shared-exports.ts, which covers the
+        #              resolution without an install; this preset is what runs
+        #              the generated suite itself.
+        preset: [reported, commerce, web, bare, full, client-core]
     env:
       # Every client next.config.ts throws by design when a production build
       # whose output ships to users has no NEXT_PUBLIC_API_URL — Next inlines
@@ -271,6 +282,17 @@ jobs:
       - name: Build stamped project
         working-directory: ${{ runner.temp }}/stamp
         run: pnpm run build
+
+      # client-core's contract test reads a committed snapshot of the tRPC
+      # router that the starter deliberately does NOT ship: the test fails with
+      # instructions rather than skipping, and the feature's own post-scaffold
+      # note tells the user to run this once and commit the result. Do the same
+      # here, so the step after it is testing the router and not the absence of
+      # a file. No other preset has the script.
+      - name: Emit the tRPC contract snapshot
+        if: matrix.preset == 'client-core'
+        working-directory: ${{ runner.temp }}/stamp
+        run: pnpm run contract:emit
 
       - name: Unit tests in stamped project
         working-directory: ${{ runner.temp }}/stamp

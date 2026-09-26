@@ -1,14 +1,35 @@
 {
+  // No `paths` mapping for `@starter/shared` here, deliberately.
+  //
+  // A mapping to `../shared/src/index.ts` would look harmless — TypeScript
+  // only uses it to resolve types, and the project reference below already
+  // does that. But `tsx` honours `paths` at RUNTIME, and the server's dev
+  // server, its `node:test` suite and `contract:emit` all run under `tsx`.
+  // So the mapping made `import { API_LEVEL_HEADER } from "@starter/shared"`
+  // load `packages/shared/src/index.ts` instead of `packages/shared/dist/`.
+  //
+  // That file is TypeScript inside a package with no `"type": "module"`, so
+  // tsx transpiles it as CommonJS — and its body is nothing but
+  // `export * from "./api-level.js"` re-exports, which survive that
+  // transpile as `require()` calls no named-export detector can see through.
+  // Node then offers the module as `default` plus `module.exports` and
+  // nothing else, and every named import off it fails to link:
+  //
+  //     SyntaxError: The requested module '@starter/shared' does not
+  //     provide an export named 'API_LEVEL_HEADER'
+  //
+  // Without the mapping, `@starter/shared` resolves through that package's
+  // own `exports` map to `dist/index.js` — real, already-emitted CommonJS
+  // whose `__exportStar` calls Node's detector does read. That is also what
+  // `scripts/dev.mjs` assumes when it builds `@starter/shared` before
+  // starting anything, and what keeps the dual import/require resolution
+  // described in `packages/shared/package.json` intact.
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "./src",
     "outDir": "./dist",
     "declaration": false,
-    "declarationMap": false,
-    "paths": {
-      "@starter/shared": ["../shared/src/index.ts"],
-      "@starter/shared/*": ["../shared/src/*"]
-    }
+    "declarationMap": false
   },
   "include": ["src"],
   "references": [
