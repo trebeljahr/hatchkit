@@ -21,5 +21,6 @@ import "./auth-account-security/definition.js";
 import "./token-client-auth/index.js";
 import "./extension/index.js";
 import "./release/index.js";
+import "./i18n/definition.js";
 
 export { allFeatures, expandFeatureSelection, getFeature } from "./contract.js";

@@ -26,8 +26,9 @@
  * dependency the package stops typechecking).
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { FeatureLedger } from "../contract.js";
 import type { I18nConfig } from "./types.js";
 
 /** Left behind by every edit below, and the reason a second run is a
@@ -65,6 +66,16 @@ export interface RewriteInput {
   clientSurface?: boolean;
   /** False for a project with no `packages/server`, same reasoning. */
   serverSurface?: boolean;
+  /**
+   * Where every edit goes. Supplied by the feature's `apply` so the
+   * whole run reports one plan and `--dry-run` describes these edits
+   * without performing them — the ledger is the only place the dry-run
+   * flag is checked (see `../contract.ts`).
+   *
+   * Omitted by the tests and by the standalone generator paths, which
+   * get a fresh real ledger over `projectDir`.
+   */
+  ledger?: FeatureLedger;
 }
 
 export interface RewriteOutcome {
@@ -97,6 +108,43 @@ function tsLiteralList(values: string[]): string {
   return `[${values.map((v) => `"${v}"`).join(", ")}]`;
 }
 
+function ledgerFor(input: RewriteInput): FeatureLedger {
+  return input.ledger ?? new FeatureLedger(input.projectDir, false);
+}
+
+/**
+ * Read one project file, transform it, and commit the result through the
+ * ledger.
+ *
+ * `transform` returns one of three things, and the difference is the
+ * whole degradation contract of this module:
+ *
+ *   · the SAME string — the edit is already there (ours or the user's
+ *     own). Reported `unchanged`.
+ *   · a DIFFERENT string — committed. Reported `rewritten`.
+ *   · `null` — a shape this module declines to edit. Reported `absent`,
+ *     and nothing is recorded in the ledger: the file is not missing,
+ *     and recording it as `unchanged` would hide the manual step the
+ *     caller owes the user. `applyI18nRewrites` turns it into a skip
+ *     plus a residue note.
+ *
+ * The closure handed to `ledger.edit` is constant, so it is a fixed
+ * point by construction — the re-run safety lives in `transform`'s own
+ * sentinel check, one line up.
+ */
+function editThrough(
+  input: RewriteInput,
+  rel: string,
+  transform: (before: string) => string | null,
+): RewriteStatus {
+  const ledger = ledgerFor(input);
+  const before = ledger.read(rel);
+  if (before === undefined) return "absent";
+  const after = transform(before);
+  if (after === null) return "absent";
+  return ledger.edit(rel, () => after) === "unchanged" ? "unchanged" : "rewritten";
+}
+
 function readIfPresent(path: string): string | null {
   if (!existsSync(path)) return null;
   try {
@@ -127,21 +175,16 @@ function readIfPresent(path: string): string | null {
  *  script rewrites it before paint. Changing it here would make every
  *  prerendered file claim a language its text is not in. */
 export function rewriteRootLayout(input: RewriteInput): RewriteStatus {
-  const path = join(input.projectDir, LAYOUT_REL);
-  const before = readIfPresent(path);
-  if (before === null) return "absent";
-  // Either sentinel means the wiring is there, ours or the user's.
-  if (before.includes("LOCALE_SCRIPT") || before.includes(GATE_SCOPE_ATTR)) return "unchanged";
+  return editThrough(input, LAYOUT_REL, (before) => {
+    // Either sentinel means the wiring is there, ours or the user's.
+    if (before.includes("LOCALE_SCRIPT") || before.includes(GATE_SCOPE_ATTR)) return before;
 
-  const withScript = injectPrePaintScript(before);
-  if (withScript === null) return "absent";
-  const withGate = wrapChildrenInGate(withScript);
-  if (withGate === null) return "absent";
-  const after = addLayoutImports(withGate);
-  if (after === null) return "absent";
-
-  writeFileSync(path, after, "utf-8");
-  return "rewritten";
+    const withScript = injectPrePaintScript(before);
+    if (withScript === null) return null;
+    const withGate = wrapChildrenInGate(withScript);
+    if (withGate === null) return null;
+    return addLayoutImports(withGate);
+  });
 }
 
 function injectPrePaintScript(content: string): string | null {
@@ -233,39 +276,37 @@ function addLayoutImports(content: string): string | null {
 // ---------------------------------------------------------------------------
 
 export function rewriteGlobalsCss(input: RewriteInput): RewriteStatus {
-  const path = join(input.projectDir, GLOBALS_CSS_REL);
-  const before = readIfPresent(path);
-  if (before === null) return "absent";
-  if (before.includes(I18N_MARKER) || before.includes(GATE_SCOPE_ATTR)) return "unchanged";
+  return editThrough(input, GLOBALS_CSS_REL, (before) => {
+    if (before.includes(I18N_MARKER) || before.includes(GATE_SCOPE_ATTR)) return before;
 
-  const block = [
-    `/* ${I18N_MARKER} — first-paint locale gate.`,
-    ` *`,
-    ` * The pre-paint script sets [${GATE_ATTR}] on <html> when the reader's`,
-    ` * language is not the one the served markup is in. Everything inside the`,
-    ` * [${GATE_SCOPE_ATTR}] wrapper in app/layout.tsx stays invisible until`,
-    ` * <LocaleRoot> clears the mark, so nobody sees a frame of the source`,
-    ` * language. A failsafe in the script lifts it regardless: a page in the`,
-    ` * wrong language beats an invisible one.`,
-    ` *`,
-    ` * visibility, not display: the subtree keeps its box, so releasing the`,
-    ` * gate costs no reflow. Unlayered on purpose — a layered rule loses to`,
-    ` * any utility class on the same element, and this one must win.`,
-    ` *`,
-    ` * A prerendered per-language page opts back in through <FixedLocale>'s`,
-    ` * [${GATE_EXEMPT_ATTR}]: its markup is already in its own language.`,
-    ` */`,
-    `[${GATE_ATTR}] [${GATE_SCOPE_ATTR}] {`,
-    `  visibility: hidden;`,
-    `}`,
-    ``,
-    `[${GATE_EXEMPT_ATTR}] {`,
-    `  visibility: visible;`,
-    `}`,
-  ].join("\n");
+    const block = [
+      `/* ${I18N_MARKER} — first-paint locale gate.`,
+      ` *`,
+      ` * The pre-paint script sets [${GATE_ATTR}] on <html> when the reader's`,
+      ` * language is not the one the served markup is in. Everything inside the`,
+      ` * [${GATE_SCOPE_ATTR}] wrapper in app/layout.tsx stays invisible until`,
+      ` * <LocaleRoot> clears the mark, so nobody sees a frame of the source`,
+      ` * language. A failsafe in the script lifts it regardless: a page in the`,
+      ` * wrong language beats an invisible one.`,
+      ` *`,
+      ` * visibility, not display: the subtree keeps its box, so releasing the`,
+      ` * gate costs no reflow. Unlayered on purpose — a layered rule loses to`,
+      ` * any utility class on the same element, and this one must win.`,
+      ` *`,
+      ` * A prerendered per-language page opts back in through <FixedLocale>'s`,
+      ` * [${GATE_EXEMPT_ATTR}]: its markup is already in its own language.`,
+      ` */`,
+      `[${GATE_ATTR}] [${GATE_SCOPE_ATTR}] {`,
+      `  visibility: hidden;`,
+      `}`,
+      ``,
+      `[${GATE_EXEMPT_ATTR}] {`,
+      `  visibility: visible;`,
+      `}`,
+    ].join("\n");
 
-  writeFileSync(path, `${before.trimEnd()}\n\n${block}\n`, "utf-8");
-  return "rewritten";
+    return `${before.trimEnd()}\n\n${block}\n`;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -277,25 +318,23 @@ export function rewriteGlobalsCss(input: RewriteInput): RewriteStatus {
  *  barrel. Missing exports here are the whole feature failing to
  *  resolve, not a cosmetic omission. */
 export function rewriteSharedBarrel(input: RewriteInput): RewriteStatus {
-  const path = join(input.projectDir, SHARED_BARREL_REL);
-  const before = readIfPresent(path);
-  if (before === null) return "absent";
-  if (before.includes(`"./locale.js"`)) return "unchanged";
+  return editThrough(input, SHARED_BARREL_REL, (before) => {
+    if (before.includes(`"./locale.js"`)) return before;
 
-  const lines = before.split("\n");
-  let lastExport = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (/^export \* from "\.\//.test(lines[i])) lastExport = i;
-  }
-  if (lastExport < 0) return "absent";
-  lines.splice(
-    lastExport + 1,
-    0,
-    `export * from "./locale.js";`,
-    `export * from "./format-duration.js";`,
-  );
-  writeFileSync(path, lines.join("\n"), "utf-8");
-  return "rewritten";
+    const lines = before.split("\n");
+    let lastExport = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (/^export \* from "\.\//.test(lines[i])) lastExport = i;
+    }
+    if (lastExport < 0) return null;
+    lines.splice(
+      lastExport + 1,
+      0,
+      `export * from "./locale.js";`,
+      `export * from "./format-duration.js";`,
+    );
+    return lines.join("\n");
+  });
 }
 
 /** Additive to the contract's rewriter list, and not optional: the
@@ -304,33 +343,36 @@ export function rewriteSharedBarrel(input: RewriteInput): RewriteStatus {
  *  compiles all of src/ — so without the dev dependency the package
  *  stops typechecking the moment the feature lands. */
 export function rewriteSharedPackageJson(input: RewriteInput): RewriteStatus {
-  const path = join(input.projectDir, SHARED_PKG_REL);
-  const raw = readIfPresent(path);
-  if (raw === null) return "absent";
-  let pkg: Record<string, unknown>;
-  try {
-    pkg = JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return "absent";
-  }
+  // Deliberately NOT `ledger.mergePackageJson`: that primitive reports a
+  // differing value as a conflict, and here a `test` script the project
+  // already chose is simply none of this feature's business — only its
+  // ABSENCE is something to fix. Same for the vitest pin, whose version
+  // is read off the client so pnpm resolves one copy for the workspace.
+  return editThrough(input, SHARED_PKG_REL, (before) => {
+    let pkg: Record<string, unknown>;
+    try {
+      pkg = JSON.parse(before) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
 
-  const scripts = asRecord(pkg.scripts) ?? {};
-  const devDeps = asRecord(pkg.devDependencies) ?? {};
-  const hasRunner = typeof devDeps.vitest === "string";
-  const hasScript = typeof scripts.test === "string";
-  if (hasRunner && hasScript) return "unchanged";
+    const scripts = asRecord(pkg.scripts) ?? {};
+    const devDeps = asRecord(pkg.devDependencies) ?? {};
+    const hasRunner = typeof devDeps.vitest === "string";
+    const hasScript = typeof scripts.test === "string";
+    if (hasRunner && hasScript) return before;
 
-  if (!hasScript) scripts.test = "vitest run";
-  pkg.scripts = scripts;
-  pkg.devDependencies = hasRunner
-    ? devDeps
-    : withEntry(
-        devDeps,
-        "vitest",
-        readClientVitestVersion(input.projectDir) ?? FALLBACK_VITEST_VERSION,
-      );
-  writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`, "utf-8");
-  return "rewritten";
+    if (!hasScript) scripts.test = "vitest run";
+    pkg.scripts = scripts;
+    pkg.devDependencies = hasRunner
+      ? devDeps
+      : withEntry(
+          devDeps,
+          "vitest",
+          readClientVitestVersion(input.projectDir) ?? FALLBACK_VITEST_VERSION,
+        );
+    return `${JSON.stringify(pkg, null, 2)}\n`;
+  });
 }
 
 /** Same version the client already resolved, so pnpm installs one copy
@@ -357,32 +399,30 @@ function readClientVitestVersion(projectDir: string): string | undefined {
  *  zod enum is the outer edge — an unknown language never reaches the
  *  database. */
 export function rewriteProfileSchema(input: RewriteInput): RewriteStatus {
-  const path = join(input.projectDir, SHARED_SCHEMAS_REL);
-  const before = readIfPresent(path);
-  if (before === null) return "absent";
-  if (before.includes(I18N_MARKER) || /locale: z\.enum\(/.test(before)) return "unchanged";
+  return editThrough(input, SHARED_SCHEMAS_REL, (before) => {
+    if (before.includes(I18N_MARKER) || /locale: z\.enum\(/.test(before)) return before;
 
-  // Scoped to updateProfileSchema: `notifications` is a common enough
-  // field name that a file-wide match could land in another schema.
-  const schemaAt = before.indexOf("updateProfileSchema");
-  if (schemaAt < 0) return "absent";
-  const tail = before.slice(schemaAt);
-  const anchor = tail.match(/\n([ \t]*)notifications: z\.boolean\(\)\.optional\(\),/);
-  if (!anchor || anchor.index === undefined) return "absent";
+    // Scoped to updateProfileSchema: `notifications` is a common enough
+    // field name that a file-wide match could land in another schema.
+    const schemaAt = before.indexOf("updateProfileSchema");
+    if (schemaAt < 0) return null;
+    const tail = before.slice(schemaAt);
+    const anchor = tail.match(/\n([ \t]*)notifications: z\.boolean\(\)\.optional\(\),/);
+    if (!anchor || anchor.index === undefined) return null;
 
-  const indent = anchor[1];
-  const values = tsLiteralList(localePreferenceValues(input.config));
-  const block = [
-    ``,
-    `${indent}// ${I18N_MARKER} — the synced language preference. "system" means`,
-    `${indent}// "follow the device", which only a device can answer: the server`,
-    `${indent}// stores the word and never resolves it to a language.`,
-    `${indent}locale: z.enum(${values}).optional(),`,
-  ].join("\n");
+    const indent = anchor[1];
+    const values = tsLiteralList(localePreferenceValues(input.config));
+    const block = [
+      ``,
+      `${indent}// ${I18N_MARKER} — the synced language preference. "system" means`,
+      `${indent}// "follow the device", which only a device can answer: the server`,
+      `${indent}// stores the word and never resolves it to a language.`,
+      `${indent}locale: z.enum(${values}).optional(),`,
+    ].join("\n");
 
-  const at = schemaAt + anchor.index + anchor[0].length;
-  writeFileSync(path, `${before.slice(0, at)}${block}${before.slice(at)}`, "utf-8");
-  return "rewritten";
+    const at = schemaAt + anchor.index + anchor[0].length;
+    return `${before.slice(0, at)}${block}${before.slice(at)}`;
+  });
 }
 
 /** The mongoose half. `default: "system"` on purpose: a profile row
@@ -390,44 +430,40 @@ export function rewriteProfileSchema(input: RewriteInput): RewriteStatus {
  *  which is what "system" says. (A DOCUMENT snapshot is the opposite
  *  case and deliberately has no default — see server/i18n/resolve.ts.) */
 export function rewriteProfileModel(input: RewriteInput): RewriteStatus {
-  const path = join(input.projectDir, PROFILE_MODEL_REL);
-  const before = readIfPresent(path);
-  if (before === null) return "absent";
-  if (before.includes(I18N_MARKER) || before.includes("LocalePreference")) return "unchanged";
+  return editThrough(input, PROFILE_MODEL_REL, (before) => {
+    if (before.includes(I18N_MARKER) || before.includes("LocalePreference")) return before;
 
-  const ifaceAnchor = before.match(/\n([ \t]*)notifications: boolean;/);
-  const schemaAnchor = before.match(/\n([ \t]*)notifications: \{ type: Boolean[^\n]*\n/);
-  if (!ifaceAnchor || ifaceAnchor.index === undefined) return "absent";
-  if (!schemaAnchor || schemaAnchor.index === undefined) return "absent";
+    const ifaceAnchor = before.match(/\n([ \t]*)notifications: boolean;/);
+    const schemaAnchor = before.match(/\n([ \t]*)notifications: \{ type: Boolean[^\n]*\n/);
+    if (!ifaceAnchor || ifaceAnchor.index === undefined) return null;
+    if (!schemaAnchor || schemaAnchor.index === undefined) return null;
 
-  const values = tsLiteralList(localePreferenceValues(input.config));
-  const ifaceIndent = ifaceAnchor[1];
-  const ifaceBlock = [
-    ``,
-    `${ifaceIndent}/** ${I18N_MARKER} — "system" = follow the reader's device. Optional`,
-    `${ifaceIndent} *  because a row written before the feature landed has no value. */`,
-    `${ifaceIndent}locale?: LocalePreference;`,
-  ].join("\n");
-  const schemaIndent = schemaAnchor[1];
-  const schemaBlock = [
-    `${schemaIndent}locale: {`,
-    `${schemaIndent}  type: String,`,
-    `${schemaIndent}  enum: ${values},`,
-    `${schemaIndent}  default: "system",`,
-    `${schemaIndent}},`,
-    ``,
-  ].join("\n");
+    const values = tsLiteralList(localePreferenceValues(input.config));
+    const ifaceIndent = ifaceAnchor[1];
+    const ifaceBlock = [
+      ``,
+      `${ifaceIndent}/** ${I18N_MARKER} — "system" = follow the reader's device. Optional`,
+      `${ifaceIndent} *  because a row written before the feature landed has no value. */`,
+      `${ifaceIndent}locale?: LocalePreference;`,
+    ].join("\n");
+    const schemaIndent = schemaAnchor[1];
+    const schemaBlock = [
+      `${schemaIndent}locale: {`,
+      `${schemaIndent}  type: String,`,
+      `${schemaIndent}  enum: ${values},`,
+      `${schemaIndent}  default: "system",`,
+      `${schemaIndent}},`,
+      ``,
+    ].join("\n");
 
-  // Later edit first, so the earlier offset stays valid.
-  const schemaAt = schemaAnchor.index + schemaAnchor[0].length;
-  const ifaceAt = ifaceAnchor.index + ifaceAnchor[0].length;
-  let after = `${before.slice(0, schemaAt)}${schemaBlock}${before.slice(schemaAt)}`;
-  after = `${after.slice(0, ifaceAt)}${ifaceBlock}${after.slice(ifaceAt)}`;
+    // Later edit first, so the earlier offset stays valid.
+    const schemaAt = schemaAnchor.index + schemaAnchor[0].length;
+    const ifaceAt = ifaceAnchor.index + ifaceAnchor[0].length;
+    let after = `${before.slice(0, schemaAt)}${schemaBlock}${before.slice(schemaAt)}`;
+    after = `${after.slice(0, ifaceAt)}${ifaceBlock}${after.slice(ifaceAt)}`;
 
-  const withImport = addLocalePreferenceImport(after, input.pkgScope);
-  if (withImport === null) return "absent";
-  writeFileSync(path, withImport, "utf-8");
-  return "rewritten";
+    return addLocalePreferenceImport(after, input.pkgScope);
+  });
 }
 
 /** Prefers widening the existing `@<scope>/shared` type import over
@@ -465,31 +501,27 @@ function addLocalePreferenceImport(content: string, pkgScope: string): string | 
  *  we do not recognise costs nothing, since the mongoose default covers
  *  the same case. */
 export function rewriteProfileRouter(input: RewriteInput): RewriteStatus {
-  const path = join(input.projectDir, PROFILE_ROUTER_REL);
-  const before = readIfPresent(path);
-  if (before === null) return "absent";
-  if (before.includes(I18N_MARKER) || before.includes(`"preferences.locale"`)) return "unchanged";
+  return editThrough(input, PROFILE_ROUTER_REL, (before) => {
+    if (before.includes(I18N_MARKER) || before.includes(`"preferences.locale"`)) return before;
 
-  const anchor = before.match(
-    /\n([ \t]*)if \(input\.preferences\.notifications !== undefined\) \{\n[\s\S]*?\n\1\}\n/,
-  );
-  if (!anchor || anchor.index === undefined) return "absent";
+    const anchor = before.match(
+      /\n([ \t]*)if \(input\.preferences\.notifications !== undefined\) \{\n[\s\S]*?\n\1\}\n/,
+    );
+    if (!anchor || anchor.index === undefined) return null;
 
-  const indent = anchor[1];
-  const block = [
-    `${indent}// ${I18N_MARKER} — stored verbatim, including "system". Resolving it`,
-    `${indent}// here would pick a language from the server's own environment.`,
-    `${indent}if (input.preferences.locale !== undefined) {`,
-    `${indent}  update["preferences.locale"] = input.preferences.locale;`,
-    `${indent}}`,
-    ``,
-  ].join("\n");
+    const indent = anchor[1];
+    const block = [
+      `${indent}// ${I18N_MARKER} — stored verbatim, including "system". Resolving it`,
+      `${indent}// here would pick a language from the server's own environment.`,
+      `${indent}if (input.preferences.locale !== undefined) {`,
+      `${indent}  update["preferences.locale"] = input.preferences.locale;`,
+      `${indent}}`,
+      ``,
+    ].join("\n");
 
-  const at = anchor.index + anchor[0].length;
-  let after = `${before.slice(0, at)}${block}${before.slice(at)}`;
-  after = seedUpsertPreference(after);
-  writeFileSync(path, after, "utf-8");
-  return "rewritten";
+    const at = anchor.index + anchor[0].length;
+    return seedUpsertPreference(`${before.slice(0, at)}${block}${before.slice(at)}`);
+  });
 }
 
 function seedUpsertPreference(content: string): string {
@@ -510,7 +542,7 @@ function seedUpsertPreference(content: string): string {
 // ---------------------------------------------------------------------------
 
 export function rewriteClientPackageJson(input: RewriteInput): RewriteStatus {
-  return addDependency(join(input.projectDir, CLIENT_PKG_REL), "use-intl", USE_INTL_VERSION);
+  return addDependency(input, CLIENT_PKG_REL, "use-intl", USE_INTL_VERSION);
 }
 
 /** Additive to the contract's list: `packages/server/src/i18n/index.ts`
@@ -518,25 +550,31 @@ export function rewriteClientPackageJson(input: RewriteInput): RewriteStatus {
  *  half without the dependency does not compile. Only called when the
  *  server catalogs are part of the config. */
 export function rewriteServerPackageJson(input: RewriteInput): RewriteStatus {
-  return addDependency(join(input.projectDir, SERVER_PKG_REL), "use-intl", USE_INTL_VERSION);
+  return addDependency(input, SERVER_PKG_REL, "use-intl", USE_INTL_VERSION);
 }
 
-function addDependency(path: string, name: string, version: string): RewriteStatus {
-  const raw = readIfPresent(path);
-  if (raw === null) return "absent";
-  let pkg: Record<string, unknown>;
-  try {
-    pkg = JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return "absent";
-  }
-  const deps = asRecord(pkg.dependencies) ?? {};
-  // A pinned version the user chose is theirs: only the absence of the
-  // package is something to fix.
-  if (typeof deps[name] === "string") return "unchanged";
-  pkg.dependencies = withEntry(deps, name, version);
-  writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`, "utf-8");
-  return "rewritten";
+function addDependency(
+  input: RewriteInput,
+  rel: string,
+  name: string,
+  version: string,
+): RewriteStatus {
+  // As in rewriteSharedPackageJson: not `ledger.mergePackageJson`, because
+  // a version the user pinned is theirs rather than a conflict to report.
+  return editThrough(input, rel, (before) => {
+    let pkg: Record<string, unknown>;
+    try {
+      pkg = JSON.parse(before) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+    const deps = asRecord(pkg.dependencies) ?? {};
+    // A pinned version the user chose is theirs: only the absence of the
+    // package is something to fix.
+    if (typeof deps[name] === "string") return before;
+    pkg.dependencies = withEntry(deps, name, version);
+    return `${JSON.stringify(pkg, null, 2)}\n`;
+  });
 }
 
 function asRecord(value: unknown): Record<string, string> | undefined {
@@ -643,7 +681,11 @@ const STEPS: readonly RewriteStep[] = [
 /** Run every applicable edit. Collects rather than throws: a project
  *  that has diverged from the starter should end up with a list of
  *  documented manual steps, not a stack trace halfway through. */
-export function applyI18nRewrites(input: RewriteInput): RewriteOutcome {
+export function applyI18nRewrites(rawInput: RewriteInput): RewriteOutcome {
+  // Resolve the ledger ONCE, so the whole set records into one plan
+  // rather than nine — which is what lets `--dry-run` print the edits
+  // beside the writes, and a real run report them together.
+  const input: RewriteInput = { ...rawInput, ledger: ledgerFor(rawInput) };
   const outcome: RewriteOutcome = {
     rewritten: [],
     unchanged: [],

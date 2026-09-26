@@ -30,6 +30,7 @@ import ora from "ora";
 import { addUsedPorts, getUsedPorts, removeUsedPorts } from "../config.js";
 import { expandFeatureSelection } from "../features/all.js";
 import { extensionPrerequisiteProblem } from "../features/extension/index.js";
+import type { I18nConfig } from "../features/i18n/types.js";
 import { applyOperationalLayer, renderOperationalLayer } from "../features/operational.js";
 import {
   applyServerFeatures,
@@ -747,8 +748,14 @@ async function runScaffoldSteps(
   // writes its own files plus a handful of idempotent edits to files the
   // starter ships (root layout, globals.css, the profile schema/model/
   // router, the shared barrel).
+  //
+  // The answers come back so the manifest below can record them: the
+  // feature's own `apply` reads them back to re-apply without prompting
+  // and without re-deriving (features/i18n/definition.ts), and
+  // `update --dry-run` itemises the recorded locales rather than a guess.
+  let i18nConfig: I18nConfig | undefined;
   if (config.features.includes("i18n")) {
-    await applyI18n(config, outputDir, modifications);
+    i18nConfig = await applyI18n(config, outputDir, modifications, identifiers);
   }
 
   // CLAUDE.md last: it documents what's left on disk, so it has to see
@@ -800,12 +807,11 @@ async function runScaffoldSteps(
   }
 
   const manifest = toManifest({ ...config, identifiers }, ports, getCliVersion());
-  writeManifest(
-    manifestDir,
-    authSecurityOptions
-      ? { ...manifest, authSecurity: { options: authSecurityOptions } }
-      : manifest,
-  );
+  writeManifest(manifestDir, {
+    ...manifest,
+    ...(authSecurityOptions ? { authSecurity: { options: authSecurityOptions } } : {}),
+    ...(i18nConfig ? { i18n: i18nConfig } : {}),
+  });
   modifications.push(".hatchkit.json (project manifest)");
 
   // Features whose files are NOT in the starter have to be applied here.
@@ -1001,7 +1007,11 @@ async function applyI18n(
   config: ProjectConfig,
   outputDir: string,
   modifications: string[],
-): Promise<void> {
+  /** The frozen set. Passed because this runs BEFORE the manifest is
+   *  written, so the generator has nothing to read the app's display name
+   *  off — and a feature does not derive one. */
+  identifiers: ProjectIdentifiers,
+): Promise<I18nConfig | undefined> {
   // The `backend` surface has no packages/client, and every surface the
   // feature localises (the store, the pre-paint gate, the public pages)
   // lives there. Recorded rather than silent: the user ticked a box.
@@ -1009,13 +1019,14 @@ async function applyI18n(
     modifications.push(
       `i18n: skipped — surface \`${config.surfaces}\` has no client package to localise`,
     );
-    return;
+    return undefined;
   }
   try {
     const { DEFAULT_NAMESPACES, runI18nSetup } = await import("../features/i18n/index.js");
     const audit = await runI18nSetup({
       projectDir: outputDir,
       mode: "create",
+      identifiers,
       presets: {
         sourceLocale: "en",
         targetLocales: ["de"],
@@ -1031,15 +1042,21 @@ async function applyI18n(
     });
     if (!audit.ok) {
       modifications.push("i18n: generator declined — project ships single-language");
-      return;
+      return undefined;
     }
     modifications.push(
       `i18n: en → de (${audit.written.length} files written, ${audit.rewritten.length} existing files edited)`,
     );
     for (const note of audit.manualResidue) modifications.push(`i18n (manual): ${note}`);
+    // The SETTLED config, not the requested one — a surface with no
+    // server half has `serverCatalogs` switched back off, and recording
+    // the request would have a later dry run itemise catalogs that were
+    // never written.
+    return audit.config;
   } catch (err) {
     modifications.push(`i18n: skipped — ${(err as Error).message}`);
   }
+  return undefined;
 }
 
 /** Edit packages/server/src/app.ts to drop the newsletter route import +

@@ -484,6 +484,19 @@ export interface FeatureContext {
   log: (message: string) => void;
 }
 
+/**
+ * What a feature needs in order to say what it WOULD write, without
+ * writing it.
+ *
+ * The apply-time {@link FeatureContext} is a superset, so a feature can
+ * use one function for both. Deliberately missing the ledger and the
+ * log: nothing here may mutate or print.
+ */
+export type FeaturePlanContext = Pick<
+  FeatureContext,
+  "projectDir" | "manifestDir" | "manifest" | "identifiers"
+>;
+
 export interface FeatureDefinition {
   id: FeatureId;
   /** Label shown in the `create` / `update` feature picker. */
@@ -528,6 +541,26 @@ export interface FeatureDefinition {
    * `--dry-run` silently.
    */
   apply(ctx: FeatureContext): void | Promise<void>;
+  /**
+   * The project-relative paths `apply` would write, for a dry run that
+   * wants to itemise them.
+   *
+   * Optional, and a pure prediction: it must not touch the disk, because
+   * `hatchkit update --dry-run` calls it INSTEAD of `apply`. That is the
+   * point. Running a real `apply` against a dry ledger would be the
+   * obvious way to itemise a feature's plan, and it is not safe in
+   * general — `client-core` writes through `node:fs` in its strip and
+   * rename helpers, and the server-platform kit carries a dry-run flag
+   * of its own rather than deferring to the ledger. A dry run that
+   * executed every apply would therefore write files on at least those
+   * paths, which is the one thing `--dry-run` promises not to do.
+   *
+   * So a feature DECLARES its plan here, reading the same table its
+   * `apply` reads. An absent implementation means "cannot say", and the
+   * dry run prints the feature without a file list rather than an empty
+   * one that looks authoritative.
+   */
+  plannedFiles?(ctx: FeaturePlanContext): readonly string[];
 }
 
 const REGISTRY = new Map<FeatureId, FeatureDefinition>();

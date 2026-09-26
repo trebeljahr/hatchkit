@@ -20,11 +20,10 @@
  * name.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { FeatureLedger } from "../contract.js";
+import { renderFeatureTemplate } from "../templates.js";
 import { DEFAULT_NAMESPACES } from "./locales.js";
 import { type I18nJob, planI18nFiles } from "./plan.js";
-import { renderI18nTemplate } from "./render.js";
 import type { I18nConfig, LocaleCode } from "./types.js";
 
 /** The destination every glossary job's path contains. The one string
@@ -49,7 +48,7 @@ export interface RenderGlossaryArgs {
  *  rather than a user problem. */
 export function renderGlossary(args: RenderGlossaryArgs): string {
   const job = glossaryJob(args);
-  return renderI18nTemplate(job.template, job.tokens);
+  return renderFeatureTemplate("i18n", job.template, job.tokens);
 }
 
 /** Project-relative path of one target's glossary. */
@@ -68,6 +67,18 @@ export interface WriteGlossariesInput {
    *  path there would conjure a package the project does not have — so
    *  the caller puts it beside the catalogs that actually exist. */
   destDir?: string;
+  /**
+   * Where every write goes. Supplied by the feature's `apply` so a
+   * combined `create`/`update` run reports one plan and `--dry-run`
+   * describes this feature without touching the disk — the ledger is the
+   * only place the dry-run flag is checked (see `../contract.ts`).
+   *
+   * Omitted by the tests and by the standalone generator paths, which get
+   * a fresh real ledger over `projectDir`. When one IS passed it owns the
+   * project directory, and `projectDir` is only read for the paths this
+   * module reports.
+   */
+  ledger?: FeatureLedger;
 }
 
 export interface WriteGlossariesResult {
@@ -84,6 +95,7 @@ export interface WriteGlossariesResult {
  *  name the files a translator has to open, which is the one output of
  *  this feature aimed at a person who does not read TypeScript. */
 export function writeI18nGlossaries(input: WriteGlossariesInput): WriteGlossariesResult {
+  const ledger = input.ledger ?? new FeatureLedger(input.projectDir, false);
   const written: string[] = [];
   const unchanged: string[] = [];
 
@@ -100,8 +112,8 @@ export function writeI18nGlossaries(input: WriteGlossariesInput): WriteGlossarie
       input.destDir === undefined
         ? planned
         : `${input.destDir.replace(/\/$/, "")}/${planned.slice(planned.lastIndexOf("/") + 1)}`;
-    const dest = join(input.projectDir, rel);
-    if (writeIfChanged(dest, body) === "written") written.push(rel);
+    const action = ledger.writeIfChanged(rel, body);
+    if (action === "written" || action === "would-write") written.push(rel);
     else unchanged.push(rel);
   }
 
@@ -134,14 +146,4 @@ function glossaryJob(args: RenderGlossaryArgs): I18nJob {
     );
   }
   return job;
-}
-
-function writeIfChanged(absPath: string, content: string): "written" | "unchanged" {
-  if (existsSync(absPath)) {
-    const cur = readFileSync(absPath, "utf-8");
-    if (cur === content) return "unchanged";
-  }
-  mkdirSync(dirname(absPath), { recursive: true });
-  writeFileSync(absPath, content, "utf-8");
-  return "written";
 }

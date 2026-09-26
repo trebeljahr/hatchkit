@@ -29,7 +29,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
 import { I18N_TEMPLATES, planI18nFiles } from "./src/features/i18n/plan.js";
-import { getI18nTemplatesDir } from "./src/features/i18n/render.js";
+import { getFeatureTemplateDir } from "./src/features/templates.js";
 import type { I18nConfig } from "./src/features/i18n/types.js";
 import { writeI18nFiles } from "./src/features/i18n/writer.js";
 
@@ -82,7 +82,7 @@ function walk(dir: string): string[] {
 // ---------------------------------------------------------------------------
 console.log("\n── plan: every template referenced exists ───────────────────────────────────");
 {
-  const root = getI18nTemplatesDir();
+  const root = getFeatureTemplateDir("i18n");
   assert(existsSync(root), `templates dir exists (${root})`);
 
   // Expand over a config that turns every gate on, so no entry is skipped.

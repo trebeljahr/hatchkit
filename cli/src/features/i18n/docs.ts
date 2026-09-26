@@ -20,8 +20,8 @@
  * an agent; this is the long form for a person.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { FeatureLedger } from "../contract.js";
 import { localeMeta } from "./locales.js";
 import { PSEUDO_EXPANSION_RATIO } from "./plan.js";
 import type { I18nConfig } from "./types.js";
@@ -31,6 +31,18 @@ export interface WriteI18nDocsInput {
   config: I18nConfig;
   pkgScope: string;
   appName: string;
+  /**
+   * Where every write goes. Supplied by the feature's `apply` so a
+   * combined `create`/`update` run reports one plan and `--dry-run`
+   * describes this feature without touching the disk — the ledger is the
+   * only place the dry-run flag is checked (see `../contract.ts`).
+   *
+   * Omitted by the tests and by the standalone generator paths, which get
+   * a fresh real ledger over `projectDir`. When one IS passed it owns the
+   * project directory, and `projectDir` is only read for the paths this
+   * module reports.
+   */
+  ledger?: FeatureLedger;
 }
 
 export interface WriteI18nDocsResult {
@@ -45,9 +57,16 @@ const DOCS_REL = "docs/i18n.md";
 
 export function writeI18nProjectDocs(input: WriteI18nDocsInput): WriteI18nDocsResult {
   const body = renderI18nDocs(input);
-  const path = join(input.projectDir, DOCS_REL);
-  const status = writeIfChanged(path, body);
-  return { relPath: DOCS_REL, path, status };
+  const ledger = input.ledger ?? new FeatureLedger(input.projectDir, false);
+  // `would-write` is reported as `written`: the caller folds this into
+  // the audit's written list, and a dry run's audit describes what a real
+  // run would do rather than what it did.
+  const action = ledger.writeIfChanged(DOCS_REL, body);
+  return {
+    relPath: DOCS_REL,
+    path: join(input.projectDir, DOCS_REL),
+    status: action === "unchanged" ? "unchanged" : "written",
+  };
 }
 
 /** Exposed separately so a test can assert on the text without a
@@ -455,14 +474,4 @@ export function renderI18nDocs(input: WriteI18nDocsInput): string {
   );
 
   return `${L.join("\n").replace(/\n{3,}/g, "\n\n")}`;
-}
-
-function writeIfChanged(absPath: string, content: string): "written" | "unchanged" {
-  if (existsSync(absPath)) {
-    const cur = readFileSync(absPath, "utf-8");
-    if (cur === content) return "unchanged";
-  }
-  mkdirSync(dirname(absPath), { recursive: true });
-  writeFileSync(absPath, content, "utf-8");
-  return "written";
 }

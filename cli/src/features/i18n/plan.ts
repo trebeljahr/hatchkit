@@ -25,9 +25,9 @@
 
 import { existsSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { getFeatureTemplateDir } from "../templates.js";
 import { localeMeta } from "./locales.js";
-import { type I18nTokens, getI18nTemplatesDir } from "./render.js";
-import type { I18nConfig } from "./types.js";
+import type { I18nConfig, I18nTokens } from "./types.js";
 
 export type I18nGate =
   /** core: store, useT, format, catalogs, first paint */
@@ -240,7 +240,7 @@ export const I18N_TEMPLATES: readonly I18nTemplateEntry[] = [
  *  `source.billing.ts.tpl` + `target.billing.ts.tpl` and one entry is the
  *  whole change. */
 export function shippedNamespaces(): string[] {
-  const dir = getI18nTemplatesDir();
+  const dir = getFeatureTemplateDir("i18n");
   const perNs = I18N_TEMPLATES.filter((e) => e.perNamespace === true);
   if (perNs.length === 0) return [];
   const candidates = new Set<string>();

@@ -89,7 +89,7 @@ Two gotchas:
 | Syntax | Where | Why |
 | --- | --- | --- |
 | `{{name}}` | `starter/` files | The starter is plain TypeScript/JSON and `{{…}}` collides with nothing there. Substituted by literal `replaceAll` — see `substituteIdentifierTokens` in `cli/src/scaffold/identifiers.ts`. |
-| `__HATCHKIT_NAME__` | `cli/src/templates/` files | Workflows are full of `${{ secrets.FOO }}` and Apple plists carry `__APPLE_TEAM_ID__` placeholders that CI substitutes with `sed` *later*. A mustache pass would mangle the first; a naive pass would eat the second. See `renderTemplateString` in `cli/src/features/templates.ts`. |
+| `__HATCHKIT_NAME__` | `cli/src/templates/` files | Workflows are full of `${{ secrets.FOO }}` and Apple plists carry `__APPLE_TEAM_ID__` placeholders that CI substitutes with `sed` *later*. A mustache pass would mangle the first; a naive pass would eat the second. The `i18n` templates are the other case: they are TypeScript/TSX carrying literal `${…}` template literals and bare ICU `{count}` braces, both of which a mustache pass would eat. See `renderTemplateString` in `cli/src/features/templates.ts`. |
 
 Both leave an unknown token **in place** rather than substituting an empty
 string, so a partial render is detectable by grepping for the marker instead of
@@ -112,6 +112,23 @@ disagreed with the one already in its own files.
 
 If your feature needs a name that does not exist yet, add it to
 `ProjectIdentifiers` with a validator and a migration. Do not derive it locally.
+
+A display name counts. `i18n` used to sniff the app's name out of the project —
+the client layout's `<title>`, falling back to the manifest's `name` — and the
+two call sites disagreed, because `create` runs the generator *before* it writes
+the manifest. A scaffold therefore baked the starter's placeholder "My App" into
+every catalog, while a later re-apply found the manifest and rendered the raw
+slug, silently rewriting nine generated files. Both were wrong;
+`identifiers.productName` was right the whole time. The tell was that the
+feature's own idempotency test still passed — each entry point was
+self-consistent, and nothing compared them until the feature was re-applied
+through the registry.
+
+The `i18n` package **scope** is the counter-example, worth knowing before you
+reach for `identifiers.npmScope`: `create` does not rename the workspace
+packages, so a project called `probe-app` still ships `@starter/client`. The
+scope a generated import must name is the one on disk, so that one is read from
+`packages/*/package.json` and checked by `cli/test-i18n-seams.ts`.
 
 ---
 
@@ -330,6 +347,36 @@ changed the user's files.
 Print from `ctx.ledger.summary()`; the `would-*` entries carry the same
 information as their real counterparts, so one code path renders both modes.
 
+### Itemising a plan without running it
+
+`hatchkit update --dry-run` returns before the feature-apply loop, so it has no
+ledger to print. A feature that wants its files listed there implements
+`plannedFiles(ctx)`, which returns the project-relative paths `apply` would
+write — read off the same table `apply` reads, never a second list:
+
+```ts
+plannedFiles(ctx) {
+  return planMyFiles(ctx.manifest).map((job) => job.dest);
+}
+```
+
+`plannedFilesFor` in `cli/src/scaffold/update.ts` asks the registry first and
+falls back to its own `desktop` table. An absent implementation means "cannot
+say", and the dry run prints the feature with no file list rather than an empty
+one that reads as authoritative.
+
+It must not touch the disk, because the dry run calls it **instead of** `apply`.
+Running a real `apply` against a dry ledger is the obvious alternative and it is
+not safe in general: `client-core` writes through `node:fs` in its strip and
+rename helpers, and the server-platform kit carries a dry-run flag of its own
+rather than deferring to the ledger. A dry run that executed every apply would
+write files on at least those paths.
+
+List the files the feature **writes**. The anchored edits it makes to files the
+project already has are a different thing, and a `+ path` line for a file that
+already exists reads as a new file. `cli/src/features/i18n/definition.ts` is the
+worked example.
+
 > The pre-existing `scaffoldDryRun` in `cli/src/scaffold/app.ts` predates this and
 > is a hand-maintained parallel list of prose that re-derives every decision from
 > `config` a second time. It has no structural connection to the real scaffold
@@ -371,6 +418,19 @@ Four separate hardcoded feature lists and three copies of the skill file is the
 reason `FeatureDefinition` exists. Register your feature in the registry, add it
 to the lists above, and when the registry can drive one of those lists, delete
 the list.
+
+One list is already most of the way there: `plannedFilesFor` in
+`cli/src/scaffold/update.ts` asks the registry for a feature's `plannedFiles`
+and only falls back to its own table, which is down to `desktop` alone.
+
+A feature that prompts needs its registration in a **separate module** from the
+code that asks the questions: `cli/src/features/all.ts` imports every definition
+eagerly so the registry can answer questions about features nobody selected, and
+pulling `@inquirer/prompts` into that graph to read a title is the wrong trade.
+`auth-account-security/definition.ts` and `i18n/definition.ts` are both split for
+this reason. Both also show the other half of the pattern: `apply` must not
+prompt, so the answers live in the manifest and `apply` reads them back instead
+of re-deriving them from today's defaults.
 
 ### Manifest fields
 

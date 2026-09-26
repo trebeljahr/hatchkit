@@ -41,10 +41,12 @@ import { addUsedPorts, getUsedPorts } from "../config.js";
 import { repoSlugFromRemote } from "../deploy/gh-actions-secrets.js";
 import { pushNativeOriginsForProject } from "../deploy/trusted-origins.js";
 import type { AuthSecurityOption } from "../features/auth-account-security/types.js";
+import { type FeaturePlanContext, getFeature } from "../features/contract.js";
 import { BUILD_COMMIT_ENV_VAR, BUILD_INFO_PATH } from "../features/deploy-recovery/index.js";
 import { upgradeNextConfig } from "../features/deploy-recovery/serving.js";
 import { extensionPrerequisiteProblem } from "../features/extension/index.js";
 import type { RunI18nSetupOptions } from "../features/i18n/index.js";
+import type { I18nConfig } from "../features/i18n/types.js";
 import {
   applyOperationalLayer,
   operationalProjectFromManifest,
@@ -151,18 +153,35 @@ export const SUPPORTED_ADDITIONS: readonly Feature[] = [
  * module is how that bug looked.)
  */
 /**
- * Starter paths the hand-written add-paths in this file would copy.
+ * What `--dry-run` says a feature would write.
  *
- * Only `desktop` is left: mobile, client-core, workspaces, release and
- * auth-account-security apply through the feature registry, where
- * `FeatureLedger` is itself the dry run and reports its own plan. This
- * table exists so `--dry-run` can describe the one add-path that still
- * copies directly, and it reads `DESKTOP_FILES` rather than re-listing,
- * so it cannot describe a different set from the one copied.
+ * Two sources, in order:
  *
- * When desktop moves onto the contract too, this and its call site go.
+ *  1. The REGISTRY. A registered feature that implements
+ *     `plannedFiles` declares its own plan, read off whatever table its
+ *     `apply` reads — so the two cannot describe different file sets.
+ *     This is the general seam: any feature can opt in without this
+ *     function learning its name.
+ *
+ *     Note what it deliberately does NOT do: run the feature's `apply`
+ *     against a dry `FeatureLedger`. That looks like the obvious answer
+ *     and it is not safe here — `client-core` writes through `node:fs`
+ *     in its strip and rename helpers, and the server-platform kit
+ *     carries a dry-run flag of its own instead of deferring to the
+ *     ledger. Executing every apply would make `--dry-run` write files,
+ *     which is the one thing it promises not to do.
+ *
+ *  2. `DESKTOP_FILES`, for the one hand-written add-path left that
+ *     copies straight out of the starter. Read rather than re-listed, so
+ *     it cannot name a different set from the one copied.
+ *
+ * A feature in neither bucket returns nothing, and the dry run prints it
+ * without a file list rather than with an empty one that reads as
+ * authoritative.
  */
-function plannedFilesFor(feature: Feature): readonly string[] {
+function plannedFilesFor(feature: Feature, ctx: FeaturePlanContext): readonly string[] {
+  const declared = getFeature(feature)?.plannedFiles?.(ctx);
+  if (declared !== undefined) return declared;
   // `build/` is copied alongside DESKTOP_FILES — it holds the icon source
   // the packager and `icons:desktop` read — so the plan has to name it.
   return feature === "desktop" ? [...DESKTOP_FILES, "build"] : [];
@@ -563,8 +582,19 @@ export async function runUpdate(
         ? chalk.bold(`\n  Would add: ${added.join(", ")}`)
         : chalk.dim("\n  Would add: (nothing — the feature set is already what you asked for)"),
     );
+    // Importing the registry is what populates it, and a feature whose
+    // module was never loaded would report no plan rather than its own.
+    await import("../features/all.js");
+    const planCtx: FeaturePlanContext = {
+      projectDir,
+      manifestDir,
+      manifest,
+      identifiers: identifiersFor(manifest),
+    };
     for (const feature of added) {
-      for (const rel of plannedFilesFor(feature)) console.log(chalk.dim(`    + ${rel}`));
+      for (const rel of plannedFilesFor(feature, planCtx)) {
+        console.log(chalk.dim(`    + ${rel}`));
+      }
     }
     if (added.some((f) => hasNativeClient([f]))) {
       console.log(
@@ -584,6 +614,10 @@ export async function runUpdate(
   let actuallyAdded: Feature[] = [];
   let skippedAdditions: Feature[] = [];
   let authSecurityOptions: string[] | undefined;
+  /** The i18n answers, when this run added the feature. Persisted so the
+   *  feature's own `apply` can re-apply without prompting and without
+   *  re-deriving — see `features/i18n/definition.ts`. */
+  let i18nConfig: I18nConfig | undefined;
   /** What the mobile refresh below actually wrote, if anything. Feeds the
    *  "did this run change the project?" decision at the end, so a pure
    *  refresh still persists the manifest's cliVersion. */
@@ -651,12 +685,19 @@ export async function runUpdate(
             projectDir,
             mode: "update",
             presets: options.presets?.i18n,
+            identifiers: identifiersFor(manifest),
           });
           // A refusal (no packages/client) must not record the feature:
           // the manifest would then claim a language the project has no
           // files for, and the next `update` would treat it as present.
-          if (audit.ok) updatedFeatures.add("i18n");
-          else refused.push("i18n");
+          if (audit.ok) {
+            updatedFeatures.add("i18n");
+            // The settled config, not the requested one: a project with
+            // no server half has `serverCatalogs` switched back off, and
+            // recording the request instead would have the next
+            // `--dry-run` itemise catalogs that were never written.
+            i18nConfig = audit.config;
+          } else refused.push("i18n");
         }
       }
 
@@ -797,6 +838,7 @@ export async function runUpdate(
       ports: updatedPorts,
       localDev: localDevEnabled ?? manifest.localDev,
       authSecurity: authSecurityOptions ? { options: authSecurityOptions } : manifest.authSecurity,
+      i18n: i18nConfig ?? manifest.i18n,
     };
     writeManifest(manifestDir, updatedManifest);
   }

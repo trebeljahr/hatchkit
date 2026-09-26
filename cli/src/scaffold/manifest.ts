@@ -122,6 +122,26 @@ export interface ProjectManifest {
    *  a file the user deleted should not be silently rewritten. Absent
    *  when the feature was never taken. */
   authSecurity?: { options: string[] };
+  /** The languages the `i18n` feature generated, and which of its
+   *  surfaces. Persisted for the same reason as `authSecurity` above: the
+   *  feature's `apply` must not prompt and must not re-derive, and a
+   *  project that chose French last month should not silently gain German
+   *  because the default moved. It is also what lets `update --dry-run`
+   *  itemise the right catalog paths for a project that already has the
+   *  feature.
+   *
+   *  Public-safe by inspection: every value is already visible in the
+   *  generated tree — the locales ARE the directory names under
+   *  `i18n/messages/`. Absent when the feature was never taken. */
+  i18n?: {
+    sourceLocale: string;
+    targetLocales: string[];
+    namespaces: string[];
+    publicPages: boolean;
+    serverCatalogs: boolean;
+    pseudoLocale: boolean;
+    gateFailsafeMs: number;
+  };
   /** ML services wired into the backend. */
   mlServices: MlService[];
   /** S3 provider name (`hetzner` / `aws` / `r2` / `existing` / `none`).

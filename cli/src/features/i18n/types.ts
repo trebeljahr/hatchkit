@@ -77,3 +77,38 @@ export interface I18nApplyResult {
   manualResidue: string[];
   config: I18nConfig;
 }
+
+/**
+ * The substitution vocabulary every i18n template can use.
+ *
+ * The values are rendered by the SHARED renderer —
+ * `renderFeatureTemplate("i18n", …)` in `cli/src/features/templates.ts` —
+ * which substitutes `__HATCHKIT_<TOKEN>__` literally and leaves an
+ * unknown token in place. That shape is not a style preference for this
+ * feature: the templates ARE TypeScript/TSX full of `${…}` template
+ * literals and, being i18n catalogs, full of bare ICU `{count}` braces.
+ * A mustache pass would eat both. See the header of `templates.ts`.
+ *
+ * Declared as a `type` rather than an `interface` on purpose: a type
+ * alias gets an implicit index signature, which is what makes it
+ * assignable to the renderer's `TemplateTokens`.
+ *
+ * `plan.ts` is the only place these are built ({@link I18nConfig} plus
+ * the project's scope and name go in, one job's tokens come out), so the
+ * set a template may rely on is whatever `tokensFor` supplies and
+ * nothing else.
+ */
+export type I18nTokens = {
+  SOURCE_LOCALE?: string;
+  TARGET_LOCALE?: string;
+  SOURCE_LABEL?: string;
+  TARGET_LABEL?: string;
+  TARGET_LABEL_EN?: string;
+  TARGET_REGION?: string;
+  ALL_LOCALES_JSON?: string;
+  PKG_SCOPE?: string;
+  APP_NAME?: string;
+  GATE_MS?: string;
+  PSEUDO_EXPANSION?: string;
+  VOICE?: string;
+};

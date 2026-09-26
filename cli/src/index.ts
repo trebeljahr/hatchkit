@@ -1090,12 +1090,23 @@ async function handleAdd(): Promise<void> {
     const { runI18nSetup } = await import("./features/i18n/index.js");
     const projectDirArg = positional0[0] === "i18n" ? undefined : positional0[0];
     const projectDir = projectDirArg ? resolve(projectDirArg) : resolve(".");
+    // The frozen identifier set supplies the app's display name, so this
+    // command and `hatchkit create` bake the same one into the catalogs.
+    // Absent for a repo hatchkit never scaffolded, where the generator
+    // falls back to reading a name out of the project.
+    const { readManifest: readI18nManifest } = await import("./scaffold/manifest.js");
+    const { legacyIdentifiers: legacyI18nIdentifiers } = await import("./scaffold/identifiers.js");
+    const i18nManifest = readI18nManifest(projectDir);
+    const i18nIdentifiers = i18nManifest
+      ? (i18nManifest.identifiers ?? legacyI18nIdentifiers(i18nManifest.name))
+      : undefined;
     const source = flagValue("--source-locale");
     const targets = flagValue("--target-locales");
     const audit = await runI18nSetup({
       projectDir,
       mode: "add",
       dryRun: args.includes("--dry-run"),
+      identifiers: i18nIdentifiers,
       presets: {
         ...(source ? { sourceLocale: source } : {}),
         ...(targets

@@ -13,10 +13,9 @@
  * "absent" instead of overwriting a shape it does not recognise.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { FeatureLedger } from "../contract.js";
+import { renderFeatureTemplate } from "../templates.js";
 import { planI18nFiles } from "./plan.js";
-import { renderI18nTemplate } from "./render.js";
 import type { I18nConfig } from "./types.js";
 
 export interface WriteI18nInput {
@@ -24,6 +23,18 @@ export interface WriteI18nInput {
   config: I18nConfig;
   pkgScope: string;
   appName: string;
+  /**
+   * Where every write goes. Supplied by the feature's `apply` so a
+   * combined `create`/`update` run reports one plan and `--dry-run`
+   * describes this feature without touching the disk — the ledger is the
+   * only place the dry-run flag is checked (see `../contract.ts`).
+   *
+   * Omitted by the tests and by the standalone generator paths, which get
+   * a fresh real ledger over `projectDir`. When one IS passed it owns the
+   * project directory, and `projectDir` is only read for the paths this
+   * module reports.
+   */
+  ledger?: FeatureLedger;
 }
 
 export interface WriteI18nResult {
@@ -39,25 +50,21 @@ export function writeI18nFiles(input: WriteI18nInput): WriteI18nResult {
     appName: input.appName,
   });
 
+  const ledger = input.ledger ?? new FeatureLedger(input.projectDir, false);
   const written: string[] = [];
   const unchanged: string[] = [];
 
   for (const job of jobs) {
-    const rendered = renderI18nTemplate(job.template, job.tokens);
-    const dest = join(input.projectDir, job.dest);
-    if (writeIfChanged(dest, rendered) === "written") written.push(job.dest);
+    const rendered = renderFeatureTemplate("i18n", job.template, job.tokens);
+    // Every planned file is one the feature OWNS and regenerates, so
+    // write-if-changed is the right primitive: a second run compares
+    // equal and reports `unchanged`, which is the idempotency invariant.
+    // `would-write` counts as written because a dry run is describing
+    // what a real one would do.
+    const action = ledger.writeIfChanged(job.dest, rendered);
+    if (action === "written" || action === "would-write") written.push(job.dest);
     else unchanged.push(job.dest);
   }
 
   return { written, unchanged };
-}
-
-function writeIfChanged(absPath: string, content: string): "written" | "unchanged" {
-  if (existsSync(absPath)) {
-    const cur = readFileSync(absPath, "utf-8");
-    if (cur === content) return "unchanged";
-  }
-  mkdirSync(dirname(absPath), { recursive: true });
-  writeFileSync(absPath, content, "utf-8");
-  return "written";
 }

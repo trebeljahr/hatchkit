@@ -37,8 +37,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 
 import { DEFAULT_NAMESPACES } from "./src/features/i18n/locales.js";
-import { shippedNamespaces } from "./src/features/i18n/plan.js";
-import { getI18nTemplatesDir } from "./src/features/i18n/render.js";
+import { planI18nFiles, shippedNamespaces } from "./src/features/i18n/plan.js";
+import { getFeatureTemplateDir } from "./src/features/templates.js";
 import { runI18nSetup } from "./src/features/i18n/index.js";
 import type { I18nConfig } from "./src/features/i18n/types.js";
 import { writeI18nFiles } from "./src/features/i18n/writer.js";
@@ -405,22 +405,30 @@ try {
   }
 
   // -------------------------------------------------------------------------
-  // 4. Every template's tokens are ones render.ts knows.
+  // 4. Every template's tokens are ones the plan supplies.
   //
   // An unknown token is left verbatim by design, so it ships as a literal
   // `__HATCHKIT_WHATEVER__` hole. The writer test catches that for the
   // default config; this catches it in the template source, which is where
   // the typo is.
+  //
+  // The token set is read off a REAL plan rather than scraped out of a
+  // renderer's source. i18n renders through the shared
+  // `renderFeatureTemplate` (cli/src/features/templates.ts), which
+  // substitutes whatever keys it is handed, so the list a template may
+  // rely on is exactly what plan.ts's `tokensFor` puts in each job — and
+  // asking the plan cannot drift from it the way a second list would.
   // -------------------------------------------------------------------------
   console.log("\n── every template token is one the renderer substitutes ────────────────────");
   {
-    const renderSrc = readFileSync(join(import.meta.dirname, "src/features/i18n/render.ts"), "utf-8");
     const known = new Set(
-      [...renderSrc.matchAll(/^\s*"([A-Z0-9_]+)",?$/gm)].map((m) => m[1]),
+      planI18nFiles(CONFIG, { pkgScope: SCOPE, appName: "Tiao" }).flatMap((job) =>
+        Object.keys(job.tokens),
+      ),
     );
-    assert(known.size >= 10, `render.ts declares ${known.size} tokens`);
+    assert(known.size >= 10, `the plan supplies ${known.size} tokens`);
 
-    const templatesDir = getI18nTemplatesDir();
+    const templatesDir = getFeatureTemplateDir("i18n");
     const used = new Set<string>();
     const leftovers: string[] = [];
     for (const rel of walk(templatesDir).filter((p) => p.endsWith(".tpl"))) {
@@ -449,7 +457,7 @@ try {
     const unused = [...known].filter((t) => !used.has(t));
     assert(
       unused.length === 0,
-      `every declared token is used${unused.length ? ` (dead: ${unused.join(", ")})` : ""}`,
+      `every token the plan supplies is used${unused.length ? ` (dead: ${unused.join(", ")})` : ""}`,
     );
   }
 
