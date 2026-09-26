@@ -16,7 +16,15 @@
  * Run: pnpm --filter hatchkit test:feature-contract
  */
 
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -82,6 +90,58 @@ console.log("\nwriteIfChanged:");
 
 // ---------------------------------------------------------------------------
 // 2. Dry run — the single choke point
+// ---------------------------------------------------------------------------
+console.log("\ncopyIfAbsent:");
+{
+  const root = tmpProject("copy");
+  const src = tmpProject("copy-src");
+  try {
+    // A binary payload and an executable script — the two kinds of file
+    // `writeIfChanged` cannot carry. A PNG round-tripped through a UTF-8
+    // string loses bytes; a shell script written with writeFileSync loses
+    // its +x bit and fails with EACCES at the call site.
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0xfe]);
+    writeFileSync(join(src, "icon.png"), png);
+    writeFileSync(join(src, "run.sh"), "#!/bin/sh\necho hi\n", "utf-8");
+    chmodSync(join(src, "run.sh"), 0o755);
+
+    const l = new FeatureLedger(root, false);
+    assert(l.copyIfAbsent("res/icon.png", join(src, "icon.png")) === "written", "binary copied");
+    assert(
+      Buffer.compare(readFileSync(join(root, "res/icon.png")), png) === 0,
+      "byte for byte — a UTF-8 round trip would corrupt it",
+    );
+    assert(l.copyIfAbsent("run.sh", join(src, "run.sh")) === "written", "script copied");
+    assert(
+      (statSync(join(root, "run.sh")).mode & 0o111) !== 0,
+      "the executable bit survives — writeFileSync would create it 0644",
+    );
+
+    // Copy-IF-ABSENT: the destination is source the user then edits, so a
+    // second apply must not take it back.
+    writeFileSync(join(root, "run.sh"), "# mine\n", "utf-8");
+    assert(l.copyIfAbsent("run.sh", join(src, "run.sh")) === "unchanged", "present is unchanged");
+    assert(
+      readFileSync(join(root, "run.sh"), "utf-8") === "# mine\n",
+      "a user edit is never overwritten",
+    );
+
+    // A missing SOURCE is not an error: the path list is shared with the
+    // create-time strip, and some paths only exist after a generator run.
+    assert(l.copyIfAbsent("nope.txt", join(src, "nope.txt")) === "absent", "missing source");
+
+    const dry = new FeatureLedger(root, true);
+    assert(
+      dry.copyIfAbsent("res/splash.png", join(src, "icon.png")) === "would-write",
+      "a dry run describes the copy",
+    );
+    assert(snapshot(root)["res/splash.png"] === undefined, "and writes nothing");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(src, { recursive: true, force: true });
+  }
+}
+
 // ---------------------------------------------------------------------------
 console.log("\ndry run:");
 {

@@ -110,15 +110,32 @@ try {
   // ── the manifest is the single source ───────────────────────────────
   section("the feature manifest is honoured by both call sites");
   {
+    // The strip lives in scaffold/app.ts; the add is the registered
+    // feature. Both must iterate the shared manifest rather than their
+    // own literals — that asymmetry is what this whole file guards.
     const appSrc = readFileSync(join(import.meta.dirname, "src/scaffold/app.ts"), "utf-8");
+    const featureSrc = readFileSync(
+      join(import.meta.dirname, "src/features/mobile/index.ts"),
+      "utf-8",
+    );
     const updateSrc = readFileSync(join(import.meta.dirname, "src/scaffold/update.ts"), "utf-8");
     assert(
-      appSrc.includes("MOBILE_PATHS") && updateSrc.includes("MOBILE_PATHS"),
+      appSrc.includes("MOBILE_PATHS") && featureSrc.includes("MOBILE_PATHS"),
       "both the strip and the add iterate the shared path list rather than their own literals",
     );
     assert(
-      !/"@capacitor\/preferences"/.test(updateSrc),
-      "update.ts does not carry its own copy of the dependency list",
+      !/"@capacitor\/preferences"/.test(featureSrc) && !/"@capacitor\/preferences"/.test(updateSrc),
+      "neither the feature nor update.ts carries its own copy of the dependency list",
+    );
+    assert(
+      !updateSrc.includes("MOBILE_PATHS"),
+      "update.ts no longer copies the feature by hand — it goes through the feature registry, " +
+        "so --dry-run covers it",
+    );
+    assert(
+      /ctx\.ledger\./.test(featureSrc) &&
+        !/\bwriteFileSync\(|\bcpSync\(/.test(featureSrc),
+      "every mutation goes through the ledger — a bare fs write breaks --dry-run silently",
     );
     assert(MOBILE_PATHS.includes("ios") && MOBILE_PATHS.includes("android"), "the native trees are part of the feature");
     assert(

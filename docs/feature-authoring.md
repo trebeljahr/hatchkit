@@ -200,6 +200,7 @@ job.
 | `ensureManagedBlock(rel, id, body)` | the file is shared; the feature owns a region of it | yes | yes, outside the markers |
 | `ensureLine(rel, line)` | one line in an ignore-file-shaped file | yes | yes |
 | `mergePackageJson(rel, patch)` | adding scripts or dependencies | yes | yes — a differing value is a reported conflict, not an overwrite |
+| `copyIfAbsent(rel, sourceAbs)` | handing over a file from `starter/` that the user then edits | yes | yes — a file that is already there is never touched |
 | `edit(rel, fn)` | anything else | only if `fn` is a fixed point | depends on `fn` |
 
 ### Owned files
@@ -208,6 +209,28 @@ job.
 and regenerates — a workflow, a generated config — and wrong for anything a user
 might reasonably edit, because their change disappears on the next `update`. An
 owned file should say it is owned, in a header comment.
+
+### Copying from the starter
+
+A feature that ships in `starter/` hands its files over with `copyIfAbsent`,
+not `writeIfChanged`. Two reasons, and either one alone is enough:
+
+- **Binary and executable files.** `writeIfChanged` round-trips content through
+  a UTF-8 string, which corrupts a PNG, and `writeFileSync` creates a 0644
+  file, so a shell script arrives without its `+x` bit. `copyIfAbsent` copies
+  bytes and carries the source's mode.
+- **They are source the user edits.** A bridge module or a build script is
+  scaffolding on day one and the user's code on day two. Copy-if-absent keeps
+  the additive invariant; write-if-changed would take their work back on the
+  next `update`.
+
+Copy at FILE granularity, not directory granularity. A project scaffolded
+before a file was added has the parent directory and not the file, and a
+whole-directory skip leaves it half-upgraded — importing a module that is not
+there. Half is worse than either end.
+
+A missing source is `absent`, not an error, so a path list shared with the
+create-time strip may name paths that only exist after a generator run.
 
 ### Managed blocks
 
@@ -226,6 +249,15 @@ change a line inside the block moves it out.
 
 One surviving marker is reported as a `conflict` rather than repaired. Guessing
 where the missing partner belonged would delete user lines.
+
+**Managed blocks do not work in CSS.** The markers are LINE comments, and CSS
+has none — `inferCommentPrefix` returns `#` for an unrecognised extension, and
+`# hatchkit:begin …` in a stylesheet is a parse error. The placement is wrong
+too: `anchor` is a single substring matched FIRST and inserted AFTER, so it
+cannot express "after the last `@import`", and a missing anchor appends at end
+of file — past every rule, where CSS drops an `@import` silently. Use a
+fixed-point `edit` that emits block-comment markers and places them itself;
+`cli/src/features/mobile/index.ts` (`wireNativeStyles`) is the worked example.
 
 ### Fixed-point edits
 

@@ -51,7 +51,7 @@
  *   both the guarantee and the dry run.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Feature, Surface } from "../prompts.js";
 import type { ProjectIdentifiers } from "../scaffold/identifiers.js";
@@ -155,6 +155,41 @@ export class FeatureLedger {
     if (this.dryRun) return this.record(rel, "would-write");
     mkdirSync(dirname(abs), { recursive: true });
     writeFileSync(abs, content, "utf-8");
+    return this.record(rel, "written");
+  }
+
+  /**
+   * Copy a file from OUTSIDE the project (the `starter/` template) into
+   * it, byte for byte, when the destination is not already there.
+   *
+   * {@link writeIfChanged} cannot do this job for two kinds of file that
+   * a feature nonetheless ships:
+   *
+   *  · **Binary.** It round-trips content through a UTF-8 string, which
+   *    corrupts a PNG. The mobile feature's `resources/icon.png` is the
+   *    1024px source every launcher icon is generated from.
+   *  · **Executable.** `writeFileSync` creates a 0644 file, so a shell
+   *    script arrives without its `+x` bit and the script that invokes
+   *    it fails with EACCES. `cpSync` carries the source's mode.
+   *
+   * Copy-IF-ABSENT rather than write-if-changed, because the files this
+   * hands over are source the user then edits — a bridge module, a build
+   * script. Overwriting them on the next `update` would silently undo
+   * their work, which is the same trap {@link writeIfChanged} documents.
+   * A destination that exists is therefore `unchanged`, never compared.
+   *
+   * A missing SOURCE is `absent`, not an error: the path list is shared
+   * with the create-time strip, and a path that only ever exists after a
+   * generator run (the `ios/` and `android/` trees) has no template copy
+   * to hand over.
+   */
+  copyIfAbsent(rel: string, sourceAbs: string): FileAction {
+    const abs = this.abs(rel);
+    if (existsSync(abs)) return this.record(rel, "unchanged");
+    if (!existsSync(sourceAbs)) return this.record(rel, "absent");
+    if (this.dryRun) return this.record(rel, "would-write");
+    mkdirSync(dirname(abs), { recursive: true });
+    cpSync(sourceAbs, abs);
     return this.record(rel, "written");
   }
 
