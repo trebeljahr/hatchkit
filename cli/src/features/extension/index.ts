@@ -71,9 +71,7 @@ import {
   type PatchResult,
   addClientEnvExample,
   addDeviceClientPlugin,
-  addServerEnvExample,
   addSharedBridgeExport,
-  addTrustExtensionOriginsEnv,
   mountExtensionBridge,
   wireAuth,
   wireServerApp,
@@ -303,13 +301,14 @@ export const extensionFeature = registerFeature({
       ledger.edit(target, () => renderTokens(result.content, tokens));
     };
 
+    // `packages/server/src/config/env.ts` and `packages/server/.env.example`
+    // are deliberately absent: the starter ships TRUST_EXTENSION_ORIGINS and
+    // its resolver, and the patches below read `trustsExtensionOrigins()`.
     patch("packages/shared/src/index.ts", addSharedBridgeExport);
-    patch("packages/server/src/config/env.ts", addTrustExtensionOriginsEnv);
     patch("packages/server/src/app.ts", wireServerApp);
     patch("packages/server/src/auth/auth.ts", wireAuth);
     patch("packages/client/src/app/layout.tsx", mountExtensionBridge);
     patch("packages/client/src/lib/auth-client.ts", addDeviceClientPlugin);
-    patch("packages/server/.env.example", addServerEnvExample);
     patch("packages/client/.env.example", addClientEnvExample);
 
     // CI: a managed block, because this file is one a project edits.

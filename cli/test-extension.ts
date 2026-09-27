@@ -397,11 +397,21 @@ check("a fresh apply lands the whole file set and wires every starter file", () 
     const read = (rel: string): string => readFileSync(join(dir, rel), "utf-8");
 
     assert.ok(read("packages/shared/src/index.ts").includes('export * from "./extension-bridge.js";'));
-    assert.ok(
-      read("packages/server/src/config/env.ts").includes(
-        'TRUST_EXTENSION_ORIGINS: getOptional("TRUST_EXTENSION_ORIGINS") === "true"',
-      ),
+
+    // The starter owns the switch, so the feature leaves env.ts and the
+    // server's .env.example alone. It keeps the RAW string plus a
+    // resolver, because unset follows TRUST_STORE_APPS — something a bare
+    // `=== "true"` coercion cannot express — and a second, coarser copy
+    // injected here would shadow it.
+    const serverEnv = read("packages/server/src/config/env.ts");
+    assert.equal(
+      serverEnv.match(/TRUST_EXTENSION_ORIGINS: /g)?.length,
+      1,
+      "the feature must not add a second TRUST_EXTENSION_ORIGINS entry",
     );
+    assert.ok(serverEnv.includes('TRUST_EXTENSION_ORIGINS: getOptional("TRUST_EXTENSION_ORIGINS"),'));
+    assert.ok(serverEnv.includes("export function trustsExtensionOrigins()"));
+    assert.equal(read("packages/server/.env.example").match(/TRUST_EXTENSION_ORIGINS/g)?.length, 1);
 
     const app = read("packages/server/src/app.ts");
     // The CORS answer for an extension origin is uncredentialed, and
@@ -411,11 +421,22 @@ check("a fresh apply lands the whole file set and wires every starter file", () 
     assert.ok(app.includes('res.setHeader("Access-Control-Allow-Origin", "*");'));
     assert.ok(app.includes(`service: "${identifiers.slug}"`));
     assert.ok(app.includes("originTrusted:"));
+    // Both callers ask the resolver. `env.TRUST_EXTENSION_ORIGINS` is a
+    // string, so reading it raw would trust the literal "false".
+    assert.ok(
+      app.includes('import { env, getTrustedOrigins, trustsExtensionOrigins } from "./config/env.js";'),
+    );
+    assert.equal(app.match(/trustsExtensionOrigins\(\)/g)?.length, 2);
+    assert.ok(!app.includes("env.TRUST_EXTENSION_ORIGINS"));
 
     const auth = read("packages/server/src/auth/auth.ts");
     assert.ok(
-      auth.includes("trustedOriginsForRequest(getTrustedOrigins(), request, env.TRUST_EXTENSION_ORIGINS)"),
+      auth.includes("trustedOriginsForRequest(getTrustedOrigins(), request, trustsExtensionOrigins())"),
     );
+    assert.ok(
+      auth.includes('import { env, getTrustedOrigins, trustsExtensionOrigins } from "../config/env.js";'),
+    );
+    assert.ok(!auth.includes("env.TRUST_EXTENSION_ORIGINS"));
     assert.ok(auth.includes("bearer(),"));
     assert.ok(auth.includes("deviceAuthorization({"));
     assert.ok(auth.includes(`clientId === "${identifiers.clientIds.extension}"`));

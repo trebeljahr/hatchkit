@@ -31,9 +31,12 @@
  *     send a credentialed request to it, let alone let the caller read
  *     the response.
  *
- * Off unless the server opts in: `TRUST_EXTENSION_ORIGINS=true`. A rule
- * that trusts a whole scheme is a decision an operator makes, not a
- * default a deployment acquires by upgrading.
+ * Switched by `TRUST_EXTENSION_ORIGINS`, which follows `TRUST_STORE_APPS`
+ * when it is unset — a server that accepts the published store clients
+ * means to accept this one too — while an explicit value wins either way,
+ * so a deployment can take the store apps and still refuse this rule.
+ * Callers pass `trustsExtensionOrigins()` from config/env.ts and never the
+ * raw env value, which is a string: the literal "false" is truthy.
  */
 import { isRandomExtensionOrigin } from "@starter/shared/extension-bridge";
 
@@ -68,7 +71,8 @@ export function carriesSessionCookie(cookieHeader: string | undefined | null): b
 export type ExtensionOriginRequest = {
   origin: string | undefined | null;
   cookie: string | undefined | null;
-  /** Whether the server has opted in at all. */
+  /** Whether the server trusts the scheme at all —
+   *  `trustsExtensionOrigins()`, never the raw env string. */
   enabled: boolean;
 };
 

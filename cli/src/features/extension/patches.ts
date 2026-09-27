@@ -41,38 +41,14 @@ export function addSharedBridgeExport(content: string): PatchResult {
 // ---------------------------------------------------------------------------
 // packages/server/src/config/env.ts
 // ---------------------------------------------------------------------------
-
-const TRUSTED_ORIGINS_ANCHOR = 'TRUSTED_ORIGINS: getOptional("TRUSTED_ORIGINS"),';
-
-const TRUST_EXTENSION_ORIGINS_BLOCK = `
-  // Trust the per-install RANDOM origins that extension builds get —
-  // Firefox's \`moz-extension://<uuid>\`, Safari's
-  // \`safari-web-extension://<uuid>\`. Nobody can know one before the
-  // install exists, so no list can hold it and the rule is per-scheme
-  // instead, narrowed by the request carrying no session cookie and by
-  // never answering such an origin with credentialed CORS
-  // (auth/extension-origins.ts). Off by default: trusting a whole
-  // scheme is an operator's decision, not something a deployment
-  // acquires by upgrading.
-  TRUST_EXTENSION_ORIGINS: getOptional("TRUST_EXTENSION_ORIGINS") === "true",`;
-
-export function addTrustExtensionOriginsEnv(content: string): PatchResult {
-  if (content.includes("TRUST_EXTENSION_ORIGINS")) return unchanged(content);
-  if (!content.includes(TRUSTED_ORIGINS_ANCHOR)) {
-    return {
-      ...unchanged(content),
-      problem:
-        'packages/server/src/config/env.ts: add `TRUST_EXTENSION_ORIGINS: getOptional("TRUST_EXTENSION_ORIGINS") === "true",` to the env object.',
-    };
-  }
-  return {
-    content: content.replace(
-      TRUSTED_ORIGINS_ANCHOR,
-      `${TRUSTED_ORIGINS_ANCHOR}\n${TRUST_EXTENSION_ORIGINS_BLOCK.trimStart()}`,
-    ),
-    changed: true,
-  };
-}
+//
+// Nothing to patch. The starter ships `TRUST_EXTENSION_ORIGINS` itself,
+// as a RAW string resolved by `trustsExtensionOrigins()`, because unset
+// has to follow `TRUST_STORE_APPS` — a server that accepts the published
+// store clients means to accept this rule too — and a bare `=== "true"`
+// coercion cannot express that. So every patch below reads the RESOLVER
+// and never the raw env value, which is a string and would be truthy for
+// the literal "false".
 
 // ---------------------------------------------------------------------------
 // packages/server/src/app.ts
@@ -80,7 +56,10 @@ export function addTrustExtensionOriginsEnv(content: string): PatchResult {
 
 const APP_IMPORT =
   'import { corsDecisionFor, extensionOriginTrusted } from "./auth/extension-origins.js";';
+/** The starter's env import, which also has to grow the resolver. */
 const APP_IMPORT_ANCHOR = 'import { env, getTrustedOrigins } from "./config/env.js";';
+const APP_IMPORT_ANCHOR_WIRED =
+  'import { env, getTrustedOrigins, trustsExtensionOrigins } from "./config/env.js";';
 
 const CORS_ANCHOR = `  app.use(
     cors({
@@ -100,7 +79,7 @@ const CORS_REPLACEMENT = `  // A per-request delegate rather than a static list.
       req.headers.origin,
       req.headers.cookie,
       trustedOrigins,
-      env.TRUST_EXTENSION_ORIGINS,
+      trustsExtensionOrigins(),
     );
     return cors({
       origin: decision.allowed ? (req.headers.origin ?? false) : false,
@@ -140,7 +119,7 @@ const HEALTH_REPLACEMENT = `  app.get("/api/health", (req, res) => {
             extensionOriginTrusted({
               origin,
               cookie: req.headers.cookie,
-              enabled: env.TRUST_EXTENSION_ORIGINS,
+              enabled: trustsExtensionOrigins(),
             }),
       db: isDatabaseReady(),`;
 
@@ -151,11 +130,11 @@ export function wireServerApp(content: string): PatchResult {
 
   if (!out.includes("./auth/extension-origins.js")) {
     if (out.includes(APP_IMPORT_ANCHOR)) {
-      out = out.replace(APP_IMPORT_ANCHOR, `${APP_IMPORT_ANCHOR}\n${APP_IMPORT}`);
+      out = out.replace(APP_IMPORT_ANCHOR, `${APP_IMPORT_ANCHOR_WIRED}\n${APP_IMPORT}`);
       changed = true;
     } else {
       problems.push(
-        "packages/server/src/app.ts: import corsDecisionFor + extensionOriginTrusted from ./auth/extension-origins.js.",
+        "packages/server/src/app.ts: import corsDecisionFor + extensionOriginTrusted from ./auth/extension-origins.js, and trustsExtensionOrigins from ./config/env.js.",
       );
     }
   }
@@ -194,6 +173,8 @@ import { deviceAuthorization } from "better-auth/plugins/device-authorization";
 import { trustedOriginsForRequest } from "./extension-origins.js";`;
 
 const AUTH_IMPORT_ANCHOR = 'import { env, getTrustedOrigins } from "../config/env.js";';
+const AUTH_IMPORT_ANCHOR_WIRED =
+  'import { env, getTrustedOrigins, trustsExtensionOrigins } from "../config/env.js";';
 
 const AUTH_TRUSTED_ANCHOR = "    trustedOrigins: getTrustedOrigins(),";
 
@@ -204,7 +185,7 @@ const AUTH_TRUSTED_REPLACEMENT = `    // Per request, because one of the trusted
     // \`request\` is optional in better-auth's own signature — it calls
     // this with nothing for the paths that have no request in hand.
     trustedOrigins: (request?: Request) =>
-      trustedOriginsForRequest(getTrustedOrigins(), request, env.TRUST_EXTENSION_ORIGINS),
+      trustedOriginsForRequest(getTrustedOrigins(), request, trustsExtensionOrigins()),
 
     plugins: [
       // Lets a client with no cookie jar — the browser extension, a CLI
@@ -243,11 +224,11 @@ export function wireAuth(content: string): PatchResult {
 
   if (!out.includes("./extension-origins.js")) {
     if (out.includes(AUTH_IMPORT_ANCHOR)) {
-      out = out.replace(AUTH_IMPORT_ANCHOR, `${AUTH_IMPORT_ANCHOR}\n${AUTH_IMPORTS}`);
+      out = out.replace(AUTH_IMPORT_ANCHOR, `${AUTH_IMPORT_ANCHOR_WIRED}\n${AUTH_IMPORTS}`);
       changed = true;
     } else {
       problems.push(
-        "packages/server/src/auth/auth.ts: import bearer, deviceAuthorization and trustedOriginsForRequest.",
+        "packages/server/src/auth/auth.ts: import bearer, deviceAuthorization, trustedOriginsForRequest and trustsExtensionOrigins.",
       );
     }
   }
@@ -356,21 +337,11 @@ export function addDeviceClientPlugin(content: string): PatchResult {
 // ---------------------------------------------------------------------------
 // .env.example files
 // ---------------------------------------------------------------------------
-
-const SERVER_ENV_BLOCK = `
-# Trust the per-install random origins of Firefox/Safari extension
-# builds (moz-extension://<uuid>), which no list can hold. Narrowed by
-# the request carrying no session cookie, and such an origin is never
-# answered with credentialed CORS. The CHROME build's origin is a fixed
-# chrome-extension://<id> and belongs in TRUSTED_ORIGINS above instead.
-# TRUST_EXTENSION_ORIGINS=true
-`;
-
-export function addServerEnvExample(content: string): PatchResult {
-  if (content.includes("TRUST_EXTENSION_ORIGINS")) return unchanged(content);
-  const trimmed = content.endsWith("\n") ? content : `${content}\n`;
-  return { content: `${trimmed}${SERVER_ENV_BLOCK}`, changed: true };
-}
+//
+// The SERVER file needs nothing: the starter documents
+// TRUST_EXTENSION_ORIGINS beside TRUST_STORE_APPS, where the two switches
+// only make sense together. Appending a second copy here would state the
+// older, coarser rule under the newer one.
 
 const CLIENT_ENV_BLOCK = `
 # The browser extension ids this web app may message, comma-separated
