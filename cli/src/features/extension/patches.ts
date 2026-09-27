@@ -168,9 +168,14 @@ export function wireServerApp(content: string): PatchResult {
 // packages/server/src/auth/auth.ts
 // ---------------------------------------------------------------------------
 
-const AUTH_IMPORTS = `import { bearer } from "better-auth/plugins";
-import { deviceAuthorization } from "better-auth/plugins/device-authorization";
-import { trustedOriginsForRequest } from "./extension-origins.js";`;
+// `bearer()` and better-auth's device grant used to be registered from
+// here too, and their own comment said who they were for: "a client with
+// no cookie jar — the browser extension, a CLI". Neither is a
+// browser-extension concern, so both moved to the shared device-grant
+// unit (`cli/src/features/device-grant/`), which this feature's `apply`
+// invokes. What is left here is the part that genuinely is the
+// extension's: an origin whose trust is decided per REQUEST.
+const AUTH_IMPORTS = `import { trustedOriginsForRequest } from "./extension-origins.js";`;
 
 const AUTH_IMPORT_ANCHOR = 'import { env, getTrustedOrigins } from "../config/env.js";';
 const AUTH_IMPORT_ANCHOR_WIRED =
@@ -185,37 +190,7 @@ const AUTH_TRUSTED_REPLACEMENT = `    // Per request, because one of the trusted
     // \`request\` is optional in better-auth's own signature — it calls
     // this with nothing for the paths that have no request in hand.
     trustedOrigins: (request?: Request) =>
-      trustedOriginsForRequest(getTrustedOrigins(), request, trustsExtensionOrigins()),
-
-    plugins: [
-      // Lets a client with no cookie jar — the browser extension, a CLI
-      // — sign in normally and then carry its session as
-      // \`Authorization: Bearer <token>\`.
-      //
-      // \`requireSignature\` stays OFF, and that is deliberate: password
-      // sign-in returns the SIGNED token on the \`set-auth-token\`
-      // header, while the device grant returns the RAW session token as
-      // \`access_token\`. Requiring a signature would accept only the
-      // first and refuse every device-paired client. It costs nothing:
-      // an unsigned value is looked up, and an unknown token matches no
-      // session.
-      bearer(),
-
-      // RFC 8628, for the clients where typing a password is wrong: the
-      // extension's "Sign in with the web app", and any account with
-      // two-factor authentication.
-      deviceAuthorization({
-        expiresIn: "10m",
-        interval: "5s",
-        // The code is approved in the WEB APP, which is a different
-        // origin from this API in development and in any split
-        // deployment. Without this, better-auth points people at the
-        // API's own /device, which does not exist.
-        verificationUri: \`\${env.FRONTEND_URL.replace(/\\/$/, "")}/device\`,
-        // Only clients this server knows may start a flow.
-        validateClient: (clientId: string) => clientId === "__HATCHKIT_DEVICE_CLIENT_ID__",
-      }),
-    ],`;
+      trustedOriginsForRequest(getTrustedOrigins(), request, trustsExtensionOrigins()),`;
 
 export function wireAuth(content: string): PatchResult {
   let out = content;
@@ -228,7 +203,7 @@ export function wireAuth(content: string): PatchResult {
       changed = true;
     } else {
       problems.push(
-        "packages/server/src/auth/auth.ts: import bearer, deviceAuthorization, trustedOriginsForRequest and trustsExtensionOrigins.",
+        "packages/server/src/auth/auth.ts: import trustedOriginsForRequest from ./extension-origins.js, and trustsExtensionOrigins from ../config/env.js.",
       );
     }
   }
@@ -239,7 +214,7 @@ export function wireAuth(content: string): PatchResult {
       changed = true;
     } else {
       problems.push(
-        "packages/server/src/auth/auth.ts: pass trustedOrigins as a per-request function and add the bearer() + deviceAuthorization() plugins.",
+        "packages/server/src/auth/auth.ts: pass trustedOrigins as a per-request function (see trustedOriginsForRequest).",
       );
     }
   }
@@ -291,48 +266,11 @@ export function mountExtensionBridge(content: string): PatchResult {
   return { content: out, changed, problem: problems.length > 0 ? problems.join(" ") : undefined };
 }
 
-const AUTH_CLIENT_IMPORT =
-  'import { deviceAuthorizationClient } from "better-auth/client/plugins";';
-const AUTH_CLIENT_IMPORT_ANCHOR = 'import { createAuthClient } from "better-auth/react";';
-/** `createAuthClient({ baseURL: <expr> });` — the expression is a template literal. */
-const AUTH_CLIENT_CALL = /createAuthClient\(\{(\s*)baseURL: ([^\n]+?),?(\s*)\}\);/;
-
-export function addDeviceClientPlugin(content: string): PatchResult {
-  let out = content;
-  let changed = false;
-  const problems: string[] = [];
-
-  if (!out.includes("better-auth/client/plugins")) {
-    if (out.includes(AUTH_CLIENT_IMPORT_ANCHOR)) {
-      out = out.replace(
-        AUTH_CLIENT_IMPORT_ANCHOR,
-        `${AUTH_CLIENT_IMPORT_ANCHOR}\n${AUTH_CLIENT_IMPORT}`,
-      );
-      changed = true;
-    } else {
-      problems.push(
-        'packages/client/src/lib/auth-client.ts: import { deviceAuthorizationClient } from "better-auth/client/plugins".',
-      );
-    }
-  }
-
-  if (!out.includes("deviceAuthorizationClient()")) {
-    if (AUTH_CLIENT_CALL.test(out)) {
-      out = out.replace(
-        AUTH_CLIENT_CALL,
-        (_match, lead: string, baseUrl: string, tail: string) =>
-          `createAuthClient({${lead}baseURL: ${baseUrl},${lead}// The device flow the browser extension signs in with. Without${lead}// it \`authClient.device\` does not exist and the approval page${lead}// fails at runtime, not at build time.${lead}plugins: [deviceAuthorizationClient()],${tail}});`,
-      );
-      changed = true;
-    } else {
-      problems.push(
-        "packages/client/src/lib/auth-client.ts: pass `plugins: [deviceAuthorizationClient()]` to createAuthClient.",
-      );
-    }
-  }
-
-  return { content: out, changed, problem: problems.length > 0 ? problems.join(" ") : undefined };
-}
+// The web app's auth client needs better-auth's
+// `deviceAuthorizationClient()` before the approval page can call
+// `authClient.device.approve(...)`. That patch is not here: it belongs
+// to the shared device-grant unit, which applies it for whichever
+// pairing client is selected.
 
 // ---------------------------------------------------------------------------
 // .env.example files

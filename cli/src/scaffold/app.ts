@@ -445,6 +445,63 @@ async function runScaffoldSteps(
       (ports.nativeHmr ? ` native=${ports.nativeHmr}` : ""),
   );
 
+  // Runs after the ports are assigned and before the next.config flip that
+  // rebuilds `transpilePackages` from the directories under `packages/`: a
+  // package stripped after that flip stays named in the client's config and
+  // the desktop or mobile build fails resolving something that is not there.
+  //
+  // The two host packages. Both SHIP starter source, so `create` subtracts
+  // rather than applies: their `apply` is the update-path copy, and its
+  // copy-if-absent loop would find every file already present here and rename
+  // nothing. Selected means rename in place; unselected means strip.
+  //
+  // Both require `client-core`, and the strip above is why that matters
+  // beyond ordering: a host package left behind next to a deleted
+  // `packages/core` still names `@starter/core` in a dependency and in a
+  // vendored copy, which fails the first `pnpm install`. The selection closure
+  // makes that unreachable — neither can be selected without client-core — and
+  // `test-client-core.ts` asserts the property rather than trusting it.
+  if (!config.features.includes("raycast")) {
+    const { stripRaycast } = await import("../features/raycast/index.js");
+    modifications.push(...stripRaycast(outputDir));
+  } else {
+    const { renameRaycastTree } = await import("../features/raycast/index.js");
+    modifications.push(
+      ...renameRaycastTree(outputDir, identifiers, {
+        domain: config.domain,
+        topology: config.topology,
+        ports,
+      }),
+    );
+  }
+
+  if (!config.features.includes("mcp")) {
+    const { stripMcp } = await import("../features/mcp/index.js");
+    modifications.push(...stripMcp(outputDir));
+  } else {
+    const { apiOriginFor, renameMcpTree } = await import("../features/mcp/index.js");
+    modifications.push(
+      ...renameMcpTree(
+        outputDir,
+        identifiers,
+        apiOriginFor({ domain: config.domain, topology: config.topology }),
+      ),
+    );
+  }
+
+  // Pairing for a client with no cookie jar. Not a feature: it belongs to
+  // whichever dependent is selected, so it is stripped only when EVERY
+  // dependent is absent — keying it on one would delete the approval page out
+  // from under the other.
+  {
+    const { shouldStripDeviceGrant, stripDeviceGrant } = await import(
+      "../features/device-grant/index.js"
+    );
+    if (shouldStripDeviceGrant(config.features)) {
+      modifications.push(...stripDeviceGrant(outputDir));
+    }
+  }
+
   // The launcher's two project-specific facts: the pinned ports it defaults
   // to, and the native shells' document origins it hands the dev server as
   // TRUSTED_ORIGINS. Also writes `dev` / `dev:auto` / `dev:fixed` — three

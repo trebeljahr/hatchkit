@@ -63,6 +63,12 @@ const {
   renderClientCoreChecklist,
 } = await import("./src/features/client-core/index.js");
 const { FeatureLedger, expandFeatureSelection } = await import("./src/features/contract.js");
+/** Conditions whose sections may name the kit: the feature itself, and the
+ *  two host surfaces that require it. */
+const CORE_GATED_CONDITIONS = new Set(["client-core", "raycast", "mcp"]);
+
+const { stripRaycast } = await import("./src/features/raycast/index.js");
+const { stripMcp } = await import("./src/features/mcp/index.js");
 const { findUnsubstitutedIdentifierTokens, resolveIdentifiers } = await import(
   "./src/scaffold/identifiers.js"
 );
@@ -125,6 +131,15 @@ function sameSnapshot(a: Map<string, string>, b: Map<string, string>): boolean {
 function strippedProject(prefix: string): string {
   const out = join(tempDir(prefix), "project");
   cpSync(STARTER, out, { recursive: true, filter: notNodeModules });
+  // The two host packages go first, because both REQUIRE client-core and both
+  // legitimately name `@starter/core` — in a dependency, in an import, and,
+  // for the launcher, in a byte-for-byte vendored copy of the kit's own prose.
+  // A tree with `packages/core` deleted and either host still present is one
+  // the selection closure can never produce, so asserting "nothing names the
+  // package" against it would be asserting a property of a project that
+  // cannot exist. Stripping them here makes the assertion about a real tree.
+  stripRaycast(out);
+  stripMcp(out);
   stripClientCore(out);
   return out;
 }
@@ -477,6 +492,15 @@ if (!existsSync(join(STARTER, "package.json"))) {
     const dir = tempDir("client-core-strip-");
     const out = join(dir, "project");
     cpSync(STARTER, out, { recursive: true, filter: notNodeModules });
+    // The two host packages go first. Both REQUIRE client-core and both
+    // legitimately name `@starter/core` — in a dependency, in an import, and,
+    // for the launcher, inside a byte-for-byte vendored copy of the kit's own
+    // prose that it must not edit. A tree with `packages/core` deleted and
+    // either host still standing is one the selection closure cannot produce,
+    // so asserting "nothing names the package" against it would be asserting a
+    // property of a project that does not exist.
+    stripRaycast(out);
+    stripMcp(out);
     stripClientCore(out);
 
     const rootPkg = JSON.parse(readFileSync(join(out, "package.json"), "utf-8")) as {
@@ -527,7 +551,11 @@ if (!existsSync(join(STARTER, "package.json"))) {
           for (const line of md.split("\n")) {
             const open = /<!--\s*hatchkit:if\s+([\w-]+)\s*-->/.exec(line);
             if (open) {
-              depth += open[1] === "client-core" ? 1000 : 1;
+              // A section gated on a feature that REQUIRES client-core is as
+              // safe as one gated on client-core itself — the selection
+              // closure never emits the first without the second — so the
+              // launcher's and the MCP server's own prose may name the kit.
+              depth += CORE_GATED_CONDITIONS.has(open[1] ?? "") ? 1000 : 1;
               continue;
             }
             if (/<!--\s*hatchkit:endif\s*-->/.test(line)) {

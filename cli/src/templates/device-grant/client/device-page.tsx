@@ -17,11 +17,12 @@ import { approveDeviceCode } from "@/lib/device-approve";
  * The code may arrive prefilled as `?user_code=`, so `useSearchParams`
  * needs a Suspense boundary to keep the page statically exportable.
  *
- * Note what this page is NOT: it is not how the extension is linked
- * when somebody is already signed in on the web. That path never
- * renders anything — the extension hands the page a code over the
- * bridge and the page approves it in the background
- * (`components/ExtensionBridge.tsx`).
+ * Note what this page is NOT: it is not the only way a client is
+ * paired. A client that can reach this browser directly may have its
+ * code approved without this page rendering at all — the browser
+ * extension does exactly that over its bridge, in
+ * `components/ExtensionBridge.tsx`, which is present only in a project
+ * that ships the extension.
  */
 function DeviceApproval(): React.JSX.Element {
   const params = useSearchParams();

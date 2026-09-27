@@ -56,6 +56,7 @@ import { dirname, join } from "node:path";
 import type { Feature, Surface } from "../prompts.js";
 import type { ProjectIdentifiers } from "../scaffold/identifiers.js";
 import type { ProjectManifest } from "../scaffold/manifest.js";
+import { KNOWN_FEATURES } from "../utils/flags.js";
 
 export type FeatureId = Feature;
 
@@ -566,6 +567,12 @@ export interface FeatureDefinition {
 const REGISTRY = new Map<FeatureId, FeatureDefinition>();
 
 /** Register a feature. Call once per feature at module load. */
+/** Every id the CLI recognises, registered here or applied elsewhere.
+ *  `expandFeatureSelection` validates against this rather than against the
+ *  registry, so a prerequisite naming a feature another writer applies is a
+ *  true statement rather than an error. */
+const KNOWN_FEATURE_IDS: ReadonlySet<FeatureId> = new Set(KNOWN_FEATURES);
+
 export function registerFeature(def: FeatureDefinition): FeatureDefinition {
   const existing = REGISTRY.get(def.id);
   if (existing && existing !== def) {
@@ -620,12 +627,34 @@ export interface ExpandedSelection {
 export function expandFeatureSelection(selected: readonly FeatureId[]): ExpandedSelection {
   const errors: string[] = [];
   const wanted = new Set<FeatureId>();
+  /** Real feature ids that something requires but this registry does not
+   *  apply — see `pull`. They are reported through `implied` so a picker
+   *  still adds them, and left out of `ordered` because nothing here runs
+   *  them. */
+  const external = new Set<FeatureId>();
   const implied: FeatureId[] = [];
 
   const pull = (id: FeatureId, viaChain: FeatureId[]): void => {
-    if (wanted.has(id)) return;
+    if (wanted.has(id) || external.has(id)) return;
     const def = REGISTRY.get(id);
     if (!def) {
+      // A feature this registry does not APPLY is not automatically a
+      // feature that does not EXIST. The server-platform trio
+      // (`server-migrations`, `scheduler`, `public-api`) are real, offerable
+      // ids in the `Feature` union that a different writer applies, so a
+      // `requires` naming one is a true statement about a real prerequisite
+      // — it just is not one this sort can order.
+      //
+      // Validate against the union, which is the actual set of ids, and let
+      // the sort own only what it applies. Checking against the REGISTRY
+      // instead reported `mcp`'s honest `requires: ["public-api"]` as
+      // "Unknown feature", and — worse — did so even when the user had
+      // selected `public-api` explicitly, so there was no way to satisfy it.
+      // A typo is still caught, because a typo is not in the union either.
+      if (KNOWN_FEATURE_IDS.has(id)) {
+        external.add(id);
+        return;
+      }
       errors.push(
         `Unknown feature "${id}"${viaChain.length ? ` (required by ${viaChain.join(" → ")})` : ""}.`,
       );

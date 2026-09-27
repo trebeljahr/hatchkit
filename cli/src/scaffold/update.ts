@@ -142,6 +142,8 @@ export const SUPPORTED_ADDITIONS: readonly Feature[] = [
   // writer `create` does.
   ...SERVER_FEATURE_IDS,
   "i18n",
+  "raycast",
+  "mcp",
 ];
 
 /**
@@ -674,6 +676,29 @@ export async function runUpdate(
         } else if (feature === "client-core") {
           await addRegisteredFeature("client-core", projectDir, manifestDir, manifest);
           updatedFeatures.add("client-core");
+        } else if (feature === "raycast" || feature === "mcp") {
+          // Both go through the registry, so `applyFeatures` orders them after
+          // the prerequisites they declare and each one's own `apply` runs the
+          // shared device-grant unit it needs. A surface that cannot host them
+          // is refused rather than half-applied — the manifest would otherwise
+          // claim a package the project has no files for, and the next
+          // `update` would treat it as already present.
+          // A manifest written before `surfaces` existed has none. Treat that
+          // as the full-stack default the scaffolder used at the time rather
+          // than refusing: the project plainly has both halves or it would not
+          // have got this far.
+          const surfaces = manifest.surfaces ?? "fullstack";
+          const problem =
+            feature === "raycast"
+              ? (await import("../features/raycast/index.js")).raycastPrerequisiteProblem(surfaces)
+              : (await import("../features/mcp/index.js")).mcpPrerequisiteProblem(surfaces);
+          if (problem !== null) {
+            console.log(chalk.yellow(`\n  Skipping ${feature}. ${problem}`));
+            refused.push(feature);
+          } else {
+            await addRegisteredFeature(feature, projectDir, manifestDir, manifest);
+            updatedFeatures.add(feature);
+          }
         } else if (feature === "i18n") {
           // i18n is the one addition that copies nothing out of the
           // starter: the starter is single-language, so there is no

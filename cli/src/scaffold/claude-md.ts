@@ -19,6 +19,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { deviceGrantWanted } from "../features/device-grant/index.js";
 import type { ProjectConfig } from "../prompts.js";
 import { rewriteFile } from "./starter-files.js";
 import { surfaceHasClient, surfaceHasServer } from "./surfaces.js";
@@ -79,6 +80,12 @@ function activeConditions(config: ProjectConfig): Set<string> {
     // conditional CLAUDE.md as everything else.
     extension: config.features.includes("extension"),
     i18n: config.features.includes("i18n"),
+    raycast: config.features.includes("raycast"),
+    mcp: config.features.includes("mcp"),
+    // Pairing belongs to whichever cookie-jar-less client is present. Asked
+    // through the predicate, not by re-listing the dependents: a second copy
+    // of that list is how a launcher ships with no way to sign in.
+    "device-grant": deviceGrantWanted(config.features),
   };
   return new Set(Object.keys(on).filter((k) => on[k]));
 }

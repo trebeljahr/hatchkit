@@ -1,0 +1,59 @@
+---
+title: MCP Server
+description: The opt-in mcp feature scaffolds a stdio MCP server that speaks only the public REST surface, with capabilities probed at start and tool schemas derived from the shared validators.
+---
+
+`mcp` scaffolds `packages/mcp`, a stdio [MCP](https://modelcontextprotocol.io) server that lets a model read and change records through the project's public API.
+
+```bash
+hatchkit create --features mcp
+# or, on an existing project:
+cd <project> && hatchkit update      # tick mcp
+```
+
+It requires [Client Core](./client-core) and [`public-api`](./server-platform), and pulls both in. It applies to the `fullstack` and `split` surfaces.
+
+## It scaffolds no server code
+
+That is the point of the feature, not an omission. `public-api` already owns `/api/v1`, the token model, the scope vocabulary and the minting path; this feature adds a client of it and nothing else.
+
+**Going through the public token path means authorization, visibility rules and field projection stay the server's decisions**, so the MCP server cannot become the one place a rule is skipped. A tool that reached around the public surface would be the first place restricted data leaked past the visibility rules — and it would fail silently, because the model would simply report what it was handed.
+
+Its capability surface is therefore a strict subset of the public API's. Areas that API deliberately omits get no tools.
+
+## Configuration
+
+Two environment variables: a scoped API token and an origin. The origin is normalised — a trailing slash, a pasted versioned base path and a plain origin all mean the same thing — but a value that is not http(s) is refused rather than guessed at. A missing token exits with one sentence naming the variable and where to mint one.
+
+The token sits in plain text in the host's configuration file. The generated `docs-site` page says so, and says where to revoke it.
+
+## What the model sees
+
+Tool input schemas are built from the same validators the API enforces, imported from the shared package, with the fields the server stamps removed. Nothing is re-declared, so a tightened limit or a new status reaches the tool list with no edit. Where a validator carries a cross-field refinement, zod refuses field removal on it and the schema is rebuilt from its field map — dropping that rebuild silently loses every per-field constraint.
+
+The server declares a short instructions string telling the model what the records are, which lookup tools to call before a write, what unit ambiguous values are in, and what the server deliberately does not cover.
+
+**Capabilities are probed once at start and the tool list is filtered by them.** When the answer is known, a tool the credential cannot call is not registered at all — a model that sees a tool will try it, and a refusal after the fact costs the user a turn. When the probe *fails*, every tool is registered and each call reports the real reason, because exiting would leave the host showing "server exited" with nothing to debug.
+
+Every tool throw is caught at registration and returned as an error result. A throw that escaped to the transport would read to the host as the server dying rather than as a failed call.
+
+## Failures the model can act on
+
+The REST client distinguishes three cases, and each known problem maps to exactly one sentence naming what to change:
+
+- a refusal the server answered with a structured problem document;
+- no answer at all — DNS, connection refused, TLS, timeout — with the real cause dug out of the runtime's wrapped error;
+- an answer that is not this API, such as an HTML page from a proxy.
+
+A tool result is read by a model and paraphrased to a person, so the model must never have to guess whether a 403 meant a wrong token, a missing capability or a visibility rule.
+
+## Tests
+
+```bash
+pnpm run test:mcp              # fast tier, in the default unit run
+pnpm --filter @starter/mcp run test:integration
+```
+
+The fast tier connects an in-memory client to the same server factory the binary uses — construction is separated from the process precisely so the tests drive what actually ships. The slow tier runs the real binary over stdio against a real backend that starts its own datastore on a random port in a throwaway directory; a shared datastore or a default port would mean another checkout's server answered and the test passed against code that is not this one.
+
+A test also fails when the capability table in the generated docs stops matching the registered tools. That table is what someone reads when choosing which scopes to grant a token: overstating it makes people grant more than they need, understating it makes a granted token look broken, and neither fails anywhere except in their hands.

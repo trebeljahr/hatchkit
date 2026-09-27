@@ -132,7 +132,17 @@ export type Feature =
    *  document or an email is snapshotted in). Purely additive, and never a
    *  routing-based library: its middleware cannot exist under a static
    *  export — see `cli/src/features/i18n/`. */
-  | "i18n";
+  | "i18n"
+  /** A macOS launcher extension (`packages/raycast`), published to the
+   *  Raycast Store from a generated standalone copy. A UI shell over
+   *  `client-core`, which it reaches through a committed vendored copy
+   *  rather than a workspace dependency — the store builds the package
+   *  alone with a plain npm install. See `cli/src/features/raycast/`. */
+  | "raycast"
+  /** A stdio MCP server (`packages/mcp`) that speaks only the public
+   *  `/api/v1` surface `public-api` scaffolds, with a scoped bearer token.
+   *  Scaffolds no server code of its own. See `cli/src/features/mcp/`. */
+  | "mcp";
 
 export type AnalyticsProvider = "glitchtip" | "openpanel" | "plausible";
 
@@ -1077,6 +1087,16 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
               name: "Second language (typed catalogs, translated public pages, no routing library)",
               value: "i18n",
               checked: c.features.includes("i18n"),
+            },
+            {
+              name: "Raycast launcher extension (5 commands, store-publishable export)",
+              value: "raycast",
+              checked: c.features.includes("raycast"),
+            },
+            {
+              name: "MCP server (stdio, over the public REST API — needs public-api)",
+              value: "mcp",
+              checked: c.features.includes("mcp"),
             },
           ],
         });
@@ -2148,6 +2168,16 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
           name: "i18n (second language — typed catalogs + per-language public pages)",
           value: "i18n",
           checked: cfg.features.includes("i18n"),
+        },
+        {
+          name: "raycast (launcher extension — needs client-core)",
+          value: "raycast",
+          checked: cfg.features.includes("raycast"),
+        },
+        {
+          name: "mcp (stdio MCP server — needs client-core and public-api)",
+          value: "mcp",
+          checked: cfg.features.includes("mcp"),
         },
       ],
     });

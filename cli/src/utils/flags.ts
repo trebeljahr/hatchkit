@@ -83,6 +83,8 @@ export const KNOWN_FEATURES: readonly Feature[] = [
   // addable feature is in this list, so the gap cannot reopen.
   "auth-account-security",
   "i18n",
+  "raycast",
+  "mcp",
 ];
 export const KNOWN_ML_SERVICES: readonly MlService[] = [
   "3d-sam-objects",

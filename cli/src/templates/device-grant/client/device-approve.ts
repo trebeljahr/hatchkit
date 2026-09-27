@@ -6,10 +6,10 @@
  * without it fails with `invalid_request`, which reads to a person like
  * a mistyped code — so claim first and report a bad code once.
  *
- * The extension is what calls this, indirectly: it hands the page a
- * user code in a bridge reply, and the page approves it with the cookie
- * session it already has. The extension then fetches its OWN token from
- * the server. No credential crosses the bridge in either direction.
+ * Every paired client reaches this the same way: it hands the web app a
+ * user code, and the page approves it with the cookie session it already
+ * has. The client then fetches its OWN token from the server. No
+ * credential ever travels between the two.
  */
 import { authClient } from "@/lib/auth-client";
 

@@ -1068,6 +1068,18 @@ function detectFeatures(projectDir: string, serverDir: string | undefined): Feat
     found.add("extension");
   }
 
+  // Same reasoning for the two host packages: each is its own workspace
+  // package at a fixed path. The launcher is detected by its vendor barrel
+  // rather than by `@raycast/api` in the root manifest — it declares its own
+  // dependencies and is a workspace dependency of nothing, so the root
+  // manifest says nothing about it either way.
+  if (existsSync(join(projectDir, "packages", "raycast", "src", "vendor", "index.ts"))) {
+    found.add("raycast");
+  }
+  if (existsSync(join(projectDir, "packages", "mcp", "src", "tools.ts"))) {
+    found.add("mcp");
+  }
+
   // .env.production / .env.example as a hint when package.json is sparse.
   const envHints = [
     serverDir ? join(serverDir, ".env.production") : undefined,
@@ -1780,6 +1792,8 @@ async function editAdoptStep(
           checked: plan.features.includes("client-core"),
         },
         { name: "extension", value: "extension", checked: plan.features.includes("extension") },
+        { name: "raycast", value: "raycast", checked: plan.features.includes("raycast") },
+        { name: "mcp", value: "mcp", checked: plan.features.includes("mcp") },
       ],
     });
     return { ...plan, features };

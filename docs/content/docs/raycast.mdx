@@ -1,0 +1,70 @@
+---
+title: Raycast Extension
+description: The opt-in raycast feature scaffolds a macOS launcher extension that is a UI shell over the shared client core, with a vendored copy of the kit and a store-publishable export.
+---
+
+A launcher is the surface people reach for without thinking — a hotkey, a menu bar item — which is also why it is the surface most often used with no network. `raycast` scaffolds `packages/raycast`, a five-command Raycast extension built on [Client Core](./client-core) so it inherits the offline queue, the optimistic overlay and the read cache rather than growing its own.
+
+```bash
+hatchkit create --features raycast
+# or, on an existing project:
+cd <project> && hatchkit update      # tick raycast
+```
+
+It requires `client-core` and pulls it in. It applies to the `fullstack` and `split` surfaces: the launcher signs in against the web app's approval page, which a backend-only project does not have.
+
+## Five commands
+
+A menu bar item, a background hotkey, a live view, a list, and one that opens the web app. Everything else stays web app work, reached in one keystroke rather than rebuilt as a launcher command.
+
+**Adding a sixth is the decision to argue about, not adding capability to one.** Raycast has no runtime command-visibility control: a command is listed whether or not the state it acts on exists, and only background-capable modes can be launched without opening a window. So a command adapts when it opens and carries keywords so the words someone types still find it — and a command whose name promises a state-specific action will be invoked when that state does not exist, so it has to answer usefully rather than fail.
+
+The hotkey command is the exception and the mode is the reason: folding it into a view command silently costs the global hotkey, because a view command opens a window before it can do anything.
+
+## Pairing, and which server it is paired with
+
+Raycast cannot hold a session cookie, so the extension pairs over the RFC 8628 device flow the shared device-grant unit installs, and carries the issued session as a bearer token in Raycast's encrypted per-extension store.
+
+**The stored credential is bound to the origin that issued it.** Every read compares the stored origin against the currently configured one and reports signed-out on a mismatch; sign-out revokes against the stored origin, not the current one. Both failures the binding prevents are silent: sending the old credential hands your session to a server that has no business holding it, and revoking against the new origin leaves the real session alive on the old one.
+
+Pairing also claims any queued work that predates having an account **before** it flushes — the flush filter refuses a row it cannot attribute, so rows queued while signed out are exactly the ones a flush-first order would strand.
+
+## The vendored copy of the core
+
+The extension imports the kit through `src/vendor/`, never through `@starter/core`. The Raycast Store builds an extension on its own with a plain `npm install`, where a `workspace:*` dependency cannot resolve at all.
+
+```bash
+pnpm run vendor:raycast    # regenerate packages/raycast/src/vendor
+pnpm run test:raycast      # includes the --check that fails on a stale copy
+```
+
+The generator resolves every name the extension imports from the vendor barrel, follows it to the file that declares it, and copies those files byte-for-byte with their import specifiers rewritten. **Never edit `src/vendor/`** — change `packages/core` and regenerate.
+
+Two closures, and they are deliberately different: the copy set follows every import including type-only ones, while the barrel re-exports only what is reached through a *value* import. `export *` is a value export, so a module that is only ever imported as a type would otherwise drag its runtime cost into every command bundle. The check also refuses vendored code that imports a package the extension's own manifest does not declare.
+
+The drift check runs in `test:unit`. That matters because the host package is outside the build graph — nothing in the root `build` imports it, so a change that breaks it otherwise compiles green through the whole pipeline.
+
+## Publishing
+
+```bash
+pnpm run export:raycast -- <dir> --license MIT --author <raycast-username>
+```
+
+The export writes an npm-installable standalone copy: workspace ranges converted to plain npm ranges, the host template's scripts, no build output. It flips the local-dev default off so a store reviewer's first run reaches the hosted service, and it refuses a copy whose README or user-visible strings still name the monorepo's tooling. A dependency that could not be installed from the public registry throws at export time rather than failing later on the store's build machine.
+
+Publishing itself is manual; the in-repo `publish` script is a guard that exits. `packages/raycast/PUBLISHING.md` has the steps.
+
+**The extension's `name` and `author` are permanent once published.** Raycast keys its encrypted per-extension store by that pair, so changing either orphans every installed copy's credential, its queue of unsent writes and its cross-process state echo — with no error anywhere.
+
+## Freshness, and why there are four mechanisms
+
+Each Raycast command is its own short-lived process with no shared memory, so storage is the only channel between them. Four mechanisms, fastest and cheapest first:
+
+1. **A local echo** in the host's key-value store, written the instant the server confirms a mutation, re-read once a second. No network, works offline, and it is what closes the gap between separate command processes. It needs no expiry because the reconciliation compares fetch timestamps — a stale record can never mask a change that originated on another device.
+2. **The push socket**, held while a command is alive.
+3. **A narrow poll** of the one authoritative value, only while that socket is disconnected — polling underneath a connected socket asks a question already answered.
+4. **A whole-snapshot poll** on a slow interval.
+
+Raycast's own "refresh this command" call sits on top as a nudge, never as one of the four: the host may decline it, and a command that is still loaded is not remounted by one.
+
+The per-origin capability cache is persisted for the same reason. Without it every fresh command process starts knowing nothing and every capability gate reads "unknown".

@@ -16,7 +16,7 @@
     "build:server": "pnpm --filter @starter/shared run build && pnpm --filter @starter/server run build",
     "build:client": "pnpm --filter @starter/shared run build && pnpm --filter @starter/client run build",
     "test": "pnpm run test:unit && pnpm run test:client && pnpm run test:e2e",
-    "test:unit": "pnpm --filter @starter/server run test && pnpm run test:electron && pnpm run test:desktop:release",
+    "test:unit": "pnpm --filter @starter/server run test && pnpm run test:electron && pnpm run test:desktop:release && pnpm run test:raycast && pnpm run test:mcp",
     "test:client": "pnpm --filter @starter/client run test",
     "test:e2e": "npx playwright test",
     "contract:emit": "pnpm --filter @starter/shared run build && pnpm --filter @starter/server exec tsx src/contract/emit-trpc-contract.ts",
@@ -62,7 +62,14 @@
     "desktop:rollout": "node scripts/desktop-rollout.mjs",
     "lint": "pnpm -r --if-present run lint",
     "lint:fix": "pnpm -r --if-present run lint:fix",
-    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true"
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
+    "vendor:raycast": "pnpm --filter ./packages/raycast run vendor",
+    "build:raycast": "pnpm --filter ./packages/raycast run build",
+    "test:raycast": "pnpm --filter ./packages/raycast run test",
+    "typecheck:raycast": "pnpm --filter ./packages/raycast run typecheck",
+    "lint:raycast": "pnpm --filter ./packages/raycast run lint",
+    "build:mcp": "pnpm --filter @starter/shared run build && pnpm --filter @starter/core run build && pnpm --filter @starter/mcp run build",
+    "test:mcp": "pnpm --filter @starter/shared run build && pnpm --filter @starter/core run build && pnpm --filter @starter/mcp run test"
   },
   "devDependencies": {
     "@capacitor/assets": "^3.0.5",

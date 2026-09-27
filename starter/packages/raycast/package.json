@@ -1,0 +1,171 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "//name": "PERMANENT. Raycast keys this extension's encrypted LocalStorage by (name, author), so changing either after the first publish orphans every install's stored credential, its durable queue of unsent writes and its cross-process state echo — with no error anywhere. See PUBLISHING.md. Written once from the project's identifier set by `hatchkit`; never re-derived.",
+  "name": "starter-launcher",
+  "title": "Starter Launcher",
+  "description": "Capture and review your items from the launcher, with the work you do offline queued until the server answers again.",
+  "icon": "extension-icon.png",
+  "//author": "The other half of the storage key, and the store listing's identity. The value here is a scaffold placeholder so `ray develop` runs; the real store handle is a decision passed to `scripts/export-store.mjs --author`, and only the exported copy is ever published.",
+  "author": "starter-author",
+  "categories": [
+    "Productivity"
+  ],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "current-item",
+      "title": "Current Item",
+      "subtitle": "Starter Launcher",
+      "description": "Show the item you touched last, kept fresh while the window is open.",
+      "mode": "menu-bar",
+      "//interval": "Raycast unloads a menu bar command once its first render settles, so the timer inside it fires once. This declared interval is what covers the unloaded case; the surface's own unfinished-load state covers the loaded one.",
+      "interval": "10m",
+      "keywords": [
+        "current",
+        "latest",
+        "recent",
+        "status"
+      ],
+      "preferences": [
+        {
+          "name": "showPending",
+          "title": "Menu Bar",
+          "label": "Show unsent work in the title",
+          "description": "Add the number of changes still waiting to be sent to the menu bar title.",
+          "type": "checkbox",
+          "required": false,
+          "default": true
+        }
+      ]
+    },
+    {
+      "name": "capture-item",
+      "title": "Capture Item",
+      "description": "Create an item without opening a window. Bind a global hotkey to this one.",
+      "//mode": "`no-view` is the reason this command exists. A global hotkey can only drive a background-capable mode, and a view command opens a window before it can do anything — so folding this into the form command silently costs the hotkey.",
+      "mode": "no-view",
+      "keywords": [
+        "capture",
+        "add",
+        "new",
+        "quick",
+        "inbox"
+      ],
+      "arguments": [
+        {
+          "name": "title",
+          "type": "text",
+          "placeholder": "Title",
+          "required": false
+        }
+      ],
+      "preferences": [
+        {
+          "name": "openAfterCapture",
+          "title": "After Capturing",
+          "label": "Open the web app",
+          "description": "Open the new item in the web app once the server has confirmed it.",
+          "type": "checkbox",
+          "required": false,
+          "default": false
+        }
+      ]
+    },
+    {
+      "name": "new-item",
+      "title": "New Item",
+      "description": "Fill in an item and send it, or queue it when there is no answer.",
+      "mode": "view",
+      "keywords": [
+        "new",
+        "create",
+        "add",
+        "compose"
+      ]
+    },
+    {
+      "name": "list-items",
+      "title": "Search Items",
+      "description": "Browse your items, including the ones still waiting to be sent.",
+      "mode": "view",
+      "keywords": [
+        "items",
+        "list",
+        "search",
+        "browse",
+        "queue"
+      ],
+      "preferences": [
+        {
+          "name": "hideArchived",
+          "title": "Search Items",
+          "label": "Hide archived items",
+          "description": "Leave archived items out of the list.",
+          "type": "checkbox",
+          "required": false,
+          "default": false
+        }
+      ]
+    },
+    {
+      "name": "open-web-app",
+      "title": "Open Web App",
+      "description": "Open the web app in your browser. Everything this extension does not cover lives there.",
+      "mode": "no-view",
+      "keywords": [
+        "web",
+        "browser",
+        "dashboard",
+        "open"
+      ]
+    }
+  ],
+  "//preferences": "Neither origin carries a `default`. Raycast stores a manifest default as a real preference value, which makes \"never touched it\" indistinguishable from \"deliberately typed the production origin\" — and the build-mode fallback in src/lib/preferences.ts could then never fire.",
+  "preferences": [
+    {
+      "name": "apiOrigin",
+      "title": "API Origin",
+      "description": "Where the API lives, e.g. https://example.com. Leave empty to use the origin this build was made for.",
+      "type": "textfield",
+      "required": false
+    },
+    {
+      "name": "webOrigin",
+      "title": "Web App Origin",
+      "description": "Where the web app lives. Leave empty to use the origin this build was made for.",
+      "type": "textfield",
+      "required": false
+    }
+  ],
+  "//dependencies": "zod is not imported by src/ directly. It is a runtime dependency of the VENDORED offline overlay (src/vendor/offline-overlay.ts), and `node scripts/vendor-core.mjs --check` fails when a vendored file imports a package this manifest does not declare — the store's build machine would otherwise be the first place that fails. Note the placement: a `//`-prefixed key is inert at the TOP level of a manifest and is read as a PACKAGE NAME inside `dependencies`, where it breaks the install.",
+  "dependencies": {
+    "@raycast/api": "^1.104.25",
+    "react": "19.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^2.2.0",
+    "@types/node": "^25.8.0",
+    "@types/react": "^19.2.14",
+    "eslint": "^9.39.4",
+    "prettier": "^3.9.9",
+    "typescript": "^6.0.3"
+  },
+  "scripts": {
+    "//scripts": "The store copy does NOT get these. scripts/export-store.mjs replaces the whole block with Raycast's own template scripts, because `pnpm`, the vendor step and the export itself do not exist outside this repository.",
+    "vendor": "node scripts/vendor-core.mjs",
+    "vendor:check": "node scripts/vendor-core.mjs --check",
+    "dev": "pnpm run vendor && ray develop",
+    "build": "pnpm run vendor && ray build -e dist -o dist",
+    "//lint": "eslint + prettier directly, NOT `ray lint`. The root `lint` script is `pnpm -r --if-present run lint`, so whatever is here runs in CI — and `ray lint` always validates the manifest's `author` against the store's HTTP API, which fails for the scaffold placeholder and makes a network call CI has no business making. The manifest schema, the icon and the author handle are checked by `lint:store` instead, which is a pre-submission step.",
+    "lint": "eslint . && prettier --check .",
+    "lint:fix": "eslint . --fix && prettier --write .",
+    "//lint:store": "The pre-submission check: the manifest schema, the icon, the metadata and the author handle. It needs the network and cannot pass with the scaffold's placeholder handle, so it is not in the repository's `lint` aggregate. See PUBLISHING.md.",
+    "lint:store": "ray lint",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test scripts/*.test.mjs",
+    "export-store": "node scripts/export-store.mjs",
+    "//publish": "A guard, not a publish. Publishing happens only from the exported copy — see PUBLISHING.md — because the in-repo manifest carries scaffold placeholders for the two permanent fields.",
+    "publish": "node scripts/refuse-publish.mjs"
+  }
+}

@@ -27,6 +27,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { RAYCAST_SCRIPT_NAMES, RAYCAST_TOP_LEVEL_PATHS } from "../features/raycast/types.js";
 import type { ProjectConfig, Surface } from "../prompts.js";
 import { CLIENT_WORKFLOW_REL_PATH } from "./client-build-args.js";
 import { stripClientDockerfileApiUrlAssertion } from "./deploy-verification.js";
@@ -627,6 +628,15 @@ const CLIENT_SIDE_TOP_LEVEL = [
   "packages/extension",
   "scripts/extension-package.mjs",
   ".github/workflows/extension-release.yml",
+  // The launcher is the same shape of client: it signs in against the web
+  // app's approval page and reads the client kit, neither of which a
+  // backend-only project has. Sourced from the feature so the two lists
+  // cannot drift.
+  ...RAYCAST_TOP_LEVEL_PATHS,
+  // The MCP server is a client of the PUBLIC REST API, which a static prune
+  // takes with `packages/server`. A backend-only project does keep that API,
+  // so `packages/mcp` is deliberately NOT listed here — it is the one host
+  // package that still makes sense with no web client.
 ];
 
 /** Native wrapper scripts a backend-only surface has no use for. The
@@ -643,6 +653,10 @@ const NATIVE_SCRIPTS = [
   "build:extension:firefox",
   "test:extension",
   "extension:id",
+  // Same reasoning as the paths above, and the same single source: a root
+  // script naming a package the prune just deleted fails with
+  // ERR_PNPM_NO_MATCHING_PACKAGE, which reads as a broken template.
+  ...RAYCAST_SCRIPT_NAMES,
 ];
 
 /** Tiny export so callers (tests, future surface kinds) can ask "does

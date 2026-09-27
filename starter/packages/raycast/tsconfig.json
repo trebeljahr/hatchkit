@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "//include": "raycast-env.d.ts is COMMITTED, not generated on demand. Raycast's own toolchain writes it from the manifest, and a machine without that toolchain — CI, or anybody running only the repository's aggregate typecheck — cannot produce it. Left out of git, `tsc --noEmit` fails there on every getPreferenceValues() call.",
+  "include": ["src/**/*", "raycast-env.d.ts"],
+  "//compilerOptions": "`module: preserve` (bundler resolution) rather than Raycast's older commonjs/node10 default: TypeScript 6 refuses node10 outright. It is also why the vendoring step rewrites every relative import specifier to drop its `.js` extension — extensionless is the one spelling both this resolver and Raycast's esbuild bundler agree on.",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM"],
+    "module": "preserve",
+    "target": "ES2022",
+    "strict": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "resolveJsonModule": true,
+    "noEmit": true
+  }
+}

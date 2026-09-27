@@ -22,5 +22,7 @@ import "./token-client-auth/index.js";
 import "./extension/index.js";
 import "./release/index.js";
 import "./i18n/definition.js";
+import "./raycast/index.js";
+import "./mcp/index.js";
 
 export { allFeatures, expandFeatureSelection, getFeature } from "./contract.js";

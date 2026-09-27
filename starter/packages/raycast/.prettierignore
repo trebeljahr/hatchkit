@@ -1,0 +1,9 @@
+# The vendored copy of the shared client core is GENERATED
+# (scripts/vendor-core.mjs) and is a byte-for-byte copy of the source files.
+# Formatting it here would make every regeneration show up as drift, and the
+# next `vendor` run would silently undo whatever the formatter did.
+#
+# scripts/export-store.mjs copies this file into the exported package, because
+# the exported copy has the same vendored tree and the same reason.
+src/vendor/
+dist/

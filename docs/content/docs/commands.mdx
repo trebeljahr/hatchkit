@@ -84,7 +84,7 @@ prompting. That makes `create` CI-safe.
 
 | Flag | Values / effect |
 |---|---|
-| `--features <list>` | `websocket`, `stripe`, `analytics`, `s3`, `workspaces`, `desktop`, `mobile`, `client-core`, `extension`, `release`. Comma-separated; pass empty for none. `extension` needs a `fullstack` or `split` surface. See [Client Core](./client-core) for what `client-core` scaffolds. |
+| `--features <list>` | `websocket`, `stripe`, `analytics`, `s3`, `workspaces`, `desktop`, `mobile`, `client-core`, `extension`, `release`, `i18n`, `raycast`, `mcp`. Comma-separated; pass empty for none. `extension`, `raycast` and `mcp` need a `fullstack` or `split` surface. `raycast` and `mcp` require `client-core` and pull it in; `mcp` also requires `public-api`. See [Client Core](./client-core) for what `client-core` scaffolds. |
 | `--analytics-providers <list>` | `glitchtip`, `openpanel`, `plausible` |
 | `--services <list>` | `glitchtip`, `openpanel`, `plausible`, `listmonk-ses`, `s3`, `email`, `search-console` |
 | `--db-engine <value>` | `mongodb` · `postgres` |
@@ -171,7 +171,7 @@ hatchkit update                     # pick interactively
 hatchkit update --features desktop,mobile --yes
 ```
 
-Reads `.hatchkit.json`, lets you pick a new feature set, copies additive pieces from the starter. **Supported additions today:** `workspaces` (tenants, members, roles, invitations), `desktop` (Electron), `mobile` (Capacitor), `client-core` (the shared client kit — see [Client Core](./client-core)), `extension` (an MV3 browser extension), `release` (release coordination), and the three server platform features below. Removal is not supported — removing a feature could delete user code. Remove manually and update the manifest.
+Reads `.hatchkit.json`, lets you pick a new feature set, copies additive pieces from the starter. **Supported additions today:** `workspaces` (tenants, members, roles, invitations), `desktop` (Electron), `mobile` (Capacitor), `client-core` (the shared client kit — see [Client Core](./client-core)), `extension` (an MV3 browser extension), `release` (release coordination), `raycast` (a launcher extension published to the Raycast Store from a generated standalone copy), `mcp` (a stdio MCP server over the public REST API), and the three server platform features below. Removal is not supported — removing a feature could delete user code. Remove manually and update the manifest.
 
 **Additive means additive.** A file the project already has is never overwritten, so a desktop shell whose main process moved into a bundler keeps it, and a hand-edited `desktop-release.yml` survives. The same holds inside `package.json`: a script or a dependency pin the project has changed away from the starter's shape is reported as kept, not replaced — including the `dev:desktop` command, which is only retargeted at a new native HMR port while it still has the generated shape. `hatchkit update --force` replaces those `package.json` pieces with the starter's current versions. It never overwrites files.
 

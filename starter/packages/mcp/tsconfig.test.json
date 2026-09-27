@@ -1,0 +1,10 @@
+{
+  "//": "The test typecheck. `include` and `exclude` are the only reason this file exists — the build config excludes src/tests so the tests never reach dist, and nothing would typecheck them otherwise. NOTE: `references` is NOT inherited through `extends`; if this package ever gains project references, they have to be repeated here or the test typecheck fails with a wall of TS6059 about files outside rootDir.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src"],
+  "exclude": []
+}

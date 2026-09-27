@@ -18,6 +18,8 @@
     "signing",
     "auth-account-security",
     "server-platform",
+    "raycast",
+    "mcp",
     "i18n",
     "related-tools",
     "deployment",

@@ -3681,9 +3681,6 @@ function printHelp(topic?: HelpTopic): void {
     package.json script or dependency pin it has changed — those are
     reported as kept. ${chalk.cyan("--force")} replaces the package.json pieces
     (never files) with the starter's current versions.
-    Currently supported additions: ${chalk.cyan("workspaces")}, ${chalk.cyan("desktop")}, ${chalk.cyan("mobile")}, ${chalk.cyan("client-core")},
-    ${chalk.cyan("extension")}, ${chalk.cyan("release")}, ${chalk.cyan("i18n")}.
-
     Currently supported additions: ${chalk.cyan(SUPPORTED_ADDITIONS.join(", "))}.
 
     ${chalk.cyan("workspaces")} adds tenants, members, roles and invitations. It only
@@ -3728,6 +3725,13 @@ function printHelp(topic?: HelpTopic): void {
     ${chalk.dim('output: "export"')} — the shell loads ${chalk.dim("packages/client/out")}, which a
     standalone build never writes. A config you've edited is left alone
     with a note saying what to add.
+
+    ${chalk.cyan("raycast")} adds packages/raycast, a launcher extension published to
+    the Raycast Store from a generated standalone copy, and ${chalk.cyan("mcp")} adds
+    packages/mcp, a stdio MCP server that speaks the ${chalk.dim("/api/v1")} surface
+    ${chalk.cyan("public-api")} scaffolds. Both need ${chalk.cyan("client-core")} and pull it in;
+    ${chalk.cyan("mcp")} needs ${chalk.cyan("public-api")} too. Each is a new workspace package,
+    so run ${chalk.cyan("pnpm install")} afterwards.
 
     ${chalk.cyan("i18n")} writes a second language: typed catalogs per namespace
     per language, one formatting module, the first-paint gate, the

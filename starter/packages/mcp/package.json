@@ -1,0 +1,32 @@
+{
+  "name": "@starter/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "//bin": "The binary name is an identifier, not a label: it is written into every user's host configuration file, so a rename orphans every configuration that already names it. It is a plain literal rather than a placeholder because this repository has to install and run before it has ever been scaffolded, and a brace in a bin key becomes a brace in a symlink name. `hatchkit` rewrites it, and src/identity.ts carries the same value. See cli/src/scaffold/identifiers.ts.",
+  "bin": {
+    "starter-mcp": "./dist/index.js"
+  },
+  "//scripts": "A host package is outside the main build graph — nothing in the root `build` imports it — so a change that breaks it compiles green through the whole pipeline unless an aggregate script names it. `typecheck` and `lint` are reached by the root's `pnpm -r` scripts; `test` is NOT, because the root `test:unit` names its packages one by one. See this package's README.",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "test": "node --import tsx --test src/tests/*.test.ts",
+    "test:integration": "node --import tsx --test src/tests/integration/*.test.ts",
+    "lint": "biome check --error-on-warnings .",
+    "lint:fix": "biome check --write ."
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "@starter/core": "workspace:*",
+    "@starter/shared": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^25.8.0",
+    "tsx": "^4.22.0",
+    "typescript": "^6.0.3"
+  }
+}

@@ -58,6 +58,7 @@ import { clientBuildArgUrls } from "../../scaffold/client-build-args.js";
 import type { ProjectIdentifiers } from "../../scaffold/identifiers.js";
 import { clientCoreFeature } from "../client-core/index.js";
 import { type FeatureContext, registerFeature } from "../contract.js";
+import { applyDeviceGrant } from "../device-grant/index.js";
 import {
   type TemplateTokens,
   identifierTemplateTokens,
@@ -70,7 +71,6 @@ import {
   CI_COMMENT_PREFIX,
   type PatchResult,
   addClientEnvExample,
-  addDeviceClientPlugin,
   addSharedBridgeExport,
   mountExtensionBridge,
   wireAuth,
@@ -133,9 +133,10 @@ const SEEDED: ReadonlyArray<readonly [string, string]> = [
   // The web app's half.
   ["client/extension-bridge.ts", "packages/client/src/lib/extension-bridge.ts"],
   ["client/extension-bridge-transport.ts", "packages/client/src/lib/extension-bridge-transport.ts"],
-  ["client/device-approve.ts", "packages/client/src/lib/device-approve.ts"],
   ["client/ExtensionBridge.tsx", "packages/client/src/components/ExtensionBridge.tsx"],
-  ["client/device-page.tsx", "packages/client/src/app/device/page.tsx"],
+  // `lib/device-approve.ts` and `app/device/page.tsx` are NOT here. They
+  // are the shared device grant's, written by `applyDeviceGrant` below,
+  // because a launcher extension pairs through the same page.
 
   // The extension itself.
   ["extension/package.json", "packages/extension/package.json"],
@@ -308,8 +309,23 @@ export const extensionFeature = registerFeature({
     patch("packages/server/src/app.ts", wireServerApp);
     patch("packages/server/src/auth/auth.ts", wireAuth);
     patch("packages/client/src/app/layout.tsx", mountExtensionBridge);
-    patch("packages/client/src/lib/auth-client.ts", addDeviceClientPlugin);
     patch("packages/client/.env.example", addClientEnvExample);
+
+    // The shared device grant: better-auth's `bearer()` and RFC 8628, the
+    // web app's device client plugin, and the `/device` approval page.
+    //
+    // Called from here rather than declared as a `requires`, because it
+    // is not a feature — see `features/device-grant/index.ts`. It runs
+    // AFTER the patches above on purpose: both edit `auth.ts`, and this
+    // order puts the plugin imports in the same place the single
+    // pre-split patch put them, so re-running a newer CLI over an
+    // existing project produces no diff at all rather than a reshuffled
+    // import block that reads like a change.
+    //
+    // A project that also ships a launcher extension applies the same
+    // unit a second time in the same run. Everything it does goes
+    // through the ledger, so that second call writes nothing.
+    problems.push(...applyDeviceGrant(ctx));
 
     // CI: a managed block, because this file is one a project edits.
     ledger.ensureManagedBlock(

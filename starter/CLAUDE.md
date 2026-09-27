@@ -961,6 +961,93 @@ extension, and `TRUST_EXTENSION_ORIGINS=true` on the server for the
 Firefox build.
 <!-- hatchkit:endif -->
 
+<!-- hatchkit:if device-grant -->
+## Pairing a client with no cookie jar
+
+The web app keeps a session cookie. A browser extension, a launcher and a CLI
+cannot, so they pair over better-auth's RFC 8628 device authorization and carry
+the same session as `Authorization: Bearer <token>`.
+
+- `bearer()` is registered with `requireSignature` OFF, deliberately: password
+  sign-in returns the SIGNED token on a header, while the device grant returns
+  the RAW session token. Requiring a signature accepts only the first and
+  refuses every device-paired client.
+- The code is approved in the WEB APP, which is a different origin from the API
+  in development and in any split deployment — so the verification URI points
+  at the client, not at the API's own `/device`, which does not exist.
+- Each surface authenticates as its own allowlisted client id, so one can be
+  revoked without signing the others out.
+
+None of this belongs to any one client: the same registration serves the
+browser extension and the launcher, and it is removed only when every one of
+them is absent.
+<!-- hatchkit:endif -->
+
+<!-- hatchkit:if raycast -->
+## Launcher extension (`packages/raycast`)
+
+```bash
+pnpm run vendor:raycast    # regenerate src/vendor after changing packages/core
+pnpm run test:raycast      # includes the vendor --check; part of test:unit
+pnpm run build:raycast
+```
+
+A UI shell over `@starter/core`. The queue, the overlay, the read cache and the
+replay classifier are all core's — if you are writing one here, read core again.
+
+- **It imports the kit through `src/vendor/`, never `@starter/core`.** The
+  Raycast Store builds this package alone with a plain `npm install`, where a
+  `workspace:*` dependency cannot resolve. Never edit `src/vendor/`: change
+  `packages/core` and regenerate.
+- **The copy set and the barrel set are different closures.** The copy follows
+  every import including type-only ones; the barrel re-exports only what a
+  VALUE import reaches, because `export *` is a value export and a type-only
+  module would otherwise put its runtime cost in every command bundle.
+- **This package is outside the build graph.** Nothing in the root `build`
+  imports it, so a change that breaks it compiles green through the whole
+  pipeline — which is why `test:unit`, `typecheck` and `lint` name it
+  explicitly and CI runs the aggregate typecheck.
+- **The stored credential is bound to the origin that issued it**, and sign-out
+  revokes against that origin rather than the currently configured one.
+- **`name` and `author` are permanent once published.** Raycast keys the
+  encrypted per-extension store by the pair, so changing either orphans every
+  install's credential, queue and echo. Publish only from the export;
+  `PUBLISHING.md` has the steps and the in-repo `publish` is a guard.
+- The root scripts filter by PATH (`--filter ./packages/raycast`), not by name:
+  the launcher's package name is the project slug, and so is the root
+  package's, so a name filter matches both and re-enters the root script.
+<!-- hatchkit:endif -->
+
+<!-- hatchkit:if mcp -->
+## MCP server (`packages/mcp`)
+
+```bash
+pnpm run test:mcp                                  # fast tier; part of test:unit
+pnpm --filter @starter/mcp run test:integration    # real binary, real API, throwaway datastore
+```
+
+A stdio MCP server over `/api/v1`, configured by a scoped token and an origin.
+
+- **It speaks the public REST surface only, never the internal tRPC API.** That
+  is what keeps authorization, visibility and field projection the server's
+  decisions, so this package cannot become the one place a rule is skipped.
+- **Tool schemas come from `@starter/shared`**, minus the fields the server
+  stamps. A refined validator cannot be `.omit`ed — rebuild from its field map,
+  or the tool silently loses every per-field constraint. Watch too that a zod
+  `.default()` survives `.optional()` and pins a page size.
+- **Capabilities are probed once at start and the tool list is filtered.** A
+  tool the credential cannot call is not registered; a FAILED probe registers
+  everything and lets each call report the real reason, because exiting leaves
+  the host showing "server exited" with nothing to debug.
+- **Stdout is the protocol.** Every human-facing line goes to stderr; one stray
+  stdout write corrupts the JSON-RPC stream and reads as a crash.
+- Server construction is separate from the process that runs it, so the fast
+  tests drive exactly what the binary serves.
+- The root scripts build `@starter/shared` and `@starter/core` first: both are
+  consumed through `dist/`, and in a fresh project neither has been built.
+<!-- hatchkit:endif -->
+
+
 <!-- hatchkit:if server -->
 ## Environment & Secrets (dotenvx)
 
