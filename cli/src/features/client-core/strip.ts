@@ -14,6 +14,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { removeIfExists, rewriteFile } from "../../scaffold/starter-files.js";
+import { reconcileLockfile } from "../lockfile.js";
 import { stripMarkedBlocks } from "./markers.js";
 import {
   CLIENT_CORE_CHAINED_SCRIPTS,
@@ -55,6 +56,12 @@ export function stripClientCore(projectDir: string): string[] {
   }
 
   modifications.push("removed: client-core (offline-first client kit not selected)");
+  // A stripped workspace package leaves an importer in the committed lockfile,
+  // and every scaffolded project's CI and both its Dockerfiles run
+  // `pnpm install --frozen-lockfile`, which refuses over it. The strip owns
+  // that consequence rather than leaving it to whoever calls the strip.
+  modifications.push(...reconcileLockfile(projectDir));
+
   return modifications;
 }
 

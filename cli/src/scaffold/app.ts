@@ -202,6 +202,14 @@ export async function scaffoldApp(
         if (rel.includes("/node_modules")) return false;
         if (rel.includes("/.next")) return false;
         if (rel.includes("/dist/")) return false;
+        // A TypeScript incremental-build stamp. It is gitignored, so a clean
+        // checkout has none — but anyone who ran a build inside their hatchkit
+        // checkout's `starter/` has one per package, and copying it without
+        // the `dist/` it describes tells tsc every output is already up to
+        // date. The scaffolded project's first build then emits almost
+        // nothing, and the failure surfaces as `@starter/shared has no
+        // exported member Item` from a file that plainly exports it.
+        if (rel.endsWith(".tsbuildinfo")) return false;
         return true;
       },
     });
@@ -636,6 +644,21 @@ async function runScaffoldSteps(
   // — a scaffold that looks half-edited. Renumbering is purely cosmetic,
   // so it is deliberately generic (see renumberStepComments) rather than a
   // per-feature mapping that would need touching for every future strip.
+  // Reconcile the committed lockfile with the tree the strips left behind.
+  //
+  // This runs LAST, after every strip, because two different kinds of strip
+  // invalidate it: a feature strip deletes a whole workspace package (the
+  // lockfile keeps its importer), and the desktop / mobile strips rewrite the
+  // ROOT package.json (the lockfile keeps the dependencies they removed).
+  // Either one is ERR_PNPM_OUTDATED_LOCKFILE on the project's first CI run and
+  // first image build, both of which use --frozen-lockfile — and neither is
+  // visible to anyone who ran `pnpm install` locally first, because that
+  // rewrites the lockfile and the evidence with it. See features/lockfile.ts.
+  {
+    const { reconcileLockfile } = await import("../features/lockfile.js");
+    modifications.push(...reconcileLockfile(outputDir));
+  }
+
   renumberStepComments(outputDir, "packages/server/src/app.ts");
   renumberStepComments(outputDir, "packages/server/src/index.ts");
 

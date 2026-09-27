@@ -1024,7 +1024,16 @@ console.log("\n── ports: web-only ──────────────
       // One root lint command, which the hook and the CI job both call.
       ["root lint + prepare wired", pkgJson.scripts.lint === "pnpm -r --if-present run lint" && String(pkgJson.scripts.prepare ?? "").includes("core.hooksPath")],
       ["pre-push hook + lint CI shipped", existsSync(join(d, ".githooks/pre-push")) && existsSync(join(d, ".github/workflows/lint.yml"))],
-      ["no stray localhost:5000", !serverEnvDev.includes("localhost:5000") && !clientEnvDev.includes("localhost:5000")],
+      // The template's literal default is 5000, so this asserts it was
+      // substituted. `pickPort` starts at a random offset in a 1000-wide
+      // span, so roughly one run in a thousand is ASSIGNED 5000 — and then
+      // `localhost:5000` is the correct output, not a leftover. Without the
+      // guard that run fails a test that is asserting nothing.
+      [
+        "no stray localhost:5000",
+        ports.server === 5000 ||
+          (!serverEnvDev.includes("localhost:5000") && !clientEnvDev.includes("localhost:5000")),
+      ],
     ];
     let ok = true;
     for (const [n, c] of checks) {
