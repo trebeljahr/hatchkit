@@ -30,6 +30,7 @@ import { join } from "node:path";
 import { RAYCAST_SCRIPT_NAMES, RAYCAST_TOP_LEVEL_PATHS } from "../features/raycast/types.js";
 import type { ProjectConfig, Surface } from "../prompts.js";
 import { CLIENT_WORKFLOW_REL_PATH } from "./client-build-args.js";
+import { applyCloudflareMode } from "./cloudflare-mode.js";
 import { stripClientDockerfileApiUrlAssertion } from "./deploy-verification.js";
 import { DESKTOP_FILES, DESKTOP_SCRIPTS_TO_STRIP } from "./desktop.js";
 import { MOBILE_SCRIPTS } from "./mobile-feature.js";
@@ -54,11 +55,14 @@ export function pruneToSurface(
   if (config.surfaces === "backend") pruneToServerOnly(outputDir, modifications);
   else {
     pruneToClientOnly(outputDir, modifications);
-    // Pages needs additional config tweaks on top of the static
-    // prune — the prune drops the `/api/*` rewrites and the API-URL
-    // guard but leaves `output: "standalone"`, which assumes a Node
-    // server Pages can't run.
+    // Both static hosts need config tweaks on top of the static prune —
+    // it drops the `/api/*` rewrites and the API-URL guard but leaves
+    // `output: "standalone"`, which assumes a Node server neither host
+    // can run.
     if (config.deploymentMode === "gh-pages") applyPagesMode(outputDir, modifications);
+    else if (config.deploymentMode === "cloudflare") {
+      applyCloudflareMode(outputDir, { workerName: config.name }, modifications);
+    }
   }
 }
 

@@ -152,10 +152,10 @@ export interface ProjectManifest {
   deployTarget: "existing" | "new";
   /** How the project is deployed. Optional for back-compat — older
    *  manifests predate the field; readers should fall back to
-   *  `coolify` when absent. `gh-pages` projects skip the Coolify
-   *  pipeline entirely; downstream tooling (destroy, regen-infra)
-   *  branches on this. */
-  deploymentMode?: "coolify" | "gh-pages" | "scaffold-only";
+   *  `coolify` when absent. `gh-pages` and `cloudflare` projects skip
+   *  the Coolify pipeline entirely; downstream tooling (destroy,
+   *  regen-infra) branches on this. */
+  deploymentMode?: "coolify" | "gh-pages" | "cloudflare" | "scaffold-only";
   /** GPU platforms each ML service was deployed to. First entry is
    *  the runtime default (`ML_BACKEND`); change `ML_BACKEND` on the
    *  deploy to flip which one serves traffic. */

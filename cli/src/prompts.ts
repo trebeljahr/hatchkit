@@ -53,7 +53,17 @@ export type DeployTarget = "existing" | "new";
  *                       Skips Coolify/Hetzner/Mongo prompts entirely.
  *  · `scaffold-only`  — write files + (optionally) push to GitHub, no
  *                       deploy. Equivalent to today's `runDeployment: false`. */
-export type DeploymentMode = "coolify" | "gh-pages" | "scaffold-only";
+export type DeploymentMode = "coolify" | "gh-pages" | "cloudflare" | "scaffold-only";
+
+/** The deployment modes that publish a pre-built bundle to a static
+ *  host. Both require `surfaces === "static"`, skip the whole Coolify
+ *  pipeline, and have no server runtime — so every "does this project
+ *  get a backend?" gate in the create/adopt flows treats them alike.
+ *  Branch on the mode itself only where the two genuinely differ (the
+ *  scaffolded files and the deploy command). */
+export function isStaticHostMode(mode: DeploymentMode): boolean {
+  return mode === "gh-pages" || mode === "cloudflare";
+}
 export type GitHubRepoVisibility = "private" | "public";
 export type DnsProvider = "inwx" | "cloudflare" | "manual";
 export type S3Provider = "hetzner" | "r2" | "aws" | "existing" | "none";
@@ -354,15 +364,16 @@ export interface ProjectConfig {
    *  the user proceeds — they can walk away while it runs. */
   installDeps: boolean;
   /** Where this project deploys. `coolify` (default) drives the existing
-   *  Hetzner + Mongo + providers pipeline. `gh-pages` is only offered
-   *  alongside `surfaces === "static"` and skips the Coolify path
-   *  entirely in favour of `hatchkit gh-pages`. `scaffold-only` writes
-   *  files but doesn't deploy. */
+   *  Hetzner + Mongo + providers pipeline. `gh-pages` and `cloudflare`
+   *  are only offered alongside `surfaces === "static"` and skip the
+   *  Coolify path entirely in favour of `hatchkit gh-pages` /
+   *  `hatchkit cloudflare`. `scaffold-only` writes files but doesn't
+   *  deploy. */
   deploymentMode: DeploymentMode;
   /** Derived from {@link deploymentMode} for back-compat with the many
    *  existing call sites that gate on a boolean: true when the mode
-   *  triggers an actual deploy step (coolify / gh-pages), false when
-   *  scaffold-only. New code should branch on `deploymentMode` directly. */
+   *  triggers an actual deploy step (coolify / gh-pages / cloudflare),
+   *  false when scaffold-only. New code should branch on `deploymentMode` directly. */
   runDeployment: boolean;
   /** Tailscale-served dev URL opt-in. When set, scaffold:
    *    · writes ~/.config/dev/projects/<slug>.caddy at the project's
@@ -889,7 +900,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       skip: () => presets.deploymentMode !== undefined,
       run: async (c) => {
         const mode = await askDeploymentMode(c.surfaces, undefined, false);
-        if (mode === "gh-pages") {
+        if (isStaticHostMode(mode)) {
           return {
             ...c,
             deploymentMode: mode,
@@ -900,9 +911,9 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
             forceRedeployMl: [],
             dbProvider: "external" as const,
             mongodbProvider: "external" as const,
-            // gh-pages has no server runtime — drop email providers + their
-            // queued services so the manifest doesn't claim email intent
-            // for a project that can't actually send mail.
+            // A static host has no server runtime — drop email providers
+            // + their queued services so the manifest doesn't claim email
+            // intent for a project that can't actually send mail.
             email: EMAIL_INTENT_NONE,
             provisionServices: c.provisionServices.filter((s) => s !== "listmonk-ses"),
           };
@@ -1004,7 +1015,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     },
     {
       name: "Features",
-      skip: (c) => c.deploymentMode === "gh-pages" || presets.features !== undefined,
+      skip: (c) => isStaticHostMode(c.deploymentMode) || presets.features !== undefined,
       run: async (c) => {
         const features = await multiselect<Feature>({
           message: "Features:",
@@ -1141,7 +1152,9 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       // email-intent prompt entirely in that case; the manifest gets
       // `{ transactional: "none", mailingList: "none" }`.
       skip: (c) =>
-        c.surfaces === "static" || c.deploymentMode === "gh-pages" || presets.email !== undefined,
+        c.surfaces === "static" ||
+        isStaticHostMode(c.deploymentMode) ||
+        presets.email !== undefined,
       run: async (c) => {
         const email = await askEmailIntent({ current: c.email });
         const provisionServices = mergeEmailIntoProvisionServices(c.provisionServices, email);
@@ -1239,7 +1252,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     },
     {
       name: "ML services",
-      skip: (c) => c.deploymentMode === "gh-pages" || presets.mlServices !== undefined,
+      skip: (c) => isStaticHostMode(c.deploymentMode) || presets.mlServices !== undefined,
       run: async (c) => {
         const mlServices = await multiselect<MlService>({
           message: "ML services:",
@@ -1429,7 +1442,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       name: "Deploy now",
       skip: (c) =>
         c.deploymentMode === "scaffold-only" ||
-        c.deploymentMode === "gh-pages" ||
+        isStaticHostMode(c.deploymentMode) ||
         dryRun ||
         presets.runDeployment !== undefined,
       run: async (c) => {
@@ -1444,7 +1457,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       name: "Database engine",
       skip: (c) =>
         c.surfaces === "static" ||
-        c.deploymentMode === "gh-pages" ||
+        isStaticHostMode(c.deploymentMode) ||
         presets.dbEngine !== undefined,
       run: async (c) => {
         const dbEngine = await select<"mongodb" | "postgres">({
@@ -1462,7 +1475,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       name: "Database provider",
       skip: (c) =>
         c.surfaces === "static" ||
-        c.deploymentMode === "gh-pages" ||
+        isStaticHostMode(c.deploymentMode) ||
         presets.dbProvider !== undefined ||
         presets.mongodbProvider !== undefined,
       run: async (c) => {
@@ -1555,8 +1568,10 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
 
   const surfaces = presets.surfaces ?? "fullstack";
   const deploymentMode = presets.deploymentMode ?? "coolify";
-  if (deploymentMode === "gh-pages" && surfaces !== "static") {
-    throw new Error(`--deployment-mode gh-pages requires --surfaces static (got: ${surfaces}).`);
+  if (isStaticHostMode(deploymentMode) && surfaces !== "static") {
+    throw new Error(
+      `--deployment-mode ${deploymentMode} requires --surfaces static (got: ${surfaces}).`,
+    );
   }
 
   const deployTarget = presets.deployTarget ?? "new";
@@ -1587,7 +1602,7 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
   // there's no server to read LISTMONK_*/SES_* env, so any queued
   // provider would be dead weight.
   const email =
-    surfaces === "static" || deploymentMode === "gh-pages"
+    surfaces === "static" || isStaticHostMode(deploymentMode)
       ? EMAIL_INTENT_NONE
       : (presets.email ?? EMAIL_INTENT_NONE);
 
@@ -1598,7 +1613,8 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
     provisionServices: presets.provisionServices,
     analyticsProviders,
     email:
-      presets.email ?? (surfaces === "static" || deploymentMode === "gh-pages" ? email : undefined),
+      presets.email ??
+      (surfaces === "static" || isStaticHostMode(deploymentMode) ? email : undefined),
     emailForwarding: presets.emailForwarding,
   });
 
@@ -1712,12 +1728,13 @@ async function askDeploymentMode(
   preset: DeploymentMode | undefined,
   nonInteractive: boolean,
 ): Promise<DeploymentMode> {
-  // gh-pages requires static — Pages has no runtime. Validate
-  // presets the same way so `--deployment-mode gh-pages` paired with
-  // a server-bearing surface fails fast.
-  if (preset === "gh-pages" && surfaces !== "static") {
+  // The static hosts have no server runtime. Validate presets the
+  // same way so `--deployment-mode gh-pages|cloudflare` paired with a
+  // server-bearing surface fails fast.
+  if (preset !== undefined && isStaticHostMode(preset) && surfaces !== "static") {
+    const host = preset === "gh-pages" ? "GitHub Pages" : "Cloudflare Workers Static Assets";
     throw new Error(
-      `--deployment-mode gh-pages requires --surfaces static (got: ${surfaces}). GitHub Pages serves static files only.`,
+      `--deployment-mode ${preset} requires --surfaces static (got: ${surfaces}). ${host} serves static files only.`,
     );
   }
   if (preset !== undefined) return preset;
@@ -1733,6 +1750,10 @@ async function askDeploymentMode(
     choices.push({
       name: "GitHub Pages — static-only, served from your repo",
       value: "gh-pages",
+    });
+    choices.push({
+      name: "Cloudflare Workers — static assets on Cloudflare's edge (free, unmetered requests)",
+      value: "cloudflare",
     });
   }
   choices.push({
@@ -1784,7 +1805,7 @@ async function reviewAndEditLoop(
 type CreateStepGroup = OnboardingStepGroup;
 
 function buildCreateStepGroups(plan: ProjectOnboardingPlan, cfg: ProjectConfig): CreateStepGroup[] {
-  const isPages = plan.deployment.mode === "gh-pages";
+  const isPages = isStaticHostMode(plan.deployment.mode);
   const groups: CreateStepGroup[] = [
     {
       title: "Project",
@@ -2029,8 +2050,8 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     // deployment mode (Pages requires a static-only project). Snap
     // it back to coolify in that case.
     const nextDeploymentMode =
-      cfg.deploymentMode === "gh-pages" && next !== "static" ? "coolify" : cfg.deploymentMode;
-    if (cfg.deploymentMode === "gh-pages" && next !== "static") {
+      isStaticHostMode(cfg.deploymentMode) && next !== "static" ? "coolify" : cfg.deploymentMode;
+    if (isStaticHostMode(cfg.deploymentMode) && next !== "static") {
       console.log(
         chalk.yellow(
           "  ⚠ gh-pages requires static surfaces — switched deployment mode back to coolify.",
@@ -2060,11 +2081,11 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
   if (section === "deploymentMode") {
     const next = await askDeploymentMode(cfg.surfaces, undefined, false);
     if (next === cfg.deploymentMode) return cfg;
-    // Switching INTO gh-pages clears the Coolify-shaped fields so
-    // the review doesn't show stale Hetzner / Mongo / feature
+    // Switching INTO a static host clears the Coolify-shaped fields
+    // so the review doesn't show stale Hetzner / Mongo / feature
     // choices that don't apply. The user can still edit them back
     // if they later switch to coolify mode.
-    if (next === "gh-pages") {
+    if (isStaticHostMode(next)) {
       return {
         ...cfg,
         deploymentMode: next,
@@ -2090,8 +2111,8 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
         gpuPlatforms: undefined,
         customHfModelId: undefined,
         customHfGpuType: undefined,
-        // gh-pages has no server runtime — clear queued email intent
-        // so the manifest doesn't claim outbound mail for a static site.
+        // A static host has no server runtime — clear queued email
+        // intent so the manifest doesn't claim outbound mail for it.
         email: EMAIL_INTENT_NONE,
       };
     }
@@ -2231,7 +2252,7 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     // visible so the user sees that email is intentionally disabled.
     // (See onboardingPlanToProjectConfig for the same gate on the
     // non-interactive path.)
-    if (cfg.surfaces === "static" || cfg.deploymentMode === "gh-pages") {
+    if (cfg.surfaces === "static" || isStaticHostMode(cfg.deploymentMode)) {
       console.log(
         chalk.yellow(
           "  ⚠ Email needs a server runtime — switch surfaces / deployment mode first to enable it.",
@@ -2376,7 +2397,7 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
         message: "Run deployment now (Terraform + Coolify + ML)?",
         default: cfg.runDeployment,
       });
-    } else if (cfg.deploymentMode === "gh-pages") {
+    } else if (isStaticHostMode(cfg.deploymentMode)) {
       runDeployment = !cfg.dryRun;
     } else {
       runDeployment = false;

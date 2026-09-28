@@ -220,6 +220,10 @@ export function renderOnboardingDeploymentModeSummary(
       return surfaces && surfaces !== "static"
         ? chalk.yellow("GitHub Pages — needs static")
         : "GitHub Pages (static)";
+    case "cloudflare":
+      return surfaces && surfaces !== "static"
+        ? chalk.yellow("Cloudflare Workers — needs static")
+        : "Cloudflare Workers (static assets)";
     case "scaffold-only":
       return "Scaffold only (no deploy)";
   }
