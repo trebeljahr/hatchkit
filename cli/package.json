@@ -13,6 +13,7 @@
   "bugs": {
     "url": "https://github.com/trebeljahr/hatchkit/issues"
   },
+  "funding": "https://ricos.site/donate?from=hatchkit",
   "keywords": [
     "cli",
     "scaffold",

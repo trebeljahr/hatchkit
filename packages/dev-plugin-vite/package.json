@@ -2,6 +2,7 @@
   "name": "@hatchkit/dev-plugin-vite",
   "version": "0.2.18",
   "description": "Vite plugin for hatchkit's local-dev integration. Writes the project's Caddy fragment on dev startup, replaces Vite's Local/Network URL banner with Local/Tailscale.",
+  "funding": "https://ricos.site/donate?from=hatchkit",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -3,11 +3,13 @@ import {
   DocsDescription,
   DocsPage,
   DocsTitle,
+  PageFooter,
 } from "fumadocs-ui/layouts/docs/page";
 import { createRelativeLink } from "fumadocs-ui/mdx";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { getMDXComponents } from "@/components/mdx";
+import { SiteFooter } from "@/components/site-footer";
 import { source } from "@/lib/source";
 import { DEFAULT_SOCIAL_IMAGE, DEFAULT_TWITTER_IMAGE, docDescription } from "@/lib/seo";
 
@@ -21,7 +23,9 @@ export default async function Page(props: { params: Promise<PageParams> }) {
   const MDX = page.data.body;
 
   return (
-    <DocsPage toc={page.data.toc} full={page.data.full}>
+    // The default page footer (prev/next) is rendered by hand so the site
+    // footer can sit below it.
+    <DocsPage toc={page.data.toc} full={page.data.full} footer={{ enabled: false }}>
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription>{page.data.description}</DocsDescription>
       <DocsBody>
@@ -31,6 +35,8 @@ export default async function Page(props: { params: Promise<PageParams> }) {
           })}
         />
       </DocsBody>
+      <PageFooter />
+      <SiteFooter className="mt-8" />
     </DocsPage>
   );
 }

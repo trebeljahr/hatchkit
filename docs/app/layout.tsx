@@ -4,6 +4,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import Script from "next/script";
 import type { ReactNode } from "react";
+import { SupportedParam } from "@/components/supported-param";
 import { DEFAULT_SOCIAL_IMAGE, DEFAULT_TWITTER_IMAGE, SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/seo";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -78,7 +79,10 @@ export default function Layout({ children }: { children: ReactNode }) {
             `}
           </Script>
         ) : null}
-        <RootProvider search={{ enabled: false }}>{children}</RootProvider>
+        <RootProvider search={{ enabled: false }}>
+          <SupportedParam />
+          {children}
+        </RootProvider>
       </body>
     </html>
   );
