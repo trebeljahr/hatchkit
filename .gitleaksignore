@@ -1,9 +1,10 @@
-# Reviewed gitleaks findings that are not secrets. One fingerprint per line.
-# fake WebSocket handshake nonce (base64 "selfhostsmoke123")
-73ee04d3008c72777f140d622ecfbca9118ceda2:cli/src/features/selfhost/smoke-workflow.ts:generic-api-key:265
-# RFC 6238 TOTP reference secret
-c70035ce02b9826445a3e84cb811e17307a0f159:cli/test-inwx-api.ts:generic-api-key:30
-# RFC 6238 TOTP reference secret
-c70035ce02b9826445a3e84cb811e17307a0f159:cli/test-totp.ts:generic-api-key:17
-# R2 token ID in a fixture manifest; an ID, not a secret, and already public in trackyourtime history
+# Per-commit fingerprints that history still needs. Reviewed test values
+# live in .gitleaks.toml as exact-value allowlists instead; add a line here
+# only when a real value was committed and later replaced.
+#
+# Real R2 account-token ID ("hatchkit-tracktime") and Cloudflare account ID,
+# copied from trackyourtime's .hatchkit.json into a test fixture. The ID is
+# the Access Key ID half of an S3 key pair, not the secret; the secret was
+# never committed. Fixture replaced with fake IDs; revoking the token is
+# tracked in the vault's hatchkit-human-tasks.
 23d60fd634362da0ca14b4ba300118dd8d760de9:cli/test-migrate-domain.ts:generic-api-key:92

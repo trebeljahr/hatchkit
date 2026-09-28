@@ -115,8 +115,8 @@ const TRACKTIME = {
         maxAgeSeconds: 86400,
       },
     },
-    tokenId: "defa5813b8a3798ae0f2882ba8bf684b",
-    accountId: "236db6b7957ea3079844334856fc162e",
+    tokenId: "00000000000000000000000000000000",
+    accountId: "fixture-account",
   },
 } as unknown as ProjectManifest;
 

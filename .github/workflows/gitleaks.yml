@@ -3,7 +3,12 @@ name: gitleaks
 # Runs secret scanning on every push + PR across the whole monorepo.
 # Catches accidentally-committed tokens (AWS, Stripe, GitHub, dotenvx
 # .env.keys contents, etc.). Out-of-the-box rules catch the common
-# providers; tune via .gitleaks.toml if needed.
+# providers; reviewed exceptions live in .gitleaks.toml / .gitleaksignore.
+#
+# Scans the FULL history every run instead of using gitleaks-action: on
+# push, the action builds its range from the push payload's commit list,
+# so a push of 83 commits (2026-09-28) was scanned as its last 20. The
+# whole history is a few hundred commits and scans in seconds.
 
 on:
   push:
@@ -14,15 +19,31 @@ on:
 permissions:
   contents: read
 
+env:
+  GITLEAKS_VERSION: 8.30.1
+  # sha256 of gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz from the
+  # release's checksums.txt. Update both together.
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
 jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0     # full history scan on pushes to main
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
-          GITLEAKS_ENABLE_SUMMARY: "true"
+          fetch-depth: 0 # full history
+      - name: Install gitleaks
+        run: |
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$tarball" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" gitleaks
+          sudo install gitleaks /usr/local/bin/gitleaks
+      - name: Scan full history
+        run: gitleaks git . --redact --verbose --exit-code 1 --report-format sarif --report-path results.sarif
+      - name: Upload report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-results
+          path: results.sarif

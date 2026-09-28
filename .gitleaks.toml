@@ -1,16 +1,50 @@
-# Extend default gitleaks rules and allowlist test fixtures.
+# Extend default gitleaks rules and allowlist reviewed test values.
 #
-# cli/test-secrets-rotate.ts contains fake credential shapes
-# (sk_test_…, whsec_…, "looks-password", etc.) used to exercise the
-# secrets-rotation redaction code paths. They never leave the test
-# process and are not real secrets. Allowlist by path so future
-# fixtures in the same file do not need per-line tweaks.
+# Prefer an exact-value regex over a path: a path entry hides every future
+# secret in that file, an exact value hides only the one we reviewed.
+# Per-commit fingerprints go in .gitleaksignore only when history still
+# needs them (e.g. a real identifier that was later replaced).
 
 [extend]
 useDefault = true
 
-[allowlist]
-description = "Test fixtures — fake Stripe / generic keys used by secrets-rotation unit tests, never sent anywhere."
+# cli/test-secrets-rotate.ts contains fake credential shapes
+# (sk_test_…, whsec_…, "looks-password", etc.) used to exercise the
+# secrets-rotation redaction code paths. They never leave the test
+# process and are not real secrets.
+[[allowlists]]
+description = "Fake Stripe / generic keys used by secrets-rotation unit tests, never sent anywhere."
 paths = [
   '''cli/test-secrets-rotate\.ts''',
+]
+
+# Published test vectors and fixtures, allowed anywhere in the repo so new
+# tests can reuse them:
+#   - RFC 6238 Appendix B SHA-1 seed: base32 of ASCII "12345678901234567890"
+#     (cli/test-totp.ts, cli/test-inwx-api.ts).
+#   - WebSocket handshake nonce: base64 of "selfhostsmoke123"
+#     (cli/src/features/selfhost/smoke-workflow.ts).
+#   - SES SMTP passwords derived from AWS's documented example secret key
+#     wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY for us-east-1, eu-west-1 and
+#     us-west-2 (cli/test-ses-smtp.ts).
+#   - Repeating "abcdef0123456789" dotenvx private-key fixture
+#     (cli/test-scaffold.ts).
+[[allowlists]]
+description = "Reviewed test vectors and fixtures (exact values)."
+regexes = [
+  '''^GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ$''',
+  '''^c2VsZmhvc3RzbW9rZTEyMw==$''',
+  '''^BLBM\/9hSUELfq8Gw\+rU1YcBjkOxGbhT2XG763xVLGWL9$''',
+  '''^BMW5RDrXmmVs0lV7GpI4oLkHXpZ4stDsk6q91z1g38Pk$''',
+  '''^BF2PynzbSCAjX08zhZZnP\/kW\+T9P5zs\/1Er0pi5vTEmd$''',
+  '''^abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789$''',
+]
+
+# Documentation placeholders such as TF_VAR_inwx_password="your-inwx-pass"
+# in Terraform comments and *.tfvars.example files. Some rules capture the
+# surrounding quotes, so allow them.
+[[allowlists]]
+description = "your-… placeholders in docs and examples."
+regexes = [
+  '''^"?your-[a-z0-9-]+"?$''',
 ]
