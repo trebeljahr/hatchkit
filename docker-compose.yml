@@ -1,7 +1,7 @@
 # Coolify reads this file (build pack: dockercompose) to deploy
 # hatchkit-monorepo. The image is built by .github/workflows/deploy.yml and
-# pushed to GHCR; Coolify pulls it and (re)starts the service when
-# the workflow's deploy webhook fires.
+# pushed to GHCR; Coolify pulls it (see `pull_policy` below) and
+# (re)starts the service when the workflow's deploy webhook fires.
 #
 # To pin a specific version, change the tag below from `latest` to a
 # git sha, semver tag, or whatever your release process uses.
@@ -12,6 +12,13 @@ services:
     # The root package.json is named "hatchkit-monorepo" but the GHCR
     # path uses the GH repo slug ("hatchkit"), not the workspace name.
     image: ghcr.io/trebeljahr/hatchkit:latest
+    # Force a registry pull on every `docker compose up`. Without this,
+    # Compose reuses whichever digest the Coolify host cached the last
+    # time it saw `:latest`, so the deploy webhook restarts the container
+    # on the PREVIOUS build while Coolify reports the deploy as finished.
+    # That kept the May 2026 docs build live through the 2026-09-28
+    # redeploy.
+    pull_policy: always
     restart: unless-stopped
     # Coolify's Traefik reverse-proxy already owns host ports 80/443 and
     # routes to this container via its internal Docker network. Use
