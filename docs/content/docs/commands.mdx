@@ -546,7 +546,9 @@ and for repairing a project deployed before 0.2.19.
 
 ## `hatchkit doctor`
 
-Runs a read-only API call against every configured provider — Coolify `/version`, Hetzner `/servers`, Cloudflare `/tokens/verify`, Resend `/domains`, and so on. Reports `ok` / `fail` / `deferred` / `not configured` per provider and exits non-zero if anything **fails**. Safe to run repeatedly.
+Runs a read-only API call against every configured provider — Coolify `/version`, Hetzner `/servers`, Cloudflare `/tokens/verify`, Resend `/domains`, and so on. Reports `ok` / `fail` / `warn` / `deferred` / `not configured` per provider and exits non-zero if anything **fails**. A `warn` prints its fix but does not fail the run. Safe to run repeatedly.
+
+With Coolify configured, `doctor` also reads the compose file of every `dockercompose` app on the instance. It warns about each service that runs a `ghcr.io/...` image on a mutable tag (`:latest`, `:main`, no tag) without `pull_policy: always`. Docker starts the image it cached for that tag, so a deploy can finish green, report `running:healthy`, and still serve the previous build. The hint names the app, the repo and the compose file. For a hatchkit project, `hatchkit update` or `hatchkit regen-infra` adds the line.
 
 Run from inside a project directory and it also lists that project's [deferred steps](#deferred-steps) with the command to finish each one. Deferred steps never make `doctor` exit non-zero — they're work you postponed, not a broken credential.
 

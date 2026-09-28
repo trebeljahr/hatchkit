@@ -320,6 +320,41 @@ export class CoolifyApi {
     return this.request("GET", "/applications");
   }
 
+  /** Every application's compose SOURCE — the file as it sits in the
+   *  repo — plus where it came from. Backs doctor's pull-policy check.
+   *
+   *  Only `docker_compose_raw` is read. `docker_compose` is Coolify's
+   *  rendered copy with the app's environment interpolated into it,
+   *  DOTENV_PRIVATE_KEY_PRODUCTION included, so it is dropped here and
+   *  never leaves this method. */
+  async listComposeSources(): Promise<CoolifyComposeSource[]> {
+    const raw = await this.request<unknown>("GET", "/applications");
+    if (!Array.isArray(raw)) return [];
+    const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+    const out: CoolifyComposeSource[] = [];
+    for (const r of raw) {
+      if (!r || typeof r !== "object") continue;
+      const e = r as Record<string, unknown>;
+      if (typeof e.uuid !== "string") continue;
+      out.push({
+        uuid: e.uuid,
+        name: str(e.name) ?? e.uuid,
+        buildPack: str(e.build_pack),
+        gitRepository: str(e.git_repository),
+        gitBranch: str(e.git_branch),
+        baseDirectory: str(e.base_directory),
+        dockerComposeLocation: str(e.docker_compose_location),
+        dockerComposeRaw:
+          typeof e.docker_compose_raw === "string"
+            ? e.docker_compose_raw
+            : e.docker_compose_raw === null
+              ? null
+              : undefined,
+      });
+    }
+    return out;
+  }
+
   /** List Coolify databases. Used by `hatchkit overview` for a
    *  fleet-level summary — the response shape differs by db type
    *  (postgres, mysql, mongodb, …), so we accept the loose union and
@@ -1112,6 +1147,23 @@ export interface CoolifyApplication {
    *  A redeploy or a manual restart sets something else, so
    *  `restartCount > 0` on its own is not evidence of a fault. */
   lastRestartType?: string;
+}
+
+/** One application's compose source, as `listComposeSources` reads it. */
+export interface CoolifyComposeSource {
+  uuid: string;
+  name: string;
+  /** Raw `build_pack` — includes values `CoolifyApplication` doesn't
+   *  model, like `dockerimage`. */
+  buildPack?: string;
+  gitRepository?: string;
+  gitBranch?: string;
+  baseDirectory?: string;
+  dockerComposeLocation?: string;
+  /** The compose file Coolify last loaded from the repo. `null` for an
+   *  app that has never deployed (Coolify fills it at deploy time);
+   *  `undefined` when the response leaves the field out. */
+  dockerComposeRaw?: string | null;
 }
 
 /** One Coolify deployment record, trimmed to the fields that answer

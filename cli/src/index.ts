@@ -4088,8 +4088,14 @@ function printHelp(topic?: HelpTopic): void {
 
   Runs a read-only API call against each provider whose credentials are
   stored (Coolify /version, Hetzner /servers, Cloudflare /tokens/verify,
-  Listmonk /api/lists, …). Reports ok / fail / not-configured per provider
-  and exits non-zero if any check fails. Safe to run repeatedly.
+  Listmonk /api/lists, …). Reports ok / fail / warn / not-configured per
+  provider and exits non-zero if any check fails; warnings print their fix
+  but don't fail the run. Safe to run repeatedly.
+
+  With Coolify configured it also reads every compose app's source file and
+  warns about ghcr images on a mutable tag (:latest, :main) without
+  ${chalk.cyan("pull_policy: always")} — those can keep serving the previous build
+  after a green deploy.
 `);
     return;
   }

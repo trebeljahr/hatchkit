@@ -440,38 +440,141 @@ export const WORKFLOW_NATIVE_ORIGIN_STEP = `      # Native shells (Capacitor, El
 // Pure content transforms
 // ---------------------------------------------------------------------------
 
-/** Add `pull_policy: always` to every compose service running an image
- *  THIS pipeline pushes.
+/** A compose service whose image is a `ghcr.io/...` ref: an image a
+ *  pipeline like this one pushes, under a tag it may move. */
+export interface GhcrComposeService {
+  /** The service key, e.g. `server`. */
+  service: string;
+  /** The `image:` value as written, minus quotes and a trailing comment
+   *  (`${CLIENT_IMAGE:-ghcr.io/o/r:main}`). */
+  ref: string;
+  /** The image a bare `docker compose up` runs: `ref` with a
+   *  `${VAR:-default}` wrapper reduced to its default. */
+  image: string;
+  /** Index of the `image:` line in `content.split(/\r?\n/)`. */
+  imageLine: number;
+  /** The service's `pull_policy`, undefined when it declares none. */
+  pullPolicy?: string;
+  /** The service also has a `build:` key, so a deploy builds the image
+   *  rather than pulling it. */
+  builds: boolean;
+}
+
+/** A YAML scalar without a trailing ` # comment` or one layer of quotes. */
+function yamlScalar(raw: string): string {
+  const v = raw.replace(/[ \t]+#.*$/, "").trim();
+  const quoted = v.match(/^(["'])(.*)\1$/);
+  return quoted ? quoted[2] : v;
+}
+
+function leadOf(line: string): number {
+  return line.length - line.trimStart().length;
+}
+
+/** Every compose service running a `ghcr.io/...` image, with what it
+ *  declares about pulling it.
  *
- *  Scoped to `ghcr.io/...` refs on purpose. Those carry a mutable
+ *  The one scoping rule shared by the retrofit below and doctor's check
+ *  of live Coolify apps, so the two can't disagree about which services
+ *  are at risk. ghcr only, on purpose: those carry a mutable
  *  `:main`-style tag that moves under the running container, which is
- *  the whole failure. A pinned upstream tag (`mongo:7`,
- *  `redis:7-alpine`) does not move, so forcing a registry round-trip on
- *  it every restart would be cost with no cover. */
+ *  the whole failure. A pinned upstream tag (`mongo:7`, `redis:7-alpine`)
+ *  does not move.
+ *
+ *  Line-based, like every transform here. A service body is the run of
+ *  lines indented at least as far as its `image:` key; the nearest line
+ *  above it indented less is the service key. Comment-only lines do not
+ *  end a body. */
+export function ghcrComposeServices(content: string): GhcrComposeService[] {
+  const lines = content.split(/\r?\n/);
+  const out: GhcrComposeService[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^([ \t]+)image:[ \t]*(.*)$/);
+    if (!m) continue;
+    const ref = yamlScalar(m[2]);
+    const image = ref.replace(/^\$\{[A-Za-z0-9_]+:?-(.*)\}$/, "$1");
+    if (!image.startsWith("ghcr.io/")) continue;
+    const indent = m[1].length;
+    const inBody = (line: string) =>
+      !line.trim() || line.trimStart().startsWith("#") || leadOf(line) >= indent;
+    let start = i;
+    while (start > 0 && inBody(lines[start - 1])) start--;
+    let end = i;
+    while (end + 1 < lines.length && inBody(lines[end + 1])) end++;
+    // Search the WHOLE body, not just what follows `image:` — a
+    // `pull_policy` declared above it still counts, and adding a second
+    // one would be a duplicate key compose refuses to load.
+    let pullPolicy: string | undefined;
+    let builds = false;
+    for (let j = start; j <= end; j++) {
+      if (leadOf(lines[j]) !== indent) continue;
+      const kv = lines[j].match(/^[ \t]*(pull_policy|build)[ \t]*:(.*)$/);
+      if (!kv) continue;
+      if (kv[1] === "build") builds = true;
+      else pullPolicy = yamlScalar(kv[2]);
+    }
+    const header = start > 0 ? lines[start - 1] : "";
+    const service = yamlScalar(header.replace(/[ \t]+#.*$/, "").replace(/:[ \t]*$/, ""));
+    out.push({ service, ref, image, imageLine: i, pullPolicy, builds });
+  }
+  return out;
+}
+
+/** Whether an image's tag can move under a running container.
+ *
+ *  Pinned: a digest (`@sha256:…`), a commit-sha tag (7–64 hex chars,
+ *  optionally `sha-`-prefixed as `docker/metadata-action` writes it), or
+ *  a full semver release (`1.4.2`, `v1.4.2-rc.1`). Everything else
+ *  moves: `latest`, a branch like `main`, a floating `1` or `1.4`, and no
+ *  tag at all, which Docker reads as `latest`.
+ *
+ *  A tag that is a variable with no default (`:${TAG}`) comes from the
+ *  deploy environment, which the file says nothing about, so it is not
+ *  reported as mutable. */
+export function hasMutableTag(image: string): boolean {
+  if (image.includes("@")) return false;
+  const resolved = image.replace(/\$\{[A-Za-z0-9_]+:?-([^}]*)\}/g, "$1");
+  if (resolved.includes("$")) return false;
+  const name = resolved.slice(resolved.lastIndexOf("/") + 1);
+  const colon = name.indexOf(":");
+  const tag = colon === -1 ? "latest" : name.slice(colon + 1);
+  if (/^(sha-)?[0-9a-f]{7,64}$/i.test(tag)) return false;
+  if (/^v?\d+\.\d+\.\d+([-+][0-9A-Za-z.+-]+)?$/.test(tag)) return false;
+  return true;
+}
+
+/** Services a deploy can silently leave on the PREVIOUS build: a ghcr
+ *  image on a mutable tag, pulled rather than built, without
+ *  `pull_policy: always`. Docker starts whatever it cached for the tag,
+ *  and every status surface reports the deploy as a success.
+ *
+ *  Stricter than the retrofit's "declares no pull_policy": an explicit
+ *  `pull_policy: missing` is the same stale start, written down. */
+export function composeStalePullRisks(content: string): GhcrComposeService[] {
+  return ghcrComposeServices(content).filter(
+    (s) => !s.builds && s.pullPolicy?.toLowerCase() !== "always" && hasMutableTag(s.image),
+  );
+}
+
+/** Add `pull_policy: always` to every compose service running an image
+ *  THIS pipeline pushes — scoped by {@link ghcrComposeServices}.
+ *
+ *  A pinned upstream tag does not move, so forcing a registry round-trip
+ *  on it every restart would be cost with no cover. An existing
+ *  `pull_policy` of any value is left alone: it is a decision someone
+ *  wrote down. */
 export function upgradeComposePullPolicy(content: string): string {
+  const missing = new Set(
+    ghcrComposeServices(content)
+      .filter((s) => s.pullPolicy === undefined)
+      .map((s) => s.imageLine),
+  );
+  if (missing.size === 0) return content;
   const lines = content.split(/\r?\n/);
   const out: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     out.push(lines[i]);
-    const m = lines[i].match(/^([ \t]+)image:[ \t]*(?:\$\{[A-Za-z0-9_]+:-)?ghcr\.io\//);
-    if (!m) continue;
-    const indent = m[1].length;
-    // Scan the rest of this service's body for an existing declaration.
-    // The body is every following line indented at least as far as the
-    // `image:` key; the first line indented less starts a sibling
-    // service (or leaves `services:` entirely).
-    let already = false;
-    for (let j = i + 1; j < lines.length; j++) {
-      if (!lines[j].trim()) continue;
-      const lead = lines[j].length - lines[j].trimStart().length;
-      if (lead < indent) break;
-      if (lead === indent && /^[ \t]*pull_policy[ \t]*:/.test(lines[j])) {
-        already = true;
-        break;
-      }
-    }
-    if (already) continue;
-    out.push(...COMPOSE_PULL_POLICY_BLOCK.replace(/\n$/, "").split("\n"));
+    if (missing.has(i)) out.push(...COMPOSE_PULL_POLICY_BLOCK.replace(/\n$/, "").split("\n"));
   }
   return out.join("\n");
 }
@@ -790,7 +893,7 @@ export function deployVerificationRetrofits(
 /** Compose files a hatchkit project can deploy from, in the order a
  *  merge should read them. Single-origin uses the first; split's two
  *  apps use the other two. */
-const IMAGE_COMPOSE_FILES = [
+export const IMAGE_COMPOSE_FILES = [
   "docker-compose.yml",
   "docker-compose.client.yml",
   "docker-compose.server.yml",

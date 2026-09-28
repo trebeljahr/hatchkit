@@ -37,8 +37,11 @@ interface CheckResult {
   /** `deferred` is a deliberate user choice ("I'll do it later"), not a
    *  health problem: it renders distinctly and does NOT make doctor
    *  exit non-zero, so a project with skipped optional steps still
-   *  passes CI. */
-  status: "ok" | "fail" | "skip" | "deferred";
+   *  passes CI.
+   *
+   *  `warn` is a latent fault in something that works today — it prints
+   *  its hint but, like `deferred`, does not fail the run. */
+  status: "ok" | "fail" | "warn" | "skip" | "deferred";
   detail?: string;
   /** Multi-line troubleshooting hint, shown under a failing check. */
   hint?: string[];
@@ -870,6 +873,125 @@ async function checkCoolifyGhcrSsh(): Promise<CheckResult[]> {
   return out;
 }
 
+/** Coolify compose apps that can keep serving an old build after a
+ *  green deploy.
+ *
+ *  On 2026-09-28 two apps (hatchkit docs, sprite-tools) were still
+ *  serving May builds. Their compose files ran
+ *  `ghcr.io/trebeljahr/<x>:latest` without `pull_policy: always`, so
+ *  Coolify's `docker compose up` started the image Docker had cached for
+ *  the tag. Coolify reported every deployment `finished` and the app
+ *  `running:healthy` throughout; nothing on any status surface differed.
+ *
+ *  The fix is one line in the repo's compose file, and
+ *  `hatchkit update` / `regen-infra` carry it for hatchkit projects. This
+ *  finds the apps that never got it, across every app on the Coolify
+ *  instance rather than just the project in cwd.
+ *
+ *  Reads `docker_compose_raw` only (see `listComposeSources`) and prints
+ *  service names and image refs, never an env value. A `warn`, not a
+ *  `fail`: the app works, it just can't be trusted to update. */
+export async function checkCoolifyComposePullPolicy(source?: {
+  api: Pick<CoolifyApi, "listComposeSources">;
+}): Promise<CheckResult[]> {
+  let api = source?.api;
+  if (!api) {
+    const cfg = await getCoolifyConfig();
+    if (!cfg) return [];
+    api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+  }
+  const name = "Coolify image pull policy";
+
+  let apps: Awaited<ReturnType<CoolifyApi["listComposeSources"]>>;
+  try {
+    apps = await api.listComposeSources();
+  } catch (err) {
+    // The Coolify row above already reports an unreachable instance or a
+    // dead token; failing again here would say the same thing twice.
+    return [
+      {
+        name,
+        status: "skip",
+        detail: `couldn't list applications: ${(err as Error).message.split("\n")[0]}`,
+      },
+    ];
+  }
+  const compose = apps.filter((a) => a.buildPack === "dockercompose");
+  if (compose.length === 0) return [];
+  const readable = compose.filter(
+    (a): a is typeof a & { dockerComposeRaw: string } => typeof a.dockerComposeRaw === "string",
+  );
+  if (readable.length === 0) {
+    return [
+      {
+        name,
+        status: "skip",
+        detail: `Coolify returned no docker_compose_raw for ${compose.length} compose app(s)`,
+      },
+    ];
+  }
+
+  const { IMAGE_COMPOSE_FILES, composeStalePullRisks } = await import(
+    "./scaffold/deploy-verification.js"
+  );
+  const out: CheckResult[] = [];
+  for (const app of readable) {
+    const risks = composeStalePullRisks(app.dockerComposeRaw);
+    if (risks.length === 0) continue;
+
+    const repo = app.gitRepository ?? "the app's repo";
+    const branch = app.gitBranch ? ` (branch ${app.gitBranch})` : "";
+    const baseDir = (app.baseDirectory ?? "/").replace(/^\/+|\/+$/g, "");
+    const location = (app.dockerComposeLocation ?? "/docker-compose.yml").replace(/^\/+/, "");
+    const file = baseDir ? `${baseDir}/${location}` : location;
+    const services = risks.map((r) => `\`${r.service}\``).join(", ");
+    const explicit = risks.filter((r) => r.pullPolicy !== undefined);
+    const retrofittable =
+      explicit.length === 0 && (IMAGE_COMPOSE_FILES as readonly string[]).includes(file);
+
+    out.push({
+      name: `Coolify app ${app.name} (image pull policy)`,
+      status: "warn",
+      detail: risks
+        .map(
+          (r) =>
+            `service "${r.service}" runs ${r.ref} with ` +
+            (r.pullPolicy === undefined ? "no pull_policy" : `pull_policy: ${r.pullPolicy}`),
+        )
+        .join("; "),
+      hint: [
+        `Coolify app ${app.name} (${app.uuid}) deploys ${file} from ${repo}${branch}.`,
+        "Docker starts the image it cached for a mutable tag, so a deploy can finish green",
+        "and report running:healthy while the previous build keeps serving.",
+        `Fix: set \`pull_policy: always\` on ${services} in ${repo}:${file}, commit, and redeploy.`,
+        ...explicit.map(
+          (r) =>
+            `  \`${r.service}\` declares \`pull_policy: ${r.pullPolicy}\` — change it to \`always\`.`,
+        ),
+        ...(retrofittable
+          ? [
+              "Or, in a hatchkit project checkout: `hatchkit update` or `hatchkit regen-infra`",
+              "  (preview with `--dry-run`) — both add it.",
+            ]
+          : []),
+        "Coolify re-reads the file on the next deploy; this warning clears after it.",
+      ],
+    });
+  }
+
+  if (out.length === 0) {
+    const unread = compose.length - readable.length;
+    out.push({
+      name,
+      status: "ok",
+      detail:
+        `${readable.length} compose app(s) checked, none runs a mutable ghcr tag without pull_policy: always` +
+        (unread > 0 ? ` (${unread} never deployed, not checked)` : ""),
+    });
+  }
+  return out;
+}
+
 /** True when a manifest's deploymentMode means "there is a Coolify app
  *  behind this domain". Absent = legacy manifest = coolify. */
 function isCoolifyManagedMode(mode: string | undefined): boolean {
@@ -977,6 +1099,7 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   results.push(await checkCoolify());
   for (const r of await checkCoolifyGithubApp()) results.push(r);
   for (const r of await checkCoolifyGhcrSsh()) results.push(r);
+  for (const r of await checkCoolifyComposePullPolicy()) results.push(r);
   results.push(await checkHetzner());
   results.push(await checkDns());
   results.push(await checkCloudflareWorkers());
@@ -2696,12 +2819,14 @@ export async function runDoctor(opts: { json?: boolean } = {}): Promise<void> {
   const failCount = results.filter((r) => r.status === "fail").length;
   const skipCount = results.filter((r) => r.status === "skip").length;
   const deferredResults = results.filter((r) => r.status === "deferred");
+  const warnResults = results.filter((r) => r.status === "warn");
 
   if (opts.json) {
     const payload = {
       summary: {
         ok: okCount,
         failing: failCount,
+        warnings: warnResults.length,
         not_configured: skipCount,
         deferred: deferredResults.length,
       },
@@ -2724,13 +2849,15 @@ export async function runDoctor(opts: { json?: boolean } = {}): Promise<void> {
         ? chalk.green("✓")
         : r.status === "fail"
           ? chalk.red("✗")
-          : r.status === "deferred"
-            ? chalk.yellow("»")
-            : chalk.dim("·");
+          : r.status === "warn"
+            ? chalk.yellow("!")
+            : r.status === "deferred"
+              ? chalk.yellow("»")
+              : chalk.dim("·");
     const name =
       r.status === "fail"
         ? chalk.red(r.name)
-        : r.status === "deferred"
+        : r.status === "deferred" || r.status === "warn"
           ? chalk.yellow(r.name)
           : r.name;
     const detail = r.detail ? chalk.dim(` — ${r.detail}`) : "";
@@ -2738,6 +2865,10 @@ export async function runDoctor(opts: { json?: boolean } = {}): Promise<void> {
   }
   console.log(
     `\n  ${chalk.green(`${okCount} ok`)}  ${failCount ? chalk.red(`${failCount} failing`) : chalk.dim("0 failing")}  ${
+      warnResults.length
+        ? chalk.yellow(`${warnResults.length} warning${warnResults.length === 1 ? "" : "s"}`)
+        : chalk.dim("0 warnings")
+    }  ${
       deferredResults.length
         ? chalk.yellow(`${deferredResults.length} deferred`)
         : chalk.dim("0 deferred")
@@ -2751,6 +2882,17 @@ export async function runDoctor(opts: { json?: boolean } = {}): Promise<void> {
     console.log(chalk.bold("  Deferred — finish when you have the credentials"));
     for (const r of deferredResults) {
       console.log(`\n  ${chalk.yellow("»")} ${chalk.bold(r.name)}`);
+      for (const line of r.hint ?? []) console.log(`    ${chalk.dim("→")} ${line}`);
+    }
+    console.log();
+  }
+
+  // Warnings don't fail the run, but a warning without its fix is just
+  // a yellow line nobody acts on.
+  if (warnResults.length > 0) {
+    console.log(chalk.bold("  Warnings — working today, worth fixing"));
+    for (const r of warnResults) {
+      console.log(`\n  ${chalk.yellow("!")} ${chalk.bold(r.name)}`);
       for (const line of r.hint ?? []) console.log(`    ${chalk.dim("→")} ${line}`);
     }
     console.log();
