@@ -8,7 +8,7 @@
 // This module patches what's left so `pnpm build` in the pruned
 // package produces an `out/` directory ready for `actions/upload-pages-artifact`.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { rewriteFile } from "./starter-files.js";
 
@@ -94,10 +94,7 @@ function patchNextConfig(outputDir: string, modifications: string[]): void {
 function ensureCnameDirExists(outputDir: string, modifications: string[]): void {
   const publicDir = join(outputDir, "packages/client/public");
   if (existsSync(publicDir)) return;
-  // Create with a placeholder so git tracks the directory. We don't
-  // import mkdirSync at the top to keep imports tight; pull it lazily.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { mkdirSync } = require("node:fs") as { mkdirSync: typeof import("node:fs").mkdirSync };
+  // Create with a placeholder so git tracks the directory.
   mkdirSync(publicDir, { recursive: true });
   writeFileSync(join(publicDir, ".gitkeep"), "");
   modifications.push("gh-pages: created packages/client/public/ for CNAME placement");

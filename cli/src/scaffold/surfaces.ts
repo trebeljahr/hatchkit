@@ -33,6 +33,7 @@ import { CLIENT_WORKFLOW_REL_PATH } from "./client-build-args.js";
 import { stripClientDockerfileApiUrlAssertion } from "./deploy-verification.js";
 import { DESKTOP_FILES, DESKTOP_SCRIPTS_TO_STRIP } from "./desktop.js";
 import { MOBILE_SCRIPTS } from "./mobile-feature.js";
+import { applyPagesMode } from "./pages-mode.js";
 import {
   setPackageJsonScript,
   stripPackageJsonDeps,
@@ -57,13 +58,7 @@ export function pruneToSurface(
     // prune — the prune drops the `/api/*` rewrites and the API-URL
     // guard but leaves `output: "standalone"`, which assumes a Node
     // server Pages can't run.
-    if (config.deploymentMode === "gh-pages") {
-      // Lazy import to avoid pulling node:fs deeper than needed for
-      // the non-pages paths. The dep graph here is already heavy.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { applyPagesMode } = require("./pages-mode.js") as typeof import("./pages-mode.js");
-      applyPagesMode(outputDir, modifications);
-    }
+    if (config.deploymentMode === "gh-pages") applyPagesMode(outputDir, modifications);
   }
 }
 
