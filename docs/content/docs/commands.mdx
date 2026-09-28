@@ -552,9 +552,11 @@ With Coolify configured, `doctor` also reads the compose file of every `dockerco
 
 Run from inside a project whose Dockerfile's final stage is `FROM nginx`, and `doctor` checks that the image gets a config under `/etc/nginx/`. nginx's stock config maps a URL straight onto a file, so a reload on a client-side route or on a page URL without `.html` returns a 404. Projects adopted before hatchkit wrote `nginx.conf` have this Dockerfile. The warning prints the config for your build and the one `COPY` line to add. `hatchkit adopt --resume --regenerate-pipeline` also fixes it, but it re-renders the Dockerfile, compose file and deploy workflow too.
 
+With SES and Listmonk configured, `doctor` checks the [bounce feedback path](/docs/email#bounces-and-complaints) across the whole SES account. It fails on a verified identity whose Bounce or Complaint notifications go to no SNS topic, on a missing or unconfirmed subscription from the `ses-feedback-listmonk` topic to Listmonk's SES webhook, on account suppression that doesn't cover `BOUNCE` and `COMPLAINT`, and on Listmonk bounce settings that are off. A read the IAM policy doesn't allow is a `warn` that names the missing action.
+
 Run from inside a project directory and it also lists that project's [deferred steps](#deferred-steps) with the command to finish each one. Deferred steps never make `doctor` exit non-zero — they're work you postponed, not a broken credential.
 
-`hatchkit doctor --fix` adds one step after the report: for each failure that doctor can repair itself, it asks `y/N` (default No) and applies the repair on a yes. Today that is one repair: a project's Listmonk tx template that HTML-escapes the email body. `--yes` applies every offered repair without asking. Without a terminal and without `--yes`, nothing is applied. `--fix` is ignored with `--json`, so `doctor --json` stays read-only.
+`hatchkit doctor --fix` adds one step after the report: for each failure that doctor can repair itself, it asks `y/N` (default No) and applies the repair on a yes. Today that covers a project's Listmonk tx template that HTML-escapes the email body, and each broken piece of the SES bounce feedback path. `--yes` applies every offered repair without asking. Without a terminal and without `--yes`, nothing is applied. `--fix` is ignored with `--json`, so `doctor --json` stays read-only.
 
 ---
 

@@ -61,6 +61,18 @@ export type LedgerStep =
       records: Array<{ id: string; name: string; type: "TXT" | "MX" | "CNAME" | "A" | "AAAA" }>;
       mergedSpf: Array<{ name: string }>;
     }
+  /** Bounce/Complaint notification topics hatchkit set on an SES
+   *  identity (SES v1 SetIdentityNotificationTopic). `types` holds only
+   *  the types THIS run set; destroy clears each one that still points
+   *  at `topicArn`. The topic itself, its Listmonk subscription, the
+   *  account suppression and Listmonk's bounce settings are shared by
+   *  every project, so they are never recorded and never undone. */
+  | {
+      kind: "sesNotificationTopics";
+      identity: string;
+      topicArn: string;
+      types: Array<"Bounce" | "Complaint">;
+    }
   /** Listmonk list hatchkit created via POST /api/lists. Recorded only
    *  when the list was created *this* run (a list adopted from a
    *  pre-existing Listmonk install belongs to the user). Destroy hits

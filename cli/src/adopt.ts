@@ -2767,6 +2767,19 @@ async function executePlan(
                 type: r.type,
               });
             }
+          } else if (
+            event.service === "sesFeedback" &&
+            event.topicArn &&
+            event.typesSetThisRun.length > 0
+          ) {
+            // Only the identity's notification types this run set. The
+            // shared topic and its subscription serve every project.
+            ledger.record({
+              kind: "sesNotificationTopics",
+              identity: event.identity,
+              topicArn: event.topicArn,
+              types: event.typesSetThisRun,
+            });
           } else if (event.service === "listmonkList" && event.createdThisRun) {
             // Only record lists hatchkit *created* — an adopted list
             // (already in Listmonk before this run) belongs to the

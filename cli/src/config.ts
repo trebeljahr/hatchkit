@@ -2221,8 +2221,9 @@ export async function ensureSes(): Promise<SesConfig> {
 
   tokenHint(
     "https://console.aws.amazon.com/iam/home#/users",
-    "AmazonSesFullAccess (or a tighter custom policy covering sesv2:* + ses:SendRawEmail)",
+    "AmazonSesFullAccess (or a tighter custom policy covering the ses:* actions Hatchkit calls)",
     "Pick an IAM USER (not a role) — programmatic access keys only.",
+    "Bounce feedback also needs sns:CreateTopic, sns:Subscribe, sns:ListSubscriptionsByTopic (not in AmazonSesFullAccess).",
   );
 
   let accessKeyId = "";

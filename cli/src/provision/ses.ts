@@ -10,6 +10,8 @@
  *   - SESv2 is the current API (v1 is legacy, missing features).
  *   - Credential resolution + SigV4 signing + retry/backoff are
  *     already correct in the SDK.
+ * The one exception is bounce/complaint notification topics, which only
+ * the v1 API sets per identity — see `ses-feedback.ts`.
  *
  * Sandbox mode is the default for every new SES account: it can only
  * send to verified recipient addresses until you submit the
@@ -25,7 +27,6 @@ import {
   GetAccountCommand,
   GetEmailIdentityCommand,
   ListEmailIdentitiesCommand,
-  PutEmailIdentityFeedbackAttributesCommand,
   PutEmailIdentityMailFromAttributesCommand,
   SESv2Client,
   SendEmailCommand,
@@ -246,27 +247,6 @@ export async function deleteSesDomain(
     if ((err as { name?: string }).name === "NotFoundException") return "not-found";
     throw err;
   }
-}
-
-/**
- * Enable SNS feedback notifications on a verified identity. Required
- * for the Listmonk bounces webhook flow (Phase 5) — SES routes
- * Bounce + Complaint events to the configured SNS topic, which in turn
- * POSTs to Listmonk's webhook. Standalone-callable for users who
- * already have an SNS topic and want to attach it after-the-fact.
- */
-export async function enableSesFeedbackNotifications(
-  domain: string,
-  authOverride?: SesAuth,
-): Promise<void> {
-  const auth = authOverride ?? (await ensureSes());
-  const client = makeClient(auth);
-  await client.send(
-    new PutEmailIdentityFeedbackAttributesCommand({
-      EmailIdentity: domain,
-      EmailForwardingEnabled: true,
-    }),
-  );
 }
 
 // ────────────────────────────────────────────────────────────────────────────

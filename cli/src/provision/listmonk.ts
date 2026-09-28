@@ -20,6 +20,10 @@
  *   POST /api/templates
  *   PUT  /api/templates/{id}
  *   DELETE /api/templates/{id}
+ *   GET  /api/settings
+ *   PUT  /api/settings
+ *   PUT  /api/settings/{key}
+ *   GET  /api/health
  */
 
 import { ensureListmonk } from "../config.js";
@@ -428,6 +432,49 @@ export async function putListmonkSettings(
 ): Promise<void> {
   const auth = authOverride ?? (await ensureListmonk());
   await listmonkFetch<boolean>(auth, "PUT", "/api/settings", settings);
+}
+
+/** Write one settings key with Listmonk v6's `PUT /api/settings/<key>`,
+ *  the raw JSON value as the body. Unlike the whole-object PUT it never
+ *  round-trips the masked SMTP passwords. Listmonk reloads after it, so
+ *  call `waitForListmonk` before the next request. */
+export async function putListmonkSetting(
+  key: string,
+  value: unknown,
+  authOverride?: ListmonkAuth,
+): Promise<void> {
+  const auth = authOverride ?? (await ensureListmonk());
+  await listmonkFetch<boolean>(auth, "PUT", `/api/settings/${encodeURIComponent(key)}`, value);
+}
+
+/** Poll `GET /api/health` until Listmonk answers, the way its admin UI
+ *  does after a settings save: the reload briefly takes the HTTP server
+ *  down. Any answer below 500 counts as up; a proxy in front of a
+ *  reloading Listmonk answers 502/503, and a dropped connection throws.
+ *  Throws after `timeoutMs`. */
+export async function waitForListmonk(
+  auth: ListmonkAuth,
+  opts: { initialDelayMs?: number; timeoutMs?: number; intervalMs?: number } = {},
+): Promise<void> {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  if (opts.initialDelayMs) await sleep(opts.initialDelayMs);
+  const deadline = Date.now() + (opts.timeoutMs ?? 30_000);
+  let lastError = "";
+  for (;;) {
+    try {
+      const res = await fetch(`${normalizeListmonkUrl(auth.url)}/api/health`, {
+        headers: authHeaders(auth),
+      });
+      if (res.status < 500) return;
+      lastError = `HTTP ${res.status}`;
+    } catch (err) {
+      lastError = (err as Error).message.split("\n")[0];
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`Listmonk did not come back after a settings reload: ${lastError}`);
+    }
+    await sleep(opts.intervalMs ?? 500);
+  }
 }
 
 /** Common-case helper: patch only the SES SMTP relay + the from-email

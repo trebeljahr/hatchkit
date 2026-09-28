@@ -13,15 +13,18 @@ import {
   getGlitchtipConfig,
   getGoogleSearchConsoleConfig,
   getHetznerConfig,
+  getListmonkConfig,
   getOpenpanelConfig,
   getPlausibleConfig,
   getS3Config,
+  getSesConfig,
   getStore,
   refreshGoogleSearchConsoleAccessToken,
   validateS3KeyPair,
 } from "./config.js";
 import { appSlugFromHtmlUrl, listUserInstallations } from "./deploy/github-app-access.js";
 import { readDeferredSteps } from "./provision/deferrals.js";
+import type { SesFeedbackAws, SesFeedbackListmonk } from "./provision/ses-feedback.js";
 import { CoolifyApi, verifyCoolify } from "./utils/coolify-api.js";
 import {
   dockerLoginAlreadyOk,
@@ -1097,6 +1100,249 @@ async function checkCloudflareWorkers(): Promise<CheckResult> {
   );
 }
 
+/**
+ * SES bounce + complaint feedback into Listmonk, account-wide: every
+ * Hatchkit project sends through one Listmonk over SES, so this runs
+ * wherever SES and Listmonk are configured, not per project.
+ *
+ * Four rows, each with a `--fix` repair:
+ *   · identities   — a verified identity whose Bounce or Complaint
+ *                    notifications go to no SNS topic. SES then only
+ *                    emails the notice to the sender, and Listmonk never
+ *                    blocklists the address.
+ *   · subscription — the shared topic is gone, or its subscription to
+ *                    Listmonk's SES webhook is missing or unconfirmed.
+ *   · suppression  — account suppression doesn't cover BOUNCE + COMPLAINT.
+ *   · Listmonk     — `bounce.enabled` / `webhooks_enabled` / `ses_enabled`
+ *                    off.
+ *
+ * Read-only: ListEmailIdentities, GetIdentityNotificationAttributes,
+ * ListSubscriptionsByTopic, GetAccount, GET /api/settings. The topic ARN
+ * comes from the identities' own notification attributes, because
+ * finding it any other way needs `sns:ListTopics` or a CreateTopic
+ * write. A read the IAM policy doesn't allow is a `warn` naming the
+ * missing action, not a crash.
+ */
+export async function checkSesBounceFeedback(source?: {
+  aws: SesFeedbackAws;
+  listmonk: SesFeedbackListmonk;
+  listmonkUrl: string;
+}): Promise<CheckResult[]> {
+  const feedback = await import("./provision/ses-feedback.js");
+  let src = source;
+  if (!src) {
+    const sesCfg = await getSesConfig();
+    if (!sesCfg) return [];
+    const listmonkCfg = await getListmonkConfig();
+    if (!listmonkCfg) {
+      return [
+        {
+          name: "SES bounce feedback",
+          status: "skip",
+          detail: "Listmonk not configured — SES bounce feedback goes to Listmonk",
+        },
+      ];
+    }
+    src = {
+      aws: feedback.createSesFeedbackAws(sesCfg),
+      // No reload wait before reads: a Listmonk that is down should
+      // fail this row now, not after 30 s.
+      listmonk: feedback.createSesFeedbackListmonk(listmonkCfg, { settleBeforeRead: false }),
+      listmonkUrl: listmonkCfg.url,
+    };
+  }
+  const { aws, listmonk } = src;
+  const report = await feedback.inspectSesFeedback(src);
+  const topicName = report.topicName;
+  const out: CheckResult[] = [];
+
+  /** Create (or find) the topic and subscribe the webhook. Listmonk's
+   *  bounce settings go first: it confirms the subscription only with
+   *  `bounce.ses_enabled` on. */
+  const repairSubscription = async (): Promise<string> => {
+    const written = await feedback.ensureListmonkBounceSettings(listmonk);
+    const arn = await aws.createTopic(topicName);
+    const sub = await feedback.ensureFeedbackSubscription(aws, arn, report.webhookUrl);
+    const settings = written.length > 0 ? `; turned on ${written.join(", ")}` : "";
+    return sub.state === "confirmed"
+      ? `${topicName} → ${report.webhookUrl} subscribed and confirmed${settings}`
+      : `${topicName} → ${report.webhookUrl} subscribed; Listmonk has not confirmed it yet — re-run doctor in a minute${settings}`;
+  };
+  const warnRow = (name: string, probe: { error: string; iamGap: boolean }): CheckResult => ({
+    name,
+    status: "warn",
+    detail: `couldn't check: ${probe.error}`,
+    hint: probe.iamGap ? feedback.feedbackIamHint() : undefined,
+  });
+
+  // Identities.
+  {
+    const name = "SES bounce feedback (identities)";
+    const probe = report.identities;
+    if (!probe.ok) {
+      out.push(warnRow(name, probe));
+    } else if (probe.value.verified.length === 0) {
+      out.push({ name, status: "skip", detail: "no verified SES identities" });
+    } else if (probe.value.missing.length > 0) {
+      const { missing, verified, foreign } = probe.value;
+      const list = missing.map((m) => `${m.identity} (${m.types.join(" + ")})`).join(", ");
+      out.push({
+        name,
+        status: "fail",
+        detail: `${missing.length} of ${verified.length} verified identities route no bounces/complaints to SNS: ${list}`,
+        hint: [
+          "SES then only emails the notice to the sender address, so Listmonk never blocklists a bouncing address.",
+          `Run \`hatchkit doctor --fix\` to point them at the ${topicName} topic.`,
+          ...(foreign.length > 0
+            ? [
+                `${foreign.length} other notification(s) go to a different topic; doctor leaves those alone.`,
+              ]
+            : []),
+        ],
+        repair: {
+          prompt: `Send Bounce + Complaint notifications of ${missing.length} identit${missing.length === 1 ? "y" : "ies"} to SNS topic ${topicName}?`,
+          run: async () => {
+            const arn = await aws.createTopic(topicName);
+            let set = 0;
+            for (const m of missing) {
+              set += (await feedback.ensureIdentityNotificationTopics(aws, m.identity, arn)).set
+                .length;
+            }
+            return `${set} notification topic(s) set to ${topicName} on ${missing.map((m) => m.identity).join(", ")}`;
+          },
+        },
+      });
+    } else if (probe.value.foreign.length > 0) {
+      const list = probe.value.foreign
+        .map((f) => `${f.identity} ${f.type} → ${feedback.topicNameFromArn(f.topicArn)}`)
+        .join(", ");
+      out.push({
+        name,
+        status: "warn",
+        detail: `every verified identity has topics, but some are not ${topicName}: ${list}`,
+        hint: [
+          "Those notifications reach Listmonk only if that topic is subscribed to its SES webhook. Doctor leaves them alone.",
+        ],
+      });
+    } else {
+      out.push({
+        name,
+        status: "ok",
+        detail: `${probe.value.verified.length} verified identities send Bounce + Complaint to ${topicName}`,
+      });
+    }
+  }
+
+  // Topic + subscription.
+  {
+    const name = "SES bounce feedback (SNS subscription)";
+    const sub = report.subscription;
+    const repair = {
+      prompt: `Create SNS topic ${topicName} if missing and subscribe ${report.webhookUrl}?`,
+      run: repairSubscription,
+    };
+    if (!report.identities.ok) {
+      out.push({ name, status: "skip", detail: "topic unknown: identities couldn't be read" });
+    } else if (report.identities.value.verified.length === 0) {
+      // Nothing sends yet, so there is nothing to locate the topic by.
+    } else if (!sub && report.identities.value.missing.length === 0) {
+      // Every identity routes to some other topic on purpose.
+      out.push({ name, status: "skip", detail: `no verified identity uses ${topicName}` });
+    } else if (!sub) {
+      out.push({
+        name,
+        status: "fail",
+        detail: `no verified identity sends to a topic named ${topicName}, so doctor can't locate it read-only`,
+        hint: [`Run \`hatchkit doctor --fix\` to create it and subscribe ${report.webhookUrl}.`],
+        repair,
+      });
+    } else if (!sub.ok) {
+      out.push(warnRow(name, sub));
+    } else if (sub.value === "confirmed") {
+      out.push({ name, status: "ok", detail: `${topicName} → ${report.webhookUrl} (confirmed)` });
+    } else {
+      const detail =
+        sub.value === "topic-missing"
+          ? `topic ${report.topicArn} no longer exists — identities point at nothing`
+          : sub.value === "missing"
+            ? `${topicName} has no subscription for ${report.webhookUrl}`
+            : `subscription ${topicName} → ${report.webhookUrl} is pending confirmation`;
+      out.push({
+        name,
+        status: "fail",
+        detail,
+        hint: [
+          "Listmonk confirms the subscription by itself once `bounce.ses_enabled` is on and the URL is reachable from AWS.",
+          "Run `hatchkit doctor --fix` to (re)subscribe; SNS then sends a fresh confirmation request.",
+        ],
+        repair,
+      });
+    }
+  }
+
+  // Account suppression.
+  {
+    const name = "SES bounce feedback (account suppression)";
+    const probe = report.suppression;
+    if (!probe.ok) {
+      out.push(warnRow(name, probe));
+    } else if (probe.value.length > 0) {
+      out.push({
+        name,
+        status: "fail",
+        detail: `account-level suppression doesn't cover ${probe.value.join(" + ")}`,
+        hint: [
+          "SES keeps sending to addresses that bounced or complained, which counts against the account's reputation.",
+          "Run `hatchkit doctor --fix` to add them.",
+        ],
+        repair: {
+          prompt: `Add ${probe.value.join(" + ")} to the SES account suppression list?`,
+          run: async () => {
+            const added = await feedback.ensureAccountSuppression(aws);
+            return added.length > 0
+              ? `SES account suppression now includes ${added.join(" + ")}`
+              : "SES account suppression already covered BOUNCE + COMPLAINT";
+          },
+        },
+      });
+    } else {
+      out.push({ name, status: "ok", detail: "BOUNCE + COMPLAINT suppressed account-wide" });
+    }
+  }
+
+  // Listmonk settings.
+  {
+    const name = "SES bounce feedback (Listmonk settings)";
+    const probe = report.listmonkSettings;
+    if (!probe.ok) {
+      out.push({ name, status: "warn", detail: `couldn't check: ${probe.error}` });
+    } else if (probe.value.length > 0) {
+      out.push({
+        name,
+        status: "fail",
+        detail: `off on ${src.listmonkUrl}: ${probe.value.join(", ")}`,
+        hint: [
+          "Listmonk ignores SES bounce webhooks until all three are on.",
+          "Run `hatchkit doctor --fix` to turn them on (one PUT per key; each reloads Listmonk).",
+        ],
+        repair: {
+          prompt: `Turn on ${probe.value.join(", ")} in Listmonk at ${src.listmonkUrl}?`,
+          run: async () => {
+            const written = await feedback.ensureListmonkBounceSettings(listmonk);
+            return written.length > 0
+              ? `Listmonk: turned on ${written.join(", ")}`
+              : "Listmonk bounce settings were already on";
+          },
+        },
+      });
+    } else {
+      out.push({ name, status: "ok", detail: "bounce.enabled, webhooks_enabled, ses_enabled on" });
+    }
+  }
+
+  return out;
+}
+
 export async function collectDoctorResults(): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   results.push(await checkGitHub());
@@ -1114,6 +1360,7 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   results.push(await checkPlausible());
   results.push(await checkGoogleSearchConsole());
   for (const r of await checkStripe()) results.push(r);
+  for (const r of await checkSesBounceFeedback()) results.push(r);
   // Local-dev (Tailscale-served per-project URLs). Returns [] when the
   // user hasn't run `hatchkit dev-setup init`, so doctor stays quiet for
   // anyone not opted in.

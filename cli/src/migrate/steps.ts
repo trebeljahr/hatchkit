@@ -40,6 +40,12 @@ import {
   reconcileAssetsCorsFromManifest,
 } from "../provision/s3-buckets.js";
 import {
+  createSesFeedbackAws,
+  createSesFeedbackListmonk,
+  ensureSesFeedback,
+  renderSesFeedbackLines,
+} from "../provision/ses-feedback.js";
+import {
   SES_MAIL_FROM_SPF,
   type SesAuth,
   createSesDomain,
@@ -184,7 +190,9 @@ export const stepCoolifySync: StepFn = async (ctx) => {
  * is what mints the DKIM tokens), publish the CNAMEs, then set MAIL
  * FROM and publish its MX + SPF. Setting MAIL FROM before the records
  * exist is legal but parks the attribute in PENDING until SES next
- * polls, which just makes the status output confusing.
+ * polls, which just makes the status output confusing. Last, the new
+ * identity's Bounce + Complaint notifications go to the shared SNS
+ * topic Listmonk listens on (see `provision/ses-feedback.ts`).
  */
 export const stepSesPrepare: StepFn = async (ctx) => {
   const manifest = manifestOf(ctx);
@@ -231,6 +239,26 @@ export const stepSesPrepare: StepFn = async (ctx) => {
   detail.push(
     `MAIL FROM ${mailFrom}: ${mailFromRes.created} created, ${mailFromRes.updated} updated`,
   );
+
+  // Bounce + complaint feedback, so the new identity's bounces reach
+  // Listmonk from its first send. Shared topic, per-identity routing;
+  // failures (usually IAM) come back as detail lines, not a failed step.
+  const listmonk = await getListmonkConfig();
+  if (listmonk) {
+    const feedback = await ensureSesFeedback({
+      identity: identityName,
+      listmonkUrl: listmonk.url,
+      aws: createSesFeedbackAws(auth),
+      listmonk: createSesFeedbackListmonk(listmonk),
+    });
+    for (const line of renderSesFeedbackLines(feedback)) {
+      detail.push(line.text.replace(/^[✓·] /, ""));
+    }
+  } else {
+    detail.push(
+      "bounce feedback skipped: Listmonk is not configured (`hatchkit config add listmonk`)",
+    );
+  }
 
   const verified = identity.verifiedForSendingStatus === true;
   detail.push(

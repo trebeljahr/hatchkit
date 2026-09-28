@@ -44,13 +44,17 @@ your app  ─── HTTPS POST ─────────┤                 �
 hatchkit config add ses
 ```
 
-You'll be prompted for an AWS region (suggest `eu-west-1` for EU compliance) and an IAM access key id + secret. The credentials need:
+You'll be prompted for an AWS region (suggest `eu-west-1` for EU compliance) and an IAM access key id + secret. The credentials need these IAM actions (SES API v1 and v2 both use the `ses:` prefix):
 
-- `sesv2:CreateEmailIdentity`, `sesv2:GetEmailIdentity`, `sesv2:ListEmailIdentities`, `sesv2:DeleteEmailIdentity`
-- `sesv2:SendEmail` / `ses:SendRawEmail`
-- `sesv2:PutEmailIdentityFeedbackAttributes` (only for the bounce-webhook path)
+- `ses:CreateEmailIdentity`, `ses:GetEmailIdentity`, `ses:ListEmailIdentities`, `ses:DeleteEmailIdentity`
+- `ses:PutEmailIdentityMailFromAttributes` (custom MAIL FROM)
+- `ses:SendEmail` / `ses:SendRawEmail`
+- For [bounces and complaints](#bounces-and-complaints):
+  - `ses:SetIdentityNotificationTopic`, `ses:GetIdentityNotificationAttributes`
+  - `ses:GetAccount`, `ses:PutAccountSuppressionAttributes`
+  - `sns:CreateTopic`, `sns:Subscribe`, `sns:ListSubscriptionsByTopic`
 
-The simplest scoped policy is `AmazonSesFullAccess`. For least-privilege, copy the actions above into a custom policy.
+`AmazonSesFullAccess` does not cover the three `sns:` actions. For least privilege, copy the actions above into a custom policy. When one is missing, provisioning prints a warning that names it and continues, and `hatchkit doctor` reports the check it could not run.
 
 **SES sandbox mode is the default.** New AWS accounts can only send to recipient addresses verified ahead of time. To send to real users you must request production access via the AWS console (one-time form, ~24h Amazon review).
 
@@ -59,6 +63,8 @@ While sandboxed, register every test recipient with:
 ```sh
 hatchkit ses verify <email>
 ```
+
+A send to an unverified recipient fails without any sign in your app: Listmonk's `/api/tx` returns 200 before SMTP runs, and the SES rejection shows only in Listmonk's log (`GET /api/logs`).
 
 SES mails a one-time confirm link to that address; clicking it flips it to verified. Drop one with `hatchkit ses unverify <email>`. See the current account state (sandbox flag + send caps + identity count) with:
 
@@ -124,12 +130,13 @@ Listmonk → Settings → SMTP → enable, paste, save. Auth protocol: `LOGIN`. 
 hatchkit add <project> listmonk-ses
 ```
 
-This runs four steps, all idempotent on re-run:
+This runs these steps, all idempotent on re-run:
 
-1. **Verify the SES sending subdomain.** Hatchkit calls `sesv2:CreateEmailIdentity` for `mail.<projectDomain>` and gets back 3 DKIM tokens.
+1. **Verify the SES sending subdomain.** Hatchkit calls `CreateEmailIdentity` for `mail.<projectDomain>` and gets back 3 DKIM tokens.
 2. **Publish DKIM CNAMEs into Cloudflare.** Same upsert + SPF-merge plumbing as Resend's flow. Records are tracked in the run-ledger so `hatchkit destroy <project>` can DELETE only what this run created.
-3. **Create the project's Listmonk lists.** `<project>` (live, lands in `.env.production`) and `<project>-test` (dev, lands in `.env.development`). Both are private and double opt-in (see [Double opt-in](#double-opt-in)). A list that already exists by that name is reused as it is. If it is still single opt-in, the run reports it and leaves it unchanged.
-4. **Render env into the server bundle.** The full `LISTMONK_*` + `SES_*` quartet. The only diff between prod and dev is which list id receives broadcasts — same pattern as Resend's audience split.
+3. **Route bounces and complaints to Listmonk.** The identity's Bounce and Complaint notifications go to the shared SNS topic that Listmonk listens on. See [Bounces and complaints](#bounces-and-complaints).
+4. **Create the project's Listmonk lists.** `<project>` (live, lands in `.env.production`) and `<project>-test` (dev, lands in `.env.development`). Both are private and double opt-in (see [Double opt-in](#double-opt-in)). A list that already exists by that name is reused as it is. If it is still single opt-in, the run reports it and leaves it unchanged.
+5. **Render env into the server bundle.** The full `LISTMONK_*` + `SES_*` quartet. The only diff between prod and dev is which list id receives broadcasts — same pattern as Resend's audience split.
 
 SES verification flips from Pending → Verified once DNS propagates (usually under 30 min). Hatchkit doesn't poll for it — you can check status anytime with `aws sesv2 get-email-identity --email-identity mail.<projectDomain>`.
 
@@ -153,22 +160,35 @@ Lists that `hatchkit add` created before this change are single opt-in. `hatchki
 hatchkit remove <project> listmonk-ses
 ```
 
-Removes the per-project Listmonk lists. The SES identity (`mail.<projectDomain>`) is intentionally left in place because un-verifying it requires re-publishing DKIM if you ever recreate the project. To fully destroy SES state, use `hatchkit destroy <project>` — the ledger-driven destroy honors the `sesDomain` step.
+Removes the per-project Listmonk lists. The SES identity (`mail.<projectDomain>`) is intentionally left in place because un-verifying it requires re-publishing DKIM if you ever recreate the project. To fully destroy SES state, use `hatchkit destroy <project>` — the ledger-driven destroy honors the `sesDomain` step. It also clears the identity's Bounce and Complaint notification topics, but only the ones that run set. The shared SNS topic, its subscription, the account suppression list and Listmonk's bounce settings stay, because the other projects use them.
 
-## The bounce webhook (optional)
+## Bounces and complaints
 
-For Listmonk to auto-blocklist on SES bounces/complaints:
+Every project sends through the same Listmonk, so they share one feedback path:
 
-1. Create an SNS Standard topic in the same region as SES.
-2. Add an HTTPS subscription pointing at `https://<your-listmonk-url>/webhooks/service/ses`.
-3. In Listmonk → Bounces, enable the SES webhook.
-4. In SES → Verified identities → `mail.<projectDomain>` → Notifications, set the SNS topic as the Bounce + Complaint destination.
+```text
+SES identity ── Bounce / Complaint ──▶ SNS topic ses-feedback-listmonk
+                                         │ HTTPS subscription
+                                         ▼
+                        <listmonk-url>/webhooks/service/ses ──▶ Listmonk blocklist
+```
 
-Hatchkit doesn't automate this today — it's a one-time setup whose API surface varies across Coolify Caddy fronts. The flow is documented at [listmonk.app/docs/bounces](https://listmonk.app/docs/bounces/).
+`hatchkit add <project> listmonk-ses` and `hatchkit migrate-domain` (for the new identity) set up each piece that is missing:
+
+1. **Listmonk bounce settings.** `bounce.enabled`, `bounce.webhooks_enabled` and `bounce.ses_enabled` are set to `true`, one `PUT /api/settings/<key>` each. A key that is already `true` is not written, because each PUT reloads Listmonk. The per-key endpoint needs Listmonk v6 and an API user with `Settings: All`.
+2. **SNS topic and subscription.** The topic is `ses-feedback-listmonk`, in the SES region. Its HTTPS subscription points at the webhook derived from the Listmonk URL you stored with `hatchkit config add listmonk`. Listmonk confirms the subscription by itself once `bounce.ses_enabled` is on, so the URL must be reachable from AWS.
+3. **Identity notifications.** The identity's Bounce and Complaint topics are set to the shared topic. This is the SES v1 `SetIdentityNotificationTopic` call; SES v2 routes notifications through configuration sets instead. A topic already set on the identity to a different SNS topic is left alone and reported.
+4. **Account suppression.** SES suppresses `BOUNCE` and `COMPLAINT` addresses account-wide, so it stops sending to them.
+
+What Listmonk does with a bounce is set in **Settings → Bounces → Actions**. Hatchkit does not change it. Blocklisting after one hard bounce and after one complaint keeps the SES bounce and complaint rates low.
+
+Without step 3, SES only emails a bounce notice to the sender address (`noreply@mail.<projectDomain>`), which nobody reads, and Listmonk keeps sending to the dead address.
+
+`hatchkit doctor` checks the whole path wherever SES and Listmonk are configured. It reports every verified identity without Bounce or Complaint topics, a missing or unconfirmed subscription, suppression that doesn't cover both reasons, and Listmonk bounce settings that are off. `hatchkit doctor --fix` repairs each one after a `y/N` prompt.
 
 ## Troubleshooting
 
-**`sesv2:CreateEmailIdentity` fails with `AccessDeniedException`** — the IAM user needs the policy listed above. Re-run `hatchkit config add ses` to repaste a key with the right policy attached.
+**`CreateEmailIdentity` fails with `AccessDeniedException`** — the IAM user needs the policy listed above. Re-run `hatchkit config add ses` to repaste a key with the right policy attached.
 
 **Listmonk says `unauthorized`** — your API user's permissions are too narrow. Edit them in Admin → Users; grant Lists / Subscribers / TX. Then re-run `hatchkit config add listmonk` to repaste the (still-valid) token. The `subscribers:sql_query` permission is not needed: subscriber lookups use `search`.
 
@@ -177,5 +197,9 @@ Hatchkit doesn't automate this today — it's a one-time setup whose API surface
 **Send fails: `Email address is not verified`** — your SES account is still in sandbox mode. Request production access in the AWS console.
 
 **The form says "check your inbox", but no confirmation email arrives** — usually the SES sandbox. `/api/tx` queues the email and returns 200 before SMTP runs, so the app reports success either way. The SES rejection (`554 Message rejected: Email address is not verified`) shows only in Listmonk's log: **Settings → Logs**, or `GET /api/logs`. Verify the recipient with `hatchkit ses verify <email>`, or request production access.
+
+**Provisioning warns `missing IAM permission sns:CreateTopic`** (or another bounce-feedback action) — the IAM user's policy lacks the actions listed under [AWS SES](#1-aws-ses). Add them, then run `hatchkit doctor --fix`, or re-run `hatchkit add <project> listmonk-ses`.
+
+**`hatchkit doctor` says the SNS subscription is pending confirmation** — SNS sent its confirmation request before `bounce.ses_enabled` was on, or it could not reach the Listmonk URL. Check that the URL works from outside your network, then run `hatchkit doctor --fix`. It subscribes again, and SNS sends a new confirmation request.
 
 **Send fails: `554 ... not authorized to send`** — SES SMTP credentials are derived from the IAM secret. Don't paste the IAM secret directly into Listmonk; hatchkit renders the *derived* value into `.env.production` under `SES_SMTP_PASSWORD`. Use that.

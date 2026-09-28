@@ -153,7 +153,7 @@ const MODEL: ExplainModel = {
     { name: "Plausible", role: "Privacy-friendly web analytics and dashboard sites." },
     {
       name: "Listmonk + AWS SES",
-      role: "Self-hosted mailing-list manager (Listmonk) backed by SES for delivery. Hatchkit verifies the SES sending subdomain, publishes DKIM into Cloudflare, creates per-project lists + tx/campaign templates, and renders LISTMONK_/SES_SMTP_* env so the app sends transactional + broadcast mail through Listmonk's API.",
+      role: "Self-hosted mailing-list manager (Listmonk) backed by SES for delivery. Hatchkit verifies the SES sending subdomain, publishes DKIM into Cloudflare, routes its bounces + complaints through the shared ses-feedback-listmonk SNS topic to Listmonk's SES webhook, creates per-project lists + tx/campaign templates, and renders LISTMONK_/SES_SMTP_* env so the app sends transactional + broadcast mail through Listmonk's API.",
     },
   ],
   state_locations: [

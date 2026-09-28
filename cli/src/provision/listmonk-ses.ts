@@ -18,16 +18,19 @@
  *      Cloudflare zone. Reuses the shared `publishDnsRecordsToCloudflare`
  *      helper — same plumbing as Resend, so SPF-merge + per-record
  *      tracking + auto-rollback all work identically.
- *   3. SES feedback notifications: opt-in. Required only when the user
- *      wants Listmonk's bounce/complaint webhook to be informed —
- *      otherwise SES silently logs bounces but doesn't notify anyone.
- *   4. Listmonk: create the `<project>` and `<project>-test` lists.
+ *   3. Listmonk: create the `<project>` and `<project>-test` lists.
  *      Two lists let the runtime broadcast to the live audience in
  *      prod and a developer-only `<project>-test` list in dev without
  *      runtime branching — just pick the right LISTMONK_LIST_ID per
  *      env file. Both are created `optin: double`; an existing list
  *      that is still single opt-in is adopted as-is and reported in
  *      `singleOptinLists`, never switched from here.
+ *   4. SES bounce + complaint feedback (after the SMTP apply, which
+ *      reloads Listmonk): the identity's Bounce/Complaint topics point at
+ *      the shared `ses-feedback-listmonk` SNS topic, which is subscribed
+ *      to Listmonk's SES webhook. See `ses-feedback.ts`. Without it
+ *      bounce notices go by email to `noreply@`, which nobody reads,
+ *      and Listmonk never blocklists a dead address.
  *
  * Returns the materialized state the caller renders into env files
  * plus per-resource event records the run-ledger consumes.
@@ -52,6 +55,12 @@ import {
   updateListmonkTemplate,
 } from "./listmonk.js";
 import {
+  type SesFeedbackResult,
+  createSesFeedbackAws,
+  createSesFeedbackListmonk,
+  ensureSesFeedback,
+} from "./ses-feedback.js";
+import {
   SES_MAIL_FROM_SPF,
   type SesAuth,
   type SesIdentity,
@@ -59,7 +68,6 @@ import {
   type SesMailFromState,
   createSesDomain,
   decideMailFromPlan,
-  enableSesFeedbackNotifications,
   getSesMailFromDomain,
   sesMailFromMxTarget,
   sesMailFromSubdomain,
@@ -81,10 +89,13 @@ export interface ListmonkSesProvisionOptions {
   /** Pre-resolved Cloudflare API for DKIM publish. When omitted the
    *  caller is expected to set `publishDns: false`. */
   cf?: import("../utils/cloudflare-api.js").CloudflareApi;
-  /** Enable SES SNS feedback notifications on the identity. Off by
-   *  default — turning this on is a 2-step process (the SNS topic
-   *  has to exist first), so most users will wire it later. */
-  enableFeedback?: boolean;
+  /** Route the identity's bounces + complaints into Listmonk through the
+   *  shared SNS topic (see `ses-feedback.ts`). On by default; each
+   *  failed piece degrades to a warning in `result.feedback`. */
+  configureBounceFeedback?: boolean;
+  /** How long to wait for Listmonk to confirm a new SNS subscription.
+   *  Defaults to 20 s. */
+  feedbackConfirmTimeoutMs?: number;
   /** Email address to auto-subscribe to the project's `-test` list as
    *  `confirmed`. Hatchkit passes the global default forwarding email
    *  here so the first `pnpm newsletter:verify` run lands a real send
@@ -186,6 +197,15 @@ export interface ListmonkSesProvisionEvents {
     zoneId: string;
     zoneName: string;
   }) => void;
+  /** Fires after the bounce-feedback step. `typesSetThisRun` lists the
+   *  notification types this run pointed at the shared topic; the ledger
+   *  records only those, so destroy clears only what this run set and
+   *  never the shared topic itself. */
+  onSesFeedback?: (event: {
+    identity: string;
+    topicArn: string | null;
+    typesSetThisRun: SesFeedbackResult["typesSetThisRun"];
+  }) => void;
 }
 
 export interface ListmonkSesProvisionResult {
@@ -240,6 +260,9 @@ export interface ListmonkSesProvisionResult {
    *  the caller surface the manual-paste fallback when the API user
    *  lacked `Settings: All` permission. */
   smtpApplied: { written: boolean; reason?: string };
+  /** Bounce + complaint feedback state. Null when the caller opted out
+   *  via `configureBounceFeedback: false`. */
+  feedback: SesFeedbackResult | null;
   /** Adopted lists that are still `optin: single`. A campaign on such
    *  a list reaches every member not `unsubscribed`, `unconfirmed`
    *  included. Reported, never switched here: an app that still adds
@@ -348,21 +371,7 @@ export async function provisionListmonkSesForProject(
   const identity = await createSesDomain(sendingDomain, opts.sesAuth);
   events.onSesDomain?.({ domain: sendingDomain, dkimRecords: identity.dkimRecords });
 
-  // 2. Optional: enable SNS feedback notifications. Best-effort —
-  //    failing here doesn't block the rest of the provision.
-  if (opts.enableFeedback) {
-    try {
-      await enableSesFeedbackNotifications(sendingDomain, opts.sesAuth);
-    } catch (err) {
-      console.warn(
-        `  SES feedback notifications could not be enabled on ${sendingDomain}: ${
-          (err as Error).message
-        }`,
-      );
-    }
-  }
-
-  // 3. DKIM publish into Cloudflare. Skipped when the caller already
+  // 2. DKIM publish into Cloudflare. Skipped when the caller already
   //    knows DNS is somewhere else (e.g. tests, or a Cloudflare-less
   //    setup). The shared helper handles SPF merge + per-record
   //    tracking the same way Resend's does.
@@ -394,13 +403,13 @@ export async function provisionListmonkSesForProject(
     });
   }
 
-  // 3b. Custom MAIL FROM Domain. Without this, Gmail surfaces
-  //     `mailed-by: <region>.amazonses.com` on every send and SPF
-  //     alignment for DMARC fails (SPF passes for amazonses.com, not
-  //     for the From: domain). Setting a custom MAIL FROM
-  //     (`<label>.<sendingDomain>`) hides the AWS infrastructure name
-  //     and lets SPF align with the From: domain. Idempotent on re-run;
-  //     adopt-path when SES already holds a user-set MAIL FROM.
+  // 3. Custom MAIL FROM Domain. Without this, Gmail surfaces
+  //    `mailed-by: <region>.amazonses.com` on every send and SPF
+  //    alignment for DMARC fails (SPF passes for amazonses.com, not
+  //    for the From: domain). Setting a custom MAIL FROM
+  //    (`<label>.<sendingDomain>`) hides the AWS infrastructure name
+  //    and lets SPF align with the From: domain. Idempotent on re-run;
+  //    adopt-path when SES already holds a user-set MAIL FROM.
   const mailFromResult = await configureMailFromStep({
     opts,
     sendingDomain,
@@ -464,18 +473,7 @@ export async function provisionListmonkSesForProject(
   // 5. SMTP credentials are deterministic from the SES IAM secret +
   //    region — derive them now so the env-render step has the values
   //    without a second round-trip.
-  let smtp: ListmonkSesProvisionResult["smtp"];
-  if (opts.sesAuth) {
-    smtp = sesSmtpCredentials(opts.sesAuth);
-  } else {
-    const { ensureSes } = await import("../config.js");
-    const cfg = await ensureSes();
-    smtp = sesSmtpCredentials({
-      region: cfg.region,
-      accessKeyId: cfg.accessKeyId,
-      secretAccessKey: cfg.secretAccessKey,
-    });
-  }
+  const smtp = sesSmtpCredentials(opts.sesAuth ?? (await globalSesAuth()));
 
   // 6. Push the SES SMTP relay + from-email into Listmonk's runtime
   //    settings so the user doesn't have to paste them into Settings →
@@ -504,6 +502,29 @@ export async function provisionListmonkSesForProject(
         ? "API user lacks `Settings: All` — widen the role in Listmonk → Admin → Users, or paste SES SMTP creds into Settings → SMTP manually."
         : msg,
     };
+  }
+
+  // 6b. Bounce + complaint feedback. After the SMTP apply, whose
+  //     whole-settings PUT reloads Listmonk; the feedback step PUTs only
+  //     the bounce keys that are still off. Never throws: each piece
+  //     that fails (usually a missing IAM action) lands in `warnings`.
+  let feedback: SesFeedbackResult | null = null;
+  if (opts.configureBounceFeedback !== false) {
+    const sesAuth = opts.sesAuth ?? (await globalSesAuth());
+    const listmonkAuth =
+      opts.listmonkAuth ?? (await (await import("../config.js")).ensureListmonk());
+    feedback = await ensureSesFeedback({
+      identity: sendingDomain,
+      listmonkUrl: listmonkAuth.url,
+      aws: createSesFeedbackAws(sesAuth),
+      listmonk: createSesFeedbackListmonk(listmonkAuth),
+      confirmTimeoutMs: opts.feedbackConfirmTimeoutMs,
+    });
+    events.onSesFeedback?.({
+      identity: sendingDomain,
+      topicArn: feedback.topicArn,
+      typesSetThisRun: feedback.typesSetThisRun,
+    });
   }
 
   // 7. Optional: seed the user's own address onto the `-test` list as a
@@ -553,6 +574,17 @@ export async function provisionListmonkSesForProject(
     singleOptinLists: driftedLists,
     seededSubscriber,
     mailFrom: mailFromResult,
+    feedback,
+  };
+}
+
+async function globalSesAuth(): Promise<SesAuth> {
+  const { ensureSes } = await import("../config.js");
+  const cfg = await ensureSes();
+  return {
+    region: cfg.region,
+    accessKeyId: cfg.accessKeyId,
+    secretAccessKey: cfg.secretAccessKey,
   };
 }
 

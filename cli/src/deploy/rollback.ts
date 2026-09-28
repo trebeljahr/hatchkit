@@ -277,6 +277,15 @@ function recipeFor(step: LedgerStep): string | null {
         `# rollback SES DNS in zone ${step.zoneName} (SES identity ${step.domainName}):\n${lines.join("\n") || "  · (no auto-deletable records)"}${mergedNote}`,
       );
     }
+    case "sesNotificationTopics":
+      return chalk.dim(
+        `# clear ${step.types.join(" + ")} notifications of SES identity ${step.identity} (the shared topic ${step.topicArn} stays):\n${step.types
+          .map(
+            (t) =>
+              `  aws ses set-identity-notification-topic --identity ${step.identity} --notification-type ${t}`,
+          )
+          .join("\n")}`,
+      );
     case "listmonkList":
       return chalk.dim(
         `# manual: delete Listmonk list ${step.listName} (id ${step.listId}) at ${step.listmonkUrl}`,
@@ -552,6 +561,8 @@ function describeStep(step: LedgerStep): string {
       const mergedNote = merged > 0 ? `, ${merged} merged SPF skipped` : "";
       return `delete ${chalk.cyan(auto)} in Cloudflare zone ${chalk.cyan(step.zoneName)} (SES ${step.domainName}${mergedNote})`;
     }
+    case "sesNotificationTopics":
+      return `clear ${step.types.join(" + ")} notification topic on SES ${chalk.cyan(step.identity)} (shared topic kept)`;
     case "listmonkList":
       return `delete Listmonk list ${chalk.cyan(step.listName)} (id ${step.listId})`;
     case "tfvars":
@@ -817,6 +828,18 @@ async function undoStep(
       }
       if (removed === 0 && missing > 0) return "not-found";
       return "done";
+    }
+    case "sesNotificationTopics": {
+      // Only the identity's own topics. The topic, its subscription,
+      // the account suppression and Listmonk's bounce settings serve
+      // every project and stay.
+      const { ensureSes } = await import("../config.js");
+      const { clearSesFeedbackTopics, createSesFeedbackAws } = await import(
+        "../provision/ses-feedback.js"
+      );
+      const aws = createSesFeedbackAws(await ensureSes());
+      const outcome = await clearSesFeedbackTopics(aws, step.identity, step.topicArn, step.types);
+      return outcome === "cleared" ? "done" : "not-found";
     }
     case "listmonkList": {
       const { deleteListmonkListById } = await import("../provision/listmonk.js");

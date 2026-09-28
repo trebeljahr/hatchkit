@@ -17,7 +17,13 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.700.0
         version: 3.1040.0
+      '@aws-sdk/client-ses':
+        specifier: ^3.1048.0
+        version: 3.1048.0
       '@aws-sdk/client-sesv2':
+        specifier: ^3.1048.0
+        version: 3.1048.0
+      '@aws-sdk/client-sns':
         specifier: ^3.1048.0
         version: 3.1048.0
       '@dotenvx/dotenvx':
@@ -156,8 +162,16 @@ packages:
     resolution: {integrity: sha512-Ldfby1xDrlZwNY2NxP9pwdVrf8sqHbGBKP1UkoG/oWcePGlGhjY8iVwy8hRy9f1EQfHVFWIFunwHaPQxhYTnWQ==}
     engines: {node: '>=20.0.0'}
 
+  '@aws-sdk/client-ses@3.1048.0':
+    resolution: {integrity: sha512-AQdlxZOclCpBpk/Ak6gx61NSbBz+vBqpClGfadTrip1wzJJrmaLBX+jOK6fIs7I/Ro+GVo0IE8j5W8uXpN+/5w==}
+    engines: {node: '>=20.0.0'}
+
   '@aws-sdk/client-sesv2@3.1048.0':
     resolution: {integrity: sha512-uTqJmBe+q8MFAsta7N6whN/bPDJf4iwkxM+MAIaDleVw0Qby4DE8Vj4thjlAR4TIgmm7C0IeEj5HhqeE33K0Qg==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/client-sns@3.1048.0':
+    resolution: {integrity: sha512-IHecQQhboEb6tnBo77q95NyfBBWNb1xDKcsV5vnyeRPlWuC8uz+utaZEQcFBzhxDCS4/A9oynTVcrSE13mB4Vw==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/core@3.974.11':
@@ -2600,6 +2614,19 @@ snapshots:
     transitivePeerDependencies:
       - aws-crt
 
+  '@aws-sdk/client-ses@3.1048.0':
+    dependencies:
+      '@aws-crypto/sha256-browser': 5.2.0
+      '@aws-crypto/sha256-js': 5.2.0
+      '@aws-sdk/core': 3.974.11
+      '@aws-sdk/credential-provider-node': 3.972.42
+      '@aws-sdk/types': 3.973.8
+      '@smithy/core': 3.24.3
+      '@smithy/fetch-http-handler': 5.4.3
+      '@smithy/node-http-handler': 4.7.3
+      '@smithy/types': 4.14.2
+      tslib: 2.8.1
+
   '@aws-sdk/client-sesv2@3.1048.0':
     dependencies:
       '@aws-crypto/sha256-browser': 5.2.0
@@ -2612,6 +2639,19 @@ snapshots:
       '@smithy/fetch-http-handler': 5.4.3
       '@smithy/node-http-handler': 4.7.3
       '@smithy/types': 4.14.1
+      tslib: 2.8.1
+
+  '@aws-sdk/client-sns@3.1048.0':
+    dependencies:
+      '@aws-crypto/sha256-browser': 5.2.0
+      '@aws-crypto/sha256-js': 5.2.0
+      '@aws-sdk/core': 3.974.11
+      '@aws-sdk/credential-provider-node': 3.972.42
+      '@aws-sdk/types': 3.973.8
+      '@smithy/core': 3.24.3
+      '@smithy/fetch-http-handler': 5.4.3
+      '@smithy/node-http-handler': 4.7.3
+      '@smithy/types': 4.14.2
       tslib: 2.8.1
 
   '@aws-sdk/core@3.974.11':

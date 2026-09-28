@@ -948,6 +948,14 @@ function recordProvisionedEvent(ledger: RunLedger, event: ProvisionedEvent): voi
       });
     }
   }
+  if (event.service === "sesFeedback" && event.topicArn && event.typesSetThisRun.length > 0) {
+    ledger.record({
+      kind: "sesNotificationTopics",
+      identity: event.identity,
+      topicArn: event.topicArn,
+      types: event.typesSetThisRun,
+    });
+  }
   if (event.service === "listmonkList" && event.createdThisRun) {
     ledger.record({
       kind: "listmonkList",
@@ -4105,12 +4113,19 @@ function printHelp(topic?: HelpTopic): void {
   runs nginx with its stock config, which 404s on reload of any deep link.
   Projects adopted before hatchkit wrote nginx.conf have that Dockerfile.
 
+  With SES and Listmonk configured it checks the bounce feedback path:
+  every verified SES identity sends Bounce + Complaint notifications to
+  the ses-feedback-listmonk SNS topic, the topic's subscription to
+  Listmonk's SES webhook is confirmed, account suppression covers
+  BOUNCE + COMPLAINT, and Listmonk's bounce settings are on.
+
   ${chalk.bold("Flags:")}
     --json    Machine-readable report. Always read-only.
     --fix     After the report, offer the repairs doctor can apply itself,
               one y/N prompt each (default No). Today: a project's Listmonk
-              tx template that HTML-escapes the email body. Exits 0 when
-              every failure was repaired. Ignored with --json.
+              tx template that HTML-escapes the email body, and each broken
+              piece of the SES bounce feedback path. Exits 0 when every
+              failure was repaired. Ignored with --json.
     --yes     With --fix, apply every offered repair without prompting.
 `);
     return;

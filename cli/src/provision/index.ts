@@ -192,6 +192,17 @@ export type ProvisionedEvent =
         type: "TXT" | "MX" | "CNAME" | "A" | "AAAA";
       }>;
     }
+  /** SES bounce + complaint feedback wired for the project's identity.
+   *  `typesSetThisRun` covers only the notification types THIS run
+   *  pointed at the shared topic; the ledger undoes exactly those. The
+   *  topic, its subscription, the account suppression and the Listmonk
+   *  bounce settings are shared by every project and never recorded. */
+  | {
+      service: "sesFeedback";
+      identity: string;
+      topicArn: string | null;
+      typesSetThisRun: Array<"Bounce" | "Complaint">;
+    }
   /** Listmonk list created (or adopted) for this project. Two such
    *  events fire per provision — `kind: "live"` (`<project>`) and
    *  `kind: "test"` (`<project>-test`). The ledger drops `kind`; only
@@ -905,6 +916,14 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
                   createdRecords: e.createdRecords,
                 });
               },
+              onSesFeedback: (e) => {
+                opts.onProvisioned?.({
+                  service: "sesFeedback",
+                  identity: e.identity,
+                  topicArn: e.topicArn,
+                  typesSetThisRun: e.typesSetThisRun,
+                });
+              },
             },
           ),
         );
@@ -986,6 +1005,15 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
               "  SES identity is not yet Verified — DKIM publish lands; AWS verification flips automatically once DNS propagates (usually < 30 min).",
             ),
           );
+        }
+
+        if (result.feedback) {
+          const { renderSesFeedbackLines } = await import("./ses-feedback.js");
+          for (const line of renderSesFeedbackLines(result.feedback)) {
+            const paint =
+              line.level === "ok" ? chalk.green : line.level === "warn" ? chalk.yellow : chalk.dim;
+            console.log(paint(`  ${line.text}`));
+          }
         }
 
         if (result.smtpApplied.written) {
