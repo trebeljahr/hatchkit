@@ -7,7 +7,7 @@
  * place before you start building.
  *
  *   1. Listmonk admin reachable           GET /api/lists
- *   2. Live + test lists resolvable       LISTMONK_LIST_ID + LISTMONK_TEST_LIST_ID exist
+ *   2. List ids resolvable                LISTMONK_TEST_LIST_ID, plus LISTMONK_LIVE_LIST_ID in production
  *   3. Test recipient on the test list    add as confirmed (your own inbox)
  *   4. Transactional send                 POST /api/tx with the smoke payload
  *
@@ -24,6 +24,7 @@
 import {
   confirmSubscription,
   findSubscriber,
+  liveListIdVar,
   resolveListId,
   sendTransactional,
 } from "../packages/server/src/services/newsletter/listmonk.js";
@@ -79,15 +80,18 @@ async function main(): Promise<void> {
       },
     },
     {
-      label: "Live + test lists configured",
+      label: "List ids configured",
       run: async () => {
-        const live = process.env.LISTMONK_LIST_ID;
         const test = process.env.LISTMONK_TEST_LIST_ID;
-        if (!live || !test) {
-          throw new Error("LISTMONK_LIST_ID / LISTMONK_TEST_LIST_ID missing from env");
-        }
+        if (!test) throw new Error("LISTMONK_TEST_LIST_ID missing from env");
+        // In production this reads the live id and throws when it is
+        // missing. Outside production the live id is not required:
+        // Hatchkit writes it into .env.production only, so a rehearsal
+        // run can never reach the real list.
         const env = resolveListId();
-        return `LISTMONK_LIST_ID=${live} · LISTMONK_TEST_LIST_ID=${test} · env-resolved=${env}`;
+        const liveVar = liveListIdVar();
+        const live = process.env[liveVar];
+        return `${live ? `${liveVar}=${live}` : `${liveVar} unset (production only)`} · LISTMONK_TEST_LIST_ID=${test} · env-resolved=${env}`;
       },
     },
   ];

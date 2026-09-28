@@ -15,7 +15,7 @@
  *
  * The Hatchkit `listmonk-ses` provisioner wires every env var this
  * file reads — LISTMONK_URL / LISTMONK_API_USER / LISTMONK_API_TOKEN /
- * LISTMONK_LIST_ID / LISTMONK_TEST_LIST_ID / LISTMONK_TX_TEMPLATE_ID /
+ * LISTMONK_LIVE_LIST_ID / LISTMONK_TEST_LIST_ID / LISTMONK_TX_TEMPLATE_ID /
  * LISTMONK_CAMPAIGN_TEMPLATE_ID / LISTMONK_FROM — so an opt-in newsletter
  * project gets a working list + templates out of the box.
  */
@@ -65,10 +65,26 @@ export function isProductionSend(): boolean {
   return process.env.NODE_ENV === "production";
 }
 
+/** The env var holding the live list's id. `LISTMONK_LIVE_LIST_ID` is
+ *  the documented name (config/env.ts, docker-compose.yml, .env.example)
+ *  and the only one the server container receives. Hatchkit's
+ *  provisioner wrote `LISTMONK_LIST_ID` before it adopted that name, so
+ *  an older env file is still read when the documented name is unset. */
+export function liveListIdVar(): string {
+  return process.env.LISTMONK_LIVE_LIST_ID || !process.env.LISTMONK_LIST_ID
+    ? "LISTMONK_LIVE_LIST_ID"
+    : "LISTMONK_LIST_ID";
+}
+
+/** The env var `resolveListId` reads. Outside production it is only
+ *  ever the test list: an older env file may hold the live id under
+ *  `LISTMONK_LIST_ID`, and a rehearsal must not reach it. */
+function listIdVar(): string {
+  return isProductionSend() ? liveListIdVar() : "LISTMONK_TEST_LIST_ID";
+}
+
 export function resolveListId(): number {
-  const raw = isProductionSend()
-    ? required("LISTMONK_LIST_ID")
-    : required("LISTMONK_TEST_LIST_ID");
+  const raw = required(listIdVar());
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) {
     throw new Error(`Invalid Listmonk list id: ${raw}`);
@@ -77,9 +93,8 @@ export function resolveListId(): number {
 }
 
 export function describeListTarget(): string {
-  return isProductionSend()
-    ? `LISTMONK_LIST_ID=${process.env.LISTMONK_LIST_ID} (production)`
-    : `LISTMONK_TEST_LIST_ID=${process.env.LISTMONK_TEST_LIST_ID} (non-production)`;
+  const name = listIdVar();
+  return `${name}=${process.env[name]} (${isProductionSend() ? "production" : "non-production"})`;
 }
 
 // ─────────────────────────────────────────────────────────────────────

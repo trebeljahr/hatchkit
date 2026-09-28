@@ -10,7 +10,7 @@
  *   pnpm tsx scripts/newsletter-send.ts <html-file> --subject "..."           dry-run, prints what would be sent
  *   pnpm tsx scripts/newsletter-send.ts <html-file> --subject "..." --confirm send to LISTMONK_TEST_LIST_ID
  *   NODE_ENV=production pnpm tsx scripts/newsletter-send.ts <html-file> \
- *     --subject "..." --confirm                                               send to LISTMONK_LIST_ID
+ *     --subject "..." --confirm                                               send to LISTMONK_LIVE_LIST_ID
  *
  * Optional flags:
  *   --name "Internal campaign name"   Defaults to the html file's basename.
@@ -21,7 +21,7 @@
  *                                      before sending manually.
  *
  * The destination list is decided by NODE_ENV, not a flag — production
- * goes to the real subscriber list (LISTMONK_LIST_ID), every other
+ * goes to the real subscriber list (LISTMONK_LIVE_LIST_ID), every other
  * environment goes to the test list (LISTMONK_TEST_LIST_ID) which
  * should only contain your own address. `--confirm` is the dry-run
  * switch; without it the script just describes the would-be send.

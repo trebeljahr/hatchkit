@@ -20,11 +20,12 @@
  *      tracking + auto-rollback all work identically.
  *   3. Listmonk: create the `<project>` and `<project>-test` lists.
  *      Two lists let the runtime broadcast to the live audience in
- *      prod and a developer-only `<project>-test` list in dev without
- *      runtime branching — just pick the right LISTMONK_LIST_ID per
- *      env file. Both are created `optin: double`; an existing list
- *      that is still single opt-in is adopted as-is and reported in
- *      `singleOptinLists`, never switched from here.
+ *      prod and a developer-only `<project>-test` list in dev. The
+ *      live id lands in the prod env file only (LISTMONK_LIVE_LIST_ID),
+ *      the test id in both (LISTMONK_TEST_LIST_ID). Both are created
+ *      `optin: double`; an existing list that is still single opt-in
+ *      is adopted as-is and reported in `singleOptinLists`, never
+ *      switched from here.
  *   4. SES bounce + complaint feedback (after the SMTP apply, which
  *      reloads Listmonk): the identity's Bounce/Complaint topics point at
  *      the shared `ses-feedback-listmonk` SNS topic, which is subscribed
@@ -914,12 +915,19 @@ export interface RenderListmonkSesEnvOptions {
 /** Render the env quartets for prod vs dev. Both surfaces share
  *  identical LISTMONK_URL / LISTMONK_API_USER / LISTMONK_API_TOKEN /
  *  LISTMONK_TEST_LIST_ID / LISTMONK_TX_TEMPLATE_ID /
- *  LISTMONK_CAMPAIGN_TEMPLATE_ID / LISTMONK_FROM / SES_SMTP_* values; the
- *  only thing that differs is which list id lands in `LISTMONK_LIST_ID`
- *  (live in prod, test in dev — mirrors Resend's audience-split pattern).
- *  `LISTMONK_TEST_LIST_ID` is written explicitly in both surfaces so the
- *  app can send to the test audience from prod when an opt-in flow needs
- *  to rehearse without depending on `NODE_ENV` to swap the bucket. */
+ *  LISTMONK_CAMPAIGN_TEMPLATE_ID / LISTMONK_FROM / SES_SMTP_* values.
+ *
+ *  `LISTMONK_LIVE_LIST_ID` goes into prod only. It is the name the
+ *  starter's config/env.ts, docker-compose.yml and newsletter code read;
+ *  the server container receives no other name for the live list. The
+ *  dev file leaves it out, so nothing run against it can pick the live
+ *  list by id: outside production the starter reads only
+ *  `LISTMONK_TEST_LIST_ID`, and code that reads the live id directly
+ *  finds it unset.
+ *
+ *  Hatchkit used to write `LISTMONK_LIST_ID` (live in prod, test in
+ *  dev). The starter still reads it in production when
+ *  `LISTMONK_LIVE_LIST_ID` is unset, so older env files keep working. */
 export function renderListmonkSesEnv(opts: RenderListmonkSesEnvOptions): {
   prod: string[];
   dev: string[];
@@ -941,7 +949,7 @@ export function renderListmonkSesEnv(opts: RenderListmonkSesEnvOptions): {
   ];
   const devOnly = opts.testRecipient ? [`LISTMONK_TEST_RECIPIENT=${opts.testRecipient}`] : [];
   return {
-    prod: [...shared, `LISTMONK_LIST_ID=${opts.liveListId}`],
-    dev: [...shared, `LISTMONK_LIST_ID=${opts.testListId}`, ...devOnly],
+    prod: [...shared, `LISTMONK_LIVE_LIST_ID=${opts.liveListId}`],
+    dev: [...shared, ...devOnly],
   };
 }

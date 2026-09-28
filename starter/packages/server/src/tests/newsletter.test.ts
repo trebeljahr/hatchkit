@@ -18,7 +18,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import express from "express";
 
-import { findSubscriber } from "../services/newsletter/listmonk.js";
+import { describeListTarget, findSubscriber, resolveListId } from "../services/newsletter/listmonk.js";
 import { registerNewsletterRoutes } from "../services/newsletter/routes.js";
 import { _resetRateLimit, mintConfirmToken } from "../services/newsletter/subscribe.js";
 
@@ -30,7 +30,7 @@ process.env.LISTMONK_API_USER = "api-user";
 process.env.LISTMONK_API_TOKEN = "api-token";
 // NODE_ENV decides which one `resolveListId` reads. Point both at the
 // same list so the assertions hold either way.
-process.env.LISTMONK_LIST_ID = String(LIST_ID);
+process.env.LISTMONK_LIVE_LIST_ID = String(LIST_ID);
 process.env.LISTMONK_TEST_LIST_ID = String(LIST_ID);
 process.env.LISTMONK_TX_TEMPLATE_ID = "5";
 process.env.NEWSLETTER_TOKEN_SECRET = "test-secret";
@@ -255,5 +255,73 @@ describe("findSubscriber", () => {
     fakeListmonk([{ ...existing("other@example.com", []), name: "reader@example.com" }]);
 
     assert.equal(await findSubscriber("reader@example.com"), null);
+  });
+});
+
+/** Run `fn` with these env vars set (or deleted, for `undefined`), then
+ *  put every one of them back. */
+async function withEnv(vars: Record<string, string | undefined>, fn: () => Promise<void> | void): Promise<void> {
+  const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  const apply = (values: Record<string, string | undefined>): void => {
+    for (const [k, v] of Object.entries(values)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+  apply(vars);
+  try {
+    await fn();
+  } finally {
+    apply(saved);
+  }
+}
+
+describe("the list NODE_ENV selects", () => {
+  // config/env.ts, docker-compose.yml, .env.example and Hatchkit's
+  // provisioner all name the live list LISTMONK_LIVE_LIST_ID, and the
+  // container receives nothing else.
+  test("production subscribes and confirms on LISTMONK_LIVE_LIST_ID alone", async () => {
+    await withEnv(
+      { NODE_ENV: "production", LISTMONK_LIVE_LIST_ID: String(LIST_ID), LISTMONK_LIST_ID: undefined, LISTMONK_TEST_LIST_ID: "99" },
+      async () => {
+        const lm = fakeListmonk();
+
+        assert.equal((await subscribe("live@example.com")).status, 200);
+        assert.equal((await confirm("live@example.com")).status, 303);
+
+        assert.equal(lm.membership("live@example.com"), "confirmed");
+        assert.equal(describeListTarget(), `LISTMONK_LIVE_LIST_ID=${LIST_ID} (production)`);
+      },
+    );
+  });
+
+  test("production prefers LISTMONK_LIVE_LIST_ID over LISTMONK_LIST_ID", async () => {
+    await withEnv({ NODE_ENV: "production", LISTMONK_LIVE_LIST_ID: "7", LISTMONK_LIST_ID: "8" }, () => {
+      assert.equal(resolveListId(), 7);
+    });
+  });
+
+  // An env file written by an older Hatchkit holds the live id under
+  // LISTMONK_LIST_ID.
+  test("production reads LISTMONK_LIST_ID only when LISTMONK_LIVE_LIST_ID is unset", async () => {
+    await withEnv({ NODE_ENV: "production", LISTMONK_LIVE_LIST_ID: undefined, LISTMONK_LIST_ID: "8" }, () => {
+      assert.equal(resolveListId(), 8);
+      assert.equal(describeListTarget(), "LISTMONK_LIST_ID=8 (production)");
+    });
+  });
+
+  test("production with no live id names the documented variable", async () => {
+    await withEnv({ NODE_ENV: "production", LISTMONK_LIVE_LIST_ID: undefined, LISTMONK_LIST_ID: undefined }, () => {
+      assert.throws(() => resolveListId(), /Missing required env var: LISTMONK_LIVE_LIST_ID/);
+    });
+  });
+
+  test("outside production only LISTMONK_TEST_LIST_ID is read", async () => {
+    await withEnv(
+      { NODE_ENV: "development", LISTMONK_LIVE_LIST_ID: "7", LISTMONK_LIST_ID: "8", LISTMONK_TEST_LIST_ID: undefined },
+      () => {
+        assert.throws(() => resolveListId(), /Missing required env var: LISTMONK_TEST_LIST_ID/);
+      },
+    );
   });
 });

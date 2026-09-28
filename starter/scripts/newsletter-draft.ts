@@ -10,7 +10,7 @@
  *
  *   pnpm tsx scripts/newsletter-draft.ts <html-file> --subject "..." [--name "..."] [--text <text-file>]
  *
- *   NODE_ENV=production pnpm tsx scripts/newsletter-draft.ts …   stages against LISTMONK_LIST_ID
+ *   NODE_ENV=production pnpm tsx scripts/newsletter-draft.ts …   stages against LISTMONK_LIVE_LIST_ID
  *
  * Like `newsletter-send.ts`, the list is selected by NODE_ENV — prod
  * targets the real list, anything else targets the test list. No

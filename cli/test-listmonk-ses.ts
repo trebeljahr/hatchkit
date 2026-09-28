@@ -12,11 +12,14 @@
  *      silently breaks email send + leaves orphan SES identities.
  *
  *   2. `renderListmonkSesEnv` — the prod/dev env quartets. The only
- *      difference between prod and dev is which list id lands in
- *      `LISTMONK_LIST_ID` (live for prod, test for dev — keeps a bug
- *      in dev from broadcasting to real subscribers). Everything else
- *      (SMTP host, username/password, region, from-email, API user/
- *      token) is identical across surfaces.
+ *      list difference is that prod carries the live list id as
+ *      `LISTMONK_LIVE_LIST_ID` and dev does not carry it at all, which
+ *      keeps a bug in dev from broadcasting to real subscribers. The
+ *      name must match the starter: its docker-compose.yml passes only
+ *      the names it lists into the server container, so a key it does
+ *      not name reaches nothing in production. Everything else (SMTP
+ *      host, username/password, region, from-email, API user/token,
+ *      the test list id) is identical across surfaces.
  *
  *   3. `singleOptinLists` / `singleOptinHint` — the drift report for
  *      adopted lists that are still single opt-in. The hint's order is
@@ -32,6 +35,9 @@
  * Run: `pnpm test` (via the script in cli/package.json).
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   DEFAULT_TX_TEMPLATE_BODY,
   escapedTxTemplateHint,
@@ -44,6 +50,7 @@ import {
   txBodyRendersEscaped,
 } from "./src/provision/listmonk-ses.js";
 
+const HERE = dirname(fileURLToPath(import.meta.url));
 const failures: string[] = [];
 
 function expect(label: string, fn: () => void): void {
@@ -85,22 +92,40 @@ const baseInput = {
   region: "eu-west-1",
 };
 
-expect("prod env routes broadcasts to the LIVE list id", () => {
+expect("prod env carries the LIVE list id as LISTMONK_LIVE_LIST_ID", () => {
   const env = renderListmonkSesEnv(baseInput);
-  assert.ok(env.prod.includes("LISTMONK_LIST_ID=11"));
-  assert.ok(!env.prod.includes("LISTMONK_LIST_ID=22"));
+  assert.ok(env.prod.includes("LISTMONK_LIVE_LIST_ID=11"));
 });
 
-expect("dev env routes broadcasts to the TEST list id (safe rehearsal)", () => {
+expect("dev env carries no live list id (safe rehearsal)", () => {
   const env = renderListmonkSesEnv(baseInput);
-  assert.ok(env.dev.includes("LISTMONK_LIST_ID=22"));
-  assert.ok(!env.dev.includes("LISTMONK_LIST_ID=11"));
+  assert.ok(!env.dev.some((l) => l.startsWith("LISTMONK_LIVE_LIST_ID=")));
+  assert.ok(!env.dev.some((l) => /_LIST_ID=11$/.test(l)), "live id 11 leaked into dev");
 });
 
-expect("non-list values are identical across prod and dev", () => {
+expect("neither surface writes the retired LISTMONK_LIST_ID name", () => {
   const env = renderListmonkSesEnv(baseInput);
-  const filter = (lines: string[]) => lines.filter((l) => !l.startsWith("LISTMONK_LIST_ID="));
+  for (const lines of [env.prod, env.dev]) {
+    assert.ok(!lines.some((l) => l.startsWith("LISTMONK_LIST_ID=")));
+  }
+});
+
+expect("values other than the live list id are identical across prod and dev", () => {
+  const env = renderListmonkSesEnv(baseInput);
+  const filter = (lines: string[]) => lines.filter((l) => !l.startsWith("LISTMONK_LIVE_LIST_ID="));
   assert.deepEqual(filter(env.prod), filter(env.dev));
+});
+
+expect("every LISTMONK_* key in the prod env reaches the starter's server container", () => {
+  const compose = readFileSync(join(HERE, "..", "starter", "docker-compose.yml"), "utf-8");
+  const passed = new Set([...compose.matchAll(/^\s+(LISTMONK_[A-Z_]+):\s*\$\{\1[:}-]/gm)].map((m) => m[1]));
+  const env = renderListmonkSesEnv(baseInput);
+  for (const line of env.prod) {
+    const key = line.slice(0, line.indexOf("="));
+    if (key.startsWith("LISTMONK_")) {
+      assert.ok(passed.has(key), `starter/docker-compose.yml never passes ${key} to the server`);
+    }
+  }
 });
 
 expect("emits every required key the runtime needs", () => {
@@ -109,7 +134,6 @@ expect("emits every required key the runtime needs", () => {
     "LISTMONK_URL=",
     "LISTMONK_API_USER=",
     "LISTMONK_API_TOKEN=",
-    "LISTMONK_LIST_ID=",
     "LISTMONK_TEST_LIST_ID=",
     "LISTMONK_TX_TEMPLATE_ID=",
     "LISTMONK_CAMPAIGN_TEMPLATE_ID=",
