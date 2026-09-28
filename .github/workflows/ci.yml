@@ -211,7 +211,10 @@ jobs:
       # it — flipNextConfigToStaticExport() hardcodes `output: "export"`, so the
       # env var was dead weight there — and setting it would flip the `web`
       # preset out of the standalone path this matrix exists to cover.
-      STAMP_DIR: ${{ runner.temp }}/stamp
+      #
+      # STAMP_DIR is not set here: `runner` is not an allowed context in a
+      # job-level env, and GitHub rejects the whole workflow file (zero jobs,
+      # no logs) when it is. The steps below spell out ${{ runner.temp }}/stamp.
       STAMP_PRESET: ${{ matrix.preset }}
     steps:
       - uses: actions/checkout@v4
@@ -250,8 +253,12 @@ jobs:
 
       - name: Stamp a project
         shell: bash
+        env:
+          STAMP_DIR: ${{ runner.temp }}/stamp
         run: |
           set -euo pipefail
+          # Single quotes on purpose: the inner bash expands the variables.
+          # shellcheck disable=SC2016
           dbus-run-session -- bash -c '
             set -euo pipefail
             # The unlock passphrase is generated per run rather than written
