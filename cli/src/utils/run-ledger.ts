@@ -164,6 +164,13 @@ export type LedgerStep =
    *  edited value here can't accidentally nuke a different
    *  domain's DNS records. */
   | { kind: "ghPages"; repo: string; projectDir: string; cname?: string }
+  /** A hostname bound to a Worker as a Custom Domain by
+   *  `hatchkit cloudflare`. Recorded ONLY for a domain hatchkit
+   *  attached itself, which it does only when the hostname had no
+   *  pre-existing DNS records — so undoing it can never take down
+   *  records that were already serving something. Cloudflare removes
+   *  the record + certificate it created along with the binding. */
+  | { kind: "cloudflareWorkerDomain"; accountId: string; domainId: string; hostname: string }
   /** Tailscale-served local-dev Caddy fragment dropped at
    *  `~/.config/dev/projects/<slug>.caddy`. Recorded only when the
    *  project opted into the local-dev integration. Destroy removes the

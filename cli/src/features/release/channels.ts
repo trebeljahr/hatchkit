@@ -71,8 +71,9 @@ const hasServerRuntime = (input: ReleaseDerivationInput): boolean =>
 
 /** Absent `deploymentMode` means `coolify` — the types file says so, and
  *  every manifest written before the field existed was a Coolify deploy. */
-const deploymentMode = (input: ReleaseDerivationInput): "coolify" | "gh-pages" | "scaffold-only" =>
-  input.deploymentMode ?? "coolify";
+const deploymentMode = (
+  input: ReleaseDerivationInput,
+): "coolify" | "gh-pages" | "cloudflare" | "scaffold-only" => input.deploymentMode ?? "coolify";
 
 /** Whether Hatchkit provisioned signing for a platform. `enabled: false`
  *  counts as no: the secrets were never pushed, so naming them as this
@@ -211,17 +212,37 @@ const CATALOG: readonly ChannelEntry[] = [
     // is no deploy for a tag to be reflected in.
     applies: (input) => deploymentMode(input) !== "scaffold-only",
     row: (input) => {
-      const pages = deploymentMode(input) === "gh-pages";
+      const mode = deploymentMode(input);
+      const pages = mode === "gh-pages";
+      // `hatchkit cloudflare` writes `deploy.yml` with `name: Deploy to
+      // Cloudflare`; it is the only workflow a cloudflare-mode project
+      // deploys through (the scaffold removes build-and-deploy.yml, which
+      // has no image to build).
+      const cloudflare = mode === "cloudflare";
       // `hatchkit gh-pages` writes `gh-pages.yml` with `name: Deploy to
       // GitHub Pages`. A Pages project that predates that command deploys
       // from the scaffold's own workflow instead.
       const ownPagesWorkflow = pages && input.exists(".github/workflows/gh-pages.yml");
-      const where = pages ? "GitHub Pages" : "the production domain";
+      const where = cloudflare
+        ? "Cloudflare Workers"
+        : pages
+          ? "GitHub Pages"
+          : "the production domain";
+      const workflowFile = cloudflare
+        ? "deploy.yml"
+        : ownPagesWorkflow
+          ? "gh-pages.yml"
+          : "build-and-deploy.yml";
+      const workflowName = cloudflare
+        ? "Deploy to Cloudflare"
+        : ownPagesWorkflow
+          ? "Deploy to GitHub Pages"
+          : "build-and-deploy";
       return {
         kind: "web",
         label: "Web deploy",
-        workflowFile: ownPagesWorkflow ? "gh-pages.yml" : "build-and-deploy.yml",
-        workflowName: ownPagesWorkflow ? "Deploy to GitHub Pages" : "build-and-deploy",
+        workflowFile,
+        workflowName,
         // Deliberately NOT "tag". Both workflows trigger on a push to the
         // default branch, so the tag has no run of its own. Calling it "tag"
         // would make the status table report every release as a deploy that

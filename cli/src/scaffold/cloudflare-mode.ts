@@ -167,7 +167,9 @@ function writeWranglerConfig(
 }
 `;
   writeFileSync(path, body, "utf-8");
-  modifications.push(`cloudflare: wrote ${CLOUDFLARE_WRANGLER_REL_PATH} (assets → ${CLOUDFLARE_PUBLISH_DIR})`);
+  modifications.push(
+    `cloudflare: wrote ${CLOUDFLARE_WRANGLER_REL_PATH} (assets → ${CLOUDFLARE_PUBLISH_DIR})`,
+  );
 }
 
 /** Pin the Node major for CI. Cloudflare's own build image and

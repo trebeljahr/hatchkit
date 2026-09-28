@@ -321,6 +321,10 @@ function recipeFor(step: LedgerStep): string | null {
       );
     case "ghPages":
       return `cd ${shellEscape(step.projectDir)} && hatchkit gh-pages --undo --yes`;
+    case "cloudflareWorkerDomain":
+      return chalk.dim(
+        `# manual: detach custom domain ${step.hostname} at https://dash.cloudflare.com/${step.accountId}/workers/overview`,
+      );
     case "localDevFragment":
       return `rm -f ~/.config/dev/projects/${shellEscape(step.slug)}.caddy`;
     case "appleBundleId":
@@ -592,6 +596,8 @@ function describeStep(step: LedgerStep): string {
       return `delete Email Routing rule for ${chalk.cyan(step.address)}`;
     case "ghPages":
       return `tear down GitHub Pages for ${chalk.cyan(step.repo)}`;
+    case "cloudflareWorkerDomain":
+      return `detach Worker custom domain ${chalk.cyan(step.hostname)}`;
     case "localDevFragment":
       return `remove local-dev Caddy fragment ${chalk.cyan(`${step.slug}.caddy`)}`;
     case "appleBundleId":
@@ -927,6 +933,18 @@ async function undoStep(
       const { runPagesUndo } = await import("./pages.js");
       await runPagesUndo(step.projectDir, { yes: true, dryRun: false });
       return "done";
+    }
+    case "cloudflareWorkerDomain": {
+      // Safe to undo unconditionally: hatchkit only ever records this
+      // for a hostname that had NO DNS records before it attached, so
+      // detaching cannot orphan a record that predates us.
+      const { getCloudflareWorkersConfig } = await import("../config.js");
+      const cfg = await getCloudflareWorkersConfig();
+      if (!cfg?.apiToken) return "skipped";
+      const { CloudflareApi } = await import("../utils/cloudflare-api.js");
+      const api = new CloudflareApi({ token: cfg.apiToken, accountId: step.accountId });
+      const res = await api.deleteWorkerCustomDomain(step.accountId, step.domainId);
+      return res === "not-found" ? "not-found" : "done";
     }
     case "localDevFragment": {
       const { removeProjectFragment } = await import("@hatchkit/dev-shared");

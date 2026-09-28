@@ -97,6 +97,14 @@ export function collectStatus(projectDir: string = process.cwd()): StatusSnapsho
     configureCommand: "hatchkit config add dns",
   });
 
+  providers.push({
+    key: "cloudflare-workers",
+    label: "Cloudflare Workers",
+    configured: config.providers.cloudflareWorkers?.status === "configured",
+    detail: config.providers.cloudflareWorkers?.accountId,
+    configureCommand: "hatchkit config add cloudflare-workers",
+  });
+
   const s3Providers = Object.keys(config.providers.s3);
   providers.push({
     key: "s3",
@@ -259,6 +267,12 @@ function computeSuggestions(
   }
   if (has("coolify") && has("hetzner") && has("dns")) {
     out.push({ command: "hatchkit create", why: "scaffold and (optionally) deploy a new project" });
+  }
+  if (has("github") && !has("cloudflare-workers")) {
+    out.push({
+      command: "hatchkit config add cloudflare-workers",
+      why: "needed for the `cloudflare` deployment mode (static sites, free unmetered asset requests)",
+    });
   }
   out.push({
     command: "hatchkit doctor",

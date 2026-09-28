@@ -177,16 +177,19 @@ export async function runServerAdd(
     writeManifest(root, {
       ...manifest,
       surfaces: "fullstack",
-      deploymentMode: manifest.deploymentMode === "gh-pages" ? "coolify" : manifest.deploymentMode,
+      deploymentMode:
+        manifest.deploymentMode === "gh-pages" || manifest.deploymentMode === "cloudflare"
+          ? "coolify"
+          : manifest.deploymentMode,
     });
   }
 
   markUpdated(result, `${MANIFEST_FILENAME} surfaces=fullstack`);
   markUpdated(result, "root package.json scripts");
   markUpdated(result, "server env/dev ports");
-  if (manifest.deploymentMode === "gh-pages") {
+  if (manifest.deploymentMode === "gh-pages" || manifest.deploymentMode === "cloudflare") {
     result.warnings.push(
-      "deploymentMode switched from gh-pages to coolify; Pages cannot host a server",
+      `deploymentMode switched from ${manifest.deploymentMode} to coolify; a static host cannot run a server`,
     );
   }
   if (serverExists) {

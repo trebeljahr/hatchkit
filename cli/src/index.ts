@@ -387,6 +387,20 @@ async function main(): Promise<void> {
       await runPagesSetup(resolve("."));
       break;
     }
+    case "cloudflare": {
+      if (args.includes("--help")) return printHelp("cloudflare");
+      if (args.includes("--undo")) {
+        const { runCloudflareUndo } = await import("./deploy/cloudflare.js");
+        await runCloudflareUndo(resolve("."), {
+          dryRun: args.includes("--dry-run"),
+          yes: args.includes("--yes") || args.includes("-y"),
+        });
+        break;
+      }
+      const { runCloudflareSetup } = await import("./deploy/cloudflare.js");
+      await runCloudflareSetup(resolve("."));
+      break;
+    }
     default:
       printHelp();
   }
@@ -2273,6 +2287,8 @@ async function handleCreate(): Promise<void> {
   console.log(`  Type:       ${chalk.cyan(config.surfaces)}`);
   if (config.deploymentMode === "gh-pages") {
     console.log(`  Deploy to:  ${chalk.cyan("GitHub Pages (static)")}`);
+  } else if (config.deploymentMode === "cloudflare") {
+    console.log(`  Deploy to:  ${chalk.cyan("Cloudflare Workers (static assets)")}`);
   } else if (config.deploymentMode === "scaffold-only") {
     console.log(`  Deploy to:  ${chalk.dim("scaffold only (no deploy)")}`);
   } else {
@@ -2444,13 +2460,23 @@ async function handleCreate(): Promise<void> {
 
     if (config.dryRun) {
       // Coolify mode previews the Terraform tfvars + Coolify env that
-      // would be written. gh-pages and scaffold-only have nothing
-      // equivalent — Pages reads no env, scaffold-only writes no infra.
+      // would be written. The static hosts and scaffold-only have
+      // nothing equivalent — neither reads env, and scaffold-only
+      // writes no infra.
       if (config.deploymentMode === "coolify") {
         scaffoldInfra(config, INFRA_ROOT, {
           serverPort: scaffoldResult?.ports.server,
           clientPort: scaffoldResult?.ports.client,
         });
+      } else if (config.deploymentMode === "cloudflare") {
+        console.log(
+          chalk.dim(
+            "  · cloudflare mode — would write `wrangler.jsonc`, `.node-version`,\n" +
+              "    `packages/client/public/_headers` and `.github/workflows/deploy.yml`,\n" +
+              "    set the CLOUDFLARE_* repo secrets, and attach the custom domain only if\n" +
+              "    the hostname has no existing DNS records.",
+          ),
+        );
       } else if (config.deploymentMode === "gh-pages") {
         console.log(
           chalk.dim(
@@ -2773,6 +2799,46 @@ async function handleCreate(): Promise<void> {
       }
     }
 
+    // Step 6.3 (cloudflare only): wire Cloudflare Workers. Writes
+    // wrangler.jsonc / .node-version / _headers / deploy.yml (the
+    // scaffold already did, so these are no-ops) and pushes the repo
+    // secrets the workflow needs. Must happen BEFORE the push so the
+    // workflow's first run already has its credentials — otherwise it
+    // fails once and needs a manual re-run.
+    if (
+      config.deploymentMode === "cloudflare" &&
+      config.scaffoldRepo &&
+      config.runDeployment &&
+      repoUrl
+    ) {
+      const { runCloudflareSetupProgrammatic } = await import("./deploy/cloudflare.js");
+      const { exec: bashExec } = await import("./utils/exec.js");
+      try {
+        const { siteUrl } = await runCloudflareSetupProgrammatic(appDir, {
+          domain: config.domain,
+          workerName: config.name,
+          ledger: ledger ?? undefined,
+        });
+        await bashExec("git", ["add", "-A"], { cwd: appDir, silent: true });
+        const status = await bashExec("git", ["status", "--porcelain"], {
+          cwd: appDir,
+          silent: true,
+        });
+        if (status.stdout.trim()) {
+          await bashExec("git", ["commit", "-m", "ci: Cloudflare Workers setup"], {
+            cwd: appDir,
+            silent: true,
+          });
+        }
+        console.log(chalk.green(`  ✓ Cloudflare will publish at ${siteUrl}`));
+      } catch (err) {
+        console.log(chalk.yellow(`  Couldn't auto-wire Cloudflare: ${(err as Error).message}`));
+        console.log(
+          chalk.dim(`  Run \`hatchkit cloudflare\` from ${appDir} once the issue is resolved.`),
+        );
+      }
+    }
+
     // Step 6.5: push the working branch to origin. Done AFTER Coolify
     // wiring + Actions-secret upserts so the workflow's first run
     // already has the secrets it needs to deploy. setupGitHub above
@@ -2894,6 +2960,14 @@ async function handleCreate(): Promise<void> {
     console.log(
       chalk.dim(
         `  Hosting:   GitHub Pages — first build kicks off on push, https cert provisions over the next few minutes.`,
+      ),
+    );
+  }
+  if (config.deploymentMode === "cloudflare") {
+    console.log(
+      chalk.dim(
+        `  Hosting:   Cloudflare Workers — first deploy kicks off on push. Click through the\n` +
+          `             *.workers.dev preview before pointing the domain at it.`,
       ),
     );
   }
@@ -3446,6 +3520,10 @@ function printHelp(topic?: HelpTopic): void {
     ${chalk.cyan("gh-pages")}       Static-only on GitHub Pages. Only offered when surfaces
                    is ${chalk.dim("static")}; the scaffold's Next config is patched to
                    ${chalk.dim('`output: "export"`')} and the gh-pages workflow is written.
+    ${chalk.cyan("cloudflare")}     Static-only on Cloudflare Workers Static Assets. Also
+                   requires ${chalk.dim("static")}. Asset requests are free and unmetered.
+                   Writes ${chalk.dim("wrangler.jsonc")}, ${chalk.dim(".node-version")}, ${chalk.dim("public/_headers")} and a
+                   wrangler-action workflow. See ${chalk.cyan("hatchkit help cloudflare")}.
     ${chalk.cyan("scaffold-only")}  Write files, skip deploy. Pick this to defer setup.
 
   ${chalk.bold("Run mode:")}
@@ -3788,6 +3866,64 @@ function printHelp(topic?: HelpTopic): void {
     --yes, -y             Skip confirmation.
     --dry-run             Show planned local changes without writing.
     --json                Machine-readable result.
+`);
+    return;
+  }
+  if (topic === "cloudflare") {
+    console.log(`
+  ${chalk.bold("hatchkit cloudflare")} — serve a static repo from Cloudflare Workers
+
+  ${chalk.bold("Usage:")}
+    cd <project-dir> && hatchkit cloudflare
+    cd <project-dir> && hatchkit cloudflare --undo [--dry-run] [--yes]
+
+  ${chalk.bold("Why:")}
+    Workers Static Assets serves asset requests free and unmetered. Only
+    Worker script invocations count against the free plan's daily quota,
+    and a pure static site runs none.
+
+  ${chalk.bold("What it does:")}
+    1. Reads the repo via \`gh repo view\`.
+    2. Prompts for the Cloudflare account id + API token if not stored
+       (${chalk.dim("hatchkit config add cloudflare-workers")}).
+    3. Writes what's missing, idempotently:
+         ${chalk.cyan("wrangler.jsonc")}                  assets dir, 404 handling, workers_dev
+         ${chalk.cyan(".node-version")}                   toolchain pin for CI
+         ${chalk.cyan("packages/client/public/_headers")} immutable caching for hashed output
+         ${chalk.cyan(".github/workflows/deploy.yml")}    build + cloudflare/wrangler-action@v4
+    4. Sets ${chalk.dim("CLOUDFLARE_API_TOKEN")} + ${chalk.dim("CLOUDFLARE_ACCOUNT_ID")} as ${chalk.bold("repo")} secrets.
+       Repo-level because a personal GitHub account has no org secrets.
+       No token value is ever printed.
+    5. Custom domain — see below.
+
+  ${chalk.bold("Custom domain: automated only when it's safe")}
+    Cloudflare creates the DNS record and certificate for a Worker custom
+    domain itself, and refuses to attach one over existing records
+    (${chalk.dim("code: 100117")}). Clearing them first means the hostname serves
+    nothing until the attach lands.
+
+    ${chalk.cyan("No records at the hostname")} — a new project. Nothing is serving,
+      there's no window to fall into. hatchkit attaches it for you.
+    ${chalk.cyan("Records already there")} — a live site. hatchkit prints the current
+      records (your rollback), the cutover order, and stops. Taking a
+      live site down is your call to time, not a CLI's.
+
+  ${chalk.bold("Token permissions:")}
+    Account → Workers Scripts    → Edit
+    Zone    → Workers Routes     → Edit
+    Zone    → DNS                → Edit
+    Zone    → Dynamic Redirect   → Edit   ${chalk.dim("(for www → apex; easy to forget)")}
+    Scope the zone permissions to every domain you'll serve.
+    ${chalk.cyan("hatchkit doctor")} probes all four and names the missing ones.
+
+  ${chalk.bold("Undo (--undo):")}
+    Detaches custom domains bound to this Worker and removes the
+    ${chalk.dim("wrangler.jsonc")} + ${chalk.dim("deploy.yml")} hatchkit wrote. The Worker itself and
+    its uploaded assets stay — delete those with ${chalk.dim("pnpm dlx wrangler delete")}.
+    ${chalk.dim("--dry-run")} prints the plan. ${chalk.dim("--yes")} skips the confirm.
+
+  ${chalk.bold("Limits (free tier):")}
+    20,000 files and 25 MiB per file. Watch 3D assets and press kits.
 `);
     return;
   }
@@ -4859,6 +4995,7 @@ function printHelp(topic?: HelpTopic): void {
     sync            Push the manifest's domain/ports onto the matching Coolify app(s)
     release         Coordinate one version across every surface (plan/cut/status/check)
     gh-pages        Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
+    cloudflare      Wire Cloudflare Workers Static Assets for the current repo
     dns             DNS reconciliation helpers (publish, link-to-cloudflare)
     plausible       Plausible site helpers (rename — domain change with history kept)
     email           Set up Cloudflare Email Routing + MX/SPF/DMARC (setup/status)
@@ -4870,7 +5007,7 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Config:")}
     config          Show provider status (same as \`status\`)
-    config add <p>  Configure a provider (coolify, hetzner, dns, s3, modal, …)
+    config add <p>  Configure a provider (coolify, hetzner, dns, cloudflare-workers, s3, modal, …)
     config reset    Clear ALL CLI config (providers, tokens, ML registry, ports)
 
   ${chalk.bold("For agents / scripts:")}

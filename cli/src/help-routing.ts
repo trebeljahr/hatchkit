@@ -50,6 +50,7 @@ export type HelpTopic =
   | "explain"
   | "completion"
   | "gh-pages"
+  | "cloudflare"
   | "dns"
   | "plausible"
   | "email";
@@ -98,6 +99,7 @@ const HELP_TOPIC_BY_COMMAND: Readonly<Record<string, HelpTopic>> = {
   plausible: "plausible",
   email: "email",
   "gh-pages": "gh-pages",
+  cloudflare: "cloudflare",
   // `pages` is the pre-rename alias and shares the topic.
   pages: "gh-pages",
 };

@@ -102,6 +102,7 @@ export const KNOWN_TOPOLOGIES: readonly Topology[] = ["single-origin", "split"];
 export const KNOWN_DEPLOYMENT_MODES: readonly DeploymentMode[] = [
   "coolify",
   "gh-pages",
+  "cloudflare",
   "scaffold-only",
 ];
 export const KNOWN_DEPLOY_TARGETS: readonly DeployTarget[] = ["existing", "new"];

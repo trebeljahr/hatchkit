@@ -73,6 +73,7 @@ import {
   type Surface,
   askEmailIntent,
   emailIntentToProvisionServices,
+  isStaticHostMode,
   mergeEmailIntoProvisionServices,
   summarizeEmailIntent,
 } from "./prompts.js";
@@ -343,9 +344,11 @@ export async function runAdopt(
   const inferredDeploymentMode: AdoptDeploymentMode =
     m?.deploymentMode === "gh-pages"
       ? "gh-pages"
-      : m?.deploymentMode === "scaffold-only"
-        ? "scaffold-only"
-        : "coolify";
+      : m?.deploymentMode === "cloudflare"
+        ? "cloudflare"
+        : m?.deploymentMode === "scaffold-only"
+          ? "scaffold-only"
+          : "coolify";
 
   let plan: AdoptPlan = {
     name: m?.name ?? state.packageName ?? "",
@@ -419,13 +422,13 @@ export async function runAdopt(
   // coolify. The edit-step handler runs the same check when the
   // user *switches into* gh-pages from inside the loop, so this
   // covers the gap where they never edit the deploymentMode row.
-  if (plan.deploymentMode === "gh-pages") {
+  if (isStaticHostMode(plan.deploymentMode)) {
     const { detectPagesIncompatibilities, hasBlockingFinding } = await import(
       "./scaffold/pages-heuristics.js"
     );
     const findings = detectPagesIncompatibilities(state.projectDir);
     if (findings.length > 0) {
-      console.log(chalk.bold("\n  Pages compatibility findings:\n"));
+      console.log(chalk.bold("\n  Static-export compatibility findings:\n"));
       for (const f of findings) {
         const tag =
           f.level === "block"
@@ -443,7 +446,7 @@ export async function runAdopt(
       if (hasBlockingFinding(findings)) {
         console.log(
           chalk.red(
-            "  Blocking findings — Pages can't host this project as-is. Fix the issues above\n" +
+            "  Blocking findings — a static host can't serve this project as-is. Fix the issues\n" +
               "  or pick a different deployment mode in the review screen.",
           ),
         );
@@ -457,14 +460,14 @@ export async function runAdopt(
   // back to) gh-pages despite blockers being present. The edit handler
   // refuses the switch into gh-pages over blockers, but it can't catch
   // the case where blockers exist on entry AND the user stays put.
-  if (plan.deploymentMode === "gh-pages") {
+  if (isStaticHostMode(plan.deploymentMode)) {
     const { detectPagesIncompatibilities, hasBlockingFinding } = await import(
       "./scaffold/pages-heuristics.js"
     );
     const findings = detectPagesIncompatibilities(state.projectDir);
     if (hasBlockingFinding(findings)) {
       throw new Error(
-        "Pages compatibility blockers still present — refusing to adopt with gh-pages mode. Fix the issues listed above or re-run adopt and pick coolify/scaffold-only.",
+        `Static-export blockers still present — refusing to adopt with ${plan.deploymentMode} mode. Fix the issues listed above or re-run adopt and pick coolify/scaffold-only.`,
       );
     }
   }
@@ -1657,8 +1660,8 @@ async function editAdoptStep(
     // can't host a backend). Snap deploymentMode back to coolify in
     // that case so the user doesn't keep an invalid combo.
     const nextDeploymentMode: AdoptDeploymentMode =
-      plan.deploymentMode === "gh-pages" && next !== "static" ? "coolify" : plan.deploymentMode;
-    if (plan.deploymentMode === "gh-pages" && next !== "static") {
+      isStaticHostMode(plan.deploymentMode) && next !== "static" ? "coolify" : plan.deploymentMode;
+    if (isStaticHostMode(plan.deploymentMode) && next !== "static") {
       console.log(
         chalk.yellow(
           "  ⚠ gh-pages requires static surfaces — switched deployment mode back to coolify.",
@@ -1681,6 +1684,7 @@ async function editAdoptStep(
     ];
     if (plan.surfaces === "static") {
       choices.push({ name: "GitHub Pages (static)", value: "gh-pages" });
+      choices.push({ name: "Cloudflare Workers (static assets)", value: "cloudflare" });
     }
     choices.push({ name: "Scaffold only — don't deploy", value: "scaffold-only" });
 
@@ -1690,18 +1694,19 @@ async function editAdoptStep(
       default: plan.deploymentMode,
     });
 
-    // When switching INTO gh-pages, run the static-site sanity checks
-    // and surface any blockers before letting the user proceed. They
-    // can still pick gh-pages over a "warn" finding, but "block"
-    // (e.g. Next without `output: "export"`) requires they either fix
-    // the project first or step back to coolify.
-    if (next === "gh-pages" && plan.deploymentMode !== "gh-pages") {
+    // When switching INTO a static host, run the static-export sanity
+    // checks and surface any blockers before letting the user proceed.
+    // They can still pick it over a "warn" finding, but "block" (e.g.
+    // Next without `output: "export"`) requires they either fix the
+    // project first or step back to coolify. The checks are the same
+    // for both hosts — both need a flat export with no server.
+    if (isStaticHostMode(next) && !isStaticHostMode(plan.deploymentMode)) {
       const { detectPagesIncompatibilities, hasBlockingFinding } = await import(
         "./scaffold/pages-heuristics.js"
       );
       const findings = detectPagesIncompatibilities(state.projectDir);
       if (findings.length > 0) {
-        console.log(chalk.bold("\n  Pages compatibility findings:\n"));
+        console.log(chalk.bold("\n  Static-export compatibility findings:\n"));
         for (const f of findings) {
           const tag =
             f.level === "block"
@@ -1719,7 +1724,7 @@ async function editAdoptStep(
         if (hasBlockingFinding(findings)) {
           console.log(
             chalk.red(
-              "  Blocking findings present — Pages won't be able to host this project as-is.",
+              "  Blocking findings present — a static host can't serve this project as-is.",
             ),
           );
           console.log(chalk.dim("  Fix the issues above (or stay on coolify) and re-pick."));
@@ -1727,7 +1732,7 @@ async function editAdoptStep(
           return plan;
         }
         const proceed = await confirm({
-          message: "Proceed with gh-pages despite the warnings?",
+          message: `Proceed with ${next} despite the warnings?`,
           default: false,
         });
         if (!proceed) return plan;
@@ -2495,6 +2500,42 @@ async function executePlan(
           reason: (err as Error).message,
           recovery: [
             `Re-run from the project dir: hatchkit gh-pages`,
+            `(it'll pick up where this left off and is idempotent).`,
+          ],
+        });
+      }
+    }
+
+    // Step 3c.2 (cloudflare only): write the Workers files into the
+    // adopted repo and push the CI secrets, before the push below so
+    // the workflow's first run has its credentials.
+    if (plan.deploymentMode === "cloudflare" && remoteUrl) {
+      try {
+        const { runCloudflareSetupProgrammatic } = await import("./deploy/cloudflare.js");
+        const { exec: bashExec } = await import("./utils/exec.js");
+        const { siteUrl } = await runCloudflareSetupProgrammatic(state.projectDir, {
+          domain: plan.domain || null,
+          workerName: plan.name,
+          ledger,
+        });
+        await bashExec("git", ["add", "-A"], { cwd: state.projectDir, silent: true });
+        const status = await bashExec("git", ["status", "--porcelain"], {
+          cwd: state.projectDir,
+          silent: true,
+        });
+        if (status.stdout.trim()) {
+          await bashExec("git", ["commit", "-m", "ci: Cloudflare Workers setup"], {
+            cwd: state.projectDir,
+            silent: true,
+          });
+        }
+        console.log(chalk.green(`  ✓ Cloudflare will publish at ${siteUrl}`));
+      } catch (err) {
+        caveats.push({
+          title: "Cloudflare Workers not wired",
+          reason: (err as Error).message,
+          recovery: [
+            `Re-run from the project dir: hatchkit cloudflare`,
             `(it'll pick up where this left off and is idempotent).`,
           ],
         });

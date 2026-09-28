@@ -410,7 +410,7 @@ export interface ReleaseDerivationInput {
   /** Project shape, from the manifest. Absent on old manifests. */
   surfaces?: "fullstack" | "split" | "backend" | "static";
   /** How the project deploys. Absent means `coolify`. */
-  deploymentMode?: "coolify" | "gh-pages" | "scaffold-only";
+  deploymentMode?: "coolify" | "gh-pages" | "cloudflare" | "scaffold-only";
   /** Per-project signing config, when the `signing` feature ran. Its
    *  `platforms` decide which store credentials are real requirements
    *  and which are absent-by-design. */

@@ -7,6 +7,7 @@
 
 import chalk from "chalk";
 import {
+  getCloudflareWorkersConfig,
   getCoolifyConfig,
   getDnsConfig,
   getGlitchtipConfig,
@@ -869,6 +870,107 @@ async function checkCoolifyGhcrSsh(): Promise<CheckResult[]> {
   return out;
 }
 
+/** True when a manifest's deploymentMode means "there is a Coolify app
+ *  behind this domain". Absent = legacy manifest = coolify. */
+function isCoolifyManagedMode(mode: string | undefined): boolean {
+  return mode === undefined || mode === "coolify";
+}
+
+/**
+ * Cloudflare Workers (the `cloudflare` deployment mode).
+ *
+ * Read-only throughout, like every other doctor check. Two layers:
+ *
+ *   1. `/user/tokens/verify` — the token is live at all.
+ *   2. A permission probe per grant the mode needs. The account-scoped
+ *      one (Workers Scripts) always runs; the three zone-scoped ones
+ *      need a zone, which comes from the DNS provider's token if one is
+ *      configured. Without a zone the check reports what it could and
+ *      says which permissions it couldn't reach.
+ *
+ * Reports every missing permission at once rather than failing on the
+ * first. A user re-editing a Cloudflare token should get the whole list
+ * in one pass, not discover a second gap after saving the first fix.
+ */
+async function checkCloudflareWorkers(): Promise<CheckResult> {
+  const cfg = await getCloudflareWorkersConfig();
+  if (!cfg) return { name: "Cloudflare Workers", status: "skip" };
+  if (!cfg.apiToken) {
+    return {
+      name: "Cloudflare Workers",
+      status: "fail",
+      detail: "Configured but no API token in the keychain.",
+      hint: ["Re-run: `hatchkit config add cloudflare-workers`"],
+    };
+  }
+
+  // Hoisted so the narrowing above survives into the closure.
+  const token = cfg.apiToken;
+  return check(
+    "Cloudflare Workers",
+    async () => {
+      const res = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const { CloudflareApi } = await import("./utils/cloudflare-api.js");
+      const api = new CloudflareApi({ token, accountId: cfg.accountId });
+
+      // The zone-scoped probes need a zone id. Borrow one from the DNS
+      // token's zone list — it's the same Cloudflare account, and any
+      // zone is representative enough to tell whether the Workers token
+      // carries the zone grants at all.
+      let zoneId: string | undefined;
+      let zoneName: string | undefined;
+      const dns = await getDnsConfig();
+      if (dns?.apiToken) {
+        try {
+          const { CloudflareApi: DnsApi } = await import("./utils/cloudflare-api.js");
+          const zones = await new DnsApi({
+            token: dns.apiToken,
+            accountId: cfg.accountId,
+          }).listZones();
+          zoneId = zones[0]?.id;
+          zoneName = zones[0]?.name;
+        } catch {
+          // No zone to probe against — handled below.
+        }
+      }
+
+      const probes = await api.probeWorkersPermissions({ accountId: cfg.accountId, zoneId });
+      const missing = probes.filter((p) => !p.ok);
+      if (missing.length > 0) {
+        throw new Error(`missing permissions: ${missing.map((p) => p.permission).join(", ")}`);
+      }
+      const scope = zoneName ? `account + zone ${zoneName}` : "account only (no zone to probe)";
+      return `${probes.length}/${probes.length} permissions OK (${scope})`;
+    },
+    (detail) => {
+      const code = httpCode(detail);
+      if (code === 401) {
+        return [
+          "Cloudflare API token is invalid, expired, or revoked.",
+          "Create a new one: https://dash.cloudflare.com/profile/api-tokens",
+          "Required: Account:Workers Scripts:Edit, Zone:Workers Routes:Edit, Zone:DNS:Edit, Zone:Dynamic Redirect:Edit.",
+          "Then re-run: `hatchkit config add cloudflare-workers`",
+        ];
+      }
+      if (/missing permissions/.test(detail)) {
+        return [
+          "The token works but is missing grants listed above.",
+          "Edit it at https://dash.cloudflare.com/profile/api-tokens and add them.",
+          "Scope the three zone permissions to every domain you plan to serve.",
+          "Dynamic Redirect is the commonly-missed one — without it the www → apex",
+          "  redirect rule can't be written and the redirect silently never happens.",
+          "Then re-run: `hatchkit config add cloudflare-workers` (or just `hatchkit doctor` if you edited in place).",
+        ];
+      }
+      return undefined;
+    },
+  );
+}
+
 export async function collectDoctorResults(): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   results.push(await checkGitHub());
@@ -877,6 +979,7 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of await checkCoolifyGhcrSsh()) results.push(r);
   results.push(await checkHetzner());
   results.push(await checkDns());
+  results.push(await checkCloudflareWorkers());
   for (const p of ["hetzner", "aws", "r2"] as const) results.push(await checkS3(p));
   for (const p of ["modal", "runpod", "hf", "replicate"]) results.push(await checkGpu(p));
   results.push(await checkGlitchtip());
@@ -1917,11 +2020,9 @@ export async function checkProjectPublicServiceState(projectDir: string): Promis
     return out;
   }
   if (!manifest.name) return out;
-  // gh-pages projects don't route through Coolify, so publicService
-  // is irrelevant to them.
-  if (manifest.deploymentMode === "gh-pages" || manifest.deploymentMode === "scaffold-only") {
-    return out;
-  }
+  // Static-host and scaffold-only projects don't route through
+  // Coolify, so publicService is irrelevant to them.
+  if (!isCoolifyManagedMode(manifest.deploymentMode)) return out;
   if (!manifest.surfaces) return out;
   if (manifest.publicService) {
     out.push({
@@ -2553,10 +2654,8 @@ export async function checkProjectDnsResolveState(projectDir: string): Promise<C
     return out;
   }
   if (!manifest.name || !manifest.domain) return out;
-  // gh-pages projects use github.io / Pages CNAMEs handled separately.
-  if (manifest.deploymentMode === "gh-pages" || manifest.deploymentMode === "scaffold-only") {
-    return out;
-  }
+  // Static hosts point at github.io / a Worker, not at a Coolify box.
+  if (!isCoolifyManagedMode(manifest.deploymentMode)) return out;
 
   const { resolve4, resolve6 } = await import("node:dns/promises");
   let resolved: string[];
