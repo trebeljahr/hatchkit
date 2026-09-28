@@ -35,5 +35,8 @@ COPY docs/ ./
 RUN pnpm build
 
 FROM nginx:alpine AS runner
+# Maps `/docs/<page>` onto the export's `<page>.html`. The stock config
+# 403s every docs page — see the header of docs/nginx.conf.
+COPY docs/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/out /usr/share/nginx/html
 EXPOSE 80
