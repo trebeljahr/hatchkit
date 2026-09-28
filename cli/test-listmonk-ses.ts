@@ -23,14 +23,25 @@
  *      load-bearing: switching the list before the app stops adding
  *      `unconfirmed` members makes Listmonk send a second opt-in email.
  *
+ *   4. The seeded tx template body and its repair. Listmonk parses a tx
+ *      body with Go `html/template`, so a bare `{{ .Tx.Data.body }}`
+ *      HTML-escapes the app's HTML and the email arrives as visible
+ *      markup. The body must pipe through `Safe` (the helper Listmonk
+ *      registers; `safeHTML` is not registered and fails to compile).
+ *
  * Run: `pnpm test` (via the script in cli/package.json).
  */
 import assert from "node:assert/strict";
 import {
+  DEFAULT_TX_TEMPLATE_BODY,
+  escapedTxTemplateHint,
   renderListmonkSesEnv,
+  repairEscapedTxTemplate,
+  repairTxTemplateBody,
   sesSendingSubdomain,
   singleOptinHint,
   singleOptinLists,
+  txBodyRendersEscaped,
 } from "./src/provision/listmonk-ses.js";
 
 const failures: string[] = [];
@@ -168,6 +179,133 @@ expect("hint names each list by id, and deploys the code before the switch", () 
   const deploy = hint.indexOf("1. Deploy");
   const flip = hint.indexOf("2. Then Listmonk");
   assert.ok(deploy >= 0 && flip > deploy, "deploy step must come first");
+});
+
+console.log("\ntx template body:");
+
+expect("the seeded body pipes .Tx.Data.body through Safe", () => {
+  assert.ok(DEFAULT_TX_TEMPLATE_BODY.includes("{{ .Tx.Data.body | Safe }}"));
+  assert.ok(!txBodyRendersEscaped(DEFAULT_TX_TEMPLATE_BODY));
+});
+
+expect("the seeded body never uses safeHTML (not registered for tx templates)", () => {
+  assert.ok(!DEFAULT_TX_TEMPLATE_BODY.includes("safeHTML"));
+});
+
+// The body tracktime-tx, streaks-tx and chemistry-sketcher-tx were
+// seeded with.
+const escapedBody = `<!doctype html>
+<html>
+  <body>
+    {{ .Tx.Data.body }}
+  </body>
+</html>
+`;
+
+expect("flags the bare body hatchkit used to seed", () => {
+  assert.ok(txBodyRendersEscaped(escapedBody));
+});
+
+expect("repair pipes the bare body through Safe and keeps everything else", () => {
+  assert.equal(repairTxTemplateBody(escapedBody), DEFAULT_TX_TEMPLATE_BODY);
+});
+
+expect("repair is idempotent", () => {
+  const once = repairTxTemplateBody(escapedBody);
+  assert.equal(repairTxTemplateBody(once), once);
+});
+
+expect("repair keeps trim markers and spacing", () => {
+  assert.equal(repairTxTemplateBody("{{- .Tx.Data.body -}}"), "{{- .Tx.Data.body | Safe -}}");
+  assert.equal(repairTxTemplateBody("{{.Tx.Data.body}}"), "{{.Tx.Data.body | Safe}}");
+});
+
+expect("repair fixes every bare occurrence", () => {
+  const body = "{{ .Tx.Data.body }}<hr>{{ .Tx.Data.body }}";
+  assert.equal(
+    repairTxTemplateBody(body),
+    "{{ .Tx.Data.body | Safe }}<hr>{{ .Tx.Data.body | Safe }}",
+  );
+});
+
+expect("a hand-made template that already uses Safe is left alone", () => {
+  const body = "<div>{{ .Tx.Data.body | Safe }}</div><p>{{ .Tx.Data.footer }}</p>";
+  assert.ok(!txBodyRendersEscaped(body));
+  assert.equal(repairTxTemplateBody(body), body);
+});
+
+expect("other .Tx.Data fields are not touched", () => {
+  const body = "{{ .Tx.Data.bodyText }} {{ .Tx.Data.subject }}";
+  assert.equal(repairTxTemplateBody(body), body);
+});
+
+expect("hint names the template by id and gives both fixes", () => {
+  const hint = escapedTxTemplateHint({ id: 7, name: "tracktime-tx", type: "tx" }).join("\n");
+  assert.ok(hint.includes("tracktime-tx (id 7)"));
+  assert.ok(hint.includes("hatchkit doctor --fix"));
+  assert.ok(hint.includes("{{ .Tx.Data.body | Safe }}"));
+});
+
+console.log("\nrepairEscapedTxTemplate:");
+
+const auth = { url: "https://listmonk.test", apiUser: "hatchkit", apiToken: "tok" };
+const realFetch = globalThis.fetch;
+
+/** Stub fetch: GET returns `template`, PUT echoes its body back. */
+function stubTemplateFetch(template: Record<string, unknown>) {
+  const calls: Array<{ method: string; path: string; body?: Record<string, unknown> }> = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const method = init?.method ?? "GET";
+    const body = init?.body ? JSON.parse(init.body as string) : undefined;
+    calls.push({ method, path: new URL(String(input)).pathname, body });
+    const data = method === "PUT" ? { ...template, ...body } : template;
+    return new Response(JSON.stringify({ data }), { status: 200 });
+  }) as typeof fetch;
+  return calls;
+}
+
+async function expectAsync(label: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+    console.log(`  ✓ ${label}`);
+  } catch (err) {
+    failures.push(`${label}: ${(err as Error).message}`);
+    console.log(`  ✗ ${label}`);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+const liveTemplate = {
+  id: 9,
+  name: "streaks-tx",
+  type: "tx",
+  subject: "{{ .Tx.Data.subject }}",
+  body: escapedBody,
+};
+
+await expectAsync("reads the template fresh, then PUTs the repaired body", async () => {
+  const calls = stubTemplateFetch(liveTemplate);
+  assert.equal(await repairEscapedTxTemplate(9, auth), "repaired");
+  assert.deepEqual(
+    calls.map((c) => `${c.method} ${c.path}`),
+    ["GET /api/templates/9", "PUT /api/templates/9"],
+  );
+  assert.deepEqual(calls[1].body, {
+    name: "streaks-tx",
+    type: "tx",
+    subject: "{{ .Tx.Data.subject }}",
+    body: DEFAULT_TX_TEMPLATE_BODY,
+  });
+});
+
+await expectAsync("does not write a template that is already safe", async () => {
+  const calls = stubTemplateFetch({ ...liveTemplate, body: DEFAULT_TX_TEMPLATE_BODY });
+  assert.equal(await repairEscapedTxTemplate(9, auth), "already-safe");
+  assert.deepEqual(
+    calls.map((c) => c.method),
+    ["GET"],
+  );
 });
 
 if (failures.length > 0) {

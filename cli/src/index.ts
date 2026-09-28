@@ -298,7 +298,11 @@ async function main(): Promise<void> {
     }
     case "doctor": {
       const { runDoctor } = await import("./doctor.js");
-      await runDoctor({ json: isJson });
+      await runDoctor({
+        json: isJson,
+        fix: args.includes("--fix"),
+        yes: args.includes("--yes") || args.includes("-y"),
+      });
       break;
     }
     case "dev-setup": {
@@ -4096,6 +4100,14 @@ function printHelp(topic?: HelpTopic): void {
   warns about ghcr images on a mutable tag (:latest, :main) without
   ${chalk.cyan("pull_policy: always")} — those can keep serving the previous build
   after a green deploy.
+
+  ${chalk.bold("Flags:")}
+    --json    Machine-readable report. Always read-only.
+    --fix     After the report, offer the repairs doctor can apply itself,
+              one y/N prompt each (default No). Today: a project's Listmonk
+              tx template that HTML-escapes the email body. Exits 0 when
+              every failure was repaired. Ignored with --json.
+    --yes     With --fix, apply every offered repair without prompting.
 `);
     return;
   }

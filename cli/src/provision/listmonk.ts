@@ -16,7 +16,9 @@
  *   POST /api/subscribers
  *   POST /api/tx
  *   GET  /api/templates
+ *   GET  /api/templates/{id}
  *   POST /api/templates
+ *   PUT  /api/templates/{id}
  *   DELETE /api/templates/{id}
  */
 
@@ -161,10 +163,13 @@ export async function deleteListmonkListById(
 //
 // The runtime needs two templates configured in Listmonk:
 //   · tx template: subject `{{ .Tx.Data.subject }}`, body renders
-//     `{{ .Tx.Data.body }}` raw so the calling app can pass
-//     pre-rendered subject + HTML through `POST /api/tx`. Tx templates
-//     use Go's `text/template` (no auto-escape, and `safeHTML` is not
-//     registered there) — the calling app owns the HTML it sends.
+//     `{{ .Tx.Data.body | Safe }}` so the calling app can pass
+//     pre-rendered subject + HTML through `POST /api/tx`. Listmonk
+//     parses a tx body with Go's `html/template`, which escapes a bare
+//     `{{ .Tx.Data.body }}` into visible markup; `Safe` is the helper
+//     it registers to mark a string as trusted HTML (`safeHTML` is not
+//     registered). The subject uses `text/template`, so it needs no
+//     pipe. The calling app owns the HTML it sends.
 //   · campaign template: a passthrough wrapper `{{ template "content" . }}`
 //     so the digest HTML the app already composed is broadcast verbatim
 //     with Listmonk's per-recipient `{{ UnsubscribeURL }}` substitution.
@@ -188,6 +193,14 @@ export async function listListmonkTemplates(
   return listmonkFetch<ListmonkTemplate[]>(auth, "GET", "/api/templates");
 }
 
+export async function getListmonkTemplate(
+  id: number,
+  authOverride?: ListmonkAuth,
+): Promise<ListmonkTemplate> {
+  const auth = authOverride ?? (await ensureListmonk());
+  return listmonkFetch<ListmonkTemplate>(auth, "GET", `/api/templates/${id}`);
+}
+
 export async function createListmonkTemplate(params: {
   name: string;
   type: "campaign" | "tx";
@@ -197,6 +210,28 @@ export async function createListmonkTemplate(params: {
 }): Promise<ListmonkTemplate> {
   const auth = params.auth ?? (await ensureListmonk());
   return listmonkFetch<ListmonkTemplate>(auth, "POST", "/api/templates", {
+    name: params.name,
+    type: params.type,
+    subject: params.subject ?? "",
+    body: params.body,
+  });
+}
+
+/** Replace a template's name, subject and body. Listmonk's PUT takes the
+ *  whole template and recompiles it, so a body that doesn't compile
+ *  comes back as HTTP 400 and the stored template is left as it was. */
+export async function updateListmonkTemplate(
+  id: number,
+  params: {
+    name: string;
+    type: "campaign" | "tx";
+    subject?: string;
+    body: string;
+    auth?: ListmonkAuth;
+  },
+): Promise<ListmonkTemplate> {
+  const auth = params.auth ?? (await ensureListmonk());
+  return listmonkFetch<ListmonkTemplate>(auth, "PUT", `/api/templates/${id}`, {
     name: params.name,
     type: params.type,
     subject: params.subject ?? "",

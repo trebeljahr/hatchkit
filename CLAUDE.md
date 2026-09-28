@@ -61,7 +61,9 @@ Check `hatchkit help <command>` before using flags you have not verified.
 
 ## Safety
 
-- `hatchkit doctor` is read-only.
+- `hatchkit doctor` is read-only. `hatchkit doctor --fix` is not: it offers
+  repairs that write to providers (y/N each; `--yes` applies them all). Ask
+  before running it.
 - Do not run interactive commands unattended unless the user gave automation
   flags/config.
 - Mutating commands can touch local files, GitHub, DNS, Terraform, Coolify, and

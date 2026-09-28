@@ -14,10 +14,11 @@ interface EmailParams {
  *
  * The transactional template seeded by `hatchkit add <project>
  * listmonk-ses` renders `{{ .Tx.Data.subject }}` for the subject and
- * `{{ .Tx.Data.body }}` raw in the body (tx templates use Go
- * text/template — no `safeHTML` filter — so HTML passes through). When
- * `html` is supplied we send that, otherwise the plaintext body is
- * wrapped in a `<pre>` so the template still receives HTML.
+ * `{{ .Tx.Data.body | Safe }}` in the body. Listmonk parses a tx body
+ * with Go html/template, so without `Safe` the HTML would arrive
+ * escaped, as visible markup. When `html` is supplied we send that,
+ * otherwise the plaintext body is escaped and wrapped in a `<pre>` so
+ * the template still receives HTML.
  */
 export async function sendEmail(params: EmailParams): Promise<void> {
   const ready =

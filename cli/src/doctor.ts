@@ -45,6 +45,10 @@ interface CheckResult {
   detail?: string;
   /** Multi-line troubleshooting hint, shown under a failing check. */
   hint?: string[];
+  /** A fix doctor can apply itself, offered only under `--fix`. Plain
+   *  doctor never calls it. `run` must be idempotent and returns the
+   *  line to print on success. */
+  repair?: { prompt: string; run: () => Promise<string> };
 }
 
 type HintFn = (detail: string) => string[] | undefined;
@@ -1128,6 +1132,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of mailFromChecks) results.push(r);
   const optinChecks = await checkProjectListmonkOptinState(process.cwd());
   for (const r of optinChecks) results.push(r);
+  const txTemplateChecks = await checkProjectListmonkTxTemplateState(process.cwd());
+  for (const r of txTemplateChecks) results.push(r);
   const emailRoutingChecks = await checkProjectEmailRoutingState(process.cwd());
   for (const r of emailRoutingChecks) results.push(r);
   const publicSvcChecks = await checkProjectPublicServiceState(process.cwd());
@@ -1773,6 +1779,91 @@ export async function checkProjectListmonkOptinState(projectDir: string): Promis
       status: "fail",
       detail: `${single.map((l) => l.name).join(", ")} single opt-in — campaigns reach unconfirmed members too`,
       hint: singleOptinHint(single),
+    },
+  ];
+}
+
+/**
+ * Project-local Listmonk tx template check, gated on `.hatchkit.json` in
+ * the cwd AND the project using Listmonk + SES for email.
+ *
+ * Fails when the project's `<name>-tx` template renders a bare
+ * `{{ .Tx.Data.body }}`. Listmonk parses a tx body with Go's
+ * `html/template`, so that form HTML-escapes the app's HTML and every
+ * confirmation or reset email arrives as visible markup. Hatchkit seeded
+ * this body before it piped it through `Safe`. Read-only: one
+ * `GET /api/templates`. The repair runs only under `--fix`.
+ */
+export async function checkProjectListmonkTxTemplateState(
+  projectDir: string,
+): Promise<CheckResult[]> {
+  const { existsSync, readFileSync } = await import("node:fs");
+  const manifestPath = `${projectDir}/.hatchkit.json`;
+  if (!existsSync(manifestPath)) return [];
+
+  let manifest: { name?: string; email?: { transactional?: string; mailingList?: string } };
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  } catch {
+    return [];
+  }
+  const usesListmonkSes =
+    manifest.email?.transactional === "listmonk-ses" ||
+    manifest.email?.mailingList === "listmonk-ses";
+  if (!usesListmonkSes || !manifest.name) return [];
+  const name = `Project ${manifest.name} (Listmonk tx template)`;
+
+  const { getListmonkConfig } = await import("./config.js");
+  const listmonkCfg = await getListmonkConfig();
+  if (!listmonkCfg) {
+    return [{ name, status: "skip", detail: "Listmonk not configured globally — can't probe" }];
+  }
+
+  const { listListmonkTemplates } = await import("./provision/listmonk.js");
+  const { escapedTxTemplateHint, repairEscapedTxTemplate, txBodyRendersEscaped } = await import(
+    "./provision/listmonk-ses.js"
+  );
+  let templates: Awaited<ReturnType<typeof listListmonkTemplates>>;
+  try {
+    templates = await listListmonkTemplates(listmonkCfg);
+  } catch (err) {
+    return [
+      {
+        name,
+        status: "fail",
+        detail: `couldn't list Listmonk templates: ${(err as Error).message.split("\n")[0]}`,
+        hint: ["The API user needs `templates:get`. Edit its role in Listmonk → Admin → Users."],
+      },
+    ];
+  }
+
+  const txName = `${manifest.name}-tx`;
+  const template = templates.find((t) => t.name === txName && t.type === "tx");
+  if (!template) {
+    return [
+      { name, status: "skip", detail: `no tx template named ${txName} on ${listmonkCfg.url}` },
+    ];
+  }
+  if (!txBodyRendersEscaped(template.body ?? "")) {
+    return [
+      { name, status: "ok", detail: `${txName} (id ${template.id}) renders the body as HTML` },
+    ];
+  }
+  return [
+    {
+      name,
+      status: "fail",
+      detail: `${txName} (id ${template.id}) HTML-escapes the body — emails arrive as visible markup`,
+      hint: escapedTxTemplateHint(template),
+      repair: {
+        prompt: `Pipe the body of ${txName} (id ${template.id}) through Safe on ${listmonkCfg.url}?`,
+        run: async () => {
+          const outcome = await repairEscapedTxTemplate(template.id, listmonkCfg);
+          return outcome === "repaired"
+            ? `${txName} (id ${template.id}) now renders {{ .Tx.Data.body | Safe }}`
+            : `${txName} (id ${template.id}) was already safe — left unchanged`;
+        },
+      },
     },
   ];
 }
@@ -2813,7 +2904,42 @@ export async function checkProjectDnsResolveState(projectDir: string): Promise<C
   return out;
 }
 
-export async function runDoctor(opts: { json?: boolean } = {}): Promise<void> {
+/** `--fix`: offer each failing check's repair, one confirm apiece
+ *  (default No). `yes` skips the confirm; without it and without a
+ *  terminal, nothing is applied. Returns the failures still standing. */
+async function offerRepairs(failed: CheckResult[], yes: boolean): Promise<number> {
+  const repairable = failed.filter((r) => r.repair);
+  if (repairable.length === 0) {
+    console.log(chalk.dim("  --fix: none of these failures has a repair doctor can apply.\n"));
+    return failed.length;
+  }
+  const interactive = process.stdin.isTTY && process.stdout.isTTY;
+  const { confirm } = await import("@inquirer/prompts");
+  console.log(chalk.bold("  Repairs"));
+  let repaired = 0;
+  for (const r of repairable) {
+    const repair = r.repair as NonNullable<CheckResult["repair"]>;
+    if (!yes) {
+      if (!interactive) {
+        console.log(chalk.yellow(`  · ${repair.prompt} Skipped: not a terminal (pass --yes).`));
+        continue;
+      }
+      if (!(await confirm({ message: repair.prompt, default: false }))) continue;
+    }
+    try {
+      console.log(`  ${chalk.green("✓")} ${await repair.run()}`);
+      repaired++;
+    } catch (err) {
+      console.log(`  ${chalk.red("✗")} ${r.name}: ${(err as Error).message.split("\n")[0]}`);
+    }
+  }
+  console.log();
+  return failed.length - repaired;
+}
+
+export async function runDoctor(
+  opts: { json?: boolean; fix?: boolean; yes?: boolean } = {},
+): Promise<void> {
   const results = await collectDoctorResults();
   const okCount = results.filter((r) => r.status === "ok").length;
   const failCount = results.filter((r) => r.status === "fail").length;
@@ -2909,7 +3035,8 @@ export async function runDoctor(opts: { json?: boolean } = {}): Promise<void> {
       for (const line of lines) console.log(`    ${chalk.dim("→")} ${line}`);
     }
     console.log();
-    process.exit(1);
+    const standing = opts.fix ? await offerRepairs(failed, opts.yes ?? false) : failed.length;
+    if (standing > 0) process.exit(1);
   }
 }
 

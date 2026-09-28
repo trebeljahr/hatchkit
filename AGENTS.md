@@ -35,7 +35,8 @@ If `@hatchkit/mcp` is configured, prefer its read-only tools:
 
 ## CLI Guard Rails
 
-- `hatchkit doctor` is safe and read-only.
+- `hatchkit doctor` is safe and read-only. `hatchkit doctor --fix` writes to
+  providers; ask before running it.
 - `hatchkit create`, `setup`, and `config add` are interactive. Do not run them
   unattended unless the user provided automation flags/config.
 - `hatchkit create` can scaffold files, initialize git, create GitHub repos,

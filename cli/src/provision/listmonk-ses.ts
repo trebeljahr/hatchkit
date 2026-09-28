@@ -46,8 +46,10 @@ import {
   applySesSmtpToListmonk,
   createListmonkList,
   createListmonkTemplate,
+  getListmonkTemplate,
   listListmonkLists,
   listListmonkTemplates,
+  updateListmonkTemplate,
 } from "./listmonk.js";
 import {
   SES_MAIL_FROM_SPF,
@@ -282,6 +284,55 @@ export function singleOptinHint(lists: ListmonkList[]): string[] {
     "   Code that still adds an `unconfirmed` member first makes Listmonk send its own opt-in email next to the app's once the list is double.",
     "2. Then Listmonk → Lists → edit → Opt-in: Double. Campaigns then reach `confirmed` members only.",
   ];
+}
+
+/** A bare `{{ .Tx.Data.body }}` action, trim markers allowed. Hatchkit
+ *  seeded tx templates with this body before it piped it through `Safe`. */
+const BARE_TX_BODY_ACTION = /\{\{(-?\s*)\.Tx\.Data\.body(\s*-?)\}\}/g;
+
+/** Pipe every bare `{{ .Tx.Data.body }}` in a tx template body through
+ *  `Safe`, leaving the rest of the body as it is. Listmonk renders the
+ *  bare form HTML-escaped, so the app's HTML arrives as visible markup.
+ *  A body with nothing to fix comes back unchanged, so a second run is a
+ *  no-op. */
+export function repairTxTemplateBody(body: string): string {
+  return body.replace(BARE_TX_BODY_ACTION, "{{$1.Tx.Data.body | Safe$2}}");
+}
+
+/** Whether a tx template body renders `.Tx.Data.body` HTML-escaped. */
+export function txBodyRendersEscaped(body: string): boolean {
+  return repairTxTemplateBody(body) !== body;
+}
+
+/** How to fix a tx template whose body renders escaped. Shared by
+ *  `hatchkit doctor` and its `--fix` repair. */
+export function escapedTxTemplateHint(template: ListmonkTemplate): string[] {
+  return [
+    `${template.name} (id ${template.id}) renders \`{{ .Tx.Data.body }}\`. Listmonk HTML-escapes it, so every email sent through it arrives as visible markup.`,
+    "Run `hatchkit doctor --fix` in this project to pipe it through `Safe`, or edit the template in Listmonk → Campaigns → Templates:",
+    "  `{{ .Tx.Data.body }}` → `{{ .Tx.Data.body | Safe }}`",
+  ];
+}
+
+/** Repair one tx template in place. Reads the template again right
+ *  before the write, so an edit made since the doctor check is kept,
+ *  and only the bare `.Tx.Data.body` actions change. Idempotent: a
+ *  template that is already safe is not written. */
+export async function repairEscapedTxTemplate(
+  id: number,
+  auth: ListmonkAuth,
+): Promise<"repaired" | "already-safe"> {
+  const current = await getListmonkTemplate(id, auth);
+  const body = current.body ?? "";
+  if (!txBodyRendersEscaped(body)) return "already-safe";
+  await updateListmonkTemplate(id, {
+    name: current.name,
+    type: "tx",
+    subject: current.subject,
+    body: repairTxTemplateBody(body),
+    auth,
+  });
+  return "repaired";
 }
 
 export async function provisionListmonkSesForProject(
@@ -724,17 +775,20 @@ async function getOrCreateList(
  *  supplies the real HTML at send-time — these scaffolds only have to be
  *  valid Listmonk Go templates that render the runtime's input. The tx
  *  template's subject expects `{{ .Tx.Data.subject }}` and the body
- *  renders `{{ .Tx.Data.body }}` raw — tx templates use Go's
- *  `text/template` (no auto-escape, and `safeHTML` is not registered
- *  there); the calling app is responsible for the HTML it passes.
- *  The campaign template is a pure passthrough so the digest HTML the
- *  app already wraps lands verbatim with per-recipient
- *  `{{ UnsubscribeURL }}` substitution. */
+ *  renders `{{ .Tx.Data.body | Safe }}`. Listmonk parses a tx body with
+ *  Go's `html/template` (only the subject goes through `text/template`),
+ *  so a bare `{{ .Tx.Data.body }}` is HTML-escaped and the email arrives
+ *  as visible markup. `Safe` is the helper Listmonk registers for tx
+ *  templates to pass a string through as HTML (`safeHTML` is not
+ *  registered and fails to compile). The calling app is responsible for
+ *  the HTML it passes. The campaign template is a pure passthrough so
+ *  the digest HTML the app already wraps lands verbatim with
+ *  per-recipient `{{ UnsubscribeURL }}` substitution. */
 const DEFAULT_TX_TEMPLATE_SUBJECT = "{{ .Tx.Data.subject }}";
-const DEFAULT_TX_TEMPLATE_BODY = `<!doctype html>
+export const DEFAULT_TX_TEMPLATE_BODY = `<!doctype html>
 <html>
   <body>
-    {{ .Tx.Data.body }}
+    {{ .Tx.Data.body | Safe }}
   </body>
 </html>
 `;

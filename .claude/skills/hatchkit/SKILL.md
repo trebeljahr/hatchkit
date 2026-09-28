@@ -128,6 +128,7 @@ Use Hatchkit context when the user mentions any of:
 ## Guard rails
 
 - `hatchkit doctor` is safe and read-only. Use it freely for diagnosis.
+  `hatchkit doctor --fix` writes to providers; ask before running it.
 - `hatchkit setup` and `config add` are interactive. Do not run them
   unattended unless the user gave flags/config for automation.
 - `hatchkit create` can write files, initialize git, create GitHub repos,
