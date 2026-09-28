@@ -72,6 +72,7 @@ rotation URL, required scopes, and exact `hatchkit config add <provider>` comman
 | `hatchkit doctor` | Read-only live health check of configured providers |
 | `hatchkit explain` | One-page mental model |
 | `hatchkit gh-pages` | Wire GitHub Pages for the current repo |
+| `hatchkit cloudflare` | Wire Cloudflare Workers Static Assets for the current repo |
 | `hatchkit adopt` | Adopt an existing repo into Hatchkit conventions |
 | `hatchkit sync` | Sync/deploy state for an existing Hatchkit project (incl. manifest `aliases[]` multi-hostname routing) |
 | `hatchkit dns publish` | Upsert A/AAAA records for the manifest's domain + aliases (supports `--dry-run`) |
@@ -132,7 +133,8 @@ Use Hatchkit context when the user mentions any of:
 - `hatchkit create` can write files, initialize git, create GitHub repos,
   run Terraform, configure DNS, create Coolify apps, and deploy. Be explicit
   before starting it — driving it from flags does not lower the blast radius.
-- `hatchkit add`, `remove`, `keys push`, `keys rotate`, `gh-pages`, `sync`,
+- `hatchkit add`, `remove`, `keys push`, `keys rotate`, `gh-pages`, `cloudflare`,
+  `sync`,
   `rename-domain`, `regen-infra`, `provision s3`, and `destroy` can mutate local
   files and/or remote systems. Make sure the user's request authorizes that action.
 - Never log secrets. `hatchkit keys show <project> --json` returns a live
@@ -147,6 +149,7 @@ Use Hatchkit context when the user mentions any of:
 - Before running a mutating command, know its rollback path and tell the user.
   Examples: `hatchkit destroy <project> --recipe` prints the rollback recipe
   without executing; `hatchkit gh-pages --undo --dry-run` previews Pages undo;
+  `hatchkit cloudflare --undo --dry-run` previews the Workers undo;
   create/adopt write a run ledger so `hatchkit destroy <project>` can undo
   resources Hatchkit created. Do not run rollback/destructive cleanup without
   explicit user approval.
@@ -181,7 +184,7 @@ Flags, with their valid values:
 | `--domain <host>` | defaults to `<name>.<root domain>` |
 | `--description <text>` | pass empty for "none" |
 | `--surfaces` | `fullstack` `split` `backend` `static` |
-| `--deployment-mode` | `coolify` `gh-pages` `scaffold-only` (`gh-pages` needs `--surfaces static`) |
+| `--deployment-mode` | `coolify` `gh-pages` `cloudflare` `scaffold-only` (`gh-pages` and `cloudflare` need `--surfaces static`) |
 | `--deploy-target` | `new` `existing` |
 | `--server-size` | `cpx21` `cpx31` `cpx41` |
 | `--server-location` | `nbg1` `fsn1` `hel1` |

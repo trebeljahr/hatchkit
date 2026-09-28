@@ -64,6 +64,7 @@ New to the CLI? Run `hatchkit explain` for a one-page mental model covering ever
 | `hatchkit signing org-init` | One-time per dev machine — collect Apple Distribution .p12 / App Store Connect API key, Google Play service account JSON, Azure Trusted Signing service principal. |
 | `hatchkit signing apply [project-dir]` | Wire signed installers + store uploads: writes `build-{windows,ios,android}.yml`, rewrites bundle ID in `package.json` (electron-builder `build`) / `capacitor.config.ts` / `android/app/build.gradle` / `strings.xml` / `MainActivity.java` / `project.pbxproj`, mints the Apple Bundle ID + App record + provisioning profile via the ASC API, generates an Android upload keystore, pushes ~20 GitHub Actions secrets. Idempotent. Same flow runs via `hatchkit add <project> signing`. |
 | `hatchkit gh-pages` | Wire GitHub Pages for the current repo (static / Vite / Jekyll) with optional custom domain + DNS. |
+| `hatchkit cloudflare` | Wire Cloudflare Workers Static Assets for the current repo — free, unmetered asset requests. |
 | `hatchkit keys show/push <project>` | Read or push the dotenvx private key to Coolify. |
 | `hatchkit config [add/reset]` | Inspect or modify stored provider credentials. |
 | `hatchkit completion <shell>` | Print a zsh / bash / fish completion script. |
@@ -145,6 +146,7 @@ Full docs live under [`docs/`](docs/) and are published at [https://hatchkit.tre
 - [Providers](https://hatchkit.trebeljahr.com/docs/providers) — GitHub, Coolify, Hetzner, DNS, S3, GPU platforms
 - [ML services](https://hatchkit.trebeljahr.com/docs/ml-services) — deploy GPU-backed models the CLI understands
 - [GitHub Pages](https://hatchkit.trebeljahr.com/docs/gh-pages) — `hatchkit gh-pages` for static sites, SPAs, Jekyll docs, and Docusaurus docs
+- [Cloudflare Workers](https://hatchkit.trebeljahr.com/docs/cloudflare) — `hatchkit cloudflare` for static sites on Cloudflare
 - [Architecture](https://hatchkit.trebeljahr.com/docs/architecture) — how scaffold / infra / deploy fit together
 - [Deploying the docs site](https://hatchkit.trebeljahr.com/docs/deployment) — the deployment flow used by this repo
 

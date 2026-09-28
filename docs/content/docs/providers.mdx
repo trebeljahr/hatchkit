@@ -96,6 +96,25 @@ Configure: `hatchkit config add dns`.
 
 ---
 
+## Cloudflare Workers
+
+Static-asset hosting for the `cloudflare` deployment mode. Stores a Cloudflare account ID (metadata) and an API token (keychain).
+
+Kept separate from the DNS and R2 Cloudflare tokens on purpose: this is the only Cloudflare credential hatchkit copies out to a third party — as `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repo secrets on GitHub — so it has to be revocable without taking DNS or R2 down with it.
+
+**Token permissions:**
+
+- Account → Workers Scripts → Edit
+- Zone → Workers Routes → Edit
+- Zone → DNS → Edit
+- Zone → Dynamic Redirect → Edit — needed for `www` → apex redirects, and the one people forget
+
+Scope the three zone permissions to every domain you plan to serve. `hatchkit doctor` probes all four and names every missing one.
+
+Configure: `hatchkit config add cloudflare-workers`. Full guide: [Cloudflare Workers](./cloudflare).
+
+---
+
 ## S3-compatible storage
 
 Opt-in via the `s3` feature during `create`.

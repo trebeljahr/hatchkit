@@ -1,0 +1,145 @@
+---
+title: Cloudflare Workers
+description: Serve a static site from Cloudflare Workers Static Assets — free, unmetered asset requests — with the custom domain automated only where that is safe.
+---
+
+`hatchkit cloudflare` serves a static site from **Cloudflare Workers Static Assets**. It is the `cloudflare` deployment mode's command, and it also works standalone on any repo that already builds a flat directory of files.
+
+## Why this mode exists
+
+Cloudflare serves static asset requests free and unmetered. Only Worker *script invocations* count against the free plan's daily quota, and a pure static site runs none — the assets are served before your code would run.
+
+The mode encodes a migration verified end to end on fractal.garden in September 2026. That site was serving roughly 85 edge requests per pageview, mostly assets and viewport prefetches, against a host that metered every one of them.
+
+## What you need
+
+One Cloudflare API token, stored separately from the DNS and R2 tokens:
+
+```bash
+hatchkit config add cloudflare-workers
+```
+
+It asks for your account ID (it is in every dashboard URL: `dash.cloudflare.com/<account-id>/…`) and the token, then verifies the token before storing it.
+
+### Token permissions
+
+Create it at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) → Create Token → Custom token.
+
+| Scope | Permission | What needs it |
+|---|---|---|
+| Account | Workers Scripts → Edit | Publishing the Worker and its assets |
+| Zone | Workers Routes → Edit | Binding the custom domain |
+| Zone | DNS → Edit | The record Cloudflare creates for that domain |
+| Zone | Dynamic Redirect → Edit | The `www` → apex (or apex → `www`) 301 |
+
+Scope the three zone permissions to **every** domain you plan to serve.
+
+Dynamic Redirect is the one people leave off. Without it the redirect rule silently cannot be written, and the redirect never happens — nothing errors. `hatchkit doctor` probes all four and names every missing one in a single pass.
+
+This is deliberately a third Cloudflare token rather than a reuse of the DNS or R2 one. It is the only Cloudflare credential hatchkit copies out of your keychain into a third party (GitHub Actions), so it has to be revocable on its own without taking DNS or R2 down with it.
+
+## Scaffolding a new project
+
+```bash
+hatchkit create
+```
+
+Pick `static` for the project shape, then `Cloudflare Workers` for the deployment mode. The scaffold writes:
+
+| File | Role |
+|---|---|
+| `wrangler.jsonc` | What to serve (`packages/client/out`), how to handle 404s, `workers_dev: true` |
+| `.node-version` | Toolchain pin, read by CI and by Cloudflare's own build image |
+| `packages/client/public/_headers` | Immutable caching for `/_next/static/*`, no-store for `/version.json` |
+| `.github/workflows/deploy.yml` | Build, then `cloudflare/wrangler-action@v4` |
+
+It also rewrites `packages/client/next.config.ts` for static export and removes the starter's GHCR image workflow — there is no image to build, and it would fail on every push.
+
+Non-interactively:
+
+```bash
+hatchkit create --yes --surfaces static --deployment-mode cloudflare \
+  --name my-site --domain my-site.example.com
+```
+
+`--deployment-mode cloudflare` requires `--surfaces static` and fails fast otherwise.
+
+## Adding it to an existing repo
+
+```bash
+cd my-site
+hatchkit cloudflare
+```
+
+Writes whatever of the four files is missing (idempotent — it never overwrites one you already have), then sets the CI secrets.
+
+## Secrets
+
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are set as **repo-level** GitHub Actions secrets. Repo-level rather than org-level because a personal GitHub account has no organization to inherit shared secrets from — every repo gets its own copy.
+
+Values are passed to `gh secret set` on stdin, never in argv, so they do not appear in your shell history or in the process list. No token value is printed, including on the failure path: the manual fallback recipe prints the command shape and leaves you to paste.
+
+## Custom domain
+
+This is the part that is **only half automated, on purpose**.
+
+Cloudflare creates the DNS record and the certificate for a Worker Custom Domain itself, and refuses to attach one over a hostname that already has records it did not make — `code: 100117`. The only way through is to delete the existing records first, and between that delete and the attach the hostname serves nothing.
+
+So the two cases are treated differently:
+
+**No records at the hostname** — a brand-new project's domain. Nothing is serving it, there is no window to fall into, and the attach either works or fails harmlessly. hatchkit does it for you and records it in the run ledger, so `hatchkit destroy` can detach it again.
+
+**Records already there** — a live site being migrated. hatchkit prints the current records, the cutover order, and stops. Deciding when to take a site down is your call to time, not a CLI's.
+
+The ledger only ever records a domain hatchkit attached itself, so an undo can never delete a record that predates hatchkit.
+
+### The manual cutover
+
+For a live domain, in one sitting:
+
+1. Deploy first and click through `<worker>.<subdomain>.workers.dev`. Check every route, the 404 page, `robots.txt` and `sitemap.xml`.
+2. Check where the domain actually redirects **today**. An apex that 308s to `www` while every canonical tag claims the apex will break each indexed URL if you point the apex straight at the Worker.
+3. Screenshot the DNS records. That is your rollback — re-creating them restores the old host in seconds.
+4. Delete the records, then attach the custom domain in Workers & Pages → your worker → Settings → Domains & Routes.
+5. Verify the cache headers and that the old host's response headers are gone.
+
+## Before you migrate an existing site
+
+Five things make a project unable to static-export at all. Grep for them first:
+
+1. `getServerSideProps` / `getInitialProps`
+2. API routes — `pages/api/**`, `app/**/route.ts`, or a root `api/`
+3. `middleware.ts`
+4. `next/image` with the default loader
+5. `i18n` in `next.config` — rejected outright by `output: "export"`
+
+Also check for ISR (`revalidate`), server actions, dynamic routes without `generateStaticParams`, and `rewrites` / `redirects` / `headers` in the config, which are silently dropped on export.
+
+`hatchkit adopt` runs these checks for you and refuses to adopt into a static-host mode over a blocking finding.
+
+## Limits
+
+Cloudflare's free tier caps static assets at **20,000 files** and **25 MiB per file**. Watch 3D assets and press kits.
+
+Losing an image-optimizing host means the originals go over the wire at full size. Check the weight before assuming it does not matter.
+
+## Undo
+
+```bash
+hatchkit cloudflare --undo --dry-run   # print the plan
+hatchkit cloudflare --undo --yes       # do it
+```
+
+Detaches custom domains bound to this Worker and removes the `wrangler.jsonc` + `deploy.yml` hatchkit wrote. The Worker itself and its uploaded assets stay — delete those with `pnpm dlx wrangler delete` if you want them gone.
+
+It does not re-create whatever DNS records a migration replaced. hatchkit never deleted them, so there is nothing of its own to restore.
+
+## Deploying locally
+
+The CI workflow is the normal path, but you can deploy a local build to check it:
+
+```bash
+pnpm build && pnpm dlx wrangler deploy
+```
+
+`wrangler login` is enough; the stored API token is only for CI.

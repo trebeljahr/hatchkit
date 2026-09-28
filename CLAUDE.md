@@ -49,6 +49,8 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
 - `hatchkit add <project> [services]`: provision GlitchTip/OpenPanel/Resend/S3/email.
 - `hatchkit keys show|push|rotate <project>`: manage dotenvx private keys.
 - `hatchkit gh-pages`: configure GitHub Pages for the current repo.
+- `hatchkit cloudflare`: configure Cloudflare Workers Static Assets for the
+  current repo (static sites; free, unmetered asset requests).
 - `hatchkit adopt`: bring an existing repo under Hatchkit conventions.
 - `hatchkit sync`, `rename-domain`, `regen-infra`, `provision s3`: maintain deployed projects. `sync` pushes the manifest's `domain` + `aliases[]` (multi-hostname) onto Coolify.
 - `hatchkit dns publish [--dry-run]`: upsert Cloudflare A/AAAA records for the manifest's domain + aliases, pointing at the Coolify server.
@@ -70,7 +72,8 @@ Check `hatchkit help <command>` before using flags you have not verified.
   command to the user. Prefer `--dry-run`, `--json`, or `--recipe`.
 - Know the undo path before executing mutations. `hatchkit destroy <project>
   --recipe` prints rollback commands without executing; `hatchkit gh-pages
-  --undo --dry-run` previews Pages cleanup; create/adopt ledgers let
+  --undo --dry-run` previews Pages cleanup; `hatchkit cloudflare --undo
+  --dry-run` previews the Workers cleanup; create/adopt ledgers let
   `hatchkit destroy <project>` undo resources Hatchkit created.
 - Ask before running rollback, cleanup, Terraform, DNS, Coolify, keychain, or
   provider API mutations.

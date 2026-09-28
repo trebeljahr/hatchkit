@@ -40,7 +40,8 @@ If `@hatchkit/mcp` is configured, prefer its read-only tools:
   unattended unless the user provided automation flags/config.
 - `hatchkit create` can scaffold files, initialize git, create GitHub repos,
   run Terraform, configure DNS, create Coolify apps, and deploy.
-- `hatchkit add`, `remove`, `keys push`, `keys rotate`, `gh-pages`, `sync`,
+- `hatchkit add`, `remove`, `keys push`, `keys rotate`, `gh-pages`, `cloudflare`,
+  `sync`,
   `rename-domain`, `regen-infra`, `provision s3`, and `destroy` can mutate local
   files and/or remote systems. Make sure the user asked for the action.
 - Never print secrets unless the user explicitly requested them.
@@ -50,7 +51,8 @@ If `@hatchkit/mcp` is configured, prefer its read-only tools:
   user the command to run. Prefer `--dry-run`, `--json`, or `--recipe` modes.
 - Know the undo path before executing mutations. `hatchkit destroy <project>
   --recipe` prints rollback commands without running them; `hatchkit gh-pages
-  --undo --dry-run` previews Pages cleanup; create/adopt ledgers let
+  --undo --dry-run` previews Pages cleanup; `hatchkit cloudflare --undo
+  --dry-run` previews the Workers cleanup; create/adopt ledgers let
   `hatchkit destroy <project>` undo resources Hatchkit created.
 - Ask before running rollback, cleanup, Terraform, DNS, Coolify, keychain, or
   provider API mutations.

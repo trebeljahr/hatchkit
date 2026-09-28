@@ -1,6 +1,6 @@
 ---
 title: Commands
-description: Every hatchkit command, every flag — setup, create, update, server add, add, gh-pages, doctor, keys, config.
+description: Every hatchkit command, every flag — setup, create, update, server add, add, gh-pages, cloudflare, doctor, keys, config.
 ---
 
 Every hatchkit command supports `--help` for detail. Global flags:
@@ -73,7 +73,7 @@ prompting. That makes `create` CI-safe.
 
 | Flag | Values / effect |
 |---|---|
-| `--deployment-mode <value>` | `coolify` · `gh-pages` · `scaffold-only`. `gh-pages` requires `--surfaces static`. |
+| `--deployment-mode <value>` | `coolify` · `gh-pages` · `cloudflare` · `scaffold-only`. `gh-pages` and `cloudflare` both require `--surfaces static`. |
 | `--deploy-target <value>` | `new` (provision a Hetzner box) · `existing` (reuse one). |
 | `--server-size <value>` | `cpx21` · `cpx31` · `cpx41`. Only for `--deploy-target new`. |
 | `--server-location <value>` | `nbg1` · `fsn1` · `hel1`. Only for `--deploy-target new`. |
@@ -303,7 +303,7 @@ cd my-app
 hatchkit server add
 ```
 
-This is a local scaffold step only. It copies `packages/server`, restores shared server types, updates workspace/root scripts, flips `.hatchkit.json` from `static` to `fullstack`, and moves `gh-pages` manifests back to `coolify` because Pages cannot host a backend.
+This is a local scaffold step only. It copies `packages/server`, restores shared server types, updates workspace/root scripts, flips `.hatchkit.json` from `static` to `fullstack`, and moves `gh-pages` / `cloudflare` manifests back to `coolify` because a static host cannot run a backend.
 
 After reviewing the diff:
 
@@ -379,6 +379,24 @@ hatchkit add raptor-runner s3   # finish one; the entry clears itself
 Re-running a deferred step is safe: `hatchkit add` refuses services whose credentials are already in the env files, so nothing is provisioned twice. `hatchkit adopt --resume` retries deferred steps for the same reason — they wrote no env keys the first time round.
 
 Nothing is rolled back for a deferral. A declined step created no remote resource, so there is no partial state to undo.
+
+---
+
+## `hatchkit cloudflare`
+
+Serve a static repo from Cloudflare Workers Static Assets, where asset requests are free and unmetered. Writes `wrangler.jsonc`, `.node-version`, `public/_headers` and a `cloudflare/wrangler-action@v4` workflow, then sets the repo-level CI secrets.
+
+```bash
+cd my-site
+hatchkit cloudflare
+hatchkit cloudflare --undo [--dry-run] [--yes]
+```
+
+Needs `hatchkit config add cloudflare-workers` first (account ID + API token). Four token permissions matter: Account → Workers Scripts → Edit, and Zone → Workers Routes / DNS / Dynamic Redirect → Edit. `hatchkit doctor` probes all four and names every missing one.
+
+The custom domain is attached automatically **only** when the hostname has no existing DNS records. Cloudflare refuses to attach over existing records (`code: 100117`), and clearing them first means downtime — so for a live domain hatchkit prints the records, the cutover order, and stops.
+
+Full guide: [Cloudflare Workers](./cloudflare).
 
 ---
 
