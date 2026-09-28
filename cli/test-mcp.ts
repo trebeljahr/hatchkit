@@ -161,10 +161,51 @@ const mirror = (await import(join(MCP_SRC, "src", "routes.ts"))) as {
   WEBHOOK_EVENTS: string[];
 };
 
-const tools = (await import(join(MCP_SRC, "src", "tools.ts"))) as {
-  TOOL_DEFINITIONS: { name: string; route: TemplateRoute }[];
-  UNTOOLED_ROUTES: { method: string; path: string; reason: string }[];
-};
+/**
+ * The tool table, read out of `tools.ts` rather than imported.
+ *
+ * Unlike `routes.ts`, `tools.ts` imports `zod` and `@starter/shared`, and
+ * those resolve only after a `pnpm install` inside `starter/`. A developer's
+ * checkout may have one; CI never does, so an import here passed locally and
+ * crashed the suite on the runner. The two facts this file checks are plain
+ * data in the source anyway: each tool's own `route: route("<method>",
+ * "<path>")` line, and the `UNTOOLED_ROUTES` literal.
+ */
+function toolTable(): {
+  tooled: { method: string; path: string }[];
+  untooled: { method: string; path: string; reason: string }[];
+} {
+  const source = readFileSync(join(MCP_SRC, "src", "tools.ts"), "utf-8");
+  const definitions = source.indexOf("export const TOOL_DEFINITIONS");
+  const exclusions = source.indexOf("export const UNTOOLED_ROUTES");
+  assert.notEqual(definitions, -1, "tools.ts no longer declares TOOL_DEFINITIONS");
+  assert.notEqual(exclusions, -1, "tools.ts no longer declares UNTOOLED_ROUTES");
+  // One chunk per `defineTool({ … })` call. The definition's own `route:` is
+  // the one at property indentation; the deeper ones are arguments to the
+  // requests its `run` makes.
+  const tooled = source
+    .slice(definitions, exclusions)
+    .split("defineTool({")
+    .slice(1)
+    .map((chunk) => {
+      const match = /^ {4}route: route\("(\w+)", "([^"]+)"\),$/m.exec(chunk);
+      assert.ok(match, `a tool with no route of its own: ${chunk.slice(0, 80).trim()}`);
+      return { method: match[1] as string, path: match[2] as string };
+    });
+  // Pure data, so evaluate the literal rather than pattern-match each field:
+  // the reasons are prose, and a regex that tripped on one would silently
+  // compare fewer rows than there are.
+  const open = source.indexOf("= [", exclusions) + 2;
+  const close = source.indexOf("\n];", open) + 2;
+  const untooled = new Function(`return ${source.slice(open, close)};`)() as {
+    method: string;
+    path: string;
+    reason: string;
+  }[];
+  return { tooled, untooled };
+}
+
+const tools = toolTable();
 
 check("the mirrored route table is the public API's route table", () => {
   const real = templateRoutes();
@@ -210,11 +251,20 @@ check("the mirrored webhook event names are the server's", () => {
 check("every real route is either a tool or a stated exclusion", () => {
   // The drift that matters most: a route ADDED to the public surface gets no
   // tool and nothing says so. Here it stops the build until somebody decides.
+  assert.ok(tools.tooled.length > 0, "read no tools out of tools.ts");
+  // What `route()` would throw on at the MCP server's startup: a tool naming
+  // a row the mirrored table does not have.
+  for (const tool of tools.tooled) {
+    assert.ok(
+      mirror.API_ROUTES.some((row) => row.method === tool.method && row.path === tool.path),
+      `a tool calls ${tool.method.toUpperCase()} ${tool.path}, which the mirrored table lacks`,
+    );
+  }
   for (const route of templateRoutes()) {
-    const tooled = tools.TOOL_DEFINITIONS.filter(
-      (tool) => tool.route.method === route.method && tool.route.path === route.path,
+    const tooled = tools.tooled.filter(
+      (tool) => tool.method === route.method && tool.path === route.path,
     ).length;
-    const excluded = tools.UNTOOLED_ROUTES.filter(
+    const excluded = tools.untooled.filter(
       (row) => row.method === route.method && row.path === route.path,
     ).length;
     assert.equal(
