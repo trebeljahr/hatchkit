@@ -237,6 +237,19 @@ export interface DnsMeta extends ProviderStatus {
   registrarUsername?: string;
 }
 
+export interface CloudflareWorkersMeta extends ProviderStatus {
+  /** Cloudflare account the Worker is published into. Required — the
+   *  Workers API is account-scoped end to end, and the deploy workflow
+   *  needs it as `CLOUDFLARE_ACCOUNT_ID`. Non-sensitive (it appears in
+   *  every dashboard URL), so it lives in metadata, not the keychain. */
+  accountId: string;
+  /** The account's `*.workers.dev` subdomain, cached from
+   *  `GET /accounts/<id>/workers/subdomain` at config time so
+   *  `hatchkit cloudflare` can print the preview URL without a round
+   *  trip. Absent until the account has claimed one. */
+  workersSubdomain?: string;
+}
+
 export interface S3ProviderMeta extends ProviderStatus {
   location?: string;
   endpoint?: string;
@@ -358,6 +371,10 @@ export interface DnsConfig extends DnsMeta {
    *  The NS-flip paths turn it into a current code for `account.unlock`. */
   registrarTotpSecret?: string;
 }
+export interface CloudflareWorkersConfig extends CloudflareWorkersMeta {
+  apiToken?: string;
+}
+
 export interface S3ProviderConfig extends S3ProviderMeta {
   accessKey: string;
   secretKey: string;
@@ -423,6 +440,7 @@ export interface CliConfig {
     coolify?: CoolifyMeta;
     hetzner?: HetznerMeta;
     dns?: DnsMeta;
+    cloudflareWorkers?: CloudflareWorkersMeta;
     s3: Record<string, S3ProviderMeta>;
     gpu: Record<string, GpuProviderMeta>;
     glitchtip?: GlitchtipMeta;
@@ -1167,6 +1185,161 @@ export async function getDnsConfig(): Promise<DnsConfig | null> {
     registrarPassword: registrarPassword ?? undefined,
     registrarTotpSecret: registrarTotpSecret ?? undefined,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Provider: Cloudflare Workers (the `cloudflare` deployment mode)
+// ---------------------------------------------------------------------------
+
+/** Verify a Cloudflare Workers deploy token.
+ *
+ *  Two calls: `/user/tokens/verify` proves the token is live, then a
+ *  read of the account's Worker scripts proves it carries
+ *  `Account > Workers Scripts > Edit` — without which every deploy
+ *  fails. The three zone-scoped permissions can't be checked here
+ *  (there is no zone yet at config time); `hatchkit doctor` probes
+ *  those once a project has a domain.
+ *
+ *  Same shape as `verifyR2AdminToken`, and kept in sync with the
+ *  doctor check for the same reason: the config-time and health-check
+ *  verdicts must agree so doctor never fails a token we just took. */
+export async function verifyCloudflareWorkersToken(
+  token: string,
+  accountId: string,
+): Promise<{ ok: true; detail: string } | { ok: false; detail: string }> {
+  try {
+    const verifyRes = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!verifyRes.ok) {
+      return {
+        ok: false,
+        detail: `Token rejected by Cloudflare (HTTP ${verifyRes.status}). Likely invalid or revoked.`,
+      };
+    }
+    const scriptsRes = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    if (!scriptsRes.ok) {
+      const body = (await scriptsRes.json().catch(() => null)) as {
+        errors?: Array<{ code: number; message: string }>;
+      } | null;
+      const code = body?.errors?.[0]?.code;
+      return {
+        ok: false,
+        detail: `Token lacks \`Account > Workers Scripts > Edit\` (HTTP ${scriptsRes.status}${code ? ` / CF code ${code}` : ""}).`,
+      };
+    }
+    const body = (await scriptsRes.json()) as { result?: unknown[] };
+    const count = body.result?.length ?? 0;
+    return { ok: true, detail: `${count} Worker(s) visible` };
+  } catch (err) {
+    return { ok: false, detail: `Network error verifying token: ${(err as Error).message}` };
+  }
+}
+
+/** Prompt for (and verify) the Cloudflare Workers deploy credentials.
+ *  Idempotent: returns the stored config untouched when one is already
+ *  present and still verifies. */
+export async function ensureCloudflareWorkers(): Promise<CloudflareWorkersConfig> {
+  const existing = store.get("providers.cloudflareWorkers") as CloudflareWorkersMeta | undefined;
+  if (existing?.status === "configured") {
+    const token = await getSecret(SECRET_KEYS.cloudflareWorkersToken);
+    if (token) return { ...existing, apiToken: token };
+    console.log(
+      chalk.dim("    · Stored Cloudflare Workers token is missing — re-prompting below."),
+    );
+  }
+
+  console.log(chalk.bold("\n  Cloudflare Workers (static assets hosting)"));
+  console.log(
+    chalk.dim(
+      "  A separate token from the DNS and R2 ones on purpose: this is the only\n" +
+        "  Cloudflare credential hatchkit copies into GitHub Actions, so it has to be\n" +
+        "  revocable without taking DNS or R2 down with it.",
+    ),
+  );
+
+  interface WorkersSetupState {
+    accountId: string;
+    apiToken: string;
+  }
+
+  const steps: Step<WorkersSetupState>[] = [
+    {
+      name: "Cloudflare account ID",
+      run: async (s) => {
+        console.log(
+          chalk.dim(
+            "  Your account ID is in the dashboard URL:\n" +
+              "    dash.cloudflare.com/<account-id>/home/overview",
+          ),
+        );
+        return {
+          ...s,
+          accountId: await input({
+            message: "Cloudflare account ID:",
+            validate: validateRequired,
+          }),
+        };
+      },
+    },
+    {
+      name: "Cloudflare API token",
+      run: async (s) => {
+        tokenHint(
+          "https://dash.cloudflare.com/profile/api-tokens → Create Token → Custom token",
+          "Account:Workers Scripts:Edit + Zone:Workers Routes:Edit + Zone:DNS:Edit + Zone:Dynamic Redirect:Edit",
+          "Scope the three zone permissions to every domain you plan to serve.",
+          "Dynamic Redirect is the one people forget — without it the www → apex",
+          "redirect rule can't be written and the redirect silently never happens.",
+        );
+        for (;;) {
+          const apiToken = await confirmPastedSecret("Cloudflare API token");
+          const verdict = await verifyCloudflareWorkersToken(apiToken, s.accountId.trim());
+          if (verdict.ok) {
+            console.log(chalk.dim(`    · Verified — ${verdict.detail}`));
+            return { ...s, apiToken };
+          }
+          console.log(chalk.yellow(`    ! ${verdict.detail}`));
+          const retry = await confirm({ message: "Paste a different token?", default: true });
+          if (!retry) return { ...s, apiToken };
+        }
+      },
+    },
+  ];
+
+  const answers = await runSteps(steps, { accountId: "", apiToken: "" });
+  const accountId = answers.accountId.trim();
+
+  // Cache the *.workers.dev subdomain so the deploy command can print
+  // the preview URL offline. Best-effort: an account that has never
+  // deployed a Worker has no subdomain yet, and that is not an error.
+  let workersSubdomain: string | undefined;
+  try {
+    const api = new CloudflareApi({ token: answers.apiToken, accountId });
+    workersSubdomain = (await api.getWorkersSubdomain(accountId)) ?? undefined;
+  } catch {
+    workersSubdomain = undefined;
+  }
+
+  const meta: CloudflareWorkersMeta = {
+    status: "configured",
+    accountId,
+    workersSubdomain,
+  };
+  store.set("providers.cloudflareWorkers", meta);
+  await setSecret(SECRET_KEYS.cloudflareWorkersToken, answers.apiToken);
+  console.log(chalk.green("  ✓ Cloudflare Workers configured"));
+  return { ...meta, apiToken: answers.apiToken };
+}
+
+export async function getCloudflareWorkersConfig(): Promise<CloudflareWorkersConfig | null> {
+  const meta = store.get("providers.cloudflareWorkers") as CloudflareWorkersMeta | undefined;
+  if (!meta || meta.status !== "configured") return null;
+  const apiToken = await getSecret(SECRET_KEYS.cloudflareWorkersToken);
+  return { ...meta, apiToken: apiToken ?? undefined };
 }
 
 // ---------------------------------------------------------------------------
@@ -3198,6 +3371,7 @@ type ReconfigurableProvider =
   | "coolify-github-app"
   | "hetzner"
   | "dns"
+  | "cloudflare-workers"
   | "glitchtip"
   | "openpanel"
   | "plausible"
@@ -3238,6 +3412,9 @@ export async function reconfigureProvider(
       SECRET_KEYS.dnsCloudflareToken,
     ]);
     await ensureDns();
+  } else if (name === "cloudflare-workers") {
+    await wipeProvider("providers.cloudflareWorkers", [SECRET_KEYS.cloudflareWorkersToken]);
+    await ensureCloudflareWorkers();
   } else if (name === "glitchtip") {
     await wipeProvider("providers.glitchtip", [SECRET_KEYS.glitchtipToken]);
     await ensureGlitchtip();

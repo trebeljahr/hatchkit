@@ -102,6 +102,29 @@ export interface R2CorsRule {
   maxAgeSeconds?: number;
 }
 
+/** A hostname bound to a Worker as a Custom Domain. Cloudflare creates
+ *  the proxied DNS record and the certificate for it, which is why it
+ *  refuses to attach one over a hostname that already has records
+ *  (error 100117). */
+export interface CfWorkerCustomDomain {
+  id: string;
+  hostname: string;
+  zone_id: string;
+  zone_name: string;
+  service: string;
+  environment: string;
+}
+
+/** Outcome of probing one Cloudflare API-token permission. `ok` means
+ *  the probe call succeeded; `detail` explains a failure in terms the
+ *  user can act on. */
+export interface CfPermissionProbe {
+  /** Permission as it is spelled in the token editor UI. */
+  permission: string;
+  ok: boolean;
+  detail?: string;
+}
+
 export interface CloudflareApiOptions {
   token: string;
   /** Optional: filter to one account. Useful if the token spans multiple. */
@@ -1210,5 +1233,150 @@ export class CloudflareApi {
         actions: [{ type: "forward", value: params.forwardTo }],
       },
     );
+  }
+
+  // ── Workers (static assets) ──────────────────────────────────────────
+
+  /** The account's `*.workers.dev` subdomain (the `<sub>` in
+   *  `<worker>.<sub>.workers.dev`). Returns null when the account has
+   *  never claimed one — the first `wrangler deploy` claims it. */
+  async getWorkersSubdomain(accountId: string): Promise<string | null> {
+    try {
+      const data = await this.request<{ subdomain?: string }>(
+        "GET",
+        `/accounts/${accountId}/workers/subdomain`,
+      );
+      return data?.subdomain ?? null;
+    } catch (err) {
+      if (/404|not\s*found/i.test((err as Error).message)) return null;
+      throw err;
+    }
+  }
+
+  /** Custom domains currently bound to Workers in this account. */
+  async listWorkerCustomDomains(accountId: string): Promise<CfWorkerCustomDomain[]> {
+    return this.request<CfWorkerCustomDomain[]>("GET", `/accounts/${accountId}/workers/domains`);
+  }
+
+  /** Bind `hostname` to `service` as a Worker Custom Domain.
+   *
+   *  Cloudflare manages the DNS record and certificate itself, so it
+   *  refuses when the hostname already resolves through records it
+   *  didn't create — `code: 100117`. The caller must delete those
+   *  records first, and the host is down in the gap, so this is only
+   *  safe to automate for a hostname with no existing records.
+   *  `attachWorkerCustomDomain` does not delete anything.
+   */
+  async attachWorkerCustomDomain(params: {
+    accountId: string;
+    zoneId: string;
+    hostname: string;
+    service: string;
+    environment?: string;
+  }): Promise<CfWorkerCustomDomain> {
+    return this.request<CfWorkerCustomDomain>(
+      "PUT",
+      `/accounts/${params.accountId}/workers/domains`,
+      {
+        zone_id: params.zoneId,
+        hostname: params.hostname,
+        service: params.service,
+        environment: params.environment ?? "production",
+      },
+    );
+  }
+
+  /** Detach a Worker Custom Domain. Used by rollback. */
+  async deleteWorkerCustomDomain(
+    accountId: string,
+    domainId: string,
+  ): Promise<"deleted" | "not-found"> {
+    try {
+      await this.request<unknown>("DELETE", `/accounts/${accountId}/workers/domains/${domainId}`);
+      return "deleted";
+    } catch (err) {
+      if (/404|not\s*found/i.test((err as Error).message)) return "not-found";
+      throw err;
+    }
+  }
+
+  /** Probe the four permissions the `cloudflare` deployment mode needs,
+   *  each with the cheapest read-only call that the permission gates.
+   *
+   *    Workers Scripts:Edit    — publish the Worker and its assets.
+   *    Workers Routes:Edit     — bind the custom domain / routes.
+   *    DNS:Edit                — the record Cloudflare creates for that
+   *                              domain, and any apex/www placeholder.
+   *    Dynamic Redirect:Edit   — the www → apex (or apex → www) 301.
+   *                              Easy to forget; without it the
+   *                              redirect rule silently can't be written.
+   *
+   *  Read-only throughout: a read succeeding does not strictly prove
+   *  the matching Edit grant, but Cloudflare's token scopes are
+   *  hierarchical — Edit implies Read, and a token with neither fails
+   *  the read. In practice a failing probe is a real missing grant and
+   *  a passing one is right for every token shape hatchkit issues
+   *  guidance for. `zoneId` is optional; the three zone-scoped probes
+   *  are skipped (reported ok) without one, since there is no zone to
+   *  check against yet.
+   */
+  async probeWorkersPermissions(params: {
+    accountId: string;
+    zoneId?: string;
+  }): Promise<CfPermissionProbe[]> {
+    const out: CfPermissionProbe[] = [];
+
+    out.push(
+      await this.probe("Account → Workers Scripts → Edit", () =>
+        this.request<unknown>("GET", `/accounts/${params.accountId}/workers/scripts`),
+      ),
+    );
+
+    if (!params.zoneId) return out;
+
+    out.push(
+      await this.probe("Zone → Workers Routes → Edit", () =>
+        this.request<unknown>("GET", `/zones/${params.zoneId}/workers/routes`),
+      ),
+    );
+    out.push(
+      await this.probe("Zone → DNS → Edit", () =>
+        this.request<unknown>("GET", `/zones/${params.zoneId}/dns_records?per_page=1`),
+      ),
+    );
+    out.push(
+      await this.probe("Zone → Dynamic Redirect → Edit", () =>
+        this.request<unknown>(
+          "GET",
+          `/zones/${params.zoneId}/rulesets/phases/http_request_dynamic_redirect/entrypoint`,
+        ),
+      ),
+    );
+    return out;
+  }
+
+  /** Run one permission probe.
+   *
+   *  A 404 counts as a PASS. The dynamic-redirect entrypoint 404s on
+   *  any zone that has never had a redirect rule written, and that is
+   *  the common case — the token could read the phase, there was just
+   *  nothing in it. Only an authorization failure means a grant is
+   *  actually missing; Cloudflare signals those as code 9109
+   *  ("Unauthorized to access requested resource") or 10000
+   *  ("Authentication error"). Anything else (network, 5xx) is
+   *  reported as a failure with the raw message so the user can see
+   *  what happened rather than getting a false all-clear. */
+  private async probe(permission: string, fn: () => Promise<unknown>): Promise<CfPermissionProbe> {
+    try {
+      await fn();
+      return { permission, ok: true };
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (/\b(9109|10000)\b|\bHTTP (401|403)\b/.test(msg)) {
+        return { permission, ok: false, detail: msg };
+      }
+      if (/\b404\b|not\s*found/i.test(msg)) return { permission, ok: true };
+      return { permission, ok: false, detail: msg };
+    }
   }
 }

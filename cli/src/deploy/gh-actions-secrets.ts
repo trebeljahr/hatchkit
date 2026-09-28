@@ -257,6 +257,82 @@ export async function setCoolifyDeploySecrets(
   return { ok: true, pushed: names, removed };
 }
 
+export interface CloudflareDeploySecretsInput {
+  /** Working directory that has `.git` + `gh` access. */
+  projectDir: string;
+  /** GitHub `<owner>/<repo>` slug. */
+  repoSlug: string;
+}
+
+export interface CloudflareDeploySecretsResult {
+  ok: boolean;
+  pushed: string[];
+}
+
+/** The two repo-level secrets `cloudflare/wrangler-action@v4` reads. */
+export const CLOUDFLARE_SECRET_NAMES = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"] as const;
+
+/** Push the secrets the scaffolded Cloudflare deploy workflow needs.
+ *
+ *  Repo-level, not org-level, on purpose: a personal GitHub account has
+ *  no org to hang shared secrets off, so every repo gets its own copy.
+ *  That is also why the token is stored under its own keychain entry —
+ *  it is the one Cloudflare credential that leaves the machine, so it
+ *  has to be revocable on its own.
+ *
+ *  Nothing here prints a token value. `gh secret set --body` passes it
+ *  as an argv element, so it never reaches stdout, and the manual
+ *  fallback recipe prints the *command shape* with a placeholder rather
+ *  than the secret. Best-effort: a failure leaves the repo without
+ *  secrets and hands the user the recipe, it doesn't roll anything back.
+ */
+export async function setCloudflareDeploySecrets(
+  input: CloudflareDeploySecretsInput,
+): Promise<CloudflareDeploySecretsResult> {
+  const { getCloudflareWorkersConfig } = await import("../config.js");
+  const cfg = await getCloudflareWorkersConfig();
+  if (!cfg?.apiToken) {
+    console.log(
+      chalk.dim(
+        "  · Cloudflare Workers not configured — skipping Actions secret push.\n" +
+          "    Run `hatchkit config add cloudflare-workers`, then `hatchkit cloudflare`.",
+      ),
+    );
+    return { ok: false, pushed: [] };
+  }
+
+  const secrets: Record<string, string> = {
+    CLOUDFLARE_API_TOKEN: cfg.apiToken,
+    CLOUDFLARE_ACCOUNT_ID: cfg.accountId,
+  };
+  const names = Object.keys(secrets);
+
+  const spinner = ora(
+    `GitHub: setting ${names.length} Actions secrets on ${input.repoSlug}`,
+  ).start();
+  try {
+    for (const [name, value] of Object.entries(secrets)) {
+      await ghSecretSet(input.projectDir, input.repoSlug, name, value);
+    }
+    spinner.succeed(`GitHub: Actions secrets set (${names.join(", ")})`);
+    return { ok: true, pushed: names };
+  } catch (err) {
+    spinner.fail(`GitHub: setting secrets failed — ${(err as Error).message}`);
+    // Deliberately a placeholder, not the value. Everything else in
+    // this file prints real values because they're service URLs and
+    // uuids; an API token is not something to leave in scrollback.
+    console.log(
+      chalk.dim(
+        "  Set them manually with (both read the value from stdin, so neither\n" +
+          "  lands in your shell history or the process list):\n" +
+          `    gh secret set CLOUDFLARE_API_TOKEN --repo ${input.repoSlug}\n` +
+          `    gh secret set CLOUDFLARE_ACCOUNT_ID --repo ${input.repoSlug}   # ${cfg.accountId}`,
+      ),
+    );
+    return { ok: false, pushed: [] };
+  }
+}
+
 /** Upsert one repo-level Actions secret.
  *
  *  The value goes in on STDIN, not `--body`. Argv is world-readable on

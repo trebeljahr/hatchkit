@@ -65,6 +65,16 @@ export const SECRET_KEYS = {
    *  R2 admin endpoints need account-level perms which most users
    *  prefer not to mix into the DNS token (least-privilege rotation). */
   r2AdminToken: "s3:r2:admin-token",
+  /** Cloudflare API token for the `cloudflare` deployment mode. Needs
+   *  Workers Scripts:Edit (account) plus Workers Routes:Edit, DNS:Edit
+   *  and Dynamic Redirect:Edit on every zone that will be served.
+   *
+   *  Deliberately a third Cloudflare token, separate from
+   *  `dns:cloudflare:token` and `s3:r2:admin-token`: it is the only one
+   *  hatchkit copies OUT of the keychain into a third party (as a
+   *  `CLOUDFLARE_API_TOKEN` GitHub Actions secret), so it must be
+   *  revocable without taking DNS or R2 down with it. */
+  cloudflareWorkersToken: "cloudflare:workers:token",
   gpuApiKey: (platform: string) => `gpu:${platform}:api-key`,
   glitchtipToken: "glitchtip:auth-token",
   /** Root-mode OpenPanel client used by the Management API to auto-create
