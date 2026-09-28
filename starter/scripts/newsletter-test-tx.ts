@@ -3,8 +3,8 @@
  * Single-shot transactional smoke test for the Listmonk + SES wiring.
  * Sends one /api/tx email through the project's transactional template
  * to LISTMONK_TEST_RECIPIENT (or the address passed positionally),
- * upserting the subscriber on the test list first so /api/tx accepts
- * the send.
+ * making sure the subscriber exists first so /api/tx accepts the send.
+ * It adds no list membership.
  *
  * Usage:
  *
@@ -18,7 +18,7 @@
  * to confirm the SES identity, SMTP relay, and tx template all work
  * end-to-end before wiring real product flows.
  */
-import { sendTransactional, upsertSubscriber } from "../packages/server/src/services/newsletter/listmonk.js";
+import { ensureSubscriber, sendTransactional } from "../packages/server/src/services/newsletter/listmonk.js";
 
 function getFlag(name: string): string | undefined {
   const idx = process.argv.indexOf(`--${name}`);
@@ -60,11 +60,15 @@ async function main(): Promise<void> {
   console.info(`[newsletter:test-tx] to:        ${to}`);
   console.info(`[newsletter:test-tx] subject:   ${subject}`);
   console.info(`[newsletter:test-tx] template:  LISTMONK_TX_TEMPLATE_ID=${process.env.LISTMONK_TX_TEMPLATE_ID ?? "(unset)"}`);
-  console.info(`[newsletter:test-tx] upserting subscriber as confirmed on the env-resolved list…`);
-  await upsertSubscriber(to, "confirmed");
+  console.info(`[newsletter:test-tx] making sure the subscriber exists…`);
+  await ensureSubscriber(to);
   console.info(`[newsletter:test-tx] sending /api/tx…`);
   await sendTransactional({ to, subject, html });
-  console.info(`[newsletter:test-tx] sent — check ${to} (and SES → Activity if it doesn't land).`);
+  console.info(
+    `[newsletter:test-tx] queued — check ${to}. /api/tx returns before SMTP runs, so an SES rejection\n` +
+      "                    (e.g. sandbox: `Email address is not verified`) shows only in Listmonk's log\n" +
+      "                    (Settings → Logs, or GET /api/logs).",
+  );
 }
 
 function escapeHtml(s: string): string {

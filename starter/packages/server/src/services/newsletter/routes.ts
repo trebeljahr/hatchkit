@@ -3,7 +3,7 @@
  * from `app.ts`. Strip the call (and this file) to disable.
  *
  *   POST /api/newsletter/subscribe   — rate-limited; mints confirm token + emails it
- *   GET  /api/newsletter/confirm     — verifies token + promotes the subscription
+ *   GET  /api/newsletter/confirm     — verifies token + adds the address to the list
  *
  * Both endpoints log JSON lines under `scope: "newsletter.*"` so log
  * aggregators can filter on it.

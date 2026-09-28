@@ -4606,6 +4606,10 @@ results.buildRegressionsReported = await run(
 
       // ── defect 7 (negative): no newsletter → no /sub routes at all ──
       ["app/sub stripped when newsletter is unselected", !existsSync(join(d, "packages/client/src/app/sub"))],
+      [
+        "newsletter server test stripped with the service it imports",
+        !existsSync(join(d, "packages/server/src/tests/newsletter.test.ts")),
+      ],
 
       // ── defect 8: server dev env ───────────────────────────────────
       [".env.development exists", existsSync(join(d, "packages/server/.env.development"))],
@@ -4673,6 +4677,10 @@ results.buildRegressionsCommerce = await run(
 
       // ── defect 7: /sub routes under a static export ────────────────
       ["listmonk keeps the /sub routes", existsSync(join(subDir, "page.tsx"))],
+      [
+        "listmonk keeps the double opt-in server test",
+        existsSync(join(d, "packages/server/src/tests/newsletter.test.ts")),
+      ],
       ["desktop/mobile flips next.config to a static export", isStaticExport],
       [
         "no app/ page forces dynamic rendering under output: export",

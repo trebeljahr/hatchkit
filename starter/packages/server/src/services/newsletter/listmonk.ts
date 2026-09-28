@@ -4,7 +4,8 @@
  * Talks to a self-hosted Listmonk instance (delivering via Amazon SES
  * SMTP) over its REST API:
  *
- *   - Subscribers + list memberships live in Listmonk.
+ *   - Subscribers + list memberships live in Listmonk. An address
+ *     joins the list only once it confirms (see `confirmSubscription`).
  *   - Transactional sends (double-opt-in confirmation, welcome issue)
  *     go through `POST /api/tx` against a pre-defined passthrough
  *     template.
@@ -107,16 +108,26 @@ type SubscribersQueryResponse = {
   data: { results: ListmonkSubscriber[]; total: number };
 };
 
-function escSqlString(s: string): string {
-  return s.replace(/'/g, "''");
+/** Quote regex metacharacters so `s` matches only itself. */
+function escRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export async function findSubscriber(email: string): Promise<ListmonkSubscriber | null> {
-  const q = `subscribers.email = '${escSqlString(email.toLowerCase())}'`;
-  const res = await listmonkFetch<SubscribersQueryResponse>(
-    `/api/subscribers?query=${encodeURIComponent(q)}&per_page=1`,
-  );
-  return res.data.results[0] ?? null;
+  const normalized = email.toLowerCase();
+  // `search` needs only the `subscribers:get*` permissions. The `query`
+  // param would need `subscribers:sql_query`, which Listmonk's role
+  // form leaves out by default. Listmonk matches `search` as a
+  // Postgres regex against name and email (`email ~* $search`), so
+  // anchor and quote it: unquoted, the `+` in `a+b@x.com` is a
+  // quantifier and a plus-address never finds itself.
+  const params = new URLSearchParams({
+    search: `^${escRegex(normalized)}$`,
+    per_page: "all",
+  });
+  const res = await listmonkFetch<SubscribersQueryResponse>(`/api/subscribers?${params}`);
+  // `search` also matches the name column, so keep only the exact email.
+  return res.data.results.find((sub) => sub.email.toLowerCase() === normalized) ?? null;
 }
 
 /** True when `email` is a confirmed member of the env-resolved list. */
@@ -128,28 +139,26 @@ export async function isConfirmedOnList(email: string): Promise<boolean> {
   return entry?.subscription_status === "confirmed";
 }
 
-/** Create the subscriber if missing, otherwise add the configured list
- *  with the given subscription status. Idempotent. */
-export async function upsertSubscriber(
-  email: string,
-  status: SubscriptionStatus,
-): Promise<ListmonkSubscriber> {
-  const listId = resolveListId();
-  const existing = await findSubscriber(email);
+// ─────────────────────────────────────────────────────────────────────
+// Double opt-in and list membership
+//
+// An address goes on the list only after the HMAC link in our
+// confirmation email is clicked, and then as `confirmed`. Until then
+// it exists as a subscriber with no lists, which is all `/api/tx`
+// needs to deliver the confirmation email.
+//
+// Hatchkit creates the lists `optin: double`, so campaigns reach
+// `confirmed` members only. Adding the membership late is what makes
+// that work without a second email: Listmonk sends its own opt-in
+// email for any `unconfirmed` membership on a double list that is
+// created or updated without `preconfirm_subscriptions` (when
+// `app.send_optin_confirmation` is on), next to ours. And on a
+// single-opt-in list Listmonk mails every member not `unsubscribed`,
+// `unconfirmed` included, so an early membership would get every
+// campaign without a confirm click.
+// ─────────────────────────────────────────────────────────────────────
 
-  if (existing) {
-    await listmonkFetch("/api/subscribers/lists", {
-      method: "PUT",
-      body: JSON.stringify({
-        ids: [existing.id],
-        action: "add",
-        target_list_ids: [listId],
-        status,
-      }),
-    });
-    return (await findSubscriber(email)) ?? existing;
-  }
-
+async function createSubscriber(email: string, listIds: number[]): Promise<ListmonkSubscriber> {
   type CreateResp = { data: ListmonkSubscriber };
   const created = await listmonkFetch<CreateResp>("/api/subscribers", {
     method: "POST",
@@ -159,20 +168,50 @@ export async function upsertSubscriber(
       // only thing the form asks for, so reuse it.
       name: email.toLowerCase(),
       status: "enabled",
-      lists: [listId],
-      // We run our own HMAC-token double opt-in — ask Listmonk not to
-      // send its own opt-in email. New list subscriptions land as
-      // `unconfirmed` until promoted by `confirmSubscription`.
-      preconfirm_subscriptions: status === "confirmed",
+      lists: listIds,
+      // Marks any list in `listIds` as `confirmed` and stops Listmonk's
+      // own opt-in email. With `false`, Listmonk would mail its
+      // confirmation for every double-opt-in list in `listIds`.
+      preconfirm_subscriptions: true,
     }),
   });
   return created.data;
 }
 
-/** Promote an existing subscription from `unconfirmed` to `confirmed`.
- *  Idempotent: if the subscriber is missing entirely, recreates them. */
+/** Make sure `email` exists as a Listmonk subscriber, without adding it
+ *  to any list. Call this before sending the confirmation email.
+ *
+ *  An existing subscriber is returned untouched. It may belong to
+ *  other projects' lists on a shared instance, or be `unsubscribed`
+ *  from ours, and submitting the form again must not put it on our
+ *  list before the confirm click. */
+export async function ensureSubscriber(email: string): Promise<ListmonkSubscriber> {
+  return (await findSubscriber(email)) ?? (await createSubscriber(email, []));
+}
+
+/** Add `email` to the env-resolved list as `confirmed`. Only the
+ *  confirm route calls this, after the token has proven the reader owns
+ *  the address (and `newsletter:verify`, for your own inbox). Idempotent:
+ *  an existing membership, whatever its status, becomes `confirmed`.
+ *  A subscriber that has gone missing since the token was issued is
+ *  recreated on the list. The `PUT /api/subscribers/lists` path sends
+ *  no Listmonk opt-in email. */
 export async function confirmSubscription(email: string): Promise<void> {
-  await upsertSubscriber(email, "confirmed");
+  const listId = resolveListId();
+  const existing = await findSubscriber(email);
+  if (!existing) {
+    await createSubscriber(email, [listId]);
+    return;
+  }
+  await listmonkFetch("/api/subscribers/lists", {
+    method: "PUT",
+    body: JSON.stringify({
+      ids: [existing.id],
+      action: "add",
+      target_list_ids: [listId],
+      status: "confirmed",
+    }),
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -191,7 +230,7 @@ export type SendTransactionalParams = {
  *  `{{ .Tx.Data.subject }}` + `{{ .Tx.Data.body }}` raw (tx templates
  *  use Go `text/template`, which doesn't auto-escape HTML and doesn't
  *  register `safeHTML`). The recipient must exist as a subscriber —
- *  call `upsertSubscriber` first. */
+ *  call `ensureSubscriber` first. */
 export async function sendTransactional(params: SendTransactionalParams): Promise<void> {
   const templateId = Number(required("LISTMONK_TX_TEMPLATE_ID"));
   await listmonkFetch("/api/tx", {

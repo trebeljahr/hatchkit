@@ -3,12 +3,15 @@
  *
  * The flow:
  *   1. Form POSTs to /api/newsletter/subscribe (handled in routes.ts).
- *   2. Server upserts the address as `unconfirmed` on the Listmonk
- *      list, mints an HMAC-signed token, and emails it via Listmonk's
- *      transactional template.
+ *   2. Server makes sure the address exists as a Listmonk subscriber
+ *      on no list, mints an HMAC-signed token, and emails it via
+ *      Listmonk's transactional template.
  *   3. User clicks the link, which GETs /api/newsletter/confirm. The
- *      handler verifies the token, promotes the subscription to
+ *      handler verifies the token, adds the address to the list as
  *      `confirmed`, and redirects to /sub/confirmed.
+ *
+ * Nothing before step 3 touches list membership. See "Double opt-in
+ * and list membership" in listmonk.ts for why.
  *
  * Tokens are stateless — no DB row, no Redis key. Validity is encoded
  * in the payload (`x` = expiry) and protected by `NEWSLETTER_TOKEN_SECRET`
@@ -17,10 +20,10 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
+  ensureSubscriber,
   isConfirmedOnList,
   confirmSubscription as listmonkConfirm,
   sendTransactional,
-  upsertSubscriber,
 } from "./listmonk.js";
 
 // 21 days is the sweet spot: long enough that an email sitting in a
@@ -125,9 +128,9 @@ export type SendConfirmationEmailParams = {
  *  react-email or a templating dependency. */
 export async function sendConfirmationEmail(params: SendConfirmationEmailParams): Promise<void> {
   // The recipient must exist as a Listmonk subscriber before /api/tx
-  // accepts the send. Create them as `unconfirmed` so they show up in
-  // the admin UI even if they never click the confirmation link.
-  await upsertSubscriber(params.to, "unconfirmed");
+  // accepts the send. It stays off the list until the link is clicked
+  // (see "Double opt-in and list membership" in listmonk.ts).
+  await ensureSubscriber(params.to);
   const siteName = params.siteName ?? "this newsletter";
   await sendTransactional({
     to: params.to,
@@ -171,8 +174,8 @@ export { listmonkConfirm as confirmSubscription };
 //
 // Resets on container restart. Subscribe is a low-volume endpoint
 // (~one POST per legitimate user, ever) and the worst-case after a
-// restart is a small spam burst that ends at the Listmonk dedupe
-// layer anyway. A real shared store would be overkill.
+// restart is a small spam burst that ends at the Listmonk dedupe in
+// `ensureSubscriber` anyway. A real shared store would be overkill.
 // ─────────────────────────────────────────────────────────────────────
 
 const RATE_WINDOW_MS = 60_000;

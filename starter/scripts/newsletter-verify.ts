@@ -8,7 +8,7 @@
  *
  *   1. Listmonk admin reachable           GET /api/lists
  *   2. Live + test lists resolvable       LISTMONK_LIST_ID + LISTMONK_TEST_LIST_ID exist
- *   3. Test recipient on the test list    upsert subscriber as confirmed
+ *   3. Test recipient on the test list    add as confirmed (your own inbox)
  *   4. Transactional send                 POST /api/tx with the smoke payload
  *
  * Step 4 sends a real email — make sure LISTMONK_TEST_RECIPIENT is an
@@ -22,10 +22,10 @@
  *   pnpm newsletter:verify --skip-send           steps 1-3 only (no real send)
  */
 import {
+  confirmSubscription,
   findSubscriber,
   resolveListId,
   sendTransactional,
-  upsertSubscriber,
 } from "../packages/server/src/services/newsletter/listmonk.js";
 
 function hasFlag(name: string): boolean {
@@ -96,9 +96,9 @@ async function main(): Promise<void> {
     steps.push({
       label: `Subscriber ${to} confirmed on env-resolved list`,
       run: async () => {
-        await upsertSubscriber(to, "confirmed");
+        await confirmSubscription(to);
         const sub = await findSubscriber(to);
-        if (!sub) throw new Error(`subscriber ${to} not found after upsert`);
+        if (!sub) throw new Error(`subscriber ${to} not found after confirm`);
         return `id=${sub.id} · status=${sub.status}`;
       },
     });
@@ -116,7 +116,9 @@ async function main(): Promise<void> {
             and the transactional template rendered.
           </p>`,
         });
-        return "queued — check inbox + SES Activity";
+        // /api/tx returns 200 once the message is queued, before SMTP
+        // runs, so a success here does not mean SES accepted it.
+        return "queued — check inbox; SES rejections show only in Listmonk's log (GET /api/logs)";
       },
     });
   }
