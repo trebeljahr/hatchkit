@@ -46,8 +46,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install libsecret (keytar runtime dep)
-        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev
+      # libsecret alone is not enough: the test suite really stores and
+      # deletes keychain entries (under a throwaway service name), so keytar
+      # needs a secret service to talk to. gnome-keyring + dbus-x11 provide
+      # one inside the test step, the same way stamp-build does.
+      - name: Install libsecret + an ephemeral keyring (keytar runtime deps)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev gnome-keyring dbus-x11
 
       - uses: pnpm/action-setup@v4
 
@@ -75,8 +81,11 @@ jobs:
 
           pnpm --filter @hatchkit/dev-shared run build
 
+          # --dir, not --filter: a --filter exec is recursive, and when the
+          # command exits non-zero pnpm appends its own failure report to
+          # STDOUT, after the JSON under test.
           hatchkit() {
-            pnpm --filter hatchkit exec tsx src/index.ts "$@"
+            pnpm --dir cli exec tsx src/index.ts "$@"
           }
 
           parse_json() {
@@ -84,7 +93,17 @@ jobs:
           }
 
           hatchkit status --json | parse_json
-          hatchkit doctor --json | parse_json
+
+          # doctor exits 1 whenever a check fails, by design. On a runner gh
+          # is installed but not signed in, so the GitHub check always fails
+          # here. Accept that exit; anything else, or JSON that does not
+          # parse, still fails the step.
+          doctor_json="$RUNNER_TEMP/doctor.json"
+          doctor_rc=0
+          hatchkit doctor --json > "$doctor_json" || doctor_rc=$?
+          [ "$doctor_rc" -le 1 ] || exit "$doctor_rc"
+          parse_json < "$doctor_json"
+
           hatchkit explain --json | parse_json
 
       - name: Typecheck
@@ -94,7 +113,20 @@ jobs:
         run: pnpm --filter hatchkit run lint
 
       - name: Test (scaffold matrix)
-        run: pnpm --filter hatchkit run test
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Single quotes on purpose: the inner bash expands the variables.
+          # shellcheck disable=SC2016
+          dbus-run-session -- bash -c '
+            set -euo pipefail
+            # Same throwaway keyring as stamp-build: the passphrase is
+            # generated per run, never printed, and dies with the session.
+            keyring_pass="$(openssl rand -hex 16)"
+            gnome-keyring-daemon --components=secrets --daemonize --unlock <<< "$keyring_pass" > /dev/null
+            unset keyring_pass
+            pnpm --filter hatchkit run test
+          '
 
   scaffold-build:
     runs-on: ubuntu-latest
