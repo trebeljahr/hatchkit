@@ -22,10 +22,9 @@
  *   · `mobile-release.yml` reads `${{ secrets.NEXT_PUBLIC_API_URL }}`,
  *     and its plan job FAILS THE RUN when that secret is empty. Nothing
  *     is built against an origin nobody set.
- *   · `desktop-release.yml` falls back to a name under `.invalid`, which
- *     RFC 2606 guarantees can never resolve. A build with no repository
- *     variable set fails at its first request instead of shipping an
- *     installer that calls a plausible-looking host.
+ *   · `desktop-release.yml` reads `${{ vars.NEXT_PUBLIC_API_URL }}`,
+ *     and a step before the build FAILS THE JOB when that variable is
+ *     empty. No installer is built against an origin nobody set.
  *
  * Both refuse to guess, at the one moment guessing is expensive: the
  * value is baked into an artifact that a redeploy cannot correct. A

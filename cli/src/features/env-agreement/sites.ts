@@ -119,9 +119,9 @@ export interface FileSite extends OriginSiteBase {
    *   · `mobile-release.yml` reads `${{ secrets.NEXT_PUBLIC_API_URL }}`
    *     and its plan job fails the run when that secret is empty, so
    *     nothing can be built against a missing origin.
-   *   · `desktop-release.yml` falls back to a reserved `.invalid`
-   *     hostname, which can never resolve, so a build with no variable
-   *     set fails loudly instead of pointing somewhere plausible.
+   *   · `desktop-release.yml` reads `${{ vars.NEXT_PUBLIC_API_URL }}`
+   *     and a step before the build fails the job when that variable is
+   *     empty, so no installer is built against a missing origin.
    *
    * Returning a reason turns the site's status into `enforced` rather
    * than `missing`. Returning null means the absence is just an
@@ -175,11 +175,10 @@ export function extractOriginLiteral(raw: string): string | null {
  *
  *  RFC 2606 reserves `.invalid` for names guaranteed never to resolve,
  *  so a value under it is never somebody's server and never a typo for
- *  one. `desktop-release.yml` uses that on purpose: a build with no
- *  `NEXT_PUBLIC_API_URL` variable set fails at the first request rather
- *  than shipping an installer that quietly calls a plausible-looking
- *  host. Reporting it as a disagreement would be reporting the safety
- *  net as the accident. */
+ *  one. A workflow that falls back to one does so on purpose: a build
+ *  with no value set fails at the first request rather than shipping an
+ *  installer that quietly calls a plausible-looking host. Reporting it
+ *  as a disagreement would be reporting the safety net as the accident. */
 export function isTripwireOrigin(value: string): boolean {
   return /^https?:\/\/[^/]*\.invalid(?::\d+)?(?:\/|$)/i.test(value);
 }
@@ -196,10 +195,11 @@ function findBuildArg(key: string) {
 /** Read `KEY: value` (the YAML env shape) out of a workflow.
  *
  *  The native release workflows write that value as a CI expression
- *  rather than a bare string — `${{ vars.KEY || 'https://…' }}` in the
- *  desktop workflow, `${{ secrets.KEY }}` in the mobile one — so the
- *  literal, where there is one at all, has to come out of the
- *  expression. That is what {@link extractOriginLiteral} exists for.
+ *  rather than a bare string — `${{ vars.KEY }}` in the desktop
+ *  workflow, `${{ secrets.KEY }}` in the mobile one — so the literal,
+ *  where there is one at all (`${{ vars.KEY || 'https://…' }}`), has to
+ *  come out of the expression. That is what {@link extractOriginLiteral}
+ *  exists for.
  *
  *  The FIRST entry in the file wins. A workflow-level `env:` block is
  *  the value every job inherits, and a step-level entry that overrides
@@ -303,18 +303,19 @@ export const ORIGIN_SITES: readonly OriginSite[] = [
     source: "file",
     path: ".github/workflows/desktop-release.yml",
     find: findYamlEnv(NATIVE_API_URL_KEY),
-    // The fallback is a reserved `.invalid` host, which the generic
-    // tripwire rule already recognises; this only supplies the sentence
-    // that names the variable a person would set.
+    // The workflow reads the variable with no fallback, and its "Check
+    // the API origin" step fails the job when the value is empty. Both
+    // halves are required: reading the variable without that guard is
+    // back to baking an empty origin into an installer.
     enforces: (content) =>
-      content.includes(`vars.${NATIVE_API_URL_KEY}`)
-        ? `the fallback is a reserved name that cannot resolve, so a build with no ${NATIVE_API_URL_KEY} ` +
-          "variable fails at its first request instead of shipping an installer that calls a " +
-          "plausible-looking host"
+      content.includes(`vars.${NATIVE_API_URL_KEY}`) &&
+      new RegExp(`-z\\s+"\\$\\{${NATIVE_API_URL_KEY}:-\\}"`).test(content)
+        ? `the build refuses to run when the ${NATIVE_API_URL_KEY} variable is empty, so no ` +
+          "installer ships without one"
         : null,
     manualStep: (expected) =>
       `Set the ${NATIVE_API_URL_KEY} repository VARIABLE to ${expected} — the desktop release ` +
-      "workflow otherwise bakes an unresolvable host into the installer " +
+      "workflow refuses to build without it, and the value is baked into the installer " +
       `(gh variable set ${NATIVE_API_URL_KEY} --body ${expected})`,
     required: (p) => hasServerHalf(p.surfaces) && p.features.includes("desktop"),
     symptom:

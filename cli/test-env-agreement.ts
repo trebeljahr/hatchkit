@@ -751,14 +751,21 @@ check("the starter mobile workflow refuses a run with an empty secret", () => {
   );
 });
 
-check("the starter desktop workflow falls back to a name that cannot resolve", () => {
+check("the starter desktop workflow refuses a build with an empty variable", () => {
   if (!starterPresent) return;
   const content = readFileSync(join(STARTER, DESKTOP_WORKFLOW), "utf-8");
   const site = ORIGIN_SITES.find((s) => s.id === "desktop-release");
   assert.ok(site && site.source === "file", "no desktop-release site");
-  const found = site.find(content);
-  assert.ok(found !== null, "the desktop workflow carries no literal at all");
-  assert.ok(isTripwireOrigin(found), `${found} is a plausible host, not a tripwire`);
+  // No literal to drift: the workflow reads the variable and nothing else.
+  assert.equal(site.find(content), null, "the desktop workflow carries a literal origin");
+  // ...and a step fails the job when it is empty, which is what makes
+  // the absence a refusal rather than the empty-build-arg failure.
+  assert.ok(site.enforces?.(content), "the desktop workflow no longer refuses an empty variable");
+  assert.equal(
+    site.enforces?.(content.replace(/-z "\$\{NEXT_PUBLIC_API_URL:-\}"/, "-z x")),
+    null,
+    "reading the variable without the guard still counts as enforced",
+  );
 });
 
 const nativeDir = mkdtempSync(join(tmpdir(), "hatchkit-native-surfaces-"));
