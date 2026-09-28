@@ -108,7 +108,7 @@ Restart Listmonk afterwards (Coolify dashboard → Restart) so the new settings 
 
 If the API user lacks `Settings: All`, hatchkit downgrades to a warning and you paste manually:
 
-```env
+```bash
 SES_SMTP_HOST=email-smtp.eu-west-1.amazonaws.com   → Host
 SES_SMTP_PORT=587                                  → Port
 SES_SMTP_USERNAME=AKIA...                          → Username
@@ -150,7 +150,7 @@ For Listmonk to auto-blocklist on SES bounces/complaints:
 3. In Listmonk → Bounces, enable the SES webhook.
 4. In SES → Verified identities → `mail.<projectDomain>` → Notifications, set the SNS topic as the Bounce + Complaint destination.
 
-Hatchkit doesn't automate this today — it's a one-time setup whose API surface varies across Coolify Caddy fronts. The flow is documented at <https://listmonk.app/docs/bounces/>.
+Hatchkit doesn't automate this today — it's a one-time setup whose API surface varies across Coolify Caddy fronts. The flow is documented at [listmonk.app/docs/bounces](https://listmonk.app/docs/bounces/).
 
 ## Troubleshooting
 
