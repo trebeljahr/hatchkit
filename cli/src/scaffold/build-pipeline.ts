@@ -15,7 +15,8 @@
  *   · `.github/workflows/deploy.yml` present → leave it alone.
  *
  * Anything missing gets scaffolded from templates under
- * cli/src/templates/build-pipeline/.
+ * cli/src/templates/build-pipeline/. A static site served by nginx
+ * also gets the `nginx.conf` its Dockerfile copies in.
  *
  * Mobile / desktop pipelines (Capacitor + Electron Builder) are
  * scaffolded out of this module too, gated on `features.includes()`,
@@ -89,6 +90,51 @@ export function detectFramework(projectDir: string): DetectedFramework {
   }
   if (detectNextjsMonorepoPackage(projectDir)) return "nextjs";
   return "generic";
+}
+
+const ASTRO_CONFIG_NAMES = [
+  "astro.config.mjs",
+  "astro.config.ts",
+  "astro.config.mts",
+  "astro.config.js",
+  "astro.config.cjs",
+] as const;
+
+/** True when the nginx static image serves this project: a static
+ *  surface that isn't Next.js (Next always gets a Node runtime). That
+ *  image is the one that needs the nginx.conf written next to its
+ *  Dockerfile. */
+export function servesWithNginx(
+  projectDir: string,
+  surfaces: ScaffoldBuildPipelineInput["surfaces"],
+): boolean {
+  return surfaces === "static" && detectFramework(projectDir) !== "nextjs";
+}
+
+/** Whether a missing path should fall back to `/index.html` in the
+ *  nginx config.
+ *
+ *  Astro's static build writes one HTML file per page (`about/index.html`,
+ *  or `about.html` with `build.format: "file"`) plus `404.html`, so a
+ *  path that matches no page is a real 404. Serving the home page with
+ *  a 200 there would hide broken links and get every typo indexed.
+ *
+ *  Everything else this image serves is a Vite-style build: one
+ *  `index.html` whose client router owns the path, so a reload on a
+ *  deep link has to get index.html back. */
+export function detectSpaFallback(projectDir: string): boolean {
+  if (ASTRO_CONFIG_NAMES.some((name) => existsSync(join(projectDir, name)))) return false;
+  const pkgPath = join(projectDir, "package.json");
+  if (!existsSync(pkgPath)) return true;
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    return !(pkg.dependencies?.astro || pkg.devDependencies?.astro);
+  } catch {
+    return true;
+  }
 }
 
 export interface MonorepoNextjsPackage {
@@ -267,6 +313,9 @@ export interface BuildPipelineState {
   composePath?: string;
   hasDockerfile: boolean;
   hasDeployWorkflow: boolean;
+  /** The nginx static image's config. Only written — and only looked
+   *  at — when that image is the one being scaffolded. */
+  hasNginxConf: boolean;
 }
 
 /** Compose file lookups mirror what Docker Compose itself supports —
@@ -280,6 +329,11 @@ const COMPOSE_FILENAMES = [
 ] as const;
 
 const DEPLOY_WORKFLOW_PATH = ".github/workflows/deploy.yml";
+
+/** Next to the Dockerfile, in the build context the Dockerfile COPYs
+ *  it from. deploy-recovery looks for the nginx config at this same
+ *  path when it adds its no-cache rule. */
+const NGINX_CONF_PATH = "nginx.conf";
 
 export function detectBuildPipeline(projectDir: string): BuildPipelineState {
   let composePath: string | undefined;
@@ -295,6 +349,7 @@ export function detectBuildPipeline(projectDir: string): BuildPipelineState {
     composePath,
     hasDockerfile: existsSync(join(projectDir, "Dockerfile")),
     hasDeployWorkflow: existsSync(join(projectDir, DEPLOY_WORKFLOW_PATH)),
+    hasNginxConf: existsSync(join(projectDir, NGINX_CONF_PATH)),
   };
 }
 
@@ -467,12 +522,13 @@ export function scaffoldBuildPipeline(
   const monorepoNextjs =
     framework === "nextjs" ? detectNextjsMonorepoPackage(input.projectDir) : undefined;
   if (input.force || !state.hasDockerfile) {
+    const nginxImage = servesWithNginx(input.projectDir, input.surfaces);
     const tpl =
       framework === "nextjs"
         ? monorepoNextjs
           ? "build-pipeline/Dockerfile.nextjs-monorepo.hbs"
           : "build-pipeline/Dockerfile.nextjs.hbs"
-        : input.surfaces === "static"
+        : nginxImage
           ? "build-pipeline/Dockerfile.client.hbs"
           : "build-pipeline/Dockerfile.server.hbs";
     const out = renderTemplate(tpl, {
@@ -484,6 +540,22 @@ export function scaffoldBuildPipeline(
       packageName: monorepoNextjs?.packageName,
     });
     write("Dockerfile", out, state.hasDockerfile);
+
+    // The nginx Dockerfile COPYs nginx.conf, so the config is written
+    // with it and only with it — a kept, user-authored Dockerfile never
+    // reads one. An nginx.conf that is already there is the user's and
+    // stays, like every other file here without `force`.
+    if (nginxImage) {
+      if (input.force || !state.hasNginxConf) {
+        const conf = renderTemplate("build-pipeline/nginx.conf.hbs", {
+          name: input.projectName,
+          spaFallback: detectSpaFallback(input.projectDir),
+        });
+        write(NGINX_CONF_PATH, conf, state.hasNginxConf);
+      } else {
+        skipped.push(NGINX_CONF_PATH);
+      }
+    }
   } else {
     skipped.push("Dockerfile");
   }

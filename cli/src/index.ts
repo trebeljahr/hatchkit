@@ -4426,9 +4426,10 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("--regenerate-pipeline")}
     Re-render the build pipeline files (Dockerfile, docker-compose.yml,
-    .github/workflows/deploy.yml) over the existing copies. Useful when
-    the templates picked up a fix you want — e.g. the Node base-image
-    auto-detection, newer GitHub Actions versions. Pre-existing files
+    .github/workflows/deploy.yml, and nginx.conf for a static site)
+    over the existing copies. Useful when the templates picked up a fix
+    you want — e.g. the Node base-image auto-detection, newer GitHub
+    Actions versions, deep links that 404 on reload. Pre-existing files
     that get overwritten are NOT recorded in the rollback ledger,
     so a later \`hatchkit destroy\` won't surprise-delete them.
     Combine with \`--resume\` if the project is already adopted:

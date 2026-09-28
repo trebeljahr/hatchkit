@@ -80,7 +80,11 @@ import {
 import { readDeferredSteps } from "./provision/deferrals.js";
 import { type ProvisionService, runProvision } from "./provision/index.js";
 import { readEnvKeys } from "./provision/write-env.js";
-import { detectBuildPipeline, scaffoldBuildPipeline } from "./scaffold/build-pipeline.js";
+import {
+  detectBuildPipeline,
+  scaffoldBuildPipeline,
+  servesWithNginx,
+} from "./scaffold/build-pipeline.js";
 import { needsLocalS3 } from "./scaffold/e2e-s3.js";
 import {
   MANIFEST_FILENAME,
@@ -4055,8 +4059,15 @@ function renderBuildPipelineSummary(state: DetectedState, plan: AdoptPlan): stri
   const pipe = detectBuildPipeline(state.projectDir);
   const willWrite: string[] = [];
   const kept: string[] = [];
-  if (pipe.hasDockerfile) kept.push("Dockerfile");
-  else willWrite.push("Dockerfile");
+  if (pipe.hasDockerfile) {
+    kept.push("Dockerfile");
+  } else {
+    willWrite.push("Dockerfile");
+    // Written with the nginx Dockerfile, which COPYs it in.
+    if (servesWithNginx(state.projectDir, plan.surfaces)) {
+      (pipe.hasNginxConf ? kept : willWrite).push("nginx.conf");
+    }
+  }
   if (pipe.hasCompose) kept.push(pipe.composePath?.split("/").pop() ?? "compose");
   else willWrite.push("docker-compose.yml");
   if (pipe.hasDeployWorkflow) kept.push(".github/workflows/deploy.yml");

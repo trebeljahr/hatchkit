@@ -1,0 +1,54 @@
+# nginx config for {{name}}'s static image. The Dockerfile copies it
+# over the stock /etc/nginx/conf.d/default.conf.
+#
+# The stock config maps a URL straight onto a file and does nothing
+# else. That breaks the two shapes a static build comes in:
+#   · a single-page app routes on the client, so a reload on
+#     `/settings` asks nginx for a file that doesn't exist → 404;
+#   · a build that writes `about.html` (clean URLs) 404s on `/about`.
+{{#if spaFallback}}
+#
+# This build is a single-page app: any path that isn't a file gets
+# index.html and the client router takes it from there.
+{{else}}
+#
+# This build writes one HTML file per page (Astro), so a path that
+# matches no page is a real 404 — not the home page answering 200.
+{{/if}}
+server {
+    listen       80;
+    server_name  localhost;
+    root         /usr/share/nginx/html;
+
+    # Keeps any redirect nginx sends relative. Behind Traefik and
+    # Cloudflare nginx only sees plain http, so an absolute one would
+    # send visitors to http:// and cost them an extra hop back to https.
+    absolute_redirect off;
+{{#if spaFallback}}
+
+    # A last path segment with a dot names a file — `/assets/index-3f2a.js`,
+    # `/favicon.ico`. A missing one is a 404, never index.html: during a
+    # deploy a tab still on the old build asks for chunks the new one
+    # doesn't have, and a 200 of HTML under a `.js` URL is what
+    # Cloudflare then caches at the edge. A client route with a dot in
+    # its last segment (`/u/jane.doe`) needs a rule of its own above
+    # this one.
+    location ~ \.[^/]*$ {
+        try_files $uri =404;
+    }
+
+    location / {
+        index     index.html;
+        try_files $uri $uri.html $uri/index.html /index.html;
+    }
+{{else}}
+
+    location / {
+        index     index.html;
+        try_files $uri $uri.html $uri/index.html =404;
+    }
+{{/if}}
+
+    # Served when the build has one; nginx's own 404 page otherwise.
+    error_page 404 /404.html;
+}

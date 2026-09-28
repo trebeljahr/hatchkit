@@ -55,7 +55,7 @@ By default the deployable lives at the repo root — one `package.json` at the t
 
 When the deployable lives in a sub-folder of a larger repo (a CLI with a sibling marketing site at `site/`, a monorepo with the runtime at `apps/web/`), the manifest's optional `projectSubdir` field captures that path. Hatchkit then:
 
-- writes the Dockerfile + `docker-compose.yml` **inside the subdir** (Coolify's build context);
+- writes the Dockerfile + `docker-compose.yml` **inside the subdir** (Coolify's build context), plus the `nginx.conf` a static site's image copies in;
 - writes `.github/workflows/*.yml` at the **repo root** with `context: <subdir>` on every build-push step so GitHub Actions only sends the subdir subtree to BuildKit;
 - sets Coolify's **Base Directory** to the same subdir on app create / sync, so Coolify clones the repo and builds from `<repo>/<subdir>` rather than from `/`.
 

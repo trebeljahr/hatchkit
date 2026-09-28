@@ -2,8 +2,9 @@
 #
 # Static-site image for {{name}}.
 # Built by .github/workflows/deploy.yml, pushed to GHCR, pulled by
-# Coolify via docker-compose.yml. nginx serves the built bundle —
-# no runtime Node, so any sensitive values must be build-time-only
+# Coolify via docker-compose.yml. nginx serves the built bundle with
+# the nginx.conf next to this file — no runtime Node, so any
+# sensitive values must be build-time-only
 # (baked into the static bundle) or non-sensitive.
 #
 # .env.production is committed to the repo dotenvx-encrypted. The
@@ -65,5 +66,8 @@ RUN mkdir -p dist \
     && printf '{"commit":"%s"}\n' "$COMMIT_SHA" > dist/version.json
 
 FROM nginx:alpine AS runner
+# Maps URLs onto the bundle: client-side routes and `.html`-less page
+# URLs. The stock default.conf 404s both — see the header of nginx.conf.
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80
