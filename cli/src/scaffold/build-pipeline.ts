@@ -332,8 +332,19 @@ const DEPLOY_WORKFLOW_PATH = ".github/workflows/deploy.yml";
 
 /** Next to the Dockerfile, in the build context the Dockerfile COPYs
  *  it from. deploy-recovery looks for the nginx config at this same
- *  path when it adds its no-cache rule. */
-const NGINX_CONF_PATH = "nginx.conf";
+ *  path when it adds its no-cache rule, and doctor when it checks a
+ *  Dockerfile scaffolded before the config existed. */
+export const NGINX_CONF_PATH = "nginx.conf";
+
+/** The nginx.conf the static image copies over the stock default.conf,
+ *  for this project's build shape. doctor prints it for a project whose
+ *  Dockerfile was scaffolded without one. */
+export function renderNginxConf(projectDir: string, projectName: string): string {
+  return renderTemplate("build-pipeline/nginx.conf.hbs", {
+    name: projectName,
+    spaFallback: detectSpaFallback(projectDir),
+  });
+}
 
 export function detectBuildPipeline(projectDir: string): BuildPipelineState {
   let composePath: string | undefined;
@@ -547,11 +558,11 @@ export function scaffoldBuildPipeline(
     // stays, like every other file here without `force`.
     if (nginxImage) {
       if (input.force || !state.hasNginxConf) {
-        const conf = renderTemplate("build-pipeline/nginx.conf.hbs", {
-          name: input.projectName,
-          spaFallback: detectSpaFallback(input.projectDir),
-        });
-        write(NGINX_CONF_PATH, conf, state.hasNginxConf);
+        write(
+          NGINX_CONF_PATH,
+          renderNginxConf(input.projectDir, input.projectName),
+          state.hasNginxConf,
+        );
       } else {
         skipped.push(NGINX_CONF_PATH);
       }

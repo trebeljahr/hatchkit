@@ -4101,6 +4101,10 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.cyan("pull_policy: always")} — those can keep serving the previous build
   after a green deploy.
 
+  Inside a static-site project it warns when the Dockerfile's final stage
+  runs nginx with its stock config, which 404s on reload of any deep link.
+  Projects adopted before hatchkit wrote nginx.conf have that Dockerfile.
+
   ${chalk.bold("Flags:")}
     --json    Machine-readable report. Always read-only.
     --fix     After the report, offer the repairs doctor can apply itself,

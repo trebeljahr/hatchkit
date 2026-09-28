@@ -1142,6 +1142,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of routingChecks) results.push(r);
   const autoDeployChecks = await checkProjectCoolifyAutoDeployState(process.cwd());
   for (const r of autoDeployChecks) results.push(r);
+  const nginxConfigChecks = await checkProjectNginxConfigState(process.cwd());
+  for (const r of nginxConfigChecks) results.push(r);
   const appHealthChecks = await checkProjectCoolifyAppHealthState(process.cwd());
   for (const r of appHealthChecks) results.push(r);
   const deployedRefChecks = await checkProjectDeployedRefState(process.cwd());
@@ -2600,6 +2602,235 @@ export async function checkProjectCoolifyAutoDeployState(
     ],
   });
   return out;
+}
+
+/** One Dockerfile build stage: the image (or earlier stage) it starts
+ *  from, its `AS` name, and its instructions with `\` continuations
+ *  joined and comment lines dropped. */
+interface DockerfileStage {
+  from: string;
+  alias?: string;
+  instructions: string[];
+}
+
+function dockerfileStages(content: string): DockerfileStage[] {
+  const logical: string[] = [];
+  let pending = "";
+  for (const raw of content.split(/\r?\n/)) {
+    // Docker drops comment lines even inside a continuation.
+    if (/^\s*#/.test(raw)) continue;
+    const continues = /\\\s*$/.test(raw);
+    const part = raw.replace(/\\\s*$/, "").trim();
+    pending = pending && part ? `${pending} ${part}` : pending || part;
+    if (continues) continue;
+    if (pending) logical.push(pending);
+    pending = "";
+  }
+  if (pending) logical.push(pending);
+
+  const stages: DockerfileStage[] = [];
+  for (const line of logical) {
+    const from = /^FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?/i.exec(line);
+    if (from) {
+      stages.push({ from: from[1], alias: from[2]?.toLowerCase(), instructions: [] });
+    } else {
+      stages.at(-1)?.instructions.push(line);
+    }
+  }
+  return stages;
+}
+
+/** The official nginx image under any tag or digest, from Docker Hub
+ *  (`nginx`, `library/nginx`, `docker.io/library/nginx`) or a mirror
+ *  (`public.ecr.aws/nginx/nginx`). Other vendors' nginx images
+ *  (`bitnami/nginx`) keep their config elsewhere and don't match. */
+function isOfficialNginxImage(ref: string): boolean {
+  const name = ref
+    .replace(/@.*$/, "")
+    .replace(/:[^/]*$/, "")
+    .toLowerCase();
+  return /^(?:(?:[^/]*[.:][^/]*|localhost)\/)?(?:library\/|nginx\/)?nginx$/.test(name);
+}
+
+/** The final stage of a Dockerfile when it runs the official nginx
+ *  image, and whether anything in it puts a config under /etc/nginx/.
+ *  `undefined` when the final stage is anything else — a Node runtime,
+ *  an image named by a build ARG.
+ *
+ *  Only the final stage ships, so a COPY into /etc/nginx/ in a build
+ *  stage doesn't count. A final `FROM <stage>` inherits that stage's
+ *  instructions, so those do. Any instruction that names /etc/nginx
+ *  counts as configuring it — a COPY or ADD there, a RUN that writes or
+ *  edits a config, a VOLUME for one mounted at runtime. Reading it
+ *  loosely costs a missed warning at worst; this is a warning, and a
+ *  false one would have no way to clear. */
+export function dockerfileNginxRuntime(
+  content: string,
+): { image: string; configured: boolean } | undefined {
+  const stages = dockerfileStages(content);
+  if (stages.length === 0) return undefined;
+  // Walk `FROM <stage>` back to an image. A stage can only name one
+  // defined above it, so `at` only goes down.
+  let at = stages.length - 1;
+  const inherited = [...stages[at].instructions];
+  for (let i = at - 1; i >= 0; i--) {
+    if (stages[i].alias !== stages[at].from.toLowerCase()) continue;
+    at = i;
+    inherited.push(...stages[at].instructions);
+  }
+  const image = stages[at].from;
+  if (!isOfficialNginxImage(image)) return undefined;
+  return { image, configured: inherited.some((i) => /\/etc\/nginx\b/i.test(i)) };
+}
+
+/** True when a compose file mounts something under /etc/nginx/ — a
+ *  bind mount of `./nginx.conf`, a long-syntax `target:`, a `configs:`
+ *  entry. Comment lines don't count. */
+export function composeMountsNginxConfig(content: string): boolean {
+  return content
+    .split(/\r?\n/)
+    .some((l) => !/^\s*#/.test(l) && /\/etc\/nginx\b/.test(l.replace(/\s#.*$/, "")));
+}
+
+/** Static-site projects whose Dockerfile serves nginx with its stock
+ *  config.
+ *
+ *  Until bd31421 the adopt Dockerfile for a non-Next static site ended
+ *  in `FROM nginx:alpine` + `COPY --from=build /app/dist ...` and
+ *  nothing else. The stock default.conf maps a URL straight onto a
+ *  file, so a reload on any client-side route of a Vite SPA 404s, and
+ *  so does `/about` for a build that wrote `about.html`. The scaffold
+ *  now writes nginx.conf next to the Dockerfile and copies it in, but
+ *  a project adopted before that still has the old Dockerfile and
+ *  nothing tells it.
+ *
+ *  Reads the Dockerfile in the manifest's `projectSubdir` (where adopt
+ *  writes it) and the compose file next to it; never touches Coolify.
+ *  A `warn`, not a `fail`: the site serves, only some of its URLs 404. */
+export async function checkProjectNginxConfigState(projectDir: string): Promise<CheckResult[]> {
+  const { existsSync, readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const manifestPath = join(projectDir, ".hatchkit.json");
+  if (!existsSync(manifestPath)) return [];
+
+  let manifest: { name?: string; deploymentMode?: string; projectSubdir?: string };
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  } catch {
+    return [];
+  }
+  // adopt writes the nginx Dockerfile for coolify mode only.
+  if (!manifest.name || !isCoolifyManagedMode(manifest.deploymentMode)) return [];
+
+  const subdir = (manifest.projectSubdir ?? "")
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/\/+$/, "");
+  const buildDir = subdir ? join(projectDir, subdir) : projectDir;
+  const rel = (file: string) => (subdir ? `${subdir}/${file}` : file);
+
+  let dockerfile: string;
+  try {
+    dockerfile = readFileSync(join(buildDir, "Dockerfile"), "utf-8");
+  } catch {
+    return [];
+  }
+  const runtime = dockerfileNginxRuntime(dockerfile);
+  if (!runtime) return [];
+
+  const name = `Project ${manifest.name} (nginx config)`;
+  if (runtime.configured) {
+    return [{ name, status: "ok", detail: `${rel("Dockerfile")} puts a config into /etc/nginx/` }];
+  }
+
+  const { NGINX_CONF_PATH, detectBuildPipeline, renderNginxConf } = await import(
+    "./scaffold/build-pipeline.js"
+  );
+  const composePath = detectBuildPipeline(buildDir).composePath;
+  if (composePath) {
+    let compose = "";
+    try {
+      compose = readFileSync(composePath, "utf-8");
+    } catch {
+      // Unreadable compose: judge the Dockerfile alone.
+    }
+    if (composeMountsNginxConfig(compose)) {
+      const composeName = composePath.split(/[\\/]/).pop() ?? "docker-compose.yml";
+      return [
+        { name, status: "ok", detail: `${rel(composeName)} mounts a config into /etc/nginx/` },
+      ];
+    }
+  }
+
+  // A config already next to the Dockerfile that nothing copies in: the
+  // fix is the COPY line alone. One with an `http {}` block is a whole
+  // nginx.conf, not a server block, and replaces the main config.
+  const confRel = rel(NGINX_CONF_PATH);
+  let existingConf: string | undefined;
+  try {
+    existingConf = readFileSync(join(buildDir, NGINX_CONF_PATH), "utf-8");
+  } catch {
+    existingConf = undefined;
+  }
+  const target =
+    existingConf !== undefined && /^\s*http\s*\{/m.test(existingConf)
+      ? "/etc/nginx/nginx.conf"
+      : "/etc/nginx/conf.d/default.conf";
+  const copyLine = `COPY ${NGINX_CONF_PATH} ${target}`;
+  const overwritten = [
+    rel("Dockerfile"),
+    rel("docker-compose.yml"),
+    ...(existingConf !== undefined ? [confRel] : []),
+  ];
+
+  let byHand: string[];
+  if (existingConf !== undefined) {
+    byHand = [
+      `  · or by hand: ${confRel} is already there, but nothing copies it in. Add this line to`,
+      `    the final (\`FROM ${runtime.image}\`) stage of ${rel("Dockerfile")}:`,
+      `      ${copyLine}`,
+    ];
+  } else {
+    let conf: string[] = [];
+    try {
+      // Comments and blank lines dropped: every hint line prints behind
+      // an arrow, and the regenerate route writes the annotated copy.
+      conf = renderNginxConf(buildDir, manifest.name)
+        .split("\n")
+        .filter((l) => l.trim() !== "" && !/^\s*#/.test(l))
+        .map((l) => l.trimEnd());
+    } catch {
+      conf = [];
+    }
+    byHand = [
+      conf.length > 0
+        ? `  · or by hand: save this as ${confRel}`
+        : `  · or by hand: write a server block for the bundle as ${confRel}`,
+      ...conf.map((l) => `      ${l}`),
+      `    and add this line to the final (\`FROM ${runtime.image}\`) stage of ${rel("Dockerfile")}:`,
+      `      ${copyLine}`,
+    ];
+  }
+
+  return [
+    {
+      name,
+      status: "warn",
+      detail: `${rel("Dockerfile")} runs ${runtime.image} with its stock config — deep links 404 on reload`,
+      hint: [
+        "nginx's stock default.conf maps a URL straight onto a file. A reload on a client-side",
+        "route (`/settings`) or a page URL without `.html` (`/about`) asks for a file that isn't",
+        "there and gets a 404. A single-page app's own links still work, so only a reload or a",
+        "shared link shows it. Projects adopted before hatchkit wrote nginx.conf have this gap.",
+        "Fix, either way:",
+        "  · hatchkit adopt --resume --regenerate-pipeline",
+        `    It re-renders ${overwritten.join(", ")} and .github/workflows/deploy.yml`,
+        "    over your copies; review `git diff` and restore anything you customized.",
+        ...byHand,
+        "Commit and deploy. This warning clears once the Dockerfile copies a config in.",
+      ],
+    },
+  ];
 }
 
 /** Verify a Coolify app can actually reach the Coolify-managed database
