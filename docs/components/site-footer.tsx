@@ -4,9 +4,9 @@ const links = [
   { text: "Donate", url: "https://ricos.site/donate?from=hatchkit" },
 ];
 
-export function SiteFooter({ className = "" }: { className?: string }) {
+export function SiteFooter() {
   return (
-    <footer className={`border-t border-fd-border py-6 text-sm text-fd-muted-foreground ${className}`}>
+    <footer className="border-t border-fd-border py-6 text-sm text-fd-muted-foreground">
       <nav aria-label="Footer" className="flex flex-wrap justify-center gap-x-6 gap-y-2">
         {links.map((link) => (
           <a key={link.text} href={link.url} className="transition-colors hover:text-fd-foreground">
