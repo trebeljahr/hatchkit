@@ -198,6 +198,13 @@ function writeHeaders(outputDir: string, modifications: string[]): void {
     `# Content-hashed build output never changes under the same URL.
 /_next/static/*
   Cache-Control: public, max-age=31536000, immutable
+
+# /version.json must never be cached: a tab that outlived a deploy fetches it
+# to find out, and a cached copy answers with the commit that tab already has.
+# The rule belongs here rather than in next.config's headers() — a static
+# export serves files directly and ignores that block entirely.
+/version.json
+  Cache-Control: no-store, must-revalidate
 `,
     "utf-8",
   );

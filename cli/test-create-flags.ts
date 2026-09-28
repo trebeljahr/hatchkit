@@ -32,7 +32,9 @@ process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-${process.pid}`;
 const DEV_CONFIG_DIR = mkdtempSync(join(tmpdir(), "create-flags-dev-"));
 process.env.HATCHKIT_DEV_CONFIG_DIR = DEV_CONFIG_DIR;
 
-const { KNOWN_SURFACES, parseCreateFlags } = await import("./src/utils/flags.js");
+const { KNOWN_DEPLOYMENT_MODES, KNOWN_SURFACES, parseCreateFlags } = await import(
+  "./src/utils/flags.js"
+);
 const { collectProjectConfig } = await import("./src/prompts.js");
 type ProjectConfig = Awaited<ReturnType<typeof collectProjectConfig>>;
 
@@ -469,7 +471,7 @@ await test("bad enum values fail early listing the valid ones", () => {
   );
   throwsWith(
     () => parseCreateFlags(["--deployment-mode", "vercel"]),
-    "coolify, gh-pages, scaffold-only",
+    KNOWN_DEPLOYMENT_MODES.join(", "),
   );
   throwsWith(() => parseCreateFlags(["--deploy-target", "somewhere"]), "existing, new");
   throwsWith(() => parseCreateFlags(["--server-size", "cpx99"]), "cpx21, cpx31, cpx41");
