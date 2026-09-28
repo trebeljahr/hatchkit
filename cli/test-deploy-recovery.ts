@@ -885,6 +885,39 @@ check("a layout with a hand-rolled mount is left exactly as it is", () => {
   assert.equal(out.content, custom);
 });
 
+check("a <body> named in a comment is not the body tag", () => {
+  // The starter's pre-paint comment says the marker goes on `<html>, never
+  // <body>`. Matching that spliced the element into the comment and broke
+  // every mobile scaffold's client build.
+  const commented = STARTER_LAYOUT.replace(
+    '    <html lang="en">\n',
+    '    <html lang="en">\n      {/* The marker goes on <html>, never <body>. */}\n' +
+      "      // and never <body> here either\n",
+  );
+  const out = mountRecoveryInLayout(commented, "@/components/deploy-recovery");
+  assert.equal(out.changed, true);
+  assert.ok(out.content.includes("{/* The marker goes on <html>, never <body>. */}"));
+  const tag = out.content.indexOf("<body className=");
+  assert.ok(tag < out.content.indexOf("<DeployRecovery />"), "mounted before the real tag");
+});
+
+check("the real starter layout gets the element right after its body tag", () => {
+  // The fixture above is a hand copy; this is the file scaffolds start from.
+  const path = join(import.meta.dirname, "..", "starter/packages/client/src/app/layout.tsx");
+  if (!existsSync(path)) return;
+  const out = mountRecoveryInLayout(readFileSync(path, "utf-8"), "@/components/deploy-recovery");
+  assert.equal(out.changed, true);
+  const bodyTag = /<body(?:\s[^>]*?)?>\s*\{\/\* Offers a reload/.exec(out.content);
+  assert.ok(bodyTag, "the element does not directly follow a <body> tag");
+  // Every comment the transform touched still closes before the element.
+  const before = out.content.slice(0, out.content.indexOf("<DeployRecovery />"));
+  assert.equal(
+    (before.match(/\{\/\*/g) ?? []).length,
+    (before.match(/\*\/\}/g) ?? []).length,
+    "the element landed inside a JSX comment",
+  );
+});
+
 check("a layout with no <body> is returned unchanged, with a reason", () => {
   const odd = "export default function App() {\n  return null;\n}\n";
   const out = mountRecoveryInLayout(odd, "@/components/deploy-recovery");

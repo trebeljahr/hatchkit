@@ -85,8 +85,14 @@ export function mountRecoveryInLayout(content: string, importSpecifier: string):
   // `<body` with its attributes, up to the closing angle bracket of the
   // opening tag. Self-closing is not a case: a body with no children
   // could not have rendered the app in the first place.
+  //
+  // Matched against the layout with its comments blanked out, because
+  // `<body>` is a word prose uses too: the starter's own pre-paint
+  // comment says the marker goes on `<html>, never <body>`, and a match
+  // there splices the element into the middle of that comment — a layout
+  // that no longer parses, in every scaffold with a mobile shell.
   const bodyOpen = /<body(?:\s[^>]*?)?>/;
-  const match = content.match(bodyOpen);
+  const match = withoutComments(content).match(bodyOpen);
   if (match === null || match.index === undefined) {
     return {
       content,
@@ -111,6 +117,17 @@ export function mountRecoveryInLayout(content: string, importSpecifier: string):
     content: withImport.slice(0, insertAt) + element + withImport.slice(insertAt),
     changed: true,
   };
+}
+
+/** The source with every block comment and every whole-line `//` comment
+ *  replaced by spaces, newlines kept, so an offset into the result is the
+ *  same offset into the original. Trailing `//` comments are left alone:
+ *  telling one from the `//` in a URL string needs a tokenizer, and a
+ *  layout does not put its body tag after a URL on the same line. */
+function withoutComments(content: string): string {
+  return content.replace(/\/\*[\s\S]*?\*\/|^[ \t]*\/\/[^\n]*/gm, (comment) =>
+    comment.replace(/[^\n]/g, " "),
+  );
 }
 
 /** Put the import after the last existing one that sits above the body,
