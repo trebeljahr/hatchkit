@@ -128,10 +128,24 @@ This runs four steps, all idempotent on re-run:
 
 1. **Verify the SES sending subdomain.** Hatchkit calls `sesv2:CreateEmailIdentity` for `mail.<projectDomain>` and gets back 3 DKIM tokens.
 2. **Publish DKIM CNAMEs into Cloudflare.** Same upsert + SPF-merge plumbing as Resend's flow. Records are tracked in the run-ledger so `hatchkit destroy <project>` can DELETE only what this run created.
-3. **Create the project's Listmonk lists.** `<project>` (live, lands in `.env.production`) and `<project>-test` (dev, lands in `.env.development`).
+3. **Create the project's Listmonk lists.** `<project>` (live, lands in `.env.production`) and `<project>-test` (dev, lands in `.env.development`). Both are private and double opt-in (see [Double opt-in](#double-opt-in)). A list that already exists by that name is reused as it is. If it is still single opt-in, the run reports it and leaves it unchanged.
 4. **Render env into the server bundle.** The full `LISTMONK_*` + `SES_*` quartet. The only diff between prod and dev is which list id receives broadcasts — same pattern as Resend's audience split.
 
 SES verification flips from Pending → Verified once DNS propagates (usually under 30 min). Hatchkit doesn't poll for it — you can check status anytime with `aws sesv2 get-email-identity --email-identity mail.<projectDomain>`.
+
+## Double opt-in
+
+The starter's signup form runs its own double opt-in: it emails an HMAC-signed confirmation link through Listmonk's `/api/tx`. Listmonk list membership follows this order:
+
+1. **Form submit.** The server makes sure the address exists as a Listmonk subscriber, on **no** list. `/api/tx` needs only that. An address Listmonk already knows is left as it is: it may be on another project's list, or `unsubscribed` from this one.
+2. **Confirm click.** The server adds the list with `PUT /api/subscribers/lists`, `action: "add"`, `status: "confirmed"`. A subscriber deleted in the meantime is created again with `preconfirm_subscriptions: true`.
+
+The lists are `optin: double`, so a campaign reaches `confirmed` members only. Two Listmonk behaviours make the order matter:
+
+- On a **single** opt-in list, Listmonk sends a campaign to every member not `unsubscribed`, `unconfirmed` included. An address added before the click would get every campaign without confirming.
+- On a **double** opt-in list, Listmonk sends its own opt-in email whenever a subscriber is created or updated with `preconfirm_subscriptions: false` and has an `unconfirmed` membership on that list (with `app.send_optin_confirmation` on, the default). An address added before the click would get two confirmation emails.
+
+Lists that `hatchkit add` created before this change are single opt-in. `hatchkit doctor`, run in the project directory, reports them. Switch one only after the app that writes to it runs the confirm-only code, then set **Listmonk → Lists → edit → Opt-in: Double**.
 
 ## Tearing down
 
@@ -156,8 +170,10 @@ Hatchkit doesn't automate this today — it's a one-time setup whose API surface
 
 **`sesv2:CreateEmailIdentity` fails with `AccessDeniedException`** — the IAM user needs the policy listed above. Re-run `hatchkit config add ses` to repaste a key with the right policy attached.
 
-**Listmonk says `unauthorized`** — your API user's permissions are too narrow. Edit them in Admin → Users; grant Lists / Subscribers / TX. Then re-run `hatchkit config add listmonk` to repaste the (still-valid) token.
+**Listmonk says `unauthorized`** — your API user's permissions are too narrow. Edit them in Admin → Users; grant Lists / Subscribers / TX. Then re-run `hatchkit config add listmonk` to repaste the (still-valid) token. The `subscribers:sql_query` permission is not needed: subscriber lookups use `search`.
 
 **Send fails: `Email address is not verified`** — your SES account is still in sandbox mode. Request production access in the AWS console.
+
+**The form says "check your inbox", but no confirmation email arrives** — usually the SES sandbox. `/api/tx` queues the email and returns 200 before SMTP runs, so the app reports success either way. The SES rejection (`554 Message rejected: Email address is not verified`) shows only in Listmonk's log: **Settings → Logs**, or `GET /api/logs`. Verify the recipient with `hatchkit ses verify <email>`, or request production access.
 
 **Send fails: `554 ... not authorized to send`** — SES SMTP credentials are derived from the IAM secret. Don't paste the IAM secret directly into Listmonk; hatchkit renders the *derived* value into `.env.production` under `SES_SMTP_PASSWORD`. Use that.

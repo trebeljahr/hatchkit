@@ -18,10 +18,20 @@
  *      (SMTP host, username/password, region, from-email, API user/
  *      token) is identical across surfaces.
  *
+ *   3. `singleOptinLists` / `singleOptinHint` — the drift report for
+ *      adopted lists that are still single opt-in. The hint's order is
+ *      load-bearing: switching the list before the app stops adding
+ *      `unconfirmed` members makes Listmonk send a second opt-in email.
+ *
  * Run: `pnpm test` (via the script in cli/package.json).
  */
 import assert from "node:assert/strict";
-import { renderListmonkSesEnv, sesSendingSubdomain } from "./src/provision/listmonk-ses.js";
+import {
+  renderListmonkSesEnv,
+  sesSendingSubdomain,
+  singleOptinHint,
+  singleOptinLists,
+} from "./src/provision/listmonk-ses.js";
 
 const failures: string[] = [];
 
@@ -140,6 +150,24 @@ expect("omitted testRecipient leaves both surfaces without the key", () => {
   const env = renderListmonkSesEnv(baseInput);
   assert.ok(!env.dev.some((l) => l.startsWith("LISTMONK_TEST_RECIPIENT=")));
   assert.ok(!env.prod.some((l) => l.startsWith("LISTMONK_TEST_RECIPIENT=")));
+});
+
+console.log("\nsingleOptinLists / singleOptinHint:");
+
+const live = { id: 5, name: "mood-magic", type: "private" as const, optin: "single" as const };
+const test = { id: 6, name: "mood-magic-test", type: "private" as const, optin: "double" as const };
+
+expect("reports only the lists that are not double opt-in", () => {
+  assert.deepEqual(singleOptinLists([live, test]), [live]);
+  assert.deepEqual(singleOptinLists([test]), []);
+});
+
+expect("hint names each list by id, and deploys the code before the switch", () => {
+  const hint = singleOptinHint([live]).join("\n");
+  assert.ok(hint.includes("mood-magic (id 5)"));
+  const deploy = hint.indexOf("1. Deploy");
+  const flip = hint.indexOf("2. Then Listmonk");
+  assert.ok(deploy >= 0 && flip > deploy, "deploy step must come first");
 });
 
 if (failures.length > 0) {

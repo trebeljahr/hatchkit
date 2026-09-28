@@ -1002,6 +1002,18 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
           );
         }
 
+        if (result.singleOptinLists.length > 0) {
+          const { singleOptinHint } = await import("./listmonk-ses.js");
+          console.log(
+            chalk.yellow(
+              `  Listmonk list(s) still single opt-in — campaigns reach unconfirmed members too. Left unchanged.\n` +
+                singleOptinHint(result.singleOptinLists)
+                  .map((line) => `    ${line}`)
+                  .join("\n"),
+            ),
+          );
+        }
+
         if (result.seededSubscriber) {
           const verb = result.seededSubscriber.createdThisRun ? "subscribed" : "confirmed";
           console.log(
@@ -1031,6 +1043,8 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
             console.log(
               chalk.yellow(
                 "  SES is in sandbox mode — outbound is limited to addresses verified in advance.\n" +
+                  "    · Listmonk's /api/tx returns 200 before SMTP runs, so a signup form still shows success;\n" +
+                  "      the `Email address is not verified` rejection shows only in Listmonk → Logs (GET /api/logs).\n" +
                   `    · Verify a test recipient:  ${chalk.cyan("hatchkit ses verify <email>")}\n` +
                   "    · Request production access (one-time AWS form, ~24h review):\n" +
                   `      ${chalk.cyan(`https://console.aws.amazon.com/ses/home?region=${sesCfg.region}#/account`)}`,

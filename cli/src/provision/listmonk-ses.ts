@@ -25,7 +25,9 @@
  *      Two lists let the runtime broadcast to the live audience in
  *      prod and a developer-only `<project>-test` list in dev without
  *      runtime branching — just pick the right LISTMONK_LIST_ID per
- *      env file.
+ *      env file. Both are created `optin: double`; an existing list
+ *      that is still single opt-in is adopted as-is and reported in
+ *      `singleOptinLists`, never switched from here.
  *
  * Returns the materialized state the caller renders into env files
  * plus per-resource event records the run-ledger consumes.
@@ -236,6 +238,13 @@ export interface ListmonkSesProvisionResult {
    *  the caller surface the manual-paste fallback when the API user
    *  lacked `Settings: All` permission. */
   smtpApplied: { written: boolean; reason?: string };
+  /** Adopted lists that are still `optin: single`. A campaign on such
+   *  a list reaches every member not `unsubscribed`, `unconfirmed`
+   *  included. Reported, never switched here: an app that still adds
+   *  `unconfirmed` members before the confirm click would then make
+   *  Listmonk send its own opt-in email next to the app's. See
+   *  `singleOptinHint`. */
+  singleOptinLists: ListmonkList[];
   /** Subscriber seeded onto the `-test` list (if any). Null when the
    *  caller didn't pass `seedSubscriberEmail`. The runtime reads the
    *  email as `LISTMONK_TEST_RECIPIENT` in dev so bundled scripts have
@@ -253,6 +262,26 @@ export interface ListmonkSesProvisionResult {
  *  without depending on the orchestrator. */
 export function sesSendingSubdomain(projectDomain: string): string {
   return `mail.${projectDomain}`;
+}
+
+/** The lists that are not double opt-in. Listmonk sends a campaign on
+ *  a single-opt-in list to every member not `unsubscribed`,
+ *  `unconfirmed` included, so any address typed into the signup form
+ *  gets every issue without confirming. */
+export function singleOptinLists(lists: ListmonkList[]): ListmonkList[] {
+  return lists.filter((l) => l.optin !== "double");
+}
+
+/** How to fix single-opt-in lists, in the order that avoids a second
+ *  confirmation email. Shared by the provisioner and `hatchkit doctor`. */
+export function singleOptinHint(lists: ListmonkList[]): string[] {
+  const names = lists.map((l) => `${l.name} (id ${l.id})`).join(", ");
+  return [
+    `Switch ${names} to double opt-in, in this order:`,
+    "1. Deploy the app with the confirm-only subscribe code: the form creates the subscriber on no list, and only the confirm link adds it, as `confirmed` (starter `ensureSubscriber` + `confirmSubscription`).",
+    "   Code that still adds an `unconfirmed` member first makes Listmonk send its own opt-in email next to the app's once the list is double.",
+    "2. Then Listmonk → Lists → edit → Opt-in: Double. Campaigns then reach `confirmed` members only.",
+  ];
 }
 
 export async function provisionListmonkSesForProject(
@@ -352,6 +381,10 @@ export async function provisionListmonkSesForProject(
     events,
     listmonkUrl,
   );
+  // Hatchkit creates lists double opt-in. A list adopted from an older
+  // run may still be single: report it, don't switch it (see
+  // `singleOptinHint` for why the order matters).
+  const driftedLists = singleOptinLists([liveList, testList]);
 
   // 4b. Listmonk templates — tx + campaign. Same idempotency contract as
   //     lists: look up by `<projectName>-tx` / `<projectName>-campaign`
@@ -466,6 +499,7 @@ export async function provisionListmonkSesForProject(
     campaignTemplate,
     dnsPublish,
     smtpApplied,
+    singleOptinLists: driftedLists,
     seededSubscriber,
     mailFrom: mailFromResult,
   };
@@ -668,9 +702,12 @@ async function getOrCreateList(
     });
     return found;
   }
+  // Double opt-in: campaigns reach `confirmed` members only. The
+  // starter's signup form adds the list only on the confirm click, as
+  // `confirmed`, so Listmonk never sends an opt-in email of its own.
   const created = await createListmonkList(name, {
     type: "private",
-    optin: "single",
+    optin: "double",
     auth: opts.listmonkAuth,
   });
   events.onListmonkList?.({

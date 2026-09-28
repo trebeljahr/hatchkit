@@ -900,6 +900,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of credChecks) results.push(r);
   const mailFromChecks = await checkProjectSesMailFromState(process.cwd());
   for (const r of mailFromChecks) results.push(r);
+  const optinChecks = await checkProjectListmonkOptinState(process.cwd());
+  for (const r of optinChecks) results.push(r);
   const emailRoutingChecks = await checkProjectEmailRoutingState(process.cwd());
   for (const r of emailRoutingChecks) results.push(r);
   const publicSvcChecks = await checkProjectPublicServiceState(process.cwd());
@@ -1474,6 +1476,79 @@ export async function checkProjectSesMailFromState(projectDir: string): Promise<
     hint: [`Reconcile: hatchkit email ses-mail-from setup`],
   });
   return out;
+}
+
+/**
+ * Project-local Listmonk opt-in check, gated on `.hatchkit.json` in the
+ * cwd AND the project using Listmonk + SES for its mailing list.
+ *
+ * Fails when the project's `<name>` or `<name>-test` list is still
+ * `optin: single`: Listmonk sends a campaign on such a list to every
+ * member not `unsubscribed`, `unconfirmed` included, so an address
+ * typed into the signup form gets every issue without confirming.
+ * Hatchkit created lists single before it created them double, so
+ * older projects carry this. Read-only: one `GET /api/lists`. Doctor
+ * never switches the list; the hint gives the safe order.
+ */
+export async function checkProjectListmonkOptinState(projectDir: string): Promise<CheckResult[]> {
+  const { existsSync, readFileSync } = await import("node:fs");
+  const manifestPath = `${projectDir}/.hatchkit.json`;
+  if (!existsSync(manifestPath)) return [];
+
+  let manifest: { name?: string; email?: { mailingList?: string } };
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  } catch {
+    return [];
+  }
+  if (manifest.email?.mailingList !== "listmonk-ses" || !manifest.name) return [];
+  const name = `Project ${manifest.name} (Listmonk opt-in)`;
+
+  const { getListmonkConfig } = await import("./config.js");
+  const listmonkCfg = await getListmonkConfig();
+  if (!listmonkCfg) {
+    return [{ name, status: "skip", detail: "Listmonk not configured globally — can't probe" }];
+  }
+
+  const { listListmonkLists } = await import("./provision/listmonk.js");
+  const { singleOptinHint, singleOptinLists } = await import("./provision/listmonk-ses.js");
+  let lists: Awaited<ReturnType<typeof listListmonkLists>>;
+  try {
+    lists = await listListmonkLists(listmonkCfg);
+  } catch (err) {
+    return [
+      {
+        name,
+        status: "fail",
+        detail: `couldn't list Listmonk lists: ${(err as Error).message.split("\n")[0]}`,
+        hint: ["The API user needs `lists:get_all`. Edit its role in Listmonk → Admin → Users."],
+      },
+    ];
+  }
+
+  const wanted = new Set([manifest.name, `${manifest.name}-test`]);
+  const own = lists.filter((l) => wanted.has(l.name));
+  if (own.length === 0) {
+    return [
+      {
+        name,
+        status: "skip",
+        detail: `no list named ${[...wanted].join(" / ")} on ${listmonkCfg.url}`,
+      },
+    ];
+  }
+  const single = singleOptinLists(own);
+  if (single.length === 0) {
+    return [{ name, status: "ok", detail: `${own.map((l) => l.name).join(", ")} double opt-in` }];
+  }
+  return [
+    {
+      name,
+      status: "fail",
+      detail: `${single.map((l) => l.name).join(", ")} single opt-in — campaigns reach unconfirmed members too`,
+      hint: singleOptinHint(single),
+    },
+  ];
 }
 
 /** Project-local key hygiene checks, gated on the presence of

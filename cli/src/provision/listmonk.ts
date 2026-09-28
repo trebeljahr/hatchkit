@@ -91,6 +91,11 @@ export async function listListmonkLists(authOverride?: ListmonkAuth): Promise<Li
   return data.results ?? [];
 }
 
+/** Create a list. `optin` defaults to `"double"`: Listmonk sends a
+ *  campaign on a single-opt-in list to every member not `unsubscribed`,
+ *  `unconfirmed` included, so a signup form that adds the address
+ *  before the confirm click would mail it every issue. On a double
+ *  list campaigns reach `confirmed` members only. */
 export async function createListmonkList(
   name: string,
   opts: {
@@ -104,7 +109,7 @@ export async function createListmonkList(
   return listmonkFetch<ListmonkList>(auth, "POST", "/api/lists", {
     name,
     type: opts.type ?? "private",
-    optin: opts.optin ?? "single",
+    optin: opts.optin ?? "double",
     tags: opts.tags ?? [],
   });
 }
@@ -254,23 +259,34 @@ export async function createListmonkSubscriber(
   });
 }
 
-/** SQL-string query against `subscribers.email`. Listmonk supports
- *  `?query=<sql-fragment>` over `GET /api/subscribers`; the inner
- *  string is interpolated raw, so single quotes in the email get
- *  doubled to escape. Returns `null` on no match. */
+/** The `search` value that matches exactly `email`. Listmonk matches
+ *  `search` as a case-insensitive Postgres regex against name and email
+ *  (`email ~* $search`), so the address is anchored and its regex
+ *  characters quoted: unquoted, the `+` in `a+b@x.com` is a quantifier
+ *  and a plus-address never finds itself. */
+export function listmonkEmailSearch(email: string): string {
+  const quoted = email.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return `^${quoted}$`;
+}
+
+/** Look up a subscriber by exact email. Returns `null` on no match.
+ *  Uses `search`, not `query`: the `query` param needs the
+ *  `subscribers:sql_query` permission, which Listmonk's role form
+ *  leaves out by default. `search` also matches the name column, so
+ *  the results are filtered to the exact email. */
 export async function findListmonkSubscriberByEmail(
   email: string,
   authOverride?: ListmonkAuth,
 ): Promise<ListmonkSubscriber | null> {
   const auth = authOverride ?? (await ensureListmonk());
-  const escaped = email.toLowerCase().replace(/'/g, "''");
-  const q = encodeURIComponent(`subscribers.email = '${escaped}'`);
+  const normalized = email.toLowerCase();
+  const params = new URLSearchParams({ search: listmonkEmailSearch(email), per_page: "all" });
   const res = await listmonkFetch<{ results: ListmonkSubscriber[] }>(
     auth,
     "GET",
-    `/api/subscribers?query=${q}&per_page=1`,
+    `/api/subscribers?${params}`,
   );
-  return res.results[0] ?? null;
+  return res.results.find((sub) => sub.email.toLowerCase() === normalized) ?? null;
 }
 
 /** Add an address to one list as a confirmed subscriber, idempotently.
