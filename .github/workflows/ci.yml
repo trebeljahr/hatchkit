@@ -46,14 +46,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # libsecret alone is not enough: the test suite really stores and
-      # deletes keychain entries (under a throwaway service name), so keytar
-      # needs a secret service to talk to. gnome-keyring + dbus-x11 provide
-      # one inside the test step, the same way stamp-build does.
-      - name: Install libsecret + an ephemeral keyring (keytar runtime deps)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsecret-1-dev gnome-keyring dbus-x11
+      # Native keytar remains a runtime dependency, but tests use fixtures.
+      - name: Install libsecret headers
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev
 
       - uses: pnpm/action-setup@v4
 
@@ -112,21 +107,8 @@ jobs:
       - name: Lint
         run: pnpm --filter hatchkit run lint
 
-      - name: Test (scaffold matrix)
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Single quotes on purpose: the inner bash expands the variables.
-          # shellcheck disable=SC2016
-          dbus-run-session -- bash -c '
-            set -euo pipefail
-            # Same throwaway keyring as stamp-build: the passphrase is
-            # generated per run, never printed, and dies with the session.
-            keyring_pass="$(openssl rand -hex 16)"
-            gnome-keyring-daemon --components=secrets --daemonize --unlock <<< "$keyring_pass" > /dev/null
-            unset keyring_pass
-            pnpm --filter hatchkit run test
-          '
+      - name: Test (scaffold matrix, fixture credentials)
+        run: pnpm --filter hatchkit run test
 
   scaffold-build:
     runs-on: ubuntu-latest
@@ -251,15 +233,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # libsecret is keytar's runtime dep; gnome-keyring + dbus-x11 give it a
-      # secret service to talk to. Scaffolding mints a dotenvx private key and
-      # stores it via keytar, which cannot work on a headless runner without
-      # one. The keyring below is created inside a throwaway D-Bus session and
-      # dies with the step — no persistent credential store is touched.
-      - name: Install libsecret + an ephemeral keyring (keytar runtime deps)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsecret-1-dev gnome-keyring dbus-x11
+      - name: Install libsecret headers
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev
 
       - uses: pnpm/action-setup@v4
 
@@ -289,20 +264,13 @@ jobs:
           STAMP_DIR: ${{ runner.temp }}/stamp
         run: |
           set -euo pipefail
-          # Single quotes on purpose: the inner bash expands the variables.
-          # shellcheck disable=SC2016
-          dbus-run-session -- bash -c '
-            set -euo pipefail
-            # The unlock passphrase is generated per run rather than written
-            # literally here: the keyring is ephemeral and dies with the D-Bus
-            # session, so the value is meaningless, but a plaintext password in
-            # a tracked file is a bad pattern to copy. It is never printed.
-            keyring_pass="$(openssl rand -hex 16)"
-            gnome-keyring-daemon --components=secrets --daemonize --unlock <<< "$keyring_pass" > /dev/null
-            unset keyring_pass
-            pnpm --filter hatchkit exec tsx scripts/ci-stamp.ts \
-              --preset "$STAMP_PRESET" --out "$STAMP_DIR"
-          '
+          export HATCHKIT_TEST_KEYCHAIN_DIR
+          HATCHKIT_TEST_KEYCHAIN_DIR="$(mktemp -d)"
+          trap 'rm -rf "$HATCHKIT_TEST_KEYCHAIN_DIR"' EXIT
+          export HATCHKIT_KEYCHAIN_ACCESS=allow
+          export NODE_OPTIONS="${NODE_OPTIONS:-} --import=file://$GITHUB_WORKSPACE/cli/test-support/setup.mjs"
+          pnpm --filter hatchkit exec tsx scripts/ci-stamp.ts \
+            --preset "$STAMP_PRESET" --out "$STAMP_DIR"
 
       # NOT --frozen-lockfile: scaffolding prunes dependencies the chosen
       # feature set doesn't need (electron/electron-builder/icon-gen/wait-on,

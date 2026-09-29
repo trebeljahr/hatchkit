@@ -132,6 +132,15 @@ Use Hatchkit context when the user mentions any of:
 
 ## Guard rails
 
+- Agent work must not open keychain authorization dialogs. Set
+  `HATCHKIT_KEYCHAIN_ACCESS=deny` for unattended checks. Use CLI tests through
+  `pnpm --filter hatchkit test` or `node cli/scripts/test.mjs test-<name>.ts`;
+  the runner uses fixture credentials, including in child processes.
+  A temporary config directory or service name alone does not isolate Keychain.
+  Never retry a denied read using the `security` CLI or another Node binary.
+  Only enable `HATCHKIT_KEYCHAIN_ACCESS=allow` for intentional credential access,
+  with the user's approval when acting as an agent. Do not change Keychain ACLs.
+
 - `hatchkit doctor` is safe and read-only. Use it freely for diagnosis.
 - "The site goes down on every deploy" means a Coolify Docker Compose app
   (no rolling updates) or a Docker Image app with its health check off.

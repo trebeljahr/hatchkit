@@ -51,6 +51,7 @@ import {
   writeProjectFragment,
 } from "@hatchkit/dev-shared";
 import { exec, execOk } from "./utils/exec.js";
+import { assertKeychainAccess } from "./utils/keychain-access.js";
 
 export {
   CADDYFILE_PATH,
@@ -938,6 +939,7 @@ async function checkLocalDevDnsRecord(currentIp: string): Promise<CheckResult | 
 }
 
 async function readCloudflareTokenFromKeychain(): Promise<string | null> {
+  assertKeychainAccess();
   const res = await exec(
     "security",
     [
@@ -956,6 +958,7 @@ async function readCloudflareTokenFromKeychain(): Promise<string | null> {
 }
 
 async function keychainEntryExists(service: string, account: string): Promise<boolean> {
+  assertKeychainAccess();
   // `security find-generic-password` exits 0 when the entry exists. We
   // don't ask for the value (`-w`) — existence is enough. Suppress
   // stderr so the "not found" line doesn't show up in normal runs.

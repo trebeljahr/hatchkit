@@ -77,6 +77,21 @@ Terraform/keychain state without user approval.
 
 ## Useful Repo Commands
 
+### Keychain access during development
+
+- Run CLI tests through `pnpm --filter hatchkit test` or
+  `pnpm --filter hatchkit exec node scripts/test.mjs test-<name>.ts`.
+  The runner replaces keytar with a temporary fixture store in the test and
+  its child processes. `HATCHKIT_CONF_DIR` and `HATCHKIT_KEYTAR_SERVICE` alone
+  do not isolate the OS keychain. Do not run tests against real credentials.
+- Unattended CLI commands refuse OS keychain access by default. Keep
+  `HATCHKIT_KEYCHAIN_ACCESS=deny` during agent work. Live credential access
+  needs an intentional interactive run or explicit `HATCHKIT_KEYCHAIN_ACCESS=allow`.
+  Do not enable it just to get a check to pass or bypass a denied read with
+  `/usr/bin/security`. After a denial, stop; do not retry across runtimes.
+- Do not weaken item ACLs, use “allow all applications”, unlock/reset a keychain,
+  or export credentials to stop prompts. Report live checks as pending.
+
 ```bash
 pnpm install
 pnpm --filter hatchkit run dev

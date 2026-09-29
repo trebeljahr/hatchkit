@@ -11,11 +11,17 @@
  *   account = stable slug, e.g. "coolify:token", "s3:hetzner:secret-key"
  */
 
-import keytar from "keytar";
+import { createKeychainQueue } from "./keychain-access.js";
 
-// Tests set HATCHKIT_KEYTAR_SERVICE to a throwaway value so they
-// don't pollute the real user's keychain with scaffold-test artifacts.
-// In normal runs this is unset and everything lives under "hatchkit".
+// Load the native module only after the access guard passes. The test
+// runner redirects this import to a fixture store, including in children.
+const keychainQueue = createKeychainQueue();
+async function withKeychain<T>(operation: (store: typeof import("keytar")) => Promise<T>) {
+  return keychainQueue(async () => operation((await import("keytar")).default));
+}
+
+// A service name is a namespace, not test isolation. Tests replace the
+// backend entirely; normal runs use the OS keychain under "hatchkit".
 const SERVICE = process.env.HATCHKIT_KEYTAR_SERVICE ?? "hatchkit";
 
 /** Well-known secret keys used across the CLI. New secrets should add
@@ -189,13 +195,17 @@ export function describeKeychainError(
 ): Error {
   const reason = err instanceof Error ? err.message : String(err);
   const lines = [`Keychain ${op} failed for secret "${key}" (service "${SERVICE}"): ${reason}`];
-  if (platform === "darwin") {
+  if (
+    platform === "darwin" &&
+    !/OS keychain access is disabled|Keychain access stopped|HATCHKIT_KEYCHAIN_ACCESS/.test(reason)
+  ) {
     lines.push(
       "  → macOS denies non-interactive keychain reads when the `node` on PATH is ad-hoc",
       "    signed (e.g. Homebrew node) rather than the Node.js-team-signed build the",
       "    keychain items trust, or when the process is sandboxed.",
       '  → Check: codesign -dv "$(command -v node)" — "Signature=adhoc" is the Homebrew case.',
-      "    Run hatchkit with the nodejs.org build, or from an unsandboxed terminal, then retry.",
+      "    Use a stable Node.js-team-signed build for intentional interactive credential access.",
+      "  → Do not retry with the security CLI or change item access controls to make tests pass.",
     );
   }
   return new Error(lines.join("\n"), { cause: err });
@@ -203,7 +213,7 @@ export function describeKeychainError(
 
 export async function getSecret(key: string): Promise<string | null> {
   try {
-    return await keytar.getPassword(SERVICE, key);
+    return await withKeychain((store) => store.getPassword(SERVICE, key));
   } catch (err) {
     throw describeKeychainError("read", key, err);
   }
@@ -211,7 +221,7 @@ export async function getSecret(key: string): Promise<string | null> {
 
 export async function setSecret(key: string, value: string): Promise<void> {
   try {
-    await keytar.setPassword(SERVICE, key, value);
+    await withKeychain((store) => store.setPassword(SERVICE, key, value));
   } catch (err) {
     throw describeKeychainError("write", key, err);
   }
@@ -219,7 +229,7 @@ export async function setSecret(key: string, value: string): Promise<void> {
 
 export async function deleteSecret(key: string): Promise<boolean> {
   try {
-    return await keytar.deletePassword(SERVICE, key);
+    return await withKeychain((store) => store.deletePassword(SERVICE, key));
   } catch (err) {
     throw describeKeychainError("delete", key, err);
   }
@@ -227,8 +237,8 @@ export async function deleteSecret(key: string): Promise<boolean> {
 
 /** Wipe every secret belonging to this CLI from the keychain. */
 export async function clearAllSecrets(): Promise<void> {
-  const entries = await keytar.findCredentials(SERVICE);
-  await Promise.all(entries.map((e) => keytar.deletePassword(SERVICE, e.account)));
+  const entries = await withKeychain((store) => store.findCredentials(SERVICE));
+  for (const entry of entries) await deleteSecret(entry.account);
 }
 
 /** Move every per-project secret from `oldName` to `newName` in the OS
@@ -267,7 +277,7 @@ export async function migrateProjectSecrets(
     ),
   ];
 
-  const entries = await keytar.findCredentials(SERVICE);
+  const entries = await withKeychain((store) => store.findCredentials(SERVICE));
   const moved: SecretMigrationResult["moved"] = [];
   const unmoved: SecretMigrationResult["unmoved"] = [];
 
@@ -279,7 +289,7 @@ export async function migrateProjectSecrets(
     });
     if (newAccount === account) continue;
     try {
-      const value = await keytar.getPassword(SERVICE, account);
+      const value = await getSecret(account);
       if (value === null) {
         unmoved.push({
           account,
@@ -289,7 +299,7 @@ export async function migrateProjectSecrets(
       }
       // Refuse to clobber a pre-existing entry under the new name; safer
       // to leave both alone so the user can resolve manually.
-      const collision = await keytar.getPassword(SERVICE, newAccount);
+      const collision = await getSecret(newAccount);
       if (collision !== null && collision !== value) {
         unmoved.push({
           account,
@@ -297,8 +307,8 @@ export async function migrateProjectSecrets(
         });
         continue;
       }
-      await keytar.setPassword(SERVICE, newAccount, value);
-      await keytar.deletePassword(SERVICE, account);
+      await setSecret(newAccount, value);
+      await deleteSecret(account);
       moved.push({ from: account, to: newAccount });
     } catch (err) {
       unmoved.push({ account, reason: (err as Error).message });

@@ -70,8 +70,8 @@ import { getCoolifyConfig } from "../config.js";
 import { exec } from "../utils/exec.js";
 import type { RunLedger } from "../utils/run-ledger.js";
 import {
-  type DeployTokenScope,
   DeployTokenError,
+  type DeployTokenScope,
   WORKER_TOKEN_GROUP,
   classifyDeployTokenPolicies,
   maskId,

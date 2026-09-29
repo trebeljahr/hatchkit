@@ -104,9 +104,9 @@ function cfg(name: string, features: Feature[]): ProjectConfig {
  * place — the minimum state in which `import ... from "@starter/shared"` inside
  * `packages/server` means anything.
  *
- * `tsc`'s exit code is ignored on purpose. Nothing is installed here, so
- * `packages/shared/src/schemas.ts` cannot resolve `zod` and tsc reports TS2307
- * — but type errors do not stop emit (`noEmitOnError` is off), and emit is the
+ * `tsc`'s exit code is ignored on purpose. This fixture only links zod, not
+ * a complete workspace install. Type errors do not stop emit
+ * (`noEmitOnError` is off), and emit is the
  * whole point: what this file tests is how Node reads the EMITTED CommonJS, not
  * whether the starter typechecks. `packages/shared/tsconfig.json` having
  * produced `dist/index.js` is asserted instead, so a tsc that genuinely emitted
@@ -120,6 +120,12 @@ async function preparedProject(prefix: string, features: Feature[]): Promise<str
   const scope = join(dir, "packages/server/node_modules/@starter");
   mkdirSync(scope, { recursive: true });
   symlinkSync(resolve(join(dir, "packages/shared")), join(scope, "shared"), "dir");
+
+  // The compiled barrel also re-exports schemas that import zod. Supply
+  // that runtime dependency without installing anything in the fixture.
+  const sharedModules = join(dir, "packages/shared/node_modules");
+  mkdirSync(sharedModules, { recursive: true });
+  symlinkSync(resolve(join(CLI, "node_modules/zod")), join(sharedModules, "zod"), "dir");
 
   try {
     execFileSync(TSC, ["-p", join(dir, "packages/shared/tsconfig.json")], { stdio: "pipe" });
@@ -162,7 +168,9 @@ function namedImportError(projectDir: string, names: readonly string[]): string 
     return null;
   } catch (error) {
     const stderr = String((error as { stderr?: Buffer }).stderr ?? "");
-    const named = stderr.split("\n").find((line) => /Error|undefined export/.test(line));
+    const named = stderr
+      .split("\n")
+      .find((line) => /^\s*(?:\w*Error[:[]|undefined export)/.test(line));
     return named?.trim() ?? (stderr.trim() || "probe failed with no output");
   } finally {
     rmSync(probe, { force: true });
@@ -292,7 +300,10 @@ group("no generated tsconfig sends a tsx-run import into packages/shared/src", (
   for (const relative of TSX_RUN) {
     const raw = readFileSync(join(clientCore, relative), "utf-8");
     const intoSharedSrc = /"@starter\/shared(?:\/\*)?"\s*:\s*\[[^\]]*shared\/src/.test(raw);
-    checks.push([`${relative} has no "@starter/shared" paths entry into shared/src`, !intoSharedSrc]);
+    checks.push([
+      `${relative} has no "@starter/shared" paths entry into shared/src`,
+      !intoSharedSrc,
+    ]);
   }
   // A mapping anywhere else is not a failure, but it should be a deliberate
   // one, so list what exists rather than asserting a count.
