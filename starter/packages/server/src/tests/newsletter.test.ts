@@ -12,6 +12,9 @@
  * These drive the real Express routes over HTTP. Every request to the
  * Listmonk host is answered by an in-memory fake, and the tests assert on
  * the writes it received.
+ *
+ * Also covered: the sender on the confirmation email, and which env var
+ * names the list for each NODE_ENV.
  */
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
@@ -24,6 +27,7 @@ import { _resetRateLimit, mintConfirmToken } from "../services/newsletter/subscr
 
 const LISTMONK = "https://listmonk.test";
 const LIST_ID = 4;
+const FROM = "Starter <noreply@mail.example.com>";
 
 process.env.LISTMONK_URL = LISTMONK;
 process.env.LISTMONK_API_USER = "api-user";
@@ -33,6 +37,7 @@ process.env.LISTMONK_API_TOKEN = "api-token";
 process.env.LISTMONK_LIVE_LIST_ID = String(LIST_ID);
 process.env.LISTMONK_TEST_LIST_ID = String(LIST_ID);
 process.env.LISTMONK_TX_TEMPLATE_ID = "5";
+process.env.LISTMONK_FROM = FROM;
 process.env.NEWSLETTER_TOKEN_SECRET = "test-secret";
 
 type Membership = { id: number; subscription_status: "unconfirmed" | "confirmed" | "unsubscribed" };
@@ -182,6 +187,31 @@ describe("POST /api/newsletter/subscribe", () => {
 
     assert.deepEqual(await res.json(), { ok: true, alreadySubscribed: true });
     assert.deepEqual(lm.calls(), []);
+  });
+
+  test("sends the confirmation from LISTMONK_FROM", async () => {
+    const lm = fakeListmonk();
+
+    await subscribe("new@example.com");
+
+    const tx = lm.writes.find((w) => w.call === "POST /api/tx");
+    // Without `from_email` Listmonk falls back to its global
+    // `app.from_email`, another project's sender on a shared instance.
+    assert.equal(tx?.body.from_email, FROM);
+    assert.equal(tx?.body.subscriber_email, "new@example.com");
+    // Default mode: the recipient is a subscriber by now (ensureSubscriber).
+    assert.equal(tx?.body.subscriber_mode, undefined);
+  });
+
+  test("falls back to LISTMONK_FROM_EMAIL when LISTMONK_FROM is unset", async () => {
+    const lm = fakeListmonk();
+
+    await withEnv({ LISTMONK_FROM: undefined, LISTMONK_FROM_EMAIL: "noreply@mail.example.org" }, async () => {
+      await subscribe("new@example.com");
+    });
+
+    const tx = lm.writes.find((w) => w.call === "POST /api/tx");
+    assert.equal(tx?.body.from_email, "noreply@mail.example.org");
   });
 });
 
