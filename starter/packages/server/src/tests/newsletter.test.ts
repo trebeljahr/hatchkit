@@ -13,8 +13,9 @@
  * Listmonk host is answered by an in-memory fake, and the tests assert on
  * the writes it received.
  *
- * Also covered: the sender on the confirmation email, and which env var
- * names the list for each NODE_ENV.
+ * Also covered: the sender on the confirmation email, which env var names
+ * the list for each NODE_ENV, and which host the confirm link and its
+ * redirects point at.
  */
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
@@ -130,6 +131,7 @@ beforeEach(async () => {
   });
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   process.env.NEWSLETTER_SITE_URL = base;
+  process.env.BETTER_AUTH_URL = base;
 });
 
 afterEach(async () => {
@@ -246,6 +248,49 @@ describe("GET /api/newsletter/confirm", () => {
   });
 });
 
+describe("confirm link and redirects with the client and the API on different hosts", () => {
+  const SITE = "https://example.test";
+  const API = "https://api.example.test";
+
+  test("the emailed link points at the API origin", async () => {
+    const lm = fakeListmonk();
+
+    await withEnv({ NEWSLETTER_SITE_URL: SITE, BETTER_AUTH_URL: `${API}/` }, () =>
+      subscribe("new@example.com"),
+    );
+
+    // The client host serves no /api routes. A link built on it gets a
+    // Next.js 404 (or a trailing-slash 308 first) instead of the API.
+    const html: string = lm.writes.find((w) => w.call === "POST /api/tx")?.body?.data?.body ?? "";
+    const href = /href="([^"]+)"/.exec(html)?.[1]?.replace(/&amp;/g, "&");
+    assert.ok(href, "confirmation email has no link");
+    assert.equal(new URL(href).origin, API);
+    assert.equal(new URL(href).pathname, "/api/newsletter/confirm");
+  });
+
+  test("the confirm route redirects to the client origin", async () => {
+    fakeListmonk([existing("reader@example.com", [])]);
+
+    const res = await withEnv({ NEWSLETTER_SITE_URL: SITE, BETTER_AUTH_URL: API }, () =>
+      confirm("reader@example.com"),
+    );
+
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get("location"), `${SITE}/sub/confirmed`);
+  });
+
+  test("subscribe refuses to send a link when BETTER_AUTH_URL is unset", async () => {
+    const lm = fakeListmonk();
+
+    const res = await withEnv({ NEWSLETTER_SITE_URL: SITE, BETTER_AUTH_URL: undefined }, () =>
+      subscribe("new@example.com"),
+    );
+
+    assert.equal(res.status, 500);
+    assert.equal(lm.calls().includes("POST /api/tx"), false);
+  });
+});
+
 test("subscribe then confirm: the membership appears only on the click", async () => {
   const lm = fakeListmonk();
 
@@ -289,8 +334,8 @@ describe("findSubscriber", () => {
 });
 
 /** Run `fn` with these env vars set (or deleted, for `undefined`), then
- *  put every one of them back. */
-async function withEnv(vars: Record<string, string | undefined>, fn: () => Promise<void> | void): Promise<void> {
+ *  put every one of them back. Resolves to what `fn` returned. */
+async function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Promise<T> | T): Promise<T> {
   const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
   const apply = (values: Record<string, string | undefined>): void => {
     for (const [k, v] of Object.entries(values)) {
@@ -300,7 +345,7 @@ async function withEnv(vars: Record<string, string | undefined>, fn: () => Promi
   };
   apply(vars);
   try {
-    await fn();
+    return await fn();
   } finally {
     apply(saved);
   }

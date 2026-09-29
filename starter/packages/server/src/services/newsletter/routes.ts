@@ -35,8 +35,17 @@ function log(level: "info" | "error", scope: string, event: string, extra: objec
   else console.info(line);
 }
 
+/** Origin of the client app. The `/sub/confirmed` and `/sub/error`
+ *  pages live here, so the confirm route redirects to it. */
 function siteUrl(): string {
   return (process.env.NEWSLETTER_SITE_URL ?? process.env.FRONTEND_URL ?? "").replace(/\/$/, "");
+}
+
+/** Public origin of this API server. The confirm link in the email must
+ *  land here: the client host has no route to `/api/newsletter/confirm`
+ *  when client and API are served from different hosts. */
+function apiUrl(): string {
+  return (process.env.BETTER_AUTH_URL ?? "").replace(/\/$/, "");
 }
 
 function siteName(): string {
@@ -83,18 +92,18 @@ export function registerNewsletterRoutes(app: Express): void {
       return;
     }
 
-    const base = siteUrl();
-    if (!base) {
-      log("error", "subscribe", "no_site_url");
+    const api = apiUrl();
+    if (!api) {
+      log("error", "subscribe", "no_api_url");
       res.status(500).json({
         error: "config",
-        message: "Newsletter site URL is not configured.",
+        message: "Newsletter API URL is not configured.",
       });
       return;
     }
 
     const token = mintConfirmToken(email);
-    const confirmUrl = `${base}/api/newsletter/confirm?token=${encodeURIComponent(token)}`;
+    const confirmUrl = `${api}/api/newsletter/confirm?token=${encodeURIComponent(token)}`;
 
     try {
       await sendConfirmationEmail({ to: email, confirmUrl, siteName: siteName() });
