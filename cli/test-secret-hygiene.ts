@@ -32,6 +32,7 @@ import {
 import { devNull, tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 
 // Keep git hermetic. Above all, no machine-wide excludes file: git
 // reads ~/.config/git/ignore even when no config names it, and a
@@ -619,6 +620,141 @@ await expect("doctor fails on an .env.development.local the repo does not ignore
     const res = await checkProjectDevEnvSecretsState(root);
     assert.equal(res.length, 1);
     assert.match(res[0].name, /\.env\.development\.local/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+console.log("\n── the move warning states what git holds, nothing more ──");
+
+/** What `retrofitDevEnvSecrets` printed to each stream, colour codes
+ *  stripped. The warning belongs on stderr: `secrets rotate --json`
+ *  writes its audit to stdout. */
+function retrofitOutput(root: string): { stderr: string; stdout: string } {
+  const err: string[] = [];
+  const out: string[] = [];
+  const { error, log } = console;
+  console.error = (...a: unknown[]) => err.push(a.map(String).join(" "));
+  console.log = (...a: unknown[]) => out.push(a.map(String).join(" "));
+  try {
+    const moved = retrofitDevEnvSecrets(root);
+    assert.deepEqual(moved[0]?.moved, ["LISTMONK_API_TOKEN", "SES_SMTP_PASSWORD"]);
+  } finally {
+    console.error = error;
+    console.log = log;
+  }
+  return {
+    stderr: stripVTControlCharacters(err.join("\n")),
+    stdout: stripVTControlCharacters(out.join("\n")),
+  };
+}
+
+/** Checks every case shares: keys named, values never, nothing on stdout. */
+function assertMoveWarning(printed: { stderr: string; stdout: string }): string {
+  assert.match(printed.stderr, /Moved LISTMONK_API_TOKEN, SES_SMTP_PASSWORD from \.env\.development/);
+  assert.ok(!printed.stdout.includes("Moved"), "warning went to stdout");
+  const all = printed.stderr + printed.stdout;
+  assert.ok(!all.includes(FAKE_TOKEN) && !all.includes(FAKE_SMTP), "printed a value");
+  return printed.stderr;
+}
+
+/** A pre-fix project whose `.env.development` git has never seen: the
+ *  collection-of-beauty and chemistry-sketcher shape. The rest of the
+ *  project is committed unless `commit` is false. */
+function uncommittedDevEnvProject(opts: { commit?: boolean } = {}): string {
+  const root = cobRepo();
+  writeFileSync(join(root, ".hatchkit.json"), JSON.stringify({ name: "cob" }));
+  mkdirSync(join(root, "packages/server/src/config"), { recursive: true });
+  writeFileSync(join(root, "packages/server/src/config/env.ts"), LEGACY_ENV_TS);
+  if (opts.commit !== false) {
+    git(root, "add", "-A");
+    git(root, "commit", "--quiet", "-m", "scaffold");
+  }
+  writeFileSync(join(root, "packages/server/.env.development"), LEGACY_DEV_ENV);
+  return root;
+}
+
+await expect("tracked .env.development: says tracked, counts commits, keeps rotate", () => {
+  const root = legacyProject();
+  try {
+    const out = assertMoveWarning(retrofitOutput(root));
+    assert.match(out, /\.env\.development is tracked by git; 1 commit touches it in this repo's history/);
+    assert.match(out, /Commit this change too/);
+    assert.match(out, /rotate each one/);
+    assert.ok(!/never committed/.test(out), out);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await expect("untracked but in history: says so, counts commits, keeps rotate", () => {
+  const root = legacyProject();
+  try {
+    git(root, "rm", "--quiet", "--cached", "--", "packages/server/.env.development");
+    git(root, "commit", "--quiet", "-m", "untrack");
+    const out = assertMoveWarning(retrofitOutput(root));
+    assert.match(out, /is not tracked now, but 2 commits touch it in this repo's history/);
+    assert.match(out, /rotate each one/);
+    assert.ok(!/is tracked by git/.test(out), out);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await expect("never committed, ignored only by this machine: no leak claim, no rotate", () => {
+  // The incident: only the user's global excludes file ignored it. The
+  // file-level GIT_CONFIG_GLOBAL keeps the developer's own excludes out;
+  // this repo gets an excludes file of its own to stand in for them.
+  const root = uncommittedDevEnvProject();
+  const excludes = join(root, "..", `hk-dev-excludes-${Date.now()}`);
+  try {
+    writeFileSync(excludes, ".env.development\n");
+    git(root, "config", "core.excludesFile", excludes);
+    const out = assertMoveWarning(retrofitOutput(root));
+    assert.match(out, /was never committed\. It is not ignored by the repo's \.gitignore/);
+    assert.match(out, /git add -A` without those excludes would commit it/);
+    assert.ok(!/is committed|is tracked|git history|rotate/.test(out), out);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(excludes, { force: true });
+  }
+});
+
+await expect("never committed, in a repo with no commits: git add -A would commit it", () => {
+  const root = uncommittedDevEnvProject({ commit: false });
+  try {
+    const out = assertMoveWarning(retrofitOutput(root));
+    assert.match(out, /was never committed, but it is not ignored by the repo's \.gitignore/);
+    assert.match(out, /so a `git add -A` would commit it/);
+    assert.ok(!/is committed|is tracked|git history|rotate/.test(out), out);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await expect("never committed and the repo ignores it: says exactly that", () => {
+  const root = uncommittedDevEnvProject();
+  try {
+    writeFileSync(join(root, ".gitignore"), `${COB_GITIGNORE}.env.development\n`);
+    const out = assertMoveWarning(retrofitOutput(root));
+    assert.match(out, /was never committed, and the repo's \.gitignore ignores it/);
+    assert.ok(!/git add -A|git history|rotate/.test(out), out);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await expect("outside a git repo: the generic wording, rotate kept", () => {
+  const root = cobRepo({ gitInit: false });
+  try {
+    writeFileSync(join(root, ".hatchkit.json"), JSON.stringify({ name: "cob" }));
+    mkdirSync(join(root, "packages/server/src/config"), { recursive: true });
+    writeFileSync(join(root, "packages/server/src/config/env.ts"), LEGACY_ENV_TS);
+    writeFileSync(join(root, "packages/server/.env.development"), LEGACY_DEV_ENV);
+    const out = assertMoveWarning(retrofitOutput(root));
+    assert.match(out, /was ever committed with these values, they are in git history/);
+    assert.match(out, /rotate each one/);
+    assert.ok(!/is tracked|never committed/.test(out), out);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

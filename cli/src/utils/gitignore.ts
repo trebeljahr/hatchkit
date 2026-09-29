@@ -199,6 +199,43 @@ export function ignoredByRepo(top: string, rel: string): boolean {
   return !/(^|[\\/])info[\\/]exclude$/.test(source);
 }
 
+/** What git holds of one file, for a warning that has to state it
+ *  exactly: during a leak response, "is committed" about a file git
+ *  never saw sends people hunting for a leak that does not exist.
+ *  `unknown` outside a git repo, or when git could not answer. */
+export type GitFileState =
+  | { kind: "unknown" }
+  | { kind: "tracked"; commits: number }
+  | { kind: "in-history"; commits: number }
+  | { kind: "never-committed"; ignoredByRepo: boolean; ignoredHere: boolean };
+
+/** Classify `filePath` against its repo. `commits` counts the commits on
+ *  any ref (`git log --all`) that touch the path. `ignoredByRepo` is the
+ *  repo's own committed rules (see `ignoredByRepo`); `ignoredHere` also
+ *  counts this machine's global excludes and `.git/info/exclude`. */
+export function gitFileState(filePath: string): GitFileState {
+  const existing = nearestExistingDir(dirname(resolve(filePath)));
+  const dir = realpathSync(existing);
+  const top = gitToplevel(dir);
+  if (!top) return { kind: "unknown" };
+  const rel = relative(top, join(dir, relative(existing, resolve(filePath))));
+  const git = (args: string[]) =>
+    spawnSync("git", args, { cwd: top, encoding: "utf-8", timeout: 15_000 });
+
+  const log = git(["log", "--all", "--format=%H", "--", rel]);
+  if (log.status !== 0) return { kind: "unknown" };
+  const commits = new Set(log.stdout.split("\n").filter(Boolean)).size;
+  if (git(["ls-files", "--error-unmatch", "--", rel]).status === 0) {
+    return { kind: "tracked", commits };
+  }
+  if (commits > 0) return { kind: "in-history", commits };
+  return {
+    kind: "never-committed",
+    ignoredByRepo: ignoredByRepo(top, rel),
+    ignoredHere: git(["check-ignore", "-q", "--", rel]).status === 0,
+  };
+}
+
 function projectRootFor(dir: string): string {
   const home = homedir();
   for (let d = dir; ; d = dirname(d)) {
