@@ -370,7 +370,9 @@ function report(label: string, checks: [string, boolean][]): boolean {
   execSync(`git config user.email t@t.t`, { cwd: dir });
   execSync(`git config user.name test`, { cwd: dir });
   writeFileSync(join(dir, ".env.keys"), `DOTENV_PRIVATE_KEY_PRODUCTION="${"a".repeat(64)}"\n`);
-  execSync("git add .env.keys", { cwd: dir });
+  // -f: a global ignore (~/.config/git/ignore) that lists .env.keys would
+  // otherwise make `git add` refuse the path.
+  execSync("git add -f .env.keys", { cwd: dir });
   execSync(`git commit -m seed --quiet --allow-empty-message`, { cwd: dir });
 
   const fake = makeFakeAdapter({ name: "fake-tracked-adapter" });

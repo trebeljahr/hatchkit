@@ -2881,6 +2881,9 @@ console.log("\n── adopt: .env.keys is gitignored, never staged ────�
   await execa("git", ["init", "--initial-branch=main"], { cwd: repoA });
   await execa("git", ["config", "user.email", "test@example.com"], { cwd: repoA });
   await execa("git", ["config", "user.name", "test"], { cwd: repoA });
+  // Ignore the machine's global excludes file: one that lists .env.keys
+  // would keep it unstaged even if ensureGitignoreEntries did nothing.
+  await execa("git", ["config", "core.excludesFile", "/dev/null"], { cwd: repoA });
   writeFileSync(
     join(repoA, ".gitignore"),
     "# pre-existing entries (no trailing newline)\n.env\n.env.local\n.env.*.local",
@@ -2925,6 +2928,7 @@ DOTENV_PRIVATE_KEY_PRODUCTION="abcdef0123456789abcdef0123456789abcdef0123456789a
   await execa("git", ["init", "--initial-branch=main"], { cwd: repoB });
   await execa("git", ["config", "user.email", "test@example.com"], { cwd: repoB });
   await execa("git", ["config", "user.name", "test"], { cwd: repoB });
+  await execa("git", ["config", "core.excludesFile", "/dev/null"], { cwd: repoB });
   writeFileSync(join(repoB, "package.json"), JSON.stringify({ name: "leak-test" }));
   const rB = ensureGitignoreEntries(repoB, [".env.keys"]);
   writeFileSync(join(repoB, ".env.keys"), `DOTENV_PRIVATE_KEY_PRODUCTION="aabbcc"\n`);
