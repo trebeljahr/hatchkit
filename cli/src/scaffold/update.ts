@@ -41,7 +41,7 @@ import { addUsedPorts, getUsedPorts } from "../config.js";
 import { repoSlugFromRemote } from "../deploy/gh-actions-secrets.js";
 import { pushNativeOriginsForProject } from "../deploy/trusted-origins.js";
 import type { AuthSecurityOption } from "../features/auth-account-security/types.js";
-import { type FeaturePlanContext, getFeature } from "../features/contract.js";
+import { FeatureLedger, type FeaturePlanContext, getFeature } from "../features/contract.js";
 import { BUILD_COMMIT_ENV_VAR, BUILD_INFO_PATH } from "../features/deploy-recovery/index.js";
 import { upgradeNextConfig } from "../features/deploy-recovery/serving.js";
 import { extensionPrerequisiteProblem } from "../features/extension/index.js";
@@ -87,6 +87,7 @@ import {
 import { DEV_LAUNCHER_LIB_FILES, applyDevLauncher } from "./dev-launcher.js";
 import { type ProjectIdentifiers, legacyIdentifiers } from "./identifiers.js";
 import { LINT_GATE_FILES, applyLintGate } from "./lint-gate.js";
+import { EMAIL_SERVICE_REL_PATH, retrofitListmonkTxMode } from "./listmonk-tx-mode.js";
 import {
   MANIFEST_FILENAME,
   type ProjectManifest,
@@ -413,6 +414,30 @@ export async function runUpdate(
       console.log(chalk.green(`  ✓ .gitignore: now ignores ${ignored.added.join(", ")}`));
     }
     retrofitDevEnvSecrets(projectDir);
+  }
+
+  // Retrofit the account-email recipient mode. Until 2026-09-29 the
+  // starter posted verification, reset and invitation mail to Listmonk's
+  // /api/tx without `subscriber_mode`, and Listmonk answers 400 for any
+  // address that is not already a subscriber — which none of those are.
+  // The error is only logged, and with auth-account-security on it locks
+  // every new account out. No flag, same rationale as the retrofits above.
+  // Through a ledger rather than the dry-run gate, so a dry run names it.
+  const txMode = retrofitListmonkTxMode(new FeatureLedger(projectDir, dryRun));
+  if (txMode.action === "written" || txMode.action === "would-write") {
+    console.log(
+      chalk.green(
+        `  ${dryRun ? "~ would patch" : "✓"} ${EMAIL_SERVICE_REL_PATH}: Listmonk account mail reaches non-subscribers (subscriber_mode "external")`,
+      ),
+    );
+  } else if (txMode.outcome === "no-anchor") {
+    console.log(
+      chalk.yellow(
+        `  ⚠ ${EMAIL_SERVICE_REL_PATH} posts to /api/tx, but hatchkit found no subscriber_email line to patch.\n` +
+          '    Add `subscriber_mode: "external"` to that request body, or Listmonk rejects every\n' +
+          "    signup, reset and invitation email with a 400.",
+      ),
+    );
   }
 
   // Derived from KNOWN_FEATURES rather than re-listed, so a feature
