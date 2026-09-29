@@ -46,6 +46,11 @@ services:
       # Forwarded from Coolify's app env. dotenvx inside the
       # container uses this to decrypt .env.production at runtime.
       - DOTENV_PRIVATE_KEY_PRODUCTION
+      # The image drains on SIGTERM so a rolling update can take it out
+      # of Traefik first. A compose deploy stops this container BEFORE
+      # starting its replacement, and kills it 10 s into the stop, so
+      # here the drain would only delay the restart.
+      - SHUTDOWN_DRAIN_SECONDS=0
     # Coolify reads this and gates Traefik/Caddy routing on it.
     # Without a healthcheck Coolify shows "No health check configured"
     # and routes blind — traffic can hit the container before it's

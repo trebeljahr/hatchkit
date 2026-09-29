@@ -10,6 +10,7 @@ import { createContext } from "./trpc/context.js";
 import { handleStripeWebhook } from "./services/stripe.js";
 import { registerNewsletterRoutes } from "./services/newsletter/routes.js";
 import { isDatabaseReady } from "./db/connection.js";
+import { isDraining, isLoopback } from "./drain.js";
 import { notFoundHandler, errorHandler } from "./middleware/error-handler.js";
 import { env, getTrustedOrigins } from "./config/env.js";
 // ── client-core ──────────────────────────────────────────────────
@@ -68,7 +69,14 @@ export function createApp() {
   registerNewsletterRoutes(app);
 
   // ── 6. Health endpoint ─────────────────────────────────────────────
-  app.get("/api/health", (_req, res) => {
+  app.get("/api/health", (req, res) => {
+    // Shutting down: fail the in-container probe so Traefik stops routing
+    // here before the server closes. Everyone else still gets the answer
+    // below — see ./drain.ts.
+    if (isDraining() && isLoopback(req.socket.remoteAddress)) {
+      res.status(503).json({ status: "draining" });
+      return;
+    }
     res.json({
       status: "ok",
       db: isDatabaseReady(),

@@ -32,6 +32,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { SHUTDOWN_DRAIN_SECONDS } from "../deploy/image-runtime.js";
 import { ensureDockerignoreAllowsEnvProduction } from "../utils/dockerignore.js";
 import { renderTemplate } from "../utils/template.js";
 import { setWorkflowVerifyUrlValues } from "./deploy-verification.js";
@@ -549,6 +550,12 @@ export function scaffoldBuildPipeline(
       nodeMajor,
       monorepoPackage: monorepoNextjs?.packageDir,
       packageName: monorepoNextjs?.packageName,
+      // The shutdown drain every image carries — see "The last second"
+      // in deploy/image-runtime.ts. The Node images get drain.cjs
+      // inlined as a heredoc, so adopting adds no file to the repo.
+      drainSeconds: SHUTDOWN_DRAIN_SECONDS,
+      drainPreload: readTemplateRaw("build-pipeline/drain.cjs").trimEnd(),
+      drainEntrypoint: readTemplateRaw("build-pipeline/drain-entrypoint.sh").trimEnd(),
     });
     write("Dockerfile", out, state.hasDockerfile);
 

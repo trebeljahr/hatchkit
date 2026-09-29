@@ -16,6 +16,11 @@ services:
     pull_policy: always
     environment:
       PORT: "3000"
+      # The image drains on SIGTERM so a rolling update can take it out of
+      # Traefik first. Compose stops this container BEFORE starting its
+      # replacement, and kills it 10 s into the stop, so here the drain
+      # would only delay the restart.
+      SHUTDOWN_DRAIN_SECONDS: "0"
       MONGODB_URI: mongodb://mongo:27017/${DB_NAME:-app}
       REDIS_URL: redis://redis:6379
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
@@ -62,6 +67,8 @@ services:
       # Pin client port — Coolify's app-level PORT (set for the server)
       # would otherwise bleed into every service.
       PORT: "3000"
+      # No drain under compose — see the server service above.
+      SHUTDOWN_DRAIN_SECONDS: "0"
       # Deliberately NO NEXT_PUBLIC_* here: Next.js inlines those into
       # the browser bundle when the image is BUILT, so runtime env on
       # this prebuilt container cannot affect them. They are passed as

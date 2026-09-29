@@ -25,11 +25,15 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  COOLIFY_STOP_TIMEOUT_SECONDS,
+  SHUTDOWN_DRAIN_SECONDS,
   healthCheckFor,
   healthCheckPayload,
+  healthCheckToConverge,
   parseImageRef,
   resolveCoolifyRuntime,
   rollingUpdateBlocker,
+  worstCaseDrainDropSeconds,
 } from "./src/deploy/image-runtime.js";
 import {
   type EnvRow,
@@ -93,6 +97,80 @@ check("health payload turns the check ON and never sends health_check_type", () 
   assert.equal(body.health_check_host, "127.0.0.1");
   assert.equal("health_check_type" in body, false);
   assert.equal("health_check_port" in body, false);
+});
+
+// The three numbers carry two budgets (see "The last second" in
+// image-runtime.ts). Moving any of them has to keep both.
+check("health timing drains a stopping container well inside docker stop", () => {
+  const t = healthCheckFor("server");
+  assert.deepEqual(
+    [t.intervalSeconds, t.retries, t.startPeriodSeconds, t.timeoutSeconds],
+    [2, 5, 15, 5],
+  );
+  // Out of Traefik before the drain ends, with room for a slow probe or
+  // a late refresh…
+  const MARGIN = 3;
+  assert.ok(
+    worstCaseDrainDropSeconds(t) + MARGIN <= SHUTDOWN_DRAIN_SECONDS,
+    `drop by ${worstCaseDrainDropSeconds(t)}s + ${MARGIN}s margin must fit in the ${SHUTDOWN_DRAIN_SECONDS}s drain`,
+  );
+  // …and closed before docker stop's SIGKILL, with time to close.
+  const CLOSE = 8;
+  assert.ok(
+    SHUTDOWN_DRAIN_SECONDS + CLOSE <= COOLIFY_STOP_TIMEOUT_SECONDS,
+    `${SHUTDOWN_DRAIN_SECONDS}s drain + ${CLOSE}s to close must fit in docker stop's ${COOLIFY_STOP_TIMEOUT_SECONDS}s`,
+  );
+  // The pre-drain timing (5 s × 12) could never drain: 60 s+ of routing
+  // to a container that exits after 30.
+  assert.ok(worstCaseDrainDropSeconds({ intervalSeconds: 5, retries: 12 }) > 30);
+});
+
+check("health timing still gives a booting container ~25 s", () => {
+  const t = healthCheckFor("client");
+  // Coolify sleeps the start period, then polls `retries` times, each
+  // `interval` plus ~1 s of round trip apart. collection-of-beauty
+  // (Next.js standalone) took up to 15 s on 2026-09-29.
+  const window = t.startPeriodSeconds + (t.retries - 1) * (t.intervalSeconds + 1);
+  assert.ok(window >= 25, `boot window ${window}s`);
+});
+
+check("sync converges health timing, keeps the path, and leaves a match alone", () => {
+  const fallback = healthCheckFor("client");
+  // Off → the whole default check.
+  assert.deepEqual(healthCheckToConverge({ enabled: false }, fallback), fallback);
+  assert.deepEqual(healthCheckToConverge({}, fallback), fallback);
+  // On with pre-drain timing → hatchkit's timing on the app's own path.
+  const old = {
+    enabled: true,
+    path: "/healthz",
+    intervalSeconds: 5,
+    timeoutSeconds: 5,
+    retries: 12,
+    startPeriodSeconds: 5,
+  };
+  const pushed = healthCheckToConverge(old, fallback);
+  assert.ok(pushed);
+  assert.equal(pushed.path, "/healthz");
+  assert.equal(pushed.intervalSeconds, 2);
+  assert.equal(pushed.retries, 5);
+  assert.equal(pushed.startPeriodSeconds, 15);
+  // Already converged → nothing to PATCH.
+  assert.equal(
+    healthCheckToConverge(
+      {
+        enabled: true,
+        path: "/",
+        intervalSeconds: 2,
+        timeoutSeconds: 5,
+        retries: 5,
+        startPeriodSeconds: 15,
+      },
+      fallback,
+    ),
+    undefined,
+  );
+  // Timing Coolify didn't return can't be compared — no PATCH on that alone.
+  assert.equal(healthCheckToConverge({ enabled: true, path: "/" }, fallback), undefined);
 });
 
 check("rollingUpdateBlocker names every Coolify fallback to stop-then-start", () => {

@@ -56,6 +56,27 @@ Coolify runs the check inside the container with `curl` or `wget`. Alpine
 images have `wget`. The scaffolded Debian images install `curl`. An image
 without either fails every deploy, and the old container stays up.
 
+#### Removing the old container
+
+Traefik sends traffic to a container until the container has exited. So when
+Coolify stops the old container, the requests sent to it in that moment fail
+with a 502, or hang until they end in a 504.
+
+The Dockerfiles hatchkit writes drain the old container first. On
+`docker stop`, the container answers the health check with a 503 and keeps
+serving every other request. Docker marks it unhealthy after 5 failed checks,
+and Traefik stops sending it traffic. The container closes 20 seconds after
+the stop (`SHUTDOWN_DRAIN_SECONDS`).
+
+The drain depends on hatchkit's health-check timing: a check every 2 seconds,
+5 retries, and a 15-second start period. `hatchkit doctor` reports an app with
+other values, and `hatchkit sync` sets them. The first deploy after a change
+still stops a container that has no drain.
+
+A compose deploy stops the old container before it starts the new one. The
+compose files set `SHUTDOWN_DRAIN_SECONDS=0`, because a drain there only
+delays the restart.
+
 Under `image`, the API is always a separate app, so mongo and redis are
 Coolify-managed databases for both topologies:
 

@@ -52,6 +52,7 @@ import {
   listFeatureTemplates,
   renderFeatureTemplate,
 } from "./src/features/templates.js";
+import { wireServerApp } from "./src/features/extension/patches.js";
 import { resolveIdentifiers } from "./src/scaffold/identifiers.js";
 import type { ProjectManifest } from "./src/scaffold/manifest.js";
 
@@ -144,7 +145,9 @@ check("the Firefox target keeps every engine difference", () => {
   // An event page, not a service worker: a manifest with
   // `service_worker` loads on Gecko with no background at all.
   assert.ok(
-    manifestConfig.includes('background: gecko\n      ? { scripts: ["background.js"], type: "module" }'),
+    manifestConfig.includes(
+      'background: gecko\n      ? { scripts: ["background.js"], type: "module" }',
+    ),
   );
   // A permanent add-on id, composed from two frozen identifiers, and
   // the floor AMO's data-collection key needs.
@@ -208,7 +211,9 @@ check("a token is adopted only after the session names the expected user", () =>
 
 check("an explicit session is never displaced by the web app", () => {
   const bridge = rendered.get("extension/src/background/bridge.ts") ?? "";
-  assert.ok(bridge.includes('if (current.sessionSource !== "web") return none("explicit-session");'));
+  assert.ok(
+    bridge.includes('if (current.sessionSource !== "web") return none("explicit-session");'),
+  );
 });
 
 check("the sign-out marker stays narrow enough to sign back in on the web", () => {
@@ -396,7 +401,9 @@ check("a fresh apply lands the whole file set and wires every starter file", () 
 
     const read = (rel: string): string => readFileSync(join(dir, rel), "utf-8");
 
-    assert.ok(read("packages/shared/src/index.ts").includes('export * from "./extension-bridge.js";'));
+    assert.ok(
+      read("packages/shared/src/index.ts").includes('export * from "./extension-bridge.js";'),
+    );
 
     // The starter owns the switch, so the feature leaves env.ts and the
     // server's .env.example alone. It keeps the RAW string plus a
@@ -409,7 +416,9 @@ check("a fresh apply lands the whole file set and wires every starter file", () 
       1,
       "the feature must not add a second TRUST_EXTENSION_ORIGINS entry",
     );
-    assert.ok(serverEnv.includes('TRUST_EXTENSION_ORIGINS: getOptional("TRUST_EXTENSION_ORIGINS"),'));
+    assert.ok(
+      serverEnv.includes('TRUST_EXTENSION_ORIGINS: getOptional("TRUST_EXTENSION_ORIGINS"),'),
+    );
     assert.ok(serverEnv.includes("export function trustsExtensionOrigins()"));
     assert.equal(read("packages/server/.env.example").match(/TRUST_EXTENSION_ORIGINS/g)?.length, 1);
 
@@ -424,17 +433,23 @@ check("a fresh apply lands the whole file set and wires every starter file", () 
     // Both callers ask the resolver. `env.TRUST_EXTENSION_ORIGINS` is a
     // string, so reading it raw would trust the literal "false".
     assert.ok(
-      app.includes('import { env, getTrustedOrigins, trustsExtensionOrigins } from "./config/env.js";'),
+      app.includes(
+        'import { env, getTrustedOrigins, trustsExtensionOrigins } from "./config/env.js";',
+      ),
     );
     assert.equal(app.match(/trustsExtensionOrigins\(\)/g)?.length, 2);
     assert.ok(!app.includes("env.TRUST_EXTENSION_ORIGINS"));
 
     const auth = read("packages/server/src/auth/auth.ts");
     assert.ok(
-      auth.includes("trustedOriginsForRequest(getTrustedOrigins(), request, trustsExtensionOrigins())"),
+      auth.includes(
+        "trustedOriginsForRequest(getTrustedOrigins(), request, trustsExtensionOrigins())",
+      ),
     );
     assert.ok(
-      auth.includes('import { env, getTrustedOrigins, trustsExtensionOrigins } from "../config/env.js";'),
+      auth.includes(
+        'import { env, getTrustedOrigins, trustsExtensionOrigins } from "../config/env.js";',
+      ),
     );
     assert.ok(!auth.includes("env.TRUST_EXTENSION_ORIGINS"));
     assert.ok(auth.includes("bearer(),"));
@@ -444,7 +459,9 @@ check("a fresh apply lands the whole file set and wires every starter file", () 
     const layout = read("packages/client/src/app/layout.tsx");
     assert.equal(layout.match(/<ExtensionBridge \/>/g)?.length, 1);
 
-    assert.ok(read("packages/client/src/lib/auth-client.ts").includes("deviceAuthorizationClient()"));
+    assert.ok(
+      read("packages/client/src/lib/auth-client.ts").includes("deviceAuthorizationClient()"),
+    );
 
     // The permission pin is worth nothing unless CI runs it.
     const ci = read(".github/workflows/build-and-deploy.yml");
@@ -479,7 +496,11 @@ check("a dry run touches nothing and says what it would do", () => {
     const before = snapshot(dir);
     const ledger = applyTo(dir, { dryRun: true });
     const after = snapshot(dir);
-    assert.deepEqual([...after.keys()].sort(), [...before.keys()].sort(), "a dry run created files");
+    assert.deepEqual(
+      [...after.keys()].sort(),
+      [...before.keys()].sort(),
+      "a dry run created files",
+    );
     for (const [file, content] of after) {
       assert.equal(content, before.get(file), `${file} changed during a dry run`);
     }
@@ -535,7 +556,10 @@ check("a moved anchor is reported, never silently skipped", () => {
     const app = join(dir, "packages/server/src/app.ts");
     writeFileSync(
       app,
-      readFileSync(app, "utf-8").replace(/app\.use\(\n\s*cors\(\{[\s\S]*?\}\),\n\s*\);/, "app.use(cors());"),
+      readFileSync(app, "utf-8").replace(
+        /app\.use\(\n\s*cors\(\{[\s\S]*?\}\),\n\s*\);/,
+        "app.use(cors());",
+      ),
       "utf-8",
     );
     const problems: string[] = [];
@@ -554,6 +578,36 @@ check("a moved anchor is reported, never silently skipped", () => {
       `messages were: ${problems.join(" | ")}`,
     );
   });
+});
+
+// The starter's health route grew a shutdown-drain branch ahead of its
+// answer, and read `req` for it. A project scaffolded before that still has
+// the old route; `hatchkit update` must wire both.
+check("the /api/health patch lands on the route with and without the drain branch", () => {
+  const answer = `    res.json({
+      status: "ok",
+      db: isDatabaseReady(),
+    });
+  });`;
+  const before = `  app.get("/api/health", (_req, res) => {\n${answer}`;
+  const after = `  app.get("/api/health", (req, res) => {
+    if (isDraining() && isLoopback(req.socket.remoteAddress)) {
+      res.status(503).json({ status: "draining" });
+      return;
+    }
+${answer}`;
+  for (const [label, route] of [
+    ["pre-drain", before],
+    ["with drain", after],
+  ] as const) {
+    const out = wireServerApp(route).content;
+    assert.ok(out.includes("originTrusted:"), `${label}: originTrusted added`);
+    assert.ok(out.includes('app.get("/api/health", (req, res) => {'), `${label}: reads req`);
+    assert.ok(!out.includes("_req"), `${label}: no unused-req name left`);
+  }
+  // The drain's early return stays ahead of the CORS answer.
+  const wired = wireServerApp(after).content;
+  assert.ok(wired.indexOf("isDraining()") < wired.indexOf("originTrusted:"));
 });
 
 if (failures.length > 0) {

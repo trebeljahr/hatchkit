@@ -133,7 +133,12 @@ import {
   repoSlugFromRemote,
   setCoolifyDeploySecrets,
 } from "./gh-actions-secrets.js";
-import { type HealthCheckSpec, healthCheckFor, resolveCoolifyRuntime } from "./image-runtime.js";
+import {
+  type HealthCheckSpec,
+  healthCheckFor,
+  healthCheckToConverge,
+  resolveCoolifyRuntime,
+} from "./image-runtime.js";
 import {
   type RoutedApp,
   type Topology,
@@ -253,15 +258,19 @@ export interface AppSyncPlan {
    *  without an evidence gate sync would either PATCH every healthy app
    *  on every run or never repair a broken one. */
   dbNetworkRepair?: boolean;
-  /** Health check to push on an image-runtime app whose check is off.
-   *  Without it Coolify's deploy removes the old container before the
-   *  new one can serve — see deploy/image-runtime.ts. Only ever set to
-   *  turn a disabled check ON; a path somebody chose is left alone. */
+  /** Health check to push on an image-runtime app whose check is off,
+   *  or whose timing isn't hatchkit's. Off, Coolify's deploy removes the
+   *  old container before the new one can serve; with pre-drain timing
+   *  the old container is still routed when it exits — see
+   *  deploy/image-runtime.ts. A path somebody chose is left alone. */
   desiredHealthCheck?: HealthCheckSpec;
   /** Snapshot of the same fields as Coolify currently reports them. */
   current: {
     /** Whether Coolify runs a health check on this app. */
     healthCheckEnabled?: boolean;
+    /** Its probe spacing and failure count, when Coolify returned them. */
+    healthCheckIntervalSeconds?: number;
+    healthCheckRetries?: number;
     fqdn: string | null;
     dockerComposeDomains?: Array<{ name: string; domain: string }>;
     portsExposes?: string;
@@ -1545,14 +1554,19 @@ function buildPlan(
 
   // A dockerimage app with its health check off gets no zero-downtime
   // deploy (Coolify stops the old container as soon as the new one
-  // starts). Turning it on is the one health-check change sync makes.
-  const desiredHealthCheck =
-    isImage && current.healthCheck.enabled !== true
-      ? (routed.healthCheck ??
-        healthCheckFor(
-          routed.role === "server" ? "server" : routed.role === "client" ? "client" : "app",
-        ))
-      : undefined;
+  // starts), and one with pre-drain timing ends every deploy in 502s
+  // (its old container is still routed when docker stop ends it).
+  // Turning the check on and converging its timing are the health-check
+  // changes sync makes; the path stays whatever it is.
+  const desiredHealthCheck = isImage
+    ? healthCheckToConverge(
+        current.healthCheck,
+        routed.healthCheck ??
+          healthCheckFor(
+            routed.role === "server" ? "server" : routed.role === "client" ? "client" : "app",
+          ),
+      )
+    : undefined;
 
   // `connect_to_docker_network`. Also write-only, so like strip_prefix
   // it cannot be diffed — but unlike strip_prefix, getting it wrong is
@@ -1582,6 +1596,12 @@ function buildPlan(
     current: {
       ...(current.healthCheck.enabled !== undefined
         ? { healthCheckEnabled: current.healthCheck.enabled }
+        : {}),
+      ...(current.healthCheck.intervalSeconds !== undefined
+        ? { healthCheckIntervalSeconds: current.healthCheck.intervalSeconds }
+        : {}),
+      ...(current.healthCheck.retries !== undefined
+        ? { healthCheckRetries: current.healthCheck.retries }
         : {}),
       fqdn: current.fqdn,
       ...(currentCollapsed ? { dockerComposeDomains: currentCollapsed } : {}),
@@ -1629,10 +1649,21 @@ function renderPlan(plan: AppSyncPlan): void {
       ),
     );
   }
-  if (plan.desiredHealthCheck) {
+  if (plan.desiredHealthCheck && plan.current.healthCheckEnabled !== true) {
     console.log(
       `    health check: ${chalk.red("off")} → ${chalk.green(`GET ${plan.desiredHealthCheck.path}`)}` +
         chalk.dim(" (needed for rolling deploys)"),
+    );
+  } else if (plan.desiredHealthCheck) {
+    const { intervalSeconds, retries } = plan.desiredHealthCheck;
+    const was =
+      plan.current.healthCheckIntervalSeconds !== undefined &&
+      plan.current.healthCheckRetries !== undefined
+        ? `every ${plan.current.healthCheckIntervalSeconds}s × ${plan.current.healthCheckRetries}`
+        : "custom timing";
+    console.log(
+      `    health check: ${chalk.red(was)} → ${chalk.green(`every ${intervalSeconds}s × ${retries}`)}` +
+        chalk.dim(" (lets a stopping container leave Traefik before it exits)"),
     );
   }
 

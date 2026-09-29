@@ -39,6 +39,13 @@ const config = defineConfig([
       ],
     },
   },
+  {
+    // A `.cjs` file is CommonJS on purpose — drain.cjs is loaded with
+    // `node --require` ahead of the production server — and `require` is
+    // how CommonJS imports.
+    files: ["**/*.cjs"],
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
 ]);
 
 export default config;

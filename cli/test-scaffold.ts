@@ -2179,7 +2179,7 @@ console.log("\n── build pipeline: framework detection (Next.js) ────
     const dockerfile = readFileSync(join(dir, "Dockerfile"), "utf-8");
     const compose = readFileSync(join(dir, "docker-compose.yml"), "utf-8");
 
-    checks.push(["Next.js Dockerfile runs next start", /node_modules\/.bin\/next/.test(dockerfile)]);
+    checks.push(["Next.js Dockerfile runs next start", /node_modules\/next\/dist\/bin\/next", "start"/.test(dockerfile)]);
     checks.push(["Next.js Dockerfile uses bookworm-slim", /bookworm-slim/.test(dockerfile)]);
     checks.push([
       "Next.js Dockerfile does NOT serve via nginx (no FROM nginx)",

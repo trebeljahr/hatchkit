@@ -87,13 +87,18 @@ const CORS_REPLACEMENT = `  // A per-request delegate rather than a static list.
     })(req, res, next);
   });`;
 
-const HEALTH_ANCHOR = `  app.get("/api/health", (_req, res) => {
-    res.json({
+// The health route's opening, before and after it read the request (the
+// shutdown drain checks where the probe comes from). The patch needs `req`.
+const HEALTH_ROUTE_UNUSED_REQ = `app.get("/api/health", (_req, res) => {`;
+const HEALTH_ROUTE = `app.get("/api/health", (req, res) => {`;
+
+// The start of the normal answer — after the drain's early return, in a
+// starter that has one.
+const HEALTH_ANCHOR = `    res.json({
       status: "ok",
       db: isDatabaseReady(),`;
 
-const HEALTH_REPLACEMENT = `  app.get("/api/health", (req, res) => {
-    // Answers EVERY origin, deliberately. A client whose origin this
+const HEALTH_REPLACEMENT = `    // Answers EVERY origin, deliberately. A client whose origin this
     // server does not trust has all its other requests refused by CORS
     // as a bare TypeError, which is indistinguishable from the server
     // being down — so this route is how it finds out which of the two
@@ -151,8 +156,13 @@ export function wireServerApp(content: string): PatchResult {
   }
 
   if (!out.includes("originTrusted")) {
-    if (out.includes(HEALTH_ANCHOR)) {
-      out = out.replace(HEALTH_ANCHOR, HEALTH_REPLACEMENT);
+    if (
+      out.includes(HEALTH_ANCHOR) &&
+      (out.includes(HEALTH_ROUTE) || out.includes(HEALTH_ROUTE_UNUSED_REQ))
+    ) {
+      out = out
+        .replace(HEALTH_ROUTE_UNUSED_REQ, HEALTH_ROUTE)
+        .replace(HEALTH_ANCHOR, HEALTH_REPLACEMENT);
       changed = true;
     } else {
       problems.push(

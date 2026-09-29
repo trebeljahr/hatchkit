@@ -105,6 +105,12 @@ export const env = {
   // commit CI just pushed. Empty outside a CI image build, which is
   // correct — a local `pnpm dev` has no commit it was built from.
   COMMIT_SHA: getOptional("COMMIT_SHA"),
+
+  // Seconds the server keeps serving after SIGTERM while it fails the
+  // health probe, so the proxy stops routing here before it closes (see
+  // src/drain.ts). Set by packages/server/Dockerfile; unset or 0 shuts
+  // down at once, which is what dev and tests want.
+  SHUTDOWN_DRAIN_SECONDS: Math.max(0, Number(getOptional("SHUTDOWN_DRAIN_SECONDS", "0")) || 0),
   GOOGLE_CLIENT_ID: getOptional("GOOGLE_CLIENT_ID"),
   GOOGLE_CLIENT_SECRET: getOptional("GOOGLE_CLIENT_SECRET"),
 

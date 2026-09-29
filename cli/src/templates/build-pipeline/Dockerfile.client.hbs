@@ -68,6 +68,51 @@ RUN mkdir -p dist \
 FROM nginx:alpine AS runner
 # Maps URLs onto the bundle: client-side routes and `.html`-less page
 # URLs. The stock default.conf 404s both — see the header of nginx.conf.
+# It also fails the health probe while this container drains (below).
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
+
+# Shutdown drain. Coolify deploys by starting the new container, waiting
+# for it to turn healthy, then running `docker stop` on this one — and
+# Traefik keeps routing here until nginx has EXITED, so the requests
+# caught in between fail with a 502 or hang into a 504. On SIGTERM this
+# entrypoint flags the container as draining (nginx.conf then fails the
+# health probe, so Docker marks it unhealthy and Traefik drops it),
+# keeps serving for SHUTDOWN_DRAIN_SECONDS, then stops nginx gracefully.
+#
+# SHUTDOWN_DRAIN_SECONDS is timed against the health check hatchkit sets
+# on the Coolify app (every 2 s, 5 retries) and has to stay under the
+# 30 s `docker stop` allows. 0 turns the drain off.
+COPY --chmod=755 <<'EOF' /usr/local/bin/drain-entrypoint
+#!/bin/sh
+flag=/tmp/hatchkit-draining
+rm -f "$flag"
+/docker-entrypoint.sh "$@" &
+pid=$!
+quit() { kill -QUIT "$pid" 2>/dev/null; }
+drain() {
+  if [ ! -e "$flag" ] && [ -n "${SHUTDOWN_DRAIN_SECONDS:-}" ] && [ "$SHUTDOWN_DRAIN_SECONDS" != 0 ]; then
+    touch "$flag"
+    echo "[drain] SIGTERM: failing the health check for ${SHUTDOWN_DRAIN_SECONDS}s so the proxy stops routing here, then shutting down"
+    sleep "$SHUTDOWN_DRAIN_SECONDS"
+  fi
+  quit
+}
+trap drain TERM
+trap quit INT QUIT
+# `wait` returns early when a trapped signal arrives; keep waiting until
+# nginx itself has exited, and exit with its status.
+status=0
+while kill -0 "$pid" 2>/dev/null; do
+  wait "$pid"
+  status=$?
+done
+exit "$status"
+EOF
+ENV SHUTDOWN_DRAIN_SECONDS={{drainSeconds}}
+# The nginx image stops on SIGQUIT — nginx's graceful quit, which closes
+# its listener at once. SIGTERM reaches the entrypoint's trap instead.
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/usr/local/bin/drain-entrypoint"]
+CMD ["nginx", "-g", "daemon off;"]
 EXPOSE 80

@@ -120,6 +120,29 @@ COPY --from=build /app/{{monorepoPackage}}/public ./{{monorepoPackage}}/public
 
 WORKDIR /app/{{monorepoPackage}}
 
+# Shutdown drain. Coolify deploys by starting the new container, waiting
+# for it to turn healthy, then running `docker stop` on this one — and
+# Traefik keeps routing here until the process has EXITED, so requests
+# caught in between fail with a 502 or hang into a 504. drain.cjs, loaded
+# ahead of `next start`, fails the health probe on SIGTERM (so Docker marks
+# this container unhealthy and Traefik drops it), keeps serving for
+# SHUTDOWN_DRAIN_SECONDS, then lets Next.js shut down as usual. Its
+# header has the details.
+#
+# SHUTDOWN_DRAIN_SECONDS is timed against the health check hatchkit sets
+# on the Coolify app (every 2 s, 5 retries) and has to stay under the
+# 30 s `docker stop` allows. 0 turns the drain off.
+COPY <<'EOF' /usr/local/lib/drain.cjs
+{{{drainPreload}}}
+EOF
+# dotenvx forwards SIGTERM to the server and SIGKILLs it 5 s later —
+# mid-drain. This entrypoint hands SIGTERM to the server itself instead.
+COPY --chmod=755 <<'EOF' /usr/local/bin/drain-entrypoint
+{{{drainEntrypoint}}}
+EOF
+ENV SHUTDOWN_DRAIN_SECONDS={{drainSeconds}}
+ENTRYPOINT ["/usr/local/bin/drain-entrypoint"]
+
 EXPOSE {{port}}
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
@@ -128,5 +151,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
 # dotenvx decrypts /app/.env.production at startup using
 # DOTENV_PRIVATE_KEY_PRODUCTION from the container env (forwarded by
 # Coolify via docker-compose.yml). The -f flag is required because
-# WORKDIR is the sub-package, not the workspace root.
-CMD ["dotenvx", "run", "-f", "/app/.env.production", "--", "./node_modules/.bin/next", "start", "--port", "{{port}}"]
+# WORKDIR is the sub-package, not the workspace root. Next's own bin
+# script rather than the `.bin/next` shim, so `node` can load the drain
+# first.
+CMD ["dotenvx", "run", "-f", "/app/.env.production", "--", "node", "--require", "/usr/local/lib/drain.cjs", "./node_modules/next/dist/bin/next", "start", "--port", "{{port}}"]

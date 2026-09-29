@@ -3383,7 +3383,13 @@ export async function checkProjectRollingDeployState(projectDir: string): Promis
   if (!cfg) return out;
   const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
   const { computeRoutingPlan } = await import("./deploy/routing.js");
-  const { rollingUpdateBlocker } = await import("./deploy/image-runtime.js");
+  const {
+    COOLIFY_STOP_TIMEOUT_SECONDS,
+    healthCheckFor,
+    healthCheckToConverge,
+    rollingUpdateBlocker,
+    worstCaseDrainDropSeconds,
+  } = await import("./deploy/image-runtime.js");
 
   const names = new Set<string>();
   for (const runtime of ["compose", "image"] as const) {
@@ -3412,6 +3418,30 @@ export async function checkProjectRollingDeployState(projectDir: string): Promis
     const blocker = rollingUpdateBlocker(app);
     const name = `Project ${manifest.name} (zero-downtime deploys)`;
     if (!blocker) {
+      // A rolling update whose timing can't drain: the old container is
+      // still routed when `docker stop` ends it, so the deploy ends in
+      // 502s. Timing Coolify didn't return is never reported.
+      const { intervalSeconds, retries } = app.healthCheck;
+      const lingers =
+        intervalSeconds !== undefined && retries !== undefined
+          ? worstCaseDrainDropSeconds({ intervalSeconds, retries })
+          : 0;
+      if (healthCheckToConverge(app.healthCheck, healthCheckFor("app")) !== undefined) {
+        out.push({
+          name,
+          status: "warn",
+          detail:
+            `"${app.name}" deploys as a rolling update, but its health check (every ${intervalSeconds}s, ${retries} retries) ` +
+            (lingers > COOLIFY_STOP_TIMEOUT_SECONDS
+              ? `keeps a stopping container routed for up to ${Math.round(lingers)}s — past the ${COOLIFY_STOP_TIMEOUT_SECONDS}s docker stop, so each deploy ends in 502s`
+              : "isn't hatchkit's, which the images' shutdown drain is timed against"),
+          hint: [
+            "Push hatchkit's health-check timing:",
+            "  hatchkit sync --dry-run   # then without --dry-run",
+          ],
+        });
+        continue;
+      }
       out.push({
         name,
         status: "ok",

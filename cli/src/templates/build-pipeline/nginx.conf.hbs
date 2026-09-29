@@ -24,6 +24,25 @@ server {
     # Cloudflare nginx only sees plain http, so an absolute one would
     # send visitors to http:// and cost them an extra hop back to https.
     absolute_redirect off;
+
+    # Shutdown drain. On `docker stop` the image's entrypoint creates
+    # /tmp/hatchkit-draining and waits before it stops nginx. Meanwhile
+    # the health probe — Coolify runs it INSIDE the container, against
+    # 127.0.0.1 — gets a 503, so Docker marks the container unhealthy
+    # and Traefik stops routing to it. Visitors never arrive over
+    # loopback, so they are served until the container leaves Traefik.
+    # Without this Traefik routes here until nginx has exited, and the
+    # requests caught in between fail with 502 or hang into a 504.
+    set $drain "";
+    if (-f /tmp/hatchkit-draining) {
+        set $drain "on";
+    }
+    if ($remote_addr ~ "^(127\.0\.0\.1|::1)$") {
+        set $drain "${drain}-probe";
+    }
+    if ($drain = "on-probe") {
+        return 503;
+    }
 {{#if spaFallback}}
 
     # A last path segment with a dot names a file — `/assets/index-3f2a.js`,

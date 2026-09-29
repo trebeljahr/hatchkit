@@ -18,6 +18,7 @@ import { setupSyncFeed } from "./sync/handler.js";
 import { setupWebSocket } from "./ws/handler.js";
 import { warnStripeStatus } from "./services/stripe.js";
 import { env } from "./config/env.js";
+import { isDraining, startDraining } from "./drain.js";
 
 const app = createApp();
 const server = createServer(app);
@@ -66,7 +67,20 @@ async function start(): Promise<void> {
 
 // ── Graceful shutdown ──────────────────────────────────────────────────
 
+// Force exit when closing hangs. Counted from the start of shutdown, after
+// any drain: 20 s of drain plus this stays under the 30 s `docker stop`
+// allows before it kills the process.
+const FORCE_EXIT_MS = 8_000;
+let shuttingDown = false;
+
 async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  setTimeout(() => {
+    console.error("[server] Forced exit after timeout");
+    process.exit(1);
+  }, FORCE_EXIT_MS).unref();
+
   console.log(`\n[server] ${signal} received, shutting down gracefully...`);
 
   // ── client-core ────────────────────────────────────────────────
@@ -96,16 +110,23 @@ async function shutdown(signal: string): Promise<void> {
   process.exit(0);
 }
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
-
-// Force exit after 10 seconds
-const FORCE_EXIT_MS = 10_000;
+// SIGTERM is `docker stop` — in production, a deploy replacing this
+// container. Drain first: fail the health probe so Traefik stops routing
+// here, keep serving what it still sends, and only then shut down (see
+// ./drain.ts). SHUTDOWN_DRAIN_SECONDS comes from the Dockerfile; unset (dev,
+// tests) or 0 skips the wait, and so does a second SIGTERM. SIGINT (Ctrl-C)
+// never waits.
 process.on("SIGTERM", () => {
-  setTimeout(() => {
-    console.error("[server] Forced exit after timeout");
-    process.exit(1);
-  }, FORCE_EXIT_MS).unref();
+  if (env.SHUTDOWN_DRAIN_SECONDS > 0 && !isDraining()) {
+    startDraining();
+    console.log(
+      `[server] SIGTERM received, failing the health check for ${env.SHUTDOWN_DRAIN_SECONDS}s before shutting down`,
+    );
+    setTimeout(() => shutdown("SIGTERM"), env.SHUTDOWN_DRAIN_SECONDS * 1000);
+    return;
+  }
+  shutdown("SIGTERM");
 });
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 start();

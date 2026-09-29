@@ -1,6 +1,7 @@
 import {
   type HealthCheckSpec,
   type ImageRef,
+  type LiveHealthCheck,
   healthCheckPayload,
 } from "../deploy/image-runtime.js";
 import { collapseComposeDomains, splitDomainString } from "../deploy/routing.js";
@@ -1006,6 +1007,10 @@ export class CoolifyApi {
                 ? false
                 : undefined,
         path: typeof raw.health_check_path === "string" ? raw.health_check_path : undefined,
+        intervalSeconds: coerceCount(raw.health_check_interval),
+        timeoutSeconds: coerceCount(raw.health_check_timeout),
+        retries: coerceCount(raw.health_check_retries),
+        startPeriodSeconds: coerceCount(raw.health_check_start_period),
       },
       portsMappings: typeof raw.ports_mappings === "string" ? raw.ports_mappings : null,
       customDockerRunOptions:
@@ -1419,10 +1424,12 @@ export interface CoolifyApplication {
    *  deploy. On an image-runtime app the deploy job pins it to the
    *  commit sha, so it doubles as "which build is live". */
   dockerRegistryImageTag?: string;
-  /** Whether Coolify runs a health check, and where. `enabled` is what
-   *  decides if a deploy is a rolling update — see
-   *  deploy/image-runtime.ts `rollingUpdateBlocker`. */
-  healthCheck: { enabled?: boolean; path?: string };
+  /** Whether Coolify runs a health check, where, and how often.
+   *  `enabled` decides if a deploy is a rolling update; the timing
+   *  decides if the old container can drain — see
+   *  deploy/image-runtime.ts `rollingUpdateBlocker`,
+   *  `healthCheckToConverge`. */
+  healthCheck: LiveHealthCheck;
   /** `ports_mappings` (host:container). Non-empty blocks rolling
    *  updates. */
   portsMappings: string | null;

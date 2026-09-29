@@ -89,10 +89,25 @@ COPY --from=build /app/packages/client/.next/standalone ./
 COPY --from=build /app/packages/client/.next/static ./packages/client/.next/static
 COPY --from=build /app/packages/client/public ./packages/client/public
 
+# Shutdown drain. Coolify deploys by starting the new container, waiting
+# for it to turn healthy, then running `docker stop` on this one — and
+# Traefik keeps routing here until the process has EXITED, so requests
+# caught in between fail with a 502 or hang into a 504. drain.cjs, loaded
+# ahead of server.js, fails the health probe on SIGTERM (so Docker marks
+# this container unhealthy and Traefik drops it), keeps serving for
+# SHUTDOWN_DRAIN_SECONDS, then lets Next.js shut down as usual. Its
+# header has the details.
+#
+# SHUTDOWN_DRAIN_SECONDS is timed against the health check hatchkit sets
+# on the Coolify app (every 2 s, 5 retries) and has to stay under the
+# 30 s `docker stop` allows. 0 turns the drain off.
+COPY --from=build /app/packages/client/drain.cjs ./packages/client/drain.cjs
+ENV SHUTDOWN_DRAIN_SECONDS=20
+
 USER node
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=5 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||'3000')).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 
-CMD ["node", "packages/client/server.js"]
+CMD ["node", "--require", "./packages/client/drain.cjs", "packages/client/server.js"]
