@@ -52,9 +52,9 @@ You'll be prompted for an AWS region (suggest `eu-west-1` for EU compliance) and
 - For [bounces and complaints](#bounces-and-complaints):
   - `ses:SetIdentityNotificationTopic`, `ses:GetIdentityNotificationAttributes`
   - `ses:GetAccount`, `ses:PutAccountSuppressionAttributes`
-  - `sns:CreateTopic`, `sns:Subscribe`, `sns:ListSubscriptionsByTopic`
+  - `sns:CreateTopic`, `sns:Subscribe`, `sns:ListSubscriptionsByTopic`, `sns:Unsubscribe`
 
-`AmazonSesFullAccess` does not cover the three `sns:` actions. For least privilege, copy the actions above into a custom policy. When one is missing, provisioning prints a warning that names it and continues, and `hatchkit doctor` reports the check it could not run.
+`AmazonSesFullAccess` does not cover the four `sns:` actions. For least privilege, copy the actions above into a custom policy. When one is missing, provisioning prints a warning that names it and continues, and `hatchkit doctor` reports the check it could not run.
 
 **SES sandbox mode is the default.** New AWS accounts can only send to recipient addresses verified ahead of time. To send to real users you must request production access via the AWS console (one-time form, ~24h Amazon review).
 
@@ -218,7 +218,7 @@ SES identity ── Bounce / Complaint ──▶ SNS topic ses-feedback-listmonk
 `hatchkit add <project> listmonk-ses` and `hatchkit migrate-domain` (for the new identity) set up each piece that is missing:
 
 1. **Listmonk bounce settings.** `bounce.enabled`, `bounce.webhooks_enabled` and `bounce.ses_enabled` are set to `true`, one `PUT /api/settings/<key>` each. A key that is already `true` is not written, because each PUT reloads Listmonk. The per-key endpoint needs Listmonk v6 and an API user with `Settings: All`.
-2. **SNS topic and subscription.** The topic is `ses-feedback-listmonk`, in the SES region. Its HTTPS subscription points at the webhook derived from the Listmonk URL you stored with `hatchkit config add listmonk`. Listmonk confirms the subscription by itself once `bounce.ses_enabled` is on, so the URL must be reachable from AWS.
+2. **SNS topic and subscription.** The topic is `ses-feedback-listmonk`, in the SES region. Its HTTPS subscription points at the webhook derived from the Listmonk URL you stored with `hatchkit config add listmonk`, with basic-auth credentials in the URL (see [Basic auth on the SNS endpoint](#basic-auth-on-the-sns-endpoint)). Listmonk confirms the subscription by itself once `bounce.ses_enabled` is on, so the URL must be reachable from AWS.
 3. **Identity notifications.** The identity's Bounce and Complaint topics are set to the shared topic. This is the SES v1 `SetIdentityNotificationTopic` call; SES v2 routes notifications through configuration sets instead. A topic already set on the identity to a different SNS topic is left alone and reported. `hatchkit migrate-domain` first copies the old identity's Bounce and Complaint topics onto the new identity, so the new identity reports to the same place as the old one. The shared topic gets only the types the old identity did not route. The cutover phase checks the topics again before the new identity starts sending. If the IAM user may not call `SetIdentityNotificationTopic`, the run prints the exact `aws ses set-identity-notification-topic` command for each type. `migrate-domain` also records them in `.hatchkit.json` under `deferred[]`.
 4. **Account suppression.** SES suppresses `BOUNCE` and `COMPLAINT` addresses account-wide, so it stops sending to them.
 
@@ -226,7 +226,23 @@ What Listmonk does with a bounce is set in **Settings → Bounces → Actions**.
 
 Without step 3, SES only emails a bounce notice to the sender address (`noreply@mail.<projectDomain>`), which nobody reads, and Listmonk keeps sending to the dead address.
 
-`hatchkit doctor` checks the whole path wherever SES and Listmonk are configured. It reports every verified identity without Bounce or Complaint topics, a missing or unconfirmed subscription, suppression that doesn't cover both reasons, and Listmonk bounce settings that are off. `hatchkit doctor --fix` repairs each one after a `y/N` prompt.
+`hatchkit doctor` checks the whole path wherever SES and Listmonk are configured. It reports every verified identity without Bounce or Complaint topics, a missing or unconfirmed subscription, a second subscription of the same webhook, suppression that doesn't cover both reasons, and Listmonk bounce settings that are off. `hatchkit doctor --fix` repairs each one after a `y/N` prompt.
+
+### Basic auth on the SNS endpoint
+
+SNS supports HTTP basic auth for HTTPS endpoints. Hatchkit generates a user and a password once, stores them in the keychain (`ses:feedback-webhook:user`, `ses:feedback-webhook:password`), and subscribes `https://<user>:<password>@<listmonk-host>/webhooks/service/ses`. Without a proxy that checks them, Listmonk takes the request as before. Output shows the endpoint with the password as `****`.
+
+Once the credentialed subscription is confirmed, hatchkit removes an older subscription of the same webhook, such as the plain one from an earlier version. Otherwise SNS would deliver each notification twice. If the IAM user may not call `sns:Unsubscribe`, the run prints the `aws sns unsubscribe` command.
+
+To require the credentials, put a basic-auth router in front of `/webhooks/service`. For Listmonk behind Traefik (Coolify, for example):
+
+```sh
+hatchkit ses webhook-auth --service <listmonk-traefik-service>
+```
+
+It prints labels for one router per entry point on `Host(<listmonk-host>) && PathPrefix(/webhooks/service)`, with priority 1000 and a `basicAuth` middleware that holds a bcrypt hash of the password. The password itself is never printed. `--service` is the service in Listmonk's own `traefik.http.services.<name>.loadbalancer.server.port` label. `--cert-resolver` defaults to `letsencrypt`. `$` is doubled for a compose file; pass `--no-compose-escape` for a plain list. Add the labels to the Listmonk container, redeploy, and check that `/webhooks/service/ses` answers `401` without credentials.
+
+The credentials belong to one machine's keychain. A run on a machine without them generates new ones, and its subscription stays pending until the proxy has their hash.
 
 ## Troubleshooting
 

@@ -59,6 +59,7 @@ const DANGEROUS_ARGV: string[][] = [
   ["ses", "verify", "someone@example.com", "--help"],
   ["ses", "unverify", "someone@example.com", "--help"],
   ["ses", "smtp", "--show-password", "--help"],
+  ["ses", "webhook-auth", "--service", "x", "--help"],
   ["listmonk", "user", "demo", "--regenerate-token", "--help"],
   ["email", "setup", "--help"],
   ["email", "ses-mail-from", "setup", "--help"],

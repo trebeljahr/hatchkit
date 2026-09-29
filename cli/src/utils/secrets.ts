@@ -110,6 +110,12 @@ export const SECRET_KEYS = {
    *  credentials. Region lives in meta JSON. */
   sesAccessKeyId: "ses:access-key-id",
   sesSecretAccessKey: "ses:secret-access-key",
+  /** Basic-auth user and password in the SNS subscription URL of
+   *  Listmonk's SES webhook. Generated once; the reverse proxy in front
+   *  of Listmonk holds a bcrypt hash of the password
+   *  (`hatchkit ses webhook-auth`). */
+  sesFeedbackWebhookUser: "ses:feedback-webhook:user",
+  sesFeedbackWebhookPassword: "ses:feedback-webhook:password",
   googleSearchConsoleClientId: "google-search-console:client-id",
   googleSearchConsoleClientSecret: "google-search-console:client-secret",
   googleSearchConsoleRefreshToken: "google-search-console:refresh-token",

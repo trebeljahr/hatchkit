@@ -70,9 +70,11 @@ import {
 } from "./listmonk.js";
 import {
   type SesFeedbackResult,
+  type WebhookCredentials,
   createSesFeedbackAws,
   createSesFeedbackListmonk,
   ensureSesFeedback,
+  ensureWebhookCredentials,
 } from "./ses-feedback.js";
 import {
   SES_MAIL_FROM_SPF,
@@ -110,6 +112,9 @@ export interface ListmonkSesProvisionOptions {
   /** How long to wait for Listmonk to confirm a new SNS subscription.
    *  Defaults to 20 s. */
   feedbackConfirmTimeoutMs?: number;
+  /** Basic-auth credentials for the SNS endpoint. Defaults to the ones
+   *  in the keychain, generated on first use. */
+  webhookCredentials?: WebhookCredentials;
   /** Email address to auto-subscribe to the project's `-test` list as
    *  `confirmed`. Hatchkit passes the global default forwarding email
    *  here so the first `pnpm newsletter:verify` run lands a real send
@@ -583,6 +588,7 @@ export async function provisionListmonkSesForProject(
     feedback = await ensureSesFeedback({
       identity: sendingDomain,
       listmonkUrl: listmonkAuth.url,
+      webhookCredentials: opts.webhookCredentials ?? (await ensureWebhookCredentials()).credentials,
       aws: createSesFeedbackAws(sesAuth),
       listmonk: createSesFeedbackListmonk(listmonkAuth),
       region: sesAuth.region,

@@ -2029,10 +2029,63 @@ async function handleListmonkCommand(rest: string[]): Promise<void> {
   }
 }
 
+/** `hatchkit ses webhook-auth`: the Traefik labels that require the SNS
+ *  endpoint's basic-auth credentials on Listmonk's `/webhooks/service`.
+ *  Generates the credentials on first use; prints only the user and a
+ *  bcrypt hash, never the password. */
+async function printSesWebhookAuth(): Promise<void> {
+  const { ensureListmonk } = await import("./config.js");
+  const { ensureWebhookCredentials, traefikBasicAuthLabels } = await import(
+    "./provision/ses-feedback.js"
+  );
+  const listmonk = await ensureListmonk();
+  const host = new URL(listmonk.url).host;
+  const { credentials, created } = await ensureWebhookCredentials();
+  const service = flagValue("--service");
+  const labels = traefikBasicAuthLabels({
+    host,
+    credentials,
+    service: service ?? "<listmonk-service>",
+    certResolver: flagValue("--cert-resolver"),
+    compose: !args.includes("--no-compose-escape"),
+  });
+  console.log(chalk.bold(`\n  Basic auth for ${host}/webhooks/service (Traefik labels)\n`));
+  if (created) {
+    console.log(
+      chalk.dim("  · Generated the SNS endpoint credentials and stored them in the keychain."),
+    );
+  }
+  if (!service) {
+    console.log(
+      chalk.yellow(
+        "  Replace <listmonk-service> with the service in Listmonk's own\n" +
+          "  `traefik.http.services.<name>.loadbalancer.server.port` label, or pass --service <name>.",
+      ),
+    );
+  }
+  console.log(
+    chalk.dim(
+      "  Add these to the Listmonk container's labels and redeploy. `$` is doubled for a\n" +
+        "  compose file; pass --no-compose-escape for a plain label list.\n",
+    ),
+  );
+  for (const l of labels) console.log(`      - ${l}`);
+  console.log(
+    chalk.dim(
+      "\n  Then re-run `hatchkit add <project> listmonk-ses` or `hatchkit doctor --fix`, so the\n" +
+        "  SNS subscription uses the credentialed endpoint and the older one is removed.\n",
+    ),
+  );
+}
+
 async function handleSesCommand(rest: string[]): Promise<void> {
   const sub = rest[0];
   if (!sub) {
     printSesUsage();
+    return;
+  }
+  if (sub === "webhook-auth") {
+    await printSesWebhookAuth();
     return;
   }
 
@@ -3744,6 +3797,12 @@ function printSesUsage(): void {
                        The SMTP relay login derived from hatchkit's SES key,
                        for pasting into Listmonk → Settings → SMTP. The
                        password prints only with --show-password.
+
+    ${chalk.cyan("webhook-auth [--service <name>] [--cert-resolver <name>] [--no-compose-escape]")}
+                       Traefik labels that require basic auth on Listmonk's
+                       /webhooks/service, matching the credentials hatchkit
+                       puts in the SNS subscription URL. Generates them on
+                       first use; prints a bcrypt hash, never the password.
 `);
 }
 

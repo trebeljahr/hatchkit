@@ -1090,6 +1090,13 @@ class FakeFeedbackAws implements SesFeedbackAws {
     this.writes.push(`subscribe ${endpoint}`);
     this.topics.get(topicArn)?.push({ subscriptionArn: `${topicArn}:sub-2`, protocol, endpoint });
   }
+  async unsubscribe(subscriptionArn: string) {
+    this.writes.push(`unsubscribe ${subscriptionArn}`);
+    for (const subs of this.topics.values()) {
+      const i = subs.findIndex((s) => s.subscriptionArn === subscriptionArn);
+      if (i >= 0) subs.splice(i, 1);
+    }
+  }
   async getNotificationTopics(names: string[]) {
     this.guard("getNotificationTopics");
     const out = new Map<string, IdentityNotificationTopics>();

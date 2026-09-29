@@ -50,10 +50,12 @@ import {
   type SesFeedbackAws,
   type SesFeedbackListmonk,
   type SesFeedbackType,
+  type WebhookCredentials,
   copyIdentityNotificationTopics,
   createSesFeedbackAws,
   createSesFeedbackListmonk,
   ensureSesFeedback,
+  ensureWebhookCredentials,
   getNotificationAttributesCommand,
   renderCopyTopicsLines,
   renderSesFeedbackLines,
@@ -227,7 +229,11 @@ export interface CarrySesFeedbackOptions {
   oldIdentity: string | null;
   newIdentity: string;
   /** Null when Listmonk is not configured on this machine. */
-  listmonk: { url: string; port: SesFeedbackListmonk } | null;
+  listmonk: {
+    url: string;
+    port: SesFeedbackListmonk;
+    webhookCredentials?: WebhookCredentials | null;
+  } | null;
   confirmTimeoutMs?: number;
   pollIntervalMs?: number;
 }
@@ -285,6 +291,7 @@ export async function carrySesFeedback(
     const feedback = await ensureSesFeedback({
       identity: opts.newIdentity,
       listmonkUrl: opts.listmonk.url,
+      webhookCredentials: opts.listmonk.webhookCredentials,
       aws: opts.aws,
       listmonk: opts.listmonk.port,
       region: opts.region,
@@ -354,7 +361,13 @@ async function carrySesFeedbackLive(
     region: auth.region,
     oldIdentity,
     newIdentity,
-    listmonk: listmonk ? { url: listmonk.url, port: createSesFeedbackListmonk(listmonk) } : null,
+    listmonk: listmonk
+      ? {
+          url: listmonk.url,
+          port: createSesFeedbackListmonk(listmonk),
+          webhookCredentials: (await ensureWebhookCredentials()).credentials,
+        }
+      : null,
   });
   if (listmonkError) result.detail.unshift(`Listmonk config unreadable: ${listmonkError}`);
   return result;

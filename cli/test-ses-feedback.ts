@@ -26,6 +26,10 @@
  *   6. Doctor reads without writing, reports each broken piece as a
  *      failure with a `--fix` repair, and after the repairs has nothing
  *      left to report.
+ *   7. With basic-auth credentials, the SNS endpoint carries them, a
+ *      subscription SNS lists with the password masked still counts as
+ *      ours, the older plain subscription goes only once the new one is
+ *      confirmed, and no output line holds the password.
  *
  * AWS and Listmonk are in-memory stubs behind the module's port
  * interfaces; nothing here touches the network except a stubbed fetch.
@@ -36,6 +40,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import bcrypt from "bcryptjs";
 import { checkSesBounceFeedback } from "./src/doctor.js";
 import {
   type IdentityNotificationTopics,
@@ -44,11 +49,15 @@ import {
   type SesFeedbackListmonk,
   type SesFeedbackType,
   type SnsSubscription,
+  type WebhookCredentials,
   clearSesFeedbackTopics,
   createSesFeedbackListmonk,
   ensureSesFeedback,
   listmonkSesWebhookUrl,
+  redactEndpoint,
   renderSesFeedbackLines,
+  subscriptionState,
+  traefikBasicAuthLabels,
 } from "./src/provision/ses-feedback.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -91,6 +100,8 @@ class FakeAws implements SesFeedbackAws {
   denied = new Set<keyof SesFeedbackAws>();
   /** Listmonk confirms a subscription as soon as SNS asks. */
   autoConfirm = true;
+  /** List endpoints with the password masked, as SNS may. */
+  maskPasswords = false;
 
   addIdentity(name: string, topics: Partial<IdentityNotificationTopics> = {}, verified = true) {
     this.identities.set(name, {
@@ -102,7 +113,12 @@ class FakeAws implements SesFeedbackAws {
 
   private guard(method: keyof SesFeedbackAws): void {
     if (!this.denied.has(method)) return;
-    if (method === "createTopic" || method === "subscribe" || method === "listSubscriptions") {
+    if (
+      method === "createTopic" ||
+      method === "subscribe" ||
+      method === "unsubscribe" ||
+      method === "listSubscriptions"
+    ) {
       throw awsError("AuthorizationError", `User is not authorized to perform: sns:${method}`);
     }
     throw awsError("AccessDenied", `User is not authorized to perform: ses:${method}`);
@@ -119,7 +135,20 @@ class FakeAws implements SesFeedbackAws {
     this.guard("listSubscriptions");
     const subs = this.topics.get(topicArn);
     if (!subs) throw awsError("NotFound", "Topic does not exist");
-    return subs.map((s) => ({ ...s }));
+    return subs.map((s) => ({
+      ...s,
+      endpoint: this.maskPasswords ? s.endpoint.replace(/:[^:@/]+@/, ":****@") : s.endpoint,
+    }));
+  }
+  async unsubscribe(subscriptionArn: string) {
+    this.guard("unsubscribe");
+    this.writes.push(`unsubscribe ${subscriptionArn}`);
+    for (const [arn, subs] of this.topics) {
+      this.topics.set(
+        arn,
+        subs.filter((s) => s.subscriptionArn !== subscriptionArn),
+      );
+    }
   }
   async subscribe(topicArn: string, protocol: "http" | "https", endpoint: string) {
     this.guard("subscribe");
@@ -127,7 +156,7 @@ class FakeAws implements SesFeedbackAws {
     const subs = this.topics.get(topicArn);
     if (!subs) throw awsError("NotFound", "Topic does not exist");
     const existing = subs.find((s) => s.endpoint === endpoint);
-    const arn = this.autoConfirm ? `${topicArn}:sub-1` : "PendingConfirmation";
+    const arn = this.autoConfirm ? `${topicArn}:sub-${subs.length + 1}` : "PendingConfirmation";
     if (existing) existing.subscriptionArn = arn;
     else subs.push({ subscriptionArn: arn, protocol, endpoint });
   }
@@ -695,6 +724,204 @@ await expect(
     assert.equal(rows.find((r) => r.name.includes("subscription"))?.status, "skip");
   },
 );
+
+console.log("\nbasic auth on the SNS endpoint:");
+
+const CREDS: WebhookCredentials = {
+  user: "0a1b2c3d4e5f60718293a4b5",
+  password: "f".repeat(64),
+};
+const CRED_WEBHOOK = `https://${CREDS.user}:${CREDS.password}@listmonk.example.com/webhooks/service/ses`;
+const MASKED_WEBHOOK = `https://${CREDS.user}:****@listmonk.example.com/webhooks/service/ses`;
+
+function runWithCreds(aws: FakeAws, listmonk: FakeListmonk, identity: string) {
+  return ensureSesFeedback({
+    identity,
+    listmonkUrl: LISTMONK_URL,
+    webhookCredentials: CREDS,
+    aws,
+    listmonk,
+    confirmTimeoutMs: 0,
+  });
+}
+
+function assertNoPassword(lines: string[]) {
+  for (const line of lines) {
+    assert.ok(!line.includes(CREDS.password), `password leaked into: ${line}`);
+  }
+}
+
+await expect("puts the credentials into the webhook URL and redacts them for output", () => {
+  assert.equal(listmonkSesWebhookUrl(LISTMONK_URL, CREDS), CRED_WEBHOOK);
+  assert.equal(listmonkSesWebhookUrl(LISTMONK_URL, null), WEBHOOK);
+  assert.equal(redactEndpoint(CRED_WEBHOOK), MASKED_WEBHOOK);
+  assert.equal(redactEndpoint(WEBHOOK), WEBHOOK);
+});
+
+await expect(
+  "the credentialed endpoint counts as ours as listed and with the password masked",
+  () => {
+    const sub = (endpoint: string): SnsSubscription[] => [
+      { subscriptionArn: `${TOPIC_ARN}:sub-1`, protocol: "https", endpoint },
+    ];
+    assert.equal(subscriptionState(sub(CRED_WEBHOOK), CRED_WEBHOOK), "confirmed");
+    assert.equal(subscriptionState(sub(MASKED_WEBHOOK), CRED_WEBHOOK), "confirmed");
+    assert.equal(subscriptionState(sub(WEBHOOK), CRED_WEBHOOK), "missing", "plain is not ours");
+    assert.equal(subscriptionState(sub(CRED_WEBHOOK), WEBHOOK), "missing", "and the reverse");
+    const otherUser = MASKED_WEBHOOK.replace(CREDS.user, "ffffffffffffffffffffffff");
+    assert.equal(subscriptionState(sub(otherUser), CRED_WEBHOOK), "missing", "another user");
+  },
+);
+
+await expect(
+  "replaces the plain subscription once the credentialed one is confirmed, then goes quiet",
+  async () => {
+    const { aws, listmonk } = healthyAccount();
+    aws.maskPasswords = true;
+    const r = await runWithCreds(aws, listmonk, "mail.a.com");
+    assert.deepEqual(r.warnings, []);
+    assert.equal(r.subscription, "confirmed");
+    assert.equal(r.credentialed, true);
+    assert.equal(r.webhookUrl, MASKED_WEBHOOK);
+    assert.deepEqual(r.supersededRemoved, [WEBHOOK]);
+    assert.deepEqual(aws.writes, [`subscribe ${CRED_WEBHOOK}`, `unsubscribe ${TOPIC_ARN}:sub-1`]);
+    assert.deepEqual(
+      aws.topics.get(TOPIC_ARN)?.map((s) => s.endpoint),
+      [CRED_WEBHOOK],
+    );
+    const lines = renderSesFeedbackLines(r).map((l) => l.text);
+    assertNoPassword([...lines, JSON.stringify(r)]);
+    assert.ok(lines.some((l) => l.includes("removed the older subscription")));
+    assert.ok(lines.some((l) => l.includes("hatchkit ses webhook-auth")));
+
+    // SNS lists the password masked; the second run still finds it.
+    aws.writes = [];
+    const again = await runWithCreds(aws, listmonk, "mail.a.com");
+    assert.equal(again.subscription, "confirmed");
+    assert.equal(again.subscribedThisRun, false);
+    assert.deepEqual(aws.writes, []);
+  },
+);
+
+await expect("keeps the plain subscription while the credentialed one is pending", async () => {
+  const { aws, listmonk } = healthyAccount();
+  aws.autoConfirm = false;
+  const r = await runWithCreds(aws, listmonk, "mail.a.com");
+  assert.equal(r.subscription, "pending");
+  assert.deepEqual(r.supersededRemoved, []);
+  assert.ok(!aws.writes.some((w) => w.startsWith("unsubscribe")));
+  assert.ok(aws.topics.get(TOPIC_ARN)?.some((s) => s.endpoint === WEBHOOK));
+  assertNoPassword(renderSesFeedbackLines(r).map((l) => l.text));
+});
+
+await expect(
+  "a refused sns:Unsubscribe is a warning with the command, and the rest still runs",
+  async () => {
+    const { aws, listmonk } = healthyAccount();
+    aws.denied.add("unsubscribe");
+    aws.suppressed = [];
+    const r = await runWithCreds(aws, listmonk, "mail.a.com");
+    assert.equal(r.subscription, "confirmed");
+    assert.ok(r.iamGap);
+    assert.ok(r.warnings.some((w) => w.includes("sns:Unsubscribe")));
+    assert.deepEqual(r.supersededLeft, [
+      { subscriptionArn: `${TOPIC_ARN}:sub-1`, endpoint: WEBHOOK },
+    ]);
+    assert.deepEqual(r.suppressionAdded, ["BOUNCE", "COMPLAINT"]);
+    const lines = renderSesFeedbackLines(r).map((l) => l.text);
+    assert.ok(
+      lines.some((l) =>
+        l.includes(`aws sns unsubscribe --subscription-arn ${TOPIC_ARN}:sub-1 --region ${REGION}`),
+      ),
+    );
+    assertNoPassword(lines);
+  },
+);
+
+await expect(
+  "doctor: a second subscription of the webhook warns, and --fix removes it",
+  async () => {
+    const { aws, listmonk } = healthyAccount();
+    aws.maskPasswords = true;
+    aws.topics.get(TOPIC_ARN)?.push({
+      subscriptionArn: `${TOPIC_ARN}:sub-2`,
+      protocol: "https",
+      endpoint: CRED_WEBHOOK,
+    });
+    const src = { aws, listmonk, listmonkUrl: LISTMONK_URL, webhookCredentials: CREDS };
+    const rows = await checkSesBounceFeedback(src);
+    const sub = rows.find((r) => r.name.includes("subscription"));
+    assert.equal(sub?.status, "warn");
+    assert.match(sub?.detail ?? "", /twice/);
+    assertNoPassword(
+      rows.flatMap((r) => [r.detail ?? "", ...(r.hint ?? []), r.repair?.prompt ?? ""]),
+    );
+    assert.deepEqual(aws.writes, []);
+    await sub?.repair?.run();
+    assert.deepEqual(aws.writes, [`unsubscribe ${TOPIC_ARN}:sub-1`]);
+    const after = await checkSesBounceFeedback(src);
+    assert.deepEqual(
+      after.map((r) => r.status),
+      ["ok", "ok", "ok", "ok"],
+    );
+  },
+);
+
+await expect(
+  "doctor --fix subscribes the credentialed endpoint and drops the plain one",
+  async () => {
+    const { aws, listmonk } = healthyAccount();
+    const src = { aws, listmonk, listmonkUrl: LISTMONK_URL, webhookCredentials: CREDS };
+    const rows = await checkSesBounceFeedback(src);
+    const sub = rows.find((r) => r.name.includes("subscription"));
+    assert.equal(sub?.status, "fail");
+    assertNoPassword([sub?.detail ?? "", sub?.repair?.prompt ?? ""]);
+    const msg = (await sub?.repair?.run()) ?? "";
+    assertNoPassword([msg]);
+    assert.deepEqual(
+      aws.topics.get(TOPIC_ARN)?.map((s) => s.endpoint),
+      [CRED_WEBHOOK],
+    );
+  },
+);
+
+await expect("Traefik labels: auth router above Listmonk's, bcrypt hash of the password", () => {
+  const labels = traefikBasicAuthLabels({
+    host: "listmonk.example.com",
+    credentials: CREDS,
+    service: "http-0-abc-listmonk",
+    compose: false,
+  });
+  const get = (suffix: string) => labels.find((l) => l.startsWith(`traefik.http.${suffix}=`));
+  const rule = "Host(`listmonk.example.com`) && PathPrefix(`/webhooks/service`)";
+  for (const r of ["listmonk-sns-https", "listmonk-sns-http"]) {
+    assert.equal(get(`routers.${r}.rule`), `traefik.http.routers.${r}.rule=${rule}`);
+    assert.equal(get(`routers.${r}.priority`), `traefik.http.routers.${r}.priority=1000`);
+    assert.ok(get(`routers.${r}.middlewares`)?.endsWith("=listmonk-sns-auth"));
+    assert.ok(get(`routers.${r}.service`)?.endsWith("=http-0-abc-listmonk"));
+  }
+  assert.ok(get("routers.listmonk-sns-https.tls.certresolver")?.endsWith("=letsencrypt"));
+  assert.ok(get("routers.listmonk-sns-https.entryPoints")?.endsWith("=https"));
+  assert.ok(get("routers.listmonk-sns-http.entryPoints")?.endsWith("=http"));
+  assert.ok(get("middlewares.listmonk-sns-auth.basicauth.removeheader")?.endsWith("=true"));
+  const users = get("middlewares.listmonk-sns-auth.basicauth.users") ?? "";
+  const [user, hash] = users.split("=")[1].split(/:(.*)/s);
+  assert.equal(user, CREDS.user);
+  assert.match(hash, /^\$2y\$10\$/);
+  assert.ok(bcrypt.compareSync(CREDS.password, hash), "hash matches the password");
+  assertNoPassword(labels);
+
+  const compose = traefikBasicAuthLabels({
+    host: "listmonk.example.com",
+    credentials: CREDS,
+    service: "s",
+    hash: "$2y$10$abc",
+  });
+  assert.ok(
+    compose.some((l) => l.endsWith(`=${CREDS.user}:$$2y$$10$$abc`)),
+    "compose escapes $",
+  );
+});
 
 console.log("\nListmonk adapter:");
 

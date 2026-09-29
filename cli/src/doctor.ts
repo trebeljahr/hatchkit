@@ -24,7 +24,12 @@ import {
 } from "./config.js";
 import { appSlugFromHtmlUrl, listUserInstallations } from "./deploy/github-app-access.js";
 import { readDeferredSteps } from "./provision/deferrals.js";
-import type { SesFeedbackAws, SesFeedbackListmonk } from "./provision/ses-feedback.js";
+import type {
+  SesFeedbackAws,
+  SesFeedbackListmonk,
+  SnsSubscription,
+  WebhookCredentials,
+} from "./provision/ses-feedback.js";
 import { CoolifyApi, verifyCoolify } from "./utils/coolify-api.js";
 import {
   dockerLoginAlreadyOk,
@@ -1127,6 +1132,7 @@ export async function checkSesBounceFeedback(source?: {
   aws: SesFeedbackAws;
   listmonk: SesFeedbackListmonk;
   listmonkUrl: string;
+  webhookCredentials?: WebhookCredentials | null;
 }): Promise<CheckResult[]> {
   const feedback = await import("./provision/ses-feedback.js");
   let src = source;
@@ -1149,12 +1155,25 @@ export async function checkSesBounceFeedback(source?: {
       // fail this row now, not after 30 s.
       listmonk: feedback.createSesFeedbackListmonk(listmonkCfg, { settleBeforeRead: false }),
       listmonkUrl: listmonkCfg.url,
+      // Read-only: doctor never generates credentials. Without any, it
+      // checks the plain webhook URL.
+      webhookCredentials: await feedback.loadWebhookCredentials(),
     };
   }
   const { aws, listmonk } = src;
   const report = await feedback.inspectSesFeedback(src);
   const topicName = report.topicName;
+  // Holds the password when there are credentials: SNS only, never output.
+  const endpoint = feedback.listmonkSesWebhookUrl(src.listmonkUrl, src.webhookCredentials);
   const out: CheckResult[] = [];
+
+  /** Remove older subscriptions of the webhook, once ours is confirmed. */
+  const removeSuperseded = async (subs: SnsSubscription[]): Promise<string> => {
+    if (subs.length === 0) return "";
+    const r = await feedback.removeSupersededSubscriptions(aws, subs);
+    if (r.error) throw r.error;
+    return `; removed ${r.removed.map((s) => feedback.redactEndpoint(s.endpoint)).join(", ")}`;
+  };
 
   /** Create (or find) the topic and subscribe the webhook. Listmonk's
    *  bounce settings go first: it confirms the subscription only with
@@ -1162,11 +1181,15 @@ export async function checkSesBounceFeedback(source?: {
   const repairSubscription = async (): Promise<string> => {
     const written = await feedback.ensureListmonkBounceSettings(listmonk);
     const arn = await aws.createTopic(topicName);
-    const sub = await feedback.ensureFeedbackSubscription(aws, arn, report.webhookUrl);
+    const sub = await feedback.ensureFeedbackSubscription(aws, arn, endpoint);
     const settings = written.length > 0 ? `; turned on ${written.join(", ")}` : "";
-    return sub.state === "confirmed"
-      ? `${topicName} → ${report.webhookUrl} subscribed and confirmed${settings}`
-      : `${topicName} → ${report.webhookUrl} subscribed; Listmonk has not confirmed it yet — re-run doctor in a minute${settings}`;
+    if (sub.state !== "confirmed") {
+      return `${topicName} → ${report.webhookUrl} subscribed; Listmonk has not confirmed it yet — re-run doctor in a minute${settings}`;
+    }
+    const removed = await removeSuperseded(
+      feedback.supersededSubscriptions(sub.subscriptions, endpoint),
+    );
+    return `${topicName} → ${report.webhookUrl} subscribed and confirmed${settings}${removed}`;
   };
   const warnRow = (name: string, probe: { error: string; iamGap: boolean }): CheckResult => ({
     name,
@@ -1258,6 +1281,21 @@ export async function checkSesBounceFeedback(source?: {
       });
     } else if (!sub.ok) {
       out.push(warnRow(name, sub));
+    } else if (sub.value === "confirmed" && report.superseded.length > 0) {
+      const list = report.superseded.map((s) => s.endpoint).join(", ");
+      out.push({
+        name,
+        status: "warn",
+        detail: `${topicName} → ${report.webhookUrl} (confirmed), but SNS also delivers to ${list}, so Listmonk gets each notification twice`,
+        hint: [
+          "Run `hatchkit doctor --fix` to remove the older subscription, or:",
+          ...report.superseded.map((s) => `  ${feedback.unsubscribeCommand(s.subscriptionArn)}`),
+        ],
+        repair: {
+          prompt: `Remove the older SNS subscription${report.superseded.length === 1 ? "" : "s"} ${list}?`,
+          run: async () => (await removeSuperseded(report.superseded)).replace(/^; r/, "R"),
+        },
+      });
     } else if (sub.value === "confirmed") {
       out.push({ name, status: "ok", detail: `${topicName} → ${report.webhookUrl} (confirmed)` });
     } else {

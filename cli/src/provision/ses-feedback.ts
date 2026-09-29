@@ -41,8 +41,20 @@
  * `migrate-domain` also uses `copyIdentityNotificationTopics`: the new
  * identity gets the old identity's topics, whatever they are, before
  * `ensureSesFeedback` fills in the types the old one did not route.
+ *
+ * Basic auth on the SNS endpoint: with `webhookCredentials`, the
+ * subscription URL carries a user and password
+ * (`https://<user>:<password>@<host>/webhooks/service/ses`), and a
+ * reverse proxy in front of Listmonk can require them on
+ * `/webhooks/service` (`hatchkit ses webhook-auth` prints the Traefik
+ * labels). Without such a proxy Listmonk takes the request as before, so
+ * the endpoint works either way. Once the credentialed
+ * subscription is confirmed, an older subscription of the same webhook
+ * is removed, so Listmonk does not get each notification twice. Output
+ * never shows the password: `webhookUrl` is always redacted.
  */
 
+import { randomBytes } from "node:crypto";
 import {
   GetIdentityNotificationAttributesCommand,
   SESClient,
@@ -59,7 +71,10 @@ import {
   ListSubscriptionsByTopicCommand,
   SNSClient,
   SubscribeCommand,
+  UnsubscribeCommand,
 } from "@aws-sdk/client-sns";
+import bcrypt from "bcryptjs";
+import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
 import {
   type ListmonkAuth,
   getListmonkSettings,
@@ -96,11 +111,101 @@ export const SES_FEEDBACK_IAM_ACTIONS = [
   "sns:CreateTopic",
   "sns:Subscribe",
   "sns:ListSubscriptionsByTopic",
+  "sns:Unsubscribe",
 ] as const;
 
-/** Listmonk's SES webhook for a stored Listmonk URL. */
-export function listmonkSesWebhookUrl(listmonkUrl: string): string {
-  return `${normalizeListmonkUrl(listmonkUrl)}/webhooks/service/ses`;
+/** Basic-auth credentials for the SNS endpoint. Both are hex, so
+ *  nothing needs escaping in a URL, an htpasswd entry or a label. */
+export interface WebhookCredentials {
+  user: string;
+  password: string;
+}
+
+export function generateWebhookCredentials(): WebhookCredentials {
+  return { user: randomBytes(12).toString("hex"), password: randomBytes(32).toString("hex") };
+}
+
+/** The stored credentials, or null when this machine has none yet.
+ *  Read-only, for doctor. */
+export async function loadWebhookCredentials(): Promise<WebhookCredentials | null> {
+  const user = (await getSecret(SECRET_KEYS.sesFeedbackWebhookUser))?.trim();
+  const password = (await getSecret(SECRET_KEYS.sesFeedbackWebhookPassword))?.trim();
+  return user && password ? { user, password } : null;
+}
+
+/** The stored credentials, generated and stored on first use. They are
+ *  never rotated here: the proxy's hash must match what SNS sends. */
+export async function ensureWebhookCredentials(): Promise<{
+  credentials: WebhookCredentials;
+  created: boolean;
+}> {
+  const existing = await loadWebhookCredentials();
+  if (existing) return { credentials: existing, created: false };
+  const credentials = generateWebhookCredentials();
+  await setSecret(SECRET_KEYS.sesFeedbackWebhookUser, credentials.user);
+  await setSecret(SECRET_KEYS.sesFeedbackWebhookPassword, credentials.password);
+  return { credentials, created: true };
+}
+
+/** Listmonk's SES webhook for a stored Listmonk URL, with the basic-auth
+ *  credentials in it when given. The result then holds the password:
+ *  pass it only to SNS, and print `redactEndpoint` of it. */
+export function listmonkSesWebhookUrl(
+  listmonkUrl: string,
+  credentials?: WebhookCredentials | null,
+): string {
+  const url = `${normalizeListmonkUrl(listmonkUrl)}/webhooks/service/ses`;
+  if (!credentials) return url;
+  return url.replace(/^(https?:\/\/)/, `$1${credentials.user}:${credentials.password}@`);
+}
+
+const USERINFO = /^(https?:\/\/)([^@/]*)@/;
+
+/** The endpoint with its password replaced by `****`. */
+export function redactEndpoint(endpoint: string): string {
+  return endpoint.replace(USERINFO, (_m, scheme: string, info: string) => {
+    const colon = info.indexOf(":");
+    return colon < 0 ? `${scheme}${info}@` : `${scheme}${info.slice(0, colon)}:****@`;
+  });
+}
+
+/** The endpoint without user or password. */
+function stripUserinfo(endpoint: string): string {
+  return endpoint.replace(USERINFO, "$1");
+}
+
+/** Whether an endpoint as SNS lists it is `endpoint`. SNS may list the
+ *  password masked, so the password is not compared. The user is, and it
+ *  is random per install. */
+export function sameEndpoint(listed: string, endpoint: string): boolean {
+  return redactEndpoint(listed) === redactEndpoint(endpoint);
+}
+
+/** Confirmed subscriptions of the same webhook under other credentials
+ *  (or none), such as the plain one from before basic auth. SNS delivers
+ *  to each, so Listmonk would count every notification twice. A pending
+ *  subscription has no ARN to remove and expires after three days. */
+export function supersededSubscriptions(
+  subs: SnsSubscription[],
+  endpoint: string,
+): SnsSubscription[] {
+  const webhook = stripUserinfo(endpoint);
+  return subs.filter(
+    (s) =>
+      s.subscriptionArn.startsWith("arn:") &&
+      stripUserinfo(s.endpoint) === webhook &&
+      !sameEndpoint(s.endpoint, endpoint),
+  );
+}
+
+/** The AWS CLI command that removes one subscription. The region is
+ *  the one in the ARN (`arn:aws:sns:<region>:…`). */
+export function unsubscribeCommand(subscriptionArn: string): string {
+  const region = subscriptionArn.split(":")[3];
+  return [
+    `aws sns unsubscribe --subscription-arn ${subscriptionArn}`,
+    ...(region ? [`--region ${region}`] : []),
+  ].join(" ");
 }
 
 /** SNS protocol for an endpoint URL: `https` unless the URL is plain http. */
@@ -137,6 +242,8 @@ export interface SesFeedbackAws {
   listSubscriptions(topicArn: string): Promise<SnsSubscription[]>;
   /** sns:Subscribe. */
   subscribe(topicArn: string, protocol: "http" | "https", endpoint: string): Promise<void>;
+  /** sns:Unsubscribe. */
+  unsubscribe(subscriptionArn: string): Promise<void>;
   /** ses:GetIdentityNotificationAttributes. Identities SES doesn't know
    *  are absent from the result. */
   getNotificationTopics(identities: string[]): Promise<Map<string, IdentityNotificationTopics>>;
@@ -280,7 +387,7 @@ export type SubscriptionState = "confirmed" | "pending" | "missing";
 
 /** State of the subscription for `endpoint` on a topic. */
 export function subscriptionState(subs: SnsSubscription[], endpoint: string): SubscriptionState {
-  const mine = subs.filter((s) => s.endpoint === endpoint);
+  const mine = subs.filter((s) => sameEndpoint(s.endpoint, endpoint));
   if (mine.some((s) => s.subscriptionArn.startsWith("arn:"))) return "confirmed";
   return mine.length > 0 ? "pending" : "missing";
 }
@@ -299,7 +406,13 @@ export async function ensureFeedbackSubscription(
   topicArn: string,
   endpoint: string,
   opts: { confirmTimeoutMs?: number; pollIntervalMs?: number } = {},
-): Promise<{ state: SubscriptionState; subscribed: boolean; topicArn: string }> {
+): Promise<{
+  state: SubscriptionState;
+  subscribed: boolean;
+  topicArn: string;
+  /** The topic's subscriptions as last listed. */
+  subscriptions: SnsSubscription[];
+}> {
   let arn = topicArn;
   let subs: SnsSubscription[];
   try {
@@ -310,15 +423,42 @@ export async function ensureFeedbackSubscription(
     subs = [];
   }
   let state = subscriptionState(subs, endpoint);
-  if (state === "confirmed") return { state, subscribed: false, topicArn: arn };
+  if (state === "confirmed") {
+    return { state, subscribed: false, topicArn: arn, subscriptions: subs };
+  }
   await aws.subscribe(arn, snsProtocolFor(endpoint), endpoint);
   const deadline = Date.now() + (opts.confirmTimeoutMs ?? 20_000);
   for (;;) {
-    state = subscriptionState(await aws.listSubscriptions(arn), endpoint);
+    subs = await aws.listSubscriptions(arn);
+    state = subscriptionState(subs, endpoint);
     if (state === "confirmed" || Date.now() >= deadline) break;
     await sleep(opts.pollIntervalMs ?? 2_000);
   }
-  return { state: state === "missing" ? "pending" : state, subscribed: true, topicArn: arn };
+  return {
+    state: state === "missing" ? "pending" : state,
+    subscribed: true,
+    topicArn: arn,
+    subscriptions: subs,
+  };
+}
+
+/** Remove superseded subscriptions, one at a time. Stops at the first
+ *  failure; what is left comes back in `left` with the error. Call only
+ *  once the replacement is confirmed, or Listmonk gets nothing. */
+export async function removeSupersededSubscriptions(
+  aws: SesFeedbackAws,
+  superseded: SnsSubscription[],
+): Promise<{ removed: SnsSubscription[]; left: SnsSubscription[]; error: unknown }> {
+  const removed: SnsSubscription[] = [];
+  for (const [i, s] of superseded.entries()) {
+    try {
+      await aws.unsubscribe(s.subscriptionArn);
+      removed.push(s);
+    } catch (error) {
+      return { removed, left: superseded.slice(i), error };
+    }
+  }
+  return { removed, left: [], error: null };
 }
 
 export interface IdentityTopicsOutcome {
@@ -373,6 +513,9 @@ export interface EnsureSesFeedbackOptions {
   identity: string;
   /** Stored Listmonk URL; the webhook URL is derived from it. */
   listmonkUrl: string;
+  /** Basic-auth credentials for the SNS endpoint. Without them the
+   *  plain webhook URL is subscribed. */
+  webhookCredentials?: WebhookCredentials | null;
   aws: SesFeedbackAws;
   listmonk: SesFeedbackListmonk;
   /** SES region, for the `--region` of printed AWS CLI commands. */
@@ -385,7 +528,10 @@ export interface EnsureSesFeedbackOptions {
 
 export interface SesFeedbackResult {
   identity: string;
+  /** The subscribed endpoint, password redacted. */
   webhookUrl: string;
+  /** Whether the endpoint carries basic-auth credentials. */
+  credentialed: boolean;
   /** Null when the topic could not be created or found. */
   topicArn: string | null;
   subscription: SubscriptionState | null;
@@ -400,6 +546,10 @@ export interface SesFeedbackResult {
   manualTopics: ManualNotificationTopic[];
   suppressionAdded: string[];
   listmonkSettingsWritten: string[];
+  /** Older subscriptions of the same webhook this run removed, and the
+   *  ones it could not (password redacted in both). */
+  supersededRemoved: string[];
+  supersededLeft: Array<{ subscriptionArn: string; endpoint: string }>;
   /** One line per step that failed. Provisioning continues past them. */
   warnings: string[];
   /** True when any warning was an IAM permission gap. */
@@ -420,10 +570,11 @@ export async function ensureSesFeedback(
   opts: EnsureSesFeedbackOptions,
 ): Promise<SesFeedbackResult> {
   const { aws, listmonk, identity } = opts;
-  const webhookUrl = listmonkSesWebhookUrl(opts.listmonkUrl);
+  const endpoint = listmonkSesWebhookUrl(opts.listmonkUrl, opts.webhookCredentials);
   const result: SesFeedbackResult = {
     identity,
-    webhookUrl,
+    webhookUrl: redactEndpoint(endpoint),
+    credentialed: Boolean(opts.webhookCredentials),
     topicArn: null,
     subscription: null,
     subscribedThisRun: false,
@@ -432,6 +583,8 @@ export async function ensureSesFeedback(
     manualTopics: [],
     suppressionAdded: [],
     listmonkSettingsWritten: [],
+    supersededRemoved: [],
+    supersededLeft: [],
     warnings: [],
     iamGap: false,
     region: opts.region,
@@ -466,13 +619,26 @@ export async function ensureSesFeedback(
   }
 
   if (result.topicArn) {
+    let superseded: SnsSubscription[] = [];
     try {
-      const sub = await ensureFeedbackSubscription(aws, result.topicArn, webhookUrl, opts);
+      const sub = await ensureFeedbackSubscription(aws, result.topicArn, endpoint, opts);
       result.topicArn = sub.topicArn;
       result.subscription = sub.state;
       result.subscribedThisRun = sub.subscribed;
+      if (sub.state === "confirmed") {
+        superseded = supersededSubscriptions(sub.subscriptions, endpoint);
+      }
     } catch (err) {
       warn(err, "sns:ListSubscriptionsByTopic / sns:Subscribe");
+    }
+    if (superseded.length > 0) {
+      const out = await removeSupersededSubscriptions(aws, superseded);
+      result.supersededRemoved = out.removed.map((s) => redactEndpoint(s.endpoint));
+      result.supersededLeft = out.left.map((s) => ({
+        subscriptionArn: s.subscriptionArn,
+        endpoint: redactEndpoint(s.endpoint),
+      }));
+      if (out.error) warn(out.error, "sns:Unsubscribe");
     }
   }
 
@@ -535,6 +701,21 @@ export function renderSesFeedbackLines(
     out.push({
       level: "info",
       text: `· SES account suppression list now includes ${r.suppressionAdded.join(" + ")}`,
+    });
+  }
+  for (const e of r.supersededRemoved) {
+    out.push({ level: "info", text: `· SNS: removed the older subscription ${e}` });
+  }
+  if (r.subscribedThisRun && r.credentialed) {
+    out.push({
+      level: "info",
+      text: "· The SNS endpoint carries basic-auth credentials. `hatchkit ses webhook-auth` prints the Traefik labels that require them.",
+    });
+  }
+  for (const s of r.supersededLeft) {
+    out.push({
+      level: "warn",
+      text: `SNS also delivers to ${s.endpoint}, so Listmonk gets each notification twice. Remove it: ${unsubscribeCommand(s.subscriptionArn)}`,
     });
   }
   if (r.subscription === "pending") {
@@ -768,6 +949,9 @@ export interface SesFeedbackInspection {
   /** Null when `topicArn` is null. `topic-missing` when SNS says the
    *  topic no longer exists. */
   subscription: Probe<SubscriptionState | "topic-missing"> | null;
+  /** Confirmed subscriptions of the same webhook under other
+   *  credentials, from the same read. Their endpoints are redacted. */
+  superseded: SnsSubscription[];
   suppression: Probe<string[]>;
   listmonkSettings: Probe<string[]>;
 }
@@ -777,11 +961,13 @@ export async function inspectSesFeedback(opts: {
   aws: SesFeedbackAws;
   listmonk: SesFeedbackListmonk;
   listmonkUrl: string;
+  webhookCredentials?: WebhookCredentials | null;
   topicName?: string;
 }): Promise<SesFeedbackInspection> {
   const { aws, listmonk } = opts;
   const topicName = opts.topicName ?? SES_FEEDBACK_TOPIC_NAME;
-  const webhookUrl = listmonkSesWebhookUrl(opts.listmonkUrl);
+  const endpoint = listmonkSesWebhookUrl(opts.listmonkUrl, opts.webhookCredentials);
+  const webhookUrl = redactEndpoint(endpoint);
 
   // Assigned inside the probe callback; the cast keeps TS from
   // narrowing it to `null` for the rest of the function.
@@ -809,11 +995,17 @@ export async function inspectSesFeedback(opts: {
   );
 
   let subscription: SesFeedbackInspection["subscription"] = null;
+  let superseded: SnsSubscription[] = [];
   if (topicArn) {
     const arn = topicArn;
     subscription = await probe("sns:ListSubscriptionsByTopic", async () => {
       try {
-        return subscriptionState(await aws.listSubscriptions(arn), webhookUrl);
+        const subs = await aws.listSubscriptions(arn);
+        superseded = supersededSubscriptions(subs, endpoint).map((s) => ({
+          ...s,
+          endpoint: redactEndpoint(s.endpoint),
+        }));
+        return subscriptionState(subs, endpoint);
       } catch (err) {
         if (isNotFound(err)) return "topic-missing" as const;
         throw err;
@@ -838,9 +1030,79 @@ export async function inspectSesFeedback(opts: {
     identities,
     topicArn,
     subscription,
+    superseded,
     suppression,
     listmonkSettings,
   };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Traefik basic auth (for `hatchkit ses webhook-auth`)
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface TraefikBasicAuthOptions {
+  /** Listmonk's public hostname. */
+  host: string;
+  credentials: WebhookCredentials;
+  /** The Traefik service Listmonk's own router uses (the name in its
+   *  `traefik.http.services.<name>.loadbalancer.server.port` label). */
+  service: string;
+  /** Same as Listmonk's own HTTPS router. Coolify uses `letsencrypt`. */
+  certResolver?: string;
+  httpsEntryPoint?: string;
+  httpEntryPoint?: string;
+  /** Prefix for the router and middleware names. */
+  name?: string;
+  /** Above Listmonk's own routers. Traefik's default priority is the
+   *  rule's length, well below this. */
+  priority?: number;
+  /** Double every `$` for a docker-compose file, which would otherwise
+   *  read the bcrypt hash as variables. Default true. */
+  compose?: boolean;
+  /** A precomputed htpasswd hash; tests pass one. */
+  hash?: string;
+}
+
+/** htpasswd bcrypt hash of the password. `$2y$` is the prefix Apache's
+ *  `htpasswd -B` writes; the algorithm is the same as `$2b$`. */
+export function htpasswdBcrypt(password: string): string {
+  return bcrypt.hashSync(password, 10).replace(/^\$2[ab]\$/, "$2y$");
+}
+
+/**
+ * Docker labels that put `/webhooks/service` on Listmonk's host behind
+ * basic auth: one router per entry point with an explicit priority and a
+ * `basicAuth` middleware. The middleware drops the Authorization header
+ * before the request reaches Listmonk. Every other path still goes
+ * through Listmonk's own routers.
+ */
+export function traefikBasicAuthLabels(o: TraefikBasicAuthOptions): string[] {
+  const name = o.name ?? "listmonk-sns";
+  const middleware = `${name}-auth`;
+  const priority = o.priority ?? 1000;
+  const hash = o.hash ?? htpasswdBcrypt(o.credentials.password);
+  const rule = `Host(\`${o.host}\`) && PathPrefix(\`/webhooks/service\`)`;
+  const router = (suffix: string, entryPoint: string, tls: string[]) => {
+    const r = `traefik.http.routers.${name}-${suffix}`;
+    return [
+      `${r}.rule=${rule}`,
+      `${r}.entryPoints=${entryPoint}`,
+      `${r}.priority=${priority}`,
+      ...tls.map((t) => `${r}.${t}`),
+      `${r}.middlewares=${middleware}`,
+      `${r}.service=${o.service}`,
+    ];
+  };
+  const labels = [
+    `traefik.http.middlewares.${middleware}.basicauth.users=${o.credentials.user}:${hash}`,
+    `traefik.http.middlewares.${middleware}.basicauth.removeheader=true`,
+    ...router("https", o.httpsEntryPoint ?? "https", [
+      "tls=true",
+      `tls.certresolver=${o.certResolver ?? "letsencrypt"}`,
+    ]),
+    ...router("http", o.httpEntryPoint ?? "http", []),
+  ];
+  return o.compose === false ? labels : labels.map((l) => l.replaceAll("$", "$$$$"));
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -890,6 +1152,9 @@ export function createSesFeedbackAws(auth: SesAuth): SesFeedbackAws {
       await sns.send(
         new SubscribeCommand({ TopicArn: topicArn, Protocol: protocol, Endpoint: endpoint }),
       );
+    },
+    async unsubscribe(subscriptionArn) {
+      await sns.send(new UnsubscribeCommand({ SubscriptionArn: subscriptionArn }));
     },
     async getNotificationTopics(identities) {
       const out = new Map<string, IdentityNotificationTopics>();
