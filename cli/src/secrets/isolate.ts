@@ -130,6 +130,30 @@ const tagOf = (ref: string): string => {
   return colon > slash ? ref.slice(colon + 1) : "latest";
 };
 
+/** The `*_IMAGE` variables of a compose app to point at `:live`, as
+ *  key → the image reference it holds now.
+ *
+ *  Only PRODUCTION rows count. GET /envs returns production and preview
+ *  rows in one list, and the same key can hold a different image in
+ *  each — a preview copy left over from an old image name, say. Read
+ *  together, whichever row came last would decide both the tag seeded
+ *  and the value written to the production variable (setAppEnv writes
+ *  production rows), pointing the app at another package's `:live`. A
+ *  row whose value Coolify withheld is skipped too: unknown is not a
+ *  reference to seed from. */
+export function composeImageVarsToSwitch(
+  rows: ReadonlyArray<{ key: string; value: string | undefined; isPreview: boolean }>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const r of rows) {
+    if (r.isPreview || r.value === undefined || !/_IMAGE$/.test(r.key)) continue;
+    if (!/^[\w.-]+(:\d+)?\/[\w./-]+(:[\w.-]+)?$/.test(r.value)) continue;
+    if (tagOf(r.value) === LIVE_TAG) continue;
+    out[r.key] = r.value;
+  }
+  return out;
+}
+
 export async function isolateProject(
   projectDir: string,
   opts: IsolateOptions,
@@ -218,14 +242,12 @@ export async function isolateProject(
             }
             result.live.push(`${label}: ${image}:${LIVE_TAG} (from :${from})`);
           } else {
-            const envs = await api.listAppEnvs(app.uuid);
+            const current = composeImageVarsToSwitch(await api.listAppEnvRows(app.uuid));
             const updates: Record<string, string> = {};
-            for (const e of envs) {
-              if (!/_IMAGE$/.test(e.key) || !/^[\w.-]+(:\d+)?\/[\w./-]+(:[\w.-]+)?$/.test(e.value)) continue;
-              if (tagOf(e.value) === LIVE_TAG) continue;
-              if (!opts.dryRun && auth) await seedLive(e.value, tagOf(e.value), auth);
-              updates[e.key] = withLiveTag(e.value);
-              result.live.push(`${label}: ${e.key}=${withLiveTag(e.value)} (from :${tagOf(e.value)})`);
+            for (const [key, value] of Object.entries(current)) {
+              if (!opts.dryRun && auth) await seedLive(value, tagOf(value), auth);
+              updates[key] = withLiveTag(value);
+              result.live.push(`${label}: ${key}=${withLiveTag(value)} (from :${tagOf(value)})`);
             }
             if (!opts.dryRun && Object.keys(updates).length > 0) await api.setAppEnv(app.uuid, updates);
           }

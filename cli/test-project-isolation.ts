@@ -53,6 +53,7 @@ const { parseBearerChallenge, parseImageName, promoteTag } = await import(
 const { findProvisionerSecretNames, findProvisionerValuesInEnv, findWorkflowTokenReads } =
   await import("./src/secrets/isolation.js");
 const { workflowsReading } = await import("./src/deploy/gh-actions-secrets.js");
+const { composeImageVarsToSwitch } = await import("./src/secrets/isolate.js");
 
 const failures: string[] = [];
 async function check(label: string, fn: () => void | Promise<void>): Promise<void> {
@@ -467,6 +468,26 @@ await check("workflow scans: who reads the token, who promotes :live", () => {
   const reads = findWorkflowTokenReads(dir);
   assert.equal(reads.length, 1);
   assert.equal(reads[0].where, ".github/workflows/old.yml");
+});
+
+await check("the :live switch reads only production image variables", () => {
+  // A preview copy of the same key, left on an old image name, came after
+  // the production row and used to decide both the tag seeded and the
+  // value written to the production variable.
+  const rows = [
+    { key: "CLIENT_IMAGE", value: `ghcr.io/acme/app-client:${SHA}`, isPreview: false },
+    { key: "CLIENT_IMAGE", value: "ghcr.io/acme/old-client:1234", isPreview: true },
+    { key: "SERVER_IMAGE", value: undefined, isPreview: false },
+    { key: "APP_IMAGE", value: "ghcr.io/acme/app:live", isPreview: false },
+    { key: "MONGODB_URI", value: "mongodb://user:pass@db/app", isPreview: false },
+    { key: "OTHER_IMAGE", value: "not an image ref", isPreview: false },
+  ];
+  assert.deepEqual(composeImageVarsToSwitch(rows), {
+    CLIENT_IMAGE: `ghcr.io/acme/app-client:${SHA}`,
+  });
+  assert.deepEqual(composeImageVarsToSwitch([...rows].reverse()), {
+    CLIENT_IMAGE: `ghcr.io/acme/app-client:${SHA}`,
+  });
 });
 
 // ── 4. The registry ───────────────────────────────────────────────────
