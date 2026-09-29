@@ -1252,8 +1252,8 @@ export async function getCloudflareProvisioner(): Promise<CloudflareProvisioner 
   };
 }
 
-/** Verify a provisioner token: live, can mint account tokens, can read
- *  Workers. Same probes as doctor's check, so the two never disagree. */
+/** Verify an active provisioner and its read access. These probes do not
+ *  prove token-minting or Worker-write permission. */
 export async function verifyCloudflareProvisionerToken(
   token: string,
   accountId: string,
@@ -1422,9 +1422,8 @@ export interface CloudflareDeployTokenRecord {
   tokenId: string;
   tokenName: string;
   /** `worker`: Individual Workers Editor on this Worker only.
-   *  `account`: Workers Scripts Write on the whole account — the fallback
-   *  from legacy records. Revocable on its own,
-   *  but not isolated; doctor flags it. */
+   *  `account`: legacy Workers Scripts Write on the whole account.
+   *  Revocable on its own, but not isolated; doctor flags it. */
   scope: "worker" | "account";
   /** `owner/repo` that holds it as `CLOUDFLARE_API_TOKEN`. */
   repo: string;

@@ -269,7 +269,10 @@ export function findCloudflareDeployTokenFindings(input: {
       },
     ];
   }
-  return [];
+  return [{
+    severity: "warn", provider: "cloudflare", where,
+    what: `${name} is scoped to Worker ${input.worker}; runtime bindings and cross-resource binding authorization are outside this audit`,
+  }];
 }
 
 /** Workflows that read a provisioner-token secret. */
@@ -392,7 +395,7 @@ export async function auditProjectIsolation(
     const { listRepoSecrets, repoSlugFromRemote } = await import("../deploy/gh-actions-secrets.js");
     repo = remote.exitCode === 0 ? repoSlugFromRemote(remote.stdout.trim()) : undefined;
     const secrets = repo ? await listRepoSecrets(repo) : null;
-    if (repo && !secrets) {
+    if (repo && !secrets && existsSync(join(projectDir, "wrangler.jsonc"))) {
       findings.push({
         severity: "warn",
         provider: "cloudflare",

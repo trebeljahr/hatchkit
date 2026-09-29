@@ -295,9 +295,9 @@ try {
       })[0].severity,
       "fail",
     );
-    assert.deepEqual(
-      findCloudflareDeployTokenFindings({ ...base, token: { status: "active", scope: "worker" } }),
-      [],
+    assert.match(
+      findCloudflareDeployTokenFindings({ ...base, token: { status: "active", scope: "worker" } })[0].what,
+      /bindings.*outside this audit/,
     );
   });
   await test("propagation retries are bounded and cannot skip validation", async () => {

@@ -40,7 +40,9 @@ Doctor runs read probes. Passing these probes does not prove write access.
 CI receives **Editor on one existing Worker**, with no DNS or zone permissions.
 [Cloudflare documents per-Worker roles](https://developers.cloudflare.com/workers/authorization/workers/).
 Editor can deploy, change settings, manage secrets, and rename that Worker. It cannot create or delete Workers.
-Deployed code can use the Worker's runtime bindings. Review bindings before claiming isolation from other projects.
+Deployed code can use the Worker's runtime bindings. Cloudflare does not require separate resource grants when deploying a Worker with bindings.
+Per-Worker scope therefore verifies Worker management access. It does not prove complete isolation from other projects' data.
+Before rollout, verify whether this token can add bindings to unrelated resources. Doctor leaves this boundary marked as unverified.
 
 Hatchkit reads back each minted policy and checks access before publishing its value to GitHub.
 A rejected policy stops setup. Hatchkit never falls back to account-wide permissions.
