@@ -705,12 +705,13 @@ export async function probeListmonk(auth: ListmonkAuth): Promise<{ listCount: nu
 // Users (Listmonk v4+) — used by `hatchkit secrets rotate --global listmonk`
 //
 // Listmonk mints an API user's token once, in the `POST /api/users`
-// response (`data.password`), and has no endpoint that regenerates it
-// (checked against v6.0.0: `UpdateUser` keeps an API user's stored token
-// hash). Rotation therefore creates a replacement user with the same
-// role, then renames it to the old name once the old user is deleted —
-// the rename keeps the token (`update-user` only rewrites the password
-// column for non-API users).
+// response (`data.password`), and has no endpoint that regenerates it.
+// The token is stored in plain text in the `password` column. Never
+// `PUT /api/users/:id` an API user: `update-user` (v4.0 through v6.1)
+// sets `password` to NULL whenever `password_login` is false, which
+// wipes the token — a rename on 2026-09-29 broke every consumer. v6.2
+// keeps it, but older servers are still in use. Rotation therefore
+// creates a replacement user and keeps its name.
 //
 // `users:get` / `users:manage` are needed for everything but
 // `/api/profile`, which any user may read about itself.
@@ -777,23 +778,6 @@ export async function createListmonkApiUser(
     throw new Error("Listmonk created the API user but returned no token");
   }
   return { id: d.id, username: d.username, token: d.password };
-}
-
-/** Rename an API user, keeping its role and its token. */
-export async function renameListmonkApiUser(
-  auth: ListmonkAuth,
-  id: number,
-  params: { username: string; name: string; userRoleId: number; listRoleId: number | null },
-): Promise<void> {
-  await listmonkFetch<unknown>(auth, "PUT", `/api/users/${id}`, {
-    username: params.username,
-    name: params.name,
-    type: "api",
-    status: "enabled",
-    password_login: false,
-    user_role_id: params.userRoleId,
-    ...(params.listRoleId ? { list_role_id: params.listRoleId } : {}),
-  });
 }
 
 /** Delete a user by id. Idempotent: a missing user is "not-found". */

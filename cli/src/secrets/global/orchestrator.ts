@@ -17,6 +17,14 @@
  *
  * `immediate` here means "revoke as soon as the new credential
  * verifies, before the fan-out" — the fan-out is the slow part.
+ *
+ * A revoke proves its own result (the old credential rejected, the new
+ * one accepted). When it cannot, it throws a `RevokeError` with the
+ * measured state, and the audit prints that state and the recovery
+ * steps instead of guessing. If the new credential stopped working
+ * (outcome `broken`), the rollback blob is rewritten to name what the
+ * consumers now hold, so `--resume` can replace it once the recovery
+ * steps put a working credential in the keychain.
  */
 
 import chalk from "chalk";
@@ -31,16 +39,18 @@ import {
   defaultProjectRoots,
   discoverCoolifyApps,
   discoverProjects,
+  planCoolifyApp,
   planProject,
 } from "./consumers.js";
 import { listmonkRotator } from "./listmonk.js";
 import { sesRotator } from "./ses.js";
-import type {
-  ConsumerAuditEntry,
-  GlobalCredentialName,
-  GlobalRotationAudit,
-  GlobalRotationContext,
-  GlobalRotator,
+import {
+  type ConsumerAuditEntry,
+  type GlobalCredentialName,
+  type GlobalRotationAudit,
+  type GlobalRotationContext,
+  type GlobalRotator,
+  RevokeError,
 } from "./types.js";
 
 export const GLOBAL_ROTATORS: Readonly<Record<GlobalCredentialName, GlobalRotator>> = {
@@ -192,9 +202,7 @@ export async function runGlobalRotate(opts: RunGlobalRotateOptions): Promise<Glo
 
   const planned: ConsumerAuditEntry[] = [
     ...plans.map((p) => p.entry),
-    ...coolify.apps.map(
-      (a): ConsumerAuditEntry => ({ kind: "coolify-app", name: a.name, keys: a.keys, status: "planned" }),
-    ),
+    ...coolify.apps.map((a) => planCoolifyApp(a, rotator)),
     ...services,
   ];
 
@@ -268,7 +276,7 @@ export async function runGlobalRotate(opts: RunGlobalRotateOptions): Promise<Glo
       results.push(plan.entry);
     }
   }
-  for (const app of coolify.apps) results.push(await applyCoolifyApp(app, fresh));
+  for (const app of coolify.apps) results.push(await applyCoolifyApp(app, rotator, fresh));
   if (rotator.updateServices) results.push(...(await rotator.updateServices(ctx, old, fresh)));
   audit.consumers = results;
 
@@ -283,19 +291,30 @@ export async function runGlobalRotate(opts: RunGlobalRotateOptions): Promise<Glo
     }
   }
 
-  if (audit.oldRevoked === true && failed.length === 0 && pending.length === 0) {
+  if (audit.outcome === "broken") {
+    // The rollback blob now names what consumers hold (safeRevoke).
+    const holding = results.filter((r) => r.status === "updated").map((r) => r.name);
+    audit.notes.push(
+      `Consumers holding the rejected ${rotator.name} credential: ${holding.length > 0 ? holding.join(", ") : "none updated in this run"}.`,
+    );
+  } else if (audit.oldRevoked === true && failed.length === 0 && pending.length === 0) {
     await clearRollback(GLOBAL_ROLLBACK_SCOPE, rotator.name);
   } else {
     audit.outcome = "partial";
     const resume = `hatchkit secrets rotate --global ${rotator.name} --resume`;
-    audit.nextSteps.push(
-      failed.length > 0 || pending.length > 0 || audit.oldRevoked === false
-        ? `Fix what failed or was skipped, then run \`${resume}\` to update the remaining consumers and revoke the old credential.`
-        : `The old credential is still active (--revoke-old=${revokePolicy}). Once every consumer runs on the new one, run \`${resume}\` to revoke it.`,
-    );
+    // A measured revoke failure already said what to do.
+    if (failed.length > 0 || pending.length > 0 || !audit.revokeReport) {
+      audit.nextSteps.push(
+        failed.length > 0 || pending.length > 0 || audit.oldRevoked === false
+          ? `Fix what failed or was skipped, then run \`${resume}\` to update the remaining consumers and revoke the old credential.`
+          : `The old credential is still active (--revoke-old=${revokePolicy}). Once every consumer runs on the new one, run \`${resume}\` to revoke it.`,
+      );
+    }
   }
   if (rotator.finish) audit.nextSteps.push(...(await rotator.finish(ctx)));
-  audit.nextSteps.unshift(...consumerNextSteps(results));
+  // Broken: recovery comes first, and committing a dead credential is
+  // not a step — the resume after recovery lists the commits.
+  if (audit.outcome !== "broken") audit.nextSteps.unshift(...consumerNextSteps(results));
   return finish(audit, opts);
 }
 
@@ -324,7 +343,20 @@ async function safeRevoke(
     return true;
   } catch (err) {
     audit.notes.push(`Revoking the old credential failed: ${redactErrorMessage((err as Error).message)}`);
-    return false;
+    if (!(err instanceof RevokeError)) return false;
+    const { state } = err;
+    audit.revokeReport = { old: state.oldStatus, new: state.newStatus, newWorks: state.newWorks };
+    audit.nextSteps.push(...state.recovery);
+    if (!state.newWorks) {
+      audit.outcome = "broken";
+      if (state.consumersHold) {
+        await saveRollback(GLOBAL_ROLLBACK_SCOPE, rotator.name, {
+          values: state.consumersHold.values,
+          handle: { ...state.consumersHold.handle, ...prefixKeys("new.", fresh.handle) },
+        });
+      }
+    }
+    return state.oldRevoked;
   }
 }
 
@@ -399,17 +431,24 @@ export function renderGlobalAuditHuman(audit: GlobalRotationAudit): void {
     const verify =
       audit.verificationResult === "ok" ? chalk.green("ok") : audit.verificationResult === "failed" ? chalk.red("failed") : chalk.dim("skipped");
     console.log(`  verify: ${verify}`);
-    const revoke =
-      audit.oldRevoked === true
+    const report = audit.revokeReport;
+    const revoke = report
+      ? (audit.oldRevoked === true ? chalk.green : chalk.red)(report.old)
+      : audit.oldRevoked === true
         ? chalk.green("old credential revoked")
         : audit.oldRevoked === false
           ? chalk.red("revoke failed — the old credential may still work")
           : chalk.yellow("old credential held (rollback blob kept in the keychain)");
     console.log(`  revoke: ${revoke}`);
+    if (report) console.log(`  new:    ${(report.newWorks ? chalk.green : chalk.red)(report.new)}`);
   }
   if (audit.nextSteps.length > 0) {
     console.log("");
-    console.log(chalk.bold(audit.dryRun ? "  Before a live run:" : "  Next steps (hatchkit never pushes):"));
+    console.log(
+      audit.outcome === "broken"
+        ? chalk.red.bold(`  ${audit.credential} calls fail until you recover:`)
+        : chalk.bold(audit.dryRun ? "  Before a live run:" : "  Next steps (hatchkit never pushes):"),
+    );
     for (const step of audit.nextSteps) console.log(`  ${step}`);
   }
   console.log("");

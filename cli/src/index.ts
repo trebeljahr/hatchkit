@@ -3822,11 +3822,13 @@ function printHelp(topic?: HelpTopic): void {
                     keychain ses:*, ListMonk SMTP login. Needs IAM rights
                     over its own keys (the command prints the policy to
                     attach) or a one-off admin key pasted at the prompt.
-    ${chalk.cyan("listmonk")}        API user → LISTMONK_API_TOKEN, keychain listmonk:api-token.
-                    ListMonk cannot regenerate a token: hatchkit creates a
-                    replacement user with the same role, deletes the old
-                    one, renames the replacement to the old name. Needs a
-                    one-off admin API user (users:get + users:manage).
+    ${chalk.cyan("listmonk")}        API user → LISTMONK_API_USER + LISTMONK_API_TOKEN, keychain
+                    listmonk:api-token. ListMonk cannot regenerate a token,
+                    and renaming an API user wipes it (v4.0–v6.1): hatchkit
+                    creates <name>-rotate-<stamp> with the same role, writes
+                    the new name and token everywhere, deletes the old user
+                    and checks both. Needs a one-off admin API user
+                    (users:get + users:manage).
 
   ${chalk.bold("Flags (rotate):")}
     --providers <list>         Per project: comma list of adapter names,
@@ -3837,7 +3839,7 @@ function printHelp(topic?: HelpTopic): void {
     --revoke-old=<policy>      ${chalk.cyan("after-verify")} (default): revoke the OLD
                                credential after verify (global: after
                                every consumer is updated).
-                               ${chalk.cyan("never")}: leave it live (not for listmonk).
+                               ${chalk.cyan("never")}: leave it live.
                                ${chalk.cyan("immediate")}: per project, revoke before
                                verify; global, right after verify and
                                before the fan-out.
@@ -3885,6 +3887,8 @@ function printHelp(topic?: HelpTopic): void {
     the apps to redeploy. Until they redeploy, apps keep the old value.
     A failed verify leaves the OLD credential live; rollback blobs sit
     under keychain account ${chalk.dim("secrets-rollback:<project|@global>:<name>")}.
+    A pasted one-off admin credential is checked first: its shape, then
+    the identity it authenticates as. A mismatch stops the run.
     The Stripe webhook secret has no API roll (dashboard only), so it
     is not rotated here.
 `);

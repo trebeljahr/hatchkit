@@ -22,7 +22,7 @@ export type GlobalCredentialName = "ses" | "listmonk";
  *  a project holds. */
 export const SHARED_CREDENTIAL_KEYS: Readonly<Record<GlobalCredentialName, readonly string[]>> = {
   ses: ["SES_SMTP_USERNAME", "SES_SMTP_PASSWORD"],
-  listmonk: ["LISTMONK_API_TOKEN"],
+  listmonk: ["LISTMONK_API_USER", "LISTMONK_API_TOKEN"],
 };
 
 export interface GlobalRotationContext {
@@ -52,7 +52,9 @@ export interface GlobalRotator {
   readonly name: GlobalCredentialName;
   readonly label: string;
   /** Env names each consumer holds for this credential. The rotated
-   *  values come from `NewCred.values` under the same names. */
+   *  values come from `NewCred.values` under the same names. They work
+   *  only as a set (a ListMonk token authenticates only under its own
+   *  user name), so a consumer holding any of them gets all of them. */
   readonly consumerKeys: readonly string[];
   /** The env name whose CURRENT value identifies a copy of the old
    *  credential. A local consumer is rewritten only when its value
@@ -89,10 +91,39 @@ export interface GlobalRotator {
   ): Promise<ConsumerAuditEntry[]>;
   /** Describe `updateServices` for the plan without mutating. */
   planServices?(ctx: GlobalRotationContext): Promise<ConsumerAuditEntry[]>;
+  /** Revoke the old credential, then prove the new one still works.
+   *  Throw a `RevokeError` when the state afterwards is known, so the
+   *  audit reports it instead of guessing. */
   revoke(ctx: GlobalRotationContext, old: OldCred, fresh: NewCred): Promise<void>;
   /** After a successful run: cleanup such as offering to delete a
    *  one-off admin user. Returns lines for `nextSteps`. */
   finish?(ctx: GlobalRotationContext): Promise<string[]>;
+}
+
+/** A revoke that stopped partway, with the state it left behind. */
+export class RevokeError extends Error {
+  constructor(
+    message: string,
+    readonly state: {
+      /** The old credential no longer authenticates. */
+      oldRevoked: boolean;
+      /** The new credential still authenticates. False means every
+       *  consumer that got it is down until `recovery` is done. */
+      newWorks: boolean;
+      /** One value-free line each on what exists now. */
+      oldStatus: string;
+      newStatus: string;
+      /** Exact steps back to a working setup, in order. */
+      recovery: string[];
+      /** What consumers now hold, when that is no longer the old
+       *  credential: `--resume` replaces this with the keychain's
+       *  credential once the recovery steps put a working one there. */
+      consumersHold?: OldCred;
+    },
+  ) {
+    super(message);
+    this.name = "RevokeError";
+  }
 }
 
 export type ConsumerStatus = "planned" | "updated" | "unchanged" | "skipped" | "failed";
@@ -126,6 +157,9 @@ export type GlobalRotationOutcome =
   /** New credential live, but a consumer failed or revoke was held or
    *  failed. `--resume` finishes it. */
   | "partial"
+  /** After the revoke the new credential no longer authenticates:
+   *  consumers holding it are down. `nextSteps` holds the recovery. */
+  | "broken"
   | "done";
 
 export interface GlobalRotationAudit {
@@ -137,6 +171,8 @@ export interface GlobalRotationAudit {
   resumed: boolean;
   verificationResult: VerifyOutcome;
   oldRevoked: boolean | "held";
+  /** Set when revoke stopped partway and measured what it left. */
+  revokeReport?: { old: string; new: string; newWorks: boolean };
   consumers: ConsumerAuditEntry[];
   notes: string[];
   nextSteps: string[];

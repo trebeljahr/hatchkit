@@ -15,11 +15,31 @@
  *       changes.
  *   G5. SES consumer failure holds the old key; --resume finishes.
  *   G6. SES with two keys already: blocked.
- *   L1. ListMonk live: replacement user, old user deleted, replacement
- *       renamed to the old name, LISTMONK_API_TOKEN fanned out, one user.
+ *   L1. ListMonk live: replacement user keeps its own name, the old user
+ *       is deleted after the fan-out, no user is ever updated, and every
+ *       consumer's LISTMONK_API_USER + LISTMONK_API_TOKEN authenticates —
+ *       also Coolify app tracktime-server, which held only the token.
+ *       The fake models ListMonk v4.0–v6.1: updating an API user wipes
+ *       its token (L1b), which is what broke the 2026-09-29 run.
  *   L2. ListMonk without users:manage, non-interactive: blocked with the
  *       one-off admin instructions.
- *   L3. ListMonk refuses --revoke-old=never.
+ *   L3. ListMonk --revoke-old=never: both users live, then --resume
+ *       deletes the old one.
+ *   L4. The replacement's token dies after the delete: outcome broken,
+ *       the real state and recovery steps, never "may still work";
+ *       --resume refuses a dead keychain pair, then fans out the pair a
+ *       `config add listmonk` stored.
+ *   L5. The rollback blob the 2026-09-29 run left, after a fix by hand:
+ *       --resume adopts the working keychain pair and finishes.
+ *   L6. ListMonk down on --resume: says so, and does not send the
+ *       operator recreating users.
+ *   P1. Paste shape feedback: length, characters, stray spaces, quotes;
+ *       never the secret.
+ *   P2. One-off ListMonk admin paste: shape lines, `✔ authenticated as`,
+ *       rotation done, admin deleted, replacement still works.
+ *   P3. ListMonk paste mismatches refuse before anything is created.
+ *   P4. One-off AWS admin key paste: shape lines, STS caller identity;
+ *       a key from another account refuses.
  *   S1. SMTP AUTH probe against a local server: authenticates, sends no
  *       MAIL FROM, reports the failing phase.
  *   I1. AWS IAM client against a local IAM query-API mock.
@@ -36,6 +56,7 @@ import { createServer } from "node:http";
 import { type AddressInfo, createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { format } from "node:util";
 
 process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-secrets-global-${process.pid}`;
 process.env.HATCHKIT_CONF_DIR = mkdtempSync(join(tmpdir(), "secrets-global-conf-"));
@@ -46,8 +67,21 @@ const { runGlobalRotate, GLOBAL_ROLLBACK_SCOPE } = await import(
 const { __setSesRotationDepsForTesting, createAwsIamOps } = await import(
   "./src/secrets/global/ses.js"
 );
+const { __setListmonkRotationDepsForTesting, listmonkBaseName } = await import(
+  "./src/secrets/global/listmonk.js"
+);
+const {
+  __setPromptsForTesting,
+  checkPasteShape,
+  AWS_ACCESS_KEY_ID_SHAPE,
+  AWS_SECRET_KEY_SHAPE,
+  LISTMONK_TOKEN_SHAPE,
+} = await import("./src/secrets/global/prompt.js");
 const { checkSmtpAuth } = await import("./src/secrets/global/smtp-auth.js");
-const { loadRollback } = await import("./src/secrets/rollback-store.js");
+const { clearRollback, loadRollback, saveRollback } = await import(
+  "./src/secrets/rollback-store.js"
+);
+const clearRollbackForTest = () => clearRollback("@global", "listmonk");
 const { writeManifest, MANIFEST_VERSION } = await import("./src/scaffold/manifest.js");
 const { writeProdEnv, writeDevEnv } = await import("./src/provision/write-env.js");
 const { loadProjectEnv } = await import("./src/assets/env.js");
@@ -77,7 +111,10 @@ const NEW_KEY = "AKIANEWNEWNEWNEWN002";
 const NEW_SECRET = "new-iam-secret-NEWNEWNEWNEWNEWNEWNEWNEW";
 const OLD_PW = deriveSesSmtpPassword(OLD_SECRET, REGION);
 const NEW_PW = deriveSesSmtpPassword(NEW_SECRET, REGION);
-const OLD_LM_TOKEN = "old-listmonk-token-0000000000000000";
+// ListMonk API tokens are 32 letters and digits.
+const OLD_LM_TOKEN = "Oldlistmonktoken".padEnd(32, "0");
+const ADMIN_KEY = "AKIAADMINADMINADMIN1";
+const ADMIN_SECRET = "Admin/secret+key".padEnd(40, "A");
 
 /** Ordered log of every mutating fake-provider call. */
 const events: string[] = [];
@@ -95,16 +132,22 @@ const iam = {
   smtpWorks: true,
   nextId: NEW_KEY,
   nextSecret: NEW_SECRET,
+  /** One-off admin keys: id → secret. They may manage any user's keys. */
+  admins: new Map<string, string>(),
+  adminAccount: "111111111111",
 };
 
 function resetIam(): void {
   iam.keys = [{ id: OLD_KEY, secret: OLD_SECRET, status: "Active" }];
   iam.selfAllowed = true;
   iam.smtpWorks = true;
+  iam.admins = new Map();
+  iam.adminAccount = "111111111111";
 }
 
 function fakeIam(creds: { accessKeyId: string; secretAccessKey: string }): IamOps {
   const guard = () => {
+    if (iam.admins.get(creds.accessKeyId) === creds.secretAccessKey) return;
     const signer = iam.keys.find(
       (k) => k.id === creds.accessKeyId && k.secret === creds.secretAccessKey,
     );
@@ -166,7 +209,20 @@ const lm = {
   users: new Map<number, LmUser>(),
   nextId: 10,
   settings: {} as Record<string, unknown>,
+  /** Runs after every user delete (L4: ListMonk loses a token). */
+  afterDelete: undefined as (() => void) | undefined,
+  /** Every ListMonk request fails at the network (L6). */
+  down: false,
 };
+
+/** Does ListMonk (the fake) accept this user + token right now? */
+function lmAuthenticates(user: string | undefined, token: string | undefined): boolean {
+  return (
+    !!user &&
+    !!token &&
+    [...lm.users.values()].some((u) => u.username === user && u.token === token)
+  );
+}
 
 const ADMIN_PERMS = ["subscribers:get", "lists:manage_all", "settings:get", "settings:manage"];
 
@@ -186,6 +242,8 @@ function resetWorld(opts: { lmUsersManage: boolean; maskedOtherRelay?: boolean }
     { uuid: "a3", name: "unrelated", envs: { FOO: "bar" } },
   ];
   coolify.failPatch.clear();
+  lm.afterDelete = undefined;
+  lm.down = false;
   lm.users = new Map([
     [
       2,
@@ -267,10 +325,13 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   }
 
   if (url.startsWith("https://listmonk.test")) {
+    if (lm.down) throw new TypeError("fetch failed");
     const path = url.slice("https://listmonk.test".length);
     const auth = /^token ([^:]+):(.+)$/.exec(headers.get("authorization") ?? "");
     const caller = auth
-      ? [...lm.users.values()].find((u) => u.username === auth[1] && u.token === auth[2])
+      ? [...lm.users.values()].find(
+          (u) => u.username === auth[1] && !!u.token && u.token === auth[2],
+        )
       : undefined;
     if (path === "/api/health") return json({ data: true });
     if (!caller) return json({ message: "invalid token" }, 403);
@@ -304,7 +365,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
         if ([...lm.users.values()].some((u) => u.username === b.username))
           return json({ message: "exists" }, 400);
         const id = lm.nextId++;
-        const token = `new-listmonk-token-${id}-xxxxxxxxxxxxxxxx`;
+        const token = `Newlistmonktoken${id}`.padEnd(32, "x");
         const role = [...lm.users.values()].find((u) => u.roleId === b.user_role_id);
         lm.users.set(id, {
           id,
@@ -323,11 +384,16 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
       if (method === "DELETE" && idMatch) {
         lm.users.delete(Number(idMatch[1]));
         events.push(`listmonk:delete ${idMatch[1]}`);
+        lm.afterDelete?.();
         return json({ data: true });
       }
       if (method === "PUT" && target) {
-        const b = body as { username: string };
+        // ListMonk v4.0–v6.1 `update-user`: `password = CASE WHEN
+        // password_login THEN … ELSE NULL END`. An API user's token IS
+        // that column, so any update of an API user wipes its token.
+        const b = body as { username: string; password_login?: boolean };
         target.username = b.username;
+        if (!b.password_login) target.token = "";
         events.push(`listmonk:rename ${target.id} ${b.username}`);
         return json({ data: profile(target) });
       }
@@ -355,8 +421,23 @@ async function resetKeychain(): Promise<void> {
   getStore().set("providers.listmonk.apiUser", "hatchkit");
 }
 
+__setListmonkRotationDepsForTesting({ timing: { attempts: 2, delayMs: 5 } });
 __setSesRotationDepsForTesting({
   iam: fakeIam,
+  whoami: async (c) => {
+    if (iam.admins.get(c.accessKeyId) === c.secretAccessKey) {
+      const account = iam.adminAccount;
+      return { account, arn: `arn:aws:iam::${account}:user/admin`, userId: "AIDAADMINUSER" };
+    }
+    if (iam.keys.some((k) => k.id === c.accessKeyId && k.secret === c.secretAccessKey)) {
+      return {
+        account: "111111111111",
+        arn: "arn:aws:iam::111111111111:user/hatchkit-ses",
+        userId: "AIDASESUSER",
+      };
+    }
+    throw new Error("The security token included in the request is invalid.");
+  },
   probe: async (auth) => {
     const k = iam.keys.find((x) => x.id === auth.accessKeyId && x.secret === auth.secretAccessKey);
     if (!k || k.status !== "Active") throw new Error("InvalidClientTokenId");
@@ -481,26 +562,43 @@ function prod(dir: string): Record<string, string> {
 function dev(dir: string): string {
   return readFileSync(join(dir, ".env.development.local"), "utf-8");
 }
+/** One value from the rotated dev copy. */
+function devValue(dir: string, key: string): string | undefined {
+  const m = new RegExp(`^${key}=(.*)$`, "m").exec(dev(dir));
+  return m?.[1].replace(/^"(.*)"$/, "$1");
+}
 /** The legacy dev file the fixtures start from. */
 function devLegacy(dir: string): string {
   return readFileSync(join(dir, ".env.development"), "utf-8");
 }
 
+/** stdout writes and console.log lines (prompt feedback, the human
+ *  audit) during `fn`. Still printed, for the test log. */
 async function captureStdout<T>(fn: () => Promise<T>): Promise<{ out: string; value: T }> {
   const chunks: string[] = [];
   const original = process.stdout.write.bind(process.stdout);
+  const originalLog = console.log;
   process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
     chunks.push(String(chunk));
     return (original as (...a: unknown[]) => boolean)(chunk, ...rest);
   }) as typeof process.stdout.write;
+  console.log = (...args: unknown[]) => {
+    const line = `${format(...args)}\n`;
+    chunks.push(line);
+    original(line);
+  };
   try {
-    return { out: chunks.join(""), value: await fn() };
+    const value = await fn();
+    return { out: chunks.join(""), value };
   } finally {
     process.stdout.write = original;
+    console.log = originalLog;
   }
 }
 
 const base = { json: true, interactive: false, yes: true } as const;
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+const plain = (text: string) => text.replace(ANSI, "");
 const byName = (audit: { consumers: Array<{ name: string }> }, name: string) =>
   audit.consumers.find((c) => c.name === name) as
     | { name: string; status: string; reason?: string; files?: string[]; keys: string[] }
@@ -946,41 +1044,102 @@ const byName = (audit: { consumers: Array<{ name: string }> }, name: string) =>
   );
   const users = [...lm.users.values()];
   const newToken = await getSecret(SECRET_KEYS.listmonkApiToken);
+  const newUser = getStore().get("providers.listmonk.apiUser") as string;
   const cobEnv = prod(dirs.cob);
+  const tt = coolify.apps[0].envs;
+  const holders: Array<[string, string | undefined, string | undefined]> = [
+    ["keychain", newUser, newToken ?? undefined],
+    ["cob .env.production", cobEnv.LISTMONK_API_USER, cobEnv.LISTMONK_API_TOKEN],
+    [
+      "cob .env.development.local",
+      devValue(dirs.cob, "LISTMONK_API_USER"),
+      devValue(dirs.cob, "LISTMONK_API_TOKEN"),
+    ],
+    [
+      "devtracked .env.production",
+      prod(dirs.devtracked).LISTMONK_API_USER,
+      prod(dirs.devtracked).LISTMONK_API_TOKEN,
+    ],
+    [
+      "nogit .env.production",
+      prod(dirs.nogit).LISTMONK_API_USER,
+      prod(dirs.nogit).LISTMONK_API_TOKEN,
+    ],
+    ["Coolify tracktime-server", tt.LISTMONK_API_USER, tt.LISTMONK_API_TOKEN],
+  ];
+  const dead = holders.filter(([, u, t]) => !lmAuthenticates(u, t)).map(([name]) => name);
   results.l1 = report("L1: ListMonk live rotation", [
     ["outcome done", audit.outcome === "done"],
     [
-      "exactly one user left, named hatchkit, new id",
-      users.length === 1 && users[0].username === "hatchkit" && users[0].id === 10,
+      "every consumer's user + token authenticates",
+      dead.length === 0 || (console.log(`    dead: ${dead.join(", ")}`), false),
+    ],
+    [
+      "one user left: the replacement, under its own name",
+      users.length === 1 &&
+        users[0].id === 10 &&
+        /^hatchkit-rotate-\d{12}$/.test(users[0].username),
     ],
     ["replacement kept the role", users[0].roleId === 2],
     [
-      "created with a temporary name first",
-      events.some((e) => /^listmonk:create hatchkit-rotate-\d{12}$/.test(e)),
+      "no user was ever updated (an update wipes an API user's token)",
+      !events.some((e) => e.startsWith("listmonk:rename")),
     ],
     [
-      "old user deleted before the rename",
-      events.indexOf("listmonk:delete 2") < events.indexOf("listmonk:rename 10 hatchkit"),
+      "keychain + config hold the replacement's pair",
+      newUser === users[0].username && newToken === users[0].token,
     ],
-    ["keychain token is the new one", newToken === users[0].token && newToken !== OLD_LM_TOKEN],
-    [
-      "config apiUser back to hatchkit",
-      getStore().get("providers.listmonk.apiUser") === "hatchkit",
-    ],
-    ["cob LISTMONK_API_TOKEN rotated", cobEnv.LISTMONK_API_TOKEN === newToken],
-    ["cob LISTMONK_API_USER unchanged", cobEnv.LISTMONK_API_USER === "hatchkit"],
+    ["old pair rejected", !lmAuthenticates("hatchkit", OLD_LM_TOKEN)],
     ["cob SES values untouched", cobEnv.SES_SMTP_USERNAME === OLD_KEY],
-    ["tracktime-server got the token", coolify.apps[0].envs.LISTMONK_API_TOKEN === newToken],
+    [
+      "tracktime-server held only the token and got the user name too",
+      tt.LISTMONK_API_USER === users[0].username && tt.LISTMONK_API_TOKEN === newToken,
+    ],
+    [
+      "the audit says tracktime-server gains LISTMONK_API_USER",
+      /adds LISTMONK_API_USER/.test(byName(audit, "tracktime-server")?.reason ?? ""),
+    ],
     [
       "old user deleted after the fan-out",
       events.indexOf("listmonk:delete 2") > events.indexOf("coolify:patch tracktime-server"),
     ],
+    ["rollback blob cleared", (await loadRollback(GLOBAL_ROLLBACK_SCOPE, "listmonk")) === null],
     [
       "JSON audit holds no token",
       !!newToken && !out.includes(newToken) && !out.includes(OLD_LM_TOKEN),
     ],
+    [
+      "a later rotation drops the old -rotate- stamp",
+      listmonkBaseName("hatchkit-rotate-202609291130") === "hatchkit" &&
+        listmonkBaseName("hatchkit") === "hatchkit" &&
+        listmonkBaseName("my-rotate-app") === "my-rotate-app",
+    ],
   ]);
   rmSync(root, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// L1b — the fake behaves like ListMonk v4.0–v6.1 `update-user`
+// ---------------------------------------------------------------------------
+{
+  resetWorld({ lmUsersManage: true });
+  const before = lmAuthenticates("hatchkit", OLD_LM_TOKEN);
+  await fetch("https://listmonk.test/api/users/2", {
+    method: "PUT",
+    headers: { authorization: `token hatchkit:${OLD_LM_TOKEN}` },
+    body: JSON.stringify({
+      username: "hatchkit",
+      name: "hatchkit",
+      type: "api",
+      status: "enabled",
+      password_login: false,
+      user_role_id: 2,
+    }),
+  });
+  results.l1b = report("L1b: updating an API user wipes its token (ListMonk v4.0–v6.1)", [
+    ["token works before", before],
+    ["token rejected after a same-name update", !lmAuthenticates("hatchkit", OLD_LM_TOKEN)],
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1005,26 +1164,491 @@ const byName = (audit: { consumers: Array<{ name: string }> }, name: string) =>
 }
 
 // ---------------------------------------------------------------------------
-// L3 — ListMonk refuses --revoke-old=never
+// L3 — --revoke-old=never keeps both users; --resume deletes the old one
+// ---------------------------------------------------------------------------
+{
+  resetWorld({ lmUsersManage: true });
+  await resetKeychain();
+  const { root, dirs } = buildRoot();
+  const opts = {
+    ...base,
+    credential: "listmonk" as const,
+    projectRoots: [root],
+    pushTargets: ["coolify" as const],
+    exclude: ["leaked"],
+  };
+  const held = await runGlobalRotate({ ...opts, revokePolicy: "never" });
+  const bothAlive = lm.users.size === 2 && lmAuthenticates("hatchkit", OLD_LM_TOKEN);
+  const cobEnv = prod(dirs.cob);
+  const cobOnNew =
+    cobEnv.LISTMONK_API_USER !== "hatchkit" &&
+    lmAuthenticates(cobEnv.LISTMONK_API_USER, cobEnv.LISTMONK_API_TOKEN);
+  const resumed = await runGlobalRotate({ ...opts, resume: true });
+  results.l3 = report("L3: ListMonk --revoke-old=never, then --resume", [
+    ["first run holds the revoke", held.outcome === "partial" && held.oldRevoked === "held"],
+    ["both users alive in between", bothAlive],
+    ["consumers already on the new pair", cobOnNew],
+    ["resume done", resumed.outcome === "done" && resumed.oldRevoked === true],
+    ["old user gone", lm.users.size === 1 && !lmAuthenticates("hatchkit", OLD_LM_TOKEN)],
+    [
+      "cob still authenticates",
+      lmAuthenticates(prod(dirs.cob).LISTMONK_API_USER, prod(dirs.cob).LISTMONK_API_TOKEN),
+    ],
+    ["rollback blob cleared", (await loadRollback(GLOBAL_ROLLBACK_SCOPE, "listmonk")) === null],
+  ]);
+  rmSync(root, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// L4 — the replacement's token dies once the old user is deleted
+// ---------------------------------------------------------------------------
+{
+  resetWorld({ lmUsersManage: true });
+  await resetKeychain();
+  const { root, dirs } = buildRoot();
+  const opts = {
+    ...base,
+    credential: "listmonk" as const,
+    projectRoots: [root],
+    pushTargets: ["coolify" as const],
+    exclude: ["leaked"],
+  };
+  lm.afterDelete = () => {
+    for (const u of lm.users.values()) if (u.username.startsWith("hatchkit-rotate-")) u.token = "";
+  };
+  const { out, value: audit } = await captureStdout(() =>
+    runGlobalRotate({ ...opts, json: false }),
+  );
+  lm.afterDelete = undefined;
+  const text = plain(out);
+  const replacement = [...lm.users.values()].find((u) => u.username.startsWith("hatchkit-rotate-"));
+  const deadToken = prod(dirs.cob).LISTMONK_API_TOKEN;
+  const blob = await loadRollback(GLOBAL_ROLLBACK_SCOPE, "listmonk");
+  const steps = audit.nextSteps.join("\n");
+
+  const refusedAudit = await runGlobalRotate({ ...opts, resume: true });
+  const refused = refusedAudit.outcome === "blocked" ? refusedAudit.nextSteps.join("\n") : "";
+  const cobUntouched = prod(dirs.cob).LISTMONK_API_TOKEN === deadToken;
+
+  // Recovery: an API user made by hand, stored with `config add listmonk`.
+  const FIX_TOKEN = "Fixlistmonktoken".padEnd(32, "7");
+  lm.users.set(50, {
+    id: 50,
+    username: "hatchkit-rotate-fix",
+    name: "hatchkit",
+    token: FIX_TOKEN,
+    type: "api",
+    roleId: 2,
+    perms: [...ADMIN_PERMS, "users:get", "users:manage"],
+  });
+  await setSecret(SECRET_KEYS.listmonkApiToken, FIX_TOKEN);
+  getStore().set("providers.listmonk.apiUser", "hatchkit-rotate-fix");
+  const resumed = await runGlobalRotate({ ...opts, resume: true });
+  const onFix = (u?: string, t?: string) => u === "hatchkit-rotate-fix" && t === FIX_TOKEN;
+  results.l4 = report("L4: replacement token dies after the delete", [
+    ["outcome broken", audit.outcome === "broken"],
+    [
+      "measured state: old deleted, new rejected",
+      audit.oldRevoked === true &&
+        audit.revokeReport?.newWorks === false &&
+        /old API user hatchkit \(id 2\) deleted/.test(audit.revokeReport.old) &&
+        /ListMonk rejects its token/.test(audit.revokeReport.new),
+    ],
+    ["output never says the old credential may still work", !text.includes("may still work")],
+    [
+      "output prints both states and a recovery header",
+      /revoke: old API user hatchkit \(id 2\) deleted/.test(text) &&
+        /new: +replacement hatchkit-rotate-\d{12} \(id 10\): ListMonk rejects its token/.test(
+          text,
+        ) &&
+        /listmonk calls fail until you recover/.test(text),
+    ],
+    [
+      "notes name the consumers holding the dead pair",
+      audit.notes.some((n) =>
+        /holding the rejected listmonk credential: .*cob.*tracktime-server/.test(n),
+      ),
+    ],
+    [
+      "recovery: new API user with the role, config add, resume",
+      /type API, role Admin/.test(steps) &&
+        steps.includes("hatchkit config add listmonk") &&
+        steps.includes("--global listmonk --resume"),
+    ],
+    [
+      "no commit step for a dead pair",
+      !audit.nextSteps.some((st) => st.startsWith("Commit and push")),
+    ],
+    [
+      "rollback blob names what consumers hold",
+      blob?.values.LISTMONK_API_TOKEN === deadToken &&
+        blob?.handle.userId === "10" &&
+        blob?.handle["new.userId"] === "10",
+    ],
+    [
+      "--resume refuses a dead keychain pair and says how to recover",
+      /does not authenticate/.test(refused) &&
+        refused.includes("hatchkit config add listmonk") &&
+        cobUntouched,
+    ],
+    ["after the fix, --resume is done", resumed.outcome === "done"],
+    [
+      "every consumer holds the fixed pair",
+      onFix(prod(dirs.cob).LISTMONK_API_USER, prod(dirs.cob).LISTMONK_API_TOKEN) &&
+        onFix(devValue(dirs.cob, "LISTMONK_API_USER"), devValue(dirs.cob, "LISTMONK_API_TOKEN")) &&
+        onFix(prod(dirs.nogit).LISTMONK_API_USER, prod(dirs.nogit).LISTMONK_API_TOKEN) &&
+        onFix(coolify.apps[0].envs.LISTMONK_API_USER, coolify.apps[0].envs.LISTMONK_API_TOKEN),
+    ],
+    [
+      "the dead replacement is deleted, the fixed user kept",
+      !!replacement && !lm.users.has(replacement.id) && lm.users.has(50) && lm.users.size === 1,
+    ],
+    ["rollback blob cleared", (await loadRollback(GLOBAL_ROLLBACK_SCOPE, "listmonk")) === null],
+  ]);
+  rmSync(root, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// L5 — the blob the 2026-09-29 run left, after a fix by hand
+// ---------------------------------------------------------------------------
+{
+  resetWorld({ lmUsersManage: true });
+  const { root, dirs } = buildRoot();
+  // The rename wiped the replacement's token and the old user was gone.
+  // The operator deleted the replacement, made a new `hatchkit` API user
+  // and stored it; only cob's .env.production got the new token by hand.
+  const HAND_TOKEN = "Handmadelistmonktoken".padEnd(32, "5");
+  lm.users = new Map([
+    [
+      12,
+      {
+        id: 12,
+        username: "hatchkit",
+        name: "hatchkit",
+        token: HAND_TOKEN,
+        type: "api",
+        roleId: 2,
+        perms: [...ADMIN_PERMS, "users:get", "users:manage"],
+      },
+    ],
+  ]);
+  await setSecret(SECRET_KEYS.listmonkApiToken, HAND_TOKEN);
+  getStore().set("providers.listmonk.apiUser", "hatchkit");
+  writeProdEnv(join(dirs.cob, ".env.production"), [
+    { key: "LISTMONK_API_TOKEN", value: HAND_TOKEN },
+  ]);
+  // The shape the old code saved: old token only, and `new.finalUsername`.
+  await saveRollback(GLOBAL_ROLLBACK_SCOPE, "listmonk", {
+    values: { LISTMONK_API_TOKEN: OLD_LM_TOKEN },
+    handle: {
+      url: "https://listmonk.test",
+      userId: "2",
+      username: "hatchkit",
+      name: "hatchkit",
+      userRoleId: "2",
+      listRoleId: "",
+      "new.userId": "10",
+      "new.username": "hatchkit-rotate-202609290042",
+      "new.finalUsername": "hatchkit",
+    },
+  });
+  const opts = {
+    ...base,
+    credential: "listmonk" as const,
+    projectRoots: [root],
+    pushTargets: ["coolify" as const],
+    exclude: ["leaked"],
+  };
+  let blocked = "";
+  try {
+    await runGlobalRotate(opts);
+  } catch (err) {
+    blocked = (err as Error).message;
+  }
+  const resumed = await runGlobalRotate({ ...opts, resume: true });
+  const nogit = prod(dirs.nogit);
+  results.l5 = report("L5: resume the 2026-09-29 run after a fix by hand", [
+    ["a fresh run points at --resume", /--resume/.test(blocked)],
+    ["resume done", resumed.outcome === "done"],
+    [
+      "nogit, still on the original token, gets the hand-made pair",
+      nogit.LISTMONK_API_USER === "hatchkit" && nogit.LISTMONK_API_TOKEN === HAND_TOKEN,
+    ],
+    [
+      "tracktime-server gets the hand-made pair",
+      lmAuthenticates(
+        coolify.apps[0].envs.LISTMONK_API_USER,
+        coolify.apps[0].envs.LISTMONK_API_TOKEN,
+      ),
+    ],
+    ["the hand-made user is kept", lm.users.has(12) && lmAuthenticates("hatchkit", HAND_TOKEN)],
+    [
+      "names the stray replacement to delete",
+      resumed.nextSteps.some((st) => st.includes("hatchkit-rotate-202609290042 (id 10)")),
+    ],
+    ["rollback blob cleared", (await loadRollback(GLOBAL_ROLLBACK_SCOPE, "listmonk")) === null],
+  ]);
+  rmSync(root, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// L6 — ListMonk down is not a dead token
 // ---------------------------------------------------------------------------
 {
   resetWorld({ lmUsersManage: true });
   await resetKeychain();
   const { root } = buildRoot();
+  await saveRollback(GLOBAL_ROLLBACK_SCOPE, "listmonk", {
+    values: { LISTMONK_API_USER: "hatchkit", LISTMONK_API_TOKEN: OLD_LM_TOKEN },
+    handle: { url: "https://listmonk.test", userId: "2", username: "hatchkit", "new.userId": "10" },
+  });
+  lm.down = true;
   const audit = await runGlobalRotate({
     ...base,
     credential: "listmonk",
     projectRoots: [root],
-    revokePolicy: "never",
+    resume: true,
   });
-  results.l3 = report("L3: ListMonk refuses --revoke-old=never", [
-    ["outcome blocked", audit.outcome === "blocked"],
+  lm.down = false;
+  const steps = audit.nextSteps.join("\n");
+  results.l6 = report("L6: ListMonk down on --resume", [
+    ["blocked", audit.outcome === "blocked"],
+    ["says ListMonk did not answer", /did not answer GET \/api\/profile/.test(steps)],
     [
-      "explains why",
-      audit.nextSteps.some((s) => /--revoke-old=never cannot apply to ListMonk/.test(s)),
+      "no advice to recreate users",
+      !steps.includes("config add listmonk") && !steps.includes("New: type API"),
+    ],
+    ["rollback blob kept", (await loadRollback(GLOBAL_ROLLBACK_SCOPE, "listmonk")) !== null],
+  ]);
+  await clearRollbackForTest();
+  rmSync(root, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// P1 — paste shape feedback
+// ---------------------------------------------------------------------------
+{
+  const TOKEN = "Pastedlistmonktoken".padEnd(32, "3");
+  const good = checkPasteShape(TOKEN, LISTMONK_TOKEN_SHAPE);
+  const spaced = checkPasteShape(` ${TOKEN}  `, LISTMONK_TOKEN_SHAPE);
+  const quoted = checkPasteShape(`"${TOKEN}"`, LISTMONK_TOKEN_SHAPE);
+  const short = checkPasteShape(TOKEN.slice(1), LISTMONK_TOKEN_SHAPE);
+  const pair = checkPasteShape(`hatchkit:${TOKEN}`, LISTMONK_TOKEN_SHAPE);
+  const temp = checkPasteShape("ASIAADMINADMINADMIN1", AWS_ACCESS_KEY_ID_SHAPE);
+  const keyId = checkPasteShape(ADMIN_KEY, AWS_ACCESS_KEY_ID_SHAPE);
+  const secret = checkPasteShape(ADMIN_SECRET, AWS_SECRET_KEY_SHAPE);
+  const lines = [good, spaced, quoted, short, pair, secret].map((r) => r.line).join("\n");
+  results.p1 = report("P1: paste shape feedback", [
+    [
+      "32 letters/digits accepted",
+      good.ok && plain(good.line).includes("32 characters, letters and digits"),
+    ],
+    [
+      "stray spaces flagged by position",
+      !spaced.ok && /1 space at the start; 2 spaces at the end/.test(plain(spaced.line)),
+    ],
+    [
+      "quotes flagged",
+      !quoted.ok && /2 quote characters; 34 characters, expected 32/.test(plain(quoted.line)),
+    ],
+    ["wrong length flagged", !short.ok && /31 characters, expected 32/.test(plain(short.line))],
+    ["a pasted user:token pair flagged", !pair.ok && plain(pair.line).includes('":"')],
+    ["temporary AWS key refused", !temp.ok && /session token/.test(plain(temp.line))],
+    ["AKIA key id accepted and echoed", keyId.ok && plain(keyId.line).includes(ADMIN_KEY)],
+    ["AWS secret accepted", secret.ok],
+    [
+      "never prints a secret",
+      !lines.includes(TOKEN) && !lines.includes(TOKEN.slice(1)) && !lines.includes(ADMIN_SECRET),
+    ],
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// P2 — one-off ListMonk admin paste, interactive
+// ---------------------------------------------------------------------------
+const ADMIN_LM_TOKEN = "Adminlistmonktoken".padEnd(32, "9");
+function addLmAdmin(): void {
+  lm.users.set(5, {
+    id: 5,
+    username: "rotate-admin",
+    name: "rotate-admin",
+    token: ADMIN_LM_TOKEN,
+    type: "api",
+    roleId: 1,
+    perms: [],
+  });
+}
+{
+  resetWorld({ lmUsersManage: false });
+  await resetKeychain();
+  addLmAdmin();
+  const { root } = buildRoot();
+  const pastes = [` ${ADMIN_LM_TOKEN}`, `"${ADMIN_LM_TOKEN}"`, ADMIN_LM_TOKEN];
+  __setPromptsForTesting({
+    input: async () => "rotate-admin",
+    password: async () => pastes.shift() ?? "",
+    confirm: async () => true,
+  });
+  const { out, value: audit } = await captureStdout(() =>
+    runGlobalRotate({
+      ...base,
+      interactive: true,
+      credential: "listmonk",
+      projectRoots: [root],
+      pushTargets: ["coolify"],
+      exclude: ["leaked"],
+    }),
+  );
+  __setPromptsForTesting(undefined);
+  const text = plain(out);
+  const keychainUser = getStore().get("providers.listmonk.apiUser") as string;
+  const keychainToken = (await getSecret(SECRET_KEYS.listmonkApiToken)) ?? "";
+  results.p2 = report("P2: one-off ListMonk admin paste", [
+    [
+      "user name shape confirmed",
+      text.includes("✔ ListMonk user name rotate-admin: 12 characters"),
+    ],
+    [
+      "leading space flagged, asked again",
+      text.includes("✘ ListMonk API token: 1 space at the start"),
+    ],
+    ["quotes flagged, asked again", text.includes("✘ ListMonk API token: 2 quote characters")],
+    [
+      "good paste confirmed",
+      text.includes("✔ ListMonk API token: 32 characters, letters and digits"),
+    ],
+    [
+      "live identity printed",
+      text.includes("✔ authenticated as rotate-admin (id 5, type api, role Super Admin)"),
+    ],
+    ["rotation done", audit.outcome === "done"],
+    ["the pasted token is never printed", !out.includes(ADMIN_LM_TOKEN)],
+    [
+      "one-off admin deleted at the end",
+      !lm.users.has(5) &&
+        audit.nextSteps.some((st) =>
+          /Deleted the one-off ListMonk admin user rotate-admin/.test(st),
+        ),
+    ],
+    [
+      "the replacement still authenticates afterwards",
+      lmAuthenticates(keychainUser, keychainToken),
     ],
   ]);
   rmSync(root, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// P3 — ListMonk paste mismatches refuse before anything is created
+// ---------------------------------------------------------------------------
+{
+  const run = async (user: string, tokens: string[]) => {
+    resetWorld({ lmUsersManage: false });
+    await resetKeychain();
+    addLmAdmin();
+    const { root } = buildRoot();
+    __setPromptsForTesting({
+      input: async () => user,
+      password: async () => tokens.shift() ?? "",
+      confirm: async () => false,
+    });
+    const r = await captureStdout(() =>
+      runGlobalRotate({ ...base, interactive: true, credential: "listmonk", projectRoots: [root] }),
+    );
+    __setPromptsForTesting(undefined);
+    rmSync(root, { recursive: true, force: true });
+    return {
+      text: plain(r.out),
+      audit: r.value,
+      created: events.some((e) => e.startsWith("listmonk:create")),
+    };
+  };
+  const otherToken = "Someoneelsestoken".padEnd(32, "1");
+  const wrongUser = await run("rotate-admin", [otherToken]);
+  const itself = await run("hatchkit", [OLD_LM_TOKEN]);
+  const garbage = await run("rotate-admin", ["x", "y y", "'z'"]);
+  results.p3 = report("P3: ListMonk paste mismatches refuse", [
+    [
+      "a token of another user is rejected",
+      wrongUser.audit.outcome === "blocked" &&
+        wrongUser.text.includes("✘ ListMonk did not accept rotate-admin") &&
+        !wrongUser.created,
+    ],
+    [
+      "the rotated user itself is refused after its identity line",
+      itself.audit.outcome === "blocked" &&
+        itself.text.includes("✔ authenticated as hatchkit (id 2, type api, role Admin)") &&
+        itself.audit.nextSteps.some((st) => /is the user being rotated/.test(st)) &&
+        !itself.created,
+    ],
+    [
+      "three wrong shapes stop the run",
+      garbage.audit.outcome === "blocked" &&
+        garbage.text.includes("wrong shape 3 times") &&
+        !garbage.created,
+    ],
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// P4 — one-off AWS admin key paste, interactive
+// ---------------------------------------------------------------------------
+{
+  const run = async (account: string) => {
+    resetIam();
+    resetWorld({ lmUsersManage: false });
+    await resetKeychain();
+    iam.selfAllowed = false;
+    iam.admins.set(ADMIN_KEY, ADMIN_SECRET);
+    iam.adminAccount = account;
+    const { root } = buildRoot();
+    const ids = ["akiaadminadminadmin1", ADMIN_KEY];
+    __setPromptsForTesting({
+      input: async () => ids.shift() ?? "",
+      password: async () => ADMIN_SECRET,
+    });
+    const r = await captureStdout(() =>
+      runGlobalRotate({
+        ...base,
+        interactive: true,
+        credential: "ses",
+        projectRoots: [root],
+        pushTargets: ["coolify"],
+        exclude: ["leaked"],
+      }),
+    );
+    __setPromptsForTesting(undefined);
+    rmSync(root, { recursive: true, force: true });
+    return { out: r.out, text: plain(r.out), audit: r.value };
+  };
+  const same = await run("111111111111");
+  const created = events.includes(`iam:create ${NEW_KEY}`);
+  const other = await run("222222222222");
+  results.p4 = report("P4: one-off AWS admin key paste", [
+    [
+      "a lowercase key id is flagged and asked again",
+      same.text.includes("✘ AWS access key id: characters outside capital letters and digits"),
+    ],
+    [
+      "key id and secret shapes confirmed",
+      same.text.includes(`✔ AWS access key id ${ADMIN_KEY}: 20 characters`) &&
+        same.text.includes("✔ AWS secret access key: 40 characters"),
+    ],
+    [
+      "STS caller identity printed",
+      same.text.includes(
+        "✔ authenticated as arn:aws:iam::111111111111:user/admin (account 111111111111, user id AIDAADMINUSER)",
+      ),
+    ],
+    ["rotation done with the admin key", same.audit.outcome === "done" && created],
+    ["the secret is never printed", !same.out.includes(ADMIN_SECRET)],
+    [
+      "a key from another account is refused",
+      other.audit.outcome === "blocked" &&
+        other.audit.nextSteps.some((st) => /from AWS account 222222222222/.test(st)) &&
+        !events.some((e) => e.startsWith("iam:create")),
+    ],
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1145,6 +1769,8 @@ const byName = (audit: { consumers: Array<{ name: string }> }, name: string) =>
 // ---------------------------------------------------------------------------
 await clearAllSecrets();
 __setSesRotationDepsForTesting(undefined);
+__setListmonkRotationDepsForTesting(undefined);
+__setPromptsForTesting(undefined);
 globalThis.fetch = realFetch;
 if (existsSync(process.env.HATCHKIT_CONF_DIR!))
   rmSync(process.env.HATCHKIT_CONF_DIR!, { recursive: true, force: true });

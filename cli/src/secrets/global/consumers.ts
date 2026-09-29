@@ -19,6 +19,11 @@
  *     client, so nothing here ever holds a Coolify value.
  *   · Services (ListMonk's SMTP settings) — owned by the rotator.
  *
+ * A consumer gets every consumer key, also one it did not hold: the
+ * values work only as a set. On 2026-09-29 Coolify app tracktime-server
+ * held LISTMONK_API_TOKEN alone; a new token next to an old user name
+ * fails.
+ *
  * Every write obeys the order rule: a project whose dotenvx key is in
  * git history is skipped, because the new value would be encrypted to a
  * key anyone can read. The plaintext dev copy is always written to the
@@ -196,7 +201,7 @@ export async function planProject(
     kind: "project",
     name: project.name,
     location: project.dir,
-    keys: rotator.consumerKeys.filter((k) => project.prodKeys.has(k) || project.devKeys.has(k)),
+    keys: [...rotator.consumerKeys],
     status: "planned",
   };
   if (!holdsProd && !holdsDev) {
@@ -293,6 +298,12 @@ export async function planProject(
 
   if (writeProd || writeDev) {
     entry.status = "planned";
+    const held = [
+      ...(writeProd ? [project.prodKeys] : []),
+      ...(writeDev ? [project.devKeys] : []),
+    ];
+    const added = missingKeys(rotator, held);
+    if (added) reasons.push(added);
   } else if (alreadyDone > 0 && reasons.length === 0) {
     entry.status = "unchanged";
     entry.reason = "already holds the new credential";
@@ -317,22 +328,27 @@ export async function applyProject(
   const { project } = plan;
   try {
     const written = new Set<string>();
+    const pairs = pairsFor(rotator, fresh);
     if (plan.writeProd && project.prodPath) {
-      const pairs = pairsFor(rotator, fresh, project.prodKeys);
       for (const k of writeProdEnv(project.prodPath, pairs)) written.add(k);
     }
     if (plan.writeDev && project.devPath) {
-      const pairs = pairsFor(rotator, fresh, project.devKeys);
       for (const k of writeDevEnv(project.devPath, pairs)) written.add(k);
     }
     entry.keys = [...written].sort();
     entry.status = "updated";
 
     if (opts.pushGh && plan.writeProd) {
-      const pairs = pairsFor(rotator, fresh, project.prodKeys);
       try {
         const res = await pushToGithub(pairs, { cwd: project.dir });
-        if (res.pushed.length > 0) entry.targets = ["gh"];
+        if (res.pushed.length > 0) {
+          entry.targets = ["gh"];
+          // pushToGithub only updates secrets the repo already holds.
+          const unset = pairs.map((p) => p.key).filter((k) => !res.pushed.includes(k));
+          if (unset.length > 0) {
+            entry.reason = `GitHub Actions holds ${res.pushed.join(", ")} but not ${unset.join(", ")}; the values work only together. Set ${unset.map((k) => `\`gh secret set ${k}\``).join(" and ")} in ${project.name}'s repo.`;
+          }
+        }
       } catch (err) {
         entry.reason = `env written, but updating its GitHub Actions secrets failed: ${redactErrorMessage((err as Error).message)}`;
         entry.status = "failed";
@@ -345,14 +361,18 @@ export async function applyProject(
   return entry;
 }
 
-function pairsFor(
-  rotator: GlobalRotator,
-  fresh: NewCred,
-  present: Set<string>,
-): Array<{ key: string; value: string }> {
+/** Every consumer key: the values work only as a set. */
+function pairsFor(rotator: GlobalRotator, fresh: NewCred): Array<{ key: string; value: string }> {
   return rotator.consumerKeys
-    .filter((k) => present.has(k) && fresh.values[k] !== undefined)
+    .filter((k) => fresh.values[k] !== undefined)
     .map((k) => ({ key: k, value: fresh.values[k] }));
+}
+
+/** "adds X" for consumer keys some written place does not hold yet. */
+export function missingKeys(rotator: GlobalRotator, held: ReadonlyArray<ReadonlySet<string>>): string | undefined {
+  const missing = rotator.consumerKeys.filter((k) => held.some((h) => !h.has(k)));
+  if (missing.length === 0) return undefined;
+  return `adds ${missing.join(", ")}: the new values work only together`;
 }
 
 // ─── Coolify apps ────────────────────────────────────────────────────
@@ -360,6 +380,7 @@ function pairsFor(
 export interface CoolifyConsumer {
   uuid: string;
   name: string;
+  /** Consumer keys the app holds now. It gets all of them. */
   keys: string[];
 }
 
@@ -389,23 +410,29 @@ export async function discoverCoolifyApps(keys: readonly string[]): Promise<Cool
   }
 }
 
-/** Set the new values on one Coolify app, for the keys it already holds. */
-export async function applyCoolifyApp(
-  app: CoolifyConsumer,
-  fresh: NewCred,
-): Promise<ConsumerAuditEntry> {
-  const entry: ConsumerAuditEntry = {
+/** The plan entry for one Coolify app. */
+export function planCoolifyApp(app: CoolifyConsumer, rotator: GlobalRotator): ConsumerAuditEntry {
+  const added = missingKeys(rotator, [new Set(app.keys)]);
+  return {
     kind: "coolify-app",
     name: app.name,
-    keys: app.keys,
-    status: "updated",
+    keys: [...rotator.consumerKeys],
+    status: "planned",
+    ...(added ? { reason: added } : {}),
   };
+}
+
+/** Set every consumer key's new value on one Coolify app. */
+export async function applyCoolifyApp(
+  app: CoolifyConsumer,
+  rotator: GlobalRotator,
+  fresh: NewCred,
+): Promise<ConsumerAuditEntry> {
+  const entry: ConsumerAuditEntry = { ...planCoolifyApp(app, rotator), status: "updated" };
   const cfg = await getCoolifyConfig();
   if (!cfg) return { ...entry, status: "failed", reason: "Coolify is no longer configured" };
   const envs: Record<string, string> = {};
-  for (const k of app.keys) {
-    if (fresh.values[k] !== undefined) envs[k] = fresh.values[k];
-  }
+  for (const { key, value } of pairsFor(rotator, fresh)) envs[key] = value;
   try {
     await new CoolifyApi({ url: cfg.url, token: cfg.token }).setAppEnv(app.uuid, envs);
   } catch (err) {

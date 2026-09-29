@@ -15,7 +15,9 @@
  *   · attach SELF_ROTATE_POLICY (below) to the user — it can then
  *     rotate only its own keys, nothing else; or
  *   · paste a one-off admin access key when prompted. It stays in
- *     memory for this run and is never stored.
+ *     memory for this run and is never stored. hatchkit prints its
+ *     shape and its STS caller identity right away, and refuses a key
+ *     from another account or one that is the SES user's own.
  */
 
 import {
@@ -26,13 +28,21 @@ import {
   ListAccessKeysCommand,
   UpdateAccessKeyCommand,
 } from "@aws-sdk/client-iam";
+import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { getListmonkConfig, getSesConfig, getStore } from "../../config.js";
 import { planListmonkSmtpSwap, swapListmonkSmtpCredentials } from "../../provision/listmonk.js";
 import { type SesAuth, deriveSesSmtpPassword, probeSes } from "../../provision/ses.js";
 import { SECRET_KEYS, setSecret } from "../../utils/secrets.js";
 import { redactErrorMessage } from "../audit.js";
 import type { NewCred, OldCred, VerifyOutcome } from "../types.js";
-import { mask, promptOneOffInput, promptOneOffSecret } from "./prompt.js";
+import {
+  AWS_ACCESS_KEY_ID_SHAPE,
+  AWS_SECRET_KEY_SHAPE,
+  authenticatedLine,
+  mask,
+  promptPasted,
+  rejectedLine,
+} from "./prompt.js";
 import { type SmtpAuthOptions, type SmtpAuthResult, checkSmtpAuth } from "./smtp-auth.js";
 import type {
   ConsumerAuditEntry,
@@ -137,8 +147,23 @@ export function createAwsIamOps(creds: AwsCreds, opts: { endpoint?: string } = {
   };
 }
 
+/** STS GetCallerIdentity: who a key belongs to. Needs no IAM rights. */
+export interface AwsIdentity {
+  account: string;
+  arn: string;
+  userId: string;
+}
+
+async function stsCallerIdentity(creds: AwsCreds): Promise<AwsIdentity> {
+  const res = await new STSClient({ region: "us-east-1", credentials: creds }).send(
+    new GetCallerIdentityCommand({}),
+  );
+  return { account: res.Account ?? "", arn: res.Arn ?? "", userId: res.UserId ?? "" };
+}
+
 interface SesDeps {
   iam(creds: AwsCreds): IamOps;
+  whoami(creds: AwsCreds): Promise<AwsIdentity>;
   probe(auth: SesAuth): Promise<unknown>;
   smtpAuth(opts: SmtpAuthOptions): Promise<SmtpAuthResult>;
   /** Attempts + delay for the post-create checks: a new IAM key takes a
@@ -150,6 +175,7 @@ interface SesDeps {
 
 const defaultDeps: SesDeps = {
   iam: (creds) => createAwsIamOps(creds),
+  whoami: stsCallerIdentity,
   probe: probeSes,
   smtpAuth: checkSmtpAuth,
   timing: { attempts: 8, delayMs: 5000 },
@@ -269,8 +295,30 @@ export const sesRotator: GlobalRotator = {
       console.log("");
       for (const line of remedy(who)) console.log(`  ${line}`);
       console.log("");
-      const accessKeyId = await promptOneOffInput("One-off admin AWS access key id");
-      const secretAccessKey = await promptOneOffSecret("One-off admin AWS secret access key");
+      const refuse = (why: string): GlobalPreflight => ({ ready: false, notes: [], remedy: [why] });
+      const accessKeyId = await promptPasted("One-off admin AWS access key id", AWS_ACCESS_KEY_ID_SHAPE);
+      if (accessKeyId === undefined) return refuse("The pasted access key id did not have the expected shape (see above).");
+      const secretAccessKey = await promptPasted("One-off admin AWS secret access key", AWS_SECRET_KEY_SHAPE);
+      if (secretAccessKey === undefined) return refuse("The pasted secret access key did not have the expected shape (see above).");
+      let caller: AwsIdentity;
+      try {
+        caller = await deps.whoami({ accessKeyId, secretAccessKey });
+      } catch (err) {
+        const detail = redactErrorMessage((err as Error).message);
+        console.log(`  ${rejectedLine(`AWS did not accept the pasted key: ${detail}`)}`);
+        return refuse(`AWS rejected the pasted key ${mask(accessKeyId)} (STS GetCallerIdentity: ${detail}). Check that the secret belongs to that access key id.`);
+      }
+      console.log(`  ${authenticatedLine(caller.arn, [`account ${caller.account}`, `user id ${caller.userId}`])}`);
+      // The SES key's own identity needs no rights either.
+      const ses = await deps.whoami(s.oldKey).catch(() => undefined);
+      if (ses && ses.account !== caller.account) {
+        return refuse(
+          `The pasted key is from AWS account ${caller.account}; the SES key is from account ${ses.account}. Paste an admin key from account ${ses.account}.`,
+        );
+      }
+      if (ses && ses.arn === caller.arn) {
+        return refuse(`The pasted key belongs to ${caller.arn}, the SES user itself, which has no IAM rights. Paste an admin key.`);
+      }
       s.admin = { accessKeyId, secretAccessKey };
       s.mode = "admin";
       const admin = deps.iam(s.admin);
