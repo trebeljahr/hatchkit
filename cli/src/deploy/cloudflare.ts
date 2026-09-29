@@ -19,7 +19,14 @@ import { join } from "node:path";
 import { confirm, input } from "@inquirer/prompts";
 import chalk from "chalk";
 import ora from "ora";
-import { ensureCloudflareWorkers, getCloudflareWorkersConfig, getDnsConfig } from "../config.js";
+import {
+  deleteCloudflareDeployTokenRecord,
+  ensureCloudflareProvisioner,
+  getCloudflareDeployTokenRecords,
+  getCloudflareProvisioner,
+  getDnsConfig,
+  rememberWorkersSubdomain,
+} from "../config.js";
 import {
   CLOUDFLARE_PUBLISH_DIR,
   CLOUDFLARE_WRANGLER_REL_PATH,
@@ -29,7 +36,13 @@ import { type CfDnsRecord, CloudflareApi } from "../utils/cloudflare-api.js";
 import { exec } from "../utils/exec.js";
 import type { RunLedger } from "../utils/run-ledger.js";
 import { parseDomain, validateDomain } from "../utils/validate.js";
-import { setCloudflareDeploySecrets } from "./gh-actions-secrets.js";
+import { maskId, workerDeployTokenName } from "./cloudflare-deploy-token.js";
+import {
+  CLOUDFLARE_SECRET_NAMES,
+  ghSecretDelete,
+  listRepoSecrets,
+  setCloudflareDeploySecrets,
+} from "./gh-actions-secrets.js";
 
 interface RepoInfo {
   owner: string;
@@ -89,15 +102,15 @@ async function executeCloudflareSetup(
   repo: RepoInfo,
   opts: { domain: string | null; workerName?: string; ledger?: RunLedger },
 ): Promise<CloudflareSetupResult> {
-  // 1. Credentials. `hatchkit create` has usually already run this via
-  //    the provider stepper; `hatchkit cloudflare` in a hand-rolled repo
-  //    has not, so prompt here rather than failing.
-  const cfg = await ensureCloudflareWorkers();
-  if (!cfg.apiToken) {
-    throw new Error(
-      "No Cloudflare API token stored. Run `hatchkit config add cloudflare-workers` and try again.",
-    );
-  }
+  // 1. The provisioner. `hatchkit create` has usually already run this
+  //    via the provider stepper; `hatchkit cloudflare` in a hand-rolled
+  //    repo has not, so prompt here rather than failing. It stays in the
+  //    keychain: the repo gets a token minted for its one Worker.
+  const prov = await ensureCloudflareProvisioner();
+  const api = new CloudflareApi({
+    token: prov.token,
+    accountId: prov.accountId,
+  });
 
   // 2. Files. A scaffolded project already has them (the create flow
   //    wrote them during the prune); an adopted repo does not.
@@ -107,24 +120,46 @@ async function executeCloudflareSetup(
   applyCloudflareMode(cwd, { workerName, defaultBranch: repo.defaultBranch }, modifications);
   for (const m of modifications) console.log(chalk.dim(`  · ${m}`));
 
-  // 3. CI secrets. Repo-level — a personal GitHub account has no org to
-  //    inherit them from.
-  await setCloudflareDeploySecrets({ projectDir: cwd, repoSlug: repo.fullName });
+  // 3. The Worker's own deploy token, pushed as the repo's CI secret. A
+  //    new project's Worker is created empty first: a per-Worker role
+  //    can only name a Worker that exists.
+  const pushed = await setCloudflareDeploySecrets({
+    projectDir: cwd,
+    repoSlug: repo.fullName,
+    workerName,
+    createWorker: true,
+    ledger: opts.ledger,
+  });
+  if (pushed.worker?.created) {
+    console.log(
+      chalk.dim(`  · created empty Worker "${workerName}" — the first CI deploy uploads the site`),
+    );
+  }
+  if (!pushed.ok) {
+    const retained = pushed.worker?.created ? ` Empty Worker ${workerName} remains for retry.` : "";
+    throw new Error((pushed.error ?? "Cloudflare deploy token setup failed") + retained);
+  }
 
   // 4. Custom domain.
   let customDomainAttached = false;
   if (opts.domain) {
     customDomainAttached = await attachCustomDomain({
-      api: new CloudflareApi({ token: cfg.apiToken, accountId: cfg.accountId }),
-      accountId: cfg.accountId,
+      api,
+      accountId: prov.accountId,
       hostname: opts.domain,
       workerName,
       ledger: opts.ledger,
     });
   }
 
-  const previewUrl = cfg.workersSubdomain
-    ? `https://${workerName}.${cfg.workersSubdomain}.workers.dev`
+  let workersSubdomain = prov.workersSubdomain;
+  if (!workersSubdomain) {
+    workersSubdomain =
+      (await api.getWorkersSubdomain(prov.accountId).catch(() => null)) ?? undefined;
+    if (workersSubdomain) rememberWorkersSubdomain(prov.accountId, workersSubdomain);
+  }
+  const previewUrl = workersSubdomain
+    ? `https://${workerName}.${workersSubdomain}.workers.dev`
     : `https://${workerName}.<your-subdomain>.workers.dev`;
   const siteUrl = opts.domain && customDomainAttached ? `https://${opts.domain}` : previewUrl;
 
@@ -327,7 +362,8 @@ export async function runCloudflareUndo(cwd: string, opts: CloudflareUndoOptions
   console.log(chalk.dim(`  Repo:  ${repo.fullName}`));
 
   const workerName = readWorkerName(cwd) ?? repo.repo;
-  const cfg = await getCloudflareWorkersConfig();
+  const prov = await getCloudflareProvisioner();
+  const api = prov ? new CloudflareApi({ token: prov.token, accountId: prov.accountId }) : null;
 
   const files = [
     join(cwd, ".github", "workflows", "deploy.yml"),
@@ -335,26 +371,50 @@ export async function runCloudflareUndo(cwd: string, opts: CloudflareUndoOptions
   ].filter((p) => existsSync(p));
 
   let domains: Array<{ id: string; hostname: string }> = [];
-  if (cfg?.apiToken) {
+  let tokens: Array<{ id: string; name: string }> = [];
+  if (api && prov) {
     try {
-      const api = new CloudflareApi({ token: cfg.apiToken, accountId: cfg.accountId });
-      domains = (await api.listWorkerCustomDomains(cfg.accountId))
+      domains = (await api.listWorkerCustomDomains(prov.accountId))
         .filter((d) => d.service === workerName)
         .map((d) => ({ id: d.id, hostname: d.hostname }));
     } catch (err) {
       console.log(chalk.dim(`  (couldn't list custom domains: ${(err as Error).message})`));
     }
+    const record = getCloudflareDeployTokenRecords()[workerName];
+    if (record?.accountId === prov.accountId && record.repo === repo.fullName) {
+      tokens = [{ id: record.tokenId, name: record.tokenName }];
+    }
   }
 
-  if (files.length === 0 && domains.length === 0) {
+  const record = getCloudflareDeployTokenRecords()[workerName];
+  const secretMetadata = tokens.length ? await listRepoSecrets(repo.fullName) : null;
+  const ownsSecrets =
+    !!record?.secretUpdatedAt &&
+    !!record?.accountSecretUpdatedAt &&
+    secretMetadata?.find((secret) => secret.name === "CLOUDFLARE_API_TOKEN")?.updatedAt ===
+      record.secretUpdatedAt &&
+    secretMetadata?.find((secret) => secret.name === "CLOUDFLARE_ACCOUNT_ID")?.updatedAt ===
+      record.accountSecretUpdatedAt;
+
+  if (files.length === 0 && domains.length === 0 && tokens.length === 0) {
     console.log(
-      chalk.dim("\n  Nothing to undo — no wrangler config, workflow, or custom domain.\n"),
+      chalk.dim(
+        "\n  Nothing to undo — no wrangler config, workflow, custom domain or deploy token.\n",
+      ),
     );
     return;
   }
 
   console.log(chalk.bold("\n  Plan:\n"));
   for (const d of domains) console.log(chalk.dim(`    detach custom domain  ${d.hostname}`));
+  for (const t of tokens) {
+    console.log(
+      chalk.dim(`    revoke deploy token   ${workerDeployTokenName(workerName)} (${maskId(t.id)})`),
+    );
+  }
+  if (ownsSecrets) {
+    console.log(chalk.dim(`    delete repo secrets   ${CLOUDFLARE_SECRET_NAMES.join(", ")}`));
+  }
   for (const f of files)
     console.log(chalk.dim(`    remove file           ${f.replace(cwd + "/", "")}`));
   console.log(
@@ -369,18 +429,34 @@ export async function runCloudflareUndo(cwd: string, opts: CloudflareUndoOptions
     return;
   }
   if (!opts.yes) {
-    const ok = await confirm({ message: "Proceed with the steps above?", default: false });
+    const ok = await confirm({
+      message: "Proceed with the steps above?",
+      default: false,
+    });
     if (!ok) {
       console.log(chalk.dim("\n  Aborted — nothing changed.\n"));
       return;
     }
   }
 
-  if (cfg?.apiToken && domains.length > 0) {
-    const api = new CloudflareApi({ token: cfg.apiToken, accountId: cfg.accountId });
+  if (api && prov) {
     for (const d of domains) {
-      const res = await api.deleteWorkerCustomDomain(cfg.accountId, d.id);
+      const res = await api.deleteWorkerCustomDomain(prov.accountId, d.id);
       console.log(chalk.dim(`  · ${d.hostname}: ${res}`));
+    }
+    for (const t of tokens) {
+      const res = await api.deleteAccountToken(prov.accountId, t.id);
+      console.log(chalk.dim(`  · ${workerDeployTokenName(workerName)} ${maskId(t.id)}: ${res}`));
+    }
+    if (tokens.length > 0) {
+      if (getCloudflareDeployTokenRecords()[workerName])
+        deleteCloudflareDeployTokenRecord(workerName);
+      for (const name of ownsSecrets ? CLOUDFLARE_SECRET_NAMES : []) {
+        const res = await ghSecretDelete(repo.fullName, name).catch(
+          (err) => (err as Error).message,
+        );
+        console.log(chalk.dim(`  · ${name}: ${res}`));
+      }
     }
   }
   const { unlinkSync } = await import("node:fs");

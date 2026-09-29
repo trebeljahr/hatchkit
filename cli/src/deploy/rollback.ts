@@ -342,6 +342,10 @@ function recipeFor(step: LedgerStep): string | null {
       return chalk.dim(
         `# manual: detach custom domain ${step.hostname} at https://dash.cloudflare.com/${step.accountId}/workers/overview`,
       );
+    case "cloudflareWorkerToken":
+      return chalk.dim(
+        `# manual: revoke account API token hatchkit-${step.worker}-worker (${step.tokenId.slice(0, 4)}…) at https://dash.cloudflare.com/${step.accountId}/api-tokens`,
+      );
     case "localDevFragment":
       return `rm -f ~/.config/dev/projects/${shellEscape(step.slug)}.caddy`;
     case "appleBundleId":
@@ -621,6 +625,8 @@ function describeStep(step: LedgerStep): string {
       return `tear down GitHub Pages for ${chalk.cyan(step.repo)}`;
     case "cloudflareWorkerDomain":
       return `detach Worker custom domain ${chalk.cyan(step.hostname)}`;
+    case "cloudflareWorkerToken":
+      return `revoke Worker deploy token ${chalk.cyan(`hatchkit-${step.worker}-worker`)}`;
     case "localDevFragment":
       return `remove local-dev Caddy fragment ${chalk.cyan(`${step.slug}.caddy`)}`;
     case "appleBundleId":
@@ -994,12 +1000,39 @@ async function undoStep(
       // Safe to undo unconditionally: hatchkit only ever records this
       // for a hostname that had NO DNS records before it attached, so
       // detaching cannot orphan a record that predates us.
-      const { getCloudflareWorkersConfig } = await import("../config.js");
-      const cfg = await getCloudflareWorkersConfig();
-      if (!cfg?.apiToken) return "skipped";
+      const { getCloudflareProvisioner } = await import("../config.js");
+      const prov = await getCloudflareProvisioner();
+      if (!prov) return "skipped";
       const { CloudflareApi } = await import("../utils/cloudflare-api.js");
-      const api = new CloudflareApi({ token: cfg.apiToken, accountId: step.accountId });
+      const api = new CloudflareApi({
+        token: prov.token,
+        accountId: step.accountId,
+      });
       const res = await api.deleteWorkerCustomDomain(step.accountId, step.domainId);
+      return res === "not-found" ? "not-found" : "done";
+    }
+    case "cloudflareWorkerToken": {
+      const {
+        deleteCloudflareDeployTokenRecord,
+        getCloudflareDeployTokenRecords,
+        getCloudflareProvisioner,
+      } = await import("../config.js");
+      const prov = await getCloudflareProvisioner();
+      if (!prov) {
+        throw new Error(
+          "Cloudflare provisioner not in keychain — re-add via `hatchkit config add cloudflare-workers`, then retry destroy.",
+        );
+      }
+      if (prov.accountId !== step.accountId) {
+        throw new Error("Cloudflare provisioner account differs from the recorded token account");
+      }
+      const { CloudflareApi } = await import("../utils/cloudflare-api.js");
+      const res = await new CloudflareApi({
+        token: prov.token,
+      }).deleteAccountToken(step.accountId, step.tokenId);
+      if (getCloudflareDeployTokenRecords()[step.worker]?.tokenId === step.tokenId) {
+        deleteCloudflareDeployTokenRecord(step.worker);
+      }
       return res === "not-found" ? "not-found" : "done";
     }
     case "localDevFragment": {

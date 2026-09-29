@@ -4020,7 +4020,10 @@ function printHelp(topic?: HelpTopic): void {
                                COOLIFY_TOKEN / COOLIFY_WEBHOOK_URL are
                                deleted from the repo. Deploys pause until
                                the rewritten workflow is pushed.
-                               ${chalk.cyan("--rotate")} mints new per-app deploy secrets.
+                               Worker repos get a per-Worker Editor token
+                               with no DNS or zone grants. Per-Worker scope
+                               failure stops; there is no broad fallback.
+                               ${chalk.cyan("--rotate")} replaces the recorded deploy credential.
 
   ${chalk.bold("Providers (per project):")}
     ${chalk.cyan("r2")}              R2 account token → <R2|S3|AWS>[_<BUCKET>]_ACCESS_KEY_ID
@@ -4259,7 +4262,7 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("What it does:")}
     1. Reads the repo via \`gh repo view\`.
-    2. Prompts for the Cloudflare account id + API token if not stored
+    2. Prompts for the Cloudflare account id + provisioner token if not stored
        (${chalk.dim("hatchkit config add cloudflare-workers")}).
     3. Writes what's missing, idempotently:
          ${chalk.cyan("wrangler.jsonc")}                  assets dir, 404 handling, workers_dev
@@ -4267,8 +4270,8 @@ function printHelp(topic?: HelpTopic): void {
          ${chalk.cyan("packages/client/public/_headers")} immutable caching for hashed output
          ${chalk.cyan(".github/workflows/deploy.yml")}    build + cloudflare/wrangler-action@v4
     4. Sets ${chalk.dim("CLOUDFLARE_API_TOKEN")} + ${chalk.dim("CLOUDFLARE_ACCOUNT_ID")} as ${chalk.bold("repo")} secrets.
-       Repo-level because a personal GitHub account has no org secrets.
-       No token value is ever printed.
+       Creates an empty Worker if needed, then mints its own Editor token.
+       The provisioner stays local. No account-wide fallback or token output.
     5. Custom domain — see below.
 
   ${chalk.bold("Custom domain: automated only when it's safe")}
@@ -4283,15 +4286,18 @@ function printHelp(topic?: HelpTopic): void {
       records (your rollback), the cutover order, and stops. Taking a
       live site down is your call to time, not a CLI's.
 
-  ${chalk.bold("Token permissions:")}
-    Account → Workers Scripts    → Edit
+  ${chalk.bold("Provisioner permissions (local keychain only):")}
+    Account → Account API Tokens → Edit
+    Account → Workers            → Admin
     Zone    → Workers Routes     → Edit
     Zone    → DNS                → Edit
-    Zone    → Dynamic Redirect   → Edit   ${chalk.dim("(for www → apex; easy to forget)")}
-    Scope the zone permissions to every domain you'll serve.
-    ${chalk.cyan("hatchkit doctor")} probes all four and names the missing ones.
+    Scope zone grants to domains you serve. Doctor runs read probes;
+    these do not prove write access. CI gets Editor on one Worker only.
+    Audit runtime bindings: deployed code can use the Worker's bindings.
+    ${chalk.cyan("hatchkit secrets isolate <dir> --dry-run")} plans an existing repo's migration.
 
   ${chalk.bold("Undo (--undo):")}
+    Revokes the recorded deploy token and removes matching repo secrets.
     Detaches custom domains bound to this Worker and removes the
     ${chalk.dim("wrangler.jsonc")} + ${chalk.dim("deploy.yml")} hatchkit wrote. The Worker itself and
     its uploaded assets stay — delete those with ${chalk.dim("pnpm dlx wrangler delete")}.

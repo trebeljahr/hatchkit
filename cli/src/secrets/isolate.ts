@@ -1,6 +1,16 @@
 /*
  * `hatchkit secrets isolate <project> | --all` — move a project's CI off
- * hatchkit's Coolify token.
+ * hatchkit's Coolify token, or a Worker repo off a shared Cloudflare
+ * token.
+ *
+ * A Worker repo (a `cloudflare` manifest, or a wrangler.jsonc whose
+ * workflow reads CLOUDFLARE_API_TOKEN) gets a token minted for its one
+ * Worker, pushed as CLOUDFLARE_API_TOKEN; hatchkit's earlier tokens for
+ * that Worker are revoked afterwards (deploy/cloudflare-deploy-token.ts).
+ * A token hatchkit did not mint — a dashboard token pasted by hand — is
+ * only overwritten in the repo: revoking it is the operator's call, in
+ * the dashboard, once the new token has deployed. The rest of this
+ * header is the Coolify path.
  *
  * Per project, in this order:
  *
@@ -31,6 +41,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
 import { getCoolifyConfig } from "../config.js";
+import { readWorkerName } from "../deploy/cloudflare.js";
 import {
   LIVE_TAG,
   deployHookSecretNames,
@@ -38,10 +49,13 @@ import {
   withLiveTag,
 } from "../deploy/coolify-deploy-hook.js";
 import {
+  type CloudflareDeploySecretsResult,
   type CoolifyDeployApp,
   PROVISIONER_SECRETS,
   repoSlugFromRemote,
+  setCloudflareDeploySecrets,
   setCoolifyDeploySecrets,
+  workflowsReading,
 } from "../deploy/gh-actions-secrets.js";
 import { PROMOTE_STEP_NAME, upgradeWorkflowToSignedDeploy } from "../scaffold/signed-deploy.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
@@ -67,7 +81,12 @@ export interface IsolateResult {
   name: string;
   dir: string;
   repo?: string;
-  apps: Array<{ uuid: string; role?: string; buildPack?: string; changes: string[] }>;
+  apps: Array<{
+    uuid: string;
+    role?: string;
+    buildPack?: string;
+    changes: string[];
+  }>;
   /** Workflows rewritten (or that would be). */
   workflowsConverted: string[];
   /** Workflows that still read the token after conversion — hand-rolled
@@ -79,7 +98,24 @@ export interface IsolateResult {
   secretsPushed: string[];
   secretsRemoved: string[];
   keptProvisioner: string[];
+  /** Set for a Worker repo, which takes the Cloudflare path. */
+  cloudflare?: CloudflareDeploySecretsResult & { workerName: string };
   errors: string[];
+}
+
+/** The Worker a repo deploys, when it is a Worker repo: a `cloudflare`
+ *  manifest, or no manifest and a workflow that reads
+ *  CLOUDFLARE_API_TOKEN next to a wrangler.jsonc. */
+export function workerRepoName(
+  projectDir: string,
+  manifest: { name?: string; deploymentMode?: string } | null,
+): string | null {
+  const worker = readWorkerName(projectDir);
+  if (manifest?.deploymentMode === "cloudflare") return worker ?? manifest.name ?? null;
+  if (manifest) return null;
+  return worker && workflowsReading(projectDir, ["CLOUDFLARE_API_TOKEN"]).length > 0
+    ? worker
+    : null;
 }
 
 /** Workflow files and their content after conversion. Pure apart from
@@ -103,9 +139,14 @@ const readsToken = (text: string): boolean =>
   PROVISIONER_SECRETS.some((n) => new RegExp(`\\bsecrets\\.${n}\\b`).test(text));
 
 /** The operator's own GitHub credential, for seeding `:live` in GHCR. */
-async function ghRegistryAuth(): Promise<{ username: string; password: string } | null> {
+async function ghRegistryAuth(): Promise<{
+  username: string;
+  password: string;
+} | null> {
   const token = await exec("gh", ["auth", "token"], { silent: true });
-  const user = await exec("gh", ["api", "user", "-q", ".login"], { silent: true });
+  const user = await exec("gh", ["api", "user", "-q", ".login"], {
+    silent: true,
+  });
   if (token.exitCode !== 0 || user.exitCode !== 0) return null;
   return { username: user.stdout.trim(), password: token.stdout.trim() };
 }
@@ -173,6 +214,8 @@ export async function isolateProject(
     keptProvisioner: [],
     errors: [],
   };
+  const worker = workerRepoName(projectDir, manifest);
+  if (worker) return isolateWorkerRepo(projectDir, worker, opts, result);
   if (!manifest && !opts.apps?.length) {
     result.errors.push("no .hatchkit.json — name the apps with --app <uuid>[:client|:server]");
     return result;
@@ -301,10 +344,69 @@ export async function isolateProject(
   return result;
 }
 
+/** The Cloudflare path: the repo's own per-Worker token. */
+async function isolateWorkerRepo(
+  projectDir: string,
+  worker: string,
+  opts: IsolateOptions,
+  result: IsolateResult,
+): Promise<IsolateResult> {
+  const remote = await exec("git", ["-C", projectDir, "remote", "get-url", "origin"], {
+    silent: true,
+  });
+  result.repo = remote.exitCode === 0 ? repoSlugFromRemote(remote.stdout.trim()) : undefined;
+  if (!result.repo) {
+    result.errors.push("no GitHub remote");
+    return result;
+  }
+  const cf = await setCloudflareDeploySecrets({
+    projectDir,
+    repoSlug: result.repo,
+    workerName: worker,
+    rotate: opts.rotate,
+    dryRun: opts.dryRun,
+  });
+  result.cloudflare = { ...cf, workerName: worker };
+  result.secretsPushed = cf.pushed;
+  if (!cf.ok) result.errors.push(cf.error ?? "Cloudflare deploy token failed");
+  return result;
+}
+
+function printCloudflare(cf: NonNullable<IsolateResult["cloudflare"]>, dryRun: boolean): void {
+  const would = dryRun ? "would " : "";
+  if (cf.inSync) {
+    console.log(
+      chalk.green(`    ✓ holds ${cf.tokenName} (${cf.tokenId}), scope ${cf.scope} — nothing to do`),
+    );
+    return;
+  }
+  if (dryRun) {
+    for (const line of cf.plan) console.log(`    · ${would}${line}`);
+  } else if (cf.ok) {
+    console.log(`    · minted ${cf.tokenName} (${cf.tokenId}), scope ${cf.scope}`);
+    console.log(chalk.dim(`    · set ${cf.pushed.join(", ")}`));
+    if (cf.revoked.length)
+      console.log(chalk.green(`    · revoked earlier ${cf.tokenName}: ${cf.revoked.join(", ")}`));
+  }
+  if (!cf.inSync && (dryRun || cf.ok)) {
+    console.log(
+      chalk.cyan(
+        "    → A token hatchkit did not mint (e.g. one made in the dashboard) is only\n" +
+          "      overwritten in the repo. Revoke it in the dashboard once a deploy with the\n" +
+          "      new token has passed (re-run the latest deploy workflow).",
+      ),
+    );
+  }
+}
+
 function printResult(r: IsolateResult, dryRun: boolean): void {
   const would = dryRun ? "would " : "";
   console.log(chalk.bold(`\n  ${r.name}`) + chalk.dim(`  ${r.repo ?? r.dir}`));
   for (const e of r.errors) console.log(chalk.red(`    ✗ ${e}`));
+  if (r.cloudflare) {
+    printCloudflare(r.cloudflare, dryRun);
+    return;
+  }
   for (const a of r.apps) {
     const kind = a.buildPack === "dockercompose" ? " (compose)" : a.buildPack ? ` (${a.buildPack})` : "";
     console.log(
@@ -376,9 +478,16 @@ export async function runSecretsIsolate(args: string[]): Promise<number> {
     const { readManifest } = await import("../scaffold/manifest.js");
     dirs = discoverProjects(defaultProjectRoots())
       .map((p) => p.dir)
-      .filter((d) => deploysToCoolify(readManifest(d)?.deploymentMode));
+      .filter((d) => {
+        const mode = readManifest(d)?.deploymentMode;
+        return deploysToCoolify(mode) || mode === "cloudflare";
+      });
   } else if (target) {
-    if (existsSync(join(target, ".hatchkit.json")) || (apps.length > 0 && existsSync(target))) {
+    if (
+      existsSync(join(target, ".hatchkit.json")) ||
+      existsSync(join(target, "wrangler.jsonc")) ||
+      (apps.length > 0 && existsSync(target))
+    ) {
       dirs = [target];
     }
     else {
@@ -391,7 +500,10 @@ export async function runSecretsIsolate(args: string[]): Promise<number> {
       }
       dirs = [match.dir];
     }
-  } else if (existsSync(join(process.cwd(), ".hatchkit.json"))) {
+  } else if (
+    existsSync(join(process.cwd(), ".hatchkit.json")) ||
+    existsSync(join(process.cwd(), "wrangler.jsonc"))
+  ) {
     dirs = [process.cwd()];
   } else {
     console.log(

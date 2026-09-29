@@ -371,10 +371,6 @@ export interface DnsConfig extends DnsMeta {
    *  The NS-flip paths turn it into a current code for `account.unlock`. */
   registrarTotpSecret?: string;
 }
-export interface CloudflareWorkersConfig extends CloudflareWorkersMeta {
-  apiToken?: string;
-}
-
 export interface S3ProviderConfig extends S3ProviderMeta {
   accessKey: string;
   secretKey: string;
@@ -453,6 +449,9 @@ export interface CliConfig {
     ghcr?: GhcrMeta;
   };
   mlServices: Record<string, MlServiceEntry>;
+  /** Per-Worker deploy tokens hatchkit minted, keyed by Worker name. Ids
+   *  only; see `CloudflareDeployTokenRecord`. */
+  cloudflareDeployTokens?: Record<string, CloudflareDeployTokenRecord>;
   /** Ports that are already assigned to scaffolded projects so the
    *  picker avoids collisions across `hatchkit create` invocations. */
   usedPorts: number[];
@@ -1124,7 +1123,11 @@ export async function promptAndSaveInwxRegistrarCreds(): Promise<{
 }> {
   console.log(chalk.dim("\n  → Find these at: https://www.inwx.com → My Account"));
 
-  const inwxSteps: Step<{ username: string; password: string; totpSecret: string }>[] = [
+  const inwxSteps: Step<{
+    username: string;
+    password: string;
+    totpSecret: string;
+  }>[] = [
     {
       name: "INWX username",
       run: async (s) => ({
@@ -1198,83 +1201,119 @@ export async function getDnsConfig(): Promise<DnsConfig | null> {
 // ---------------------------------------------------------------------------
 // Provider: Cloudflare Workers (the `cloudflare` deployment mode)
 // ---------------------------------------------------------------------------
+//
+// Hatchkit holds ONE Cloudflare provisioner token, only in the keychain.
+// It never reaches a repo: each Worker repo's CI gets a token minted for
+// that Worker alone (deploy/cloudflare-deploy-token.ts). So what this
+// provider asks for is the provisioner, not a CI token.
 
-/** Verify a Cloudflare Workers deploy token.
- *
- *  Two calls: `/user/tokens/verify` proves the token is live, then a
- *  read of the account's Worker scripts proves it carries
- *  `Account > Workers Scripts > Edit` — without which every deploy
- *  fails. The three zone-scoped permissions can't be checked here
- *  (there is no zone yet at config time); `hatchkit doctor` probes
- *  those once a project has a domain.
- *
- *  Same shape as `verifyR2AdminToken`, and kept in sync with the
- *  doctor check for the same reason: the config-time and health-check
- *  verdicts must agree so doctor never fails a token we just took. */
-export async function verifyCloudflareWorkersToken(
+/** The Cloudflare provisioner, resolved from the keychain. */
+export interface CloudflareProvisioner {
+  token: string;
+  accountId: string;
+  /** Keychain entry the token came from. `s3:r2:admin-token` is the
+   *  documented reuse: hatchkit's R2 admin token already carries Account
+   *  API Tokens Write, so it can mint the per-Worker tokens as well. */
+  source: string;
+  workersSubdomain?: string;
+}
+
+/** What the provisioner token needs, as the dashboard's token editor
+ *  spells it. CI needs none of the zone grants — they are for attaching
+ *  a new project's custom domain from this machine. */
+export const CLOUDFLARE_PROVISIONER_GRANTS = [
+  "Account → Account API Tokens → Edit   (mint one token per Worker)",
+  "Account → Workers → Admin             (look up / create the Worker)",
+  "Zone → Workers Routes → Edit          (attach a custom domain; zones you serve)",
+  "Zone → DNS → Edit                     (read the hostname's records first)",
+] as const;
+
+function r2AccountId(): string | undefined {
+  const r2 = store.get("providers.s3.r2") as S3ProviderMeta | undefined;
+  return r2?.endpoint?.match(/^https?:\/\/([0-9a-f]{32})\.r2\.cloudflarestorage\.com/i)?.[1];
+}
+
+/** The provisioner token and account, or null when neither
+ *  `cloudflare:provisioner` nor the R2 admin token is stored. Reads only. */
+export async function getCloudflareProvisioner(): Promise<CloudflareProvisioner | null> {
+  const meta = store.get("providers.cloudflareWorkers") as CloudflareWorkersMeta | undefined;
+  const own = await getSecret(SECRET_KEYS.cloudflareProvisionerToken);
+  const token = own ?? (await getSecret(SECRET_KEYS.r2AdminToken));
+  if (!token) return null;
+  // Never pair an R2 token with a different provider's account metadata.
+  const accountId = own ? meta?.accountId : r2AccountId();
+  if (!own && meta?.accountId && meta.accountId !== accountId) return null;
+  if (!accountId) return null;
+  return {
+    token,
+    accountId,
+    source: own ? SECRET_KEYS.cloudflareProvisionerToken : SECRET_KEYS.r2AdminToken,
+    workersSubdomain: meta?.workersSubdomain,
+  };
+}
+
+/** Verify a provisioner token: live, can mint account tokens, can read
+ *  Workers. Same probes as doctor's check, so the two never disagree. */
+export async function verifyCloudflareProvisionerToken(
   token: string,
   accountId: string,
 ): Promise<{ ok: true; detail: string } | { ok: false; detail: string }> {
   try {
-    const verifyRes = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!verifyRes.ok) {
+    const api = new CloudflareApi({ token, accountId });
+    const status = await api.verifyToken().catch(() => null);
+    if (status !== "active") {
       return {
         ok: false,
-        detail: `Token rejected by Cloudflare (HTTP ${verifyRes.status}). Likely invalid or revoked.`,
+        detail: "Token rejected by Cloudflare. Likely invalid or revoked.",
       };
     }
-    const scriptsRes = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    );
-    if (!scriptsRes.ok) {
-      const body = (await scriptsRes.json().catch(() => null)) as {
-        errors?: Array<{ code: number; message: string }>;
-      } | null;
-      const code = body?.errors?.[0]?.code;
-      return {
-        ok: false,
-        detail: `Token lacks \`Account > Workers Scripts > Edit\` (HTTP ${scriptsRes.status}${code ? ` / CF code ${code}` : ""}).`,
-      };
-    }
-    const body = (await scriptsRes.json()) as { result?: unknown[] };
-    const count = body.result?.length ?? 0;
-    return { ok: true, detail: `${count} Worker(s) visible` };
-  } catch (err) {
-    return { ok: false, detail: `Network error verifying token: ${(err as Error).message}` };
+    const probes = await api.probeProvisionerPermissions({ accountId });
+    const missing = probes.filter((p) => !p.ok).map((p) => p.permission);
+    if (missing.length > 0) return { ok: false, detail: `Token lacks ${missing.join(", ")}.` };
+    return {
+      ok: true,
+      detail: "read preflight passed; write grants require a live operation to verify",
+    };
+  } catch {
+    return {
+      ok: false,
+      detail: "Could not verify token; check connectivity and provisioner permissions",
+    };
   }
 }
 
-/** Prompt for (and verify) the Cloudflare Workers deploy credentials.
- *  Idempotent: returns the stored config untouched when one is already
- *  present and still verifies. */
-export async function ensureCloudflareWorkers(): Promise<CloudflareWorkersConfig> {
-  const existing = store.get("providers.cloudflareWorkers") as CloudflareWorkersMeta | undefined;
-  if (existing?.status === "configured") {
-    const token = await getSecret(SECRET_KEYS.cloudflareWorkersToken);
-    if (token) return { ...existing, apiToken: token };
-    console.log(
-      chalk.dim("    · Stored Cloudflare Workers token is missing — re-prompting below."),
-    );
+/** The provisioner, prompting for it when none is stored (or when
+ *  `force`, which is `hatchkit config add cloudflare-workers`). */
+export async function ensureCloudflareProvisioner(
+  opts: { force?: boolean } = {},
+): Promise<CloudflareProvisioner> {
+  const existing = opts.force ? null : await getCloudflareProvisioner();
+  if (existing) {
+    const meta = store.get("providers.cloudflareWorkers") as CloudflareWorkersMeta | undefined;
+    if (meta?.status !== "configured") {
+      store.set("providers.cloudflareWorkers", {
+        status: "configured",
+        accountId: existing.accountId,
+      } satisfies CloudflareWorkersMeta);
+    }
+    return existing;
   }
 
   console.log(chalk.bold("\n  Cloudflare Workers (static assets hosting)"));
   console.log(
     chalk.dim(
-      "  A separate token from the DNS and R2 ones on purpose: this is the only\n" +
-        "  Cloudflare credential hatchkit copies into GitHub Actions, so it has to be\n" +
-        "  revocable without taking DNS or R2 down with it.",
+      "  Hatchkit stores ONE Cloudflare provisioner token here and never copies it\n" +
+        "  anywhere. Each Worker repo gets its own token, minted for that one Worker.",
     ),
   );
 
-  interface WorkersSetupState {
+  interface ProvisionerSetupState {
     accountId: string;
     apiToken: string;
   }
+  const previous = store.get("providers.cloudflareWorkers") as CloudflareWorkersMeta | undefined;
 
-  const steps: Step<WorkersSetupState>[] = [
+  const steps: Step<ProvisionerSetupState>[] = [
     {
       name: "Cloudflare account ID",
       run: async (s) => {
@@ -1288,30 +1327,34 @@ export async function ensureCloudflareWorkers(): Promise<CloudflareWorkersConfig
           ...s,
           accountId: await input({
             message: "Cloudflare account ID:",
+            default: s.accountId || previous?.accountId || r2AccountId(),
             validate: validateRequired,
           }),
         };
       },
     },
     {
-      name: "Cloudflare API token",
+      name: "Cloudflare provisioner token",
       run: async (s) => {
         tokenHint(
           "https://dash.cloudflare.com/profile/api-tokens → Create Token → Custom token",
-          "Account:Workers Scripts:Edit + Zone:Workers Routes:Edit + Zone:DNS:Edit + Zone:Dynamic Redirect:Edit",
-          "Scope the three zone permissions to every domain you plan to serve.",
-          "Dynamic Redirect is the one people forget — without it the www → apex",
-          "redirect rule can't be written and the redirect silently never happens.",
+          "these four (a User API Token — the zone grants on every zone you serve):",
+          ...CLOUDFLARE_PROVISIONER_GRANTS.map((g) => `  • ${g}`),
+          "This token stays in your keychain. CI gets a token that can deploy one Worker",
+          "(Individual Workers Editor) and has no DNS or zone permission.",
         );
         for (;;) {
-          const apiToken = await confirmPastedSecret("Cloudflare API token");
-          const verdict = await verifyCloudflareWorkersToken(apiToken, s.accountId.trim());
+          const apiToken = await confirmPastedSecret("Cloudflare provisioner token");
+          const verdict = await verifyCloudflareProvisionerToken(apiToken, s.accountId.trim());
           if (verdict.ok) {
             console.log(chalk.dim(`    · Verified — ${verdict.detail}`));
             return { ...s, apiToken };
           }
           console.log(chalk.yellow(`    ! ${verdict.detail}`));
-          const retry = await confirm({ message: "Paste a different token?", default: true });
+          const retry = await confirm({
+            message: "Paste a different token?",
+            default: true,
+          });
           if (!retry) return { ...s, apiToken };
         }
       },
@@ -1338,16 +1381,79 @@ export async function ensureCloudflareWorkers(): Promise<CloudflareWorkersConfig
     workersSubdomain,
   };
   store.set("providers.cloudflareWorkers", meta);
-  await setSecret(SECRET_KEYS.cloudflareWorkersToken, answers.apiToken);
-  console.log(chalk.green("  ✓ Cloudflare Workers configured"));
-  return { ...meta, apiToken: answers.apiToken };
+  await setSecret(SECRET_KEYS.cloudflareProvisionerToken, answers.apiToken);
+  console.log(chalk.green("  ✓ Cloudflare provisioner configured"));
+  return {
+    token: answers.apiToken,
+    accountId,
+    source: SECRET_KEYS.cloudflareProvisionerToken,
+    workersSubdomain,
+  };
 }
 
-export async function getCloudflareWorkersConfig(): Promise<CloudflareWorkersConfig | null> {
+/** Whether the `cloudflare` deployment mode was ever set up here. The
+ *  provisioner can resolve from the R2 admin token alone, so its presence
+ *  says nothing about whether this machine deploys Workers. */
+export function getCloudflareWorkersMeta(): CloudflareWorkersMeta | undefined {
+  return store.get("providers.cloudflareWorkers") as CloudflareWorkersMeta | undefined;
+}
+
+/** Cache the account's workers.dev subdomain once it is known. */
+export function rememberWorkersSubdomain(accountId: string, subdomain: string): void {
   const meta = store.get("providers.cloudflareWorkers") as CloudflareWorkersMeta | undefined;
-  if (!meta || meta.status !== "configured") return null;
-  const apiToken = await getSecret(SECRET_KEYS.cloudflareWorkersToken);
-  return { ...meta, apiToken: apiToken ?? undefined };
+  store.set("providers.cloudflareWorkers", {
+    ...(meta ?? { status: "configured" }),
+    accountId: meta?.accountId ?? accountId,
+    workersSubdomain: subdomain,
+  } satisfies CloudflareWorkersMeta);
+}
+
+// ---------------------------------------------------------------------------
+// Per-Worker deploy tokens hatchkit minted (ids only — never a value)
+// ---------------------------------------------------------------------------
+
+/** One per-Worker deploy token hatchkit minted and pushed to a repo. The
+ *  value is not kept anywhere but the repo's Actions secret. */
+export interface CloudflareDeployTokenRecord {
+  worker: string;
+  /** The Worker's immutable id (tag) the token's policy names. */
+  workerId: string;
+  accountId: string;
+  tokenId: string;
+  tokenName: string;
+  /** `worker`: Individual Workers Editor on this Worker only.
+   *  `account`: Workers Scripts Write on the whole account — the fallback
+   *  from legacy records. Revocable on its own,
+   *  but not isolated; doctor flags it. */
+  scope: "worker" | "account";
+  /** `owner/repo` that holds it as `CLOUDFLARE_API_TOKEN`. */
+  repo: string;
+  mintedAt: string;
+  /** `updated_at` GitHub reported for `CLOUDFLARE_API_TOKEN` right after
+   *  the push. Doctor compares it: a later change means the repo no
+   *  longer holds the token recorded here. */
+  secretUpdatedAt?: string;
+  accountSecretUpdatedAt?: string;
+}
+
+export function getCloudflareDeployTokenRecords(): Record<string, CloudflareDeployTokenRecord> {
+  return (
+    (store.get("cloudflareDeployTokens") as
+      | Record<string, CloudflareDeployTokenRecord>
+      | undefined) ?? {}
+  );
+}
+
+export function setCloudflareDeployTokenRecord(record: CloudflareDeployTokenRecord): void {
+  store.set("cloudflareDeployTokens", {
+    ...getCloudflareDeployTokenRecords(),
+    [record.worker]: record,
+  });
+}
+
+export function deleteCloudflareDeployTokenRecord(worker: string): void {
+  const { [worker]: _gone, ...rest } = getCloudflareDeployTokenRecords();
+  store.set("cloudflareDeployTokens", rest);
 }
 
 // ---------------------------------------------------------------------------
@@ -3037,7 +3143,10 @@ export async function ensureStripe(): Promise<StripeConfig> {
     await deleteSecret(SECRET_KEYS.stripePublishableKey);
   }
 
-  const stripeSteps: Step<{ testKey: string | null; liveKey: string | null }>[] = [
+  const stripeSteps: Step<{
+    testKey: string | null;
+    liveKey: string | null;
+  }>[] = [
     {
       name: "Stripe TEST/sandbox master key",
       run: async (s) => ({ ...s, testKey: await promptForMasterKey("test") }),
@@ -3448,8 +3557,8 @@ export async function reconfigureProvider(
     ]);
     await ensureDns();
   } else if (name === "cloudflare-workers") {
-    await wipeProvider("providers.cloudflareWorkers", [SECRET_KEYS.cloudflareWorkersToken]);
-    await ensureCloudflareWorkers();
+    // Preserve the old credential if setup is cancelled or verification fails.
+    await ensureCloudflareProvisioner({ force: true });
   } else if (name === "glitchtip") {
     await wipeProvider("providers.glitchtip", [SECRET_KEYS.glitchtipToken]);
     await ensureGlitchtip();

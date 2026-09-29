@@ -58,7 +58,11 @@ export type LedgerStep =
       domainName: string;
       zoneId: string;
       zoneName: string;
-      records: Array<{ id: string; name: string; type: "TXT" | "MX" | "CNAME" | "A" | "AAAA" }>;
+      records: Array<{
+        id: string;
+        name: string;
+        type: "TXT" | "MX" | "CNAME" | "A" | "AAAA";
+      }>;
       mergedSpf: Array<{ name: string }>;
     }
   /** Bounce/Complaint notification topics hatchkit set on an SES
@@ -77,7 +81,12 @@ export type LedgerStep =
    *  when the list was created *this* run (a list adopted from a
    *  pre-existing Listmonk install belongs to the user). Destroy hits
    *  DELETE /api/lists/{id}, 404-tolerant. */
-  | { kind: "listmonkList"; listmonkUrl: string; listName: string; listId: number }
+  | {
+      kind: "listmonkList";
+      listmonkUrl: string;
+      listName: string;
+      listId: number;
+    }
   /** A project's own Listmonk role (user role or list role) hatchkit
    *  created. Undo needs the `hatchkit-admin` credential, deletes by id,
    *  and refuses while a user still holds the role: Listmonk deletes
@@ -91,7 +100,12 @@ export type LedgerStep =
     }
   /** A project's own Listmonk API user hatchkit created. Undo deletes
    *  it by id with the `hatchkit-admin` credential. */
-  | { kind: "listmonkApiUser"; listmonkUrl: string; username: string; userId: number }
+  | {
+      kind: "listmonkApiUser";
+      listmonkUrl: string;
+      username: string;
+      userId: number;
+    }
   | { kind: "tfvars"; path: string }
   | { kind: "coolifyEnv"; path: string }
   | { kind: "keychain"; account: string }
@@ -146,7 +160,12 @@ export type LedgerStep =
    *      the migration revokes the user-token, but if migration
    *      crashed mid-flight the ledger still has the user-token entry
    *      so destroy can finish the job). */
-  | { kind: "r2Token"; tokenId: string; accountId: string; audience: "account" | "user" }
+  | {
+      kind: "r2Token";
+      tokenId: string;
+      accountId: string;
+      audience: "account" | "user";
+    }
   | {
       kind: "cloudflareDnsRecord";
       zoneId: string;
@@ -196,7 +215,22 @@ export type LedgerStep =
    *  pre-existing DNS records — so undoing it can never take down
    *  records that were already serving something. Cloudflare removes
    *  the record + certificate it created along with the binding. */
-  | { kind: "cloudflareWorkerDomain"; accountId: string; domainId: string; hostname: string }
+  | {
+      kind: "cloudflareWorkerDomain";
+      accountId: string;
+      domainId: string;
+      hostname: string;
+    }
+  /** The per-Worker deploy token `hatchkit cloudflare` minted and pushed
+   *  as the repo's `CLOUDFLARE_API_TOKEN` (an account API token, see
+   *  deploy/cloudflare-deploy-token.ts). Destroy revokes it with
+   *  `DELETE /accounts/{accountId}/tokens/{tokenId}`. */
+  | {
+      kind: "cloudflareWorkerToken";
+      accountId: string;
+      tokenId: string;
+      worker: string;
+    }
   /** Tailscale-served local-dev Caddy fragment dropped at
    *  `~/.config/dev/projects/<slug>.caddy`. Recorded only when the
    *  project opted into the local-dev integration. Destroy removes the
@@ -354,7 +388,10 @@ export function rewriteLedgerStepPathBasenames(
  *
  *  Quiet on errors: an unreadable / malformed ledger file maps to
  *  "skip", not "throw". A bad file shouldn't block destroy. */
-export function loadAllLedgers(): Array<{ name: string; steps: readonly LedgerStep[] }> {
+export function loadAllLedgers(): Array<{
+  name: string;
+  steps: readonly LedgerStep[];
+}> {
   const dir = runsDir();
   if (!existsSync(dir)) return [];
   const out: Array<{ name: string; steps: readonly LedgerStep[] }> = [];

@@ -24,12 +24,26 @@
  * secrets the NAMES that hatchkit used to push the provisioner under are
  * the signal (`COOLIFY_API_TOKEN`, `COOLIFY_TOKEN`), plus the workflows
  * that still read them.
+ *
+ * A Worker repo's `CLOUDFLARE_API_TOKEN` is judged by its `updated_at`:
+ * hatchkit records the token it minted for the repo together with the
+ * `updated_at` GitHub reported right after the push. Any other value —
+ * a dashboard token pasted by hand, the old shared token — was set at a
+ * different time and fails the check.
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { getConfigPath, getSesConfig } from "../config.js";
-import { PROVISIONER_DEPLOY_SECRET_NAMES, TOKEN_ONLY_DEPLOY_SECRET_NAMES } from "../deploy/coolify-deploy-hook.js";
+import { type CloudflareDeployTokenRecord, getConfigPath, getSesConfig } from "../config.js";
+import {
+  type DeployTokenScope,
+  maskId,
+  workerDeployTokenName,
+} from "../deploy/cloudflare-deploy-token.js";
+import {
+  PROVISIONER_DEPLOY_SECRET_NAMES,
+  TOKEN_ONLY_DEPLOY_SECRET_NAMES,
+} from "../deploy/coolify-deploy-hook.js";
 import { deriveSesSmtpPassword } from "../provision/ses.js";
 import { exec } from "../utils/exec.js";
 import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
@@ -76,11 +90,24 @@ export async function collectProvisionerValues(): Promise<ProvisionerValue[]> {
     if (value && value.length >= 16) out.push({ provider, label, value, severity });
   };
   add("coolify", "hatchkit's Coolify token", await getSecret(SECRET_KEYS.coolifyToken));
-  add("cloudflare", "hatchkit's Cloudflare DNS token", await getSecret(SECRET_KEYS.dnsCloudflareToken));
-  add("cloudflare", "hatchkit's Cloudflare R2 admin token", await getSecret(SECRET_KEYS.r2AdminToken));
   add(
     "cloudflare",
-    "hatchkit's Cloudflare Workers token",
+    "hatchkit's Cloudflare DNS token",
+    await getSecret(SECRET_KEYS.dnsCloudflareToken),
+  );
+  add(
+    "cloudflare",
+    "hatchkit's Cloudflare R2 admin token",
+    await getSecret(SECRET_KEYS.r2AdminToken),
+  );
+  add(
+    "cloudflare",
+    "hatchkit's Cloudflare provisioner token",
+    await getSecret(SECRET_KEYS.cloudflareProvisionerToken),
+  );
+  add(
+    "cloudflare",
+    "the shared Cloudflare Workers token older hatchkit pushed to every Worker repo",
     await getSecret(SECRET_KEYS.cloudflareWorkersToken),
   );
   const sesId = await getSecret(SECRET_KEYS.sesAccessKeyId);
@@ -156,6 +183,95 @@ export function findProvisionerSecretNames(names: readonly string[], repo: strin
   return out;
 }
 
+/** Findings for a Worker repo's `CLOUDFLARE_API_TOKEN`. Pure.
+ *
+ *  `token` is the recorded token as the provisioner reads it now: its
+ *  status and what its policies reach, or null when it no longer exists.
+ *  Undefined when it could not be read, which is not a finding. */
+export function findCloudflareDeployTokenFindings(input: {
+  repo: string;
+  worker: string;
+  secrets: ReadonlyArray<{ name: string; updatedAt?: string }>;
+  record?: CloudflareDeployTokenRecord;
+  token?: { status: string; scope: DeployTokenScope | "broader" } | null;
+}): IsolationFinding[] {
+  const where = `github:${input.repo}`;
+  const secret = input.secrets.find((s) => s.name === "CLOUDFLARE_API_TOKEN");
+  if (!secret)
+    return [
+      {
+        severity: "warn",
+        provider: "cloudflare",
+        where,
+        what: "No repo-level CLOUDFLARE_API_TOKEN; CI deployment credentials are unverified",
+      },
+    ];
+  const fix = `\`hatchkit secrets isolate <dir>\` gives the repo a token for Worker ${input.worker} alone`;
+  const { record } = input;
+  if (!record || record.repo !== input.repo || record.worker !== input.worker) {
+    return [
+      {
+        severity: "fail",
+        provider: "cloudflare",
+        where,
+        what: `CLOUDFLARE_API_TOKEN is not a per-project token hatchkit minted — ${fix}`,
+      },
+    ];
+  }
+  const name = `${workerDeployTokenName(input.worker)} (${maskId(record.tokenId)})`;
+  if (!record.secretUpdatedAt || secret.updatedAt !== record.secretUpdatedAt) {
+    return [
+      {
+        severity: "fail",
+        provider: "cloudflare",
+        where,
+        what: `CLOUDFLARE_API_TOKEN was set at ${secret.updatedAt ?? "an unknown time"}, not when hatchkit pushed ${name} — ${fix}`,
+      },
+    ];
+  }
+  if (input.token === null || (input.token && input.token.status !== "active")) {
+    return [
+      {
+        severity: "fail",
+        provider: "cloudflare",
+        where,
+        what: `${name} is ${input.token ? input.token.status : "gone"}, so CI can't deploy — \`hatchkit secrets isolate <dir> --rotate\``,
+      },
+    ];
+  }
+  if (input.token === undefined)
+    return [
+      {
+        severity: "warn",
+        provider: "cloudflare",
+        where,
+        what: `${name}: current policy and status could not be verified`,
+      },
+    ];
+  const scope = input.token.scope;
+  if (scope === "broader") {
+    return [
+      {
+        severity: "fail",
+        provider: "cloudflare",
+        where,
+        what: `${name} reaches more than Worker ${input.worker} — \`hatchkit secrets isolate <dir> --rotate\``,
+      },
+    ];
+  }
+  if (scope === "account") {
+    return [
+      {
+        severity: "fail",
+        provider: "cloudflare",
+        where,
+        what: `${name} is this repo's own token, but it has Workers Scripts Write on the whole account: revocable on its own, not isolated — retry with \`hatchkit secrets isolate <dir> --rotate\``,
+      },
+    ];
+  }
+  return [];
+}
+
 /** Workflows that read a provisioner-token secret. */
 export function findWorkflowTokenReads(projectDir: string): IsolationFinding[] {
   const dir = join(projectDir, ".github", "workflows");
@@ -199,19 +315,6 @@ export function parsePlainEnv(text: string): Record<string, string> {
   return out;
 }
 
-/** Actions secret names on `repo`, or null when `gh` can't list them. */
-export async function listRepoSecretNames(repo: string): Promise<string[] | null> {
-  const res = await exec("gh", ["secret", "list", "--repo", repo, "--json", "name"], {
-    silent: true,
-  });
-  if (res.exitCode !== 0) return null;
-  try {
-    return (JSON.parse(res.stdout) as Array<{ name: string }>).map((s) => s.name);
-  } catch {
-    return null;
-  }
-}
-
 export interface AuditOptions {
   /** Provisioner values; read from the keychain when omitted. */
   provisioners?: ProvisionerValue[];
@@ -221,6 +324,33 @@ export interface AuditOptions {
   github?: boolean;
   /** Read the project's Coolify app envs (one API call per app). */
   coolify?: boolean;
+  /** Read the recorded Cloudflare deploy token's state (one API call). */
+  cloudflare?: boolean;
+}
+
+/** The recorded deploy token as the provisioner sees it now: null when
+ *  it no longer exists, undefined when it can't be read. */
+async function readDeployToken(
+  record: CloudflareDeployTokenRecord,
+): Promise<{ status: string; scope: DeployTokenScope | "broader" } | null | undefined> {
+  const { getCloudflareProvisioner } = await import("../config.js");
+  const prov = await getCloudflareProvisioner();
+  if (!prov) return undefined;
+  const { CloudflareApi } = await import("../utils/cloudflare-api.js");
+  const { classifyDeployTokenPolicies } = await import("../deploy/cloudflare-deploy-token.js");
+  try {
+    const t = await new CloudflareApi({ token: prov.token }).getAccountToken(
+      record.accountId,
+      record.tokenId,
+    );
+    if (!t) return null;
+    return {
+      status: t.status,
+      scope: classifyDeployTokenPolicies(t.policies ?? [], record),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 /** Everything the rule forbids, for one project. Read-only. */
@@ -259,11 +389,41 @@ export async function auditProjectIsolation(
     const remote = await exec("git", ["-C", projectDir, "remote", "get-url", "origin"], {
       silent: true,
     });
-    const { repoSlugFromRemote } = await import("../deploy/gh-actions-secrets.js");
+    const { listRepoSecrets, repoSlugFromRemote } = await import("../deploy/gh-actions-secrets.js");
     repo = remote.exitCode === 0 ? repoSlugFromRemote(remote.stdout.trim()) : undefined;
-    if (repo) {
-      const names = await listRepoSecretNames(repo);
-      if (names) findings.push(...findProvisionerSecretNames(names, repo));
+    const secrets = repo ? await listRepoSecrets(repo) : null;
+    if (repo && !secrets) {
+      findings.push({
+        severity: "warn",
+        provider: "cloudflare",
+        where: `github:${repo}`,
+        what: "GitHub secret metadata could not be read; credential isolation is unverified",
+      });
+    }
+    if (repo && secrets) {
+      findings.push(
+        ...findProvisionerSecretNames(
+          secrets.map((s) => s.name),
+          repo,
+        ),
+      );
+      const { readWorkerName } = await import("../deploy/cloudflare.js");
+      const worker = readWorkerName(projectDir);
+      if (worker) {
+        const { getCloudflareDeployTokenRecords } = await import("../config.js");
+        const record = getCloudflareDeployTokenRecords()[worker];
+        const token =
+          record && opts.cloudflare !== false ? await readDeployToken(record) : undefined;
+        findings.push(
+          ...findCloudflareDeployTokenFindings({
+            repo,
+            worker,
+            secrets,
+            record,
+            token,
+          }),
+        );
+      }
     }
   }
 
@@ -294,10 +454,21 @@ export async function auditProjectIsolation(
 export function isolationCheckResults(
   name: string,
   findings: readonly IsolationFinding[],
-): Array<{ name: string; status: "ok" | "fail" | "warn"; detail: string; hint?: string[] }> {
+): Array<{
+  name: string;
+  status: "ok" | "fail" | "warn";
+  detail: string;
+  hint?: string[];
+}> {
   const title = `Project ${name} (credentials are project-scoped)`;
   if (findings.length === 0) {
-    return [{ name: title, status: "ok", detail: "no provisioner credential in any project-facing place" }];
+    return [
+      {
+        name: title,
+        status: "ok",
+        detail: "no provisioner credential in any project-facing place",
+      },
+    ];
   }
   const fails = findings.filter((f) => f.severity === "fail");
   return [
@@ -312,8 +483,9 @@ export function isolationCheckResults(
         ...findings.map((f) => `${f.severity === "fail" ? "✗" : "!"} ${f.where}: ${f.what}`),
         "",
         "A provisioner credential in one project reaches every project on the same",
-        "provider. `hatchkit secrets isolate <project> --dry-run` shows the fix for",
-        "Coolify; afterwards rotate the provisioner (see the isolation design notes).",
+        "provider. `hatchkit secrets isolate <project> --dry-run` shows the fix (Coolify",
+        "deploy hooks, a Cloudflare token per Worker); afterwards rotate the shared",
+        "credential (see the isolation design notes).",
       ],
     },
   ];

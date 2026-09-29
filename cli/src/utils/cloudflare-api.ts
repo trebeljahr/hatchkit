@@ -185,7 +185,11 @@ export class CloudflareApi {
     if (!res.ok || !json || !json.success) {
       const errMsg =
         json?.errors?.map((e) => `${e.code}: ${e.message}`).join("; ") ?? res.statusText;
-      throw new Error(`Cloudflare ${method} ${path} failed: ${errMsg}`);
+      // The status rides along as a property: several endpoints answer a
+      // missing resource with a message that never says "not found".
+      throw Object.assign(new Error(`Cloudflare ${method} ${path} failed: ${errMsg}`), {
+        status: res.status,
+      });
     }
     return json.result;
   }
@@ -468,7 +472,10 @@ export class CloudflareApi {
   async createR2Bucket(
     accountId: string,
     name: string,
-    opts: { locationHint?: string; storageClass?: "Standard" | "InfrequentAccess" } = {},
+    opts: {
+      locationHint?: string;
+      storageClass?: "Standard" | "InfrequentAccess";
+    } = {},
   ): Promise<{
     name: string;
     location?: string;
@@ -502,10 +509,13 @@ export class CloudflareApi {
   /** List every R2 bucket on the account. Used by `hatchkit overview`
    *  to show a fleet-level inventory without iterating naming-convention
    *  candidates. */
-  async listR2Buckets(
-    accountId: string,
-  ): Promise<
-    Array<{ name: string; location?: string; creation_date?: string; storage_class?: string }>
+  async listR2Buckets(accountId: string): Promise<
+    Array<{
+      name: string;
+      location?: string;
+      creation_date?: string;
+      storage_class?: string;
+    }>
   > {
     type Resp = {
       buckets?: Array<{
@@ -579,7 +589,11 @@ export class CloudflareApi {
     accountId: string,
     bucket: string,
   ): Promise<
-    Array<{ domain: string; enabled: boolean; status?: { ownership?: string; ssl?: string } }>
+    Array<{
+      domain: string;
+      enabled: boolean;
+      status?: { ownership?: string; ssl?: string };
+    }>
   > {
     type Resp = {
       domains?: Array<{
@@ -645,7 +659,7 @@ export class CloudflareApi {
       permissions === "read"
         ? ["Workers R2 Storage Bucket Item Read"]
         : ["Workers R2 Storage Bucket Item Read", "Workers R2 Storage Bucket Item Write"];
-    const groups = await this.getR2PermissionGroups();
+    const groups = await this.getPermissionGroups();
     const groupIds: string[] = [];
     for (const name of wanted) {
       const found = groups.find((g) => g.name === name);
@@ -722,7 +736,7 @@ export class CloudflareApi {
       permissions === "read"
         ? ["Workers R2 Storage Bucket Item Read"]
         : ["Workers R2 Storage Bucket Item Read", "Workers R2 Storage Bucket Item Write"];
-    const groups = await this.getR2PermissionGroups(params.accountId);
+    const groups = await this.getPermissionGroups(params.accountId);
     const groupIds: string[] = [];
     for (const name of wanted) {
       const found = groups.find((g) => g.name === name);
@@ -790,7 +804,7 @@ export class CloudflareApi {
         policies?: CfTokenPolicy[];
       }>("GET", `/accounts/${accountId}/tokens/${tokenId}`);
     } catch (err) {
-      if (/404|not\s*found/i.test((err as Error).message)) return null;
+      if ((err as { status?: number }).status === 404) return null;
       throw err;
     }
   }
@@ -803,7 +817,7 @@ export class CloudflareApi {
       await this.request<unknown>("DELETE", `/accounts/${accountId}/tokens/${tokenId}`);
       return "deleted";
     } catch (err) {
-      if (/404|not\s*found/i.test((err as Error).message)) return "not-found";
+      if ((err as { status?: number }).status === 404) return "not-found";
       throw err;
     }
   }
@@ -818,7 +832,7 @@ export class CloudflareApi {
    *  Cache is keyed on `accountId ?? ""` so user-token + account-token
    *  flows can coexist in one process without crosstalk. */
   private permissionGroupsCache: Map<string, Array<{ id: string; name: string }>> = new Map();
-  private async getR2PermissionGroups(
+  private async getPermissionGroups(
     accountId?: string,
   ): Promise<Array<{ id: string; name: string }>> {
     const key = accountId ?? "";
@@ -842,6 +856,67 @@ export class CloudflareApi {
     return all;
   }
 
+  /** Permission-group ids for `names`, from the account catalog. Throws
+   *  naming the first one Cloudflare no longer lists. */
+  async permissionGroupIds(accountId: string, names: readonly string[]): Promise<string[]> {
+    const groups = await this.getPermissionGroups(accountId);
+    return names.map((name) => {
+      const found = groups.find((g) => g.name === name);
+      if (!found) {
+        throw new Error(
+          `Permission group "${name}" not found in /accounts/${accountId}/tokens/permission_groups. The Cloudflare API may have renamed it.`,
+        );
+      }
+      return found.id;
+    });
+  }
+
+  /** Mint an account API token with the given policies. Returns the value
+   *  once; Cloudflare never shows it again. */
+  async createAccountToken(params: {
+    accountId: string;
+    name: string;
+    policies: Array<{
+      effect: "allow";
+      permission_groups: Array<{ id: string }>;
+      resources: Record<string, unknown>;
+    }>;
+  }): Promise<{ id: string; value: string }> {
+    return this.request<{ id: string; value: string }>(
+      "POST",
+      `/accounts/${params.accountId}/tokens`,
+      { name: params.name, policies: params.policies },
+    );
+  }
+
+  /** The Worker named `name`, or null when the account has none by that
+   *  name. `id` is the Worker's immutable tag, which is what a per-Worker
+   *  token policy names. A token without Workers access gets a 403 here,
+   *  which is thrown, not read as "absent". */
+  async getWorker(accountId: string, name: string): Promise<{ id: string; name: string } | null> {
+    try {
+      return await this.request<{ id: string; name: string }>(
+        "GET",
+        `/accounts/${accountId}/workers/workers/${encodeURIComponent(name)}`,
+      );
+    } catch (err) {
+      if ((err as { status?: number }).status === 404) return null;
+      throw err;
+    }
+  }
+
+  /** Create an empty Worker (no version, nothing served). A per-Worker
+   *  role can only name a Worker that exists, so a new project's Worker
+   *  is created here before its deploy token is minted; the first CI
+   *  deploy uploads the site. */
+  async createWorker(accountId: string, name: string): Promise<{ id: string; name: string }> {
+    return this.request<{ id: string; name: string }>(
+      "POST",
+      `/accounts/${accountId}/workers/workers`,
+      { name },
+    );
+  }
+
   /** Delete a USER-scoped API token by id (`DELETE /user/tokens/{id}`).
    *  Distinct from `deleteAccountToken` — this is used during
    *  migration to clean up the legacy user-tokens hatchkit minted
@@ -851,7 +926,7 @@ export class CloudflareApi {
       await this.request<unknown>("DELETE", `/user/tokens/${tokenId}`);
       return "deleted";
     } catch (err) {
-      if (/404|not\s*found/i.test((err as Error).message)) return "not-found";
+      if ((err as { status?: number }).status === 404) return "not-found";
       throw err;
     }
   }
@@ -924,12 +999,26 @@ export class CloudflareApi {
   async addR2CustomDomain(
     accountId: string,
     bucket: string,
-    params: { domain: string; zoneId: string; minTLS?: "1.0" | "1.1" | "1.2" | "1.3" },
-  ): Promise<{ domain: string; enabled: boolean; zoneId: string; existed: boolean }> {
+    params: {
+      domain: string;
+      zoneId: string;
+      minTLS?: "1.0" | "1.1" | "1.2" | "1.3";
+    },
+  ): Promise<{
+    domain: string;
+    enabled: boolean;
+    zoneId: string;
+    existed: boolean;
+  }> {
     const existing = await this.listR2CustomDomains(accountId, bucket);
     const match = existing.find((d) => d.domain === params.domain);
     if (match) {
-      return { domain: match.domain, enabled: match.enabled, zoneId: params.zoneId, existed: true };
+      return {
+        domain: match.domain,
+        enabled: match.enabled,
+        zoneId: params.zoneId,
+        existed: true,
+      };
     }
     const body: Record<string, unknown> = {
       domain: params.domain,
@@ -937,11 +1026,11 @@ export class CloudflareApi {
       zoneId: params.zoneId,
     };
     if (params.minTLS) body.minTLS = params.minTLS;
-    const res = await this.request<{ domain: string; enabled: boolean; zoneId: string }>(
-      "POST",
-      `/accounts/${accountId}/r2/buckets/${bucket}/domains/custom`,
-      body,
-    );
+    const res = await this.request<{
+      domain: string;
+      enabled: boolean;
+      zoneId: string;
+    }>("POST", `/accounts/${accountId}/r2/buckets/${bucket}/domains/custom`, body);
     return { ...res, existed: false };
   }
 
@@ -1065,7 +1154,7 @@ export class CloudflareApi {
     try {
       return await this.request<CfEmailRoutingSettings>("GET", `/zones/${zoneId}/email/routing`);
     } catch (err) {
-      if (/404|not\s*found/i.test((err as Error).message)) return null;
+      if ((err as { status?: number }).status === 404) return null;
       throw err;
     }
   }
@@ -1140,7 +1229,7 @@ export class CloudflareApi {
       );
       return "deleted";
     } catch (err) {
-      if (/404|not\s*found/i.test((err as Error).message)) return "not-found";
+      if ((err as { status?: number }).status === 404) return "not-found";
       throw err;
     }
   }
@@ -1212,7 +1301,7 @@ export class CloudflareApi {
       await this.request<unknown>("DELETE", `/zones/${zoneId}/email/routing/rules/${ruleId}`);
       return "deleted";
     } catch (err) {
-      if (/404|not\s*found/i.test((err as Error).message)) return "not-found";
+      if ((err as { status?: number }).status === 404) return "not-found";
       throw err;
     }
   }
@@ -1229,7 +1318,7 @@ export class CloudflareApi {
         `/zones/${zoneId}/email/routing/rules/catch_all`,
       );
     } catch (err) {
-      if (/404|not\s*found/i.test((err as Error).message)) return null;
+      if ((err as { status?: number }).status === 404) return null;
       throw err;
     }
   }
@@ -1266,7 +1355,7 @@ export class CloudflareApi {
       );
       return data?.subdomain ?? null;
     } catch (err) {
-      if (/404|not\s*found/i.test((err as Error).message)) return null;
+      if ((err as { status?: number }).status === 404) return null;
       throw err;
     }
   }
@@ -1313,40 +1402,46 @@ export class CloudflareApi {
       await this.request<unknown>("DELETE", `/accounts/${accountId}/workers/domains/${domainId}`);
       return "deleted";
     } catch (err) {
-      if (/404|not\s*found/i.test((err as Error).message)) return "not-found";
+      if ((err as { status?: number }).status === 404) return "not-found";
       throw err;
     }
   }
 
-  /** Probe the four permissions the `cloudflare` deployment mode needs,
-   *  each with the cheapest read-only call that the permission gates.
+  /** Probe the grants the Cloudflare PROVISIONER needs, each with the
+   *  cheapest read-only call that the permission gates:
    *
-   *    Workers Scripts:Edit    — publish the Worker and its assets.
-   *    Workers Routes:Edit     — bind the custom domain / routes.
-   *    DNS:Edit                — the record Cloudflare creates for that
-   *                              domain, and any apex/www placeholder.
-   *    Dynamic Redirect:Edit   — the www → apex (or apex → www) 301.
-   *                              Easy to forget; without it the
-   *                              redirect rule silently can't be written.
+   *    Account API Tokens:Edit — mint each Worker repo its own token.
+   *    Workers Admin           — look up a Worker's id, create a new
+   *                              project's Worker.
+   *    Workers Routes:Edit     — attach a custom domain (zone).
+   *    DNS:Edit                — read the hostname's records first; the
+   *                              attach is only automated on an empty one.
    *
-   *  Read-only throughout: a read succeeding does not strictly prove
-   *  the matching Edit grant, but Cloudflare's token scopes are
-   *  hierarchical — Edit implies Read, and a token with neither fails
-   *  the read. In practice a failing probe is a real missing grant and
-   *  a passing one is right for every token shape hatchkit issues
-   *  guidance for. `zoneId` is optional; the three zone-scoped probes
-   *  are skipped (reported ok) without one, since there is no zone to
-   *  check against yet.
-   */
-  async probeWorkersPermissions(params: {
+   *  None of these ever reach CI: the per-Worker token hatchkit mints
+   *  carries Individual Workers Editor on one Worker and nothing else.
+   *
+   *  Workers is probed through the account's workers.dev subdomain, NOT
+   *  the script list: since per-Worker roles (2026-09-15) the list
+   *  answers 200 with an empty array to a token with no Workers grant at
+   *  all, so a list probe passes every token.
+   *
+   *  Read-only throughout: Edit implies Read, and a token with neither
+   *  fails the read. `zoneId` is optional; the zone probes are skipped
+   *  without one. */
+  async probeProvisionerPermissions(params: {
     accountId: string;
     zoneId?: string;
   }): Promise<CfPermissionProbe[]> {
     const out: CfPermissionProbe[] = [];
 
     out.push(
-      await this.probe("Account → Workers Scripts → Edit", () =>
-        this.request<unknown>("GET", `/accounts/${params.accountId}/workers/scripts`),
+      await this.probe("Account → Account API Tokens → Edit", () =>
+        this.request<unknown>("GET", `/accounts/${params.accountId}/tokens?per_page=1`),
+      ),
+    );
+    out.push(
+      await this.probe("Account → Workers → Admin (read preflight)", () =>
+        this.request<unknown>("GET", `/accounts/${params.accountId}/workers/subdomain`),
       ),
     );
 
@@ -1362,24 +1457,32 @@ export class CloudflareApi {
         this.request<unknown>("GET", `/zones/${params.zoneId}/dns_records?per_page=1`),
       ),
     );
-    out.push(
-      await this.probe("Zone → Dynamic Redirect → Edit", () =>
-        this.request<unknown>(
-          "GET",
-          `/zones/${params.zoneId}/rulesets/phases/http_request_dynamic_redirect/entrypoint`,
-        ),
-      ),
-    );
     return out;
+  }
+
+  /** The calls `wrangler deploy` makes against an existing Worker before
+   *  it uploads, run with THIS client's token. A read preflight only; a live canary deployment is still
+   *  required to verify writes. Works for Workers with no version yet. */
+  async workerDeployRefusals(accountId: string, name: string): Promise<string[]> {
+    const refused: string[] = [];
+    const worker = encodeURIComponent(name);
+    for (const path of [`/accounts/${accountId}/workers/workers/${worker}`]) {
+      try {
+        await this.request<unknown>("GET", path);
+      } catch (err) {
+        refused.push(
+          `GET ${path.replace(accountId, "<account>")}: ${(err as Error).message.replace(/^.*failed: /, "")}`,
+        );
+      }
+    }
+    return refused;
   }
 
   /** Run one permission probe.
    *
-   *  A 404 counts as a PASS. The dynamic-redirect entrypoint 404s on
-   *  any zone that has never had a redirect rule written, and that is
-   *  the common case — the token could read the phase, there was just
-   *  nothing in it. Only an authorization failure means a grant is
-   *  actually missing; Cloudflare signals those as code 9109
+   *  A 404 counts as a PASS: an account that never claimed a workers.dev
+   *  subdomain answers 404 to a token that may read it. Only an
+   *  authorization failure means a grant is actually missing; Cloudflare signals those as code 9109
    *  ("Unauthorized to access requested resource") or 10000
    *  ("Authentication error"). Anything else (network, 5xx) is
    *  reported as a failure with the raw message so the user can see
@@ -1390,10 +1493,11 @@ export class CloudflareApi {
       return { permission, ok: true };
     } catch (err) {
       const msg = (err as Error).message;
-      if (/\b(9109|10000)\b|\bHTTP (401|403)\b/.test(msg)) {
+      const status = (err as { status?: number }).status;
+      if (status === 401 || status === 403 || /\b(9109|10000)\b|\bHTTP (401|403)\b/.test(msg)) {
         return { permission, ok: false, detail: msg };
       }
-      if (/\b404\b|not\s*found/i.test(msg)) return { permission, ok: true };
+      if (status === 404 || /\b404\b|not\s*found/i.test(msg)) return { permission, ok: true };
       return { permission, ok: false, detail: msg };
     }
   }

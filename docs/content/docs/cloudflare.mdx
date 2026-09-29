@@ -13,30 +13,39 @@ The mode encodes a migration verified end to end on fractal.garden in September 
 
 ## What you need
 
-One Cloudflare API token, stored separately from the DNS and R2 tokens:
+Keep the Cloudflare provisioner in Hatchkit's local keychain:
 
 ```bash
 hatchkit config add cloudflare-workers
 ```
 
-It asks for your account ID (it is in every dashboard URL: `dash.cloudflare.com/<account-id>/…`) and the token, then verifies the token before storing it.
+Setup asks for your account ID and provisioner token. It checks read access before storing the token.
+Hatchkit can reuse the configured R2 admin token when both providers use the same account.
+That token still needs the Workers permissions below.
 
-### Token permissions
+### Provisioner permissions
 
-Create it at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) → Create Token → Custom token.
+Create a user token at [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens).
 
-| Scope | Permission | What needs it |
+| Scope | Permission | Purpose |
 |---|---|---|
-| Account | Workers Scripts → Edit | Publishing the Worker and its assets |
-| Zone | Workers Routes → Edit | Binding the custom domain |
-| Zone | DNS → Edit | The record Cloudflare creates for that domain |
-| Zone | Dynamic Redirect → Edit | The `www` → apex (or apex → `www`) 301 |
+| Account | Account API Tokens → Edit | Mint per-Worker deploy tokens |
+| Account, Workers product | Admin | Look up and create Workers |
+| Zone | Workers Routes → Edit | Attach custom domains |
+| Zone | DNS → Edit | Inspect existing hostname records |
 
-Scope the three zone permissions to **every** domain you plan to serve.
+Limit zone grants to domains you serve. These grants stay on the local provisioner.
+Doctor runs read probes. Passing these probes does not prove write access.
 
-Dynamic Redirect is the one people leave off. Without it the redirect rule silently cannot be written, and the redirect never happens — nothing errors. `hatchkit doctor` probes all four and names every missing one in a single pass.
+CI receives **Editor on one existing Worker**, with no DNS or zone permissions.
+[Cloudflare documents per-Worker roles](https://developers.cloudflare.com/workers/authorization/workers/).
+Editor can deploy, change settings, manage secrets, and rename that Worker. It cannot create or delete Workers.
+Deployed code can use the Worker's runtime bindings. Review bindings before claiming isolation from other projects.
 
-This is deliberately a third Cloudflare token rather than a reuse of the DNS or R2 one. It is the only Cloudflare credential hatchkit copies out of your keychain into a third party (GitHub Actions), so it has to be revocable on its own without taking DNS or R2 down with it.
+Hatchkit reads back each minted policy and checks access before publishing its value to GitHub.
+A rejected policy stops setup. Hatchkit never falls back to account-wide permissions.
+The API resource-key format remains a compatibility assumption. Verify it against a dashboard-created scoped token before production rollout.
+Read checks cannot prove deployment works. Run a canary deployment before revoking a shared credential.
 
 ## Scaffolding a new project
 
@@ -75,9 +84,34 @@ Writes whatever of the four files is missing (idempotent — it never overwrites
 
 ## Secrets
 
-`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are set as **repo-level** GitHub Actions secrets. Repo-level rather than org-level because a personal GitHub account has no organization to inherit shared secrets from — every repo gets its own copy.
+`CLOUDFLARE_API_TOKEN` holds the Worker's own token. `CLOUDFLARE_ACCOUNT_ID` identifies its account.
+Both are repo-level GitHub Actions secrets. The provisioner never becomes a repo secret.
 
-Values are passed to `gh secret set` on stdin, never in argv, so they do not appear in your shell history or in the process list. No token value is printed, including on the failure path: the manual fallback recipe prints the command shape and leaves you to paste.
+Secret values go to `gh secret set` through stdin. Hatchkit stores token IDs and secret timestamps locally, never deploy-token values.
+Timestamp matching is a provenance check. GitHub does not expose secret values for comparison.
+
+### Migrate an existing Worker repo
+
+```bash
+hatchkit secrets isolate /path/to/repo --dry-run
+hatchkit secrets isolate /path/to/repo
+```
+
+The repo must have a `wrangler.jsonc` Worker name and a workflow reading `CLOUDFLARE_API_TOKEN`, or a Cloudflare deployment manifest.
+Use an explicit path for repos without a manifest. `--all` discovers manifest-backed projects only.
+Keep routes and custom domains out of CI's deployment configuration. Configure those separately with the provisioner.
+
+Run one repo first, then rerun its deployment workflow. Verify the deployed revision, pages, assets, and existing custom domain.
+After every consumer deploys successfully, revoke the old shared token manually. Hatchkit does not revoke tokens it did not record.
+
+`--rotate` replaces the recorded token. Hatchkit revokes its recorded predecessor only after publishing the replacement and reading secret metadata.
+It never uses a matching token name as proof of ownership.
+If a token write has an unknown outcome, Hatchkit retains both tokens and reports the candidate for review.
+
+A failed migration leaves the current site running, but CI may need credential repair.
+For rollback, restore the previous CI token from its original secure source, if it remains valid, and restore the account ID.
+GitHub cannot return the old value. Without a saved valid credential, mint a corrected per-Worker replacement.
+Do not use `cloudflare --undo` to roll back a token migration: it also detaches custom domains and removes deployment files.
 
 ## Custom domain
 
@@ -130,6 +164,7 @@ hatchkit cloudflare --undo --dry-run   # print the plan
 hatchkit cloudflare --undo --yes       # do it
 ```
 
+Revokes the recorded deploy token and removes repo secrets whose timestamps still match the recorded writes.
 Detaches custom domains bound to this Worker and removes the `wrangler.jsonc` + `deploy.yml` hatchkit wrote. The Worker itself and its uploaded assets stay — delete those with `pnpm dlx wrangler delete` if you want them gone.
 
 It does not re-create whatever DNS records a migration replaced. hatchkit never deleted them, so there is nothing of its own to restore.
@@ -142,4 +177,4 @@ The CI workflow is the normal path, but you can deploy a local build to check it
 pnpm build && pnpm dlx wrangler deploy
 ```
 
-`wrangler login` is enough; the stored API token is only for CI.
+`wrangler login` uses your local Cloudflare identity. The CI token belongs only in its repo secret.

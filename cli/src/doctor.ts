@@ -7,7 +7,10 @@
 
 import chalk from "chalk";
 import {
-  getCloudflareWorkersConfig,
+  CLOUDFLARE_PROVISIONER_GRANTS,
+  getCloudflareDeployTokenRecords,
+  getCloudflareProvisioner,
+  getCloudflareWorkersMeta,
   getCoolifyConfig,
   getDnsConfig,
   getGlitchtipConfig,
@@ -256,7 +259,9 @@ async function checkHetzner(): Promise<CheckResult> {
         headers: { Authorization: `Bearer ${cfg.token}` },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as { meta?: { pagination?: { total_entries?: number } } };
+      const body = (await res.json()) as {
+        meta?: { pagination?: { total_entries?: number } };
+      };
       return `${body.meta?.pagination?.total_entries ?? "?"} server(s)`;
     },
     (detail) => {
@@ -1011,59 +1016,68 @@ function isCoolifyManagedMode(mode: string | undefined): boolean {
 }
 
 /**
- * Cloudflare Workers (the `cloudflare` deployment mode).
+ * Cloudflare Workers (the `cloudflare` deployment mode): the provisioner.
  *
- * Read-only throughout, like every other doctor check. Two layers:
+ * Hatchkit's one Cloudflare provisioner token stays in the keychain and
+ * mints each Worker repo its own token (deploy/cloudflare-deploy-token.ts).
+ * This checks the provisioner can do that. Whether each repo holds its
+ * own token is the per-project "credentials are project-scoped" check.
+ *
+ * Read-only throughout, like every other doctor check:
  *
  *   1. `/user/tokens/verify` — the token is live at all.
- *   2. A permission probe per grant the mode needs. The account-scoped
- *      one (Workers Scripts) always runs; the three zone-scoped ones
- *      need a zone, which comes from the DNS provider's token if one is
- *      configured. Without a zone the check reports what it could and
- *      says which permissions it couldn't reach.
+ *   2. A permission probe per grant the provisioner needs. The account
+ *      ones always run; the zone ones need a zone, which comes from the
+ *      DNS provider's token if one is configured.
  *
  * Reports every missing permission at once rather than failing on the
  * first. A user re-editing a Cloudflare token should get the whole list
  * in one pass, not discover a second gap after saving the first fix.
+ *
+ * Runs only when the mode was set up here (or a deploy token was
+ * minted): the provisioner also resolves from the R2 admin token alone,
+ * and an R2-only user has no reason to grant it Workers.
  */
 async function checkCloudflareWorkers(): Promise<CheckResult> {
-  const cfg = await getCloudflareWorkersConfig();
-  if (!cfg) return { name: "Cloudflare Workers", status: "skip" };
-  if (!cfg.apiToken) {
+  const name = "Cloudflare Workers provisioner";
+  const used =
+    getCloudflareWorkersMeta()?.status === "configured" ||
+    Object.keys(getCloudflareDeployTokenRecords()).length > 0;
+  if (!used) return { name, status: "skip" };
+  const prov = await getCloudflareProvisioner();
+  if (!prov) {
     return {
-      name: "Cloudflare Workers",
+      name,
       status: "fail",
-      detail: "Configured but no API token in the keychain.",
+      detail: "No Cloudflare provisioner in the keychain.",
       hint: ["Re-run: `hatchkit config add cloudflare-workers`"],
     };
   }
+  const legacy = await getSecret(SECRET_KEYS.cloudflareWorkersToken);
 
-  // Hoisted so the narrowing above survives into the closure.
-  const token = cfg.apiToken;
   return check(
-    "Cloudflare Workers",
+    name,
     async () => {
-      const res = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
       const { CloudflareApi } = await import("./utils/cloudflare-api.js");
-      const api = new CloudflareApi({ token, accountId: cfg.accountId });
+      const api = new CloudflareApi({
+        token: prov.token,
+        accountId: prov.accountId,
+      });
+
+      if ((await api.verifyToken()) !== "active") throw new Error("Token is not active");
 
       // The zone-scoped probes need a zone id. Borrow one from the DNS
       // token's zone list — it's the same Cloudflare account, and any
-      // zone is representative enough to tell whether the Workers token
+      // zone is representative enough to tell whether the provisioner
       // carries the zone grants at all.
       let zoneId: string | undefined;
       let zoneName: string | undefined;
       const dns = await getDnsConfig();
       if (dns?.apiToken) {
         try {
-          const { CloudflareApi: DnsApi } = await import("./utils/cloudflare-api.js");
-          const zones = await new DnsApi({
+          const zones = await new CloudflareApi({
             token: dns.apiToken,
-            accountId: cfg.accountId,
+            accountId: prov.accountId,
           }).listZones();
           zoneId = zones[0]?.id;
           zoneName = zones[0]?.name;
@@ -1072,32 +1086,44 @@ async function checkCloudflareWorkers(): Promise<CheckResult> {
         }
       }
 
-      const probes = await api.probeWorkersPermissions({ accountId: cfg.accountId, zoneId });
+      const probes = await api.probeProvisionerPermissions({
+        accountId: prov.accountId,
+        zoneId,
+      });
       const missing = probes.filter((p) => !p.ok);
       if (missing.length > 0) {
         throw new Error(`missing permissions: ${missing.map((p) => p.permission).join(", ")}`);
       }
+      if (legacy) {
+        throw new Error("legacy shared token `cloudflare:workers:token` still in the keychain");
+      }
       const scope = zoneName ? `account + zone ${zoneName}` : "account only (no zone to probe)";
-      return `${probes.length}/${probes.length} permissions OK (${scope})`;
+      return `${probes.length}/${probes.length} read probes passed (${scope}; from ${prov.source}); write grants unverified`;
     },
     (detail) => {
+      const grants = CLOUDFLARE_PROVISIONER_GRANTS.map((g) => `  • ${g}`);
       const code = httpCode(detail);
       if (code === 401) {
         return [
-          "Cloudflare API token is invalid, expired, or revoked.",
-          "Create a new one: https://dash.cloudflare.com/profile/api-tokens",
-          "Required: Account:Workers Scripts:Edit, Zone:Workers Routes:Edit, Zone:DNS:Edit, Zone:Dynamic Redirect:Edit.",
+          `The provisioner (${prov.source}) is invalid, expired, or revoked.`,
+          "Create a new User API Token: https://dash.cloudflare.com/profile/api-tokens",
+          ...grants,
           "Then re-run: `hatchkit config add cloudflare-workers`",
         ];
       }
       if (/missing permissions/.test(detail)) {
         return [
-          "The token works but is missing grants listed above.",
-          "Edit it at https://dash.cloudflare.com/profile/api-tokens and add them.",
-          "Scope the three zone permissions to every domain you plan to serve.",
-          "Dynamic Redirect is the commonly-missed one — without it the www → apex",
-          "  redirect rule can't be written and the redirect silently never happens.",
-          "Then re-run: `hatchkit config add cloudflare-workers` (or just `hatchkit doctor` if you edited in place).",
+          `The provisioner (${prov.source}) works but is missing the grants listed above:`,
+          ...grants,
+          "Edit it at https://dash.cloudflare.com/profile/api-tokens, or store a dedicated",
+          "one with `hatchkit config add cloudflare-workers`. CI never gets these grants.",
+        ];
+      }
+      if (/legacy shared token/.test(detail)) {
+        return [
+          "Older hatchkit pushed this ONE token to every Worker repo. Nothing reads it now.",
+          "Give each repo its own token (`hatchkit secrets isolate <dir>`), then revoke",
+          "the old token in the dashboard. The local legacy keychain copy is unused.",
         ];
       }
       return undefined;
@@ -1584,7 +1610,9 @@ export async function checkProjectProdEnvState(projectDir: string): Promise<Chec
 
   let projectName: string;
   try {
-    const m = JSON.parse(readFileSync(manifestPath, "utf-8")) as { name?: string };
+    const m = JSON.parse(readFileSync(manifestPath, "utf-8")) as {
+      name?: string;
+    };
     if (!m.name) return out;
     projectName = m.name;
   } catch {
@@ -2094,7 +2122,10 @@ export async function checkProjectListmonkTxTemplateState(
   const manifestPath = `${projectDir}/.hatchkit.json`;
   if (!existsSync(manifestPath)) return [];
 
-  let manifest: { name?: string; email?: { transactional?: string; mailingList?: string } };
+  let manifest: {
+    name?: string;
+    email?: { transactional?: string; mailingList?: string };
+  };
   try {
     manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
   } catch {
@@ -2219,7 +2250,9 @@ export async function checkProjectKeyState(projectDir: string): Promise<CheckRes
 
   let projectName: string;
   try {
-    const m = JSON.parse(readFileSync(manifestPath, "utf-8")) as { name?: string };
+    const m = JSON.parse(readFileSync(manifestPath, "utf-8")) as {
+      name?: string;
+    };
     if (!m.name) return out;
     projectName = m.name;
   } catch {
@@ -3144,12 +3177,22 @@ export async function checkProjectCoolifyAutoDeployState(
 
 /** The project holds no provisioner credential anywhere project-facing:
  *  env files, the plaintext provisioning cache, workflows, the repo's
- *  Actions secret names, its Coolify app envs. See secrets/isolation.ts. */
+ *  Actions secret names, its Coolify app envs — and a Worker repo holds
+ *  the Cloudflare token hatchkit minted for its Worker, not a shared
+ *  one. See secrets/isolation.ts. Runs in a hatchkit project and in any
+ *  repo with a wrangler.jsonc (Worker repos migrated by hand have no
+ *  manifest). */
 export async function checkProjectCredentialIsolationState(
   projectDir: string,
 ): Promise<CheckResult[]> {
   const { existsSync } = await import("node:fs");
-  if (!existsSync(`${projectDir}/.hatchkit.json`)) return [];
+  const { CLOUDFLARE_WRANGLER_REL_PATH } = await import("./scaffold/cloudflare-mode.js");
+  if (
+    !existsSync(`${projectDir}/.hatchkit.json`) &&
+    !existsSync(`${projectDir}/${CLOUDFLARE_WRANGLER_REL_PATH}`)
+  ) {
+    return [];
+  }
   const { auditProjectIsolation, isolationCheckResults } = await import("./secrets/isolation.js");
   try {
     const { name, findings } = await auditProjectIsolation(projectDir);
@@ -3274,7 +3317,11 @@ export async function checkProjectNginxConfigState(projectDir: string): Promise<
   const manifestPath = join(projectDir, ".hatchkit.json");
   if (!existsSync(manifestPath)) return [];
 
-  let manifest: { name?: string; deploymentMode?: string; projectSubdir?: string };
+  let manifest: {
+    name?: string;
+    deploymentMode?: string;
+    projectSubdir?: string;
+  };
   try {
     manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
   } catch {

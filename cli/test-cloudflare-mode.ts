@@ -250,7 +250,7 @@ await test("the workflow renderer honours a non-main default branch", () => {
 
 const { CloudflareApi } = await import("./src/utils/cloudflare-api.js");
 
-/** Drive `probeWorkersPermissions` against a stubbed fetch so the
+/** Drive `probeProvisionerPermissions` against a stubbed fetch so the
  *  pass/fail classification is testable without a live token. */
 async function probeWith(
   responder: (url: string) => { status: number; body: unknown },
@@ -266,7 +266,7 @@ async function probeWith(
   }) as typeof globalThis.fetch;
   try {
     const api = new CloudflareApi({ token: "t", accountId: "acct" });
-    return await api.probeWorkersPermissions({ accountId: "acct", zoneId: "zone" });
+    return await api.probeProvisionerPermissions({ accountId: "acct", zoneId: "zone" });
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -299,10 +299,10 @@ await test("probe reports all four permissions when a zone is known", async () =
   assert.deepEqual(
     probes.map((p) => p.permission),
     [
-      "Account → Workers Scripts → Edit",
+      "Account → Account API Tokens → Edit",
+      "Account → Workers → Admin (read preflight)",
       "Zone → Workers Routes → Edit",
       "Zone → DNS → Edit",
-      "Zone → Dynamic Redirect → Edit",
     ],
   );
 });
@@ -321,11 +321,9 @@ await test("probe reports every missing grant, not just the first", async () => 
 });
 
 await test("a 404 is a pass, not a missing permission", async () => {
-  // The dynamic-redirect entrypoint 404s on any zone that has never had
-  // a redirect rule written, which is the common case. Reading that as
-  // "permission missing" would send users to re-edit a correct token.
+  // An account without a workers.dev subdomain may return 404.
   const probes = await probeWith((url) =>
-    url.includes("http_request_dynamic_redirect") ? ABSENT : OK,
+    url.includes("workers/subdomain") ? ABSENT : OK,
   );
   assert.ok(probes.every((p) => p.ok));
 });
@@ -339,9 +337,9 @@ await test("probe skips the zone-scoped grants when no zone is known", async () 
     })) as typeof globalThis.fetch;
   try {
     const api = new CloudflareApi({ token: "t", accountId: "acct" });
-    const probes = await api.probeWorkersPermissions({ accountId: "acct" });
-    assert.equal(probes.length, 1);
-    assert.equal(probes[0].permission, "Account → Workers Scripts → Edit");
+    const probes = await api.probeProvisionerPermissions({ accountId: "acct" });
+    assert.equal(probes.length, 2);
+    assert.equal(probes[0].permission, "Account → Account API Tokens → Edit");
   } finally {
     globalThis.fetch = realFetch;
   }

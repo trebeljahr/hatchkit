@@ -1,6 +1,8 @@
 /*
  * GitHub Actions secrets helpers shared by `hatchkit adopt`,
- * `hatchkit create`, `hatchkit sync` and `hatchkit secrets isolate`.
+ * `hatchkit create`, `hatchkit sync`, `hatchkit cloudflare` and
+ * `hatchkit secrets isolate`. The Cloudflare half (per-Worker tokens) is
+ * at the bottom; its model is in deploy/cloudflare-deploy-token.ts.
  *
  * Those flows scaffold a GitHub Actions workflow that builds the
  * Docker image, pushes to GHCR, and triggers Coolify to redeploy.
@@ -66,6 +68,17 @@ import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import { exec } from "../utils/exec.js";
+import type { RunLedger } from "../utils/run-ledger.js";
+import {
+  type DeployTokenScope,
+  DeployTokenError,
+  WORKER_TOKEN_GROUP,
+  classifyDeployTokenPolicies,
+  maskId,
+  mintWorkerDeployToken,
+  withPropagationRetry,
+  workerDeployTokenName,
+} from "./cloudflare-deploy-token.js";
 import {
   type DeployHook,
   PROVISIONER_DEPLOY_SECRET_NAMES,
@@ -336,74 +349,278 @@ export interface CloudflareDeploySecretsInput {
   projectDir: string;
   /** GitHub `<owner>/<repo>` slug. */
   repoSlug: string;
+  /** The Worker the repo deploys (`name` in wrangler.jsonc). */
+  workerName: string;
+  /** Create the Worker (empty) when the account has none by that name.
+   *  `hatchkit cloudflare` passes it for a new project; the migration of
+   *  an existing repo does not, since its Worker must already exist. */
+  createWorker?: boolean;
+  /** Mint a new token even when the repo holds the recorded one — the
+   *  per-project revocation path. */
+  rotate?: boolean;
+  /** Read and plan only: no token, no secret, no Worker is created. */
+  dryRun?: boolean;
+  ledger?: RunLedger;
 }
 
 export interface CloudflareDeploySecretsResult {
   ok: boolean;
+  /** Secret names set (or that would be, on a dry run). */
   pushed: string[];
+  /** The repo already holds the recorded, active per-Worker token. */
+  inSync?: boolean;
+  worker?: { id: string; created: boolean };
+  tokenName?: string;
+  /** Masked. */
+  tokenId?: string;
+  scope?: DeployTokenScope;
+  /** Masked ids of hatchkit's earlier tokens for this Worker, revoked
+   *  (or that would be) once the repo holds the new one. */
+  revoked: string[];
+  /** One line per step, for a dry run. */
+  plan: string[];
+  error?: string;
 }
 
 /** The two repo-level secrets `cloudflare/wrangler-action@v4` reads. */
 export const CLOUDFLARE_SECRET_NAMES = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"] as const;
 
-/** Push the secrets the scaffolded Cloudflare deploy workflow needs.
+/** Give a Worker repo its own Cloudflare token and push it.
  *
- *  Repo-level, not org-level, on purpose: a personal GitHub account has
- *  no org to hang shared secrets off, so every repo gets its own copy.
- *  That is also why the token is stored under its own keychain entry —
- *  it is the one Cloudflare credential that leaves the machine, so it
- *  has to be revocable on its own.
+ *  The token is minted by the keychain provisioner for this one Worker
+ *  (deploy/cloudflare-deploy-token.ts); the provisioner itself never
+ *  leaves the machine. When the repo already holds the token hatchkit
+ *  recorded for it (same GitHub `updated_at`, token still active), no
+ *  new token is minted unless `rotate`. hatchkit's earlier tokens for
+ *  the Worker are revoked only after the new one is in the repo, so a
+ *  failed push never leaves the repo without a working token.
  *
- *  Nothing here prints a token value. `gh secret set --body` passes it
- *  as an argv element, so it never reaches stdout, and the manual
- *  fallback recipe prints the *command shape* with a placeholder rather
- *  than the secret. Best-effort: a failure leaves the repo without
- *  secrets and hands the user the recipe, it doesn't roll anything back.
- */
+ *  Nothing here prints a token value: it goes to `gh secret set` on
+ *  stdin, and ids are masked. A token that could not be pushed is
+ *  revoked only when it is known not to have reached GitHub. Unknown write
+ *  outcomes retain both tokens for recovery. */
+export interface CloudflareDeployDependencies {
+  provisioner: { token: string; accountId: string; source: string } | null;
+  api: Pick<
+    import("../utils/cloudflare-api.js").CloudflareApi,
+    | "getWorker"
+    | "createWorker"
+    | "getAccountToken"
+    | "permissionGroupIds"
+    | "createAccountToken"
+    | "deleteAccountToken"
+  >;
+  records: Record<string, import("../config.js").CloudflareDeployTokenRecord>;
+  saveRecord: (record: import("../config.js").CloudflareDeployTokenRecord) => void;
+  listSecrets: typeof listRepoSecrets;
+  setSecret: typeof ghSecretSet;
+  check: (value: string, accountId: string, worker: string) => Promise<string[]>;
+}
+
 export async function setCloudflareDeploySecrets(
   input: CloudflareDeploySecretsInput,
+  dependencies?: CloudflareDeployDependencies,
 ): Promise<CloudflareDeploySecretsResult> {
-  const { getCloudflareWorkersConfig } = await import("../config.js");
-  const cfg = await getCloudflareWorkersConfig();
-  if (!cfg?.apiToken) {
-    console.log(
-      chalk.dim(
-        "  · Cloudflare Workers not configured — skipping Actions secret push.\n" +
-          "    Run `hatchkit config add cloudflare-workers`, then `hatchkit cloudflare`.",
-      ),
-    );
-    return { ok: false, pushed: [] };
-  }
-
-  const secrets: Record<string, string> = {
-    CLOUDFLARE_API_TOKEN: cfg.apiToken,
-    CLOUDFLARE_ACCOUNT_ID: cfg.accountId,
+  let deps = dependencies;
+  const result: CloudflareDeploySecretsResult = {
+    ok: false,
+    pushed: [],
+    revoked: [],
+    plan: [],
   };
-  const names = Object.keys(secrets);
-
-  const spinner = ora(
-    `GitHub: setting ${names.length} Actions secrets on ${input.repoSlug}`,
-  ).start();
-  try {
-    for (const [name, value] of Object.entries(secrets)) {
-      await ghSecretSet(input.projectDir, input.repoSlug, name, value);
+  if (!deps) {
+    const config = await import("../config.js");
+    const provisioner = await config.getCloudflareProvisioner();
+    if (!provisioner) {
+      result.error =
+        "no Cloudflare provisioner in the keychain — run `hatchkit config add cloudflare-workers`";
+      return result;
     }
-    spinner.succeed(`GitHub: Actions secrets set (${names.join(", ")})`);
-    return { ok: true, pushed: names };
-  } catch (err) {
-    spinner.fail(`GitHub: setting secrets failed — ${(err as Error).message}`);
-    // Deliberately a placeholder, not the value. Everything else in
-    // this file prints real values because they're service URLs and
-    // uuids; an API token is not something to leave in scrollback.
-    console.log(
-      chalk.dim(
-        "  Set them manually with (both read the value from stdin, so neither\n" +
-          "  lands in your shell history or the process list):\n" +
-          `    gh secret set CLOUDFLARE_API_TOKEN --repo ${input.repoSlug}\n` +
-          `    gh secret set CLOUDFLARE_ACCOUNT_ID --repo ${input.repoSlug}   # ${cfg.accountId}`,
-      ),
-    );
-    return { ok: false, pushed: [] };
+    const { CloudflareApi } = await import("../utils/cloudflare-api.js");
+    deps = {
+      provisioner,
+      api: new CloudflareApi({
+        token: provisioner.token,
+        accountId: provisioner.accountId,
+      }),
+      records: config.getCloudflareDeployTokenRecords(),
+      saveRecord: config.setCloudflareDeployTokenRecord,
+      listSecrets: listRepoSecrets,
+      setSecret: ghSecretSet,
+      check: (value, accountId, worker) =>
+        withPropagationRetry((token) =>
+          new CloudflareApi({ token }).workerDeployRefusals(accountId, worker),
+        )(value),
+    };
+  }
+  const { provisioner: prov, api } = deps;
+  if (!prov) {
+    result.error = "No Cloudflare provisioner configured";
+    return result;
+  }
+  const accountId = prov.accountId;
+  const tokenName = workerDeployTokenName(input.workerName);
+  result.tokenName = tokenName;
+  try {
+    // A failed metadata read must stop before creating resources or replacing secrets.
+    const secrets = await deps.listSecrets(input.repoSlug);
+    if (!secrets)
+      return { ...result, error: "Cannot read GitHub secret metadata; no changes made" };
+    const record = deps.records[input.workerName];
+    if (record && (record.repo !== input.repoSlug || record.accountId !== accountId)) {
+      return {
+        ...result,
+        error: "Worker token record belongs to another repo or account; review it before migration",
+      };
+    }
+    let worker = await api.getWorker(accountId, input.workerName);
+    if (!worker && !input.createWorker)
+      return { ...result, error: `Worker ${input.workerName} does not exist` };
+    const created = !worker;
+    if (!worker) {
+      if (input.dryRun) {
+        result.plan.push(`create empty Worker ${input.workerName}`);
+        worker = { id: "(new)", name: input.workerName };
+      } else {
+        worker = await api.createWorker(accountId, input.workerName);
+      }
+    }
+    result.worker = { id: worker.id, created };
+    const current = secrets.find((secret) => secret.name === "CLOUDFLARE_API_TOKEN");
+    const accountSecret = secrets.find((secret) => secret.name === "CLOUDFLARE_ACCOUNT_ID");
+    const previous = record ? await api.getAccountToken(accountId, record.tokenId) : null;
+    if (
+      !input.rotate &&
+      record &&
+      record.workerId === worker.id &&
+      record.secretUpdatedAt &&
+      current?.updatedAt === record.secretUpdatedAt &&
+      record.accountSecretUpdatedAt &&
+      accountSecret?.updatedAt === record.accountSecretUpdatedAt &&
+      previous?.status === "active" &&
+      classifyDeployTokenPolicies(previous.policies ?? [], record) === "worker"
+    ) {
+      return {
+        ...result,
+        ok: true,
+        inSync: true,
+        tokenId: maskId(record.tokenId),
+        scope: "worker",
+      };
+    }
+    if (input.dryRun) {
+      result.plan.push(
+        `mint ${tokenName}: ${WORKER_TOKEN_GROUP} on Worker ${input.workerName}; read back policy and check access; stop on failure (no broader fallback)`,
+        `set ${CLOUDFLARE_SECRET_NAMES.join(", ")} on ${input.repoSlug}`,
+      );
+      if (record)
+        result.plan.push(
+          `revoke recorded previous token ${maskId(record.tokenId)} only after confirmed replacement`,
+        );
+      return {
+        ...result,
+        ok: true,
+        pushed: [...CLOUDFLARE_SECRET_NAMES],
+        revoked: record ? [maskId(record.tokenId)] : [],
+      };
+    }
+    const minted = await mintWorkerDeployToken(api, {
+      accountId,
+      worker: input.workerName,
+      workerId: worker.id,
+      check: (value) => deps.check(value, accountId, input.workerName),
+    });
+    result.tokenId = maskId(minted.tokenId);
+    result.scope = "worker";
+    // Record ownership immediately. A later failure must remain recoverable.
+    input.ledger?.record({
+      kind: "cloudflareWorkerToken",
+      accountId,
+      tokenId: minted.tokenId,
+      worker: input.workerName,
+    });
+    try {
+      // Set the non-secret account id first. Failure cannot replace the old token.
+      await deps.setSecret(input.projectDir, input.repoSlug, "CLOUDFLARE_ACCOUNT_ID", accountId);
+      result.pushed.push("CLOUDFLARE_ACCOUNT_ID");
+    } catch {
+      try {
+        await api.deleteAccountToken(accountId, minted.tokenId);
+        result.error =
+          "Account-id secret update failed; unused candidate revoked; previous token retained";
+      } catch {
+        result.error = `Account-id secret update failed; candidate cleanup failed (${result.tokenId}); review the dashboard`;
+      }
+      return result;
+    }
+    try {
+      await deps.setSecret(input.projectDir, input.repoSlug, "CLOUDFLARE_API_TOKEN", minted.value);
+      result.pushed.push("CLOUDFLARE_API_TOKEN");
+    } catch {
+      // A lost response can mean GitHub DID write it. Never revoke a token
+      // that CI may now hold, and never revoke the previous token here.
+      result.error = `Token secret update outcome unknown; both tokens retained. Review candidate ${tokenName} (${result.tokenId}) and retry migration`;
+      return result;
+    }
+    const after = await deps.listSecrets(input.repoSlug);
+    const secretUpdatedAt = after?.find(
+      (secret) => secret.name === "CLOUDFLARE_API_TOKEN",
+    )?.updatedAt;
+    const accountSecretUpdatedAt = after?.find(
+      (secret) => secret.name === "CLOUDFLARE_ACCOUNT_ID",
+    )?.updatedAt;
+    deps.saveRecord({
+      worker: input.workerName,
+      workerId: worker.id,
+      accountId,
+      tokenId: minted.tokenId,
+      tokenName,
+      scope: "worker",
+      repo: input.repoSlug,
+      mintedAt: new Date().toISOString(),
+      secretUpdatedAt,
+      accountSecretUpdatedAt,
+    });
+    if (!secretUpdatedAt || !accountSecretUpdatedAt) {
+      result.error =
+        "Secrets written, but metadata verification failed; previous token retained. Retry migration";
+      return result;
+    }
+    // Only an id we recorded for this exact repo/account is owned. A
+    // matching token display name never grants permission to revoke it.
+    if (record && record.tokenId !== minted.tokenId) {
+      try {
+        await api.deleteAccountToken(accountId, record.tokenId);
+        result.revoked.push(maskId(record.tokenId));
+      } catch {
+        result.error = `Replacement installed; previous token cleanup failed (${maskId(record.tokenId)}). Revoke it after verifying deployment`;
+        return result;
+      }
+    }
+    result.ok = true;
+    return result;
+  } catch (error) {
+    if (error instanceof DeployTokenError) return { ...result, error: error.message };
+    // Provider errors may echo submitted credentials. Return context only.
+    result.error =
+      "Cloudflare token setup failed before completion. Check provisioner permissions and per-Worker policy support; review account tokens for any incomplete candidate";
+    return result;
+  }
+}
+
+/** Actions secret names and their `updated_at`, or null when `gh` can't
+ *  list them (it never returns a value). */
+export async function listRepoSecrets(
+  repo: string,
+): Promise<Array<{ name: string; updatedAt: string }> | null> {
+  const res = await exec("gh", ["secret", "list", "--repo", repo, "--json", "name,updatedAt"], {
+    silent: true,
+  });
+  if (res.exitCode !== 0) return null;
+  try {
+    return JSON.parse(res.stdout) as Array<{ name: string; updatedAt: string }>;
+  } catch {
+    return null;
   }
 }
 
@@ -429,7 +646,7 @@ export async function ghSecretSet(
     silent: true,
   });
   if (res.exitCode !== 0) {
-    throw new Error(`gh secret set ${name} exited ${res.exitCode}: ${res.stderr.trim()}`);
+    throw new Error(`gh secret set ${name} exited ${res.exitCode}`);
   }
 }
 

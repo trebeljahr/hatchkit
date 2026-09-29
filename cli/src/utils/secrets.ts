@@ -73,15 +73,18 @@ export const SECRET_KEYS = {
    *  R2 admin endpoints need account-level perms which most users
    *  prefer not to mix into the DNS token (least-privilege rotation). */
   r2AdminToken: "s3:r2:admin-token",
-  /** Cloudflare API token for the `cloudflare` deployment mode. Needs
-   *  Workers Scripts:Edit (account) plus Workers Routes:Edit, DNS:Edit
-   *  and Dynamic Redirect:Edit on every zone that will be served.
+  /** The Cloudflare PROVISIONER: a user token that mints account API
+   *  tokens (Account API Tokens Write) and edits Workers, routes and DNS.
+   *  Used only by hatchkit on this machine; never copied into a project.
+   *  Each Worker repo gets its own token minted from it instead
+   *  (deploy/cloudflare-deploy-token.ts).
    *
-   *  Deliberately a third Cloudflare token, separate from
-   *  `dns:cloudflare:token` and `s3:r2:admin-token`: it is the only one
-   *  hatchkit copies OUT of the keychain into a third party (as a
-   *  `CLOUDFLARE_API_TOKEN` GitHub Actions secret), so it must be
-   *  revocable without taking DNS or R2 down with it. */
+   *  Optional: when absent, `getCloudflareProvisioner` falls back to
+   *  `s3:r2:admin-token`, which carries the same token-minting grant. */
+  cloudflareProvisionerToken: "cloudflare:provisioner",
+  /** @deprecated The ONE Cloudflare token older hatchkit pushed to every
+   *  Worker repo as `CLOUDFLARE_API_TOKEN`. Never read for a push any
+   *  more; kept so doctor can flag a copy of it and reset can clear it. */
   cloudflareWorkersToken: "cloudflare:workers:token",
   gpuApiKey: (platform: string) => `gpu:${platform}:api-key`,
   glitchtipToken: "glitchtip:auth-token",
@@ -278,7 +281,10 @@ export async function migrateProjectSecrets(
     try {
       const value = await keytar.getPassword(SERVICE, account);
       if (value === null) {
-        unmoved.push({ account, reason: "value disappeared between list and read" });
+        unmoved.push({
+          account,
+          reason: "value disappeared between list and read",
+        });
         continue;
       }
       // Refuse to clobber a pre-existing entry under the new name; safer
