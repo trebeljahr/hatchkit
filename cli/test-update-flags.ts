@@ -44,6 +44,8 @@ const {
   WORKFLOW_VERIFY_STEP,
   deployVerificationRetrofits,
 } = await import("./src/scaffold/deploy-verification.js");
+const { DEV_LAUNCHER_LIB_FILES } = await import("./src/scaffold/dev-launcher.js");
+const { LINT_GATE_FILES } = await import("./src/scaffold/lint-gate.js");
 type Feature = import("./src/prompts.js").Feature;
 type ProjectConfig = import("./src/prompts.js").ProjectConfig;
 
@@ -196,6 +198,52 @@ await withProject("dry-run-pre-gate-workflow", async (dir) => {
       workflowRetrofit !== undefined && workflowRetrofit(preGate) !== preGate,
     ],
     ["the workflow is byte-for-byte unchanged", readFileSync(path, "utf-8") === preGate],
+  ];
+});
+
+// ── --dry-run leaves a pre-lint-gate project alone ───────────────────
+// The base-infrastructure retrofit (dev-launcher helpers + lint gate)
+// runs outside the dry-run gate so it can report, and once copied its
+// files and wrote the root scripts on a dry run too. A freshly
+// scaffolded project already carries all of it, so the `dry-run` case
+// above never saw the writes.
+await withProject("dry-run-pre-lint-gate", async (dir) => {
+  const gateFile = LINT_GATE_FILES[0];
+  const launcherFile = DEV_LAUNCHER_LIB_FILES[0];
+  const scaffolded = existsSync(join(dir, gateFile)) && existsSync(join(dir, launcherFile));
+  rmSync(join(dir, gateFile));
+  rmSync(join(dir, launcherFile));
+  const pkgPath = join(dir, "package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+  const hadLint = typeof pkg.scripts?.lint === "string";
+  delete pkg.scripts.lint;
+  writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`, "utf-8");
+  const pkgBefore = readFileSync(pkgPath, "utf-8");
+  const manifest = JSON.parse(readFileSync(join(dir, ".hatchkit.json"), "utf-8"));
+  const updatePresets = { ...presets, desiredFeatures: manifest.features };
+
+  const before = fingerprint(dir);
+  await runUpdate(dir, { dryRun: true, presets: updatePresets });
+  const after = fingerprint(dir);
+  const dryRunChecks: Check[] = [
+    ["the fixture started with the files and the lint script", scaffolded && hadLint],
+    ["the tree is byte-for-byte unchanged", before === after],
+    [`${gateFile} was not copied`, !existsSync(join(dir, gateFile))],
+    [`${launcherFile} was not copied`, !existsSync(join(dir, launcherFile))],
+    ["package.json is byte-for-byte unchanged", readFileSync(pkgPath, "utf-8") === pkgBefore],
+  ];
+
+  // A real run on the same tree restores all three, so the dry run
+  // above had something to skip.
+  await runUpdate(dir, { presets: updatePresets });
+  return [
+    ...dryRunChecks,
+    [`a real run copies ${gateFile}`, existsSync(join(dir, gateFile))],
+    [`a real run copies ${launcherFile}`, existsSync(join(dir, launcherFile))],
+    [
+      "a real run writes the root lint script",
+      typeof JSON.parse(readFileSync(pkgPath, "utf-8")).scripts?.lint === "string",
+    ],
   ];
 });
 

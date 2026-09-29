@@ -83,10 +83,18 @@ export function mergePrepareScript(existing: string | undefined): string | null 
 }
 
 export interface LintGateResult {
-  /** True when the root package.json was changed. */
+  /** True when the root package.json was changed — or, in a dry run,
+   *  would have been. */
   changed: boolean;
-  /** Scripts this call wrote, for the caller to report. */
+  /** Scripts this call wrote (or, in a dry run, would write), for the
+   *  caller to report. */
   wrote: string[];
+}
+
+export interface LintGateOptions {
+  /** Work out what would be written without touching package.json, so
+   *  `hatchkit update --dry-run` can report the retrofit. */
+  dryRun?: boolean;
 }
 
 /**
@@ -96,7 +104,7 @@ export interface LintGateResult {
  * writes nothing and reports `changed: false`, so `hatchkit update` can
  * call it unconditionally without touching the file's mtime.
  */
-export function applyLintGate(outputDir: string): LintGateResult {
+export function applyLintGate(outputDir: string, options: LintGateOptions = {}): LintGateResult {
   const path = join(outputDir, "package.json");
   if (!existsSync(path)) return { changed: false, wrote: [] };
 
@@ -117,14 +125,14 @@ export function applyLintGate(outputDir: string): LintGateResult {
     // the script is absent — the gate is "there is one root command", not
     // "it is exactly this one".
     if (scripts[name] === undefined) {
-      setPackageJsonScript(outputDir, name, value);
+      if (!options.dryRun) setPackageJsonScript(outputDir, name, value);
       wrote.push(name);
     }
   }
 
   const prepare = mergePrepareScript(scripts.prepare);
   if (prepare !== null) {
-    setPackageJsonScript(outputDir, "prepare", prepare);
+    if (!options.dryRun) setPackageJsonScript(outputDir, "prepare", prepare);
     wrote.push("prepare");
   }
 

@@ -453,18 +453,31 @@ export async function runUpdate(
   //
   // `scripts/dev.mjs` itself is NOT overwritten: a project may have edited
   // it, and this list is what the shipped launcher needs beside it.
+  //
+  // Outside the dry-run gate above so a dry run can name what it would
+  // copy and write — every write below is conditional on `dryRun`.
   const retrofittedTooling: string[] = [];
   for (const rel of [...DEV_LAUNCHER_LIB_FILES, ...LINT_GATE_FILES]) {
     if (existsSync(join(projectDir, rel))) continue;
+    if (dryRun) {
+      if (existsSync(join(STARTER_ROOT, rel))) retrofittedTooling.push(rel);
+      continue;
+    }
     copyFromStarter(STARTER_ROOT, projectDir, rel);
     if (existsSync(join(projectDir, rel))) retrofittedTooling.push(rel);
   }
-  const lintGate = applyLintGate(projectDir);
+  const lintGate = applyLintGate(projectDir, { dryRun });
   if (retrofittedTooling.length > 0) {
-    console.log(chalk.green(`  ✓ shared tooling: ${retrofittedTooling.join(", ")}`));
+    console.log(
+      chalk.green(
+        `  ${dryRun ? "~ would copy" : "✓"} shared tooling: ${retrofittedTooling.join(", ")}`,
+      ),
+    );
   }
   if (lintGate.changed) {
-    console.log(chalk.green(`  ✓ lint gate: root ${lintGate.wrote.join(", ")}`));
+    console.log(
+      chalk.green(`  ${dryRun ? "~ would add" : "✓"} lint gate: root ${lintGate.wrote.join(", ")}`),
+    );
     console.log(
       chalk.dim(
         "    `pnpm run lint` is the one command; .githooks/pre-push and the lint\n" +

@@ -54,6 +54,14 @@ try {
     writeFileSync(join(dir, "package.json"), JSON.stringify(value, null, 2), "utf-8");
 
   write({ scripts: { build: "pnpm -r build" } });
+  // A dry run reports the same scripts and writes none of them, so
+  // `hatchkit update --dry-run` can name the retrofit without applying it.
+  const before = readFileSync(join(dir, "package.json"), "utf-8");
+  const planned = applyLintGate(dir, { dryRun: true });
+  assert.equal(planned.changed, true);
+  assert.deepEqual(planned.wrote.sort(), ["lint", "lint:fix", "prepare"]);
+  assert.equal(readFileSync(join(dir, "package.json"), "utf-8"), before, "dry run writes nothing");
+
   const first = applyLintGate(dir);
   assert.equal(first.changed, true);
   assert.deepEqual(first.wrote.sort(), ["lint", "lint:fix", "prepare"]);
