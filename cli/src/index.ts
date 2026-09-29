@@ -2692,6 +2692,17 @@ async function handleCreate(): Promise<void> {
       }
     }
 
+    // The project's own tRPC contract snapshot. It runs before the initial
+    // commit, so the first commit carries it. The scaffold removed the
+    // starter's copy, which records a different router, and only the installed
+    // project can write this one. See features/client-core/snapshot.ts.
+    if (installedDeps && config.features.includes("client-core")) {
+      const { emitContractSnapshot } = await import("./features/client-core/index.js");
+      if (!(await emitContractSnapshot(appDir))) {
+        console.log(chalk.yellow("  contract:emit failed — continuing anyway."));
+      }
+    }
+
     // Step 3: Git + GitHub — must run BEFORE scaffoldInfra so the repo
     // URL can be threaded into the Coolify env (GITHUB_REPO_URL).
     let repoUrl: string | null = null;
@@ -3169,6 +3180,20 @@ async function handleCreate(): Promise<void> {
       console.log(chalk.yellow(`\n  Next: cd ${config.name} && pnpm dev`));
     } else {
       console.log(chalk.yellow(`\n  Next: cd ${config.name} && pnpm install && pnpm dev`));
+    }
+  }
+
+  // No install, or a failed emit: the server's contract test fails until the
+  // snapshot exists, so say so here rather than on the first `pnpm test`.
+  if (config.scaffoldRepo && config.features.includes("client-core")) {
+    const { CONTRACT_SNAPSHOT_PATH } = await import("./features/client-core/index.js");
+    if (!existsSync(join(appDir, CONTRACT_SNAPSHOT_PATH))) {
+      console.log(
+        chalk.yellow(
+          "\n  Next (client-core): write the tRPC contract snapshot once, then commit it:",
+        ),
+      );
+      console.log(chalk.dim("    pnpm run contract:emit"));
     }
   }
 

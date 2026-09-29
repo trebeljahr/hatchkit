@@ -156,8 +156,10 @@ pnpm run contract:emit    # rewrite the snapshot
 pnpm run test:unit        # fails when the committed file is stale
 ```
 
-Run `contract:emit` once after scaffolding — the file is not generated for you,
-because a test that writes its own expectation cannot fail — and again in every
+`hatchkit create` writes the first snapshot after `pnpm install`. If the
+install was skipped, or the kit arrived through `hatchkit update`, run
+`contract:emit` once yourself. The test never writes the file: a test that
+writes its own expectation cannot fail. Run `contract:emit` again in every
 change that touches a procedure name, a procedure's input or a sync event kind.
 Commit the result.
 

@@ -316,6 +316,13 @@ for (const combo of COMBOS) {
       ["release workflows match the selected shells", workflowMismatches(dir, combo.features)],
       ["env model matches the scaffolded services", envMismatches(dir, combo.features, combo.surfaces)],
       ["compose matches the scaffolded services", composeMismatches(dir, combo.features, combo.surfaces)],
+      // The starter's snapshot records the starter's router. Unselected, the
+      // strip removes it; selected, the scaffold does, and `create` writes the
+      // project's own after `pnpm install` (features/client-core/snapshot.ts).
+      [
+        "no contract snapshot of the starter's router",
+        existsSync(join(dir, "packages/server/contract")) ? ["packages/server/contract"] : [],
+      ],
     ];
 
     let ok = true;

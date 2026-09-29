@@ -1,0 +1,358 @@
+{
+  "apiLevel": 2,
+  "minClientApiLevel": 1,
+  "procedures": {
+    "billing.status": {
+      "input": null,
+      "type": "query"
+    },
+    "health.check": {
+      "input": null,
+      "type": "query"
+    },
+    "items.create": {
+      "input": {
+        "properties": {
+          "description": {
+            "maxLength": 2000,
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "type": "object"
+      },
+      "type": "mutation"
+    },
+    "items.delete": {
+      "input": {
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "type": "mutation"
+    },
+    "items.get": {
+      "input": {
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "type": "query"
+    },
+    "items.list": {
+      "input": {
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "type": "query"
+    },
+    "items.update": {
+      "input": {
+        "properties": {
+          "description": {
+            "maxLength": 2000,
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "published",
+              "archived"
+            ],
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "type": "mutation"
+    },
+    "ml.generate3d": {
+      "input": {
+        "properties": {
+          "imageBase64": {
+            "type": "string"
+          },
+          "removeBg": {
+            "default": true,
+            "type": "boolean"
+          },
+          "resolution": {
+            "default": 256,
+            "maximum": 512,
+            "minimum": 128,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "imageBase64"
+        ],
+        "type": "object"
+      },
+      "type": "mutation"
+    },
+    "ml.generate3dHunyuan": {
+      "input": {
+        "properties": {
+          "imageBase64": {
+            "type": "string"
+          },
+          "removeBg": {
+            "default": true,
+            "type": "boolean"
+          },
+          "withTexture": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "imageBase64"
+        ],
+        "type": "object"
+      },
+      "type": "mutation"
+    },
+    "ml.generate3dSamBody": {
+      "input": {
+        "properties": {
+          "imageBase64": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "imageBase64"
+        ],
+        "type": "object"
+      },
+      "type": "mutation"
+    },
+    "ml.generate3dSamObjects": {
+      "input": {
+        "properties": {
+          "imageBase64": {
+            "type": "string"
+          },
+          "removeBg": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "imageBase64"
+        ],
+        "type": "object"
+      },
+      "type": "mutation"
+    },
+    "ml.generate3dTrellis": {
+      "input": {
+        "properties": {
+          "imageBase64": {
+            "type": "string"
+          },
+          "removeBg": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "imageBase64"
+        ],
+        "type": "object"
+      },
+      "type": "mutation"
+    },
+    "ml.generateSubtitles": {
+      "input": {
+        "properties": {
+          "audioBase64": {
+            "type": "string"
+          },
+          "format": {
+            "default": "json",
+            "enum": [
+              "json",
+              "srt",
+              "vtt"
+            ],
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "model": {
+            "default": "large-v3",
+            "enum": [
+              "large-v3",
+              "medium",
+              "small",
+              "base"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "audioBase64"
+        ],
+        "type": "object"
+      },
+      "type": "mutation"
+    },
+    "ml.recognizeImage": {
+      "input": {
+        "properties": {
+          "imageBase64": {
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "topK": {
+            "default": 5,
+            "maximum": 20,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "imageBase64"
+        ],
+        "type": "object"
+      },
+      "type": "mutation"
+    },
+    "ml.removeBackground": {
+      "input": {
+        "properties": {
+          "imageBase64": {
+            "type": "string"
+          },
+          "model": {
+            "default": "birefnet-general",
+            "enum": [
+              "birefnet-general",
+              "u2net",
+              "isnet-general-use"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "imageBase64"
+        ],
+        "type": "object"
+      },
+      "type": "mutation"
+    },
+    "profile.get": {
+      "input": null,
+      "type": "query"
+    },
+    "profile.update": {
+      "input": {
+        "properties": {
+          "avatarUrl": {
+            "format": "uri",
+            "type": "string"
+          },
+          "bio": {
+            "maxLength": 500,
+            "type": "string"
+          },
+          "preferences": {
+            "properties": {
+              "notifications": {
+                "type": "boolean"
+              },
+              "theme": {
+                "enum": [
+                  "light",
+                  "dark",
+                  "system"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "type": "mutation"
+    }
+  },
+  "syncEvents": {
+    "items.changed": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "items.changed",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "profile.changed": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "profile.changed",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    }
+  }
+}

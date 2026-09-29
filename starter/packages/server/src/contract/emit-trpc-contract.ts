@@ -3,9 +3,9 @@
 //   pnpm run contract:emit
 //
 // The file is COMMITTED; `tests/trpc-contract.test.ts` fails when it is stale
-// and says which versioning rule the difference falls under. Run this once
-// after scaffolding, and again in every change that touches a procedure's
-// input, a procedure's name or a sync event kind.
+// and says which versioning rule the difference falls under. `hatchkit create`
+// runs it once after `pnpm install`. Run it again in every change that touches
+// a procedure's input, a procedure's name or a sync event kind.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { appRouter } from "../trpc/router.js";

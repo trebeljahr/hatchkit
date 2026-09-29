@@ -19,10 +19,10 @@ export const CLIENT_CORE_FEATURE = "client-core";
  * project was scaffolded into a subfolder). Directories are removed
  * recursively.
  *
- * `packages/server/contract` is on the list although the starter does not ship
- * it: it is where `pnpm run contract:emit` writes the committed snapshot, so a
- * project that ran the script once and later strips the feature by hand has
- * somewhere for the strip to look.
+ * `packages/server/contract` is on the list so the strip removes the committed
+ * snapshot with the rest of the feature. It is also on
+ * `CLIENT_CORE_GENERATED_PATHS`, because the copy the starter ships describes
+ * the starter's router and no other.
  */
 export const CLIENT_CORE_OWNED_PATHS: readonly string[] = [
   "packages/core",
@@ -38,6 +38,25 @@ export const CLIENT_CORE_OWNED_PATHS: readonly string[] = [
   "packages/client/src/lib/query-client.ts",
   "docs/versioning.md",
 ];
+
+/**
+ * Owned paths whose content is GENERATED from the project's own code, so the
+ * starter's copy is never handed to a project.
+ *
+ * The starter commits `packages/server/contract/trpc-contract.json` so its own
+ * server suite passes. That file records the STARTER's router. A scaffold
+ * prunes procedures from it (no ML service drops every `ml.*` procedure), and
+ * features add some (`workspaces`, `public-api`) or rewrite inputs
+ * (`auth-account-security`, `i18n`, the Postgres overlay). A project that
+ * gains the feature through `update` has its own router again. The contract
+ * test would compare any of those routers with the starter's snapshot and
+ * report a removed procedure as BREAKING: "raise MIN_CLIENT_API_LEVEL", which
+ * is wrong advice on the first run. With no snapshot at all, the test says
+ * "run `pnpm run contract:emit`", which is correct. So `create` removes the
+ * starter's copy and writes the project's own after `pnpm install`
+ * (`snapshot.ts`). `update` never copies it.
+ */
+export const CLIENT_CORE_GENERATED_PATHS: readonly string[] = ["packages/server/contract"];
 
 /**
  * Files the starter always ships that carry `// ── client-core ──` blocks.

@@ -45,6 +45,7 @@ import { renameStarterIdentifiers } from "./rename.js";
 import { unchainSegment } from "./strip.js";
 import {
   CLIENT_CORE_CHAINED_SCRIPTS,
+  CLIENT_CORE_GENERATED_PATHS,
   CLIENT_CORE_MARKED_FILES,
   CLIENT_CORE_OWNED_PATHS,
   CLIENT_CORE_PACKAGE_DEPENDENTS,
@@ -110,6 +111,9 @@ export function applyClientCore(
  */
 function copyOwnedFiles(ctx: FeatureContext, starterRoot: string): void {
   for (const rel of CLIENT_CORE_OWNED_PATHS) {
+    // The contract snapshot records the starter's router, not this project's.
+    // See `CLIENT_CORE_GENERATED_PATHS`.
+    if (CLIENT_CORE_GENERATED_PATHS.includes(rel)) continue;
     for (const file of starterFilesUnder(starterRoot, rel)) {
       // Copy-if-absent: see the header. A file that is already there is the
       // user's, whatever this build would have written.

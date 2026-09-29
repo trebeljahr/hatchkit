@@ -43,9 +43,12 @@ export const clientCoreFeature = registerFeature({
   apply(ctx: FeatureContext) {
     ctx.log("  client-core: shared client kit + version handshake");
     applyClientCore(ctx);
+    // `update` does not install, and only the project's installed code can
+    // write a snapshot of the project's router. See `snapshot.ts`.
     ctx.log(
       "    Run `pnpm install` for the new workspace package, then\n" +
-        "    `pnpm run contract:emit` once and commit the snapshot it writes.",
+        "    `pnpm run contract:emit` once and commit the snapshot it writes.\n" +
+        "    Until then the server's contract test fails and names that command.",
     );
   },
 });
@@ -73,10 +76,16 @@ export {
   renameStarterIdentifiers,
   renameStarterIdentifiersAcross,
 } from "./rename.js";
+export {
+  CONTRACT_SNAPSHOT_PATH,
+  dropStarterContractSnapshot,
+  emitContractSnapshot,
+} from "./snapshot.js";
 export { stripClientCore, unchainSegment } from "./strip.js";
 export {
   CLIENT_CORE_CHAINED_SCRIPTS,
   CLIENT_CORE_FEATURE,
+  CLIENT_CORE_GENERATED_PATHS,
   CLIENT_CORE_MARKED_FILES,
   CLIENT_CORE_OWNED_PATHS,
   CLIENT_CORE_PACKAGE_DEPENDENTS,

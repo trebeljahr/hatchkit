@@ -422,8 +422,14 @@ async function runScaffoldSteps(
     // tokens — a brace in an HTTP header name makes `new Headers()` throw, and
     // the starter has to be runnable before it is ever scaffolded — so they get
     // their own rename pass. See features/client-core/rename.ts.
-    const { renameClientCoreIdentifiers } = await import("../features/client-core/index.js");
+    const { dropStarterContractSnapshot, renameClientCoreIdentifiers } = await import(
+      "../features/client-core/index.js"
+    );
     modifications.push(...renameClientCoreIdentifiers(outputDir, identifiers));
+    // The starter's contract snapshot records the starter's router, which the
+    // strips above and the features below change. `create` writes the
+    // project's own after `pnpm install`. See features/client-core/snapshot.ts.
+    modifications.push(...dropStarterContractSnapshot(outputDir));
   }
 
   const wantsDesktop = config.features.includes("desktop");

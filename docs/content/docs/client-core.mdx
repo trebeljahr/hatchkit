@@ -75,6 +75,7 @@ Self-hosted servers lag. Store clients update themselves and are often newer tha
 - `MIN_CLIENT_API_LEVEL` is the floor. A request that declares a lower level is refused as **412** with `data.versionRefusal`. 412 is deliberate: the offline queue drops a row on 400, 403, 404, 409, 410 and 422, and version skew must never delete queued work. `health.*` is never refused, so a refused client can still learn which side is too old.
 - Never send the handshake headers to `/api/health`. A custom header forces a CORS preflight that an untrusted origin fails, which a client reads as "unreachable".
 - `pnpm run contract:emit` writes the committed snapshot; its test fails when the snapshot is stale and says whether the change is **breaking** (raise the floor and the level), **additive** (bump the level) or **neither**.
+- `hatchkit create` writes the first snapshot after `pnpm install`, so it is in the project's first commit. If you skipped the install, run `pnpm run contract:emit` once and commit the file. Until then the contract test fails and names that command.
 
 ## Adding it to an existing project
 
@@ -82,6 +83,6 @@ Self-hosted servers lag. Store clients update themselves and are often newer tha
 
 If you have edited one of those files since scaffolding, `update` inserts the block next to the line it follows in the starter. If that line is gone, the block is written to `.hatchkit/post-client-core.md` with the exact text to paste rather than guessed at: a misplaced block either fails to compile or leaves a version floor that silently never refuses anything.
 
-Afterwards, run `pnpm install` for the new workspace package and `pnpm run contract:emit` once, then commit the snapshot.
+Afterwards, run `pnpm install` for the new workspace package and `pnpm run contract:emit` once, then commit the snapshot. `update` does not copy the starter's snapshot, because it records the starter's router, not yours.
 
 Removal is not supported by `update`, as for every other feature — delete `packages/core`, the marked blocks and the `workspace:*` references by hand, and update the manifest.

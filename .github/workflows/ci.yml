@@ -323,11 +323,11 @@ jobs:
         run: pnpm run build
 
       # client-core's contract test reads a committed snapshot of the tRPC
-      # router that the starter deliberately does NOT ship: the test fails with
-      # instructions rather than skipping, and the feature's own post-scaffold
-      # note tells the user to run this once and commit the result. Do the same
-      # here, so the step after it is testing the router and not the absence of
-      # a file. No other preset has the script.
+      # router. The scaffold removes the starter's copy, because it records the
+      # starter's router, and `hatchkit create` writes the project's own after
+      # its `pnpm install`. This stamp installs by itself, so it emits here, and
+      # the step after it tests the router and not the absence of a file. No
+      # other preset has the script.
       - name: Emit the tRPC contract snapshot
         if: matrix.preset == 'client-core'
         working-directory: ${{ runner.temp }}/stamp
