@@ -87,6 +87,7 @@ import {
 import { DEV_LAUNCHER_LIB_FILES, applyDevLauncher } from "./dev-launcher.js";
 import { type ProjectIdentifiers, legacyIdentifiers } from "./identifiers.js";
 import { LINT_GATE_FILES, applyLintGate } from "./lint-gate.js";
+import { NEWSLETTER_LISTMONK_REL_PATH, retrofitListmonkTxFrom } from "./listmonk-tx-from.js";
 import { EMAIL_SERVICE_REL_PATH, retrofitListmonkTxMode } from "./listmonk-tx-mode.js";
 import {
   MANIFEST_FILENAME,
@@ -436,6 +437,32 @@ export async function runUpdate(
         `  ⚠ ${EMAIL_SERVICE_REL_PATH} posts to /api/tx, but hatchkit found no subscriber_email line to patch.\n` +
           '    Add `subscriber_mode: "external"` to that request body, or Listmonk rejects every\n' +
           "    signup, reset and invitation email with a 400.",
+      ),
+    );
+  }
+
+  // Retrofit the newsletter's transactional sender. Until 2026-09-29 the
+  // starter's sendTransactional posted to /api/tx without `from_email`, so
+  // Listmonk used its global app.from_email — on a shared instance another
+  // project's sender — for every double-opt-in confirmation. Delivery
+  // still succeeds, so nothing flags it. No flag, same rationale as above.
+  // Never adds `subscriber_mode`: the newsletter creates its subscriber
+  // first, so the default mode is right there.
+  const txFrom = retrofitListmonkTxFrom(new FeatureLedger(projectDir, dryRun));
+  if (txFrom.action === "written" || txFrom.action === "would-write") {
+    console.log(
+      chalk.green(
+        `  ${dryRun ? "~ would patch" : "✓"} ${NEWSLETTER_LISTMONK_REL_PATH}: newsletter confirmation mail sent from LISTMONK_FROM`,
+      ),
+    );
+  } else if (txFrom.outcome === "no-anchor") {
+    console.log(
+      chalk.yellow(
+        `  ⚠ ${NEWSLETTER_LISTMONK_REL_PATH} posts to /api/tx without from_email, and hatchkit found no\n` +
+          "    subscriber_email line to patch. Add\n" +
+          "      from_email: process.env.LISTMONK_FROM || process.env.LISTMONK_FROM_EMAIL,\n" +
+          "    to that request body, or Listmonk sends the confirmation email from its global\n" +
+          "    app.from_email — another project's sender on a shared instance.",
       ),
     );
   }
