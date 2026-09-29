@@ -547,9 +547,10 @@ const byName = (audit: { consumers: Array<{ name: string }> }, name: string) =>
       byName(audit, "intent")?.status === "unchanged",
     ],
     [
-      "devtracked: prod + dev planned, dev to the gitignored .env.development.local",
+      "devtracked: prod + dev planned, dev to .env.development.local, tracked legacy file listed",
       byName(audit, "devtracked")?.status === "planned" &&
-        byName(audit, "devtracked")?.files?.join(",") === ".env.production,.env.development.local",
+        byName(audit, "devtracked")?.files?.join(",") ===
+          ".env.production,.env.development.local,.env.development",
     ],
     ["nested worktree copy not discovered", !audit.consumers.some((c) => c.name === "cob-copy")],
     ["Coolify app mailer planned by key name", byName(audit, "mailer")?.status === "planned"],
@@ -664,6 +665,12 @@ const byName = (audit: { consumers: Array<{ name: string }> }, name: string) =>
     [
       "next steps: commit cob's .env.production only",
       audit.nextSteps.some((s) => s.includes(`git -C ${dirs.cob} add .env.production &&`)),
+    ],
+    [
+      "next steps: commit devtracked's .env.development with the credential moved out",
+      audit.nextSteps.some((s) =>
+        s.includes(`git -C ${dirs.devtracked} add .env.production .env.development &&`),
+      ),
     ],
     [
       "next steps: redeploy mailer",

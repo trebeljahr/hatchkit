@@ -40,8 +40,13 @@ import {
 } from "../../provision/write-env.js";
 import { readManifestWithMigrationInfo } from "../../scaffold/manifest.js";
 import { CoolifyApi } from "../../utils/coolify-api.js";
-import { DEV_ENV_FILE, DEV_LOCAL_ENV_FILE } from "../../utils/dev-env-secrets.js";
+import {
+  DEV_ENV_FILE,
+  DEV_LOCAL_ENV_FILE,
+  findDevEnvSecrets,
+} from "../../utils/dev-env-secrets.js";
 import { locateEnvFile } from "../../utils/env-files.js";
+import { execOk } from "../../utils/exec.js";
 import { SECRET_KEYS, getSecret } from "../../utils/secrets.js";
 import { redactErrorMessage } from "../audit.js";
 import { inspectEnvKeysHistory } from "../key-history.js";
@@ -271,7 +276,19 @@ export async function planProject(
 
   const files: string[] = [];
   if (writeProd && project.prodPath) files.push(relative(project.dir, project.prodPath));
-  if (writeDev && project.devPath) files.push(relative(project.dir, project.devPath));
+  if (writeDev && project.devPath) {
+    files.push(relative(project.dir, project.devPath));
+    // writeDevEnv moves every provisioned secret out of a legacy
+    // .env.development. When git tracks that file the edit has to be
+    // committed too, or the old plaintext credential stays in the tree.
+    for (const legacy of project.devReadPaths.filter((p) => p !== project.devPath)) {
+      if (findDevEnvSecrets(readFileSync(legacy, "utf-8")).length === 0) continue;
+      const rel = relative(project.dir, legacy);
+      if (await execOk("git", ["ls-files", "--error-unmatch", "--", rel], { cwd: project.dir })) {
+        files.push(rel);
+      }
+    }
+  }
   if (files.length > 0) entry.files = files;
 
   if (writeProd || writeDev) {

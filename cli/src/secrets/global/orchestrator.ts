@@ -341,7 +341,9 @@ function consumerNextSteps(results: ConsumerAuditEntry[]): string[] {
   for (const r of results) {
     if (r.status !== "updated") continue;
     if (r.kind === "project" && r.location) {
-      const committed = (r.files ?? []).filter((f) => !/\.env\.development(\.local)?$/.test(f));
+      // The gitignored .env.development.local is never committed. A
+      // tracked .env.development in the list had a credential moved out.
+      const committed = (r.files ?? []).filter((f) => !f.endsWith(".env.development.local"));
       if (committed.length > 0) {
         steps.push(
           `Commit and push ${r.name}: git -C ${r.location} add ${committed.join(" ")} && git -C ${r.location} commit -m "chore: rotate shared credentials" (then push and let it redeploy).`,
