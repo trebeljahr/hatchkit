@@ -477,7 +477,9 @@ export async function ghSecretDelete(
   const res = await exec("gh", ["secret", "delete", name, "--repo", repoSlug], { silent: true });
   if (res.exitCode === 0) return "done";
   const msg = `${res.stderr}\n${res.stdout}`;
-  if (/not found|could not find/i.test(msg)) return "not-found";
+  // Older `gh` says "could not find secret"; newer ones pass the API's
+  // "HTTP 404" through.
+  if (/not found|could not find|HTTP 404/i.test(msg)) return "not-found";
   throw new Error(`gh secret delete ${name} exited ${res.exitCode}: ${res.stderr.trim()}`);
 }
 
