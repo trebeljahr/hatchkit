@@ -177,17 +177,26 @@ export function gitToplevel(cwd: string): string | undefined {
   return res.status === 0 && res.stdout.trim() ? res.stdout.trim() : undefined;
 }
 
-/** True when the repo's own ignore rules cover `rel` (relative to the
- *  repo's toplevel `top`). `--no-index` evaluates the patterns even for
- *  a tracked path; the empty `core.excludesFile` drops the machine-wide
- *  excludes file, which protects one machine and no other clone. */
+/** True when the repo's own, committed ignore rules cover `rel`
+ *  (relative to the repo's toplevel `top`): a `.gitignore` pattern that
+ *  is not a `!` negation. Two sources git also consults do NOT count,
+ *  because neither reaches another clone: the machine-wide excludes file
+ *  (switched off with an empty `core.excludesFile`) and
+ *  `.git/info/exclude`. `--no-index` evaluates the patterns even for a
+ *  tracked path. `-v` names the deciding pattern and its source; it
+ *  exits 0 for a negation too, so the pattern is read, not the status. */
 export function ignoredByRepo(top: string, rel: string): boolean {
   const res = spawnSync(
     "git",
-    ["-c", `core.excludesFile=${devNull}`, "check-ignore", "-q", "--no-index", "--", rel],
-    { cwd: top },
+    ["-c", `core.excludesFile=${devNull}`, "check-ignore", "-v", "--no-index", "--", rel],
+    { cwd: top, encoding: "utf-8" },
   );
-  return res.status === 0;
+  if (res.status !== 0) return false;
+  const m = res.stdout.match(/^(.*?):\d+:(.*)\t/);
+  if (!m) return false;
+  const [, source, pattern] = m;
+  if (pattern.startsWith("!")) return false;
+  return !/(^|[\\/])info[\\/]exclude$/.test(source);
 }
 
 function projectRootFor(dir: string): string {

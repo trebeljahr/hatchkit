@@ -340,6 +340,17 @@ await expect("a global excludes file does not count: the repo gets its own entry
   }
 });
 
+await expect(".git/info/exclude does not count either: it is not cloned", async () => {
+  const root = cobRepo();
+  try {
+    writeFileSync(join(root, ".git/info/exclude"), ".env.keys\n");
+    writeProdEnv(join(root, ".env.production"), [{ key: "A", value: "b" }]);
+    assert.match(readFileSync(join(root, ".gitignore"), "utf-8"), /^\.env\.keys$/m);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 await expect("a repo that already ignores .env.keys (via .env*) is left alone", async () => {
   const root = cobRepo();
   try {
