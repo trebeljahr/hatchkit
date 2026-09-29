@@ -14,5 +14,9 @@
     "server": 3000,
     "client": 3001
   },
-  "surfaces": "client-only"
+  "surfaces": "client-only",
+  "coolifyRuntime": "image",
+  "containerPorts": {
+    "app": 80
+  }
 }

@@ -43,7 +43,7 @@ import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig, getStore } from "../config.js";
-import { readManifest, writeManifest } from "../scaffold/manifest.js";
+import { readManifest } from "../scaffold/manifest.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { discoverPublicIps } from "../utils/coolify-server-ips.js";
 import {
@@ -838,10 +838,42 @@ async function updateManifestIfComplete(projectDir: string, api: CoolifyApi): Pr
     if (Number.isFinite(port) && port !== 3000 && routed.role !== "compose")
       ports[routed.role] = port;
   }
-  writeManifest(projectDir, {
-    ...manifest,
-    coolifyRuntime: "image",
-    ...(Object.keys(ports).length > 0 ? { containerPorts: ports } : {}),
-  });
-  console.log(chalk.dim(`  .hatchkit.json: coolifyRuntime → "image"`));
+  if (
+    addManifestFields(projectDir, {
+      coolifyRuntime: "image",
+      ...(Object.keys(ports).length > 0 ? { containerPorts: ports } : {}),
+    })
+  ) {
+    console.log(chalk.dim(`  .hatchkit.json: coolifyRuntime → "image"`));
+  }
+}
+
+/** Add top-level fields to `.hatchkit.json` without rewriting the rest.
+ *
+ *  `writeManifest` would also apply every pending schema migration to a
+ *  file this command has no other business in (a v4 manifest gains a
+ *  seeded `identifiers` block, arrays get re-wrapped). The fields are
+ *  spliced in before the closing brace instead, so the diff is exactly
+ *  what this move changed. Returns false when the file isn't a JSON
+ *  object or already has one of the keys. */
+export function addManifestFields(projectDir: string, fields: Record<string, unknown>): boolean {
+  const path = join(projectDir, ".hatchkit.json");
+  let text: string;
+  let parsed: unknown;
+  try {
+    text = readFileSync(path, "utf-8");
+    parsed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  if (Object.keys(fields).some((k) => k in (parsed as Record<string, unknown>))) return false;
+  const close = text.lastIndexOf("}");
+  const body = text.slice(0, close).replace(/\s*$/, "");
+  const entries = Object.entries(fields).map(
+    ([k, v]) => `  ${JSON.stringify(k)}: ${JSON.stringify(v, null, 2).replace(/\n/g, "\n  ")}`,
+  );
+  const sep = body.trimEnd().endsWith("{") ? "\n" : ",\n";
+  writeFileSync(path, `${body}${sep}${entries.join(",\n")}\n}${text.slice(close + 1)}`);
+  return true;
 }

@@ -21,7 +21,8 @@
  * Run: `pnpm test` (via the script in cli/package.json).
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   healthCheckFor,
@@ -37,6 +38,7 @@ import {
   interpolate,
   planRuntimeMigration,
 } from "./src/deploy/migrate-runtime-plan.js";
+import { addManifestFields } from "./src/deploy/migrate-runtime.js";
 import { computeRoutingPlan, needsManagedDatastores } from "./src/deploy/routing.js";
 
 const failures: string[] = [];
@@ -440,6 +442,24 @@ check("deploy secret follows the app's role suffix", () => {
   assert.equal(deploySecretNameFor("site"), "COOLIFY_RESOURCE_UUID");
   assert.equal(deploySecretNameFor("tracktime-client"), "COOLIFY_CLIENT_RESOURCE_UUID");
   assert.equal(deploySecretNameFor("tiao-backend"), "COOLIFY_SERVER_RESOURCE_UUID");
+});
+
+check("migrate-runtime adds its manifest fields without rewriting the file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hk-manifest-"));
+  const original = '{\n  "version": 4,\n  "aliases": ["a.com", "b.com"],\n  "name": "x"\n}\n';
+  writeFileSync(join(dir, ".hatchkit.json"), original);
+  assert.equal(
+    addManifestFields(dir, { coolifyRuntime: "image", containerPorts: { app: 80 } }),
+    true,
+  );
+  const after = readFileSync(join(dir, ".hatchkit.json"), "utf-8");
+  assert.equal(
+    after,
+    '{\n  "version": 4,\n  "aliases": ["a.com", "b.com"],\n  "name": "x",\n  "coolifyRuntime": "image",\n  "containerPorts": {\n    "app": 80\n  }\n}\n',
+  );
+  assert.deepEqual(JSON.parse(after).containerPorts, { app: 80 });
+  // Already recorded: left alone.
+  assert.equal(addManifestFields(dir, { coolifyRuntime: "image" }), false);
 });
 
 console.log("\nimage runtime — shipped files");
