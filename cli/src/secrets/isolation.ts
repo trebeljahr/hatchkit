@@ -42,8 +42,9 @@ export interface ProvisionerValue {
   /** What it is, for the finding text. Never the value. */
   label: string;
   value: string;
-  /** `warn` for a shared credential whose per-project replacement is
-   *  tracked elsewhere (Listmonk), so doctor does not fail on it yet. */
+  /** `warn` for a shared credential whose per-project replacement exists
+   *  but is backfilled by its own command (Listmonk), so doctor does not
+   *  fail every project on it at once. */
   severity: IsolationSeverity;
 }
 
@@ -56,9 +57,10 @@ export interface IsolationFinding {
   what: string;
 }
 
-/** Env keys derived from the shared SES IAM key. Nothing a project runs
- *  reads them (Listmonk's SMTP settings come straight from the keychain),
- *  so any copy is a copy of the provisioner. */
+/** Env keys derived from the shared SES IAM key. Hatchkit no longer
+ *  writes them and nothing a project runs reads them (Listmonk's SMTP
+ *  settings come straight from the keychain), so any copy left over is a
+ *  copy of the provisioner. */
 export const SHARED_SES_ENV_KEYS = ["SES_SMTP_USERNAME", "SES_SMTP_PASSWORD"] as const;
 
 /** Every provisioner value in the keychain. Short values are skipped: a
@@ -93,7 +95,7 @@ export async function collectProvisionerValues(): Promise<ProvisionerValue[]> {
   }
   add(
     "listmonk",
-    "hatchkit's Listmonk API token (per-project Listmonk users are a separate task)",
+    "hatchkit's Listmonk API token (give the project its own: `hatchkit listmonk user <project>`)",
     await getSecret(SECRET_KEYS.listmonkApiToken),
     "warn",
   );
