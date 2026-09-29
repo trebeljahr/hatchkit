@@ -7,6 +7,7 @@ import {
   getMlServices,
   getPersonalEmailLocalPart,
 } from "./config.js";
+import { type CoolifyRuntime, DEFAULT_NEW_PROJECT_RUNTIME } from "./deploy/image-runtime.js";
 import type { Topology } from "./deploy/routing.js";
 import { DEFAULT_CATCH_ALL, buildForwardPresets } from "./email/presets.js";
 import type { AuthSecurityOption } from "./features/auth-account-security/types.js";
@@ -252,6 +253,11 @@ export interface ProjectConfig {
    *  creates `<name>-client` + `<name>-server` with an `api.<domain>`
    *  subdomain and Coolify-managed mongo/redis. */
   topology?: Topology;
+  /** How each routed service runs on Coolify. See
+   *  {@link ProjectManifest.coolifyRuntime}. Defaults to `image` for a
+   *  new project (zero-downtime rolling deploys); `compose` keeps the
+   *  legacy single Docker Compose app. */
+  coolifyRuntime?: CoolifyRuntime;
 
   deployTarget: DeployTarget;
   serverId?: number;
@@ -778,6 +784,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     subdomain: "",
     surfaces: presets.surfaces ?? "fullstack",
     topology: presets.topology ?? "single-origin",
+    coolifyRuntime: presets.coolifyRuntime ?? DEFAULT_NEW_PROJECT_RUNTIME,
     deployTarget: presets.deployTarget ?? "new",
     serverId: presets.serverId,
     serverUuid: presets.serverUuid,
@@ -932,15 +939,19 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       skip: (c) =>
         presets.topology !== undefined || c.deploymentMode !== "coolify" || c.surfaces === "static",
       run: async (c) => {
+        const image = (c.coolifyRuntime ?? DEFAULT_NEW_PROJECT_RUNTIME) === "image";
         const topology = await select<Topology>({
           message: "How should this deploy onto Coolify?",
           default: c.topology ?? "single-origin",
           choices: [
             {
-              name: "Single origin — one app, API under https://<domain>/api (recommended)",
+              name: image
+                ? "Single origin — API under https://<domain>/api (recommended)"
+                : "Single origin — one app, API under https://<domain>/api (recommended)",
               value: "single-origin",
-              description:
-                "One Coolify app running the compose file. Same-origin, so no CORS and no cookie-domain setup, and only one DNS record.",
+              description: image
+                ? "<name>-client and <name>-server on one hostname, mongo/redis as Coolify databases. Same-origin, so no CORS and no cookie-domain setup, and only one DNS record."
+                : "One Coolify app running the compose file. Same-origin, so no CORS and no cookie-domain setup, and only one DNS record.",
             },
             {
               name: "Split — <name>-client at <domain>, <name>-server at api.<domain>",
@@ -1710,6 +1721,8 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
     githubRepoVisibility,
     installDeps,
     deploymentMode,
+    topology: presets.topology ?? "single-origin",
+    coolifyRuntime: presets.coolifyRuntime ?? DEFAULT_NEW_PROJECT_RUNTIME,
     runDeployment,
     envValues,
     localDev,

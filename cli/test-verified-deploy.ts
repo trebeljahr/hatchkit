@@ -480,6 +480,9 @@ interface FakeOptions {
   breakWritesAfter?: number;
   /** Return no readable value for the image variables. */
   hideValues?: boolean;
+  /** Model Docker Image applications: the image is the application's
+   *  own name + tag, and the env variable is ignored. */
+  imageApps?: boolean;
 }
 
 function fakePlatform(options: FakeOptions) {
@@ -492,6 +495,11 @@ function fakePlatform(options: FakeOptions) {
       options.clientImage === null
         ? {}
         : { CLIENT_IMAGE: options.clientImage ?? `ghcr.io/acme/app-client:${OLD_SHA}` },
+  };
+  // Docker Image applications hold their image as name + tag.
+  const images: Record<string, { name: string; tag: string }> = {
+    [SRV]: { name: "ghcr.io/acme/app-server", tag: OLD_SHA },
+    [CLI]: { name: "ghcr.io/acme/app-client", tag: OLD_SHA },
   };
   const serving = { server: OLD_SHA, client: OLD_SHA };
   const lines: string[] = [];
@@ -521,6 +529,17 @@ function fakePlatform(options: FakeOptions) {
 
     if (path.startsWith("/api/v1/applications/")) {
       const uuid = path.split("/")[4];
+      if (method === "GET" && !path.endsWith("/envs")) {
+        return json(
+          options.imageApps
+            ? {
+                build_pack: "dockerimage",
+                docker_registry_image_name: images[uuid].name,
+                docker_registry_image_tag: images[uuid].tag,
+              }
+            : { build_pack: "dockercompose" },
+        );
+      }
       if (method === "GET") {
         return json(
           Object.entries(envs[uuid] ?? {}).map(([key, value]) => ({
@@ -541,8 +560,10 @@ function fakePlatform(options: FakeOptions) {
         return json({ message: "no" }, 500);
       }
       const uuid = parsed.searchParams.get("uuid") ?? "";
-      if (uuid === SRV) serving.server = shaOf(envs[SRV].SERVER_IMAGE);
-      if (uuid === CLI) serving.client = shaOf(envs[CLI].CLIENT_IMAGE);
+      const running = (app: string, key: string) =>
+        options.imageApps ? shaOf(`x:${images[app].tag}`) : shaOf(envs[app][key]);
+      if (uuid === SRV) serving.server = running(SRV, "SERVER_IMAGE");
+      if (uuid === CLI) serving.client = running(CLI, "CLIENT_IMAGE");
       return json({ ok: true });
     }
 
@@ -581,7 +602,12 @@ function fakePlatform(options: FakeOptions) {
       const body = JSON.parse(init.body ?? "{}");
       const before = writes;
       const response = await fetchImpl(url, init);
-      if (response.ok && writes > before) envs[uuid][body.key] = body.value;
+      if (response.ok && writes > before) {
+        if (parsed.pathname.endsWith("/envs")) envs[uuid][body.key] = body.value;
+        else if (typeof body.docker_registry_image_tag === "string") {
+          images[uuid].tag = body.docker_registry_image_tag;
+        }
+      }
       return response;
     }
     return fetchImpl(url, init);
@@ -589,6 +615,7 @@ function fakePlatform(options: FakeOptions) {
 
   return {
     envs,
+    images,
     serving,
     lines,
     deps: {
@@ -619,6 +646,35 @@ await checkAsync("a healthy deploy pins both halves and passes", async () => {
   assert.equal(result.ok, true, result.errors.join("\n"));
   assert.equal(fake.envs[SRV].SERVER_IMAGE, `ghcr.io/acme/app-server:${NEW_SHA}`);
   assert.equal(fake.envs[CLI].CLIENT_IMAGE, `ghcr.io/acme/app-client:${NEW_SHA}`);
+});
+
+await checkAsync(
+  "Docker Image apps: the deploy pins the image TAG, not the ignored env var",
+  async () => {
+    const fake = fakePlatform({ imageApps: true });
+    const result = await lib.runDeploy(fake.deps, fake.config, {
+      targetSha: NEW_SHA,
+      apps: ["server", "client"],
+      rollback: true,
+    });
+    assert.equal(result.ok, true, result.errors.join("\n"));
+    assert.equal(fake.images[SRV].tag, NEW_SHA);
+    assert.equal(fake.images[CLI].tag, NEW_SHA);
+    // The env variable an image application ignores is left alone.
+    assert.equal(fake.envs[SRV].SERVER_IMAGE, `ghcr.io/acme/app-server:${OLD_SHA}`);
+  },
+);
+
+await checkAsync("Docker Image apps: a failed gate rolls the image tag back", async () => {
+  const fake = fakePlatform({ imageApps: true, badServer: [NEW_SHA] });
+  const result = await lib.runDeploy(fake.deps, fake.config, {
+    targetSha: NEW_SHA,
+    apps: ["server", "client"],
+    rollback: true,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(fake.images[SRV].tag, OLD_SHA);
+  assert.equal(fake.serving.server, OLD_SHA);
 });
 
 await checkAsync("a failed gate rolls back, and the run still FAILS", async () => {

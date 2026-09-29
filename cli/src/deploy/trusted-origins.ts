@@ -75,13 +75,15 @@ export const TRUSTED_ORIGINS_KEY = "TRUSTED_ORIGINS";
  *  By role, never by name: `split` gives a `-client` and a `-server`
  *  app and only the server reads TRUSTED_ORIGINS; `single-origin` gives
  *  one `compose` app whose compose runs the server; a `static` project
- *  has no server at all, even though its one app is also `compose`. */
+ *  has no server at all, even though its one app is also `compose` (or
+ *  `app` under the image runtime). */
 export function serverAppsOf<T extends { role: RoutedApp["role"] }>(
   apps: readonly T[],
   surfaces?: string,
 ): T[] {
   if (surfaces === "static") return [];
-  return apps.filter((a) => a.role === "server" || a.role === "compose");
+  // `app` is the one image app of a backend-only project — the server.
+  return apps.filter((a) => a.role === "server" || a.role === "compose" || a.role === "app");
 }
 
 export type NativeOriginsStatus =

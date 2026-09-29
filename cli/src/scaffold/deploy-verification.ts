@@ -203,6 +203,14 @@ export const WORKFLOW_PIN_STEP = `      # Pin each app to the IMMUTABLE tag befo
       # Which uuid secrets are set follows the project's topology — see
       # the deploy-step comments below. A single-origin app runs one
       # compose declaring both services, so it carries both variables.
+      #
+      # A Docker Image app (hatchkit's \`image\` runtime) has no compose
+      # file to interpolate: it pulls \`docker_registry_image_tag\`, so
+      # that is the field pinned for it. Image apps are the ones Coolify
+      # deploys as rolling updates — the old container keeps serving
+      # until the new one passes its health check. The build pack is
+      # read per app, so this step is right before and after
+      # \`hatchkit migrate-runtime\` moves a project across.
       - name: Pin image tags to this commit
         env:
           COOLIFY_BASE_URL: \${{ secrets.COOLIFY_BASE_URL }}
@@ -217,6 +225,19 @@ export const WORKFLOW_PIN_STEP = `      # Pin each app to the IMMUTABLE tag befo
           CLIENT_IMAGE="ghcr.io/\${{ github.repository }}-client:\${{ github.sha }}"
 
           pin() { # uuid key value
+            # Only \`.build_pack\` is read out of the response: the same GET
+            # returns the interpolated compose, secrets included.
+            build_pack=$(curl -fsSL "$COOLIFY_BASE_URL/api/v1/applications/$1" \\
+              -H "Authorization: Bearer $COOLIFY_API_TOKEN" | jq -r '.build_pack // empty')
+            if [ "$build_pack" = "dockerimage" ]; then
+              curl -fsSL -o /dev/null -X PATCH \\
+                "$COOLIFY_BASE_URL/api/v1/applications/$1" \\
+                -H "Authorization: Bearer $COOLIFY_API_TOKEN" \\
+                -H 'Content-Type: application/json' \\
+                -d "{\\"docker_registry_image_tag\\":\\"\${{ github.sha }}\\"}"
+              echo "pinned image tag \${{ github.sha }} on $1"
+              return
+            fi
             body="{\\"key\\":\\"$2\\",\\"value\\":\\"$3\\",\\"is_preview\\":false}"
             curl -fsS -o /dev/null -X POST \\
               "$COOLIFY_BASE_URL/api/v1/applications/$1/envs" \\
@@ -858,6 +879,67 @@ export const DEPLOY_WORKFLOW_REL_PATH = ".github/workflows/build-and-deploy.yml"
  *  its own images cannot satisfy. Each entry is idempotent and no-ops on
  *  a file that already carries the change or does not match the
  *  generated shape; callers skip paths that don't exist. */
+/** The branch a pin step needs for a Coolify Docker Image app: patch
+ *  `docker_registry_image_tag`, which is what an image app pulls. An
+ *  image app has no compose file to interpolate, so the env-var pin the
+ *  older step writes is ignored there and every deploy re-runs whatever
+ *  tag the app was created with. */
+const IMAGE_PIN_BRANCH = `            # Only \`.build_pack\` is read out of the response: the same GET
+            # returns the interpolated compose, secrets included.
+            build_pack=$(curl -fsSL "$COOLIFY_BASE_URL/api/v1/applications/$1" \\
+              -H "Authorization: Bearer $COOLIFY_API_TOKEN" | jq -r '.build_pack // empty')
+            if [ "$build_pack" = "dockerimage" ]; then
+              curl -fsSL -o /dev/null -X PATCH \\
+                "$COOLIFY_BASE_URL/api/v1/applications/$1" \\
+                -H "Authorization: Bearer $COOLIFY_API_TOKEN" \\
+                -H 'Content-Type: application/json' \\
+                -d "{\\"docker_registry_image_tag\\":\\"\${{ github.sha }}\\"}"
+              echo "pinned image tag \${{ github.sha }} on $1"
+              return
+            fi
+`;
+
+/** Same branch for the single-app build-pipeline workflow (adopt's
+ *  `deploy.yml`), whose pin step is inline rather than a function. */
+const IMAGE_PIN_BRANCH_SINGLE = `          # Only \`.build_pack\` is read out of the response: the same GET
+          # returns the interpolated compose, secrets included.
+          BUILD_PACK=$(curl -fsSL "$COOLIFY_BASE_URL/api/v1/applications/$COOLIFY_RESOURCE_UUID" \\
+            -H "Authorization: Bearer $COOLIFY_API_TOKEN" | jq -r '.build_pack // empty')
+          if [ "$BUILD_PACK" = "dockerimage" ]; then
+            curl -fsSL -o /dev/null -X PATCH \\
+              "$COOLIFY_BASE_URL/api/v1/applications/$COOLIFY_RESOURCE_UUID" \\
+              -H "Authorization: Bearer $COOLIFY_API_TOKEN" \\
+              -H 'Content-Type: application/json' \\
+              -d "{\\"docker_registry_image_tag\\":\\"\${{ github.sha }}\\"}"
+            echo "pinned image tag \${{ github.sha }} on $COOLIFY_RESOURCE_UUID"
+            exit 0
+          fi
+`;
+
+/** Teach a pin step written before the image runtime to pin Docker
+ *  Image apps too. Handles both generated shapes — the starter's `pin()`
+ *  function and the build-pipeline's inline APP_IMAGE pin — and returns
+ *  the content unchanged when it already knows (idempotent) or when
+ *  neither anchor is there (a hand-rolled workflow is left alone). */
+export function upgradeWorkflowPinForImageApps(content: string): string {
+  // The PATCH body, not the bare field name — the step's own comment
+  // mentions the field too.
+  if (content.includes('\\"docker_registry_image_tag\\":')) return content;
+  const fnAnchor = "          pin() { # uuid key value\n";
+  if (content.includes(fnAnchor)) {
+    return content.replace(fnAnchor, `${fnAnchor}${IMAGE_PIN_BRANCH}`);
+  }
+  const inlineAnchor =
+    /^( {10}set -euo pipefail\n)( {10}APP_IMAGE="ghcr\.io\/\$\{\{ github\.repository \}\}:\$\{\{ github\.sha \}\}"\n)/m;
+  if (inlineAnchor.test(content)) {
+    return content.replace(
+      inlineAnchor,
+      (_m, a: string, b: string) => `${a}${IMAGE_PIN_BRANCH_SINGLE}${b}`,
+    );
+  }
+  return content;
+}
+
 export function deployVerificationRetrofits(
   domain: string,
   topology: Topology = "single-origin",
@@ -880,6 +962,7 @@ export function deployVerificationRetrofits(
         let out = addWorkflowCommitShaBuildArg(c, "packages/server/Dockerfile");
         out = addWorkflowCommitShaBuildArg(out, "packages/client/Dockerfile");
         out = upgradeWorkflowDeployVerification(out, domain, topology, surfaces);
+        out = upgradeWorkflowPinForImageApps(out);
         return features === undefined ? out : upgradeWorkflowNativeOriginCheck(out, features);
       },
     ],

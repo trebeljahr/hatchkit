@@ -83,6 +83,13 @@
  */
 
 import type { Surface } from "../prompts.js";
+import {
+  type CoolifyRuntime,
+  type HealthCheckSpec,
+  type ImageRef,
+  healthCheckFor,
+  parseImageRef,
+} from "./image-runtime.js";
 
 /** How a project's runtime is spread across Coolify applications.
  *  Persisted in the manifest as `topology`; see
@@ -167,6 +174,25 @@ export interface RoutingInput {
    *  a name the compose doesn't have. Undefined = "couldn't read the
    *  compose", which falls back to the surface-derived defaults. */
   composeServices?: string[];
+  /** How each routed service runs on Coolify. Default `compose` — the
+   *  shape of every project deployed before `image` existed. See
+   *  deploy/image-runtime.ts for why `image` is the one that doesn't go
+   *  down on deploy. */
+  runtime?: CoolifyRuntime;
+  /** GHCR image per role, `name:tag`, for `image` runtime. `app` is the
+   *  single image of a one-service deployment (a static site, or a
+   *  backend-only project). The tag is only the INITIAL one: the deploy
+   *  job pins every push's sha. Missing entries leave
+   *  {@link RoutedApp.image} undefined and the provisioner refuses to
+   *  create the app rather than guess. */
+  images?: { app?: string; client?: string; server?: string };
+  /** Port each image's process listens on INSIDE its container, for
+   *  `image` runtime. Unlike a compose app — where Coolify reads the
+   *  port from the compose file and `ports_exposes` is metadata — an
+   *  image app's `ports_exposes` IS the port Traefik forwards to, so
+   *  it has to be the container's real one, not the dev-server port in
+   *  `ports`. Defaults to 3000, what the starter's Node images bind. */
+  containerPorts?: { app?: number; client?: number; server?: number };
 }
 
 /** One Coolify application the plan expects to exist, plus the exact
@@ -178,8 +204,21 @@ export interface RoutedApp {
    *  used when creating one). Empty for single-origin. */
   aliases: string[];
   /** Which half of the deployment this app is. `compose` means the one
-   *  multi-service app of a single-origin deployment. */
-  role: "compose" | "client" | "server";
+   *  multi-service app of a single-origin compose deployment; `app` the
+   *  single image app of a one-service `image` deployment (a static
+   *  site, or a backend that owns the bare domain). */
+  role: "compose" | "app" | "client" | "server";
+  /** `compose` → a Coolify `dockercompose` app built from
+   *  {@link composeLocation}; `image` → a Coolify `dockerimage` app
+   *  pulling {@link image}, with {@link healthCheck}, deployed as a
+   *  rolling update. */
+  runtime: CoolifyRuntime;
+  /** Registry image for an `image` app. Undefined for `compose` apps,
+   *  and for an `image` app whose image the caller couldn't name. */
+  image?: ImageRef;
+  /** Health check for an `image` app — the thing that makes its deploy
+   *  zero-downtime. Undefined for `compose` apps. */
+  healthCheck?: HealthCheckSpec;
   /** Payload for `docker_compose_domains`. At most one entry per
    *  service name — multiple FQDNs for one service are comma-joined
    *  into that entry's `domain` (see module header, point 2). */
@@ -304,6 +343,7 @@ export function resolveApiService(input: RoutingInput, publicService: string): s
  *  no network — so `--dry-run` never has to reach the API to render a
  *  plan, and the whole thing is unit-testable. */
 export function computeRoutingPlan(input: RoutingInput): RoutingPlan {
+  if (input.runtime === "image") return imagePlan(input);
   return input.topology === "split" ? splitPlan(input) : singleOriginPlan(input);
 }
 
@@ -357,6 +397,7 @@ function singleOriginPlan(input: RoutingInput): RoutingPlan {
         appName: input.name,
         aliases: [],
         role: "compose",
+        runtime: "compose",
         composeDomains: entries,
         flatDomains: flat,
         portsExposes: String(input.surfaces === "static" ? 80 : publicPort),
@@ -389,6 +430,7 @@ function splitPlan(input: RoutingInput): RoutingPlan {
     appName: `${input.name}-client`,
     aliases: CLIENT_APP_SUFFIXES.slice(1).map((s) => `${input.name}${s}`),
     role: "client",
+    runtime: "compose",
     composeDomains: [{ name: "client", domain: publics.join(",") }],
     flatDomains: publics,
     portsExposes: String(input.ports?.client ?? 3001),
@@ -402,6 +444,7 @@ function splitPlan(input: RoutingInput): RoutingPlan {
     appName: `${input.name}-server`,
     aliases: SERVER_APP_SUFFIXES.slice(1).map((s) => `${input.name}${s}`),
     role: "server",
+    runtime: "compose",
     // One host, root path — no stripprefix hazard, and the client's
     // NEXT_PUBLIC_API_URL points straight at it. The bare domain is
     // owned by the client app, so nothing path-scoped is needed here.
@@ -424,6 +467,121 @@ function splitPlan(input: RoutingInput): RoutingPlan {
     apps,
     extraDnsHostnames: apps.some((a) => a.role === "server") ? [apiHost] : [],
   };
+}
+
+/** `image` runtime: one Coolify Docker Image application per routed
+ *  service, each with a health check, so every deploy is a rolling
+ *  update (deploy/image-runtime.ts).
+ *
+ *  Routing is the same as the compose topologies, only carried by
+ *  separate apps:
+ *
+ *    one service (static site, backend-only)
+ *      <name>        → https://<domain> (+ aliases)
+ *    single-origin, client + server
+ *      <name>-client → https://<domain> (+ aliases)
+ *      <name>-server → https://<domain>/api      (stripprefix OFF)
+ *    split, client + server
+ *      <name>-client → https://<domain> (+ aliases)
+ *      <name>-server → https://api.<domain>
+ *
+ *  The two-app shapes both need Coolify-managed datastores: the two
+ *  containers no longer share a compose network, so a mongo inside one
+ *  of them would be unreachable from the other. Traefik ranks the
+ *  `/api` router above the bare-host one by rule length, exactly as it
+ *  does for the compose single-origin layout. */
+function imagePlan(input: RoutingInput): RoutingPlan {
+  const imageOf = (role: "app" | "client" | "server"): ImageRef | undefined => {
+    const ref = input.images?.[role];
+    return ref ? parseImageRef(ref) : undefined;
+  };
+  const portOf = (role: "app" | "client" | "server", fallback?: number): string =>
+    String(input.containerPorts?.[role] ?? fallback ?? 3000);
+  const apiHost = `api.${input.domain}`;
+  const apiUrl = `https://${apiHost}`;
+  const bare = `https://${input.domain}`;
+
+  if (input.surfaces === "static" || input.surfaces === "backend") {
+    const backing = input.surfaces === "backend" ? "server" : "client";
+    // A backend under `split` keeps answering on api.<domain> too, the
+    // same way the compose split plan routes it.
+    const withApi = input.surfaces === "backend" && input.topology === "split";
+    const publics = publicUrls(input).filter((u) => !withApi || u !== apiUrl);
+    return {
+      topology: input.topology,
+      apps: [
+        {
+          appName: input.name,
+          aliases: [],
+          role: "app",
+          runtime: "image",
+          image: imageOf("app") ?? imageOf(backing),
+          healthCheck: healthCheckFor("app", { surfaces: input.surfaces }),
+          composeDomains: [],
+          flatDomains: withApi ? [...publics, apiUrl] : publics,
+          portsExposes: portOf("app", input.containerPorts?.[backing]),
+          composeLocation: "",
+          requiredComposeServices: [],
+        },
+      ],
+      extraDnsHostnames: withApi ? [apiHost] : [],
+    };
+  }
+
+  const split = input.topology === "split";
+  const clientApp: RoutedApp = {
+    appName: `${input.name}-client`,
+    aliases: CLIENT_APP_SUFFIXES.slice(1).map((s) => `${input.name}${s}`),
+    role: "client",
+    runtime: "image",
+    image: imageOf("client"),
+    healthCheck: healthCheckFor("client"),
+    composeDomains: [],
+    // Same subtraction as the compose split plan: an alias equal to the
+    // API host belongs to the server app, never to both.
+    flatDomains: split ? publicUrls(input).filter((u) => u !== apiUrl) : publicUrls(input),
+    portsExposes: portOf("client"),
+    composeLocation: "",
+    requiredComposeServices: [],
+  };
+  const serverUrl = split ? apiUrl : `${bare}/api`;
+  const serverApp: RoutedApp = {
+    appName: `${input.name}-server`,
+    aliases: SERVER_APP_SUFFIXES.slice(1).map((s) => `${input.name}${s}`),
+    role: "server",
+    runtime: "image",
+    image: imageOf("server"),
+    healthCheck: healthCheckFor("server"),
+    composeDomains: [],
+    flatDomains: [serverUrl],
+    portsExposes: portOf("server"),
+    composeLocation: "",
+    // Only a path route pulls in Coolify's stripprefix middleware; see
+    // RoutedApp.stripPrefix.
+    ...(split ? {} : { stripPrefix: false }),
+    requiredComposeServices: [],
+  };
+  return {
+    topology: input.topology,
+    apps: [clientApp, serverApp],
+    extraDnsHostnames: split ? [apiHost] : [],
+  };
+}
+
+/** Must this project's datastores be Coolify-managed databases rather
+ *  than services in its compose file?
+ *
+ *  Yes under `split` (the two apps sit on separate Docker networks) and
+ *  yes for any server under the `image` runtime, where Coolify runs no
+ *  compose file at all — each app is one container on the shared
+ *  `coolify` network, which is exactly where managed databases live. */
+export function needsManagedDatastores(args: {
+  topology?: Topology;
+  runtime?: CoolifyRuntime;
+  surfaces?: Surface;
+}): boolean {
+  if (args.surfaces === "static") return false;
+  return args.topology === "split" || args.runtime === "image";
 }
 
 // ---------------------------------------------------------------------------

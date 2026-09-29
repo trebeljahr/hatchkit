@@ -87,6 +87,16 @@ RUN mkdir -p {{monorepoPackage}}/public \
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 WORKDIR /app
 
+# curl for Coolify's health check. Coolify probes the container by
+# running `curl … || wget … || exit 1` INSIDE it, in place of the
+# HEALTHCHECK below, and bookworm-slim ships neither. Without one the
+# probe can never pass: every deploy would be rolled back and the old
+# container kept. With it, a deploy is a rolling update — the old
+# container serves until this one is healthy.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl \
+  && rm -rf /var/lib/apt/lists/*
+
 ENV NODE_ENV=production
 ENV PORT={{port}}
 

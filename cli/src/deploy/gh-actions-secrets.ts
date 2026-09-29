@@ -343,7 +343,12 @@ export async function setCloudflareDeploySecrets(
  *
  *  `silent` so a non-zero exit doesn't let exec() echo a stderr line
  *  that may quote the value back; the throw below carries the message. */
-async function ghSecretSet(cwd: string, repo: string, name: string, value: string): Promise<void> {
+export async function ghSecretSet(
+  cwd: string,
+  repo: string,
+  name: string,
+  value: string,
+): Promise<void> {
   const res = await exec("gh", ["secret", "set", name, "--repo", repo], {
     cwd,
     input: value,
@@ -400,6 +405,15 @@ export async function ghSecretDelete(
   const msg = `${res.stderr}\n${res.stdout}`;
   if (/not found|could not find/i.test(msg)) return "not-found";
   throw new Error(`gh secret delete ${name} exited ${res.exitCode}: ${res.stderr.trim()}`);
+}
+
+/** `owner/repo` from what Coolify stores in `git_repository`: a URL for
+ *  public-repo apps, the bare `owner/repo` for GitHub-App ones (see
+ *  `normalizeCoolifyGitRepository`). */
+export function repoSlugFromCoolifyGitRepository(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  if (/^[\w.-]+\/[\w.-]+$/.test(value)) return value.replace(/\.git$/, "");
+  return repoSlugFromRemote(value);
 }
 
 /** Extract `owner/repo` from a git remote URL.

@@ -487,9 +487,36 @@ const platform = async (deps, config, method, path, body) => {
 const envsOf = (deps, config, app) =>
   platform(deps, config, "GET", "/applications/" + config.uuids[app] + "/envs");
 
+const applicationOf = (deps, config, app) =>
+  platform(deps, config, "GET", "/applications/" + config.uuids[app]);
+
+/**
+ * The image a Docker Image application runs, as '<name>:<tag>', or null
+ * for any other kind of application.
+ *
+ * Where the image reference lives depends on the application. A Docker
+ * Compose application reads it from an env variable its compose file
+ * interpolates. A Docker Image application — the kind the platform
+ * deploys as a rolling update, old container serving until the new one
+ * is healthy — has no compose file: it pulls its own image name and
+ * tag, and an env variable of the same name is ignored. Pinning or
+ * reading the variable there would pin nothing and roll back nothing.
+ *
+ * Only these three fields are read; the same response carries the
+ * application's interpolated compose, secrets included.
+ */
+const imageAppRef = (application) =>
+  application && application.build_pack === "dockerimage" && application.docker_registry_image_name
+    ? application.docker_registry_image_name + ":" + (application.docker_registry_image_tag || "latest")
+    : null;
+
 /** The raw image value of one half, or null where it cannot be read. */
-export const readImageValue = async (deps, config, app) =>
-  findEnvValue(await envsOf(deps, config, app), IMAGE_ENV[app]);
+export const readImageValue = async (deps, config, app) => {
+  const ref = imageAppRef(await applicationOf(deps, config, app));
+  return ref !== null ? ref : findEnvValue(await envsOf(deps, config, app), IMAGE_ENV[app]);
+};
+
+const tagOf = (ref) => ref.slice(ref.lastIndexOf(":") + 1);
 
 /**
  * The rollback target of each half, read BEFORE anything is pinned.
@@ -500,7 +527,12 @@ export const readImageValue = async (deps, config, app) =>
 export const readRollbackTargets = async (deps, config, apps) => {
   const targets = {};
   for (const app of apps) {
-    targets[app] = selectRollbackTarget(await envsOf(deps, config, app), IMAGE_ENV[app]);
+    const ref = imageAppRef(await applicationOf(deps, config, app));
+    const entries =
+      ref !== null
+        ? [{ key: IMAGE_ENV[app], value: ref, is_preview: false }]
+        : await envsOf(deps, config, app);
+    targets[app] = selectRollbackTarget(entries, IMAGE_ENV[app]);
   }
   return targets;
 };
@@ -516,18 +548,28 @@ export const readRollbackTargets = async (deps, config, apps) => {
 export const pin = async (deps, config, values) => {
   for (const app of Object.keys(values)) {
     const value = values[app];
-    await platform(deps, config, "PATCH", "/applications/" + config.uuids[app] + "/envs", {
-      key: IMAGE_ENV[app],
-      value: value,
-      is_preview: false,
-    });
+    const imageApp = imageAppRef(await applicationOf(deps, config, app)) !== null;
+    if (imageApp) {
+      // The name stays as the platform normalised it; only the tag moves.
+      await platform(deps, config, "PATCH", "/applications/" + config.uuids[app], {
+        docker_registry_image_tag: tagOf(value),
+      });
+    } else {
+      await platform(deps, config, "PATCH", "/applications/" + config.uuids[app] + "/envs", {
+        key: IMAGE_ENV[app],
+        value: value,
+        is_preview: false,
+      });
+    }
     const after = await readImageValue(deps, config, app);
-    if (after !== null && after !== value) {
+    if (imageApp ? after === null || tagOf(after) !== tagOf(value) : after !== null && after !== value) {
       throw new Error(
-        IMAGE_ENV[app] + " on the " + app + " application still reads " + after + " after the update; create the variable once on the application and run again",
+        imageApp
+          ? "the " + app + " application's image tag still reads " + (after === null ? "nothing" : tagOf(after)) + " after the update"
+          : IMAGE_ENV[app] + " on the " + app + " application still reads " + after + " after the update; create the variable once on the application and run again",
       );
     }
-    deps.log("pinned " + IMAGE_ENV[app] + "=" + value);
+    deps.log("pinned " + (imageApp ? "the " + app + " image tag" : IMAGE_ENV[app]) + "=" + value);
   }
 };
 

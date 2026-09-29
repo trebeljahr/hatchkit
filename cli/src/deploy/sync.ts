@@ -118,7 +118,7 @@ import {
   findCoolifyDbReferences,
   needsDockerNetwork,
 } from "./coolify-db-network.js";
-import { provisionRoutedApp } from "./coolify.js";
+import { imageRefsForProject, provisionRoutedApp } from "./coolify.js";
 import {
   type DeployedRefReport,
   checkDeployedRef,
@@ -133,6 +133,7 @@ import {
   repoSlugFromRemote,
   setCoolifyDeploySecrets,
 } from "./gh-actions-secrets.js";
+import { type HealthCheckSpec, healthCheckFor, resolveCoolifyRuntime } from "./image-runtime.js";
 import {
   type RoutedApp,
   type Topology,
@@ -252,8 +253,15 @@ export interface AppSyncPlan {
    *  without an evidence gate sync would either PATCH every healthy app
    *  on every run or never repair a broken one. */
   dbNetworkRepair?: boolean;
+  /** Health check to push on an image-runtime app whose check is off.
+   *  Without it Coolify's deploy removes the old container before the
+   *  new one can serve — see deploy/image-runtime.ts. Only ever set to
+   *  turn a disabled check ON; a path somebody chose is left alone. */
+  desiredHealthCheck?: HealthCheckSpec;
   /** Snapshot of the same fields as Coolify currently reports them. */
   current: {
+    /** Whether Coolify runs a health check on this app. */
+    healthCheckEnabled?: boolean;
     fqdn: string | null;
     dockerComposeDomains?: Array<{ name: string; domain: string }>;
     portsExposes?: string;
@@ -369,6 +377,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
 
   const compose = readComposeFile(opts.projectDir);
+  const runtime = resolveCoolifyRuntime(manifest.coolifyRuntime);
   const inference = inferTopology({
     topology: manifest.topology,
     composeServices: compose?.services,
@@ -384,6 +393,16 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     ports: manifest.ports,
     publicService: manifest.publicService,
     composeServices: compose?.services,
+    runtime,
+    ...(runtime === "image"
+      ? {
+          images: imageRefsForProject({
+            projectDir: opts.projectDir,
+            repoSlug: await detectRepoSlug(opts.projectDir),
+          }),
+          ...(manifest.containerPorts ? { containerPorts: manifest.containerPorts } : {}),
+        }
+      : {}),
   });
 
   if (!opts.json) {
@@ -633,8 +652,12 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     try {
       const result = await api.updateApplication(plan.uuid, {
         // Skipped for compose apps — Coolify re-derives it from the
-        // compose file and our value would be discarded anyway.
-        ...(plan.buildPack === "dockercompose" ? {} : { portsExposes: plan.desiredPortsExposes }),
+        // compose file and our value would be discarded anyway — and for
+        // image apps, whose port is the container's own (see buildPlan).
+        ...(plan.buildPack === "dockercompose" || plan.buildPack === "dockerimage"
+          ? {}
+          : { portsExposes: plan.desiredPortsExposes }),
+        ...(plan.desiredHealthCheck ? { healthCheck: plan.desiredHealthCheck } : {}),
         ...(plan.desiredStripPrefix !== undefined
           ? { isStripprefixEnabled: plan.desiredStripPrefix }
           : {}),
@@ -649,7 +672,9 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
         // case where a manifest drops `projectSubdir` after an earlier
         // adopt set one. Coolify's API treats `""` and `"/"` as
         // equivalent (both mean repo root).
-        baseDirectory: plan.desiredBaseDirectory ?? "",
+        ...(plan.buildPack === "dockerimage"
+          ? {}
+          : { baseDirectory: plan.desiredBaseDirectory ?? "" }),
         ...(plan.desiredDockerComposeDomains
           ? { dockerComposeDomains: plan.desiredDockerComposeDomains }
           : {}),
@@ -901,7 +926,9 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
         if (!found) return null;
         return {
           uuid: found.uuid,
-          ...(routed.role === "compose" ? {} : { role: routed.role }),
+          // The one app of a single-app deployment (compose or image)
+          // carries no role in the secret names.
+          ...(routed.role === "compose" || routed.role === "app" ? {} : { role: routed.role }),
         } as CoolifyDeployApp;
       })
       .filter((a): a is CoolifyDeployApp => a !== null);
@@ -1438,6 +1465,12 @@ function buildPlan(
   coolifyDbReferences: CoolifyDbReference[] = [],
 ): AppSyncPlan {
   const isCompose = current.buildPack === "dockercompose";
+  // An image app has no git checkout, so `base_directory` means nothing
+  // to it, and its `ports_exposes` is the port its container really
+  // binds — set when the app was created (by `create` or
+  // `migrate-runtime`, which read it off the image) and not something a
+  // manifest default should overwrite.
+  const isImage = current.buildPack === "dockerimage";
   // dockercompose apps use docker_compose_domains; everything else uses
   // the flat `domains` field. Coolify rejects a domain payload that
   // doesn't match the build pack with a 422.
@@ -1486,6 +1519,7 @@ function buildPlan(
   // build packs where the field is actually ours.
   const portsChanged =
     !isCompose &&
+    !isImage &&
     current.portsExposes !== undefined &&
     current.portsExposes !== routed.portsExposes;
   const domainsChanged = isCompose
@@ -1507,7 +1541,18 @@ function buildPlan(
   // built from `desiredBaseDirectory` (`"/"` for the unset case).
   const desiredBaseDirCanonical = desiredBaseDirectory ? `/${desiredBaseDirectory}` : "/";
   const currentBaseDirCanonical = current.baseDirectory?.trim() || "/";
-  const baseDirectoryChanged = desiredBaseDirCanonical !== currentBaseDirCanonical;
+  const baseDirectoryChanged = !isImage && desiredBaseDirCanonical !== currentBaseDirCanonical;
+
+  // A dockerimage app with its health check off gets no zero-downtime
+  // deploy (Coolify stops the old container as soon as the new one
+  // starts). Turning it on is the one health-check change sync makes.
+  const desiredHealthCheck =
+    isImage && current.healthCheck.enabled !== true
+      ? (routed.healthCheck ??
+        healthCheckFor(
+          routed.role === "server" ? "server" : routed.role === "client" ? "client" : "app",
+        ))
+      : undefined;
 
   // `connect_to_docker_network`. Also write-only, so like strip_prefix
   // it cannot be diffed — but unlike strip_prefix, getting it wrong is
@@ -1533,7 +1578,11 @@ function buildPlan(
     desiredPortsExposes: routed.portsExposes,
     ...(routed.stripPrefix !== undefined ? { desiredStripPrefix: routed.stripPrefix } : {}),
     ...(desiredBaseDirectory ? { desiredBaseDirectory } : {}),
+    ...(desiredHealthCheck ? { desiredHealthCheck } : {}),
     current: {
+      ...(current.healthCheck.enabled !== undefined
+        ? { healthCheckEnabled: current.healthCheck.enabled }
+        : {}),
       fqdn: current.fqdn,
       ...(currentCollapsed ? { dockerComposeDomains: currentCollapsed } : {}),
       ...(current.portsExposes !== undefined ? { portsExposes: current.portsExposes } : {}),
@@ -1551,7 +1600,12 @@ function buildPlan(
     ...(coolifyDbReferences.length > 0 ? { coolifyDbReferences } : {}),
     ...(dbNetworkRepair ? { dbNetworkRepair: true } : {}),
     changed:
-      portsChanged || domainsChanged || stripChanged || baseDirectoryChanged || dbNetworkRepair,
+      portsChanged ||
+      domainsChanged ||
+      stripChanged ||
+      baseDirectoryChanged ||
+      dbNetworkRepair ||
+      desiredHealthCheck !== undefined,
     ...(blocked ? { blocked } : {}),
   };
 }
@@ -1566,6 +1620,20 @@ function renderPlan(plan: AppSyncPlan): void {
   );
   if (plan.buildPack) {
     console.log(chalk.dim(`    build pack: ${plan.buildPack}`));
+  }
+  if (plan.buildPack === "dockercompose") {
+    console.log(
+      chalk.yellow(
+        "    ! Docker Compose app: every deploy stops the site until the new container is up.\n" +
+          "      Zero-downtime move: hatchkit migrate-runtime --dry-run",
+      ),
+    );
+  }
+  if (plan.desiredHealthCheck) {
+    console.log(
+      `    health check: ${chalk.red("off")} → ${chalk.green(`GET ${plan.desiredHealthCheck.path}`)}` +
+        chalk.dim(" (needed for rolling deploys)"),
+    );
   }
 
   if (plan.blocked) {

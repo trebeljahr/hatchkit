@@ -228,6 +228,11 @@ async function main(): Promise<void> {
       await runMigrateDomainCli(args.slice(1), MONOREPO_ROOT);
       break;
     }
+    case "migrate-runtime": {
+      const { runMigrateRuntimeCli } = await import("./deploy/migrate-runtime.js");
+      await runMigrateRuntimeCli(args.slice(1));
+      break;
+    }
     case "set-description": {
       const { runSetDescriptionCli } = await import("./deploy/set-description.js");
       await runSetDescriptionCli(args.slice(1));
@@ -2723,15 +2728,22 @@ async function handleCreate(): Promise<void> {
       // per-half compose files reflect that — the server reads
       // MONGODB_URI / REDIS_URL from env with no in-stack fallback —
       // so provisioning them is not optional here.
-      const dbProvider =
-        config.topology === "split" ? "coolify" : (config.dbProvider ?? config.mongodbProvider);
-      if (
-        config.topology === "split" &&
-        (config.dbProvider ?? config.mongodbProvider) !== "coolify"
-      ) {
+      // The image runtime forces them too: Coolify runs no compose file
+      // for an image app, so there is nowhere for an in-stack mongo to
+      // live. See `needsManagedDatastores` in deploy/routing.ts.
+      const { needsManagedDatastores } = await import("./deploy/routing.js");
+      const managedOnly = needsManagedDatastores({
+        topology: config.topology,
+        runtime: config.coolifyRuntime,
+        surfaces: config.surfaces,
+      });
+      const dbProvider = managedOnly ? "coolify" : (config.dbProvider ?? config.mongodbProvider);
+      if (managedOnly && (config.dbProvider ?? config.mongodbProvider) !== "coolify") {
         console.log(
           chalk.dim(
-            "  · split topology: provisioning Coolify-managed datastores (the two apps don't share a Docker network).",
+            config.topology === "split"
+              ? "  · split topology: provisioning Coolify-managed datastores (the two apps don't share a Docker network)."
+              : "  · image runtime: provisioning Coolify-managed datastores (each app is one container; there is no compose stack).",
           ),
         );
       }
@@ -2747,10 +2759,11 @@ async function handleCreate(): Promise<void> {
             const mongoResult = await provisionCoolifyMongo(config, serverEnvDir);
             ledger?.record({ kind: "coolifyDb", uuid: mongoResult.databaseUuid });
           }
-          // Redis is only provisioned for `split` — under
-          // `single-origin` it's a service in the project's own compose
-          // and reachable at redis://redis:6379 with nothing to create.
-          if (config.topology === "split" && config.features.includes("websocket")) {
+          // Redis is only provisioned when the datastores must be
+          // managed — under a compose `single-origin` it's a service in
+          // the project's own compose, reachable at redis://redis:6379
+          // with nothing to create.
+          if (managedOnly && config.features.includes("websocket")) {
             const { provisionCoolifyRedis } = await import("./deploy/coolify-redis.js");
             const redisResult = await provisionCoolifyRedis(config, serverEnvDir);
             ledger?.record({ kind: "coolifyDb", uuid: redisResult.databaseUuid });
@@ -2777,11 +2790,12 @@ async function handleCreate(): Promise<void> {
       // print the manual command instead of failing the whole flow.
       if (scaffoldResult?.dotenvx) {
         try {
-          // App name matches the project name (the dockercompose
-          // wrapper). The candidate-list fallback in
-          // `pushProjectKeyToCoolify` still catches legacy `-web`
-          // projects.
-          await pushProjectKeyToCoolify(config.name, { appName: config.name });
+          // Every app this run provisioned: one under a compose
+          // single-origin, `-client` + `-server` otherwise — and each
+          // container decrypts its own .env.production at runtime.
+          for (const app of coolifyResult.apps) {
+            await pushProjectKeyToCoolify(config.name, { appName: app.name });
+          }
         } catch (err) {
           console.log(chalk.yellow(`  Couldn't auto-push dotenvx key: ${(err as Error).message}`));
           deferredSteps.push(
@@ -3653,6 +3667,10 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Deployment:")}
     --deployment-mode <${DEPLOYMENT_MODE_VALUES}>
+    --coolify-runtime <image|compose>
+                                   ${chalk.dim("image")} (default)=one Docker Image app per service, rolling
+                                   deploys with no downtime; ${chalk.dim("compose")}=one Docker Compose app,
+                                   restarted (site down) on every deploy
     --deploy-target <${DEPLOY_TARGET_VALUES}>     ${chalk.dim("new")} provisions a Hetzner box, ${chalk.dim("existing")} reuses one
     --server-size <${SERVER_SIZE_VALUES}>  Hetzner size for --deploy-target new
     --server-location <${SERVER_LOCATION_VALUES}> Hetzner region for --deploy-target new
@@ -4779,6 +4797,55 @@ function printHelp(topic?: HelpTopic): void {
 `);
     return;
   }
+  if (topic === "migrate-runtime") {
+    console.log(`
+  ${chalk.bold("hatchkit migrate-runtime")} — stop deploys from taking the site down
+
+  ${chalk.bold("Usage:")}
+    hatchkit migrate-runtime [app…] --dry-run        ${chalk.dim("# show the plan, change nothing")}
+    hatchkit migrate-runtime [app…]                  ${chalk.dim("# migrate (asks first)")}
+    hatchkit migrate-runtime [app…] --rollback       ${chalk.dim("# back to the compose app")}
+    hatchkit migrate-runtime [app…] --cleanup        ${chalk.dim("# delete the stopped compose app")}
+
+  With no app named, migrates the compose app(s) of the project whose
+  .hatchkit.json is in the current directory (or ${chalk.cyan("--dir")}).
+
+  ${chalk.bold("Why:")}
+    A Coolify ${chalk.dim("Docker Compose")} app is redeployed by stopping its container and
+    starting the new one, so the site is down on every push. Coolify only does
+    rolling updates for ${chalk.dim("Docker Image")} (and Dockerfile/Nixpacks) apps with a
+    health check: the old container serves until the new one is healthy, and
+    a new one that never gets healthy is discarded with the old one still up.
+
+  ${chalk.bold("What it does:")}
+    1. Renames ${chalk.dim("<app>")} to ${chalk.dim("<app>-legacy-compose")}.
+    2. Creates a Docker Image app per compose service with the same image,
+       env, port and hostnames, plus a health check. Deploys it while the old
+       app keeps serving, and checks it through Traefik.
+    3. Stops the old app (kept for --rollback), repoints the repo's
+       COOLIFY_*_RESOURCE_UUID secret, and records the move in .hatchkit.json.
+    Any failure before step 3 leaves the old app serving and untouched.
+
+  ${chalk.bold("Refuses")} apps that hold data (a mongo/postgres/redis service or any
+  volume in the compose): that data would not follow. Move it to a
+  Coolify-managed database first (${chalk.cyan("hatchkit add")}).
+
+  ${chalk.bold("Options:")}
+    --dry-run                     Plan only
+    --yes                         Don't ask before migrating / deleting
+    --health-path <svc>=/path     Health endpoint for one compose service
+                                  (default /api/health for server/api/backend, else /)
+    --no-secrets                  Leave the GitHub Actions secrets alone
+    --keep-live-tag               Stay on the deployed sha tag instead of the branch tag —
+                                  for repos whose workflow already pins image tags
+    --dir <path>                  Project directory (default: cwd)
+
+  The deploy workflow must pin ${chalk.dim("docker_registry_image_tag")} for an image app.
+  Workflows scaffolded by this version do; an older one keeps working because
+  the app is left on its branch tag (${chalk.dim(":main")} / ${chalk.dim(":latest")}), which each push updates.
+`);
+    return;
+  }
   if (topic === "migrate-domain") {
     console.log(`
   ${chalk.bold("hatchkit migrate-domain")} — move a LIVE project to a new domain
@@ -5186,6 +5253,7 @@ function printHelp(topic?: HelpTopic): void {
     destroy         Roll back everything ${chalk.cyan("hatchkit create")} did for a project
     rename-domain   Move a scaffolded project to a new domain (rewrites tfvars/env/manifest)
     migrate-domain  Move a LIVE project to a new domain (files + SES/R2/DNS/Coolify/Stripe)
+    migrate-runtime Move a LIVE Coolify compose app to Docker Image apps (deploys stop taking the site down)
     rename-project  Change a scaffolded project's slug (rewrites manifest/pkg.json/tfvars/env/ledger)
     set-description Update a project's description across manifest, package.json, Coolify, GitHub
     sync            Push the manifest's domain/ports onto the matching Coolify app(s)

@@ -1,3 +1,8 @@
+import {
+  type HealthCheckSpec,
+  type ImageRef,
+  healthCheckPayload,
+} from "../deploy/image-runtime.js";
 import { collapseComposeDomains, splitDomainString } from "../deploy/routing.js";
 
 export interface CoolifyServer {
@@ -762,7 +767,7 @@ export class CoolifyApi {
   async updateApplication(
     uuid: string,
     fields: {
-      buildPack?: "nixpacks" | "static" | "dockerfile" | "dockercompose";
+      buildPack?: "nixpacks" | "static" | "dockerfile" | "dockercompose" | "dockerimage";
       portsExposes?: string;
       dockerComposeLocation?: string;
       gitBranch?: string;
@@ -815,9 +820,35 @@ export class CoolifyApi {
        *  `"site"` or `"apps/web"` to point Coolify at a sub-folder
        *  build context. Mirrors the manifest's `projectSubdir`. */
       baseDirectory?: string;
+      /** Rename the application. Cosmetic to Coolify — container labels
+       *  only pick the new name up on the next deploy — but it is how
+       *  hatchkit finds apps, so `migrate-runtime` renames the legacy
+       *  compose app out of the way before its replacement takes the
+       *  canonical name. */
+      name?: string;
+      /** `docker_registry_image_name` of a `dockerimage` app. */
+      dockerRegistryImageName?: string;
+      /** `docker_registry_image_tag` of a `dockerimage` app. The deploy
+       *  job owns this after creation (it pins each push's sha), so
+       *  reconcile paths must NOT send it — they would roll production
+       *  back to the mutable branch tag. */
+      dockerRegistryImageTag?: string;
+      /** Health check for a `dockerimage` app. Without one Coolify's
+       *  deploy is not a rolling update in any useful sense — see
+       *  deploy/image-runtime.ts. */
+      healthCheck?: HealthCheckSpec;
     },
   ): Promise<{ droppedFields: string[] }> {
     const body: Record<string, unknown> = {};
+    if (fields.name !== undefined) body.name = fields.name;
+    if (fields.dockerRegistryImageName !== undefined) {
+      body.docker_registry_image_name = fields.dockerRegistryImageName;
+    }
+    if (fields.dockerRegistryImageTag !== undefined) {
+      body.docker_registry_image_tag = fields.dockerRegistryImageTag;
+    }
+    if (fields.healthCheck !== undefined)
+      Object.assign(body, healthCheckPayload(fields.healthCheck));
     if (fields.buildPack !== undefined) body.build_pack = fields.buildPack;
     if (fields.portsExposes !== undefined) body.ports_exposes = fields.portsExposes;
     if (fields.dockerComposeLocation !== undefined) {
@@ -957,7 +988,233 @@ export class CoolifyApi {
       restartCount: coerceCount(raw.restart_count),
       lastRestartType:
         typeof raw.last_restart_type === "string" ? raw.last_restart_type : undefined,
+      dockerRegistryImageName:
+        typeof raw.docker_registry_image_name === "string"
+          ? raw.docker_registry_image_name
+          : undefined,
+      dockerRegistryImageTag:
+        typeof raw.docker_registry_image_tag === "string"
+          ? raw.docker_registry_image_tag
+          : undefined,
+      healthCheck: {
+        enabled:
+          typeof raw.health_check_enabled === "boolean"
+            ? raw.health_check_enabled
+            : raw.health_check_enabled === 1
+              ? true
+              : raw.health_check_enabled === 0
+                ? false
+                : undefined,
+        path: typeof raw.health_check_path === "string" ? raw.health_check_path : undefined,
+      },
+      portsMappings: typeof raw.ports_mappings === "string" ? raw.ports_mappings : null,
+      customDockerRunOptions:
+        typeof raw.custom_docker_run_options === "string" ? raw.custom_docker_run_options : null,
+      environmentId: typeof raw.environment_id === "number" ? raw.environment_id : undefined,
     };
+  }
+
+  /** The compose file Coolify last loaded for a `dockercompose` app —
+   *  the repo's file as committed, NOT the interpolated one. Read by
+   *  `migrate-runtime` to learn each service's image, port, env and
+   *  routing labels. Null for apps that never deployed.
+   *
+   *  Deliberately not part of {@link getApplication}: the same GET also
+   *  returns `docker_compose` (the INTERPOLATED file, with dotenvx keys
+   *  inlined — see the Coolify API memory note), and keeping this read
+   *  separate keeps that neighbour out of every other caller's hands. */
+  async getApplicationComposeRaw(uuid: string): Promise<string | null> {
+    const raw = (await this.request("GET", `/applications/${uuid}`)) as Record<string, unknown>;
+    return typeof raw.docker_compose_raw === "string" && raw.docker_compose_raw.trim() !== ""
+      ? raw.docker_compose_raw
+      : null;
+  }
+
+  /** Create a Coolify **Docker Image** application — the build pack that
+   *  gets rolling updates (see deploy/image-runtime.ts).
+   *
+   *  No git source: the image is built by GitHub Actions and pulled from
+   *  GHCR, so there is no clone, no GitHub App grant and no compose file
+   *  involved. `force_domain_override` IS honoured here (flat `domains`
+   *  are conflict-checked in `validateDataApplications`, before the
+   *  field is stripped), which is what lets a replacement app share a
+   *  hostname with the app it replaces for the length of a cutover. */
+  async createDockerImageApplication(input: {
+    projectUuid: string;
+    serverUuid: string;
+    environmentName?: string;
+    environmentUuid?: string;
+    name: string;
+    description?: string;
+    image: ImageRef;
+    portsExposes: string;
+    domains: string[];
+    healthCheck: HealthCheckSpec;
+    forceDomainOverride?: boolean;
+    instantDeploy?: boolean;
+  }): Promise<{ uuid: string; domains?: string }> {
+    const body: Record<string, unknown> = {
+      project_uuid: input.projectUuid,
+      server_uuid: input.serverUuid,
+      name: input.name,
+      docker_registry_image_name: input.image.name,
+      docker_registry_image_tag: input.image.tag,
+      ports_exposes: input.portsExposes,
+      domains: input.domains.join(","),
+      instant_deploy: input.instantDeploy ?? false,
+      ...healthCheckPayload(input.healthCheck),
+    };
+    if (input.environmentUuid) body.environment_uuid = input.environmentUuid;
+    else body.environment_name = input.environmentName ?? "production";
+    if (input.description) body.description = input.description;
+    // Without a domain Coolify would mint an sslip.io one; an app with
+    // no public surface (never the case today) should say so explicitly.
+    if (input.domains.length === 0) body.autogenerate_domain = false;
+    if (input.forceDomainOverride) body.force_domain_override = true;
+    return this.request("POST", "/applications/dockerimage", body);
+  }
+
+  /** Queue a deploy through `/deploy?uuid=`, the same endpoint the GitHub
+   *  Actions job calls. Returns the queued deployment's uuid. */
+  async queueDeploy(
+    uuid: string,
+    opts: { force?: boolean } = {},
+  ): Promise<{ deploymentUuid?: string }> {
+    const raw = (await this.request(
+      "GET",
+      `/deploy?uuid=${encodeURIComponent(uuid)}&force=${opts.force ? "true" : "false"}`,
+    )) as { deployments?: Array<{ deployment_uuid?: string }> } | undefined;
+    const deploymentUuid = raw?.deployments?.find(
+      (d) => typeof d.deployment_uuid === "string",
+    )?.deployment_uuid;
+    return deploymentUuid ? { deploymentUuid } : {};
+  }
+
+  /** Most recent deployments of one application, newest first. Unlike
+   *  `GET /deployments/{uuid}` this keeps finished deployments, so a
+   *  poller can see how one ended. Log bodies are dropped. */
+  async listApplicationDeployments(
+    uuid: string,
+    take = 5,
+  ): Promise<Array<{ deploymentUuid: string; status?: string; createdAt?: string }>> {
+    const raw = (await this.request(
+      "GET",
+      `/deployments/applications/${uuid}?skip=0&take=${take}`,
+    )) as { deployments?: Array<Record<string, unknown>> } | undefined;
+    return (raw?.deployments ?? [])
+      .filter((d) => typeof d.deployment_uuid === "string")
+      .map((d) => ({
+        deploymentUuid: d.deployment_uuid as string,
+        status: typeof d.status === "string" ? d.status : undefined,
+        createdAt: typeof d.created_at === "string" ? d.created_at : undefined,
+      }));
+  }
+
+  /** Ask Coolify to stop an application's containers. Asynchronous: the
+   *  request is queued, so callers poll `getApplication().status` for
+   *  `exited`. `docker_cleanup=false` keeps the images, so starting the
+   *  app again (a rollback) doesn't have to re-pull anything. */
+  async stopApplication(uuid: string): Promise<void> {
+    await this.request("GET", `/applications/${uuid}/stop?docker_cleanup=false`);
+  }
+
+  /** Delete an application WITHOUT touching its volumes. Coolify's
+   *  DELETE defaults `delete_volumes` to true; an app being retired after
+   *  a migration may still hold data somebody wants, so this spells the
+   *  safe value out. */
+  async deleteApplicationKeepingVolumes(uuid: string): Promise<"deleted" | "not-found"> {
+    return this.delete(
+      `/applications/${uuid}?delete_volumes=false&delete_connected_networks=false&delete_configurations=true&docker_cleanup=true`,
+    );
+  }
+
+  /** Every project with its environments. Lets a caller holding only an
+   *  application's `environment_id` find the project + environment uuids
+   *  a sibling application has to be created in. */
+  async listProjectsWithEnvironments(): Promise<
+    Array<{
+      uuid: string;
+      name: string;
+      environments: Array<{ id: number; uuid?: string; name: string }>;
+    }>
+  > {
+    const projects = (await this.request("GET", "/projects")) as Array<{
+      uuid?: string;
+      name: string;
+    }>;
+    const out: Array<{
+      uuid: string;
+      name: string;
+      environments: Array<{ id: number; uuid?: string; name: string }>;
+    }> = [];
+    for (const p of projects) {
+      if (!p.uuid) continue;
+      const detail = (await this.request("GET", `/projects/${p.uuid}`)) as {
+        environments?: Array<{ id?: number; uuid?: string; name?: string }>;
+      };
+      out.push({
+        uuid: p.uuid,
+        name: p.name,
+        environments: (detail.environments ?? [])
+          .filter((e) => typeof e.id === "number" && typeof e.name === "string")
+          .map((e) => ({ id: e.id as number, uuid: e.uuid, name: e.name as string })),
+      });
+    }
+    return out;
+  }
+
+  /** Env rows with the flags a faithful copy needs. Same secrecy rule as
+   *  {@link listAppEnvs}: values are production secrets — never print,
+   *  log or persist one. */
+  async listAppEnvRowsDetailed(uuid: string): Promise<
+    Array<{
+      key: string;
+      value: string | undefined;
+      isPreview: boolean;
+      isLiteral: boolean;
+      isMultiline: boolean;
+    }>
+  > {
+    const raw = await this.request<unknown>("GET", `/applications/${uuid}/envs`);
+    const rows = Array.isArray(raw) ? raw : [];
+    const out: Array<{
+      key: string;
+      value: string | undefined;
+      isPreview: boolean;
+      isLiteral: boolean;
+      isMultiline: boolean;
+    }> = [];
+    for (const r of rows) {
+      if (!r || typeof r !== "object") continue;
+      const e = r as Record<string, unknown>;
+      if (typeof e.key !== "string") continue;
+      out.push({
+        key: e.key,
+        value: typeof e.value === "string" ? e.value : e.value === null ? "" : undefined,
+        isPreview: e.is_preview === true || e.is_preview === 1,
+        isLiteral: e.is_literal === true || e.is_literal === 1,
+        isMultiline: e.is_multiline === true || e.is_multiline === 1,
+      });
+    }
+    return out;
+  }
+
+  /** Upsert production env rows keeping each row's literal/multiline
+   *  flags — the copy half of {@link listAppEnvRowsDetailed}. */
+  async setAppEnvRows(
+    appUuid: string,
+    rows: Array<{ key: string; value: string; isLiteral: boolean; isMultiline: boolean }>,
+  ): Promise<void> {
+    if (rows.length === 0) return;
+    await this.request("PATCH", `/applications/${appUuid}/envs/bulk`, {
+      data: rows.map((r) => ({
+        key: r.key,
+        value: r.value,
+        is_preview: false,
+        is_literal: r.isLiteral,
+        is_multiline: r.isMultiline,
+      })),
+    });
   }
 
   /** Read an application's environment variables.
@@ -1097,7 +1354,7 @@ export class CoolifyApi {
 export interface CoolifyApplication {
   uuid: string;
   name: string;
-  buildPack?: "nixpacks" | "static" | "dockerfile" | "dockercompose";
+  buildPack?: "nixpacks" | "static" | "dockerfile" | "dockercompose" | "dockerimage";
   /** Comma-joined FQDN string Coolify exposes for non-dockercompose
    *  apps (and as a denormalized cache for dockercompose apps on some
    *  builds). Null when no domains are attached. */
@@ -1156,6 +1413,25 @@ export interface CoolifyApplication {
    *  A redeploy or a manual restart sets something else, so
    *  `restartCount > 0` on its own is not evidence of a fault. */
   lastRestartType?: string;
+  /** `docker_registry_image_name` — set on `dockerimage` apps. */
+  dockerRegistryImageName?: string;
+  /** `docker_registry_image_tag` — the tag Coolify will pull on the next
+   *  deploy. On an image-runtime app the deploy job pins it to the
+   *  commit sha, so it doubles as "which build is live". */
+  dockerRegistryImageTag?: string;
+  /** Whether Coolify runs a health check, and where. `enabled` is what
+   *  decides if a deploy is a rolling update — see
+   *  deploy/image-runtime.ts `rollingUpdateBlocker`. */
+  healthCheck: { enabled?: boolean; path?: string };
+  /** `ports_mappings` (host:container). Non-empty blocks rolling
+   *  updates. */
+  portsMappings: string | null;
+  /** `custom_docker_run_options`. An `--ip` in here blocks rolling
+   *  updates. */
+  customDockerRunOptions: string | null;
+  /** Coolify's numeric environment id — the only pointer from an
+   *  application back to its project on this API. */
+  environmentId?: number;
 }
 
 /** One application's compose source, as `listComposeSources` reads it. */

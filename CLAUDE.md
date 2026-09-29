@@ -59,6 +59,7 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   current repo (static sites; free, unmetered asset requests).
 - `hatchkit adopt`: bring an existing repo under Hatchkit conventions.
 - `hatchkit sync`, `rename-domain`, `regen-infra`, `provision s3`: maintain deployed projects. `sync` pushes the manifest's `domain` + `aliases[]` (multi-hostname) onto Coolify.
+- `hatchkit migrate-runtime [app] [--dry-run|--rollback|--cleanup]`: move a deployed Coolify compose app to Docker Image apps (rolling, zero-downtime deploys). Side by side with a verified cutover; refuses apps holding data. See `cli/src/deploy/image-runtime.ts` for why compose apps go down on every deploy.
 - `hatchkit dns publish [--dry-run]`: upsert Cloudflare A/AAAA records for the manifest's domain + aliases, pointing at the Coolify server.
 - `hatchkit plausible rename <old> <new>`: move a Plausible site to a new domain (stats history preserved).
 - `hatchkit explain --json`: source-of-truth mental model.

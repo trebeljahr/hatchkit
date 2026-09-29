@@ -38,6 +38,7 @@ export type HelpTopic =
   | "destroy"
   | "rename-domain"
   | "migrate-domain"
+  | "migrate-runtime"
   | "rename-project"
   | "set-description"
   | "sync"
@@ -86,6 +87,7 @@ const HELP_TOPIC_BY_COMMAND: Readonly<Record<string, HelpTopic>> = {
   destroy: "destroy",
   "rename-domain": "rename-domain",
   "migrate-domain": "migrate-domain",
+  "migrate-runtime": "migrate-runtime",
   "set-description": "set-description",
   "rename-project": "rename-project",
   sync: "sync",

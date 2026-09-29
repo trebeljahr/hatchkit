@@ -32,6 +32,62 @@ hatchkit create --topology=split
 
 Or answer the **Deployment topology** step in the interactive flow.
 
+## Deploys without downtime: the runtime
+
+A second field, `coolifyRuntime`, decides how each service runs on Coolify.
+It decides whether a push takes the site down.
+
+| Value | Coolify apps | What a deploy does |
+|---|---|---|
+| `image` (default for new projects) | one **Docker Image** app per service | Starts the new container, waits for its health check, then stops the old one. The site stays up. |
+| `compose` | one **Docker Compose** app | Stops the old container, then starts the new one. The site is down until the new process listens. |
+
+Coolify only does rolling updates for Docker Image, Dockerfile, Nixpacks and
+Static apps. It has none for Docker Compose apps. So the fix is one Docker
+Image app per service, each pulling the image GitHub Actions pushes to GHCR.
+
+The health check does three jobs:
+
+- Coolify waits for it before it removes the old container.
+- Traefik sends no traffic to a container that is not healthy yet.
+- A new container that never turns healthy is removed. The old one keeps serving, and the deploy fails.
+
+Coolify runs the check inside the container with `curl` or `wget`. Alpine
+images have `wget`. The scaffolded Debian images install `curl`. An image
+without either fails every deploy, and the old container stays up.
+
+Under `image`, the API is always a separate app, so mongo and redis are
+Coolify-managed databases for both topologies:
+
+| Topology | Apps |
+|---|---|
+| `single-origin` | `<name>-client` at `https://<domain>`, `<name>-server` at `https://<domain>/api` |
+| `split` | `<name>-client` at `https://<domain>`, `<name>-server` at `https://api.<domain>` |
+| static or backend-only | one app, `<name>` |
+
+A manifest without the field is read as `compose`, because that is what it
+was deployed as. Choose at scaffold time with `--coolify-runtime image|compose`.
+
+### Moving a deployed project
+
+```bash
+hatchkit migrate-runtime --dry-run    # in the project directory
+hatchkit migrate-runtime
+```
+
+It creates the Docker Image app next to the compose app, with the same image,
+env, port and hostnames. It deploys it while the old app keeps serving and
+checks it through Traefik. Only then does it stop the old app and point the
+repo's deploy secret at the new one. The old app stays, stopped:
+`--rollback` starts it again, `--cleanup` deletes it.
+
+It refuses a compose app that holds data — a mongo, postgres or redis service,
+or any volume. That data lives in the old app's Docker volume and would not
+follow. Move it to a Coolify-managed database first with `hatchkit add`.
+
+`hatchkit doctor` names every app of the project whose deploys still take
+the site down.
+
 ## single-origin
 
 One Coolify application running the project's `docker-compose.yml`, with all

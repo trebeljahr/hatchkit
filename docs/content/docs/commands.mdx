@@ -443,6 +443,46 @@ If you opt in:
 
 ---
 
+## `hatchkit migrate-runtime`
+
+Moves a deployed project from a Coolify Docker Compose app to Docker Image
+apps, so a push no longer takes the site down. See
+[Deploys without downtime](/docs/topology#deploys-without-downtime-the-runtime)
+for why.
+
+```bash
+hatchkit migrate-runtime [app…] --dry-run    # the plan, nothing changed
+hatchkit migrate-runtime [app…]              # asks before it starts
+hatchkit migrate-runtime [app…] --rollback   # back to the compose app
+hatchkit migrate-runtime [app…] --cleanup    # delete the stopped compose app
+```
+
+With no app named, it takes the compose apps of the project in the current
+directory. The steps:
+
+1. Renames `<app>` to `<app>-legacy-compose`.
+2. Creates a Docker Image app per compose service. It copies the image, the
+   env, the port and every hostname, including hosts named only in
+   hand-written Traefik labels, and adds a health check.
+3. Deploys the new app while the old one serves, then checks it through
+   Traefik on a private verification hostname.
+4. Stops the old app, points the repo's `COOLIFY_*_RESOURCE_UUID` secret at
+   the new one, and records `"coolifyRuntime": "image"` in `.hatchkit.json`.
+
+A failure before step 4 leaves the old app serving, with only the rename
+undone. Every step is recorded under the hatchkit config directory, so
+`--rollback` and `--cleanup` never guess.
+
+| Option | Effect |
+|---|---|
+| `--health-path <service>=/path` | Health endpoint for one service. Default: `/api/health` for a service named `server`, `api` or `backend`, `/` otherwise. |
+| `--keep-live-tag` | Keep the deployed commit's tag. Use it when the repo's workflow already pins image tags. |
+| `--no-secrets` | Leave the GitHub Actions secrets alone. |
+| `--yes` | Don't ask. |
+
+It refuses apps with a datastore service or a volume, apps that publish host
+ports, and apps that never deployed.
+
 ## `hatchkit sync`
 
 Pushes the manifest's view of the project onto Coolify: which applications

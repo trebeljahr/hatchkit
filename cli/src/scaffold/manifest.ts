@@ -31,6 +31,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { localDevDomainFromProjectDomain } from "@hatchkit/dev-shared";
+import { type CoolifyRuntime, DEFAULT_NEW_PROJECT_RUNTIME } from "../deploy/image-runtime.js";
 import {
   type Topology,
   defaultPublicServiceForSurfaces as routingDefaultPublicService,
@@ -252,6 +253,30 @@ export interface ProjectManifest {
    *  it has to be chosen explicitly. See `inferTopology` in
    *  deploy/routing.ts. */
   topology?: Topology;
+  /** How each routed service runs on Coolify.
+   *
+   *    · `image` — one Coolify Docker Image application per service,
+   *      pulling the GHCR image GitHub Actions builds, with a health
+   *      check. Deploys are rolling updates: the old container serves
+   *      until the new one is healthy, and a new one that never turns
+   *      healthy is thrown away with the old one still up.
+   *    · `compose` — one Coolify Docker Compose application. Coolify
+   *      has no rolling update for compose apps, so every deploy stops
+   *      the old container before starting the new one: the site is
+   *      down for the length of the restart.
+   *
+   *  Optional for back-compat. Absent means `compose`, because that is
+   *  what every manifest written before the field describes. New
+   *  projects are written with `image`; `hatchkit migrate-runtime` moves
+   *  a deployed compose project across and writes the field. See
+   *  deploy/image-runtime.ts. */
+  coolifyRuntime?: CoolifyRuntime;
+  /** Port each image-runtime app's container listens on, when it isn't
+   *  the starter's 3000 — an nginx-served static site binds 80.
+   *  Written by `hatchkit migrate-runtime` from the compose it replaced;
+   *  read by `sync` only when it has to CREATE a missing app (an
+   *  existing image app's port is never overwritten). */
+  containerPorts?: { app?: number; client?: number; server?: number };
   /** Path from the repo root to the deployable subdir, posix-slashed,
    *  no leading "./", no trailing slash. Absent / undefined means the
    *  deployable lives at the repo root (the historical default).
@@ -505,6 +530,9 @@ export function toManifest(
     surfaces: config.surfaces,
     publicService: config.publicService ?? defaultPublicServiceForSurfaces(config.surfaces),
     topology: config.topology ?? "single-origin",
+    ...(config.deploymentMode === "coolify" || config.deploymentMode === undefined
+      ? { coolifyRuntime: config.coolifyRuntime ?? DEFAULT_NEW_PROJECT_RUNTIME }
+      : {}),
     projectSubdir: config.projectSubdir || undefined,
     gpuPlatforms: config.gpuPlatforms,
     customHfModelId: config.customHfModelId,

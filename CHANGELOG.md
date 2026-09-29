@@ -6,6 +6,20 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 
 ## Unreleased
 
+### Changed
+
+- **Deploys no longer take the site down.** Every hatchkit app used to be a Coolify Docker Compose app. Coolify redeploys those by stopping the old container before it starts the new one, so each push was an outage until the new process listened. Coolify only does rolling updates for Docker Image, Dockerfile, Nixpacks and Static apps with a health check. New projects now get one Docker Image app per service (`coolifyRuntime: "image"` in `.hatchkit.json`, `--coolify-runtime` on `create`). Each app pulls the GHCR image the workflow builds and carries a health check (`/api/health` for the server, `/` otherwise). The old container serves until the new one is healthy, and a new container that never turns healthy is removed with the old one still up. Under the image runtime the server is always its own app, so mongo and redis are Coolify-managed databases in both topologies. Existing manifests without the field stay on `compose`.
+- The deploy workflows pin `docker_registry_image_tag` on a Docker Image app and keep the env-var pin on a compose app. They read the build pack at run time, so one workflow is correct before and after a migration. `hatchkit update` adds the image branch to an older pin step. The generated `verified-deploy` script pins and rolls back the image tag on image apps too.
+- The scaffolded Debian runtime images (`node:*-bookworm-slim`) install `curl`. Coolify's health check runs `curl … || wget …` inside the container, and those images had neither.
+- `hatchkit sync` turns on a Docker Image app's health check when it is off, and never overwrites an image app's port or base directory.
+- `hatchkit create --yes` now honours `--topology`; the non-interactive path dropped it.
+- `hatchkit create` pushes the dotenvx key to every app it provisioned, not only one named after the project — split projects never got it.
+
+### Added
+
+- `hatchkit migrate-runtime` moves a deployed compose app to Docker Image apps, side by side. It copies the image, env, port and every hostname (including hosts named only in hand-written Traefik labels), deploys the new app while the old one serves, checks it through Traefik, then stops the old app and repoints the repo's deploy secret. `--rollback` restores the compose app; `--cleanup` deletes it, keeping its volumes. It refuses apps with a datastore service or a volume, whose data would not follow.
+- `hatchkit doctor` warns for every app of the project whose deploys still take the site down, and names the command that fixes it.
+
 ### Removed
 
 - **`desktop-tauri` is gone.** Electron is the one desktop wrapper. Both wrapped the same static client export, so a second release pipeline bought nothing. Removed: `starter/src-tauri/`, `tauri-release.yml`, the four `tauri`/`icons:tauri` scripts, `@tauri-apps/cli`, the `tauri://localhost` + `http://tauri.localhost` trusted origins, and the `--features desktop-tauri` value. `hatchkit signing`'s `windows` platform now detects `electron/` instead of `src-tauri/` and its `build-windows.yml` builds an electron-builder NSIS installer signed with Azure Trusted Signing. An existing `.hatchkit.json` that lists `desktop-tauri` is migrated on read (manifest v5): the flag is dropped with a note, nothing is deleted from the project, and an already-deployed server keeps trusting the origins it already trusts — `TRUSTED_ORIGINS` is merge-only. A project that still wants Tauri should pin an older CLI or keep its `src-tauri/` tree by hand.

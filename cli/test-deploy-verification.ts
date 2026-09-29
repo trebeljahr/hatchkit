@@ -178,8 +178,10 @@ if (!starterPresent) {
     }
     // POST before PATCH: a PATCH naming a key Coolify doesn't have is
     // accepted and does nothing, so create-then-update is load-bearing.
-    const postAt = WORKFLOW_PIN_STEP.indexOf("-X POST");
-    const patchAt = WORKFLOW_PIN_STEP.indexOf("-X PATCH");
+    // Measured on the env pin only — the Docker Image branch before it
+    // PATCHes the application itself, not an env var.
+    const postAt = WORKFLOW_PIN_STEP.search(/-X POST \\\n\s+"[^"]*\/envs"/);
+    const patchAt = WORKFLOW_PIN_STEP.search(/-X PATCH \\\n\s+"[^"]*\/envs"/);
     assert.ok(postAt > 0 && patchAt > postAt, "POST must precede PATCH");
     // `is_build_time` is rejected on that POST with "This field is not
     // allowed" — sending it takes the whole request down. Check the
@@ -650,7 +652,9 @@ expect("adopt workflow pins APP_IMAGE to the sha before deploying", () => {
     wf.indexOf("- name: Pin the image tag to this commit"),
     wf.indexOf("- name: Deploy via Coolify API"),
   );
-  assert.ok(pin.indexOf("-X POST") < pin.indexOf("-X PATCH"), "POST must precede PATCH");
+  const envPost = pin.search(/-X POST \\\n\s+"[^"]*\/envs"/);
+  const envPatch = pin.search(/-X PATCH \\\n\s+"[^"]*\/envs"/);
+  assert.ok(envPost > 0 && envPost < envPatch, "POST must precede PATCH");
   assert.ok(pin.includes("/api/v1/applications/$COOLIFY_RESOURCE_UUID/envs"));
   assert.ok(!pin.includes("is_build_time"), "is_build_time is rejected on POST");
   assert.ok(pin.includes('APP_IMAGE="ghcr.io/${{ github.repository }}:${{ github.sha }}"'));

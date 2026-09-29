@@ -18,6 +18,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { COOLIFY_RUNTIMES } from "../deploy/image-runtime.js";
 import type { Topology } from "../deploy/routing.js";
 import type {
   AnalyticsProvider,
@@ -255,6 +256,9 @@ export function parseCreateFlags(argv: string[]): ParsedCreateFlags {
 
   const topology = pickEnum("topology", KNOWN_TOPOLOGIES);
   if (topology) presets.topology = topology;
+
+  const coolifyRuntime = pickEnum("coolify-runtime", COOLIFY_RUNTIMES);
+  if (coolifyRuntime) presets.coolifyRuntime = coolifyRuntime;
 
   const deploymentMode = pickEnum("deployment-mode", KNOWN_DEPLOYMENT_MODES);
   if (deploymentMode) presets.deploymentMode = deploymentMode;

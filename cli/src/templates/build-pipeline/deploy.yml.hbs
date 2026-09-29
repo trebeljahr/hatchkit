@@ -202,6 +202,14 @@ jobs:
       # "This field is not allowed"; key/value/is_preview is accepted.)
       # hatchkit seeds APP_IMAGE when it provisions the app, so in
       # practice the PATCH is the one that does the work.
+      #
+      # A Docker Image app (hatchkit's `image` runtime) has no compose
+      # to interpolate — it pulls `docker_registry_image_tag`, so that is
+      # what gets pinned there. Image apps are the ones Coolify deploys
+      # as rolling updates: the old container keeps serving until the
+      # new one passes its health check. The build pack is read at run
+      # time, so this step is right before and after
+      # `hatchkit migrate-runtime` moves the app across.
       - name: Pin the image tag to this commit
         env:
           COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
@@ -210,6 +218,19 @@ jobs:
         if: env.COOLIFY_BASE_URL != '' && env.COOLIFY_RESOURCE_UUID != ''
         run: |
           set -euo pipefail
+          # Only `.build_pack` is read out of the response: the same GET
+          # returns the interpolated compose, secrets included.
+          BUILD_PACK=$(curl -fsSL "$COOLIFY_BASE_URL/api/v1/applications/$COOLIFY_RESOURCE_UUID" \
+            -H "Authorization: Bearer $COOLIFY_API_TOKEN" | jq -r '.build_pack // empty')
+          if [ "$BUILD_PACK" = "dockerimage" ]; then
+            curl -fsSL -o /dev/null -X PATCH \
+              "$COOLIFY_BASE_URL/api/v1/applications/$COOLIFY_RESOURCE_UUID" \
+              -H "Authorization: Bearer $COOLIFY_API_TOKEN" \
+              -H 'Content-Type: application/json' \
+              -d "{\"docker_registry_image_tag\":\"${{ github.sha }}\"}"
+            echo "pinned image tag ${{ github.sha }} on $COOLIFY_RESOURCE_UUID"
+            exit 0
+          fi
           APP_IMAGE="ghcr.io/${{ github.repository }}:${{ github.sha }}"
           BODY="{\"key\":\"APP_IMAGE\",\"value\":\"$APP_IMAGE\",\"is_preview\":false}"
           curl -fsS -o /dev/null -X POST \

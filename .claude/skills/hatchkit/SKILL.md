@@ -78,6 +78,7 @@ rotation URL, required scopes, and exact `hatchkit config add <provider>` comman
 | `hatchkit adopt` | Adopt an existing repo into Hatchkit conventions |
 | `hatchkit sync` | Sync/deploy state for an existing Hatchkit project (incl. manifest `aliases[]` multi-hostname routing) |
 | `hatchkit dns publish` | Upsert A/AAAA records for the manifest's domain + aliases (supports `--dry-run`) |
+| `hatchkit migrate-runtime [app]` | Move a deployed Coolify compose app to Docker Image apps so deploys stop taking the site down (`--dry-run`, `--rollback`, `--cleanup`) |
 | `hatchkit plausible rename <old> <new>` | Move a Plausible site to a new domain, keeping stats history |
 | `hatchkit rename-domain` | Rename project domain and related deploy config |
 | `hatchkit regen-infra` | Regenerate project infra files |
@@ -130,6 +131,11 @@ Use Hatchkit context when the user mentions any of:
 ## Guard rails
 
 - `hatchkit doctor` is safe and read-only. Use it freely for diagnosis.
+- "The site goes down on every deploy" means a Coolify Docker Compose app
+  (no rolling updates) or a Docker Image app with its health check off.
+  `hatchkit doctor` names each one; `hatchkit migrate-runtime <app>
+  --dry-run` shows the move. The real run stops the old app after a
+  verified cutover — ask first.
   `hatchkit doctor --fix` writes to providers; ask before running it.
 - `hatchkit setup` and `config add` are interactive. Do not run them
   unattended unless the user gave flags/config for automation.
@@ -188,6 +194,7 @@ Flags, with their valid values:
 | `--description <text>` | pass empty for "none" |
 | `--surfaces` | `fullstack` `split` `backend` `static` |
 | `--deployment-mode` | `coolify` `gh-pages` `cloudflare` `scaffold-only` (`gh-pages` and `cloudflare` need `--surfaces static`) |
+| `--coolify-runtime` | `image` (default: one Docker Image app per service, rolling zero-downtime deploys) `compose` (one Docker Compose app, restarted on every deploy) |
 | `--deploy-target` | `new` `existing` |
 | `--server-size` | `cpx21` `cpx31` `cpx41` |
 | `--server-location` | `nbg1` `fsn1` `hel1` |

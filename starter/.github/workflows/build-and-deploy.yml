@@ -189,6 +189,14 @@ jobs:
       # Which uuid secrets are set follows the project's topology — see
       # the deploy-step comments below. A single-origin app runs one
       # compose declaring both services, so it carries both variables.
+      #
+      # A Docker Image app (hatchkit's `image` runtime) has no compose
+      # file to interpolate: it pulls `docker_registry_image_tag`, so
+      # that is the field pinned for it. Image apps are the ones Coolify
+      # deploys as rolling updates — the old container keeps serving
+      # until the new one passes its health check. The build pack is
+      # read per app, so this step is right before and after
+      # `hatchkit migrate-runtime` moves a project across.
       - name: Pin image tags to this commit
         env:
           COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
@@ -203,6 +211,19 @@ jobs:
           CLIENT_IMAGE="ghcr.io/${{ github.repository }}-client:${{ github.sha }}"
 
           pin() { # uuid key value
+            # Only `.build_pack` is read out of the response: the same GET
+            # returns the interpolated compose, secrets included.
+            build_pack=$(curl -fsSL "$COOLIFY_BASE_URL/api/v1/applications/$1" \
+              -H "Authorization: Bearer $COOLIFY_API_TOKEN" | jq -r '.build_pack // empty')
+            if [ "$build_pack" = "dockerimage" ]; then
+              curl -fsSL -o /dev/null -X PATCH \
+                "$COOLIFY_BASE_URL/api/v1/applications/$1" \
+                -H "Authorization: Bearer $COOLIFY_API_TOKEN" \
+                -H 'Content-Type: application/json' \
+                -d "{\"docker_registry_image_tag\":\"${{ github.sha }}\"}"
+              echo "pinned image tag ${{ github.sha }} on $1"
+              return
+            fi
             body="{\"key\":\"$2\",\"value\":\"$3\",\"is_preview\":false}"
             curl -fsS -o /dev/null -X POST \
               "$COOLIFY_BASE_URL/api/v1/applications/$1/envs" \

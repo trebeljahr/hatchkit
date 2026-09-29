@@ -37,12 +37,13 @@ import type { ProjectConfig } from "../prompts.js";
 import { readImageEnvDefaults } from "../scaffold/deploy-verification.js";
 import { composeServicesOf, validateComposeServices } from "../utils/compose.js";
 import { type ApplicationCreateInput, CoolifyApi } from "../utils/coolify-api.js";
-import { repoSlugFromRemote } from "./gh-actions-secrets.js";
+import { repoSlugFromCoolifyGitRepository, repoSlugFromRemote } from "./gh-actions-secrets.js";
 import {
   appSlugFromHtmlUrl,
   ensureCoolifyAppHasRepoAccess,
   installUrlForSlug,
 } from "./github-app-access.js";
+import { formatImageRef, healthCheckFor } from "./image-runtime.js";
 import { type RoutedApp, computeRoutingPlan } from "./routing.js";
 import { type NativeOriginsOutcome, pushNativeOriginsToServerApps } from "./trusted-origins.js";
 
@@ -220,6 +221,7 @@ export async function runCoolifySetup(
   //     middleware, so `/api/health` would arrive at Express as
   //     `/health`. `stripPrefix` below turns that off.
   const composeServices = composeServicesOf(options.projectDir);
+  const runtime = config.coolifyRuntime ?? "compose";
   const plan = computeRoutingPlan({
     name: config.name,
     domain: config.domain,
@@ -228,13 +230,34 @@ export async function runCoolifySetup(
     ports: { server: options.serverPort, client: options.clientPort },
     publicService: config.publicService,
     composeServices,
+    runtime,
+    ...(runtime === "image"
+      ? {
+          images: imageRefsForProject({
+            projectDir: options.projectDir,
+            repoSlug: repoSlugFromCoolifyGitRepository(repoRef?.gitRepository),
+          }),
+          containerPorts: {
+            app: STARTER_CONTAINER_PORT,
+            client: STARTER_CONTAINER_PORT,
+            server: STARTER_CONTAINER_PORT,
+          },
+        }
+      : {}),
   });
 
-  console.log(chalk.dim(`  Topology: ${plan.topology}`));
+  console.log(chalk.dim(`  Topology: ${plan.topology} · runtime: ${runtime}`));
   for (const app of plan.apps) {
     console.log(chalk.dim(`  Domain routing — ${app.appName}:`));
     for (const entry of app.composeDomains) {
       console.log(chalk.dim(`    ${entry.name} → ${entry.domain}`));
+    }
+    if (app.runtime === "image") {
+      for (const url of app.flatDomains) console.log(chalk.dim(`    → ${url}`));
+      if (app.image)
+        console.log(
+          chalk.dim(`    image ${formatImageRef(app.image)} · health ${app.healthCheck?.path}`),
+        );
     }
     if (app.stripPrefix === false) {
       console.log(chalk.dim("    (path-prefix stripping disabled so /api survives to the server)"));
@@ -301,6 +324,20 @@ export async function runCoolifySetup(
   // PORT (the Next.js standalone server already binds 3000) and
   // FRONTEND_URL is meaningless without a CORS-checking backend.
   const surfaces = config.surfaces ?? "fullstack";
+  if (runtime === "image") {
+    // One container per app, so each gets exactly its own env. PORT is
+    // the port Traefik forwards to (`ports_exposes`), and has to be:
+    // there is no compose file pinning it any more.
+    for (const app of provisioned) {
+      const routed = plan.apps.find((r) => r.appName === app.name) ?? plan.apps[0];
+      const envs: Record<string, string> = { NODE_ENV: "production", PORT: routed.portsExposes };
+      if (app.role === "server" || (app.role === "app" && surfaces === "backend")) {
+        envs.FRONTEND_URL = `https://${config.domain}`;
+      }
+      await api.setAppEnv(app.uuid, envs);
+    }
+    console.log(chalk.green(`  ✓ Set env vars on ${provisioned.length} image application(s)`));
+  }
   const envs: Record<string, string> =
     surfaces === "static"
       ? { NODE_ENV: "production" }
@@ -322,14 +359,16 @@ export async function runCoolifySetup(
   // client app has no use for PORT/FRONTEND_URL, but Coolify env is
   // additive and harmless, and keeping one code path means the two
   // halves can't drift.
-  for (const app of provisioned) {
-    await api.setAppEnv(app.uuid, envs);
+  if (runtime === "compose") {
+    for (const app of provisioned) {
+      await api.setAppEnv(app.uuid, envs);
+    }
+    console.log(
+      chalk.green(
+        `  ✓ Set ${Object.keys(envs).length} env vars on ${provisioned.length} application(s) (${Object.keys(envs).join(", ")})`,
+      ),
+    );
   }
-  console.log(
-    chalk.green(
-      `  ✓ Set ${Object.keys(envs).length} env vars on ${provisioned.length} application(s) (${Object.keys(envs).join(", ")})`,
-    ),
-  );
 
   // Native shells (Capacitor / Electron) load the client from
   // their own document origin, which better-auth rejects with 403
@@ -407,10 +446,33 @@ export async function provisionRoutedApp(args: {
     }
   }
 
+  if (routed.runtime === "image") {
+    return provisionImageApp({ ...args, existingApp });
+  }
+
   if (existingApp) {
     console.log(
       chalk.dim(`  Using existing Coolify application ${existingApp.name} (${existingApp.uuid})`),
     );
+    // A stale manifest (no `coolifyRuntime`, so read as compose) must
+    // never turn a migrated image app back into a compose app: that
+    // would put the project straight back on stop-then-start deploys,
+    // and the compose file it would build from may no longer exist.
+    const live = await api.getApplication(existingApp.uuid).catch(() => null);
+    if (live?.buildPack === "dockerimage") {
+      console.log(
+        chalk.yellow(
+          `  ${existingApp.name} is a Docker Image app (zero-downtime deploys) but this project's manifest\n` +
+            '  says compose. Left it as it is. Set "coolifyRuntime": "image" in .hatchkit.json.',
+        ),
+      );
+      return {
+        uuid: existingApp.uuid,
+        name: existingApp.name || routed.appName,
+        role: routed.role,
+        created: false,
+      };
+    }
     const reconcile = ora(`Reconciling Coolify app source + routing (${existingApp.name})`).start();
     try {
       await api.updateApplication(existingApp.uuid, {
@@ -516,6 +578,151 @@ export async function provisionRoutedApp(args: {
     if (create.isSpinning) create.fail();
     throw err;
   }
+}
+
+/** `provisionRoutedApp` for an `image`-runtime app: create or reconcile
+ *  a Coolify Docker Image application (deploy/image-runtime.ts).
+ *
+ *  Reconcile never sends `docker_registry_image_tag`. After the first
+ *  push the deploy job owns that field — it pins each commit's sha — and
+ *  resetting it to the plan's initial branch tag would quietly roll
+ *  production back to whatever that mutable tag points at.
+ *
+ *  An existing `dockercompose` app under the same name is left alone.
+ *  Converting it in place would restart the site as a different kind of
+ *  app with no way to test the result first; `hatchkit migrate-runtime`
+ *  does that move side by side, with a verified cutover. */
+async function provisionImageApp(args: {
+  api: CoolifyApi;
+  routed: RoutedApp;
+  projectUuid: string;
+  serverUuid: string;
+  description?: string;
+  forceDomainOverride?: boolean;
+  existingApp: { uuid: string; name: string } | null;
+}): Promise<{ uuid: string; name: string; role: RoutedApp["role"]; created: boolean }> {
+  const { api, routed, existingApp } = args;
+  const pathOpinion =
+    routed.stripPrefix !== undefined ? { isStripprefixEnabled: routed.stripPrefix } : {};
+
+  if (existingApp) {
+    const live = await api.getApplication(existingApp.uuid);
+    const name = existingApp.name || routed.appName;
+    if (live.buildPack === "dockercompose") {
+      console.log(
+        chalk.yellow(
+          `  ${name} already exists as a Docker Compose app — its deploys stop the site.\n` +
+            `  Left it untouched. Move it with: hatchkit migrate-runtime ${name} --dry-run`,
+        ),
+      );
+      return { uuid: existingApp.uuid, name, role: routed.role, created: false };
+    }
+    const reconcile = ora(`Reconciling Coolify image app (${name})`).start();
+    try {
+      const result = await api.updateApplication(existingApp.uuid, {
+        portsExposes: routed.portsExposes,
+        domains: routed.flatDomains,
+        ...(routed.image ? { dockerRegistryImageName: routed.image.name } : {}),
+        ...(routed.healthCheck ? { healthCheck: routed.healthCheck } : {}),
+        ...(args.description ? { description: args.description } : {}),
+        ...pathOpinion,
+        forceDomainOverride: args.forceDomainOverride,
+      });
+      reconcile.succeed(`Coolify image app reconciled (${name})`);
+      if (result.droppedFields.includes("is_stripprefix_enabled")) {
+        printStripPrefixManualStep(name);
+      }
+    } catch (err) {
+      reconcile.fail(`Coolify image app reconcile failed: ${(err as Error).message}`);
+    }
+    return { uuid: existingApp.uuid, name, role: routed.role, created: false };
+  }
+
+  if (!routed.image) {
+    throw new Error(
+      `No container image for "${routed.appName}" (${routed.role}). An image-runtime app pulls the ` +
+        "image GitHub Actions pushes to GHCR; hatchkit reads its name from the compose file's " +
+        "`${SERVER_IMAGE:-…}` / `${CLIENT_IMAGE:-…}` / `${APP_IMAGE:-…}` defaults.",
+    );
+  }
+  const create = ora(`Creating image application ${routed.appName}`).start();
+  try {
+    const created = await api.createDockerImageApplication({
+      projectUuid: args.projectUuid,
+      serverUuid: args.serverUuid,
+      environmentName: "production",
+      name: routed.appName,
+      description: args.description,
+      image: routed.image,
+      portsExposes: routed.portsExposes,
+      domains: routed.flatDomains,
+      healthCheck:
+        routed.healthCheck ?? healthCheckFor(routed.role === "server" ? "server" : "app"),
+      forceDomainOverride: args.forceDomainOverride,
+      // The first deploy lands from GitHub Actions, once the image exists.
+      instantDeploy: false,
+    });
+    create.succeed(
+      `Application created: ${routed.appName} (${created.uuid}) — Docker Image, rolling deploys`,
+    );
+    if (routed.stripPrefix === false) {
+      const strip = ora("Coolify: disabling path-prefix stripping").start();
+      try {
+        const result = await api.updateApplication(created.uuid, { isStripprefixEnabled: false });
+        if (result.droppedFields.includes("is_stripprefix_enabled")) {
+          strip.warn("Coolify: this build won't take the path-prefix setting over the API");
+          printStripPrefixManualStep(routed.appName);
+        } else {
+          strip.succeed("Coolify: path-prefix stripping disabled (so /api reaches the server)");
+        }
+      } catch (err) {
+        strip.fail(`Coolify: couldn't disable path-prefix stripping — ${(err as Error).message}`);
+        printStripPrefixManualStep(routed.appName);
+      }
+    }
+    return { uuid: created.uuid, name: routed.appName, role: routed.role, created: true };
+  } catch (err) {
+    if (create.isSpinning) create.fail();
+    throw err;
+  }
+}
+
+function printStripPrefixManualStep(appName: string): void {
+  console.log(
+    chalk.yellow(
+      `  Turn "Strip Prefixes" OFF on ${appName} in Coolify (Configuration → Advanced), then redeploy,\n` +
+        "  or every /api request reaches the server without its /api prefix and 404s.",
+    ),
+  );
+}
+
+/** Port every starter image binds inside its container (`PORT`, default
+ *  3000 in both the server and client Dockerfiles). */
+const STARTER_CONTAINER_PORT = 3000;
+
+/** GHCR image per role for an image-runtime project.
+ *
+ *  The compose file's `${SERVER_IMAGE:-…}` / `${CLIENT_IMAGE:-…}` /
+ *  `${APP_IMAGE:-…}` defaults are the source of truth — they name what
+ *  the GitHub Actions workflow pushes. A default still carrying the
+ *  starter's `OWNER/REPO` placeholder is ignored in favour of the repo
+ *  slug, which is what the workflow's `${{ github.repository }}` expands
+ *  to. GHCR names are lowercase. */
+export function imageRefsForProject(args: {
+  projectDir?: string;
+  repoSlug?: string;
+}): { app?: string; client?: string; server?: string } {
+  const defaults = readImageEnvDefaults(args.projectDir);
+  const usable = (ref: string | undefined): string | undefined =>
+    ref && !/OWNER\/REPO/.test(ref) ? ref : undefined;
+  const slug = args.repoSlug?.toLowerCase();
+  const fromSlug = (suffix: string): string | undefined =>
+    slug ? `ghcr.io/${slug}${suffix}:main` : undefined;
+  return {
+    app: usable(defaults.APP_IMAGE),
+    client: usable(defaults.CLIENT_IMAGE) ?? fromSlug("-client"),
+    server: usable(defaults.SERVER_IMAGE) ?? fromSlug("-server"),
+  };
 }
 
 export interface ResolvedGithubAppSource {

@@ -1395,6 +1395,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of nginxConfigChecks) results.push(r);
   const appHealthChecks = await checkProjectCoolifyAppHealthState(process.cwd());
   for (const r of appHealthChecks) results.push(r);
+  const rollingChecks = await checkProjectRollingDeployState(process.cwd());
+  for (const r of rollingChecks) results.push(r);
   const deployedRefChecks = await checkProjectDeployedRefState(process.cwd());
   for (const r of deployedRefChecks) results.push(r);
   const deployedVersionChecks = await checkProjectDeployedVersionState(process.cwd());
@@ -3359,6 +3361,85 @@ export async function checkProjectNginxConfigState(projectDir: string): Promise<
  *  available, and reporting "might be missing the setting" for every
  *  healthy app that happens to use a managed database would be noise
  *  with no way to clear it. */
+/** Does a push to this project take the site down?
+ *
+ *  Coolify only redeploys without an outage (start the new container,
+ *  wait for its health check, then stop the old one) for Docker Image /
+ *  Dockerfile / Nixpacks apps with a health check. A Docker Compose app
+ *  is stopped before its replacement starts, on every deploy. See
+ *  deploy/image-runtime.ts.
+ *
+ *  Apps are found by NAME, across both runtimes' naming, rather than via
+ *  the run ledger: `migrate-runtime` replaces the app the ledger
+ *  recorded, and this check matters most right after that happens. */
+export async function checkProjectRollingDeployState(projectDir: string): Promise<CheckResult[]> {
+  const out: CheckResult[] = [];
+  const { readManifestWithMigrationInfo } = await import("./scaffold/manifest.js");
+  const manifest = readManifestWithMigrationInfo(projectDir)?.manifest;
+  if (!manifest?.name || !manifest.domain) return out;
+  if (manifest.deploymentMode && manifest.deploymentMode !== "coolify") return out;
+
+  const cfg = await getCoolifyConfig();
+  if (!cfg) return out;
+  const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+  const { computeRoutingPlan } = await import("./deploy/routing.js");
+  const { rollingUpdateBlocker } = await import("./deploy/image-runtime.js");
+
+  const names = new Set<string>();
+  for (const runtime of ["compose", "image"] as const) {
+    for (const topology of ["single-origin", "split"] as const) {
+      for (const routed of computeRoutingPlan({
+        name: manifest.name,
+        domain: manifest.domain,
+        topology,
+        surfaces: manifest.surfaces,
+        runtime,
+      }).apps) {
+        names.add(routed.appName);
+        for (const alias of routed.aliases) names.add(alias);
+      }
+    }
+  }
+  let apps: Array<{ uuid: string; name: string }>;
+  try {
+    apps = (await api.listApplications()).filter((a) => names.has(a.name));
+  } catch {
+    return out;
+  }
+  for (const found of apps) {
+    const app = await api.getApplication(found.uuid).catch(() => null);
+    if (!app) continue;
+    const blocker = rollingUpdateBlocker(app);
+    const name = `Project ${manifest.name} (zero-downtime deploys)`;
+    if (!blocker) {
+      out.push({
+        name,
+        status: "ok",
+        detail: `"${app.name}" deploys as a rolling update (health check GET ${app.healthCheck.path ?? "/"})`,
+      });
+      continue;
+    }
+    out.push({
+      name,
+      status: "warn",
+      detail: `"${app.name}": every deploy takes the site down — ${blocker}`,
+      hint:
+        app.buildPack === "dockercompose"
+          ? [
+              "Move it to a Docker Image app, side by side, with a verified cutover:",
+              `  hatchkit migrate-runtime ${app.name} --dry-run`,
+            ]
+          : app.healthCheck.enabled !== true
+            ? [
+                "Turn the health check on (the image needs curl or wget):",
+                "  hatchkit sync --dry-run   # then without --dry-run",
+              ]
+            : ["Remove the setting named above in the app's Coolify configuration."],
+    });
+  }
+  return out;
+}
+
 export async function checkProjectCoolifyAppHealthState(
   projectDir: string,
 ): Promise<CheckResult[]> {
