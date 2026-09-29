@@ -43,6 +43,7 @@ import {
   publishDnsRecordsToCloudflare,
 } from "./cloudflare-dns-publish.js";
 import {
+  type ApplySesSmtpResult,
   type ListmonkAuth,
   type ListmonkList,
   type ListmonkTemplate,
@@ -256,11 +257,11 @@ export interface ListmonkSesProvisionResult {
     zoneId: string | null;
     zoneName: string | null;
   } | null;
-  /** Whether Listmonk's runtime SMTP settings + from-email got auto-
-   *  configured via `/api/settings` PUT this run. `false + reason` lets
-   *  the caller surface the manual-paste fallback when the API user
-   *  lacked `Settings: All` permission. */
-  smtpApplied: { written: boolean; reason?: string };
+  /** Whether Listmonk's SMTP relay got written this run, and what
+   *  happened to its shared default sender. `false + reason` lets the
+   *  caller surface the manual-paste fallback when the API user lacked
+   *  `Settings: All` permission. */
+  smtpApplied: ApplySesSmtpResult;
   /** Bounce + complaint feedback state. Null when the caller opted out
    *  via `configureBounceFeedback: false`. */
   feedback: SesFeedbackResult | null;
@@ -476,12 +477,14 @@ export async function provisionListmonkSesForProject(
   //    without a second round-trip.
   const smtp = sesSmtpCredentials(opts.sesAuth ?? (await globalSesAuth()));
 
-  // 6. Push the SES SMTP relay + from-email into Listmonk's runtime
-  //    settings so the user doesn't have to paste them into Settings →
-  //    SMTP by hand. Best-effort: when the API user's role doesn't
-  //    cover `Settings: All` the helper throws — downgrade to a warning
-  //    and let the caller print the manual-paste fallback.
-  let smtpApplied: { written: boolean; reason?: string };
+  // 6. Push the SES SMTP relay into Listmonk's runtime settings so the
+  //    user doesn't have to paste it into Settings → SMTP by hand. The
+  //    default sender (`app.from_email`) is shared by every project on
+  //    the instance, so it is set only when Listmonk has none.
+  //    Best-effort: when the API user's role doesn't cover `Settings:
+  //    All` the helper throws — downgrade to a warning and let the
+  //    caller print the manual-paste fallback.
+  let smtpApplied: ApplySesSmtpResult;
   try {
     smtpApplied = await applySesSmtpToListmonk(
       {
@@ -506,8 +509,8 @@ export async function provisionListmonkSesForProject(
   }
 
   // 6b. Bounce + complaint feedback. After the SMTP apply, whose
-  //     whole-settings PUT reloads Listmonk; the feedback step PUTs only
-  //     the bounce keys that are still off. Never throws: each piece
+  //     per-key PUTs reload Listmonk; the feedback step PUTs only the
+  //     bounce keys that are still off. Never throws: each piece
   //     that fails (usually a missing IAM action) lands in `warnings`.
   let feedback: SesFeedbackResult | null = null;
   if (opts.configureBounceFeedback !== false) {

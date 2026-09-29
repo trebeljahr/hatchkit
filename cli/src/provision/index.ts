@@ -1016,17 +1016,34 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
           }
         }
 
-        if (result.smtpApplied.written) {
+        const smtpApplied = result.smtpApplied;
+        if (smtpApplied.written) {
+          console.log(chalk.green("  ✓ Listmonk SMTP settings auto-configured to SES."));
+        } else if (smtpApplied.reason === "already in place") {
+          console.log(chalk.dim("  · Listmonk SMTP already matches SES; left as-is."));
+        } else if (smtpApplied.reason) {
+          console.log(
+            chalk.yellow(`  Could not auto-configure Listmonk SMTP: ${smtpApplied.reason}`),
+          );
+        }
+        if (smtpApplied.fromEmail?.written) {
           console.log(
             chalk.green(
-              "  ✓ Listmonk SMTP settings auto-configured to SES — restart the Listmonk container so the in-memory cache refreshes.",
+              `  ✓ Listmonk default sender was unset; set to ${smtpApplied.fromEmail.value}.`,
             ),
           );
-        } else if (result.smtpApplied.reason === "already in place") {
-          console.log(chalk.dim("  · Listmonk SMTP already matches SES; left as-is."));
-        } else if (result.smtpApplied.reason) {
+        } else if (smtpApplied.fromEmail) {
           console.log(
-            chalk.yellow(`  Could not auto-configure Listmonk SMTP: ${result.smtpApplied.reason}`),
+            chalk.dim(
+              `  · Listmonk default sender stays ${smtpApplied.fromEmail.value} (shared by every project; this app sends with LISTMONK_FROM).`,
+            ),
+          );
+        }
+        if (smtpApplied.needsRestart) {
+          console.log(
+            chalk.yellow(
+              "  A Listmonk campaign is running, so Listmonk saved the settings but did not reload. Restart Listmonk after the campaign to load them.",
+            ),
           );
         }
 

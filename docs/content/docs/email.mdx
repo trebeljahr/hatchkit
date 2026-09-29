@@ -95,7 +95,7 @@ The `--deploy` flag prints a step-by-step walkthrough for the Coolify Listmonk s
    - `Lists: All` — hatchkit creates per-project lists.
    - `Subscribers: All` — signup forms add subscribers.
    - `Campaigns: All` — transactional sends via `/api/tx`.
-   - `Settings: All` — so hatchkit can push SES SMTP creds + from-email into Settings → SMTP without manual paste.
+   - `Settings: All` — so hatchkit can push SES SMTP creds into Settings → SMTP without manual paste.
    
    Skipping `Settings: All` is OK — provisioning still works, but the SES SMTP step falls back to manual paste in the Listmonk admin UI. Copy the generated token after save.
 
@@ -103,14 +103,17 @@ Then hatchkit prompts you for the URL + API user name + token. It validates by h
 
 ### 3. Wire SES into Listmonk's SMTP settings
 
-Listmonk delivers via SMTP, so the SES SMTP relay credentials need to land in **Listmonk's** Settings → SMTP. As of v0.2.12 hatchkit auto-pushes these via `PUT /api/settings` during `hatchkit add <project> listmonk-ses` — provided the API user's role includes `Settings: All`. If it does, you'll see:
+Listmonk delivers via SMTP, so the SES SMTP relay credentials need to land in **Listmonk's** Settings → SMTP. `hatchkit add <project> listmonk-ses` writes them with Listmonk's per-key `PUT /api/settings/smtp` (Listmonk v6 or later), provided the API user's role includes `Settings: All`. If it does, you'll see:
 
 ```
-✓ Listmonk SMTP settings auto-configured to SES — restart the Listmonk
-  container so the in-memory cache refreshes.
+✓ Listmonk SMTP settings auto-configured to SES.
 ```
 
-Restart Listmonk afterwards (Coolify dashboard → Restart) so the new settings load from the DB.
+The write happens only when the host, port, username or password differ: on the first run, or after the SES IAM key rotates. An existing SES server keeps its name and tuning. Listmonk reloads by itself after the write. If a campaign is running, Listmonk saves the settings but does not reload, and hatchkit tells you to restart it after the campaign.
+
+Hatchkit never uses the whole-document `PUT /api/settings`. `GET /api/settings` masks every secret (SMTP and bounce-mailbox passwords, the S3 and OIDC secrets), and a whole-document PUT would write the masks back. For the same reason, hatchkit will not rewrite the SMTP list when it holds another server with a password: the per-key write replaces the whole list, and that server's password is unknown. It prints a warning, and you add the SES server by hand.
+
+One Listmonk serves every project, so its default sender (Settings → General → Default 'from' email, `app.from_email`) belongs to no single project. It sends Listmonk's own mail, such as opt-in confirmations, and any campaign or tx call that names no sender. Apps built from the starter pass `LISTMONK_FROM` on every call, so they do not depend on it. Hatchkit sets it only when it is empty or still Listmonk's install default (`listmonk <noreply@listmonk.yoursite.com>`). Any other value is left alone.
 
 If the API user lacks `Settings: All`, hatchkit downgrades to a warning and you paste manually:
 
@@ -119,7 +122,7 @@ SES_SMTP_HOST=email-smtp.eu-west-1.amazonaws.com   → Host
 SES_SMTP_PORT=587                                  → Port
 SES_SMTP_USERNAME=AKIA...                          → Username
 SES_SMTP_PASSWORD=<derived-from-IAM-secret>        → Password
-SES_FROM_EMAIL=noreply@mail.<projectDomain>        → Settings → General → from-email
+SES_FROM_EMAIL=noreply@mail.<projectDomain>        → Settings → General → from-email, only if it is empty
 ```
 
 Listmonk → Settings → SMTP → enable, paste, save. Auth protocol: `LOGIN`. TLS type: `STARTTLS`.

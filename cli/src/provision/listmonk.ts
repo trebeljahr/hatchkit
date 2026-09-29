@@ -21,11 +21,11 @@
  *   PUT  /api/templates/{id}
  *   DELETE /api/templates/{id}
  *   GET  /api/settings
- *   PUT  /api/settings
  *   PUT  /api/settings/{key}
  *   GET  /api/health
  */
 
+import { randomUUID } from "node:crypto";
 import { ensureListmonk } from "../config.js";
 
 export interface ListmonkAuth {
@@ -375,13 +375,20 @@ export async function addListmonkSubscriberToList(params: {
 // ────────────────────────────────────────────────────────────────────────────
 // Settings (singleton runtime config, stored in Listmonk's `settings` table)
 //
-// Listmonk's GET/PUT /api/settings drives the values the admin UI's
+// Listmonk's GET /api/settings drives the values the admin UI's
 // Settings → General / Settings → SMTP pages edit. Hatchkit consumes
 // this endpoint to:
-//   1. Read app.root_url / app.admin_url / smtp[0] and detect drift.
+//   1. Read app.root_url / app.admin_url / smtp and detect drift.
 //   2. Push the SES SMTP relay credentials we already derived, so the
 //      manual "paste SES creds into Listmonk → Settings → SMTP" step
 //      drops out of the per-project walkthrough.
+//
+// Writes go through the per-key `PUT /api/settings/<key>` only. The
+// whole-document PUT would send back every secret GET masked (SMTP and
+// bounce-mailbox passwords, S3 and OIDC secrets) as a row of `•`.
+//
+// One Listmonk serves every project, so these settings belong to none
+// of them. Write a value only when it is unset or provably Hatchkit's.
 //
 // Auth: requires the API user to have `Settings: All` permission.
 // Without it, calls 403 with `permission denied: settings:get` /
@@ -390,9 +397,9 @@ export async function addListmonkSubscriberToList(params: {
 // ────────────────────────────────────────────────────────────────────────────
 
 /** Shape of one entry in Listmonk's `settings.smtp[]` array. Mirrors the
- *  schema the admin UI's Settings → SMTP form posts. We only set the
- *  fields needed for a typical relay; the rest get sensible defaults
- *  from Listmonk if omitted (it round-trips by-uuid and replaces). */
+ *  schema the admin UI's Settings → SMTP form posts. GET leaves out
+ *  `password` when it is empty and masks it otherwise. The sample
+ *  servers a fresh install ships have no `name` or `uuid`. */
 export interface ListmonkSmtpEntry {
   name: string;
   uuid: string;
@@ -402,14 +409,16 @@ export interface ListmonkSmtpEntry {
   port: number;
   auth_protocol: "login" | "cram" | "plain" | "none";
   username: string;
-  password: string;
-  email_headers: Array<{ key: string; value: string }>;
+  password?: string;
+  email_headers: Array<Record<string, string>>;
   max_conns: number;
   max_msg_retries: number;
+  msg_retry_delay?: string;
   idle_timeout: string;
   wait_timeout: string;
   tls_type: "STARTTLS" | "TLS" | "none";
   tls_skip_verify: boolean;
+  from_addresses?: string[];
 }
 
 export async function getListmonkSettings(
@@ -423,28 +432,28 @@ export async function getListmonkSettings(
   );
 }
 
-/** Replace Listmonk's entire settings document. The API is whole-object
- *  PUT, not patch — caller must read first, mutate, then push. The
- *  returned `data` is `true` on success. */
-export async function putListmonkSettings(
-  settings: Record<string, unknown>,
-  authOverride?: ListmonkAuth,
-): Promise<void> {
-  const auth = authOverride ?? (await ensureListmonk());
-  await listmonkFetch<boolean>(auth, "PUT", "/api/settings", settings);
-}
-
 /** Write one settings key with Listmonk v6's `PUT /api/settings/<key>`,
  *  the raw JSON value as the body. Unlike the whole-object PUT it never
- *  round-trips the masked SMTP passwords. Listmonk reloads after it, so
- *  call `waitForListmonk` before the next request. */
+ *  round-trips the masked SMTP passwords. Listmonk stores the value as
+ *  sent: no password merge, no UUID, no validation.
+ *
+ *  Listmonk reloads 500 ms after it answers, so call `waitForListmonk`
+ *  before the next request. While a campaign runs it does not reload:
+ *  it saves the value, answers `needs_restart`, and loads it on the
+ *  next restart. */
 export async function putListmonkSetting(
   key: string,
   value: unknown,
   authOverride?: ListmonkAuth,
-): Promise<void> {
+): Promise<{ needsRestart: boolean }> {
   const auth = authOverride ?? (await ensureListmonk());
-  await listmonkFetch<boolean>(auth, "PUT", `/api/settings/${encodeURIComponent(key)}`, value);
+  const data = await listmonkFetch<boolean | { needs_restart?: boolean } | null>(
+    auth,
+    "PUT",
+    `/api/settings/${encodeURIComponent(key)}`,
+    value,
+  );
+  return { needsRestart: typeof data === "object" && data?.needs_restart === true };
 }
 
 /** Poll `GET /api/health` until Listmonk answers, the way its admin UI
@@ -477,64 +486,207 @@ export async function waitForListmonk(
   }
 }
 
-/** Common-case helper: patch only the SES SMTP relay + the from-email
- *  display name on an existing settings document. Reads current
- *  settings, mutates in memory, PUTs back. Idempotent on re-run
- *  (compares by host+username+password and skips the PUT when already
- *  in place). Returns whether a write was performed.
+/** GET /api/settings replaces each secret with one `•` per character. */
+const LISTMONK_SECRET_MASK = /^•+$/;
+
+/** SES's SMTP endpoints, `email-smtp.<region>.amazonaws.com`. */
+const SES_SMTP_HOST = /^email-smtp(-fips)?\.[a-z0-9-]+\.amazonaws\.com$/i;
+
+/** The two sample servers a fresh Listmonk ships in `smtp`. Their
+ *  password is the literal "password", so dropping them loses nothing. */
+function isListmonkSampleSmtp(entry: ListmonkSmtpEntry): boolean {
+  return (
+    entry.host === "smtp.yoursite.com" ||
+    (entry.host === "smtp.gmail.com" && entry.username === "username@gmail.com")
+  );
+}
+
+/** `app.from_email` counts as unset when it is blank or still the
+ *  install default, `listmonk <noreply@listmonk.yoursite.com>`, which
+ *  no project sends from. Any other value is some project's sender. */
+export function listmonkFromEmailUnset(value: unknown): boolean {
+  if (typeof value !== "string" || !value.trim()) return true;
+  return /@listmonk\.yoursite\.com>?$/i.test(value.trim());
+}
+
+/** Whether a stored SMTP password is `password`. GET masks it, so a
+ *  masked value can only be checked for length. SES derives the SMTP
+ *  password from the IAM secret behind `username` and the region in
+ *  `host`, so the caller's host + username check does the rest. */
+function smtpPasswordMatches(stored: string | undefined, password: string): boolean {
+  if (!stored) return password === "";
+  if (LISTMONK_SECRET_MASK.test(stored)) return [...stored].length === [...password].length;
+  return stored === password;
+}
+
+export interface SesSmtpRelay {
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+}
+
+type SesSmtpPlan =
+  | { kind: "in-place" }
+  | { kind: "write"; smtp: ListmonkSmtpEntry[] }
+  | { kind: "blocked"; reason: string };
+
+/** The `smtp` list with the SES relay in it, or why it can't be written.
  *
- *  Best-effort: when the calling API user lacks Settings: All the
- *  function throws a descriptive error the caller can downgrade to a
- *  warning + the manual-paste fallback. */
+ *  The per-key PUT replaces the whole list, and Listmonk stores it as
+ *  sent, so every entry must go back with its real password. Only the
+ *  SES entry's is known. Another server with a (masked) password would
+ *  come back with `•••` as its password, so the plan refuses instead.
+ *  Listmonk's install samples are dropped. */
+function planSesSmtp(
+  current: ListmonkSmtpEntry[],
+  ses: SesSmtpRelay,
+  helloHostname: string,
+): SesSmtpPlan {
+  const sesEntries = current.filter((e) => SES_SMTP_HOST.test(e.host ?? ""));
+  const existing =
+    sesEntries.find((e) => e.host === ses.host && e.username === ses.username) ?? sesEntries[0];
+  if (
+    existing?.enabled === true &&
+    existing.host === ses.host &&
+    existing.port === ses.port &&
+    existing.username === ses.username &&
+    smtpPasswordMatches(existing.password, ses.password)
+  ) {
+    return { kind: "in-place" };
+  }
+
+  const others = current.filter((e) => e !== existing && !isListmonkSampleSmtp(e));
+  const masked = others.filter((e) => e.password && LISTMONK_SECRET_MASK.test(e.password));
+  if (masked.length > 0) {
+    const names = masked.map((e) => e.name || e.host).join(", ");
+    return {
+      kind: "blocked",
+      reason:
+        `Listmonk has other SMTP servers (${names}) and the API masks their passwords. ` +
+        "Writing the SMTP list would replace those passwords with the mask. " +
+        "Add the SES server in Listmonk → Settings → SMTP by hand, with SES_SMTP_HOST, " +
+        "SES_SMTP_USERNAME and SES_SMTP_PASSWORD from .env.production.",
+    };
+  }
+
+  const defaults = {
+    name: "email-ses",
+    hello_hostname: helloHostname,
+    email_headers: [],
+    max_conns: 10,
+    max_msg_retries: 2,
+    msg_retry_delay: "10ms",
+    idle_timeout: "15s",
+    wait_timeout: "5s",
+    tls_skip_verify: false,
+    from_addresses: [],
+  };
+  const entry: ListmonkSmtpEntry = {
+    ...defaults,
+    ...existing,
+    // The whole-document PUT assigned the UUID; the per-key PUT won't.
+    uuid: existing?.uuid || randomUUID(),
+    enabled: true,
+    host: ses.host,
+    port: ses.port,
+    auth_protocol: "login",
+    username: ses.username,
+    password: ses.password,
+    tls_type: "STARTTLS",
+  };
+  if (!entry.name) entry.name = "email-ses";
+
+  const smtp = existing
+    ? current.filter((e) => !isListmonkSampleSmtp(e)).map((e) => (e === existing ? entry : e))
+    : [entry, ...others];
+  return { kind: "write", smtp };
+}
+
+export interface ApplySesSmtpResult {
+  /** The SMTP list was written this run. */
+  written: boolean;
+  /** Why not: "already in place", or what stopped the write. */
+  reason?: string;
+  /** Listmonk's instance-wide default sender after this run. */
+  fromEmail?: { value: string; written: boolean };
+  /** A campaign was running, so Listmonk saved the write but loads it
+   *  only on its next restart. */
+  needsRestart?: boolean;
+}
+
+/** Put the SES SMTP relay into Listmonk, and set its default sender
+ *  when it has none.
+ *
+ *  The relay is written with the per-key `PUT /api/settings/smtp`, and
+ *  only when host, port, username or password differ (first
+ *  provisioning, or a rotated IAM key). An existing SES entry keeps its
+ *  name, UUID and tuning; only the connection fields change.
+ *
+ *  `app.from_email` is shared by every project on the instance: it sends
+ *  Listmonk's own mail (opt-in confirmations, notifications) and any
+ *  campaign or tx call that names no sender. Apps from the starter pass
+ *  `from_email` (LISTMONK_FROM) on every call, so they never need it.
+ *  It is written only when unset (`listmonkFromEmailUnset`), never over
+ *  another project's sender.
+ *
+ *  Throws when the API user lacks `Settings: All` or Listmonk predates
+ *  the per-key endpoint; the caller downgrades that to a warning plus
+ *  the manual-paste fallback. */
 export async function applySesSmtpToListmonk(
-  ses: {
-    host: string;
-    port: number;
-    username: string;
-    password: string;
+  ses: SesSmtpRelay & {
     fromEmail: string;
     fromName?: string;
   },
   authOverride?: ListmonkAuth,
-): Promise<{ written: boolean; reason?: string }> {
+  opts: { reloadDelayMs?: number } = {},
+): Promise<ApplySesSmtpResult> {
   const auth = authOverride ?? (await ensureListmonk());
   const settings = await getListmonkSettings(auth);
+  let needsRestart = false;
 
-  const current = settings.smtp?.[0];
-  const alreadyMatches =
-    current?.host === ses.host &&
-    current?.port === ses.port &&
-    current?.username === ses.username &&
-    current?.password === ses.password &&
-    current?.enabled === true;
-  if (alreadyMatches) return { written: false, reason: "already in place" };
+  const write = async (key: string, value: unknown, byHand: string) => {
+    try {
+      const res = await putListmonkSetting(key, value, auth);
+      needsRestart ||= res.needsRestart;
+      if (res.needsRestart) return;
+    } catch (err) {
+      if (/HTTP (404|405)/.test((err as Error).message)) {
+        throw new Error(`Listmonk has no per-key settings endpoint (needs v6+). ${byHand}`);
+      }
+      throw err;
+    }
+    // Listmonk reloads 500 ms after it answers; a health check sent
+    // sooner can land before the reload and let the next write hit it.
+    await waitForListmonk(auth, { initialDelayMs: opts.reloadDelayMs ?? 1_500 });
+  };
 
-  settings.smtp = [
-    {
-      name: "SES",
-      uuid: current?.uuid ?? "",
-      enabled: true,
-      host: ses.host,
-      hello_hostname: new URL(auth.url).hostname,
-      port: ses.port,
-      auth_protocol: "login",
-      username: ses.username,
-      password: ses.password,
-      email_headers: [],
-      max_conns: 10,
-      max_msg_retries: 2,
-      idle_timeout: "15s",
-      wait_timeout: "5s",
-      tls_type: "STARTTLS",
-      tls_skip_verify: false,
-    },
-  ];
+  const plan = planSesSmtp(settings.smtp ?? [], ses, new URL(auth.url).hostname);
+  if (plan.kind === "write") {
+    await write("smtp", plan.smtp, "Paste the SES SMTP credentials into Settings → SMTP by hand.");
+  }
 
-  const display = ses.fromName ? `${ses.fromName} <${ses.fromEmail}>` : ses.fromEmail;
-  settings["app.from_email"] = display;
+  const currentFrom = settings["app.from_email"];
+  let fromEmail: ApplySesSmtpResult["fromEmail"];
+  if (listmonkFromEmailUnset(currentFrom)) {
+    const display = ses.fromName ? `${ses.fromName} <${ses.fromEmail}>` : ses.fromEmail;
+    await write(
+      "app.from_email",
+      display,
+      `Set Settings → General → Default 'from' email to "${display}" by hand.`,
+    );
+    fromEmail = { value: display, written: true };
+  } else {
+    fromEmail = { value: String(currentFrom), written: false };
+  }
 
-  await putListmonkSettings(settings, auth);
-  return { written: true };
+  return {
+    written: plan.kind === "write",
+    ...(plan.kind === "in-place" ? { reason: "already in place" } : {}),
+    ...(plan.kind === "blocked" ? { reason: plan.reason } : {}),
+    fromEmail,
+    ...(needsRestart ? { needsRestart } : {}),
+  };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
