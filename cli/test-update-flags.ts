@@ -38,6 +38,12 @@ process.env.HATCHKIT_DEV_CONFIG_DIR = mkdtempSync(join(tmpdir(), "update-devdir-
 const { scaffoldApp } = await import("./src/scaffold/app.js");
 const { runUpdate } = await import("./src/scaffold/update.js");
 const { STATIC_EXPORT_MARKER } = await import("./src/scaffold/starter-files.js");
+const {
+  DEPLOY_WORKFLOW_REL_PATH,
+  WORKFLOW_PIN_STEP,
+  WORKFLOW_VERIFY_STEP,
+  deployVerificationRetrofits,
+} = await import("./src/scaffold/deploy-verification.js");
 type Feature = import("./src/prompts.js").Feature;
 type ProjectConfig = import("./src/prompts.js").ProjectConfig;
 
@@ -154,6 +160,45 @@ await withProject("dry-run", async (dir) => {
   ];
 });
 
+// ── --dry-run leaves a pre-gate deploy workflow alone ────────────────
+// The verification-gate retrofit was once pasted twice into runUpdate,
+// and the second copy sat outside the dry-run gate. A real run never
+// showed it — the first copy had already written the file — but a dry
+// run on a project scaffolded before the gate rewrote its workflow.
+await withProject("dry-run-pre-gate-workflow", async (dir) => {
+  // The starter's workflow minus its pin and verify steps is what a
+  // project scaffolded before the gate carries.
+  const path = join(dir, DEPLOY_WORKFLOW_REL_PATH);
+  const starterWorkflow = readFileSync(join(STARTER, DEPLOY_WORKFLOW_REL_PATH), "utf-8");
+  const preGate = starterWorkflow
+    .replace(`${WORKFLOW_PIN_STEP}\n`, "")
+    .replace(`\n\n${WORKFLOW_VERIFY_STEP.replace(/\n+$/, "")}\n`, "");
+  writeFileSync(path, preGate, "utf-8");
+  const manifest = JSON.parse(readFileSync(join(dir, ".hatchkit.json"), "utf-8"));
+  const workflowRetrofit = deployVerificationRetrofits(
+    manifest.domain,
+    manifest.topology,
+    manifest.surfaces,
+    manifest.features,
+  ).find(([, rel]) => rel === DEPLOY_WORKFLOW_REL_PATH)?.[2];
+  await runUpdate(dir, {
+    dryRun: true,
+    presets: { ...presets, desiredFeatures: manifest.features },
+  });
+  return [
+    [
+      "the fixture lacks the pin and verify steps",
+      !preGate.includes("Pin image tags") &&
+        !preGate.includes("Verify the deployment is actually live"),
+    ],
+    [
+      "a real run would retrofit the fixture",
+      workflowRetrofit !== undefined && workflowRetrofit(preGate) !== preGate,
+    ],
+    ["the workflow is byte-for-byte unchanged", readFileSync(path, "utf-8") === preGate],
+  ];
+});
+
 // ── adding desktop brings the files its scripts need ─────────────────
 await withProject("add-desktop", async (dir) => {
   await runUpdate(dir, { presets: { ...presets, desiredFeatures: ["desktop"] } });
@@ -217,7 +262,10 @@ await withProject("preserves-next-config", async (dir) => {
   writeFileSync(configPath, edited, "utf-8");
   await runUpdate(dir, { presets: { ...presets, desiredFeatures: ["mobile"] } });
   return [
-    ["the edited next.config.ts is left exactly as it was", readFileSync(configPath, "utf-8") === edited],
+    [
+      "the edited next.config.ts is left exactly as it was",
+      readFileSync(configPath, "utf-8") === edited,
+    ],
     ["mobile was still added", existsSync(join(dir, "capacitor.config.ts"))],
   ];
 });

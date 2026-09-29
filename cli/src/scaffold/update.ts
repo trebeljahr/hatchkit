@@ -440,8 +440,6 @@ export async function runUpdate(
     );
   }
 
-  // Derived from KNOWN_FEATURES rather than re-listed, so a feature
-  // added to the create flags cannot go missing from the update picker.
   // Base-infrastructure retrofit: the dev launcher's helper modules and the
   // lint gate. No flag and no prompt, for the same reason as the retrofits
   // around it — each one fixes a failure that is silent.
@@ -475,39 +473,9 @@ export async function runUpdate(
     );
   }
 
+  // Derived from KNOWN_FEATURES rather than re-listed, so a feature
+  // added to the create flags cannot go missing from the update picker.
   const allOptions: readonly Feature[] = KNOWN_FEATURES;
-
-  // Retrofit the post-deploy verification gate for projects scaffolded
-  // before it landed. Until it existed the pipeline's final assertion
-  // was an HTTP 200 from a deploy POST, so a stale container, an image
-  // built with an empty API URL, and a crash-looping server all reported
-  // success. Same no-flag rationale as the two retrofits above: the
-  // failure is silent, and every one of those shipped green.
-  let verificationRetrofitted = false;
-  for (const [label, rel, fn] of deployVerificationRetrofits(
-    manifest.domain,
-    manifest.topology,
-    manifest.surfaces,
-    manifest.features,
-  )) {
-    const path = join(projectDir, rel);
-    if (!existsSync(path)) continue;
-    const before = readFileSync(path, "utf-8");
-    const after = fn(before);
-    if (after !== before) {
-      writeFileSync(path, after, "utf-8");
-      verificationRetrofitted = true;
-      console.log(chalk.green(`  ✓ ${label}: deploy verification wired`));
-    }
-  }
-  if (verificationRetrofitted) {
-    console.log(
-      chalk.dim(
-        "    The deploy job now polls /api/health and /version.json for the pushed\n" +
-          "    commit and fails the run when they disagree.",
-      ),
-    );
-  }
 
   const desired =
     options.presets?.desiredFeatures ??
