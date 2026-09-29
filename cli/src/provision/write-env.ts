@@ -42,7 +42,11 @@ import {
 } from "../utils/dev-env-secrets.js";
 import { dotenvxSet } from "../utils/dotenvx-safe.js";
 import { envFileCandidates, resolveEnvFileTarget } from "../utils/env-files.js";
-import { ensureIgnoredOnEveryClone, gitFileState } from "../utils/gitignore.js";
+import {
+  describeGitFileState,
+  ensureIgnoredOnEveryClone,
+  gitFileState,
+} from "../utils/gitignore.js";
 
 /** One `KEY=VALUE` pair parsed out of a provisioned env block. */
 export interface EnvPair {
@@ -285,47 +289,32 @@ export function retrofitDevEnvSecrets(projectDir: string): DevSecretsMigration[]
 function reportMigration(m: DevSecretsMigration): void {
   if (m.moved.length === 0) return;
   const belongs = `Provisioned credentials belong in the gitignored ${DEV_LOCAL_ENV_FILE}.`;
+  const history = "If any of those commits held these values, they are in git history:";
   const rotate =
     "rotate each one with its provider (`hatchkit secrets rotate` covers the supported ones).";
-  const commits = (n: number) => (n === 1 ? "1 commit touches" : `${n} commits touch`);
   const state = gitFileState(m.from);
+  const facts = describeGitFileState(m.from, state);
   let lines: string[];
   switch (state.kind) {
     case "tracked":
       lines =
         state.commits > 0
           ? [
-              `${m.from} is tracked by git; ${commits(state.commits)} it in this repo's history.`,
+              ...facts,
               "Commit this change too, so the committed copy drops these values.",
-              "If any of those commits held these values, they are in git history:",
+              history,
               rotate,
             ]
           : [
-              `${m.from} is tracked by git, staged but never committed.`,
+              ...facts,
               "Stage this change before you commit, so the first commit does not record these values.",
             ];
       break;
     case "in-history":
-      lines = [
-        `${m.from} is not tracked now, but ${commits(state.commits)} it in this repo's history.`,
-        "If any of them held these values, they are in git history:",
-        rotate,
-      ];
+      lines = [...facts, history, rotate];
       break;
     case "never-committed":
-      lines = state.ignoredByRepo
-        ? [`${m.from} was never committed, and the repo's .gitignore ignores it.`, belongs]
-        : state.ignoredHere
-          ? [
-              `${m.from} was never committed. It is not ignored by the repo's .gitignore, only by`,
-              "this machine's git excludes, so a `git add -A` without those excludes would commit it.",
-              belongs,
-            ]
-          : [
-              `${m.from} was never committed, but it is not ignored by the repo's .gitignore,`,
-              "so a `git add -A` would commit it.",
-              belongs,
-            ];
+      lines = [...facts, belongs];
       break;
     case "unknown":
       lines = [

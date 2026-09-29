@@ -2379,13 +2379,19 @@ export async function checkProjectKeyState(projectDir: string): Promise<CheckRes
  *  commits that file. They belong in the gitignored
  *  `.env.development.local`; `hatchkit update` moves them. Also fails
  *  on an `.env.development.local` the repo does not ignore. Read-only,
- *  and hints name keys, never values. */
+ *  and hints name keys, never values.
+ *
+ *  What it says about git comes from `gitFileState`: "is committed"
+ *  and "rotate" about a file git never saw send a leak response after
+ *  a leak that does not exist (the move warning did that on 2026-09-29). */
 export async function checkProjectDevEnvSecretsState(projectDir: string): Promise<CheckResult[]> {
   const out: CheckResult[] = [];
   const { existsSync, readFileSync, realpathSync } = await import("node:fs");
   const { basename, dirname, join, relative } = await import("node:path");
   if (!existsSync(join(projectDir, ".hatchkit.json"))) return out;
-  const { gitToplevel, ignoredByRepo } = await import("./utils/gitignore.js");
+  const { describeGitFileState, gitFileState, gitToplevel, ignoredByRepo } = await import(
+    "./utils/gitignore.js"
+  );
   const top = gitToplevel(projectDir);
   if (!top) return out;
   const { envFileCandidates } = await import("./utils/env-files.js");
@@ -2398,23 +2404,60 @@ export async function checkProjectDevEnvSecretsState(projectDir: string): Promis
 
   for (const devPath of envFileCandidates(projectDir, DEV_ENV_FILE).filter((p) => existsSync(p))) {
     const path = repoRel(devPath);
-    const committable =
-      (await execOk("git", ["ls-files", "--error-unmatch", "--", path], { cwd: top })) ||
-      !ignoredByRepo(top, path);
     const keys = findDevEnvSecrets(readFileSync(devPath, "utf-8")).map((s) => s.key);
-    if (committable && keys.length > 0) {
-      out.push({
-        name: `Dev env credentials (${path})`,
-        status: "fail",
-        detail: `committed file holds provisioned credentials: ${keys.join(", ")}`,
-        hint: [
-          `${DEV_ENV_FILE} is committed and is for local defaults only.`,
-          `Provisioned dev credentials belong in the gitignored ${DEV_LOCAL_ENV_FILE}:`,
-          `  hatchkit update      # moves them there and makes the server load it`,
-          "If the file was ever committed with these values, they are in git history:",
-          "rotate each one (hatchkit secrets rotate <project> covers the supported providers).",
-        ],
-      });
+    if (keys.length > 0) {
+      const state = gitFileState(devPath);
+      const committable =
+        state.kind === "tracked" ||
+        (state.kind === "never-committed" ? !state.ignoredByRepo : !ignoredByRepo(top, path));
+      if (committable) {
+        const move = [
+          `${DEV_ENV_FILE} is for local defaults only. Provisioned dev credentials belong in the`,
+          `gitignored ${DEV_LOCAL_ENV_FILE}:`,
+          "  hatchkit update      # moves them there and makes the server load it",
+        ];
+        const history = "If any of those commits held these values, they are in git history:";
+        const rotate =
+          "rotate each one (hatchkit secrets rotate <project> covers the supported providers).";
+        const facts = describeGitFileState(path, state);
+        let where: string;
+        let hint: string[];
+        switch (state.kind) {
+          case "tracked":
+            where = "tracked by git";
+            hint =
+              state.commits > 0
+                ? [...facts, ...move, history, rotate]
+                : [
+                    ...facts,
+                    ...move,
+                    "Run it before you commit, so the first commit does not record these values.",
+                  ];
+            break;
+          case "in-history":
+            where = "in git history, and the repo's .gitignore does not ignore it";
+            hint = [...facts, ...move, history, rotate];
+            break;
+          case "never-committed":
+            where = "never committed, but the repo's .gitignore does not ignore it";
+            hint = [...facts, ...move];
+            break;
+          case "unknown":
+            where = "the repo's .gitignore does not ignore it";
+            hint = [
+              ...move,
+              "If the file was ever committed with these values, they are in git history:",
+              rotate,
+            ];
+            break;
+        }
+        out.push({
+          name: `Dev env credentials (${path})`,
+          status: "fail",
+          detail: `${where}; holds provisioned credentials: ${keys.join(", ")}`,
+          hint,
+        });
+      }
     }
     const localPath = join(dirname(devPath), DEV_LOCAL_ENV_FILE);
     const localRel = repoRel(localPath);

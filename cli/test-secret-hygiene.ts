@@ -453,6 +453,22 @@ function legacyProject(): string {
   return root;
 }
 
+/** A pre-fix project whose `.env.development` git has never seen: the
+ *  collection-of-beauty and chemistry-sketcher shape. The rest of the
+ *  project is committed unless `commit` is false. */
+function uncommittedDevEnvProject(opts: { commit?: boolean } = {}): string {
+  const root = cobRepo();
+  writeFileSync(join(root, ".hatchkit.json"), JSON.stringify({ name: "cob" }));
+  mkdirSync(join(root, "packages/server/src/config"), { recursive: true });
+  writeFileSync(join(root, "packages/server/src/config/env.ts"), LEGACY_ENV_TS);
+  if (opts.commit !== false) {
+    git(root, "add", "-A");
+    git(root, "commit", "--quiet", "-m", "scaffold");
+  }
+  writeFileSync(join(root, "packages/server/.env.development"), LEGACY_DEV_ENV);
+  return root;
+}
+
 await expect("writeDevEnv refuses the committed .env.development", () => {
   const root = cobRepo();
   try {
@@ -590,6 +606,10 @@ await expect(
       assert.equal(before.length, 1);
       assert.equal(before[0].status, "fail");
       assert.match(before[0].detail ?? "", /LISTMONK_API_TOKEN, SES_SMTP_PASSWORD/);
+      assert.match(before[0].detail ?? "", /^tracked by git;/);
+      const hint = (before[0].hint ?? []).join("\n");
+      assert.match(hint, /is tracked by git; 1 commit touches it in this repo's history/);
+      assert.match(hint, /rotate each one/);
       const printed = JSON.stringify(before);
       assert.ok(
         !printed.includes(FAKE_TOKEN) && !printed.includes(FAKE_SMTP),
@@ -607,6 +627,61 @@ await expect(
     }
   },
 );
+
+await expect(
+  "doctor on an untracked .env.development in history: counts commits, keeps rotate",
+  async () => {
+    const root = legacyProject();
+    try {
+      git(root, "rm", "--quiet", "--cached", "--", "packages/server/.env.development");
+      git(root, "commit", "--quiet", "-m", "untrack");
+      const res = await checkProjectDevEnvSecretsState(root);
+      assert.equal(res.length, 1);
+      assert.equal(res[0].status, "fail");
+      assert.match(
+        res[0].detail ?? "",
+        /^in git history, and the repo's \.gitignore does not ignore it;/,
+      );
+      const hint = (res[0].hint ?? []).join("\n");
+      assert.match(hint, /is not tracked now, but 2 commits touch it in this repo's history/);
+      assert.match(hint, /rotate each one/);
+      assert.ok(!/is tracked|is committed/.test(JSON.stringify(res)), JSON.stringify(res));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+await expect("doctor on a never-committed .env.development: no leak claim, no rotate", async () => {
+  // The incident shape: only the user's global excludes ignore it. The
+  // repo gets an excludes file of its own to stand in for theirs.
+  const root = uncommittedDevEnvProject();
+  const excludes = join(root, "..", `hk-doctor-excludes-${Date.now()}`);
+  try {
+    writeFileSync(excludes, ".env.development\n");
+    git(root, "config", "core.excludesFile", excludes);
+    const res = await checkProjectDevEnvSecretsState(root);
+    assert.equal(res.length, 1);
+    assert.equal(res[0].status, "fail");
+    assert.match(
+      res[0].detail ?? "",
+      /^never committed, but the repo's \.gitignore does not ignore it; holds provisioned credentials: LISTMONK_API_TOKEN, SES_SMTP_PASSWORD$/,
+    );
+    const printed = JSON.stringify(res);
+    assert.match(printed, /git add -A` without those excludes would commit it/);
+    assert.ok(!/is committed|is tracked|git history|rotate/.test(printed), printed);
+    assert.ok(
+      !printed.includes(FAKE_TOKEN) && !printed.includes(FAKE_SMTP),
+      "doctor printed a value",
+    );
+    // Once the repo's own .gitignore covers it, nothing is committable.
+    writeFileSync(join(root, ".gitignore"), `${COB_GITIGNORE}.env.development\n`);
+    assert.deepEqual(await checkProjectDevEnvSecretsState(root), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(excludes, { force: true });
+  }
+});
 
 await expect("doctor fails on an .env.development.local the repo does not ignore", async () => {
   const root = legacyProject();
@@ -651,34 +726,24 @@ function retrofitOutput(root: string): { stderr: string; stdout: string } {
 
 /** Checks every case shares: keys named, values never, nothing on stdout. */
 function assertMoveWarning(printed: { stderr: string; stdout: string }): string {
-  assert.match(printed.stderr, /Moved LISTMONK_API_TOKEN, SES_SMTP_PASSWORD from \.env\.development/);
+  assert.match(
+    printed.stderr,
+    /Moved LISTMONK_API_TOKEN, SES_SMTP_PASSWORD from \.env\.development/,
+  );
   assert.ok(!printed.stdout.includes("Moved"), "warning went to stdout");
   const all = printed.stderr + printed.stdout;
   assert.ok(!all.includes(FAKE_TOKEN) && !all.includes(FAKE_SMTP), "printed a value");
   return printed.stderr;
 }
 
-/** A pre-fix project whose `.env.development` git has never seen: the
- *  collection-of-beauty and chemistry-sketcher shape. The rest of the
- *  project is committed unless `commit` is false. */
-function uncommittedDevEnvProject(opts: { commit?: boolean } = {}): string {
-  const root = cobRepo();
-  writeFileSync(join(root, ".hatchkit.json"), JSON.stringify({ name: "cob" }));
-  mkdirSync(join(root, "packages/server/src/config"), { recursive: true });
-  writeFileSync(join(root, "packages/server/src/config/env.ts"), LEGACY_ENV_TS);
-  if (opts.commit !== false) {
-    git(root, "add", "-A");
-    git(root, "commit", "--quiet", "-m", "scaffold");
-  }
-  writeFileSync(join(root, "packages/server/.env.development"), LEGACY_DEV_ENV);
-  return root;
-}
-
 await expect("tracked .env.development: says tracked, counts commits, keeps rotate", () => {
   const root = legacyProject();
   try {
     const out = assertMoveWarning(retrofitOutput(root));
-    assert.match(out, /\.env\.development is tracked by git; 1 commit touches it in this repo's history/);
+    assert.match(
+      out,
+      /\.env\.development is tracked by git; 1 commit touches it in this repo's history/,
+    );
     assert.match(out, /Commit this change too/);
     assert.match(out, /rotate each one/);
     assert.ok(!/never committed/.test(out), out);

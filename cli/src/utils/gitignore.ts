@@ -236,6 +236,38 @@ export function gitFileState(filePath: string): GitFileState {
   };
 }
 
+/** `state` as sentences a warning prints about `file`: the facts, no
+ *  advice. Empty for `unknown`, which the caller words itself. Every
+ *  warning that says what git holds of a dev env file prints these, so
+ *  no two of them can disagree again. */
+export function describeGitFileState(file: string, state: GitFileState): string[] {
+  const commits = (n: number) => (n === 1 ? "1 commit touches" : `${n} commits touch`);
+  switch (state.kind) {
+    case "tracked":
+      return state.commits > 0
+        ? [`${file} is tracked by git; ${commits(state.commits)} it in this repo's history.`]
+        : [`${file} is tracked by git, staged but never committed.`];
+    case "in-history":
+      return [
+        `${file} is not tracked now, but ${commits(state.commits)} it in this repo's history.`,
+      ];
+    case "never-committed":
+      return state.ignoredByRepo
+        ? [`${file} was never committed, and the repo's .gitignore ignores it.`]
+        : state.ignoredHere
+          ? [
+              `${file} was never committed. It is not ignored by the repo's .gitignore, only by`,
+              "this machine's git excludes, so a `git add -A` without those excludes would commit it.",
+            ]
+          : [
+              `${file} was never committed, but it is not ignored by the repo's .gitignore,`,
+              "so a `git add -A` would commit it.",
+            ];
+    case "unknown":
+      return [];
+  }
+}
+
 function projectRootFor(dir: string): string {
   const home = homedir();
   for (let d = dir; ; d = dirname(d)) {
