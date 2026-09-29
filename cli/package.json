@@ -119,7 +119,9 @@
     "test:error-reporting": "node scripts/test.mjs test-error-reporting.ts",
     "test:lint-gate": "node scripts/test.mjs test-lint-gate.ts",
     "test:ses-feedback": "node scripts/test.mjs test-ses-feedback.ts",
-    "test:keychain-isolation": "node scripts/test.mjs test-keychain-isolation.ts"
+    "test:keychain-isolation": "node scripts/test.mjs test-keychain-isolation.ts",
+    "test:ses-project-sender": "node scripts/test.mjs test-ses-project-sender.ts",
+    "test:ses-project-runtime": "node scripts/test.mjs test-ses-project-runtime.ts"
   },
   "dependencies": {
     "@aws-sdk/client-iam": "^3.1048.0",

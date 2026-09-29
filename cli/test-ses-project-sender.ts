@@ -465,3 +465,122 @@ console.log(
 console.log(
   "✓ failed keychain save rolls back the new key; unknown AWS outcome retains recovery journal and refuses automatic retry",
 );
+
+// Drive the CLI through the mandatory fixture backend. Native keytar imports
+// and shell keychain commands are blocked by the test runner, in descendants too.
+{
+  assert.equal(
+    (globalThis as Record<symbol, unknown>)[Symbol.for("hatchkit.test-keychain-loaded")],
+    true,
+    "Use node scripts/test.mjs test-ses-project-sender.ts",
+  );
+  const { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync } = await import(
+    "node:fs"
+  );
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { execFileSync } = await import("node:child_process");
+  const { IAMClient } = await import("@aws-sdk/client-iam");
+  const { SESv2Client } = await import("@aws-sdk/client-sesv2");
+  const { STSClient } = await import("@aws-sdk/client-sts");
+  const { getStore } = await import("./src/config.js");
+  const { SECRET_KEYS, setSecret } = await import("./src/utils/secrets.js");
+  const { runSesSenderCli, keychainSenderStore } = await import(
+    "./src/provision/ses-sender-cli.js"
+  );
+  const { readProjectEnvSnapshot } = await import("./src/provision/listmonk-user-cli.js");
+  const { writeProdEnv } = await import("./src/provision/write-env.js");
+  const dir = mkdtempSync(join(tmpdir(), "ses-cli-"));
+  const senders = [
+    IAMClient.prototype.send,
+    SESv2Client.prototype.send,
+    STSClient.prototype.send,
+  ] as const;
+  const f = fake();
+  IAMClient.prototype.send = f.deps.iam.send;
+  SESv2Client.prototype.send = f.deps.ses.send;
+  STSClient.prototype.send = f.deps.sts.send;
+  getStore().set("providers.ses", { status: "configured", region: spec.region });
+  await setSecret(SECRET_KEYS.sesAccessKeyId, "mock-provisioner-id-never-copy");
+  await setSecret(SECRET_KEYS.sesSecretAccessKey, "mock-provisioner-secret-never-copy");
+  const output: string[] = [];
+  const log = console.log;
+  console.log = (...args) => {
+    output.push(args.map(String).join(" "));
+  };
+  try {
+    writeFileSync(
+      join(dir, ".hatchkit.json"),
+      JSON.stringify({
+        version: 5,
+        name: spec.project,
+        domain: spec.domain,
+        surfaces: "backend",
+        features: [],
+        deploymentMode: "scaffold-only",
+      }),
+    );
+    writeFileSync(join(dir, ".gitignore"), ".env.keys\n.env.*.local\n");
+    writeFileSync(join(dir, ".env.production"), "SES_FROM_EMAIL=legacy@example.com\n");
+    execFileSync("git", ["init", "-q", dir]);
+    execFileSync("git", ["add", "."], { cwd: dir });
+    execFileSync(
+      "git",
+      ["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-qm", "fixture"],
+      { cwd: dir },
+    );
+    const before = readFileSync(join(dir, ".env.production"), "utf8");
+    const files = readdirSync(dir);
+    await runSesSenderCli([dir, "--dry-run"]);
+    assert.deepEqual(readdirSync(dir), files);
+    assert.equal(readFileSync(join(dir, ".env.production"), "utf8"), before);
+    assert.equal(await keychainSenderStore(spec.project).read(), null);
+    assert.equal(f.state.writes.length, 0);
+    await runSesSenderCli([dir]);
+    const snap = await readProjectEnvSnapshot(dir);
+    assert.equal(snap.prod.SES_PROJECT_ACCESS_KEY_ID, "MOCKKEY1");
+    assert.equal(snap.prod.SES_PROJECT_SECRET_ACCESS_KEY, "mock-secret-1");
+    assert.equal(
+      snap.prod.SES_FROM_EMAIL,
+      "legacy@example.com",
+      "Preparation must not change any legacy sender field",
+    );
+    assert.equal(snap.prod.EMAIL_TRANSPORT, undefined);
+    const encrypted = readFileSync(join(dir, ".env.production"), "utf8");
+    assert(encrypted.includes("encrypted:"));
+    assert(!encrypted.includes("mock-secret-1"));
+    assert.equal(snap.dev.SES_PROJECT_SECRET_ACCESS_KEY, "mock-secret-1");
+    const mutations = f.state.writes.length;
+    await runSesSenderCli([dir]);
+    assert.equal(f.state.writes.length, mutations);
+    assert.equal(
+      readFileSync(join(dir, ".env.production"), "utf8"),
+      encrypted,
+      "Idempotent rerun must not re-encrypt unchanged values",
+    );
+    await assert.rejects(runSesSenderCli([dir, "--activate"]), /Port\/review/);
+    mkdirSync(join(dir, "src/services"), { recursive: true });
+    writeFileSync(join(dir, "src/services/email.ts"), "// hatchkit-ses-project-v1 fixture\n");
+    writeProdEnv(join(dir, ".env.production"), [
+      { key: "LISTMONK_API_TOKEN", value: "mock-newsletter-token" },
+    ]);
+    await assert.rejects(runSesSenderCli([dir, "--activate"]), /acknowledge-listmonk-gap/);
+    await runSesSenderCli([dir, "--activate", "--acknowledge-listmonk-gap"]);
+    assert.equal((await readProjectEnvSnapshot(dir)).prod.EMAIL_TRANSPORT, "ses");
+    assert.equal(
+      (await readProjectEnvSnapshot(dir)).prod.LISTMONK_API_TOKEN,
+      "mock-newsletter-token",
+      "Active newsletter access must be preserved",
+    );
+    assert(!output.join("\n").includes("mock-provisioner"));
+    assert(!output.join("\n").includes("mock-secret-1"));
+    assert(!output.join("\n").includes("mock-newsletter-token"));
+  } finally {
+    console.log = log;
+    [IAMClient.prototype.send, SESv2Client.prototype.send, STSClient.prototype.send] = senders;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+console.log(
+  "✓ fixture CLI backfill: dry-run zero writes, encrypted prod/ignored dev, no secret output, idempotent env, explicit activation and retained newsletter access",
+);

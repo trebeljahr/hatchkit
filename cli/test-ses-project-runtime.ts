@@ -107,11 +107,25 @@ try {
   mkdirSync(join(fixture, "config"));
   mkdirSync(join(fixture, "services/newsletter"), { recursive: true });
   writeFileSync(join(fixture, "package.json"), '{"type":"module"}');
-  const config = { ...source, EMAIL_TRANSPORT: "ses", LISTMONK_URL: "https://never-contact.test", LISTMONK_API_USER: "shared", LISTMONK_API_TOKEN: "mock-shared", LISTMONK_TX_TEMPLATE_ID: "1", LISTMONK_FROM: "Foreign <foreign@b.example.com>" };
+  const config = {
+    ...source,
+    EMAIL_TRANSPORT: "ses",
+    LISTMONK_URL: "https://never-contact.test",
+    LISTMONK_API_USER: "shared",
+    LISTMONK_API_TOKEN: "mock-shared",
+    LISTMONK_TX_TEMPLATE_ID: "1",
+    LISTMONK_FROM: "Foreign <foreign@b.example.com>",
+  };
   writeFileSync(join(fixture, "config/env.ts"), `export const env = ${JSON.stringify(config)};`);
-  for (const name of ["email", "ses-email"]) writeFileSync(join(fixture, `services/${name}.ts`), readFileSync(join(root, `starter/packages/server/src/services/${name}.ts`), "utf8"));
+  for (const name of ["email", "ses-email"])
+    writeFileSync(
+      join(fixture, `services/${name}.ts`),
+      readFileSync(join(root, `starter/packages/server/src/services/${name}.ts`), "utf8"),
+    );
   writeFileSync(join(fixture, "services/newsletter/listmonk.ts"), newsletter);
-  globalThis.fetch = async () => { throw new Error("Unexpected shared Listmonk/network request"); };
+  globalThis.fetch = async () => {
+    throw new Error("Unexpected shared Listmonk/network request");
+  };
   const actual = await import(pathToFileURL(join(fixture, "services/email.ts")).href);
   await actual.sendEmail(email);
   const actualEnv = (await import(pathToFileURL(join(fixture, "config/env.ts")).href)).env;
@@ -119,11 +133,26 @@ try {
   await assert.rejects(actual.sendEmail(email), /incomplete/);
   actualEnv.SES_PROJECT_SECRET_ACCESS_KEY = source.SES_PROJECT_SECRET_ACCESS_KEY;
   process.env.EMAIL_TRANSPORT = "ses";
-  const actualNewsletter = await import(pathToFileURL(join(fixture, "services/newsletter/listmonk.ts")).href);
-  await actualNewsletter.sendTransactional({ to: email.to, subject: email.subject, html: email.html });
-  writeFileSync(join(fixture, "email-delivery.ts"), readFileSync(join(root, "cli/src/templates/auth-account-security/server/email-delivery.ts.tpl"), "utf8"));
+  const actualNewsletter = await import(
+    pathToFileURL(join(fixture, "services/newsletter/listmonk.ts")).href
+  );
+  await actualNewsletter.sendTransactional({
+    to: email.to,
+    subject: email.subject,
+    html: email.html,
+  });
+  writeFileSync(
+    join(fixture, "email-delivery.ts"),
+    readFileSync(
+      join(root, "cli/src/templates/auth-account-security/server/email-delivery.ts.tpl"),
+      "utf8",
+    ),
+  );
   const authTransport = await import(pathToFileURL(join(fixture, "email-delivery.ts")).href);
-  assert.equal(authTransport.selectEmailTransport({ ...config, SMTP_HOST: "never-contact.test" }), "ses");
+  assert.equal(
+    authTransport.selectEmailTransport({ ...config, SMTP_HOST: "never-contact.test" }),
+    "ses",
+  );
   assert.equal(authTransport.isEmailDeliveryConfigured(), true);
 } finally {
   globalThis.fetch = realFetch;
@@ -131,4 +160,6 @@ try {
   else process.env.EMAIL_TRANSPORT = oldTransport;
   rmSync(fixture, { recursive: true, force: true });
 }
-console.log("✓ actual account/newsletter dispatch never falls back to shared Listmonk; account-security detection honors SES ahead of SMTP");
+console.log(
+  "✓ actual account/newsletter dispatch never falls back to shared Listmonk; account-security detection honors SES ahead of SMTP",
+);
