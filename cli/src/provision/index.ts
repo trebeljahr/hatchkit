@@ -51,6 +51,7 @@ import {
   writeManifest,
 } from "../scaffold/manifest.js";
 import { exec } from "../utils/exec.js";
+import { SECRET_KEYS, setSecret } from "../utils/secrets.js";
 import { validateDomain, validateProjectName } from "../utils/validate.js";
 import { getCliVersion } from "../utils/version.js";
 import {
@@ -215,6 +216,27 @@ export type ProvisionedEvent =
       kind: "live" | "test";
       createdThisRun: boolean;
     }
+  /** The project's own Listmonk user role or list role, created (or
+   *  found) by name. The ledger records only `createdThisRun`. */
+  | {
+      service: "listmonkRole";
+      listmonkUrl: string;
+      roleType: "user" | "list";
+      roleId: number;
+      name: string;
+      createdThisRun: boolean;
+    }
+  /** The project's own Listmonk API user. `keychainAccount` names the
+   *  keychain entry its token was stored in, when this run created the
+   *  user. */
+  | {
+      service: "listmonkApiUser";
+      listmonkUrl: string;
+      userId: number;
+      username: string;
+      createdThisRun: boolean;
+      keychainAccount?: string;
+    }
   | {
       service: "s3";
       bucketKey: string;
@@ -294,6 +316,11 @@ export interface ProvisionOptions {
    *  (create / adopt) can fold deferrals into their own end-of-run
    *  report without re-deriving them from the return value. */
   onDeferred?: (step: DeferredStep) => void;
+  /** Listmonk: when the project's own API user exists but no working
+   *  token is stored, delete and recreate it without asking. That
+   *  breaks every deployed copy of the old token. Without this flag an
+   *  interactive run asks, and a non-interactive one stops. */
+  listmonkRegenerateToken?: boolean;
   /** Print the "Configured / Deferred" block at the end of the run.
    *  Default true. `hatchkit create` and `hatchkit adopt` turn it off
    *  and render one combined summary for the whole flow instead. */
@@ -844,6 +871,43 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
           );
         }
 
+        // The project's own Listmonk API user needs the admin credential
+        // (`hatchkit-admin`). Without it the project gets hatchkit's own
+        // user, as before, and a warning. With it, any question about
+        // recreating an existing user is settled here, before the
+        // spinner starts.
+        const { LISTMONK_ADMIN_API_USER, getListmonkAdminAuth } = await import("../config.js");
+        const listmonkAdmin = await getListmonkAdminAuth();
+        let projectUser:
+          | NonNullable<Parameters<typeof provisionListmonkSesForProject>[0]["projectUser"]>
+          | undefined;
+        const projectTokenAccount = SECRET_KEYS.listmonkProjectApiToken(opts.baseName);
+        if (listmonkAdmin) {
+          const { checkListmonkAdmin } = await import("./listmonk-project-user.js");
+          const { cachedProjectListmonkTokens, decideListmonkRegenerate } = await import(
+            "./listmonk-user-cli.js"
+          );
+          await checkListmonkAdmin(listmonkAdmin);
+          const cachedTokens = await cachedProjectListmonkTokens(
+            opts.baseName,
+            surfaces?.serverEnvDir ?? projectDir,
+          );
+          const regenerate = await decideListmonkRegenerate({
+            admin: listmonkAdmin,
+            name: opts.baseName,
+            cachedTokens,
+            allow: opts.listmonkRegenerateToken === true,
+            interactive: !!process.stdin.isTTY,
+            reservedNames: [listmonkCfg.apiUser, LISTMONK_ADMIN_API_USER],
+          });
+          projectUser = {
+            admin: listmonkAdmin,
+            cachedTokens,
+            confirmRegenerate: async () => regenerate,
+            reservedNames: [listmonkCfg.apiUser, LISTMONK_ADMIN_API_USER],
+          };
+        }
+
         // Optional CF token: only needed for DKIM auto-publish.
         const dnsCfg = await getDnsConfig();
         let cf: import("../utils/cloudflare-api.js").CloudflareApi | undefined;
@@ -870,6 +934,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
                 apiUser: listmonkCfg.apiUser,
                 apiToken: listmonkCfg.apiToken,
               },
+              projectUser,
             },
             {
               onSesDomain: (e) => {
@@ -902,6 +967,27 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
                   kind: e.kind,
                   createdThisRun: e.createdThisRun,
                 });
+              },
+              onListmonkRole: (e) => {
+                opts.onProvisioned?.({ service: "listmonkRole", ...e });
+              },
+              onListmonkApiUser: (e) => {
+                opts.onProvisioned?.({
+                  service: "listmonkApiUser",
+                  ...e,
+                  ...(e.createdThisRun ? { keychainAccount: projectTokenAccount } : {}),
+                });
+              },
+              onListmonkApiToken: async (e) => {
+                // Listmonk shows the token once. Keep it before anything
+                // else can fail; the env write comes at the end of the step.
+                try {
+                  await setSecret(projectTokenAccount, e.token);
+                } catch (err) {
+                  console.warn(
+                    `  Could not store ${e.username}'s Listmonk token in the keychain: ${(err as Error).message}`,
+                  );
+                }
               },
               onSesMailFromConfigured: (e) => {
                 opts.onProvisioned?.({
@@ -1100,19 +1186,49 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
           // Diagnostic only; failure here doesn't matter to provisioning.
         }
 
+        let listmonkApiUser = listmonkCfg.apiUser;
+        let listmonkApiToken = listmonkCfg.apiToken;
+        if (result.projectUser) {
+          if (!result.projectUser.token) {
+            throw new Error(
+              `Listmonk returned no token for API user ${result.projectUser.username}.`,
+            );
+          }
+          listmonkApiUser = result.projectUser.username;
+          listmonkApiToken = result.projectUser.token;
+          for (const line of result.projectUser.changes) {
+            console.log(chalk.green(`  ✓ Listmonk: ${line}`));
+          }
+          if (result.projectUser.changes.length === 0) {
+            console.log(
+              chalk.dim(`  · Listmonk API user ${listmonkApiUser} and its roles already in place.`),
+            );
+          }
+          if (result.projectUser.regenerated) {
+            console.log(
+              chalk.yellow(
+                `  ${listmonkApiUser} was recreated: deployed copies of its old token stop working. Run \`hatchkit sync\` and redeploy now.`,
+              ),
+            );
+          }
+        } else {
+          const { sharedListmonkUserWarning } = await import("./listmonk-project-user.js");
+          console.log(
+            chalk.yellow(
+              `  ${sharedListmonkUserWarning(opts.baseName, listmonkCfg.apiUser).join("\n  ")}`,
+            ),
+          );
+        }
+
         const env = renderListmonkSesEnv({
           listmonkUrl: listmonkCfg.url,
-          listmonkApiUser: listmonkCfg.apiUser,
-          listmonkApiToken: listmonkCfg.apiToken,
+          listmonkApiUser,
+          listmonkApiToken,
           liveListId: result.liveList.id,
           testListId: result.testList.id,
           txTemplateId: result.txTemplate.id,
           campaignTemplateId: result.campaignTemplate.id,
           listmonkFrom: result.fromDisplay,
-          smtpHost: result.smtp.host,
-          smtpPort: result.smtp.port,
-          smtpUsername: result.smtp.username,
-          smtpPassword: result.smtp.password,
           fromEmail: result.fromEmail,
           region: sesCfg.region,
           testRecipient: result.seededSubscriber?.email,
@@ -1962,6 +2078,51 @@ export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
   // relay credentials are stateless — there's nothing to revoke
   // beyond the IAM access key in global config.
   if (opts.services.includes("listmonk-ses")) {
+    // The project's own API user and its two roles, user first: Listmonk
+    // refuses to delete a role a user still holds. Needs the admin
+    // credential; hatchkit's own API user cannot manage users.
+    const { LISTMONK_ADMIN_API_USER, getListmonkAdminAuth, getListmonkConfig } = await import(
+      "../config.js"
+    );
+    const admin = await getListmonkAdminAuth();
+    if (!admin) {
+      console.log(
+        chalk.yellow(
+          `  Listmonk: no hatchkit-admin credential, so API user ${opts.baseName} and its roles (if any) stay. Delete them in Listmonk → Admin → Users / User roles / List roles.`,
+        ),
+      );
+    } else {
+      const { removeListmonkProjectUser } = await import("./listmonk-project-user.js");
+      const sharedUser = (await getListmonkConfig())?.apiUser;
+      try {
+        const res = await removeListmonkProjectUser(admin, opts.baseName, {
+          dryRun: opts.dryRun,
+          reservedNames: [LISTMONK_ADMIN_API_USER, ...(sharedUser ? [sharedUser] : [])],
+        });
+        const verb = opts.dryRun ? "would delete" : "deleted";
+        const line = (what: string, r: "deleted" | "not-found" | "skipped") =>
+          r === "deleted"
+            ? chalk.green(`  ✓ Listmonk: ${verb} ${what} ${opts.baseName}`)
+            : r === "not-found"
+              ? chalk.dim(`  · Listmonk: ${what} ${opts.baseName} — already gone`)
+              : null;
+        for (const l of [
+          line("API user", res.user),
+          line("user role", res.userRole),
+          line("list role", res.listRole),
+        ]) {
+          if (l) console.log(l);
+        }
+        for (const note of res.notes) console.log(chalk.yellow(`  · Listmonk: ${note}`));
+        if (!opts.dryRun && res.user === "deleted") {
+          const { deleteSecret } = await import("../utils/secrets.js");
+          await deleteSecret(SECRET_KEYS.listmonkProjectApiToken(opts.baseName)).catch(() => {});
+        }
+      } catch (err) {
+        console.log(chalk.red(`  ✗ Listmonk user teardown: ${(err as Error).message}`));
+      }
+    }
+
     const { deleteListmonkList } = await import("./listmonk.js");
     for (const name of [opts.baseName, `${opts.baseName}-test`]) {
       await runDelete(`Listmonk: deleting list ${name} (if present)`, opts.dryRun, () =>

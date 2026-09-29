@@ -2064,6 +2064,10 @@ export async function ensureListmonk(opts: { deploy?: boolean } = {}): Promise<L
         "  If you skip Settings: All, hatchkit will still provision everything else,\n" +
         "  but you'll have to paste SES creds into Listmonk → Settings → SMTP yourself.\n" +
         "\n" +
+        "  Projects get their own API user (not this one) once you also create API user\n" +
+        "  hatchkit-admin (role Super Admin) and store its token in the keychain:\n" +
+        "    security add-generic-password -U -s hatchkit -a listmonk:admin-api-token -w\n" +
+        "\n" +
         "  Paste the API user name + the generated token below.",
     ),
   );
@@ -2125,6 +2129,28 @@ export async function getListmonkConfig(): Promise<ListmonkConfig | null> {
   const apiToken = await getSecret(SECRET_KEYS.listmonkApiToken);
   if (!apiToken) return null;
   return { ...meta, apiToken };
+}
+
+/** Listmonk username of the admin credential. The operator creates this
+ *  API user by hand (role Super Admin): the `hatchkit` API user above
+ *  has no `users:*` / `roles:*` permission, and should not get them
+ *  while projects still hold its token. */
+export const LISTMONK_ADMIN_API_USER = "hatchkit-admin";
+
+/** The credential that creates each project's own Listmonk roles and
+ *  API user, or null when its token is not in the keychain (service
+ *  `hatchkit`, account `listmonk:admin-api-token`). It talks to the
+ *  configured Listmonk URL. It is never written into a project env. */
+export async function getListmonkAdminAuth(): Promise<{
+  url: string;
+  apiUser: string;
+  apiToken: string;
+} | null> {
+  const meta = store.get("providers.listmonk") as ListmonkMeta | undefined;
+  if (!meta?.url) return null;
+  const apiToken = (await getSecret(SECRET_KEYS.listmonkAdminApiToken))?.trim();
+  if (!apiToken) return null;
+  return { url: meta.url, apiUser: LISTMONK_ADMIN_API_USER, apiToken };
 }
 
 function normalizeListmonkUrlInput(raw: string): string {

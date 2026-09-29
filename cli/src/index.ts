@@ -378,6 +378,10 @@ async function main(): Promise<void> {
       await handleSesCommand(args.slice(1));
       break;
     }
+    case "listmonk": {
+      await handleListmonkCommand(args.slice(1));
+      break;
+    }
     case "gh-pages":
     case "pages": {
       if (command === "pages") {
@@ -964,7 +968,9 @@ function servicesAlreadyAdded(args: {
   if (/(^|\n)(PUBLIC_)?GLITCHTIP_DSN=/m.test(text)) added.add("glitchtip");
   if (/(^|\n)(PUBLIC_)?OPENPANEL_CLIENT_ID=/m.test(text)) added.add("openpanel");
   if (/(^|\n)(NEXT_PUBLIC_|PUBLIC_)?PLAUSIBLE_DOMAIN=/m.test(text)) added.add("plausible");
-  if (/(^|\n)LISTMONK_URL=/m.test(text) && /(^|\n)SES_SMTP_HOST=/m.test(text)) {
+  // SES_SMTP_HOST for env files written before hatchkit stopped writing
+  // the SMTP login into projects; SES_FROM_EMAIL since.
+  if (/(^|\n)LISTMONK_URL=/m.test(text) && /(^|\n)SES_(SMTP_HOST|FROM_EMAIL)=/m.test(text)) {
     added.add("listmonk-ses");
   }
   if (/(^|\n)R2(_[A-Z0-9]+)?_ACCESS_KEY_ID=/m.test(text)) added.add("s3");
@@ -1063,6 +1069,24 @@ function recordProvisionedEvent(ledger: RunLedger, event: ProvisionedEvent): voi
       listName: event.listName,
       listId: event.listId,
     });
+  }
+  if (event.service === "listmonkRole" && event.createdThisRun) {
+    ledger.record({
+      kind: "listmonkRole",
+      listmonkUrl: event.listmonkUrl,
+      roleType: event.roleType,
+      name: event.name,
+      roleId: event.roleId,
+    });
+  }
+  if (event.service === "listmonkApiUser" && event.createdThisRun) {
+    ledger.record({
+      kind: "listmonkApiUser",
+      listmonkUrl: event.listmonkUrl,
+      username: event.username,
+      userId: event.userId,
+    });
+    if (event.keychainAccount) ledger.record({ kind: "keychain", account: event.keychainAccount });
   }
   if (event.service === "s3" && event.minted) {
     ledger.record({
@@ -1520,6 +1544,7 @@ async function handleAdd(): Promise<void> {
     domain: domainFlag,
     failIfExists: true,
     adoptExisting,
+    listmonkRegenerateToken: args.includes("--regenerate-listmonk-token"),
     onProvisioned: (event) => recordProvisionedEvent(ledger, event),
   });
   ledger.complete();
@@ -1980,6 +2005,21 @@ async function handlePlausible(): Promise<void> {
 //
 // `hatchkit ses list` mirrors `aws sesv2 list-email-identities` but
 // pulls auth from hatchkit's keychain so it works without aws CLI config.
+async function handleListmonkCommand(rest: string[]): Promise<void> {
+  if (rest[0] !== "user") {
+    printListmonkUsage();
+    if (rest[0] !== undefined) process.exitCode = 1;
+    return;
+  }
+  const { runListmonkUserCli } = await import("./provision/listmonk-user-cli.js");
+  try {
+    await runListmonkUserCli(rest.slice(1));
+  } catch (err) {
+    console.log(chalk.red(`\n  ${(err as Error).message.split("\n").join("\n  ")}\n`));
+    process.exitCode = 1;
+  }
+}
+
 async function handleSesCommand(rest: string[]): Promise<void> {
   const sub = rest[0];
   if (!sub) {
@@ -2047,6 +2087,23 @@ async function handleSesCommand(rest: string[]): Promise<void> {
         for (const e of emails) console.log(`    ${e}`);
         if (emails.length === 0) console.log(chalk.dim("    (none)"));
       }
+      break;
+    }
+    case "smtp": {
+      // The SMTP login Listmonk sends through. Projects no longer carry
+      // it in their env, so this is where a hand paste into Listmonk →
+      // Settings → SMTP gets it. The password only on request.
+      const { sesSmtpCredentials } = await import("./provision/ses.js");
+      const smtp = sesSmtpCredentials(auth);
+      const show = rest.includes("--show-password");
+      console.log(chalk.bold("\n  SES SMTP relay (for Listmonk → Settings → SMTP)\n"));
+      console.log(`  Host:      ${chalk.cyan(smtp.host)}`);
+      console.log(`  Port:      ${chalk.cyan(String(smtp.port))} (STARTTLS, auth login)`);
+      console.log(`  Username:  ${chalk.cyan(smtp.username)}`);
+      console.log(
+        `  Password:  ${show ? smtp.password : chalk.dim("(hidden — pass --show-password to print it)")}`,
+      );
+      console.log("");
       break;
     }
     case "status": {
@@ -3510,6 +3567,9 @@ function printCommandHelp(cmd: string | undefined): void {
     case "ses":
       printSesUsage();
       return;
+    case "listmonk":
+      printListmonkUsage();
+      return;
     default:
       printHelp(helpTopicForCommand(cmd));
   }
@@ -3591,6 +3651,41 @@ function printI18nUsage(): void {
 `);
 }
 
+function printListmonkUsage(): void {
+  console.log(`
+  ${chalk.bold("hatchkit listmonk")} — Listmonk helpers
+
+  ${chalk.bold("Subcommands:")}
+    ${chalk.cyan("user [<project>] [flags]")}
+                       Give a project its own Listmonk API user. Creates, or
+                       finds by name, a user role ${chalk.cyan("<project>")} (tx:send,
+                       subscribers:get_all, subscribers:manage, campaigns:manage),
+                       a list role ${chalk.cyan("<project>")} (get + manage on the project's
+                       live and test lists) and an API user ${chalk.cyan("<project>")} with
+                       both. Writes LISTMONK_API_USER + LISTMONK_API_TOKEN into the
+                       project's .env.production (encrypted) and, when dev uses
+                       Listmonk, .env.development.local. Removes SES_SMTP_* lines
+                       that nothing in the project reads. Never pushes to Coolify:
+                       run ${chalk.cyan("hatchkit sync")} after.
+
+                       Needs the admin credential: Listmonk API user hatchkit-admin
+                       (role Super Admin), its token in the keychain (service
+                       hatchkit, account listmonk:admin-api-token).
+
+  ${chalk.bold("Flags for user:")}
+    --project-dir <path>   Project root (default: <project> as a path, else the
+                           project around the current directory)
+    --server-dir <path>    Directory of the server's .env.production, when it is
+                           not where hatchkit looks (packages/server, apps/server, root)
+    --name <name>          Role and user name (default: the manifest's name)
+    --dry-run              Print what would change; write nothing
+    --regenerate-token     The user exists but no working token is stored: delete
+                           and recreate it without asking. The deployed old token
+                           stops working until the app redeploys.
+    --keep-ses-smtp        Leave SES_SMTP_* in the env files
+`);
+}
+
 function printSesUsage(): void {
   console.log(`
   ${chalk.bold("hatchkit ses")} — Amazon SES helpers
@@ -3609,6 +3704,11 @@ function printSesUsage(): void {
 
     ${chalk.cyan("status")}             Region, sandbox state, send caps, identity
                        count. Run this first when something fails.
+
+    ${chalk.cyan("smtp [--show-password]")}
+                       The SMTP relay login derived from hatchkit's SES key,
+                       for pasting into Listmonk → Settings → SMTP. The
+                       password prints only with --show-password.
 `);
 }
 
@@ -4463,8 +4563,11 @@ function printHelp(topic?: HelpTopic): void {
     · Listmonk + SES: verifies the SES sending identity for
       ${chalk.cyan("mail.<projectDomain>")}, publishes DKIM into Cloudflare, creates
       per-project ${chalk.cyan("<project>")} + ${chalk.cyan("<project>-test")} Listmonk lists,
-      seeds passthrough tx + campaign templates, and writes LISTMONK_*/
-      SES_SMTP_* into the server env.
+      seeds passthrough tx + campaign templates, gives the project its own
+      Listmonk API user ${chalk.cyan("<project>")} (needs the hatchkit-admin credential,
+      see \`hatchkit listmonk --help\`; without it the project gets hatchkit's
+      own user), and writes LISTMONK_* + SES_FROM_EMAIL / SES_REGION into the
+      server env. The SES SMTP login stays in Listmonk's settings.
     · Search Console: verifies the project domain via Cloudflare DNS TXT,
       then adds the ${chalk.cyan("sc-domain:<domain>")} property to your Google account.
       No runtime env is written.
@@ -4497,10 +4600,10 @@ function printHelp(topic?: HelpTopic): void {
     openpanel   OPENPANEL_* (server) / PUBLIC_OPENPANEL_* (client)
     plausible   NEXT_PUBLIC_PLAUSIBLE_DOMAIN / *_SCRIPT_URL (client only)
     listmonk-ses
-                LISTMONK_URL / _API_USER / _API_TOKEN / _FROM_EMAIL /
+                LISTMONK_URL / _API_USER / _API_TOKEN / _FROM /
                 _LIVE_LIST_ID / _TEST_LIST_ID / _TX_TEMPLATE_ID /
-                _CAMPAIGN_TEMPLATE_ID + SES_SMTP_HOST / _PORT / _USERNAME /
-                _PASSWORD (server only)
+                _CAMPAIGN_TEMPLATE_ID + SES_FROM_EMAIL / SES_REGION
+                (server only)
     search-console
                 Google Search Console domain property (DNS verification; no env)
     s3          R2_<BUCKET>_ACCESS_KEY_ID / *_SECRET_ACCESS_KEY / *_BUCKET / R2_ENDPOINT
@@ -4535,6 +4638,9 @@ function printHelp(topic?: HelpTopic): void {
                                 will not delete something Hatchkit didn't create.
     --enable-dev-obs            Also populate .env.development.local with obs creds.
     --no-write                  Skip writing; save 0600 cache only.
+    --regenerate-listmonk-token The project's Listmonk API user exists but no working
+                                token is stored: delete and recreate it without
+                                asking. Its deployed old token stops working.
     --surfaces=<mode>           shared | server-only | client-only | separate
     --server-dir <path>         Server env directory (skips prompt when set).
     --client-dir <path>         Client env directory (skips prompt when set).
@@ -4660,8 +4766,10 @@ function printHelp(topic?: HelpTopic): void {
     openpanel   Deletes the OpenPanel project (and clears cached creds)
     plausible   Deletes the Plausible site cached for this project
     listmonk-ses
-                Deletes the per-project Listmonk lists; keeps the SES identity
-                so a future re-add can reuse the verified sending subdomain
+                Deletes the per-project Listmonk lists, and (with the
+                hatchkit-admin credential) the project's own API user and its
+                two roles; keeps the SES identity so a future re-add can reuse
+                the verified sending subdomain
     search-console
                 Removes the Search Console property from your Google account
                 (keeps DNS verification token / ownership state)
@@ -5262,6 +5370,7 @@ function printHelp(topic?: HelpTopic): void {
     cloudflare      Wire Cloudflare Workers Static Assets for the current repo
     dns             DNS reconciliation helpers (publish, link-to-cloudflare)
     plausible       Plausible site helpers (rename — domain change with history kept)
+    listmonk user   Give a project its own Listmonk API user (roles + env rewrite)
     email           Set up Cloudflare Email Routing + MX/SPF/DMARC (setup/status)
     keys show <p>   Print the dotenvx private key for a project
     keys set <p>    Upsert the key into the OS keychain (after \`dotenvx rotate\`)

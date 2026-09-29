@@ -23,6 +23,11 @@
  *   GET  /api/settings
  *   PUT  /api/settings/{key}
  *   GET  /api/health
+ *   GET  /api/profile
+ *   GET|POST /api/users, DELETE /api/users/{id}
+ *   GET|POST /api/roles/users, PUT /api/roles/users/{id}
+ *   GET|POST /api/roles/lists, PUT /api/roles/lists/{id}
+ *   DELETE /api/roles/{id}
  */
 
 import { randomUUID } from "node:crypto";
@@ -565,8 +570,8 @@ function planSesSmtp(
       reason:
         `Listmonk has other SMTP servers (${names}) and the API masks their passwords. ` +
         "Writing the SMTP list would replace those passwords with the mask. " +
-        "Add the SES server in Listmonk → Settings → SMTP by hand, with SES_SMTP_HOST, " +
-        "SES_SMTP_USERNAME and SES_SMTP_PASSWORD from .env.production.",
+        "Add the SES server in Listmonk → Settings → SMTP by hand; " +
+        "`hatchkit ses smtp --show-password` prints its host, port, username and password.",
     };
   }
 
@@ -780,6 +785,164 @@ export async function createListmonkApiUser(
   return { id: d.id, username: d.username, token: d.password };
 }
 
+/** One row of `GET /api/users`. Listmonk blanks the token here; it is
+ *  only ever returned by `POST /api/users`. */
+export interface ListmonkUser {
+  id: number;
+  username: string;
+  type: "user" | "api";
+  status: string;
+  userRoleId: number;
+  listRoleId: number | null;
+}
+
+/** `GET /api/users` — every user, human and API. Needs `users:get`. */
+export async function listListmonkUsers(auth: ListmonkAuth): Promise<ListmonkUser[]> {
+  const rows = await listmonkFetch<
+    Array<{
+      id: number;
+      username: string;
+      type: "user" | "api";
+      status: string;
+      user_role_id?: number;
+      user_role?: { id: number } | null;
+      list_role?: { id: number } | null;
+    }>
+  >(auth, "GET", "/api/users");
+  return (rows ?? []).map((u) => ({
+    id: u.id,
+    username: u.username,
+    type: u.type,
+    status: u.status,
+    userRoleId: u.user_role?.id ?? u.user_role_id ?? 0,
+    listRoleId: u.list_role?.id ?? null,
+  }));
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Roles (Listmonk v4+)
+//
+// A user role holds global permissions (`tx:send`, `subscribers:get_all`,
+// …). A list role holds per-list `list:get` / `list:manage`. Names are
+// unique per type, so a user role and a list role may share a name.
+// Every route needs `roles:get` / `roles:manage`.
+//
+// `PUT /api/roles/lists/:id` replaces the role's whole list set, and
+// deleting a list role deletes every user that holds it
+// (`users.list_role_id … ON DELETE CASCADE`). A user role that a user
+// still holds cannot be deleted (`ON DELETE RESTRICT`).
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface ListmonkUserRole {
+  id: number;
+  name: string;
+  permissions: string[];
+}
+
+export interface ListmonkListRole {
+  id: number;
+  name: string;
+  lists: Array<{ id: number; name?: string; permissions: string[] }>;
+}
+
+export async function listListmonkUserRoles(auth: ListmonkAuth): Promise<ListmonkUserRole[]> {
+  const rows = await listmonkFetch<
+    Array<{ id: number; name: string | null; permissions?: string[] | null }>
+  >(auth, "GET", "/api/roles/users");
+  return (rows ?? []).map((r) => ({
+    id: r.id,
+    name: r.name ?? "",
+    permissions: r.permissions ?? [],
+  }));
+}
+
+export async function listListmonkListRoles(auth: ListmonkAuth): Promise<ListmonkListRole[]> {
+  const rows = await listmonkFetch<
+    Array<{
+      id: number;
+      name: string | null;
+      lists?: Array<{ id: number; name?: string; permissions?: string[] | null }> | null;
+    }>
+  >(auth, "GET", "/api/roles/lists");
+  return (rows ?? []).map((r) => ({
+    id: r.id,
+    name: r.name ?? "",
+    lists: (r.lists ?? []).map((l) => ({
+      id: l.id,
+      name: l.name,
+      permissions: (l.permissions ?? []).filter(Boolean),
+    })),
+  }));
+}
+
+export async function createListmonkUserRole(
+  auth: ListmonkAuth,
+  params: { name: string; permissions: string[] },
+): Promise<ListmonkUserRole> {
+  const r = await listmonkFetch<{ id: number; name: string | null; permissions?: string[] }>(
+    auth,
+    "POST",
+    "/api/roles/users",
+    { name: params.name, permissions: params.permissions },
+  );
+  return {
+    id: r.id,
+    name: r.name ?? params.name,
+    permissions: r.permissions ?? params.permissions,
+  };
+}
+
+export async function updateListmonkUserRole(
+  auth: ListmonkAuth,
+  id: number,
+  params: { name: string; permissions: string[] },
+): Promise<void> {
+  await listmonkFetch<unknown>(auth, "PUT", `/api/roles/users/${id}`, {
+    name: params.name,
+    permissions: params.permissions,
+  });
+}
+
+export async function createListmonkListRole(
+  auth: ListmonkAuth,
+  params: { name: string; lists: Array<{ id: number; permissions: string[] }> },
+): Promise<{ id: number; name: string }> {
+  const r = await listmonkFetch<{ id: number; name: string | null }>(
+    auth,
+    "POST",
+    "/api/roles/lists",
+    { name: params.name, lists: params.lists },
+  );
+  return { id: r.id, name: r.name ?? params.name };
+}
+
+/** Replace a list role's lists. Lists left out lose their grant. */
+export async function updateListmonkListRole(
+  auth: ListmonkAuth,
+  id: number,
+  params: { name: string; lists: Array<{ id: number; permissions: string[] }> },
+): Promise<void> {
+  await listmonkFetch<unknown>(auth, "PUT", `/api/roles/lists/${id}`, {
+    name: params.name,
+    lists: params.lists,
+  });
+}
+
+/** Delete a user or list role by id. Idempotent: a missing role is
+ *  "not-found". */
+export async function deleteListmonkRole(
+  auth: ListmonkAuth,
+  id: number,
+): Promise<"deleted" | "not-found"> {
+  try {
+    await listmonkFetch<boolean>(auth, "DELETE", `/api/roles/${id}`);
+    return "deleted";
+  } catch (err) {
+    if (/HTTP 404\b/.test((err as Error).message)) return "not-found";
+    throw err;
+  }
+}
+
 /** Delete a user by id. Idempotent: a missing user is "not-found". */
 export async function deleteListmonkUser(
   auth: ListmonkAuth,
@@ -867,7 +1030,7 @@ function planSmtpSwap(
     matched,
     blocked:
       `Listmonk has other SMTP servers (${names}) and the API masks their passwords, so writing the SMTP list would replace them with the mask. ` +
-      "In Listmonk → Settings → SMTP, set the SES server's username and password to SES_SMTP_USERNAME and SES_SMTP_PASSWORD from a rotated .env.production.",
+      "In Listmonk → Settings → SMTP, set the SES server's username and password to the rotated ones: `hatchkit ses smtp --show-password` prints them.",
   };
 }
 

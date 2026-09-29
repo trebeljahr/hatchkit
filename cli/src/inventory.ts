@@ -554,7 +554,8 @@ function collectEnvSignals(
   // tight; over-broad matches lead to spurious "expected" flags.
   const patterns: Array<{ re: RegExp; signal: string }> = [
     { re: /^\s*LISTMONK_/m, signal: "LISTMONK" },
-    { re: /^\s*SES_SMTP_/m, signal: "SES_SMTP" },
+    // SES_SMTP_* in env files older hatchkit wrote; SES_FROM_EMAIL since.
+    { re: /^\s*SES_(SMTP_|FROM_EMAIL)/m, signal: "SES" },
     { re: /^\s*GLITCHTIP_DSN|^\s*PUBLIC_GLITCHTIP_DSN/m, signal: "GLITCHTIP" },
     { re: /^\s*SENTRY_DSN|^\s*PUBLIC_SENTRY_DSN/m, signal: "SENTRY" },
     { re: /^\s*OPENPANEL_|^\s*PUBLIC_OPENPANEL_/m, signal: "OPENPANEL" },
@@ -1012,7 +1013,7 @@ export interface ProviderExpectations {
   plausible: boolean;
   stripe: boolean;
   /** True when the project sends mail via the Listmonk + SES bundle —
-   *  either env signals (LISTMONK_URL + SES_SMTP_HOST present) or the
+   *  either env signals (LISTMONK_* + SES_FROM_EMAIL / SES_SMTP_*) or the
    *  manifest's email intent points at `listmonk-ses`. Drives the SES
    *  MAIL FROM scanner. */
   sesMailFrom: boolean;
@@ -1061,7 +1062,7 @@ export function computeExpectations(
       // Env fallback for projects whose manifest predates the email intent
       // field — both signals required to avoid false positives from a
       // Listmonk-only or SES-only setup that lives outside Hatchkit's bundle.
-      return env.has("LISTMONK") && env.has("SES_SMTP");
+      return env.has("LISTMONK") && env.has("SES");
     })(),
   };
 }

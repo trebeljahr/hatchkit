@@ -11,15 +11,16 @@
  *      records' parent, and the destroy-time identity name; drifting it
  *      silently breaks email send + leaves orphan SES identities.
  *
- *   2. `renderListmonkSesEnv` — the prod/dev env quartets. The only
+ *   2. `renderListmonkSesEnv` — the prod/dev env. The only
  *      list difference is that prod carries the live list id as
  *      `LISTMONK_LIVE_LIST_ID` and dev does not carry it at all, which
  *      keeps a bug in dev from broadcasting to real subscribers. The
  *      name must match the starter: its docker-compose.yml passes only
  *      the names it lists into the server container, so a key it does
- *      not name reaches nothing in production. Everything else (SMTP
- *      host, username/password, region, from-email, API user/token,
- *      the test list id) is identical across surfaces.
+ *      not name reaches nothing in production. Everything else (region,
+ *      from-email, API user/token, the test list id) is identical across
+ *      surfaces. No SES_SMTP_*: nothing in the starter sends SMTP, and
+ *      the password carries hatchkit's SES IAM user's rights.
  *
  *   3. `singleOptinLists` / `singleOptinHint` — the drift report for
  *      adopted lists that are still single opt-in. The hint's order is
@@ -77,17 +78,13 @@ console.log("\nrenderListmonkSesEnv:");
 
 const baseInput = {
   listmonkUrl: "https://newsletter.example.com",
-  listmonkApiUser: "hatchkit",
+  listmonkApiUser: "playtiao",
   listmonkApiToken: "tok-abc",
   liveListId: 11,
   testListId: 22,
   txTemplateId: 33,
   campaignTemplateId: 44,
   listmonkFrom: "Playtiao <noreply@mail.playtiao.com>",
-  smtpHost: "email-smtp.eu-west-1.amazonaws.com",
-  smtpPort: 587,
-  smtpUsername: "AKIAEXAMPLE",
-  smtpPassword: "smtp-derived-secret",
   fromEmail: "noreply@mail.playtiao.com",
   region: "eu-west-1",
 };
@@ -118,7 +115,9 @@ expect("values other than the live list id are identical across prod and dev", (
 
 expect("every LISTMONK_* key in the prod env reaches the starter's server container", () => {
   const compose = readFileSync(join(HERE, "..", "starter", "docker-compose.yml"), "utf-8");
-  const passed = new Set([...compose.matchAll(/^\s+(LISTMONK_[A-Z_]+):\s*\$\{\1[:}-]/gm)].map((m) => m[1]));
+  const passed = new Set(
+    [...compose.matchAll(/^\s+(LISTMONK_[A-Z_]+):\s*\$\{\1[:}-]/gm)].map((m) => m[1]),
+  );
   const env = renderListmonkSesEnv(baseInput);
   for (const line of env.prod) {
     const key = line.slice(0, line.indexOf("="));
@@ -138,10 +137,6 @@ expect("emits every required key the runtime needs", () => {
     "LISTMONK_TX_TEMPLATE_ID=",
     "LISTMONK_CAMPAIGN_TEMPLATE_ID=",
     "LISTMONK_FROM=",
-    "SES_SMTP_HOST=",
-    "SES_SMTP_PORT=",
-    "SES_SMTP_USERNAME=",
-    "SES_SMTP_PASSWORD=",
     "SES_FROM_EMAIL=",
     "SES_REGION=",
   ];
@@ -154,6 +149,19 @@ expect("emits every required key the runtime needs", () => {
       env.dev.some((l) => l.startsWith(prefix)),
       `missing key ${prefix} in dev env`,
     );
+  }
+});
+
+expect("names the API user it is given, in both surfaces", () => {
+  const env = renderListmonkSesEnv(baseInput);
+  assert.ok(env.prod.includes("LISTMONK_API_USER=playtiao"));
+  assert.ok(env.dev.includes("LISTMONK_API_USER=playtiao"));
+});
+
+expect("writes no SES SMTP login into either surface", () => {
+  const env = renderListmonkSesEnv(baseInput);
+  for (const lines of [env.prod, env.dev]) {
+    assert.ok(!lines.some((l) => l.startsWith("SES_SMTP_")), lines.join("\n"));
   }
 });
 

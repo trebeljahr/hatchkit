@@ -76,6 +76,7 @@ rotation URL, required scopes, and exact `hatchkit config add <provider>` comman
 | `hatchkit sync` | Sync/deploy state for an existing Hatchkit project (incl. manifest `aliases[]` multi-hostname routing) |
 | `hatchkit dns publish` | Upsert A/AAAA records for the manifest's domain + aliases (supports `--dry-run`) |
 | `hatchkit plausible rename <old> <new>` | Move a Plausible site to a new domain, keeping stats history |
+| `hatchkit listmonk user <project>` | Give a project its own Listmonk API user + roles and rewrite its env (`--dry-run` first; needs the `hatchkit-admin` keychain token; never pushes) |
 | `hatchkit rename-domain` | Rename project domain and related deploy config |
 | `hatchkit regen-infra` | Regenerate project infra files |
 | `hatchkit provision s3` | Create project S3/R2 buckets and env entries |

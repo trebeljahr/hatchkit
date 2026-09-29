@@ -2816,6 +2816,24 @@ async function executePlan(
               listName: event.listName,
               listId: event.listId,
             });
+          } else if (event.service === "listmonkRole" && event.createdThisRun) {
+            ledger.record({
+              kind: "listmonkRole",
+              listmonkUrl: event.listmonkUrl,
+              roleType: event.roleType,
+              name: event.name,
+              roleId: event.roleId,
+            });
+          } else if (event.service === "listmonkApiUser" && event.createdThisRun) {
+            ledger.record({
+              kind: "listmonkApiUser",
+              listmonkUrl: event.listmonkUrl,
+              username: event.username,
+              userId: event.userId,
+            });
+            if (event.keychainAccount) {
+              ledger.record({ kind: "keychain", account: event.keychainAccount });
+            }
           } else if (event.service === "search-console") {
             if (event.dnsRecord?.created) {
               ledger.record({

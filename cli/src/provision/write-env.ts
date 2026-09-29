@@ -181,6 +181,24 @@ export function writeProdEnv(envPath: string, pairs: EnvPair[]): string[] {
   return encrypted;
 }
 
+/** Delete each `KEY=` line in `keys` from an env file, encrypted or
+ *  plain; other lines, comments and the dotenvx header stay as they
+ *  are. Returns the keys it found and removed. A missing file is a
+ *  no-op. Single-line values only — every key hatchkit writes is one. */
+export function removeEnvKeys(envPath: string, keys: readonly string[]): string[] {
+  if (!existsSync(envPath) || keys.length === 0) return [];
+  const text = readFileSync(envPath, "utf-8");
+  const removed: string[] = [];
+  const kept = text.split("\n").filter((line) => {
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+    if (!m || !keys.includes(m[1])) return true;
+    if (!removed.includes(m[1])) removed.push(m[1]);
+    return false;
+  });
+  if (removed.length > 0) writeFileSync(envPath, kept.join("\n"), { mode: 0o600 });
+  return removed;
+}
+
 /** Append a block of comment lines to an env file ONCE. The first line
  *  acts as a sentinel — if it already appears in the file, the call is
  *  a no-op. dotenvx-encrypted files preserve comments verbatim, so this

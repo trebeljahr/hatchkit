@@ -78,6 +78,20 @@ export type LedgerStep =
    *  pre-existing Listmonk install belongs to the user). Destroy hits
    *  DELETE /api/lists/{id}, 404-tolerant. */
   | { kind: "listmonkList"; listmonkUrl: string; listName: string; listId: number }
+  /** A project's own Listmonk role (user role or list role) hatchkit
+   *  created. Undo needs the `hatchkit-admin` credential, deletes by id,
+   *  and refuses while a user still holds the role: Listmonk deletes
+   *  every user that holds a list role along with it. */
+  | {
+      kind: "listmonkRole";
+      listmonkUrl: string;
+      roleType: "user" | "list";
+      name: string;
+      roleId: number;
+    }
+  /** A project's own Listmonk API user hatchkit created. Undo deletes
+   *  it by id with the `hatchkit-admin` credential. */
+  | { kind: "listmonkApiUser"; listmonkUrl: string; username: string; userId: number }
   | { kind: "tfvars"; path: string }
   | { kind: "coolifyEnv"; path: string }
   | { kind: "keychain"; account: string }

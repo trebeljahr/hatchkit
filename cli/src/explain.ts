@@ -153,7 +153,7 @@ const MODEL: ExplainModel = {
     { name: "Plausible", role: "Privacy-friendly web analytics and dashboard sites." },
     {
       name: "Listmonk + AWS SES",
-      role: "Self-hosted mailing-list manager (Listmonk) backed by SES for delivery. Hatchkit verifies the SES sending subdomain, publishes DKIM into Cloudflare, routes its bounces + complaints through the shared ses-feedback-listmonk SNS topic to Listmonk's SES webhook, creates per-project lists + tx/campaign templates, and renders LISTMONK_/SES_SMTP_* env so the app sends transactional + broadcast mail through Listmonk's API.",
+      role: "Self-hosted mailing-list manager (Listmonk) backed by SES for delivery. Hatchkit verifies the SES sending subdomain, publishes DKIM into Cloudflare, routes its bounces + complaints through the shared ses-feedback-listmonk SNS topic to Listmonk's SES webhook, creates per-project lists + tx/campaign templates, gives the project its own Listmonk API user (user role + list role; needs the hatchkit-admin credential in keychain listmonk:admin-api-token, else the project gets hatchkit's own user), and renders LISTMONK_* + SES_FROM_EMAIL / SES_REGION env so the app sends transactional + broadcast mail through Listmonk's API. `hatchkit listmonk user <project>` moves an existing project to its own user.",
     },
   ],
   state_locations: [

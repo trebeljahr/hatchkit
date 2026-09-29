@@ -58,6 +58,8 @@ const DANGEROUS_ARGV: string[][] = [
   ["assets", "pull", "--help"],
   ["ses", "verify", "someone@example.com", "--help"],
   ["ses", "unverify", "someone@example.com", "--help"],
+  ["ses", "smtp", "--show-password", "--help"],
+  ["listmonk", "user", "demo", "--regenerate-token", "--help"],
   ["email", "setup", "--help"],
   ["email", "ses-mail-from", "setup", "--help"],
   ["dns", "publish", "--help"],
@@ -100,6 +102,7 @@ check("commands with hand-written usage have no topic", () => {
   assert.equal(helpTopicForCommand("provision"), undefined);
   assert.equal(helpTopicForCommand("signing"), undefined);
   assert.equal(helpTopicForCommand("ses"), undefined);
+  assert.equal(helpTopicForCommand("listmonk"), undefined);
   assert.equal(helpTopicForCommand("not-a-command"), undefined);
 });
 
@@ -190,6 +193,7 @@ checkHelpRun(["keys", "rotate", "demo", "--help"], "hatchkit keys — manage per
 checkHelpRun(["ses", "unverify", "someone@example.com", "--help"], "hatchkit ses — Amazon SES");
 checkHelpRun(["signing", "apply", "--help"], "hatchkit signing org-init");
 checkHelpRun(["email", "setup", "--help"], "hatchkit email — Cloudflare Email Routing");
+checkHelpRun(["listmonk", "user", "demo", "--help"], "hatchkit listmonk — Listmonk helpers");
 
 // The topic has to be the command's own — root help would satisfy a
 // looser assertion while telling the user nothing about what they

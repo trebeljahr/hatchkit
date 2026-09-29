@@ -5,9 +5,12 @@
  * one provisioner step because the two services are complementary:
  * SES owns delivery + IP reputation (and gets pasted into Listmonk's
  * SMTP settings out-of-band), Listmonk owns subscribe/confirm/
- * broadcast UI. From the project's runtime view it's a single bundle
- * of env vars — LISTMONK_* + SES_* — that the app reads to send mail
- * via either route.
+ * broadcast UI. From the project's runtime view it is one bundle of
+ * env vars: LISTMONK_* for the API, plus SES_FROM_EMAIL / SES_REGION.
+ * The SES SMTP login stays in Listmonk's settings and out of the app
+ * env: nothing in the starter sends SMTP itself, and the password is
+ * derived from hatchkit's own SES IAM secret, so it carries that IAM
+ * user's rights rather than the project's.
  *
  * Sequencing (all idempotent on re-run):
  *
@@ -26,6 +29,10 @@
  *      `optin: double`; an existing list that is still single opt-in
  *      is adopted as-is and reported in `singleOptinLists`, never
  *      switched from here.
+ *   3b. Listmonk: the project's own API user `<project>`, with a user
+ *      role and a list role on those two lists (`listmonk-project-
+ *      user.ts`). Needs the `hatchkit-admin` credential; without it the
+ *      caller renders hatchkit's own user and warns.
  *   4. SES bounce + complaint feedback (after the SMTP apply, which
  *      reloads Listmonk): the identity's Bounce/Complaint topics point at
  *      the shared `ses-feedback-listmonk` SNS topic, which is subscribed
@@ -42,6 +49,11 @@ import {
   type PublishDnsRecord,
   publishDnsRecordsToCloudflare,
 } from "./cloudflare-dns-publish.js";
+import {
+  type EnsureListmonkProjectUserOptions,
+  type ListmonkProjectUserResult,
+  ensureListmonkProjectUser,
+} from "./listmonk-project-user.js";
 import {
   type ApplySesSmtpResult,
   type ListmonkAuth,
@@ -106,6 +118,11 @@ export interface ListmonkSesProvisionOptions {
    *  the bundled test scripts know which address to target. Skipped
    *  when not set. */
   seedSubscriberEmail?: string;
+  /** Give the project its own Listmonk API user, with a user role and
+   *  a list role on the live + test lists (`listmonk-project-user.ts`).
+   *  Carries the `hatchkit-admin` credential. Omitted: no user is
+   *  created and the caller renders hatchkit's own user, as before. */
+  projectUser?: Omit<EnsureListmonkProjectUserOptions, "name" | "listIds" | "dryRun">;
   /** Pre-resolved SES + Listmonk credentials. When omitted the
    *  orchestrator falls back to the global config (ensureSes /
    *  ensureListmonk). Tests pass overrides to avoid keychain. */
@@ -169,6 +186,27 @@ export interface ListmonkSesProvisionEvents {
     listName: string;
     createdThisRun: boolean;
   }) => void;
+  /** Fires after each of the project's own Listmonk roles is created
+   *  or found by name. Only with `projectUser`. */
+  onListmonkRole?: (event: {
+    listmonkUrl: string;
+    roleType: "user" | "list";
+    roleId: number;
+    name: string;
+    createdThisRun: boolean;
+  }) => void;
+  /** Fires once the project's own API user exists. `createdThisRun` is
+   *  also true for a user deleted and created again after the caller
+   *  confirmed it. Only with `projectUser`. */
+  onListmonkApiUser?: (event: {
+    listmonkUrl: string;
+    userId: number;
+    username: string;
+    createdThisRun: boolean;
+  }) => void;
+  /** Receives a freshly created user's token before anything else can
+   *  fail. Listmonk shows it once; the caller persists it here. */
+  onListmonkApiToken?: (event: { username: string; token: string }) => Promise<void> | void;
   /** Fires after the DKIM CNAMEs are upserted into Cloudflare.
    *  `createdRecords` is the per-record handle list for everything
    *  THIS run created — auto-rollback uses it to DELETE only what we
@@ -223,6 +261,9 @@ export interface ListmonkSesProvisionResult {
   testList: ListmonkList;
   txTemplate: ListmonkTemplate;
   campaignTemplate: ListmonkTemplate;
+  /** The project's own API user and its token. Null when the caller
+   *  passed no `projectUser`. */
+  projectUser: ListmonkProjectUserResult | null;
   dnsPublish: {
     zoneId: string;
     zoneName: string;
@@ -472,6 +513,28 @@ export async function provisionListmonkSesForProject(
     listmonkUrl,
   );
 
+  // 4c. The project's own API user: a user role, a list role on the two
+  //     lists above, and the user. Before the shared SMTP settings are
+  //     touched, so a declined token regeneration stops the run early.
+  //     Every step finds its object by name first, so a re-run with the
+  //     stored token writes nothing.
+  let projectUser: ListmonkProjectUserResult | null = null;
+  if (opts.projectUser) {
+    const adminUrl = opts.projectUser.admin.url;
+    projectUser = await ensureListmonkProjectUser(
+      {
+        ...opts.projectUser,
+        name: opts.projectName,
+        listIds: [liveList.id, testList.id],
+      },
+      {
+        onRole: (e) => events.onListmonkRole?.({ listmonkUrl: adminUrl, ...e }),
+        onUser: (e) => events.onListmonkApiUser?.({ listmonkUrl: adminUrl, ...e }),
+        onToken: (e) => events.onListmonkApiToken?.(e),
+      },
+    );
+  }
+
   // 5. SMTP credentials are deterministic from the SES IAM secret +
   //    region — derive them now so the env-render step has the values
   //    without a second round-trip.
@@ -574,6 +637,7 @@ export async function provisionListmonkSesForProject(
     testList,
     txTemplate,
     campaignTemplate,
+    projectUser,
     dnsPublish,
     smtpApplied,
     singleOptinLists: driftedLists,
@@ -902,10 +966,6 @@ export interface RenderListmonkSesEnvOptions {
    *  `SES_FROM_EMAIL`); the two can drift when the project's display name
    *  differs from the bare mailbox. */
   listmonkFrom: string;
-  smtpHost: string;
-  smtpPort: number;
-  smtpUsername: string;
-  smtpPassword: string;
   fromEmail: string;
   region: string;
   /** Optional default-recipient for the bundled `newsletter:test-tx` /
@@ -916,10 +976,20 @@ export interface RenderListmonkSesEnvOptions {
   testRecipient?: string;
 }
 
-/** Render the env quartets for prod vs dev. Both surfaces share
- *  identical LISTMONK_URL / LISTMONK_API_USER / LISTMONK_API_TOKEN /
+/** Render the env for prod vs dev. Both surfaces share identical
+ *  LISTMONK_URL / LISTMONK_API_USER / LISTMONK_API_TOKEN /
  *  LISTMONK_TEST_LIST_ID / LISTMONK_TX_TEMPLATE_ID /
- *  LISTMONK_CAMPAIGN_TEMPLATE_ID / LISTMONK_FROM / SES_SMTP_* values.
+ *  LISTMONK_CAMPAIGN_TEMPLATE_ID / LISTMONK_FROM / SES_FROM_EMAIL /
+ *  SES_REGION values.
+ *
+ *  `listmonkApiUser` / `listmonkApiToken` are the project's own API user
+ *  when the admin credential exists, hatchkit's own user otherwise.
+ *
+ *  No SES_SMTP_*: the starter never sends SMTP itself, and the SMTP
+ *  password is derived from hatchkit's own SES IAM secret, so it
+ *  carries that IAM user's rights. Listmonk holds it in its SMTP
+ *  settings (`applySesSmtpToListmonk`); `hatchkit ses smtp` prints it
+ *  for a hand paste.
  *
  *  `LISTMONK_LIVE_LIST_ID` goes into prod only. It is the name the
  *  starter's config/env.ts, docker-compose.yml and newsletter code read;
@@ -944,10 +1014,6 @@ export function renderListmonkSesEnv(opts: RenderListmonkSesEnvOptions): {
     `LISTMONK_TX_TEMPLATE_ID=${opts.txTemplateId}`,
     `LISTMONK_CAMPAIGN_TEMPLATE_ID=${opts.campaignTemplateId}`,
     `LISTMONK_FROM=${opts.listmonkFrom}`,
-    `SES_SMTP_HOST=${opts.smtpHost}`,
-    `SES_SMTP_PORT=${opts.smtpPort}`,
-    `SES_SMTP_USERNAME=${opts.smtpUsername}`,
-    `SES_SMTP_PASSWORD=${opts.smtpPassword}`,
     `SES_FROM_EMAIL=${opts.fromEmail}`,
     `SES_REGION=${opts.region}`,
   ];

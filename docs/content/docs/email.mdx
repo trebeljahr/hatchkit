@@ -7,7 +7,7 @@ Hatchkit can wire up two providers for outbound email:
 
 | Need | Resend | Listmonk + SES |
 |---|---|---|
-| Transactional sends | one API key per env | SMTP relay (direct) or Listmonk `/api/tx` |
+| Transactional sends | one API key per env | Listmonk `/api/tx` |
 | Mailing list broadcasts | Audiences | Listmonk lists |
 | Subscribe / confirm / unsub UI | bring your own | Listmonk admin UI |
 | Cost (low-volume hobbyist) | €20/month entry tier | ~€0.10 per 1,000 sends + €0 Listmonk |
@@ -32,9 +32,9 @@ your app  ─── HTTPS POST ─────────┤                 �
 
 - SES owns IP reputation, delivery, bounce + complaint feedback.
 - Listmonk owns subscribe/confirm/broadcast/template UX.
-- The runtime app can pick either route:
-  - `LISTMONK_URL` + `LISTMONK_API_USER` + `LISTMONK_API_TOKEN` + `LISTMONK_LIVE_LIST_ID` (production) or `LISTMONK_TEST_LIST_ID` (everywhere else) for list ops + `/api/tx` transactional.
-  - `SES_SMTP_HOST` + `SES_SMTP_USERNAME` + `SES_SMTP_PASSWORD` + `SES_FROM_EMAIL` for direct SMTP sends (bypassing Listmonk — e.g. signup confirmations that go to non-subscribers).
+- The app talks to Listmonk only: `LISTMONK_URL` + `LISTMONK_API_USER` + `LISTMONK_API_TOKEN` + `LISTMONK_LIVE_LIST_ID` (production) or `LISTMONK_TEST_LIST_ID` (everywhere else) for list operations and `/api/tx` transactional sends. `SES_FROM_EMAIL` and `SES_REGION` name the sending identity.
+- Each project has its own Listmonk API user (see [One API user per project](#one-api-user-per-project)).
+- The SES SMTP login stays in Listmonk's settings, not in the app's env. Nothing in the starter sends SMTP itself. The SMTP password derives from hatchkit's own SES IAM secret, so it carries that IAM user's rights, not the project's.
 
 ## One-time global setup
 
@@ -101,6 +101,15 @@ The `--deploy` flag prints a step-by-step walkthrough for the Coolify Listmonk s
 
 Then hatchkit prompts you for the URL + API user name + token. It validates by hitting `GET /api/lists` before storing anything.
 
+3. **Admin → Users → New API user** again, for the admin credential: name `hatchkit-admin`, role `Super Admin`. Hatchkit uses it to create each project's own role pair and API user. The `hatchkit` user above has no `users:*` or `roles:*` permission, and it should not get them. Store the token in the keychain only; the command prompts for it, so the token stays out of your shell history:
+
+   ```sh
+   security add-generic-password -U -s hatchkit -a listmonk:admin-api-token -w   # macOS
+   secret-tool store --label="hatchkit listmonk:admin-api-token" service hatchkit account listmonk:admin-api-token   # Linux
+   ```
+
+   Without it, every project gets the `hatchkit` user and its token, and provisioning prints a warning.
+
 ### 3. Wire SES into Listmonk's SMTP settings
 
 Listmonk delivers via SMTP, so the SES SMTP relay credentials need to land in **Listmonk's** Settings → SMTP. `hatchkit add <project> listmonk-ses` writes them with Listmonk's per-key `PUT /api/settings/smtp` (Listmonk v6 or later), provided the API user's role includes `Settings: All`. If it does, you'll see:
@@ -115,17 +124,13 @@ Hatchkit never uses the whole-document `PUT /api/settings`. `GET /api/settings` 
 
 One Listmonk serves every project, so its default sender (Settings → General → Default 'from' email, `app.from_email`) belongs to no single project. It sends Listmonk's own mail, such as opt-in confirmations, and any campaign or tx call that names no sender. Apps built from the starter pass `LISTMONK_FROM` on every call, so they do not depend on it. Hatchkit sets it only when it is empty or still Listmonk's install default (`listmonk <noreply@listmonk.yoursite.com>`). Any other value is left alone.
 
-If the API user lacks `Settings: All`, hatchkit downgrades to a warning and you paste manually:
+If the API user lacks `Settings: All`, hatchkit downgrades to a warning and you paste manually. Print the values with:
 
-```bash
-SES_SMTP_HOST=email-smtp.eu-west-1.amazonaws.com   → Host
-SES_SMTP_PORT=587                                  → Port
-SES_SMTP_USERNAME=AKIA...                          → Username
-SES_SMTP_PASSWORD=<derived-from-IAM-secret>        → Password
-SES_FROM_EMAIL=noreply@mail.<projectDomain>        → Settings → General → from-email, only if it is empty
+```sh
+hatchkit ses smtp --show-password
 ```
 
-Listmonk → Settings → SMTP → enable, paste, save. Auth protocol: `LOGIN`. TLS type: `STARTTLS`.
+Listmonk → Settings → SMTP → enable, paste host, port, username and password, save. Auth protocol: `LOGIN`. TLS type: `STARTTLS`. If Settings → General → Default 'from' email is empty, set it to `noreply@mail.<projectDomain>`.
 
 ## Per-project provisioning
 
@@ -139,9 +144,41 @@ This runs these steps, all idempotent on re-run:
 2. **Publish DKIM CNAMEs into Cloudflare.** Same upsert + SPF-merge plumbing as Resend's flow. Records are tracked in the run-ledger so `hatchkit destroy <project>` can DELETE only what this run created.
 3. **Route bounces and complaints to Listmonk.** The identity's Bounce and Complaint notifications go to the shared SNS topic that Listmonk listens on. See [Bounces and complaints](#bounces-and-complaints).
 4. **Create the project's Listmonk lists.** `<project>` (live, its id lands in `.env.production`) and `<project>-test` (dev, its id lands in both env files). Both are private and double opt-in (see [Double opt-in](#double-opt-in)). A list that already exists by that name is reused as it is. If it is still single opt-in, the run reports it and leaves it unchanged.
-5. **Render env into the server bundle.** The full `LISTMONK_*` + `SES_*` quartet. Both files get `LISTMONK_TEST_LIST_ID`. Only `.env.production` gets the live list's id, as `LISTMONK_LIVE_LIST_ID`, so code run against the development env cannot pick the live list by its id. The development values, including the Admin API token and the SMTP password, go to the gitignored `.env.development.local`, not the committed `.env.development`. The starter reads the live id only when `NODE_ENV=production`. Env files written by an older Hatchkit hold the live id as `LISTMONK_LIST_ID`; the starter still reads that name in production when `LISTMONK_LIVE_LIST_ID` is unset.
+5. **Create the project's own Listmonk API user.** A user role, a list role and an API user, each named `<project>`. See [One API user per project](#one-api-user-per-project).
+6. **Render env into the server bundle.** `LISTMONK_*` plus `SES_FROM_EMAIL` and `SES_REGION`. `LISTMONK_API_USER` and `LISTMONK_API_TOKEN` name the project's own user. Both files get `LISTMONK_TEST_LIST_ID`. Only `.env.production` gets the live list's id, as `LISTMONK_LIVE_LIST_ID`, so code run against the development env cannot pick the live list by its id. The development values, including the API token, go to the gitignored `.env.development.local`, not the committed `.env.development`. The starter reads the live id only when `NODE_ENV=production`. Env files written by an older Hatchkit hold the live id as `LISTMONK_LIST_ID`; the starter still reads that name in production when `LISTMONK_LIVE_LIST_ID` is unset.
 
 SES verification flips from Pending → Verified once DNS propagates (usually under 30 min). Hatchkit doesn't poll for it — you can check status anytime with `aws sesv2 get-email-identity --email-identity mail.<projectDomain>`.
+
+## One API user per project
+
+One Listmonk serves every project. If every project held the same token, a leak from any one app would carry that token's rights on the whole instance. So each project gets its own objects, all named after the project:
+
+| Object | Grants |
+|---|---|
+| User role `<project>` | `tx:send`, `subscribers:get_all`, `subscribers:manage`, `campaigns:manage` |
+| List role `<project>` | `list:get` + `list:manage` on the `<project>` and `<project>-test` lists |
+| API user `<project>` | both roles |
+
+The role needs `subscribers:get_all`, not `subscribers:get`. The signup form creates each subscriber on no list until the confirm click (see [Double opt-in](#double-opt-in)). With `subscribers:get` alone, Listmonk limits subscriber queries to the user's own lists. The confirm step then cannot find the address, and creating it again fails with a 409. The cost: the token can read every subscriber on the instance. Listmonk also cannot limit a user to its own templates or senders.
+
+The project token cannot read or change Listmonk's settings: `GET /api/settings` answers 403.
+
+Listmonk shows an API user's token once, when it creates the user. Hatchkit keeps it in the keychain (`listmonk:project:<project>:api-token`) and in the project's env files. A second run finds all three objects by name and reuses the token. If the user exists but no stored token works, hatchkit stops. Listmonk cannot regenerate a token, so the only fix is to delete the user and create it again, and that breaks the deployed copy of the old token. Hatchkit does it only after a yes at the prompt, or with `--regenerate-token` (`--regenerate-listmonk-token` on `hatchkit add`). Hatchkit never updates an existing API user in place: on Listmonk v4.0 to v6.1, that sets its token to NULL.
+
+A role that lacks one of the permissions or lists above gets it added. Anything else the role holds stays.
+
+### Existing projects
+
+Projects provisioned before this change hold the `hatchkit` user and its token. Move one to its own user with:
+
+```sh
+hatchkit listmonk user <project> --dry-run   # print the plan
+hatchkit listmonk user <project>
+```
+
+It reads the list ids from the project's env (`LISTMONK_LIVE_LIST_ID`, or `LISTMONK_LIST_ID` in older files, and `LISTMONK_TEST_LIST_ID`), or finds the lists by name. It creates the three objects and writes `LISTMONK_API_USER` + `LISTMONK_API_TOKEN` into `.env.production` (encrypted). If the development env uses Listmonk, it writes them into `.env.development.local` too. It also removes `SES_SMTP_*` lines when no file in the project's git tree reads them; `--keep-ses-smtp` leaves them.
+
+It does not push to Coolify. Run `hatchkit sync` and redeploy. Sync only adds and updates variables, so delete `SES_SMTP_*` from the Coolify app's environment by hand. When no project holds the `hatchkit` token any more, retire it with `hatchkit secrets rotate --global listmonk`.
 
 ## Double opt-in
 
@@ -165,7 +202,7 @@ The confirmation link points at the API's origin, `BETTER_AUTH_URL`. The confirm
 hatchkit remove <project> listmonk-ses
 ```
 
-Removes the per-project Listmonk lists. The SES identity (`mail.<projectDomain>`) is intentionally left in place because un-verifying it requires re-publishing DKIM if you ever recreate the project. To fully destroy SES state, use `hatchkit destroy <project>` — the ledger-driven destroy honors the `sesDomain` step. It also clears the identity's Bounce and Complaint notification topics, but only the ones that run set. The shared SNS topic, its subscription, the account suppression list and Listmonk's bounce settings stay, because the other projects use them.
+Removes the per-project Listmonk lists. With the `hatchkit-admin` credential, it also deletes the project's API user, then its user role, then its list role. A role another user still holds stays. The SES identity (`mail.<projectDomain>`) is intentionally left in place because un-verifying it requires re-publishing DKIM if you ever recreate the project. To fully destroy SES state, use `hatchkit destroy <project>` — the ledger-driven destroy honors the `sesDomain` step. It also clears the identity's Bounce and Complaint notification topics, but only the ones that run set. The shared SNS topic, its subscription, the account suppression list and Listmonk's bounce settings stay, because the other projects use them.
 
 ## Bounces and complaints
 
@@ -207,4 +244,6 @@ Without step 3, SES only emails a bounce notice to the sender address (`noreply@
 
 **`hatchkit doctor` says the SNS subscription is pending confirmation** — SNS sent its confirmation request before `bounce.ses_enabled` was on, or it could not reach the Listmonk URL. Check that the URL works from outside your network, then run `hatchkit doctor --fix`. It subscribes again, and SNS sends a new confirmation request.
 
-**Send fails: `554 ... not authorized to send`** — SES SMTP credentials are derived from the IAM secret. Don't paste the IAM secret directly into Listmonk; hatchkit renders the *derived* value into `.env.production` under `SES_SMTP_PASSWORD`. Use that.
+**Send fails: `554 ... not authorized to send`** — SES SMTP credentials are derived from the IAM secret. Don't paste the IAM secret directly into Listmonk. `hatchkit ses smtp --show-password` prints the *derived* password. Use that.
+
+**`hatchkit listmonk user` stops: the API user exists, but no stored token works** — Listmonk shows a token only once. If you have the working token, store it with `security add-generic-password -U -s hatchkit -a listmonk:project:<project>:api-token -w` and run the command again. Otherwise run it with `--regenerate-token`, then `hatchkit sync` and redeploy right away.

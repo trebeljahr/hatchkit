@@ -88,6 +88,15 @@ export const SECRET_KEYS = {
    *  alongside the URL; only the bearer token belongs in the keychain.
    *  Auth header format is `Authorization: token <api_user>:<token>`. */
   listmonkApiToken: "listmonk:api-token",
+  /** Token of the Listmonk API user `hatchkit-admin` (role Super
+   *  Admin), which creates each project's own role pair and API user.
+   *  The operator creates that user by hand and stores the token here;
+   *  hatchkit never writes it and never copies it into a project. */
+  listmonkAdminApiToken: "listmonk:admin-api-token",
+  /** Token of a project's own Listmonk API user. Listmonk shows it only
+   *  in the create response, so it is kept here to rebuild the env on a
+   *  re-run without replacing the user. */
+  listmonkProjectApiToken: (project: string) => `listmonk:project:${project}:api-token`,
   /** AWS access key id + secret for the IAM user hatchkit uses to
    *  drive SES (CreateEmailIdentity + Send*) and derive SMTP relay
    *  credentials. Region lives in meta JSON. */

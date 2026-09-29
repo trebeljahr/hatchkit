@@ -290,6 +290,14 @@ function recipeFor(step: LedgerStep): string | null {
       return chalk.dim(
         `# manual: delete Listmonk list ${step.listName} (id ${step.listId}) at ${step.listmonkUrl}`,
       );
+    case "listmonkRole":
+      return chalk.dim(
+        `# manual: delete Listmonk ${step.roleType} role ${step.name} (id ${step.roleId}) at ${step.listmonkUrl}, after its users`,
+      );
+    case "listmonkApiUser":
+      return chalk.dim(
+        `# manual: delete Listmonk API user ${step.username} (id ${step.userId}) at ${step.listmonkUrl}`,
+      );
     case "github":
       return `gh repo delete ${shellEscape(step.repo)} --yes`;
     case "scaffold":
@@ -565,6 +573,10 @@ function describeStep(step: LedgerStep): string {
       return `clear ${step.types.join(" + ")} notification topic on SES ${chalk.cyan(step.identity)} (shared topic kept)`;
     case "listmonkList":
       return `delete Listmonk list ${chalk.cyan(step.listName)} (id ${step.listId})`;
+    case "listmonkRole":
+      return `delete Listmonk ${step.roleType} role ${chalk.cyan(step.name)} (id ${step.roleId})`;
+    case "listmonkApiUser":
+      return `delete Listmonk API user ${chalk.cyan(step.username)} (id ${step.userId})`;
     case "tfvars":
       return `remove ${chalk.cyan(step.path)}`;
     case "coolifyEnv":
@@ -844,6 +856,27 @@ async function undoStep(
     case "listmonkList": {
       const { deleteListmonkListById } = await import("../provision/listmonk.js");
       const result = await deleteListmonkListById(step.listId);
+      return result === "not-found" ? "not-found" : "done";
+    }
+    case "listmonkRole":
+    case "listmonkApiUser": {
+      // Roles and users need users:* / roles:*, which only the admin
+      // credential has; hatchkit's own API user lacks them.
+      const { getListmonkAdminAuth } = await import("../config.js");
+      const admin = await getListmonkAdminAuth();
+      if (!admin) {
+        const { listmonkAdminSetupSteps } = await import("../provision/listmonk-project-user.js");
+        throw new Error(
+          `Deleting a Listmonk ${step.kind === "listmonkRole" ? "role" : "API user"} needs the hatchkit-admin credential:\n${listmonkAdminSetupSteps().join("\n")}`,
+        );
+      }
+      const { deleteListmonkApiUserIfNamed, deleteListmonkRoleIfUnheld } = await import(
+        "../provision/listmonk-project-user.js"
+      );
+      const result =
+        step.kind === "listmonkApiUser"
+          ? await deleteListmonkApiUserIfNamed(admin, step.userId, step.username)
+          : await deleteListmonkRoleIfUnheld(admin, step.roleType, step.roleId, step.name);
       return result === "not-found" ? "not-found" : "done";
     }
     case "manifest":

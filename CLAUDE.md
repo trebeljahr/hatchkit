@@ -62,6 +62,7 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
 - `hatchkit migrate-runtime [app] [--dry-run|--rollback|--cleanup]`: move a deployed Coolify compose app to Docker Image apps (rolling, zero-downtime deploys). Side by side with a verified cutover; refuses apps holding data. See `cli/src/deploy/image-runtime.ts` for why compose apps go down on every deploy.
 - `hatchkit dns publish [--dry-run]`: upsert Cloudflare A/AAAA records for the manifest's domain + aliases, pointing at the Coolify server.
 - `hatchkit plausible rename <old> <new>`: move a Plausible site to a new domain (stats history preserved).
+- `hatchkit listmonk user <project> [--dry-run]`: give a project its own Listmonk API user (user role + list role + API user, needs the `hatchkit-admin` token in keychain `listmonk:admin-api-token`) and rewrite LISTMONK_API_USER/TOKEN in its env. Never pushes; `hatchkit sync` after. `hatchkit add … listmonk-ses` does the same for new projects.
 - `hatchkit explain --json`: source-of-truth mental model.
 
 Check `hatchkit help <command>` before using flags you have not verified.
