@@ -890,7 +890,6 @@ await expect("Traefik labels: auth router above Listmonk's, bcrypt hash of the p
     host: "listmonk.example.com",
     credentials: CREDS,
     service: "http-0-abc-listmonk",
-    compose: false,
   });
   const get = (suffix: string) => labels.find((l) => l.startsWith(`traefik.http.${suffix}=`));
   const rule = "Host(`listmonk.example.com`) && PathPrefix(`/webhooks/service`)";
@@ -911,16 +910,25 @@ await expect("Traefik labels: auth router above Listmonk's, bcrypt hash of the p
   assert.ok(bcrypt.compareSync(CREDS.password, hash), "hash matches the password");
   assertNoPassword(labels);
 
+  // Coolify escapes the raw label for compose. Plain compose needs the
+  // explicit flag; both must deliver the same bcrypt hash to Traefik.
+  const raw = traefikBasicAuthLabels({
+    host: "listmonk.example.com",
+    credentials: CREDS,
+    hash,
+  });
+  assert.ok(!raw.some((l) => l.includes(".service=")), "no service: container default");
   const compose = traefikBasicAuthLabels({
     host: "listmonk.example.com",
     credentials: CREDS,
-    service: "s",
-    hash: "$2y$10$abc",
+    hash,
+    escapeDollars: true,
   });
-  assert.ok(
-    compose.some((l) => l.endsWith(`=${CREDS.user}:$$2y$$10$$abc`)),
-    "compose escapes $",
-  );
+  assert.deepEqual(compose.map((label) => label.replaceAll("$$", "$")), raw);
+  const composeUsers = compose.find((l) => l.includes(".basicauth.users=")) ?? "";
+  assert.ok(composeUsers.includes(`=${CREDS.user}:$$2y$$10$$`), "compose escapes bcrypt delimiters");
+  const composedHash = composeUsers.split("=")[1].split(/:(.*)/s)[1].replaceAll("$$", "$");
+  assert.ok(bcrypt.compareSync(CREDS.password, composedHash), "compose preserves the password hash");
 });
 
 console.log("\nListmonk adapter:");

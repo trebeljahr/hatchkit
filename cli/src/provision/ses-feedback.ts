@@ -1044,9 +1044,9 @@ export interface TraefikBasicAuthOptions {
   /** Listmonk's public hostname. */
   host: string;
   credentials: WebhookCredentials;
-  /** The Traefik service Listmonk's own router uses (the name in its
-   *  `traefik.http.services.<name>.loadbalancer.server.port` label). */
-  service: string;
+  /** The Traefik service to route to. Optional when Traefik can infer
+   *  the container's only service. Required with multiple services. */
+  service?: string;
   /** Same as Listmonk's own HTTPS router. Coolify uses `letsencrypt`. */
   certResolver?: string;
   httpsEntryPoint?: string;
@@ -1057,8 +1057,9 @@ export interface TraefikBasicAuthOptions {
    *  rule's length, well below this. */
   priority?: number;
   /** Double every `$` for a docker-compose file, which would otherwise
-   *  read the bcrypt hash as variables. Default true. */
-  compose?: boolean;
+   *  read the bcrypt hash as variables. Off by default: Coolify doubles
+   *  them itself while "Escape special characters in labels" is on. */
+  escapeDollars?: boolean;
   /** A precomputed htpasswd hash; tests pass one. */
   hash?: string;
 }
@@ -1090,7 +1091,7 @@ export function traefikBasicAuthLabels(o: TraefikBasicAuthOptions): string[] {
       `${r}.priority=${priority}`,
       ...tls.map((t) => `${r}.${t}`),
       `${r}.middlewares=${middleware}`,
-      `${r}.service=${o.service}`,
+      ...(o.service ? [`${r}.service=${o.service}`] : []),
     ];
   };
   const labels = [
@@ -1102,7 +1103,7 @@ export function traefikBasicAuthLabels(o: TraefikBasicAuthOptions): string[] {
     ]),
     ...router("http", o.httpEntryPoint ?? "http", []),
   ];
-  return o.compose === false ? labels : labels.map((l) => l.replaceAll("$", "$$$$"));
+  return o.escapeDollars ? labels.map((l) => l.replaceAll("$", "$$$$")) : labels;
 }
 
 // ────────────────────────────────────────────────────────────────────────────

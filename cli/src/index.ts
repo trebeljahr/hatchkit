@@ -2041,13 +2041,13 @@ async function printSesWebhookAuth(): Promise<void> {
   const listmonk = await ensureListmonk();
   const host = new URL(listmonk.url).host;
   const { credentials, created } = await ensureWebhookCredentials();
-  const service = flagValue("--service");
+  const escapeDollars = args.includes("--escape-dollars");
   const labels = traefikBasicAuthLabels({
     host,
     credentials,
-    service: service ?? "<listmonk-service>",
+    service: flagValue("--service"),
     certResolver: flagValue("--cert-resolver"),
-    compose: !args.includes("--no-compose-escape"),
+    escapeDollars,
   });
   console.log(chalk.bold(`\n  Basic auth for ${host}/webhooks/service (Traefik labels)\n`));
   if (created) {
@@ -2055,18 +2055,11 @@ async function printSesWebhookAuth(): Promise<void> {
       chalk.dim("  · Generated the SNS endpoint credentials and stored them in the keychain."),
     );
   }
-  if (!service) {
-    console.log(
-      chalk.yellow(
-        "  Replace <listmonk-service> with the service in Listmonk's own\n" +
-          "  `traefik.http.services.<name>.loadbalancer.server.port` label, or pass --service <name>.",
-      ),
-    );
-  }
   console.log(
     chalk.dim(
-      "  Add these to the Listmonk container's labels and redeploy. `$` is doubled for a\n" +
-        "  compose file; pass --no-compose-escape for a plain label list.\n",
+      escapeDollars
+        ? "  Add these to the Listmonk container's labels and redeploy. `$` is doubled for a\n  plain compose file.\n"
+        : '  Add these to the Listmonk container\'s labels and redeploy. In Coolify, keep\n  "Escape special characters in labels" on; for a plain compose file, pass\n  --escape-dollars.\n',
     ),
   );
   for (const l of labels) console.log(`      - ${l}`);
@@ -3798,7 +3791,7 @@ function printSesUsage(): void {
                        for pasting into Listmonk → Settings → SMTP. The
                        password prints only with --show-password.
 
-    ${chalk.cyan("webhook-auth [--service <name>] [--cert-resolver <name>] [--no-compose-escape]")}
+    ${chalk.cyan("webhook-auth [--service <name>] [--cert-resolver <name>] [--escape-dollars]")}
                        Traefik labels that require basic auth on Listmonk's
                        /webhooks/service, matching the credentials hatchkit
                        puts in the SNS subscription URL. Generates them on

@@ -237,10 +237,14 @@ Once the credentialed subscription is confirmed, hatchkit removes an older subsc
 To require the credentials, put a basic-auth router in front of `/webhooks/service`. For Listmonk behind Traefik (Coolify, for example):
 
 ```sh
-hatchkit ses webhook-auth --service <listmonk-traefik-service>
+hatchkit ses webhook-auth
 ```
 
-It prints labels for one router per entry point on `Host(<listmonk-host>) && PathPrefix(/webhooks/service)`, with priority 1000 and a `basicAuth` middleware that holds a bcrypt hash of the password. The password itself is never printed. `--service` is the service in Listmonk's own `traefik.http.services.<name>.loadbalancer.server.port` label. `--cert-resolver` defaults to `letsencrypt`. `$` is doubled for a compose file; pass `--no-compose-escape` for a plain list. Add the labels to the Listmonk container, redeploy, and check that `/webhooks/service/ses` answers `401` without credentials.
+The labels add one router per entry point on `Host(<listmonk-host>) && PathPrefix(/webhooks/service)`, with priority 1000. A `basicAuth` middleware holds a bcrypt hash of the password. The password itself is never printed. `--cert-resolver` defaults to `letsencrypt`.
+
+Traefik can infer the service when the container has only one. If the container has multiple Traefik services, pass `--service <name>` with Listmonk's service name.
+
+In Coolify, keep "Escape special characters in labels" on and paste the labels as printed. For a plain compose file, pass `--escape-dollars` to double each `$` in the hash. Add the labels to the Listmonk container and redeploy. Check that `/webhooks/service/ses` answers `401` without credentials.
 
 The credentials belong to one machine's keychain. A run on a machine without them generates new ones, and its subscription stays pending until the proxy has their hash.
 
