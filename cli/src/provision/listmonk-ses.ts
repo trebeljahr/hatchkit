@@ -519,6 +519,7 @@ export async function provisionListmonkSesForProject(
       listmonkUrl: listmonkAuth.url,
       aws: createSesFeedbackAws(sesAuth),
       listmonk: createSesFeedbackListmonk(listmonkAuth),
+      region: sesAuth.region,
       confirmTimeoutMs: opts.feedbackConfirmTimeoutMs,
     });
     events.onSesFeedback?.({

@@ -431,7 +431,10 @@ export function planSes(input: MigrationPlanInput): MigrationAction[] {
         phase: "cutover",
         kind: "update",
         summary: `make sure the app's from-address is on ${desired}`,
-        detail: [`SES_FROM_EMAIL / LISTMONK_FROM: @${oldIdentity} → @${desired}, if still there`],
+        detail: [
+          `SES_FROM_EMAIL / LISTMONK_FROM: @${oldIdentity} → @${desired}, if still there`,
+          `checks ${desired}'s bounce/complaint topics`,
+        ],
         gate: `SES reports VerifiedForSendingStatus=true for ${desired}`,
       });
       if (input.includeCleanup) actions.push(retire);
@@ -452,6 +455,8 @@ export function planSes(input: MigrationPlanInput): MigrationAction[] {
         detail: [
           "publishes 3 DKIM CNAMEs into the new zone",
           `sets MAIL FROM ${newMailFrom} + its MX and SPF TXT`,
+          `copies ${current}'s Bounce + Complaint SNS topics onto it; a type it`,
+          "doesn't route goes to ses-feedback-listmonk (Listmonk's SES webhook)",
           "the old identity keeps sending until cutover",
         ],
       },
@@ -465,6 +470,7 @@ export function planSes(input: MigrationPlanInput): MigrationAction[] {
       kind: "update",
       summary: `switch the sending identity to ${desired}`,
       detail: [
+        `checks ${desired}'s bounce/complaint topics again before it starts sending`,
         `manifest.ses.identity: ${current} → ${desired}`,
         `SES_FROM_EMAIL / LISTMONK_FROM in the env files: @${current} → @${desired}`,
       ],
@@ -477,15 +483,23 @@ export function planSes(input: MigrationPlanInput): MigrationAction[] {
 }
 
 /**
- * Listmonk's `app.from_email`. Separate from the SES step because it is
- * a different system that merely happens to quote the SES identity.
+ * Listmonk's `app.from_email`: a conditional pointer flip, not a move.
  *
- * Note the trap: `applySesSmtpToListmonk` short-circuits when the SMTP
- * host/user/password already match, and the from-email is only written
- * on the far side of that check. A domain migration keeps the same IAM
- * key, so the SMTP block always matches and that helper would be a
- * silent no-op — the FROM address would never move. The executor uses
- * `setListmonkFromEmail` instead, which writes only that field.
+ * One Listmonk serves every project (collection-of-beauty, tracktime,
+ * chemistry-sketcher, ...), and `app.from_email` is its instance-wide
+ * default sender. It belongs to no single project: setting it to
+ * `noreply@mail.<new>` on every migration would hand every other
+ * project's default sender to whichever project moved last.
+ *
+ * This project's own mail doesn't need it: apps built from the starter
+ * pass `from_email` (LISTMONK_FROM) on every /api/tx and campaign call,
+ * and the SES cutover moves LISTMONK_FROM. The step stays for one case.
+ * When the default sender still names this project's OLD identity,
+ * cleanup would delete that identity out from under Listmonk's own mail
+ * (opt-in confirmations, notifications). So the executor rewrites it
+ * only then, swapping the domain and keeping the display name, and
+ * leaves any other value alone. The plan can't read Listmonk, so the row
+ * says "if".
  */
 export function planListmonk(input: MigrationPlanInput): MigrationAction[] {
   const usesListmonk =
@@ -504,17 +518,23 @@ export function planListmonk(input: MigrationPlanInput): MigrationAction[] {
   }
   const current = input.manifest.ses?.identity ?? sesSendingSubdomain(input.manifest.domain);
   const desired = sesSendingSubdomain(input.newDomain);
-  if (current.toLowerCase() === desired.toLowerCase()) {
+  const onDesired = current.toLowerCase() === desired.toLowerCase();
+  if (onDesired && !isMigrating(input)) {
     return [
       {
         provider: "listmonk",
         id: "listmonk:from",
         phase: "cutover",
         kind: "noop",
-        summary: `Listmonk from-address already on ${desired}`,
+        summary: `sending identity already ${desired}, so no old sender to move in Listmonk`,
       },
     ];
   }
+  // After the SES cutover the manifest names the new identity, and only
+  // `--from` still names the old one. Plan it anyway: a re-run of a
+  // failed step must reach the executor, which skips when nothing names
+  // the old identity.
+  const old = onDesired ? sesSendingSubdomain(input.oldDomain) : current;
   return [
     gatedOnCredential(
       {
@@ -522,8 +542,13 @@ export function planListmonk(input: MigrationPlanInput): MigrationAction[] {
         id: "listmonk:from",
         phase: "cutover",
         kind: "update",
-        summary: `Listmonk from-address noreply@${current} → noreply@${desired}`,
-        detail: ["SMTP relay credentials are unchanged — only app.from_email moves"],
+        summary: `Listmonk's default sender → @${desired}, only if it still sends from @${old}`,
+        detail: [
+          "app.from_email is shared: one Listmonk serves every project",
+          `rewritten only when it names @${old}; display name and local part kept`,
+          "any other sender belongs to another project and is left alone",
+          "this app's own mail uses LISTMONK_FROM, which the SES cutover moves",
+        ],
         gate: `SES reports VerifiedForSendingStatus=true for ${desired}`,
       },
       input.configured.listmonk,

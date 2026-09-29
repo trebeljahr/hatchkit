@@ -537,41 +537,6 @@ export async function applySesSmtpToListmonk(
   return { written: true };
 }
 
-/**
- * Write ONLY `app.from_email`, leaving the SMTP block alone.
- *
- * `applySesSmtpToListmonk` above cannot be reused for this. It returns
- * early when the SMTP host/username/password already match what it was
- * asked to write, and the from-email assignment sits on the far side of
- * that check. That is correct for provisioning — nothing has changed,
- * so don't PUT — but it is exactly wrong for a domain migration, where
- * the SES IAM key is unchanged (so the SMTP block always matches) and
- * the from-address is the one thing that has to move. Routing a
- * migration through that helper is a guaranteed silent no-op: the run
- * reports success and Listmonk keeps sending as `noreply@mail.<old>`.
- *
- * Settings is a whole-object PUT, so this still reads first and mutates
- * in memory. Returns the previous value so the caller can log the
- * transition (and `written: false` when it already matched).
- */
-export async function setListmonkFromEmail(
-  fromEmail: string,
-  fromName: string | undefined,
-  authOverride?: ListmonkAuth,
-): Promise<{ written: boolean; previous?: string }> {
-  const auth = authOverride ?? (await ensureListmonk());
-  const settings = await getListmonkSettings(auth);
-  const display = fromName ? `${fromName} <${fromEmail}>` : fromEmail;
-  const previous =
-    typeof settings["app.from_email"] === "string"
-      ? (settings["app.from_email"] as string)
-      : undefined;
-  if (previous === display) return { written: false, previous };
-  settings["app.from_email"] = display;
-  await putListmonkSettings(settings, auth);
-  return { written: true, previous };
-}
-
 // ────────────────────────────────────────────────────────────────────────────
 // Auth probe
 // ────────────────────────────────────────────────────────────────────────────

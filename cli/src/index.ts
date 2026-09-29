@@ -4648,18 +4648,23 @@ function printHelp(topic?: HelpTopic): void {
     the Stripe webhook URL, the Coolify routing.
 
   ${chalk.bold("Three phases, and why:")}
-    ${chalk.green("prepare")}  Additive. Creates the new SES identity beside the old one,
-             attaches the new R2 custom domain beside the old one, adds
-             the new Search Console property, publishes DNS, sets up
-             Cloudflare Email Routing on the new domain (inbound mail such
-             as imprint@<new>), and keeps the old origin on the assets
-             bucket's CORS rule. Nothing
-             that works today stops working. This is the default.
+    ${chalk.green("prepare")}  Additive. Creates the new SES identity beside the old one and
+             gives it the old identity's Bounce + Complaint SNS topics
+             (any type the old one doesn't route goes to Listmonk's
+             ses-feedback-listmonk topic), attaches the new R2 custom
+             domain beside the old one, adds the new Search Console
+             property, publishes DNS, sets up Cloudflare Email Routing on
+             the new domain (inbound mail such as imprint@<new>), and
+             keeps the old origin on the assets bucket's CORS rule.
+             Nothing that works today stops working. This is the default.
     ${chalk.yellow("cutover")}  Moves the pointers: FROM address (manifest + SES_FROM_EMAIL /
              LISTMONK_FROM in the env files), assets URL, webhook URL,
              Coolify FQDN. Every step re-checks a gate first (is SES
              verified? is the certificate issued?) and refuses rather
-             than half-moving.
+             than half-moving. Listmonk's default sender (app.from_email)
+             is shared by every project on the instance, so it moves only
+             when it still names this project's old identity; any other
+             value is left alone.
     ${chalk.red("cleanup")}  Retires the old identities. Explicitly invoked, never
              implied — run it after you have watched the new domain work.
 
@@ -4686,6 +4691,9 @@ function printHelp(topic?: HelpTopic): void {
     A gated or failed step lands in ${chalk.cyan(".hatchkit.json")} under ${chalk.cyan("deferred[]")} with
     the exact retry command. Re-running any phase re-plans from current
     state, so a half-migrated project only gets the parts still behind.
+    When the SES IAM user may not set notification topics, the run
+    prints the exact ${chalk.cyan("aws ses set-identity-notification-topic")} commands
+    and records them there too.
 
   ${chalk.bold("Example:")}
     cd ~/src/tracktime

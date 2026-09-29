@@ -82,7 +82,7 @@ import {
   selectActions,
 } from "./plan.js";
 import { renderManualChecklist, renderMigrationPlan } from "./render.js";
-import { type StepContext, type StepOutcome, executorFor } from "./steps.js";
+import { type StepContext, type StepFollowUp, type StepOutcome, executorFor } from "./steps.js";
 
 export interface MigrateDomainOptions {
   projectDir: string;
@@ -335,6 +335,9 @@ export async function runMigrateDomain(opts: MigrateDomainOptions): Promise<void
 
   const done: string[] = [];
   const deferred: DeferredStep[] = [];
+  // Deferral keys a completed step settles: its own, and its follow-up
+  // unless it left a new one.
+  const resolved: string[] = [];
 
   for (const action of todo) {
     console.log(chalk.bold(`\n  ▸ ${action.provider} — ${action.summary}`));
@@ -367,17 +370,18 @@ export async function runMigrateDomain(opts: MigrateDomainOptions): Promise<void
     console.log(`    ${mark} ${outcome.message}`);
     for (const d of outcome.detail ?? []) console.log(chalk.dim(`      ${d}`));
     done.push(`${action.provider}: ${outcome.message}`);
+    resolved.push(deferralKey(action));
+    if (outcome.followUp) {
+      console.log(chalk.yellow(`    ! ${outcome.followUp.reason}`));
+      for (const c of outcome.followUp.commands) console.log(`      ${chalk.cyan(c)}`);
+      deferred.push(followUpDeferral(action, plan, outcome.followUp));
+    } else {
+      resolved.push(followUpKey(action));
+    }
   }
 
-  const failedKeys = new Set(deferred.map((d) => d.key));
-  persistDeferredSteps(
-    projectDir,
-    deferred,
-    // Anything that succeeded this run clears its own earlier deferral.
-    todo
-      .map(deferralKey)
-      .filter((key) => !failedKeys.has(key)),
-  );
+  // Anything that succeeded this run clears its own earlier deferral.
+  persistDeferredSteps(projectDir, deferred, resolved);
 
   console.log("");
   console.log(chalk.bold("  ── Summary ──────────────────────────────────────────────"));
@@ -395,6 +399,30 @@ export async function runMigrateDomain(opts: MigrateDomainOptions): Promise<void
 
 function deferralKey(action: MigrationAction): string {
   return `migrate:${action.id}`;
+}
+
+function followUpKey(action: MigrationAction): string {
+  return `${deferralKey(action)}:follow-up`;
+}
+
+/** A follow-up is recorded apart from the step's own deferral: the step
+ *  went through, so re-running it is not the fix; `commands` are. A
+ *  later run of the step that leaves no follow-up clears it. */
+export function followUpDeferral(
+  action: MigrationAction,
+  plan: Pick<MigrationPlan, "oldDomain" | "newDomain">,
+  followUp: StepFollowUp,
+): DeferredStep {
+  return deferralForStep({
+    key: followUpKey(action),
+    label: `migrate-domain / ${action.provider} (${action.phase}): manual follow-up`,
+    kind: "failed",
+    reason: followUp.reason,
+    command: followUp.commands.join(" && "),
+    hint: [
+      `then re-run \`${migrateCommand(plan, action.phase, action.provider)}\` to check and clear this`,
+    ],
+  });
 }
 
 /** The command that runs `phase` of this migration again.

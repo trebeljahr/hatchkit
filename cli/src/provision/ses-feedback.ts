@@ -33,7 +33,14 @@
  *
  * AWS and Listmonk sit behind two small port interfaces so the test
  * suite can drive every path with in-memory stubs. A missing IAM
- * permission degrades to a warning that names the action.
+ * permission degrades to a warning that names the action. When the
+ * missing action is `ses:SetIdentityNotificationTopic`, the result also
+ * carries the exact `aws ses set-identity-notification-topic` commands,
+ * so the operator can set the topics with a profile that may.
+ *
+ * `migrate-domain` also uses `copyIdentityNotificationTopics`: the new
+ * identity gets the old identity's topics, whatever they are, before
+ * `ensureSesFeedback` fills in the types the old one did not route.
  */
 
 import {
@@ -188,6 +195,35 @@ export function describeFeedbackError(err: unknown, action: string): string {
   return `${action} failed: ${firstLine(err)}`;
 }
 
+/** A notification topic a run meant to set but could not, because the
+ *  IAM user lacks `ses:SetIdentityNotificationTopic` (or could not read
+ *  the identity to see what was set). */
+export interface ManualNotificationTopic {
+  identity: string;
+  type: SesFeedbackType;
+  topicArn: string;
+}
+
+/** The AWS CLI command that sets one notification topic. */
+export function setNotificationTopicCommand(t: ManualNotificationTopic, region?: string): string {
+  return [
+    "aws ses set-identity-notification-topic",
+    `--identity ${t.identity}`,
+    `--notification-type ${t.type}`,
+    `--sns-topic ${t.topicArn}`,
+    ...(region ? [`--region ${region}`] : []),
+  ].join(" ");
+}
+
+/** The AWS CLI command that reads identities' notification topics. */
+export function getNotificationAttributesCommand(identities: string[], region?: string): string {
+  return [
+    "aws ses get-identity-notification-attributes",
+    `--identities ${identities.join(" ")}`,
+    ...(region ? [`--region ${region}`] : []),
+  ].join(" ");
+}
+
 /** Hint lines for a permission gap. */
 export function feedbackIamHint(): string[] {
   return [
@@ -339,6 +375,8 @@ export interface EnsureSesFeedbackOptions {
   listmonkUrl: string;
   aws: SesFeedbackAws;
   listmonk: SesFeedbackListmonk;
+  /** SES region, for the `--region` of printed AWS CLI commands. */
+  region?: string;
   topicName?: string;
   /** How long to wait for Listmonk to confirm a new subscription. */
   confirmTimeoutMs?: number;
@@ -357,12 +395,16 @@ export interface SesFeedbackResult {
    *  exactly these. */
   typesSetThisRun: SesFeedbackType[];
   foreignTopics: IdentityTopicsOutcome["foreign"];
+  /** Topics IAM kept this run from setting. `renderSesFeedbackLines`
+   *  prints the command for each. */
+  manualTopics: ManualNotificationTopic[];
   suppressionAdded: string[];
   listmonkSettingsWritten: string[];
   /** One line per step that failed. Provisioning continues past them. */
   warnings: string[];
   /** True when any warning was an IAM permission gap. */
   iamGap: boolean;
+  region?: string;
 }
 
 /**
@@ -387,10 +429,12 @@ export async function ensureSesFeedback(
     subscribedThisRun: false,
     typesSetThisRun: [],
     foreignTopics: [],
+    manualTopics: [],
     suppressionAdded: [],
     listmonkSettingsWritten: [],
     warnings: [],
     iamGap: false,
+    region: opts.region,
   };
   const warn = (err: unknown, action: string) => {
     if (isAccessDenied(err)) result.iamGap = true;
@@ -406,10 +450,12 @@ export async function ensureSesFeedback(
   const topicName = opts.topicName ?? SES_FEEDBACK_TOPIC_NAME;
   let current: IdentityNotificationTopics | undefined;
   let identityReadable = true;
+  let identityReadDenied = false;
   try {
     current = (await aws.getNotificationTopics([identity])).get(identity);
   } catch (err) {
     identityReadable = false;
+    identityReadDenied = isAccessDenied(err);
     warn(err, "ses:GetIdentityNotificationAttributes");
   }
 
@@ -431,18 +477,24 @@ export async function ensureSesFeedback(
   }
 
   if (result.topicArn && identityReadable) {
+    const topicArn = result.topicArn;
     try {
-      const topics = await ensureIdentityNotificationTopics(
-        aws,
-        identity,
-        result.topicArn,
-        current,
-      );
+      const topics = await ensureIdentityNotificationTopics(aws, identity, topicArn, current);
       result.typesSetThisRun = topics.set;
       result.foreignTopics = topics.foreign;
     } catch (err) {
       warn(err, "ses:SetIdentityNotificationTopic");
+      // The unset types are exactly what the call was going to set.
+      if (isAccessDenied(err)) {
+        result.manualTopics = SES_FEEDBACK_TYPES.filter((type) => !topicOf(current, type)).map(
+          (type) => ({ identity, type, topicArn }),
+        );
+      }
     }
+  } else if (result.topicArn && identityReadDenied) {
+    // Can't see what is set; both commands are the ones to run.
+    const topicArn = result.topicArn;
+    result.manualTopics = SES_FEEDBACK_TYPES.map((type) => ({ identity, type, topicArn }));
   }
 
   try {
@@ -500,6 +552,164 @@ export function renderSesFeedbackLines(
   for (const w of r.warnings) out.push({ level: "warn", text: `SES bounce feedback: ${w}` });
   if (r.iamGap) {
     for (const line of feedbackIamHint()) out.push({ level: "warn", text: `  ${line}` });
+  }
+  out.push(...renderManualTopicLines(r.manualTopics, r.region));
+  return out;
+}
+
+/** The commands for topics IAM kept a run from setting, one per line. */
+export function renderManualTopicLines(
+  topics: ManualNotificationTopic[],
+  region?: string,
+): Array<{ level: "warn"; text: string }> {
+  if (topics.length === 0) return [];
+  return [
+    {
+      level: "warn",
+      text: "  Or set the notification topics with an AWS profile that has ses:SetIdentityNotificationTopic:",
+    },
+    ...topics.map((t) => ({
+      level: "warn" as const,
+      text: `    ${setNotificationTopicCommand(t, region)}`,
+    })),
+  ];
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Copy (migrate-domain)
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface CopyNotificationTopicsResult {
+  from: string;
+  to: string;
+  /** False when SES does not know `from`, or it could not be read. */
+  sourceFound: boolean;
+  /** The read of both identities failed on IAM. */
+  readDenied: boolean;
+  /** Types this call set on `to`, with the topic each got. */
+  copied: Array<{ type: SesFeedbackType; topicArn: string }>;
+  /** Types `to` already routes to the same topic as `from`. */
+  unchanged: SesFeedbackType[];
+  /** Types `from` routes nowhere: nothing to copy. */
+  unrouted: SesFeedbackType[];
+  /** Types `to` already routes to another topic. Left alone. */
+  conflicts: Array<{ type: SesFeedbackType; topicArn: string; sourceTopicArn: string }>;
+  manualTopics: ManualNotificationTopic[];
+  warnings: string[];
+  iamGap: boolean;
+}
+
+/**
+ * Give identity `to` the Bounce and Complaint topics of identity `from`.
+ * One read covers both identities. A type `to` already routes somewhere
+ * else is reported and left alone, like `ensureIdentityNotificationTopics`
+ * does. A set that IAM refuses lands in `manualTopics` and the other type
+ * is still tried. Never throws.
+ */
+export async function copyIdentityNotificationTopics(
+  aws: SesFeedbackAws,
+  from: string,
+  to: string,
+): Promise<CopyNotificationTopicsResult> {
+  const result: CopyNotificationTopicsResult = {
+    from,
+    to,
+    sourceFound: false,
+    readDenied: false,
+    copied: [],
+    unchanged: [],
+    unrouted: [],
+    conflicts: [],
+    manualTopics: [],
+    warnings: [],
+    iamGap: false,
+  };
+  const warn = (err: unknown, action: string) => {
+    if (isAccessDenied(err)) result.iamGap = true;
+    const line = describeFeedbackError(err, action);
+    if (!result.warnings.includes(line)) result.warnings.push(line);
+  };
+
+  let attrs: Map<string, IdentityNotificationTopics>;
+  try {
+    attrs = await aws.getNotificationTopics([from, to]);
+  } catch (err) {
+    result.readDenied = isAccessDenied(err);
+    warn(err, "ses:GetIdentityNotificationAttributes");
+    return result;
+  }
+  const source = attrs.get(from);
+  if (!source) return result;
+  result.sourceFound = true;
+  const target = attrs.get(to);
+
+  for (const type of SES_FEEDBACK_TYPES) {
+    const sourceTopicArn = topicOf(source, type);
+    if (!sourceTopicArn) {
+      result.unrouted.push(type);
+      continue;
+    }
+    const existing = topicOf(target, type);
+    if (existing === sourceTopicArn) {
+      result.unchanged.push(type);
+      continue;
+    }
+    if (existing) {
+      result.conflicts.push({ type, topicArn: existing, sourceTopicArn });
+      continue;
+    }
+    try {
+      await aws.setNotificationTopic(to, type, sourceTopicArn);
+      result.copied.push({ type, topicArn: sourceTopicArn });
+    } catch (err) {
+      warn(err, "ses:SetIdentityNotificationTopic");
+      if (isAccessDenied(err)) {
+        result.manualTopics.push({ identity: to, type, topicArn: sourceTopicArn });
+      }
+    }
+  }
+  return result;
+}
+
+/** Status lines for a copy. Leaves the commands for `manualTopics` to
+ *  the caller, which may merge them with another run's. */
+export function renderCopyTopicsLines(
+  r: CopyNotificationTopicsResult,
+): Array<{ level: "ok" | "info" | "warn"; text: string }> {
+  const out: Array<{ level: "ok" | "info" | "warn"; text: string }> = [];
+  const name = (arn: string) => topicNameFromArn(arn);
+  if (r.copied.length > 0) {
+    out.push({
+      level: "info",
+      text: `· copied from ${r.from}: ${r.copied.map((c) => `${c.type} → ${name(c.topicArn)}`).join(", ")}`,
+    });
+  }
+  if (r.unchanged.length > 0 && r.copied.length === 0 && r.manualTopics.length === 0) {
+    out.push({
+      level: "ok",
+      text: `✓ ${r.to} already has ${r.from}'s ${r.unchanged.join(" + ")} topic${r.unchanged.length === 1 ? "" : "s"}`,
+    });
+  }
+  if (!r.sourceFound && r.warnings.length === 0) {
+    out.push({
+      level: "info",
+      text: `· ${r.from} is not an SES identity (any more), so there are no topics to copy`,
+    });
+  }
+  if (r.unrouted.length > 0) {
+    out.push({
+      level: "info",
+      text: `· ${r.from} routes no ${r.unrouted.join(" or ")} notifications, so there is nothing to copy for ${r.unrouted.length === 1 ? "it" : "them"}`,
+    });
+  }
+  for (const c of r.conflicts) {
+    out.push({
+      level: "warn",
+      text: `${r.to} sends ${c.type} notifications to ${c.topicArn}, ${r.from} to ${c.sourceTopicArn}. Left unchanged.`,
+    });
+  }
+  for (const w of r.warnings) {
+    out.push({ level: "warn", text: `copying ${r.from}'s notification topics: ${w}` });
   }
   return out;
 }

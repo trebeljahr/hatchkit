@@ -30,7 +30,12 @@ import { resolveCarriedForwarding } from "../email/presets.js";
 import { probeEmailRouting, summarizeEmailRoutingProbe } from "../email/routing-access.js";
 import { publishDnsRecordsToCloudflare } from "../provision/cloudflare-dns-publish.js";
 import { sesSendingSubdomain } from "../provision/listmonk-ses.js";
-import { setListmonkFromEmail } from "../provision/listmonk.js";
+import {
+  type ListmonkAuth,
+  getListmonkSettings,
+  putListmonkSetting,
+  waitForListmonk,
+} from "../provision/listmonk.js";
 import {
   accountIdFromR2Endpoint,
   defaultBucketHostname,
@@ -40,10 +45,19 @@ import {
   reconcileAssetsCorsFromManifest,
 } from "../provision/s3-buckets.js";
 import {
+  type ManualNotificationTopic,
+  SES_FEEDBACK_TYPES,
+  type SesFeedbackAws,
+  type SesFeedbackListmonk,
+  type SesFeedbackType,
+  copyIdentityNotificationTopics,
   createSesFeedbackAws,
   createSesFeedbackListmonk,
   ensureSesFeedback,
+  getNotificationAttributesCommand,
+  renderCopyTopicsLines,
   renderSesFeedbackLines,
+  setNotificationTopicCommand,
 } from "../provision/ses-feedback.js";
 import {
   SES_MAIL_FROM_SPF,
@@ -85,6 +99,16 @@ export interface StepOutcome {
   status: StepStatus;
   message: string;
   detail?: string[];
+  /** Work left for the operator after the step itself went through. */
+  followUp?: StepFollowUp;
+}
+
+/** Something a step could not do with the credentials it has, such as
+ *  an AWS call the IAM user may not make. The orchestrator prints it and
+ *  records it under `deferred[]`, with `commands` as the way home. */
+export interface StepFollowUp {
+  reason: string;
+  commands: string[];
 }
 
 export type StepFn = (ctx: StepContext) => Promise<StepOutcome>;
@@ -179,6 +203,163 @@ export const stepCoolifySync: StepFn = async (ctx) => {
 // SES
 // ---------------------------------------------------------------------------
 
+/** The identities the project sent from before this migration, recorded
+ *  one first. Cutover rewrites `manifest.ses`, so after it only the old
+ *  domain (`--from`) still names the old identity. Never includes the
+ *  new identity. */
+export function previousIdentities(
+  manifest: Pick<ProjectManifest, "ses">,
+  ctx: Pick<StepContext, "oldDomain" | "newDomain">,
+): string[] {
+  const next = sesSendingSubdomain(ctx.newDomain).toLowerCase();
+  const out: string[] = [];
+  for (const id of [manifest.ses?.identity, sesSendingSubdomain(ctx.oldDomain)]) {
+    const name = id?.trim().toLowerCase();
+    if (name && name !== next && !out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
+export interface CarrySesFeedbackOptions {
+  aws: SesFeedbackAws;
+  region: string;
+  /** The identity the project sent from until now. Null: nothing to copy. */
+  oldIdentity: string | null;
+  newIdentity: string;
+  /** Null when Listmonk is not configured on this machine. */
+  listmonk: { url: string; port: SesFeedbackListmonk } | null;
+  confirmTimeoutMs?: number;
+  pollIntervalMs?: number;
+}
+
+export interface CarrySesFeedbackResult {
+  /** Whether anything was written. */
+  changed: boolean;
+  detail: string[];
+  followUp?: StepFollowUp;
+}
+
+/**
+ * Bounce + complaint routing for the new identity, before it sends.
+ *
+ * First the old identity's Bounce and Complaint topics are copied, so
+ * the new identity reports wherever the old one did: the shared
+ * `ses-feedback-listmonk` topic on a Hatchkit account, or a topic an
+ * operator set by hand. Then, when Listmonk is configured here,
+ * `ensureSesFeedback` routes any type still unset to the shared topic
+ * and checks the subscription, account suppression and Listmonk bounce
+ * settings that every project shares.
+ *
+ * Never throws. What IAM refused comes back as `followUp` with the
+ * exact AWS CLI commands, one per type. When both halves wanted the same
+ * type, the old identity's topic wins.
+ */
+export async function carrySesFeedback(
+  opts: CarrySesFeedbackOptions,
+): Promise<CarrySesFeedbackResult> {
+  const detail: string[] = [];
+  const manual: ManualNotificationTopic[] = [];
+  const text = (line: { text: string }) => line.text.replace(/^[✓·] /, "");
+  let changed = false;
+  let copyReadDenied = false;
+  // Types that have a topic, or will once the operator runs a command.
+  const covered = new Set<SesFeedbackType>();
+
+  if (opts.oldIdentity) {
+    const copy = await copyIdentityNotificationTopics(opts.aws, opts.oldIdentity, opts.newIdentity);
+    detail.push(...renderCopyTopicsLines(copy).map(text));
+    manual.push(...copy.manualTopics);
+    copyReadDenied = copy.readDenied;
+    changed ||= copy.copied.length > 0;
+    for (const t of [
+      ...copy.copied.map((c) => c.type),
+      ...copy.unchanged,
+      ...copy.conflicts.map((c) => c.type),
+      ...copy.manualTopics.map((m) => m.type),
+    ]) {
+      covered.add(t);
+    }
+  }
+
+  if (opts.listmonk) {
+    const feedback = await ensureSesFeedback({
+      identity: opts.newIdentity,
+      listmonkUrl: opts.listmonk.url,
+      aws: opts.aws,
+      listmonk: opts.listmonk.port,
+      region: opts.region,
+      confirmTimeoutMs: opts.confirmTimeoutMs,
+      pollIntervalMs: opts.pollIntervalMs,
+    });
+    // Its commands go out once, below, merged with the copy's.
+    detail.push(...renderSesFeedbackLines({ ...feedback, manualTopics: [] }).map(text));
+    for (const t of feedback.manualTopics) {
+      if (!manual.some((m) => m.identity === t.identity && m.type === t.type)) manual.push(t);
+    }
+    changed ||=
+      feedback.typesSetThisRun.length > 0 ||
+      feedback.subscribedThisRun ||
+      feedback.suppressionAdded.length > 0 ||
+      feedback.listmonkSettingsWritten.length > 0;
+  } else {
+    const missing = SES_FEEDBACK_TYPES.filter((t) => !covered.has(t));
+    if (missing.length > 0 && !copyReadDenied) {
+      detail.push(
+        `${opts.newIdentity} routes no ${missing.join(" or ")} notifications: Listmonk is not configured here, so the shared topic was not checked (\`hatchkit config add listmonk\`, then re-run)`,
+      );
+    }
+  }
+
+  const commands = manual.map((t) => setNotificationTopicCommand(t, opts.region));
+  // The old identity's topics could not be read and nothing above
+  // produced a command for every type: start with the read.
+  const readFirst =
+    copyReadDenied && opts.oldIdentity !== null && manual.length < SES_FEEDBACK_TYPES.length;
+  if (readFirst && opts.oldIdentity) {
+    commands.unshift(getNotificationAttributesCommand([opts.oldIdentity], opts.region));
+  }
+  if (commands.length === 0) return { changed, detail };
+
+  const reasons: string[] = [];
+  if (manual.length > 0) {
+    reasons.push(
+      `the SES IAM user may not set ${opts.newIdentity}'s notification topics; run the set commands with a profile that has ses:SetIdentityNotificationTopic`,
+    );
+  }
+  if (readFirst) {
+    reasons.push(
+      `could not read ${opts.oldIdentity}'s notification topics; give ${opts.newIdentity} the same Bounce and Complaint topic ARNs`,
+    );
+  }
+  return { changed, detail, followUp: { reason: reasons.join("; "), commands } };
+}
+
+/** `carrySesFeedback` against the real AWS account and Listmonk. A
+ *  Listmonk credential that can't be read counts as not configured: it
+ *  must not stop the SES cutover. */
+async function carrySesFeedbackLive(
+  auth: SesAuth,
+  oldIdentity: string | null,
+  newIdentity: string,
+): Promise<CarrySesFeedbackResult> {
+  let listmonk: Awaited<ReturnType<typeof getListmonkConfig>> = null;
+  let listmonkError: string | null = null;
+  try {
+    listmonk = await getListmonkConfig();
+  } catch (err) {
+    listmonkError = (err as Error).message.split("\n")[0];
+  }
+  const result = await carrySesFeedback({
+    aws: createSesFeedbackAws(auth),
+    region: auth.region,
+    oldIdentity,
+    newIdentity,
+    listmonk: listmonk ? { url: listmonk.url, port: createSesFeedbackListmonk(listmonk) } : null,
+  });
+  if (listmonkError) result.detail.unshift(`Listmonk config unreadable: ${listmonkError}`);
+  return result;
+}
+
 /**
  * Stand up `mail.<new>` next to `mail.<old>`.
  *
@@ -191,8 +372,9 @@ export const stepCoolifySync: StepFn = async (ctx) => {
  * FROM and publish its MX + SPF. Setting MAIL FROM before the records
  * exist is legal but parks the attribute in PENDING until SES next
  * polls, which just makes the status output confusing. Last, the new
- * identity's Bounce + Complaint notifications go to the shared SNS
- * topic Listmonk listens on (see `provision/ses-feedback.ts`).
+ * identity gets the old one's Bounce + Complaint notification topics
+ * (see `carrySesFeedback`). SES documents that call for a verified
+ * identity, so cutover runs it again behind its verification gate.
  */
 export const stepSesPrepare: StepFn = async (ctx) => {
   const manifest = manifestOf(ctx);
@@ -240,37 +422,25 @@ export const stepSesPrepare: StepFn = async (ctx) => {
     `MAIL FROM ${mailFrom}: ${mailFromRes.created} created, ${mailFromRes.updated} updated`,
   );
 
-  // Bounce + complaint feedback, so the new identity's bounces reach
-  // Listmonk from its first send. Shared topic, per-identity routing;
-  // failures (usually IAM) come back as detail lines, not a failed step.
-  const listmonk = await getListmonkConfig();
-  if (listmonk) {
-    const feedback = await ensureSesFeedback({
-      identity: identityName,
-      listmonkUrl: listmonk.url,
-      aws: createSesFeedbackAws(auth),
-      listmonk: createSesFeedbackListmonk(listmonk),
-    });
-    for (const line of renderSesFeedbackLines(feedback)) {
-      detail.push(line.text.replace(/^[✓·] /, ""));
-    }
-  } else {
-    detail.push(
-      "bounce feedback skipped: Listmonk is not configured (`hatchkit config add listmonk`)",
-    );
-  }
+  // Bounce + complaint routing, copied from the identity this one
+  // replaces. Failures (usually IAM) come back as detail lines and a
+  // follow-up, not a failed step.
+  const [oldIdentity = null] = previousIdentities(manifest, ctx);
+  const feedback = await carrySesFeedbackLive(auth, oldIdentity, identityName);
+  detail.push(...feedback.detail);
 
   const verified = identity.verifiedForSendingStatus === true;
   detail.push(
     verified
       ? "identity already verified — cutover can run now"
       : "AWS verifies DKIM on its own schedule (minutes to a few hours); " +
-          "cutover stays gated until it does",
+          "cutover stays gated until it does, then checks the notification topics again",
   );
   return {
     status: "done",
     message: `SES identity ${identityName} created (${manifest.ses?.identity ?? "none"} still sending)`,
     detail,
+    followUp: feedback.followUp,
   };
 };
 
@@ -279,6 +449,11 @@ export const stepSesPrepare: StepFn = async (ctx) => {
  * SES does not soft-fail a send from an unverified identity — it
  * rejects the message. Recording an identity the account cannot send
  * from would turn every transactional email into a hard bounce.
+ *
+ * Before anything moves, the new identity's notification topics are
+ * checked again: this is the moment it starts sending, and prepare may
+ * have run before SES would take the topics. On a healthy setup that
+ * check only reads.
  */
 export const stepSesCutover: StepFn = async (ctx) => {
   const manifest = manifestOf(ctx);
@@ -302,6 +477,9 @@ export const stepSesCutover: StepFn = async (ctx) => {
     };
   }
 
+  const [feedbackSource = null] = previousIdentities(manifest, ctx);
+  const feedback = await carrySesFeedbackLive(auth, feedbackSource, identityName);
+
   if (manifest.ses?.identity === identityName) {
     // The manifest moved on an earlier run, but the env files are what
     // the app actually sends from — and older hatchkit versions moved
@@ -316,12 +494,13 @@ export const stepSesCutover: StepFn = async (ctx) => {
       defaultsWhenUnreadable: false,
     });
     return {
-      status: env.rewritten.length > 0 ? "done" : "skipped",
+      status: env.rewritten.length > 0 || feedback.changed ? "done" : "skipped",
       message:
         env.rewritten.length > 0
           ? `manifest already records ${identityName}; moved ${env.rewritten.length} env from-address entr${env.rewritten.length === 1 ? "y" : "ies"}`
           : `manifest already records ${identityName}`,
-      detail: env.detail,
+      detail: [...env.detail, ...feedback.detail],
+      followUp: feedback.followUp,
     };
   }
 
@@ -368,10 +547,12 @@ export const stepSesCutover: StepFn = async (ctx) => {
   if (env.rewritten.length > 0) {
     detail.push("run `hatchkit sync` (or redeploy) so the running app picks up the new env");
   }
+  detail.push(...feedback.detail);
   return {
     status: "done",
     message: `sending identity ${previous} → ${identityName}`,
     detail,
+    followUp: feedback.followUp,
   };
 };
 
@@ -601,35 +782,127 @@ export const stepEmailRoutingSetup: StepFn = async (ctx) => {
 // Listmonk
 // ---------------------------------------------------------------------------
 
-/** Move `app.from_email`. Gated on the same SES verification as the
- *  identity switch: pointing Listmonk at an unverified identity turns
- *  every campaign into a bounce. */
-export const stepListmonkFrom: StepFn = async (ctx) => {
-  const manifest = manifestOf(ctx);
-  const auth = await sesAuth();
-  const identityName = sesSendingSubdomain(ctx.newDomain);
+/** Listmonk's instance-wide default sender, `app.from_email`. */
+export interface ListmonkSenderPort {
+  /** Null when unset. */
+  getFromEmail(): Promise<string | null>;
+  setFromEmail(value: string): Promise<void>;
+}
 
-  const identity = await getSesDomain(identityName, auth);
-  if (identity.verifiedForSendingStatus !== true) {
+/**
+ * Move Listmonk's default sender off this project's old identity, and
+ * only off that.
+ *
+ * One Listmonk serves every project, so `app.from_email` belongs to no
+ * single one of them: it sends Listmonk's own mail (opt-in
+ * confirmations, notifications) and any campaign or tx call that names
+ * no sender. This project's mail doesn't depend on it, because the
+ * starter passes `from_email` (LISTMONK_FROM) on every call and the SES
+ * cutover moves that. The one case this project must handle is a
+ * default sender on its OLD identity: after cleanup deletes that
+ * identity, SES rejects everything Listmonk sends from it. Any other
+ * value is another sender's and is left alone.
+ *
+ * The rewrite swaps only the domain, so the display name and local part
+ * the operator chose survive. The SES gate is read only when there is
+ * something to move.
+ */
+export async function moveListmonkDefaultSender(opts: {
+  listmonk: ListmonkSenderPort;
+  /** From `previousIdentities`. */
+  oldIdentities: string[];
+  newIdentity: string;
+  /** Live SES check that the new identity may send. */
+  isVerified: () => Promise<boolean>;
+}): Promise<StepOutcome> {
+  const current = await opts.listmonk.getFromEmail();
+  if (!current) {
+    return { status: "skipped", message: "Listmonk has no default sender set, so nothing to move" };
+  }
+
+  let next: string | null = null;
+  let from: string | undefined;
+  for (const old of opts.oldIdentities) {
+    next = rewriteFromAddress(current, old, opts.newIdentity);
+    if (next !== null) {
+      from = old;
+      break;
+    }
+  }
+
+  if (next === null || from === undefined) {
+    if (current.toLowerCase().includes(`@${opts.newIdentity.toLowerCase()}`)) {
+      return { status: "skipped", message: `Listmonk default sender already ${current}` };
+    }
     return {
-      status: "gated",
-      message: `SES has not verified ${identityName} — leaving Listmonk on the old address`,
+      status: "skipped",
+      message: `Listmonk default sender is ${current}: not this project's old identity, left alone`,
+      detail: [
+        "one Listmonk serves every project, so only a sender on " +
+          (opts.oldIdentities.map((i) => `@${i}`).join(" or ") || "the old identity") +
+          " is moved",
+        "this app sends with LISTMONK_FROM on every call; the SES cutover moves that",
+      ],
     };
   }
 
+  if (!(await opts.isVerified())) {
+    return {
+      status: "gated",
+      message: `SES has not verified ${opts.newIdentity}, so Listmonk's default sender stays ${current}`,
+    };
+  }
+
+  await opts.listmonk.setFromEmail(next);
+  return {
+    status: "done",
+    message: `Listmonk default sender ${current} → ${next}`,
+    detail: [`it sent from @${from}, the identity this project is leaving`],
+  };
+}
+
+/** `app.from_email` through Listmonk's per-key `PUT /api/settings/<key>`.
+ *  Not the whole-document PUT: that sends back the masked SMTP passwords
+ *  `GET /api/settings` returns, and every project sends through them. */
+function listmonkSenderPort(auth: ListmonkAuth): ListmonkSenderPort {
+  return {
+    async getFromEmail() {
+      await waitForListmonk(auth);
+      const value = (await getListmonkSettings(auth))["app.from_email"];
+      return typeof value === "string" && value.trim() ? value : null;
+    },
+    async setFromEmail(value) {
+      try {
+        await putListmonkSetting("app.from_email", value, auth);
+      } catch (err) {
+        if (/HTTP (404|405)/.test((err as Error).message)) {
+          throw new Error(
+            `Listmonk has no per-key settings endpoint (needs v6+). Set Settings → General → Default 'from' email to "${value}" by hand.`,
+          );
+        }
+        throw err;
+      }
+      await waitForListmonk(auth, { initialDelayMs: 500 });
+    },
+  };
+}
+
+/** Move `app.from_email` when it names this project's old identity. The
+ *  write is gated on the same SES verification as the identity switch. */
+export const stepListmonkFrom: StepFn = async (ctx) => {
+  const manifest = manifestOf(ctx);
   const listmonk = await getListmonkConfig();
   if (!listmonk) {
     return { status: "gated", message: "Listmonk not configured on this machine" };
   }
-
-  const fromEmail = `noreply@${identityName}`;
-  const res = await setListmonkFromEmail(fromEmail, manifest.name);
-  return {
-    status: res.written ? "done" : "skipped",
-    message: res.written
-      ? `Listmonk from-address ${res.previous ?? "(unset)"} → ${fromEmail}`
-      : `Listmonk from-address already ${fromEmail}`,
-  };
+  const newIdentity = sesSendingSubdomain(ctx.newDomain);
+  return moveListmonkDefaultSender({
+    listmonk: listmonkSenderPort(listmonk),
+    oldIdentities: previousIdentities(manifest, ctx),
+    newIdentity,
+    isVerified: async () =>
+      (await getSesDomain(newIdentity, await sesAuth())).verifiedForSendingStatus === true,
+  });
 };
 
 // ---------------------------------------------------------------------------

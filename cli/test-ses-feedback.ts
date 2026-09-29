@@ -18,7 +18,8 @@
  *   3. A notification topic someone else set on the identity is left
  *      alone, and is not counted as something this run set.
  *   4. A missing IAM permission is a warning that names the action, and
- *      the other steps still run.
+ *      the other steps still run. A refused topic write also comes with
+ *      the exact `aws ses set-identity-notification-topic` command.
  *   5. Destroy clears only the identity's own topics this run set. The
  *      shared topic, its subscription, account suppression and Listmonk
  *      settings stay, so every other project keeps its bounces.
@@ -401,6 +402,59 @@ await expect("missing SES v1 + account permissions warn instead of throwing", as
   ]);
   assert.deepEqual(r.typesSetThisRun, []);
   assert.equal(r.subscription, "confirmed", "the topic + subscription still get wired");
+});
+
+await expect(
+  "a refused ses:SetIdentityNotificationTopic comes with the exact aws command per unset type",
+  async () => {
+    const aws = new FakeAws();
+    aws.addIdentity("mail.a.com", { bounceTopic: TOPIC_ARN });
+    aws.denied.add("setNotificationTopic");
+    const r = await ensureSesFeedback({
+      identity: "mail.a.com",
+      listmonkUrl: LISTMONK_URL,
+      aws,
+      listmonk: new FakeListmonk(),
+      region: REGION,
+      confirmTimeoutMs: 0,
+    });
+    assert.equal(r.iamGap, true);
+    assert.deepEqual(r.warnings, ["missing IAM permission ses:SetIdentityNotificationTopic"]);
+    // Bounce is already routed; only Complaint needs the command.
+    assert.deepEqual(r.manualTopics, [
+      { identity: "mail.a.com", type: "Complaint", topicArn: TOPIC_ARN },
+    ]);
+    const lines = renderSesFeedbackLines(r).map((l) => l.text.trim());
+    assert.ok(
+      lines.includes(
+        `aws ses set-identity-notification-topic --identity mail.a.com --notification-type Complaint --sns-topic ${TOPIC_ARN} --region ${REGION}`,
+      ),
+      lines.join("\n"),
+    );
+  },
+);
+
+await expect("an identity IAM won't let us read still gets both commands", async () => {
+  const aws = new FakeAws();
+  aws.addIdentity("mail.a.com");
+  aws.denied.add("getNotificationTopics");
+  aws.denied.add("setNotificationTopic");
+  const r = await run(aws, new FakeListmonk(), "mail.a.com");
+  assert.deepEqual(
+    r.manualTopics.map((t) => t.type),
+    ["Bounce", "Complaint"],
+  );
+  assert.ok(
+    !aws.writes.some((w) => w.startsWith("setNotificationTopic")),
+    "no set without knowing what is there",
+  );
+});
+
+await expect("a healthy run carries no commands", async () => {
+  const { aws, listmonk } = healthyAccount();
+  const r = await run(aws, listmonk, "mail.a.com");
+  assert.deepEqual(r.manualTopics, []);
+  assert.ok(!renderSesFeedbackLines(r).some((l) => l.text.includes("aws ses")));
 });
 
 await expect("a Listmonk API user without Settings: All is a warning, not a crash", async () => {

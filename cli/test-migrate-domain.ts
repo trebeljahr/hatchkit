@@ -32,6 +32,15 @@
  *      cutover had moved every recorded field; and a refused keychain
  *      read surfaced as a bare "An unknown error occurred.".
  *
+ *   5. The tracktime sender move (mail.tracktime.trebeljahr.com →
+ *      mail.trackyourtime.dev, 2026-09-29), which found two gaps. The
+ *      Listmonk step rewrote the GLOBAL `app.from_email` of a Listmonk
+ *      every project shares (it named chemistry-sketcher at the time),
+ *      under the slug "tracktime". And the new SES identity never got
+ *      the old one's Bounce/Complaint SNS topics, so its bounces would
+ *      never have reached Listmonk. Both executors sit behind ports, so
+ *      these run against in-memory fakes.
+ *
  * Run: `pnpm test` (via the script in cli/package.json).
  */
 import assert from "node:assert/strict";
@@ -43,6 +52,7 @@ import keytar from "keytar";
 import {
   type ProviderConfigReaders,
   detectConfigured,
+  followUpDeferral,
   migrateCommand,
 } from "./src/migrate/index.js";
 import {
@@ -59,8 +69,23 @@ import {
   rewriteFromAddress,
   rewriteSesFromEnv,
 } from "./src/migrate/ses-env.js";
-import { executorFor, transitionalCorsOrigins } from "./src/migrate/steps.js";
+import {
+  type ListmonkSenderPort,
+  carrySesFeedback,
+  executorFor,
+  moveListmonkDefaultSender,
+  previousIdentities,
+  transitionalCorsOrigins,
+} from "./src/migrate/steps.js";
 import { buildDesiredCors, resolveCorsExtras } from "./src/provision/s3-buckets.js";
+import {
+  type IdentityNotificationTopics,
+  SES_FEEDBACK_TOPIC_NAME,
+  type SesFeedbackAws,
+  type SesFeedbackListmonk,
+  type SesFeedbackType,
+  type SnsSubscription,
+} from "./src/provision/ses-feedback.js";
 import type { ProjectManifest } from "./src/scaffold/manifest.js";
 import { describeKeychainError, getSecret } from "./src/utils/secrets.js";
 
@@ -250,11 +275,24 @@ await expect("R2: attach the new custom domain in prepare, move publicUrl in cut
   assert.equal(byId(plan, "r2:retire")[0].phase, "cleanup");
 });
 
-await expect("Listmonk from-address moves with the SES identity", () => {
+await expect("Listmonk's default sender moves only if it still names the old identity", () => {
   const from = byId(plan, "listmonk:from")[0];
   assert.equal(from.phase, "cutover");
   assert.equal(from.kind, "update");
-  assert.match(from.summary, /noreply@mail\.trackyourtime\.dev/);
+  assert.match(from.summary, /only if it still sends from @mail\.tracktime\.trebeljahr\.com/);
+  assert.match(from.summary, /@mail\.trackyourtime\.dev/);
+  const detail = (from.detail ?? []).join("\n");
+  assert.match(detail, /shared: one Listmonk serves every project/);
+  assert.match(detail, /left alone/);
+  assert.match(detail, /LISTMONK_FROM/);
+  // The old detail claimed the move unconditionally.
+  assert.doesNotMatch(detail, /only app\.from_email moves/);
+});
+
+await expect("SES prepare says it copies the old identity's notification topics", () => {
+  const detail = (byId(plan, "ses:identity")[0].detail ?? []).join("\n");
+  assert.match(detail, /copies mail\.tracktime\.trebeljahr\.com's Bounce \+ Complaint SNS topics/);
+  assert.match(detail, /ses-feedback-listmonk/);
 });
 
 await expect("Plausible is planned (project has the analytics feature)", () => {
@@ -883,6 +921,355 @@ await expect("dns needs an apiToken, not merely a truthy config object", async (
   readers.dns = async () => ({}); // truthy, but no apiToken
   const configured = await detectConfigured(readers);
   assert.equal(configured.dns, false, "a DNS config without an apiToken is not usable");
+});
+
+// ---------------------------------------------------------------------------
+
+console.log("\nListmonk's default sender on a shared instance (tracktime, gap 1):");
+
+const OLD_ID = "mail.tracktime.trebeljahr.com";
+const NEW_ID = "mail.trackyourtime.dev";
+
+/** `app.from_email` in memory. `writes` logs every set. */
+class FakeSender implements ListmonkSenderPort {
+  writes: string[] = [];
+  constructor(public value: string | null) {}
+  async getFromEmail() {
+    return this.value;
+  }
+  async setFromEmail(value: string) {
+    this.writes.push(value);
+    this.value = value;
+  }
+}
+
+function moveSender(sender: FakeSender, verified = true) {
+  let checks = 0;
+  const outcome = moveListmonkDefaultSender({
+    listmonk: sender,
+    oldIdentities: [OLD_ID],
+    newIdentity: NEW_ID,
+    isVerified: async () => {
+      checks += 1;
+      return verified;
+    },
+  });
+  return outcome.then((o) => ({ outcome: o, checks }));
+}
+
+await expect("another project's default sender is left alone, SES not even asked", async () => {
+  // The state on 2026-09-29: the shared Listmonk's sender was
+  // chemistry-sketcher's.
+  const sender = new FakeSender("Chemistry Sketcher <noreply@mail.chemistry-sketcher.com>");
+  const { outcome, checks } = await moveSender(sender);
+  assert.equal(outcome.status, "skipped");
+  assert.match(outcome.message, /not this project's old identity, left alone/);
+  assert.deepEqual(sender.writes, [], "no write to the shared setting");
+  assert.equal(checks, 0);
+});
+
+await expect("a sender on the old identity moves, display name and local part kept", async () => {
+  const sender = new FakeSender(`Track Your Time <hello@${OLD_ID}>`);
+  const { outcome } = await moveSender(sender);
+  assert.equal(outcome.status, "done");
+  assert.deepEqual(sender.writes, [`Track Your Time <hello@${NEW_ID}>`]);
+  assert.doesNotMatch(sender.value ?? "", /tracktime </, "never the project slug as display name");
+});
+
+await expect("the move waits for SES to verify the new identity", async () => {
+  const sender = new FakeSender(`Track Your Time <noreply@${OLD_ID}>`);
+  const { outcome, checks } = await moveSender(sender, false);
+  assert.equal(outcome.status, "gated");
+  assert.equal(checks, 1);
+  assert.deepEqual(sender.writes, []);
+});
+
+await expect("already on the new identity, or unset: nothing to do", async () => {
+  const moved = new FakeSender(`Track Your Time <noreply@${NEW_ID}>`);
+  assert.equal((await moveSender(moved)).outcome.status, "skipped");
+  const unset = new FakeSender(null);
+  assert.equal((await moveSender(unset)).outcome.status, "skipped");
+  assert.deepEqual([...moved.writes, ...unset.writes], []);
+});
+
+await expect("a look-alike domain is not the old identity", async () => {
+  const sender = new FakeSender(`x <noreply@${OLD_ID}.example.com>`);
+  assert.equal((await moveSender(sender)).outcome.status, "skipped");
+  assert.deepEqual(sender.writes, []);
+});
+
+await expect(
+  "previousIdentities: the recorded identity, then the --from one, never the new",
+  () => {
+    const ctx = { oldDomain: "tracktime.trebeljahr.com", newDomain: "trackyourtime.dev" };
+    assert.deepEqual(previousIdentities(TRACKTIME, ctx), [OLD_ID]);
+    // After the SES cutover moved the manifest, only --from names it.
+    const cutOver = { ses: { identity: NEW_ID } } as ProjectManifest;
+    assert.deepEqual(previousIdentities(cutOver, ctx), [OLD_ID]);
+    // A hand-picked identity comes first.
+    const custom = { ses: { identity: "mail.custom.example" } } as ProjectManifest;
+    assert.deepEqual(previousIdentities(custom, ctx), ["mail.custom.example", OLD_ID]);
+    assert.deepEqual(
+      previousIdentities(cutOver, {
+        oldDomain: "trackyourtime.dev",
+        newDomain: "trackyourtime.dev",
+      }),
+      [],
+    );
+  },
+);
+
+await expect("after the SES cutover, a --from run still plans the Listmonk check", () => {
+  // A failed listmonk:from must be retryable once ses:cutover has
+  // already moved manifest.ses.identity.
+  const cutOver = planFor(
+    { ...TRACKTIME, ses: { ...TRACKTIME.ses, identity: NEW_ID } } as ProjectManifest,
+    "trackyourtime.dev",
+    { oldDomain: "tracktime.trebeljahr.com", oldDomainSource: "--from" },
+  );
+  const from = byId(cutOver, "listmonk:from")[0];
+  assert.equal(from.kind, "update");
+  assert.match(from.summary, /@mail\.tracktime\.trebeljahr\.com/);
+  // Without --from there is no old identity to look for.
+  assert.equal(byId(settled, "listmonk:from")[0].kind, "noop");
+});
+
+// ---------------------------------------------------------------------------
+
+console.log("\nSES notification topics follow the identity (tracktime, gap 2):");
+
+const REGION = "eu-west-1";
+const SHARED_ARN = `arn:aws:sns:${REGION}:111122223333:${SES_FEEDBACK_TOPIC_NAME}`;
+const CUSTOM_ARN = `arn:aws:sns:${REGION}:111122223333:tracktime-bounces`;
+const WEBHOOK = "https://listmonk.example.com/webhooks/service/ses";
+
+function deniedError(action: string): Error {
+  const err = new Error(`User is not authorized to perform: ${action}`);
+  err.name = "AccessDenied";
+  return err;
+}
+
+/** One AWS account's SES identities + SNS topics. `writes` logs every
+ *  mutating call; `denied` names methods that fail on IAM. */
+class FakeFeedbackAws implements SesFeedbackAws {
+  identities = new Map<string, IdentityNotificationTopics>();
+  topics = new Map<string, SnsSubscription[]>();
+  suppressed = ["BOUNCE", "COMPLAINT"];
+  writes: string[] = [];
+  denied = new Set<keyof SesFeedbackAws>();
+
+  constructor() {
+    this.topics.set(SHARED_ARN, [
+      { subscriptionArn: `${SHARED_ARN}:sub-1`, protocol: "https", endpoint: WEBHOOK },
+    ]);
+  }
+  identity(name: string, bounceTopic: string | null = null, complaintTopic = bounceTopic) {
+    this.identities.set(name, { bounceTopic, complaintTopic });
+    return this;
+  }
+  private guard(method: keyof SesFeedbackAws) {
+    if (this.denied.has(method)) throw deniedError(method);
+  }
+  async createTopic(name: string) {
+    this.guard("createTopic");
+    this.writes.push(`createTopic ${name}`);
+    const arn = `arn:aws:sns:${REGION}:111122223333:${name}`;
+    if (!this.topics.has(arn)) this.topics.set(arn, []);
+    return arn;
+  }
+  async listSubscriptions(topicArn: string) {
+    const subs = this.topics.get(topicArn);
+    if (!subs) {
+      const err = new Error("Topic does not exist");
+      err.name = "NotFound";
+      throw err;
+    }
+    return subs;
+  }
+  async subscribe(topicArn: string, protocol: "http" | "https", endpoint: string) {
+    this.writes.push(`subscribe ${endpoint}`);
+    this.topics.get(topicArn)?.push({ subscriptionArn: `${topicArn}:sub-2`, protocol, endpoint });
+  }
+  async getNotificationTopics(names: string[]) {
+    this.guard("getNotificationTopics");
+    const out = new Map<string, IdentityNotificationTopics>();
+    for (const n of names) {
+      const t = this.identities.get(n);
+      if (t) out.set(n, { ...t });
+    }
+    return out;
+  }
+  async setNotificationTopic(identity: string, type: SesFeedbackType, topicArn: string | null) {
+    this.guard("setNotificationTopic");
+    this.writes.push(`set ${identity} ${type} ${topicArn}`);
+    const t = this.identities.get(identity);
+    if (!t) throw new Error(`Identity ${identity} does not exist`);
+    if (type === "Bounce") t.bounceTopic = topicArn;
+    else t.complaintTopic = topicArn;
+  }
+  async getSuppressedReasons() {
+    return [...this.suppressed];
+  }
+  async putSuppressedReasons(reasons: string[]) {
+    this.writes.push(`suppress ${reasons.join(",")}`);
+    this.suppressed = reasons;
+  }
+  async listVerifiedIdentities() {
+    return [...this.identities.keys()];
+  }
+}
+
+/** A Listmonk with bounce processing already on. */
+const healthyListmonk = (): SesFeedbackListmonk => ({
+  async getSettings() {
+    return { "bounce.enabled": true, "bounce.webhooks_enabled": true, "bounce.ses_enabled": true };
+  },
+  async putSetting(key) {
+    throw new Error(`unexpected Listmonk write ${key}`);
+  },
+});
+
+function carry(aws: FakeFeedbackAws, opts: { listmonk?: boolean; old?: string | null } = {}) {
+  return carrySesFeedback({
+    aws,
+    region: REGION,
+    oldIdentity: opts.old === undefined ? OLD_ID : opts.old,
+    newIdentity: NEW_ID,
+    listmonk:
+      opts.listmonk === false
+        ? null
+        : { url: "https://listmonk.example.com", port: healthyListmonk() },
+    confirmTimeoutMs: 0,
+  });
+}
+
+const setCommand = (type: SesFeedbackType, arn: string) =>
+  `aws ses set-identity-notification-topic --identity ${NEW_ID} --notification-type ${type} --sns-topic ${arn} --region ${REGION}`;
+
+await expect(
+  "the new identity gets the old identity's topics; a re-run writes nothing",
+  async () => {
+    const aws = new FakeFeedbackAws().identity(OLD_ID, SHARED_ARN).identity(NEW_ID);
+    const first = await carry(aws);
+    assert.deepEqual(aws.identities.get(NEW_ID), {
+      bounceTopic: SHARED_ARN,
+      complaintTopic: SHARED_ARN,
+    });
+    assert.deepEqual(aws.writes, [
+      `set ${NEW_ID} Bounce ${SHARED_ARN}`,
+      `set ${NEW_ID} Complaint ${SHARED_ARN}`,
+    ]);
+    assert.equal(first.changed, true);
+    assert.equal(first.followUp, undefined);
+    assert.ok(first.detail.some((d) => d.includes(`copied from ${OLD_ID}`)));
+
+    aws.writes = [];
+    const second = await carry(aws);
+    assert.deepEqual(aws.writes, [], "healthy re-run: no CreateTopic, no set, no subscribe");
+    assert.equal(second.changed, false);
+  },
+);
+
+await expect("a topic set by hand on the old identity is copied as is", async () => {
+  // Old identity: Bounce to a custom topic, Complaint nowhere.
+  const aws = new FakeFeedbackAws().identity(OLD_ID, CUSTOM_ARN, null).identity(NEW_ID);
+  const r = await carry(aws);
+  assert.equal(aws.identities.get(NEW_ID)?.bounceTopic, CUSTOM_ARN, "copied, not replaced");
+  assert.equal(
+    aws.identities.get(NEW_ID)?.complaintTopic,
+    SHARED_ARN,
+    "the type the old one didn't route goes to the shared topic",
+  );
+  assert.equal(r.followUp, undefined);
+});
+
+await expect("without Listmonk configured, the copy still happens", async () => {
+  const aws = new FakeFeedbackAws().identity(OLD_ID, SHARED_ARN).identity(NEW_ID);
+  const r = await carry(aws, { listmonk: false });
+  assert.equal(aws.identities.get(NEW_ID)?.complaintTopic, SHARED_ARN);
+  assert.ok(!r.detail.some((d) => /Listmonk is not configured/.test(d)), "nothing left unset");
+
+  const bare = new FakeFeedbackAws().identity(OLD_ID).identity(NEW_ID);
+  const unrouted = await carry(bare, { listmonk: false });
+  assert.ok(
+    unrouted.detail.some((d) => /routes no Bounce or Complaint notifications/.test(d)),
+    unrouted.detail.join("\n"),
+  );
+});
+
+await expect("a topic already on the new identity is reported and left alone", async () => {
+  const aws = new FakeFeedbackAws().identity(OLD_ID, SHARED_ARN).identity(NEW_ID, CUSTOM_ARN, null);
+  const r = await carry(aws, { listmonk: false });
+  assert.equal(aws.identities.get(NEW_ID)?.bounceTopic, CUSTOM_ARN);
+  assert.equal(aws.identities.get(NEW_ID)?.complaintTopic, SHARED_ARN);
+  assert.ok(r.detail.some((d) => d.includes("Left unchanged")));
+});
+
+await expect("an old identity SES no longer knows: the shared topic fills both", async () => {
+  const aws = new FakeFeedbackAws().identity(NEW_ID);
+  const r = await carry(aws);
+  assert.deepEqual(aws.identities.get(NEW_ID), {
+    bounceTopic: SHARED_ARN,
+    complaintTopic: SHARED_ARN,
+  });
+  assert.ok(r.detail.some((d) => d.includes("no topics to copy")));
+});
+
+await expect(
+  "IAM refuses the write: the exact aws commands, once per type, as a follow-up",
+  async () => {
+    const aws = new FakeFeedbackAws().identity(OLD_ID, SHARED_ARN).identity(NEW_ID);
+    aws.denied.add("setNotificationTopic");
+    const r = await carry(aws);
+    assert.ok(r.followUp, "a refused write is a follow-up, not a thrown step");
+    // Copy and ensure both wanted these; each command appears once.
+    assert.deepEqual(r.followUp.commands, [
+      setCommand("Bounce", SHARED_ARN),
+      setCommand("Complaint", SHARED_ARN),
+    ]);
+    assert.match(r.followUp.reason, /ses:SetIdentityNotificationTopic/);
+    assert.ok(
+      !r.detail.some((d) => d.includes("aws ses set-identity-notification-topic")),
+      "the commands are not repeated in the detail lines",
+    );
+  },
+);
+
+await expect("with a hand-set topic, the command carries the old identity's ARN", async () => {
+  const aws = new FakeFeedbackAws().identity(OLD_ID, CUSTOM_ARN).identity(NEW_ID);
+  aws.denied.add("setNotificationTopic");
+  const r = await carry(aws);
+  assert.deepEqual(r.followUp?.commands, [
+    setCommand("Bounce", CUSTOM_ARN),
+    setCommand("Complaint", CUSTOM_ARN),
+  ]);
+});
+
+await expect("IAM refuses the read too, no Listmonk: read the old topics first", async () => {
+  const aws = new FakeFeedbackAws().identity(OLD_ID, SHARED_ARN).identity(NEW_ID);
+  aws.denied.add("getNotificationTopics");
+  const r = await carry(aws, { listmonk: false });
+  assert.deepEqual(r.followUp?.commands, [
+    `aws ses get-identity-notification-attributes --identities ${OLD_ID} --region ${REGION}`,
+  ]);
+  assert.match(r.followUp?.reason ?? "", /same Bounce and Complaint topic ARNs/);
+});
+
+await expect("the follow-up is recorded as its own deferral with the commands", () => {
+  const action = byId(plan, "ses:identity")[0];
+  const step = followUpDeferral(action, plan, {
+    reason: "IAM",
+    commands: [setCommand("Bounce", SHARED_ARN), setCommand("Complaint", SHARED_ARN)],
+  });
+  assert.equal(step.key, "migrate:ses:identity:follow-up");
+  assert.equal(
+    step.command,
+    `${setCommand("Bounce", SHARED_ARN)} && ${setCommand("Complaint", SHARED_ARN)}`,
+  );
+  assert.match(
+    (step.hint ?? []).join("\n"),
+    /hatchkit migrate-domain --to trackyourtime\.dev --from tracktime\.trebeljahr\.com --phase prepare --only ses/,
+  );
 });
 
 if (failures.length > 0) {
