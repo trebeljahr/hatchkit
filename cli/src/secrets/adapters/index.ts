@@ -14,5 +14,8 @@
 
 import "./glitchtip.js";
 import "./openpanel.js";
-// Other adapters (stripe, r2-token, dotenvx-key) will land here as one
-// import line each.
+import "./r2.js";
+import "./local-secrets.js";
+// Global credentials (SES, ListMonk) are shared across projects and are
+// not per-project adapters: see `../global/`. The Stripe webhook secret
+// has no API roll (dashboard only), so it has no adapter.

@@ -14,6 +14,14 @@
  * push site uses: `<project>`, `<project>-web`, `<project>-server`,
  * `<project>-client`. Unknown-app errors become `coolify-app-not-found`
  * skip reasons (not exceptions); transient 5xx still bubbles.
+ *
+ * Both targets update only keys the target ALREADY holds. A hatchkit
+ * app normally reads its secrets from the committed, encrypted
+ * `.env.production`; a Coolify env var or Actions secret of the same
+ * name exists only where the project put one on purpose, and there it
+ * overrides the file, so it must move with the rotation. Creating a
+ * new plaintext copy where none existed would spread the credential to
+ * one more place it can leak from.
  */
 
 import { getCoolifyConfig } from "../config.js";
@@ -89,10 +97,13 @@ export async function pushToCoolify(
     return { target: "coolify", pushed: [], skipReason: "coolify-app-not-found" };
   }
 
-  const envs: Record<string, string> = {};
-  for (const { key, value } of pairs) envs[key] = value;
-
+  let onTarget: PushPair[];
   try {
+    const present = new Set(await api.listAppEnvKeys(uuid));
+    onTarget = pairs.filter((p) => present.has(p.key));
+    if (onTarget.length === 0) return { target: "coolify", pushed: [] };
+    const envs: Record<string, string> = {};
+    for (const { key, value } of onTarget) envs[key] = value;
     await api.setAppEnv(uuid, envs);
   } catch (err) {
     if (err instanceof Error && /not found/i.test(err.message)) {
@@ -101,11 +112,12 @@ export async function pushToCoolify(
     throw err;
   }
 
-  return { target: "coolify", pushed: pairs.map((p) => p.key) };
+  return { target: "coolify", pushed: onTarget.map((p) => p.key) };
 }
 
-/** Push pairs to GitHub Actions as repo-level secrets via `gh secret
- *  set --body`. The `gh` CLI must be installed and authenticated.
+/** Update repo-level GitHub Actions secrets that already exist, via
+ *  `gh secret set <name>` with the value on stdin (never in argv, where
+ *  `ps` can read it). The `gh` CLI must be installed and authenticated.
  *
  *  When `repoSlug` is omitted, auto-detects from `git remote get-url
  *  origin`. Returns `skipReason: 'no-git-remote'` when no slug can be
@@ -122,10 +134,13 @@ export async function pushToGithub(
     return { target: "gh", pushed: [], skipReason: "no-git-remote" };
   }
 
+  const present = await listGithubSecretNames(slug);
   const pushed: string[] = [];
   for (const { key, value } of pairs) {
-    const res = await exec("gh", ["secret", "set", key, "--repo", slug, "--body", value], {
+    if (!present.has(key)) continue;
+    const res = await exec("gh", ["secret", "set", key, "--repo", slug], {
       silent: true,
+      input: value,
     });
     if (res.exitCode !== 0) {
       throw new Error(
@@ -135,6 +150,25 @@ export async function pushToGithub(
     pushed.push(key);
   }
   return { target: "gh", pushed };
+}
+
+/** Names of the repo-level Actions secrets on `slug`. Names only — the
+ *  API never returns a secret value. */
+export async function listGithubSecretNames(slug: string): Promise<Set<string>> {
+  const res = await exec("gh", ["secret", "list", "--repo", slug, "--json", "name"], {
+    silent: true,
+  });
+  if (res.exitCode !== 0) {
+    throw new Error(
+      redactErrorMessage(`gh secret list --repo ${slug} exited ${res.exitCode}: ${res.stderr.trim()}`),
+    );
+  }
+  try {
+    const rows = JSON.parse(res.stdout || "[]") as Array<{ name?: string }>;
+    return new Set(rows.map((r) => r.name ?? "").filter(Boolean));
+  } catch {
+    throw new Error(`gh secret list --repo ${slug} returned output that is not JSON`);
+  }
 }
 
 /** Single dispatcher used by the orchestrator. Iterates the requested

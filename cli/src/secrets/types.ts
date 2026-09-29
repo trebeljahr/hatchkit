@@ -87,6 +87,11 @@ export interface RotationContext {
    *  scanned from every `.env.*` under projectDir. Adapters use
    *  this in `detect()` instead of re-reading files themselves. */
   readonly envPresence: ReadonlySet<string>;
+  /** Env-var names present in `.env.production` alone (names only, read
+   *  without decrypting). Adapters whose keys only matter when production
+   *  already holds them (local-secrets) detect on this instead of
+   *  `envPresence`, which also counts `.env.development`. */
+  readonly prodEnvPresence: ReadonlySet<string>;
   /** True when the user passed `--dry-run`. createNew/verify/revoke
    *  MUST short-circuit to a no-op return when set, but should still
    *  populate the audit shape so the user sees the plan. */
@@ -181,6 +186,26 @@ export interface ProviderRotator {
    *  404/already-deleted response is success. Throw only on
    *  genuine API failure that an operator should see. */
   revoke(ctx: RotationContext, old: OldCred): Promise<void>;
+
+  /** `false` for values with no upstream credential behind them (a
+   *  random `CRON_SECRET`): there is nothing to revoke, and the old value
+   *  stops working as soon as every consumer holds the new one. The
+   *  orchestrator skips `revoke`, reports `oldRevoked: 'not-applicable'`
+   *  and clears the rollback blob once the write and push succeeded.
+   *  Default `true`. */
+  readonly revocable?: boolean;
+
+  /** What changes for users when this adapter rotates, one line per
+   *  consequence ("BETTER_AUTH_SECRET: signs every user out"). Printed
+   *  in the plan and the `--dry-run` output. Names only, no values. */
+  sideEffects?(ctx: RotationContext): string[];
+
+  /** Record the NEW credential's non-secret identifiers after the env
+   *  write, e.g. the R2 token id in `.hatchkit.json`. Runs before verify
+   *  so the manifest always names the token the env file holds, which
+   *  is what `hatchkit provision s3`'s reuse check compares. Never
+   *  writes a secret value. */
+  recordNew?(ctx: RotationContext, fresh: NewCred, old: OldCred): Promise<void>;
 }
 
 /** What the orchestrator emits per adapter in the final audit
@@ -194,8 +219,12 @@ export interface AdapterAuditEntry {
   /** `true` when revoke succeeded; `false` when not yet performed
    *  but expected to be; `'held'` when revoke was deliberately
    *  skipped (verify failed, `--revoke=never`, or the adapter
-   *  reported it can't recover an old credential). */
-  oldRevoked: boolean | "held";
+   *  reported it can't recover an old credential);
+   *  `'not-applicable'` for adapters with nothing upstream to revoke
+   *  (`revocable: false`). */
+  oldRevoked: boolean | "held" | "not-applicable";
+  /** Consequences for users, from `ProviderRotator.sideEffects`. */
+  sideEffects?: string[];
   /** Populated when the orchestrator skipped a step entirely.
    *  See `RotationSkipReason` for the vocabulary. */
   skipReason?: RotationSkipReason;
@@ -217,4 +246,15 @@ export interface RotationAudit {
   finishedAt: string;
   dryRun: boolean;
   adapters: AdapterAuditEntry[];
+  /** Global credentials this project holds a copy of (`ses`,
+   *  `listmonk`). A per-project run never rotates them: they are shared
+   *  with other projects, so `hatchkit secrets rotate --global <name>`
+   *  owns them. Listed so the operator sees them in the plan. */
+  sharedCredentials?: string[];
+  /** What the operator must still do (commit the env file, redeploy).
+   *  hatchkit never runs `git push`. */
+  nextSteps?: string[];
+  /** Dry run only: why a live run would refuse (the dotenvx key is in
+   *  git history). A live run throws this text instead. */
+  blockedBy?: string;
 }

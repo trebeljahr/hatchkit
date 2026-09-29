@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { confirm, select } from "@inquirer/prompts";
 import chalk from "chalk";
@@ -559,27 +560,37 @@ async function handleKeys(): Promise<void> {
 }
 
 /** `hatchkit secrets <sub> <project>` dispatch. Only `rotate` is wired
- *  today — the orchestrator at `./secrets/orchestrator.ts` owns every
- *  upstream call, env-file write, deploy-target push, keychain rollback
- *  bookkeeping, and audit emission. This handler is intentionally thin:
- *  parse flags, run the orchestrator, exit. Modeled after `handleKeys`. */
+ *  today — the orchestrators at `./secrets/orchestrator.ts` (one
+ *  project) and `./secrets/global/orchestrator.ts` (`--global`, shared
+ *  credentials) own every upstream call, env-file write, deploy-target
+ *  push, keychain rollback bookkeeping, and audit emission. This handler
+ *  is intentionally thin: parse flags, run an orchestrator, exit.
+ *  Modeled after `handleKeys`. */
 async function handleSecrets(): Promise<void> {
   const sub = args[1];
+  const usage =
+    "Usage: hatchkit secrets rotate <project-name> [flags]\n       hatchkit secrets rotate --global <ses|listmonk> [flags]";
   if (!sub) {
-    console.log("Usage: hatchkit secrets rotate <project-name> [flags]");
+    console.log(usage);
     process.exit(1);
   }
 
   switch (sub) {
     case "rotate": {
-      const projectName = args[2];
-      if (!projectName || projectName.startsWith("--")) {
-        console.log("Usage: hatchkit secrets rotate <project-name> [flags]");
-        process.exit(1);
-      }
-
       const isJson = args.includes("--json");
       const dryRun = args.includes("--dry-run");
+      const keysRotated = args.includes("--keys-rotated");
+
+      if (args.includes("--global") || args.some((a) => a.startsWith("--global="))) {
+        await handleGlobalSecretsRotate({ isJson, dryRun, keysRotated, usage });
+        break;
+      }
+
+      const projectName = args[2];
+      if (!projectName || projectName.startsWith("--")) {
+        console.log(usage);
+        process.exit(1);
+      }
 
       // `--env` is reserved for future scoping; only `production` is
       // supported today (Coolify + gh secrets are production-only).
@@ -672,6 +683,7 @@ async function handleSecrets(): Promise<void> {
           only,
           json: isJson,
           ghRepo,
+          keysRotated,
         });
       } catch (err) {
         // Orchestrator throws on captureOld/createNew failures (rollback
@@ -692,6 +704,88 @@ async function handleSecrets(): Promise<void> {
       console.log(`Unknown secrets subcommand: ${sub}`);
       console.log("Valid: rotate");
       process.exit(1);
+  }
+}
+
+/** `hatchkit secrets rotate --global <ses|listmonk>`: one shared
+ *  credential, fanned out to every project and Coolify app holding it. */
+async function handleGlobalSecretsRotate(flags: {
+  isJson: boolean;
+  dryRun: boolean;
+  keysRotated: boolean;
+  usage: string;
+}): Promise<void> {
+  const name = (flagValue("--global") ?? "").toLowerCase();
+  if (name !== "ses" && name !== "listmonk") {
+    console.log(`--global needs a credential name: ses or listmonk.\n${flags.usage}`);
+    process.exit(1);
+  }
+  if (args[2] && !args[2].startsWith("--")) {
+    console.log(
+      `--global rotates a shared credential across projects; drop the project name (${args[2]}).`,
+    );
+    process.exit(1);
+  }
+
+  const revokeFlag = (flagValue("--revoke-old") ?? "after-verify").toLowerCase();
+  if (!["after-verify", "never", "immediate"].includes(revokeFlag)) {
+    console.log(`Invalid --revoke-old=${revokeFlag}. Valid: after-verify, never, immediate.`);
+    process.exit(1);
+  }
+
+  let pushTargets: ("coolify" | "gh")[] = ["coolify", "gh"];
+  const pushFlag = flagValue("--push-targets")?.toLowerCase();
+  if (pushFlag && pushFlag !== "both") {
+    const requested =
+      pushFlag === "none"
+        ? []
+        : pushFlag
+            .split(",")
+            .map((t) => t.trim())
+            .filter(Boolean)
+            .map((t) => (t === "github" ? "gh" : t));
+    const invalid = requested.filter((t) => t !== "coolify" && t !== "gh");
+    if (invalid.length > 0) {
+      console.log(
+        `Invalid --push-targets entries: ${invalid.join(", ")}. Valid: coolify, gh, github, both, none.`,
+      );
+      process.exit(1);
+    }
+    pushTargets = requested as ("coolify" | "gh")[];
+  }
+
+  const list = (flag: string): string[] | undefined =>
+    flagValue(flag)
+      ?.split(",")
+      .map((v) => v.trim())
+      .filter(Boolean);
+  const projectRoots = list("--projects-root")?.map((p) =>
+    resolve(p.replace(/^~(?=$|\/)/, homedir())),
+  );
+
+  const { runGlobalRotate } = await import("./secrets/global/orchestrator.js");
+  try {
+    const audit = await runGlobalRotate({
+      credential: name,
+      dryRun: flags.dryRun,
+      json: flags.isJson,
+      revokePolicy: revokeFlag as "after-verify" | "never" | "immediate",
+      projectRoots,
+      exclude: list("--exclude"),
+      pushTargets,
+      keysRotated: flags.keysRotated,
+      resume: args.includes("--resume"),
+      yes: args.includes("--yes") || args.includes("-y"),
+    });
+    if (!["done", "planned", "cancelled"].includes(audit.outcome)) process.exit(1);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (flags.isJson) {
+      process.stdout.write(`${JSON.stringify({ credential: name, error: message })}\n`);
+    } else {
+      console.error(chalk.red(`  ${message}`));
+    }
+    process.exit(1);
   }
 }
 
@@ -3690,61 +3784,106 @@ function printHelp(topic?: HelpTopic): void {
   }
   if (topic === "secrets") {
     console.log(`
-  ${chalk.bold("hatchkit secrets")} — rotate per-project provider credentials
+  ${chalk.bold("hatchkit secrets")} — rotate provider credentials
 
   ${chalk.bold("Subcommands:")}
     secrets rotate <project>   Mint fresh upstream credentials for every
-                               detected provider, write them to
-                               ${chalk.cyan(".env.production")} (encrypted) and
-                               ${chalk.cyan(".env.development")} (plaintext), push to
-                               deploy targets, verify, then revoke the
-                               old credential. Two-phase: a verify
-                               failure leaves the OLD credential live
-                               and stashes a rollback blob in the
-                               keychain so you can recover.
+                               detected provider in one project, write
+                               them to ${chalk.cyan(".env.production")} (encrypted),
+                               update deploy targets that already hold
+                               them, verify, then revoke the old
+                               credential. A verify failure leaves the
+                               OLD credential live and stashes a
+                               rollback blob in the keychain.
+    secrets rotate --global <ses|listmonk>
+                               Rotate a credential SHARED across
+                               projects: mint once, then update every
+                               copy — local projects' env files, Coolify
+                               apps that carry the key name, and
+                               ListMonk's SMTP settings (ses).
+
+  ${chalk.bold("Providers (per project):")}
+    ${chalk.cyan("r2")}              R2 account token → <R2|S3|AWS>[_<BUCKET>]_ACCESS_KEY_ID
+                    + _SECRET_ACCESS_KEY. Same bucket scope; verified with
+                    ListObjectsV2; old token deleted; manifest tokenId updated.
+    ${chalk.cyan("local-secrets")}   CRON_SECRET, NEWSLETTER_TOKEN_SECRET, BETTER_AUTH_SECRET,
+                    AUTH_SECRET — only those already in .env.production.
+                    New value: 32 random bytes (hex). Side effects: the
+                    auth secret signs users out; the newsletter secret
+                    breaks confirm/unsubscribe links already sent.
+    ${chalk.cyan("glitchtip")}       GLITCHTIP_DSN, PUBLIC_GLITCHTIP_DSN
+    ${chalk.cyan("openpanel")}       OPENPANEL_CLIENT_ID / _SECRET, PUBLIC_OPENPANEL_CLIENT_ID
+
+  ${chalk.bold("Global credentials (--global):")}
+    ${chalk.cyan("ses")}             IAM user hatchkit-ses → SES_SMTP_USERNAME / SES_SMTP_PASSWORD,
+                    keychain ses:*, ListMonk SMTP login. Needs IAM rights
+                    over its own keys (the command prints the policy to
+                    attach) or a one-off admin key pasted at the prompt.
+    ${chalk.cyan("listmonk")}        API user → LISTMONK_API_TOKEN, keychain listmonk:api-token.
+                    ListMonk cannot regenerate a token: hatchkit creates a
+                    replacement user with the same role, deletes the old
+                    one, renames the replacement to the old name. Needs a
+                    one-off admin API user (users:get + users:manage).
 
   ${chalk.bold("Flags (rotate):")}
-    --env production           Scope the rotation. Only ${chalk.cyan("production")} is
-                               supported today.
-    --providers <list>         Comma list of adapter names, or ${chalk.cyan("all")}.
-                               E.g. ${chalk.dim("--providers=openpanel,glitchtip")}.
-                               Default: ${chalk.dim("all")} (every registered adapter
-                               whose detect() returns true).
-    --push-targets <list>      Comma list of ${chalk.cyan("coolify")}, ${chalk.cyan("gh")} (alias
-                               ${chalk.cyan("github")}), or ${chalk.cyan("both")} / ${chalk.cyan("none")}. Default:
-                               ${chalk.dim("both")} — silently filters to whatever's
-                               actually configured + detected.
-    --revoke-old=<policy>      ${chalk.cyan("after-verify")} (default): revoke OLD
-                               credential only after verify succeeds.
-                               ${chalk.cyan("never")}: leave OLD credential live (safe
-                               for audit replays).
-                               ${chalk.cyan("immediate")}: revoke BEFORE verify (for
-                               emergency leak-race rotations only).
-    --push-gh <owner/repo>     Override the auto-detected GitHub repo
-                               for the Actions secret push. (alias:
-                               ${chalk.cyan("--repo")})
-    --dry-run                  Print the plan (providers, env-key names,
-                               deploy targets, revoke policy) without
-                               minting, writing, or pushing anything.
-    --json                     Emit one NDJSON line of ${chalk.cyan("RotationAudit")} on
-                               stdout. Names + outcomes only — never
-                               credential values.
+    --providers <list>         Per project: comma list of adapter names,
+                               or ${chalk.cyan("all")} (default).
+    --push-targets <list>      ${chalk.cyan("coolify")}, ${chalk.cyan("gh")} (alias ${chalk.cyan("github")}), ${chalk.cyan("both")} (default) or
+                               ${chalk.cyan("none")}. Only keys a target already holds
+                               are updated; nothing new is created there.
+    --revoke-old=<policy>      ${chalk.cyan("after-verify")} (default): revoke the OLD
+                               credential after verify (global: after
+                               every consumer is updated).
+                               ${chalk.cyan("never")}: leave it live (not for listmonk).
+                               ${chalk.cyan("immediate")}: per project, revoke before
+                               verify; global, right after verify and
+                               before the fan-out.
+    --keys-rotated             You rotated the dotenvx keypair after a
+                               ${chalk.cyan(".env.keys")} reached git history. Lets an
+                               undecidable history through; a committed
+                               key that is still current always refuses.
+    --push-gh <owner/repo>     Per project: override the GitHub repo.
+                               (alias: ${chalk.cyan("--repo")})
+    --projects-root <dirs>     Global: comma list of directories whose
+                               direct children are scanned for projects.
+                               Default: ${chalk.dim("$HATCHKIT_PROJECTS_ROOTS")}, else
+                               ${chalk.dim("~/projects")} and ${chalk.dim("~/work")}.
+    --exclude <names>          Global: project slugs or Coolify app names
+                               to leave alone.
+    --resume                   Global: finish an interrupted or held
+                               rotation (remaining consumers, then revoke).
+                               A project skipped for a leaked dotenvx key
+                               holds the revoke until then.
+    --yes                      Global: skip the confirmation prompt.
+    --env production           Per project. Only ${chalk.cyan("production")} today.
+    --dry-run                  Print the plan (providers or consumers,
+                               env-key names, targets, side effects)
+                               without minting, writing or pushing.
+    --json                     One NDJSON line of the audit on stdout.
+                               Names + outcomes only — never values.
 
   ${chalk.bold("Examples:")}
-    hatchkit secrets rotate raptor-runner
     hatchkit secrets rotate raptor-runner --dry-run
-    hatchkit secrets rotate raptor-runner --providers=openpanel
-    hatchkit secrets rotate raptor-runner --push-targets=none
+    hatchkit secrets rotate raptor-runner --providers=r2
     hatchkit secrets rotate raptor-runner --revoke-old=immediate
+    hatchkit secrets rotate --global ses --dry-run
+    hatchkit secrets rotate --global listmonk
+    hatchkit secrets rotate --global ses --resume
 
   ${chalk.bold("Safety:")}
-    REFUSES if ${chalk.cyan(".env.keys")} is tracked by git (run
-    ${chalk.cyan("git rm --cached .env.keys && hatchkit keys rotate <project>")} first).
-    WARNS but proceeds if ${chalk.cyan(".env.production")} isn't dotenvx-encrypted
-    (run ${chalk.cyan("hatchkit adopt")} first to migrate).
-    A failed verify leaves the OLD credential live and stashes a
-    rollback blob under keychain account
-    ${chalk.dim("secrets-rollback:<project>:<adapter>")}.
+    REFUSES if ${chalk.cyan(".env.keys")} is tracked by git, or if a committed
+    ${chalk.cyan(".env.keys")} (any ref, any path) holds the key that encrypts
+    ${chalk.cyan(".env.production")} today: a new value would be readable from
+    history. Run ${chalk.cyan("hatchkit keys rotate <project>")} first. A global run
+    skips such a project instead.
+    Plaintext ${chalk.cyan(".env.development")} copies are rewritten only when git
+    ignores the file.
+    hatchkit never pushes: the run ends with the repos to commit and
+    the apps to redeploy. Until they redeploy, apps keep the old value.
+    A failed verify leaves the OLD credential live; rollback blobs sit
+    under keychain account ${chalk.dim("secrets-rollback:<project|@global>:<name>")}.
+    The Stripe webhook secret has no API roll (dashboard only), so it
+    is not rotated here.
 `);
     return;
   }
@@ -5049,7 +5188,7 @@ function printHelp(topic?: HelpTopic): void {
     keys set <p>    Upsert the key into the OS keychain (after \`dotenvx rotate\`)
     keys rotate <p> Rotate the dotenvx keypair, mirror to keychain + (default) deploy targets
     keys push <p>   Push the key to Coolify (default) and/or GitHub Actions
-    secrets rotate <p>  Rotate per-project provider credentials (OpenPanel, GlitchTip, ...)
+    secrets rotate <p>  Rotate provider credentials (R2, local secrets, GlitchTip, OpenPanel; --global ses|listmonk)
 
   ${chalk.bold("Config:")}
     config          Show provider status (same as \`status\`)

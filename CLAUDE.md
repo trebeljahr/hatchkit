@@ -48,6 +48,12 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   gone stale before.
 - `hatchkit add <project> [services]`: provision GlitchTip/OpenPanel/Resend/S3/email.
 - `hatchkit keys show|push|rotate <project>`: manage dotenvx private keys.
+- `hatchkit secrets rotate <project>`: rotate one project's provider
+  credentials (`r2`, `local-secrets`, `glitchtip`, `openpanel`).
+  `hatchkit secrets rotate --global ses|listmonk`: rotate a credential shared
+  across projects and update every local project, Coolify app and ListMonk
+  setting that holds it. Both refuse while the dotenvx key is in git history
+  (`keys rotate` first). Start with `--dry-run`; never pushes.
 - `hatchkit gh-pages`: configure GitHub Pages for the current repo.
 - `hatchkit cloudflare`: configure Cloudflare Workers Static Assets for the
   current repo (static sites; free, unmetered asset requests).

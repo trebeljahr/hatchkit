@@ -131,17 +131,39 @@ export function renderAuditHuman(audit: RotationAudit): void {
   console.log(chalk.dim(`  ${audit.startedAt} → ${audit.finishedAt}`));
   console.log("");
 
+  if (audit.blockedBy) {
+    console.log(chalk.red(`  ${audit.blockedBy.split("\n").join("\n  ")}`));
+    console.log("");
+  }
+
   if (audit.adapters.length === 0) {
     console.log(chalk.dim("  No adapters matched this project."));
-    return;
   }
 
   for (const entry of audit.adapters) {
-    renderEntry(entry);
+    renderEntry(entry, audit.dryRun);
+  }
+
+  if (audit.sharedCredentials && audit.sharedCredentials.length > 0) {
+    console.log("");
+    console.log(
+      chalk.yellow(
+        `  Shared credentials in this project: ${audit.sharedCredentials.join(", ")}. They are global (copied into other projects too), so a per-project run leaves them alone.`,
+      ),
+    );
+    for (const name of audit.sharedCredentials) {
+      console.log(chalk.yellow(`    hatchkit secrets rotate --global ${name} --dry-run`));
+    }
+  }
+
+  if (audit.nextSteps && audit.nextSteps.length > 0) {
+    console.log("");
+    console.log(chalk.bold("  Next steps:"));
+    for (const step of audit.nextSteps) console.log(`  ${step}`);
   }
 }
 
-function renderEntry(entry: AdapterAuditEntry): void {
+function renderEntry(entry: AdapterAuditEntry, dryRun: boolean): void {
   const prefix = `  · ${chalk.cyan(entry.provider)}`;
   if (entry.skipReason === "adapter-not-detected") {
     console.log(`${prefix} ${chalk.dim("skipped (not detected for this project)")}`);
@@ -156,7 +178,9 @@ function renderEntry(entry: AdapterAuditEntry): void {
   const targets = entry.deployTargetsUpdated.length
     ? entry.deployTargetsUpdated.join(", ")
     : chalk.dim("none");
-  console.log(`      deploy: ${targets}`);
+  console.log(
+    `      deploy: ${targets}${dryRun && entry.deployTargetsUpdated.length ? chalk.dim(" (only keys that already exist there)") : ""}`,
+  );
 
   const verifyColor =
     entry.verificationResult === "ok"
@@ -167,12 +191,19 @@ function renderEntry(entry: AdapterAuditEntry): void {
   console.log(`      verify: ${verifyColor(entry.verificationResult)}`);
 
   const revokeText =
-    entry.oldRevoked === true
-      ? chalk.green("revoked")
-      : entry.oldRevoked === false
-        ? chalk.red("revoke failed — old credential may still be live")
-        : chalk.yellow("held (rollback blob preserved in keychain)");
+    entry.oldRevoked === "not-applicable"
+      ? chalk.dim("n/a (no upstream credential; the old value stops working once the app redeploys)")
+      : dryRun
+        ? chalk.dim("not run (dry run)")
+        : entry.oldRevoked === true
+          ? chalk.green("revoked")
+          : entry.oldRevoked === false
+            ? chalk.red("revoke failed — old credential may still be live")
+            : chalk.yellow("held (rollback blob preserved in keychain)");
   console.log(`      revoke: ${revokeText}`);
+  for (const effect of entry.sideEffects ?? []) {
+    console.log(chalk.yellow(`      effect: ${effect}`));
+  }
 
   if (entry.skipReason === "push-failed") {
     // Loud: env+upstream succeeded but deploy targets are still on

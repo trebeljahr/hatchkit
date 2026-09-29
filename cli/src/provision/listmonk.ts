@@ -700,3 +700,199 @@ export async function probeListmonk(auth: ListmonkAuth): Promise<{ listCount: nu
   const lists = await listListmonkLists(auth);
   return { listCount: lists.length };
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Users (Listmonk v4+) — used by `hatchkit secrets rotate --global listmonk`
+//
+// Listmonk mints an API user's token once, in the `POST /api/users`
+// response (`data.password`), and has no endpoint that regenerates it
+// (checked against v6.0.0: `UpdateUser` keeps an API user's stored token
+// hash). Rotation therefore creates a replacement user with the same
+// role, then renames it to the old name once the old user is deleted —
+// the rename keeps the token (`update-user` only rewrites the password
+// column for non-API users).
+//
+// `users:get` / `users:manage` are needed for everything but
+// `/api/profile`, which any user may read about itself.
+// ────────────────────────────────────────────────────────────────────────────
+
+export interface ListmonkProfile {
+  id: number;
+  username: string;
+  name: string;
+  type: string;
+  status: string;
+  userRoleId: number;
+  userRoleName: string;
+  permissions: string[];
+  listRoleId: number | null;
+}
+
+/** `GET /api/profile` — the user the auth pair belongs to. */
+export async function getListmonkProfile(auth: ListmonkAuth): Promise<ListmonkProfile> {
+  const d = await listmonkFetch<{
+    id: number;
+    username: string;
+    name?: string;
+    type: string;
+    status: string;
+    user_role?: { id: number; name: string; permissions?: string[] };
+    list_role?: { id: number } | null;
+  }>(auth, "GET", "/api/profile");
+  return {
+    id: d.id,
+    username: d.username,
+    name: d.name ?? d.username,
+    type: d.type,
+    status: d.status,
+    userRoleId: d.user_role?.id ?? 0,
+    userRoleName: d.user_role?.name ?? "",
+    permissions: d.user_role?.permissions ?? [],
+    listRoleId: d.list_role?.id ?? null,
+  };
+}
+
+/** Create an API user. Returns its id and the token, which Listmonk
+ *  shows exactly once. The caller must persist the token before doing
+ *  anything else that can fail. */
+export async function createListmonkApiUser(
+  auth: ListmonkAuth,
+  params: { username: string; name: string; userRoleId: number; listRoleId: number | null },
+): Promise<{ id: number; username: string; token: string }> {
+  const d = await listmonkFetch<{ id: number; username: string; password?: string }>(
+    auth,
+    "POST",
+    "/api/users",
+    {
+      username: params.username,
+      name: params.name,
+      type: "api",
+      status: "enabled",
+      password_login: false,
+      user_role_id: params.userRoleId,
+      ...(params.listRoleId ? { list_role_id: params.listRoleId } : {}),
+    },
+  );
+  if (!d.password) {
+    throw new Error("Listmonk created the API user but returned no token");
+  }
+  return { id: d.id, username: d.username, token: d.password };
+}
+
+/** Rename an API user, keeping its role and its token. */
+export async function renameListmonkApiUser(
+  auth: ListmonkAuth,
+  id: number,
+  params: { username: string; name: string; userRoleId: number; listRoleId: number | null },
+): Promise<void> {
+  await listmonkFetch<unknown>(auth, "PUT", `/api/users/${id}`, {
+    username: params.username,
+    name: params.name,
+    type: "api",
+    status: "enabled",
+    password_login: false,
+    user_role_id: params.userRoleId,
+    ...(params.listRoleId ? { list_role_id: params.listRoleId } : {}),
+  });
+}
+
+/** Delete a user by id. Idempotent: a missing user is "not-found". */
+export async function deleteListmonkUser(
+  auth: ListmonkAuth,
+  id: number,
+): Promise<"deleted" | "not-found"> {
+  try {
+    await listmonkFetch<boolean>(auth, "DELETE", `/api/users/${id}`);
+    return "deleted";
+  } catch (err) {
+    if (/HTTP 404\b/.test((err as Error).message)) return "not-found";
+    throw err;
+  }
+}
+
+/**
+ * Swap the SMTP login on the settings entries that use `oldUsername`,
+ * keeping every other field and every other SMTP server as they are.
+ *
+ * `applySesSmtpToListmonk` above is the provisioning path: it picks the
+ * SES entry by the NEW username (falling back to the first SES entry)
+ * and may write `app.from_email`. A key rotation matches on the OLD IAM
+ * access key id instead and never touches the from-address. It writes
+ * the same way — the per-key `PUT /api/settings/smtp`, which stores the
+ * list as sent — so it inherits the same limit: another server whose
+ * password GET masks would be written back as bullets, so the swap
+ * refuses and says what to paste by hand.
+ */
+export async function swapListmonkSmtpCredentials(
+  swap: { oldUsername: string; username: string; password: string },
+  authOverride?: ListmonkAuth,
+  opts: { reloadDelayMs?: number } = {},
+): Promise<{ written: boolean; matched: number; reason?: string; needsRestart?: boolean }> {
+  const auth = authOverride ?? (await ensureListmonk());
+  const settings = await getListmonkSettings(auth);
+  const current = settings.smtp ?? [];
+  const plan = planSmtpSwap(current, swap.oldUsername);
+  if (plan.matched === 0) return { written: false, matched: 0 };
+  if (plan.blocked) return { written: false, matched: plan.matched, reason: plan.blocked };
+
+  const smtp = current
+    .filter((e) => !isListmonkSampleSmtp(e))
+    .map((e) =>
+      e.username === swap.oldUsername
+        ? { ...e, uuid: e.uuid || randomUUID(), username: swap.username, password: swap.password }
+        : e,
+    );
+  let res: { needsRestart: boolean };
+  try {
+    res = await putListmonkSetting("smtp", smtp, auth);
+  } catch (err) {
+    if (/HTTP (404|405)/.test((err as Error).message)) {
+      throw new Error(
+        "Listmonk has no per-key settings endpoint (needs v6+). Set the SES server's SMTP username and password in Settings → SMTP by hand.",
+      );
+    }
+    throw err;
+  }
+  if (!res.needsRestart) {
+    await waitForListmonk(auth, { initialDelayMs: opts.reloadDelayMs ?? 1_500 });
+  }
+  return {
+    written: true,
+    matched: plan.matched,
+    ...(res.needsRestart ? { needsRestart: true } : {}),
+  };
+}
+
+/** Which SMTP entries log in as `oldUsername`, and why the list can't
+ *  be written back (another server's password is masked). Pure. */
+function planSmtpSwap(
+  current: ListmonkSmtpEntry[],
+  oldUsername: string,
+): { matched: number; blocked?: string } {
+  const matched = current.filter((e) => e.username === oldUsername).length;
+  const masked = current.filter(
+    (e) =>
+      e.username !== oldUsername &&
+      !isListmonkSampleSmtp(e) &&
+      e.password &&
+      LISTMONK_SECRET_MASK.test(e.password),
+  );
+  if (matched === 0 || masked.length === 0) return { matched };
+  const names = masked.map((e) => e.name || e.host).join(", ");
+  return {
+    matched,
+    blocked:
+      `Listmonk has other SMTP servers (${names}) and the API masks their passwords, so writing the SMTP list would replace them with the mask. ` +
+      "In Listmonk → Settings → SMTP, set the SES server's username and password to SES_SMTP_USERNAME and SES_SMTP_PASSWORD from a rotated .env.production.",
+  };
+}
+
+/** Read-only plan for `swapListmonkSmtpCredentials`. */
+export async function planListmonkSmtpSwap(
+  oldUsername: string,
+  authOverride?: ListmonkAuth,
+): Promise<{ matched: number; blocked?: string }> {
+  const auth = authOverride ?? (await ensureListmonk());
+  const settings = await getListmonkSettings(auth);
+  return planSmtpSwap(settings.smtp ?? [], oldUsername);
+}

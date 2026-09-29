@@ -18,9 +18,11 @@
  * verify for leak-race scenarios.
  */
 
+import { relative } from "node:path";
+import { readEnvKeys } from "../provision/write-env.js";
+import type { EnvPair } from "../provision/write-env.js";
 import { readManifest } from "../scaffold/manifest.js";
 import type { ProjectManifest } from "../scaffold/manifest.js";
-import type { EnvPair } from "../provision/write-env.js";
 import { buildAudit, printAudit, redactErrorMessage } from "./audit.js";
 import {
   assertEnvKeysNotTracked,
@@ -31,6 +33,8 @@ import {
   setProdPairs,
   warnIfNotEncrypted,
 } from "./env-writer.js";
+import { SHARED_CREDENTIAL_KEYS } from "./global/types.js";
+import { assertKeysNotLeaked, inspectEnvKeysHistory, keyHistoryRefusal } from "./key-history.js";
 import { type PushPair, type PushResult, detectRepoSlug, push } from "./push.js";
 import { all as listAdapters } from "./registry.js";
 import { clearRollback, saveRollback } from "./rollback-store.js";
@@ -80,6 +84,11 @@ export interface RunSecretsRotateOptions {
   /** Override the Coolify app name (otherwise the candidate-walker
    *  in `push.ts` tries `<p>`, `<p>-web`, `<p>-server`, `<p>-client`). */
   coolifyAppName?: string;
+  /** The operator states the dotenvx keypair was rotated after a
+   *  `.env.keys` reached git history. Lets an undecidable history
+   *  through; a committed key that still derives the current public key
+   *  refuses regardless. CLI: `--keys-rotated`. */
+  keysRotated?: boolean;
 }
 
 /** Top-level entry. Returns the same audit it printed. */
@@ -92,10 +101,30 @@ export async function runSecretsRotate(
   // ── Phase 0: pre-flight guards (no adapter calls yet) ──
   const manifest = assertManifest(projectDir);
   await assertEnvKeysNotTracked(projectDir);
+  // Order rule: a new value encrypted to a leaked key is public on the
+  // next push, so the keypair must rotate first. A dry run reports the
+  // blocker in the plan instead of throwing.
+  let blockedBy: string | undefined;
+  if (opts.dryRun) {
+    const history = await inspectEnvKeysHistory(projectDir);
+    if (history.status === "leaked" || (history.status === "unknown" && !opts.keysRotated)) {
+      blockedBy = keyHistoryRefusal(history, {
+        projectName: opts.projectName,
+        keysRotated: opts.keysRotated,
+      });
+    }
+  } else {
+    await assertKeysNotLeaked(projectDir, {
+      projectName: opts.projectName,
+      keysRotated: opts.keysRotated,
+    });
+  }
   warnIfNotEncrypted(safeResolveProdPath(projectDir));
 
   // ── Phase 0.5: build the shared RotationContext base ──
   const envPresence = scanEnvVarNames(projectDir);
+  const prodPath = safeResolveProdPath(projectDir);
+  const prodEnvPresence: ReadonlySet<string> = prodPath ? readEnvKeys(prodPath) : new Set();
   const pushTargets: ReadonlyArray<DeployTarget> = opts.noPush
     ? []
     : (opts.pushTargets ?? ["coolify", "gh"]);
@@ -106,6 +135,7 @@ export async function runSecretsRotate(
     projectDir,
     manifest,
     envPresence,
+    prodEnvPresence,
     dryRun: !!opts.dryRun,
     pushTargets,
     revokePolicy,
@@ -143,6 +173,7 @@ export async function runSecretsRotate(
     }
 
     const specs = adapter.envKeys(ctx);
+    const sideEffects = adapter.sideEffects?.(ctx) ?? [];
 
     if (ctx.dryRun) {
       auditEntries.push({
@@ -150,18 +181,23 @@ export async function runSecretsRotate(
         envKeysChanged: specs.map((s) => s.name),
         deployTargetsUpdated: [...ctx.pushTargets],
         verificationResult: "skipped",
-        oldRevoked: "held",
+        oldRevoked: adapter.revocable === false ? "not-applicable" : "held",
+        ...(sideEffects.length > 0 ? { sideEffects } : {}),
       });
       continue;
     }
 
-    auditEntries.push(
-      await rotateOneAdapter(adapter, ctx, {
-        ghRepoSlug,
-        coolifyAppName: opts.coolifyAppName,
-      }),
-    );
+    const entry = await rotateOneAdapter(adapter, ctx, {
+      ghRepoSlug,
+      coolifyAppName: opts.coolifyAppName,
+    });
+    if (sideEffects.length > 0) entry.sideEffects = sideEffects;
+    auditEntries.push(entry);
   }
+
+  const sharedCredentials = Object.entries(SHARED_CREDENTIAL_KEYS)
+    .filter(([, keys]) => keys.some((k) => envPresence.has(k)))
+    .map(([name]) => name);
 
   const audit: RotationAudit = {
     project: opts.projectName,
@@ -170,7 +206,11 @@ export async function runSecretsRotate(
     finishedAt: new Date().toISOString(),
     dryRun: !!opts.dryRun,
     adapters: auditEntries,
+    ...(sharedCredentials.length > 0 ? { sharedCredentials } : {}),
+    ...(blockedBy ? { blockedBy } : {}),
   };
+  const nextSteps = rotationNextSteps(audit, prodPath);
+  if (nextSteps.length > 0) audit.nextSteps = nextSteps;
 
   const built = buildAudit(audit);
   printAudit(built, { json: !!opts.json });
@@ -252,6 +292,18 @@ async function rotateOneAdapter(
     for (const k of setDevPairs(path, devPairs)) writtenKeys.add(k);
   }
 
+  // Non-secret bookkeeping (e.g. the manifest's R2 token id) follows the
+  // env file, so the two never name different credentials.
+  if (adapter.recordNew) {
+    try {
+      await adapter.recordNew(ctx, newCred, oldCred);
+    } catch (err) {
+      console.error(
+        `  · ${adapter.name} could not record the new credential's id: ${redactErrorMessage((err as Error).message)}`,
+      );
+    }
+  }
+
   // Push only production-scope values to deploy targets. Coolify
   // and GH Actions are production-only surfaces in hatchkit's model.
   const pushPairs: PushPair[] = prodPairs.map((p) => ({ key: p.key, value: p.value }));
@@ -292,9 +344,17 @@ async function rotateOneAdapter(
 
   // === Two-phase step 2: verify (+ revoke depending on policy) ===
   let verifyOutcome: VerifyOutcome;
-  let oldRevoked: boolean | "held" = "held";
+  let oldRevoked: boolean | "held" | "not-applicable" = "held";
 
-  if (effectivePolicy === "immediate") {
+  if (adapter.revocable === false) {
+    // Nothing upstream to revoke: the old value dies once every consumer
+    // holds the new one. The rollback blob only guarded the write.
+    verifyOutcome = await runVerify(adapter, ctx, newCred);
+    oldRevoked = "not-applicable";
+    if (!pushError && verifyOutcome !== "failed") {
+      await clearRollback(ctx.projectName, adapter.name);
+    }
+  } else if (effectivePolicy === "immediate") {
     // Emergency: revoke first, verify second. Used when the user is
     // racing a leak — they accept the risk of a verify-failed state
     // where neither old nor new credential works rather than leave
@@ -345,6 +405,9 @@ async function rotateOneAdapter(
     skipReason = "verify-failed";
   } else if (pushError) {
     skipReason = "push-failed";
+  } else if (adapter.revocable === false) {
+    // No revoke step exists, so a revoke policy has nothing to hold.
+    skipReason = firstPushSkipReason;
   } else if (effectivePolicy === "never" && ctx.revokePolicy !== "never") {
     // Downgraded from `after-verify` to `never` because captureOld
     // returned empty — still report as revoke-held so the operator
@@ -365,6 +428,28 @@ async function rotateOneAdapter(
     skipReason,
     ...(pushError ? { pushError } : {}),
   };
+}
+
+/** What the operator must do after a live run: commit the env file
+ *  hatchkit rewrote, and let the app redeploy. hatchkit never pushes. */
+function rotationNextSteps(audit: RotationAudit, prodPath: string | undefined): string[] {
+  if (audit.dryRun) return [];
+  const wrote = audit.adapters.some((a) => a.envKeysChanged.length > 0);
+  if (!wrote) return [];
+  const file = prodPath ? relative(audit.projectDir, prodPath) || prodPath : ".env.production";
+  const steps = [
+    `Commit ${file} in ${audit.projectDir} and push it yourself (hatchkit never pushes).`,
+    "Until the app redeploys with that commit it keeps the old values.",
+  ];
+  if (audit.adapters.some((a) => a.oldRevoked === true)) {
+    steps.push(
+      `Revoked credentials (${audit.adapters
+        .filter((a) => a.oldRevoked === true)
+        .map((a) => a.provider)
+        .join(", ")}) already fail in the running app, so push and redeploy now.`,
+    );
+  }
+  return steps;
 }
 
 async function runVerify(

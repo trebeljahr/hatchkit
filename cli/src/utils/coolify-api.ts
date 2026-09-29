@@ -1003,6 +1003,15 @@ export class CoolifyApi {
     return out;
   }
 
+  /** Names of an application's PRODUCTION env variables. Values are
+   *  dropped inside this method: `GET /envs` inlines them, and callers
+   *  that only need to know WHICH keys an app holds (secrets rotate's
+   *  consumer discovery) must never keep a value around. */
+  async listAppEnvKeys(uuid: string): Promise<string[]> {
+    const rows = await this.listAppEnvRows(uuid);
+    return [...new Set(rows.filter((r) => !r.isPreview).map((r) => r.key))];
+  }
+
   /** Create ONE production env variable. `POST /applications/{uuid}/envs`
    *  creates and answers 409 once the key exists; `setAppEnv`'s bulk
    *  PATCH upserts on every build hatchkit supports. This exists for the

@@ -41,8 +41,8 @@ If `@hatchkit/mcp` is configured, prefer its read-only tools:
   unattended unless the user provided automation flags/config.
 - `hatchkit create` can scaffold files, initialize git, create GitHub repos,
   run Terraform, configure DNS, create Coolify apps, and deploy.
-- `hatchkit add`, `remove`, `keys push`, `keys rotate`, `gh-pages`, `cloudflare`,
-  `sync`,
+- `hatchkit add`, `remove`, `keys push`, `keys rotate`, `secrets rotate`,
+  `gh-pages`, `cloudflare`, `sync`,
   `rename-domain`, `regen-infra`, `provision s3`, and `destroy` can mutate local
   files and/or remote systems. Make sure the user asked for the action.
 - Never print secrets unless the user explicitly requested them.

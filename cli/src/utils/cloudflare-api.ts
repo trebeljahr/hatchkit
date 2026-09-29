@@ -118,6 +118,13 @@ export interface CfWorkerCustomDomain {
 /** Outcome of probing one Cloudflare API-token permission. `ok` means
  *  the probe call succeeded; `detail` explains a failure in terms the
  *  user can act on. */
+/** One policy of an API token, as `GET …/tokens/{id}` returns it. */
+export interface CfTokenPolicy {
+  effect: string;
+  permission_groups: Array<{ id: string; name?: string }>;
+  resources: Record<string, unknown>;
+}
+
 export interface CfPermissionProbe {
   /** Permission as it is spelled in the token editor UI. */
   permission: string;
@@ -761,16 +768,27 @@ export class CloudflareApi {
   /** GET /accounts/{accountId}/tokens/{tokenId} — used to verify a
    *  recorded token still exists (and isn't disabled/expired) before
    *  we trust the encrypted credentials in the project's
-   *  .env.production. Returns null on 404. */
+   *  .env.production. Returns null on 404.
+   *
+   *  `policies` carries the token's resource scope; `hatchkit secrets
+   *  rotate` reads it to mint a replacement with the same buckets and
+   *  permissions. The response never includes the token value. */
   async getAccountToken(
     accountId: string,
     tokenId: string,
-  ): Promise<{ id: string; status: string; name: string } | null> {
+  ): Promise<{
+    id: string;
+    status: string;
+    name: string;
+    policies?: CfTokenPolicy[];
+  } | null> {
     try {
-      return await this.request<{ id: string; status: string; name: string }>(
-        "GET",
-        `/accounts/${accountId}/tokens/${tokenId}`,
-      );
+      return await this.request<{
+        id: string;
+        status: string;
+        name: string;
+        policies?: CfTokenPolicy[];
+      }>("GET", `/accounts/${accountId}/tokens/${tokenId}`);
     } catch (err) {
       if (/404|not\s*found/i.test((err as Error).message)) return null;
       throw err;

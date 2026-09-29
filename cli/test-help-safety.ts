@@ -50,6 +50,8 @@ const DANGEROUS_ARGV: string[][] = [
   ["keys", "rotate", "demo", "--help"],
   ["keys", "push", "demo", "--help"],
   ["secrets", "rotate", "demo", "--help"],
+  ["secrets", "rotate", "--global", "ses", "--help"],
+  ["secrets", "rotate", "--global", "listmonk", "--resume", "--help"],
   ["signing", "apply", "--help"],
   ["signing", "org-init", "--help"],
   ["assets", "push", "--help"],

@@ -702,11 +702,14 @@ function report(label: string, checks: [string, boolean][]): boolean {
 
   const fakeBinDir = mkdtempSync(join(tmpdir(), "fake-gh-bin-"));
   const ghPath = join(fakeBinDir, "gh");
-  // Fake gh: exits non-zero with stderr that contains both a sk_ token
-  // and a long hex run — exactly the shapes redactErrorMessage strips.
+  // Fake gh: `secret list` reports FAKE_SECRET as existing (push only
+  // updates secrets the repo already holds); `secret set` exits non-zero
+  // with stderr that contains both a sk_ token and a long hex run —
+  // exactly the shapes redactErrorMessage strips.
   writeFileSync(
     ghPath,
     `#!/bin/sh
+if [ "$2" = "list" ]; then echo '[{"name":"FAKE_SECRET"}]'; exit 0; fi
 echo "auth failed: token sk_test_abcdefghijklmnopqrst (${"f".repeat(40)})" 1>&2
 exit 1
 `,

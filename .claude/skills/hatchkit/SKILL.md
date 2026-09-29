@@ -69,6 +69,8 @@ rotation URL, required scopes, and exact `hatchkit config add <provider>` comman
 | `hatchkit keys show <project>` | Print stored dotenvx private key |
 | `hatchkit keys push <project>` | Push dotenvx key to Coolify/GitHub Actions |
 | `hatchkit keys rotate <project>` | Rotate dotenvx keypair |
+| `hatchkit secrets rotate <project>` | Rotate one project's provider credentials (R2, local secrets, GlitchTip, OpenPanel); `--dry-run` first |
+| `hatchkit secrets rotate --global ses\|listmonk` | Rotate a shared credential and update every project, Coolify app and ListMonk setting holding it; `--dry-run` first |
 | `hatchkit doctor` | Read-only live health check of configured providers |
 | `hatchkit explain` | One-page mental model |
 | `hatchkit gh-pages` | Wire GitHub Pages for the current repo |
@@ -134,8 +136,8 @@ Use Hatchkit context when the user mentions any of:
 - `hatchkit create` can write files, initialize git, create GitHub repos,
   run Terraform, configure DNS, create Coolify apps, and deploy. Be explicit
   before starting it — driving it from flags does not lower the blast radius.
-- `hatchkit add`, `remove`, `keys push`, `keys rotate`, `gh-pages`, `cloudflare`,
-  `sync`,
+- `hatchkit add`, `remove`, `keys push`, `keys rotate`, `secrets rotate`,
+  `gh-pages`, `cloudflare`, `sync`,
   `rename-domain`, `regen-infra`, `provision s3`, and `destroy` can mutate local
   files and/or remote systems. Make sure the user's request authorizes that action.
 - Never log secrets. `hatchkit keys show <project> --json` returns a live
