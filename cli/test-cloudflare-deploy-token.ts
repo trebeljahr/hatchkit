@@ -1,6 +1,7 @@
 /** Offline safety regressions. No provider, GitHub, keychain, or local user state. */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
+import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CloudflareDeployTokenRecord } from "./src/config.js";
@@ -9,11 +10,21 @@ import type { CloudflareDeployDependencies } from "./src/deploy/gh-actions-secre
 const conf = mkdtempSync(join(tmpdir(), "cf-deploy-test-"));
 process.env.HATCHKIT_CONF_DIR = conf;
 // Fail immediately if a regression escapes the injected dependencies.
-const keytar = (await import("keytar")).default;
-for (const method of ["getPassword", "setPassword", "deletePassword", "findCredentials", "findPassword"] as const) {
-  keytar[method] = (async () => { throw new Error("Unexpected OS keychain access in offline test"); }) as never;
-}
-globalThis.fetch = async () => { throw new Error("Unexpected network access in offline test"); };
+const keychainStub = `const deny = async () => { throw new Error("Unexpected OS keychain access in offline test"); };
+export default { getPassword: deny, setPassword: deny, deletePassword: deny, findCredentials: deny, findPassword: deny };`;
+const moduleGuard = registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === "keytar")
+      return {
+        url: `data:text/javascript,${encodeURIComponent(keychainStub)}`,
+        shortCircuit: true,
+      };
+    return nextResolve(specifier, context);
+  },
+});
+globalThis.fetch = async () => {
+  throw new Error("Unexpected network access in offline test");
+};
 const {
   classifyDeployTokenPolicies,
   mintWorkerDeployToken,
@@ -296,7 +307,10 @@ try {
       "fail",
     );
     assert.match(
-      findCloudflareDeployTokenFindings({ ...base, token: { status: "active", scope: "worker" } })[0].what,
+      findCloudflareDeployTokenFindings({
+        ...base,
+        token: { status: "active", scope: "worker" },
+      })[0].what,
       /bindings.*outside this audit/,
     );
   });
@@ -344,5 +358,6 @@ try {
   });
   console.log(`${count} Cloudflare deploy-token regressions passed`);
 } finally {
+  moduleGuard.deregister();
   rmSync(conf, { recursive: true, force: true });
 }
