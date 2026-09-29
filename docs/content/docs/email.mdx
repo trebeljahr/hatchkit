@@ -157,6 +157,8 @@ The lists are `optin: double`, so a campaign reaches `confirmed` members only. T
 
 Lists that `hatchkit add` created before this change are single opt-in. `hatchkit doctor`, run in the project directory, reports them. Switch one only after the app that writes to it runs the confirm-only code, then set **Listmonk → Lists → edit → Opt-in: Double**.
 
+The confirmation link points at the API's origin, `BETTER_AUTH_URL`. The confirm route then redirects to `/sub/confirmed` or `/sub/error` on the site's origin, `NEWSLETTER_SITE_URL` (else `FRONTEND_URL`). Under the `split` topology these are two hosts, and only the API host serves `/api/newsletter/confirm`. Projects created before 2026-09-29 built the link on the site's origin, so under `split` it returned a 404. `hatchkit update` moves the link to `BETTER_AUTH_URL`.
+
 ## Tearing down
 
 ```sh

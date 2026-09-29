@@ -97,6 +97,10 @@ import {
   writeManifest,
 } from "./manifest.js";
 import { hasNativeClient } from "./native-origins.js";
+import {
+  NEWSLETTER_ROUTES_REL_PATH,
+  retrofitNewsletterConfirmOrigin,
+} from "./newsletter-confirm-origin.js";
 import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
 import { setPackageJsonScript } from "./pkg-json.js";
 import {
@@ -463,6 +467,30 @@ export async function runUpdate(
           "      from_email: process.env.LISTMONK_FROM || process.env.LISTMONK_FROM_EMAIL,\n" +
           "    to that request body, or Listmonk sends the confirmation email from its global\n" +
           "    app.from_email — another project's sender on a shared instance.",
+      ),
+    );
+  }
+
+  // Retrofit the newsletter's confirm link origin. Until 2026-09-29 the
+  // starter built the emailed link on the site URL (NEWSLETTER_SITE_URL ??
+  // FRONTEND_URL). Under the split topology that host serves no /api routes,
+  // so the link 308s to a trailing slash and then 404s, and nobody can
+  // confirm. Subscribing still succeeds, so nothing flags it. The link now
+  // uses BETTER_AUTH_URL; the /sub/* redirects stay on the site URL.
+  const confirmOrigin = retrofitNewsletterConfirmOrigin(new FeatureLedger(projectDir, dryRun));
+  if (confirmOrigin.action === "written" || confirmOrigin.action === "would-write") {
+    console.log(
+      chalk.green(
+        `  ${dryRun ? "~ would patch" : "✓"} ${NEWSLETTER_ROUTES_REL_PATH}: newsletter confirm link points at the API (BETTER_AUTH_URL)`,
+      ),
+    );
+  } else if (confirmOrigin.outcome === "no-anchor") {
+    console.log(
+      chalk.yellow(
+        `  ⚠ ${NEWSLETTER_ROUTES_REL_PATH} builds the newsletter confirm link on the site URL, and hatchkit\n` +
+          "    could not patch it. Build that link on process.env.BETTER_AUTH_URL instead, and keep\n" +
+          "    the /sub/* redirects on the site URL. When the client and the API are on different\n" +
+          "    hosts, the client host has no /api/newsletter/confirm route and the link 404s.",
       ),
     );
   }
