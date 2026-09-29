@@ -1024,7 +1024,7 @@ export const stepR2Cutover: StepFn = async (ctx) => {
   // Env: same key-selection rule provision uses, so the value lands
   // under the name this project's runtime actually reads.
   try {
-    const { set: dotenvxSet } = await import("@dotenvx/dotenvx");
+    const { dotenvxSet } = await import("../utils/dotenvx-safe.js");
     const { resolveEnvFileTarget } = await import("../utils/env-files.js");
     const keys = envKeysForPrefix(detectEnvPrefix(ctx.projectDir));
     const envPath = resolveEnvFileTarget(ctx.projectDir, ".env.production");

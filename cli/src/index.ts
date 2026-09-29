@@ -2879,7 +2879,8 @@ async function handleCreate(): Promise<void> {
         // Commit the workflow + CNAME file before the push step
         // below picks up the staged changes. Empty diffs (e.g. re-
         // running on an idempotent state) just produce a no-op commit.
-        await bashExec("git", ["add", "-A"], { cwd: appDir, silent: true });
+        const { stageAllSafely } = await import("./utils/git-safety.js");
+        await stageAllSafely(appDir, { project: config.name });
         const status = await bashExec("git", ["status", "--porcelain"], {
           cwd: appDir,
           silent: true,
@@ -2925,7 +2926,8 @@ async function handleCreate(): Promise<void> {
           workerName: config.name,
           ledger: ledger ?? undefined,
         });
-        await bashExec("git", ["add", "-A"], { cwd: appDir, silent: true });
+        const { stageAllSafely } = await import("./utils/git-safety.js");
+        await stageAllSafely(appDir, { project: config.name });
         const status = await bashExec("git", ["status", "--porcelain"], {
           cwd: appDir,
           silent: true,

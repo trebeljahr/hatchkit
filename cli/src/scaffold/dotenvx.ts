@@ -25,10 +25,10 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { set as dotenvxSet } from "@dotenvx/dotenvx";
 import chalk from "chalk";
 import ora from "ora";
 import type { ProjectConfig } from "../prompts.js";
+import { dotenvxSet } from "../utils/dotenvx-safe.js";
 import { SECRET_KEYS, setSecret } from "../utils/secrets.js";
 
 export interface DotenvxValues {

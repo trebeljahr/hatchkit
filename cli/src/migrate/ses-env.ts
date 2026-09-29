@@ -29,8 +29,9 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
-import { parse as dotenvxParse, set as dotenvxSet } from "@dotenvx/dotenvx";
+import { parse as dotenvxParse } from "@dotenvx/dotenvx";
 import { parseDotenv } from "../deploy/env-resolve.js";
+import { dotenvxSet } from "../utils/dotenvx-safe.js";
 import { locateEnvFile } from "../utils/env-files.js";
 import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
 

@@ -16,12 +16,12 @@
  */
 
 import { join } from "node:path";
-import { set as dotenvxSet } from "@dotenvx/dotenvx";
 import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
+import { dotenvxSet } from "../utils/dotenvx-safe.js";
 import { joinProjectAppsToDatabaseNetwork } from "./coolify-db-network.js";
 
 export interface RedisProvisionResult {

@@ -105,7 +105,8 @@ import { CoolifyApi } from "./utils/coolify-api.js";
 import { ensureDockerignoreAllowsEnvProduction } from "./utils/dockerignore.js";
 import { resolveEnvFileTarget } from "./utils/env-files.js";
 import { exec, execOk } from "./utils/exec.js";
-import { ensureGitignoreEntries, looksLikeDotenvxPrivateKey } from "./utils/gitignore.js";
+import { assertNothingSecretStaged, stageAllSafely } from "./utils/git-safety.js";
+import { ensureGitignoreEntries } from "./utils/gitignore.js";
 import { multiselect } from "./utils/multiselect.js";
 import { RunLedger } from "./utils/run-ledger.js";
 import { SECRET_KEYS, getSecret, setSecret } from "./utils/secrets.js";
@@ -2486,7 +2487,10 @@ async function executePlan(
         // Stage and commit so the next push picks up the workflow
         // + CNAME file. If nothing changed (idempotent re-run), the
         // status check skips the commit entirely.
-        await bashExec("git", ["add", "-A"], { cwd: state.projectDir, silent: true });
+        await stageAllSafely(state.projectDir, {
+          project: plan.name,
+          retry: "hatchkit adopt --resume",
+        });
         const status = await bashExec("git", ["status", "--porcelain"], {
           cwd: state.projectDir,
           silent: true,
@@ -2522,7 +2526,10 @@ async function executePlan(
           workerName: plan.name,
           ledger,
         });
-        await bashExec("git", ["add", "-A"], { cwd: state.projectDir, silent: true });
+        await stageAllSafely(state.projectDir, {
+          project: plan.name,
+          retry: "hatchkit adopt --resume",
+        });
         const status = await bashExec("git", ["status", "--porcelain"], {
           cwd: state.projectDir,
           silent: true,
@@ -2569,7 +2576,7 @@ async function executePlan(
         // package layouts have repoRoot === projectDir so unchanged.
         pushedThisRun = await pushInitialBranch(state.repoRoot);
       } else if (state.gitRemoteUrl) {
-        const result = await commitAndPushScaffold(state, {
+        const result = await commitAndPushScaffold(state, plan.name, {
           scaffoldedAbsPaths,
           overwrittenAbsPaths,
           manifestPath,
@@ -3328,7 +3335,7 @@ async function bootstrapDotenvxNow(
     // (if missing), generates the keypair, and writes .env.keys.
     // Subsequent calls reuse the existing keypair. Using HATCHKIT_ADOPTED
     // as the sentinel keeps the file non-empty so the keypair survives.
-    const { set: dotenvxSet } = await import("@dotenvx/dotenvx");
+    const { dotenvxSet } = await import("./utils/dotenvx-safe.js");
     dotenvxSet("HATCHKIT_ADOPTED", new Date().toISOString(), {
       path: prodPath,
       encrypt: true,
@@ -3575,6 +3582,7 @@ async function detectUserWip(
  */
 async function commitAndPushScaffold(
   state: DetectedState,
+  projectName: string,
   paths: {
     scaffoldedAbsPaths: string[];
     overwrittenAbsPaths: string[];
@@ -3686,6 +3694,25 @@ async function commitAndPushScaffold(
           `  git push`,
           "Then re-run: hatchkit adopt --resume",
         ],
+      },
+    };
+  }
+
+  // The paths are hatchkit's own output, but the push below publishes
+  // the whole index, so the same guard as every other commit site runs.
+  try {
+    await assertNothingSecretStaged(state.projectDir, {
+      project: projectName,
+      retry: "hatchkit adopt --resume",
+    });
+  } catch (err) {
+    const [first, ...rest] = (err as Error).message.split("\n");
+    return {
+      pushed: false,
+      caveat: {
+        title: "Refusing to auto-commit — secrets in the index",
+        reason: first,
+        recovery: rest,
       },
     };
   }
@@ -3803,22 +3830,10 @@ async function setupGitHubRemote(
   //   `git diff --cached --quiet` exits 0 → no diff (nothing staged)
   //                                 1 → diff present (commit needed)
   // execOk returns true on exit 0, so the inverse is "something to commit".
-  await exec("git", ["add", "-A"], { cwd: gitCwd });
-
-  // Defensive last-mile check: refuse to commit anything that smells
-  // like a dotenvx private key, regardless of whether `.gitignore` is
-  // up to date.
-  const stagedFiles = await listStagedFiles(gitCwd);
-  const leaks = stagedFiles.filter((rel) => looksLikeDotenvxPrivateKey(join(gitCwd, rel)));
-  if (leaks.length > 0) {
-    throw new Error(
-      `Refusing to commit — staged files look like dotenvx private keys:\n` +
-        leaks.map((p) => `      ${p}`).join("\n") +
-        `\n\n  Add them to .gitignore and unstage:\n` +
-        leaks.map((p) => `      git rm --cached ${p}`).join("\n") +
-        `\n\n  Then re-run \`hatchkit adopt --resume\`.`,
-    );
-  }
+  // stageAllSafely refuses a staged secret (`.env.keys`, a keystore, a
+  // DOTENV_PRIVATE_KEY value …) whatever `.gitignore` says, before
+  // `gh repo create` below can publish it.
+  await stageAllSafely(gitCwd, { project: plan.name, retry: "hatchkit adopt --resume" });
 
   const cleanIndex = await execOk("git", ["diff", "--cached", "--quiet"], {
     cwd: gitCwd,
@@ -4044,15 +4059,6 @@ function relativeTo(p: string, from = process.cwd()): string {
 
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
-}
-
-/** Return the relative paths of files currently staged in the index.
- *  Used by setupGitHubRemote's defensive private-key guard. Quiet
- *  exit-1 (no diff) returns an empty list rather than throwing. */
-async function listStagedFiles(cwd: string): Promise<string[]> {
-  const res = await exec("git", ["diff", "--cached", "--name-only", "-z"], { cwd, silent: true });
-  if (res.exitCode !== 0) return [];
-  return res.stdout.split("\0").filter((s) => s.length > 0);
 }
 
 // ---------------------------------------------------------------------------

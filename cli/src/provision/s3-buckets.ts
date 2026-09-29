@@ -45,7 +45,6 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { set as dotenvxSet } from "@dotenvx/dotenvx";
 import chalk from "chalk";
 import ora from "ora";
 import { getDnsConfig } from "../config.js";
@@ -57,6 +56,7 @@ import {
   writeManifest,
 } from "../scaffold/manifest.js";
 import { CloudflareApi, type R2CorsRule } from "../utils/cloudflare-api.js";
+import { dotenvxSet } from "../utils/dotenvx-safe.js";
 import { locateEnvFile, resolveEnvFileTarget, resolveEnvSearchRoot } from "../utils/env-files.js";
 import { SECRET_KEYS, deleteSecret, getSecret } from "../utils/secrets.js";
 import { readEnvKeys } from "./write-env.js";

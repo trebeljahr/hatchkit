@@ -15,7 +15,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { set as dotenvxSet } from "@dotenvx/dotenvx";
+import { dotenvxSet } from "../utils/dotenvx-safe.js";
 import { resolveEnvFileTarget } from "../utils/env-files.js";
 
 /** One `KEY=VALUE` pair parsed out of a provisioned env block. */

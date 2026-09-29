@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import type { ProjectConfig } from "../prompts.js";
 import { exec } from "../utils/exec.js";
+import { stageAllSafely } from "../utils/git-safety.js";
 
 /** Initialize git repo + create GitHub remote. Does NOT push — the
  *  caller (handleCreate / runAdopt) finishes the deploy wiring (env,
@@ -16,8 +17,9 @@ export async function setupGitHub(config: ProjectConfig, appDir: string): Promis
     spinner: "Initializing git repo...",
   });
 
-  // Initial commit
-  await exec("git", ["add", "-A"], { cwd: appDir });
+  // Initial commit. stageAllSafely refuses a staged secret whatever
+  // `.gitignore` says; the `gh repo create` below would publish it.
+  await stageAllSafely(appDir, { project: config.name });
   await exec("git", ["commit", "-m", "Initial scaffold"], {
     cwd: appDir,
     spinner: "Creating initial commit...",
