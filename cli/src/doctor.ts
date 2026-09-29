@@ -2119,22 +2119,60 @@ export async function checkProjectListmonkTxTemplateState(
   ];
 }
 
+/** What to do once a dotenvx private key has touched git, in order.
+ *  Rotation comes first: every value written before it is encrypted to
+ *  a key others may hold, and a history purge alone un-leaks nothing. */
+function burnedKeyHint(projectName: string): string[] {
+  return [
+    "Treat the key as burned: rotate it BEFORE writing any new value, or new values are encrypted to a key others may hold.",
+    `  hatchkit keys rotate ${projectName}`,
+    "Then rotate every value in .env.production (provider credentials, app secrets):",
+    `  hatchkit secrets rotate ${projectName}   # provider credentials hatchkit knows; rotate the rest by hand`,
+    "If the repo is or was public, consider purging .env.keys from history and asking GitHub Support to drop cached objects.",
+  ];
+}
+
+function exposureHint(exposure: {
+  count: number;
+  first?: string;
+  last?: string;
+  files: string[];
+}): string[] {
+  if (exposure.count === 0) return ["No committed env file is encrypted to that key."];
+  const range =
+    exposure.first === exposure.last ? exposure.first : `${exposure.first} → ${exposure.last}`;
+  const noun = exposure.count === 1 ? "version" : "versions";
+  return [
+    `${exposure.count} committed ${noun} of ${exposure.files.join(", ")} (${range}) are encrypted to it.`,
+  ];
+}
+
 /** Project-local key hygiene checks, gated on the presence of
  *  `.hatchkit.json` in the cwd:
  *
- *    1. `.env.keys` is NOT tracked by git. (If it is, the dotenvx
- *       private key has either already leaked or is one push away.)
- *    2. The keychain copy of DOTENV_PRIVATE_KEY_PRODUCTION matches
+ *    1. Every `.env.keys` on disk (root and server dir) is untracked
+ *       AND ignored by the repo's own `.gitignore`. Untracked but not
+ *       ignored, the next `git add -A` commits it — that is how
+ *       collection-of-beauty leaked its key. A global ignore alone
+ *       doesn't travel to other machines or CI, so it only warns.
+ *    2. No dotenvx private key was ever committed on any ref. Untracking
+ *       the file doesn't remove it from history. If the committed key is
+ *       still in use, everything encrypted since is readable by anyone
+ *       with the history; if it's an older key, the ciphertexts committed
+ *       while it was active are.
+ *    3. The keychain copy of DOTENV_PRIVATE_KEY_PRODUCTION matches
  *       the value in `.env.keys`. After `dotenvx rotate` the file
  *       updates but the keychain doesn't — `keys set` fixes that;
  *       this check surfaces the drift before a deploy goes wrong.
+ *
+ *  Read-only. No key, and no fingerprint of one, reaches a result.
  *
  *  Exported so tests can invoke it directly with a fixture dir
  *  instead of munging `process.cwd()`. */
 export async function checkProjectKeyState(projectDir: string): Promise<CheckResult[]> {
   const out: CheckResult[] = [];
   const manifestPath = `${projectDir}/.hatchkit.json`;
-  const { existsSync, readFileSync } = await import("node:fs");
+  const { existsSync, readFileSync, realpathSync } = await import("node:fs");
   if (!existsSync(manifestPath)) return out;
 
   let projectName: string;
@@ -2146,47 +2184,157 @@ export async function checkProjectKeyState(projectDir: string): Promise<CheckRes
     return out;
   }
 
+  const { join, relative } = await import("node:path");
   const { locateEnvKeysFile, parsePrivateKeyValue } = await import("./deploy/keys.js");
+  const { envFileCandidates } = await import("./utils/env-files.js");
+  const history = await import("./utils/env-keys-history.js");
+  const { gitToplevel } = await import("./utils/gitignore.js");
+
+  // Every `.env.keys` the project has: the server dir the env resolver
+  // picks (packages/server/ in the split layout) and the root.
+  const keyFiles = [
+    ...new Set([...envFileCandidates(projectDir, ".env.keys"), join(projectDir, ".env.keys")]),
+  ].filter((p) => existsSync(p));
+
+  const repoRoot = gitToplevel(projectDir);
+  if (repoRoot) {
+    // git reports the real path; compare it with the real projectDir so
+    // a symlinked cwd (macOS /var → /private/var) doesn't yield ../../..
+    const gitignore =
+      relative(realpathSync(projectDir), join(repoRoot, ".gitignore")) || ".gitignore";
+    const addIgnore = `  printf '\\n.env.keys\\n' >> ${gitignore}`;
+    const globalNote =
+      "A global ignore (core.excludesFile) is not enough: it doesn't travel to other machines, CI or a fresh container, where `git add -A` still commits the key.";
+    const burned = burnedKeyHint(projectName);
+
+    // Check 1: every on-disk `.env.keys` is untracked and ignored.
+    // Paths go to git relative to projectDir so they resolve inside the
+    // repo wherever doctor was invoked from. `--error-unmatch` exits 1
+    // when the path is untracked, 0 when tracked.
+    const ignoredBy: string[] = [];
+    for (const file of keyFiles) {
+      const rel = relative(projectDir, file);
+      const tracked = await execOk("git", ["ls-files", "--error-unmatch", rel], {
+        cwd: projectDir,
+      });
+      if (tracked) {
+        out.push({
+          name: `Project ${projectName} (.env.keys leak)`,
+          status: "fail",
+          detail: `${rel} is tracked by git`,
+          hint: ["Untrack it and ignore it:", `  git rm --cached ${rel}`, addIgnore, ...burned],
+        });
+        continue;
+      }
+      const state = await history.ignoreState(projectDir, rel);
+      if (!state.ignored) {
+        out.push({
+          name: `Project ${projectName} (.env.keys not ignored)`,
+          status: "fail",
+          detail: `${rel} is not git-ignored — the next \`git add -A\` commits the private key`,
+          hint: [
+            ...(state.negated
+              ? [`${state.source} re-includes it with a \`!\` pattern — remove that line.`]
+              : []),
+            "Add it to the repo's own .gitignore:",
+            addIgnore,
+            globalNote,
+          ],
+        });
+      } else if (!state.portable) {
+        out.push({
+          name: `Project ${projectName} (.env.keys not ignored)`,
+          status: "warn",
+          detail: `${rel} is ignored only by ${state.source}, not by the repo's .gitignore`,
+          hint: ["Add it to the repo's own .gitignore:", addIgnore, globalNote],
+        });
+      } else {
+        ignoredBy.push(state.source ?? ".gitignore");
+      }
+    }
+
+    // Check 2: was a private key ever committed? The on-disk keys and
+    // the public keys the working tree encrypts to are "in use"; with
+    // neither on this machine (CI, a fresh clone) the public keys still
+    // answer.
+    const currentPrivate: string[] = [];
+    for (const file of keyFiles) {
+      currentPrivate.push(...history.parseCurrentPrivateKeys(readFileSync(file, "utf-8")));
+    }
+    const currentPublic: string[] = [];
+    for (const name of [".env.production", ".env.development", ".env"]) {
+      for (const file of envFileCandidates(projectDir, name)) {
+        if (existsSync(file))
+          currentPublic.push(...history.parsePublicKeys(readFileSync(file, "utf-8")));
+      }
+    }
+    const scan = await history.scanEnvKeysHistory(repoRoot, {
+      privateKeys: currentPrivate,
+      publicKeys: currentPublic,
+    });
+    const hit = scan.currentKeyCommit ?? scan.oldKeyCommit;
+    const visibility = hit ? await history.originVisibility(repoRoot) : undefined;
+    const suffix = visibility ? `; ${visibility}` : "";
+    if (scan.currentKeyCommit) {
+      const { shortSha, date } = scan.currentKeyCommit;
+      out.push({
+        name: `Project ${projectName} (.env.keys in git history)`,
+        status: "fail",
+        detail: `the current dotenvx private key is in git history (${shortSha}, ${date})${suffix}`,
+        hint: [...burned, ...exposureHint(scan.currentExposure)],
+      });
+    } else if (scan.oldKeyCommit) {
+      const { shortSha, date } = scan.oldKeyCommit;
+      // Nothing here to compare with: no `.env.keys` and no public key in
+      // the working tree. The committed key may well be the live one.
+      const unknown = currentPrivate.length === 0 && currentPublic.length === 0;
+      out.push({
+        name: `Project ${projectName} (.env.keys in git history)`,
+        status: "warn",
+        detail: unknown
+          ? `a dotenvx private key is in git history (${shortSha}, ${date}); nothing on this machine shows whether it is still in use${suffix}`
+          : `an older dotenvx private key is in git history (${shortSha}, ${date}) — values committed while it was active can be decrypted${suffix}`,
+        hint: [
+          "Check that those values were rotated after that key was replaced. Rotating the key alone re-encrypts the same values.",
+          ...exposureHint(scan.oldExposure),
+          `  hatchkit secrets rotate ${projectName}   # provider credentials hatchkit knows; rotate the rest by hand`,
+          "If the repo is or was public, consider purging .env.keys from history and asking GitHub Support to drop cached objects.",
+        ],
+      });
+    }
+
+    const allClean = keyFiles.length > 0 && ignoredBy.length === keyFiles.length;
+    if (allClean && !hit) {
+      const where = [...new Set(ignoredBy)].join(", ");
+      const past = !scan.checked
+        ? "git history not checked"
+        : scan.shallow
+          ? "never committed (shallow clone — older history not checked)"
+          : scan.truncated
+            ? "never committed in the commits checked"
+            : "never committed";
+      out.push({
+        name: `Project ${projectName} (.env.keys hygiene)`,
+        status: "ok",
+        detail: `.env.keys is ignored by ${where}, not tracked, and ${past}`,
+      });
+    }
+  } else if (keyFiles.length > 0) {
+    out.push({
+      name: `Project ${projectName} (.env.keys hygiene)`,
+      status: "skip",
+      detail: "not a git repository — nothing to commit .env.keys into",
+    });
+  }
+
   const envKeysPath = locateEnvKeysFile(projectDir);
   if (!envKeysPath) {
-    // No `.env.keys` on disk → nothing to verify against. Common in
-    // CI checkouts where dotenvx setup hasn't run; not a problem.
+    // No `.env.keys` on disk → nothing to compare the keychain with.
+    // Common in CI checkouts where dotenvx setup hasn't run.
     return out;
   }
 
-  // Check 1: tracked-by-git status. Pass the path relative to
-  // projectDir so `git ls-files --error-unmatch` resolves it inside
-  // the repo regardless of where the user invoked `hatchkit doctor`
-  // from. `--error-unmatch` exits 1 when the path is untracked, 0
-  // when tracked — so execOk's true/false maps directly to "tracked".
-  const { relative } = await import("node:path");
-  const relEnvKeys = relative(projectDir, envKeysPath);
-  const tracked = await execOk("git", ["ls-files", "--error-unmatch", relEnvKeys], {
-    cwd: projectDir,
-  });
-  if (tracked) {
-    out.push({
-      name: `Project ${projectName} (.env.keys leak)`,
-      status: "fail",
-      detail: ".env.keys is tracked by git",
-      hint: [
-        "The dotenvx private key may already be in your git history.",
-        "Treat as a credential leak: rotate immediately.",
-        `  git rm --cached ${envKeysPath}`,
-        `  echo .env.keys >> .gitignore`,
-        `  hatchkit keys rotate ${projectName} --push-coolify`,
-        "Then check the remote (e.g. GitHub) for any commits that include .env.keys and force-purge if necessary.",
-      ],
-    });
-  } else {
-    out.push({
-      name: `Project ${projectName} (.env.keys hygiene)`,
-      status: "ok",
-      detail: ".env.keys present on disk and not tracked by git",
-    });
-  }
-
-  // Check 2: keychain matches `.env.keys`.
+  // Check 3: keychain matches `.env.keys`.
   const fileKey = parsePrivateKeyValue(readFileSync(envKeysPath, "utf-8"));
   if (!fileKey) {
     // .env.keys exists but has no DOTENV_PRIVATE_KEY_PRODUCTION line —
