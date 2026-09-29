@@ -6,26 +6,29 @@
  * The failure this closes
  * ---------------------------------------------------------------------
  *
- * A rollback is only as good as the reference it restores. Three values
- * look like a rollback target and are not:
+ * A rollback is only as good as the reference it restores. Deploys pick
+ * their image by moving a `:live` tag in the registry, so "go back" means
+ * pointing `:live` at an older `:<sha>` again — and three things look
+ * like a place to go back to and are not:
  *
- *   1. A MUTABLE tag. The compose files default the image variable to
- *      `:main`, and after a push `:main` already points at the build
- *      that just failed. "Restoring" it redeploys the failure, the gate
- *      fails again, and a job that believes it recovered reports a
- *      rollback that changed nothing.
- *   2. A value the token may not read. The platform omits `value` from
- *      its env listing entirely when the token lacks permission for
- *      sensitive values. Read as an empty string that would pin an empty
- *      image reference; read as "unknown" it correctly stops the run.
- *   3. The preview copy of the variable. The platform keeps one beside
- *      the production row, and it is not what production runs.
+ *   1. Nothing. A half that reported no commit before the run (a first
+ *      deploy, or one that was down) names no build.
+ *   2. A MUTABLE reference. A half reporting `main` or an abbreviated
+ *      sha names no immutable image tag.
+ *   3. An image the registry no longer has. Restoring it would fail the
+ *      promote, half way through a rollback.
  *
- * All three have to end the run with an error rather than a retry — see
- * the module header of index.ts for why "no target" never loops.
+ * The target is what each half was SERVING before the run moved
+ * anything, read from its own health or build-info endpoint: that is
+ * what was actually running, not what something last asked for. All
+ * three "none" cases end the run with an error rather than a retry —
+ * see the module header of index.ts for why "no target" never loops.
+ *
+ * The generated lib (script.ts) carries the same function; the tests
+ * hold the two to the same cases.
  */
 
-import type { PlatformEnvEntry, RollbackTarget } from "./types.js";
+import type { RollbackTarget } from "./types.js";
 
 /** A full commit sha: the only tag an image reference may carry for the
  *  reference to name one immutable build. */
@@ -54,50 +57,43 @@ export function shaFromImageRef(value: unknown): string | null {
   return isFullSha(tag) ? tag : null;
 }
 
-/**
- * The production value of `key` in the platform's env listing, or null
- * when it is absent, a preview copy, or unreadable.
- *
- * Null rather than `""` on purpose. The caller has to be able to tell
- * "there is no such variable" and "the token cannot see this variable"
- * apart from "the variable is set to the empty string", and treating all
- * three as "no target" is the safe collapse — none of them names a build
- * to go back to.
- */
-export function findEnvValue(
-  entries: readonly PlatformEnvEntry[] | null | undefined,
-  key: string,
-): string | null {
-  if (!Array.isArray(entries)) return null;
-  const rows = entries.filter((row) => row && typeof row === "object" && row.key === key);
-  const row = rows.find((candidate) => candidate.is_preview !== true) ?? null;
-  return row && typeof row.value === "string" && row.value !== "" ? row.value : null;
+/** The immutable reference of `base` at `sha`. */
+function imageRef(base: string, sha: string): string {
+  return `${base}:${sha}`;
 }
 
 /**
- * Which value a rollback may restore for one image variable, and when
- * there is none, the sentence that says why.
- *
- * The reasons are written for the person reading a failed run, so each
- * one names the fix: create the variable, pin it, or widen the token.
+ * Which image a rollback may restore for one half, and when there is
+ * none, the sentence that says why. Each reason names the fix.
  */
-export function selectRollbackTarget(
-  entries: readonly PlatformEnvEntry[] | null | undefined,
-  key: string,
-): RollbackTarget {
-  const value = findEnvValue(entries, key);
-  if (value === null) {
+export function selectRollbackTarget(input: {
+  app: string;
+  /** The commit the half reported before the run, or null/undefined
+   *  when it reported none. */
+  served: unknown;
+  /** The half's image, without a tag. */
+  base: string;
+  /** Whether the registry still has `base:served`. */
+  inRegistry: boolean;
+}): RollbackTarget {
+  const { app, served, base } = input;
+  if (served === undefined || served === null || served === "") {
     return {
       kind: "none",
-      reason: `no ${key} value could be read: this is a first deploy, the variable does not exist on the application, or the token may not read variable values`,
+      reason: `the ${app} half reported no commit before the deploy: this is a first deploy, or it was not answering`,
     };
   }
-  const sha = shaFromImageRef(value);
-  if (sha === null) {
+  if (!isFullSha(served)) {
     return {
       kind: "none",
-      reason: `${key} is ${value}, which is a moving tag rather than a commit — after this push it already points at the build that just failed, so restoring it would redeploy the failure`,
+      reason: `the ${app} half reported ${String(served)}, which is not a full commit sha, so no image tag names it`,
     };
   }
-  return { kind: "target", value, sha };
+  if (input.inRegistry !== true) {
+    return {
+      kind: "none",
+      reason: `${imageRef(base, served)} is not in the registry, so there is no image to go back to`,
+    };
+  }
+  return { kind: "target", value: imageRef(base, served), sha: served };
 }

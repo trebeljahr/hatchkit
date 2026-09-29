@@ -41,7 +41,8 @@ import {
   COMPOSE_PULL_POLICY_BLOCK,
   SERVER_DOCKERFILE_COMMIT_SHA_BLOCK,
   WORKFLOW_NATIVE_ORIGIN_STEP,
-  WORKFLOW_PIN_STEP,
+  WORKFLOW_PROMOTE_STEP,
+  WORKFLOW_SIGNED_DEPLOY_STEP,
   WORKFLOW_VERIFY_STEP,
   addWorkflowCommitShaBuildArg,
   deployVerificationRetrofits,
@@ -58,6 +59,53 @@ import {
   upgradeWorkflowDeployVerification,
   upgradeWorkflowNativeOriginCheck,
 } from "./src/scaffold/deploy-verification.js";
+import { upgradeWorkflowToSignedDeploy } from "./src/scaffold/signed-deploy.js";
+
+/** The deploy steps every generated workflow carried before the signed
+ *  deploy: hatchkit's Coolify token, POSTed per app, plus the webhook
+ *  fallback. Verbatim from the starter as it shipped, so the round trip
+ *  below proves the retrofit converts a real pre-isolation workflow. */
+const LEGACY_TOKEN_DEPLOY_STEPS = `      - name: Deploy via Coolify API
+        env:
+          COOLIFY_BASE_URL: \${{ secrets.COOLIFY_BASE_URL }}
+          COOLIFY_RESOURCE_UUID: \${{ secrets.COOLIFY_RESOURCE_UUID }}
+          COOLIFY_API_TOKEN: \${{ secrets.COOLIFY_API_TOKEN }}
+        if: env.COOLIFY_BASE_URL != '' && env.COOLIFY_RESOURCE_UUID != ''
+        run: |
+          curl -fsSL -X POST \\
+            "$COOLIFY_BASE_URL/api/v1/deploy?uuid=$COOLIFY_RESOURCE_UUID&force=true" \\
+            -H "Authorization: Bearer $COOLIFY_API_TOKEN"
+
+      # split topology only — unset (and skipped) for single-origin.
+      - name: Deploy server app via Coolify API (split topology)
+        env:
+          COOLIFY_BASE_URL: \${{ secrets.COOLIFY_BASE_URL }}
+          COOLIFY_SERVER_RESOURCE_UUID: \${{ secrets.COOLIFY_SERVER_RESOURCE_UUID }}
+          COOLIFY_API_TOKEN: \${{ secrets.COOLIFY_API_TOKEN }}
+        if: env.COOLIFY_BASE_URL != '' && env.COOLIFY_SERVER_RESOURCE_UUID != ''
+        run: |
+          curl -fsSL -X POST \\
+            "$COOLIFY_BASE_URL/api/v1/deploy?uuid=$COOLIFY_SERVER_RESOURCE_UUID&force=true" \\
+            -H "Authorization: Bearer $COOLIFY_API_TOKEN"
+
+      - name: Deploy client app via Coolify API (split topology)
+        env:
+          COOLIFY_BASE_URL: \${{ secrets.COOLIFY_BASE_URL }}
+          COOLIFY_CLIENT_RESOURCE_UUID: \${{ secrets.COOLIFY_CLIENT_RESOURCE_UUID }}
+          COOLIFY_API_TOKEN: \${{ secrets.COOLIFY_API_TOKEN }}
+        if: env.COOLIFY_BASE_URL != '' && env.COOLIFY_CLIENT_RESOURCE_UUID != ''
+        run: |
+          curl -fsSL -X POST \\
+            "$COOLIFY_BASE_URL/api/v1/deploy?uuid=$COOLIFY_CLIENT_RESOURCE_UUID&force=true" \\
+            -H "Authorization: Bearer $COOLIFY_API_TOKEN"
+
+      - name: Deploy via webhook (fallback)
+        env:
+          COOLIFY_BASE_URL: \${{ secrets.COOLIFY_BASE_URL }}
+          COOLIFY_WEBHOOK_URL: \${{ secrets.COOLIFY_WEBHOOK_URL }}
+        if: env.COOLIFY_BASE_URL == '' && env.COOLIFY_WEBHOOK_URL != ''
+        run: curl -fsSL "$COOLIFY_WEBHOOK_URL"
+`;
 
 const failures: string[] = [];
 function expect(label: string, fn: () => void) {
@@ -118,9 +166,10 @@ if (!starterPresent) {
     assert.equal(stripClientDockerfileApiUrlAssertion(pruned), pruned, "not idempotent");
   });
 
-  expect("starter workflow carries the canonical pin + verify steps", () => {
+  expect("starter workflow carries the canonical promote, signed deploy + verify steps", () => {
     const wf = read(WORKFLOW_REL);
-    assert.ok(wf.includes(WORKFLOW_PIN_STEP.trimEnd()), "pin step missing");
+    assert.ok(wf.includes(WORKFLOW_PROMOTE_STEP.trimEnd()), "promote step missing");
+    assert.ok(wf.includes(WORKFLOW_SIGNED_DEPLOY_STEP.trimEnd()), "signed deploy step missing");
     assert.ok(wf.includes(WORKFLOW_VERIFY_STEP.trimEnd()), "verify step missing");
     // The shipped starter keeps the repo-variable fallback; hatchkit
     // writes the literal per project.
@@ -167,30 +216,31 @@ if (!starterPresent) {
     );
   });
 
-  expect("pin step covers single-origin and both split halves", () => {
+  expect("the deploy job holds no Coolify API token and covers every topology", () => {
     const wf = read(WORKFLOW_REL);
-    for (const secret of [
-      "COOLIFY_RESOURCE_UUID",
-      "COOLIFY_SERVER_RESOURCE_UUID",
-      "COOLIFY_CLIENT_RESOURCE_UUID",
-    ]) {
-      assert.ok(WORKFLOW_PIN_STEP.includes(secret), `${secret} not pinned`);
+    // The whole point of the signed deploy: a leaked secret from this repo
+    // deploys this project's apps and nothing else on the Coolify host.
+    for (const name of ["COOLIFY_API_TOKEN", "COOLIFY_TOKEN", "COOLIFY_WEBHOOK_URL"]) {
+      assert.ok(!wf.includes(name), `${name} still in the starter workflow`);
     }
-    // POST before PATCH: a PATCH naming a key Coolify doesn't have is
-    // accepted and does nothing, so create-then-update is load-bearing.
-    // Measured on the env pin only — the Docker Image branch before it
-    // PATCHes the application itself, not an env var.
-    const postAt = WORKFLOW_PIN_STEP.search(/-X POST \\\n\s+"[^"]*\/envs"/);
-    const patchAt = WORKFLOW_PIN_STEP.search(/-X PATCH \\\n\s+"[^"]*\/envs"/);
-    assert.ok(postAt > 0 && patchAt > postAt, "POST must precede PATCH");
-    // `is_build_time` is rejected on that POST with "This field is not
-    // allowed" — sending it takes the whole request down. Check the
-    // request BODY, not the step text: the comment above it names the
-    // field precisely so the next reader doesn't re-add it.
-    const body = WORKFLOW_PIN_STEP.match(/^\s*body=(.+)$/m)?.[1] ?? "";
-    assert.ok(body.includes("is_preview"), `unexpected pin body: ${body}`);
-    assert.ok(!body.includes("is_build_time"));
-    assert.ok(wf.includes("- name: Pin image tags to this commit"));
+    for (const prefix of ["COOLIFY_", "COOLIFY_SERVER_", "COOLIFY_CLIENT_"]) {
+      for (const key of ["RESOURCE_UUID", "DEPLOY_SECRET", "DEPLOY_REPOSITORY", "DEPLOY_BRANCH"]) {
+        assert.ok(
+          WORKFLOW_SIGNED_DEPLOY_STEP.includes(`${prefix}${key}: \${{ secrets.${prefix}${key} }}`),
+          `${prefix}${key} not passed to the deploy step`,
+        );
+      }
+    }
+    // Server before client: the API is up before the client that calls it.
+    assert.ok(
+      WORKFLOW_SIGNED_DEPLOY_STEP.indexOf("deploy server COOLIFY_SERVER_") <
+        WORKFLOW_SIGNED_DEPLOY_STEP.indexOf("deploy client COOLIFY_CLIENT_"),
+    );
+    // Promote happens before the deploy it decides the image for.
+    assert.ok(
+      wf.indexOf("- name: Promote this commit's images to :live") <
+        wf.indexOf("- name: Deploy via signed Coolify webhook"),
+    );
   });
 
   // ------------------------------------------------------------------
@@ -202,13 +252,13 @@ if (!starterPresent) {
     // steps above it ran, so the job reports green having verified
     // nothing. The only guard allowed here is "was a deploy triggered".
     const guard = WORKFLOW_VERIFY_STEP.match(/^\s*if: (.+)$/m)?.[1];
-    assert.equal(guard, "env.COOLIFY_BASE_URL != '' || env.COOLIFY_WEBHOOK_URL != ''");
+    assert.equal(guard, "env.COOLIFY_BASE_URL != ''");
     assert.ok(!/if:.*HATCHKIT_(WEB|API)_URL/.test(WORKFLOW_VERIFY_STEP));
   });
 
   expect("native-origin step is gated on a deploy firing, like the verify step", () => {
     const guard = WORKFLOW_NATIVE_ORIGIN_STEP.match(/^\s*if: (.+)$/m)?.[1];
-    assert.equal(guard, "env.COOLIFY_BASE_URL != '' || env.COOLIFY_WEBHOOK_URL != ''");
+    assert.equal(guard, "env.COOLIFY_BASE_URL != ''");
   });
 
   expect("native-origin probe takes the path a WebView takes, and can actually fail", () => {
@@ -270,10 +320,12 @@ if (!starterPresent) {
 
   expect("retrofitting a pre-gate workflow reproduces the starter byte-for-byte", () => {
     const current = read(WORKFLOW_REL);
-    // Reconstruct what the file looked like before the gate existed.
+    // Reconstruct what the file looked like before the gate existed: no
+    // promote, no verify, and the token-driven deploy steps it had then.
     const before = current
       .replace(`\n${WORKFLOW_NATIVE_ORIGIN_STEP}`, "")
-      .replace(`${WORKFLOW_PIN_STEP}\n`, "")
+      .replace(`${WORKFLOW_PROMOTE_STEP}\n`, "")
+      .replace(WORKFLOW_SIGNED_DEPLOY_STEP, LEGACY_TOKEN_DEPLOY_STEPS)
       .replace(`\n\n${WORKFLOW_VERIFY_STEP.replace(/\n+$/, "")}\n`, "")
       .replace(
         /^ *# Bakes the commit into the image so \/api\/health can report it\.\n(?: *#.*\n)*? *build-args: \|\n *COMMIT_SHA=\$\{\{ github\.sha \}\}\n/m,
@@ -281,13 +333,15 @@ if (!starterPresent) {
       )
       .replace(/^ *COMMIT_SHA=\$\{\{ github\.sha \}\}\n/m, "");
     assert.notEqual(before, current, "failed to construct a pre-gate fixture");
-    assert.ok(!before.includes("Pin image tags"), "pin step not stripped");
+    assert.ok(!before.includes("- name: Promote this commit"), "promote step not stripped");
+    assert.ok(before.includes("COOLIFY_API_TOKEN"), "legacy token steps not restored");
     assert.ok(!before.includes("COMMIT_SHA"), "build args not stripped");
     assert.ok(!before.includes("Verify native clients"), "native-origin step not stripped");
 
     let after = addWorkflowCommitShaBuildArg(before, "packages/server/Dockerfile");
     after = addWorkflowCommitShaBuildArg(after, "packages/client/Dockerfile");
     after = upgradeWorkflowDeployVerification(after, "example.com", "split", "split");
+    after = upgradeWorkflowToSignedDeploy(after);
     after = upgradeWorkflowNativeOriginCheck(after, ["mobile"]);
     // Only the literals differ from the shipped starter, which leaves
     // them blank for hatchkit to fill per project.
@@ -305,11 +359,7 @@ if (!starterPresent) {
     const wf = read(WORKFLOW_REL);
     const desktop = upgradeWorkflowNativeOriginCheck(wf, ["desktop"]);
     assert.ok(desktop.includes('HATCHKIT_NATIVE_ORIGINS: "app://-"'));
-    assert.equal(
-      upgradeWorkflowNativeOriginCheck(desktop, ["desktop"]),
-      desktop,
-      "not idempotent",
-    );
+    assert.equal(upgradeWorkflowNativeOriginCheck(desktop, ["desktop"]), desktop, "not idempotent");
     const none = upgradeWorkflowNativeOriginCheck(wf, []);
     assert.ok(none.includes('HATCHKIT_NATIVE_ORIGINS: ""'), "empty list must be quoted");
     const renamed = setWorkflowDeployVerifyUrls(desktop, "renamed.example.com", "split", "split");
@@ -642,31 +692,19 @@ expect("adopt workflow template carries the verify gate and one build arg", () =
   assert.ok(!/ghcr\.io\/\$\{\{ github\.repository \}\}-(server|client)/.test(wf));
 });
 
-expect("adopt workflow pins APP_IMAGE to the sha before deploying", () => {
+expect("adopt workflow promotes its one image to :live, then signs the deploy", () => {
   const wf = template("deploy.yml.hbs");
-  assert.ok(wf.includes("- name: Pin the image tag to this commit"), "pin step missing");
-  // POST then PATCH: Coolify's env API accepts a PATCH for a key it does
-  // not have with a 200 and silently does nothing, and POST fails once
-  // the key exists — so both run and the right one wins.
-  const pin = wf.slice(
-    wf.indexOf("- name: Pin the image tag to this commit"),
-    wf.indexOf("- name: Deploy via Coolify API"),
-  );
-  const envPost = pin.search(/-X POST \\\n\s+"[^"]*\/envs"/);
-  const envPatch = pin.search(/-X PATCH \\\n\s+"[^"]*\/envs"/);
-  assert.ok(envPost > 0 && envPost < envPatch, "POST must precede PATCH");
-  assert.ok(pin.includes("/api/v1/applications/$COOLIFY_RESOURCE_UUID/envs"));
-  assert.ok(!pin.includes("is_build_time"), "is_build_time is rejected on POST");
-  assert.ok(pin.includes('APP_IMAGE="ghcr.io/${{ github.repository }}:${{ github.sha }}"'));
-  // Pinning after the deploy fired would pin the NEXT deploy's image.
-  assert.ok(
-    wf.indexOf("- name: Pin the image tag to this commit") <
-      wf.indexOf("- name: Deploy via Coolify API"),
-    "pin step must come before the deploy step",
-  );
-  // The note this step replaced said adopt's compose had no variable to
-  // pin. It has one now; the note must not linger and contradict it.
-  assert.ok(!wf.includes("no image-pin step here"));
+  const promoteAt = wf.indexOf("- name: Promote this commit's images to :live");
+  const deployAt = wf.indexOf("- name: Deploy via signed Coolify webhook");
+  assert.ok(promoteAt > 0, "promote step missing");
+  // Promoting after the deploy fired would pick the NEXT deploy's image.
+  assert.ok(deployAt > promoteAt, "promote must come before the deploy");
+  const promote = wf.slice(promoteAt, deployAt);
+  assert.ok(promote.includes('image="ghcr.io/${{ github.repository }}"'), "single image expected");
+  assert.ok(promote.includes('--tag "$image:live" "$image:${{ github.sha }}"'));
+  for (const name of ["COOLIFY_API_TOKEN", "COOLIFY_TOKEN", "COOLIFY_WEBHOOK_URL", "/api/v1/"]) {
+    assert.ok(!wf.includes(name), `${name} still in the adopt workflow`);
+  }
 });
 
 expect("adopt compose reads APP_IMAGE, and hatchkit seeds it from that default", () => {

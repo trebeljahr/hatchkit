@@ -38,6 +38,7 @@
  */
 
 import { DEPLOY_WORKFLOW_REL_PATH } from "../../scaffold/deploy-verification.js";
+import { indentOf, jobRange, stepRange } from "../../utils/workflow-yaml.js";
 import { DEPLOY_ENTRY_REL_PATH } from "./script.js";
 import type { VerifiedDeployPlan } from "./types.js";
 
@@ -53,79 +54,14 @@ export const DEPLOY_STEP_NAME = "Deploy, gate and roll back on failure";
  *  would deploy twice and poll twice. */
 const SUPERSEDED_STEPS = [
   "- name: Pin image tags to this commit",
+  "- name: Promote this commit's images to :live",
+  "- name: Deploy via signed Coolify webhook",
   "- name: Deploy via Coolify API",
   "- name: Deploy server app via Coolify API (split topology)",
   "- name: Deploy client app via Coolify API (split topology)",
   "- name: Deploy via webhook (fallback)",
   "- name: Verify the deployment is actually live",
 ];
-
-// ---------------------------------------------------------------------------
-// Small YAML helpers — line ranges, not a parser
-// ---------------------------------------------------------------------------
-//
-// Deliberately textual. The generated workflow carries long comment
-// blocks that explain which failure each step prevents, and a YAML
-// round-trip drops every one of them. These transforms edit lines and
-// leave everything they did not touch byte for byte.
-
-/** Indentation width of a line. */
-function indentOf(line: string): number {
-  return line.length - line.trimStart().length;
-}
-
-/** Line range `[start, end)` of the job named `job`, body included.
- *  Undefined when there is no such job. */
-function jobRange(lines: string[], job: string): [number, number] | undefined {
-  const start = lines.findIndex((line) => new RegExp(`^  ${job}:\\s*$`).test(line));
-  if (start === -1) return undefined;
-  let end = lines.length;
-  for (let i = start + 1; i < lines.length; i++) {
-    if (!lines[i].trim()) continue;
-    if (indentOf(lines[i]) <= 2) {
-      end = i;
-      break;
-    }
-  }
-  return [start, end];
-}
-
-/** Line range `[start, end)` of the step whose `- name:` line contains
- *  `marker`, including the comment block attached above it. */
-function stepRange(
-  lines: string[],
-  marker: string,
-  from: number,
-  to: number,
-): [number, number] | undefined {
-  let at = -1;
-  for (let i = from; i < to; i++) {
-    if (lines[i].includes(marker)) {
-      at = i;
-      break;
-    }
-  }
-  if (at === -1) return undefined;
-  const indent = indentOf(lines[at]);
-
-  // Walk up over the comment block that explains this step. It belongs
-  // to the step, and leaving it behind turns a removal into a paragraph
-  // of prose about a step that is no longer there.
-  let start = at;
-  while (start - 1 >= from) {
-    const above = lines[start - 1];
-    if (above.trim().startsWith("#") && indentOf(above) === indent) start -= 1;
-    else break;
-  }
-
-  let end = at + 1;
-  for (let i = at + 1; i < to; i++) {
-    if (!lines[i].trim()) continue;
-    if (indentOf(lines[i]) <= indent) break;
-    end = i + 1;
-  }
-  return [start, end];
-}
 
 // ---------------------------------------------------------------------------
 // Retrofits
@@ -281,10 +217,22 @@ export function withoutSupersededDeploySteps(content: string): string {
   return out;
 }
 
+/** The per-application deploy secrets the script reads, as step `env`
+ *  lines. No platform API token: each secret deploys one application. */
+function deployHookEnvLines(): string[] {
+  const lines: string[] = [];
+  for (const prefix of ["COOLIFY_", "COOLIFY_SERVER_", "COOLIFY_CLIENT_"]) {
+    for (const key of ["RESOURCE_UUID", "DEPLOY_SECRET", "DEPLOY_REPOSITORY", "DEPLOY_BRANCH"]) {
+      lines.push(`          ${prefix}${key}: \${{ secrets.${prefix}${key} }}`);
+    }
+  }
+  return lines;
+}
+
 /** The workflow step that runs the generated deploy script. */
 export function deployStepYaml(plan: VerifiedDeployPlan): string {
   return [
-    "      # Pin the immutable image references, deploy, wait until the new",
+    "      # Point the live tag at this commit's images, deploy, wait until the new",
     "      # commit is actually being served, run the gate, and put the",
     "      # previous images back when it fails. The run fails either way: a",
     "      # rollback is never a green run, because the commit on the default",
@@ -297,10 +245,8 @@ export function deployStepYaml(plan: VerifiedDeployPlan): string {
     `      - name: ${DEPLOY_STEP_NAME}`,
     "        env:",
     "          COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}",
-    "          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}",
-    "          COOLIFY_RESOURCE_UUID: ${{ secrets.COOLIFY_RESOURCE_UUID }}",
-    "          COOLIFY_SERVER_RESOURCE_UUID: ${{ secrets.COOLIFY_SERVER_RESOURCE_UUID }}",
-    "          COOLIFY_CLIENT_RESOURCE_UUID: ${{ secrets.COOLIFY_CLIENT_RESOURCE_UUID }}",
+    ...deployHookEnvLines(),
+    "          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
     "          IMAGE_OWNER_REPO: ${{ github.repository }}",
     `          HATCHKIT_WEB_URL: ${plan.webOrigin}`,
     `          HATCHKIT_API_URL: ${plan.apiOrigin}`,
@@ -397,7 +343,7 @@ export function renderRollbackWorkflow(plan: VerifiedDeployPlan): string {
 # run. Change the generator, or copy this file to a workflow of your own.
 #
 # Put ${plan.name} on the images of an earlier commit, by hand, with the same
-# pin, deploy, poll and gate as the push deploy in
+# promote, deploy, poll and gate as the push deploy in
 # ${DEPLOY_WORKFLOW_REL_PATH}.
 #
 #   gh workflow run hosted-rollback.yml -f sha=<commit> -f which=both
@@ -406,9 +352,9 @@ export function renderRollbackWorkflow(plan: VerifiedDeployPlan): string {
 # reachable from the default branch. This run resolves an abbreviated sha and
 # refuses anything that is not.
 #
-# When the gate fails, the run fails and the images of \`sha\` stay pinned: the
+# When the gate fails, the run fails and the images of \`sha\` stay live: the
 # images that were live before this run are usually the build being escaped,
-# and putting them back would re-pin it. \`restore_on_failure\` puts them back
+# and putting them back would deploy it again. \`restore_on_failure\` puts them back
 # instead — for a rollback that is a trial of an older build rather than an
 # escape from the current one.
 #
@@ -444,13 +390,16 @@ on:
         type: boolean
         default: false
       restore_on_failure:
-        description: When the gate fails, pin the images that were live before this run again (off, since those are usually the build being escaped)
+        description: When the gate fails, put back the images that were live before this run (off, since those are usually the build being escaped)
         required: false
         type: boolean
         default: false
 
+# packages: write moves the live tag in this repository's own GHCR
+# packages. It is the only write this workflow has.
 permissions:
   contents: read
+  packages: write
 
 jobs:
   rollback:
@@ -502,10 +451,8 @@ jobs:
       - name: Deploy the chosen commit and gate it
         env:
           COOLIFY_BASE_URL: \${{ secrets.COOLIFY_BASE_URL }}
-          COOLIFY_API_TOKEN: \${{ secrets.COOLIFY_API_TOKEN }}
-          COOLIFY_RESOURCE_UUID: \${{ secrets.COOLIFY_RESOURCE_UUID }}
-          COOLIFY_SERVER_RESOURCE_UUID: \${{ secrets.COOLIFY_SERVER_RESOURCE_UUID }}
-          COOLIFY_CLIENT_RESOURCE_UUID: \${{ secrets.COOLIFY_CLIENT_RESOURCE_UUID }}
+${deployHookEnvLines().join("\n")}
+          GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
           IMAGE_OWNER_REPO: \${{ github.repository }}
           HATCHKIT_WEB_URL: ${plan.webOrigin}
           HATCHKIT_API_URL: ${plan.apiOrigin}

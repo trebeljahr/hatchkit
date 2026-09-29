@@ -646,7 +646,15 @@ export async function ensureCoolify(): Promise<CoolifyConfig> {
     {
       name: "API token",
       run: async (s) => {
-        tokenHint(`${s.url.replace(/\/$/, "")}/security/api-tokens`, "root (full access)");
+        // The provisioner: it creates apps, envs and databases, so it has
+        // to be root. It never leaves the keychain — each project's CI
+        // gets per-app deploy webhook secrets instead
+        // (deploy/coolify-deploy-hook.ts).
+        tokenHint(
+          `${s.url.replace(/\/$/, "")}/security/api-tokens`,
+          "root (full access)",
+          "Stays in your keychain. Projects never receive it: CI deploys through per-app webhook secrets.",
+        );
         for (;;) {
           const candidate = await confirmPastedSecret("Coolify API token");
           const spinner = ora("Testing Coolify connection...").start();

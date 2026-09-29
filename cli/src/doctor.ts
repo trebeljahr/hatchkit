@@ -1391,6 +1391,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of routingChecks) results.push(r);
   const autoDeployChecks = await checkProjectCoolifyAutoDeployState(process.cwd());
   for (const r of autoDeployChecks) results.push(r);
+  const isolationChecks = await checkProjectCredentialIsolationState(process.cwd());
+  for (const r of isolationChecks) results.push(r);
   const nginxConfigChecks = await checkProjectNginxConfigState(process.cwd());
   for (const r of nginxConfigChecks) results.push(r);
   const appHealthChecks = await checkProjectCoolifyAppHealthState(process.cwd());
@@ -3007,99 +3009,122 @@ export async function checkProjectDeployedRefState(projectDir: string): Promise<
   return out;
 }
 
-/** Verify build-pipeline projects (the canonical hatchkit adopt flow:
- *  GHA builds + pushes to GHCR + calls Coolify's deploy webhook) have
- *  Coolify's git-webhook auto-deploy turned OFF. If both are on, every
- *  git push triggers Coolify to redeploy from a stale-or-absent GHCR
- *  image before GHA has finished pushing the fresh one — race-y deploy
- *  failures with no obvious root cause from the UI.
+/** Verify each Coolify app of the project can be deployed by CI's
+ *  signed webhook, and ONLY by it (deploy/coolify-deploy-hook.ts):
  *
- *  Build-pipeline projects are detected by the presence of
- *  `.github/workflows/deploy.yml` (the file hatchkit's build-pipeline
- *  scaffold writes). Source-build projects don't have it and want
- *  auto-deploy on, so the check is skipped. */
+ *    · its GitHub-slot webhook secret is set and is the one hatchkit
+ *      gave the repo (compared in memory with the keychain copy);
+ *    · the GitLab/Gitea/Bitbucket slots are set too — a null secret
+ *      there accepts a signature made with the empty key;
+ *    · `watch_paths` is the hatchkit sentinel, so auto-deploy (which the
+ *      webhook needs) never fires for an ordinary push through the
+ *      GitHub App before the image exists.
+ *
+ *  Compose apps get a warning on top: Coolify fetches the payload's
+ *  commit with a shallow fetch by default, which also reaches commits
+ *  that exist only in a fork. That setting is not readable through the
+ *  API, so doctor can only remind. */
 export async function checkProjectCoolifyAutoDeployState(
   projectDir: string,
 ): Promise<CheckResult[]> {
   const out: CheckResult[] = [];
-  const { existsSync, readFileSync } = await import("node:fs");
-  const manifestPath = `${projectDir}/.hatchkit.json`;
-  if (!existsSync(manifestPath)) return out;
-
-  let manifest: { name?: string; deploymentMode?: string };
-  try {
-    manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
-  } catch {
-    return out;
-  }
-  if (!manifest.name) return out;
-  if (manifest.deploymentMode !== "coolify") return out;
-  // Build-pipeline signal: hatchkit-scaffolded deploy.yml.
-  const deployWorkflow = `${projectDir}/.github/workflows/deploy.yml`;
-  if (!existsSync(deployWorkflow)) return out;
-
-  // Resolve the Coolify app uuid from the per-project ledger (recorded
-  // at adopt-time as `coolifyApp`). Without a ledger entry there's
-  // nothing to probe.
-  const ledgers = loadAllLedgers();
-  const ourLedger = ledgers.find((l) => l.name === manifest.name);
-  const appStep = ourLedger?.steps.find((s): s is LedgerStep & { kind: "coolifyApp" } => {
-    return s.kind === "coolifyApp";
-  });
-  if (!appStep) return out;
-
+  const { readManifest } = await import("./scaffold/manifest.js");
+  const manifest = readManifest(projectDir);
+  if (!manifest?.name) return out;
+  if (manifest.deploymentMode !== undefined && manifest.deploymentMode !== "coolify") return out;
   const cfg = await getCoolifyConfig();
   if (!cfg) return out;
+  const { findCoolifyAppsForProject } = await import("./deploy/coolify-app.js");
+  const { DEPLOY_HOOK_WATCH_PATH, deployHookKeychainKey } = await import(
+    "./deploy/coolify-deploy-hook.js"
+  );
+  const apps = await findCoolifyAppsForProject(manifest.name, manifest.topology).catch(() => []);
+  if (apps.length === 0) return out;
   const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
-
-  let isAutoDeployEnabled: boolean | undefined;
-  try {
-    const app = await api.getApplication(appStep.uuid);
-    isAutoDeployEnabled = app.isAutoDeployEnabled;
-  } catch (err) {
+  const title = `Project ${manifest.name} (Coolify deploy hooks)`;
+  const problems: string[] = [];
+  const composeApps: string[] = [];
+  for (const app of apps) {
+    const label = app.role ?? "app";
+    try {
+      const state = await api.getDeployHookState(app.uuid);
+      const kept = await getSecret(deployHookKeychainKey(app.uuid));
+      if (!state.githubSecret)
+        problems.push(`${label}: no webhook secret — anyone can sign for it`);
+      else if (kept !== state.githubSecret) {
+        problems.push(`${label}: webhook secret differs from the one hatchkit gave the repo`);
+      }
+      if (!state.otherSlotsLocked) {
+        problems.push(
+          `${label}: a GitLab/Gitea/Bitbucket webhook secret is null (empty-key signatures pass)`,
+        );
+      }
+      if (state.watchPaths?.trim() !== DEPLOY_HOOK_WATCH_PATH) {
+        problems.push(`${label}: watch_paths is not ${DEPLOY_HOOK_WATCH_PATH}`);
+      }
+      if (state.buildPack === "dockercompose") composeApps.push(label);
+    } catch (err) {
+      problems.push(`${label}: couldn't read the app — ${(err as Error).message.split("\n")[0]}`);
+    }
+  }
+  if (problems.length > 0) {
     out.push({
-      name: `Project ${manifest.name} (Coolify auto-deploy)`,
+      name: title,
       status: "fail",
-      detail: `couldn't read app state: ${(err as Error).message.split("\n")[0]}`,
+      detail: `${problems.length} problem(s)`,
       hint: [
-        `Confirm the Coolify app still exists and the token is valid:`,
-        `  hatchkit doctor`,
-        `Then re-run: hatchkit doctor`,
+        ...problems,
+        "",
+        "`hatchkit sync` (or `hatchkit secrets isolate`) sets all three and pushes",
+        "the matching per-app secrets to the repo.",
       ],
     });
-    return out;
-  }
-
-  if (isAutoDeployEnabled === undefined) {
+  } else {
     out.push({
-      name: `Project ${manifest.name} (Coolify auto-deploy)`,
-      status: "skip",
-      detail: "Coolify API didn't surface is_auto_deploy_enabled (older build?)",
-    });
-    return out;
-  }
-
-  if (isAutoDeployEnabled === false) {
-    out.push({
-      name: `Project ${manifest.name} (Coolify auto-deploy)`,
+      name: title,
       status: "ok",
-      detail: "auto-deploy off (GHA owns deploys)",
+      detail: `${apps.length} app(s) deploy only via their own signed webhook`,
     });
-    return out;
   }
-
-  out.push({
-    name: `Project ${manifest.name} (Coolify auto-deploy)`,
-    status: "fail",
-    detail:
-      "Coolify's git-webhook auto-deploy is ON for a build-pipeline project — every push will race the GHA build with a stale-image redeploy.",
-    hint: [
-      `Re-run the SSH+login + auto-deploy toggle:`,
-      `  hatchkit config add ghcr`,
-      `Or open the Coolify app's Configuration → Source → toggle "Auto Deploy on Git Push" OFF.`,
-    ],
-  });
+  if (composeApps.length > 0) {
+    out.push({
+      name: `Project ${manifest.name} (Coolify shallow clone)`,
+      status: "warn",
+      detail: `${composeApps.join(", ")} build from git; check "Shallow Clone" is OFF`,
+      hint: [
+        "With shallow clone on, Coolify fetches the webhook's commit by sha, and",
+        "GitHub serves commits that exist only in a fork that way. A leaked deploy",
+        "secret could then deploy a fork's compose file. The API can't read the",
+        "setting: Coolify → the app → Advanced → Shallow Clone → off.",
+        "Moving the app to the image runtime removes the question:",
+        "  hatchkit migrate-runtime",
+      ],
+    });
+  }
   return out;
+}
+
+/** The project holds no provisioner credential anywhere project-facing:
+ *  env files, the plaintext provisioning cache, workflows, the repo's
+ *  Actions secret names, its Coolify app envs. See secrets/isolation.ts. */
+export async function checkProjectCredentialIsolationState(
+  projectDir: string,
+): Promise<CheckResult[]> {
+  const { existsSync } = await import("node:fs");
+  if (!existsSync(`${projectDir}/.hatchkit.json`)) return [];
+  const { auditProjectIsolation, isolationCheckResults } = await import("./secrets/isolation.js");
+  try {
+    const { name, findings } = await auditProjectIsolation(projectDir);
+    return isolationCheckResults(name, findings);
+  } catch (err) {
+    return [
+      {
+        name: "Project credentials are project-scoped",
+        status: "skip",
+        detail: `couldn't audit: ${(err as Error).message.split("\n")[0]}`,
+      },
+    ];
+  }
 }
 
 /** One Dockerfile build stage: the image (or earlier stage) it starts

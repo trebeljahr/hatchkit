@@ -16,9 +16,9 @@
  *      URL; `db: true` does not prove the auth handler can read that
  *      database; and under a split topology nothing else in CI exercises
  *      the cross-origin preflight.
- *   3. A rollback target is only a value pinned to a full commit sha. A
- *      moving tag already points at the build that just failed, and a
- *      value the token may not read is unknown, not empty.
+ *   3. A rollback target is only the full commit a half was serving,
+ *      with its image still in the registry. A moving reference names no
+ *      build, and a half that answered nothing names none either.
  *   4. The migration guard. A migration can raise the minimum reader
  *      above the previous build, which would then refuse to start —
  *      so the server stays and only the client moves. Unknown counts as
@@ -44,6 +44,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash, createHmac } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -56,8 +57,11 @@ process.env.HATCHKIT_CONF_DIR = mkdtempSync(join(tmpdir(), "verified-deploy-conf
 const { applicableChecks, evaluateGate, isWaiting } = await import(
   "./src/features/verified-deploy/gate.js"
 );
-const { findEnvValue, selectRollbackTarget, shaFromImageRef, isFullSha } = await import(
+const { selectRollbackTarget, shaFromImageRef, isFullSha } = await import(
   "./src/features/verified-deploy/rollback-target.js"
+);
+const { deployWebhookQueued, renderDeployWebhookBody, signDeployWebhook } = await import(
+  "./src/deploy/coolify-deploy-hook.js"
 );
 const {
   DEFAULT_ID_FIELD,
@@ -90,7 +94,6 @@ import type {
   GateExpectations,
   GateProbes,
   MigrationRegistry,
-  PlatformEnvEntry,
 } from "./src/features/verified-deploy/types.js";
 
 const failures: string[] = [];
@@ -262,28 +265,26 @@ check("a client-only move still gates the server on being up", () => {
 
 console.log("\nrollback targets\n");
 
-const pinnedRow: PlatformEnvEntry[] = [
-  { key: "SERVER_IMAGE", value: `ghcr.io/acme/app-server:${OLD_SHA}` },
-];
+const target = (served: unknown, inRegistry = true) =>
+  selectRollbackTarget({ app: "server", served, base: "ghcr.io/acme/app-server", inRegistry });
 
-check("a value pinned to a full sha is a target", () => {
-  const target = selectRollbackTarget(pinnedRow, "SERVER_IMAGE");
-  assert.equal(target.kind, "target");
-  assert.equal(target.kind === "target" && target.sha, OLD_SHA);
+check("the commit a half serves, with its image in the registry, is a target", () => {
+  const found = target(OLD_SHA);
+  assert.equal(found.kind, "target");
+  assert.equal(found.kind === "target" && found.sha, OLD_SHA);
+  assert.equal(found.kind === "target" && found.value, `ghcr.io/acme/app-server:${OLD_SHA}`);
 });
 
-check("a moving tag is NOT a target — it already points at the failed build", () => {
-  const target = selectRollbackTarget(
-    [{ key: "SERVER_IMAGE", value: "ghcr.io/acme/app-server:main" }],
-    "SERVER_IMAGE",
-  );
-  assert.equal(target.kind, "none");
-  assert.match(target.kind === "none" ? target.reason : "", /moving tag/);
+check("a moving reference is NOT a target — no image tag names it", () => {
+  const found = target("main");
+  assert.equal(found.kind, "none");
+  assert.match(found.kind === "none" ? found.reason : "", /not a full commit sha/);
 });
 
 check("an abbreviated sha is not a target either", () => {
   assert.equal(shaFromImageRef("ghcr.io/acme/app-server:abc1234"), null);
   assert.equal(isFullSha(OLD_SHA.slice(0, 7)), false);
+  assert.equal(target(OLD_SHA.slice(0, 7)).kind, "none");
 });
 
 check("a registry port does not read as a tag", () => {
@@ -291,27 +292,16 @@ check("a registry port does not read as a tag", () => {
   assert.equal(shaFromImageRef("registry.example.com:5000/app"), null);
 });
 
-check("a value the token may not read is unknown, not empty", () => {
-  const target = selectRollbackTarget([{ key: "SERVER_IMAGE" }], "SERVER_IMAGE");
-  assert.equal(target.kind, "none");
-  assert.match(target.kind === "none" ? target.reason : "", /may not read variable values/);
+check("a half that reported nothing names the first-deploy case", () => {
+  const found = target(null);
+  assert.equal(found.kind, "none");
+  assert.match(found.kind === "none" ? found.reason : "", /first deploy/);
 });
 
-check("a missing variable says so, and names the first-deploy case", () => {
-  const target = selectRollbackTarget([], "SERVER_IMAGE");
-  assert.equal(target.kind, "none");
-  assert.match(target.kind === "none" ? target.reason : "", /first deploy/);
-});
-
-check("the preview copy of a variable is never the target", () => {
-  const value = findEnvValue(
-    [
-      { key: "SERVER_IMAGE", value: "preview-image", is_preview: true },
-      { key: "SERVER_IMAGE", value: `ghcr.io/acme/app-server:${OLD_SHA}` },
-    ],
-    "SERVER_IMAGE",
-  );
-  assert.equal(value, `ghcr.io/acme/app-server:${OLD_SHA}`);
+check("an image the registry no longer has is not a target", () => {
+  const found = target(OLD_SHA, false);
+  assert.equal(found.kind, "none");
+  assert.match(found.kind === "none" ? found.reason : "", /not in the registry/);
 });
 
 // ── The migration guard ──────────────────────────────────────────────
@@ -466,116 +456,161 @@ const lib = await import(pathToFileURL(libPath).href);
 
 const SRV = "srv-uuid";
 const CLI = "cli-uuid";
+const SECRETS: Record<string, string> = { [SRV]: "srv-deploy-secret", [CLI]: "cli-deploy-secret" };
+const REPO: Record<string, string> = { server: "acme/app-server", client: "acme/app-client" };
+const PLATFORM = "https://platform.test";
 
 interface FakeOptions {
-  /** Starting image value on each application. */
-  serverImage?: string | null;
-  clientImage?: string | null;
+  /** What each half serves before the run. `null` = reports no commit. */
+  serving?: { server?: string | null; client?: string | null };
+  /** Commits whose `:<sha>` images exist in the registry. */
+  built?: string[];
   /** Commits whose SERVER fails the gate (health db false). */
   badServer?: string[];
   /** Commits whose CLIENT fails the gate (built against the wrong API). */
   badClient?: string[];
-  /** Make every platform write fail, to model a rollback that cannot
-   *  even be queued. */
+  /** Make every registry or platform write after the Nth fail. */
   breakWritesAfter?: number;
-  /** Return no readable value for the image variables. */
-  hideValues?: boolean;
-  /** Model Docker Image applications: the image is the application's
-   *  own name + tag, and the env variable is ignored. */
-  imageApps?: boolean;
+  /** The platform holds a different deploy secret for the server app. */
+  staleServerSecret?: boolean;
+  /** One application pulls both images (single-origin). */
+  singleOrigin?: boolean;
 }
 
 function fakePlatform(options: FakeOptions) {
-  const envs: Record<string, Record<string, string>> = {
-    [SRV]:
-      options.serverImage === null
-        ? {}
-        : { SERVER_IMAGE: options.serverImage ?? `ghcr.io/acme/app-server:${OLD_SHA}` },
-    [CLI]:
-      options.clientImage === null
-        ? {}
-        : { CLIENT_IMAGE: options.clientImage ?? `ghcr.io/acme/app-client:${OLD_SHA}` },
+  const manifestOf = (sha: string) => {
+    const body = JSON.stringify({
+      mediaType: "application/vnd.oci.image.index.v1+json",
+      manifests: [{ digest: `sha256:${sha}` }],
+    });
+    return { body, digest: `sha256:${createHash("sha256").update(body).digest("hex")}`, sha };
   };
-  // Docker Image applications hold their image as name + tag.
-  const images: Record<string, { name: string; tag: string }> = {
-    [SRV]: { name: "ghcr.io/acme/app-server", tag: OLD_SHA },
-    [CLI]: { name: "ghcr.io/acme/app-client", tag: OLD_SHA },
+  const registry: Record<
+    string,
+    Record<string, { body: string; digest: string; sha: string }>
+  > = {};
+  const serving = {
+    server: options.serving?.server === undefined ? OLD_SHA : options.serving.server,
+    client: options.serving?.client === undefined ? OLD_SHA : options.serving.client,
   };
-  const serving = { server: OLD_SHA, client: OLD_SHA };
+  for (const half of ["server", "client"] as const) {
+    registry[REPO[half]] = {};
+    for (const sha of options.built ?? [OLD_SHA, NEW_SHA]) {
+      registry[REPO[half]][sha] = manifestOf(sha);
+    }
+    const now = serving[half];
+    if (now && registry[REPO[half]][now]) registry[REPO[half]].live = registry[REPO[half]][now];
+  }
+  const uuidOf = { server: SRV, client: options.singleOrigin ? SRV : CLI };
+  const platformSecrets = {
+    ...SECRETS,
+    ...(options.staleServerSecret ? { [SRV]: "an-older-secret" } : {}),
+  };
   const lines: string[] = [];
+  const webhooks: Array<{ uuid: string | null; body: string; signature: string }> = [];
+  const platformAuthHeaders: string[] = [];
   let writes = 0;
-
-  const shaOf = (value: string | undefined): string => {
-    if (!value) return "";
-    const tag = value.slice(value.lastIndexOf(":") + 1);
-    return /^[0-9a-f]{40}$/.test(tag) ? tag : "";
+  const write = () => {
+    writes += 1;
+    return options.breakWritesAfter !== undefined && writes > options.breakWritesAfter;
   };
 
-  const json = (body: unknown, status = 200) => ({
+  const respond = (body: unknown, status = 200, headers: Record<string, string> = {}) => ({
     status,
     ok: status < 400,
-    headers: { get: () => null as string | null },
-    text: async () => JSON.stringify(body),
+    headers: { get: (name: string) => headers[name.toLowerCase()] ?? null },
+    text: async () => (typeof body === "string" ? body : JSON.stringify(body)),
   });
+  const liveSha = (half: "server" | "client") => registry[REPO[half]].live?.sha ?? null;
 
   const fetchImpl = async (
     url: string,
-    init?: { method?: string; headers?: Record<string, string> },
+    init?: { method?: string; headers?: Record<string, string>; body?: string },
   ) => {
     const parsed = new URL(url);
     const origin = `${parsed.protocol}//${parsed.host}`;
     const method = init?.method ?? "GET";
     const path = parsed.pathname;
+    const header = (name: string) =>
+      Object.entries(init?.headers ?? {}).find(([k]) => k.toLowerCase() === name)?.[1];
 
-    if (path.startsWith("/api/v1/applications/")) {
-      const uuid = path.split("/")[4];
-      if (method === "GET" && !path.endsWith("/envs")) {
-        return json(
-          options.imageApps
-            ? {
-                build_pack: "dockerimage",
-                docker_registry_image_name: images[uuid].name,
-                docker_registry_image_tag: images[uuid].tag,
-              }
-            : { build_pack: "dockercompose" },
-        );
-      }
-      if (method === "GET") {
-        return json(
-          Object.entries(envs[uuid] ?? {}).map(([key, value]) => ({
-            key,
-            value: options.hideValues ? undefined : value,
-          })),
-        );
-      }
-      writes += 1;
-      if (options.breakWritesAfter !== undefined && writes > options.breakWritesAfter) {
-        return json({ message: "no" }, 500);
-      }
-      return json({ ok: true });
+    // ── the registry ──
+    if (origin === "https://ghcr.io" && path === "/v2/") {
+      return respond({}, 401, {
+        "www-authenticate": 'Bearer realm="https://ghcr.io/token",service="ghcr.io"',
+      });
     }
-    if (path === "/api/v1/deploy") {
-      writes += 1;
-      if (options.breakWritesAfter !== undefined && writes > options.breakWritesAfter) {
-        return json({ message: "no" }, 500);
+    if (origin === "https://ghcr.io" && path === "/token") {
+      assert.match(header("authorization") ?? "", /^Basic /, "token request without credentials");
+      assert.match(
+        parsed.searchParams.get("scope") ?? "",
+        /^repository:acme\/app-(server|client):pull,push$/,
+      );
+      return respond({ token: "registry-token" });
+    }
+    const manifest = path.match(/^\/v2\/(.+)\/manifests\/([^/]+)$/);
+    if (origin === "https://ghcr.io" && manifest) {
+      assert.equal(header("authorization"), "Bearer registry-token");
+      const [, repo, ref] = manifest;
+      if (method === "PUT") {
+        if (write()) return respond({ errors: [{ code: "DENIED" }] }, 500);
+        const body = init?.body ?? "";
+        const source = Object.values(registry[repo]).find((m) => m.body === body);
+        assert.ok(source, "PUT a manifest the registry never had — bytes were re-serialised");
+        registry[repo][ref] = source;
+        return respond("", 201);
       }
-      const uuid = parsed.searchParams.get("uuid") ?? "";
-      const running = (app: string, key: string) =>
-        options.imageApps ? shaOf(`x:${images[app].tag}`) : shaOf(envs[app][key]);
-      if (uuid === SRV) serving.server = running(SRV, "SERVER_IMAGE");
-      if (uuid === CLI) serving.client = running(CLI, "CLIENT_IMAGE");
-      return json({ ok: true });
+      const found = registry[repo]?.[ref];
+      if (!found) return respond({ errors: [{ code: "MANIFEST_UNKNOWN" }] }, 404);
+      return respond(found.body, 200, {
+        "content-type": "application/vnd.oci.image.index.v1+json",
+        "docker-content-digest": found.digest,
+      });
     }
 
+    // ── the platform: only the signed webhook, never an API token ──
+    if (origin === PLATFORM) {
+      const auth = header("authorization");
+      if (auth) platformAuthHeaders.push(auth);
+      assert.equal(
+        path,
+        "/webhooks/source/github/events/manual",
+        `unexpected platform call ${path}`,
+      );
+      if (write()) return respond({ message: "no" }, 500);
+      const body = init?.body ?? "";
+      const signature = (header("x-hub-signature-256") ?? "").replace(/^sha256=/, "");
+      const apps = [...new Set(Object.values(uuidOf))];
+      const matched =
+        apps.find(
+          (uuid) =>
+            createHmac("sha256", platformSecrets[uuid]).update(body).digest("hex") === signature,
+        ) ?? null;
+      webhooks.push({ uuid: matched, body, signature });
+      const answer = apps.map((uuid) => {
+        if (uuid !== matched) {
+          return { application: `app-${uuid}`, status: "failed", message: "Invalid signature." };
+        }
+        for (const half of ["server", "client"] as const) {
+          if (uuidOf[half] === uuid) serving[half] = liveSha(half);
+        }
+        return { status: "success", message: "Deployment queued.", application_uuid: uuid };
+      });
+      return respond(answer);
+    }
+
+    // ── the public origins ──
     if (origin === API && path === "/api/health") {
-      return json({
+      if (serving.server === null) return respond("", 503);
+      return respond({
         status: "ok",
         db: !(options.badServer ?? []).includes(serving.server),
         commit: serving.server,
       });
     }
     if (origin === WEB && path === "/version.json") {
-      return json({
+      if (serving.client === null) return respond("", 404);
+      return respond({
         commit: serving.client,
         apiUrl: (options.badClient ?? []).includes(serving.client) ? "" : API,
       });
@@ -589,45 +624,35 @@ function fakePlatform(options: FakeOptions) {
           text: async () => "",
         };
       }
-      return json(null);
+      return respond(null);
     }
     throw new Error(`unexpected request: ${method} ${url}`);
   };
 
-  // The PATCH body carries the new value; apply it so a read-back sees it.
-  const fetchWithWrites = async (url: string, init?: { method?: string; body?: string }) => {
-    const parsed = new URL(url);
-    if (parsed.pathname.startsWith("/api/v1/applications/") && init?.method === "PATCH") {
-      const uuid = parsed.pathname.split("/")[4];
-      const body = JSON.parse(init.body ?? "{}");
-      const before = writes;
-      const response = await fetchImpl(url, init);
-      if (response.ok && writes > before) {
-        if (parsed.pathname.endsWith("/envs")) envs[uuid][body.key] = body.value;
-        else if (typeof body.docker_registry_image_tag === "string") {
-          images[uuid].tag = body.docker_registry_image_tag;
-        }
-      }
-      return response;
-    }
-    return fetchImpl(url, init);
-  };
+  const hook = (half: "server" | "client") => ({
+    uuid: uuidOf[half],
+    secret: SECRETS[uuidOf[half]],
+    repository: "acme/app",
+    branch: "main",
+  });
 
   return {
-    envs,
-    images,
+    registry,
+    liveSha,
     serving,
     lines,
+    webhooks,
+    platformAuthHeaders,
     deps: {
-      fetch: fetchWithWrites,
+      fetch: fetchImpl,
       sleep: async () => {},
       log: (line: string) => lines.push(line),
       readRegistry: () => ({ ok: true, registry: { migrations: [], schemaVersion: 0 } }),
     },
     config: {
-      baseUrl: "https://platform.test",
-      token: "t",
-      uuids: { server: SRV, client: CLI },
+      baseUrl: PLATFORM,
+      hooks: { server: hook("server"), client: hook("client") },
+      registryAuth: { username: "ci", password: "github-token" },
       imageBase: { server: "ghcr.io/acme/app-server", client: "ghcr.io/acme/app-client" },
       webOrigin: WEB,
       apiOrigin: API,
@@ -636,45 +661,54 @@ function fakePlatform(options: FakeOptions) {
   };
 }
 
-await checkAsync("a healthy deploy pins both halves and passes", async () => {
-  const fake = fakePlatform({});
-  const result = await lib.runDeploy(fake.deps, fake.config, {
-    targetSha: NEW_SHA,
-    apps: ["server", "client"],
-    rollback: true,
-  });
-  assert.equal(result.ok, true, result.errors.join("\n"));
-  assert.equal(fake.envs[SRV].SERVER_IMAGE, `ghcr.io/acme/app-server:${NEW_SHA}`);
-  assert.equal(fake.envs[CLI].CLIENT_IMAGE, `ghcr.io/acme/app-client:${NEW_SHA}`);
-});
-
 await checkAsync(
-  "Docker Image apps: the deploy pins the image TAG, not the ignored env var",
+  "a healthy deploy promotes both halves, signs both webhooks, and passes",
   async () => {
-    const fake = fakePlatform({ imageApps: true });
+    const fake = fakePlatform({});
     const result = await lib.runDeploy(fake.deps, fake.config, {
       targetSha: NEW_SHA,
       apps: ["server", "client"],
       rollback: true,
     });
     assert.equal(result.ok, true, result.errors.join("\n"));
-    assert.equal(fake.images[SRV].tag, NEW_SHA);
-    assert.equal(fake.images[CLI].tag, NEW_SHA);
-    // The env variable an image application ignores is left alone.
-    assert.equal(fake.envs[SRV].SERVER_IMAGE, `ghcr.io/acme/app-server:${OLD_SHA}`);
+    assert.equal(fake.liveSha("server"), NEW_SHA);
+    assert.equal(fake.liveSha("client"), NEW_SHA);
+    assert.deepEqual(
+      fake.webhooks.map((w) => w.uuid),
+      [SRV, CLI],
+      "one signed webhook per app, server first",
+    );
   },
 );
 
-await checkAsync("Docker Image apps: a failed gate rolls the image tag back", async () => {
-  const fake = fakePlatform({ imageApps: true, badServer: [NEW_SHA] });
+await checkAsync("the platform never sees an API token — only per-app signatures", async () => {
+  const fake = fakePlatform({ badServer: [NEW_SHA] });
+  await lib.runDeploy(fake.deps, fake.config, {
+    targetSha: NEW_SHA,
+    apps: ["server", "client"],
+    rollback: true,
+  });
+  assert.deepEqual(fake.platformAuthHeaders, [], "a bearer token reached the platform");
+  for (const call of fake.webhooks) {
+    assert.ok(call.uuid !== null, "a webhook matched no app");
+    const body = JSON.parse(call.body);
+    assert.equal(body.ref, "refs/heads/main");
+    assert.equal(body.repository.full_name, "acme/app");
+    assert.deepEqual(body.commits[0].modified, [".hatchkit/deploy-webhook"]);
+  }
+});
+
+await checkAsync("single-origin: one application, one webhook, both images promoted", async () => {
+  const fake = fakePlatform({ singleOrigin: true });
   const result = await lib.runDeploy(fake.deps, fake.config, {
     targetSha: NEW_SHA,
     apps: ["server", "client"],
     rollback: true,
   });
-  assert.equal(result.ok, false);
-  assert.equal(fake.images[SRV].tag, OLD_SHA);
-  assert.equal(fake.serving.server, OLD_SHA);
+  assert.equal(result.ok, true, result.errors.join("\n"));
+  assert.equal(fake.webhooks.length, 1);
+  assert.equal(fake.liveSha("server"), NEW_SHA);
+  assert.equal(fake.liveSha("client"), NEW_SHA);
 });
 
 await checkAsync("a failed gate rolls back, and the run still FAILS", async () => {
@@ -690,17 +724,14 @@ await checkAsync("a failed gate rolls back, and the run still FAILS", async () =
   assert.ok(text.includes(NEW_SHA), "the error must name the new commit");
   assert.ok(text.includes(OLD_SHA), "the error must name the restored commit");
   assert.match(text, /rolled back to .*which passed the gate/);
-  assert.equal(fake.envs[SRV].SERVER_IMAGE, `ghcr.io/acme/app-server:${OLD_SHA}`);
+  assert.equal(fake.liveSha("server"), OLD_SHA);
+  assert.equal(fake.serving.server, OLD_SHA);
 });
 
 await checkAsync(
-  "no rollback target: the run fails, says which, and leaves the new pin",
+  "no rollback target: the run fails, says which, and leaves the new build live",
   async () => {
-    const fake = fakePlatform({
-      badServer: [NEW_SHA],
-      serverImage: "ghcr.io/acme/app-server:main",
-      clientImage: "ghcr.io/acme/app-client:main",
-    });
+    const fake = fakePlatform({ badServer: [NEW_SHA], serving: { server: null, client: null } });
     const result = await lib.runDeploy(fake.deps, fake.config, {
       targetSha: NEW_SHA,
       apps: ["server", "client"],
@@ -709,24 +740,35 @@ await checkAsync(
     assert.equal(result.ok, false);
     const text = result.errors.join("\n");
     assert.match(text, /nothing was rolled back/);
-    assert.match(text, /moving tag/);
-    assert.equal(fake.envs[SRV].SERVER_IMAGE, `ghcr.io/acme/app-server:${NEW_SHA}`);
+    assert.match(text, /first deploy/);
+    assert.equal(fake.liveSha("server"), NEW_SHA);
   },
 );
 
 await checkAsync(
-  "a token that cannot read the values is a hard failure, not a silent skip",
+  "a served commit whose image is gone from the registry is not a target",
   async () => {
-    const fake = fakePlatform({ badServer: [NEW_SHA], hideValues: true });
+    const fake = fakePlatform({ badServer: [NEW_SHA], built: [NEW_SHA] });
     const result = await lib.runDeploy(fake.deps, fake.config, {
       targetSha: NEW_SHA,
       apps: ["server", "client"],
       rollback: true,
     });
     assert.equal(result.ok, false);
-    assert.match(result.errors.join("\n"), /may not read variable values/);
+    assert.match(result.errors.join("\n"), /is not in the registry/);
   },
 );
+
+await checkAsync("a stale deploy secret is named, and nothing counts as deployed", async () => {
+  const fake = fakePlatform({ staleServerSecret: true });
+  const result = await lib.runDeploy(fake.deps, fake.config, {
+    targetSha: NEW_SHA,
+    apps: ["server", "client"],
+    rollback: false,
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.errors.join("\n"), /deploy secret is stale/);
+});
 
 await checkAsync("a rollback that fails its own gate is named, and never retried", async () => {
   const fake = fakePlatform({ badServer: [NEW_SHA, OLD_SHA] });
@@ -744,10 +786,10 @@ await checkAsync("a rollback that fails its own gate is named, and never retried
 });
 
 await checkAsync(
-  "a platform write that fails while restoring is named, and never retried",
+  "a registry or platform write that fails while restoring is named, and never retried",
   async () => {
-    // Four writes get the new pin in place and deployed; the fifth, which
-    // is the restore, fails.
+    // Two promotes and two webhooks get the new build live; the fifth
+    // write, which is the restore, fails.
     const fake = fakePlatform({ badServer: [NEW_SHA], breakWritesAfter: 4 });
     const result = await lib.runDeploy(fake.deps, fake.config, {
       targetSha: NEW_SHA,
@@ -755,7 +797,7 @@ await checkAsync(
       rollback: true,
     });
     assert.equal(result.ok, false);
-    assert.match(result.errors.join("\n"), /FAILED while pinning or deploying/);
+    assert.match(result.errors.join("\n"), /FAILED while promoting or deploying/);
   },
 );
 
@@ -779,16 +821,8 @@ await checkAsync("a migration the previous build cannot read moves only the clie
   assert.match(text, /web-api-url/);
   assert.match(text, /002-split-users\.ts/);
   assert.match(text, /refuse to start/);
-  assert.equal(
-    fake.envs[SRV].SERVER_IMAGE,
-    `ghcr.io/acme/app-server:${NEW_SHA}`,
-    "the server stays",
-  );
-  assert.equal(
-    fake.envs[CLI].CLIENT_IMAGE,
-    `ghcr.io/acme/app-client:${OLD_SHA}`,
-    "the client moves",
-  );
+  assert.equal(fake.liveSha("server"), NEW_SHA, "the server stays");
+  assert.equal(fake.liveSha("client"), OLD_SHA, "the client moves");
 });
 
 await checkAsync("an unreadable registry blocks the server rollback too", async () => {
@@ -803,10 +837,10 @@ await checkAsync("an unreadable registry blocks the server rollback too", async 
   });
   assert.equal(result.ok, false);
   assert.match(result.errors.join("\n"), /could not be compared/);
-  assert.equal(fake.envs[SRV].SERVER_IMAGE, `ghcr.io/acme/app-server:${NEW_SHA}`);
+  assert.equal(fake.liveSha("server"), NEW_SHA);
 });
 
-await checkAsync("without --rollback a failed gate leaves the new images pinned", async () => {
+await checkAsync("without --rollback a failed gate leaves the new images live", async () => {
   const fake = fakePlatform({ badServer: [NEW_SHA] });
   const result = await lib.runDeploy(fake.deps, fake.config, {
     targetSha: NEW_SHA,
@@ -815,16 +849,13 @@ await checkAsync("without --rollback a failed gate leaves the new images pinned"
   });
   assert.equal(result.ok, false);
   assert.match(result.errors.join("\n"), /no rollback was requested/);
-  assert.equal(fake.envs[SRV].SERVER_IMAGE, `ghcr.io/acme/app-server:${NEW_SHA}`);
+  assert.equal(fake.liveSha("server"), NEW_SHA);
 });
 
 await checkAsync(
   "deploying an older server past a migration is refused before anything changes",
   async () => {
-    const fake = fakePlatform({
-      serverImage: `ghcr.io/acme/app-server:${NEW_SHA}`,
-      clientImage: `ghcr.io/acme/app-client:${NEW_SHA}`,
-    });
+    const fake = fakePlatform({ serving: { server: NEW_SHA, client: NEW_SHA } });
     fake.deps.readRegistry = ((sha: string) => ({
       ok: true,
       registry:
@@ -841,21 +872,15 @@ await checkAsync(
     });
     assert.equal(result.ok, false);
     assert.match(result.errors.join("\n"), /refusing to deploy the server/);
-    assert.equal(
-      fake.envs[SRV].SERVER_IMAGE,
-      `ghcr.io/acme/app-server:${NEW_SHA}`,
-      "nothing changed",
-    );
+    assert.equal(fake.liveSha("server"), NEW_SHA, "nothing changed");
+    assert.equal(fake.webhooks.length, 0, "nothing was deployed");
   },
 );
 
 await checkAsync(
   "force-server deploys it anyway, for an operator who restored a dump",
   async () => {
-    const fake = fakePlatform({
-      serverImage: `ghcr.io/acme/app-server:${NEW_SHA}`,
-      clientImage: `ghcr.io/acme/app-client:${NEW_SHA}`,
-    });
+    const fake = fakePlatform({ serving: { server: NEW_SHA, client: NEW_SHA } });
     fake.deps.readRegistry = ((sha: string) => ({
       ok: true,
       registry:
@@ -884,6 +909,22 @@ await checkAsync("an abbreviated sha is refused before any platform call", async
   });
   assert.equal(result.ok, false);
   assert.match(result.errors.join("\n"), /not a full 40-character commit sha/);
+});
+
+check("the generated webhook helpers agree with hatchkit's own", () => {
+  const hook = { repository: "acme/app", branch: "main" };
+  assert.equal(lib.webhookBody(hook, NEW_SHA), renderDeployWebhookBody({ ...hook, sha: NEW_SHA }));
+  assert.equal(lib.signWebhook("k", "body"), signDeployWebhook("k", "body"));
+  for (const answer of [
+    JSON.stringify([{ status: "success", application_uuid: "u" }]),
+    JSON.stringify([{ status: "failed", message: "Deployments disabled.", application: "x" }]),
+    JSON.stringify([{ status: "failed", message: "Invalid signature.", application: "y" }]),
+    JSON.stringify([{ status: "skipped", message: "already queued" }]),
+    JSON.stringify([]),
+    "Nothing to do. No applications found.",
+  ]) {
+    assert.deepEqual(lib.webhookQueued(answer, "u"), deployWebhookQueued(answer, "u"), answer);
+  }
 });
 
 check("the generated lib mirrors the gate's check order", () => {

@@ -21,7 +21,15 @@ const SERVICE = process.env.HATCHKIT_KEYTAR_SERVICE ?? "hatchkit";
 /** Well-known secret keys used across the CLI. New secrets should add
  *  their key here so `clearAllSecrets` can reach them on reset. */
 export const SECRET_KEYS = {
+  /** The Coolify PROVISIONER token (root). Used only by hatchkit on
+   *  this machine; never copied into a project — CI deploys through
+   *  per-app webhook secrets instead (deploy/coolify-deploy-hook.ts). */
   coolifyToken: "coolify:token",
+  /** One Coolify application's manual-webhook HMAC key: the only
+   *  Coolify credential a project's CI holds, and it deploys that one
+   *  application. Kept here so sync can tell whether Coolify still holds
+   *  the value the repo was given. */
+  coolifyDeployHook: (appUuid: string) => `coolify:deploy-webhook:${appUuid}`,
   hetznerToken: "hetzner:token",
   dnsInwxPassword: "dns:inwx:password",
   dnsCloudflareToken: "dns:cloudflare:token",

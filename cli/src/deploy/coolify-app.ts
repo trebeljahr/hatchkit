@@ -1,13 +1,14 @@
 import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig, getDnsConfig } from "../config.js";
-import { readImageEnvDefaults } from "../scaffold/deploy-verification.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { composeServicesOf, validateComposeServices } from "../utils/compose.js";
 import type { ApplicationCreateInput } from "../utils/coolify-api.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { type PublicIps, discoverPublicIps } from "../utils/coolify-server-ips.js";
 import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
+import { DEPLOY_HOOK_WATCH_PATH } from "./coolify-deploy-hook.js";
+import { deployImageDefaults } from "./coolify.js";
 import { type CoolifyDeployApp, repoSlugFromRemote } from "./gh-actions-secrets.js";
 import { type RoutedApp, type RoutingPlan, type Topology, computeRoutingPlan } from "./routing.js";
 import { pushNativeOriginsToServerApps } from "./trusted-origins.js";
@@ -512,30 +513,28 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
 
   // ── 4b. Toggle Coolify's git-webhook auto-deploy.
   //
-  // Build-pipeline projects (GHA builds the image + calls Coolify's
-  // deploy webhook) want auto-deploy OFF. Otherwise every git push
-  // triggers Coolify to redeploy from a stale-or-absent GHCR image
-  // before the GHA build has produced the fresh one — surfaces as
-  // flaky deploys. Source-build projects keep the default ON.
+  // Build-pipeline projects (GHA builds the image, then signs the app's
+  // own deploy webhook) must not deploy on an ordinary push: Coolify
+  // would redeploy from a stale-or-absent GHCR image before the GHA
+  // build has produced the fresh one. Auto-deploy has to stay ON — the
+  // signed webhook refuses to deploy without it — so the gate is the
+  // watch path instead: only a payload naming DEPLOY_HOOK_WATCH_PATH
+  // deploys, and no commit ever touches it. The per-app secret itself is
+  // minted when the deploy secrets are pushed (setCoolifyDeploySecrets).
   //
-  // Best-effort: PATCH failure surfaces as a caveat (rare — the field
-  // is documented on every Coolify v4 build hatchkit supports), the
-  // create/reconcile above already succeeded, and the user can flip
-  // the toggle from the dashboard.
+  // Best-effort: a failure surfaces as a caveat; `hatchkit sync` sets it
+  // again.
   if (input.scaffoldBuildPipeline === true) {
-    const toggle = ora("Coolify: disabling git-webhook auto-deploy (GHA owns deploys)").start();
+    const toggle = ora("Coolify: limiting deploys to the signed webhook").start();
     try {
-      await api.updateApplication(appUuid, { isAutoDeployEnabled: false });
-      toggle.succeed("Coolify: auto-deploy off (GHA owns deploys)");
+      await api.updateDeployHook(appUuid, { watchPaths: DEPLOY_HOOK_WATCH_PATH });
+      toggle.succeed("Coolify: deploys only via the signed webhook (GHA owns deploys)");
     } catch (err) {
-      toggle.fail(`Coolify: couldn't disable auto-deploy: ${(err as Error).message}`);
+      toggle.fail(`Coolify: couldn't set the deploy watch path: ${(err as Error).message}`);
       caveats.push({
-        title: "Coolify auto-deploy left ON for a build-pipeline project",
-        reason: `PATCH is_auto_deploy_enabled=false failed: ${(err as Error).message}`,
-        recovery: [
-          `Open the Coolify app's Configuration page → Source → "Auto Deploy on Git Push" → toggle OFF.`,
-          `Or re-run: hatchkit adopt --resume`,
-        ],
+        title: "Coolify may deploy on every push for a build-pipeline project",
+        reason: `PATCH watch_paths failed: ${(err as Error).message}`,
+        recovery: [`Re-run: hatchkit sync`],
       });
     }
   }
@@ -560,7 +559,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
         // the app keeps running whatever `:main` resolved to. Seeding the
         // value the compose already defaults to changes nothing about
         // what runs; it just makes the key exist.
-        ...readImageEnvDefaults(input.projectDir),
+        ...deployImageDefaults(input.projectDir),
       });
       setEnv.succeed("Coolify: baseline env set");
     } catch (err) {

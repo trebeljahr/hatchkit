@@ -1,6 +1,6 @@
 /*
  * GitHub Actions secrets helpers shared by `hatchkit adopt`,
- * `hatchkit create` and `hatchkit sync`.
+ * `hatchkit create`, `hatchkit sync` and `hatchkit secrets isolate`.
  *
  * Those flows scaffold a GitHub Actions workflow that builds the
  * Docker image, pushes to GHCR, and triggers Coolify to redeploy.
@@ -8,72 +8,78 @@
  * push, otherwise the workflow's first run hits the "secret not
  * set — skipping deploy trigger" branch and silently no-ops.
  *
- * Which uuid secrets get pushed depends on the project's topology, and
- * the two sets are MUTUALLY EXCLUSIVE:
- *
- *   single-origin — ONE Coolify app runs the whole compose:
- *     COOLIFY_BASE_URL + COOLIFY_API_TOKEN + COOLIFY_RESOURCE_UUID +
- *     COOLIFY_WEBHOOK_URL (legacy fallback path).
- *
- *   split — TWO Coolify apps, `<name>-client` on the bare domain and
- *   `<name>-server` on api.<domain>:
- *     COOLIFY_BASE_URL + COOLIFY_API_TOKEN +
- *     COOLIFY_CLIENT_RESOURCE_UUID + COOLIFY_SERVER_RESOURCE_UUID.
- *
  * ---------------------------------------------------------------------
- * Why the paired names are back, and why they are spelled this way
+ * No Coolify API token in a repo
  * ---------------------------------------------------------------------
  *
- * The paired names were once pushed, then removed on the grounds that
- * they "never matched a real project layout in production". That
- * conclusion was wrong: a split project's CI has two apps to redeploy
- * and one uuid can only ever trigger one of them. Deploying them
+ * Every deploy secret pushed here is minted for ONE Coolify application:
+ * the HMAC key of its manual webhook, plus the non-secret values the
+ * signed payload has to name. Hatchkit's own Coolify token (root, the
+ * provisioner) never leaves the keychain — see
+ * deploy/coolify-deploy-hook.ts for why a Coolify token cannot be scoped
+ * any tighter than "every app on the host".
+ *
+ * `COOLIFY_API_TOKEN` / `COOLIFY_TOKEN` (the provisioner, as older
+ * hatchkit pushed it) and `COOLIFY_WEBHOOK_URL` (an `/api/v1/deploy`
+ * URL that only works with that token) are cleared — but only once the
+ * repo's workflows no longer read them, so a sync on a project whose
+ * workflow has not been converted yet does not stop its deploys.
+ * `hatchkit secrets isolate` converts the workflow and clears them in
+ * one go.
+ *
+ * Which per-app secrets get pushed depends on the project's topology,
+ * and the two sets are MUTUALLY EXCLUSIVE:
+ *
+ *   single-app — ONE Coolify app runs the whole deployment:
+ *     COOLIFY_RESOURCE_UUID, COOLIFY_DEPLOY_SECRET,
+ *     COOLIFY_DEPLOY_REPOSITORY, COOLIFY_DEPLOY_BRANCH.
+ *
+ *   split — `<name>-client` on the bare domain, `<name>-server` on
+ *   api.<domain>: the same four names with CLIENT_ / SERVER_ after
+ *   `COOLIFY_`, one set per app.
+ *
+ * Plus COOLIFY_BASE_URL for both.
+ *
+ * ---------------------------------------------------------------------
+ * Why the paired names are spelled `COOLIFY_<ROLE>_…`
+ * ---------------------------------------------------------------------
+ *
+ * A split project's CI has two apps to redeploy, and deploying them
  * separately is the whole point of the split — the server holds the
- * WebSocket connections, so a client-only change must not restart it
- * and drop every connected device's socket.
+ * WebSocket connections, so a client-only change must not restart it.
+ * `COOLIFY_<ROLE>_RESOURCE_UUID` (role in the middle) is what real
+ * checked-in workflows read. A brief intermediate revision pushed
+ * `COOLIFY_RESOURCE_UUID_<ROLE>`; any repo synced during that window has
+ * the role-suffixed names, so they are cleared as stale below.
  *
- * The spelling is `COOLIFY_<ROLE>_RESOURCE_UUID` (role in the middle),
- * because that is what real checked-in workflows read. A brief
- * intermediate revision pushed `COOLIFY_RESOURCE_UUID_<ROLE>` (role at
- * the end) and renamed the starter workflow to match. That inverted the
- * bug: the observation was that hatchkit never SET the names workflows
- * were reading, and the fix for that is to set them, not to rename the
- * workflows. Any repo synced during that window has the role-suffixed
- * names, so they are cleared as stale below.
- *
- * ---------------------------------------------------------------------
- * Why split does NOT also set COOLIFY_RESOURCE_UUID
- * ---------------------------------------------------------------------
- *
- * Setting it "additively for back-compat" looks free and is not. The
- * generated deploy job guards each step on its own secret, so a split
- * project with COOLIFY_RESOURCE_UUID (pointing at the bare-domain app,
- * i.e. the client) AND COOLIFY_CLIENT_RESOURCE_UUID fires two
- * concurrent `force=true` deploys of that same client app on every
- * push — a self-race, every time.
- *
- * So split pushes only the paired names and CLEARS a stale
- * COOLIFY_RESOURCE_UUID. The cost is that a split repo whose workflow
- * only knows COOLIFY_RESOURCE_UUID now deploys nothing rather than
- * silently deploying half of itself. That is the honest failure, and
- * `hatchkit doctor` reports it rather than papering over it.
+ * Split does NOT also set the unprefixed names: the generated deploy job
+ * guards each step on its own secret, so a split project holding both
+ * would fire two concurrent deploys of the client app on every push.
  *
  * Idempotent (`gh secret set` upserts, and the stale-secret cleanup
  * treats "not found" as success).
  */
 
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import { exec } from "../utils/exec.js";
+import {
+  type DeployHook,
+  PROVISIONER_DEPLOY_SECRET_NAMES,
+  TOKEN_ONLY_DEPLOY_SECRET_NAMES,
+  deployHookSecretNames,
+  ensureDeployHook,
+} from "./coolify-deploy-hook.js";
 
 /** A Coolify application the workflow should redeploy on push. */
 export interface CoolifyDeployApp {
   /** Coolify application uuid. */
   uuid: string;
   /** Which half of a `split` deployment this app is. Undefined for a
-   *  `single-origin` project, which has exactly one app and therefore
-   *  exactly one deploy trigger. */
+   *  single-app deployment, which has exactly one deploy trigger. */
   role?: "client" | "server";
 }
 
@@ -83,10 +89,16 @@ export interface CoolifyDeploySecretsInput {
   /** GitHub `<owner>/<repo>` slug. */
   repoSlug: string;
   /** One or more apps to wire deploy hooks for. Pass a single
-   *  unlabelled entry for a `single-origin` project; pass two entries
-   *  carrying `role` for a `split` one. The first entry is always the
-   *  app that owns the bare domain. */
+   *  unlabelled entry for a single-app project; pass two entries
+   *  carrying `role` for a `split` one. */
   apps: CoolifyDeployApp[];
+  /** Mint fresh per-app deploy secrets even when the current ones are
+   *  in sync — the per-project revocation path. */
+  rotate?: boolean;
+  /** Clear the provisioner-token secrets even though a workflow still
+   *  reads them. `secrets isolate` passes this after rewriting the
+   *  workflow; everything else leaves it off. */
+  clearProvisionerSecrets?: boolean;
 }
 
 export interface CoolifyDeploySecretsResult {
@@ -95,19 +107,24 @@ export interface CoolifyDeploySecretsResult {
    *  the success log line. */
   pushed: string[];
   /** Names of stale secrets removed because they belong to the topology
-   *  this project is NOT in (or to the superseded role-suffixed
-   *  spelling). Empty when there was nothing to clean up. */
+   *  this project is NOT in, to a superseded spelling, or to the
+   *  provisioner token. Empty when there was nothing to clean up. */
   removed: string[];
+  /** Provisioner-token secrets left in place because a workflow still
+   *  reads them. Non-empty means the repo is not isolated yet. */
+  keptProvisioner: string[];
 }
 
 /** Secret name carrying a split half's application uuid. */
 export function resourceUuidSecretName(role: "client" | "server"): string {
-  return `COOLIFY_${role.toUpperCase()}_RESOURCE_UUID`;
+  return deployHookSecretNames(role).uuid;
 }
 
-/** Canonical paired names — set under `split`, cleared under
- *  `single-origin`. */
-const PAIRED_UUID_SECRETS = [resourceUuidSecretName("client"), resourceUuidSecretName("server")];
+const namesOf = (role?: "client" | "server"): string[] =>
+  Object.values(deployHookSecretNames(role));
+
+/** Names set under `split`, cleared under single-app. */
+const PAIRED_SECRETS = [...namesOf("client"), ...namesOf("server")];
 
 /** Names from the superseded role-suffixed spelling. Never set any
  *  more; always cleared, so a repo synced during that window converges
@@ -119,62 +136,59 @@ const LEGACY_ROLE_SUFFIXED_SECRETS = [
   "COOLIFY_WEBHOOK_URL_SERVER",
 ];
 
+/** Everything that only works with the provisioner token. */
+export const PROVISIONER_SECRETS: readonly string[] = [
+  ...PROVISIONER_DEPLOY_SECRET_NAMES,
+  ...TOKEN_ONLY_DEPLOY_SECRET_NAMES,
+];
+
 /** Which secrets a project's topology calls for, and which stale ones
  *  should be cleared. Pure — no network, no config lookup — so the
  *  single-vs-split decision is unit-testable without a `gh` binary or a
  *  Coolify install. {@link setCoolifyDeploySecrets} is the I/O wrapper
- *  around it. */
+ *  around it.
+ *
+ *  The provisioner-token names are always in `staleToRemove`; the I/O
+ *  wrapper decides whether it is safe to remove them yet. */
 export function computeCoolifyDeploySecrets(input: {
-  apps: CoolifyDeployApp[];
+  hooks: DeployHook[];
   coolifyUrl: string;
-  coolifyToken: string;
 }): { secrets: Record<string, string>; staleToRemove: string[] } {
-  // The API-style triple lets the workflow call Coolify directly with a
-  // per-resource uuid + bearer token.
-  const baseUrl = input.coolifyUrl.replace(/\/$/, "");
   const secrets: Record<string, string> = {
-    COOLIFY_BASE_URL: baseUrl,
-    COOLIFY_API_TOKEN: input.coolifyToken,
-    // Alias kept for adopt's simpler `deploy.yml` template.
-    COOLIFY_TOKEN: input.coolifyToken,
+    COOLIFY_BASE_URL: input.coolifyUrl.replace(/\/$/, ""),
   };
 
-  // A split project contributes one paired secret per half. An app with
-  // no role is single-origin. Sorted so the emitted secret order (and
-  // therefore the log line) is stable regardless of the order Coolify
-  // happened to list the applications in.
-  const roled = input.apps
-    .filter((a): a is CoolifyDeployApp & { role: "client" | "server" } => a.role !== undefined)
+  // A split project contributes one set per half. Sorted so the emitted
+  // secret order (and therefore the log line) is stable regardless of
+  // the order Coolify happened to list the applications in.
+  const roled = input.hooks
+    .filter((h): h is DeployHook & { role: "client" | "server" } => h.role !== undefined)
     .sort((a, b) => a.role.localeCompare(b.role));
-  for (const app of roled) {
-    secrets[resourceUuidSecretName(app.role)] = app.uuid;
-  }
+  const put = (hook: DeployHook, role?: "client" | "server") => {
+    const n = deployHookSecretNames(role);
+    secrets[n.uuid] = hook.uuid;
+    secrets[n.secret] = hook.secret;
+    secrets[n.repository] = hook.repository;
+    secrets[n.branch] = hook.branch;
+  };
 
   if (roled.length > 0) {
-    // Split. No COOLIFY_RESOURCE_UUID / COOLIFY_WEBHOOK_URL — see the
-    // module header: keeping them would double-deploy the client on
-    // every push.
+    for (const hook of roled) put(hook, hook.role);
+    // Split. No unprefixed names — see the module header: keeping them
+    // would double-deploy the client on every push.
     return {
       secrets,
-      staleToRemove: [
-        "COOLIFY_RESOURCE_UUID",
-        "COOLIFY_WEBHOOK_URL",
-        ...LEGACY_ROLE_SUFFIXED_SECRETS,
-      ],
+      staleToRemove: [...namesOf(), ...LEGACY_ROLE_SUFFIXED_SECRETS, ...PROVISIONER_SECRETS],
     };
   }
 
-  // Single-origin. One uuid, plus the webhook as the fallback path for
-  // workflows predating the bearer-token step.
-  const primary = input.apps[0];
-  secrets.COOLIFY_WEBHOOK_URL = `${baseUrl}/api/v1/deploy?uuid=${primary.uuid}`;
-  secrets.COOLIFY_RESOURCE_UUID = primary.uuid;
+  put(input.hooks[0]);
   // Clear paired secrets left behind by a split that was reverted.
   // Otherwise they keep firing deploys against apps that no longer
   // exist.
   return {
     secrets,
-    staleToRemove: [...PAIRED_UUID_SECRETS, ...LEGACY_ROLE_SUFFIXED_SECRETS],
+    staleToRemove: [...PAIRED_SECRETS, ...LEGACY_ROLE_SUFFIXED_SECRETS, ...PROVISIONER_SECRETS],
   };
 }
 
@@ -190,30 +204,71 @@ export function coolifyDeploySecretNames(apps: CoolifyDeployApp[]): string[] {
   if (apps.length === 0) return [];
   // Values are irrelevant to the key set; placeholders keep this pure.
   return Object.keys(
-    computeCoolifyDeploySecrets({ apps, coolifyUrl: "https://x", coolifyToken: "x" }).secrets,
+    computeCoolifyDeploySecrets({
+      hooks: apps.map((a) => ({ ...a, secret: "x", repository: "x/x", branch: "x" })),
+      coolifyUrl: "https://x",
+    }).secrets,
   );
 }
 
-/** Push the secrets that the scaffolded GH Actions workflows need
- *  to talk to Coolify. Best-effort — failures don't roll anything
- *  back; the caller gets a copy-pasteable manual recipe instead. */
+/** Workflow files (repo-relative) that still read one of `names`. */
+export function workflowsReading(projectDir: string, names: readonly string[]): string[] {
+  const dir = join(projectDir, ".github", "workflows");
+  if (!existsSync(dir)) return [];
+  const hits: string[] = [];
+  for (const file of readdirSync(dir)) {
+    if (!/\.ya?ml$/.test(file)) continue;
+    const text = readFileSync(join(dir, file), "utf8");
+    if (names.some((n) => new RegExp(`\\bsecrets\\.${n}\\b`).test(text))) {
+      hits.push(`.github/workflows/${file}`);
+    }
+  }
+  return hits;
+}
+
+/** Push the per-app deploy secrets the scaffolded GH Actions workflows
+ *  need, minting (or adopting) each app's hook on Coolify first.
+ *  Best-effort — failures don't roll anything back; the caller gets a
+ *  copy-pasteable manual recipe instead. */
 export async function setCoolifyDeploySecrets(
   input: CoolifyDeploySecretsInput,
 ): Promise<CoolifyDeploySecretsResult> {
+  const none = { ok: false, pushed: [], removed: [], keptProvisioner: [] };
   const cfg = await getCoolifyConfig();
   if (!cfg) {
     console.log(chalk.dim("  · Coolify not configured — skipping Actions secret push."));
-    return { ok: false, pushed: [], removed: [] };
+    return none;
   }
   if (input.apps.length === 0) {
     console.log(chalk.dim("  · No Coolify apps to wire deploy hooks for — skipping."));
-    return { ok: false, pushed: [], removed: [] };
+    return none;
+  }
+
+  const { CoolifyApi } = await import("../utils/coolify-api.js");
+  const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+  const hooks: DeployHook[] = [];
+  const hookSpinner = ora("Coolify: per-app deploy hooks").start();
+  try {
+    for (const app of input.apps) {
+      const { hook, changes } = await ensureDeployHook(api, app.uuid, {
+        role: app.role,
+        rotate: input.rotate,
+      });
+      hooks.push(hook);
+      if (changes.length > 0) {
+        hookSpinner.info(`Coolify: ${app.role ?? "app"} ${app.uuid} — ${changes.join(", ")}`);
+        hookSpinner.start("Coolify: per-app deploy hooks");
+      }
+    }
+    hookSpinner.succeed(`Coolify: deploy hooks ready for ${hooks.length} app(s)`);
+  } catch (err) {
+    hookSpinner.fail(`Coolify: deploy hook setup failed — ${(err as Error).message}`);
+    return none;
   }
 
   const { secrets, staleToRemove } = computeCoolifyDeploySecrets({
-    apps: input.apps,
+    hooks,
     coolifyUrl: cfg.url,
-    coolifyToken: cfg.token,
   });
   const names = Object.keys(secrets);
   const spinner = ora(
@@ -225,24 +280,35 @@ export async function setCoolifyDeploySecrets(
     }
   } catch (err) {
     spinner.fail(`GitHub: setting secrets failed — ${(err as Error).message}`);
-    // Print names only. The values include COOLIFY_API_TOKEN, and a
-    // failed push is not a reason to spill it into the terminal (and
-    // from there into scrollback, screen shares and pasted bug
-    // reports).
+    // Print names only. The values include the deploy secrets, and a
+    // failed push is not a reason to spill them into the terminal (and
+    // from there into scrollback, screen shares and pasted bug reports).
     console.log(
       chalk.dim(
-        `  Set them manually — \`gh secret set <NAME> --repo ${input.repoSlug}\` reads the value from stdin:\n` +
+        `  Re-run once \`gh\` can write secrets on ${input.repoSlug}. Names:\n` +
           names.map((n) => `    ${n}`).join("\n"),
       ),
     );
-    return { ok: false, pushed: [], removed: [] };
+    return none;
   }
 
-  // Clear secrets belonging to the other topology. Best-effort: a token
-  // without the scope to delete secrets still got the push it came for,
-  // so a failure here degrades to a note rather than failing the call.
+  // The provisioner-token names stay while a checked-in workflow still
+  // reads them: removing them first would stop the project's deploys
+  // until the workflow is converted. They are the whole point of this
+  // module, so the caller hears about it.
+  const stillRead = input.clearProvisionerSecrets
+    ? []
+    : workflowsReading(input.projectDir, PROVISIONER_SECRETS);
+  const keepProvisioner = stillRead.length > 0;
   const removed: string[] = [];
+  const keptProvisioner: string[] = [];
   for (const name of staleToRemove) {
+    if (keepProvisioner && PROVISIONER_SECRETS.includes(name)) {
+      if (await ghSecretExists(input.projectDir, input.repoSlug, name)) keptProvisioner.push(name);
+      continue;
+    }
+    // Best-effort: a token without the scope to delete secrets still got
+    // the push it came for, so a failure here degrades to a note.
     try {
       if ((await ghSecretDelete(input.repoSlug, name)) === "done") removed.push(name);
     } catch (err) {
@@ -252,9 +318,17 @@ export async function setCoolifyDeploySecrets(
 
   spinner.succeed(
     `GitHub: Actions secrets set (${names.join(", ")})` +
-      (removed.length ? ` — removed stale ${removed.join(", ")}` : ""),
+      (removed.length ? ` — removed ${removed.join(", ")}` : ""),
   );
-  return { ok: true, pushed: names, removed };
+  if (keptProvisioner.length > 0) {
+    console.log(
+      chalk.yellow(
+        `  ! ${input.repoSlug} still holds ${keptProvisioner.join(", ")} (hatchkit's Coolify token) because\n` +
+          `    ${stillRead.join(", ")} still read${stillRead.length === 1 ? "s" : ""} it. Run \`hatchkit secrets isolate\` to convert the workflow and remove it.`,
+      ),
+    );
+  }
+  return { ok: true, pushed: names, removed, keptProvisioner };
 }
 
 export interface CloudflareDeploySecretsInput {
@@ -336,10 +410,10 @@ export async function setCloudflareDeploySecrets(
 /** Upsert one repo-level Actions secret.
  *
  *  The value goes in on STDIN, not `--body`. Argv is world-readable on
- *  both Linux and macOS (`ps aux`, /proc/<pid>/cmdline), and one of the
- *  values here is COOLIFY_API_TOKEN — a token with full control of the
- *  user's Coolify install. `gh secret set` reads the value from stdin
- *  when `--body` is absent, which keeps it out of the process list.
+ *  both Linux and macOS (`ps aux`, /proc/<pid>/cmdline), and the values
+ *  here include deploy secrets and Cloudflare tokens. `gh secret set`
+ *  reads the value from stdin when `--body` is absent, which keeps it
+ *  out of the process list.
  *
  *  `silent` so a non-zero exit doesn't let exec() echo a stderr line
  *  that may quote the value back; the throw below carries the message. */

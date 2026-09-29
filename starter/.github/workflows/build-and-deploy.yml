@@ -140,153 +140,123 @@ jobs:
             ghcr.io/${{ github.repository }}-client:main
             ghcr.io/${{ github.repository }}-client:${{ github.sha }}
 
-  # Deploy job. Which triggers fire depends on the project's deployment
-  # topology (`topology` in .hatchkit.json). The two secret sets are
-  # mutually exclusive — hatchkit sets one and clears the other:
+  # Deploy job. It holds no Coolify API token: the promote step moves
+  # the `:live` tag in GHCR with this job's GITHUB_TOKEN, and the deploy
+  # step signs a webhook with each app's own deploy secret, which can
+  # deploy that one app and nothing else. hatchkit mints those secrets
+  # (`hatchkit sync`, `hatchkit secrets isolate`).
   #
-  #   single-origin  ONE Coolify app running a dockercompose that pulls
-  #                  both the -server and -client images. Only
-  #                  COOLIFY_RESOURCE_UUID is set, so only the first
-  #                  step runs.
-  #   split          TWO Coolify apps. COOLIFY_SERVER_RESOURCE_UUID and
-  #                  COOLIFY_CLIENT_RESOURCE_UUID are set and
-  #                  COOLIFY_RESOURCE_UUID is cleared, so the two
-  #                  per-half steps run and the first one does not.
+  # Which apps get deployed depends on the project's topology
+  # (`topology` in .hatchkit.json). The two secret sets are mutually
+  # exclusive — hatchkit sets one and clears the other:
   #
-  # Every step is guarded on its own secret being non-empty, so a repo
-  # that only ever had the single-app secret keeps working unchanged.
+  #   single-origin  ONE Coolify app pulling both the -server and -client
+  #                  images. COOLIFY_RESOURCE_UUID + COOLIFY_DEPLOY_*.
+  #   split          TWO Coolify apps. COOLIFY_SERVER_* and COOLIFY_CLIENT_*
+  #                  are set and the unprefixed ones are cleared.
   #
-  # Why split does NOT also set COOLIFY_RESOURCE_UUID: it would point at
-  # the bare-domain app (the client), which COOLIFY_CLIENT_RESOURCE_UUID
-  # already covers. Both steps are independently guarded, so setting
-  # both fires two concurrent force-deploys of the same client app on
-  # every push.
+  # Why split does NOT also set the unprefixed set: it would point at the
+  # bare-domain app (the client), which the CLIENT_ set already covers, so
+  # every push would deploy the client twice.
   deploy:
     runs-on: ubuntu-latest
     needs: [build-server, build-client]
     steps:
-      # Pin each app to the IMMUTABLE tag before deploying it.
+      # Point `:live` at the images this run built. Every Coolify app
+      # pulls `:live` (hatchkit sets that when it wires the app), so
+      # this is what decides which build the deploy below starts — the
+      # immutable `:<sha>` tag, re-published under the name the apps
+      # read. It uses this job's own GITHUB_TOKEN (`packages: write`),
+      # which can write this repository's packages and nothing else; no
+      # Coolify credential is involved.
       #
-      # The compose files default to `:main`, and Docker keeps whatever
-      # image it already has for a mutable tag. That means Coolify can
-      # start the PREVIOUS build while ghcr's `main`, the Coolify
-      # dashboard and this workflow all report the new commit — a client
-      # migrated to a new API host keeps calling the old one, and every
-      # status surface says the deploy succeeded. `pull_policy: always`
-      # in the compose files covers the `:main` default; pinning the sha
-      # tag here removes the ambiguity entirely, and makes rollback "set
-      # this variable to an older sha".
-      #
-      # POST *and* PATCH, in that order: Coolify's env API only UPDATES
-      # an existing variable — a PATCH for a key that does not exist is
-      # accepted with a 200 and silently does nothing. POST creates it
-      # and fails once it exists. Neither alone is enough, so both run
-      # and the right one wins. (`is_build_time` is rejected on POST with
-      # "This field is not allowed"; key/value/is_preview is accepted.)
-      # hatchkit creates both variables when it provisions the apps, so
-      # in practice the PATCH is the one that does the work.
-      #
-      # Which uuid secrets are set follows the project's topology — see
-      # the deploy-step comments below. A single-origin app runs one
-      # compose declaring both services, so it carries both variables.
-      #
-      # A Docker Image app (hatchkit's `image` runtime) has no compose
-      # file to interpolate: it pulls `docker_registry_image_tag`, so
-      # that is the field pinned for it. Image apps are the ones Coolify
-      # deploys as rolling updates — the old container keeps serving
-      # until the new one passes its health check. The build pack is
-      # read per app, so this step is right before and after
-      # `hatchkit migrate-runtime` moves a project across.
-      - name: Pin image tags to this commit
+      # A rollback is the same step with an older sha.
+      - name: Promote this commit's images to :live
         env:
           COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
-          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
-          COOLIFY_RESOURCE_UUID: ${{ secrets.COOLIFY_RESOURCE_UUID }}
-          COOLIFY_SERVER_RESOURCE_UUID: ${{ secrets.COOLIFY_SERVER_RESOURCE_UUID }}
-          COOLIFY_CLIENT_RESOURCE_UUID: ${{ secrets.COOLIFY_CLIENT_RESOURCE_UUID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         if: env.COOLIFY_BASE_URL != ''
         run: |
           set -euo pipefail
-          SERVER_IMAGE="ghcr.io/${{ github.repository }}-server:${{ github.sha }}"
-          CLIENT_IMAGE="ghcr.io/${{ github.repository }}-client:${{ github.sha }}"
-
-          pin() { # uuid key value
-            # Only `.build_pack` is read out of the response: the same GET
-            # returns the interpolated compose, secrets included.
-            build_pack=$(curl -fsSL "$COOLIFY_BASE_URL/api/v1/applications/$1" \
-              -H "Authorization: Bearer $COOLIFY_API_TOKEN" | jq -r '.build_pack // empty')
-            if [ "$build_pack" = "dockerimage" ]; then
-              curl -fsSL -o /dev/null -X PATCH \
-                "$COOLIFY_BASE_URL/api/v1/applications/$1" \
-                -H "Authorization: Bearer $COOLIFY_API_TOKEN" \
-                -H 'Content-Type: application/json' \
-                -d "{\"docker_registry_image_tag\":\"${{ github.sha }}\"}"
-              echo "pinned image tag ${{ github.sha }} on $1"
-              return
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for half in server client; do
+            image="ghcr.io/${{ github.repository }}-$half"
+            if ! docker buildx imagetools inspect "$image:${{ github.sha }}" >/dev/null 2>&1; then
+              echo "no $image:${{ github.sha }} — this project has no $half image"
+              continue
             fi
-            body="{\"key\":\"$2\",\"value\":\"$3\",\"is_preview\":false}"
-            curl -fsS -o /dev/null -X POST \
-              "$COOLIFY_BASE_URL/api/v1/applications/$1/envs" \
-              -H "Authorization: Bearer $COOLIFY_API_TOKEN" \
-              -H 'Content-Type: application/json' -d "$body" || true
-            curl -fsSL -o /dev/null -X PATCH \
-              "$COOLIFY_BASE_URL/api/v1/applications/$1/envs" \
-              -H "Authorization: Bearer $COOLIFY_API_TOKEN" \
-              -H 'Content-Type: application/json' -d "$body"
-            echo "pinned $2 on $1"
-          }
+            docker buildx imagetools create --tag "$image:live" "$image:${{ github.sha }}"
+            echo "promoted $image:${{ github.sha }} to :live"
+          done
 
-          if [ -n "${COOLIFY_RESOURCE_UUID:-}" ]; then
-            pin "$COOLIFY_RESOURCE_UUID" SERVER_IMAGE "$SERVER_IMAGE"
-            pin "$COOLIFY_RESOURCE_UUID" CLIENT_IMAGE "$CLIENT_IMAGE"
-          fi
-          if [ -n "${COOLIFY_SERVER_RESOURCE_UUID:-}" ]; then
-            pin "$COOLIFY_SERVER_RESOURCE_UUID" SERVER_IMAGE "$SERVER_IMAGE"
-          fi
-          if [ -n "${COOLIFY_CLIENT_RESOURCE_UUID:-}" ]; then
-            pin "$COOLIFY_CLIENT_RESOURCE_UUID" CLIENT_IMAGE "$CLIENT_IMAGE"
-          fi
-
-      - name: Deploy via Coolify API
+      # Tell Coolify to deploy. There is no Coolify API token here: each
+      # app has its own webhook secret (hatchkit mints it), and a `push`
+      # payload signed with it queues a deploy of that one app — it can
+      # read nothing and touch no other app. The payload names
+      # `.hatchkit/deploy-webhook`, the app's only watch path, so an ordinary
+      # push that reaches Coolify through its GitHub App never deploys a
+      # build that does not exist yet; only this step does.
+      #
+      # Which apps: COOLIFY_RESOURCE_UUID for a single-app project, or
+      # COOLIFY_SERVER_/COOLIFY_CLIENT_RESOURCE_UUID for a split one.
+      # hatchkit sets one set and clears the other.
+      - name: Deploy via signed Coolify webhook
         env:
           COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
           COOLIFY_RESOURCE_UUID: ${{ secrets.COOLIFY_RESOURCE_UUID }}
-          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
-        if: env.COOLIFY_BASE_URL != '' && env.COOLIFY_RESOURCE_UUID != ''
-        run: |
-          curl -fsSL -X POST \
-            "$COOLIFY_BASE_URL/api/v1/deploy?uuid=$COOLIFY_RESOURCE_UUID&force=true" \
-            -H "Authorization: Bearer $COOLIFY_API_TOKEN"
-
-      # split topology only — unset (and skipped) for single-origin.
-      - name: Deploy server app via Coolify API (split topology)
-        env:
-          COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
+          COOLIFY_DEPLOY_SECRET: ${{ secrets.COOLIFY_DEPLOY_SECRET }}
+          COOLIFY_DEPLOY_REPOSITORY: ${{ secrets.COOLIFY_DEPLOY_REPOSITORY }}
+          COOLIFY_DEPLOY_BRANCH: ${{ secrets.COOLIFY_DEPLOY_BRANCH }}
           COOLIFY_SERVER_RESOURCE_UUID: ${{ secrets.COOLIFY_SERVER_RESOURCE_UUID }}
-          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
-        if: env.COOLIFY_BASE_URL != '' && env.COOLIFY_SERVER_RESOURCE_UUID != ''
-        run: |
-          curl -fsSL -X POST \
-            "$COOLIFY_BASE_URL/api/v1/deploy?uuid=$COOLIFY_SERVER_RESOURCE_UUID&force=true" \
-            -H "Authorization: Bearer $COOLIFY_API_TOKEN"
-
-      - name: Deploy client app via Coolify API (split topology)
-        env:
-          COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
+          COOLIFY_SERVER_DEPLOY_SECRET: ${{ secrets.COOLIFY_SERVER_DEPLOY_SECRET }}
+          COOLIFY_SERVER_DEPLOY_REPOSITORY: ${{ secrets.COOLIFY_SERVER_DEPLOY_REPOSITORY }}
+          COOLIFY_SERVER_DEPLOY_BRANCH: ${{ secrets.COOLIFY_SERVER_DEPLOY_BRANCH }}
           COOLIFY_CLIENT_RESOURCE_UUID: ${{ secrets.COOLIFY_CLIENT_RESOURCE_UUID }}
-          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
-        if: env.COOLIFY_BASE_URL != '' && env.COOLIFY_CLIENT_RESOURCE_UUID != ''
+          COOLIFY_CLIENT_DEPLOY_SECRET: ${{ secrets.COOLIFY_CLIENT_DEPLOY_SECRET }}
+          COOLIFY_CLIENT_DEPLOY_REPOSITORY: ${{ secrets.COOLIFY_CLIENT_DEPLOY_REPOSITORY }}
+          COOLIFY_CLIENT_DEPLOY_BRANCH: ${{ secrets.COOLIFY_CLIENT_DEPLOY_BRANCH }}
+        if: env.COOLIFY_BASE_URL != ''
         run: |
-          curl -fsSL -X POST \
-            "$COOLIFY_BASE_URL/api/v1/deploy?uuid=$COOLIFY_CLIENT_RESOURCE_UUID&force=true" \
-            -H "Authorization: Bearer $COOLIFY_API_TOKEN"
-
-      - name: Deploy via webhook (fallback)
-        env:
-          COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
-          COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK_URL }}
-        if: env.COOLIFY_BASE_URL == '' && env.COOLIFY_WEBHOOK_URL != ''
-        run: curl -fsSL "$COOLIFY_WEBHOOK_URL"
+          set -euo pipefail
+          deployed=0
+          deploy() { # label, secret-name prefix
+            local uuid_var="${2}RESOURCE_UUID" secret_var="${2}DEPLOY_SECRET"
+            local repo_var="${2}DEPLOY_REPOSITORY" branch_var="${2}DEPLOY_BRANCH"
+            local uuid="${!uuid_var:-}" secret="${!secret_var:-}"
+            local repo="${!repo_var:-}" branch="${!branch_var:-}"
+            [ -n "$uuid" ] || return 0
+            if [ -z "$secret" ] || [ -z "$repo" ] || [ -z "$branch" ]; then
+              echo "::error::${2}DEPLOY_SECRET/_REPOSITORY/_BRANCH are not set — run \`hatchkit sync\` or \`hatchkit secrets isolate\`."
+              exit 1
+            fi
+            local body sig answer
+            body=$(jq -cn --arg ref "refs/heads/$branch" --arg sha "$GITHUB_SHA" --arg repo "$repo" \
+              '{ref: $ref, after: $sha, repository: {full_name: $repo}, commits: [{id: $sha, added: [], removed: [], modified: [".hatchkit/deploy-webhook"]}]}')
+            sig=$(printf '%s' "$body" | HOOK_SECRET="$secret" node -e \
+              'process.stdout.write(require("node:crypto").createHmac("sha256", process.env.HOOK_SECRET).update(require("node:fs").readFileSync(0)).digest("hex"))')
+            answer=$(curl -fsS -X POST "$COOLIFY_BASE_URL/webhooks/source/github/events/manual" \
+              -H 'Content-Type: application/json' -H 'X-GitHub-Event: push' \
+              -H "X-Hub-Signature-256: sha256=$sig" --data-binary "$body")
+            if printf '%s' "$answer" | jq -e --arg uuid "$uuid" \
+              'type == "array" and (any(.[]; .application_uuid == $uuid and .status == "success") or any(.[]; .status == "skipped"))' \
+              >/dev/null 2>&1; then
+              echo "deploy queued for the $1 app ($uuid)"
+              deployed=$((deployed + 1))
+            else
+              # Other apps on the same repo answer "Invalid signature.";
+              # they are left out so a public log names only this one.
+              detail=$(printf '%s' "$answer" | jq -c '[.[]? | select(.message != "Invalid signature.") | {status, message}]' 2>/dev/null || printf '%s' "$answer" | head -c 200)
+              echo "::error::Coolify did not queue a deploy of the $1 app: $detail"
+              exit 1
+            fi
+          }
+          deploy app COOLIFY_
+          deploy server COOLIFY_SERVER_
+          deploy client COOLIFY_CLIENT_
+          if [ "$deployed" -eq 0 ]; then
+            echo "::error::COOLIFY_BASE_URL is set but no COOLIFY_*RESOURCE_UUID is — nothing was deployed."
+            exit 1
+          fi
 
       # Everything above only proves Coolify ACCEPTED a request. This
       # proves the deployed artefacts are the ones this run built.
@@ -318,10 +288,9 @@ jobs:
       - name: Verify the deployment is actually live
         env:
           COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
-          COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK_URL }}
           HATCHKIT_WEB_URL: ${{ vars.HATCHKIT_WEB_URL }}
           HATCHKIT_API_URL: ${{ vars.HATCHKIT_API_URL }}
-        if: env.COOLIFY_BASE_URL != '' || env.COOLIFY_WEBHOOK_URL != ''
+        if: env.COOLIFY_BASE_URL != ''
         run: |
           set -uo pipefail
           SHA='${{ github.sha }}'
@@ -430,10 +399,9 @@ jobs:
       - name: Verify native clients can sign in
         env:
           COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
-          COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK_URL }}
           HATCHKIT_API_URL: ${{ vars.HATCHKIT_API_URL }}
           HATCHKIT_NATIVE_ORIGINS: ${{ vars.HATCHKIT_NATIVE_ORIGINS }}
-        if: env.COOLIFY_BASE_URL != '' || env.COOLIFY_WEBHOOK_URL != ''
+        if: env.COOLIFY_BASE_URL != ''
         run: |
           set -uo pipefail
           API="${HATCHKIT_API_URL:-}"

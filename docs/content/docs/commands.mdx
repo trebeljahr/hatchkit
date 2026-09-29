@@ -466,8 +466,9 @@ directory. The steps:
    hand-written Traefik labels, and adds a health check.
 3. Deploys the new app while the old one serves, then checks it through
    Traefik on a private verification hostname.
-4. Stops the old app, points the repo's `COOLIFY_*_RESOURCE_UUID` secret at
-   the new one, and records `"coolifyRuntime": "image"` in `.hatchkit.json`.
+4. Stops the old app, points the repo's `COOLIFY_*_RESOURCE_UUID` secret (and,
+   on a repo using signed deploys, the new app's own deploy secret) at the new
+   one, and records `"coolifyRuntime": "image"` in `.hatchkit.json`.
 
 A failure before step 4 leaves the old app serving, with only the rename
 undone. Every step is recorded under the hatchkit config directory, so

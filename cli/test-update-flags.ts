@@ -40,7 +40,8 @@ const { runUpdate } = await import("./src/scaffold/update.js");
 const { STATIC_EXPORT_MARKER } = await import("./src/scaffold/starter-files.js");
 const {
   DEPLOY_WORKFLOW_REL_PATH,
-  WORKFLOW_PIN_STEP,
+  WORKFLOW_PROMOTE_STEP,
+  WORKFLOW_SIGNED_DEPLOY_STEP,
   WORKFLOW_VERIFY_STEP,
   deployVerificationRetrofits,
 } = await import("./src/scaffold/deploy-verification.js");
@@ -168,12 +169,30 @@ await withProject("dry-run", async (dir) => {
 // showed it — the first copy had already written the file — but a dry
 // run on a project scaffolded before the gate rewrote its workflow.
 await withProject("dry-run-pre-gate-workflow", async (dir) => {
-  // The starter's workflow minus its pin and verify steps is what a
-  // project scaffolded before the gate carries.
+  // The starter's workflow minus its promote and verify steps, and with
+  // the token-driven deploy steps it had then, is what a project
+  // scaffolded before the gate carries.
   const path = join(dir, DEPLOY_WORKFLOW_REL_PATH);
   const starterWorkflow = readFileSync(join(STARTER, DEPLOY_WORKFLOW_REL_PATH), "utf-8");
+  const legacyDeploy = [
+    "      - name: Deploy via Coolify API",
+    "        env:",
+    "          COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}",
+    "          COOLIFY_RESOURCE_UUID: ${{ secrets.COOLIFY_RESOURCE_UUID }}",
+    "          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}",
+    "        if: env.COOLIFY_BASE_URL != '' && env.COOLIFY_RESOURCE_UUID != ''",
+    '        run: curl -fsSL -X POST "$COOLIFY_BASE_URL/api/v1/deploy?uuid=$COOLIFY_RESOURCE_UUID"',
+    "",
+    "      - name: Deploy via webhook (fallback)",
+    "        env:",
+    "          COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK_URL }}",
+    "        if: env.COOLIFY_WEBHOOK_URL != ''",
+    '        run: curl -fsSL "$COOLIFY_WEBHOOK_URL"',
+    "",
+  ].join("\n");
   const preGate = starterWorkflow
-    .replace(`${WORKFLOW_PIN_STEP}\n`, "")
+    .replace(`${WORKFLOW_PROMOTE_STEP}\n`, "")
+    .replace(WORKFLOW_SIGNED_DEPLOY_STEP, legacyDeploy)
     .replace(`\n\n${WORKFLOW_VERIFY_STEP.replace(/\n+$/, "")}\n`, "");
   writeFileSync(path, preGate, "utf-8");
   const manifest = JSON.parse(readFileSync(join(dir, ".hatchkit.json"), "utf-8"));
@@ -189,8 +208,8 @@ await withProject("dry-run-pre-gate-workflow", async (dir) => {
   });
   return [
     [
-      "the fixture lacks the pin and verify steps",
-      !preGate.includes("Pin image tags") &&
+      "the fixture lacks the promote and verify steps",
+      !preGate.includes("- name: Promote this commit") &&
         !preGate.includes("Verify the deployment is actually live"),
     ],
     [

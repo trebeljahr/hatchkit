@@ -7,26 +7,26 @@
  * ---------------------------------------------------------------------
  *
  * `scaffold/deploy-verification.ts` already makes the pipeline assert
- * that the thing running is the thing it just built: it pins immutable
- * image references and polls the origins until they name this run's
- * commit. This module is the next step — a deploy that also UNDOES
+ * that the thing running is the thing it just built: it promotes this
+ * commit's immutable images to the tag the apps pull and polls the
+ * origins until they name this run's commit. This module is the next step — a deploy that also UNDOES
  * itself when that assertion fails, and the manual rollback workflow
  * that shares its script.
  *
  * In order, one deploy:
  *
- *   1. Reads the rollback target BEFORE pinning. Only a value already
- *      pinned to a full commit sha counts; a moving tag points at the
- *      new build the moment the push lands, so restoring it would
- *      redeploy the failure.
- *   2. Pins the immutable references, reads them back, and queues the
- *      deploy.
+ *   1. Reads the rollback target BEFORE promoting: the commit each half
+ *      is serving, when the registry still has its image. A moving
+ *      reference names no build, so it is no target.
+ *   2. Points the live tag at this commit's images, reads it back, and
+ *      queues the deploy through each app's own signed webhook — no
+ *      platform API token (deploy/coolify-deploy-hook.ts).
  *   3. Polls each half until it reports the commit this run built. A
  *      queued deploy is not a finished one.
  *   4. Runs the gate: health and database, the API origin the client
  *      was BUILT against, an unauthenticated session call, and the
  *      cross-origin preflight.
- *   5. Restores the values from step 1 when 3 or 4 fails, and runs the
+ *   5. Points the live tag back at step 1's images when 3 or 4 fails, and runs the
  *      same poll and gate against the restored commit. The run fails
  *      either way — a rollback is never a green run, because the commit
  *      on the default branch is still broken.
@@ -82,12 +82,7 @@ export {
   readMigrationRegistry,
   EMPTY_REGISTRY,
 } from "./migration-guard.js";
-export {
-  findEnvValue,
-  isFullSha,
-  selectRollbackTarget,
-  shaFromImageRef,
-} from "./rollback-target.js";
+export { isFullSha, selectRollbackTarget, shaFromImageRef } from "./rollback-target.js";
 export {
   DEPLOY_CONCURRENCY_GROUP,
   type VerifiedDeployPlanInput,

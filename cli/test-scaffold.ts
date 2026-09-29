@@ -4237,7 +4237,14 @@ console.log("\n── deploy secrets: split vs single-origin ──────�
   const { computeCoolifyDeploySecrets, coolifyDeploySecretNames, resourceUuidSecretName } =
     await import("./src/deploy/gh-actions-secrets.js");
   const checks: Check[] = [];
-  const base = { coolifyUrl: "https://coolify.example.com/", coolifyToken: "tok" };
+  const base = { coolifyUrl: "https://coolify.example.com/" };
+  const hook = (uuid: string, role?: "client" | "server") => ({
+    uuid,
+    ...(role ? { role } : {}),
+    secret: `secret-${uuid}`,
+    repository: "acme/app",
+    branch: "main",
+  });
 
   checks.push([
     "secret name: client",
@@ -4248,57 +4255,49 @@ console.log("\n── deploy secrets: split vs single-origin ──────�
     resourceUuidSecretName("server") === "COOLIFY_SERVER_RESOURCE_UUID",
   ]);
 
-  // Single-origin: one unlabelled app.
-  const single = computeCoolifyDeploySecrets({
-    ...base,
-    apps: [{ uuid: "uuid-single" }],
-  });
+  // Single-app: one unlabelled app.
+  const single = computeCoolifyDeploySecrets({ ...base, hooks: [hook("uuid-single")] });
   checks.push([
-    "single: COOLIFY_RESOURCE_UUID set",
-    single.secrets.COOLIFY_RESOURCE_UUID === "uuid-single",
-  ]);
-  checks.push([
-    "single: webhook points at the app, trailing slash trimmed",
-    single.secrets.COOLIFY_WEBHOOK_URL ===
-      "https://coolify.example.com/api/v1/deploy?uuid=uuid-single",
+    "single: uuid + per-app deploy hook set",
+    single.secrets.COOLIFY_RESOURCE_UUID === "uuid-single" &&
+      single.secrets.COOLIFY_DEPLOY_SECRET === "secret-uuid-single" &&
+      single.secrets.COOLIFY_DEPLOY_REPOSITORY === "acme/app" &&
+      single.secrets.COOLIFY_DEPLOY_BRANCH === "main",
   ]);
   checks.push([
     "single: no paired names emitted",
-    !("COOLIFY_CLIENT_RESOURCE_UUID" in single.secrets) &&
-      !("COOLIFY_SERVER_RESOURCE_UUID" in single.secrets),
+    !Object.keys(single.secrets).some((n) => /^COOLIFY_(CLIENT|SERVER)_/.test(n)),
   ]);
   checks.push([
     "single: stale paired names queued for removal",
     single.staleToRemove.includes("COOLIFY_CLIENT_RESOURCE_UUID") &&
-      single.staleToRemove.includes("COOLIFY_SERVER_RESOURCE_UUID"),
+      single.staleToRemove.includes("COOLIFY_SERVER_DEPLOY_SECRET"),
   ]);
   checks.push([
-    "single: keeps its own uuid out of the removal list",
-    !single.staleToRemove.includes("COOLIFY_RESOURCE_UUID"),
+    "single: keeps its own names out of the removal list",
+    !Object.keys(single.secrets).some((n) => single.staleToRemove.includes(n)),
   ]);
 
   // Split: two roled apps.
   const split = computeCoolifyDeploySecrets({
     ...base,
-    apps: [
-      { uuid: "uuid-server", role: "server" },
-      { uuid: "uuid-client", role: "client" },
-    ],
+    hooks: [hook("uuid-server", "server"), hook("uuid-client", "client")],
   });
   checks.push([
-    "split: both paired uuids set",
+    "split: each half gets its own uuid and its own deploy secret",
     split.secrets.COOLIFY_SERVER_RESOURCE_UUID === "uuid-server" &&
-      split.secrets.COOLIFY_CLIENT_RESOURCE_UUID === "uuid-client",
+      split.secrets.COOLIFY_CLIENT_RESOURCE_UUID === "uuid-client" &&
+      split.secrets.COOLIFY_SERVER_DEPLOY_SECRET === "secret-uuid-server" &&
+      split.secrets.COOLIFY_CLIENT_DEPLOY_SECRET === "secret-uuid-client",
   ]);
   checks.push([
-    "split: no single-app uuid (would double-deploy on older workflows)",
-    !("COOLIFY_RESOURCE_UUID" in split.secrets) &&
-      !("COOLIFY_WEBHOOK_URL" in split.secrets),
+    "split: no single-app names (would double-deploy on older workflows)",
+    !("COOLIFY_RESOURCE_UUID" in split.secrets) && !("COOLIFY_DEPLOY_SECRET" in split.secrets),
   ]);
   checks.push([
-    "split: clears the single-app uuid so it can't double-deploy the client",
+    "split: clears the single-app names so they can't double-deploy the client",
     split.staleToRemove.includes("COOLIFY_RESOURCE_UUID") &&
-      split.staleToRemove.includes("COOLIFY_WEBHOOK_URL"),
+      split.staleToRemove.includes("COOLIFY_DEPLOY_SECRET"),
   ]);
   checks.push([
     "split: clears the superseded role-suffixed spelling",
@@ -4316,25 +4315,33 @@ console.log("\n── deploy secrets: split vs single-origin ──────�
         Object.keys(
           computeCoolifyDeploySecrets({
             ...base,
-            apps: [
-              { uuid: "uuid-client", role: "client" },
-              { uuid: "uuid-server", role: "server" },
-            ],
+            hooks: [hook("uuid-client", "client"), hook("uuid-server", "server")],
           }).secrets,
         ),
       ),
   ]);
 
-  // Both flows always carry the API triple.
+  // The whole point: hatchkit's own Coolify token never goes to a repo,
+  // and the names that carried it are always on the removal list.
   for (const [label, r] of [
     ["single", single],
     ["split", split],
   ] as const) {
     checks.push([
-      `${label}: base url + token triple present`,
-      r.secrets.COOLIFY_BASE_URL === "https://coolify.example.com" &&
-        r.secrets.COOLIFY_API_TOKEN === "tok" &&
-        r.secrets.COOLIFY_TOKEN === "tok",
+      `${label}: base url set, trailing slash trimmed`,
+      r.secrets.COOLIFY_BASE_URL === "https://coolify.example.com",
+    ]);
+    checks.push([
+      `${label}: no provisioner token and no token-only webhook URL pushed`,
+      !("COOLIFY_API_TOKEN" in r.secrets) &&
+        !("COOLIFY_TOKEN" in r.secrets) &&
+        !("COOLIFY_WEBHOOK_URL" in r.secrets),
+    ]);
+    checks.push([
+      `${label}: provisioner-token names queued for removal`,
+      ["COOLIFY_API_TOKEN", "COOLIFY_TOKEN", "COOLIFY_WEBHOOK_URL"].every((n) =>
+        r.staleToRemove.includes(n),
+      ),
     ]);
   }
 
@@ -4351,7 +4358,7 @@ console.log("\n── deploy secrets: split vs single-origin ──────�
     ) === JSON.stringify(Object.keys(split.secrets)),
   ]);
   checks.push([
-    "names helper matches what single-origin actually pushes",
+    "names helper matches what a single-app project actually pushes",
     JSON.stringify(coolifyDeploySecretNames([{ uuid: "a" }])) ===
       JSON.stringify(Object.keys(single.secrets)),
   ]);

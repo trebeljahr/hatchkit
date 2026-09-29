@@ -578,13 +578,22 @@ async function handleKeys(): Promise<void> {
 async function handleSecrets(): Promise<void> {
   const sub = args[1];
   const usage =
-    "Usage: hatchkit secrets rotate <project-name> [flags]\n       hatchkit secrets rotate --global <ses|listmonk> [flags]";
+    "Usage: hatchkit secrets rotate <project-name> [flags]\n       hatchkit secrets rotate --global <ses|listmonk> [flags]\n       hatchkit secrets isolate <project> | --all [--dry-run] [--rotate] [--json]";
   if (!sub) {
     console.log(usage);
     process.exit(1);
   }
 
   switch (sub) {
+    case "isolate": {
+      // Take hatchkit's Coolify token out of the project: per-app deploy
+      // hooks, promote-in-GHCR workflows, token secrets deleted. See
+      // secrets/isolate.ts.
+      const { runSecretsIsolate } = await import("./secrets/isolate.js");
+      const code = await runSecretsIsolate(args.slice(1));
+      if (code !== 0) process.exit(code);
+      break;
+    }
     case "rotate": {
       const isJson = args.includes("--json");
       const dryRun = args.includes("--dry-run");
@@ -2870,8 +2879,9 @@ async function handleCreate(): Promise<void> {
       // Set the GH Actions deploy secrets so the starter's
       // build-and-deploy.yml workflow can hit Coolify on push.
       // Mirrors the same flow `hatchkit adopt` runs: discover the
-      // matching Coolify app(s) by name, push COOLIFY_BASE_URL +
-      // COOLIFY_API_TOKEN + per-app resource uuids + webhook URLs.
+      // matching Coolify app(s) by name, mint each one's deploy hook and
+      // push COOLIFY_BASE_URL + the per-app uuid/secret/repo/branch. No
+      // Coolify API token goes to the repo.
       // Best-effort — failures print a manual recipe.
       if (repoUrl && config.scaffoldRepo) {
         try {
@@ -3922,6 +3932,18 @@ function printHelp(topic?: HelpTopic): void {
                                copy — local projects' env files, Coolify
                                apps that carry the key name, and
                                ListMonk's SMTP settings (ses).
+
+    secrets isolate <project> | --all [--dry-run] [--rotate]
+                               Take hatchkit's Coolify token out of a
+                               project. Each Coolify app gets its own
+                               signed deploy webhook (a secret that can
+                               deploy that one app and nothing else), the
+                               deploy workflow promotes ${chalk.cyan(":live")} in GHCR and
+                               signs the webhook, and COOLIFY_API_TOKEN /
+                               COOLIFY_TOKEN / COOLIFY_WEBHOOK_URL are
+                               deleted from the repo. Deploys pause until
+                               the rewritten workflow is pushed.
+                               ${chalk.cyan("--rotate")} mints new per-app deploy secrets.
 
   ${chalk.bold("Providers (per project):")}
     ${chalk.cyan("r2")}              R2 account token → <R2|S3|AWS>[_<BUCKET>]_ACCESS_KEY_ID

@@ -9,7 +9,7 @@
  * `scaffold/deploy-verification.ts` generates the gate as shell inside
  * the workflow. That was enough while the only outcome was pass or fail.
  * A deploy that can UNDO itself needs state across steps — the image
- * values read before pinning, the migration registries of two commits,
+ * commits served before promoting, the migration registries of two commits,
  * which halves were restored — and shell inside YAML has no way to be
  * tested, so every rule it holds is only ever exercised by a real
  * deploy against real infrastructure.
@@ -44,6 +44,12 @@
  * top of each generated file are interpolated.
  */
 
+import {
+  COOLIFY_MANUAL_WEBHOOK_PATH,
+  DEPLOY_HOOK_WATCH_PATH,
+  LIVE_TAG,
+} from "../../deploy/coolify-deploy-hook.js";
+import { MANIFEST_ACCEPT } from "../../utils/oci-registry.js";
 import { GATE_CHECK_ORDER, type VerifiedDeployPlan } from "./types.js";
 
 /** Project-relative path of the generated logic module. */
@@ -58,7 +64,7 @@ function lit(value: unknown): string {
 }
 
 /**
- * The logic module: the whole pin → deploy → poll → gate → restore
+ * The logic module: the whole promote → deploy → poll → gate → restore
  * sequence, with the network, the clock and git taken as parameters.
  *
  * The project's shape is baked into the constants at the top — which
@@ -69,7 +75,7 @@ function lit(value: unknown): string {
  */
 export function renderDeployLib(plan: VerifiedDeployPlan): string {
   return `/**
- * The verified deploy: pin the immutable image references, deploy, wait
+ * The verified deploy: point the live tag at this commit's images, deploy, wait
  * for the new commit to actually be serving, run the gate, and put the
  * previous images back when it fails.
  *
@@ -89,6 +95,8 @@ export function renderDeployLib(plan: VerifiedDeployPlan): string {
  * ${DEPLOY_ENTRY_REL_PATH}.
  */
 
+import { createHash, createHmac } from "node:crypto";
+
 // ── What this project can check ──────────────────────────────────────
 //
 // Derived from the project's shape when this file was generated. A
@@ -103,7 +111,7 @@ export const APPS = Object.freeze(${lit(plan.apps)});
 /** The platform env variable holding each half's image reference. */
 export const IMAGE_ENV = Object.freeze(${lit(plan.imageEnvKeys)});
 
-/** Image references with the tag stripped. The deploy pins
+/** Image references with the tag stripped. The deploy promotes
  *  '<base>:<commit sha>', which is immutable — a moving tag like ':main'
  *  lets the platform start the PREVIOUS build while every status surface
  *  reports the new commit. */
@@ -143,6 +151,24 @@ export const DEFAULT_TIMING = Object.freeze({
   gateIntervalMs: ${plan.gateIntervalMs},
 });
 
+/** The moving tag every application pulls. Deploying commit X means
+ *  pointing it at the image built for X, then telling the application to
+ *  redeploy; the old images are never touched, so going back is the same
+ *  move with an older commit. */
+export const LIVE_TAG = ${lit(LIVE_TAG)};
+
+/** The platform's signed deploy webhook, and the one path its payload
+ *  names as changed. The applications are configured to deploy only when
+ *  that path changes, so a push that reaches the platform any other way
+ *  never deploys a build that has not been pushed yet. */
+export const WEBHOOK = Object.freeze({
+  path: ${lit(COOLIFY_MANUAL_WEBHOOK_PATH)},
+  watchPath: ${lit(DEPLOY_HOOK_WATCH_PATH)},
+});
+
+/** Every manifest shape a build can push, for reading one by tag. */
+const MANIFEST_ACCEPT = ${lit(MANIFEST_ACCEPT)};
+
 /**
  * Every check the gate can fail, in the order it is evaluated. The order
  * decides which failure a run reports when several are true at once, and
@@ -176,43 +202,39 @@ export const shaFromImageRef = (value) => {
 export const imageRef = (base, sha) => String(base) + ":" + sha;
 
 /**
- * The production value of a variable in the platform's env listing, or
- * null when it is absent, a preview copy, or unreadable.
+ * What a rollback may restore for one half, or why there is nothing to
+ * restore.
  *
- * Null rather than the empty string on purpose: the platform leaves
- * 'value' out entirely when the token may not read sensitive values, and
- * that has to mean 'unknown', never 'set to nothing'.
+ * The target is the commit the half was SERVING before this run moved
+ * anything — read from its own health or build-info endpoint, so it is
+ * what was actually running rather than what something last asked for —
+ * and only when the registry still holds that commit's image, because
+ * restoring means pointing the live tag back at it. Each 'none' reason
+ * says how to fix it.
  */
-export const findEnvValue = (entries, key) => {
-  if (!Array.isArray(entries)) return null;
-  const rows = entries.filter((row) => row && typeof row === "object" && row.key === key);
-  const row = rows.find((candidate) => candidate.is_preview !== true) || null;
-  return row && typeof row.value === "string" && row.value !== "" ? row.value : null;
-};
-
-/**
- * What a rollback may restore for one image variable, or why there is
- * nothing to restore. The two 'none' reasons are the two ways a rollback
- * silently does nothing useful, so each one says how to fix it.
- */
-export const selectRollbackTarget = (entries, key) => {
-  const value = findEnvValue(entries, key);
-  if (value === null) {
+export const selectRollbackTarget = (input) => {
+  const served = input.served;
+  if (served === undefined || served === null || served === "") {
     return {
       kind: "none",
       reason:
-        "no " + key + " value could be read: this is a first deploy, the variable does not exist on the application, or the token may not read variable values",
+        "the " + input.app + " half reported no commit before the deploy: this is a first deploy, or it was not answering",
     };
   }
-  const sha = shaFromImageRef(value);
-  if (sha === null) {
+  if (!isFullSha(served)) {
     return {
       kind: "none",
       reason:
-        key + " is " + value + ", which is a moving tag rather than a commit — after this push it already points at the build that just failed, so restoring it would redeploy the failure",
+        "the " + input.app + " half reported " + show(served) + ", which is not a full commit sha, so no image tag names it",
     };
   }
-  return { kind: "target", value: value, sha: sha };
+  if (input.inRegistry !== true) {
+    return {
+      kind: "none",
+      reason: imageRef(input.base, served) + " is not in the registry, so there is no image to go back to",
+    };
+  }
+  return { kind: "target", value: imageRef(input.base, served), sha: served };
 };
 
 // ── The gate ─────────────────────────────────────────────────────────
@@ -466,125 +488,229 @@ export const waitForHealthy = async (deps, config, expected) => {
   }
 };
 
-// ── Talking to the platform ──────────────────────────────────────────
+// ── Talking to the registry ──────────────────────────────────────────
+//
+// Deploys pick their image here, not on the platform: every application
+// pulls '<image>:live', and moving that tag is two calls of the OCI
+// distribution API — read the manifest a tag names, write the same bytes
+// under another tag. The credential is the workflow's own GITHUB_TOKEN,
+// which can write this repository's packages and nothing else.
 
-const platform = async (deps, config, method, path, body) => {
-  const headers = { Authorization: "Bearer " + config.token, Accept: "application/json" };
-  if (body !== undefined) headers["Content-Type"] = "application/json";
-  const response = await deps.fetch(config.baseUrl + "/api/v1" + path, {
-    method: method,
-    headers: headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(30000),
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error("the platform answered " + response.status + " to " + method + " " + path + ": " + text.slice(0, 300));
+const REQUEST_TIMEOUT_MS = 30000;
+
+const imageBaseOf = (config, app) => (config.imageBase || IMAGE_BASE)[app];
+
+const splitImage = (base) => {
+  const slash = String(base).indexOf("/");
+  return { host: base.slice(0, slash), repository: base.slice(slash + 1).toLowerCase() };
+};
+
+const bearerChallenge = (header) => {
+  if (!header || !/^Bearer\\s/i.test(header)) return null;
+  const params = {};
+  for (const match of header.matchAll(/(\\w+)="([^"]*)"/g)) params[match[1].toLowerCase()] = match[2];
+  return params.realm ? params : null;
+};
+
+const registryTokens = new WeakMap();
+
+/** A pull+push token for one repository, cached per run. */
+const registryToken = async (deps, config, name) => {
+  let cache = registryTokens.get(config);
+  if (!cache) {
+    cache = new Map();
+    registryTokens.set(config, cache);
   }
-  return text === "" ? null : JSON.parse(text);
+  const key = name.host + "/" + name.repository;
+  if (cache.has(key)) return cache.get(key);
+  const probe = await deps.fetch("https://" + name.host + "/v2/", {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  const challenge = bearerChallenge(probe.headers.get("www-authenticate"));
+  if (challenge === null) {
+    throw new Error(name.host + " did not offer bearer authentication (" + probe.status + ")");
+  }
+  const url = new URL(challenge.realm);
+  if (challenge.service) url.searchParams.set("service", challenge.service);
+  url.searchParams.set("scope", "repository:" + name.repository + ":pull,push");
+  const auth = config.registryAuth || {};
+  const basic = Buffer.from(String(auth.username) + ":" + String(auth.password)).toString("base64");
+  const response = await deps.fetch(url.toString(), {
+    headers: { Authorization: "Basic " + basic },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(name.host + " refused a registry token (" + response.status + ")");
+  const body = JSON.parse(await response.text());
+  const token = body.token || body.access_token;
+  if (!token) throw new Error(name.host + " answered without a registry token");
+  cache.set(key, token);
+  return token;
 };
 
-const envsOf = (deps, config, app) =>
-  platform(deps, config, "GET", "/applications/" + config.uuids[app] + "/envs");
-
-const applicationOf = (deps, config, app) =>
-  platform(deps, config, "GET", "/applications/" + config.uuids[app]);
+/** The manifest '<base>:<reference>' names, or null when there is none. */
+export const readManifest = async (deps, config, base, reference) => {
+  const name = splitImage(base);
+  const token = await registryToken(deps, config, name);
+  const response = await deps.fetch(
+    "https://" + name.host + "/v2/" + name.repository + "/manifests/" + reference,
+    {
+      headers: { Authorization: "Bearer " + token, Accept: MANIFEST_ACCEPT },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    },
+  );
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error("reading " + imageRef(base, reference) + " failed (" + response.status + ")");
+  const body = await response.text();
+  const mediaType =
+    (response.headers.get("content-type") || "").split(";")[0].trim() || JSON.parse(body).mediaType || "";
+  const digest =
+    response.headers.get("docker-content-digest") ||
+    "sha256:" + createHash("sha256").update(body).digest("hex");
+  return { mediaType: mediaType, body: body, digest: digest };
+};
 
 /**
- * The image a Docker Image application runs, as '<name>:<tag>', or null
- * for any other kind of application.
+ * Point each half's live tag at the image built for its commit, then read
+ * the tag back.
  *
- * Where the image reference lives depends on the application. A Docker
- * Compose application reads it from an env variable its compose file
- * interpolates. A Docker Image application — the kind the platform
- * deploys as a rolling update, old container serving until the new one
- * is healthy — has no compose file: it pulls its own image name and
- * tag, and an env variable of the same name is ignored. Pinning or
- * reading the variable there would pin nothing and roll back nothing.
- *
- * Only these three fields are read; the same response carries the
- * application's interpolated compose, secrets included.
+ * The bytes are copied verbatim: a manifest's digest is the hash of its
+ * exact bytes, and a re-serialised body would name an image that does not
+ * exist. The read-back catches a registry that answered and kept the old
+ * manifest.
  */
-const imageAppRef = (application) =>
-  application && application.build_pack === "dockerimage" && application.docker_registry_image_name
-    ? application.docker_registry_image_name + ":" + (application.docker_registry_image_tag || "latest")
-    : null;
-
-/** The raw image value of one half, or null where it cannot be read. */
-export const readImageValue = async (deps, config, app) => {
-  const ref = imageAppRef(await applicationOf(deps, config, app));
-  return ref !== null ? ref : findEnvValue(await envsOf(deps, config, app), IMAGE_ENV[app]);
+export const promote = async (deps, config, shas) => {
+  for (const app of Object.keys(shas)) {
+    const base = imageBaseOf(config, app);
+    const source = await readManifest(deps, config, base, shas[app]);
+    if (source === null) {
+      throw new Error(imageRef(base, shas[app]) + " is not in the registry — was it built and pushed?");
+    }
+    const name = splitImage(base);
+    const token = await registryToken(deps, config, name);
+    const response = await deps.fetch(
+      "https://" + name.host + "/v2/" + name.repository + "/manifests/" + LIVE_TAG,
+      {
+        method: "PUT",
+        headers: { Authorization: "Bearer " + token, "Content-Type": source.mediaType },
+        body: source.body,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      },
+    );
+    if (!response.ok) {
+      throw new Error("writing " + imageRef(base, LIVE_TAG) + " failed (" + response.status + ")");
+    }
+    const after = await readManifest(deps, config, base, LIVE_TAG);
+    if (after === null || after.digest !== source.digest) {
+      throw new Error(imageRef(base, LIVE_TAG) + " does not point at " + shas[app] + " after the update");
+    }
+    deps.log("promoted " + imageRef(base, shas[app]) + " to :" + LIVE_TAG);
+  }
 };
 
-const tagOf = (ref) => ref.slice(ref.lastIndexOf(":") + 1);
+// ── Talking to the platform ──────────────────────────────────────────
+//
+// No platform API token. Each application has its own webhook secret, and
+// a push payload signed with it queues a deploy of that one application:
+// it can read nothing and reach no other application.
+
+/** The exact body signed and sent for one application. */
+export const webhookBody = (hook, sha) =>
+  JSON.stringify({
+    ref: "refs/heads/" + hook.branch,
+    after: sha,
+    repository: { full_name: hook.repository },
+    commits: [{ id: sha, added: [], removed: [], modified: [WEBHOOK.watchPath] }],
+  });
+
+export const signWebhook = (secret, body) => createHmac("sha256", secret).update(body).digest("hex");
 
 /**
- * The rollback target of each half, read BEFORE anything is pinned.
+ * Whether the platform's answer says THIS application's deploy was
+ * queued. Every other application on the same repository answers
+ * "Invalid signature."; only an entry for this uuid with status success,
+ * or a skipped entry (the same commit is already queued — only an
+ * application whose signature matched gets that far), counts. The detail
+ * never names other applications: a public repository's log is public.
+ */
+export const webhookQueued = (text, uuid) => {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (caught) {
+    return { ok: false, detail: String(text).slice(0, 200).trim() || "(empty answer)" };
+  }
+  if (!Array.isArray(parsed)) return { ok: false, detail: JSON.stringify(parsed).slice(0, 200) };
+  const entries = parsed.filter((entry) => entry && typeof entry === "object");
+  if (entries.some((entry) => entry.application_uuid === uuid && entry.status === "success")) {
+    return { ok: true, detail: "deployment queued" };
+  }
+  if (entries.some((entry) => entry.status === "skipped")) {
+    return { ok: true, detail: "this commit is already queued" };
+  }
+  const own = entries.filter((entry) => entry.message !== "Invalid signature.");
+  if (own.length === 0) {
+    return {
+      ok: false,
+      detail:
+        entries.length === 0
+          ? "no application matched the repository and branch"
+          : "the signature matched no application — the deploy secret is stale or belongs to another application",
+    };
+  }
+  return { ok: false, detail: own.map((entry) => entry.status + ": " + entry.message).join("; ") };
+};
+
+/**
+ * The rollback target of each half, read BEFORE anything is promoted.
  *
- * This is step one of the deploy for a reason: once the new reference is
- * pinned, the value that named the build to go back to is gone.
+ * This is step one of the deploy for a reason: once the live tag moves,
+ * nothing on the platform names the build to go back to.
  */
 export const readRollbackTargets = async (deps, config, apps) => {
+  const probes = await observe(deps, config, 0);
+  const served = {
+    server: probes.health ? healthCommit(probes.health) : null,
+    client: probes.buildInfo ? probes.buildInfo.commit : null,
+  };
   const targets = {};
   for (const app of apps) {
-    const ref = imageAppRef(await applicationOf(deps, config, app));
-    const entries =
-      ref !== null
-        ? [{ key: IMAGE_ENV[app], value: ref, is_preview: false }]
-        : await envsOf(deps, config, app);
-    targets[app] = selectRollbackTarget(entries, IMAGE_ENV[app]);
+    const base = imageBaseOf(config, app);
+    const sha = served[app];
+    const inRegistry = isFullSha(sha) ? (await readManifest(deps, config, base, sha)) !== null : false;
+    targets[app] = selectRollbackTarget({ app: app, served: sha, base: base, inRegistry: inRegistry });
   }
   return targets;
 };
 
-/**
- * Set each half's image variable, then read it back.
- *
- * The read-back is not paranoia. The platform's env API accepts a PATCH
- * naming a key that does not exist, answers 200 and does nothing — the
- * deploy then runs the compose default and the pin is a no-op nobody
- * notices. A value that did not stick is an error here instead.
- */
-export const pin = async (deps, config, values) => {
-  for (const app of Object.keys(values)) {
-    const value = values[app];
-    const imageApp = imageAppRef(await applicationOf(deps, config, app)) !== null;
-    if (imageApp) {
-      // The name stays as the platform normalised it; only the tag moves.
-      await platform(deps, config, "PATCH", "/applications/" + config.uuids[app], {
-        docker_registry_image_tag: tagOf(value),
-      });
-    } else {
-      await platform(deps, config, "PATCH", "/applications/" + config.uuids[app] + "/envs", {
-        key: IMAGE_ENV[app],
-        value: value,
-        is_preview: false,
-      });
-    }
-    const after = await readImageValue(deps, config, app);
-    if (imageApp ? after === null || tagOf(after) !== tagOf(value) : after !== null && after !== value) {
-      throw new Error(
-        imageApp
-          ? "the " + app + " application's image tag still reads " + (after === null ? "nothing" : tagOf(after)) + " after the update"
-          : IMAGE_ENV[app] + " on the " + app + " application still reads " + after + " after the update; create the variable once on the application and run again",
-      );
-    }
-    deps.log("pinned " + (imageApp ? "the " + app + " image tag" : IMAGE_ENV[app]) + "=" + value);
-  }
-};
-
 /** Queue a deploy of each half, in APPS order. Applications are
  *  de-duplicated by uuid: a single-origin project runs one application
- *  that declares both services, so both image variables live on it and
- *  one deploy covers them. */
-export const trigger = async (deps, config, apps) => {
+ *  that pulls both images, so one deploy covers both halves. */
+export const trigger = async (deps, config, shas) => {
   const seen = [];
   for (const app of APPS) {
-    if (!apps.includes(app)) continue;
-    const uuid = config.uuids[app];
-    if (seen.includes(uuid)) continue;
-    seen.push(uuid);
-    await platform(deps, config, "POST", "/deploy?uuid=" + encodeURIComponent(uuid) + "&force=true");
+    if (!(app in shas)) continue;
+    const hook = config.hooks[app];
+    if (seen.includes(hook.uuid)) continue;
+    seen.push(hook.uuid);
+    const body = webhookBody(hook, shas[app]);
+    const response = await deps.fetch(config.baseUrl + WEBHOOK.path, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-GitHub-Event": "push",
+        "X-Hub-Signature-256": "sha256=" + signWebhook(hook.secret, body),
+      },
+      body: body,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error("the platform answered " + response.status + " to the " + app + " application's deploy webhook");
+    }
+    const verdict = webhookQueued(text, hook.uuid);
+    if (verdict.ok !== true) {
+      throw new Error("the " + app + " application's deploy was not queued: " + verdict.detail);
+    }
     deps.log("deploy queued for the " + app + " application");
   }
 };
@@ -611,7 +737,7 @@ export const planRollback = (input) => {
     if (!target || target.kind !== "target") {
       skipped[app] = target ? target.reason : "no rollback target was read for " + app;
     } else if (target.sha === input.targetSha) {
-      skipped[app] = IMAGE_ENV[app] + " already pointed at " + input.targetSha;
+      skipped[app] = "the " + app + " half was already serving " + input.targetSha;
     } else if (app === "server" && input.serverGuard && input.serverGuard.allowed !== true) {
       skipped[app] = "not rolled back: " + input.serverGuard.reason;
     } else {
@@ -630,7 +756,7 @@ export const planRollback = (input) => {
  *
  *   · No rollback target. A first deploy, a variable still on a moving
  *     tag, or a token that may not read variable values leaves nothing
- *     to go back to. The new images stay pinned and the run says which
+ *     to go back to. The new images stay live and the run says which
  *     of the three it was.
  *   · A rollback that itself fails — the restored build fails its own
  *     gate, or a platform call fails while restoring. A second automatic
@@ -665,7 +791,7 @@ export const runDeploy = async (deps, config, request) => {
     };
   }
 
-  // Step 1: read what a rollback would go back to, BEFORE pinning. Once
+  // Step 1: read what a rollback would go back to, BEFORE promoting. Once
   // the new reference is written, the old one is gone.
   let targets;
   try {
@@ -674,14 +800,14 @@ export const runDeploy = async (deps, config, request) => {
     return {
       ok: false,
       errors: [
-        "the image variables could not be read before pinning (" + messageOf(caught) + "); nothing was changed",
+        "what each half is serving could not be read before promoting (" + messageOf(caught) + "); nothing was changed",
       ],
     };
   }
   for (const app of apps) {
     const target = targets[app];
     deps.log(
-      IMAGE_ENV[app] + " before: " + (target.kind === "target" ? target.value : "<no rollback target: " + target.reason + ">"),
+      "the " + app + " half before: " + (target.kind === "target" ? target.value : "<no rollback target: " + target.reason + ">"),
     );
   }
 
@@ -710,17 +836,16 @@ export const runDeploy = async (deps, config, request) => {
     }
   }
 
-  // Steps 2, 3 and 4: pin, deploy, poll for the commit, run the gate. A
-  // platform call that fails half way through pinning leaves a variable
+  // Steps 2, 3 and 4: promote, deploy, poll for the commit, run the gate. A
+  // call that fails half way through promoting leaves a live tag
   // the next unrelated deploy would pick up, so it goes through the same
   // restore as a failed gate rather than throwing out of here.
   let verdict;
   try {
-    const bases = config.imageBase || IMAGE_BASE;
-    const values = {};
-    for (const app of apps) values[app] = imageRef(bases[app], targetSha);
-    await pin(deps, config, values);
-    await trigger(deps, config, apps);
+    const shas = {};
+    for (const app of apps) shas[app] = targetSha;
+    await promote(deps, config, shas);
+    await trigger(deps, config, shas);
     verdict = await waitForHealthy(deps, config, expected);
   } catch (caught) {
     verdict = { ok: false, failed: "platform", detail: messageOf(caught) };
@@ -730,7 +855,7 @@ export const runDeploy = async (deps, config, request) => {
   const failure = verdict.failed + ": " + verdict.detail;
   const headline = (outcome) => targetSha + " failed the deploy gate (" + failure + "); " + outcome;
   if (request.rollback !== true) {
-    return { ok: false, errors: [headline("it stays pinned, since no rollback was requested")] };
+    return { ok: false, errors: [headline("it stays live, since no rollback was requested")] };
   }
 
   // Step 5: roll back. The server is asked about separately, because a
@@ -755,7 +880,7 @@ export const runDeploy = async (deps, config, request) => {
       ok: false,
       errors: [
         headline(
-          "nothing was rolled back and " + targetSha + " is still pinned. Fix forward, or run the manual rollback workflow with a known-good commit",
+          "nothing was rolled back and " + targetSha + " is still live. Fix forward, or run the manual rollback workflow with a known-good commit",
         ),
       ].concat(skipped),
     };
@@ -764,16 +889,16 @@ export const runDeploy = async (deps, config, request) => {
   const restored = restoreApps.map((app) => app + " " + plan.restore[app].sha).join(", ");
   deps.log("rolling back to " + restored);
   try {
-    const values = {};
-    for (const app of restoreApps) values[app] = plan.restore[app].value;
-    await pin(deps, config, values);
-    await trigger(deps, config, restoreApps);
+    const shas = {};
+    for (const app of restoreApps) shas[app] = plan.restore[app].sha;
+    await promote(deps, config, shas);
+    await trigger(deps, config, shas);
   } catch (caught) {
     return {
       ok: false,
       errors: [
         headline(
-          "the rollback to " + restored + " FAILED while pinning or deploying (" + messageOf(caught) + "); the deployment needs a person now",
+          "the rollback to " + restored + " FAILED while promoting or deploying (" + messageOf(caught) + "); the deployment needs a person now",
         ),
       ].concat(skipped),
     };
@@ -803,7 +928,7 @@ export const runDeploy = async (deps, config, request) => {
 };
 
 /**
- * The gate alone, for a layout with no image variable to pin: nothing to
+ * The gate alone, for a layout with no image to promote: nothing to
  * restore, but the same checks.
  */
 export const runVerify = async (deps, config, targetSha) => {
@@ -830,7 +955,7 @@ export const runVerify = async (deps, config, targetSha) => {
 export function renderDeployEntry(plan: VerifiedDeployPlan): string {
   return `#!/usr/bin/env node
 /**
- * Pin, deploy, gate and — when the gate fails — roll back ${plan.name}.
+ * Promote, deploy, gate and — when the gate fails — roll back ${plan.name}.
  *
  *   node ${DEPLOY_ENTRY_REL_PATH} deploy --sha <sha> [--which both|${plan.apps.join("|")}]
  *        [--rollback] [--guard-server-downgrade] [--force-server]
@@ -841,7 +966,7 @@ export function renderDeployEntry(plan: VerifiedDeployPlan): string {
  * '--guard-server-downgrade', and adds '--rollback' only when the
  * operator asked for the images that were live before the run to be put
  * back — after a manual rollback those are usually the build being
- * escaped, so restoring them would re-pin it.
+ * escaped, so restoring them would promote it again.
  *
  * Generated and OWNED by hatchkit: every 'hatchkit update' regenerates
  * this file from the project manifest, so an edit made here is lost on
@@ -855,11 +980,14 @@ export function renderDeployEntry(plan: VerifiedDeployPlan): string {
  * checkout needs the full history (fetch-depth: 0). A shallow checkout
  * is the usual reason a rollback is refused as 'unknown'.
  *
- * Environment: COOLIFY_BASE_URL, COOLIFY_API_TOKEN, the application
- * uuids (COOLIFY_RESOURCE_UUID for a single application, or
- * COOLIFY_SERVER_RESOURCE_UUID / COOLIFY_CLIENT_RESOURCE_UUID for two),
- * and optionally HATCHKIT_WEB_URL / HATCHKIT_API_URL to override the
- * origins this project was generated with.
+ * Environment: COOLIFY_BASE_URL; per application its uuid, deploy
+ * secret, repository and branch (COOLIFY_RESOURCE_UUID,
+ * COOLIFY_DEPLOY_SECRET, COOLIFY_DEPLOY_REPOSITORY, COOLIFY_DEPLOY_BRANCH
+ * for a single application, or the same names with SERVER_ / CLIENT_
+ * after COOLIFY_ for two); GITHUB_TOKEN with packages: write, which moves
+ * the live tag; and optionally HATCHKIT_WEB_URL / HATCHKIT_API_URL to
+ * override the origins this project was generated with. There is no
+ * platform API token: each deploy secret deploys one application.
  */
 import { execFileSync } from "node:child_process";
 import { parseArgs } from "node:util";
@@ -1005,27 +1133,44 @@ const main = async () => {
 
   const apps = parseWhich(parsed.values.which);
   const baseUrl = trimSlash(env("COOLIFY_BASE_URL"));
-  const token = env("COOLIFY_API_TOKEN");
-  const shared = env("COOLIFY_RESOURCE_UUID");
-  const uuids = {};
+  // A single application carries the unprefixed names; a split project
+  // one set per half. Each half falls back to the unprefixed set, which
+  // is how a single-origin project's two halves share one application.
+  const hookName = (app, key) =>
+    env("COOLIFY_" + app.toUpperCase() + "_" + key) !== ""
+      ? "COOLIFY_" + app.toUpperCase() + "_" + key
+      : "COOLIFY_" + key;
+  const hooks = {};
+  const needed = [["COOLIFY_BASE_URL", baseUrl]];
   for (const app of apps) {
-    uuids[app] = env("COOLIFY_" + app.toUpperCase() + "_RESOURCE_UUID") || shared;
+    hooks[app] = {};
+    for (const [field, key] of [
+      ["uuid", "RESOURCE_UUID"],
+      ["secret", "DEPLOY_SECRET"],
+      ["repository", "DEPLOY_REPOSITORY"],
+      ["branch", "DEPLOY_BRANCH"],
+    ]) {
+      const name = hookName(app, key);
+      hooks[app][field] = env(name);
+      needed.push([name, hooks[app][field]]);
+    }
   }
+  const registryPassword = env("GITHUB_TOKEN");
+  needed.push(["GITHUB_TOKEN", registryPassword]);
 
-  const needed = [
-    ["COOLIFY_BASE_URL", baseUrl],
-    ["COOLIFY_API_TOKEN", token],
-  ].concat(apps.map((app) => ["COOLIFY_" + app.toUpperCase() + "_RESOURCE_UUID", uuids[app]]));
-  const missing = needed.filter((pair) => pair[1] === "").map((pair) => pair[0]);
+  const unique = needed.filter((pair, index) => needed.findIndex((other) => other[0] === pair[0]) === index);
+  const missing = unique.filter((pair) => pair[1] === "").map((pair) => pair[0]);
   // Nothing configured is a project that does not deploy from CI yet.
   // SOME of it configured is a half-built deploy, which is worse than
-  // none, so it fails rather than doing part of the work.
-  if (missing.length === needed.length) {
-    notice("No platform credentials are set — nothing was deployed.");
+  // none, so it fails rather than doing part of the work. GITHUB_TOKEN is
+  // not counted: it is always there in Actions.
+  const platformNames = unique.filter((pair) => pair[0] !== "GITHUB_TOKEN");
+  if (platformNames.every((pair) => pair[1] === "")) {
+    notice("No platform deploy secrets are set — nothing was deployed.");
     return 0;
   }
   if (missing.length > 0) {
-    fail(missing.join(", ") + " not set, while the other platform credentials are. Set all of them or none.");
+    fail(missing.join(", ") + " not set, while the other deploy secrets are. Set all of them (hatchkit sync) or none.");
     return 1;
   }
 
@@ -1043,8 +1188,8 @@ const main = async () => {
     deps,
     {
       baseUrl: baseUrl,
-      token: token,
-      uuids: uuids,
+      hooks: hooks,
+      registryAuth: { username: env("GITHUB_ACTOR") || "x-access-token", password: registryPassword },
       imageBase: imageBase,
       webOrigin: webOrigin,
       apiOrigin: apiOrigin,

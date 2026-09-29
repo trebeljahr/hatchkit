@@ -35,6 +35,9 @@ import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
 import { readImageEnvDefaults } from "../scaffold/deploy-verification.js";
+import { workflowsPromotingLive } from "../scaffold/signed-deploy.js";
+import { liveImageRefs } from "./coolify-deploy-hook.js";
+
 import { composeServicesOf, validateComposeServices } from "../utils/compose.js";
 import { type ApplicationCreateInput, CoolifyApi } from "../utils/coolify-api.js";
 import { repoSlugFromCoolifyGitRepository, repoSlugFromRemote } from "./gh-actions-secrets.js";
@@ -46,6 +49,15 @@ import {
 import { formatImageRef, healthCheckFor } from "./image-runtime.js";
 import { type RoutedApp, computeRoutingPlan } from "./routing.js";
 import { type NativeOriginsOutcome, pushNativeOriginsToServerApps } from "./trusted-origins.js";
+
+/** The image variables to seed on a compose app: the compose defaults,
+ *  re-pointed at `:live` when the project's workflow promotes it. */
+export function deployImageDefaults(projectDir?: string): Record<string, string> {
+  const defaults = readImageEnvDefaults(projectDir);
+  return projectDir && workflowsPromotingLive(projectDir).length > 0
+    ? liveImageRefs(defaults)
+    : defaults;
+}
 
 export interface RunCoolifySetupOptions {
   /** GitHub repository URL — required when creating a new application
@@ -354,7 +366,10 @@ export async function runCoolifySetup(
   // whatever `:main` resolved to. Seeding the same value the compose
   // already defaults to changes nothing about what runs; it just makes
   // the key exist.
-  Object.assign(envs, readImageEnvDefaults(options.projectDir));
+  //
+  // A project whose workflow promotes `:live` (the signed deploy) gets
+  // `:live` instead: nothing moves any other tag on deploy.
+  Object.assign(envs, deployImageDefaults(options.projectDir));
   // Every app in the plan gets the same baseline. Under `split` the
   // client app has no use for PORT/FRONTEND_URL, but Coolify env is
   // additive and harmless, and keeping one code path means the two
@@ -718,11 +733,16 @@ export function imageRefsForProject(args: {
   const slug = args.repoSlug?.toLowerCase();
   const fromSlug = (suffix: string): string | undefined =>
     slug ? `ghcr.io/${slug}${suffix}:main` : undefined;
-  return {
+  const refs = {
     app: usable(defaults.APP_IMAGE),
     client: usable(defaults.CLIENT_IMAGE) ?? fromSlug("-client"),
     server: usable(defaults.SERVER_IMAGE) ?? fromSlug("-server"),
   };
+  // Under the signed deploy the workflow promotes `:live`, and that is
+  // the only tag an app may pull: nothing else moves on deploy.
+  return args.projectDir && workflowsPromotingLive(args.projectDir).length > 0
+    ? liveImageRefs(refs)
+    : refs;
 }
 
 export interface ResolvedGithubAppSource {

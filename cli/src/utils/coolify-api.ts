@@ -1035,6 +1035,66 @@ export class CoolifyApi {
       : null;
   }
 
+  /** What the signed deploy webhook depends on, for one application
+   *  (see deploy/coolify-deploy-hook.ts).
+   *
+   *  `githubSecret` is a secret VALUE. It is read only so the caller can
+   *  compare it with the keychain copy in memory; nothing may print it.
+   *  Visible only to a token with `root` or `read:sensitive`, which the
+   *  provisioner has. `otherSlotsLocked` is false while any of the
+   *  GitLab/Gitea/Bitbucket secrets is null: those endpoints then accept
+   *  a signature made with the empty key. */
+  async getDeployHookState(uuid: string): Promise<{
+    githubSecret: string | null;
+    otherSlotsLocked: boolean;
+    watchPaths: string | null;
+    gitRepository?: string;
+    gitBranch?: string;
+    buildPack?: string;
+  }> {
+    const raw = (await this.request("GET", `/applications/${uuid}`)) as Record<string, unknown>;
+    const secret = (key: string) =>
+      typeof raw[key] === "string" && (raw[key] as string) !== "" ? (raw[key] as string) : null;
+    return {
+      githubSecret: secret("manual_webhook_secret_github"),
+      otherSlotsLocked: ["gitlab", "bitbucket", "gitea"].every(
+        (slot) => secret(`manual_webhook_secret_${slot}`) !== null,
+      ),
+      watchPaths: typeof raw.watch_paths === "string" ? raw.watch_paths : null,
+      gitRepository: typeof raw.git_repository === "string" ? raw.git_repository : undefined,
+      gitBranch: typeof raw.git_branch === "string" ? raw.git_branch : undefined,
+      buildPack: typeof raw.build_pack === "string" ? raw.build_pack : undefined,
+    };
+  }
+
+  /** Write the settings the signed deploy webhook needs. Every field is
+   *  ESSENTIAL: a dropped one would leave the app either undeployable
+   *  (auto-deploy off) or deployable by anyone (a null secret). */
+  async updateDeployHook(
+    uuid: string,
+    fields: {
+      webhookSecrets?: { github?: string; gitlab?: string; bitbucket?: string; gitea?: string };
+      watchPaths?: string;
+      autoDeploy?: boolean;
+    },
+  ): Promise<void> {
+    const body: Record<string, unknown> = {};
+    for (const [slot, value] of Object.entries(fields.webhookSecrets ?? {})) {
+      if (value !== undefined) body[`manual_webhook_secret_${slot}`] = value;
+    }
+    if (fields.watchPaths !== undefined) body.watch_paths = fields.watchPaths;
+    if (fields.autoDeploy !== undefined) body.is_auto_deploy_enabled = fields.autoDeploy;
+    if (Object.keys(body).length === 0) return;
+    try {
+      await this.request("PATCH", `/applications/${uuid}`, body);
+    } catch (err) {
+      // The error text can echo the request body back; strip anything
+      // that looks like one of the secrets before it reaches a terminal.
+      const message = (err as Error).message.replace(/[0-9a-f]{64}/g, "<redacted>");
+      throw new Error(message);
+    }
+  }
+
   /** Create a Coolify **Docker Image** application — the build pack that
    *  gets rolling updates (see deploy/image-runtime.ts).
    *

@@ -72,6 +72,11 @@ import { join } from "node:path";
 import type { Topology } from "../deploy/routing.js";
 import { clientBuildArgUrls } from "./client-build-args.js";
 import { nativeClientOrigins } from "./native-origins.js";
+import {
+  PROMOTE_STEP_NAME,
+  WORKFLOW_PROMOTE_STEP,
+  upgradeWorkflowToSignedDeploy,
+} from "./signed-deploy.js";
 
 /** Project shape, as recorded in the manifest's `surfaces`. Decides
  *  which halves of the gate can run at all. */
@@ -177,90 +182,10 @@ RUN printf '{"commit":"%s","apiUrl":"%s"}\\n' "$COMMIT_SHA" "$NEXT_PUBLIC_API_UR
       > packages/client/public/version.json
 `;
 
-/** Deploy-job step that pins the immutable image tag on the Coolify
- *  app(s) before the deploy POST. */
-export const WORKFLOW_PIN_STEP = `      # Pin each app to the IMMUTABLE tag before deploying it.
-      #
-      # The compose files default to \`:main\`, and Docker keeps whatever
-      # image it already has for a mutable tag. That means Coolify can
-      # start the PREVIOUS build while ghcr's \`main\`, the Coolify
-      # dashboard and this workflow all report the new commit — a client
-      # migrated to a new API host keeps calling the old one, and every
-      # status surface says the deploy succeeded. \`pull_policy: always\`
-      # in the compose files covers the \`:main\` default; pinning the sha
-      # tag here removes the ambiguity entirely, and makes rollback "set
-      # this variable to an older sha".
-      #
-      # POST *and* PATCH, in that order: Coolify's env API only UPDATES
-      # an existing variable — a PATCH for a key that does not exist is
-      # accepted with a 200 and silently does nothing. POST creates it
-      # and fails once it exists. Neither alone is enough, so both run
-      # and the right one wins. (\`is_build_time\` is rejected on POST with
-      # "This field is not allowed"; key/value/is_preview is accepted.)
-      # hatchkit creates both variables when it provisions the apps, so
-      # in practice the PATCH is the one that does the work.
-      #
-      # Which uuid secrets are set follows the project's topology — see
-      # the deploy-step comments below. A single-origin app runs one
-      # compose declaring both services, so it carries both variables.
-      #
-      # A Docker Image app (hatchkit's \`image\` runtime) has no compose
-      # file to interpolate: it pulls \`docker_registry_image_tag\`, so
-      # that is the field pinned for it. Image apps are the ones Coolify
-      # deploys as rolling updates — the old container keeps serving
-      # until the new one passes its health check. The build pack is
-      # read per app, so this step is right before and after
-      # \`hatchkit migrate-runtime\` moves a project across.
-      - name: Pin image tags to this commit
-        env:
-          COOLIFY_BASE_URL: \${{ secrets.COOLIFY_BASE_URL }}
-          COOLIFY_API_TOKEN: \${{ secrets.COOLIFY_API_TOKEN }}
-          COOLIFY_RESOURCE_UUID: \${{ secrets.COOLIFY_RESOURCE_UUID }}
-          COOLIFY_SERVER_RESOURCE_UUID: \${{ secrets.COOLIFY_SERVER_RESOURCE_UUID }}
-          COOLIFY_CLIENT_RESOURCE_UUID: \${{ secrets.COOLIFY_CLIENT_RESOURCE_UUID }}
-        if: env.COOLIFY_BASE_URL != ''
-        run: |
-          set -euo pipefail
-          SERVER_IMAGE="ghcr.io/\${{ github.repository }}-server:\${{ github.sha }}"
-          CLIENT_IMAGE="ghcr.io/\${{ github.repository }}-client:\${{ github.sha }}"
-
-          pin() { # uuid key value
-            # Only \`.build_pack\` is read out of the response: the same GET
-            # returns the interpolated compose, secrets included.
-            build_pack=$(curl -fsSL "$COOLIFY_BASE_URL/api/v1/applications/$1" \\
-              -H "Authorization: Bearer $COOLIFY_API_TOKEN" | jq -r '.build_pack // empty')
-            if [ "$build_pack" = "dockerimage" ]; then
-              curl -fsSL -o /dev/null -X PATCH \\
-                "$COOLIFY_BASE_URL/api/v1/applications/$1" \\
-                -H "Authorization: Bearer $COOLIFY_API_TOKEN" \\
-                -H 'Content-Type: application/json' \\
-                -d "{\\"docker_registry_image_tag\\":\\"\${{ github.sha }}\\"}"
-              echo "pinned image tag \${{ github.sha }} on $1"
-              return
-            fi
-            body="{\\"key\\":\\"$2\\",\\"value\\":\\"$3\\",\\"is_preview\\":false}"
-            curl -fsS -o /dev/null -X POST \\
-              "$COOLIFY_BASE_URL/api/v1/applications/$1/envs" \\
-              -H "Authorization: Bearer $COOLIFY_API_TOKEN" \\
-              -H 'Content-Type: application/json' -d "$body" || true
-            curl -fsSL -o /dev/null -X PATCH \\
-              "$COOLIFY_BASE_URL/api/v1/applications/$1/envs" \\
-              -H "Authorization: Bearer $COOLIFY_API_TOKEN" \\
-              -H 'Content-Type: application/json' -d "$body"
-            echo "pinned $2 on $1"
-          }
-
-          if [ -n "\${COOLIFY_RESOURCE_UUID:-}" ]; then
-            pin "$COOLIFY_RESOURCE_UUID" SERVER_IMAGE "$SERVER_IMAGE"
-            pin "$COOLIFY_RESOURCE_UUID" CLIENT_IMAGE "$CLIENT_IMAGE"
-          fi
-          if [ -n "\${COOLIFY_SERVER_RESOURCE_UUID:-}" ]; then
-            pin "$COOLIFY_SERVER_RESOURCE_UUID" SERVER_IMAGE "$SERVER_IMAGE"
-          fi
-          if [ -n "\${COOLIFY_CLIENT_RESOURCE_UUID:-}" ]; then
-            pin "$COOLIFY_CLIENT_RESOURCE_UUID" CLIENT_IMAGE "$CLIENT_IMAGE"
-          fi
-`;
+/** Deploy-job steps that pick the image in GHCR and signal Coolify
+ *  without a Coolify API token. Defined in signed-deploy.ts; re-exported
+ *  here beside the other starter-mirrored blocks. */
+export { WORKFLOW_PROMOTE_STEP, WORKFLOW_SIGNED_DEPLOY_STEP } from "./signed-deploy.js";
 
 /** Deploy-job step that proves the deployed artefacts are this run's
  *  build. Always the last step of the deploy job. */
@@ -294,10 +219,9 @@ export const WORKFLOW_VERIFY_STEP = `      # Everything above only proves Coolif
       - name: Verify the deployment is actually live
         env:
           COOLIFY_BASE_URL: \${{ secrets.COOLIFY_BASE_URL }}
-          COOLIFY_WEBHOOK_URL: \${{ secrets.COOLIFY_WEBHOOK_URL }}
           HATCHKIT_WEB_URL: \${{ vars.HATCHKIT_WEB_URL }}
           HATCHKIT_API_URL: \${{ vars.HATCHKIT_API_URL }}
-        if: env.COOLIFY_BASE_URL != '' || env.COOLIFY_WEBHOOK_URL != ''
+        if: env.COOLIFY_BASE_URL != ''
         run: |
           set -uo pipefail
           SHA='\${{ github.sha }}'
@@ -410,10 +334,9 @@ export const WORKFLOW_NATIVE_ORIGIN_STEP = `      # Native shells (Capacitor, El
       - name: Verify native clients can sign in
         env:
           COOLIFY_BASE_URL: \${{ secrets.COOLIFY_BASE_URL }}
-          COOLIFY_WEBHOOK_URL: \${{ secrets.COOLIFY_WEBHOOK_URL }}
           HATCHKIT_API_URL: \${{ vars.HATCHKIT_API_URL }}
           HATCHKIT_NATIVE_ORIGINS: \${{ vars.HATCHKIT_NATIVE_ORIGINS }}
-        if: env.COOLIFY_BASE_URL != '' || env.COOLIFY_WEBHOOK_URL != ''
+        if: env.COOLIFY_BASE_URL != ''
         run: |
           set -uo pipefail
           API="\${HATCHKIT_API_URL:-}"
@@ -792,14 +715,16 @@ function endOfWorkflowStep(content: string, marker: string): number | undefined 
   return Math.min(offset, content.length);
 }
 
-/** Insert the pin + verify steps into a deploy job that predates them,
- *  then point them at this project's URLs.
+/** Insert the promote + verify steps into a deploy job that predates
+ *  them, then point them at this project's URLs.
  *
- *  Anchors are the two steps every generated deploy job has had since
- *  the pipeline existed: the Coolify API deploy (pin goes before it, so
- *  the app is pinned before it is told to deploy) and the webhook
- *  fallback (verify goes after it, so it runs whichever path deployed).
- *  Returns the content unchanged when either is missing. */
+ *  Anchors are the two steps every generated deploy job had before the
+ *  signed deploy existed: the Coolify API deploy (promote goes before
+ *  it, so the image is chosen before the app is told to deploy) and the
+ *  webhook fallback (verify goes after it, so it runs whichever path
+ *  deployed). Returns the content unchanged when either is missing.
+ *  {@link upgradeWorkflowToSignedDeploy} then replaces the token-driven
+ *  deploy steps themselves. */
 export function upgradeWorkflowDeployVerification(
   content: string,
   domain: string,
@@ -808,11 +733,14 @@ export function upgradeWorkflowDeployVerification(
 ): string {
   let out = content;
 
-  if (!out.includes("- name: Pin image tags to this commit")) {
+  if (
+    !out.includes("- name: Pin image tags to this commit") &&
+    !out.includes(`- name: ${PROMOTE_STEP_NAME}`)
+  ) {
     const anchor = /^[ \t]*- name: Deploy via Coolify API.*$/m;
     const m = out.match(anchor);
     if (!m || m.index === undefined) return content;
-    out = `${out.slice(0, m.index)}${WORKFLOW_PIN_STEP}\n${out.slice(m.index)}`;
+    out = `${out.slice(0, m.index)}${WORKFLOW_PROMOTE_STEP}\n${out.slice(m.index)}`;
   }
 
   if (!out.includes("- name: Verify the deployment is actually live")) {
@@ -879,67 +807,6 @@ export const DEPLOY_WORKFLOW_REL_PATH = ".github/workflows/build-and-deploy.yml"
  *  its own images cannot satisfy. Each entry is idempotent and no-ops on
  *  a file that already carries the change or does not match the
  *  generated shape; callers skip paths that don't exist. */
-/** The branch a pin step needs for a Coolify Docker Image app: patch
- *  `docker_registry_image_tag`, which is what an image app pulls. An
- *  image app has no compose file to interpolate, so the env-var pin the
- *  older step writes is ignored there and every deploy re-runs whatever
- *  tag the app was created with. */
-const IMAGE_PIN_BRANCH = `            # Only \`.build_pack\` is read out of the response: the same GET
-            # returns the interpolated compose, secrets included.
-            build_pack=$(curl -fsSL "$COOLIFY_BASE_URL/api/v1/applications/$1" \\
-              -H "Authorization: Bearer $COOLIFY_API_TOKEN" | jq -r '.build_pack // empty')
-            if [ "$build_pack" = "dockerimage" ]; then
-              curl -fsSL -o /dev/null -X PATCH \\
-                "$COOLIFY_BASE_URL/api/v1/applications/$1" \\
-                -H "Authorization: Bearer $COOLIFY_API_TOKEN" \\
-                -H 'Content-Type: application/json' \\
-                -d "{\\"docker_registry_image_tag\\":\\"\${{ github.sha }}\\"}"
-              echo "pinned image tag \${{ github.sha }} on $1"
-              return
-            fi
-`;
-
-/** Same branch for the single-app build-pipeline workflow (adopt's
- *  `deploy.yml`), whose pin step is inline rather than a function. */
-const IMAGE_PIN_BRANCH_SINGLE = `          # Only \`.build_pack\` is read out of the response: the same GET
-          # returns the interpolated compose, secrets included.
-          BUILD_PACK=$(curl -fsSL "$COOLIFY_BASE_URL/api/v1/applications/$COOLIFY_RESOURCE_UUID" \\
-            -H "Authorization: Bearer $COOLIFY_API_TOKEN" | jq -r '.build_pack // empty')
-          if [ "$BUILD_PACK" = "dockerimage" ]; then
-            curl -fsSL -o /dev/null -X PATCH \\
-              "$COOLIFY_BASE_URL/api/v1/applications/$COOLIFY_RESOURCE_UUID" \\
-              -H "Authorization: Bearer $COOLIFY_API_TOKEN" \\
-              -H 'Content-Type: application/json' \\
-              -d "{\\"docker_registry_image_tag\\":\\"\${{ github.sha }}\\"}"
-            echo "pinned image tag \${{ github.sha }} on $COOLIFY_RESOURCE_UUID"
-            exit 0
-          fi
-`;
-
-/** Teach a pin step written before the image runtime to pin Docker
- *  Image apps too. Handles both generated shapes — the starter's `pin()`
- *  function and the build-pipeline's inline APP_IMAGE pin — and returns
- *  the content unchanged when it already knows (idempotent) or when
- *  neither anchor is there (a hand-rolled workflow is left alone). */
-export function upgradeWorkflowPinForImageApps(content: string): string {
-  // The PATCH body, not the bare field name — the step's own comment
-  // mentions the field too.
-  if (content.includes('\\"docker_registry_image_tag\\":')) return content;
-  const fnAnchor = "          pin() { # uuid key value\n";
-  if (content.includes(fnAnchor)) {
-    return content.replace(fnAnchor, `${fnAnchor}${IMAGE_PIN_BRANCH}`);
-  }
-  const inlineAnchor =
-    /^( {10}set -euo pipefail\n)( {10}APP_IMAGE="ghcr\.io\/\$\{\{ github\.repository \}\}:\$\{\{ github\.sha \}\}"\n)/m;
-  if (inlineAnchor.test(content)) {
-    return content.replace(
-      inlineAnchor,
-      (_m, a: string, b: string) => `${a}${IMAGE_PIN_BRANCH_SINGLE}${b}`,
-    );
-  }
-  return content;
-}
-
 export function deployVerificationRetrofits(
   domain: string,
   topology: Topology = "single-origin",
@@ -962,7 +829,7 @@ export function deployVerificationRetrofits(
         let out = addWorkflowCommitShaBuildArg(c, "packages/server/Dockerfile");
         out = addWorkflowCommitShaBuildArg(out, "packages/client/Dockerfile");
         out = upgradeWorkflowDeployVerification(out, domain, topology, surfaces);
-        out = upgradeWorkflowPinForImageApps(out);
+        out = upgradeWorkflowToSignedDeploy(out);
         return features === undefined ? out : upgradeWorkflowNativeOriginCheck(out, features);
       },
     ],

@@ -54,6 +54,11 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   across projects and update every local project, Coolify app and ListMonk
   setting that holds it. Both refuse while the dotenvx key is in git history
   (`keys rotate` first). Start with `--dry-run`; never pushes.
+- `hatchkit secrets isolate <project> | --all [--dry-run] [--rotate]`: take
+  hatchkit's Coolify token out of a project — per-app signed deploy webhooks,
+  `:live` promoted in GHCR, token secrets deleted. See
+  `cli/src/deploy/coolify-deploy-hook.ts` for why no Coolify token can be
+  scoped to one app.
 - `hatchkit gh-pages`: configure GitHub Pages for the current repo.
 - `hatchkit cloudflare`: configure Cloudflare Workers Static Assets for the
   current repo (static sites; free, unmetered asset requests).

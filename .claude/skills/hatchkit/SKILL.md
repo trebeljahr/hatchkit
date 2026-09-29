@@ -71,6 +71,7 @@ rotation URL, required scopes, and exact `hatchkit config add <provider>` comman
 | `hatchkit keys rotate <project>` | Rotate dotenvx keypair |
 | `hatchkit secrets rotate <project>` | Rotate one project's provider credentials (R2, local secrets, GlitchTip, OpenPanel); `--dry-run` first |
 | `hatchkit secrets rotate --global ses\|listmonk` | Rotate a shared credential and update every project, Coolify app and ListMonk setting holding it; `--dry-run` first |
+| `hatchkit secrets isolate <project>\|--all` | Replace the Coolify token in a repo with per-app signed deploy webhooks; `--dry-run` first, `--rotate` mints new per-app secrets |
 | `hatchkit doctor` | Read-only live health check of configured providers |
 | `hatchkit explain` | One-page mental model |
 | `hatchkit gh-pages` | Wire GitHub Pages for the current repo |

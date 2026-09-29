@@ -542,21 +542,23 @@ check("migrate-runtime adds its manifest fields without rewriting the file", () 
 
 console.log("\nimage runtime — shipped files");
 
-check("both deploy workflows pin docker_registry_image_tag on image apps", () => {
+check("both deploy workflows choose the image in GHCR, for image and compose apps alike", () => {
   for (const file of [
     "starter/.github/workflows/build-and-deploy.yml",
     "cli/src/templates/build-pipeline/deploy.yml.hbs",
   ]) {
     const text = readFileSync(join(REPO, file), "utf-8");
-    assert.match(text, /jq -r '\.build_pack \/\/ empty'/, `${file}: reads the build pack`);
-    assert.match(text, /= "dockerimage"/, `${file}: branches on dockerimage`);
+    // Image apps pull docker_registry_image_tag, compose apps interpolate
+    // an env var; both are set to `:live` once by hatchkit, so the one
+    // thing the workflow moves is that tag — no build-pack branch, and
+    // no Coolify API call that would need a token.
     assert.match(
       text,
-      /\\"docker_registry_image_tag\\":\\"\$\{\{ github\.sha \}\}\\"/,
-      `${file}: pins the sha tag`,
+      /docker buildx imagetools create --tag "\$image:live"/,
+      `${file}: promotes :live`,
     );
-    // The compose path still pins its env var.
-    assert.match(text, /\/envs"/, `${file}: keeps the env pin for compose apps`);
+    assert.ok(!text.includes("/api/v1/"), `${file}: still calls the Coolify API`);
+    assert.ok(!text.includes("docker_registry_image_tag"), `${file}: still pins on Coolify`);
   }
 });
 

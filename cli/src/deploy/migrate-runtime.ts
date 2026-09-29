@@ -481,15 +481,22 @@ async function migrate(
   //    Two requests, so a refused domain update can't take the tag
   //    change down with it — and the domains need the override: the
   //    stopped compose app still has them on record.
+  //    A project whose workflow promotes `:live` in GHCR (the signed
+  //    deploy, deploy/coolify-deploy-hook.ts) deploys by moving that
+  //    tag, so `:live` is its steady tag — any other would never move.
+  const { workflowsPromotingLive } = await import("../scaffold/signed-deploy.js");
+  const { LIVE_TAG } = await import("./coolify-deploy-hook.js");
+  const promotesLive = workflowsPromotingLive(opts.projectDir).length > 0;
   for (const [i, app] of plan.apps.entries()) {
     const uuid = ledger.apps[i].uuid;
-    if (!opts.keepLiveTag && app.steadyTag !== app.image.tag) {
+    const steadyTag = promotesLive ? LIVE_TAG : app.steadyTag;
+    if (!opts.keepLiveTag && steadyTag !== app.image.tag) {
       await api
-        .updateApplication(uuid, { dockerRegistryImageTag: app.steadyTag })
+        .updateApplication(uuid, { dockerRegistryImageTag: steadyTag })
         .catch((err) =>
           console.log(
             chalk.yellow(
-              `  Couldn't move ${app.appName} to :${app.steadyTag}: ${(err as Error).message}\n` +
+              `  Couldn't move ${app.appName} to :${steadyTag}: ${(err as Error).message}\n` +
                 "  Its next deploy re-runs the migrated build unless the workflow pins the tag.",
             ),
           ),
@@ -507,7 +514,7 @@ async function migrate(
   }
 
   // ── 5. Point CI at the new app(s).
-  if (!opts.noSecrets) await repointSecrets(coolifyUrl, plan, ledger, opts.projectDir);
+  if (!opts.noSecrets) await repointSecrets(api, coolifyUrl, plan, ledger, opts.projectDir);
   saveLedger(ledger);
 
   console.log(
@@ -525,6 +532,7 @@ async function migrate(
 }
 
 async function repointSecrets(
+  api: CoolifyApi,
   coolifyUrl: string,
   plan: RuntimeMigrationPlan,
   ledger: MigrationLedger,
@@ -565,6 +573,23 @@ async function repointSecrets(
           value: ledger.apps[i].uuid,
           uuid: ledger.apps[i].uuid,
         }));
+  // A repo on the signed deploy (no Coolify token) signs with the app's
+  // own webhook secret, so the new app needs its own hook and the repo
+  // its secret, repository and branch. Same existing-only rule.
+  const { deployHookSecretNames, ensureDeployHook } = await import("./coolify-deploy-hook.js");
+  for (let i = 0; i < plan.apps.length; i++) {
+    const role =
+      plan.apps.length === 1 ? undefined : plan.apps[i].role === "server" ? "server" : "client";
+    const names = deployHookSecretNames(role);
+    if (!(await ghSecretExists(cwd, repo, names.secret))) continue;
+    const { hook } = await ensureDeployHook(api, ledger.apps[i].uuid, { role });
+    candidates.push(
+      { name: names.secret, value: hook.secret, uuid: hook.uuid },
+      { name: names.repository, value: hook.repository, uuid: hook.uuid },
+      { name: names.branch, value: hook.branch, uuid: hook.uuid },
+    );
+  }
+
   let updated = 0;
   for (const c of candidates) {
     if (!(await ghSecretExists(cwd, repo, c.name))) continue;
@@ -629,11 +654,24 @@ async function rollback(
     name: ledger.source.name,
     ...(ledger.source.autoDeployWasEnabled ? { isAutoDeployEnabled: true } : {}),
   });
+  // A signed-deploy repo gets the legacy app's own hook back: its
+  // secret, repository and branch, not its uuid. ensureDeployHook also
+  // turns the legacy app's auto-deploy back on, which the webhook needs.
+  const { ensureDeployHook } = await import("./coolify-deploy-hook.js");
+  const sourceHook = ledger.secrets.some((s) => /_DEPLOY_(SECRET|REPOSITORY|BRANCH)$/.test(s.name))
+    ? (await ensureDeployHook(api, ledger.source.uuid)).hook
+    : undefined;
   for (const s of ledger.secrets) {
     const value =
       s.name === "COOLIFY_WEBHOOK_URL"
         ? `${(await getCoolifyConfig())?.url}/api/v1/deploy?uuid=${s.previousUuid}`
-        : s.previousUuid;
+        : sourceHook && s.name.endsWith("_DEPLOY_SECRET")
+          ? sourceHook.secret
+          : sourceHook && s.name.endsWith("_DEPLOY_REPOSITORY")
+            ? sourceHook.repository
+            : sourceHook && s.name.endsWith("_DEPLOY_BRANCH")
+              ? sourceHook.branch
+              : s.previousUuid;
     await ghSecretSet(opts.projectDir, s.repo, s.name, value).catch((err) =>
       console.log(chalk.yellow(`  Couldn't restore ${s.name}: ${(err as Error).message}`)),
     );
