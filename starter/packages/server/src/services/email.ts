@@ -20,7 +20,19 @@ export interface EmailParams {
  * otherwise the plaintext body is escaped and wrapped in a `<pre>` so
  * the template still receives HTML.
  */
+// hatchkit-ses-project-v1: activation is explicit, including for existing apps.
+export function isEmailConfigured(): boolean {
+  if (env.EMAIL_TRANSPORT === "ses") return true; // incomplete SES must fail, never log-and-drop
+  return !!(env.LISTMONK_URL && env.LISTMONK_TX_TEMPLATE_ID);
+}
+
 export async function sendEmail(params: EmailParams): Promise<void> {
+  if (env.EMAIL_TRANSPORT === "ses") {
+    const { sendProjectSesEmail } = await import("./ses-email.js");
+    await sendProjectSesEmail(params, env);
+    return;
+  }
+  if (env.EMAIL_TRANSPORT && env.EMAIL_TRANSPORT !== "listmonk") throw new Error("Unknown EMAIL_TRANSPORT");
   const ready =
     env.LISTMONK_URL &&
     env.LISTMONK_API_USER &&

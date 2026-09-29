@@ -30,6 +30,7 @@ export const PROVISIONED_DEV_SECRET_KEYS: readonly string[] = [
   // whole Listmonk instance, and the SES SMTP password.
   "LISTMONK_API_TOKEN",
   "SES_SMTP_PASSWORD",
+  "SES_PROJECT_SECRET_ACCESS_KEY",
   // OpenPanel, with `--enable-dev-obs`.
   "OPENPANEL_CLIENT_SECRET",
   // Stripe sandbox keys (`renderStripeEnv`). Test-mode keys still read

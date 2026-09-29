@@ -267,3 +267,68 @@ The credentials belong to one machine's keychain. A run on a machine without the
 **Send fails: `554 ... not authorized to send`** — SES SMTP credentials are derived from the IAM secret. Don't paste the IAM secret directly into Listmonk. `hatchkit ses smtp --show-password` prints the *derived* password. Use that.
 
 **`hatchkit listmonk user` stops: the API user exists, but no stored token works** — Listmonk shows a token only once. If you have the working token, store it with `security add-generic-password -U -s hatchkit -a listmonk:project:<project>:api-token -w` and run the command again. Otherwise run it with `--regenerate-token`, then `hatchkit sync` and redeploy right away.
+
+## Restrict direct transactional mail to one project
+
+A project credential should not send as another project. `hatchkit ses isolate` prepares a separate IAM sender, SES tenant and configuration set.
+
+**Shared Listmonk remains a separate boundary.** Its project API users retain shared relay and subscriber permissions. Keeping that credential means the app is not fully isolated. Do not remove active newsletter access before migrating it.
+
+The direct sender permits only SES v2 `SendEmail`. Its policy requires the exact verified identity, permitted From mailbox, region and tenant name. Explicit denies reject other resources, missing scope and all other AWS actions. SMTP and legacy `SendRawEmail` are denied. SES v2 raw MIME still uses `SendEmail`; AWS's `ses:FromAddress` restriction remains the header boundary.
+
+The tenant condition prevents a leaked key from omitting or changing the tenant. A client-supplied `X-SES-TENANT` header alone would not provide this guarantee. AWS documents these conditions in the [SES v2 authorization reference](https://docs.aws.amazon.com/service-authorization/latest/reference/list_sesv2.html). See also [sender restrictions](https://docs.aws.amazon.com/ses/latest/dg/control-user-access.html) and [SES tenants](https://docs.aws.amazon.com/ses/latest/dg/tenants.html).
+
+### Prepare and review
+
+1. Verify `mail.<project-domain>` in the configured SES region. The isolation command preserves that identity, its DNS and feedback settings.
+2. Give Hatchkit's keychain-only provisioner the required IAM and SES tenant rights. A permission refusal prints the required actions. Never put this credential in an app.
+3. Review the plan:
+
+```bash
+hatchkit status --json
+hatchkit ses isolate /path/to/project --dry-run
+```
+
+`--from` accepts comma-separated exact mailboxes at `mail.<project-domain>`. The default is `noreply@mail.<project-domain>`. The plan prints resource identifiers and the sender policy, with no secrets. Dry-run makes no AWS, keychain or env writes.
+
+After approval, run the same command without `--dry-run`. It writes the project credential to encrypted production env and ignored development env. It does not change the transport, sync, deploy or send mail. Repeating it reuses the audited sender and key.
+
+### Activate the application
+
+Review these starter changes in an existing app before activation:
+
+- Add `@aws-sdk/client-sesv2` and `services/ses-email.ts`.
+- Port the explicit SES branch in `services/email.ts` and the `SES_PROJECT_*` env fields.
+- Use `isEmailConfigured()` in account verification and password-reset handlers. Both database variants support this.
+- Pass the new variables through the container configuration. Keep the credentials on the server.
+- Route newsletter confirmation and welcome mail through `sendEmail` when `EMAIL_TRANSPORT=ses`. Preserve the confirm-only list-membership logic.
+- Set `EMAIL_TEST_RECIPIENT` for development. Direct SES rejects other non-production recipients; test mode never sends mail.
+
+Hatchkit does not overwrite custom mail code during `update`. After reviewing the runtime, preview activation:
+
+```bash
+hatchkit ses isolate /path/to/project --activate --dry-run
+```
+
+If the app retains Listmonk credentials, the command refuses activation until you add `--acknowledge-listmonk-gap`. This acknowledges an incomplete boundary; it does not certify isolation.
+
+After approval, remove `--dry-run`. Review the encrypted env diff, then approve sync and deployment separately. Missing SES settings or failed sends never fall back to a shared credential. Account recipients do not need newsletter membership.
+
+### Rotate or undo
+
+```bash
+hatchkit ses isolate /path/to/project --rotate --dry-run
+hatchkit ses isolate /path/to/project --recipe
+```
+
+An approved rotation creates a new key and keeps the old key active. A failed env write is resumable: rerun without `--rotate`. After deploying and verifying the new key, preview `--retire-previous --dry-run`, then approve retirement separately.
+
+The rollback recipe names only journaled project resources. Restore and verify the previous app transport before revoking a deployed key. Recheck ownership tags and IAM UserId before cleanup. Preserve the pre-existing SES identity and its DNS and feedback settings.
+
+### Limits and verification
+
+Mock tests exercise hostile sender/identity/tenant requests, extra IAM grants, ownership collisions, failed creation and rotation, and dry-run writes. They do not prove live AWS enforcement or raw MIME parsing. A production rollout still needs read-only policy simulation where permitted and an explicitly approved delivery test.
+
+Tenants do not create separate AWS accounts. Billing, account quotas, shared infrastructure and account-level enforcement remain shared. This implementation supports commercial AWS regions; unsupported tenant APIs fail closed.
+
+For full newsletter isolation, migrate each project to its own Listmonk instance, database and restricted relay. An alternative gateway must hold all shared credentials outside apps, bind each authenticated project to its sender and lists, and validate every subscriber and campaign operation. Retire old project API tokens only after testing the replacement. Doctor reports retained shared Listmonk authority as a failure beside an isolated SES sender.

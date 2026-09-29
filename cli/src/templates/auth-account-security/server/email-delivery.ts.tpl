@@ -12,12 +12,13 @@
  * send — and no error anywhere, because not sending was the code's own idea.
  */
 
-export type EmailTransportKind = "smtp" | "listmonk" | "console";
+export type EmailTransportKind = "ses" | "smtp" | "listmonk" | "console";
 
 /** The subset of the environment that decides the transport. Taken as a
  *  parameter rather than read from `env`, so the rule is unit-testable
  *  without a process environment. */
 export interface EmailTransportEnv {
+  EMAIL_TRANSPORT?: string;
   SMTP_HOST: string;
   LISTMONK_URL: string;
   LISTMONK_API_USER: string;
@@ -45,6 +46,9 @@ export interface EmailTransportEnv {
  * an operator who plainly configured it.
  */
 export function selectEmailTransport(source: EmailTransportEnv): EmailTransportKind {
+  // Explicit SES wins. An incomplete sender must throw at delivery time,
+  // never downgrade to a shared relay or silently log the account URL.
+  if (source.EMAIL_TRANSPORT === "ses") return "ses";
   if (source.SMTP_HOST.trim()) return "smtp";
   const listmonkReady =
     source.LISTMONK_URL &&
@@ -65,6 +69,7 @@ export function isEmailDeliveryConfigured(): boolean {
   const read = (key: string): string => process.env[key] ?? "";
   return (
     selectEmailTransport({
+      EMAIL_TRANSPORT: read("EMAIL_TRANSPORT"),
       SMTP_HOST: read("SMTP_HOST"),
       LISTMONK_URL: read("LISTMONK_URL"),
       LISTMONK_API_USER: read("LISTMONK_API_USER"),

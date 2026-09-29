@@ -2077,6 +2077,11 @@ async function handleSesCommand(rest: string[]): Promise<void> {
     printSesUsage();
     return;
   }
+  if (sub === "isolate") {
+    const { runSesSenderCli } = await import("./provision/ses-sender-cli.js");
+    await runSesSenderCli(rest.slice(1));
+    return;
+  }
   if (sub === "webhook-auth") {
     await printSesWebhookAuth();
     return;
@@ -3785,6 +3790,15 @@ function printSesUsage(): void {
 
     ${chalk.cyan("status")}             Region, sandbox state, send caps, identity
                        count. Run this first when something fails.
+
+    ${chalk.cyan("isolate [<project-directory>] [--dry-run] [--from <mailboxes>]")}
+                       Prepare an AWS-restricted project sender and tenant.
+                       Writes encrypted local env only; transport stays unchanged.
+                       --activate selects direct SES after runtime review.
+                       --acknowledge-listmonk-gap acknowledges retained shared
+                       relay/subscriber authority; full isolation stays incomplete.
+                       --rotate keeps the old key; --retire-previous revokes it
+                       only after a verified rollout. --recipe prints rollback.
 
     ${chalk.cyan("smtp [--show-password]")}
                        The SMTP relay login derived from hatchkit's SES key,

@@ -110,6 +110,7 @@ export async function collectProvisionerValues(): Promise<ProvisionerValue[]> {
     "the shared Cloudflare Workers token older hatchkit pushed to every Worker repo",
     await getSecret(SECRET_KEYS.cloudflareWorkersToken),
   );
+  add("listmonk", "hatchkit's Listmonk admin token", await getSecret(SECRET_KEYS.listmonkAdminApiToken));
   const sesId = await getSecret(SECRET_KEYS.sesAccessKeyId);
   const sesSecret = await getSecret(SECRET_KEYS.sesSecretAccessKey);
   add("ses", "hatchkit's shared SES access key id", sesId);
@@ -153,6 +154,13 @@ export function findProvisionerValuesInEnv(
         what: `${key} is set — it is derived from hatchkit's shared SES key (an older one, or the current one)`,
       });
     }
+  }
+  if (env.LISTMONK_API_TOKEN) {
+    out.push({
+      severity: env.SES_PROJECT_ACCESS_KEY_ID || env.EMAIL_TRANSPORT === "ses" ? "fail" : "warn",
+      provider: "listmonk", where,
+      what: "Listmonk credentials retain shared relay/subscriber authority; per-project API users do not enforce sender isolation. Migrate newsletters to a dedicated instance or project-bound gateway before claiming full isolation.",
+    });
   }
   return out;
 }
@@ -366,6 +374,7 @@ export async function auditProjectIsolation(
   const name = manifest?.name ?? projectDir.split("/").pop() ?? projectDir;
   const provisioners = opts.provisioners ?? (await collectProvisionerValues());
   const findings: IsolationFinding[] = [];
+  const senderEnvs: Array<{ where: string; env: Record<string, string> }> = [];
 
   if (opts.envFiles !== false) {
     const { readDevEnv, readEncryptedProd } = await import("./env-writer.js");
@@ -374,7 +383,9 @@ export async function auditProjectIsolation(
       ["dev env", () => readDevEnv(projectDir)],
     ] as const) {
       try {
-        findings.push(...findProvisionerValuesInEnv(read(), provisioners, label));
+        const env = read();
+        findings.push(...findProvisionerValuesInEnv(env, provisioners, label));
+        senderEnvs.push({ where: label, env });
       } catch {
         // A missing file or a key that can't be located is not a finding.
       }
@@ -447,8 +458,13 @@ export async function auditProjectIsolation(
           (await api.listAppEnvs(app.uuid).catch(() => [])).map((e) => [e.key, e.value]),
         );
         findings.push(...findProvisionerValuesInEnv(env, provisioners, `coolify:${app.uuid}`));
+        senderEnvs.push({ where: `coolify:${app.uuid}`, env });
       }
     }
+  }
+  if (senderEnvs.some(({ env }) => env.SES_PROJECT_ACCESS_KEY_ID || env.EMAIL_TRANSPORT === "ses")) {
+    const { auditProjectSenderEnvs } = await import("../provision/ses-sender-audit.js");
+    findings.push(...await auditProjectSenderEnvs(name, senderEnvs));
   }
   return { name, repo, findings };
 }

@@ -252,6 +252,11 @@ export type SendTransactionalParams = {
  *  whichever project set it last. Same names as the account-email
  *  transport (`listmonkTxBody` in services/email.ts). */
 export async function sendTransactional(params: SendTransactionalParams): Promise<void> {
+  if (process.env.EMAIL_TRANSPORT === "ses") {
+    const { sendEmail } = await import("../email.js");
+    await sendEmail({ to: params.to, subject: params.subject, text: "Open this email in an HTML-capable mail client.", html: params.html });
+    return;
+  }
   const templateId = Number(required("LISTMONK_TX_TEMPLATE_ID"));
   await listmonkFetch("/api/tx", {
     method: "POST",

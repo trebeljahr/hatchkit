@@ -125,6 +125,18 @@ export const env = {
   STRIPE_PUBLISHABLE_KEY: getOptional("STRIPE_PUBLISHABLE_KEY"),
   STRIPE_WEBHOOK_SECRET: getOptional("STRIPE_WEBHOOK_SECRET"),
 
+  // Opt in only after preparing a restricted project sender. Legacy apps stay
+  // on Listmonk until the migration explicitly sets EMAIL_TRANSPORT=ses.
+  EMAIL_TRANSPORT: getOptional("EMAIL_TRANSPORT", "listmonk"),
+  SES_PROJECT_ACCESS_KEY_ID: getOptional("SES_PROJECT_ACCESS_KEY_ID"),
+  SES_PROJECT_SECRET_ACCESS_KEY: getOptional("SES_PROJECT_SECRET_ACCESS_KEY"),
+  SES_PROJECT_REGION: getOptional("SES_PROJECT_REGION"),
+  SES_PROJECT_IDENTITY_ARN: getOptional("SES_PROJECT_IDENTITY_ARN"),
+  SES_PROJECT_TENANT: getOptional("SES_PROJECT_TENANT"),
+  SES_PROJECT_CONFIGURATION_SET: getOptional("SES_PROJECT_CONFIGURATION_SET"),
+  SES_PROJECT_FROM_EMAIL: getOptional("SES_PROJECT_FROM_EMAIL"),
+  EMAIL_TEST_RECIPIENT: getOptional("EMAIL_TEST_RECIPIENT"),
+
   // Email — Listmonk + SES. Listmonk owns the API surface (tx + campaigns
   // + subscriber management); SES is the SMTP relay it sends through.
   // `hatchkit add <project> listmonk-ses` provisions the SES identity +

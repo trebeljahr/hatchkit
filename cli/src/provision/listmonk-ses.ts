@@ -995,7 +995,8 @@ export interface RenderListmonkSesEnvOptions {
  *  password is derived from hatchkit's own SES IAM secret, so it
  *  carries that IAM user's rights. Listmonk holds it in its SMTP
  *  settings (`applySesSmtpToListmonk`); `hatchkit ses smtp` prints it
- *  for a hand paste.
+ *  for a hand paste. Direct SES uses separately provisioned project API keys
+ *  (`hatchkit ses isolate`), never these shared SMTP credentials.
  *
  *  `LISTMONK_LIVE_LIST_ID` goes into prod only. It is the name the
  *  starter's config/env.ts, docker-compose.yml and newsletter code read;

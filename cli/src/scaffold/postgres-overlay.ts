@@ -467,7 +467,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { env, getTrustedOrigins } from "../config/env.js";
 import { getDb } from "../db/connection.js";
 import * as schema from "../db/schema.js";
-import { sendEmail } from "../services/email.js";
+import { isEmailConfigured, sendEmail } from "../services/email.js";
 
 /**
  * better-auth instance. Must be initialized AFTER connectToDB() because
@@ -495,7 +495,7 @@ export async function initAuth(): Promise<void> {
       enabled: true,
       requireEmailVerification: false,
       async sendResetPassword({ user, url }: { user: { email: string }; url: string }) {
-        if (!env.LISTMONK_URL || !env.LISTMONK_TX_TEMPLATE_ID) {
+        if (!isEmailConfigured()) {
           console.log(\`[auth] Password reset URL for \${user.email}: \${url}\`);
           return;
         }
@@ -507,7 +507,7 @@ export async function initAuth(): Promise<void> {
         });
       },
       async sendVerificationEmail({ user, url }: { user: { email: string }; url: string }) {
-        if (!env.LISTMONK_URL || !env.LISTMONK_TX_TEMPLATE_ID) {
+        if (!isEmailConfigured()) {
           console.log(\`[auth] Verification URL for \${user.email}: \${url}\`);
           return;
         }

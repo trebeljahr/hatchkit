@@ -629,6 +629,13 @@ await check("the token's secret names on a repo are failures; the webhook URL a 
   assert.deepEqual(findProvisionerSecretNames(["COOLIFY_DEPLOY_SECRET"], "acme/app"), []);
 });
 
+await check("shared Listmonk remains an isolation failure beside a scoped SES sender", () => {
+  const env = { LISTMONK_API_USER: "project-a", LISTMONK_API_TOKEN: "fixture-token", SES_PROJECT_ACCESS_KEY_ID: "fixture-project-key" };
+  const found = findProvisionerValuesInEnv(env, [], "prod");
+  assert(found.some((f) => f.provider === "listmonk" && f.severity === "fail"));
+  assert(!JSON.stringify(found).includes("fixture-token"));
+});
+
 if (failures.length > 0) {
   console.log(`\n${failures.length} failure(s):`);
   for (const f of failures) console.log(f);

@@ -51,6 +51,8 @@
   "test-listmonk-tx-mode.ts",
   "test-listmonk-tx-from.ts",
   "test-newsletter-confirm-origin.ts",
+  "test-ses-project-sender.ts",
+  "test-ses-project-runtime.ts",
   "test-ses-smtp.ts",
   "test-ses-mail-from.ts",
   "test-cloudflare-dns-publish.ts",
