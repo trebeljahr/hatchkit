@@ -8,7 +8,7 @@
  *     `~/projects` and `~/work`, `$HATCHKIT_PROJECTS_ROOTS`, or
  *     `--projects-root`) for a direct child with `.hatchkit.json`.
  *     Detection is by env KEY NAME in `.env.production` /
- *     `.env.development`, not by the manifest's email intent: on
+ *     `.env.development(.local)`, not by the manifest's email intent: on
  *     2026-09-29 collection-of-beauty's manifest said `email: none`
  *     while its `.env.production` held the SES and ListMonk values.
  *     A project is rewritten only when its current value equals the old
@@ -21,21 +21,27 @@
  *
  * Every write obeys the order rule: a project whose dotenvx key is in
  * git history is skipped, because the new value would be encrypted to a
- * key anyone can read. A plaintext `.env.development` is written only
- * when git ignores it.
+ * key anyone can read. The plaintext dev copy is always written to the
+ * gitignored `.env.development.local` (`writeDevEnv` checks), never to
+ * the committed `.env.development`; a copy found there is moved out.
  */
 
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join, relative } from "node:path";
+import { delimiter, dirname, join, relative } from "node:path";
 import { parse as parseDotenv } from "@dotenvx/dotenvx";
 import { getCoolifyConfig } from "../../config.js";
 import { locateEnvKeysFile, parsePrivateKeyValue } from "../../deploy/keys.js";
-import { readEnvKeys, writeDevEnv, writeProdEnv } from "../../provision/write-env.js";
+import {
+  devLocalEnvPath,
+  readEnvKeys,
+  writeDevEnv,
+  writeProdEnv,
+} from "../../provision/write-env.js";
 import { readManifestWithMigrationInfo } from "../../scaffold/manifest.js";
 import { CoolifyApi } from "../../utils/coolify-api.js";
+import { DEV_ENV_FILE, DEV_LOCAL_ENV_FILE } from "../../utils/dev-env-secrets.js";
 import { locateEnvFile } from "../../utils/env-files.js";
-import { exec } from "../../utils/exec.js";
 import { SECRET_KEYS, getSecret } from "../../utils/secrets.js";
 import { redactErrorMessage } from "../audit.js";
 import { inspectEnvKeysHistory } from "../key-history.js";
@@ -49,7 +55,12 @@ export interface LocalProject {
   name: string;
   dir: string;
   prodPath?: string;
+  /** The gitignored `.env.development.local` a dev copy is written to,
+   *  when the project has a dev env at all. */
   devPath?: string;
+  /** Dev env files to read, local first: `.env.development.local`, then
+   *  a legacy `.env.development` from before provisioned values moved. */
+  devReadPaths: string[];
   prodKeys: Set<string>;
   devKeys: Set<string>;
   /** Manifest email intent names listmonk-ses. */
@@ -99,15 +110,19 @@ export function discoverProjects(roots: string[]): LocalProject[] {
     }
     if (!manifest) continue;
     const prodPath = locateEnvFile(dir, ".env.production");
-    const devPath = locateEnvFile(dir, ".env.development");
+    const devReadPaths = [DEV_LOCAL_ENV_FILE, DEV_ENV_FILE]
+      .map((f) => locateEnvFile(dir, f))
+      .filter((p): p is string => p !== undefined);
+    const devPath = devReadPaths[0] ? devLocalEnvPath(dirname(devReadPaths[0])) : undefined;
     const email = manifest.manifest.email;
     out.push({
       name: manifest.manifest.name,
       dir,
       prodPath,
       devPath,
+      devReadPaths,
       prodKeys: prodPath ? readEnvKeys(prodPath) : new Set(),
-      devKeys: devPath ? readEnvKeys(devPath) : new Set(),
+      devKeys: new Set(devReadPaths.flatMap((p) => [...readEnvKeys(p)])),
       listmonkSes: email?.transactional === "listmonk-ses" || email?.mailingList === "listmonk-ses",
     });
   }
@@ -139,23 +154,6 @@ function decryptFile(path: string, privateKey: string | undefined): Record<strin
     processEnv: {},
   }) as Record<string, string>;
   return parsed;
-}
-
-/** True when git would never commit `path`: outside any repo, or
- *  ignored and untracked. */
-async function gitIgnores(path: string, dir: string): Promise<boolean> {
-  const inRepo = await exec("git", ["rev-parse", "--is-inside-work-tree"], {
-    cwd: dir,
-    silent: true,
-  });
-  if (inRepo.exitCode !== 0) return true;
-  const tracked = await exec("git", ["ls-files", "--error-unmatch", path], {
-    cwd: dir,
-    silent: true,
-  });
-  if (tracked.exitCode === 0) return false;
-  const ignored = await exec("git", ["check-ignore", "-q", path], { cwd: dir, silent: true });
-  return ignored.exitCode === 0;
 }
 
 // ─── Planning ────────────────────────────────────────────────────────
@@ -249,21 +247,24 @@ export async function planProject(
   }
 
   if (holdsDev && project.devPath) {
+    // The value the server loads: the local file wins over the legacy one.
     let value: string | undefined;
-    try {
-      value = decryptFile(project.devPath, undefined)[rotator.matchKey];
-    } catch {
-      value = undefined;
+    for (const path of project.devReadPaths) {
+      try {
+        value = decryptFile(path, undefined)[rotator.matchKey];
+      } catch {
+        value = undefined;
+      }
+      if (value !== undefined) break;
     }
     if (opts.freshMatchValue !== undefined && value === opts.freshMatchValue) {
       alreadyDone++;
     } else if (oldValue === undefined || value !== oldValue) {
-      reasons.push(".env.development holds a different value; left alone");
-    } else if (!(await gitIgnores(project.devPath, project.dir))) {
-      reasons.push(
-        ".env.development skipped: git does not ignore it, so a plaintext secret there is published on the next push. It still holds the old credential; remove it from that file and ignore the file",
-      );
+      reasons.push("the dev env holds a different value; left alone");
     } else {
+      // Always safe: writeDevEnv writes the gitignored
+      // .env.development.local and moves the old copy out of a
+      // committed .env.development on the way.
       writeDev = true;
     }
   }

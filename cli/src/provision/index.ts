@@ -101,7 +101,7 @@ import {
   provisionSearchConsoleForDomain,
   unprovisionSearchConsoleForDomain,
 } from "./search-console.js";
-import { parseEnvLines, writeDevEnv, writeProdEnv } from "./write-env.js";
+import { devLocalEnvPath, parseEnvLines, writeDevEnv, writeProdEnv } from "./write-env.js";
 
 export type ProvisionService =
   | "glitchtip"
@@ -262,7 +262,7 @@ export interface ProvisionOptions {
   /** If set, resolves the write destinations without prompting.
    *  Pass `false` to force cache-only mode (no writes). */
   surfaces?: Surfaces | false;
-  /** Also write observability values to `.env.development`. Off by
+  /** Also write observability values to `.env.development.local`. Off by
    *  default — see the file header. */
   enableDevObs?: boolean;
   /** Domain for services that are site/domain-scoped, e.g. Plausible. */
@@ -329,7 +329,7 @@ interface WriteBucket {
   envDir: string;
   /** KEY=VALUE lines destined for `.env.production`. */
   prodLines: string[];
-  /** KEY=VALUE lines destined for `.env.development` (only if
+  /** KEY=VALUE lines destined for `.env.development.local` (only if
    *  enableDevObs or when values are genuinely dev-scoped). */
   devLines: string[];
 }
@@ -1338,10 +1338,9 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
       );
     }
     if (devPairs.length > 0) {
-      const devPath = join(b.envDir, ".env.development");
-      const keys = writeDevEnv(devPath, devPairs);
+      const keys = writeDevEnv(devLocalEnvPath(b.envDir), devPairs);
       console.log(
-        `    ${chalk.green("✓")} .env.development ${chalk.dim("(plaintext, gitignored)")}  ${chalk.dim(keys.join(", "))}`,
+        `    ${chalk.green("✓")} .env.development.local ${chalk.dim("(plaintext, gitignored)")}  ${chalk.dim(keys.join(", "))}`,
       );
     }
   }
@@ -1391,7 +1390,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
       chalk.dim(
         "  Note: observability (GlitchTip/OpenPanel/Plausible) values went to prod only.\n" +
           "  Dev errors/events would pollute real metrics — pass --enable-dev-obs to\n" +
-          "  also populate .env.development when you need to debug SDK wiring.",
+          "  also populate .env.development.local when you need to debug SDK wiring.",
       ),
     );
   }

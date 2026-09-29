@@ -172,15 +172,16 @@ function nearestExistingDir(dir: string): string {
   return d;
 }
 
-function gitToplevel(cwd: string): string | undefined {
+export function gitToplevel(cwd: string): string | undefined {
   const res = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf-8" });
   return res.status === 0 && res.stdout.trim() ? res.stdout.trim() : undefined;
 }
 
-/** True when the repo's own ignore rules cover `rel`. `--no-index`
- *  evaluates the patterns even for a tracked path; the empty
- *  `core.excludesFile` drops the machine-wide excludes file. */
-function ignoredByRepo(top: string, rel: string): boolean {
+/** True when the repo's own ignore rules cover `rel` (relative to the
+ *  repo's toplevel `top`). `--no-index` evaluates the patterns even for
+ *  a tracked path; the empty `core.excludesFile` drops the machine-wide
+ *  excludes file, which protects one machine and no other clone. */
+export function ignoredByRepo(top: string, rel: string): boolean {
   const res = spawnSync(
     "git",
     ["-c", `core.excludesFile=${devNull}`, "check-ignore", "-q", "--no-index", "--", rel],
@@ -202,4 +203,45 @@ function projectRootFor(dir: string): string {
 function gitignoreHasLine(text: string, pattern: string): boolean {
   const want = pattern.trim().replace(/^\/+/, "");
   return text.split(/\r?\n/).some((l) => l.trim().replace(/^\/+/, "") === want);
+}
+
+/** Secret files a hatchkit project can end up holding, as `.gitignore`
+ *  patterns, each with a sample path the pattern must cover. The
+ *  starter's `.gitignore` lists all of them (`cli/test-secret-hygiene.ts`
+ *  checks), and `adopt` / `update` add whichever a repo is missing. The
+ *  commit guard in `utils/git-safety.ts` refuses the same files; this
+ *  list is what keeps them out of `git add -A` in the first place. */
+export const SECRET_IGNORE_RULES: ReadonlyArray<{ pattern: string; sample: string }> = [
+  // dotenvx private keys, and the dotenvx account credential.
+  { pattern: ".env.keys", sample: "packages/server/.env.keys" },
+  { pattern: ".env.me", sample: ".env.me" },
+  // Plaintext local env files: `hatchkit add` writes provisioned dev
+  // credentials to `.env.development.local`.
+  { pattern: ".env.local", sample: "packages/client/.env.local" },
+  { pattern: ".env.*.local", sample: "packages/server/.env.development.local" },
+  // Android keystores (`hatchkit signing`, `cap add` release config).
+  { pattern: "*.keystore", sample: "android/app/release.keystore" },
+  { pattern: "*.jks", sample: "android/app/upload.jks" },
+  // Apple distribution certificate bundle and App Store Connect API key.
+  { pattern: "*.p12", sample: "ios/dist.p12" },
+  { pattern: "*.p8", sample: "ios/AuthKey_ABC123.p8" },
+  // Terraform state holds every provider secret a plan touched.
+  { pattern: "*.tfstate", sample: "infra/terraform.tfstate" },
+  { pattern: "*.tfstate.*", sample: "infra/terraform.tfstate.backup" },
+];
+
+/** Append every `SECRET_IGNORE_RULES` pattern that `repoRoot`'s own
+ *  ignore rules do not already cover. In a git repo "cover" is asked of
+ *  git (global excludes off, as in `ensureIgnoredOnEveryClone`); outside
+ *  one, a literal line in `<repoRoot>/.gitignore` counts. Additive and
+ *  idempotent. */
+export function ensureSecretFilesIgnored(repoRoot: string): EnsureGitignoreResult {
+  const root = existsSync(repoRoot) ? realpathSync(repoRoot) : repoRoot;
+  const top = existsSync(root) ? gitToplevel(root) : undefined;
+  const giPath = join(root, ".gitignore");
+  const text = existsSync(giPath) ? readFileSync(giPath, "utf-8") : "";
+  const missing = SECRET_IGNORE_RULES.filter(({ pattern, sample }) =>
+    top ? !ignoredByRepo(top, relative(top, join(root, sample))) : !gitignoreHasLine(text, pattern),
+  ).map((r) => r.pattern);
+  return ensureGitignoreEntries(root, missing);
 }

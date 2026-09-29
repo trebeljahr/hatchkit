@@ -933,6 +933,7 @@ function readProjectEnvText(projectDir: string | undefined, baseName: string | u
       const abs = resolve(projectDir, dir);
       chunks.push(readIfExists(join(abs, ".env.production")));
       chunks.push(readIfExists(join(abs, ".env.development")));
+      chunks.push(readIfExists(join(abs, ".env.development.local")));
     }
   }
   if (baseName) {
@@ -1429,7 +1430,7 @@ async function handleAdd(): Promise<void> {
 
   // Flag parsing:
   //   --no-write                      → never write; print a cache summary only
-  //   --enable-dev-obs                → also populate .env.development with observability creds
+  //   --enable-dev-obs                → also populate .env.development.local with observability creds
   //   --surfaces=<fullstack|split|backend|static>
   //   --server-dir <path>             → absolute or project-relative env dir for the server
   //   --client-dir <path>             → same for the client
@@ -2535,7 +2536,7 @@ async function handleCreate(): Promise<void> {
       // Stripe: walk the user through pasting per-project keys (sk + pk
       // for test + live), auto-mint a webhook endpoint per mode using
       // the master keys, and persist:
-      //   · sandbox creds  → .env.development (plaintext)
+      //   · sandbox creds  → .env.development.local (plaintext, gitignored)
       //   · live creds     → .env.production  (dotenvx-encrypted)
       // Webhook endpoint ids are tracked in keychain so destroy can
       // reach them later. Skipped for static (no server runtime).
@@ -4436,7 +4437,7 @@ function printHelp(topic?: HelpTopic): void {
       \`environment\` so dev / staging / prod share the same dashboard.
     · Plausible: one site for the public project domain, with browser tracker env.
       Observability values are written to ${chalk.cyan(".env.production")} only — dev noise pollutes real metrics.
-      Pass ${chalk.cyan("--enable-dev-obs")} to populate ${chalk.cyan(".env.development")} too.
+      Pass ${chalk.cyan("--enable-dev-obs")} to populate ${chalk.cyan(".env.development.local")} too.
     · Listmonk + SES: verifies the SES sending identity for
       ${chalk.cyan("mail.<projectDomain>")}, publishes DKIM into Cloudflare, creates
       per-project ${chalk.cyan("<project>")} + ${chalk.cyan("<project>-test")} Listmonk lists,
@@ -4446,7 +4447,10 @@ function printHelp(topic?: HelpTopic): void {
       then adds the ${chalk.cyan("sc-domain:<domain>")} property to your Google account.
       No runtime env is written.
     · ${chalk.cyan(".env.production")} is dotenvx-encrypted — commit-safe.
-      ${chalk.cyan(".env.development")} is plaintext — gitignored, not encrypted.
+      Dev values go to ${chalk.cyan(".env.development.local")}: plaintext, gitignored
+      (${chalk.cyan(".env.*.local")}), loaded over the committed ${chalk.cyan(".env.development")}.
+      ${chalk.cyan(".env.development")} itself is committed and holds only local defaults;
+      hatchkit never writes a credential there, and moves any it finds.
     · A 0600 cache of every value is saved under
       ${chalk.dim("<config-dir>/provisioned/<project>.*.env")} for recoverability.
       ${chalk.dim("Secret values never hit stdout.")}
@@ -4507,7 +4511,7 @@ function printHelp(topic?: HelpTopic): void {
                                 written into your env files. Adopted resources are
                                 not recorded in the run ledger, so \`hatchkit remove\`
                                 will not delete something Hatchkit didn't create.
-    --enable-dev-obs            Also populate .env.development with obs creds.
+    --enable-dev-obs            Also populate .env.development.local with obs creds.
     --no-write                  Skip writing; save 0600 cache only.
     --surfaces=<mode>           shared | server-only | client-only | separate
     --server-dir <path>         Server env directory (skips prompt when set).
@@ -5124,7 +5128,8 @@ function printHelp(topic?: HelpTopic): void {
     from the target. Streams Get→Put so cross-provider migrations
     (e.g. AWS S3 → R2) work without server-side copy.
 
-    Reads dev creds from ${chalk.cyan("packages/server/.env.development")} (plaintext)
+    Reads dev creds from ${chalk.cyan("packages/server/.env.development")} with
+    ${chalk.cyan(".env.development.local")} layered over it (plaintext)
     and prod creds from ${chalk.cyan("packages/server/.env.production")} (decrypted via
     dotenvx + .env.keys). Bucket names come from .hatchkit.json when
     the env doesn't carry them (R2's URL-driven assets bucket).

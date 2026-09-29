@@ -28,8 +28,8 @@ import { type DeferredStep, classifyOptionalStepError, deferralForStripe } from 
 export interface WireStripeArgs {
   projectName: string;
   domain: string;
-  /** Directory holding `.env.development` / `.env.production` for the
-   *  server bundle. Stripe secrets are server-side only. */
+  /** Directory holding `.env.development(.local)` / `.env.production`
+   *  for the server bundle. Stripe secrets are server-side only. */
   serverEnvDir: string;
   /** Label prefix used in console output, e.g. `packages/server`.
    *  Defaults to the directory name. */
@@ -56,17 +56,16 @@ export async function wireStripeForProject(args: WireStripeArgs): Promise<WireSt
     const { provisionStripeProject, renderStripeEnv, renderStripeSkipComment } = await import(
       "./stripe.js"
     );
-    const { appendCommentBlock, parseEnvLines, writeDevEnv, writeProdEnv } = await import(
-      "./write-env.js"
-    );
+    const { appendCommentBlock, devLocalEnvPath, parseEnvLines, writeDevEnv, writeProdEnv } =
+      await import("./write-env.js");
     const result = await provisionStripeProject({
       projectName: args.projectName,
       domain: args.domain,
     });
 
-    const devEnvPath = join(args.serverEnvDir, ".env.development");
+    const devEnvPath = devLocalEnvPath(args.serverEnvDir);
     const prodEnvPath = join(args.serverEnvDir, ".env.production");
-    const devLabel = `${labelPrefix}/.env.development`;
+    const devLabel = `${labelPrefix}/.env.development.local`;
     const prodLabel = `${labelPrefix}/.env.production`;
 
     if (result.test) {

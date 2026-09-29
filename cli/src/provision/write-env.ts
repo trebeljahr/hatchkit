@@ -1,22 +1,48 @@
 /*
  * write-env — write provisioned credentials directly into a project's
- * `.env.development` (plain) and `.env.production` (dotenvx-encrypted).
+ * `.env.development.local` (plain, gitignored) and `.env.production`
+ * (dotenvx-encrypted, committed).
  *
  * Motivation: printing env blocks to stdout leaks secret values into
  * the user's terminal scrollback / shell history / any process log
  * capturing the CLI. Writing straight into the project repo means:
- *   · dev values land in a gitignored `.env.development`
+ *   · dev values land in `.env.development.local`, which every hatchkit
+ *     `.gitignore` covers (`.env.*.local`) and `writeDevEnv` checks
  *   · prod values land in a commit-safe encrypted `.env.production`
  *   · nothing with a live secret crosses stdout
+ *
+ * NOT `.env.development`. That file is committed on purpose (the
+ * starter's `!.env.development` re-includes it past a machine-wide
+ * ignore) and holds only safe local defaults. Until 2026-09-29 dev
+ * credentials went there, so the Listmonk Admin token and the SES SMTP
+ * password were one `git add` away from the repo. `writeDevEnv` now
+ * refuses that file and moves any provisioned secret it finds there
+ * into `.env.development.local`. See `utils/dev-env-secrets.ts`.
  *
  * The starter lays env files under `packages/server/`; we detect that
  * layout first and fall back to the project root otherwise.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
+import chalk from "chalk";
+import { upgradeServerEnvLoader } from "../utils/dev-env-loader.js";
+import {
+  DEV_ENV_FILE,
+  DEV_LOCAL_ENV_FILE,
+  LOCAL_ENV_IGNORE_PATTERN,
+  findDevEnvSecrets,
+} from "../utils/dev-env-secrets.js";
 import { dotenvxSet } from "../utils/dotenvx-safe.js";
-import { resolveEnvFileTarget } from "../utils/env-files.js";
+import { envFileCandidates, resolveEnvFileTarget } from "../utils/env-files.js";
+import { ensureIgnoredOnEveryClone } from "../utils/gitignore.js";
 
 /** One `KEY=VALUE` pair parsed out of a provisioned env block. */
 export interface EnvPair {
@@ -89,11 +115,35 @@ export function resolveEnvTarget(
   return { baseDir, layout: baseDir === root ? "root" : "starter" };
 }
 
-/** Upsert plain-text KEY=VALUE entries into `.env.development`. If the
- *  file already has a line for a given key, we replace it in place so
- *  re-runs don't duplicate entries. */
+/** Where provisioned development credentials go: the gitignored
+ *  `.env.development.local` in `envDir` (the directory that holds
+ *  `.env.development`). */
+export function devLocalEnvPath(envDir: string): string {
+  return join(envDir, DEV_LOCAL_ENV_FILE);
+}
+
+/** Upsert plain-text KEY=VALUE entries into a gitignored local env
+ *  file, normally `devLocalEnvPath(envDir)`. If the file already has a
+ *  line for a given key, we replace it in place so re-runs don't
+ *  duplicate entries.
+ *
+ *  Throws on `.env.development`: that file is committed. Before the
+ *  first write it makes the repo ignore the target, and moves any
+ *  provisioned secret still in the sibling `.env.development` into it
+ *  (`migrateDevSecretsToLocal`). */
 export function writeDevEnv(envPath: string, pairs: EnvPair[]): string[] {
+  if (basename(envPath) === DEV_ENV_FILE) {
+    throw new Error(
+      `writeDevEnv refuses ${envPath}: .env.development is committed. ` +
+        `Write provisioned values to ${DEV_LOCAL_ENV_FILE} (devLocalEnvPath).`,
+    );
+  }
   ensureParent(envPath);
+  ensureIgnoredOnEveryClone(envPath, ignorePatternFor(envPath));
+  if (basename(envPath) === DEV_LOCAL_ENV_FILE) {
+    ensureDevLocalLoaded(dirname(envPath));
+    reportMigration(migrateDevSecretsToLocal(dirname(envPath)));
+  }
   const existing = existsSync(envPath) ? readFileSync(envPath, "utf-8") : "";
   const lines = existing === "" ? [] : existing.split("\n");
 
@@ -142,6 +192,129 @@ export function appendCommentBlock(envPath: string, comments: string[]): void {
   const prefix = existing === "" ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
   const block = `${comments.join("\n")}\n`;
   writeFileSync(envPath, existing + prefix + block, { mode: 0o600 });
+}
+
+export interface DevSecretsMigration {
+  /** Keys moved out of `.env.development`, in file order. */
+  moved: string[];
+  from: string;
+  to: string;
+}
+
+/** Move every provisioned secret with a real value out of the committed
+ *  `<envDir>/.env.development` into `<envDir>/.env.development.local`.
+ *  A key the local file already sets keeps the local value: the local
+ *  file is the newer one, and it is what the server loads first. Safe
+ *  to call repeatedly; returns `moved: []` when there is nothing to do.
+ *
+ *  Moving the line out of the working tree does not remove it from git
+ *  history. The caller warns: a value that was ever committed has to be
+ *  rotated. */
+export function migrateDevSecretsToLocal(envDir: string): DevSecretsMigration {
+  const from = join(envDir, DEV_ENV_FILE);
+  const to = join(envDir, DEV_LOCAL_ENV_FILE);
+  if (!existsSync(from)) return { moved: [], from, to };
+  const text = readFileSync(from, "utf-8");
+  const hits = findDevEnvSecrets(text);
+  if (hits.length === 0) return { moved: [], from, to };
+
+  ensureIgnoredOnEveryClone(to, LOCAL_ENV_IGNORE_PATTERN);
+  const lines = text.split("\n");
+  const localText = existsSync(to) ? readFileSync(to, "utf-8") : "";
+  const localKeys = readEnvKeysFromText(localText);
+  const carried = hits.filter((h) => !localKeys.has(h.key)).map((h) => lines[h.line]);
+  if (carried.length > 0) {
+    const sep = localText === "" || localText.endsWith("\n") ? "" : "\n";
+    const header =
+      localText === ""
+        ? "# Provisioned development credentials. Gitignored: never commit this file.\n"
+        : "";
+    writeFileSync(to, `${localText}${sep}${header}${carried.join("\n")}\n`, { mode: 0o600 });
+  }
+  const drop = new Set(hits.map((h) => h.line));
+  writeAtomically(from, lines.filter((_, i) => !drop.has(i)).join("\n"));
+  return { moved: hits.map((h) => h.key), from, to };
+}
+
+/** Directories whose loader was already checked this process. */
+const loaderChecked = new Set<string>();
+
+/** Make the server in `envDir` load `.env.development.local`, so the
+ *  values about to be written there reach it. Upgrades the starter's
+ *  legacy loader in place; warns about a hand-edited one. */
+export function ensureDevLocalLoaded(envDir: string): void {
+  if (loaderChecked.has(envDir)) return;
+  loaderChecked.add(envDir);
+  const { status, path } = upgradeServerEnvLoader(envDir);
+  if (status === "upgraded") {
+    console.error(chalk.dim(`  · ${path} now loads ${DEV_LOCAL_ENV_FILE} before ${DEV_ENV_FILE}`));
+  } else if (status === "custom") {
+    console.error(
+      chalk.yellow(
+        `  ⚠ ${path} does not load ${DEV_LOCAL_ENV_FILE}, and hatchkit did not recognise its loader to update it.\n` +
+          `    Load ${DEV_LOCAL_ENV_FILE} before ${DEV_ENV_FILE}, or the dev credentials hatchkit writes there never reach the server.`,
+      ),
+    );
+  }
+}
+
+/** `hatchkit update`'s pass over a project scaffolded before
+ *  2026-09-29: for every env directory with a `.env.development`, make
+ *  its server load `.env.development.local` and move provisioned
+ *  credentials there. Returns the keys moved, per file. */
+export function retrofitDevEnvSecrets(projectDir: string): DevSecretsMigration[] {
+  const out: DevSecretsMigration[] = [];
+  for (const devPath of envFileCandidates(projectDir, DEV_ENV_FILE)) {
+    if (!existsSync(devPath)) continue;
+    const envDir = dirname(devPath);
+    ensureDevLocalLoaded(envDir);
+    const m = migrateDevSecretsToLocal(envDir);
+    reportMigration(m);
+    if (m.moved.length > 0) out.push(m);
+  }
+  return out;
+}
+
+/** Warnings go to stderr: `secrets rotate --json` writes its audit to
+ *  stdout, and a line of prose there breaks every JSON consumer. */
+function reportMigration(m: DevSecretsMigration): void {
+  if (m.moved.length === 0) return;
+  console.error(
+    chalk.yellow(
+      `  ⚠ Moved ${m.moved.join(", ")} from ${DEV_ENV_FILE} to ${DEV_LOCAL_ENV_FILE}.\n` +
+        `    ${DEV_ENV_FILE} is committed; provisioned credentials belong in the gitignored ${DEV_LOCAL_ENV_FILE}.\n` +
+        `    If ${m.from} was ever committed with these values, they are in git history:\n` +
+        "    rotate each one with its provider (`hatchkit secrets rotate` covers the supported ones).",
+    ),
+  );
+}
+
+function readEnvKeysFromText(text: string): Set<string> {
+  const keys = new Set<string>();
+  for (const line of text.split("\n")) {
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+    if (m) keys.add(m[1]);
+  }
+  return keys;
+}
+
+/** `.env.*.local` for the local env files, the file's own name otherwise. */
+function ignorePatternFor(envPath: string): string {
+  const name = basename(envPath);
+  return /^\.env\..+\.local$/.test(name) ? LOCAL_ENV_IGNORE_PATTERN : name;
+}
+
+/** Replace a file's contents via a sibling temp file, so an interrupted
+ *  run never leaves a half-written `.env.development`. */
+function writeAtomically(path: string, text: string): void {
+  const tmp = `${path}.hatchkit-tmp`;
+  try {
+    writeFileSync(tmp, text);
+    renameSync(tmp, path);
+  } catch (err) {
+    if (existsSync(tmp)) unlinkSync(tmp);
+    throw err;
+  }
 }
 
 function ensureParent(filePath: string): void {

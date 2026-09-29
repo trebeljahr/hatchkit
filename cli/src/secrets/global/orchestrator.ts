@@ -341,7 +341,7 @@ function consumerNextSteps(results: ConsumerAuditEntry[]): string[] {
   for (const r of results) {
     if (r.status !== "updated") continue;
     if (r.kind === "project" && r.location) {
-      const committed = (r.files ?? []).filter((f) => !f.endsWith(".env.development"));
+      const committed = (r.files ?? []).filter((f) => !/\.env\.development(\.local)?$/.test(f));
       if (committed.length > 0) {
         steps.push(
           `Commit and push ${r.name}: git -C ${r.location} add ${committed.join(" ")} && git -C ${r.location} commit -m "chore: rotate shared credentials" (then push and let it redeploy).`,

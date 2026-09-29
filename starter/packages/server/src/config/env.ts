@@ -9,7 +9,12 @@ import { fileURLToPath } from "url";
 //
 // Load order mirrors conventional dotenv behavior:
 //   - production: only .env.production (encrypted, committed to git)
-//   - otherwise:  .env.development (plaintext, local-dev defaults)
+//   - otherwise:  .env.development.local, then .env.development
+// .env.development is committed and holds only local-dev defaults.
+// .env.development.local is gitignored: `hatchkit add` writes the real
+// development credentials it provisions there (Listmonk token, SES SMTP
+// password, Stripe sandbox keys), and you can put your own overrides
+// there too. A variable already set in the shell wins over both files.
 // Any plaintext values in a production file stay plaintext — dotenvx
 // only decrypts values whose cipher prefix starts with "encrypted:".
 //
@@ -22,11 +27,15 @@ import { fileURLToPath } from "url";
 // So this block matters on a dev workstation and in CI, not in prod.
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverRoot = resolve(__dirname, "../..");
-const envFile =
-  process.env.NODE_ENV === "production" ? ".env.production" : ".env.development";
-const envPath = resolve(serverRoot, envFile);
-if (existsSync(envPath)) {
-  dotenvxConfig({ path: envPath });
+// Gitignored .env.development.local first: dotenvx keeps the first
+// value it reads for a key, so provisioned credentials win over defaults.
+const envFiles =
+  process.env.NODE_ENV === "production"
+    ? [".env.production"]
+    : [".env.development.local", ".env.development"];
+const envPaths = envFiles.map((f) => resolve(serverRoot, f)).filter((p) => existsSync(p));
+if (envPaths.length > 0) {
+  dotenvxConfig({ path: envPaths });
 }
 
 function getRequired(key: string): string {

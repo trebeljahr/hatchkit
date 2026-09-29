@@ -1371,6 +1371,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   // no-op, so `hatchkit doctor` from $HOME stays clean.
   const projectChecks = await checkProjectKeyState(process.cwd());
   for (const r of projectChecks) results.push(r);
+  const devEnvSecretChecks = await checkProjectDevEnvSecretsState(process.cwd());
+  for (const r of devEnvSecretChecks) results.push(r);
   const corsChecks = await checkProjectS3CorsState(process.cwd());
   for (const r of corsChecks) results.push(r);
   const credChecks = await checkProjectR2CredsState(process.cwd());
@@ -2221,6 +2223,62 @@ export async function checkProjectKeyState(projectDir: string): Promise<CheckRes
     });
   }
 
+  return out;
+}
+
+/** Provisioned dev credentials in a committable `.env.development`.
+ *  Until 2026-09-29 `hatchkit add` wrote them there, and the starter
+ *  commits that file. They belong in the gitignored
+ *  `.env.development.local`; `hatchkit update` moves them. Also fails
+ *  on an `.env.development.local` the repo does not ignore. Read-only,
+ *  and hints name keys, never values. */
+export async function checkProjectDevEnvSecretsState(projectDir: string): Promise<CheckResult[]> {
+  const out: CheckResult[] = [];
+  const { existsSync, readFileSync, realpathSync } = await import("node:fs");
+  const { basename, dirname, join, relative } = await import("node:path");
+  if (!existsSync(join(projectDir, ".hatchkit.json"))) return out;
+  const { gitToplevel, ignoredByRepo } = await import("./utils/gitignore.js");
+  const top = gitToplevel(projectDir);
+  if (!top) return out;
+  const { envFileCandidates } = await import("./utils/env-files.js");
+  const { DEV_ENV_FILE, DEV_LOCAL_ENV_FILE, findDevEnvSecrets } = await import(
+    "./utils/dev-env-secrets.js"
+  );
+  // git's toplevel is a real path; resolve the file's directory the same
+  // way (macOS tmpdir is /var → /private/var) or `relative` escapes it.
+  const repoRel = (p: string): string => relative(top, join(realpathSync(dirname(p)), basename(p)));
+
+  for (const devPath of envFileCandidates(projectDir, DEV_ENV_FILE).filter((p) => existsSync(p))) {
+    const path = repoRel(devPath);
+    const committable =
+      (await execOk("git", ["ls-files", "--error-unmatch", "--", path], { cwd: top })) ||
+      !ignoredByRepo(top, path);
+    const keys = findDevEnvSecrets(readFileSync(devPath, "utf-8")).map((s) => s.key);
+    if (committable && keys.length > 0) {
+      out.push({
+        name: `Dev env credentials (${path})`,
+        status: "fail",
+        detail: `committed file holds provisioned credentials: ${keys.join(", ")}`,
+        hint: [
+          `${DEV_ENV_FILE} is committed and is for local defaults only.`,
+          `Provisioned dev credentials belong in the gitignored ${DEV_LOCAL_ENV_FILE}:`,
+          `  hatchkit update      # moves them there and makes the server load it`,
+          "If the file was ever committed with these values, they are in git history:",
+          "rotate each one (hatchkit secrets rotate <project> covers the supported providers).",
+        ],
+      });
+    }
+    const localPath = join(dirname(devPath), DEV_LOCAL_ENV_FILE);
+    const localRel = repoRel(localPath);
+    if (existsSync(localPath) && !ignoredByRepo(top, localRel)) {
+      out.push({
+        name: `Dev env credentials (${localRel})`,
+        status: "fail",
+        detail: "holds plaintext dev credentials and the repo's .gitignore does not cover it",
+        hint: ["  echo '.env.*.local' >> .gitignore"],
+      });
+    }
+  }
   return out;
 }
 

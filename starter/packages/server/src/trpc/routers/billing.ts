@@ -29,7 +29,7 @@ export const billingRouter = router({
     const mode = env.STRIPE_MODE || null;
     const envFile = env.isProduction
       ? "packages/server/.env.production"
-      : "packages/server/.env.development";
+      : "packages/server/.env.development.local";
     return {
       // True when hatchkit wrote any Stripe env scaffolding for this
       // project. Lets the client hide billing entirely on builds that

@@ -147,7 +147,7 @@ async function main(): Promise<void> {
       "[newsletter:verify] One or more steps failed. Most common causes:\n" +
         "  · Listmonk URL or API user/token wrong → re-run `hatchkit config add listmonk`\n" +
         "  · SES still in sandbox + recipient not verified → `hatchkit ses verify <email>` or open the production-access form\n" +
-        "  · Test recipient missing → set LISTMONK_TEST_RECIPIENT in .env.development",
+        "  · Test recipient missing → set LISTMONK_TEST_RECIPIENT in packages/server/.env.development.local",
     );
     process.exit(1);
   }

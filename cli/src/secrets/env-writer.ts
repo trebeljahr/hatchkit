@@ -19,6 +19,7 @@ import { loadProjectEnv } from "../assets/env.js";
 import { locateEnvKeysFile, locateEnvProductionFile } from "../deploy/keys.js";
 import {
   type EnvPair,
+  devLocalEnvPath,
   resolveEnvTarget,
   writeDevEnv,
   writeProdEnv,
@@ -80,7 +81,8 @@ export function readEncryptedProd(projectDir: string): Record<string, string> {
   return loadProjectEnv({ projectDir, mode: "prod" });
 }
 
-/** Decrypt `.env.development` for `projectDir`. Same wrapper shape as
+/** Read the dev env for `projectDir`: `.env.development` with
+ *  `.env.development.local` layered over it. Same wrapper shape as
  *  `readEncryptedProd` but for the dev side (which is plain text — the
  *  helper still works since `parseDotenv` handles unencrypted files). */
 export function readDevEnv(projectDir: string): Record<string, string> {
@@ -99,12 +101,13 @@ export function resolveProdEnvPath(projectDir: string): string {
   return `${baseDir}/.env.production`;
 }
 
-/** Resolve the absolute path of `.env.development`. Same precedence as
- *  `resolveProdEnvPath` but for dev: writes always land where
- *  `resolveEnvTarget` says the env layout is rooted. */
+/** Resolve the absolute path dev credentials are written to: the
+ *  gitignored `.env.development.local` where `resolveEnvTarget` says
+ *  the env layout is rooted. Never the committed `.env.development`,
+ *  which `writeDevEnv` refuses. */
 export function resolveDevEnvPath(projectDir: string): string {
   const { baseDir } = resolveEnvTarget(projectDir);
-  return `${baseDir}/.env.development`;
+  return devLocalEnvPath(baseDir);
 }
 
 /** Encrypt `pairs` into `.env.production` via the canonical
@@ -116,8 +119,8 @@ export function setProdPairs(envPath: string, pairs: EnvPair[]): string[] {
   return writeProdEnv(envPath, pairs);
 }
 
-/** Write `pairs` into `.env.development` plain-text via the canonical
- *  `writeDevEnv` helper. Returns the list of keys written. */
+/** Write `pairs` into `.env.development.local` plain-text via the
+ *  canonical `writeDevEnv` helper. Returns the list of keys written. */
 export function setDevPairs(envPath: string, pairs: EnvPair[]): string[] {
   if (pairs.length === 0) return [];
   return writeDevEnv(envPath, pairs);

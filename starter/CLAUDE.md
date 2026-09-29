@@ -43,7 +43,7 @@ NODE_ENV=production pnpm newsletter:send emails/digest-sample.html --subject "..
 ```
 
 Hatchkit auto-subscribes your default forwarding email onto
-`<project>-test` and writes it to `.env.development` as
+`<project>-test` and writes it to `packages/server/.env.development.local` as
 `LISTMONK_TEST_RECIPIENT`, so the smoke scripts work end-to-end on a
 fresh provision with no extra setup.
 
@@ -1065,12 +1065,18 @@ The server uses **[dotenvx](https://dotenvx.com)** for env handling — a
 drop-in replacement for `dotenv` that transparently decrypts values
 marked `encrypted:...`. `packages/server/src/config/env.ts` loads
 either `.env.production` (when `NODE_ENV=production`) or
-`.env.development` (otherwise).
+`.env.development.local` then `.env.development` (otherwise; the first
+value read for a key wins).
 
 ```
 packages/server/
   .env.example        plaintext, committed (reference, no real secrets)
-  .env.development    plaintext, committed (local-dev defaults, localhost)
+  .env.development    plaintext, committed (local-dev defaults, localhost).
+                      Never put a real credential here.
+  .env.development.local
+                      plaintext, gitignored. `hatchkit add` writes the
+                      dev credentials it provisions here (Listmonk token,
+                      SES SMTP password, Stripe sandbox keys).
   .env.production     mixed: plaintext config + encrypted secrets,
                       committed to git. Public key lives at the top.
   .env.keys           DOTENV_PRIVATE_KEY_PRODUCTION lives here locally;
@@ -1286,8 +1292,9 @@ The order in `app.ts` is load-bearing. Do not rearrange:
 ## Environment Variables
 
 - Always add new env vars to `.env.example` with a comment explaining the value
-- Add sensible dev defaults to `.env.development` (this file is committed)
-- Never commit `.env` or `.env.local` (these are gitignored)
+- Add sensible dev defaults to `.env.development` (this file is committed, so no real credentials)
+- Real dev credentials go in `.env.development.local` (gitignored; loaded first)
+- Never commit `.env`, `.env.local` or `.env.*.local` (these are gitignored)
 <!-- hatchkit:if server -->
 - Server env vars: plain `process.env.X` via `config/env.ts`
 <!-- hatchkit:endif -->

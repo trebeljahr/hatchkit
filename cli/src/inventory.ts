@@ -548,7 +548,7 @@ function collectEnvSignals(
   clientDir: string | undefined,
 ): Set<string> {
   const signals = new Set<string>();
-  const filenames = [".env.example", ".env.development", ".env"];
+  const filenames = [".env.example", ".env.development", ".env.development.local", ".env"];
   const dirs = [cwd, serverDir, clientDir].filter((d): d is string => !!d);
   // Patterns we recognize — prefix → signal name. Keep this list
   // tight; over-broad matches lead to spurious "expected" flags.

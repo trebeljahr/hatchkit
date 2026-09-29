@@ -38,7 +38,7 @@ async function main(): Promise<void> {
   if (!to) {
     console.error(
       "[newsletter:test-tx] No recipient. Pass one as a positional arg or set LISTMONK_TEST_RECIPIENT.\n" +
-        "                    hatchkit's listmonk-ses provisioner writes the latter to .env.development\n" +
+        "                    hatchkit's listmonk-ses provisioner writes the latter to .env.development.local\n" +
         "                    when a default forwarding email is configured (`hatchkit setup`).",
     );
     process.exit(1);

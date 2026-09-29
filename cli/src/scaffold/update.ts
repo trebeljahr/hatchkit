@@ -59,8 +59,10 @@ import {
   printServerFeatureResults,
 } from "../features/server-platform/index.js";
 import type { Feature } from "../prompts.js";
+import { retrofitDevEnvSecrets } from "../provision/write-env.js";
 import { exec } from "../utils/exec.js";
 import { KNOWN_FEATURES } from "../utils/flags.js";
+import { ensureSecretFilesIgnored } from "../utils/gitignore.js";
 import { multiselect } from "../utils/multiselect.js";
 import { PORT_RANGES, pickPort } from "../utils/ports.js";
 import { getCliVersion } from "../utils/version.js";
@@ -399,6 +401,18 @@ export async function runUpdate(
         ),
       );
     }
+
+    // Retrofit secret hygiene. Until 2026-09-29 `hatchkit add` wrote dev
+    // credentials into the committed .env.development, and the starter's
+    // .gitignore named one keystore path, not the pattern. Ignore every
+    // secret file hatchkit can generate, make the server load
+    // .env.development.local, and move provisioned credentials there.
+    // No flag: the failure is a credential in git, and nothing warns.
+    const ignored = ensureSecretFilesIgnored(projectDir);
+    if (ignored.added.length > 0) {
+      console.log(chalk.green(`  ✓ .gitignore: now ignores ${ignored.added.join(", ")}`));
+    }
+    retrofitDevEnvSecrets(projectDir);
   }
 
   // Derived from KNOWN_FEATURES rather than re-listed, so a feature

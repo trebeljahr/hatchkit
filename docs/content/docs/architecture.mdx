@@ -83,7 +83,20 @@ The encrypted file is **not** shipped into the image, and the server `Dockerfile
 `src/config/env.ts` still calls dotenvx, guarded by an `existsSync`, so in a deployed container the call is a no-op and `process.env` already holds everything. The guard is what makes the same file work on a workstation, in CI, and in production.
 
 `hatchkit doctor` fails when a project's repo disagrees with this — when `.env.production` exists but isn't committed (a global `core.excludesFile` listing `.env.production` is the usual cause, and a repo `.gitignore` only beats it with an explicit `!` negation), or when a `Dockerfile` still copies the file into its runtime stage.
-- **Provisioned service credentials** → printed at the end of `add`, plus cached under `<config-dir>/provisioned/<project>.{dev,prod}.env`.
+- **Provisioned service credentials** → written into the project's env files, never to stdout, plus cached (mode 0600) under `<config-dir>/provisioned/<project>.*.env`. Production values go encrypted into `.env.production`. Development values go into `.env.development.local`, described next.
+
+### Development env files
+
+- **`.env.development` is committed.** The starter's `.gitignore` re-includes it with `!.env.development`, so a machine-wide ignore cannot drop it. It holds only safe local defaults: localhost URLs, the local S3 login, a dev-only auth secret.
+- **`.env.development.local` is gitignored** (`.env.*.local`). `hatchkit add` and `hatchkit secrets rotate` write every development credential they provision here: the Listmonk API token, the SES SMTP password, Stripe sandbox keys, and observability secrets with `--enable-dev-obs`.
+- **The server loads both.** `src/config/env.ts` reads `.env.development.local` first, then `.env.development`. dotenvx keeps the first value it reads for a key, so the local file wins. Next.js and Vite load `.env.development.local` over `.env.development` on their own.
+- **hatchkit never writes a credential into `.env.development`.** A project provisioned before this rule has them there. The next `hatchkit add` or `hatchkit update` moves them into `.env.development.local` and warns, and `hatchkit doctor` fails while any remain. Moving a value does not remove it from git history: if the file was ever committed with it, rotate the credential.
+
+### What hatchkit refuses to commit
+
+Every hatchkit commit (`create`, `adopt`, their GitHub Pages and Cloudflare Workers steps) stages through one guard. It refuses `.env.keys`, `.env.me`, `.env.local` and `.env.*.local`, keystores (`*.keystore`, `*.jks`), `*.p12`, `*.p8`, Terraform state, SSH private keys, PEM files that hold a private key, and any file with a `DOTENV_PRIVATE_KEY_*=<hex>` line, whatever `.gitignore` says. On a refusal it unstages the new files and prints the fix. Every dotenvx write also makes the repo's own `.gitignore` cover `.env.keys` before dotenvx can create the file; a global excludes file does not count, because it protects one machine and no other clone.
+
+`hatchkit doctor` fails on a tracked `.env.keys`, on a committed `.env.development` that holds a provisioned credential, and on an `.env.development.local` the repo does not ignore. A `.env.keys` that was ever committed is burned, even after you untrack it. Run `hatchkit keys rotate <project>` before you write any new value, then rotate every credential it encrypted.
 
 ## Scaffolding strategy
 

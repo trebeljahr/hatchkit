@@ -5,7 +5,7 @@
  * stands up Stripe credentials + a webhook endpoint for the project in
  * **two** modes:
  *
- *   · TEST / sandbox  → ends up in `.env.development` (plaintext)
+ *   · TEST / sandbox  → ends up in `.env.development.local` (plaintext, gitignored)
  *   · LIVE            → ends up in `.env.production`  (dotenvx-encrypted)
  *
  * What hatchkit can auto-provision (one resource per mode):
@@ -64,7 +64,7 @@ export type StripeMode = "test" | "live";
 
 /** Per-project Stripe credentials for ONE mode. Returned per mode by
  *  the provisioner so the caller can write each into the right env file
- *  (`.env.development` for test, `.env.production` for live). */
+ *  (`.env.development.local` for test, `.env.production` for live). */
 export interface StripeModeCredentials {
   kind: "configured";
   mode: StripeMode;
@@ -177,7 +177,7 @@ export async function provisionStripeProject(
   console.log(
     chalk.dim(
       `  Hatchkit provisions Stripe in two modes per project:\n` +
-        `    TEST/sandbox → .env.development (plaintext)\n` +
+        `    TEST/sandbox → .env.development.local (plaintext, gitignored)\n` +
         `    LIVE         → .env.production  (dotenvx-encrypted)\n` +
         `  Webhook signing secrets are auto-minted using your master keys;\n` +
         `  per-project app keys (sk + pk) you'll paste below — Stripe doesn't\n` +
@@ -540,7 +540,8 @@ export function renderStripeSkipComment(mode: StripeMode, envFileLabel: string):
     mode === "test"
       ? "https://dashboard.stripe.com/sandboxes (per-project sandbox recommended)"
       : "https://dashboard.stripe.com/apikeys (project-scoped restricted key recommended)";
-  const dotenvxFlag = envFileLabel.endsWith(".env.production") ? " --encrypt" : "";
+  // dotenvx `set` encrypts by default; the dev file is plaintext.
+  const dotenvxFlag = envFileLabel.endsWith(".env.production") ? " --encrypt" : " --plain";
   return [
     `# ─── Stripe (${mode}) — skipped at hatchkit scaffold time ───`,
     `# To wire up later:`,

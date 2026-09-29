@@ -80,12 +80,28 @@ packages/client/out-mobile/
 #              .env.production — because production values are
 #              encrypted via dotenvx, not plaintext).
 #
+# .env.development holds only local defaults. The dev credentials
+# `hatchkit add` provisions go to .env.development.local, ignored below.
+#
 # .env.keys must NEVER be committed — it contains the private keys
 # that decrypt the encrypted values in .env.production.
 .env
 .env.local
 .env.keys
 .env.*.local
+.env.me
+
+# Other credentials. `hatchkit signing` keeps its Android keystore in
+# .hatchkit/signing/, which has its own .gitignore; these patterns cover a
+# keystore, certificate bundle or App Store Connect key copied anywhere
+# else, and Terraform state, which holds provider secrets in plaintext.
+# hatchkit's commit guard refuses the same files whatever this file says.
+*.keystore
+*.jks
+*.p12
+*.p8
+*.tfstate
+*.tfstate.*
 
 # The negations below are load-bearing, not decoration.
 #

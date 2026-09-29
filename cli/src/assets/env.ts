@@ -23,6 +23,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseDotenv } from "@dotenvx/dotenvx";
 import { readManifest } from "../scaffold/manifest.js";
+import { DEV_LOCAL_ENV_FILE } from "../utils/dev-env-secrets.js";
 
 export type AssetsMode = "dev" | "prod";
 export type BucketKind = "assets" | "state";
@@ -56,11 +57,23 @@ interface LoadOpts {
   serverDir?: string;
 }
 
-/** Load + decrypt the env vars that the runtime will see in `mode`. */
+/** Load + decrypt the env vars that the runtime will see in `mode`.
+ *  In dev that is `.env.development` with the gitignored
+ *  `.env.development.local` layered over it — the same order the
+ *  starter's server loads them in, and where `hatchkit add` writes
+ *  provisioned dev credentials. */
 export function loadProjectEnv(opts: LoadOpts): Record<string, string> {
   const serverDir = opts.serverDir ?? detectServerDir(opts.projectDir);
   const filename = opts.mode === "prod" ? ".env.production" : ".env.development";
   const envPath = join(serverDir, filename);
+  const localPath = join(serverDir, DEV_LOCAL_ENV_FILE);
+  const hasLocal = opts.mode === "dev" && existsSync(localPath);
+  if (!existsSync(envPath) && hasLocal) {
+    return parseDotenv(readFileSync(localPath, "utf-8"), { processEnv: {} }) as Record<
+      string,
+      string
+    >;
+  }
   if (!existsSync(envPath)) {
     throw new Error(
       `Expected ${envPath} (mode=${opts.mode}). Is this a hatchkit project? ` +
@@ -81,8 +94,11 @@ export function loadProjectEnv(opts: LoadOpts): Record<string, string> {
     }
   }
 
-  const parsed = parseDotenv(src, { privateKey, processEnv: {} });
-  return parsed as Record<string, string>;
+  const parsed = parseDotenv(src, { privateKey, processEnv: {} }) as Record<string, string>;
+  if (hasLocal) {
+    Object.assign(parsed, parseDotenv(readFileSync(localPath, "utf-8"), { processEnv: {} }));
+  }
+  return parsed;
 }
 
 /** Resolve the unified S3 config used by mirror operations. */

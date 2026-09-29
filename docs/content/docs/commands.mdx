@@ -354,7 +354,7 @@ hatchkit add raptor-runner search-console        # verify domain + add Search Co
 
 `stripe` and `signing` are standalone targets — run them by name; they are not part of `all`.
 
-The resulting env blocks are printed **and** saved under `<config-dir>/provisioned/<project>.{dev,prod}.env` for safe keeping.
+Values are written into the project, never to stdout: production values encrypted into `.env.production`, development values into the gitignored `.env.development.local`. The committed `.env.development` keeps only local defaults; `add` moves any provisioned credential it finds there into `.env.development.local` and warns. A 0600 copy of every value is also cached under `<config-dir>/provisioned/<project>.*.env`.
 
 ---
 

@@ -18,7 +18,7 @@
  */
 
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -87,6 +87,11 @@ function cobRepo(opts: { gitInit?: boolean } = {}): string {
     git(root, "config", "commit.gpgsign", "false");
   }
   return root;
+}
+
+/** Exit status of a git command, for the ones that answer by status. */
+function spawnGit(cwd: string, ...args: string[]): number {
+  return spawnSync("git", args, { cwd }).status ?? 1;
 }
 
 function staged(root: string): string[] {
@@ -385,6 +390,268 @@ await expect("no module imports dotenvx's `set` except utils/dotenvx-safe.ts", (
   assert.ok(importsSet('const { set: dotenvxSet } = await import("@dotenvx/dotenvx");'));
   assert.ok(importsSet('import * as dotenvx from "@dotenvx/dotenvx";'));
   assert.ok(!importsSet('import { parse as dotenvxParse } from "@dotenvx/dotenvx";'));
+});
+
+console.log("\n── dev credentials stay out of the committed .env.development ──");
+
+const { devLocalEnvPath, migrateDevSecretsToLocal, retrofitDevEnvSecrets, writeDevEnv } =
+  await import("./src/provision/write-env.js");
+const { CURRENT_LOADER, LEGACY_LOADER, upgradeServerEnvLoader } = await import(
+  "./src/utils/dev-env-loader.js"
+);
+const { SECRET_IGNORE_RULES, ensureSecretFilesIgnored } = await import("./src/utils/gitignore.js");
+const { loadProjectEnv } = await import("./src/assets/env.js");
+const { checkProjectDevEnvSecretsState } = await import("./src/doctor.js");
+
+/** Fake credentials: shaped like the real thing, valid nowhere. */
+const FAKE_TOKEN = "hk-test-listmonk-token-0000";
+const FAKE_SMTP = "hk-test-smtp-password-0000";
+
+/** `.env.development` the way `hatchkit add` left it before 2026-09-29:
+ *  starter defaults plus provisioned values, secrets included. */
+const LEGACY_DEV_ENV = `PORT=5000
+AWS_SECRET_ACCESS_KEY=hatchkit-dev
+LISTMONK_URL=https://listmonk.example.test
+LISTMONK_API_TOKEN=${FAKE_TOKEN}
+SES_SMTP_PASSWORD="${FAKE_SMTP}"
+STRIPE_SECRET_KEY=CHANGE_ME_STRIPE_SECRET_KEY
+`;
+
+/** The loader module as every starter shipped it before `.local`. */
+const LEGACY_ENV_TS = `import { config as dotenvxConfig } from "@dotenvx/dotenvx";
+import { existsSync } from "fs";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const serverRoot = resolve(__dirname, "../..");
+${LEGACY_LOADER}
+export const env = {};
+`;
+
+/** A scaffolded project from before the fix: manifest, starter layout,
+ *  secrets in the committed .env.development, all of it committed. */
+function legacyProject(): string {
+  const root = cobRepo();
+  writeFileSync(join(root, ".hatchkit.json"), JSON.stringify({ name: "cob" }));
+  mkdirSync(join(root, "packages/server/src/config"), { recursive: true });
+  writeFileSync(join(root, "packages/server/.env.development"), LEGACY_DEV_ENV);
+  writeFileSync(join(root, "packages/server/src/config/env.ts"), LEGACY_ENV_TS);
+  git(root, "add", "-A");
+  git(root, "commit", "--quiet", "-m", "scaffold");
+  return root;
+}
+
+await expect("writeDevEnv refuses the committed .env.development", () => {
+  const root = cobRepo();
+  try {
+    assert.throws(
+      () => writeDevEnv(join(root, ".env.development"), [{ key: "A", value: "b" }]),
+      /refuses .*\.env\.development is committed/,
+    );
+    assert.ok(!existsSync(join(root, ".env.development")));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await expect("writeDevEnv gitignores .env.*.local first, so git add -A skips it", () => {
+  const root = cobRepo();
+  try {
+    writeFileSync(join(root, ".gitignore"), "node_modules/\n.env\n");
+    const path = devLocalEnvPath(join(root, "packages/server"));
+    writeDevEnv(path, [{ key: "LISTMONK_API_TOKEN", value: FAKE_TOKEN }]);
+    assert.match(readFileSync(join(root, ".gitignore"), "utf-8"), /^\.env\.\*\.local$/m);
+    git(root, "add", "-A");
+    assert.ok(!staged(root).includes("packages/server/.env.development.local"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await expect("the first dev write moves provisioned secrets out of .env.development", () => {
+  const root = legacyProject();
+  const serverDir = join(root, "packages/server");
+  try {
+    writeFileSync(join(serverDir, ".env.development.local"), `SES_SMTP_PASSWORD=newer-local\n`);
+    writeDevEnv(devLocalEnvPath(serverDir), [{ key: "LISTMONK_TEST_LIST_ID", value: "7" }]);
+    const dev = readFileSync(join(serverDir, ".env.development"), "utf-8");
+    const local = readFileSync(join(serverDir, ".env.development.local"), "utf-8");
+    assert.ok(
+      !dev.includes(FAKE_TOKEN) && !dev.includes(FAKE_SMTP),
+      "secret left in .env.development",
+    );
+    assert.match(dev, /^AWS_SECRET_ACCESS_KEY=hatchkit-dev$/m, "placeholder moved");
+    assert.match(dev, /^STRIPE_SECRET_KEY=CHANGE_ME/m, "CHANGE_ME moved");
+    assert.match(dev, /^LISTMONK_URL=/m, "non-secret moved");
+    assert.match(local, new RegExp(`^LISTMONK_API_TOKEN=${FAKE_TOKEN}$`, "m"));
+    assert.match(local, /^SES_SMTP_PASSWORD=newer-local$/m, "local value overwritten");
+    assert.ok(!local.includes(FAKE_SMTP), "stale committed value copied over the local one");
+    assert.match(local, /^LISTMONK_TEST_LIST_ID=7$/m);
+    // And the next migration is a no-op.
+    assert.deepEqual(migrateDevSecretsToLocal(serverDir).moved, []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await expect("the legacy server loader is upgraded once, a custom one is left alone", () => {
+  const root = legacyProject();
+  const serverDir = join(root, "packages/server");
+  try {
+    assert.equal(upgradeServerEnvLoader(serverDir).status, "upgraded");
+    const text = readFileSync(join(serverDir, "src/config/env.ts"), "utf-8");
+    assert.ok(text.includes(CURRENT_LOADER) && !text.includes(LEGACY_LOADER));
+    assert.equal(upgradeServerEnvLoader(serverDir).status, "current");
+    writeFileSync(join(serverDir, "src/config/env.ts"), 'import "dotenv/config";\n');
+    assert.equal(upgradeServerEnvLoader(serverDir).status, "custom");
+    assert.equal(
+      readFileSync(join(serverDir, "src/config/env.ts"), "utf-8"),
+      'import "dotenv/config";\n',
+    );
+    assert.equal(upgradeServerEnvLoader(join(root, "nowhere")).status, "absent");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await expect("the starter's env.ts carries the exact block the retrofit writes", () => {
+  const starterEnv = readFileSync(
+    join(HERE, "../starter/packages/server/src/config/env.ts"),
+    "utf-8",
+  );
+  assert.ok(starterEnv.includes(CURRENT_LOADER), "starter loader drifted from CURRENT_LOADER");
+});
+
+await expect("the upgraded loader reads .env.development.local over .env.development", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "hk-secret-hygiene-loader-"));
+  try {
+    writeFileSync(join(dir, ".env.development"), "A=committed\nB=committed\n");
+    writeFileSync(join(dir, ".env.development.local"), "A=local\n");
+    // Run CURRENT_LOADER itself with dotenvx, not a paraphrase of it.
+    const body = CURRENT_LOADER.replace(
+      /dotenvxConfig\(\{ path: envPaths \}\)/,
+      "dotenvxConfig({ path: envPaths, processEnv: out, quiet: true })",
+    );
+    const run = new Function(
+      "process",
+      "resolve",
+      "existsSync",
+      "serverRoot",
+      "dotenvxConfig",
+      "out",
+      body,
+    );
+    const out: Record<string, string> = {};
+    const { config } = await import("@dotenvx/dotenvx");
+    run(
+      { env: { NODE_ENV: "development" } },
+      (...p: string[]) => join(...p),
+      existsSync,
+      dir,
+      config,
+      out,
+    );
+    assert.deepEqual(out, { A: "local", B: "committed" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await expect("loadProjectEnv(dev) layers .env.development.local over .env.development", () => {
+  const root = legacyProject();
+  try {
+    retrofitDevEnvSecrets(root);
+    const env = loadProjectEnv({ projectDir: root, mode: "dev" });
+    assert.equal(env.LISTMONK_API_TOKEN, FAKE_TOKEN);
+    assert.equal(env.PORT, "5000");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await expect(
+  "doctor fails on a committed .env.development with credentials, names keys only",
+  async () => {
+    const root = legacyProject();
+    try {
+      const before = await checkProjectDevEnvSecretsState(root);
+      assert.equal(before.length, 1);
+      assert.equal(before[0].status, "fail");
+      assert.match(before[0].detail ?? "", /LISTMONK_API_TOKEN, SES_SMTP_PASSWORD/);
+      const printed = JSON.stringify(before);
+      assert.ok(
+        !printed.includes(FAKE_TOKEN) && !printed.includes(FAKE_SMTP),
+        "doctor printed a value",
+      );
+      assert.ok(!printed.includes("AWS_SECRET_ACCESS_KEY"), "flagged the MinIO placeholder");
+      // `hatchkit update`'s retrofit clears it.
+      const moved = retrofitDevEnvSecrets(root);
+      assert.deepEqual(moved[0]?.moved, ["LISTMONK_API_TOKEN", "SES_SMTP_PASSWORD"]);
+      assert.deepEqual(await checkProjectDevEnvSecretsState(root), []);
+      const env = readFileSync(join(root, "packages/server/src/config/env.ts"), "utf-8");
+      assert.ok(env.includes(CURRENT_LOADER), "retrofit did not upgrade the loader");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+await expect("doctor fails on an .env.development.local the repo does not ignore", async () => {
+  const root = legacyProject();
+  try {
+    writeFileSync(join(root, ".gitignore"), "node_modules/\n");
+    writeFileSync(join(root, "packages/server/.env.development"), "PORT=5000\n");
+    writeFileSync(
+      join(root, "packages/server/.env.development.local"),
+      `LISTMONK_API_TOKEN=${FAKE_TOKEN}\n`,
+    );
+    const res = await checkProjectDevEnvSecretsState(root);
+    assert.equal(res.length, 1);
+    assert.match(res[0].name, /\.env\.development\.local/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+console.log("\n── .gitignore covers every secret file hatchkit can generate ──");
+
+await expect("the starter's .gitignore covers every SECRET_IGNORE_RULES sample", () => {
+  const root = cobRepo();
+  try {
+    writeFileSync(
+      join(root, ".gitignore"),
+      readFileSync(join(HERE, "../starter/.gitignore"), "utf-8"),
+    );
+    const uncovered = SECRET_IGNORE_RULES.filter(
+      ({ sample }) => spawnGit(root, "check-ignore", "-q", "--no-index", "--", sample) !== 0,
+    ).map((r) => r.sample);
+    assert.deepEqual(uncovered, []);
+    // The negations still win: both committed env files stay committable.
+    for (const kept of ["packages/server/.env.development", "packages/server/.env.production"]) {
+      assert.notEqual(
+        spawnGit(root, "check-ignore", "-q", "--no-index", "--", kept),
+        0,
+        `${kept} ignored`,
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await expect("ensureSecretFilesIgnored completes a CoB .gitignore and is idempotent", () => {
+  const root = cobRepo();
+  try {
+    const first = ensureSecretFilesIgnored(root);
+    assert.ok(first.added.includes(".env.keys") && first.added.includes("*.keystore"));
+    assert.ok(!first.added.includes(".env.*.local"), "re-added a pattern the repo had");
+    assert.deepEqual(ensureSecretFilesIgnored(root).added, []);
+    for (const { sample } of SECRET_IGNORE_RULES) {
+      assert.equal(spawnGit(root, "check-ignore", "-q", "--no-index", "--", sample), 0, sample);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 console.log("");

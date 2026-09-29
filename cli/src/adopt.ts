@@ -106,7 +106,7 @@ import { ensureDockerignoreAllowsEnvProduction } from "./utils/dockerignore.js";
 import { resolveEnvFileTarget } from "./utils/env-files.js";
 import { exec, execOk } from "./utils/exec.js";
 import { assertNothingSecretStaged, stageAllSafely } from "./utils/git-safety.js";
-import { ensureGitignoreEntries } from "./utils/gitignore.js";
+import { ensureSecretFilesIgnored } from "./utils/gitignore.js";
 import { multiselect } from "./utils/multiselect.js";
 import { RunLedger } from "./utils/run-ledger.js";
 import { SECRET_KEYS, getSecret, setSecret } from "./utils/secrets.js";
@@ -2033,7 +2033,26 @@ async function executePlan(
   let coolifyResult:
     | Awaited<ReturnType<typeof import("./deploy/coolify-app.js").wireProjectIntoCoolify>>
     | undefined;
+  // .gitignore paths this run edited. They count as hatchkit's own
+  // files, so the pathspec commit below carries them instead of
+  // reading them as unrelated user WIP.
+  const touchedGitignores: string[] = [];
   try {
+    // Step 0: ignore the secret files hatchkit can generate (.env.keys,
+    // .env.development.local, keystores, tfstate …) BEFORE anything
+    // below writes one. The repo predates hatchkit, so its .gitignore
+    // may not cover them — on 2026-04-29 one missed .env.keys, and the
+    // next `git add -A` committed the production private key.
+    const ignoreResult = ensureSecretFilesIgnored(state.repoRoot);
+    if (ignoreResult.added.length > 0) {
+      touchedGitignores.push(ignoreResult.path);
+      console.log(
+        chalk.dim(
+          `  · ${ignoreResult.fileCreated ? "Created" : "Updated"} ${relativeTo(ignoreResult.path)}: ignoring ${ignoreResult.added.join(", ")}`,
+        ),
+      );
+    }
+
     // Step 1: bootstrap / encrypt dotenvx so a key actually exists.
     if (plan.bootstrapDotenvx) {
       const dotenvxResult = await bootstrapDotenvxNow(state, plan);
@@ -2578,7 +2597,7 @@ async function executePlan(
       } else if (state.gitRemoteUrl) {
         const result = await commitAndPushScaffold(state, plan.name, {
           scaffoldedAbsPaths,
-          overwrittenAbsPaths,
+          overwrittenAbsPaths: [...overwrittenAbsPaths, ...touchedGitignores],
           manifestPath,
         });
         pushedThisRun = result.pushed;
@@ -3038,9 +3057,8 @@ async function executePlan(
         const { provisionStripeProject, renderStripeEnv, renderStripeSkipComment } = await import(
           "./provision/stripe.js"
         );
-        const { appendCommentBlock, parseEnvLines, writeDevEnv, writeProdEnv } = await import(
-          "./provision/write-env.js"
-        );
+        const { appendCommentBlock, devLocalEnvPath, parseEnvLines, writeDevEnv, writeProdEnv } =
+          await import("./provision/write-env.js");
         // Adopt's surface model: serverDir is the canonical env home for
         // a server-bearing project. If serverDir is missing (client-only
         // adopt) we have no place to write Stripe creds — surface a
@@ -3060,16 +3078,19 @@ async function executePlan(
           // a cache miss (e.g. fresh machine) would reprompt for the
           // sk/pk and re-create the webhook endpoint, leaving the
           // old endpoint orphaned in the user's Stripe dashboard.
-          const devEnvPath = join(plan.serverDir, ".env.development");
+          const devEnvPath = devLocalEnvPath(plan.serverDir);
           const prodEnvPath = join(plan.serverDir, ".env.production");
+          // A run before 2026-09-29 wrote the sandbox keys into the
+          // committed .env.development; the next writeDevEnv moves them.
           const stripeAlreadyWired =
             opts.resume &&
             readEnvKeys(prodEnvPath).has("STRIPE_SECRET_KEY") &&
-            readEnvKeys(devEnvPath).has("STRIPE_SECRET_KEY");
+            (readEnvKeys(devEnvPath).has("STRIPE_SECRET_KEY") ||
+              readEnvKeys(join(plan.serverDir, ".env.development")).has("STRIPE_SECRET_KEY"));
           if (stripeAlreadyWired) {
             console.log(
               chalk.dim(
-                `  · Skipping Stripe on --resume — STRIPE_SECRET_KEY present in both .env.production and .env.development.`,
+                `  · Skipping Stripe on --resume — STRIPE_SECRET_KEY present in both .env.production and the dev env.`,
               ),
             );
           } else {
@@ -3303,25 +3324,12 @@ async function bootstrapDotenvxNow(
   // we're about to create the keys file or just reuse the existing one.
   const keysExistedBefore = existsSync(keysPath);
 
-  // Belt-and-braces: ensure `.env.keys` is gitignored at the repo root
-  // BEFORE we ask dotenvx to write it. The user's pre-existing
-  // `.gitignore` may not cover dotenvx-specific files (the starter does,
-  // but adopt runs against arbitrary repos). If we let `dotenvx set`
-  // run first and `.env.keys` lands in a non-ignored path, the next
-  // `git add -A` (in setupGitHubRemote) sweeps the private key into the
-  // index and a public push leaks it forever. The gitignore write is
-  // additive — never touches existing entries — so it's safe to run
-  // even when `.env.keys` is already covered.
-  const ignoreResult = ensureGitignoreEntries(state.projectDir, [".env.keys"]);
-  if (ignoreResult.added.length > 0) {
-    console.log(
-      chalk.dim(
-        ignoreResult.fileCreated
-          ? `  · Created .gitignore at ${relativeTo(ignoreResult.path)} with .env.keys`
-          : `  · Appended .env.keys to ${relativeTo(ignoreResult.path)}`,
-      ),
-    );
-  }
+  // `.env.keys` is gitignored before dotenvx can create it twice over:
+  // executePlan's step 0 (ensureSecretFilesIgnored) and dotenvxSet
+  // itself (utils/dotenvx-safe.ts). If `.env.keys` landed in a
+  // non-ignored path, the next `git add -A` (in setupGitHubRemote)
+  // would sweep the private key into the index, and a push publishes
+  // it for good.
 
   const ora = (await import("ora")).default;
   const label = state.prodEnvIsEncrypted

@@ -5,7 +5,7 @@ import test from "node:test";
 // module-evaluation time, so the environment has to be staged BEFORE the
 // module is pulled in — hence the dynamic import instead of a static one.
 // dotenvx does not overload keys already present in process.env, so these
-// assignments win over whatever .env.development happens to hold.
+// assignments win over whatever .env.development(.local) happens to hold.
 //
 // Staging matters here: `hatchkit create` rewrites FRONTEND_URL to each
 // project's own allocated client port, so asserting on a hardcoded

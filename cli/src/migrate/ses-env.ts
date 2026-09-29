@@ -15,7 +15,8 @@
  * Two constraints shape the code:
  *
  *   · Encryption state is per entry and must survive. `.env.production`
- *     is dotenvx-encrypted and committed; `.env.development` is plain.
+ *     is dotenvx-encrypted and committed; `.env.development` and the
+ *     gitignored `.env.development.local` (provisioned dev values) are plain.
  *     Each value is re-set with the same `encrypt` flag its line had.
  *
  *   · A value is only rewritten when it can be READ and names the old
@@ -39,7 +40,7 @@ import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
 export const SES_FROM_ENV_KEYS = ["SES_FROM_EMAIL", "LISTMONK_FROM"] as const;
 export type SesFromEnvKey = (typeof SES_FROM_ENV_KEYS)[number];
 
-const ENV_FILES = [".env.production", ".env.development"] as const;
+const ENV_FILES = [".env.production", ".env.development", ".env.development.local"] as const;
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

@@ -413,10 +413,15 @@ function project(
       join(dir, ".env.production"),
       Object.entries(opts.prod).map(([key, value]) => ({ key, value })),
     );
+  // `dev` is the shape `hatchkit add` left before 2026-09-29: the
+  // credentials in `.env.development` itself. Written by hand because
+  // writeDevEnv now refuses that file.
   if (opts.dev)
-    writeDevEnv(
+    writeFileSync(
       join(dir, ".env.development"),
-      Object.entries(opts.dev).map(([key, value]) => ({ key, value })),
+      Object.entries(opts.dev)
+        .map(([key, value]) => `${key}=${value}\n`)
+        .join(""),
     );
   if (opts.git) {
     git(dir, "init --quiet");
@@ -472,7 +477,12 @@ function buildRoot(): { root: string; dirs: Record<string, string> } {
 function prod(dir: string): Record<string, string> {
   return loadProjectEnv({ projectDir: dir, mode: "prod" });
 }
+/** Where rotated dev copies go. */
 function dev(dir: string): string {
+  return readFileSync(join(dir, ".env.development.local"), "utf-8");
+}
+/** The legacy dev file the fixtures start from. */
+function devLegacy(dir: string): string {
   return readFileSync(join(dir, ".env.development"), "utf-8");
 }
 
@@ -519,7 +529,8 @@ const byName = (audit: { consumers: Array<{ name: string }> }, name: string) =>
     ],
     [
       "cob planned for prod + dev (manifest says email none)",
-      cob?.status === "planned" && cob.files?.join(",") === ".env.production,.env.development",
+      cob?.status === "planned" &&
+        cob.files?.join(",") === ".env.production,.env.development.local",
     ],
     [
       "other holds a different credential",
@@ -536,9 +547,9 @@ const byName = (audit: { consumers: Array<{ name: string }> }, name: string) =>
       byName(audit, "intent")?.status === "unchanged",
     ],
     [
-      "devtracked: prod planned, dev refused",
+      "devtracked: prod + dev planned, dev to the gitignored .env.development.local",
       byName(audit, "devtracked")?.status === "planned" &&
-        /git does not ignore/.test(byName(audit, "devtracked")?.reason ?? ""),
+        byName(audit, "devtracked")?.files?.join(",") === ".env.production,.env.development.local",
     ],
     ["nested worktree copy not discovered", !audit.consumers.some((c) => c.name === "cob-copy")],
     ["Coolify app mailer planned by key name", byName(audit, "mailer")?.status === "planned"],
@@ -596,16 +607,23 @@ const byName = (audit: { consumers: Array<{ name: string }> }, name: string) =>
       cobEnv.SES_SMTP_USERNAME === NEW_KEY && cobEnv.SES_SMTP_PASSWORD === NEW_PW,
     ],
     ["cob prod: ListMonk values untouched", cobEnv.LISTMONK_API_TOKEN === OLD_LM_TOKEN],
-    ["cob dev (git-ignored) rewritten", dev(dirs.cob).includes(`SES_SMTP_USERNAME=${NEW_KEY}`)],
+    [
+      "cob dev: new pair in .env.development.local, old password moved out of .env.development",
+      dev(dirs.cob).includes(`SES_SMTP_USERNAME=${NEW_KEY}`) &&
+        dev(dirs.cob).includes(`SES_SMTP_PASSWORD=${NEW_PW}`) &&
+        !devLegacy(dirs.cob).includes(OLD_PW),
+    ],
     ["other left alone", prod(dirs.other).SES_SMTP_USERNAME === "AKIAOTHEROTHEROTHER9"],
     [
       "excluded project left alone and not listed",
       prod(dirs.leaked).SES_SMTP_USERNAME === OLD_KEY && !byName(audit, "leaked"),
     ],
     [
-      "devtracked prod rewritten, tracked dev not",
+      "devtracked: prod rewritten, dev copy in .env.development.local, none left in the tracked file",
       prod(dirs.devtracked).SES_SMTP_USERNAME === NEW_KEY &&
-        dev(dirs.devtracked).includes(`SES_SMTP_USERNAME=${OLD_KEY}`),
+        dev(dirs.devtracked).includes(`SES_SMTP_PASSWORD=${NEW_PW}`) &&
+        !devLegacy(dirs.devtracked).includes(OLD_PW) &&
+        !devLegacy(dirs.devtracked).includes(NEW_PW),
     ],
     ["nogit rewritten", prod(dirs.nogit).SES_SMTP_USERNAME === NEW_KEY],
     [
