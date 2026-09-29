@@ -5,6 +5,8 @@
  *      refuses (even with --keys-rotated); a dry run reports it instead.
  *   2. key history: a committed key that was since rotated passes; an
  *      undecidable history refuses unless --keys-rotated.
+ *   2b. key history edge cases: nested key path, empty key file, lost
+ *      blob, unreadable history, no repo; no key material in a report.
  *   3. r2 + local-secrets happy path against HTTP mocks: same-scope
  *      mint, ListObjectsV2 with the NEW pair, old token deleted after
  *      verify, manifest tokenId moved, local secrets replaced, side
@@ -26,7 +28,15 @@
  */
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -415,6 +425,87 @@ function r2Project(name: string): string {
   );
   rmSync(dir, { recursive: true, force: true });
   rmSync(dir2, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// Test 2b — history edge cases: a nested key path, an empty committed key
+// file, a blob git lost, a history git cannot read, no repo at all.
+// ---------------------------------------------------------------------------
+{
+  const gitOut = (dir: string, cmd: string): string =>
+    execSync(`git ${cmd}`, { cwd: dir, encoding: "utf-8" }).trim();
+  // A partial clone or a broken repo lacks the object.
+  const dropObject = (dir: string, oid: string): void =>
+    rmSync(join(dir, ".git", "objects", oid.slice(0, 2), oid.slice(2)));
+
+  const nested = makeProject("nested", { CRON_SECRET: "old" });
+  gitInit(nested);
+  mkdirSync(join(nested, "packages", "server"), { recursive: true });
+  writeFileSync(
+    join(nested, "packages", "server", ".env.keys"),
+    readFileSync(join(nested, ".env.keys")),
+  );
+  git(nested, "add -f packages/server/.env.keys");
+  git(nested, "commit -q -m nested");
+  const nestedReport = await inspectEnvKeysHistory(nested);
+
+  // An empty blob reads as "", which must not count as unreadable.
+  const empty = makeProject("emptykeys", { CRON_SECRET: "old" });
+  gitInit(empty);
+  const emptyKeys = readFileSync(join(empty, ".env.keys"), "utf-8");
+  writeFileSync(join(empty, ".env.keys"), "");
+  git(empty, "add -f .env.keys");
+  git(empty, "commit -q -m empty");
+  writeFileSync(join(empty, ".env.keys"), emptyKeys);
+  const emptyReport = await inspectEnvKeysHistory(empty);
+
+  const lost = makeProject("lostblob", { CRON_SECRET: "old" });
+  gitInit(lost);
+  git(lost, "add -f .env.keys");
+  git(lost, "commit -q -m leak");
+  dropObject(lost, gitOut(lost, "rev-parse HEAD:.env.keys"));
+  const lostReport = await inspectEnvKeysHistory(lost);
+
+  const broken = makeProject("brokenlog", { CRON_SECRET: "old" });
+  gitInit(broken);
+  git(broken, "add -f .hatchkit.json");
+  git(broken, "commit -q -m init");
+  dropObject(broken, gitOut(broken, "rev-parse HEAD"));
+  let brokenErr: Error | undefined;
+  try {
+    await inspectEnvKeysHistory(broken);
+  } catch (err) {
+    brokenErr = err as Error;
+  }
+
+  const plain = makeProject("plain", { CRON_SECRET: "old" });
+  const plainReport = await inspectEnvKeysHistory(plain);
+
+  const reports = JSON.stringify([nestedReport, emptyReport, lostReport, plainReport]);
+  const keyMaterial = [nested, empty, lost, plain].flatMap((d) => [
+    ...(readFileSync(join(d, ".env.keys"), "utf-8").match(/[0-9a-f]{64}/g) ?? []),
+    ...(readFileSync(join(d, ".env.production"), "utf-8").match(/[0-9a-f]{66}/g) ?? []),
+  ]);
+
+  results.keyHistoryEdges = report("Test 2b: key history edge cases", [
+    ["nested current key is 'leaked'", nestedReport.status === "leaked"],
+    [
+      "nested path is repo-relative",
+      nestedReport.paths.join(",") === "packages/server/.env.keys",
+    ],
+    ["commit ids are 8 hex digits", /^[0-9a-f]{8}$/.test(nestedReport.commits[0] ?? "")],
+    ["empty committed .env.keys is 'superseded'", emptyReport.status === "superseded"],
+    ["lost blob is 'unknown'", lostReport.status === "unknown"],
+    ["lost blob still names its commit", lostReport.commits.length === 1],
+    [
+      "unreadable history throws REFUSE, not 'clean'",
+      !!brokenErr && /^REFUSE: git could not read/.test(brokenErr.message),
+    ],
+    ["no repo is 'not-a-repo'", plainReport.status === "not-a-repo"],
+    ["fixtures hold key material to look for", keyMaterial.length >= 8],
+    ["no report carries a private or public key", keyMaterial.every((k) => !reports.includes(k))],
+  ]);
+  for (const d of [nested, empty, lost, broken, plain]) rmSync(d, { recursive: true, force: true });
 }
 
 // ---------------------------------------------------------------------------

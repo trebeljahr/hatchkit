@@ -11,15 +11,17 @@
  * push, exactly like the old one.
  *
  * `assertEnvKeysNotTracked` (env-writer.ts) only sees the index. This
- * module walks history on every ref, reads each committed `.env.keys`
- * blob in memory, and compares the public key each committed private
- * key derives against `DOTENV_PUBLIC_KEY_PRODUCTION` in the current
+ * module asks `scanEnvKeysHistory` (utils/env-keys-history.ts, the walk
+ * doctor also runs) to read every committed `.env.keys` on every ref in
+ * memory, and to compare the public key each committed private key
+ * derives against `DOTENV_PUBLIC_KEY_PRODUCTION` in the current
  * `.env.production`. No key material is printed, logged or written:
  * the report carries short commit ids and paths only.
  */
 
-import { derivePublicKey, locateEnvProductionFile, parseEnvKeysEntries, readPublicKey } from "../deploy/keys.js";
-import { exec } from "../utils/exec.js";
+import { locateEnvProductionFile, readPublicKey } from "../deploy/keys.js";
+import { scanEnvKeysHistory } from "../utils/env-keys-history.js";
+import { gitToplevel } from "../utils/gitignore.js";
 
 export type KeyHistoryStatus =
   /** Not inside a git work tree — there is no history to leak from. */
@@ -46,94 +48,35 @@ export interface KeyHistoryReport {
 }
 
 /** Walk every ref's history for `.env.keys` at any path and classify it
- *  against the current `.env.production` public key. Read-only. */
+ *  against the current `.env.production` public key. Read-only. Throws
+ *  when git cannot read the history (a timeout, a broken repo): the
+ *  callers refuse on that, never read it as "clean". */
 export async function inspectEnvKeysHistory(projectDir: string): Promise<KeyHistoryReport> {
-  const inRepo = await exec("git", ["rev-parse", "--is-inside-work-tree"], {
-    cwd: projectDir,
-    silent: true,
-  });
-  if (inRepo.exitCode !== 0 || inRepo.stdout.trim() !== "true") {
-    return { status: "not-a-repo", commits: [], paths: [] };
-  }
-
-  const log = await exec(
-    "git",
-    [
-      "log",
-      "--all",
-      "--format=%H",
-      "--name-only",
-      "--diff-filter=AMRC",
-      "--",
-      ":(top,glob)**/.env.keys",
-    ],
-    { cwd: projectDir, silent: true },
-  );
-  if (log.exitCode !== 0) {
-    // A repo with no commits yet answers non-zero; nothing is committed.
-    return { status: "clean", commits: [], paths: [] };
-  }
-
-  const entries: Array<{ sha: string; path: string }> = [];
-  let sha: string | undefined;
-  for (const raw of log.stdout.split("\n")) {
-    const line = raw.trim();
-    if (!line) continue;
-    if (/^[0-9a-f]{40}$/.test(line)) {
-      sha = line;
-      continue;
-    }
-    if (sha) entries.push({ sha, path: line });
-  }
-  if (entries.length === 0) return { status: "clean", commits: [], paths: [] };
-
-  const allCommits = unique(entries.map((e) => e.sha.slice(0, 8)));
-  const allPaths = unique(entries.map((e) => e.path));
+  const repoRoot = gitToplevel(projectDir);
+  if (!repoRoot) return { status: "not-a-repo", commits: [], paths: [] };
 
   const prodPath = locateEnvProductionFile(projectDir);
   const currentPublic = prodPath ? readPublicKey(prodPath)?.toLowerCase() : undefined;
-  if (!currentPublic) {
-    return { status: "unknown", commits: allCommits, paths: allPaths };
+  const scan = await scanEnvKeysHistory(
+    repoRoot,
+    { privateKeys: [], publicKeys: currentPublic ? [currentPublic] : [] },
+    { exposure: false },
+  );
+  if (!scan.checked) {
+    throw new Error(
+      "REFUSE: git could not read this repo's history (it failed or timed out), so hatchkit cannot rule out a committed .env.keys that holds the current key. " +
+        "Retry. To check by hand:\n  git log --all --oneline -- .env.keys '**/.env.keys'",
+    );
   }
 
-  const leaked: Array<{ sha: string; path: string }> = [];
-  let unreadable = false;
-  for (const entry of entries) {
-    const blob = await exec("git", ["show", `${entry.sha}:${entry.path}`], {
-      cwd: projectDir,
-      silent: true,
-    });
-    if (blob.exitCode !== 0) {
-      unreadable = true;
-      continue;
-    }
-    const keys = parseEnvKeysEntries(blob.stdout) ?? [];
-    for (const key of keys) {
-      let derived: string | undefined;
-      try {
-        derived = derivePublicKey(key).toLowerCase();
-      } catch {
-        continue; // not a valid secp256k1 key — cannot be the current one
-      }
-      if (derived === currentPublic) {
-        leaked.push(entry);
-        break;
-      }
-    }
+  const { commits, paths } = scan.keyFiles;
+  if (commits.length === 0) return { status: "clean", commits: [], paths: [] };
+  if (!currentPublic) return { status: "unknown", commits, paths };
+  const current = scan.currentKeyFiles;
+  if (current.commits.length > 0) {
+    return { status: "leaked", commits: current.commits, paths: current.paths };
   }
-
-  if (leaked.length > 0) {
-    return {
-      status: "leaked",
-      commits: unique(leaked.map((e) => e.sha.slice(0, 8))),
-      paths: unique(leaked.map((e) => e.path)),
-    };
-  }
-  return {
-    status: unreadable ? "unknown" : "superseded",
-    commits: allCommits,
-    paths: allPaths,
-  };
+  return { status: scan.unreadable ? "unknown" : "superseded", commits, paths };
 }
 
 export interface AssertKeysNotLeakedOptions {
@@ -183,8 +126,4 @@ export function keyHistoryRefusal(report: KeyHistoryReport, opts: AssertKeysNotL
     `REFUSE: .env.keys appears in git history: ${where}, and hatchkit cannot tell whether that key still encrypts .env.production. ` +
     `If it does, a new credential written now is readable by anyone with that history. Rotate the keypair first:\n${recipe}`
   );
-}
-
-function unique(values: string[]): string[] {
-  return [...new Set(values)];
 }

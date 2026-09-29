@@ -13,10 +13,10 @@
  * never leave this module: not in a return value, a log line or an error,
  * and not as a fingerprint either.
  *
- * `secrets/key-history.ts` walks the same history for `secrets rotate`'s
- * refusal, and answers only "does a committed key derive today's public
- * key?". Doctor also needs the date, the older keys and the env versions
- * encrypted to them, and a comparison with the key on disk.
+ * Doctor reads the dates, the older keys and the env versions encrypted
+ * to them. `secrets/key-history.ts` reads the commits and paths for
+ * `secrets rotate`'s refusal, which asks only "does a committed key
+ * derive today's public key?".
  */
 
 import { createHash } from "node:crypto";
@@ -48,6 +48,13 @@ export interface EnvExposure {
   files: string[];
 }
 
+export interface KeyFiles {
+  /** Eight-hex-digit commit shas, in `git log` order (newest first). */
+  commits: string[];
+  /** Repo-relative paths, e.g. ["packages/server/.env.keys"]. */
+  paths: string[];
+}
+
 export interface EnvKeysHistory {
   /** False when git could not answer (no git, timeout). Every other
    *  field is then empty. */
@@ -64,6 +71,20 @@ export interface EnvKeysHistory {
   currentExposure: EnvExposure;
   /** Env-file versions encrypted to a committed key no longer in use. */
   oldExposure: EnvExposure;
+  /** Every commit that wrote a `.env.keys`, and the paths it wrote. */
+  keyFiles: KeyFiles;
+  /** The commits and paths whose `.env.keys` holds a key still in use. */
+  currentKeyFiles: KeyFiles;
+  /** A committed `.env.keys` could not be read (a shallow or partial
+   *  clone lacks it, or `git cat-file` failed), so a key in use may have
+   *  gone unseen. */
+  unreadable: boolean;
+}
+
+export interface ScanOptions {
+  /** False skips the env-file walk, and both exposures stay empty.
+   *  `secrets rotate` needs only the key files. Default true. */
+  exposure?: boolean;
 }
 
 export interface CurrentKeys {
@@ -271,6 +292,12 @@ function emptyExposure(): EnvExposure {
   return { count: 0, files: [] };
 }
 
+function addKeyFile(files: KeyFiles, change: BlobChange): void {
+  const shortSha = change.commit.sha.slice(0, 8);
+  if (!files.commits.includes(shortSha)) files.commits.push(shortSha);
+  if (!files.paths.includes(change.path)) files.paths.push(change.path);
+}
+
 /** Has any dotenvx private key been committed on any ref, and is it the
  *  one in use today? A committed key counts as current when it equals a
  *  key in `current.privateKeys` (compared by sha256 fingerprint) or
@@ -278,6 +305,7 @@ function emptyExposure(): EnvExposure {
 export async function scanEnvKeysHistory(
   repoRoot: string,
   current: CurrentKeys,
+  opts: ScanOptions = {},
 ): Promise<EnvKeysHistory> {
   const result: EnvKeysHistory = {
     checked: false,
@@ -285,6 +313,9 @@ export async function scanEnvKeysHistory(
     truncated: false,
     currentExposure: emptyExposure(),
     oldExposure: emptyExposure(),
+    keyFiles: { commits: [], paths: [] },
+    currentKeyFiles: { commits: [], paths: [] },
+    unreadable: false,
   };
 
   const keyLog = await blobChanges(repoRoot, KEY_PATHSPECS, MAX_KEY_COMMITS);
@@ -306,13 +337,19 @@ export async function scanEnvKeysHistory(
 
   const contents = await readBlobs(repoRoot, [...new Set(keyLog.changes.map((c) => c.blob))]);
   for (const change of keyLog.changes) {
+    addKeyFile(result.keyFiles, change);
+    // An empty blob reads as "", which is not a missing one.
     const content = contents.get(change.blob);
-    if (!content) continue;
+    if (content === undefined) {
+      result.unreadable = true;
+      continue;
+    }
     for (const key of parsePrivateKeys(content)) {
       const pub = publicKeyOf(key);
       const inUse = currentFps.has(fingerprint(key)) || (!!pub && currentPubs.has(pub));
       if (inUse) {
         currentCommit = earlier(currentCommit, change.commit);
+        addKeyFile(result.currentKeyFiles, change);
         if (pub) burnedPubs.add(pub);
       } else {
         oldCommit = earlier(oldCommit, change.commit);
@@ -322,7 +359,7 @@ export async function scanEnvKeysHistory(
   }
   result.currentKeyCommit = toRef(currentCommit);
   result.oldKeyCommit = toRef(oldCommit);
-  if (burnedPubs.size === 0 && oldPubs.size === 0) return result;
+  if (opts.exposure === false || (burnedPubs.size === 0 && oldPubs.size === 0)) return result;
 
   const envLog = await blobChanges(repoRoot, ENV_PATHSPECS, MAX_ENV_COMMITS);
   if (!envLog.ok) return result;
