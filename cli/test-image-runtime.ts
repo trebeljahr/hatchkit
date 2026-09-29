@@ -86,6 +86,9 @@ check("health payload turns the check ON and never sends health_check_type", () 
   const body = healthCheckPayload(healthCheckFor("server"));
   assert.equal(body.health_check_enabled, true);
   assert.equal(body.health_check_path, "/api/health");
+  // localhost resolves to ::1 under busybox wget; an IPv4-only server
+  // (Next.js with HOSTNAME=0.0.0.0) then fails a healthy container.
+  assert.equal(body.health_check_host, "127.0.0.1");
   assert.equal("health_check_type" in body, false);
   assert.equal("health_check_port" in body, false);
 });

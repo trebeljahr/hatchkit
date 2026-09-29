@@ -179,7 +179,11 @@ export function healthCheckPayload(spec: HealthCheckSpec): Record<string, unknow
     health_check_path: spec.path,
     health_check_method: "GET",
     health_check_scheme: "http",
-    health_check_host: "localhost",
+    // Not `localhost`: busybox wget (every Alpine image) resolves it to
+    // ::1 first, and a server bound to 0.0.0.0 — Next.js standalone with
+    // HOSTNAME=0.0.0.0 — refuses that, so the check fails on a healthy
+    // container. 127.0.0.1 reaches IPv4-only and dual-stack listeners.
+    health_check_host: "127.0.0.1",
     health_check_return_code: 200,
     health_check_interval: spec.intervalSeconds,
     health_check_timeout: spec.timeoutSeconds,
