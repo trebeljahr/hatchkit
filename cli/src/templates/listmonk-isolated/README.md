@@ -16,6 +16,13 @@ This bundle is a new, empty Listmonk installation, its own Postgres database and
 
 ## Migration acceptance gate
 
+See [MIGRATION.md](MIGRATION.md) for the selective transfer schema, consent rules,
+legacy confirmation/unsubscribe handling, validation commands and cutover gates.
+`export-memberships.sql` prepares only the two reviewed project lists through a
+read-only connection. It is not an importer. Live migration remains blocked until
+the importer and legacy reconciliation path pass a disposable-data rehearsal.
+
+
 Import only reviewed subscribers belonging to this project's lists. Preserve consent timestamps, confirmed/unconfirmed/unsubscribed membership, global disabled/blocklisted status, and unsubscribe decisions. Do not promote consent during import. A person subscribed to multiple projects is copied only with this project's membership. Pending signups with no membership cannot be attributed safely from the shared database alone: reconcile against the project signup records, or leave them behind and preserve the old confirmation path until they expire. Protect exports and remove them after the agreed retention period.
 
 Native unsubscribe links contain old subscriber/campaign UUIDs and still point to the old hostname. Preserve those endpoints and propagate late unsubscribe/bounce events to the new database before sending; do not retire the old service until this is solved. Freeze scheduled campaigns during the final delta transfer and reconcile writes received during the switch. Migration automation is intentionally not supplied until these ownership and consent mappings are reviewed.

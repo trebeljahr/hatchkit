@@ -53,6 +53,7 @@
   "test-newsletter-confirm-origin.ts",
   "test-ses-policy-verification.ts",
   "test-listmonk-isolation-plan.ts",
+  "test-listmonk-relay-separation.ts",
   "test-ses-project-sender.ts",
   "test-ses-project-runtime.ts",
   "test-ses-smtp.ts",
