@@ -26,3 +26,26 @@ Limits reset on process restart and are independent across workers. This is
 not a fleet-wide email quota. Shared-store accounting and edge policy validation
 require a separate deployment decision. Existing honeypot and double opt-in
 behavior remain in place.
+
+## Deployment configuration
+
+The production Compose server service passes `NEWSLETTER_TRUSTED_PROXY_IPS`
+through with an empty default. An empty value keeps socket-peer identity.
+Verify the deployed Compose revision and effective container value; setting a
+host or control-panel variable alone does not prove the running app received it.
+If dotenvx supplies the same key, check its precedence before rollout. Do not
+print or dump the container environment to inspect this single non-secret key.
+
+Before setting addresses, inspect the actual ingress route to the server,
+proxy container network attachments, header trust/append policy, and direct
+server reachability. Trust only the proxy peers actually traversed, not a whole
+Docker/private subnet. Dynamic container addresses must be reverified after
+container recreation. A trusted proxy that accepts forged forwarding chains
+can still defeat per-client identity.
+
+After separate approval for runtime validation, use a staging instance with
+mail delivery disabled to verify that two ordinary clients get distinct
+identities and independent budgets. Confirm the deployed revision first.
+Do not exercise real subscription endpoints merely to discover proxy identity.
+If identity is uncertain, retain the empty setting. Clearing the setting and
+restarting through the approved deployment workflow restores socket-peer mode.
