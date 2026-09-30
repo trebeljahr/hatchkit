@@ -64,3 +64,7 @@ Use the Node 24 runtime configured by the container images. Install with the
 frozen lockfile; run the production audit and application tests before rollout.
 The docs and test dependencies appearing in a production audit are not proof
 that their development servers are exposed by the deployed app.
+
+The separate docs workspace pins `mdast-util-to-markdown` to 2.1.2. Version
+2.1.3 changes attention handlers in a way that causes recursive serialization
+with Fumadocs 16.8.9. Recheck a clean docs build before removing this pin.
