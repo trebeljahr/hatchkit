@@ -169,22 +169,30 @@ function renderConfirmationHtml(args: { confirmUrl: string; siteName: string }):
 /** Thin re-export so route code can stay close to its previous shape. */
 export { listmonkConfirm as confirmSubscription };
 
-// ─────────────────────────────────────────────────────────────────────
-// Rate limiter — per-IP, sliding window, in-memory.
-//
-// Resets on container restart. Subscribe is a low-volume endpoint
-// (~one POST per legitimate user, ever) and the worst-case after a
-// restart is a small spam burst that ends at the Listmonk dedupe in
-// `ensureSubscriber` anyway. A real shared store would be overkill.
-// ─────────────────────────────────────────────────────────────────────
-
+// Process-local fixed window: five requests per minute, with bounded storage.
+// Workers and restarts have separate budgets; fleet-wide limits need a shared store.
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX_PER_WINDOW = 5;
+const RATE_MAX_BUCKETS = 10_000;
 const ipBuckets = new Map<string, { count: number; resetAt: number }>();
+let nextSweepAt = 0;
 
 export function checkRateLimit(ip: string, now: number = Date.now()): boolean {
-  const bucket = ipBuckets.get(ip);
-  if (!bucket || bucket.resetAt < now) {
+  // Bound both retained identities and cleanup work (at most one sweep/second).
+  if (now >= nextSweepAt) {
+    for (const [key, bucket] of ipBuckets) {
+      if (bucket.resetAt <= now) ipBuckets.delete(key);
+    }
+    nextSweepAt = now + 1_000;
+  }
+  let bucket = ipBuckets.get(ip);
+  if (bucket && bucket.resetAt <= now) {
+    ipBuckets.delete(ip);
+    bucket = undefined;
+  }
+  if (!bucket) {
+    // Never evict active budgets: churn must not reset an existing allowance.
+    if (ipBuckets.size >= RATE_MAX_BUCKETS) return false;
     ipBuckets.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
     return true;
   }
@@ -195,4 +203,5 @@ export function checkRateLimit(ip: string, now: number = Date.now()): boolean {
 
 export function _resetRateLimit(): void {
   ipBuckets.clear();
+  nextSweepAt = 0;
 }

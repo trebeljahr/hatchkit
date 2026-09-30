@@ -10,6 +10,7 @@
  */
 
 import type { Express, Request, Response } from "express";
+import { createNewsletterClientIp } from "./client-ip.js";
 import {
   checkRateLimit,
   confirmSubscription,
@@ -19,15 +20,6 @@ import {
   sendConfirmationEmail,
   verifyConfirmToken,
 } from "./subscribe.js";
-
-function clientIp(req: Request): string {
-  const fwd = req.headers["x-forwarded-for"];
-  if (typeof fwd === "string") return fwd.split(",")[0]?.trim() ?? "unknown";
-  if (Array.isArray(fwd)) return fwd[0]?.split(",")[0]?.trim() ?? "unknown";
-  const real = req.headers["x-real-ip"];
-  if (typeof real === "string") return real;
-  return req.ip ?? "unknown";
-}
 
 function log(level: "info" | "error", scope: string, event: string, extra: object = {}): void {
   const line = JSON.stringify({ scope: `newsletter.${scope}`, level, event, ...extra });
@@ -53,6 +45,7 @@ function siteName(): string {
 }
 
 export function registerNewsletterRoutes(app: Express): void {
+  const clientIp = createNewsletterClientIp();
   // POST /api/newsletter/subscribe
   app.post("/api/newsletter/subscribe", async (req: Request, res: Response) => {
     const ip = clientIp(req);
