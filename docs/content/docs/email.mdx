@@ -246,6 +246,8 @@ Traefik can infer the service when the container has only one. If the container 
 
 In Coolify, keep "Escape special characters in labels" on and paste the labels as printed. For a plain compose file, pass `--escape-dollars` to double each `$` in the hash. Add the labels to the Listmonk container and redeploy. Check that `/webhooks/service/ses` answers `401` without credentials.
 
+Preserve the capital `M` in the `traefik.http.Middlewares` definitions. Traefik accepts case-insensitive label keys; this spelling prevents Coolify from adding the scoped middleware to its default site routers. Before redeploying, inspect the rendered labels: only the two `listmonk-sns` routers should reference `listmonk-sns-auth`. After redeploying, verify that the normal UI and `/health` still load without these credentials.
+
 The credentials belong to one machine's keychain. A run on a machine without them generates new ones, and its subscription stays pending until the proxy has their hash.
 
 ## Troubleshooting

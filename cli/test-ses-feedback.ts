@@ -891,7 +891,8 @@ await expect("Traefik labels: auth router above Listmonk's, bcrypt hash of the p
     credentials: CREDS,
     service: "http-0-abc-listmonk",
   });
-  const get = (suffix: string) => labels.find((l) => l.startsWith(`traefik.http.${suffix}=`));
+  const get = (suffix: string) =>
+    labels.find((l) => l.toLowerCase().startsWith(`traefik.http.${suffix}=`.toLowerCase()));
   const rule = "Host(`listmonk.example.com`) && PathPrefix(`/webhooks/service`)";
   for (const r of ["listmonk-sns-https", "listmonk-sns-http"]) {
     assert.equal(get(`routers.${r}.rule`), `traefik.http.routers.${r}.rule=${rule}`);
@@ -929,6 +930,31 @@ await expect("Traefik labels: auth router above Listmonk's, bcrypt hash of the p
   assert.ok(composeUsers.includes(`=${CREDS.user}:$$2y$$10$$`), "compose escapes bcrypt delimiters");
   const composedHash = composeUsers.split("=")[1].split(/:(.*)/s)[1].replaceAll("$$", "$");
   assert.ok(bcrypt.compareSync(CREDS.password, composedHash), "compose preserves the password hash");
+});
+
+await expect("Coolify leaves scoped middleware off its generated site routers", () => {
+  const labels = traefikBasicAuthLabels({
+    host: "listmonk.example.com",
+    credentials: CREDS,
+    hash: "$2y$10$fixture",
+  });
+  // Coolify's fqdnLabelsForTraefik discovers middleware definitions with
+  // this case-sensitive pattern, then adds them to the default routers.
+  const discovered = (entries: string[]) =>
+    entries.flatMap((label) => {
+      const match = /traefik\.http\.middlewares\.(.*?)(\.|$)/.exec(label);
+      return match ? [match[1]] : [];
+    });
+  assert.deepEqual(discovered(labels), []);
+  assert.deepEqual(discovered(labels.map((label) => label.toLowerCase())), [
+    "listmonk-sns-auth",
+    "listmonk-sns-auth",
+  ]);
+  assert.equal(
+    labels.filter((label) => /routers\..*\.middlewares=listmonk-sns-auth$/.test(label)).length,
+    2,
+    "both explicit webhook routers still attach the middleware",
+  );
 });
 
 console.log("\nListmonk adapter:");

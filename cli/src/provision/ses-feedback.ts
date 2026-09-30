@@ -1094,9 +1094,13 @@ export function traefikBasicAuthLabels(o: TraefikBasicAuthOptions): string[] {
       ...(o.service ? [`${r}.service=${o.service}`] : []),
     ];
   };
+  // Traefik label keys are case-insensitive. Coolify scans lowercase
+  // `traefik.http.middlewares.*` definitions and attaches every match to
+  // its generated site routers. Keep these definitions scoped to the
+  // explicit routers above by using `Middlewares` instead.
   const labels = [
-    `traefik.http.middlewares.${middleware}.basicauth.users=${o.credentials.user}:${hash}`,
-    `traefik.http.middlewares.${middleware}.basicauth.removeheader=true`,
+    `traefik.http.Middlewares.${middleware}.basicauth.users=${o.credentials.user}:${hash}`,
+    `traefik.http.Middlewares.${middleware}.basicauth.removeheader=true`,
     ...router("https", o.httpsEntryPoint ?? "https", [
       "tls=true",
       `tls.certresolver=${o.certResolver ?? "letsencrypt"}`,
