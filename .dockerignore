@@ -9,3 +9,11 @@
 .env.keys
 !.env.example
 !.env.production
+
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.production
+**/.env.keys
+**/*.pem
+**/*.key

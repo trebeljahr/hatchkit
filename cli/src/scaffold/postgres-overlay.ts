@@ -271,7 +271,7 @@ function rewriteDevComposeForPostgres(content: string): string {
   // access. Rename the mongo service to postgres + swap the volume name.
   let out = content;
   out = out.replace(
-    /^( *)mongo:\s*\n( *)image: mongo:7\s*\n( *)ports:\s*\n( *)- "27017:27017"\s*\n( *)volumes:\s*\n( *)- mongo-data:\/data\/db/m,
+    /^( *)mongo:\s*\n( *)image: mongo:7\s*\n( *)ports:\s*\n( *)- "(?:127\.0\.0\.1:)?27017:27017"\s*\n( *)volumes:\s*\n( *)- mongo-data:\/data\/db/m,
     `$1postgres:
 $2image: postgres:16-alpine
 $2environment:
@@ -279,7 +279,7 @@ $2  POSTGRES_USER: postgres
 $2  POSTGRES_PASSWORD: postgres
 $2  POSTGRES_DB: \${DB_NAME:-app}
 $3ports:
-$4- "5432:5432"
+$4- "127.0.0.1:5432:5432"
 $5volumes:
 $6- postgres-data:/var/lib/postgresql/data`,
   );
@@ -462,7 +462,8 @@ export const verification = pgTable("verification", {
 });
 `;
 
-const POSTGRES_AUTH = `import { betterAuth } from "better-auth";
+const POSTGRES_AUTH = `import { logAuthLink, requireEmailVerification } from "./link-policy.js";
+import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { env, getTrustedOrigins } from "../config/env.js";
 import { getDb } from "../db/connection.js";
@@ -493,10 +494,10 @@ export async function initAuth(): Promise<void> {
 
     emailAndPassword: {
       enabled: true,
-      requireEmailVerification: false,
+      requireEmailVerification: requireEmailVerification(isEmailConfigured()),
       async sendResetPassword({ user, url }: { user: { email: string }; url: string }) {
         if (!isEmailConfigured()) {
-          console.log(\`[auth] Password reset URL for \${user.email}: \${url}\`);
+          logAuthLink("Password reset", user.email, url);
           return;
         }
         await sendEmail({
@@ -506,9 +507,14 @@ export async function initAuth(): Promise<void> {
           html: \`<p>Click <a href="\${url}">here</a> to reset your password.</p>\`,
         });
       },
+    },
+    emailVerification: {
+      sendOnSignUp: requireEmailVerification(isEmailConfigured()),
+      sendOnSignIn: requireEmailVerification(isEmailConfigured()),
+      autoSignInAfterVerification: false,
       async sendVerificationEmail({ user, url }: { user: { email: string }; url: string }) {
         if (!isEmailConfigured()) {
-          console.log(\`[auth] Verification URL for \${user.email}: \${url}\`);
+          logAuthLink("Verification", user.email, url);
           return;
         }
         await sendEmail({

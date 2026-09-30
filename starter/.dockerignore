@@ -1,0 +1,12 @@
+
+# Recursive exclusions apply to every package and build stage.
+**/.env
+**/.env.*
+!**/.env.example
+**/*.pem
+**/*.key
+**/.npmrc
+**/.git
+**/node_modules
+**/.next
+**/*.tsbuildinfo

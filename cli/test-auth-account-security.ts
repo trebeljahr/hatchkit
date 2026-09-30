@@ -386,7 +386,7 @@ await expect("email verification becomes conditional, and ships the backfill", a
   const dir = makeProject();
   await apply(dir, ["email-verification"]);
   const auth = readFileSync(join(dir, "packages/server/src/auth/auth.ts"), "utf-8");
-  assert.match(auth, /requireEmailVerification: isEmailDeliveryConfigured\(\)/);
+  assert.match(auth, /requireEmailVerification: requireEmailVerification\(isEmailConfigured\(\)\)/);
   // sendVerificationEmail must live in the emailVerification block —
   // better-auth never calls it from under emailAndPassword.
   assert.match(auth, /emailVerification: emailVerificationOptions\(/);

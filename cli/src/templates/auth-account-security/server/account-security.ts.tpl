@@ -107,19 +107,13 @@ export type AuthMail = { to: string; subject: string; text: string; html: string
  */
 export type AuthMailSender = (url: string, mail: AuthMail) => Promise<void>;
 
-/**
- * The one line that makes a broken mail setup recoverable.
- *
- * With no transport configured this *is* the delivery mechanism, and the
- * documented way back into a single-user instance whose owner locked
- * themselves out. With a transport that is configured but broken — a host set
- * and a From address missing is the easy mistake, wrong credentials the next
- * one — the send throws, and without this the one recovery path is removed by
- * exactly the misconfiguration that needs it. Callers still rethrow: a silent
- * delivery failure is the worse outcome, the URL just goes to the log on the
- * way out.
+/** Log bearer links only in development or with deliberate owner opt-in.
+ * Production operators should prefer mail or their local admin recovery tool.
  */
 export function logAuthUrl(label: string, recipient: string, url: string): void {
+  if (process.env.NODE_ENV !== "development" && process.env.NODE_ENV !== "test" && process.env.AUTH_LOG_LINKS !== "true") {
+    throw new Error("Auth email unavailable; configure mail or explicitly enable AUTH_LOG_LINKS for owner recovery");
+  }
   console.log(`[auth] ${label} URL for ${recipient}: ${url}`);
 }
 
@@ -172,7 +166,7 @@ export function magicLinkEmailBody(url: string): Omit<AuthMail, "to"> {
  * would do the same thing, except that better-auth's client then follows it as
  * a redirect and the page never navigates.
  */
-export function emailVerificationOptions(send: AuthMailSender): {
+export function emailVerificationOptions(send: AuthMailSender, sendOnSignUp = true): {
   sendOnSignUp: boolean;
   sendOnSignIn: boolean;
   autoSignInAfterVerification: boolean;
@@ -182,7 +176,7 @@ export function emailVerificationOptions(send: AuthMailSender): {
   }) => Promise<void>;
 } {
   return {
-    sendOnSignUp: true,
+    sendOnSignUp,
     sendOnSignIn: false,
     autoSignInAfterVerification: false,
     async sendVerificationEmail({ user, url }) {

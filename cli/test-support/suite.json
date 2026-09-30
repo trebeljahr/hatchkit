@@ -103,5 +103,6 @@
   "test-deploy-recovery.ts",
   "test-error-reporting.ts",
   "test-raycast.ts",
-  "test-mcp.ts"
+  "test-mcp.ts",
+  "test-security-baseline.ts"
 ]
