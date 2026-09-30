@@ -24,7 +24,9 @@ two explicit list UUIDs and refuses missing, duplicate or non-double-opt-in
 lists. Use an approved read-only database connection and `psql -X -q` with
 `ON_ERROR_STOP=1`; protect the destination directory (0700) and output (0600).
 Redirect stdout to the protected file, never chat/logs. Check exit status before
-using it; a failed export must not become an empty successful transfer.
+using it; a failed export must not become an empty successful transfer. The script
+sets `ON_ERROR_STOP` internally and raises a SQL error on an invalid list selection,
+which [psql 17](https://www.postgresql.org/docs/17/app-psql.html) returns as exit code 3.
 
 Export one row per **project** membership: source subscriber ID/UUID, email,
 global status and timestamps, source list ID/UUID, membership status/timestamps,

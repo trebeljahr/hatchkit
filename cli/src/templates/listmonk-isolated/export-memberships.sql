@@ -3,6 +3,7 @@
 --   -f export-memberships.sql > protected-memberships.csv
 -- Use a separately approved read-only connection; never put passwords in argv.
 -- No orphan subscribers, global attributes, SMTP settings, users or campaigns.
+\set ON_ERROR_STOP on
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
 SELECT count(*) = 2 AND bool_and(optin = 'double') AS approved_lists_present
 FROM lists WHERE uuid IN (:'live_uuid'::uuid, :'test_uuid'::uuid) \gset
@@ -24,6 +25,7 @@ COPY (
 COMMIT;
 \else
 ROLLBACK;
-\echo 'STOP: expected two distinct, existing double-opt-in lists.'
-\quit 3
+-- psql 17 does not support an exit-code argument to \quit. Force a SQL
+-- error under ON_ERROR_STOP so a rejected export cannot look successful.
+SELECT CAST('STOP: expected two distinct existing double-opt-in lists' AS integer);
 \endif
