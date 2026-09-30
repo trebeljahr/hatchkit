@@ -23,7 +23,7 @@
     "lint:fix": "biome check --write ."
   },
   "dependencies": {
-    "zod": "^4.4.3"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
