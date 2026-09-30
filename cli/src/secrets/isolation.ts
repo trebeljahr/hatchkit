@@ -279,7 +279,7 @@ export function findCloudflareDeployTokenFindings(input: {
   }
   return [{
     severity: "warn", provider: "cloudflare", where,
-    what: `${name} is scoped to Worker ${input.worker}; runtime bindings and cross-resource binding authorization are outside this audit`,
+    what: `${name} is scoped to Worker ${input.worker}; this role can add bindings to other same-account KV namespaces and read their data. Other runtime bindings remain outside this audit`,
   }];
 }
 
