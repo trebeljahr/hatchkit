@@ -283,7 +283,7 @@ The tenant condition prevents a leaked key from omitting or changing the tenant.
 ### Prepare and review
 
 1. Verify `mail.<project-domain>` in the configured SES region. The isolation command preserves that identity, its DNS and feedback settings.
-2. Give Hatchkit's keychain-only provisioner the required IAM and SES tenant rights. A permission refusal prints the required actions. Never put this credential in an app.
+2. Install the reusable operator setup below once per account and region. Keep the operator credential in Hatchkit's keychain; never put it in an app.
 3. Review the plan:
 
 ```bash
@@ -294,6 +294,32 @@ hatchkit ses isolate /path/to/project --dry-run
 `--from` accepts comma-separated exact mailboxes at `mail.<project-domain>`. The default is `noreply@mail.<project-domain>`. The plan prints resource identifiers and the sender policy, with no secrets. Dry-run makes no AWS, keychain or env writes.
 
 After approval, run the same command without `--dry-run`. It writes the project credential to encrypted production env and ignored development env. It does not change the transport, sync, deploy or send mail. Repeating it reuses the audited sender and key.
+
+### Configure the operator once
+
+Generate the setup without credentials or AWS calls:
+
+```bash
+hatchkit ses operator-plan --account 123456789012 --region eu-west-1 \
+  --operator-user hatchkit-ses --output ./ses-operator-review --json
+```
+
+An administrator reviews `plan.json` and installs `bootstrap.cloudformation.json` with the named-IAM capability. Confirm the target account first. The template creates two managed policies and attaches the operator policy to the existing IAM user. It does not create access keys, send email, change DNS or deploy an app.
+
+Before granting access, inspect every IAM user under `/hatchkit/ses/`. Reserve that path for Hatchkit senders with the required boundary; it must never contain administrative users. The operator can manage credentials within that namespace. Review its existing permissions too: this policy adds permissions and does not remove old grants.
+
+| Policy | Purpose |
+| --- | --- |
+| Operator | Creates and maintains Hatchkit sender users, keys, configuration sets and tenants across future projects in this account and region. |
+| Sender boundary | Limits each new sender to scoped SES v2 sending. It denies IAM, other services, legacy sending, foreign resources and missing tenant scope. |
+
+Each project still receives its own exact identity/From/tenant inline policy. The reusable boundary is a service ceiling, not a substitute for those project restrictions. The operator manages all projects and remains a trusted local credential. It cannot remove or replace sender boundaries, attach managed policies to senders, or rewrite either bootstrap policy.
+
+New projects in the same account and region need no operator-policy edits. `ses isolate` supplies the required boundary during user creation and checks its installed content before creating resources and during sender audits. Missing or changed boundaries stop the operation. Existing boundaryless senders require an administrator-reviewed migration; the CLI does not silently change them.
+
+This setup adds isolated-sender management to the existing SES provider workflow. Domain verification, DNS and shared feedback keep their existing provider permissions. A new region/account or a changed permission ceiling requires another administrator review. Ordinary `hatchkit create` keeps its current Listmonk transport; preparing/activating a direct sender remains explicit.
+
+To stop new provisioning, an administrator can detach the operator policy. Preserve the boundary while any sender uses it. The CloudFormation template retains both policies on stack deletion; removing a stack alone does not revoke access. Remove retained policies only after reviewing attachments and cleaning up their users. See [AWS permissions-boundary guidance](https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html).
 
 ### Activate the application
 

@@ -1,6 +1,7 @@
 /** Offline adversarial tests. No keytar/config module, credentials, network,
  * test mail, AWS policy simulation or real keychain calls. */
 import assert from "node:assert/strict";
+import { operatorScope, senderBoundaryPolicy } from "./src/provision/ses-operator-policy.js";
 import { senderPolicy, senderSpec } from "./src/provision/ses-project-policy.js";
 import {
   type SenderDeps,
@@ -137,6 +138,7 @@ function fake() {
     keys: [] as { AccessKeyId: string; Status: string }[],
     seq: 0,
     verified: true,
+    boundaryDrift: false,
     identityPolicies: {},
     attached: false,
     groups: false,
@@ -170,6 +172,25 @@ function fake() {
       return notFound("AccessDeniedException");
     }
     switch (op) {
+      case "GetPolicy":
+        return {
+          Policy: {
+            Arn: operatorScope(spec.account, spec.region).boundaryArn,
+            DefaultVersionId: "v1",
+          },
+        };
+      case "GetPolicyVersion":
+        return {
+          PolicyVersion: {
+            Document: encodeURIComponent(
+              JSON.stringify(
+                state.boundaryDrift
+                  ? { Version: "2012-10-17", Statement: [] }
+                  : senderBoundaryPolicy(spec.account, spec.region),
+              ),
+            ),
+          },
+        };
       case "GetCallerIdentity":
         return { Account: state.account };
       case "GetEmailIdentity":
@@ -218,6 +239,9 @@ function fake() {
           UserId: "OWNED-ID",
           UserName: spec.user,
           Path: input.Path,
+          PermissionsBoundary: {
+            PermissionsBoundaryArn: input.PermissionsBoundary,
+          },
           Tags: input.Tags,
           Arn: `arn:aws:iam::${spec.account}:user/hatchkit/ses/${spec.user}`,
         };
@@ -307,6 +331,9 @@ function fake() {
   const result = await ensureSender(f.deps, opts);
   assert(result.record?.current);
   assert.equal(result.record.spec.identityArn, spec.identityArn);
+  assert.deepEqual(f.state.user?.PermissionsBoundary, {
+    PermissionsBoundaryArn: operatorScope(spec.account, spec.region).boundaryArn,
+  });
   const writes = f.state.writes.length;
   assert.deepEqual((await ensureSender(f.deps, opts)).changes, []);
   assert.equal(f.state.writes.length, writes);
@@ -363,6 +390,9 @@ for (const failure of [
 }
 for (const mutate of [
   (f: ReturnType<typeof fake>) => {
+    f.state.boundaryDrift = true;
+  },
+  (f: ReturnType<typeof fake>) => {
     f.state.verified = false;
   },
   (f: ReturnType<typeof fake>) => {
@@ -381,6 +411,17 @@ for (const mutate of [
   assert.equal(f.state.writes.length, 0);
 }
 for (const mutate of [
+  (f: ReturnType<typeof fake>) => {
+    f.state.boundaryDrift = true;
+  },
+  (f: ReturnType<typeof fake>) => {
+    assert(f.state.user);
+    delete f.state.user.PermissionsBoundary;
+  },
+  (f: ReturnType<typeof fake>) => {
+    assert(f.state.user);
+    f.state.user.PermissionsBoundary = { PermissionsBoundaryArn: "wrong" };
+  },
   (f: ReturnType<typeof fake>) => {
     f.state.attached = true;
   },
@@ -500,7 +541,10 @@ console.log(
   IAMClient.prototype.send = f.deps.iam.send;
   SESv2Client.prototype.send = f.deps.ses.send;
   STSClient.prototype.send = f.deps.sts.send;
-  getStore().set("providers.ses", { status: "configured", region: spec.region });
+  getStore().set("providers.ses", {
+    status: "configured",
+    region: spec.region,
+  });
   await setSecret(SECRET_KEYS.sesAccessKeyId, "mock-provisioner-id-never-copy");
   await setSecret(SECRET_KEYS.sesSecretAccessKey, "mock-provisioner-secret-never-copy");
   const output: string[] = [];

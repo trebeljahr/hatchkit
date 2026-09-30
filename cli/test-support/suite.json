@@ -52,6 +52,7 @@
   "test-listmonk-tx-from.ts",
   "test-newsletter-confirm-origin.ts",
   "test-ses-policy-verification.ts",
+  "test-ses-operator.ts",
   "test-listmonk-isolation-plan.ts",
   "test-listmonk-relay-separation.ts",
   "test-listmonk-transfer.ts",

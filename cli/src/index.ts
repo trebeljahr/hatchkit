@@ -2082,6 +2082,11 @@ async function handleSesCommand(rest: string[]): Promise<void> {
     printSesUsage();
     return;
   }
+  if (sub === "operator-plan") {
+    const { runSesOperatorPlan } = await import("./provision/ses-operator-cli.js");
+    await runSesOperatorPlan(rest.slice(1));
+    return;
+  }
   if (sub === "verify-policy") {
     const { runSesPolicyVerification } = await import("./provision/ses-policy-verification-cli.js");
     await runSesPolicyVerification(rest.slice(1));
@@ -3805,6 +3810,10 @@ function printSesUsage(): void {
 
     ${chalk.cyan("status")}             Region, sandbox state, send caps, identity
                        count. Run this first when something fails.
+
+    ${chalk.cyan("operator-plan --account <id> --region <region> --operator-user <name> [--output <new-dir>] [--json]")}
+      Offline one-time operator/bootstrap plan for every future project in this region.
+      No credentials or AWS writes. Administrator reviews and installs the policies.
 
     ${chalk.cyan("verify-policy <dir> --account <id> --region <region> [--dry-run | --profile <name>]")}
       Read-only AWS IAM simulation; dry-run needs no credentials. No email or writes.

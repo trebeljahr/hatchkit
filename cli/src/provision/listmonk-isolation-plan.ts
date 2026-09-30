@@ -3,8 +3,9 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readManifest } from "../scaffold/manifest.js";
+import { operatorScope, senderOperatorPolicy } from "./ses-operator-policy.js";
 import { SIMULATION_PERMISSION } from "./ses-policy-verification.js";
-import { senderPolicy, senderProvisionerPolicy, senderSpec } from "./ses-project-policy.js";
+import { senderPolicy, senderSpec } from "./ses-project-policy.js";
 
 export async function runListmonkIsolationPlan(argv: string[]): Promise<void> {
   let projectDir = "";
@@ -62,7 +63,8 @@ export async function runListmonkIsolationPlan(argv: string[]): Promise<void> {
       "project SES v2 HTTP messenger",
     ],
     senderPolicy: senderPolicy(spec),
-    provisionerPolicy: senderProvisionerPolicy(spec),
+    provisionerPolicy: senderOperatorPolicy(spec.account, spec.region),
+    senderBoundaryArn: operatorScope(spec.account, spec.region).boundaryArn,
     simulationPermission: SIMULATION_PERMISSION,
     requiresApproval: [
       "AWS resource/key creation",

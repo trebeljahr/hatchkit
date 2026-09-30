@@ -11,6 +11,8 @@ import {
   DeleteUserCommand,
   DeleteUserPolicyCommand,
   GetLoginProfileCommand,
+  GetPolicyCommand,
+  GetPolicyVersionCommand,
   GetUserCommand,
   GetUserPolicyCommand,
   IAMClient,
@@ -35,6 +37,7 @@ import {
   SESv2Client,
 } from "@aws-sdk/client-sesv2";
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
+import { operatorScope, senderBoundaryPolicy } from "./ses-operator-policy.js";
 import {
   SENDER_POLICY_NAME,
   type SesSenderSpec,
@@ -87,14 +90,7 @@ export function senderClients(auth: SesAuth) {
   };
 }
 export function senderSetupInstructions(): string {
-  return (
-    "Configure the SES provisioner with `hatchkit config add ses`; keep its keys in Hatchkit's keychain only. " +
-    "Its policy needs sts:GetCallerIdentity; ses:GetEmailIdentity, ses:GetConfigurationSet, ses:GetTenant, ses:ListResourceTenants, ses:ListTenantResources; " +
-    "ses:TagResource, ses:CreateConfigurationSet, ses:DeleteConfigurationSet, ses:CreateTenant, ses:DeleteTenant, ses:CreateTenantResourceAssociation, ses:DeleteTenantResourceAssociation on this project's SES resources; " +
-    "iam:GetUser, iam:GetLoginProfile, iam:ListUserPolicies, iam:GetUserPolicy, iam:ListAttachedUserPolicies, iam:ListGroupsForUser, iam:ListAccessKeys, " +
-    "iam:CreateUser, iam:TagUser, iam:DeleteUser, iam:PutUserPolicy, iam:DeleteUserPolicy, iam:CreateAccessKey, iam:DeleteAccessKey on arn:aws:iam::<account>:user/hatchkit/ses/<planned-user>. " +
-    "Verify mail.<project-domain> with SES in the chosen region first. Review the dry-run policy and resource ARNs; never grant these admin rights to the sender."
-  );
+  return "Install the reusable operator and sender boundary once with an administrator-reviewed `hatchkit ses operator-plan --account <account> --region <region> --operator-user <existing-operator> --output <new-directory>`. Keep operator credentials local; projects receive only restricted sender keys. Existing boundaryless senders need a reviewed migration. Verify mail.<project-domain> in SES first.";
 }
 function errorName(err: unknown): string {
   return err instanceof Error ? err.name : "UnknownError";
@@ -173,6 +169,30 @@ async function ownedUser(d: SenderDeps, r: SenderRecord) {
   return res.User;
 }
 
+/** Refuse missing/changed bootstrap before provisioning and after creating a key. */
+async function auditBoundary(d: SenderDeps, s: SesSenderSpec): Promise<void> {
+  const arn = operatorScope(s.account, s.region).boundaryArn;
+  const policy = (await d.iam.send(new GetPolicyCommand({ PolicyArn: arn }))).Policy;
+  requireState(
+    policy?.Arn === arn && policy.DefaultVersionId,
+    "Reusable sender boundary is missing. " + senderSetupInstructions(),
+  );
+  const version = (
+    await d.iam.send(
+      new GetPolicyVersionCommand({
+        PolicyArn: arn,
+        VersionId: policy.DefaultVersionId,
+      }),
+    )
+  ).PolicyVersion;
+  requireState(
+    version?.Document &&
+      canonical(JSON.parse(decodeURIComponent(version.Document))) ===
+        canonical(senderBoundaryPolicy(s.account, s.region)),
+    "Reusable sender boundary drift; administrator review required. No policy was changed.",
+  );
+}
+
 /** Read-only AWS audit. Exact policy comparison plus explicit denies avoids
  * relying on a friendly user name or ignoring managed/group grants. */
 export async function auditSender(d: SenderDeps, r: SenderRecord): Promise<void> {
@@ -190,11 +210,13 @@ export async function auditSender(d: SenderDeps, r: SenderRecord): Promise<void>
     caller.Account === s.account,
     "Provisioner AWS account changed; refusing to use another account's sender.",
   );
+  await auditBoundary(d, s);
   await identityCheck(d, s);
   const user = await ownedUser(d, r);
   requireState(
-    !user.PermissionsBoundary,
-    "Unexpected IAM permissions boundary; review it before reuse.",
+    user.PermissionsBoundary?.PermissionsBoundaryArn ===
+      operatorScope(s.account, s.region).boundaryArn,
+    "Missing or unexpected sender boundary; administrator-reviewed migration required before reuse.",
   );
   const inline = await d.iam.send(new ListUserPoliciesCommand({ UserName: s.user }));
   const attached = await d.iam.send(new ListAttachedUserPoliciesCommand({ UserName: s.user }));
@@ -291,6 +313,7 @@ export async function ensureSender(
     opts.region,
     opts.from ?? (old?.spec.domain === opts.domain ? old.spec.from : undefined),
   );
+  await auditBoundary(d, s);
   const changes: string[] = [];
   if (old) {
     requireState(
@@ -361,7 +384,11 @@ export async function ensureSender(
   async function mutation<T>(operation: string, run: () => Promise<T>): Promise<T> {
     // Persist intent BEFORE every remote mutation, including rotation. A crash
     // after AWS accepts CreateAccessKey must not erase the ownership evidence.
-    await d.store.write({ ...r, phase: "preparing", pendingOperation: operation });
+    await d.store.write({
+      ...r,
+      phase: "preparing",
+      pendingOperation: operation,
+    });
     inFlight = operation;
     const result = await run();
     inFlight = undefined;
@@ -419,6 +446,7 @@ export async function ensureSender(
           new CreateUserCommand({
             UserName: s.user,
             Path: "/hatchkit/ses/",
+            PermissionsBoundary: operatorScope(s.account, s.region).boundaryArn,
             Tags: tags(r),
           }),
         ),

@@ -10,7 +10,8 @@ import { assertEnvKeysNotTracked, resolveProdEnvPath } from "../secrets/env-writ
 import { assertKeysNotLeaked } from "../secrets/key-history.js";
 import { deleteSecret, getSecret, setSecret } from "../utils/secrets.js";
 import { readProjectEnvSnapshot } from "./listmonk-user-cli.js";
-import { senderPolicy, senderProvisionerPolicy, senderSpec } from "./ses-project-policy.js";
+import { operatorScope, senderOperatorPolicy } from "./ses-operator-policy.js";
+import { senderPolicy, senderSpec } from "./ses-project-policy.js";
 import {
   type SenderRecord,
   type SenderStore,
@@ -160,7 +161,8 @@ export async function runSesSenderCli(argv: string[]): Promise<void> {
         {
           scope: planned,
           senderPolicy: senderPolicy(planned),
-          provisionerPolicy: senderProvisionerPolicy(planned),
+          provisionerPolicy: senderOperatorPolicy(planned.account, planned.region),
+          senderBoundaryArn: operatorScope(planned.account, planned.region).boundaryArn,
         },
         null,
         2,
