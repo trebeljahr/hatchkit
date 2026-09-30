@@ -17,6 +17,7 @@ import { ipcMain, type IpcMainInvokeEvent } from "electron";
 
 import type { DesktopIpcChannel } from "../../packages/shared/src/desktop-bridge.ts";
 import { isTrustedSenderUrl } from "./trust.ts";
+import { getMainWindow } from "./window.ts";
 
 export class UntrustedSenderError extends Error {
   constructor(channel: string, url: string | null) {
@@ -50,7 +51,11 @@ export function handle<Args extends unknown[], Result>(
 ): void {
   ipcMain.handle(channel, (event, ...args) => {
     const url = senderUrl(event);
-    if (!isTrustedSenderUrl(url, devUrl)) {
+    const win = getMainWindow();
+    // An app-origin subframe or another window is not the application bridge.
+    if (!win || event.sender !== win.webContents || !event.senderFrame ||
+        event.senderFrame !== win.webContents.mainFrame ||
+        !isTrustedSenderUrl(url, devUrl)) {
       console.warn(`[ipc] ${channel} refused: sender ${url ?? "(no frame)"}`);
       throw new UntrustedSenderError(channel, url);
     }
