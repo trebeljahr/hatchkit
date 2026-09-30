@@ -19,15 +19,16 @@
  * The provisioner (keychain, see `getCloudflareProvisioner`) mints an
  * ACCOUNT-owned token named `hatchkit-<worker>-worker` with one policy:
  * the role "Individual Workers Editor" on the resource
- * `com.cloudflare.edge.worker.script.<worker id>`. The id is the Worker's
+ * `com.cloudflare.edge.worker.script.<worker id>` nested under its account
+ * resource. The id is the Worker's
  * immutable tag (`GET /accounts/{a}/workers/workers/{name}` → `id`).
  * Editor can upload, deploy and configure that Worker; it cannot create
  * or delete a Worker, touch another one, routes, custom domains or DNS.
  *
  * Per-Worker roles are documented at:
  * https://developers.cloudflare.com/workers/authorization/workers/
- * The API resource key remains a compatibility assumption. Read back
- * each minted policy before publication and fail closed on rejection.
+ * The nested resource shape was verified against the dashboard JSON
+ * payload. Read back each minted policy before publication and fail closed.
  * Read probes are preflight checks, not proof of a successful deployment.
  * Never downgrade to an account-wide token. CI can also access resources
  * already bound to the Worker through deployed code; audit those bindings.
@@ -60,23 +61,49 @@ const accountResource = (accountId: string): string => `com.cloudflare.api.accou
 
 /** The only policy Hatchkit creates for Worker CI. */
 export function workerDeployTokenPolicy(params: {
+  accountId: string;
   workerId: string;
   groupId: string;
 }): Array<{
   effect: "allow";
   permission_groups: Array<{ id: string }>;
-  resources: Record<string, "*">;
+  resources: Record<string, Record<string, "*">>;
 }> {
-  if (!/^[0-9a-f]{32}$/i.test(params.workerId) || !params.groupId) {
-    throw new Error("A valid immutable Worker id and Editor role are required");
+  if (
+    !/^[0-9a-f]{32}$/i.test(params.accountId) ||
+    !/^[0-9a-f]{32}$/i.test(params.workerId) ||
+    !params.groupId
+  ) {
+    throw new Error("Valid account and immutable Worker ids and an Editor role are required");
   }
   return [
     {
       effect: "allow",
       permission_groups: [{ id: params.groupId }],
-      resources: { [workerScriptResource(params.workerId)]: "*" },
+      resources: {
+        [accountResource(params.accountId)]: {
+          [workerScriptResource(params.workerId)]: "*",
+        },
+      },
     },
   ];
+}
+
+/** The account wrapper is a namespace, not an account-wide grant. */
+function hasExactWorkerResource(
+  resources: Record<string, unknown>,
+  target: { accountId: string; workerId: string },
+): boolean {
+  const entries = Object.entries(resources);
+  if (entries.length !== 1 || entries[0][0] !== accountResource(target.accountId)) return false;
+  const workers = entries[0][1];
+  if (!workers || typeof workers !== "object" || Array.isArray(workers)) return false;
+  const nested = Object.entries(workers);
+  return (
+    nested.length === 1 &&
+    nested[0][0] === workerScriptResource(target.workerId) &&
+    nested[0][1] === "*"
+  );
 }
 
 /** What a token's policies (as `GET …/tokens/{id}` returns them) reach:
@@ -89,21 +116,14 @@ export function classifyDeployTokenPolicies(
   if (policies.length !== 1) return "broader";
   const [policy] = policies;
   const resources = Object.entries(policy.resources);
-  if (
-    policy.effect !== "allow" ||
-    resources.length !== 1 ||
-    resources[0][1] !== "*" ||
-    policy.permission_groups.length !== 1
-  )
+  if (policy.effect !== "allow" || resources.length !== 1 || policy.permission_groups.length !== 1)
     return "broader";
   const group = policy.permission_groups[0];
-  if (
-    resources[0][0] === workerScriptResource(target.workerId) &&
-    group.name === WORKER_TOKEN_GROUP
-  )
+  if (hasExactWorkerResource(policy.resources, target) && group.name === WORKER_TOKEN_GROUP)
     return "worker";
   if (
     resources[0][0] === accountResource(target.accountId) &&
+    resources[0][1] === "*" &&
     group.name === ACCOUNT_FALLBACK_GROUP
   )
     return "account";
@@ -187,6 +207,7 @@ export async function mintWorkerDeployToken(
     throw new DeployTokenError("Per-Worker Editor role lookup failed; no token created");
   }
   const policies = workerDeployTokenPolicy({
+    accountId: params.accountId,
     workerId: params.workerId,
     groupId,
   });
@@ -211,8 +232,7 @@ export async function mintWorkerDeployToken(
       policy?.effect !== "allow" ||
       policy.permission_groups.length !== 1 ||
       policy.permission_groups[0].id !== groupId ||
-      Object.keys(policy.resources).length !== 1 ||
-      policy.resources[workerScriptResource(params.workerId)] !== "*"
+      !hasExactWorkerResource(policy.resources, params)
     ) {
       throw new Error("Cloudflare did not return the requested per-Worker Editor policy");
     }

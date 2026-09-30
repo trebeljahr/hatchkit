@@ -38,8 +38,20 @@ const { CloudflareApi } = await import("./src/utils/cloudflare-api.js");
 const workerId = "a".repeat(32);
 const accountId = "b".repeat(32);
 const secretValue = "fixture-value-never-in-results";
+// Independent fixture matching Cloudflare dashboard's JSON Payload review.
+const dashboardPolicy = [
+  {
+    effect: "allow",
+    permission_groups: [{ id: "editor" }],
+    resources: {
+      [`com.cloudflare.api.account.${accountId}`]: {
+        [`com.cloudflare.edge.worker.script.${workerId}`]: "*",
+      },
+    },
+  },
+];
 const policy = () =>
-  workerDeployTokenPolicy({ workerId, groupId: "editor" }).map((p) => ({
+  structuredClone(dashboardPolicy).map((p) => ({
     ...p,
     permission_groups: [{ id: "editor", name: WORKER_TOKEN_GROUP }],
   }));
@@ -74,7 +86,7 @@ function fixture() {
         return ["editor"];
       },
       createAccountToken: async (args) => {
-        assert.deepEqual(args.policies, workerDeployTokenPolicy({ workerId, groupId: "editor" }));
+        assert.deepEqual(args.policies, dashboardPolicy);
         mutations.push("mint");
         return { id: "new-token-id", value: secretValue };
       },
@@ -117,19 +129,74 @@ async function test(name: string, fn: () => Promise<void> | void) {
 try {
   await test("exact Worker Editor policy only; reject broad, empty, wrong-role and multi-policy grants", () => {
     const target = { accountId, workerId };
+    assert.deepEqual(
+      workerDeployTokenPolicy({ accountId, workerId, groupId: "editor" }),
+      dashboardPolicy,
+    );
     assert.equal(classifyDeployTokenPolicies(policy(), target), "worker");
     for (const policies of [
       [],
       [...policy(), ...policy()],
       [{ ...policy()[0], permission_groups: [] }],
-      [{ ...policy()[0], permission_groups: [{ id: "admin", name: "Individual Workers Admin" }] }],
-      [{ ...policy()[0], resources: { [`com.cloudflare.api.account.${accountId}`]: "*" } }],
+      [
+        {
+          ...policy()[0],
+          permission_groups: [{ id: "admin", name: "Individual Workers Admin" }],
+        },
+      ],
+      [
+        {
+          ...policy()[0],
+          resources: { [`com.cloudflare.api.account.${accountId}`]: "*" },
+        },
+      ],
       [{ ...policy()[0], resources: {} }],
-      [{ ...policy()[0], resources: { [`com.cloudflare.edge.worker.script.${workerId}`]: {} } }],
+      [
+        {
+          ...policy()[0],
+          resources: { [`com.cloudflare.edge.worker.script.${workerId}`]: "*" },
+        },
+      ],
+      [
+        {
+          ...policy()[0],
+          resources: {
+            [`com.cloudflare.api.account.${"c".repeat(32)}`]:
+              dashboardPolicy[0].resources[`com.cloudflare.api.account.${accountId}`],
+          },
+        },
+      ],
+      [
+        {
+          ...policy()[0],
+          resources: {
+            [`com.cloudflare.api.account.${accountId}`]: {
+              [`com.cloudflare.edge.worker.script.${workerId}`]: "*",
+              [`com.cloudflare.edge.worker.script.${"c".repeat(32)}`]: "*",
+            },
+          },
+        },
+      ],
+      [
+        {
+          ...policy()[0],
+          resources: {
+            [`com.cloudflare.api.account.${accountId}`]: {
+              "com.cloudflare.edge.worker.script.*": "*",
+            },
+          },
+        },
+      ],
+      [
+        {
+          ...policy()[0],
+          resources: { [`com.cloudflare.edge.worker.script.${workerId}`]: {} },
+        },
+      ],
     ]) {
       assert.equal(classifyDeployTokenPolicies(policies, target), "broader");
     }
-    assert.throws(() => workerDeployTokenPolicy({ workerId: "*", groupId: "editor" }));
+    assert.throws(() => workerDeployTokenPolicy({ accountId, workerId: "*", groupId: "editor" }));
   });
   await test("mint rejection never requests an account-wide fallback", async () => {
     const f = fixture();
@@ -204,7 +271,11 @@ try {
     for (const mode of ["metadata", "repo", "account"]) {
       const f = fixture();
       if (mode === "metadata") f.deps.listSecrets = async () => null;
-      else f.deps.records.site = { ...record(), [mode === "repo" ? "repo" : "accountId"]: "other" };
+      else
+        f.deps.records.site = {
+          ...record(),
+          [mode === "repo" ? "repo" : "accountId"]: "other",
+        };
       assert.equal((await setCloudflareDeploySecrets(input, f.deps)).ok, false);
       assert.deepEqual(f.mutations, []);
     }
@@ -344,7 +415,10 @@ try {
       globalThis.fetch = async (url) => {
         assert.ok(String(url).endsWith("/workers/workers/site%2Fname"));
         return new Response(
-          JSON.stringify({ success: false, errors: [{ code: 10000, message: "refused" }] }),
+          JSON.stringify({
+            success: false,
+            errors: [{ code: 10000, message: "refused" }],
+          }),
           { status },
         );
       };

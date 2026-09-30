@@ -46,7 +46,7 @@ Before rollout, verify whether this token can add bindings to unrelated resource
 
 Hatchkit reads back each minted policy and checks access before publishing its value to GitHub.
 A rejected policy stops setup. Hatchkit never falls back to account-wide permissions.
-The API resource-key format remains a compatibility assumption. Verify it against a dashboard-created scoped token before production rollout.
+The Worker resource is nested under its account resource, matching the dashboard’s JSON Payload review. The account wrapper does not grant account-wide access.
 Read checks cannot prove deployment works. Run a canary deployment before revoking a shared credential.
 
 ## Scaffolding a new project
