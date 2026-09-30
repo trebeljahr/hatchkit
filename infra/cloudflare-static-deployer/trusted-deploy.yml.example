@@ -1,0 +1,96 @@
+# Install only in the separate trusted repository, after policy/environment review.
+name: Deploy static assets
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: Fixed policy project key
+        required: true
+        type: choice
+        options: [portfolio, fractal-garden, minecraft-clone, quaternius-showcase]
+      run_id:
+        description: Successful source build run ID
+        required: true
+        type: string
+      run_attempt:
+        description: Exact source build attempt
+        required: true
+        type: string
+      artifact_id:
+        description: Exact static-assets artifact ID
+        required: true
+        type: string
+      expected_version:
+        description: Reviewed current Cloudflare version UUID
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  # Policy validation forbids multiple project keys targeting the same Worker.
+  group: cf-static-${{ inputs.project }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Verify source and archive without a Cloudflare token
+        env:
+          SOURCE_READ_TOKEN: ${{ secrets.SOURCE_READ_TOKEN }}
+          PROJECT: ${{ inputs.project }}
+          SOURCE_RUN: ${{ inputs.run_id }}
+          SOURCE_ATTEMPT: ${{ inputs.run_attempt }}
+          SOURCE_ARTIFACT: ${{ inputs.artifact_id }}
+        run: >-
+          python3 -I deployer.py verify --policy policy.json --project "$PROJECT"
+          --run "$SOURCE_RUN" --attempt "$SOURCE_ATTEMPT" --artifact "$SOURCE_ARTIFACT"
+          --receipt "$RUNNER_TEMP/verified.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/verified.json
+          if-no-files-found: error
+          retention-days: 7
+  deploy:
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Configure every named environment with a reviewer and main-only access.
+    # Cloudflare tokens belong ONLY in these environments, never repo secrets.
+    environment: cf-static-${{ inputs.project }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/approved
+      - name: Revalidate artifact and deploy fixed assets-only metadata
+        env:
+          SOURCE_READ_TOKEN: ${{ secrets.SOURCE_READ_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PROJECT: ${{ inputs.project }}
+          SOURCE_RUN: ${{ inputs.run_id }}
+          SOURCE_ATTEMPT: ${{ inputs.run_attempt }}
+          SOURCE_ARTIFACT: ${{ inputs.artifact_id }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+        run: >-
+          python3 -I deployer.py deploy --policy policy.json --project "$PROJECT"
+          --run "$SOURCE_RUN" --attempt "$SOURCE_ATTEMPT" --artifact "$SOURCE_ARTIFACT"
+          --approved-receipt "$RUNNER_TEMP/approved/verified.json"
+          --expected-version "$EXPECTED_VERSION" --allow-live
+          --receipt "$RUNNER_TEMP/deployment.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: deployment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/deployment.json
+          if-no-files-found: warn
+          retention-days: 90

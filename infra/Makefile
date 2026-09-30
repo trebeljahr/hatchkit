@@ -57,3 +57,7 @@ tf-destroy:
 
 create:
 	cd ../cli && pnpm run dev
+
+.PHONY: test-static-deployer
+test-static-deployer:
+	$(MAKE) -C cloudflare-static-deployer check

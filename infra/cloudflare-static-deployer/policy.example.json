@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "trusted_repository_id": 0,
+  "trusted_branch": "main",
+  "projects": {
+    "portfolio": {
+      "repository": "trebeljahr/portfolio.trebeljahr.com",
+      "repository_id": 0,
+      "branch": "main",
+      "workflow": ".github/workflows/build-static.yml",
+      "artifact": "static-assets",
+      "account_id": "REPLACE_WITH_REVIEWED_ACCOUNT_ID",
+      "worker_id": "REPLACE_WITH_REVIEWED_IMMUTABLE_WORKER_ID",
+      "worker_name": "portfolio",
+      "compatibility_date": "2026-09-28",
+      "not_found_handling": "404-page",
+      "limits": {
+        "archive_bytes": 0,
+        "expanded_bytes": 0,
+        "file_bytes": 0,
+        "files": 0,
+        "entries": 0,
+        "ratio": 0
+      }
+    }
+  }
+}

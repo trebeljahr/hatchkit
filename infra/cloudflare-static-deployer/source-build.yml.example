@@ -1,0 +1,36 @@
+# Review replacements before publishing in each source repository.
+# No Cloudflare token or cross-repository dispatch token belongs here.
+name: Build static assets
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: build-static-assets
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # Required for Fractal Garden sitemap dates.
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build # Fractal Garden: pnpm export
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: static-assets-${{ github.run_attempt }}
+          path: out/ # Minecraft: public/
+          if-no-files-found: error
+          retention-days: 7
+          # Hidden files are excluded. Review .well-known needs separately.
+          include-hidden-files: false

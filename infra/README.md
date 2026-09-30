@@ -2,6 +2,11 @@
 
 Opinionated, reusable infrastructure for deploying small SaaS apps on dedicated VPS instances through Coolify. Terraform for provisioning, shell scripts for Coolify API automation, Ansible for server hardening.
 
+## Static Cloudflare deployments
+
+The [trusted static deployer](cloudflare-static-deployer/README.md) keeps Worker tokens outside source-project builds.
+Its local security tests run with `make test-static-deployer`. Workflow templates remain inactive until a separate trusted repository and disposable canary are reviewed.
+
 ## Philosophy
 
 - **Coolify is the deployment control plane.** It handles containers, reverse proxy (Traefik), TLS certs (Let's Encrypt), and deploy triggers.
