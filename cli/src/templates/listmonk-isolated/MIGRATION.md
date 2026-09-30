@@ -56,7 +56,8 @@ paused. Ordinary CSV import defaults may enable subscribers, preconfirm lists,
 change timestamps or emit opt-in mail; do not use those defaults. Exact importer
 SQL/API behavior must pass a fixture rehearsal first. `prepare-transfer.mjs`
 now compiles the reviewed export into an initial-import transaction. Its offline
-input tests pass; PostgreSQL execution is still an explicit gate before use.
+input tests and synthetic PostgreSQL rehearsal pass. Rehearse the actual reviewed
+mapping in an empty staging destination before any production import.
 
 Read back every row and compare email, global status, each membership status,
 original timestamps and reviewed evidence. Reconcile counts by live/test list,
@@ -172,10 +173,14 @@ to all projects or treat an arbitrary email address as project ownership.
    It exercises two real HTTP relay handlers with fake SES send functions.
 2. When memory/swap permits, run `HATCHKIT_RUN_LISTMONK_DOCKER=1 node
    scripts/test.mjs test-listmonk-instance-separation.ts` from `cli/`. This opt-in
-   test takes the shared validation lock, requires local cached images, creates
+   test takes the shared validation lock, requires cached Postgres 17, Listmonk 6.2
+   and nginx 1.28 Alpine images, creates
    two disposable Listmonk/Postgres stacks on high loopback ports, and removes
    only its own random Compose projects/volumes. It starts no SES relay. Foreign
    auth/read/write/send requests must fail, while positive controls pass.
+   Only after explicit operator approval, `HATCHKIT_LISTMONK_RESOURCE_OVERRIDE=1`
+   permits the capped rehearsal despite historical load/swap. Unknown metrics
+   and unsafe current memory pressure still refuse; run checks serially.
 3. Rehearse the selective import, every status in the table, duplicate replay,
    deleted rows, old unsubscribe URL, old pending token, late bounce/complaint,
    a returning subscriber and rollback. No real subscribers or mail are needed.

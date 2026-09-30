@@ -58,6 +58,7 @@ export async function runListmonkIsolationPlan(argv: string[]): Promise<void> {
     services: [
       "dedicated Listmonk v6.2.0",
       "dedicated Postgres volume",
+      "loopback ingress proxy with a fixed Listmonk upstream",
       "project SES v2 HTTP messenger",
     ],
     senderPolicy: senderPolicy(spec),

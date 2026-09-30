@@ -1,11 +1,24 @@
 # One project per Compose project. Never attach another project's volumes/networks.
 name: __PROJECT_SLUG__-newsletter
 services:
+  ingress:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    user: "101:101"
+    entrypoint: ["nginx"]
+    command: ["-g", "daemon off;"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:uid=101,gid=101,mode=0700"]
+    ports: ["127.0.0.1:${LISTMONK_HTTP_PORT:?Choose a free high port}:8080"]
+    volumes: ["./ingress.conf:/etc/nginx/nginx.conf:ro"]
+    depends_on: [listmonk]
+    networks: [private, ingress]
   listmonk:
     image: listmonk/listmonk:v6.2.0
     restart: unless-stopped
     command: ["sh", "-c", "./listmonk --install --idempotent --yes --config '' && ./listmonk --config ''"]
-    ports: ["127.0.0.1:${LISTMONK_HTTP_PORT:?Choose a free high port}:9000"]
     environment:
       LISTMONK_app__address: 0.0.0.0:9000
       LISTMONK_db__host: db
@@ -65,6 +78,7 @@ services:
 networks:
   private: { internal: true }
   sending: {}
+  ingress: {}
 volumes:
   database: {}
   uploads: {}

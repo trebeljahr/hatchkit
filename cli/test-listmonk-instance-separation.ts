@@ -1,11 +1,12 @@
 /** Opt-in real Listmonk/Postgres test. No AWS, SMTP, public routes or real subscribers. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { cpus, loadavg, tmpdir } from "node:os";
+import { cpus, loadavg } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse, stringify } from "yaml";
 import { prepareTransfer } from "./src/templates/listmonk-isolated/prepare-transfer.mjs";
 
@@ -15,9 +16,12 @@ if (process.env.HATCHKIT_RUN_LISTMONK_DOCKER !== "1") {
   );
 }
 // Never follow a remote Docker context or read ambient provider credentials.
-const env: NodeJS.ProcessEnv = { ...process.env, HATCHKIT_KEYCHAIN_ACCESS: "deny" };
-delete env.DOCKER_HOST;
-delete env.DOCKER_CONTEXT;
+const env: NodeJS.ProcessEnv = {
+  ...process.env,
+  HATCHKIT_KEYCHAIN_ACCESS: "deny",
+};
+env.DOCKER_HOST = undefined;
+env.DOCKER_CONTEXT = undefined;
 const command = (cmd: string, args: string[], input?: string) => {
   const result = spawnSync(cmd, args, {
     env,
@@ -28,21 +32,29 @@ const command = (cmd: string, args: string[], input?: string) => {
   });
   if (result.error || result.status !== 0)
     throw new Error(
-      `${cmd} ${args.slice(0, 2).join(" ")} failed (output withheld; fixture data may be present)`,
+      `${cmd} ${args.slice(0, 2).join(" ")} failed: ${result.error?.message ?? result.stderr.slice(-4000)}`,
     );
   return result.stdout.trim();
 };
-if (loadavg()[0] > cpus().length * 0.7) throw new Error("Deferred: machine load too high.");
+// Explicit operator approval permits capped runs despite historical load/swap.
+// Unknown metrics and current memory pressure still fail closed.
+const resourceOverride = process.env.HATCHKIT_LISTMONK_RESOURCE_OVERRIDE === "1";
+if (!resourceOverride && loadavg()[0] > cpus().length * 0.7)
+  throw new Error("Deferred: machine load too high.");
 if (process.platform !== "darwin")
   throw new Error("Review a resource gate for this platform before running.");
 const swap = command("sysctl", ["vm.swapusage"]);
 const used = Number(swap.match(/used = ([\d.]+)M/)?.[1] ?? Number.NaN);
-if (!Number.isFinite(used) || used > 2048)
+if (!Number.isFinite(used) || (!resourceOverride && used > 2048))
   throw new Error("Deferred: swap is unknown or above 2 GiB.");
 const pressure = command("memory_pressure", []);
 const free = Number(pressure.match(/memory free percentage: (\d+)%/)?.[1] ?? Number.NaN);
 if (!Number.isFinite(free) || free < 30)
   throw new Error("Deferred: memory pressure is unsafe or unknown.");
+if (resourceOverride)
+  console.log(
+    "Operator-approved resource override: serialized, capped containers; memory-pressure guard retained.",
+  );
 const context = command("docker", ["context", "show"]);
 const endpoint = command("docker", [
   "context",
@@ -56,19 +68,34 @@ if (!endpoint.startsWith("unix://"))
 // Pin the reviewed local context, even if another shell changes its default.
 const docker = (args: string[], input?: string) =>
   command("docker", ["--context", context, ...args], input);
-for (const image of ["postgres:17-alpine", "listmonk/listmonk:v6.2.0"])
+for (const image of ["postgres:17-alpine", "listmonk/listmonk:v6.2.0", "nginx:1.28-alpine"])
   docker(["image", "inspect", image]);
 const lock = "/tmp/hatchkit-recovery-validation.lock";
-if (existsSync(lock))
-  throw new Error("Validation lock exists; inspect owner. Never remove a foreign lock.");
-mkdirSync(lock);
+const lockDeadline = Date.now() + 60_000;
+let announcedWait = false;
+while (true) {
+  try {
+    mkdirSync(lock);
+    break;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if (Date.now() >= lockDeadline)
+      throw new Error("Validation lock remains busy; inspect owner. Never remove a foreign lock.");
+    if (!announcedWait) {
+      console.log("Waiting up to 60 seconds for the shared validation lock.");
+      announcedWait = true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
 const owner = JSON.stringify({
   pid: process.pid,
   purpose: "Listmonk two-instance fixtures",
   started: new Date().toISOString(),
 });
 writeFileSync(join(lock, "owner.json"), owner);
-const scratch = mkdtempSync(join(tmpdir(), "hatchkit-listmonk-separation-"));
+// Colima shares the home checkout, but not necessarily macOS /var/folders.
+const scratch = mkdtempSync(fileURLToPath(new URL("./.listmonk-fixture-", import.meta.url)));
 const stacks: Array<{
   name: string;
   path: string;
@@ -128,7 +155,11 @@ try {
     delete definition.networks.sending;
     for (const key of ["relay_password", "ses_access_key", "ses_secret_key"])
       delete definition.secrets[key];
-    definition.services.listmonk.ports = [`127.0.0.1:${stack.port}:9000`];
+    definition.services.ingress.ports = [`127.0.0.1:${stack.port}:8080`];
+    cpSync(
+      new URL("./src/templates/listmonk-isolated/ingress.conf", import.meta.url),
+      join(path, "ingress.conf"),
+    );
     for (const service of Object.values(definition.services) as Array<{
       restart: string;
       mem_limit: string;
@@ -165,29 +196,34 @@ try {
       INSERT INTO roles(id,type,name,permissions) VALUES (100,'user','fixture',ARRAY['subscribers:get','subscribers:get_all','subscribers:manage','campaigns:get','campaigns:manage','tx:send']);
       INSERT INTO roles(id,type,name) VALUES (101,'list','fixture');
       INSERT INTO roles(id,type,parent_id,list_id,permissions) VALUES (102,'list',101,100,ARRAY['list:get','list:manage']);
-      INSERT INTO users(username,password,email,name,type,user_role_id,list_role_id,status) VALUES ('project-api','${token}','fixture@api','fixture','api',100,101,'enabled');
+      INSERT INTO users(username,password,email,name,type,user_role_id,list_role_id,status) VALUES ('project-api','${createHash("sha256").update(token).digest("hex")}','fixture@api','fixture','api',100,101,'enabled');
       INSERT INTO campaigns(id,uuid,name,subject,from_email,body,content_type,messenger) VALUES (${stack.id},gen_random_uuid(),'fixture','fixture','noreply@mail.${project}.example.com','fixture','plain','email');
       INSERT INTO campaign_lists(campaign_id,list_id,list_name) VALUES (${stack.id},100,'fixture');
       UPDATE settings SET value='[]'::jsonb WHERE key='smtp';
       UPDATE settings SET value='false'::jsonb WHERE key IN ('app.check_updates','app.send_optin_confirmation');
     `,
     );
-    compose(stack, ["up", "-d", "--pull", "never", "listmonk"]);
+    compose(stack, ["up", "-d", "--pull", "never", "ingress"]);
     let ready = false;
+    let readiness = "no response";
     for (let attempt = 0; attempt < 60; attempt++) {
       try {
         const r = await fetch(`http://127.0.0.1:${stack.port}/api/subscribers/${stack.id}`, {
           headers: { authorization: stack.auth },
           signal: AbortSignal.timeout(1000),
         });
+        readiness = `HTTP ${r.status}: ${(await r.text()).slice(0, 500)}`;
         if (r.ok) {
           ready = true;
           break;
         }
-      } catch {}
+      } catch (error) {
+        readiness = String(error);
+      }
       await pause(500);
     }
-    assert(ready, "Fixture Listmonk did not become ready with its own token");
+    if (!ready) console.error(compose(stack, ["logs", "--tail", "30", "listmonk", "ingress"]));
+    assert(ready, `Fixture Listmonk did not become ready with its own token: ${readiness}`);
   }
   const call = async (
     destination: (typeof stacks)[number],
@@ -230,7 +266,7 @@ try {
         {
           subscriber_email: other.email,
           template_id: 1,
-          from_email: `noreply@mail.bravo.example.com`,
+          from_email: "noreply@mail.bravo.example.com",
         },
       ],
     ] as const)
@@ -248,6 +284,16 @@ try {
     assert.equal(JSON.parse(protectedRow.text).data.email, other.email);
     const protectedCampaign = await call(other, other.auth, `/api/campaigns/${other.id}`);
     assert.equal(JSON.parse(protectedCampaign.text).data.status, "draft");
+    // Listmonk and PostgreSQL stay internal-only. Only the ingress publishes a port.
+    for (const service of ["listmonk", "db"]) {
+      const container = JSON.parse(docker(["inspect", `${own.name}-${service}-1`]))[0];
+      assert.deepEqual(Object.keys(container.NetworkSettings.Networks), [`${own.name}_private`]);
+      assert.equal(Object.keys(container.HostConfig.PortBindings ?? {}).length, 0);
+    }
+    const ingress = JSON.parse(docker(["inspect", `${own.name}-ingress-1`]))[0];
+    assert.deepEqual(ingress.NetworkSettings.Ports["8080/tcp"], [
+      { HostIp: "127.0.0.1", HostPort: String(own.port) },
+    ]);
     const ownNetwork = JSON.parse(docker(["network", "inspect", `${own.name}_private`]))[0];
     assert.equal(ownNetwork.Internal, true);
     const foreignContainers = Object.keys(

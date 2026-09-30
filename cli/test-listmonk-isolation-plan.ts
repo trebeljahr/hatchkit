@@ -148,6 +148,7 @@ try {
   assert(!compose.includes("__PROJECT"));
   assert(compose.includes("internal: true"));
   assert(compose.includes("arn:aws:ses:eu-west-1:123456789012:identity/mail.sample.example.com"));
+  assert(existsSync(join(output, "ingress.conf")));
   assert(existsSync(join(output, "relay/package-lock.json")));
   assert(existsSync(join(output, "MIGRATION.md")));
   assert(existsSync(join(output, "export-memberships.sql")));
