@@ -158,6 +158,8 @@ export interface EnsureListmonkProjectUserOptions {
   name: string;
   /** Lists the list role grants get + manage on (live, test). */
   listIds: number[];
+  /** Grant only tx:send, without a list role. */
+  transactionalOnly?: boolean;
   /** Tokens from an earlier run (the project env, the keychain), best
    *  first. The first one Listmonk accepts for the user is reused. */
   cachedTokens?: string[];
@@ -182,7 +184,7 @@ export interface ListmonkProjectUserResult {
   token: string;
   userId: number;
   userRoleId: number;
-  listRoleId: number;
+  listRoleId: number | null;
   /** One line per change made (or, under `dryRun`, planned). Empty on
    *  a re-run that found everything in place. */
   changes: string[];
@@ -208,16 +210,21 @@ export async function ensureListmonkProjectUser(
   }
   assertNotReserved(name, opts.reservedNames);
   const listIds = [...new Set(opts.listIds.filter((id) => Number.isInteger(id) && id > 0))];
-  if (listIds.length === 0) {
+  if (listIds.length === 0 && !opts.transactionalOnly) {
     throw new Error(`No Listmonk list ids for ${name}: the list role would grant nothing.`);
   }
   const changes: string[] = [];
   const created = { userRole: false, listRole: false, user: false };
 
   // ── user role ──
-  const wanted = [...PROJECT_USER_PERMISSIONS];
+  const wanted = opts.transactionalOnly ? ["tx:send"] : [...PROJECT_USER_PERMISSIONS];
   const userRoles = await listListmonkUserRoles(admin);
   let userRole: ListmonkUserRole | undefined = userRoles.find((r) => r.name === name);
+  if (opts.transactionalOnly && userRole?.permissions.some((p) => p !== "tx:send")) {
+    throw new Error(
+      `User role ${name} has broader permissions. Choose a different --name for transactional-only access; existing permissions are preserved.`,
+    );
+  }
   if (!userRole) {
     changes.push(`create user role ${name}: ${wanted.join(", ")}`);
     if (dry) {
@@ -243,44 +250,48 @@ export async function ensureListmonkProjectUser(
   });
 
   // ── list role ──
-  const listPerms = [...PROJECT_LIST_PERMISSIONS];
-  const listRoles = await listListmonkListRoles(admin);
-  let listRole: ListmonkListRole | undefined = listRoles.find((r) => r.name === name);
-  if (!listRole) {
-    const lists = listIds.map((id) => ({ id, permissions: listPerms }));
-    changes.push(`create list role ${name}: lists ${listIds.join(", ")} (get, manage)`);
-    if (dry) {
-      listRole = { id: 0, name, lists };
+  let listRole: ListmonkListRole | undefined;
+  if (!opts.transactionalOnly) {
+    const listPerms = [...PROJECT_LIST_PERMISSIONS];
+    const listRoles = await listListmonkListRoles(admin);
+    listRole = listRoles.find((r) => r.name === name);
+    if (!listRole) {
+      const lists = listIds.map((id) => ({ id, permissions: listPerms }));
+      changes.push(`create list role ${name}: lists ${listIds.join(", ")} (get, manage)`);
+      if (dry) {
+        listRole = { id: 0, name, lists };
+      } else {
+        const r = await createListmonkListRole(admin, { name, lists });
+        listRole = { id: r.id, name, lists };
+      }
+      created.listRole = true;
     } else {
-      const r = await createListmonkListRole(admin, { name, lists });
-      listRole = { id: r.id, name, lists };
+      // PUT replaces the whole set, so send every list the role has, with
+      // the missing rights added to ours.
+      const byId = new Map(listRole.lists.map((l) => [l.id, [...l.permissions]]));
+      const added: string[] = [];
+      for (const id of listIds) {
+        const have = byId.get(id) ?? [];
+        const missing = listPerms.filter((p) => !have.includes(p));
+        if (missing.length === 0) continue;
+        byId.set(id, [...have, ...missing]);
+        added.push(`${missing.join(" + ")} on list ${id}`);
+      }
+      if (added.length > 0) {
+        const lists = [...byId].map(([id, permissions]) => ({ id, permissions }));
+        changes.push(`add ${added.join(", ")} to list role ${name} (id ${listRole.id})`);
+        if (!dry) await updateListmonkListRole(admin, listRole.id, { name, lists });
+        listRole = { ...listRole, lists };
+      }
     }
-    created.listRole = true;
-  } else {
-    // PUT replaces the whole set, so send every list the role has, with
-    // the missing rights added to ours.
-    const byId = new Map(listRole.lists.map((l) => [l.id, [...l.permissions]]));
-    const added: string[] = [];
-    for (const id of listIds) {
-      const have = byId.get(id) ?? [];
-      const missing = listPerms.filter((p) => !have.includes(p));
-      if (missing.length === 0) continue;
-      byId.set(id, [...have, ...missing]);
-      added.push(`${missing.join(" + ")} on list ${id}`);
-    }
-    if (added.length > 0) {
-      const lists = [...byId].map(([id, permissions]) => ({ id, permissions }));
-      changes.push(`add ${added.join(", ")} to list role ${name} (id ${listRole.id})`);
-      if (!dry) await updateListmonkListRole(admin, listRole.id, { name, lists });
-      listRole = { ...listRole, lists };
-    }
+    events.onRole?.({
+      roleType: "list",
+      roleId: listRole.id,
+      name,
+      createdThisRun: created.listRole,
+    });
   }
-  events.onRole?.({
-    roleType: "list",
-    roleId: listRole.id,
-    name,
-    createdThisRun: created.listRole,
-  });
+  const listRoleId = listRole?.id ?? null;
 
   // ── API user ──
   const users = await listListmonkUsers(admin);
@@ -295,7 +306,7 @@ export async function ensureListmonkProjectUser(
         `Listmonk user ${name} (id ${existing.id}) is a login user, not an API user. hatchkit will not replace it. Rename it in Listmonk, or pick another project name.`,
       );
     }
-    const check = await checkReuse(existing, opts.cachedTokens, userRole.id, listRole.id, admin);
+    const check = await checkReuse(existing, opts.cachedTokens, userRole.id, listRoleId, admin);
     if (check.token) {
       token = check.token;
     } else {
@@ -322,13 +333,15 @@ export async function ensureListmonkProjectUser(
 
   if (!existing || regenerated) {
     if (dry) {
-      changes.push(`create API user ${name} with user role ${name} and list role ${name}`);
+      changes.push(
+        `create API user ${name} with user role ${name}${opts.transactionalOnly ? " (tx:send only)" : ` and list role ${name}`}`,
+      );
     } else {
       const fresh = await createListmonkApiUser(admin, {
         username: name,
         name,
         userRoleId: userRole.id,
-        listRoleId: listRole.id,
+        listRoleId,
       });
       await events.onToken?.({ username: fresh.username, token: fresh.token });
       token = fresh.token;
@@ -344,7 +357,7 @@ export async function ensureListmonkProjectUser(
     token,
     userId,
     userRoleId: userRole.id,
-    listRoleId: listRole.id,
+    listRoleId,
     changes,
     created,
     regenerated,
@@ -380,6 +393,7 @@ export async function inspectListmonkProjectUser(
   admin: ListmonkAuth,
   name: string,
   cachedTokens: string[] | undefined,
+  transactionalOnly = false,
 ): Promise<{ userId: number; reason: string | null } | null> {
   const user = (await listListmonkUsers(admin)).find((u) => u.username === name);
   if (!user) return null;
@@ -389,8 +403,16 @@ export async function inspectListmonkProjectUser(
     );
   }
   const userRole = (await listListmonkUserRoles(admin)).find((r) => r.name === name);
-  const listRole = (await listListmonkListRoles(admin)).find((r) => r.name === name);
-  const check = await checkReuse(user, cachedTokens, userRole?.id ?? -1, listRole?.id ?? -1, admin);
+  const listRole = transactionalOnly
+    ? undefined
+    : (await listListmonkListRoles(admin)).find((r) => r.name === name);
+  const check = await checkReuse(
+    user,
+    cachedTokens,
+    userRole?.id ?? -1,
+    transactionalOnly ? null : (listRole?.id ?? -1),
+    admin,
+  );
   return { userId: user.id, reason: check.token ? null : (check.reason ?? "no working token") };
 }
 
@@ -402,11 +424,16 @@ async function checkReuse(
   user: ListmonkUser,
   cachedTokens: string[] | undefined,
   userRoleId: number,
-  listRoleId: number,
+  listRoleId: number | null,
   admin: ListmonkAuth,
 ): Promise<{ token: string; reason?: undefined } | { token?: undefined; reason: string }> {
   if (user.userRoleId !== userRoleId || user.listRoleId !== listRoleId) {
-    return { reason: `it does not hold user role ${user.username} and list role ${user.username}` };
+    return {
+      reason:
+        listRoleId === null
+          ? `it does not hold user role ${user.username} without a list role`
+          : `it does not hold user role ${user.username} and list role ${user.username}`,
+    };
   }
   if (user.status !== "enabled") return { reason: `it is ${user.status}` };
   const tokens = [...new Set((cachedTokens ?? []).map((t) => t.trim()).filter(Boolean))];

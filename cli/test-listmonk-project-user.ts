@@ -35,7 +35,7 @@
  * Run: `pnpm test` (via the script in cli/package.json).
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -824,6 +824,173 @@ await check("removeEnvKeys drops the SES_SMTP_* lines and nothing else", () => {
     ].join("\n"),
   );
   assert.deepEqual(removeEnvKeys(path, SES_SMTP_KEYS), [], "second run is a no-op");
+});
+
+await check(
+  "transactional-only creates tx:send with no list role and reuses its token",
+  async () => {
+    fresh();
+    lm.lists = [];
+    const opts = { admin, name: "receipt-app", listIds: [], transactionalOnly: true };
+    const first = await ensureListmonkProjectUser(opts);
+    assert.equal(first.listRoleId, null);
+    assert.equal(first.created.listRole, false);
+    assert.deepEqual(lm.userRoles.find((r) => r.id === first.userRoleId)?.permissions, ["tx:send"]);
+    assert.equal(lm.listRoles.length, 0);
+    assert.equal(lm.users.find((u) => u.id === first.userId)?.listRoleId, null);
+    lm.calls = [];
+    assert.equal(
+      await decideListmonkRegenerate({
+        ...opts,
+        cachedTokens: [first.token],
+        allow: false,
+        interactive: false,
+      }),
+      false,
+    );
+    const again = await ensureListmonkProjectUser({ ...opts, cachedTokens: [first.token] });
+    assert.equal(again.token, first.token);
+    assert.deepEqual(lm.writes(), []);
+    assert.ok(!lm.calls.some((c) => c.includes("/api/roles/lists")));
+    await assert.rejects(ensureListmonkProjectUser(opts), /no token/);
+    assert.deepEqual(lm.writes(), []);
+    const regenerated = await ensureListmonkProjectUser({
+      ...opts,
+      confirmRegenerate: async () => true,
+    });
+    assert.equal(regenerated.regenerated, true);
+    assert.notEqual(regenerated.token, first.token);
+  },
+);
+
+await check("transactional-only refuses broader roles without changing them", async () => {
+  fresh();
+  const first = await ensureListmonkProjectUser({ admin, name: "demo", listIds: [7, 8] });
+  lm.calls = [];
+  await assert.rejects(
+    ensureListmonkProjectUser({
+      admin,
+      name: "demo",
+      listIds: [],
+      transactionalOnly: true,
+      cachedTokens: [first.token],
+    }),
+    /broader permissions/,
+  );
+  assert.deepEqual(lm.writes(), []);
+  assert.equal(lm.users.find((u) => u.id === first.userId)?.token, first.token);
+});
+
+await check(
+  "CLI supports an existing app's local env without production env or lists",
+  async () => {
+    fresh();
+    lm.lists = [];
+    const { getStore } = await import("./src/config.js");
+    const { SECRET_KEYS, setSecret } = await import("./src/utils/secrets.js");
+    const { runListmonkUserCli } = await import("./src/provision/listmonk-user-cli.js");
+    getStore().set("providers.listmonk", {
+      status: "configured",
+      url: URL_BASE,
+      apiUser: "hatchkit",
+    });
+    await setSecret(SECRET_KEYS.listmonkApiToken, "SHAREDTOKEN");
+    await setSecret(SECRET_KEYS.listmonkAdminApiToken, "ADMINTOKEN");
+    const dir = mkdtempSync(join(tmpdir(), "hatchkit-lm-local-"));
+    mkdirSync(join(dir, "server"));
+    const path = join(dir, "server", ".env");
+    writeFileSync(path, "OTHER=value\nSES_SMTP_HOST=keep-me\n");
+    const args = [
+      "receipt-local",
+      "--project-dir",
+      dir,
+      "--transactional-only",
+      "--env-file",
+      "server/.env",
+    ];
+    await runListmonkUserCli([...args, "--dry-run"]);
+    assert.deepEqual(lm.writes(), []);
+    assert.equal(readFileSync(path, "utf8"), "OTHER=value\nSES_SMTP_HOST=keep-me\n");
+    await runListmonkUserCli(args);
+    const contents = readFileSync(path, "utf8");
+    assert.match(contents, /LISTMONK_URL=/);
+    assert.match(contents, /LISTMONK_API_USER=receipt-local/);
+    assert.match(contents, /OTHER=value/);
+    assert.match(contents, /SES_SMTP_HOST=keep-me/);
+    assert.equal(existsSync(join(dir, "server", ".env.production")), false);
+    assert.equal(existsSync(join(dir, "server", ".env.development.local")), false);
+    assert.ok(!lm.calls.includes("GET /api/lists"));
+    lm.calls = [];
+    await runListmonkUserCli(args);
+    assert.deepEqual(lm.writes(), []);
+    assert.equal(readFileSync(path, "utf8"), contents);
+    writeFileSync(path, contents.replace(URL_BASE, "https://another.test"));
+    lm.calls = [];
+    await assert.rejects(runListmonkUserCli(args), /only manages hatchkit/);
+    assert.deepEqual(lm.calls, []);
+  },
+);
+
+await check(
+  "explicit env rejects tracked or encrypted destinations before provider calls",
+  async () => {
+    fresh();
+    const { runListmonkUserCli } = await import("./src/provision/listmonk-user-cli.js");
+    const { execFileSync } = await import("node:child_process");
+    const dir = mkdtempSync(join(tmpdir(), "hatchkit-lm-tracked-"));
+    execFileSync("git", ["init", "-q", dir]);
+    const path = join(dir, ".env");
+    writeFileSync(path, "OTHER=value\n");
+    execFileSync("git", ["-C", dir, "add", "-f", ".env"]);
+    const args = [
+      "receipt-safe",
+      "--project-dir",
+      dir,
+      "--transactional-only",
+      "--env-file",
+      ".env",
+    ];
+    await assert.rejects(runListmonkUserCli(args), /tracked file/);
+    execFileSync("git", ["-C", dir, "rm", "--cached", ".env"]);
+    writeFileSync(path, 'LISTMONK_API_TOKEN="encrypted:abc"\n');
+    await assert.rejects(runListmonkUserCli(args), /encrypted env/);
+    assert.deepEqual(lm.calls, []);
+  },
+);
+
+await check(
+  "local writer replaces export/duplicate keys without touching sibling envs",
+  async () => {
+    const { writeLocalEnv } = await import("./src/provision/write-env.js");
+    const { parseDotenv } = await import("./src/deploy/env-resolve.js");
+    const dir = mkdtempSync(join(tmpdir(), "hatchkit-lm-writer-"));
+    const path = join(dir, ".env.development.local");
+    const sibling = join(dir, ".env.development");
+    writeFileSync(sibling, "LISTMONK_API_TOKEN=leave-this-alone\n");
+    writeFileSync(
+      path,
+      "export LISTMONK_API_TOKEN = old\nLISTMONK_API_TOKEN=duplicate\nOTHER=value\n",
+    );
+    writeLocalEnv(path, [{ key: "LISTMONK_API_TOKEN", value: "new" }]);
+    assert.equal(parseDotenv(readFileSync(path, "utf8")).LISTMONK_API_TOKEN, "new");
+    assert.equal(readFileSync(path, "utf8").match(/LISTMONK_API_TOKEN/g)?.length, 1);
+    assert.equal(readFileSync(sibling, "utf8"), "LISTMONK_API_TOKEN=leave-this-alone\n");
+  },
+);
+
+await check("custom env creation also preserves the default newsletter workflow", async () => {
+  fresh();
+  const { runListmonkUserCli } = await import("./src/provision/listmonk-user-cli.js");
+  const dir = mkdtempSync(join(tmpdir(), "hatchkit-lm-newsletter-"));
+  await runListmonkUserCli(["demo", "--project-dir", dir, "--env-file", "server/.env"]);
+  assert.deepEqual(lm.userRoles.find((r) => r.name === "demo")?.permissions, [
+    ...PROJECT_USER_PERMISSIONS,
+  ]);
+  assert.deepEqual(
+    lm.listRoles.find((r) => r.name === "demo")?.lists.map((l) => l.id),
+    [7, 8],
+  );
+  assert.ok(existsSync(join(dir, "server", ".env")));
 });
 
 globalThis.fetch = realFetch;

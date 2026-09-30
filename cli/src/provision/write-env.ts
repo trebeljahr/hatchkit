@@ -148,15 +148,25 @@ export function writeDevEnv(envPath: string, pairs: EnvPair[]): string[] {
     ensureDevLocalLoaded(dirname(envPath));
     reportMigration(migrateDevSecretsToLocal(dirname(envPath)));
   }
+  return writeLocalEnv(envPath, pairs);
+}
+
+/** Write a caller-selected plaintext env without migrating sibling files or loaders. */
+export function writeLocalEnv(envPath: string, pairs: EnvPair[]): string[] {
+  ensureParent(envPath);
+  ensureIgnoredOnEveryClone(envPath, ignorePatternFor(envPath));
   const existing = existsSync(envPath) ? readFileSync(envPath, "utf-8") : "";
-  const lines = existing === "" ? [] : existing.split("\n");
+  let lines = existing === "" ? [] : existing.split("\n");
 
   const wroteKeys: string[] = [];
   for (const { key, value } of pairs) {
-    const idx = lines.findIndex((l) => l.startsWith(`${key}=`));
+    const matches = (line: string) =>
+      line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/)?.[1] === key;
+    const idx = lines.findIndex(matches);
     const line = `${key}=${serializeDevValue(value)}`;
     if (idx >= 0) {
       lines[idx] = line;
+      lines = lines.filter((l, i) => i <= idx || !matches(l));
     } else {
       lines.push(line);
     }

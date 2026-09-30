@@ -131,12 +131,18 @@ export async function decideListmonkRegenerate(opts: {
   cachedTokens: string[];
   /** `--regenerate-token`: yes without asking. */
   allow: boolean;
+  transactionalOnly?: boolean;
   interactive: boolean;
   /** hatchkit's own users; refused before anything is asked. */
   reservedNames?: string[];
 }): Promise<boolean> {
   assertNotReserved(opts.name, opts.reservedNames);
-  const found = await inspectListmonkProjectUser(opts.admin, opts.name, opts.cachedTokens);
+  const found = await inspectListmonkProjectUser(
+    opts.admin,
+    opts.name,
+    opts.cachedTokens,
+    opts.transactionalOnly,
+  );
   if (!found?.reason) return false;
   if (opts.allow) return true;
   if (opts.interactive) {
@@ -179,6 +185,8 @@ interface CliFlags {
   positional: string[];
   projectDir?: string;
   serverDir?: string;
+  envFile?: string;
+  transactionalOnly?: boolean;
   name?: string;
   dryRun: boolean;
   regenerateToken: boolean;
@@ -186,7 +194,7 @@ interface CliFlags {
 }
 
 function parseFlags(argv: string[]): CliFlags {
-  const valueFlags = new Set(["--project-dir", "--server-dir", "--name"]);
+  const valueFlags = new Set(["--project-dir", "--server-dir", "--name", "--env-file"]);
   const out: CliFlags = {
     positional: [],
     dryRun: false,
@@ -197,12 +205,14 @@ function parseFlags(argv: string[]): CliFlags {
     const a = argv[i];
     if (valueFlags.has(a)) {
       const v = argv[++i];
-      if (!v) throw new Error(`${a} needs a value`);
+      if (!v || v.startsWith("--")) throw new Error(`${a} needs a value`);
       if (a === "--project-dir") out.projectDir = v;
       if (a === "--server-dir") out.serverDir = v;
+      if (a === "--env-file") out.envFile = v;
       if (a === "--name") out.name = v;
     } else if (a === "--dry-run") out.dryRun = true;
     else if (a === "--regenerate-token") out.regenerateToken = true;
+    else if (a === "--transactional-only") out.transactionalOnly = true;
     else if (a === "--keep-ses-smtp") out.keepSesSmtp = true;
     else if (a.startsWith("-")) throw new Error(`Unknown flag ${a}`);
     else out.positional.push(a);
@@ -215,6 +225,8 @@ function parseFlags(argv: string[]): CliFlags {
 export async function runListmonkUserCli(argv: string[]): Promise<void> {
   const flags = parseFlags(argv);
   const dry = flags.dryRun;
+  if (flags.envFile && flags.serverDir)
+    throw new Error("Use --env-file or --server-dir, not both.");
   const { findManifestDirUpward, readManifest } = await import("../scaffold/manifest.js");
 
   // ── project ──
@@ -254,7 +266,10 @@ export async function runListmonkUserCli(argv: string[]): Promise<void> {
     throw new Error(`"${name}" cannot be a Listmonk username. Pass --name <3+ characters>.`);
   }
 
-  const snap = await readProjectEnvSnapshot(envRoot);
+  const explicitEnv = flags.envFile ? resolve(projectDir, flags.envFile) : undefined;
+  const snap = explicitEnv
+    ? await readLocalListmonkEnv(explicitEnv)
+    : await readProjectEnvSnapshot(envRoot);
   if (!snap.prodPath) {
     throw new Error(
       `No .env.production under ${envRoot}. For a project without Listmonk env yet, run \`hatchkit add ${name} listmonk-ses\`; if the server env lives elsewhere, pass --server-dir.`,
@@ -290,8 +305,8 @@ export async function runListmonkUserCli(argv: string[]): Promise<void> {
   const adminProfile = await checkListmonkAdmin(admin);
 
   // ── lists ──
-  const lists = await listListmonkLists(admin);
-  const fromEnv = listmonkListIdsFromEnv(snap.prod, snap.dev);
+  const lists = flags.transactionalOnly ? [] : await listListmonkLists(admin);
+  const fromEnv = flags.transactionalOnly ? {} : listmonkListIdsFromEnv(snap.prod, snap.dev);
   const live = fromEnv.live ?? lists.find((l) => l.name === name)?.id;
   const test = fromEnv.test ?? lists.find((l) => l.name === `${name}-test`)?.id;
   const listIds = [live, test].filter((id): id is number => id !== undefined);
@@ -301,7 +316,7 @@ export async function runListmonkUserCli(argv: string[]): Promise<void> {
       `${name}'s env names Listmonk list id(s) ${unknown.join(", ")}, which do not exist.`,
     );
   }
-  if (listIds.length === 0) {
+  if (listIds.length === 0 && !flags.transactionalOnly) {
     throw new Error(
       `Found no Listmonk list for ${name}: no LISTMONK_LIVE_LIST_ID / LISTMONK_LIST_ID / LISTMONK_TEST_LIST_ID in its env, and no list named ${name} or ${name}-test.`,
     );
@@ -331,6 +346,7 @@ export async function runListmonkUserCli(argv: string[]): Promise<void> {
         name,
         cachedTokens,
         allow: flags.regenerateToken,
+        transactionalOnly: flags.transactionalOnly,
         interactive: !!process.stdin.isTTY,
         reservedNames,
       });
@@ -345,6 +361,7 @@ export async function runListmonkUserCli(argv: string[]): Promise<void> {
       admin,
       name,
       listIds,
+      transactionalOnly: flags.transactionalOnly,
       cachedTokens,
       confirmRegenerate: async () => regenerate,
       reservedNames,
@@ -385,6 +402,36 @@ export async function runListmonkUserCli(argv: string[]): Promise<void> {
     for (const line of result.changes) {
       console.log(dry ? chalk.cyan(`  would ${line}`) : chalk.green(`  ✓ ${line}`));
     }
+  }
+
+  if (explicitEnv) {
+    const current =
+      snap.prod.LISTMONK_API_USER === name &&
+      snap.prod.LISTMONK_API_TOKEN === result.token &&
+      snap.prod.LISTMONK_URL === admin.url;
+    if (dry) {
+      console.log(
+        chalk.cyan(
+          `  would set LISTMONK_URL, LISTMONK_API_USER and LISTMONK_API_TOKEN in ${prodRel} (local plaintext)`,
+        ),
+      );
+    } else {
+      if (!result.token) throw new Error(`No token for Listmonk API user ${name}.`);
+      const { writeLocalEnv } = await import("./write-env.js");
+      if (!current)
+        writeLocalEnv(explicitEnv, [
+          { key: "LISTMONK_URL", value: admin.url },
+          { key: "LISTMONK_API_USER", value: name },
+          { key: "LISTMONK_API_TOKEN", value: result.token },
+        ]);
+      if ((await getSecret(tokenAccount)) !== result.token)
+        await setSecret(tokenAccount, result.token);
+      console.log(
+        chalk.green(`  ✓ ${prodRel}: local Listmonk settings ready. Restart the app to load them.`),
+      );
+    }
+    ledger?.complete();
+    return;
   }
 
   // ── env files ──
@@ -513,4 +560,24 @@ export async function runListmonkUserCli(argv: string[]): Promise<void> {
   console.log(chalk.bold("\n  Next:"));
   for (const line of lines) console.log(`    · ${line}`);
   console.log("");
+}
+
+/** An explicit destination is a local plaintext file; never infer sibling envs. */
+export async function readLocalListmonkEnv(path: string): Promise<ProjectEnvSnapshot> {
+  const { parseDotenv } = await import("../deploy/env-resolve.js");
+  const { gitFileState } = await import("../utils/gitignore.js");
+  if ([".env.production", ".env.development"].includes(basename(path))) {
+    throw new Error("--env-file requires a local plaintext env file, such as server/.env.");
+  }
+  if (gitFileState(path).kind === "tracked")
+    throw new Error(`Refusing to write plaintext credentials to tracked file ${path}.`);
+  const prod = existsSync(path) ? parseDotenv(readFileSync(path, "utf-8")) : {};
+  if (
+    Object.entries(prod).some(
+      ([k, v]) => k.startsWith("DOTENV_PUBLIC_KEY") || v.startsWith("encrypted:"),
+    )
+  ) {
+    throw new Error(`--env-file cannot rewrite encrypted env file ${path}.`);
+  }
+  return { prodPath: path, prod, undecrypted: [], devDir: dirname(path), dev: {} };
 }

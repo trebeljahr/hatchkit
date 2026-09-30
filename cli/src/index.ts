@@ -3783,6 +3783,10 @@ function printListmonkUsage(): void {
                            project around the current directory)
     --server-dir <path>    Directory of the server's .env.production, when it is
                            not where hatchkit looks (packages/server, apps/server, root)
+    --transactional-only   Grant tx:send only; no mailing lists or list role required
+    --env-file <path>      Local plaintext env destination, relative to project root
+                           (e.g. server/.env). Writes URL, user and token only;
+                           preserves other settings. Cannot combine with --server-dir.
     --name <name>          Role and user name (default: the manifest's name)
     --dry-run              Print what would change; write nothing
     --regenerate-token     The user exists but no working token is stored: delete

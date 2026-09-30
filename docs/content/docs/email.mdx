@@ -180,6 +180,29 @@ It reads the list ids from the project's env (`LISTMONK_LIVE_LIST_ID`, or `LISTM
 
 It does not push to Coolify. Run `hatchkit sync` and redeploy. Sync only adds and updates variables, so delete `SES_SMTP_*` from the Coolify app's environment by hand. When no project holds the `hatchkit` token any more, retire it with `hatchkit secrets rotate --global listmonk`.
 
+### Transactional-only apps and custom env files
+
+Apps that only send transactional mail can use a user with `tx:send` and no list role:
+
+```sh
+hatchkit listmonk user receipt-app --project-dir /path/to/app \
+  --transactional-only --env-file server/.env --dry-run
+```
+
+Remove `--dry-run` to create the user and write the local settings. No mailing lists are required or queried.
+Existing roles with broader permissions are refused; use a different `--name` to preserve newsletter access.
+Existing tokens are reused. Deleting and recreating an existing user still requires explicit confirmation or `--regenerate-token`.
+
+`--env-file` works with either permission mode. Its path is relative to `--project-dir`; absolute paths also work.
+It creates or updates a plaintext local file with `LISTMONK_URL`, `LISTMONK_API_USER`, and `LISTMONK_API_TOKEN`.
+It preserves other settings, including `SES_SMTP_*`, and adds a Git ignore rule when needed.
+Tracked files, encrypted files, `.env.production`, and `.env.development` are refused as local destinations.
+It does not require a Hatchkit manifest or `.env.production`, and it does not change sibling env files or loaders.
+Restart the app to load these settings. Deployment remains a separate step.
+
+Without `--env-file`, the existing encrypted production and development env workflow applies.
+Without `--transactional-only`, the existing newsletter permissions and list requirements apply.
+
 ## Double opt-in
 
 The starter's signup form runs its own double opt-in: it emails an HMAC-signed confirmation link through Listmonk's `/api/tx`. Listmonk list membership follows this order:
