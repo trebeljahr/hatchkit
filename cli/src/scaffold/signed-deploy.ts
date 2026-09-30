@@ -133,7 +133,7 @@ ${hookEnv("COOLIFY_CLIENT_")}
               -H 'Content-Type: application/json' -H 'X-GitHub-Event: push' \\
               -H "X-Hub-Signature-256: sha256=$sig" --data-binary "$body")
             if printf '%s' "$answer" | jq -e --arg uuid "$uuid" \\
-              'type == "array" and (any(.[]; .application_uuid == $uuid and .status == "success") or any(.[]; .status == "skipped"))' \\
+              'type == "array" and any(.[]; .application_uuid == $uuid and .status == "success")' \\
               >/dev/null 2>&1; then
               echo "deploy queued for the $1 app ($uuid)"
               deployed=$((deployed + 1))
@@ -214,8 +214,9 @@ function reindent(block: string, indent: number): string[] {
 /**
  * Convert a workflow's deploy steps from "hatchkit's Coolify token" to
  * "promote in GHCR + signed per-app webhook". Idempotent; returns the
- * content unchanged when it has no token-driven deploy step (a
- * hand-rolled workflow is left for a person, and doctor names it).
+ * content unchanged when it has no known deploy step (a hand-rolled
+ * workflow is left for a person, and doctor names it). Existing signed
+ * steps also receive the current app-specific queue acceptance rule.
  *
  *   · A Coolify pin step becomes the promote step: the multi-image one
  *     when the old step pinned SERVER_/CLIENT_IMAGE, the single-image
@@ -230,7 +231,13 @@ function reindent(block: string, indent: number): string[] {
  * moving tag the build pushes (`:latest`, `:main`), and adding a promote
  * without also pointing the apps at `:live` would change nothing.
  */
-export function upgradeWorkflowToSignedDeploy(content: string): string {
+export function upgradeWorkflowToSignedDeploy(originalContent: string): string {
+  // Existing signed workflows need the same app-specific acceptance rule.
+  // An unscoped skip can describe another app or a deployment never queued.
+  const content = originalContent.replaceAll(
+    'type == "array" and (any(.[]; .application_uuid == $uuid and .status == "success") or any(.[]; .status == "skipped"))',
+    'type == "array" and any(.[]; .application_uuid == $uuid and .status == "success")',
+  );
   if (
     !TOKEN_DEPLOY_STEPS.some((m) => content.includes(m)) &&
     !TOKEN_PIN_STEPS.some((m) => content.includes(m))

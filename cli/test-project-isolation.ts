@@ -86,7 +86,7 @@ await check("the signature is HMAC-SHA256 over the exact body", () => {
   assert.equal(signDeployWebhook("k", body), createHmac("sha256", "k").update(body).digest("hex"));
 });
 
-await check("only this app's success (or a skip) counts as queued", () => {
+await check("only this app's success counts as queued", () => {
   const answer = (entries: unknown[]) => JSON.stringify(entries);
   assert.equal(
     deployWebhookQueued(answer([{ status: "success", application_uuid: "mine" }]), "mine").ok,
@@ -97,7 +97,23 @@ await check("only this app's success (or a skip) counts as queued", () => {
     false,
     "another app's success is not ours",
   );
-  assert.equal(deployWebhookQueued(answer([{ status: "skipped", message: "x" }]), "mine").ok, true);
+  for (const entry of [
+    { status: "skipped", message: "already queued" },
+    { status: "skipped", application_uuid: "theirs", message: "already queued" },
+    { status: "skipped", application_uuid: "mine", message: "All commits contain [skip ci]." },
+  ]) {
+    assert.equal(deployWebhookQueued(answer([entry]), "mine").ok, false);
+  }
+  assert.equal(
+    deployWebhookQueued(
+      answer([
+        { status: "failed", application_uuid: "mine", message: "Deployments disabled." },
+        { status: "skipped", application_uuid: "theirs", message: "already queued" },
+      ]),
+      "mine",
+    ).ok,
+    false,
+  );
   const disabled = deployWebhookQueued(
     answer([{ status: "failed", message: "Deployments disabled.", application: "mine-app" }]),
     "mine",
@@ -421,6 +437,17 @@ await check("the shell step signs exactly what hatchkit signs", () => {
   assert.ok(WORKFLOW_SIGNED_DEPLOY_STEP.includes("/webhooks/source/github/events/manual"));
 });
 
+await check("existing signed workflows gain app-specific queue confirmation idempotently", () => {
+  const current = WORKFLOW_SIGNED_DEPLOY_STEP;
+  const legacy = current.replace(
+    'type == "array" and any(.[]; .application_uuid == $uuid and .status == "success")',
+    'type == "array" and (any(.[]; .application_uuid == $uuid and .status == "success") or any(.[]; .status == "skipped"))',
+  );
+  assert.notEqual(legacy, current);
+  assert.equal(upgradeWorkflowToSignedDeploy(legacy), current);
+  assert.equal(upgradeWorkflowToSignedDeploy(current), current);
+});
+
 await check("the shell step accepts exactly the answers hatchkit accepts (jq)", () => {
   let jq = true;
   try {
@@ -437,6 +464,8 @@ await check("the shell step accepts exactly the answers hatchkit accepts (jq)", 
     [{ status: "success", application_uuid: "u" }],
     [{ status: "success", application_uuid: "other" }],
     [{ status: "skipped", message: "already queued" }],
+    [{ status: "skipped", application_uuid: "other", message: "already queued" }],
+    [{ status: "skipped", application_uuid: "u", message: "All commits contain [skip ci]." }],
     [{ status: "failed", message: "Deployments disabled.", application: "x" }],
     [{ status: "failed", message: "Invalid signature.", application: "y" }],
     [],
@@ -630,7 +659,11 @@ await check("the token's secret names on a repo are failures; the webhook URL a 
 });
 
 await check("shared Listmonk remains an isolation failure beside a scoped SES sender", () => {
-  const env = { LISTMONK_API_USER: "project-a", LISTMONK_API_TOKEN: "fixture-token", SES_PROJECT_ACCESS_KEY_ID: "fixture-project-key" };
+  const env = {
+    LISTMONK_API_USER: "project-a",
+    LISTMONK_API_TOKEN: "fixture-token",
+    SES_PROJECT_ACCESS_KEY_ID: "fixture-project-key",
+  };
   const found = findProvisionerValuesInEnv(env, [], "prod");
   assert(found.some((f) => f.provider === "listmonk" && f.severity === "fail"));
   assert(!JSON.stringify(found).includes("fixture-token"));

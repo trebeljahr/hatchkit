@@ -160,9 +160,10 @@ export function signDeployWebhook(secret: string, body: string): string {
  *  The endpoint answers 200 with one entry per application whose
  *  `git_repository` matched — including every OTHER app on the same
  *  repo, each marked "Invalid signature.". Only an entry for this uuid
- *  with status `success`, or a `skipped` entry (the same commit is
- *  already queued or running; only an app whose signature matched gets
- *  that far), counts. Anything else — "Deployments disabled.", a watch
+ *  with status `success` counts. A `skipped` entry does not prove this
+ *  app queued a deployment: duplicate-queue replies may omit its uuid,
+ *  and other skip reasons do not queue anything. Anything else —
+ *  "Deployments disabled.", a watch
  *  path mismatch, every entry invalid, or the plain-text "Nothing to
  *  do." — is a failure, and the detail says which.
  *
@@ -186,9 +187,6 @@ export function deployWebhookQueued(
   );
   if (entries.some((e) => e.application_uuid === uuid && e.status === "success")) {
     return { ok: true, detail: "deployment queued" };
-  }
-  if (entries.some((e) => e.status === "skipped")) {
-    return { ok: true, detail: "this commit is already queued" };
   }
   const own = entries.filter((e) => e.message !== "Invalid signature.");
   if (own.length === 0) {

@@ -920,6 +920,10 @@ check("the generated webhook helpers agree with hatchkit's own", () => {
     JSON.stringify([{ status: "failed", message: "Deployments disabled.", application: "x" }]),
     JSON.stringify([{ status: "failed", message: "Invalid signature.", application: "y" }]),
     JSON.stringify([{ status: "skipped", message: "already queued" }]),
+    JSON.stringify([{ status: "skipped", application_uuid: "other", message: "already queued" }]),
+    JSON.stringify([
+      { status: "skipped", application_uuid: "u", message: "All commits contain [skip ci]." },
+    ]),
     JSON.stringify([]),
     "Nothing to do. No applications found.",
   ]) {

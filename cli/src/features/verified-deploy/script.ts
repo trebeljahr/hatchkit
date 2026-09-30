@@ -644,9 +644,6 @@ export const webhookQueued = (text, uuid) => {
   if (entries.some((entry) => entry.application_uuid === uuid && entry.status === "success")) {
     return { ok: true, detail: "deployment queued" };
   }
-  if (entries.some((entry) => entry.status === "skipped")) {
-    return { ok: true, detail: "this commit is already queued" };
-  }
   const own = entries.filter((entry) => entry.message !== "Invalid signature.");
   if (own.length === 0) {
     return {
