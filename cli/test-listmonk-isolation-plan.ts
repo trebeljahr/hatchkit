@@ -151,6 +151,8 @@ try {
   assert(existsSync(join(output, "relay/package-lock.json")));
   assert(existsSync(join(output, "MIGRATION.md")));
   assert(existsSync(join(output, "export-memberships.sql")));
+  assert(existsSync(join(output, "prepare-transfer.mjs")));
+  assert(existsSync(join(output, "transfer-review.example.json")));
   assert(!existsSync(join(output, "secrets")));
   await assert.rejects(runListmonkIsolationPlan(args), /already exists/);
   assert.equal(

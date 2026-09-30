@@ -54,13 +54,57 @@ Prepare a source UUID → destination UUID/ID map per subscriber and list. Impor
 into the empty destination under a transaction while app writes and sends are
 paused. Ordinary CSV import defaults may enable subscribers, preconfirm lists,
 change timestamps or emit opt-in mail; do not use those defaults. Exact importer
-SQL/API behavior must pass a fixture rehearsal first. This bundle deliberately
-does not provide an unverified production importer.
+SQL/API behavior must pass a fixture rehearsal first. `prepare-transfer.mjs`
+now compiles the reviewed export into an initial-import transaction. Its offline
+input tests pass; PostgreSQL execution is still an explicit gate before use.
 
 Read back every row and compare email, global status, each membership status,
 original timestamps and reviewed evidence. Reconcile counts by live/test list,
 status and suppression; compare sets, not just totals. Keep the protected source
 export and mapping for rollback under an agreed retention period.
+
+## Prepare the initial import offline
+
+Copy `transfer-review.example.json` to a protected working file. Fill in the
+project and target origin from this bundle's `plan.json`, the audited source
+origin, live/test source IDs/UUIDs, new target UUIDs, and independently reviewed
+subscriber/membership counts. Set `reviewed` only after that review. Do not use
+an empty export to infer there are no subscribers.
+
+From this generated bundle, run:
+
+```sh
+node prepare-transfer.mjs reviewed-mapping.json protected-memberships.csv new-import.sql
+```
+
+This command reads local files only. It creates a new 0600 SQL file and prints
+counts plus a SHA-256 digest. It refuses to overwrite files. Treat the SQL file
+as personal data: it includes the selected subscriber rows and membership
+metadata. Do not commit, paste, or log it. The compiler does not connect to any
+database, read credentials, import data or send mail.
+
+The transaction locks the relevant tables and requires the exact destination
+root URL and pinned sender, an empty SMTP array, exactly the two approved active
+double-opt-in lists, and no subscribers or campaigns. It creates a private
+migration mapping schema; an existing schema is a collision. Fresh Listmonk
+sample data must be reviewed and removed only in the owned new installation
+before import. Never clear an existing database to make these guards pass.
+
+It creates new subscriber UUIDs/IDs and preserves the source global status,
+per-list status, original timestamps (including unknown values), and selected
+membership evidence. A source-to-target mapping and manifest digest remain in
+`hatchkit_newsletter_transfer`. Names default to email; global subscriber
+attributes and unrelated data are not copied. Read-back checks run before commit;
+any failure aborts the transaction. Run with `psql -X` and check the exit code.
+
+This is **initial import only**. It refuses a populated target or a repeated
+import; it never upserts over newer suppressions. If the result is ambiguous,
+inspect the protected manifest/mapping and actual rows. Do not blindly retry.
+This does not implement final delta sync, deletion tombstones or legacy feedback.
+The opt-in two-instance test now includes a synthetic export/import rehearsal:
+wrong-origin refusal, selective data ownership, each consent/suppression state,
+unknown timestamps, rollback after inserts, and replay after a new blocklist.
+Only an actual successful run establishes the PostgreSQL behavior.
 
 ## CoB pending confirmations
 

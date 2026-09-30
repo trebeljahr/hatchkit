@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "reviewed": false,
+  "project": "COPY_EXACT_PROJECT_FROM_PLAN",
+  "sourceOrigin": "https://REVIEW_SOURCE_ORIGIN",
+  "targetOrigin": "COPY_EXACT_PUBLIC_URL_FROM_PLAN",
+  "lists": [
+    { "role": "live", "sourceId": 0, "sourceUuid": "", "targetUuid": "" },
+    { "role": "test", "sourceId": 0, "sourceUuid": "", "targetUuid": "" }
+  ],
+  "expectedSubscribers": 0,
+  "expectedMemberships": 0
+}

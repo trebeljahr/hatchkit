@@ -7,6 +7,7 @@ import { createServer } from "node:net";
 import { cpus, loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
+import { prepareTransfer } from "./src/templates/listmonk-isolated/prepare-transfer.mjs";
 
 if (process.env.HATCHKIT_RUN_LISTMONK_DOCKER !== "1") {
   throw new Error(
@@ -251,6 +252,143 @@ try {
     );
     assert(!Object.keys(ownNetwork.Containers).some((id) => foreignContainers.includes(id)));
   }
+  // Reuse only these owned synthetic stacks for the import rehearsal. No third DB.
+  for (const stack of stacks) compose(stack, ["stop", "listmonk"]);
+  const sql = (stack: (typeof stacks)[number], statement: string) =>
+    compose(
+      stack,
+      [
+        "exec",
+        "-T",
+        "db",
+        "psql",
+        "-X",
+        "-q",
+        "-A",
+        "-t",
+        "-U",
+        "listmonk",
+        "-d",
+        "listmonk",
+        "-v",
+        "ON_ERROR_STOP=1",
+      ],
+      statement,
+    );
+  const uid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+  const source = stacks[0];
+  const target = stacks[1];
+  // These databases were created above, contain fixtures only, and are destroyed below.
+  for (const stack of stacks)
+    sql(stack, "DELETE FROM campaigns; DELETE FROM subscribers; DELETE FROM lists;");
+  sql(
+    source,
+    `
+    INSERT INTO lists(id,uuid,name,type,optin) VALUES
+      (3,'${uid(3)}','fixture live','private','double'),
+      (4,'${uid(4)}','fixture test','private','double'),
+      (9,'${uid(9)}','excluded fixture project','private','double');
+    INSERT INTO subscribers(id,uuid,email,name,status,created_at,updated_at) VALUES
+      (21,'${uid(21)}','reader21@example.com','fixture','enabled','2026-09-29 01:02:03.123456+00','2026-09-29 01:02:03.123456+00'),
+      (22,'${uid(22)}','reader22@example.com','fixture','disabled',NULL,NULL),
+      (23,'${uid(23)}','reader23@example.com','fixture','blocklisted',NOW(),NOW()),
+      (24,'${uid(24)}','reader24@example.com','fixture','enabled',NOW(),NOW()),
+      (25,'${uid(25)}','excluded-orphan@example.com','fixture','enabled',NOW(),NOW()),
+      (26,'${uid(26)}','excluded-project@example.com','fixture','enabled',NOW(),NOW());
+    INSERT INTO subscriber_lists(subscriber_id,list_id,status,updated_at) VALUES
+      (21,3,'confirmed','2026-09-29 01:02:03.123456+00'),
+      (21,4,'unsubscribed','2026-09-29 01:02:03.123456+00'),
+      (22,3,'unconfirmed',NULL),(23,3,'confirmed',NOW()),(24,3,'unconfirmed',NOW()),(26,9,'confirmed',NOW());
+  `,
+  );
+  const exportTemplate = readFileSync(
+    new URL("./src/templates/listmonk-isolated/export-memberships.sql", import.meta.url),
+    "utf8",
+  );
+  const exported = sql(
+    source,
+    exportTemplate
+      .replaceAll(":'live_uuid'", `'${uid(3)}'`)
+      .replaceAll(":'test_uuid'", `'${uid(4)}'`),
+  );
+  assert(!exported.includes("excluded-"));
+  assert.throws(() =>
+    sql(
+      source,
+      exportTemplate
+        .replaceAll(":'live_uuid'", `'${uid(3)}'`)
+        .replaceAll(":'test_uuid'", `'${uid(3)}'`),
+    ),
+  );
+  const plan = {
+    project: "alpha",
+    publicUrl: "https://newsletter.alpha.example.com",
+    scope: { from: ["noreply@mail.alpha.example.com"] },
+  };
+  const review = {
+    version: 1,
+    reviewed: true,
+    project: "alpha",
+    sourceOrigin: "https://newsletter.shared.example.com",
+    targetOrigin: plan.publicUrl,
+    lists: [
+      { role: "live", sourceId: 3, sourceUuid: uid(3), targetUuid: uid(13) },
+      { role: "test", sourceId: 4, sourceUuid: uid(4), targetUuid: uid(14) },
+    ],
+    expectedSubscribers: 4,
+    expectedMemberships: 5,
+  };
+  const prepared = prepareTransfer(plan, review, exported);
+  sql(
+    target,
+    `
+    INSERT INTO lists(id,uuid,name,type,optin) VALUES
+      (13,'${uid(13)}','fixture live','private','double'),(14,'${uid(14)}','fixture test','private','double');
+    UPDATE settings SET value='"noreply@mail.alpha.example.com"'::jsonb WHERE key='app.from_email';
+  `,
+  );
+  assert.throws(() => sql(target, prepared.sql));
+  assert.equal(sql(target, "SELECT count(*) FROM subscribers;"), "0");
+  sql(
+    target,
+    `UPDATE settings SET value='"https://newsletter.alpha.example.com"'::jsonb WHERE key='app.root_url';`,
+  );
+  // A failure after inserts must roll back both imported rows and migration mapping.
+  assert.throws(() => sql(target, prepared.sql.replace("COMMIT;", "SELECT 1/0; COMMIT;")));
+  assert.equal(sql(target, "SELECT count(*) FROM subscribers;"), "0");
+  assert.equal(
+    sql(target, "SELECT count(*) FROM pg_namespace WHERE nspname='hatchkit_newsletter_transfer';"),
+    "0",
+  );
+  sql(target, prepared.sql);
+  assert.equal(sql(target, "SELECT count(*) FROM subscribers;"), "4");
+  assert.equal(sql(target, "SELECT count(*) FROM subscriber_lists;"), "5");
+  assert.equal(
+    sql(target, "SELECT status FROM subscribers WHERE email='reader22@example.com';"),
+    "disabled",
+  );
+  assert.equal(
+    sql(target, "SELECT status FROM subscribers WHERE email='reader23@example.com';"),
+    "blocklisted",
+  );
+  assert.equal(
+    sql(
+      target,
+      "SELECT sl.status FROM subscriber_lists sl JOIN subscribers s ON sl.subscriber_id=s.id WHERE s.email='reader21@example.com' AND sl.list_id=14;",
+    ),
+    "unsubscribed",
+  );
+  assert.equal(
+    sql(target, "SELECT created_at IS NULL FROM subscribers WHERE email='reader22@example.com';"),
+    "t",
+  );
+  // Replaying an initial import cannot erase a newer suppression.
+  sql(target, "UPDATE subscribers SET status='blocklisted' WHERE email='reader21@example.com';");
+  assert.throws(() => sql(target, prepared.sql));
+  assert.equal(
+    sql(target, "SELECT status FROM subscribers WHERE email='reader21@example.com';"),
+    "blocklisted",
+  );
 } finally {
   for (const stack of stacks.reverse()) {
     try {
@@ -268,5 +406,5 @@ try {
 
 if (!cleaned) throw new Error("Fixture cleanup incomplete; not a verification pass.");
 console.log(
-  "PASS: two disposable Listmonk/Postgres instances deny foreign API tokens, isolate subscriber/campaign data and have separate internal networks. No mail sent. Run relay separation separately; AWS enforcement is not tested here.",
+  "PASS: two disposable Listmonk/Postgres instances deny foreign API tokens, isolate subscriber/campaign data and have separate internal networks. Selective export/import preserves consent states, excludes other-project/orphan rows, rolls back on failure and refuses destructive replay. No mail sent. Run relay separation separately; AWS enforcement is not tested here.",
 );
