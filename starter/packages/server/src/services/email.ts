@@ -81,11 +81,12 @@ export function listmonkTxBody(
   source: Pick<
     typeof env,
     "LISTMONK_FROM" | "LISTMONK_FROM_EMAIL" | "LISTMONK_TX_TEMPLATE_ID"
-  >,
+  > & { LISTMONK_MESSENGER?: string },
 ): Record<string, unknown> {
   return {
     subscriber_email: params.to,
     subscriber_mode: "external",
+    ...(source.LISTMONK_MESSENGER ? { messenger: source.LISTMONK_MESSENGER } : {}),
     template_id: Number(source.LISTMONK_TX_TEMPLATE_ID),
     from_email: source.LISTMONK_FROM || source.LISTMONK_FROM_EMAIL,
     data: {

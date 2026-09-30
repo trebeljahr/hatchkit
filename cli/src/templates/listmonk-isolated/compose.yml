@@ -1,0 +1,76 @@
+# One project per Compose project. Never attach another project's volumes/networks.
+name: __PROJECT_SLUG__-newsletter
+services:
+  listmonk:
+    image: listmonk/listmonk:v6.2.0
+    restart: unless-stopped
+    command: ["sh", "-c", "./listmonk --install --idempotent --yes --config '' && ./listmonk --config ''"]
+    ports: ["127.0.0.1:${LISTMONK_HTTP_PORT:?Choose a free high port}:9000"]
+    environment:
+      LISTMONK_app__address: 0.0.0.0:9000
+      LISTMONK_db__host: db
+      LISTMONK_db__port: 5432
+      LISTMONK_db__user: listmonk
+      LISTMONK_db__database: listmonk
+      LISTMONK_db__password_FILE: /run/secrets/db_password
+      LISTMONK_db__ssl_mode: disable
+      LISTMONK_ADMIN_USER: newsletter-admin
+      LISTMONK_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+    secrets: [db_password, admin_password]
+    depends_on:
+      db: { condition: service_healthy }
+    volumes: ["uploads:/listmonk/uploads"]
+    networks: [private]
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: listmonk
+      POSTGRES_DB: listmonk
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes: ["database:/var/lib/postgresql/data"]
+    networks: [private]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U listmonk"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+  relay:
+    build: ./relay
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      RELAY_USER: __PROJECT_SLUG__
+      RELAY_PASSWORD_FILE: /run/secrets/relay_password
+      RELAY_MODE: ${RELAY_MODE:-staging}
+      EMAIL_TEST_RECIPIENT: ${EMAIL_TEST_RECIPIENT:?Set the single staging recipient}
+      LISTMONK_PUBLIC_URL: __PUBLIC_URL__
+      SES_PROJECT_REGION: __REGION__
+      SES_PROJECT_IDENTITY_ARN: __IDENTITY_ARN__
+      SES_PROJECT_TENANT: __TENANT__
+      SES_PROJECT_CONFIGURATION_SET: __CONFIGURATION_SET__
+      SES_PROJECT_FROM_EMAIL: __FROM__
+      SES_PROJECT_ACCESS_KEY_ID_FILE: /run/secrets/ses_access_key
+      SES_PROJECT_SECRET_ACCESS_KEY_FILE: /run/secrets/ses_secret_key
+    secrets: [relay_password, ses_access_key, ses_secret_key]
+    networks: [private, sending]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+networks:
+  private: { internal: true }
+  sending: {}
+volumes:
+  database: {}
+  uploads: {}
+secrets:
+  db_password: { file: ./secrets/db_password }
+  admin_password: { file: ./secrets/admin_password }
+  relay_password: { file: ./secrets/relay_password }
+  ses_access_key: { file: ./secrets/ses_access_key }
+  ses_secret_key: { file: ./secrets/ses_secret_key }

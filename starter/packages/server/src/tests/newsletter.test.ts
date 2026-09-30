@@ -22,7 +22,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import express from "express";
 
-import { describeListTarget, findSubscriber, resolveListId } from "../services/newsletter/listmonk.js";
+import { describeListTarget, findSubscriber, resolveListId, sendCampaign } from "../services/newsletter/listmonk.js";
 import { registerNewsletterRoutes } from "../services/newsletter/routes.js";
 import { _resetRateLimit, mintConfirmToken } from "../services/newsletter/subscribe.js";
 
@@ -399,4 +399,29 @@ describe("the list NODE_ENV selects", () => {
       },
     );
   });
+});
+
+
+test("dedicated messenger is selected for confirmation and campaigns", async () => {
+  const previous = process.env.LISTMONK_MESSENGER;
+  const previousTemplate = process.env.LISTMONK_CAMPAIGN_TEMPLATE_ID;
+  process.env.LISTMONK_MESSENGER = "project-ses";
+  process.env.LISTMONK_CAMPAIGN_TEMPLATE_ID = "7";
+  try {
+    const lm = fakeListmonk();
+    assert.equal((await subscribe("messenger@example.com")).status, 200);
+    assert.equal(lm.writes.find(w => w.call === "POST /api/tx")?.body.messenger, "project-ses");
+    let campaign: Record<string, unknown> | undefined;
+    globalThis.fetch = async (_url, init) => {
+      campaign = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ data: { id: 11 } }), { status: 200 });
+    };
+    await sendCampaign({ name: "draft", subject: "test", html: "<p>test</p>", text: "test", draft: true });
+    assert.equal(campaign?.messenger, "project-ses");
+  } finally {
+    if (previous === undefined) delete process.env.LISTMONK_MESSENGER;
+    else process.env.LISTMONK_MESSENGER = previous;
+    if (previousTemplate === undefined) delete process.env.LISTMONK_CAMPAIGN_TEMPLATE_ID;
+    else process.env.LISTMONK_CAMPAIGN_TEMPLATE_ID = previousTemplate;
+  }
 });

@@ -2015,6 +2015,11 @@ async function handlePlausible(): Promise<void> {
 // `hatchkit ses list` mirrors `aws sesv2 list-email-identities` but
 // pulls auth from hatchkit's keychain so it works without aws CLI config.
 async function handleListmonkCommand(rest: string[]): Promise<void> {
+  if (rest[0] === "isolation-plan") {
+    const { runListmonkIsolationPlan } = await import("./provision/listmonk-isolation-plan.js");
+    await runListmonkIsolationPlan(rest.slice(1));
+    return;
+  }
   if (rest[0] !== "user") {
     printListmonkUsage();
     if (rest[0] !== undefined) process.exitCode = 1;
@@ -2075,6 +2080,11 @@ async function handleSesCommand(rest: string[]): Promise<void> {
   const sub = rest[0];
   if (!sub) {
     printSesUsage();
+    return;
+  }
+  if (sub === "verify-policy") {
+    const { runSesPolicyVerification } = await import("./provision/ses-policy-verification-cli.js");
+    await runSesPolicyVerification(rest.slice(1));
     return;
   }
   if (sub === "isolate") {
@@ -3742,6 +3752,11 @@ function printListmonkUsage(): void {
   ${chalk.bold("hatchkit listmonk")} — Listmonk helpers
 
   ${chalk.bold("Subcommands:")}
+    ${chalk.cyan("isolation-plan <dir> --account <id> --region <region> --url <https-origin>")}
+                       --dry-run prints an offline plan; --output <new-directory>
+                       writes a dedicated Listmonk/database/SES-relay staging bundle.
+                       No credentials, subscribers, deployments or provider writes.
+
     ${chalk.cyan("user [<project>] [flags]")}
                        Give a project its own Listmonk API user. Creates, or
                        finds by name, a user role ${chalk.cyan("<project>")} (tx:send,
@@ -3790,6 +3805,9 @@ function printSesUsage(): void {
 
     ${chalk.cyan("status")}             Region, sandbox state, send caps, identity
                        count. Run this first when something fails.
+
+    ${chalk.cyan("verify-policy <dir> --account <id> --region <region> [--dry-run | --profile <name>]")}
+      Read-only AWS IAM simulation; dry-run needs no credentials. No email or writes.
 
     ${chalk.cyan("isolate [<project-directory>] [--dry-run] [--from <mailboxes>]")}
                        Prepare an AWS-restricted project sender and tenant.

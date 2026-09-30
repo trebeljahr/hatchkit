@@ -266,7 +266,7 @@ export async function sendTransactional(params: SendTransactionalParams): Promis
       from_email: process.env.LISTMONK_FROM || process.env.LISTMONK_FROM_EMAIL,
       data: { subject: params.subject, body: params.html },
       content_type: "html",
-      messenger: "email",
+      messenger: process.env.LISTMONK_MESSENGER || "email",
     }),
   });
 }
@@ -309,6 +309,7 @@ export async function sendCampaign(params: SendCampaignParams): Promise<Campaign
       body: params.html,
       altbody: params.text,
       type: "regular",
+      ...(process.env.LISTMONK_MESSENGER ? { messenger: process.env.LISTMONK_MESSENGER } : {}),
       template_id: templateId,
       send_later: false,
     }),

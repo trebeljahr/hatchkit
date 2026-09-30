@@ -37,6 +37,11 @@ describe("listmonkTxBody", () => {
     assert.equal(body.template_id, 1);
   });
 
+  test("selects the dedicated messenger only when configured", () => {
+    assert.equal(listmonkTxBody(params, listmonk).messenger, undefined);
+    assert.equal(listmonkTxBody(params, { ...listmonk, LISTMONK_MESSENGER: "project-ses" }).messenger, "project-ses");
+  });
+
   test("escapes a plain-text body and passes HTML through", () => {
     assert.deepEqual(listmonkTxBody(params, listmonk).data, {
       subject: "Verify",

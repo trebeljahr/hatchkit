@@ -332,3 +332,28 @@ Mock tests exercise hostile sender/identity/tenant requests, extra IAM grants, o
 Tenants do not create separate AWS accounts. Billing, account quotas, shared infrastructure and account-level enforcement remain shared. This implementation supports commercial AWS regions; unsupported tenant APIs fail closed.
 
 For full newsletter isolation, migrate each project to its own Listmonk instance, database and restricted relay. An alternative gateway must hold all shared credentials outside apps, bind each authenticated project to its sender and lists, and validate every subscriber and campaign operation. Retire old project API tokens only after testing the replacement. Doctor reports retained shared Listmonk authority as a failure beside an isolated SES sender.
+
+
+### Prepare an isolated newsletter service
+
+`hatchkit listmonk isolation-plan` creates an offline staging bundle for one project. It includes a dedicated Listmonk database, private network and authenticated SES v2 messenger. It does not deploy, read credentials, copy subscribers or change existing newsletters.
+
+```bash
+hatchkit listmonk isolation-plan /path/to/project --account 123456789012 --region eu-west-1 --url https://newsletter.example.com --dry-run --json
+```
+
+Replace `--dry-run` with `--output /path/to/new-staging-directory` to save the reviewed bundle. An existing output directory is refused. Its `README.md` covers deployment, project-only subscriber export, consent preservation, old unsubscribe links, feedback, cutover and rollback. Those steps need separate approval. Keep the shared service running until old links and late events are reconciled.
+
+The relay fixes the sender, tenant, configuration set and credential at startup. It accepts exactly one recipient per request and starts in staging mode, restricted to `EMAIL_TEST_RECIPIENT`. It rejects custom headers and attachments. The Listmonk service has no outbound network access; only the relay does. Configure `project-ses` as an HTTP messenger and set `LISTMONK_MESSENGER=project-ses` in the app after reviewing its runtime. Existing apps retain the default email messenger until then.
+
+### Verify the proposed IAM policy with AWS
+
+```bash
+hatchkit ses verify-policy /path/to/project --account 123456789012 --region eu-west-1 --dry-run --json
+```
+
+The offline result contains the exact simulation requests and the required read-only permission, `iam:SimulateCustomPolicy` on `*`. After credential-access approval, replace `--dry-run` with `--profile approved-profile`. This uses the named AWS CLI profile and never reads Hatchkit's keychain. The profile's configured credential provider may need an existing login; the command does not log in for you.
+
+The checks cover the permitted identity/configuration set, missing and foreign context, foreign resources, SMTP/legacy sends, administrative actions and overlapping Allow policies. Failed or incomplete responses stop verification. No email is sent and no AWS resources are created or changed.
+
+A successful simulation verifies only the supplied policy and context. It does not verify a deployed principal, MIME parsing, tenant associations, delivery or shared Listmonk isolation. AWS documents this distinction in [SimulateCustomPolicy](https://docs.aws.amazon.com/IAM/latest/APIReference/API_SimulateCustomPolicy.html). A live rollout still needs the sender audit and an approved one-recipient test.
