@@ -144,6 +144,8 @@ try {
     compose(stack, [
       "run",
       "--rm",
+      "--pull",
+      "never",
       "--no-deps",
       "listmonk",
       "./listmonk",
@@ -160,8 +162,9 @@ try {
       INSERT INTO lists(id,uuid,name,type,optin) VALUES (100,gen_random_uuid(),'fixture','private','double');
       INSERT INTO subscribers(id,uuid,email,name,status) VALUES (${stack.id},gen_random_uuid(),'${stack.email}','fixture','enabled');
       INSERT INTO subscriber_lists(subscriber_id,list_id,status) VALUES (${stack.id},100,'confirmed');
-      INSERT INTO roles(id,type,name,permissions) VALUES (100,'user','fixture',ARRAY['subscribers:get_all','subscribers:manage','campaigns:manage','tx:send']);
-      INSERT INTO roles(id,type,name,list_id,permissions) VALUES (101,'list','fixture',100,ARRAY['list:get','list:manage']);
+      INSERT INTO roles(id,type,name,permissions) VALUES (100,'user','fixture',ARRAY['subscribers:get','subscribers:get_all','subscribers:manage','campaigns:get','campaigns:manage','tx:send']);
+      INSERT INTO roles(id,type,name) VALUES (101,'list','fixture');
+      INSERT INTO roles(id,type,parent_id,list_id,permissions) VALUES (102,'list',101,100,ARRAY['list:get','list:manage']);
       INSERT INTO users(username,password,email,name,type,user_role_id,list_role_id,status) VALUES ('project-api','${token}','fixture@api','fixture','api',100,101,'enabled');
       INSERT INTO campaigns(id,uuid,name,subject,from_email,body,content_type,messenger) VALUES (${stack.id},gen_random_uuid(),'fixture','fixture','noreply@mail.${project}.example.com','fixture','plain','email');
       INSERT INTO campaign_lists(campaign_id,list_id,list_name) VALUES (${stack.id},100,'fixture');
