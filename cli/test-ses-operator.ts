@@ -57,6 +57,17 @@ function allowed(
 }
 const user = `arn:aws:iam::${account}:user/hatchkit/ses/hk-future-project`;
 const correct = { "iam:PermissionsBoundary": scope.boundaryArn };
+const uncreatedUser = `arn:aws:iam::${account}:user/hk-future-project`;
+assert(allowed(operator, "iam:GetUser", uncreatedUser));
+assert(!allowed(operator, "iam:GetUser", `arn:aws:iam::${account}:user/admin`));
+for (const action of [
+  "iam:CreateUser",
+  "iam:PutUserPolicy",
+  "iam:CreateAccessKey",
+  "iam:DeleteUser",
+  "iam:TagUser",
+])
+  assert(!allowed(operator, action, uncreatedUser, correct));
 for (const action of ["iam:CreateUser", "iam:PutUserPolicy"]) {
   assert(allowed(operator, action, user, correct));
   for (const context of [

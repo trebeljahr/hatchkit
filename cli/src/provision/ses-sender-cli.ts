@@ -120,13 +120,17 @@ export async function runSesSenderCli(argv: string[]): Promise<void> {
         "Activation requires --acknowledge-listmonk-gap while this app retains Listmonk credentials. Full project isolation remains incomplete.",
       );
     if (f.activate) {
-      // Never replace custom application code automatically. Both layouts are
+      // Never replace custom application code automatically. These layouts are
       // supported; the operator ports/reviews the transport before activation.
       const source = [
         join(dir, "packages/server/src/services/email.ts"),
         join(dir, "src/services/email.ts"),
-      ].find(existsSync);
-      if (!source || !readFileSync(source, "utf8").includes("hatchkit-ses-project-v1"))
+        join(dir, "src/lib/server/ses-email.ts"),
+      ].find(
+        (path) =>
+          existsSync(path) && readFileSync(path, "utf8").includes("hatchkit-ses-project-v1"),
+      );
+      if (!source)
         throw new Error(
           "Port/review the starter SES transport (hatchkit-ses-project-v1), env schema and container variables first. This command does not overwrite application code.",
         );

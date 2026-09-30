@@ -137,6 +137,15 @@ export function senderOperatorPolicy(account: string, region: string): PolicyDoc
         },
       },
       {
+        // GetUser takes a name, not a path. A pre-creation lookup can be
+        // authorized against the root-path ARN before the user exists.
+        // This grants only the lookup; all lifecycle writes stay path-scoped.
+        Sid: "ReadSenderNameBeforeCreation",
+        Effect: "Allow",
+        Action: "iam:GetUser",
+        Resource: `arn:aws:iam::${account}:user/hk-*`,
+      },
+      {
         Sid: "SenderLifecycle",
         Effect: "Allow",
         Resource: s.users,

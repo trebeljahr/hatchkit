@@ -370,6 +370,18 @@ function fake() {
 console.log(
   "✓ provision/rotation idempotence, truthful dry-run, previous key retention, safe failed rotation and owned rollback recipe",
 );
+for (const dryRun of [true, false]) {
+  const f = fake();
+  const send = f.deps.iam.send.bind(f.deps.iam);
+  f.deps.iam.send = async (command) => {
+    if (command.constructor.name === "GetUserCommand")
+      throw Object.assign(new Error("lookup denied"), { name: "AccessDenied" });
+    return send(command);
+  };
+  await assert.rejects(ensureSender(f.deps, { ...opts, dryRun }), { name: "AccessDenied" });
+  assert.equal(f.state.writes.length, 0);
+  assert.equal(f.read(), null);
+}
 for (const failure of [
   "CreateTenant",
   "CreateConfigurationSet",
@@ -604,7 +616,11 @@ console.log(
     );
     await assert.rejects(runSesSenderCli([dir, "--activate"]), /Port\/review/);
     mkdirSync(join(dir, "src/services"), { recursive: true });
-    writeFileSync(join(dir, "src/services/email.ts"), "// hatchkit-ses-project-v1 fixture\n");
+    writeFileSync(join(dir, "src/services/email.ts"), "// unrelated legacy transport\n");
+    mkdirSync(join(dir, "src/lib/server"), { recursive: true });
+    writeFileSync(join(dir, "src/lib/server/ses-email.ts"), "// unreviewed transport\n");
+    await assert.rejects(runSesSenderCli([dir, "--activate"]), /Port\/review/);
+    writeFileSync(join(dir, "src/lib/server/ses-email.ts"), "// hatchkit-ses-project-v1 fixture\n");
     writeProdEnv(join(dir, ".env.production"), [
       { key: "LISTMONK_API_TOKEN", value: "mock-newsletter-token" },
     ]);
