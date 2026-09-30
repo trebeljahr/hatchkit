@@ -4325,7 +4325,8 @@ function printHelp(topic?: HelpTopic): void {
     Zone    → DNS                → Edit
     Scope zone grants to domains you serve. Doctor runs read probes;
     these do not prove write access. CI gets Editor on one Worker only.
-    Audit runtime bindings: deployed code can use the Worker's bindings.
+    Editor can add bindings to other same-account KV namespaces and read them.
+    Worker scope does not isolate project data, even with no current bindings.
     ${chalk.cyan("hatchkit secrets isolate <dir> --dry-run")} plans an existing repo's migration.
 
   ${chalk.bold("Undo (--undo):")}

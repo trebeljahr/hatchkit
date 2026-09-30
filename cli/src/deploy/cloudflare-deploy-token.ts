@@ -30,8 +30,10 @@
  * The nested resource shape was verified against the dashboard JSON
  * payload. Read back each minted policy before publication and fail closed.
  * Read probes are preflight checks, not proof of a successful deployment.
- * Never downgrade to an account-wide token. CI can also access resources
- * already bound to the Worker through deployed code; audit those bindings.
+ * Never downgrade to an account-wide token. Editor can add a new binding
+ * to another same-account KV namespace and read it through deployed code,
+ * even when direct KV API access is denied. Worker scope is not a data
+ * boundary; auditing only existing bindings does not close this gap.
  *
  * A per-Worker role can only name a Worker that exists. A new project's
  * Worker is therefore created empty by the provisioner first; the first
