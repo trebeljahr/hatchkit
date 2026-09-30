@@ -19,8 +19,10 @@ export function relayConfig(env) {
     secretAccessKey: required('SES_PROJECT_SECRET_ACCESS_KEY'),
     user: required('RELAY_USER'), password: required('RELAY_PASSWORD'),
     publicUrl: required('LISTMONK_PUBLIC_URL'),
+    replyTo: env.SES_PROJECT_REPLY_TO || '',
     mode: env.RELAY_MODE || 'staging', recipient: env.EMAIL_TEST_RECIPIENT || '',
   };
+  if (config.replyTo && !mailbox(config.replyTo)) throw new Error('Invalid SES_PROJECT_REPLY_TO');
   const identity = config.identity.match(/^arn:aws:ses:([a-z0-9-]+):\d{12}:identity\/(mail\.[a-z0-9.-]+)$/);
   if (!identity || identity[1] !== config.region || !/^[a-z0-9][a-z0-9._+-]*@[a-z0-9.-]+$/.test(config.from) || config.from.split('@')[1] !== identity[2]) throw new Error('Invalid sender scope');
   if (!['staging', 'production'].includes(config.mode) || (config.mode === 'staging' && !mailbox(config.recipient))) throw new Error('Staging requires EMAIL_TEST_RECIPIENT');
@@ -59,6 +61,7 @@ export function messageForProject(payload, config) {
     FromEmailAddress: config.from, FromEmailAddressIdentityArn: config.identity,
     TenantName: config.tenant, ConfigurationSetName: config.configurationSet,
     Destination: { ToAddresses: [recipient.email] },
+    ...(config.replyTo ? { ReplyToAddresses: [config.replyTo] } : {}),
     Content: { Simple: { Subject: { Data: payload.subject, Charset: 'UTF-8' },
       Body: payload.content_type === 'html' ? { Html: { Data: payload.body, Charset: 'UTF-8' } } : { Text: { Data: payload.body, Charset: 'UTF-8' } },
       ...(headers.length ? { Headers: headers } : {}),

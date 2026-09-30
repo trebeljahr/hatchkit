@@ -67,6 +67,7 @@ services:
       SES_PROJECT_TENANT: __TENANT__
       SES_PROJECT_CONFIGURATION_SET: __CONFIGURATION_SET__
       SES_PROJECT_FROM_EMAIL: __FROM__
+      SES_PROJECT_REPLY_TO: "__REPLY_TO__"
       SES_PROJECT_ACCESS_KEY_ID_FILE: /run/secrets/ses_access_key
       SES_PROJECT_SECRET_ACCESS_KEY_FILE: /run/secrets/ses_secret_key
     secrets: [relay_password, ses_access_key, ses_secret_key]

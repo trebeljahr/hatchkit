@@ -14,6 +14,7 @@ export async function runListmonkIsolationPlan(argv: string[]): Promise<void> {
   let region = "";
   let url = "";
   let dryRun = false;
+  let replyTo = "";
   let from: string[] | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -22,7 +23,7 @@ export async function runListmonkIsolationPlan(argv: string[]): Promise<void> {
       dryRun = true;
       continue;
     }
-    if (["--output", "--account", "--region", "--url", "--from"].includes(a)) {
+    if (["--output", "--account", "--region", "--url", "--from", "--reply-to"].includes(a)) {
       const value = argv[++i];
       if (!value || value.startsWith("-")) throw new Error(`${a} requires a value.`);
       if (a === "--output") output = resolve(value);
@@ -30,12 +31,15 @@ export async function runListmonkIsolationPlan(argv: string[]): Promise<void> {
       if (a === "--region") region = value;
       if (a === "--url") url = value;
       if (a === "--from") from = [value];
+      if (a === "--reply-to") replyTo = value;
     } else if (a.startsWith("-") || projectDir) throw new Error(`Unknown argument: ${a}`);
     else projectDir = resolve(a);
   }
   const manifest = readManifest(projectDir || process.cwd());
   if (!manifest?.name || !manifest.domain)
     throw new Error("A Hatchkit project manifest is required.");
+  if (replyTo && !/^[a-zA-Z0-9._+\-]+@(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,63}$/.test(replyTo))
+    throw new Error("--reply-to must be one bare email address.");
   const spec = senderSpec(manifest.name, manifest.domain, account, region, from);
   const publicUrl = new URL(url);
   if (
@@ -54,6 +58,7 @@ export async function runListmonkIsolationPlan(argv: string[]): Promise<void> {
     project: spec.project,
     scope: spec,
     publicUrl: publicUrl.origin,
+    replyTo: replyTo || null,
     status: "staging-only; not deployed or verified",
     sourceMigration:
       "reviewed initial import and optional privileged legacy bridge; no automatic subscriber copy",
@@ -107,6 +112,7 @@ export async function runListmonkIsolationPlan(argv: string[]): Promise<void> {
       __TENANT__: spec.tenant,
       __CONFIGURATION_SET__: spec.configurationSet,
       __FROM__: spec.from[0],
+      __REPLY_TO__: replyTo,
     };
     const path = join(output, "compose.yml");
     let compose = readFileSync(path, "utf8");

@@ -138,6 +138,8 @@ try {
     "eu-west-1",
     "--url",
     "https://news.sample.example.com",
+    "--reply-to",
+    "hi@example.com",
     "--output",
     output,
   ];
@@ -147,6 +149,8 @@ try {
   const compose = readFileSync(join(output, "compose.yml"), "utf8");
   assert(!compose.includes("__PROJECT"));
   assert(compose.includes("internal: true"));
+  assert(compose.includes('SES_PROJECT_REPLY_TO: "hi@example.com"'));
+  await assert.rejects(runListmonkIsolationPlan([...args, "--reply-to", "a@example.com\r\nBcc: b@example.com"]), /one bare email/);
   assert(compose.includes("arn:aws:ses:eu-west-1:123456789012:identity/mail.sample.example.com"));
   assert(existsSync(join(output, "ingress.conf")));
   assert(existsSync(join(output, "relay/package-lock.json")));

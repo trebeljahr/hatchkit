@@ -3760,6 +3760,7 @@ function printListmonkUsage(): void {
     ${chalk.cyan("isolation-plan <dir> --account <id> --region <region> --url <https-origin>")}
                        --dry-run prints an offline plan; --output <new-directory>
                        writes a dedicated Listmonk/database/SES-relay staging bundle.
+                       --from <mailbox> pins the sender; --reply-to <mailbox> pins replies.
                        No credentials, subscribers, deployments or provider writes.
 
     ${chalk.cyan("user [<project>] [flags]")}

@@ -11,6 +11,7 @@ const make = (project: string) =>
     SES_PROJECT_REGION: "eu-west-1",
     SES_PROJECT_IDENTITY_ARN: `arn:aws:ses:eu-west-1:123456789012:identity/mail.${project}.example.com`,
     SES_PROJECT_TENANT: project,
+    SES_PROJECT_REPLY_TO: `hi@${project}.example.com`,
     SES_PROJECT_CONFIGURATION_SET: project,
     SES_PROJECT_FROM_EMAIL: `noreply@mail.${project}.example.com`,
     SES_PROJECT_ACCESS_KEY_ID: `fixture-${project}`,
@@ -66,6 +67,7 @@ try {
         await send(own, own, {
           ...payload(own),
           TenantName: configs[foreign].tenant,
+          ReplyToAddresses: ["foreign@example.com"],
           ConfigurationSetName: configs[foreign].configurationSet,
           FromEmailAddressIdentityArn: configs[foreign].identity,
           Destination: { ToAddresses: ["foreign@example.com"] },
@@ -76,6 +78,7 @@ try {
     );
     const result = sent[own][0] as {
       TenantName: string;
+      ReplyToAddresses: string[];
       ConfigurationSetName: string;
       FromEmailAddressIdentityArn: string;
       FromEmailAddress: string;
@@ -89,6 +92,7 @@ try {
     assert.equal(result.FromEmailAddress, configs[own].from);
     assert.deepEqual(result.Destination, { ToAddresses: ["inbox@example.com"] });
     assert.equal(result.credentials, undefined);
+    assert.deepEqual(result.ReplyToAddresses, [configs[own].replyTo]);
     assert.equal(
       result.Content.Simple.Headers[0].Value,
       `<${configs[own].publicUrl}/subscription/${campaign}/${subscriber}>`,
