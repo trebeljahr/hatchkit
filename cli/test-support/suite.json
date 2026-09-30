@@ -56,6 +56,7 @@
   "test-listmonk-isolation-plan.ts",
   "test-listmonk-relay-separation.ts",
   "test-listmonk-transfer.ts",
+  "test-listmonk-bridge.ts",
   "test-ses-project-sender.ts",
   "test-ses-project-runtime.ts",
   "test-ses-smtp.ts",

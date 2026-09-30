@@ -101,7 +101,7 @@ any failure aborts the transaction. Run with `psql -X` and check the exit code.
 This is **initial import only**. It refuses a populated target or a repeated
 import; it never upserts over newer suppressions. If the result is ambiguous,
 inspect the protected manifest/mapping and actual rows. Do not blindly retry.
-This does not implement final delta sync, deletion tombstones or legacy feedback.
+The bridge below supplies ongoing reconciliation, deletion tombstones and authenticated feedback. Install source capture before the final snapshot; the importer itself remains initial-only.
 The opt-in two-instance test now includes a synthetic export/import rehearsal:
 wrong-origin refusal, selective data ownership, each consent/suppression state,
 unknown timestamps, rollback after inserts, and replay after a new blocklist.
@@ -120,23 +120,19 @@ even if a later signup created a new orphan row. A disabled/blocklisted record
 always fails. An unsubscribed record needs consent issued after its preserved
 unsubscribe timestamp. Unknown timestamps fail closed.
 
-Before cutover, implement and test a privileged legacy reconciliation path
-outside the app. Verify the CoB HMAC token first, then look up **only that email**
-in the old instance, preserving suppression and any CoB unsubscribe tombstone.
-A valid token proves a CoB pending signup; the old database alone does not.
-Import the reviewed pending record without promoting consent. If representing
-it with an unconfirmed destination membership, keep double opt-in enabled,
-disable automatic opt-in mail during that write, and record that explicit mapping.
-Then the ordinary confirm route can apply the still-valid token. Missing old
-records or unavailable old state remain held for review, not enabled by default.
-Do not put the shared administrator token back into CoB to perform this lookup.
+`prepare-bridge.mjs` generates reviewed SQL and configuration for the privileged
+bridge outside the app. It validates the existing CoB HMAC token before looking
+up that exact email. A valid old token and an existing eligible orphan can create
+a destination orphan and then confirm the selected list. Missing old records,
+unknown unsubscribe timestamps, deletions and global suppressions remain held.
+No unrelated orphan export is needed. CoB forwards the original token through
+`/bridge/prepare` or `/bridge/confirm` using a distinct project app password.
+Source database credentials never enter CoB.
 
-The legacy path must work before cutover. Merely holding old links is a safety
-guard, not successful migration. Keep it for at least the maximum token lifetime
-after the last old issuer stops; account for clock skew and in-flight requests.
-A new signup must also check retained suppression evidence before confirmation
-mail. Do not release signup writes until this cross-cutover suppression case is
-implemented and tested.
+Keep the bridge for at least 21 days after the final old token issuer stops,
+including clock skew and in-flight requests. Old unsubscribe URLs and feedback
+can outlive that period; retain reconciliation until their retirement is agreed.
+New signups also pass reconciliation before confirmation mail.
 
 ## Old unsubscribe links and late feedback
 
@@ -151,7 +147,7 @@ outside app credentials. Project membership unsubscriptions map only to that
 project; global blocklist/disabled state propagates conservatively to matching
 migrated records. Handle native unsubscribe, global opt-out, bounce, complaint
 and deletion. Preserve source event identity/time, deduplicate, retry safely,
-and advance the watermark only after the destination write commits. Retain
+and acknowledge events only after the destination write commits. Sequence IDs are not commit-ordered, so the bridge uses a pending queue rather than a watermark. Retain
 tombstones. A missing/deleted source row cannot silently become enabled.
 
 Polling only `subscribers.updated_at` misses membership-only changes. Scan both
@@ -167,13 +163,100 @@ concurrent shared settings or SNS mutations. Match authenticated feedback to
 project identity/configuration set/message evidence. Do not broadcast feedback
 to all projects or treat an arbitrary email address as project ownership.
 
+
+## Bridge installation and operation
+
+Read and approve both generated SQL files before installation. This changes
+shared database triggers and grants access to exact-email state; it requires
+operator approval even though no subscriber data is copied by installation.
+
+1. Fill `bridge-review.example.json` with the audited origins, source list IDs
+   and UUIDs, target list UUIDs and actual write-freeze cutoff. Generate a new
+   protected directory with `node prepare-bridge.mjs reviewed-bridge.json output`.
+2. Pause CoB writes and sends, drain requests, and freeze source CoB campaigns.
+   Install `source.sql` **before** taking the final selective export. It installs
+   a per-project schema, durable event journal and native row triggers. Other
+   projects keep their existing transport. Subscriber-row triggers briefly
+   serialize each email; review this shared-service impact and back up first.
+3. Pre-create a dedicated login with a unique secret and no table privileges.
+   Run source SQL with `psql -X -v bridge_role=<role>` through an approved admin
+   connection. The granted functions expose exact-email state, selected-list
+   membership and pending project events. Never grant table SELECT or ownership.
+4. Import the reviewed final snapshot into the empty destination. Install
+   `target.sql` after the initial import and before starting the bridge. Both SQL
+   files are transactional and refuse an existing schema; inspect an ambiguous
+   result rather than replaying. Keep schemas and roles out of app credentials.
+5. Add protected files `bridge_scope` (generated bridge.json),
+   `bridge_source_database_url`, `bridge_target_database_url`,
+   `bridge_app_password` (at least 32 random characters) and
+   `newsletter_token_secret`. The token secret must match CoB's existing effective
+   secret, including its CRON_SECRET fallback when used. Do not rotate it here.
+   Make files readable by the container's node UID 1000 without world access.
+6. Review the existing private DB network name. Set `LEGACY_DATABASE_NETWORK`
+   and a dedicated `BRIDGE_SNS_TOPIC_ARN` in the protected env. Apply
+   `compose.bridge.yml` with the base Compose file. Only the privileged relay
+   joins the legacy network. The app and new Listmonk keep project-only access.
+7. Preserve the shared SNS route. Configure a new topic and SES configuration-set
+   event destination for Bounce and Complaint only. Publish SES events to that
+   topic using a resource policy restricted to the account/configuration set.
+   Route HTTPS `/webhooks/service/ses` to the bridge. It verifies the AWS SNS
+   certificate/signature, exact topic, sender, account and configuration set,
+   then matches an accepted SES message ID and recipient before suppression.
+8. A signed SNS SubscriptionConfirmation stores its token in the protected
+   `confirmations` table. An approved operator confirms the exact topic through
+   AWS; the bridge does not follow arbitrary SubscribeURL values. Verify the
+   subscription and real dedicated feedback with owned test addresses before
+   allowing production. Unknown message IDs return 503 for retry/review.
+9. Configure CoB's `NEWSLETTER_BRIDGE_URL` to the exact new LISTMONK_URL,
+   `NEWSLETTER_BRIDGE_PASSWORD` to the project app secret, and
+   `NEWSLETTER_BRIDGE_LIST_ROLE` to live or test as appropriate. Set the same
+   actual cutoff in `NEWSLETTER_MIGRATION_STARTED_AT`. Missing bridge access
+   refuses dedicated migration confirmations without a direct-write fallback.
+
+The bridge polls unacknowledged events every five seconds. Each send also takes
+the same per-email source and destination advisory locks as native mutations,
+reconciles current state and retained events, and holds those locks through the
+SES response and receipt commit. A native unsubscribe racing an accepted send
+commits after that send; later sends see it. Source outages and disabled capture
+triggers refuse delivery. This requires every sender to use project-ses with zero
+retries; it does not gate an unreviewed alternative transport.
+
+An attempt is committed before SES. Timeouts, crashes or lost receipt commits
+leave `attempts.status=pending`, holding further mail to that recipient. An
+operator must reconcile SES evidence before marking an attempt reviewed. Never
+bulk-clear pending attempts. Hard bounces and complaints create retained global
+suppression; transient bounces are recorded without enabling anyone. Retained
+unknown unsubscribe dates and deletions require operator review, not token replay.
+
+`GET /health` checks database reachability and destination configuration.
+Monitor reconciliation errors, queue age, pending attempts and SNS delivery
+failures. Health alone cannot prove that SES feedback is correctly configured.
+No message content or recipient addresses are logged by the bridge.
+
+For a synthetic PostgreSQL rehearsal, build `bridge/Dockerfile` from this bundle
+as `hatchkit-newsletter-bridge-fixture:local`, then add
+`HATCHKIT_BRIDGE_TEST_IMAGE=hatchkit-newsletter-bridge-fixture:local` to the
+opt-in two-instance test. It tests old orphan tokens, per-list consent,
+source/target native suppression, deletion, disabled triggers, an unsubscribe
+racing a fake SES call, ambiguous acceptance, and duplicate/foreign feedback.
+`test-listmonk-bridge.ts` separately tests signed SNS envelopes and token policy.
+The rehearsal sends no mail and uses disposable data only.
+
+Before rollback, pause both sides and reconcile new target consent/suppression
+back into the selected source lists. Keep journals and mappings. Removing source
+hooks or the role while target sending continues makes sends fail closed; stop
+the target first. After the agreed legacy window, an approved operator may drop
+only the two named per-project source triggers and generated project schema,
+then revoke/drop that project's bridge login. Never drop shared tables or use a
+full database restore as rollback.
+
 ## Rehearsal and cutover
 
 1. Run `test-listmonk-relay-separation.ts` through the isolated Hatchkit runner.
    It exercises two real HTTP relay handlers with fake SES send functions.
-2. When memory/swap permits, run `HATCHKIT_RUN_LISTMONK_DOCKER=1 node
+2. With safe current memory pressure, run `HATCHKIT_RUN_LISTMONK_DOCKER=1 node
    scripts/test.mjs test-listmonk-instance-separation.ts` from `cli/`. This opt-in
-   test takes the shared validation lock, requires cached Postgres 17, Listmonk 6.2
+   test requires cached Postgres 17, Listmonk 6.2
    and nginx 1.28 Alpine images, creates
    two disposable Listmonk/Postgres stacks on high loopback ports, and removes
    only its own random Compose projects/volumes. It starts no SES relay. Foreign
@@ -199,7 +282,7 @@ to all projects or treat an arbitrary email address as project ownership.
 8. Set `NEWSLETTER_WRITES_PAUSED=true`; separately freeze CoB campaign jobs and
    ensure no running/scheduled source campaign or in-flight send remains. Drain
    app requests. Take final per-project snapshot/delta and reconcile all writes.
-9. Review the final mapping, reconciliation watermark and image/env diff. Only
+9. Review the final mapping, pending event queue and image/env diff. Only
    then approve subscriber import and cutover of URL, API user/token, live/test
    IDs, template IDs, messenger, sender settings and migration cutoff. Switch
    while writes remain paused. Verify read-back and own-inbox checks before

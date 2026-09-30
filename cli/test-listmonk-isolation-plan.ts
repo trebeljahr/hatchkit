@@ -153,6 +153,15 @@ try {
   assert(existsSync(join(output, "MIGRATION.md")));
   assert(existsSync(join(output, "export-memberships.sql")));
   assert(existsSync(join(output, "prepare-transfer.mjs")));
+  for (const asset of [
+    "prepare-bridge.mjs",
+    "compose.bridge.yml",
+    "ingress.bridge.conf",
+    "bridge/install.mjs",
+    "bridge/server.mjs",
+    "bridge/package-lock.json",
+  ])
+    assert(existsSync(join(output, asset)), asset);
   assert(existsSync(join(output, "transfer-review.example.json")));
   assert(!existsSync(join(output, "secrets")));
   await assert.rejects(runListmonkIsolationPlan(args), /already exists/);

@@ -1,0 +1,7 @@
+{
+  "version": 1, "reviewed": false, "project": "REPLACE", "sourceOrigin": "https://REPLACE", "targetOrigin": "https://REPLACE", "cutover": "REPLACE_WITH_ACTUAL_UTC_CUTOFF",
+  "lists": [
+    {"role":"live","sourceId":0,"sourceUuid":"","targetUuid":""},
+    {"role":"test","sourceId":0,"sourceUuid":"","targetUuid":""}
+  ]
+}

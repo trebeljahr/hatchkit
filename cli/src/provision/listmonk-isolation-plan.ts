@@ -55,12 +55,14 @@ export async function runListmonkIsolationPlan(argv: string[]): Promise<void> {
     scope: spec,
     publicUrl: publicUrl.origin,
     status: "staging-only; not deployed or verified",
-    sourceMigration: "manual reviewed per-project export/import; no automatic subscriber copy",
+    sourceMigration:
+      "reviewed initial import and optional privileged legacy bridge; no automatic subscriber copy",
     services: [
       "dedicated Listmonk v6.2.0",
       "dedicated Postgres volume",
       "loopback ingress proxy with a fixed Listmonk upstream",
       "project SES v2 HTTP messenger",
+      "optional legacy confirmation, suppression and signed-feedback bridge",
     ],
     senderPolicy: senderPolicy(spec),
     provisionerPolicy: senderOperatorPolicy(spec.account, spec.region),
@@ -69,13 +71,15 @@ export async function runListmonkIsolationPlan(argv: string[]): Promise<void> {
     requiresApproval: [
       "AWS resource/key creation",
       "new deployment and DNS/proxy route",
+      "source database capture hooks and scoped bridge role",
+      "dedicated SNS feedback route and subscription",
       "subscriber migration",
       "one-recipient delivery test",
       "app cutover",
       "old token retirement",
     ],
     rollback:
-      "Before cutover, stop only this new stack without -v. After cutover, restore prior app env/image first and reconcile new subscriptions/unsubscribes. Keep the shared service and old credentials until verified migration; do not revoke them during staging.",
+      "Before cutover, stop only this new stack without -v. After cutover, pause writes/sends, reconcile new subscriptions and suppression back to the selected source lists, then restore the prior app env/image. If reconciliation is unavailable, keep writes paused. Keep the shared service and old credentials until verified migration; do not revoke them during staging.",
     output: output || null,
   };
   if (!dryRun) {

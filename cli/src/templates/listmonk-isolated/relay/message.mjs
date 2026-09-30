@@ -72,7 +72,7 @@ export function createRelayHandler(config, send) {
     if (req.method !== 'POST' || req.url !== '/send') return respond(404, 'not found');
     if (!authenticated(req.headers.authorization, config)) return respond(401, 'unauthorized');
     if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) return respond(415, 'JSON required');
-    let message;
+    let message; let payload;
     try {
       const chunks = []; let size = 0;
       for await (const chunk of req) {
@@ -80,9 +80,10 @@ export function createRelayHandler(config, send) {
         if (size > 2 * 1024 * 1024) { respond(413, 'message too large'); req.destroy(); return; }
         chunks.push(chunk);
       }
-      message = messageForProject(JSON.parse(Buffer.concat(chunks).toString('utf8')), config);
+      payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      message = messageForProject(payload, config);
     } catch { return respond(400, 'invalid project message'); }
-    try { await send(message); respond(200, 'accepted'); }
+    try { await send(message, payload); respond(200, 'accepted'); }
     catch { respond(502, 'delivery failed; verify outcome before retry'); }
   };
 }

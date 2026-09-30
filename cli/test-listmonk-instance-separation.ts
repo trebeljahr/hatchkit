@@ -8,6 +8,7 @@ import { cpus, loadavg } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse, stringify } from "yaml";
+import { installationSql } from "./src/templates/listmonk-isolated/bridge/install.mjs";
 import { prepareTransfer } from "./src/templates/listmonk-isolated/prepare-transfer.mjs";
 
 if (process.env.HATCHKIT_RUN_LISTMONK_DOCKER !== "1") {
@@ -70,32 +71,9 @@ const docker = (args: string[], input?: string) =>
   command("docker", ["--context", context, ...args], input);
 for (const image of ["postgres:17-alpine", "listmonk/listmonk:v6.2.0", "nginx:1.28-alpine"])
   docker(["image", "inspect", image]);
-const lock = "/tmp/hatchkit-recovery-validation.lock";
-const lockDeadline = Date.now() + 60_000;
-let announcedWait = false;
-while (true) {
-  try {
-    mkdirSync(lock);
-    break;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    if (Date.now() >= lockDeadline)
-      throw new Error("Validation lock remains busy; inspect owner. Never remove a foreign lock.");
-    if (!announcedWait) {
-      console.log("Waiting up to 60 seconds for the shared validation lock.");
-      announcedWait = true;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-}
-const owner = JSON.stringify({
-  pid: process.pid,
-  purpose: "Listmonk two-instance fixtures",
-  started: new Date().toISOString(),
-});
-writeFileSync(join(lock, "owner.json"), owner);
 // Colima shares the home checkout, but not necessarily macOS /var/folders.
 const scratch = mkdtempSync(fileURLToPath(new URL("./.listmonk-fixture-", import.meta.url)));
+const bridgeContainers: string[] = [];
 const stacks: Array<{
   name: string;
   path: string;
@@ -438,7 +416,73 @@ try {
     sql(target, "SELECT status FROM subscribers WHERE email='reader21@example.com';"),
     "blocklisted",
   );
+
+  if (process.env.HATCHKIT_BRIDGE_TEST_IMAGE) {
+    // The privileged bridge runs after the cross-project app isolation assertions.
+    sql(target, "UPDATE subscribers SET status='enabled' WHERE email='reader21@example.com';");
+    const scope = { ...review, cutover: new Date(Date.now() - 5000).toISOString() };
+    sql(
+      source,
+      `UPDATE settings SET value='"https://newsletter.shared.example.com"'::jsonb WHERE key='app.root_url';`,
+    );
+    const scripts = installationSql(scope);
+    sql(source, "CREATE ROLE fixture_bridge LOGIN PASSWORD 'fixture-bridge-only';");
+    sql(source, scripts.source.replaceAll(':"bridge_role"', "fixture_bridge"));
+    sql(target, scripts.target);
+    const password = (stack: (typeof stacks)[number]) =>
+      readFileSync(join(stack.path, "secrets", "db_password"), "utf8");
+    const database = (stack: (typeof stacks)[number]) =>
+      `postgresql://listmonk:${password(stack)}@${stack.name}-db-1:5432/listmonk`;
+    const fixture = join(scratch, "bridge-fixture.json");
+    writeFileSync(
+      fixture,
+      JSON.stringify({
+        source: `postgresql://fixture_bridge:fixture-bridge-only@${source.name}-db-1:5432/listmonk`,
+        sourceAdmin: database(source),
+        target: database(target),
+        scope: scripts.config,
+      }),
+      { mode: 0o600 },
+    );
+    const test = fileURLToPath(
+      new URL("./test-support/newsletter-bridge-database.mjs", import.meta.url),
+    );
+    const bridgeName = `${source.name}-bridge-rehearsal`;
+    bridgeContainers.push(bridgeName);
+    console.log(
+      docker([
+        "run",
+        "--name",
+        bridgeName,
+        "--rm",
+        "--pull",
+        "never",
+        "--memory",
+        "256m",
+        "--cpus",
+        "0.5",
+        "--user",
+        "0",
+        "--network",
+        `${source.name}_private`,
+        "--network",
+        `${target.name}_private`,
+        "--mount",
+        `type=bind,src=${fixture},dst=/fixture.json,readonly`,
+        "--mount",
+        `type=bind,src=${test},dst=/app/test.mjs,readonly`,
+        process.env.HATCHKIT_BRIDGE_TEST_IMAGE,
+        "node",
+        "/app/test.mjs",
+      ]),
+    );
+  }
 } finally {
+  for (const name of bridgeContainers) {
+    try {
+      docker(["rm", "--force", name]);
+    } catch {}
+  }
   for (const stack of stacks.reverse()) {
     try {
       compose(stack, ["down", "--volumes", "--timeout", "5"]);
@@ -450,7 +494,6 @@ try {
     }
   }
   if (cleaned) rmSync(scratch, { recursive: true });
-  if (readFileSync(join(lock, "owner.json"), "utf8") === owner) rmSync(lock, { recursive: true });
 }
 
 if (!cleaned) throw new Error("Fixture cleanup incomplete; not a verification pass.");

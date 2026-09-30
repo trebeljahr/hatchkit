@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { relayConfig, createRelayHandler } from './message.mjs';
 const config = relayConfig(process.env);
+if (config.mode === 'production' && process.env.LEGACY_BRIDGE_REQUIRED === 'true') throw new Error('Production migration requires the reviewed bridge runtime');
 const client = new SESv2Client({ region: config.region,
   credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
   maxAttempts: 1, // Delivery is not idempotent. An uncertain result requires review.

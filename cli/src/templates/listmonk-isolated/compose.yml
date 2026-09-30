@@ -59,6 +59,7 @@ services:
       RELAY_USER: __PROJECT_SLUG__
       RELAY_PASSWORD_FILE: /run/secrets/relay_password
       RELAY_MODE: ${RELAY_MODE:-staging}
+      LEGACY_BRIDGE_REQUIRED: "true"
       EMAIL_TEST_RECIPIENT: ${EMAIL_TEST_RECIPIENT:?Set the single staging recipient}
       LISTMONK_PUBLIC_URL: __PUBLIC_URL__
       SES_PROJECT_REGION: __REGION__

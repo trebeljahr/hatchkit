@@ -1,0 +1,28 @@
+# Reviewed migration override: docker compose -f compose.yml -f compose.bridge.yml ...
+# Install reviewed source/target SQL before starting this service. No auto-migration.
+services:
+  ingress:
+    volumes: ["./ingress.bridge.conf:/etc/nginx/nginx.conf:ro"]
+  relay:
+    build:
+      context: .
+      dockerfile: bridge/Dockerfile
+    environment:
+      BRIDGE_SCOPE_FILE: /run/secrets/bridge_scope
+      BRIDGE_SOURCE_DATABASE_URL_FILE: /run/secrets/bridge_source_database_url
+      BRIDGE_TARGET_DATABASE_URL_FILE: /run/secrets/bridge_target_database_url
+      BRIDGE_APP_PASSWORD_FILE: /run/secrets/bridge_app_password
+      NEWSLETTER_TOKEN_SECRET_FILE: /run/secrets/newsletter_token_secret
+      BRIDGE_SNS_TOPIC_ARN: ${BRIDGE_SNS_TOPIC_ARN:?Set the exact dedicated SNS topic}
+    secrets: [bridge_scope, bridge_source_database_url, bridge_target_database_url, bridge_app_password, newsletter_token_secret]
+    networks: [private, sending, legacy]
+networks:
+  legacy:
+    external: true
+    name: ${LEGACY_DATABASE_NETWORK:?Review the shared database network name}
+secrets:
+  bridge_scope: { file: ./secrets/bridge_scope }
+  bridge_source_database_url: { file: ./secrets/bridge_source_database_url }
+  bridge_target_database_url: { file: ./secrets/bridge_target_database_url }
+  bridge_app_password: { file: ./secrets/bridge_app_password }
+  newsletter_token_secret: { file: ./secrets/newsletter_token_secret }
