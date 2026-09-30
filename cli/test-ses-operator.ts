@@ -110,10 +110,25 @@ const identity = `arn:aws:ses:${region}:${account}:identity/mail.future.example.
 const sendContext = {
   "ses:FromAddress": "noreply@mail.future.example.com",
   "ses:TenantName": "hk-future",
-  "ses:ApiVersion": "2019-09-27",
+  "ses:ApiVersion": "2",
   "aws:RequestedRegion": region,
 };
 assert(allowed(boundary, "ses:SendEmail", identity, sendContext));
+for (const version of ["1", "2010-12-01", "2019-09-27"])
+  for (const broad of [false, true])
+    assert(
+      !allowed(
+        boundary,
+        "ses:SendEmail",
+        identity,
+        {
+          ...sendContext,
+          "ses:ApiVersion": version,
+        },
+        broad,
+      ),
+      `reject API version ${version}`,
+    );
 for (const action of [
   "iam:CreateUser",
   "iam:CreateAccessKey",

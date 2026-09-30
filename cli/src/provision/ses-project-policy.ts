@@ -82,10 +82,12 @@ export function senderPolicy(s: SesSenderSpec) {
   const resources = [s.identityArn, s.configurationSetArn];
   // Explicit denies win even over an accidentally attached managed/group policy
   // or an identity resource policy granting this principal broader send rights.
+  // IAM uses "2", not the SDK service model date (2019-09-27).
+  // https://docs.aws.amazon.com/ses/latest/dg/control-user-access.html
   const conditions: Record<string, string | string[]> = {
     "ses:FromAddress": s.from,
     "ses:TenantName": s.tenant,
-    "ses:ApiVersion": "2019-09-27",
+    "ses:ApiVersion": "2",
     "aws:RequestedRegion": s.region,
   };
   return {

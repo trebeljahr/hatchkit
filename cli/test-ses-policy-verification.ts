@@ -7,7 +7,21 @@ import { senderPolicyProbes, verifySenderPolicy } from "./src/provision/ses-poli
 import { senderSpec } from "./src/provision/ses-project-policy.js";
 const spec = senderSpec("sample", "sample.example.com", "123456789012", "eu-west-1");
 const probes = senderPolicyProbes(spec);
-assert.equal(probes.length, 36);
+assert.equal(probes.length, 40);
+for (const probe of probes.filter((p) => p.expected === "allowed"))
+  assert.deepEqual(
+    probe.input.ContextEntries?.find((entry) => entry.ContextKeyName === "ses:ApiVersion")
+      ?.ContextKeyValues,
+    ["2"],
+    "AWS IAM context must use the documented API version, not the SDK model date",
+  );
+for (const version of ["1", "2019-09-27"])
+  assert.equal(
+    probes.filter(
+      (p) => p.expected === "explicitDeny" && p.name.includes(`unsupported API version ${version}`),
+    ).length,
+    2,
+  );
 const response = (index: number) => ({
   $metadata: {},
   EvaluationResults: [

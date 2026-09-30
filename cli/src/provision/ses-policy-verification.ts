@@ -14,7 +14,7 @@ export function senderPolicyProbes(s: SesSenderSpec): PolicyProbe[] {
   const context: Record<string, string> = {
     "ses:FromAddress": s.from[0],
     "ses:TenantName": s.tenant,
-    "ses:ApiVersion": "2019-09-27",
+    "ses:ApiVersion": "2",
     "aws:RequestedRegion": s.region,
   };
   const probes: PolicyProbe[] = [];
@@ -58,6 +58,15 @@ export function senderPolicyProbes(s: SesSenderSpec): PolicyProbe[] {
       });
   for (const broad of [false, true]) {
     const prefix = broad ? "with overlapping Allow: " : "";
+    for (const version of ["1", "2019-09-27"])
+      add(
+        `${prefix}unsupported API version ${version}`,
+        "explicitDeny",
+        "ses:SendEmail",
+        s.identityArn,
+        { ...context, "ses:ApiVersion": version },
+        broad,
+      );
     for (const key of Object.keys(context)) {
       const missing = { ...context };
       delete missing[key];

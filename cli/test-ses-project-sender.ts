@@ -62,7 +62,7 @@ function allowed(
 const context = {
   "ses:FromAddress": spec.from[0],
   "ses:TenantName": spec.tenant,
-  "ses:ApiVersion": "2019-09-27",
+  "ses:ApiVersion": "2",
   "aws:RequestedRegion": spec.region,
 };
 assert(allowed("ses:SendEmail", [spec.identityArn, spec.configurationSetArn], context));
@@ -94,7 +94,7 @@ for (const extraAllow of [false, true]) {
       `foreign ${key}`,
     );
   }
-  // Forged From header, foreign explicit source ARN, SMTP (raw v1), and
+  // Forged From header, foreign explicit source ARN, SMTP (SendRawEmail), and
   // legacy SendEmail cannot turn a leaked project key into a second sender.
   assert(
     !allowed(
@@ -105,14 +105,16 @@ for (const extraAllow of [false, true]) {
     ),
   );
   assert(!allowed("ses:SendEmail", [spec.identityArn, other.identityArn], context, extraAllow));
-  assert(
-    !allowed(
-      "ses:SendEmail",
-      [spec.identityArn],
-      { ...context, "ses:ApiVersion": "2010-12-01" },
-      extraAllow,
-    ),
-  );
+  for (const version of ["1", "2010-12-01", "2019-09-27"])
+    assert(
+      !allowed(
+        "ses:SendEmail",
+        [spec.identityArn],
+        { ...context, "ses:ApiVersion": version },
+        extraAllow,
+      ),
+      `reject API version ${version}`,
+    );
 }
 for (const from of [
   ["*@mail.a.example.com"],
@@ -378,7 +380,9 @@ for (const dryRun of [true, false]) {
       throw Object.assign(new Error("lookup denied"), { name: "AccessDenied" });
     return send(command);
   };
-  await assert.rejects(ensureSender(f.deps, { ...opts, dryRun }), { name: "AccessDenied" });
+  await assert.rejects(ensureSender(f.deps, { ...opts, dryRun }), {
+    name: "AccessDenied",
+  });
   assert.equal(f.state.writes.length, 0);
   assert.equal(f.read(), null);
 }

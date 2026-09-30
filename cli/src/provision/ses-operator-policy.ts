@@ -67,7 +67,7 @@ export function senderBoundaryPolicy(account: string, region: string): PolicyDoc
         }),
       ),
       ...Object.entries({
-        "ses:ApiVersion": "2019-09-27",
+        "ses:ApiVersion": "2",
         "aws:RequestedRegion": region,
       }).map(
         ([key, value], index): PolicyStatement => ({
@@ -85,7 +85,7 @@ export function senderBoundaryPolicy(account: string, region: string): PolicyDoc
         Resource: resources,
         Condition: {
           StringEquals: {
-            "ses:ApiVersion": "2019-09-27",
+            "ses:ApiVersion": "2",
             "aws:RequestedRegion": region,
           },
           StringLike: {
