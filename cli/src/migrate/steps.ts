@@ -732,6 +732,20 @@ export const stepEmailRoutingSetup: StepFn = async (ctx) => {
     personalLocalPart: getPersonalEmailLocalPart(),
   });
 
+  const alternateDestinations = Object.entries(recorded?.addressDestinations ?? {})
+    .filter(([localPart]) => forwarding.addresses.includes(localPart))
+    .filter(([, email]) => email.toLowerCase() !== destination.toLowerCase());
+  const accountId = probe.accountId ?? dns.accountId;
+  if (alternateDestinations.length > 0 && !accountId) {
+    throw new Error(`Cloudflare account id could not be resolved for ${ctx.newDomain}.`);
+  }
+  for (const [, email] of alternateDestinations) {
+    const saved = await cf.addEmailDestination(accountId!, email);
+    if (saved.verified !== "active") {
+      throw new Error(`Forwarding destination ${email} needs Cloudflare verification before migration can continue.`);
+    }
+  }
+
   const { detectExtraSpfIncludes } = await import("../email/index.js");
   const { runEmailSetup } = await import("../email/setup.js");
   const result = await runEmailSetup({
@@ -739,12 +753,23 @@ export const stepEmailRoutingSetup: StepFn = async (ctx) => {
     accountId: probe.accountId,
     domain: ctx.newDomain,
     destination,
-    addresses: forwarding.addresses,
+    addresses: forwarding.addresses.filter((localPart) =>
+      !alternateDestinations.some(([alternate]) => alternate === localPart)),
     catchAll: forwarding.catchAll,
     extraSpfIncludes: await detectExtraSpfIncludes(dns.apiToken, probe.zone.id, ctx.newDomain),
     // Additive: a DMARC policy already on the new zone is someone's choice.
     preserveExistingDmarc: true,
   });
+
+  for (const [localPart, email] of alternateDestinations) {
+    const address = `${localPart}@${ctx.newDomain}`;
+    const rule = await cf.upsertEmailRoutingRule(probe.zone.id, {
+      address,
+      forwardTo: [email],
+      name: `Forward ${address}`,
+    });
+    result.rules.push({ address, ...rule });
+  }
 
   // Re-read: runEmailSetup is slow, and the manifest is shared state.
   const fresh = manifestOf(ctx);
@@ -757,6 +782,7 @@ export const stepEmailRoutingSetup: StepFn = async (ctx) => {
         configuredAt: new Date().toISOString(),
         destinationEmail: result.destination.record.email,
         addresses: forwarding.addresses,
+        addressDestinations: recorded?.addressDestinations,
         catchAll: forwarding.catchAll,
       },
     },

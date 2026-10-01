@@ -11,7 +11,7 @@ import chalk from "chalk";
 import { getConfig, getConfigPath, getMlServices } from "./config.js";
 import type { Feature } from "./prompts.js";
 import { type DeferredStep, readDeferredSteps } from "./provision/deferrals.js";
-import { readManifest } from "./scaffold/manifest.js";
+import { readManifestWithMigrationInfo } from "./scaffold/manifest.js";
 import { getCliVersion } from "./utils/version.js";
 
 export interface ProviderSnapshot {
@@ -176,7 +176,7 @@ export function collectStatus(projectDir: string = process.cwd()): StatusSnapsho
   let project: StatusSnapshot["project"] = null;
   let deferredSteps: DeferredStep[] = [];
   try {
-    const manifest = readManifest(projectDir);
+    const manifest = readManifestWithMigrationInfo(projectDir)?.manifest;
     if (manifest) {
       const features = manifest.features ?? [];
       project = {

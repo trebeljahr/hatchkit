@@ -191,6 +191,8 @@ export interface ProjectManifest {
       configuredAt: string;
       destinationEmail?: string;
       addresses?: string[];
+      /** Destinations for literal rules that differ from destinationEmail. */
+      addressDestinations?: Record<string, string>;
       catchAll?: boolean;
     };
     searchConsole?: { domain: string; siteUrl: string; verifiedAt: string };

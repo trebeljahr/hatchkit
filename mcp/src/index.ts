@@ -63,17 +63,18 @@ function runHatchkit(args: string[]): Promise<RunResult> {
   });
 }
 
-/** Parse a JSON payload from the end of stdout. The CLI prefixes a
- *  banner on some non-JSON runs, so we find the first `{` or `[`. */
+/** Parse the final JSON payload even when older CLI versions print notices. */
 function parseJsonOutput(stdout: string): unknown {
   const trimmed = stdout.trim();
-  const start = Math.min(
-    ...[trimmed.indexOf("{"), trimmed.indexOf("[")].filter((i) => i >= 0),
-  );
-  if (!Number.isFinite(start)) {
-    throw new Error(`hatchkit produced no JSON:\n${stdout}`);
+  for (const match of trimmed.matchAll(/(?:^|\n)(?=[ \t]*[\[{])/g)) {
+    const candidate = trimmed.slice(match.index + (trimmed[match.index] === "\n" ? 1 : 0)).trimStart();
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // A preceding notice may itself contain braces; try the next line.
+    }
   }
-  return JSON.parse(trimmed.slice(start));
+  throw new Error(`hatchkit produced no JSON:\n${stdout}`);
 }
 
 // ---------------------------------------------------------------------------

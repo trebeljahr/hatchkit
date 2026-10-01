@@ -318,6 +318,7 @@ export async function runEmailForward(rest: string[], cwd: string = process.cwd(
   if (existing) {
     const targets = existing.actions?.filter((a) => a.type === "forward").flatMap((a) => a.value ?? []) ?? [];
     if (existing.enabled !== false && targets.length === 1 && targets[0].toLowerCase() === destination.toLowerCase()) {
+      recordForwarding(cwd, domain, localPart.toLowerCase(), destination);
       console.log(chalk.dim(`  · ${address} already forwards to ${destination}`));
       return;
     }
@@ -329,9 +330,21 @@ export async function runEmailForward(rest: string[], cwd: string = process.cwd(
     return;
   }
   await cf.upsertEmailRoutingRule(zone.id, { address, forwardTo: [destination], name: `Forward ${address}` });
+  recordForwarding(cwd, domain, localPart.toLowerCase(), destination);
+  console.log(chalk.green(`  ✓ ${address} → ${destination}`));
+}
+
+export function recordForwarding(cwd: string, domain: string, localPart: string, destination: string): void {
   const manifest = readManifest(cwd);
   if (manifest?.domain?.toLowerCase() === domain.toLowerCase()) {
     const old = manifest.integrations?.email;
+    const defaultDestination = old?.destinationEmail ?? destination;
+    const addressDestinations = { ...old?.addressDestinations };
+    if (defaultDestination.toLowerCase() === destination.toLowerCase()) {
+      delete addressDestinations[localPart];
+    } else {
+      addressDestinations[localPart] = destination;
+    }
     writeManifest(cwd, {
       ...manifest,
       integrations: {
@@ -340,13 +353,13 @@ export async function runEmailForward(rest: string[], cwd: string = process.cwd(
           ...old,
           domain,
           configuredAt: new Date().toISOString(),
-          destinationEmail: old?.destinationEmail ?? destination,
-          addresses: [...new Set([...(old?.addresses ?? []), localPart.toLowerCase()])],
+          destinationEmail: defaultDestination,
+          addresses: [...new Set([...(old?.addresses ?? []), localPart])],
+          addressDestinations,
         },
       },
     });
   }
-  console.log(chalk.green(`  ✓ ${address} → ${destination}`));
 }
 
 async function assertForwardingReady(cf: CloudflareApi, zoneId: string, domain: string, accountId: string): Promise<void> {

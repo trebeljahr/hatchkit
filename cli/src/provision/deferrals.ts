@@ -70,7 +70,7 @@
  */
 
 import chalk from "chalk";
-import { readManifest, writeManifest } from "../scaffold/manifest.js";
+import { readManifest, readManifestWithMigrationInfo, writeManifest } from "../scaffold/manifest.js";
 import type { ProvisionService } from "./index.js";
 
 /** Why a step didn't run. All three continue the flow; only the
@@ -357,7 +357,7 @@ export function withoutDeferredSteps(
 export function readDeferredSteps(projectDir: string | undefined): DeferredStep[] {
   if (!projectDir) return [];
   try {
-    const manifest = readManifest(projectDir);
+    const manifest = readManifestWithMigrationInfo(projectDir)?.manifest;
     return manifest?.deferred ? [...manifest.deferred] : [];
   } catch {
     return [];

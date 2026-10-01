@@ -43,6 +43,8 @@ const {
   summarizeEmailRoutingProbe,
 } = await import("./src/email/routing-access.js");
 const { runEmailSetup } = await import("./src/email/setup.js");
+const { recordForwarding } = await import("./src/email/index.js");
+const { readManifest } = await import("./src/scaffold/manifest.js");
 const { MIGRATION_PROVIDERS, planDomainMigration, planEmailRouting, selectActions } = await import(
   "./src/migrate/plan.js"
 );
@@ -312,6 +314,29 @@ await expect("manifest-recorded forwarding is planned even when the old zone is 
   assert.match(detail, /hello@, imprint@; catch-all off/);
 });
 
+await expect("recording an existing rule keeps its own forwarding destination", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-forward-manifest-"));
+  try {
+    writeFileSync(join(dir, ".hatchkit.json"), JSON.stringify({
+      ...COB,
+      domain: COB_OLD,
+      integrations: { email: {
+        domain: COB_OLD,
+        configuredAt: "2026-01-01T00:00:00.000Z",
+        destinationEmail: "main@example.com",
+        addresses: ["hello"],
+      } },
+    }));
+    recordForwarding(dir, COB_OLD, "support", "support@example.org");
+    const email = readManifest(dir)?.integrations?.email;
+    assert.deepEqual(email?.addresses, ["hello", "support"]);
+    assert.equal(email?.addressDestinations?.support, "support@example.org");
+    assert.equal(email?.destinationEmail, "main@example.com");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 await expect("already receiving on the new domain → no-op (idempotent re-run)", () => {
   const [action] = planEmailRouting(
     input({ emailRouting: { newDomain: { state: "receiving", zone: COB_NEW } } }),
@@ -475,7 +500,7 @@ await expect("an existing SPF is merged into ONE record, not joined by a second"
         id: "old-spf",
         type: "TXT",
         name: "example.com",
-        content: "v=spf1 include:amazonses.com ~all",
+        content: "v=spf1 ip4:192.0.2.1 a mx include:amazonses.com -all",
       },
     ] as Rec[],
   };
@@ -489,6 +514,8 @@ await expect("an existing SPF is merged into ONE record, not joined by a second"
   assert.equal(spf.length, 1, `SPF rows: ${spf.map((r) => r.content).join(" | ")}`);
   assert.match(spf[0].content, /include:amazonses\.com/);
   assert.match(spf[0].content, /include:_spf\.mx\.cloudflare\.net/);
+  assert.match(spf[0].content, /ip4:192\.0\.2\.1 a mx/);
+  assert.match(spf[0].content, /-all$/);
   assert.equal(state.records.filter((r) => r.type === "MX").length, 3);
 });
 

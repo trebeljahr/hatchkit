@@ -31,7 +31,7 @@ import {
   CloudflareApi,
 } from "../utils/cloudflare-api.js";
 import { assertEmailRoutingAccess } from "./routing-access.js";
-import { buildDmarcRecord, buildSpfRecord, parseSpfIncludes } from "./spf.js";
+import { buildDmarcRecord, buildSpfRecord, mergeSpfRecord } from "./spf.js";
 
 /** Cloudflare-published MX hosts for Email Routing. Verified against
  *  what `GET /zones/{id}/email/routing/dns` returns — kept hardcoded
@@ -202,10 +202,9 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
   const existingSpf = await findApexTxt(cf, zone.id, opts.domain, SPF_RE);
   const mergedIncludes = new Set<string>(["_spf.mx.cloudflare.net"]);
   for (const inc of opts.extraSpfIncludes ?? []) mergedIncludes.add(inc);
-  if (existingSpf) {
-    for (const inc of parseSpfIncludes(existingSpf.content)) mergedIncludes.add(inc);
-  }
-  const spfContent = buildSpfRecord({ includes: [...mergedIncludes] });
+  const spfContent = existingSpf
+    ? mergeSpfRecord(existingSpf.content, [...mergedIncludes])
+    : buildSpfRecord({ includes: [...mergedIncludes] });
   // TXT upserts match on content, so a merged record that differs from
   // the one on the zone is a NEW row. Write it first, then drop every
   // other SPF TXT at the name — exactly one SPF record per name per

@@ -82,6 +82,20 @@ export function parseSpfIncludes(record: string): string[] {
   return includes;
 }
 
+/** Add includes without changing any existing authorization or `all` policy. */
+export function mergeSpfRecord(record: string, includes: string[]): string {
+  const tokens = record.trim().replace(/^"|"$/g, "").trim().split(/\s+/);
+  if (!/^v=spf1$/i.test(tokens[0])) throw new Error("Cannot merge a malformed SPF record.");
+  const present = new Set(parseSpfIncludes(record));
+  const additions = [...new Set(includes.map((value) => value.toLowerCase()))]
+    .filter((value) => !present.has(value))
+    .sort()
+    .map((value) => `include:${value}`);
+  const allIndex = tokens.findIndex((token) => /^[+?~-]?all$/i.test(token));
+  tokens.splice(allIndex < 0 ? tokens.length : allIndex, 0, ...additions);
+  return tokens.join(" ");
+}
+
 /** Build a DMARC TXT record content string.
  *
  *  Default policy is `p=quarantine` — failed-DMARC mail lands in spam
