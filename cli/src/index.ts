@@ -4479,6 +4479,7 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Subcommands:")}
     setup            Configure Email Routing + DNS (MX, SPF, DMARC) for a domain
+    forward <address>  Add one forwarding address to a receiving domain
     status           Print current routing state (read-only)
     ses-mail-from    Manage SES Custom MAIL FROM Domain for this project
                      ${chalk.dim("(subcommands: setup | status | remove)")}

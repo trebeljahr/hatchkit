@@ -43,7 +43,7 @@ export const STATIC_FORWARD_PRESETS: EmailAddressPreset[] = [
   { localPart: "support", description: "customer-facing support", defaultChecked: true },
   { localPart: "hi", description: "short personal alias", defaultChecked: false },
   { localPart: "imprint", description: "legal notice / Impressum contact", defaultChecked: true },
-  { localPart: "privacy", description: "privacy-policy / GDPR contact", defaultChecked: false },
+  { localPart: "privacy", description: "privacy-policy / GDPR contact", defaultChecked: true },
 ];
 
 /** Build the full preset list, optionally prepending a personal alias

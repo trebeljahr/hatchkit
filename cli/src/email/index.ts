@@ -26,11 +26,11 @@ import {
   getDnsConfig,
   getPersonalEmailLocalPart,
 } from "../config.js";
-import { readManifest } from "../scaffold/manifest.js";
+import { readManifest, writeManifest } from "../scaffold/manifest.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { multiselect } from "../utils/multiselect.js";
 import { DEFAULT_CATCH_ALL, buildForwardPresets } from "./presets.js";
-import { probeEmailRouting } from "./routing-access.js";
+import { assertEmailRoutingAccess, probeEmailRouting } from "./routing-access.js";
 import {
   type EmailSetupOptions,
   type EmailSetupResult,
@@ -285,6 +285,82 @@ export async function runEmailStatus(
   }
 }
 
+/** Add one literal forwarding rule without changing DNS, catch-all, or other rules. */
+export async function runEmailForward(rest: string[], cwd: string = process.cwd()): Promise<void> {
+  const addressArg = rest[0];
+  const flags = parseEmailFlags(rest.slice(1));
+  const domain = await resolveDomain(flags.domain, cwd);
+  const localPart = addressArg?.includes("@")
+    ? addressArg.slice(0, addressArg.indexOf("@"))
+    : addressArg;
+  if (!localPart || !/^[a-z0-9][a-z0-9.!#$%&'*+/=?^_`{|}~-]*$/i.test(localPart)) {
+    throw new Error("Give one valid local part or full address: hatchkit email forward support --domain example.com");
+  }
+  if (addressArg?.includes("@") && addressArg.slice(addressArg.indexOf("@") + 1).toLowerCase() !== domain.toLowerCase()) {
+    throw new Error(`Address must belong to ${domain}.`);
+  }
+  const address = `${localPart.toLowerCase()}@${domain.toLowerCase()}`;
+  const dns = await getDnsConfig();
+  if (!dns?.apiToken) throw new Error("Cloudflare API token not configured. Run `hatchkit config add dns`.");
+  const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
+  const zone = await cf.resolveZoneForName(domain);
+  if (!zone) throw new Error(`No Cloudflare zone for ${domain}.`);
+  const accountId = dns.accountId ?? zone.account?.id;
+  if (!accountId) throw new Error("Cloudflare account id could not be resolved.");
+  await assertForwardingReady(cf, zone.id, domain, accountId);
+  const rules = await cf.listEmailRoutingRules(zone.id);
+  const existing = rules.find((r) => r.matchers?.some((m) =>
+    m.field === "to" && m.type === "literal" && m.value?.toLowerCase() === address));
+  const destination = flags.to?.trim() || getDefaultForwardingEmail();
+  if (!destination || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(destination)) {
+    throw new Error("Set a forwarding destination with --to <email> or in hatchkit setup defaults.");
+  }
+  if (existing) {
+    const targets = existing.actions?.filter((a) => a.type === "forward").flatMap((a) => a.value ?? []) ?? [];
+    if (existing.enabled !== false && targets.length === 1 && targets[0].toLowerCase() === destination.toLowerCase()) {
+      console.log(chalk.dim(`  · ${address} already forwards to ${destination}`));
+      return;
+    }
+    throw new Error(`${address} already has a different routing rule. Inspect it with hatchkit email status --domain ${domain}; no changes made.`);
+  }
+  const saved = await cf.addEmailDestination(accountId, destination);
+  if (saved.verified !== "active") {
+    console.log(chalk.yellow(`  ${destination} is pending verification. Click the Cloudflare email, then re-run this command. No rule created.`));
+    return;
+  }
+  await cf.upsertEmailRoutingRule(zone.id, { address, forwardTo: [destination], name: `Forward ${address}` });
+  const manifest = readManifest(cwd);
+  if (manifest?.domain?.toLowerCase() === domain.toLowerCase()) {
+    const old = manifest.integrations?.email;
+    writeManifest(cwd, {
+      ...manifest,
+      integrations: {
+        ...manifest.integrations,
+        email: {
+          ...old,
+          domain,
+          configuredAt: new Date().toISOString(),
+          destinationEmail: old?.destinationEmail ?? destination,
+          addresses: [...new Set([...(old?.addresses ?? []), localPart.toLowerCase()])],
+        },
+      },
+    });
+  }
+  console.log(chalk.green(`  ✓ ${address} → ${destination}`));
+}
+
+async function assertForwardingReady(cf: CloudflareApi, zoneId: string, domain: string, accountId: string): Promise<void> {
+  await assertEmailRoutingAccess(cf, domain, { accountId });
+  const routing = await cf.getEmailRouting(zoneId);
+  const mx = await cf.findRecordsByName(zoneId, domain, "MX");
+  if (!routing?.enabled || !mx.some((r) => /(^|\.)mx\.cloudflare\.net\.?$/i.test(r.content))) {
+    throw new Error(`Email Routing is not receiving for ${domain}. Run hatchkit email setup --domain ${domain} first.`);
+  }
+  if (mx.some((r) => !/(^|\.)mx\.cloudflare\.net\.?$/i.test(r.content))) {
+    throw new Error(`${domain} has non-Cloudflare MX records. Resolve mail delivery before adding a rule.`);
+  }
+}
+
 /** Parse `hatchkit email …` flags from the raw argv slice. Centralised
  *  here so the index.ts dispatcher only deals with subcommand routing. */
 export function parseEmailFlags(rest: string[]): EmailCommandFlags {
@@ -318,6 +394,9 @@ export async function handleEmailCommand(rest: string[]): Promise<void> {
   }
   const flags = parseEmailFlags(rest.slice(1));
   switch (sub) {
+    case "forward":
+      await runEmailForward(rest.slice(1), resolve("."));
+      return;
     case "setup":
       await runEmailSetupForDomain(flags, resolve("."));
       return;
@@ -325,9 +404,10 @@ export async function handleEmailCommand(rest: string[]): Promise<void> {
       await runEmailStatus(flags, resolve("."));
       return;
     default:
-      console.log("Usage: hatchkit email <setup|status|ses-mail-from> [flags]");
+      console.log("Usage: hatchkit email <setup|forward|status|ses-mail-from> [flags]");
       console.log("");
       console.log("  setup           Configure Cloudflare Email Routing + DNS for a domain");
+      console.log("  forward <address>  Add one address on an existing receiving domain");
       console.log("  status          Print the current Email Routing state");
       console.log("  ses-mail-from   Manage the SES Custom MAIL FROM Domain for this project");
       console.log("");

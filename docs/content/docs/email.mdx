@@ -408,3 +408,14 @@ The offline result contains the exact simulation requests and the required read-
 The checks cover the permitted identity/configuration set, missing and foreign context, foreign resources, SMTP/legacy sends, administrative actions and overlapping Allow policies. Failed or incomplete responses stop verification. No email is sent and no AWS resources are created or changed.
 
 A successful simulation verifies only the supplied policy and context. It does not verify a deployed principal, MIME parsing, tenant associations, delivery or shared Listmonk isolation. AWS documents this distinction in [SimulateCustomPolicy](https://docs.aws.amazon.com/IAM/latest/APIReference/API_SimulateCustomPolicy.html). A live rollout still needs the sender audit and an approved one-recipient test.
+# Add one forwarding address
+
+For an existing domain that already receives mail through Cloudflare Email Routing:
+
+```bash
+hatchkit email forward support --domain example.com --to owner@example.net
+```
+
+Run from the project directory to use its `.hatchkit.json` domain and record the new role address for future domain migrations. `--to` defaults to the saved forwarding inbox. The command checks existing MX and routing state, leaves DNS and catch-all untouched, and refuses to replace a rule with a different destination. A new destination receives a Cloudflare verification email; click its link and rerun the command to create the rule. `hatchkit email status --domain example.com` shows verification and rules.
+
+The default setup picker includes `support@`, `privacy@`, and `imprint@`; add `moderation@`, `press@`, or other roles as needed with `email forward`. `noreply@` is normally an outbound identity, not a forwarding rule. Transactional and campaign Reply-To settings are separate from inbound routing; choose a verified, routed reply address before publishing mail.

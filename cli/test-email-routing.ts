@@ -180,11 +180,11 @@ await expect("summary: receiving / not-receiving / foreign MX / no zone", async 
 
 console.log("\npresets:");
 
-await expect("imprint@ is offered and ticked; privacy@ is offered, unticked", () => {
+await expect("imprint@ and privacy@ are offered and ticked", () => {
   const imprint = STATIC_FORWARD_PRESETS.find((p) => p.localPart === "imprint");
   const privacy = STATIC_FORWARD_PRESETS.find((p) => p.localPart === "privacy");
   assert.equal(imprint?.defaultChecked, true);
-  assert.equal(privacy?.defaultChecked, false);
+  assert.equal(privacy?.defaultChecked, true);
 });
 
 await expect("a personal alias still lands right after hello@", () => {
@@ -218,7 +218,7 @@ await expect("carried forwarding: manifest beats old-domain rules beats defaults
     personalLocalPart: "rico",
   });
   assert.equal(defaults.source, "defaults");
-  assert.deepEqual(defaults.addresses, ["hello", "rico", "admin", "support", "imprint"]);
+  assert.deepEqual(defaults.addresses, ["hello", "rico", "admin", "support", "imprint", "privacy"]);
   assert.equal(defaults.catchAll, true);
 });
 
