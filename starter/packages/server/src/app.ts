@@ -17,7 +17,7 @@ import { env, getTrustedOrigins } from "./config/env.js";
 import { API_LEVEL, MIN_CLIENT_API_LEVEL } from "@starter/shared";
 // ── end client-core ──────────────────────────────────────────────
 
-export function createApp() {
+export function createApp(options: { accessLogStream?: { write(message: string): void } } = {}) {
   const app = express();
 
   app.set("trust proxy", 1);
@@ -30,6 +30,8 @@ export function createApp() {
       credentials: true,
     }),
   );
+  // Apply security headers before routes that send their own response.
+  app.use(helmet());
 
   // ── 1. better-auth — BEFORE express.json() ────────────────────────
   // better-auth handles its own body parsing. Mounting express.json()
@@ -54,9 +56,13 @@ export function createApp() {
   app.use(express.json({ limit: "100kb" }));
   app.use(express.urlencoded({ extended: true }));
 
-  // ── 4. Security + logging ──────────────────────────────────────────
-  app.use(helmet());
-  app.use(morgan(env.isProduction ? "combined" : "dev"));
+  // ── 4. Logging ─────────────────────────────────────────────────────
+  // The newsletter confirm URL carries a 21-day bearer token. Its route
+  // already logs outcomes without the URL, so omit it from access logs.
+  app.use(morgan(env.isProduction ? "combined" : "dev", {
+    skip: (req) => req.path === "/api/newsletter/confirm",
+    stream: options.accessLogStream,
+  }));
 
   // ── 5. tRPC ────────────────────────────────────────────────────────
   const trpcMiddleware = createExpressMiddleware({

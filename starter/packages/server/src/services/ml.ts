@@ -1,5 +1,6 @@
 import { env } from "../config/env.js";
 import { getPresignedUploadUrl, getPublicUrl } from "./storage.js";
+import { readLimitedMlResponse } from "./ml-response.js";
 import { randomUUID } from "crypto";
 import {
   PutObjectCommand,
@@ -23,6 +24,15 @@ function getEndpoint(service: string): string {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+const ML_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
+const ML_BINARY_RESPONSE_MAX_BYTES = 256 * 1024 * 1024;
+const ML_JSON_RESPONSE_MAX_BYTES = 10 * 1024 * 1024;
+const ML_ERROR_RESPONSE_MAX_BYTES = 64 * 1024;
+
+async function readMlJson<T>(res: Response): Promise<T> {
+  return JSON.parse((await readLimitedMlResponse(res, ML_JSON_RESPONSE_MAX_BYTES)).toString("utf8")) as T;
+}
+
 async function callMlEndpoint(
   service: string,
   formData: FormData,
@@ -31,9 +41,12 @@ async function callMlEndpoint(
   const res = await fetch(endpoint, {
     method: "POST",
     body: formData,
+    signal: AbortSignal.timeout(ML_REQUEST_TIMEOUT_MS),
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
+    const text = await readLimitedMlResponse(res, ML_ERROR_RESPONSE_MAX_BYTES)
+      .then((body) => body.toString("utf8"))
+      .catch(() => "");
     throw new Error(`ML service "${service}" returned ${res.status}: ${text}`);
   }
   return res;
@@ -81,7 +94,7 @@ export async function removeBackground(
 
   const res = await callMlEndpoint("background-removal", formData);
 
-  const resultBuffer = Buffer.from(await res.arrayBuffer());
+  const resultBuffer = await readLimitedMlResponse(res, ML_BINARY_RESPONSE_MAX_BYTES);
   const width = parseInt(res.headers.get("X-Image-Width") || "0", 10);
   const height = parseInt(res.headers.get("X-Image-Height") || "0", 10);
 
@@ -113,11 +126,11 @@ export async function generateSubtitles(
   formData.append("format", "json");
 
   const res = await callMlEndpoint("subtitles", formData);
-  return res.json() as Promise<{
+  return readMlJson<{
     text: string;
     language: string;
     segments: Array<{ start: number; end: number; text: string }>;
-  }>;
+  }>(res);
 }
 
 // ---------------------------------------------------------------------------
@@ -136,7 +149,7 @@ export async function recognizeImage(
   formData.append("top_k", String(topK));
 
   const res = await callMlEndpoint("image-recognition", formData);
-  return res.json() as Promise<{ results: Array<{ label: string; score: number }> }>;
+  return readMlJson<{ results: Array<{ label: string; score: number }> }>(res);
 }
 
 // ---------------------------------------------------------------------------
@@ -156,7 +169,7 @@ export async function generate3dModel(
 
   const res = await callMlEndpoint("3d-extraction", formData);
 
-  const glbBuffer = Buffer.from(await res.arrayBuffer());
+  const glbBuffer = await readLimitedMlResponse(res, ML_BINARY_RESPONSE_MAX_BYTES);
   const vertices = parseInt(res.headers.get("X-Vertex-Count") || "0", 10);
 
   const key = `ml/3d-models/${randomUUID()}.glb`;
@@ -184,7 +197,7 @@ async function callGlbEndpoint(
 
   const res = await callMlEndpoint(service, formData);
 
-  const glbBuffer = Buffer.from(await res.arrayBuffer());
+  const glbBuffer = await readLimitedMlResponse(res, ML_BINARY_RESPONSE_MAX_BYTES);
   const vertices = parseInt(res.headers.get("X-Vertex-Count") || "0", 10);
 
   const key = `${s3Prefix}/${randomUUID()}.glb`;

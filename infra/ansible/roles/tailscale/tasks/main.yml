@@ -16,13 +16,36 @@
     state: started
 
 - name: Bring up Tailscale
-  ansible.builtin.command: >
-    tailscale up
-    --authkey={{ tailscale_auth_key }}
-    --hostname={{ tailscale_hostname }}
-    --ssh
-    --accept-routes=false
-    --accept-dns=false
+  block:
+    - name: Create temporary auth key file
+      ansible.builtin.tempfile:
+        state: file
+        prefix: tailscale-auth-
+      register: tailscale_auth_file
+
+    - name: Write temporary auth key
+      ansible.builtin.copy:
+        content: "{{ tailscale_auth_key }}"
+        dest: "{{ tailscale_auth_file.path }}"
+        mode: "0600"
+
+    - name: Authenticate Tailscale
+      ansible.builtin.command:
+        argv:
+          - tailscale
+          - up
+          - "--authkey=file:{{ tailscale_auth_file.path }}"
+          - "--hostname={{ tailscale_hostname }}"
+          - --ssh
+          - --accept-routes=false
+          - --accept-dns=false
+  always:
+    - name: Remove temporary auth key file
+      ansible.builtin.file:
+        path: "{{ tailscale_auth_file.path }}"
+        state: absent
+      when: tailscale_auth_file.path is defined
+  no_log: true
   when:
     - tailscale_auth_key | length > 0
     - tailscale_status.rc != 0 or '"BackendState":"Running"' not in tailscale_status.stdout
