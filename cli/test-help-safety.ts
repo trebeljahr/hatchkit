@@ -194,6 +194,8 @@ checkHelpRun(["keys", "rotate", "demo", "--help"], "hatchkit keys — manage per
 checkHelpRun(["ses", "unverify", "someone@example.com", "--help"], "hatchkit ses — Amazon SES");
 checkHelpRun(["signing", "apply", "--help"], "hatchkit signing org-init");
 checkHelpRun(["email", "setup", "--help"], "hatchkit email — Cloudflare Email Routing");
+checkHelpRun(["add", "i18n", "--help"], "hatchkit add i18n");
+checkHelpRun(["create", "--help"], "--topology");
 checkHelpRun(["listmonk", "user", "demo", "--help"], "hatchkit listmonk — Listmonk helpers");
 
 // The topic has to be the command's own — root help would satisfy a

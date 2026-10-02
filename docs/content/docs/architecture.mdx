@@ -15,7 +15,7 @@ hatchkit/
 │     ├─ prompts.ts       # interactive ProjectConfig collection
 │     ├─ config.ts        # keychain + config.json + provider ensure()
 │     ├─ scaffold/        # starter copy + feature strip + ports
-│     ├─ provision/       # GlitchTip / OpenPanel / Plausible / Resend / email / search services
+│     ├─ provision/       # GlitchTip / OpenPanel / Plausible / Listmonk + SES / email / search
 │     ├─ deploy/          # terraform, coolify, github, gpu, keys
 │     ├─ doctor.ts        # provider health checks
 │     └─ utils/           # flags, exec, validation, version
@@ -51,7 +51,7 @@ Key properties of the pipeline:
 
 ## Project layout: root vs. subdir
 
-By default the deployable lives at the repo root — one `package.json` at the top, one Dockerfile, one Coolify app. The manifest sits at the root too, and every Hatchkit command resolves paths against it.
+By default the deployable lives at the repo root. The manifest sits there too. New Coolify projects use one Docker Image app per service; `--coolify-runtime compose` selects a Compose app. See [Deployment topology](./topology).
 
 When the deployable lives in a sub-folder of a larger repo (a CLI with a sibling marketing site at `site/`, a monorepo with the runtime at `apps/web/`), the manifest's optional `projectSubdir` field captures that path. Hatchkit then:
 
@@ -73,7 +73,7 @@ The manifest **always** lives at the repo root, even when `projectSubdir` is set
 Two things are easy to conflate here, so plainly:
 
 - **`.env.production` (dotenvx-encrypted, committed) is the *at-rest store*.** It is what `hatchkit secrets rotate` writes into and what `hatchkit sync` reads. Versioning it in git is what stops the values from existing only on whichever laptop last wrote them.
-- **The container's environment, held by Coolify, is the *runtime source of truth*.** `hatchkit sync` decrypts the at-rest store locally and pushes the resolved values into Coolify's env fields. The generated `docker-compose.yml` already declares every one of them as `${VAR}`, which is what makes Coolify render a UI field per value.
+- **Coolify's environment is the runtime source of truth.** `hatchkit sync` decrypts the at-rest store locally and pushes the resolved values to Coolify. New projects use Docker Image apps by default. Projects that select `--coolify-runtime compose` use the generated `docker-compose.yml` to declare their environment variables.
 
 The encrypted file is **not** shipped into the image, and the server `Dockerfile` deliberately doesn't copy it. Two reasons:
 

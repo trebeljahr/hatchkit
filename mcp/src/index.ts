@@ -16,66 +16,13 @@
  * mutating; the user runs them directly.
  */
 
-import { spawn } from "node:child_process";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-
-const HATCHKIT_BIN = process.env.HATCHKIT_BIN ?? "hatchkit";
-
-interface RunResult {
-  stdout: string;
-  stderr: string;
-  code: number;
-}
-
-function runHatchkit(args: string[]): Promise<RunResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(HATCHKIT_BIN, args, {
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (d) => {
-      stdout += d.toString();
-    });
-    child.stderr.on("data", (d) => {
-      stderr += d.toString();
-    });
-    child.on("error", (err) => {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-        reject(
-          new Error(
-            `Could not find \`${HATCHKIT_BIN}\` on PATH. Install hatchkit (e.g. \`pnpm add -g hatchkit\`) or set HATCHKIT_BIN.`,
-          ),
-        );
-      } else {
-        reject(err);
-      }
-    });
-    child.on("close", (code) => {
-      resolve({ stdout, stderr, code: code ?? 0 });
-    });
-  });
-}
-
-/** Parse the final JSON payload even when older CLI versions print notices. */
-function parseJsonOutput(stdout: string): unknown {
-  const trimmed = stdout.trim();
-  for (const match of trimmed.matchAll(/(?:^|\n)(?=[ \t]*[\[{])/g)) {
-    const candidate = trimmed.slice(match.index + (trimmed[match.index] === "\n" ? 1 : 0)).trimStart();
-    try {
-      return JSON.parse(candidate);
-    } catch {
-      // A preceding notice may itself contain braces; try the next line.
-    }
-  }
-  throw new Error(`hatchkit produced no JSON:\n${stdout}`);
-}
+import { parseJsonOutput, runHatchkit } from "./cli-bridge.js";
 
 // ---------------------------------------------------------------------------
 // Tool definitions

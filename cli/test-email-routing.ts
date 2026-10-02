@@ -43,7 +43,7 @@ const {
   summarizeEmailRoutingProbe,
 } = await import("./src/email/routing-access.js");
 const { runEmailSetup } = await import("./src/email/setup.js");
-const { recordForwarding } = await import("./src/email/index.js");
+const { parseEmailFlags, recordForwarding } = await import("./src/email/index.js");
 const { readManifest } = await import("./src/scaffold/manifest.js");
 const { MIGRATION_PROVIDERS, planDomainMigration, planEmailRouting, selectActions } = await import(
   "./src/migrate/plan.js"
@@ -103,6 +103,11 @@ function fakeReader(opts: {
 // ---------------------------------------------------------------------------
 
 console.log("access preflight:");
+
+await expect("email flags reject the obsolete SPF switch", () => {
+  assert.equal(parseEmailFlags(["--no-resend-spf"]).noResendSpf, true);
+  assert.throws(() => parseEmailFlags(["--no-listmonk-spf"]), /Unknown email flag/);
+});
 
 await expect("10000 / 9109 / 403 read as auth errors; 404 and timeouts do not", () => {
   assert.ok(isCloudflareAuthError(AUTH_10000));

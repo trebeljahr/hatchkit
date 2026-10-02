@@ -393,6 +393,7 @@ export function parseEmailFlags(rest: string[]): EmailCommandFlags {
     else if (a.startsWith("--dmarc="))
       flags.dmarcPolicy = a.slice("--dmarc=".length) as EmailCommandFlags["dmarcPolicy"];
     else if (a === "--no-resend-spf") flags.noResendSpf = true;
+    else if (a.startsWith("-")) throw new Error(`Unknown email flag: ${a}. Run hatchkit email --help.`);
   }
   return flags;
 }

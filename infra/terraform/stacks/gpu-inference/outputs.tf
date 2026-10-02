@@ -99,9 +99,9 @@ output "next_steps" {
     8. Run: make lockdown
 
     Phase 3 — GPU platform:
-    9. Set up Modal / RunPod / AWS Batch (see templates/apps/gpu-inference-api/)
-    10. Configure GPU_PROVIDER and GPU_API_URL in your stack .env
-    11. Deploy the inference container to your chosen GPU platform
+    9. Select a supported ML service with hatchkit create --ml-services <name> --gpu-platforms <platform>
+    10. Follow Hatchkit's generated endpoint and environment instructions for that service
+    11. Verify inference with the selected service's own test command
 
     See docs/gpu-inference-pipeline.md for platform comparison and cost analysis.
   EOT

@@ -1,9 +1,26 @@
 ---
-title: MCP Server
-description: The opt-in mcp feature scaffolds a stdio MCP server that speaks only the public REST surface, with capabilities probed at start and tool schemas derived from the shared validators.
+title: MCP servers
+description: Choose the local Hatchkit operator server or a project's API server.
 ---
 
-`mcp` scaffolds `packages/mcp`, a stdio [MCP](https://modelcontextprotocol.io) server that lets a model read and change records through the project's public API.
+Hatchkit has two [MCP](https://modelcontextprotocol.io) servers because they connect to different systems.
+
+| Server | Code location | What it can access | How to get it |
+|---|---|---|---|
+| `@hatchkit/mcp` | Separate package in this repository's `mcp/` directory | Local Hatchkit CLI status, doctor, explain, and a requested dotenvx key | Install the separate `@hatchkit/mcp` package. |
+| Project `mcp` feature | `packages/mcp` in each generated app | That app's `/api/v1` records, subject to the supplied API token | Select `--features mcp` or add it with `hatchkit update`. |
+
+Both run as stdio processes under an MCP host. The operator server does not access an app's records. The project server does not read local Hatchkit provider configuration. You can install either server alone.
+
+## Operator server: `@hatchkit/mcp`
+
+Install `hatchkit` and `@hatchkit/mcp` on the machine that holds your Hatchkit configuration. Set your MCP host's command to `hatchkit-mcp`. It runs the CLI's JSON commands and exposes `hatchkit_status`, `hatchkit_doctor`, `hatchkit_explain`, and `hatchkit_keys_show`. The last tool returns a live private key; call it only when the user asks for that key.
+
+The operator server has no create, deploy, or provider-write tools. See its [package README](https://github.com/trebeljahr/hatchkit/tree/main/mcp) for installation and host configuration. Its bridge tests run with `pnpm --filter @hatchkit/mcp test`.
+
+## Project server: `mcp` feature
+
+`mcp` scaffolds `packages/mcp`, a stdio server that lets a model read and change records through that project's public API.
 
 ```bash
 hatchkit create --features mcp
@@ -47,7 +64,7 @@ The REST client distinguishes three cases, and each known problem maps to exactl
 
 A tool result is read by a model and paraphrased to a person, so the model must never have to guess whether a 403 meant a wrong token, a missing capability or a visibility rule.
 
-## Tests
+## Project-server tests
 
 ```bash
 pnpm run test:mcp              # fast tier, in the default unit run

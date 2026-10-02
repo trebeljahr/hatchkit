@@ -43,6 +43,14 @@ import { execOk } from "./utils/exec.js";
 import { type LedgerStep, loadAllLedgers } from "./utils/run-ledger.js";
 import { SECRET_KEYS, getSecret } from "./utils/secrets.js";
 
+// A stalled provider must not prevent later checks from reporting. Keep
+// this local to doctor so production API calls retain their own policies.
+const fetch: typeof globalThis.fetch = (input, init) =>
+  globalThis.fetch(input, {
+    ...init,
+    signal: init?.signal ?? AbortSignal.timeout(15_000),
+  });
+
 interface CheckResult {
   name: string;
   /** `deferred` is a deliberate user choice ("I'll do it later"), not a

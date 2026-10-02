@@ -1,9 +1,9 @@
 ---
 title: Commands
-description: Every hatchkit command, every flag — setup, create, update, server add, add, gh-pages, cloudflare, doctor, keys, config.
+description: Hatchkit command reference, with links to detailed help for each route.
 ---
 
-Every hatchkit command supports `--help` for detail. Global flags:
+Every hatchkit command supports `--help`. Use `hatchkit help <command>` for its current flags. Global flags:
 
 | Flag | Effect |
 |---|---|
@@ -25,7 +25,7 @@ One-time onboarding. Walks through every provider hatchkit knows about:
 - GitHub (via `gh` CLI)
 - Coolify (URL + token)
 - Hetzner Cloud, DNS provider (INWX / Cloudflare), S3 (Hetzner / AWS / R2)
-- GlitchTip, OpenPanel, Resend, Google Search Console
+- GlitchTip, OpenPanel, Listmonk, AWS SES, Google Search Console
 - GPU platforms — Modal, RunPod, Hugging Face, Replicate
 
 Everything is optional; you'll be prompted again the first time a command actually needs that provider.
@@ -74,6 +74,7 @@ prompting. That makes `create` CI-safe.
 | Flag | Values / effect |
 |---|---|
 | `--deployment-mode <value>` | `coolify` · `gh-pages` · `cloudflare` · `scaffold-only`. `gh-pages` and `cloudflare` both require `--surfaces static`. |
+| `--coolify-runtime <value>` | `image` (default for new projects) · `compose`. Image apps deploy each service separately. |
 | `--deploy-target <value>` | `new` (provision a Hetzner box) · `existing` (reuse one). |
 | `--server-size <value>` | `cpx21` · `cpx31` · `cpx41`. Only for `--deploy-target new`. |
 | `--server-location <value>` | `nbg1` · `fsn1` · `hel1`. Only for `--deploy-target new`. |
@@ -84,7 +85,7 @@ prompting. That makes `create` CI-safe.
 
 | Flag | Values / effect |
 |---|---|
-| `--features <list>` | `websocket`, `stripe`, `analytics`, `s3`, `workspaces`, `desktop`, `mobile`, `client-core`, `extension`, `release`, `i18n`, `raycast`, `mcp`. Comma-separated; pass empty for none. `extension`, `raycast` and `mcp` need a `fullstack` or `split` surface. `raycast` and `mcp` require `client-core` and pull it in; `mcp` also requires `public-api`. See [Client Core](./client-core) for what `client-core` scaffolds. |
+| `--features <list>` | `websocket`, `stripe`, `analytics`, `s3`, `workspaces`, `token-client-auth`, `desktop`, `mobile`, `release`, `client-core`, `extension`, `server-migrations`, `scheduler`, `public-api`, `auth-account-security`, `i18n`, `raycast`, `mcp`. Comma-separated; pass empty for none. `extension`, `raycast` and `mcp` need a `fullstack` or `split` surface. `raycast` and `mcp` pull in `client-core`; `mcp` also pulls in `public-api`. |
 | `--analytics-providers <list>` | `glitchtip`, `openpanel`, `plausible` |
 | `--services <list>` | `glitchtip`, `openpanel`, `plausible`, `listmonk-ses`, `s3`, `email`, `search-console` |
 | `--db-engine <value>` | `mongodb` · `postgres` |
@@ -152,7 +153,7 @@ hatchkit create --yes --name blog --domain blog.example.com \
 3. Auto-wires local-dev unless disabled: `.hatchkit.json` gets `localDev.slug`, `docs/dev-setup.md` is generated, and the Next/Vite dev plugin plus Caddy fragment are added.
 4. Installs deps (if `pnpm` is available and you opt in).
 5. `git init` + first commit + GitHub repo.
-6. Optionally provisions GlitchTip/OpenPanel/Plausible, Resend, Email Routing, and Search Console via the same path as `hatchkit add`.
+6. Optionally provisions GlitchTip/OpenPanel/Plausible, Listmonk + SES, Email Routing, and Search Console via the same path as `hatchkit add`.
 7. Generates Terraform tfvars + Coolify `.env`.
 8. Runs Terraform (DNS + optionally server).
 9. Runs Coolify app setup and pushes the dotenvx private key.
@@ -171,7 +172,7 @@ hatchkit update                     # pick interactively
 hatchkit update --features desktop,mobile --yes
 ```
 
-Reads `.hatchkit.json`, lets you pick a new feature set, copies additive pieces from the starter. **Supported additions today:** `workspaces` (tenants, members, roles, invitations), `desktop` (Electron), `mobile` (Capacitor), `client-core` (the shared client kit — see [Client Core](./client-core)), `extension` (an MV3 browser extension), `release` (release coordination), `raycast` (a launcher extension published to the Raycast Store from a generated standalone copy), `mcp` (a stdio MCP server over the public REST API), and the three server platform features below. Removal is not supported — removing a feature could delete user code. Remove manually and update the manifest.
+Reads `.hatchkit.json`, then adds selected features. Supported additions are `workspaces`, `token-client-auth`, `desktop`, `mobile`, `release`, `auth-account-security`, `client-core`, `extension`, `server-migrations`, `scheduler`, `public-api`, `i18n`, `raycast`, and `mcp`. Removal is not supported because it could delete user code. Remove files manually and update the manifest.
 
 **Additive means additive.** A file the project already has is never overwritten, so a desktop shell whose main process moved into a bundler keeps it, and a hand-edited `desktop-release.yml` survives. The same holds inside `package.json`: a script or a dependency pin the project has changed away from the starter's shape is reported as kept, not replaced — including the `dev:desktop` command, which is only retargeted at a new native HMR port while it still has the generated shape. `hatchkit update --force` replaces those `package.json` pieces with the starter's current versions. It never overwrites files.
 
@@ -335,7 +336,7 @@ Provision observability / email / search services for an **existing** project. C
 hatchkit add                                     # fully interactive
 hatchkit add raptor-runner                       # prompts for services
 hatchkit add raptor-runner all                   # all services
-hatchkit add raptor-runner glitchtip,resend      # explicit list
+hatchkit add raptor-runner glitchtip,listmonk-ses # explicit list
 hatchkit add raptor-runner search-console        # verify domain + add Search Console property
 ```
 
@@ -346,7 +347,8 @@ hatchkit add raptor-runner search-console        # verify domain + add Search Co
 | `glitchtip` | GlitchTip project | `GLITCHTIP_DSN` |
 | `openpanel` | OpenPanel client | `OPENPANEL_CLIENT_ID`, `OPENPANEL_CLIENT_SECRET` |
 | `plausible` | Plausible site | `NEXT_PUBLIC_PLAUSIBLE_DOMAIN`, `NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL` |
-| `resend` | Restricted Resend API key | `RESEND_API_KEY`, `RESEND_FROM_EMAIL` |
+| `listmonk-ses` | SES sending identity, Listmonk lists and templates | `LISTMONK_*`, `SES_FROM_EMAIL` |
+| `s3` | Project object-storage buckets and credentials | `R2_*` or provider-specific S3 keys |
 | `email` | Cloudflare Email Routing rules | no env; DNS MX/SPF/DMARC + forwarding rules |
 | `search-console` | Google Search Console domain property | no env; DNS TXT verification |
 
@@ -587,7 +589,7 @@ and for repairing a project deployed before 0.2.19.
 
 ## `hatchkit doctor`
 
-Runs a read-only API call against every configured provider — Coolify `/version`, Hetzner `/servers`, Cloudflare `/tokens/verify`, Resend `/domains`, and so on. Reports `ok` / `fail` / `warn` / `deferred` / `not configured` per provider and exits non-zero if anything **fails**. A `warn` prints its fix but does not fail the run. Safe to run repeatedly.
+Runs read-only checks against configured providers, including Coolify, Hetzner, Cloudflare, SES, and Listmonk. Reports `ok` / `fail` / `warn` / `deferred` / `not configured` and exits non-zero if any check fails. A warning prints its fix without failing the run.
 
 With Coolify configured, `doctor` also reads the compose file of every `dockercompose` app on the instance. It warns about each service that runs a `ghcr.io/...` image on a mutable tag (`:latest`, `:main`, no tag) without `pull_policy: always`. Docker starts the image it cached for that tag, so a deploy can finish green, report `running:healthy`, and still serve the previous build. The hint names the app, the repo and the compose file. For a hatchkit project, `hatchkit update` or `hatchkit regen-infra` adds the line.
 
@@ -624,4 +626,23 @@ hatchkit config add <provider>       # (re-)configure a provider
 hatchkit config reset                # clear ALL CLI config (confirmed)
 ```
 
-Valid providers: `coolify`, `hetzner`, `dns`, `s3`, `glitchtip`, `openpanel`, `plausible`, `resend`, `search-console`, `modal`, `runpod`, `hf`, `replicate`.
+Valid providers: `coolify`, `coolify-github-app`, `ghcr`, `hetzner`, `dns`, `cloudflare-workers`, `s3`, `glitchtip`, `openpanel`, `plausible`, `listmonk`, `ses`, `search-console`, `stripe`, `modal`, `runpod`, `hf`, `replicate`.
+
+---
+
+## Other command routes
+
+These routes have their own CLI help. Run the command with `--help` before using a flag that is not shown on this page.
+
+| Route | Purpose |
+|---|---|
+| `status`, `explain`, `overview`, `inventory` | Inspect provider and project state. |
+| `adopt`, `remove`, `destroy` | Adopt a repo or remove resources recorded by Hatchkit. |
+| `rename-domain`, `migrate-domain`, `rename-project`, `set-description` | Change a project's identity or public address. |
+| `regen-infra` | Render infrastructure files from the current manifest. |
+| `assets seed|push|pull|migrate|list` | Copy or list objects in S3-compatible buckets. |
+| `dns publish|link-to-cloudflare` | Reconcile DNS records and zone links. |
+| `email setup|forward|status|ses-mail-from` | Manage inbound routing and SES MAIL FROM. See [Email](./email). |
+| `ses`, `listmonk`, `plausible`, `provision s3` | Manage provider-specific resources. See [Providers](./providers). |
+| `signing`, `release`, `secrets rotate` | Manage signing, releases, and credential rotation. See [Signing](./signing) and [Secrets rotation](./secrets-rotation). |
+| `completion` | Generate zsh, bash, or fish completion. |

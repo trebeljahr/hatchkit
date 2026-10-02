@@ -5,6 +5,11 @@ machine-readable subset of the CLI as MCP tools so any MCP-compatible
 client (Claude Desktop, Cursor, Claude Code) can inspect the user's
 hatchkit state without scraping CLI output.
 
+This is the **operator MCP server**. The optional `mcp` feature generated
+inside an app is a separate server for that app's `/api/v1` records. The
+two servers have separate credentials and can be installed independently.
+See the [MCP guide](https://hatchkit.trebeljahr.com/docs/mcp) for a comparison.
+
 ## Tools
 
 | Tool | Returns |
@@ -66,4 +71,5 @@ pnpm install
 pnpm run dev        # tsx src/index.ts (stdio)
 pnpm run build      # tsc → dist/
 pnpm run typecheck
+pnpm test            # local CLI bridge behavior; no provider credentials
 ```

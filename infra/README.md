@@ -38,7 +38,6 @@ Its local security tests run with `make test-static-deployer`. Workflow template
 │   └── ubuntu-24.04-coolify.yaml # First-boot provisioning
 ├── templates/
 │   ├── apps/node-express-websocket/
-│   ├── apps/gpu-inference-api/   # FastAPI + Modal/RunPod GPU dispatch
 │   └── services/uptime-kuma/
 ├── docs/                         # Runbooks and decision records
 └── Makefile                      # Orchestrates everything
@@ -195,23 +194,17 @@ These are documented in `docs/coolify-stamps.md`:
 - **node-realtime-ha**: Node + WebSockets, 2+ replicas, shared state via Redis pubsub. Near-zero downtime.
 - **node-api-postgres**: CRUD/API apps with PostgreSQL.
 - **node-api-mongo**: Document-heavy apps with MongoDB.
-- **gpu-inference**: FastAPI server that dispatches to external GPU platforms (Modal, RunPod, AWS Batch). Dual S3 buckets for uploads + generated models. *(See `docs/gpu-inference-pipeline.md` for platform comparison and cost analysis.)*
+- **gpu-inference**: Terraform resources for a GPU-backed project, including two S3 buckets. The stack does not include an API server. *(See `docs/gpu-inference-pipeline.md` for platform comparison.)*
 
 ## GPU inference stack
 
-For ML workloads (image processing, 3D model generation, etc.) that need GPU:
+For a new Hatchkit app with the implemented TripoSR service:
 
 ```bash
-# 1. Scaffold the project + provision infra + create the Coolify app
-hatchkit create     # interactive — pick the gpu-inference template
-
-# 2. Deploy GPU pipeline to Modal (recommended for V1)
-cd templates/apps/gpu-inference-api/modal
-pip install modal && modal setup
-modal deploy pipeline.py
+hatchkit create --ml-services 3d-extraction --gpu-platforms modal
 ```
 
-The Hetzner server runs the web API (receives uploads, dispatches jobs, serves results). GPU inference runs on an external platform that scales to zero. See `docs/gpu-inference-pipeline.md` for:
+The CLI scaffolds the app and uses `services/ml/3d-extraction/modal/pipeline.py` for the selected ML service. The separate Terraform GPU stack provisions infrastructure only. See `docs/gpu-inference-pipeline.md` for:
 - Platform comparison (Modal vs RunPod vs AWS Batch)
 - 3D reconstruction model benchmarks (SF3D, TripoSR, TRELLIS.2)
 - Cost analysis and cold start strategies

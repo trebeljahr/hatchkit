@@ -30,6 +30,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "test": "node --import tsx --test test-cli-bridge.ts",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",

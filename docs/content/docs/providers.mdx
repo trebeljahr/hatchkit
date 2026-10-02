@@ -1,6 +1,6 @@
 ---
 title: Providers
-description: External systems hatchkit talks to — GitHub, Coolify, Hetzner, DNS, S3, Resend, GlitchTip, OpenPanel, GPU platforms.
+description: External systems hatchkit talks to — GitHub, Coolify, Hetzner, DNS, S3, Listmonk, SES, GlitchTip, OpenPanel, and GPU platforms.
 ---
 
 Hatchkit talks to a handful of external systems. Every one is optional until a command actually needs it — you can start with just GitHub + Coolify and add the rest later.
@@ -130,17 +130,9 @@ Configure: `hatchkit config add s3`.
 
 ---
 
-## Email — Resend
-
-Hatchkit can create a **restricted** Resend API key per environment (dev/prod) tied to a sending domain you own. It writes `RESEND_API_KEY` and, when the sending domain is known, `RESEND_FROM_EMAIL` for the starter email runtime.
-
-Configure: `hatchkit config add resend`.
-
----
-
 ## Email — Listmonk + AWS SES
 
-The sovereign alternative to Resend. Hatchkit verifies a per-project sending subdomain on SES (`mail.<projectDomain>`), publishes the 3 DKIM CNAMEs into Cloudflare, then provisions a `<project>` (live) + `<project>-test` (dev) list in your Listmonk instance. SES handles delivery + IP reputation (~€0.10 per 1,000 sends); Listmonk owns subscribe/confirm/broadcast UI. The runtime gets `LISTMONK_*` for the API and `SES_FROM_EMAIL` for the from-address; the SES SMTP login stays in Listmonk. Each project gets its own Listmonk API user and roles when a `hatchkit-admin` credential is stored; see [One API user per project](/docs/email#one-api-user-per-project). Each identity's bounces and complaints go through one shared SNS topic to Listmonk's SES webhook, so Listmonk blocklists dead addresses; see [Bounces and complaints](/docs/email#bounces-and-complaints) for the extra IAM actions.
+Hatchkit verifies a project sending subdomain on SES and publishes its three DKIM records through Cloudflare. It creates live and test lists in Listmonk. SES delivers messages; Listmonk manages subscriptions and campaigns. The app receives `LISTMONK_*` API values and `SES_FROM_EMAIL`. With an admin credential, Hatchkit gives each project its own Listmonk API user. See [project API users](/docs/email#one-api-user-per-project) and [bounce handling](/docs/email#bounces-and-complaints).
 
 Configure: `hatchkit config add ses` + `hatchkit config add listmonk` (add `--deploy` to the second one to get a guided walkthrough for the Coolify Listmonk service template).
 

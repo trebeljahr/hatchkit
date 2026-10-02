@@ -176,7 +176,7 @@ function normEtag(etag: string): string {
 
 async function listSource(source: MirrorSource): Promise<ObjectRef[]> {
   if (source.kind === "s3") {
-    return listBucket(source.client, source.bucket, source.prefix);
+    return listBucket(source.client, source.bucket, directoryPrefix(source.prefix));
   }
   return listDir(source.dir);
 }
@@ -194,6 +194,7 @@ async function listBucket(client: S3Client, bucket: string, prefix?: string): Pr
     );
     for (const c of out.Contents ?? []) {
       if (!c.Key) continue;
+      if (prefix && !c.Key.startsWith(prefix)) continue;
       refs.push({ key: c.Key, size: c.Size ?? 0, etag: c.ETag });
     }
     token = out.IsTruncated ? out.NextContinuationToken : undefined;
@@ -231,9 +232,14 @@ async function listTargetEtags(target: MirrorEndpointS3): Promise<Map<string, Ob
 }
 
 function stripPrefix(source: MirrorSource, key: string): string {
-  const prefix = source.kind === "s3" ? source.prefix : undefined;
+  const prefix = source.kind === "s3" ? directoryPrefix(source.prefix) : undefined;
   if (!prefix) return key;
   return key.startsWith(prefix) ? key.slice(prefix.length) : key;
+}
+
+function directoryPrefix(prefix: string | undefined): string | undefined {
+  if (!prefix) return undefined;
+  return prefix.endsWith("/") ? prefix : `${prefix}/`;
 }
 
 function applyPrefix(prefix: string | undefined, key: string): string {

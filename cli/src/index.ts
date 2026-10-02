@@ -3652,6 +3652,10 @@ const GPU_PLATFORM_VALUES = KNOWN_GPU_PLATFORMS.join(", ");
  *  `ses` own their usage text, so they are routed by hand. An unmapped
  *  command gets the root help, which is what a typo deserves. */
 function printCommandHelp(cmd: string | undefined): void {
+  if (cmd === "add" && args.includes("i18n")) {
+    printI18nUsage();
+    return;
+  }
   switch (cmd) {
     case "provision":
       printProvisionUsage();
@@ -3897,6 +3901,7 @@ function printHelp(topic?: HelpTopic): void {
     --surfaces <${SURFACE_VALUES}>
                                    ${chalk.dim("fullstack")}=one package w/ server runtime, ${chalk.dim("split")}=server+client,
                                    ${chalk.dim("backend")}=API/worker only, ${chalk.dim("static")}=no server runtime
+    --topology <single-origin|split>  Coolify app layout (default: single-origin)
 
   ${chalk.bold("Deployment:")}
     --deployment-mode <${DEPLOYMENT_MODE_VALUES}>
@@ -4491,7 +4496,7 @@ function printHelp(topic?: HelpTopic): void {
     --all-defaults            Use every default preset; skip picker
     --no-catch-all            Don't set the *@domain catch-all rule
     --dmarc <none|quarantine|reject>  DMARC policy (default: quarantine)
-    --no-listmonk-spf         Skip auto-merging amazonses.com
+    --no-resend-spf           Skip auto-merging _spf.resend.com
 
   ${chalk.bold("What it sets:")}
     · Email Routing enabled on the zone

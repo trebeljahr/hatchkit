@@ -110,7 +110,7 @@ Agents (Claude Code, Cursor, Claude Desktop) can drive hatchkit without scraping
 
 `SKILL.md` at the repo root (plus `.agents/skills/hatchkit/SKILL.md` and `.claude/skills/hatchkit/SKILL.md`) tells agents when and how to reach for hatchkit.
 
-An MCP server (`@hatchkit/mcp`) exposes the JSON commands as MCP tools. See **[mcp/README.md](mcp/README.md)**.
+The optional `@hatchkit/mcp` package exposes local CLI status and doctor tools. The `mcp` project feature generates a separate server for one app's public API. See the [MCP guide](docs/content/docs/mcp.mdx) and [operator server README](mcp/README.md).
 
 ---
 
