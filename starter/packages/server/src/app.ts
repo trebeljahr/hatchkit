@@ -10,6 +10,7 @@ import { createContext } from "./trpc/context.js";
 import { handleStripeWebhook } from "./services/stripe.js";
 import { registerNewsletterRoutes } from "./services/newsletter/routes.js";
 import { isDatabaseReady } from "./db/connection.js";
+import { isRedisReady } from "./db/redis.js";
 import { isDraining, isLoopback } from "./drain.js";
 import { notFoundHandler, errorHandler } from "./middleware/error-handler.js";
 import { env, getTrustedOrigins } from "./config/env.js";
@@ -83,9 +84,12 @@ export function createApp(options: { accessLogStream?: { write(message: string):
       res.status(503).json({ status: "draining" });
       return;
     }
-    res.json({
-      status: "ok",
-      db: isDatabaseReady(),
+    const dbReady = isDatabaseReady();
+    const redisReady = isRedisReady();
+    res.status(dbReady && redisReady ? 200 : 503).json({
+      status: dbReady && redisReady ? "ok" : "degraded",
+      db: dbReady,
+      redis: redisReady,
       // The commit this image was built from. The deploy pipeline polls
       // this until it matches the commit it just pushed — without it, a
       // deploy that silently kept the previous container reported success

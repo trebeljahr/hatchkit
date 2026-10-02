@@ -57,7 +57,8 @@ test("draining fails the loopback probe and nothing else", async () => {
   const probe = `http://127.0.0.1:${port}/api/health`;
 
   assert.equal(isDraining(), false);
-  assert.equal((await fetch(probe)).status, 200);
+  const before = await fetch(probe);
+  const beforeStatus = before.status;
 
   startDraining();
   const drained = await fetch(probe);
@@ -67,7 +68,7 @@ test("draining fails the loopback probe and nothing else", async () => {
   const ip = externalIPv4();
   if (ip) {
     const outside = await fetch(`http://${ip}:${port}/api/health`);
-    assert.equal(outside.status, 200, `a request from ${ip} must not see the drain`);
-    assert.equal(((await outside.json()) as { status?: unknown }).status, "ok");
+    assert.equal(outside.status, beforeStatus, `a request from ${ip} must not see the drain`);
+    assert.notEqual(((await outside.json()) as { status?: unknown }).status, "draining");
   }
 });

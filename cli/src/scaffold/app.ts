@@ -384,6 +384,8 @@ async function runScaffoldSteps(
     // (`sync/handler.ts` → `sessionFromCookie`), so there is nothing in
     // `ws/` a project without the `websocket` feature still needs.
     removeIfExists(join(outputDir, "packages/server/src/ws"));
+    removeIfExists(join(outputDir, "packages/client/src/lib/room-socket.ts"));
+    removeIfExists(join(outputDir, "packages/client/src/lib/room-socket.test.ts"));
     modifications.push("removed: ws/ (WebSocket not selected)");
     // Deleting ws/ alone leaves `index.ts` importing ./ws/handler.js —
     // a hard TS2307 on the first `pnpm run build`. Strip the call sites too.
@@ -1306,9 +1308,15 @@ function stripWebSocketFromServerIndex(outputDir: string): void {
   if (!existsSync(path)) return;
   let content = readFileSync(path, "utf-8");
   content = content.replace(
-    /import\s+{\s*setupWebSocket\s*}\s+from\s+"\.\/ws\/handler\.js";\n/,
+    /import\s+{\s*(?:roomManager,\s*)?setupWebSocket\s*}\s+from\s+"\.\/ws\/handler\.js";\n/,
     "",
   );
+  content = content.replace(
+    'import { connectRedis, disconnectRedis, getRedis } from "./db/redis.js";',
+    'import { connectRedis, disconnectRedis } from "./db/redis.js";',
+  );
+  content = content.replace(/\n {4}const redis = getRedis\(\);\n {4}if \(redis\) await roomManager\.connectPubSub\(redis\);/, "");
+  content = content.replace(/\n {2}await roomManager\.disconnectPubSub\(\);/, "");
   content = content.replace(/[ \t]*const\s+wss\s*=\s*setupWebSocket\(server\);\n/, "");
   content = content.replace(
     /\n[ \t]*\n(?:[ \t]*\/\/[^\n]*\n)*[ \t]*for\s*\(const client of wss\.clients\)\s*{[\s\S]*?\n[ \t]*}\n/,

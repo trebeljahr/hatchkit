@@ -2,9 +2,21 @@ import { Redis } from "ioredis";
 import { env } from "../config/env.js";
 
 let redis: Redis | null = null;
+let roomSubscriber: Redis | null = null;
+let roomSubscriberRequired = false;
 
 export function getRedis(): Redis | null {
   return redis;
+}
+
+export function isRedisReady(): boolean {
+  return !env.REDIS_URL ||
+    (redis?.status === "ready" && (!roomSubscriberRequired || roomSubscriber?.status === "ready"));
+}
+
+export function setRoomSubscriber(client: Redis | null): void {
+  roomSubscriber = client;
+  if (client) roomSubscriberRequired = true;
 }
 
 export async function connectRedis(): Promise<void> {
@@ -26,5 +38,7 @@ export async function disconnectRedis(): Promise<void> {
   if (!redis) return;
   await redis.quit();
   redis = null;
+  roomSubscriber = null;
+  roomSubscriberRequired = false;
   console.log("[redis] Disconnected from Redis");
 }

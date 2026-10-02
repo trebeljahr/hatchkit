@@ -165,11 +165,13 @@ results.minimal = await run("minimal (no flags)", "plain-app", [], (d) => {
   const manifest = JSON.parse(readFileSync(join(d, ".hatchkit.json"), "utf-8"));
   const ciWorkflow = readFileSync(join(d, ".github/workflows/build-and-deploy.yml"), "utf-8");
   const clientDockerfile = readFileSync(join(d, "packages/client/Dockerfile"), "utf-8");
+  const serverDockerfile = readFileSync(join(d, "packages/server/Dockerfile"), "utf-8");
   const compose = readFileSync(join(d, "docker-compose.yml"), "utf-8");
   const gitignore = existsSync(join(d, ".gitignore"))
     ? readFileSync(join(d, ".gitignore"), "utf-8")
     : "";
   const claudeMd = readFileSync(join(d, "CLAUDE.md"), "utf-8");
+  const serverIndex = readFileSync(join(d, "packages/server/src/index.ts"), "utf-8");
   return [
     ["package.json renamed", pkg.name === "plain-app"],
     [".gitignore copied into scaffold", gitignore.length > 0],
@@ -178,6 +180,9 @@ results.minimal = await run("minimal (no flags)", "plain-app", [], (d) => {
     ["resources/ removed", !existsSync(join(d, "resources"))],
     ["capacitor.config.ts removed", !existsSync(join(d, "capacitor.config.ts"))],
     ["ws/ removed (no websocket)", !existsSync(join(d, "packages/server/src/ws"))],
+    ["room reconnect helper removed (no websocket)", !existsSync(join(d, "packages/client/src/lib/room-socket.ts"))],
+    ["room pub/sub startup removed (no websocket)", !serverIndex.includes("roomManager") && !serverIndex.includes("getRedis()")],
+    ["server image deploys its non-injected workspace", serverDockerfile.includes("deploy --legacy /prod")],
     ["stripe service removed", !existsSync(join(d, "packages/server/src/services/stripe.ts"))],
     ["no electron deps", !pkg.devDependencies?.electron],
     ["no capacitor deps", !pkg.dependencies?.["@capacitor/core"]],
@@ -322,11 +327,25 @@ results.minimal = await run("minimal (no flags)", "plain-app", [], (d) => {
 });
 
 results.websocket = await run("websocket only", "rt-app", ["websocket"], (d) => {
+  const serverIndex = readFileSync(join(d, "packages/server/src/index.ts"), "utf-8");
   return [
     ["ws/ kept", existsSync(join(d, "packages/server/src/ws"))],
+    ["room reconnect helper kept", existsSync(join(d, "packages/client/src/lib/room-socket.ts"))],
+    ["room pub/sub startup kept", serverIndex.includes("roomManager.connectPubSub(redis)")],
     ["stripe service removed", !existsSync(join(d, "packages/server/src/services/stripe.ts"))],
   ];
 });
+
+results.splitWebsocket = await run("split websocket", "split-rt", ["websocket"], (d) => {
+  const serverEnv = readFileSync(join(d, "packages/server/.env.example"), "utf-8");
+  const clientEnv = readFileSync(join(d, "packages/client/.env.example"), "utf-8");
+  return [
+    ["split client origin stays bare", serverEnv.includes("FRONTEND_URL=https://split-rt.example.com")],
+    ["split auth uses API host", serverEnv.includes("BETTER_AUTH_URL=https://api.split-rt.example.com")],
+    ["split client calls API host", clientEnv.includes("NEXT_PUBLIC_API_URL=https://api.split-rt.example.com")],
+    ["split socket uses API host", clientEnv.includes("NEXT_PUBLIC_WS_URL=wss://api.split-rt.example.com")],
+  ];
+}, { surfaces: "split", topology: "split", coolifyRuntime: "image" });
 
 results.extension = await run("browser extension", "ext-app", ["extension"], (d) => {
   const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));

@@ -610,6 +610,23 @@ ${answer}`;
   assert.ok(wired.indexOf("isDraining()") < wired.indexOf("originTrusted:"));
 });
 
+check("the extension health patch preserves dependency readiness", () => {
+  const route = `  app.get("/api/health", (req, res) => {
+    const dbReady = isDatabaseReady();
+    const redisReady = isRedisReady();
+    res.status(dbReady && redisReady ? 200 : 503).json({
+      status: dbReady && redisReady ? "ok" : "degraded",
+      db: dbReady,
+      redis: redisReady,
+    });
+  });`;
+  const wired = wireServerApp(route).content;
+  assert.ok(wired.includes("originTrusted:"));
+  assert.ok(wired.includes("res.status(dbReady && redisReady ? 200 : 503).json({"));
+  assert.ok(wired.includes("db: dbReady,"));
+  assert.ok(wired.includes("redis: redisReady,"));
+});
+
 if (failures.length > 0) {
   console.error("\nextension feature failures:");
   for (const line of failures) console.error(line);

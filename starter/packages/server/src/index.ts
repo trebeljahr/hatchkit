@@ -4,7 +4,7 @@ import "./instrument.js";
 import { createServer } from "http";
 import { createApp } from "./app.js";
 import { connectToDB, disconnectFromDB } from "./db/connection.js";
-import { connectRedis, disconnectRedis } from "./db/redis.js";
+import { connectRedis, disconnectRedis, getRedis } from "./db/redis.js";
 import { initAuth, disconnectAuth } from "./auth/auth.js";
 // ── client-core ──────────────────────────────────────────────────
 // Above the `./ws/handler.js` import, not below it, and the same goes for the
@@ -15,7 +15,7 @@ import { initAuth, disconnectAuth } from "./auth/auth.js";
 // generated itself.
 import { setupSyncFeed } from "./sync/handler.js";
 // ── end client-core ──────────────────────────────────────────────
-import { setupWebSocket } from "./ws/handler.js";
+import { roomManager, setupWebSocket } from "./ws/handler.js";
 import { warnStripeStatus } from "./services/stripe.js";
 import { env } from "./config/env.js";
 import { isDraining, startDraining } from "./drain.js";
@@ -45,6 +45,8 @@ async function start(): Promise<void> {
     // 1. Connect to databases
     await connectToDB();
     await connectRedis();
+    const redis = getRedis();
+    if (redis) await roomManager.connectPubSub(redis);
 
     // 2. Initialize auth (needs DB connection)
     await initAuth();
@@ -103,6 +105,7 @@ async function shutdown(signal: string): Promise<void> {
 
   // Disconnect from databases and auth
   await disconnectAuth();
+  await roomManager.disconnectPubSub();
   await disconnectRedis();
   await disconnectFromDB();
 

@@ -1,4 +1,7 @@
 import type { WebSocket } from "ws";
+import { randomUUID } from "node:crypto";
+import type { Redis } from "ioredis";
+import { setRoomSubscriber } from "../db/redis.js";
 import type { RoomMember, ClientToServerMessage, ServerToClientMessage } from "@starter/shared";
 
 interface MemberInfo {
@@ -20,6 +23,41 @@ interface Room {
 export class RoomManager {
   private rooms = new Map<string, Room>();
   private socketToRoom = new Map<WebSocket, string>();
+  private readonly instanceId = randomUUID();
+  private publisher: Redis | null = null;
+  private subscriber: Redis | null = null;
+  private readonly channel = "hatchkit:room-events";
+
+  async connectPubSub(redis: Redis): Promise<void> {
+    const subscriber = redis.duplicate();
+    await subscriber.connect();
+    await subscriber.subscribe(this.channel);
+    subscriber.on("message", (_channel, payload) => {
+      try {
+        const event = JSON.parse(payload) as {
+          origin: string;
+          roomId: string;
+          message: ServerToClientMessage;
+        };
+        if (event.origin !== this.instanceId && typeof event.roomId === "string") {
+          this.deliver(event.roomId, event.message);
+        }
+      } catch {
+        // Ignore malformed pub/sub frames; the app's own room messages remain valid.
+      }
+    });
+    this.publisher = redis;
+    this.subscriber = subscriber;
+    setRoomSubscriber(subscriber);
+  }
+
+  async disconnectPubSub(): Promise<void> {
+    const subscriber = this.subscriber;
+    this.subscriber = null;
+    this.publisher = null;
+    setRoomSubscriber(null);
+    if (subscriber) await subscriber.quit();
+  }
 
   join(
     roomId: string,
@@ -141,6 +179,17 @@ export class RoomManager {
     message: ServerToClientMessage,
     exclude?: WebSocket,
   ): void {
+    this.deliver(roomId, message, exclude);
+    if (this.publisher) {
+      void this.publisher.publish(this.channel, JSON.stringify({
+        origin: this.instanceId,
+        roomId,
+        message,
+      })).catch((error: unknown) => console.error("[ws] Redis room publish failed:", error));
+    }
+  }
+
+  private deliver(roomId: string, message: ServerToClientMessage, exclude?: WebSocket): void {
     const room = this.rooms.get(roomId);
     if (!room) return;
 

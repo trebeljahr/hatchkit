@@ -98,6 +98,10 @@ const HEALTH_ANCHOR = `    res.json({
       status: "ok",
       db: isDatabaseReady(),`;
 
+const HEALTH_READY_ANCHOR = `    res.status(dbReady && redisReady ? 200 : 503).json({
+      status: dbReady && redisReady ? "ok" : "degraded",
+      db: dbReady,`;
+
 const HEALTH_REPLACEMENT = `    // Answers EVERY origin, deliberately. A client whose origin this
     // server does not trust has all its other requests refused by CORS
     // as a bare TypeError, which is indistinguishable from the server
@@ -128,6 +132,11 @@ const HEALTH_REPLACEMENT = `    // Answers EVERY origin, deliberately. A client 
             }),
       db: isDatabaseReady(),`;
 
+const HEALTH_READY_REPLACEMENT = HEALTH_REPLACEMENT
+  .replace('    res.json({\n      status: "ok",',
+    '    res.status(dbReady && redisReady ? 200 : 503).json({\n      status: dbReady && redisReady ? "ok" : "degraded",')
+  .replace("      db: isDatabaseReady(),", "      db: dbReady,");
+
 export function wireServerApp(content: string): PatchResult {
   let out = content;
   let changed = false;
@@ -157,12 +166,13 @@ export function wireServerApp(content: string): PatchResult {
 
   if (!out.includes("originTrusted")) {
     if (
-      out.includes(HEALTH_ANCHOR) &&
+      (out.includes(HEALTH_ANCHOR) || out.includes(HEALTH_READY_ANCHOR)) &&
       (out.includes(HEALTH_ROUTE) || out.includes(HEALTH_ROUTE_UNUSED_REQ))
     ) {
       out = out
         .replace(HEALTH_ROUTE_UNUSED_REQ, HEALTH_ROUTE)
-        .replace(HEALTH_ANCHOR, HEALTH_REPLACEMENT);
+        .replace(HEALTH_ANCHOR, HEALTH_REPLACEMENT)
+        .replace(HEALTH_READY_ANCHOR, HEALTH_READY_REPLACEMENT);
       changed = true;
     } else {
       problems.push(
