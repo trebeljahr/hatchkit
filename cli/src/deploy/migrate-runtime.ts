@@ -12,16 +12,14 @@
  *
  *   1. Rename the compose app `<name>` → `<name>-legacy-compose`, so the
  *      replacement can take the name hatchkit looks apps up by.
- *   2. Create the image app(s) with the SAME hostnames
- *      (`force_domain_override`) plus a private verification host, copy
- *      the env, deploy. While the new container is starting Traefik
- *      skips it (not healthy yet); the old one keeps serving.
+ *   2. Create the image app(s) on a private verification host, copy
+ *      the env, deploy. The old one keeps serving its public hosts.
  *   3. Verify: the deployment finished (Coolify's own health check
  *      passed inside the container), the verification host answers
  *      through Traefik, and Coolify reports the app running.
  *      Any failure here stops the run with the old app untouched and
- *      renamed back. Nobody saw the new container.
- *   4. Cut over: turn off the old app's git auto-deploy, stop it. Until
+ *      renamed back. Nobody saw the new container on a public host.
+ *   4. Add public hosts, turn off the old app's git auto-deploy, stop it. Until
  *      it stops, both containers carry routers for the same hosts and
  *      either may answer — both serve the same build. After, only the
  *      new one does.
@@ -334,6 +332,10 @@ async function migrate(
   const ips = await discoverPublicIps(api, source.serverUuid, serverIp).catch(
     () => ({}) as { v4?: string },
   );
+  if (!ips.v4) {
+    console.log(chalk.red("  No public IPv4 address for a private verification host; refusing an unverified cutover."));
+    return false;
+  }
 
   // Baseline: what the public routes answer right now, so the cutover
   // check compares like with like (a server that 404s at `/` today is
@@ -349,6 +351,12 @@ async function migrate(
 
   const abort = async (why: string): Promise<boolean> => {
     console.log(chalk.red(`\n  ✗ ${why}`));
+    for (const app of ledger.apps) {
+      await api.updateApplication(app.uuid, {
+        domains: [`http://${app.name}-verify.${ips.v4}.sslip.io`],
+        forceDomainOverride: true,
+      }).catch(() => {});
+    }
     await api.updateApplication(plan.source.uuid, { name: plan.source.name }).catch(() => {});
     console.log(
       chalk.dim(
@@ -377,7 +385,9 @@ async function migrate(
         description: `Replaces ${plan.legacyName} — Docker Image, rolling deploys (hatchkit migrate-runtime)`,
         image: app.image,
         portsExposes: String(app.port),
-        domains: [...app.domains, ...(verifyHost ? [`http://${verifyHost}`] : [])],
+        // Do not register production routers until the private host has
+        // passed both container health and a Traefik request.
+        domains: [`http://${verifyHost}`],
         healthCheck: app.healthCheck,
         // The old app holds these hostnames until the cutover; sharing
         // them for that window is the point.
@@ -418,7 +428,7 @@ async function migrate(
     if (verifyHost && ips.v4) {
       const status = await waitFor(
         () => probeViaHost(ips.v4 as string, verifyHost, app.healthCheck.path),
-        (s) => s !== null && s < 500,
+        (s) => s === 200,
         60_000,
       );
       if (!status) {
@@ -433,6 +443,19 @@ async function migrate(
   }
 
   // ── 3. Cut over.
+  // Add the public routers only after every replacement passed its
+  // private verification. The old app keeps serving during overlap.
+  for (const [i, app] of plan.apps.entries()) {
+    const verifyHost = `${app.appName}-verify.${ips.v4}.sslip.io`;
+    try {
+      await api.updateApplication(ledger.apps[i].uuid, {
+        domains: [...app.domains, `http://${verifyHost}`],
+        forceDomainOverride: true,
+      });
+    } catch (err) {
+      return abort(`Couldn't add production routes for ${app.appName}: ${(err as Error).message}`);
+    }
+  }
   if (source.isAutoDeployEnabled) {
     await api.updateApplication(plan.source.uuid, { isAutoDeployEnabled: false }).catch(() => {});
   }

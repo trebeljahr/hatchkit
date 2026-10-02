@@ -90,6 +90,10 @@ jobs:
       # COOLIFY_SERVER_/COOLIFY_CLIENT_RESOURCE_UUID for a split one.
       # hatchkit sets one set and clears the other.
       - name: Deploy via signed Coolify webhook
+        # Keep this off until the existing Image app, target secrets, and
+        # health check are verified. The first image-build push must not
+        # wake an older Compose app still referenced by these secrets.
+        if: vars.HATCHKIT_IMAGE_ROLLOUT_READY == 'true'
         env:
           COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
           COOLIFY_RESOURCE_UUID: ${{ secrets.COOLIFY_RESOURCE_UUID }}
@@ -104,9 +108,12 @@ jobs:
           COOLIFY_CLIENT_DEPLOY_SECRET: ${{ secrets.COOLIFY_CLIENT_DEPLOY_SECRET }}
           COOLIFY_CLIENT_DEPLOY_REPOSITORY: ${{ secrets.COOLIFY_CLIENT_DEPLOY_REPOSITORY }}
           COOLIFY_CLIENT_DEPLOY_BRANCH: ${{ secrets.COOLIFY_CLIENT_DEPLOY_BRANCH }}
-        if: env.COOLIFY_BASE_URL != ''
         run: |
           set -euo pipefail
+          if [ -z "$COOLIFY_BASE_URL" ]; then
+            echo "::error::HATCHKIT_IMAGE_ROLLOUT_READY is true but COOLIFY_BASE_URL is unset."
+            exit 1
+          fi
           deployed=0
           deploy() { # label, secret-name prefix
             local uuid_var="${2}RESOURCE_UUID" secret_var="${2}DEPLOY_SECRET"

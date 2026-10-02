@@ -3535,6 +3535,17 @@ export async function checkProjectRollingDeployState(projectDir: string): Promis
     if (!app) continue;
     const blocker = rollingUpdateBlocker(app);
     const name = `Project ${manifest.name} (zero-downtime deploys)`;
+    if (app.buildPack === "dockerimage" && manifest.coolifyRuntime !== "image") {
+      out.push({
+        name,
+        status: "warn",
+        detail: `"${app.name}" is a live Docker Image app, but .hatchkit.json still selects Docker Compose`,
+        hint: [
+          "Reconcile coolifyRuntime and containerPorts with the live app before running hatchkit sync.",
+          "Check the image, port, domains, and deploy target first; do not infer them from the app name alone.",
+        ],
+      });
+    }
     if (!blocker) {
       // A rolling update whose timing can't drain: the old container is
       // still routed when `docker stop` ends it, so the deploy ends in
@@ -3544,6 +3555,20 @@ export async function checkProjectRollingDeployState(projectDir: string): Promis
         intervalSeconds !== undefined && retries !== undefined
           ? worstCaseDrainDropSeconds({ intervalSeconds, retries })
           : 0;
+      const timingUnknown =
+        intervalSeconds === undefined ||
+        retries === undefined ||
+        app.healthCheck.timeoutSeconds === undefined ||
+        app.healthCheck.startPeriodSeconds === undefined;
+      if (timingUnknown) {
+        out.push({
+          name,
+          status: "warn",
+          detail: `"${app.name}" has an enabled health check, but Coolify did not return all probe timing fields`,
+          hint: ["Inspect the live probe timing before claiming a safe drain or measured rollout."],
+        });
+        continue;
+      }
       if (healthCheckToConverge(app.healthCheck, healthCheckFor("app")) !== undefined) {
         out.push({
           name,
