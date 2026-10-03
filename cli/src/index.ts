@@ -5184,10 +5184,18 @@ function printHelp(topic?: HelpTopic): void {
     --yes                         Don't ask before migrating / deleting
     --health-path <svc>=/path     Health endpoint for one compose service
                                   (default /api/health for server/api/backend, else /)
+    --image <svc>=<repo>@sha256:<digest>
+                                  Use a reviewed replacement from the same repository
+                                  (requires --keep-live-tag and --rollback-commit)
+    --rollback-commit <full-sha>  Reviewed legacy source commit, already pinned in Coolify
     --no-secrets                  Leave the GitHub Actions secrets alone
     --keep-live-tag               Stay on the deployed sha tag instead of the branch tag —
                                   for repos whose workflow already pins image tags
     --dir <path>                  Project directory (default: cwd)
+
+  With --image, retain the old image digest in the legacy Compose file and pin
+  its Git source commit before cutover. Rollback fetches that source again;
+  an unchanged mutable tag is not an immutable rollback guarantee.
 
   The deploy workflow must pin ${chalk.dim("docker_registry_image_tag")} for an image app.
   Workflows scaffolded by this version do; an older one keeps working because

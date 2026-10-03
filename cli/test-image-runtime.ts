@@ -27,6 +27,7 @@ import { join } from "node:path";
 import {
   COOLIFY_STOP_TIMEOUT_SECONDS,
   SHUTDOWN_DRAIN_SECONDS,
+  formatImageRef,
   healthCheckFor,
   healthCheckPayload,
   healthCheckToConverge,
@@ -41,6 +42,7 @@ import {
   deploySecretNameFor,
   hostsFromTraefikLabels,
   interpolate,
+  parseMigrationImageOverride,
   planRuntimeMigration,
 } from "./src/deploy/migrate-runtime-plan.js";
 import { addManifestFields } from "./src/deploy/migrate-runtime.js";
@@ -620,6 +622,52 @@ check("standalone web images bind all IPv4 interfaces without a deployment env o
     const runtime = dockerfile.slice(dockerfile.lastIndexOf("FROM "));
     assert.match(runtime, /^ENV HOSTNAME=0\.0\.0\.0$/m, `${label}: image owns the bind address`);
     assert.match(runtime, /127\.0\.0\.1/, `${label}: the health probe uses loopback`);
+  }
+});
+
+check("digest references round-trip through Coolify's immutable tag encoding", () => {
+  const digest = "a".repeat(64);
+  const reference = `ghcr.io/test/site@sha256:${digest}`;
+  assert.deepEqual(parseImageRef(reference), {
+    name: "ghcr.io/test/site",
+    tag: `sha256-${digest}`,
+  });
+  assert.equal(formatImageRef(parseImageRef(reference)), reference);
+});
+
+check("migration overrides preserve legacy refs and require the same immutable repository", () => {
+  const digest = "a".repeat(64);
+  const live = {
+    uuid: "old",
+    name: "site",
+    buildPack: "dockercompose",
+    composeRaw: "services:\n  app:\n    image: ghcr.io/test/site:latest\n    expose: ['80']\n",
+    composeDomains: [{ name: "app", domain: "https://site.example" }],
+  };
+  const replacement = `ghcr.io/test/site@sha256:${digest}`;
+  const plan = planRuntimeMigration(live, [], { images: { app: replacement } });
+  assert.deepEqual(plan.blockers, []);
+  assert.equal(formatImageRef(plan.apps[0].image), replacement);
+  assert.equal(formatImageRef(plan.apps[0].sourceImage!), "ghcr.io/test/site:latest");
+  assert.equal(plan.apps[0].steadyTag, `sha256-${digest}`);
+  assert.match(plan.warnings.join(" "), /pin the legacy source commit/);
+  assert.match(live.composeRaw, /site:latest/);
+  for (const images of [
+    { missing: replacement },
+    { app: "ghcr.io/test/site:latest" },
+    { app: `ghcr.io/other/site@sha256:${digest}` },
+    { app: `ghcr.io/test/site@sha256:${digest.slice(1)}` },
+  ])
+    assert.ok(planRuntimeMigration(live, [], { images }).blockers.length > 0);
+  for (const invalid of [
+    "latest",
+    "ghcr.io/test/site:abcdef",
+    `https://user:password@ghcr.io/test/site@sha256:${digest}`,
+  ]) {
+    assert.throws(
+      () => parseMigrationImageOverride(invalid),
+      /pinned by a lowercase sha256 digest/,
+    );
   }
 });
 

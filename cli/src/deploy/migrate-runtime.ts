@@ -23,7 +23,7 @@
  *      Verify a fresh activation host and public health routes, then turn off
  *      the old app's git auto-deploy and stop it. Until
  *      it stops, both containers carry routers for the same hosts and
- *      either may answer — both serve the same build. After, only the
+ *      either may answer — explicit replacement builds must be compatible. After, only the
  *      new one does.
  *   5. Point the repo's deploy secrets at the new app and leave it on
  *      its steady tag (see the plan module for why).
@@ -57,6 +57,7 @@ import {
   type PlannedImageApp,
   type RuntimeMigrationPlan,
   deploySecretNameFor,
+  parseMigrationImageOverride,
   planRuntimeMigration,
 } from "./migrate-runtime-plan.js";
 import { computeRoutingPlan } from "./routing.js";
@@ -71,6 +72,10 @@ export interface MigrateRuntimeOptions {
   yes: boolean;
   /** Per-compose-service health-check path overrides. */
   healthPaths: Record<string, string>;
+  /** Explicit immutable replacement images, keyed by Compose service. */
+  images?: Record<string, string>;
+  /** Reviewed legacy source commit, already pinned in Coolify before replacement. */
+  rollbackCommit?: string;
   /** Skip the GitHub Actions secret swap. */
   noSecrets: boolean;
   /** Leave the new app on the sha it was created with instead of the
@@ -88,12 +93,15 @@ export interface MigrationLedger {
     legacyName: string;
     autoDeployWasEnabled?: boolean;
     gitRepository?: string;
+    rollbackGitCommitSha?: string;
   };
   apps: Array<{
     uuid: string;
     name: string;
     service: string;
     steadyTag: string;
+    image?: string;
+    sourceImage?: string;
     verificationHost?: string;
   }>;
   /** Secrets this run repointed, and the uuid they held before. */
@@ -122,6 +130,43 @@ export async function runMigrateRuntimeCli(args: string[]): Promise<void> {
     }
     healthPaths[spec.slice(0, eq)] = spec.slice(eq + 1);
   }
+  if (
+    args.some(
+      (arg, index) => arg === "--image" && (!args[index + 1] || args[index + 1].startsWith("--")),
+    )
+  ) {
+    throw new Error("--image requires <service>=<repository>@sha256:<digest>.");
+  }
+  const images: Record<string, string> = {};
+  for (const spec of flagValues("image")) {
+    const eq = spec.indexOf("=");
+    const service = spec.slice(0, eq);
+    if (eq <= 0 || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(service) || images[service]) {
+      throw new Error("--image takes a unique <service>=<repository>@sha256:<digest>.");
+    }
+    parseMigrationImageOverride(spec.slice(eq + 1));
+    images[service] = spec.slice(eq + 1);
+  }
+  if (
+    Object.keys(images).length > 0 &&
+    (!args.includes("--keep-live-tag") || args.includes("--rollback") || args.includes("--cleanup"))
+  ) {
+    throw new Error("--image requires --keep-live-tag and is only valid when migrating.");
+  }
+  const rollbackCommit = flagValue("rollback-commit");
+  if (Object.keys(images).length > 0 && !/^[a-f0-9]{40}$/.test(rollbackCommit ?? "")) {
+    throw new Error(
+      "--image requires --rollback-commit with a reviewed full lowercase Git commit SHA.",
+    );
+  }
+  if (
+    args.includes("--rollback-commit") &&
+    (Object.keys(images).length === 0 || !/^[a-f0-9]{40}$/.test(rollbackCommit ?? ""))
+  ) {
+    throw new Error(
+      "--rollback-commit requires --image and a reviewed full lowercase Git commit SHA.",
+    );
+  }
   const action = args.includes("--rollback")
     ? "rollback"
     : args.includes("--cleanup")
@@ -135,13 +180,15 @@ export async function runMigrateRuntimeCli(args: string[]): Promise<void> {
     dryRun: args.includes("--dry-run"),
     yes: args.includes("--yes") || args.includes("-y"),
     healthPaths,
+    images,
+    rollbackCommit,
     noSecrets: args.includes("--no-secrets"),
     keepLiveTag: args.includes("--keep-live-tag"),
   });
   if (!ok) process.exitCode = 1;
 }
 
-const VALUE_FLAGS = new Set(["--dir", "--health-path"]);
+const VALUE_FLAGS = new Set(["--dir", "--health-path", "--image", "--rollback-commit"]);
 
 export async function runMigrateRuntime(opts: MigrateRuntimeOptions): Promise<boolean> {
   const cfg = await getCoolifyConfig();
@@ -266,7 +313,7 @@ async function loadPlan(
       composeDomains: live.dockerComposeDomains,
     },
     envRows,
-    { healthPaths: opts.healthPaths },
+    { healthPaths: opts.healthPaths, images: opts.images },
   );
 }
 
@@ -325,7 +372,27 @@ export async function migrate(
     ghSecretExists,
     ...dependencies,
   };
+  if (plan.apps.some((app) => app.sourceImage) && !opts.keepLiveTag) {
+    console.log(
+      chalk.red(
+        "  Explicit replacement images require --keep-live-tag; refusing to switch back to a mutable tag.",
+      ),
+    );
+    return false;
+  }
   const source = await api.getApplication(plan.source.uuid);
+  if (
+    plan.apps.some((app) => app.sourceImage) &&
+    (!/^[a-f0-9]{40}$/.test(opts.rollbackCommit ?? "") ||
+      source.gitCommitSha !== opts.rollbackCommit)
+  ) {
+    console.log(
+      chalk.red(
+        "  Legacy source must already be pinned to --rollback-commit in Coolify; refusing an unpinned or changed rollback source.",
+      ),
+    );
+    return false;
+  }
   const placement = await resolvePlacement(api, source.environmentId);
   if (!placement || !source.serverUuid) {
     console.log(chalk.red("  Couldn't resolve the Coolify project/server this app lives in."));
@@ -388,6 +455,7 @@ export async function migrate(
         ? { autoDeployWasEnabled: source.isAutoDeployEnabled }
         : {}),
       ...(source.gitRepository ? { gitRepository: source.gitRepository } : {}),
+      ...(opts.rollbackCommit ? { rollbackGitCommitSha: opts.rollbackCommit } : {}),
     },
     apps: [],
     secrets: [],
@@ -521,6 +589,8 @@ export async function migrate(
       name: app.appName,
       service: app.service,
       steadyTag: app.steadyTag,
+      image: formatImageRef(app.image),
+      ...(app.sourceImage ? { sourceImage: formatImageRef(app.sourceImage) } : {}),
       verificationHost: verifyHost,
     });
     run.saveLedger(ledger);
@@ -607,6 +677,12 @@ export async function migrate(
         );
     } catch (err) {
       return abort(`Couldn't add production routes for ${app.appName}: ${(err as Error).message}`);
+    }
+  }
+  if (ledger.source.rollbackGitCommitSha) {
+    const currentSource = await api.getApplication(plan.source.uuid);
+    if (currentSource.gitCommitSha !== ledger.source.rollbackGitCommitSha) {
+      return abort("Legacy Git source changed during migration; keeping the old app serving.");
     }
   }
   if (source.isAutoDeployEnabled) {
@@ -827,6 +903,20 @@ export async function rollback(
     return true;
   }
   if (ledger.phase === "cut-over" || ledger.phase === "cutting-over") {
+    if (ledger.source.rollbackGitCommitSha) {
+      const source = await api.getApplication(ledger.source.uuid);
+      if (
+        !/^[a-f0-9]{40}$/.test(ledger.source.rollbackGitCommitSha) ||
+        source.gitCommitSha !== ledger.source.rollbackGitCommitSha
+      ) {
+        console.log(
+          chalk.red(
+            "  Legacy Git source differs from the recorded rollback commit; leaving replacements serving.",
+          ),
+        );
+        return false;
+      }
+    }
     const start = ora(`Starting ${ledger.source.legacyName} again (a compose deploy)`).start();
     const outcome = await run.deployAndWait(api, ledger.source.uuid);
     if (outcome !== "finished") {

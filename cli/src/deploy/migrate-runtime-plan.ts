@@ -89,6 +89,8 @@ export interface PlannedImageApp {
   role: "app" | "client" | "server";
   /** Tag the replacement is created with — the build that is live. */
   image: ImageRef;
+  /** Original Compose image when an explicit replacement digest is requested. */
+  sourceImage?: ImageRef;
   /** Tag the app is left on once the cutover is done. */
   steadyTag: string;
   port: number;
@@ -210,6 +212,20 @@ function roleFor(service: string, count: number): "app" | "client" | "server" {
   return /^(server|api|backend)$/i.test(service) ? "server" : "client";
 }
 
+/** Parse a reviewed replacement without accepting a moving tag or credentials. */
+export function parseMigrationImageOverride(value: string): ImageRef {
+  if (
+    !/^([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]+)?\/(?:[a-z0-9]+(?:[._-]+[a-z0-9]+)*\/)*[a-z0-9]+(?:[._-]+[a-z0-9]+)*)@sha256:[a-f0-9]{64}$/.test(
+      value,
+    )
+  ) {
+    throw new Error(
+      "Migration image override must be a registry repository pinned by a lowercase sha256 digest.",
+    );
+  }
+  return parseImageRef(value);
+}
+
 /** Build the migration plan for one live compose app. */
 export function planRuntimeMigration(
   app: LiveComposeApp,
@@ -217,6 +233,8 @@ export function planRuntimeMigration(
   opts: {
     /** Override the health-check path per compose service. */
     healthPaths?: Record<string, string>;
+    /** Replacement-only digest pins; never changes the legacy Compose image. */
+    images?: Record<string, string>;
   } = {},
 ): RuntimeMigrationPlan {
   const blockers: string[] = [];
@@ -255,6 +273,11 @@ export function planRuntimeMigration(
   if (names.length === 0) {
     blockers.push("The compose file declares no services.");
     return plan([]);
+  }
+
+  for (const service of Object.keys(opts.images ?? {})) {
+    if (!names.includes(service))
+      blockers.push(`Image override names unknown service "${service}".`);
   }
 
   // Production env, and whether we could read it at all.
@@ -387,9 +410,27 @@ export function planRuntimeMigration(
       );
       continue;
     }
-    const image = parseImageRef(resolvedImage);
+    const sourceImage = parseImageRef(resolvedImage);
+    let image = sourceImage;
+    const override = opts.images?.[service];
+    if (override !== undefined) {
+      try {
+        image = parseMigrationImageOverride(override);
+      } catch {
+        blockers.push(`${where}: replacement image must be pinned by a lowercase sha256 digest.`);
+        continue;
+      }
+      if (image.name !== sourceImage.name) {
+        blockers.push(`${where}: replacement image must use the existing repository.`);
+        continue;
+      }
+      warnings.push(
+        `${where}: replacement differs from the live Compose image. Keep old/new clients compatible and pin the legacy source commit and image before cutover; rollback redeploys that source.`,
+      );
+    }
     const steady = imageDefault(rawImage);
-    const steadyTag = steady ? parseImageRef(steady).tag : image.tag;
+    const steadyTag =
+      override !== undefined ? image.tag : steady ? parseImageRef(steady).tag : image.tag;
 
     // Env: every app row, then the service's own entries on top.
     const env = new Map<string, { value: string; isLiteral: boolean; isMultiline: boolean }>();
@@ -484,6 +525,7 @@ export function planRuntimeMigration(
       appName: appServices.length === 1 ? app.name : `${app.name}-${service}`,
       role,
       image,
+      ...(override !== undefined ? { sourceImage } : {}),
       steadyTag,
       port,
       portSource,

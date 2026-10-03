@@ -16,6 +16,7 @@ import {
   migrationProbeMatchesBaseline,
   publicProbeUrls,
   rollback,
+  runMigrateRuntimeCli,
   setManifestRuntime,
 } from "./src/deploy/migrate-runtime.js";
 import type { CoolifyApi } from "./src/utils/coolify-api.js";
@@ -50,6 +51,8 @@ function fixture(
     publicAfter?: number;
     missingPrefixSetting?: boolean;
     stopStuck?: boolean;
+    gitCommitSha?: string;
+    sourceDrifts?: boolean;
   } = {},
 ) {
   const calls: string[] = [];
@@ -66,6 +69,10 @@ function fixture(
         environmentId: 1,
         serverUuid: "host",
         gitRepository: "test/site",
+        gitCommitSha:
+          settings.sourceDrifts && calls.includes("deploy:new1")
+            ? "d".repeat(40)
+            : (settings.gitCommitSha ?? "c".repeat(40)),
         status: states.get(uuid),
         isAutoDeployEnabled: false,
       };
@@ -164,6 +171,79 @@ function fixture(
 }
 
 try {
+  for (const args of [
+    ["--image"],
+    ["--image", "app=ghcr.io/test/site:latest", "--keep-live-tag"],
+    ["--image", `app=ghcr.io/test/site@sha256:${"a".repeat(64)}`, "--keep-live-tag"],
+    ["--rollback-commit", "main"],
+  ])
+    await assert.rejects(runMigrateRuntimeCli(args), /--image|--rollback-commit|sha256 digest/);
+  {
+    const f = fixture();
+    const plan = basePlan();
+    plan.apps[0].sourceImage = { ...plan.apps[0].image };
+    plan.apps[0].image = { name: "ghcr.io/test/site", tag: `sha256-${"a".repeat(64)}` };
+    plan.apps[0].steadyTag = plan.apps[0].image.tag;
+    assert.equal(
+      await migrate(
+        f.api,
+        "https://coolify.example",
+        plan,
+        { ...options, keepLiveTag: false },
+        f.deps,
+      ),
+      false,
+    );
+    assert.equal(f.calls.length, 0, "unsafe tag restoration refused before any mutation");
+    assert.equal(await migrate(f.api, "https://coolify.example", plan, options, f.deps), false);
+    assert.equal(f.calls.length, 0, "legacy source commit must be explicit before mutation");
+    assert.equal(
+      await migrate(
+        f.api,
+        "https://coolify.example",
+        plan,
+        { ...options, rollbackCommit: "d".repeat(40) },
+        f.deps,
+      ),
+      false,
+    );
+    assert.equal(f.calls.length, 0, "legacy source readback must match before mutation");
+    assert.equal(
+      await migrate(
+        f.api,
+        "https://coolify.example",
+        plan,
+        { ...options, rollbackCommit: "c".repeat(40) },
+        f.deps,
+      ),
+      true,
+    );
+    assert.equal(f.ledger()?.source.rollbackGitCommitSha, "c".repeat(40));
+    const drifting = fixture({ sourceDrifts: true });
+    assert.equal(
+      await migrate(
+        drifting.api,
+        "https://coolify.example",
+        plan,
+        { ...options, rollbackCommit: "c".repeat(40) },
+        drifting.deps,
+      ),
+      false,
+    );
+    assert.ok(
+      !drifting.calls.includes("stop:old"),
+      "source drift during deploy must leave legacy serving",
+    );
+    const changed = fixture({ gitCommitSha: "d".repeat(40) });
+    assert.equal(await rollback(changed.api, f.ledger()!, options, changed.deps), false);
+    assert.equal(
+      changed.calls.length,
+      0,
+      "source drift blocks rollback before deploying or stopping anything",
+    );
+    assert.equal(f.ledger()?.apps[0].image, `ghcr.io/test/site@sha256:${"a".repeat(64)}`);
+    assert.equal(f.ledger()?.apps[0].sourceImage, "ghcr.io/test/site:abc123");
+  }
   {
     const f = fixture();
     assert.equal(

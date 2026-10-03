@@ -145,10 +145,12 @@ export interface ImageRef {
 /** Parse `ghcr.io/o/r:main` / `ghcr.io/o/r` / `localhost:5000/r:tag`.
  *  A colon only separates a tag when it comes after the last `/`, so a
  *  registry port is never mistaken for one. Digests (`@sha256:…`) are
- *  returned with an empty tag — Coolify has its own spelling for them
- *  and hatchkit never produces one. */
+ *  encoded as Coolify's `sha256-<hex>` tag; its deployment renderer turns
+ *  that back into `name@sha256:<hex>` instead of a mutable tag. */
 export function parseImageRef(ref: string, defaultTag = "latest"): ImageRef {
   const trimmed = ref.trim();
+  const digest = trimmed.match(/^(.+)@sha256:([a-f0-9]{64})$/);
+  if (digest) return { name: digest[1], tag: `sha256-${digest[2]}` };
   if (trimmed.includes("@")) return { name: trimmed, tag: "" };
   const slash = trimmed.lastIndexOf("/");
   const colon = trimmed.lastIndexOf(":");
@@ -159,6 +161,7 @@ export function parseImageRef(ref: string, defaultTag = "latest"): ImageRef {
 }
 
 export function formatImageRef(ref: ImageRef): string {
+  if (/^sha256-[a-f0-9]{64}$/.test(ref.tag)) return `${ref.name}@sha256:${ref.tag.slice(7)}`;
   return ref.tag ? `${ref.name}:${ref.tag}` : ref.name;
 }
 
