@@ -392,6 +392,12 @@ def main():
         state = subprocess.run(['systemctl', 'show', '--property=ActiveState', '--value', 'hatchkit-backups.service'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.decode().strip()
         status['running'] = state in ('active', 'activating')
         report = work / 'restore-check-all.json'
+        alert_state = work / 'alerts-status.json'
+        status['alerts'] = {'configured': bool(config.get('alerts', {}).get('enabled', bool(config.get('alerts')))),
+                            'to': config.get('alerts', {}).get('to'),
+                            'state': json.loads(alert_state.read_text()) if alert_state.exists() else None}
+        status['alerts']['timerActive'] = subprocess.run(['systemctl', 'is-active', '--quiet', 'hatchkit-backup-alerts.timer'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        status['alerts']['serviceFailed'] = subprocess.run(['systemctl', 'is-failed', '--quiet', 'hatchkit-backup-alerts.service'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
         status['restoreCheck'] = json.loads(report.read_text()) if report.exists() else None
         print(json.dumps(status, indent=2))
         return

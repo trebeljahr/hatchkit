@@ -2,6 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readManifestWithMigrationInfo } from "../scaffold/manifest.js";
+import { configureBackupAlerts } from "./alerts.js";
 import { installBackupHost } from "./install.js";
 import { backupHostExec, backupProvider, configureBackupProvider } from "./provider.js";
 import { registerBackupProject } from "./register.js";
@@ -13,6 +14,8 @@ export const BACKUP_USAGE = `Usage:
   hatchkit backup status [--json]
   hatchkit backup install [--dry-run] [--json]
   hatchkit backup run [--json]
+  hatchkit backup alerts --to <email> --from <verified-ses-email> [--dry-run] [--json]
+  hatchkit backup alert-test [--json]
   hatchkit backup register --config <project-sources.json> [--dry-run] [--json]
 
 plan reads the current project's backup intent. It does not claim that a job is installed.
@@ -23,6 +26,8 @@ status reads the configured host through Tailscale; it never falls back to publi
 install reads the backup keys from keychain and installs the host runner through Tailscale.
 It preserves registered projects and refuses a different recovery password or repository.
 run starts a full host backup; inspect status for completion and failures.
+alerts uses the existing SES keychain credential to configure failure/overdue email alerts.
+alert-test sends a test email to the configured recipient without triggering a backup failure.
 
 The runner captures native PostgreSQL, MongoDB, ClickHouse and Redis backups and
 SQLite-safe file copies. It encrypts each project with restic, downloads and verifies
@@ -98,15 +103,18 @@ export async function runBackupCommand(args: string[], cwd = process.cwd()): Pro
       dryRun = true;
       continue;
     }
-    if ((flag === "--config" || flag === "--output") && args[i + 1]?.startsWith("--") === false) {
+    if (
+      ["--config", "--output", "--to", "--from"].includes(flag) &&
+      args[i + 1]?.startsWith("--") === false
+    ) {
       flags.set(flag, args[++i]);
     } else {
       throw new Error(`Unknown or incomplete backup option: ${flag}`);
     }
   }
   let result: unknown;
-  if (dryRun && !["register", "install"].includes(subcommand))
-    throw new Error("--dry-run applies to backup register or install.");
+  if (dryRun && !["register", "install", "alerts"].includes(subcommand))
+    throw new Error("--dry-run applies to backup register, install, or alerts.");
   if (subcommand === "plan" && flags.size === 0) {
     result = backupPlan(cwd);
   } else if (subcommand === "configure" && flags.size === 1 && flags.has("--config")) {
@@ -115,6 +123,15 @@ export async function runBackupCommand(args: string[], cwd = process.cwd()): Pro
     );
   } else if (subcommand === "install" && flags.size === 0) {
     result = await installBackupHost(dryRun);
+  } else if (
+    subcommand === "alerts" &&
+    flags.size === 2 &&
+    flags.has("--to") &&
+    flags.has("--from")
+  ) {
+    result = await configureBackupAlerts(flags.get("--to")!, flags.get("--from")!, dryRun);
+  } else if (subcommand === "alert-test" && flags.size === 0) {
+    result = JSON.parse(await backupHostExec("python3 /opt/hatchkit-backups/alerts.py test"));
   } else if (subcommand === "run" && flags.size === 0) {
     await backupHostExec("systemctl start --no-block hatchkit-backups.service");
     result = { requested: true, nextStep: "hatchkit backup status --json" };
@@ -127,7 +144,10 @@ export async function runBackupCommand(args: string[], cwd = process.cwd()): Pro
     const input = JSON.parse(readFileSync(resolve(cwd, flags.get("--config")!), "utf8"));
     if (!input.serverUuid || !input.project)
       throw new Error("Registration config requires serverUuid and project.");
-    result = await registerBackupProject(input.project, { serverUuid: input.serverUuid, dryRun });
+    result = await registerBackupProject(input.project, {
+      serverUuid: input.serverUuid,
+      dryRun,
+    });
   } else if (subcommand === "bundle" && flags.has("--config") && flags.has("--output")) {
     result = exportBackupBundle(
       resolve(cwd, flags.get("--config")!),

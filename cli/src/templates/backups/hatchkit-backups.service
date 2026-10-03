@@ -2,6 +2,7 @@
 Description=Encrypted project data backups to R2
 Wants=network-online.target
 After=network-online.target docker.service
+OnFailure=hatchkit-backup-alerts.service
 
 [Service]
 Type=oneshot

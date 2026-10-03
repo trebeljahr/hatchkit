@@ -62,7 +62,7 @@ const MODEL: ExplainModel = {
   ],
   commands: [
     {
-      name: "hatchkit backup <configure|install|register|run|status|plan|bundle>",
+      name: "hatchkit backup <configure|install|register|run|status|plan|bundle|alerts|alert-test>",
       summary:
         "Keep backup-bucket credentials in the OS keychain; manage encrypted daily data backups through Tailscale. Retain three verified generations per project.",
       when: "Configure once for a backup host. New create deployments register standard databases on that host; register existing projects and custom file paths explicitly. Status reports missing, failed and stale backups.",
@@ -145,18 +145,39 @@ const MODEL: ExplainModel = {
     "7. `hatchkit update` (from project dir) — extend an existing project with new features.",
   ],
   provider_glossary: [
-    { name: "GitHub", role: "Hosts the project repo. Uses the `gh` CLI for auth." },
-    { name: "Coolify", role: "Self-hosted PaaS. Deploys apps on your Hetzner box." },
-    { name: "Hetzner Cloud", role: "VMs (and optional S3 object storage) for new deploy targets." },
-    { name: "DNS (Cloudflare / INWX)", role: "Automates domain records during Terraform." },
-    { name: "S3 (Hetzner / AWS / R2)", role: "Optional object storage — picked per-project." },
+    {
+      name: "GitHub",
+      role: "Hosts the project repo. Uses the `gh` CLI for auth.",
+    },
+    {
+      name: "Coolify",
+      role: "Self-hosted PaaS. Deploys apps on your Hetzner box.",
+    },
+    {
+      name: "Hetzner Cloud",
+      role: "VMs (and optional S3 object storage) for new deploy targets.",
+    },
+    {
+      name: "DNS (Cloudflare / INWX)",
+      role: "Automates domain records during Terraform.",
+    },
+    {
+      name: "S3 (Hetzner / AWS / R2)",
+      role: "Optional object storage — picked per-project.",
+    },
     {
       name: "GPU (Modal / RunPod / HF / Replicate)",
       role: "Optional inference backends for ML services.",
     },
-    { name: "GlitchTip", role: "Self-hostable Sentry-compatible error tracking." },
+    {
+      name: "GlitchTip",
+      role: "Self-hostable Sentry-compatible error tracking.",
+    },
     { name: "OpenPanel", role: "Privacy-friendly product analytics." },
-    { name: "Plausible", role: "Privacy-friendly web analytics and dashboard sites." },
+    {
+      name: "Plausible",
+      role: "Privacy-friendly web analytics and dashboard sites.",
+    },
     {
       name: "Listmonk + AWS SES",
       role: "Self-hosted mailing-list manager (Listmonk) backed by SES for delivery. Hatchkit verifies the SES sending subdomain, publishes DKIM into Cloudflare, routes its bounces + complaints through the shared ses-feedback-listmonk SNS topic to Listmonk's SES webhook, creates per-project lists + tx/campaign templates, gives the project its own Listmonk API user (user role + list role; needs the hatchkit-admin credential in keychain listmonk:admin-api-token, else the project gets hatchkit's own user), and renders LISTMONK_* + SES_FROM_EMAIL / SES_REGION env so the app sends transactional + broadcast mail through Listmonk's API. `hatchkit listmonk user <project>` moves an existing project to its own user. These Listmonk roles retain shared relay/subscriber authority. `hatchkit ses isolate <project-directory> --dry-run` plans a restricted direct SES sender with an IAM-required project tenant; activation is explicit and does not migrate the shared newsletter boundary.",
@@ -171,7 +192,10 @@ const MODEL: ExplainModel = {
       what: "Secrets (tokens, keys)",
       where: "OS keychain under service `hatchkit` (macOS Keychain / libsecret)",
     },
-    { what: "Provisioned env blocks", where: "~/<conf-dir>/provisioned/<project>.{dev,prod}.env" },
+    {
+      what: "Provisioned env blocks",
+      where: "~/<conf-dir>/provisioned/<project>.{dev,prod}.env",
+    },
     { what: "Project manifest", where: "<project-dir>/.hatchkit.json" },
   ],
 };

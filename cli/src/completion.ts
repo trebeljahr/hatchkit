@@ -29,7 +29,17 @@ const TOP_LEVEL = [
 ] as const;
 
 const ASSETS_SUB = ["seed", "push", "pull", "migrate", "list"] as const;
-const BACKUP_SUB = ["configure", "install", "register", "run", "status", "plan", "bundle"] as const;
+const BACKUP_SUB = [
+  "configure",
+  "install",
+  "register",
+  "run",
+  "status",
+  "plan",
+  "bundle",
+  "alerts",
+  "alert-test",
+] as const;
 
 const CONFIG_ADD = [
   "coolify",
@@ -207,7 +217,7 @@ function fish(): string {
   lines.push("# Install:");
   lines.push("#   hatchkit completion fish > ~/.config/fish/completions/hatchkit.fish");
   lines.push("");
-  lines.push(`complete -c hatchkit -f`);
+  lines.push("complete -c hatchkit -f");
   for (const c of TOP_LEVEL) {
     lines.push(`complete -c hatchkit -n "__fish_use_subcommand" -a "${c}" -d "${topDesc(c)}"`);
   }

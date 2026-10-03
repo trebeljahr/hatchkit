@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Hatchkit backup health hourly
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=60
+Persistent=true
+Unit=hatchkit-backup-alerts.service
+
+[Install]
+WantedBy=timers.target

@@ -106,8 +106,8 @@ After the first verified backups and an isolated database restore, enable the
 timer with `systemctl enable --now hatchkit-backups.timer`. It runs daily from
 03:15–03:30 UTC. Inspect `runner.py status`, `systemctl status
 hatchkit-backups.service`, and `journalctl -u hatchkit-backups.service`. Connect
-the failed-service status to the operator's existing monitoring. The installer
-does not configure an alert destination.
+the failed-service status to the operator's existing monitoring or enable email
+alerts below. The installer preserves existing alert settings and timer state.
 
 Run `python3 /opt/hatchkit-backups/restore-check.py` for the maintained restore
 drill (`--project example` limits it). It verifies archive member checksums and
@@ -149,3 +149,45 @@ data store. The runner deliberately does not guess which stores are disposable.
 Rollback: `systemctl disable --now hatchkit-backups.timer`. Stop an active backup
 through systemd if needed; allow its cleanup/watchdog to release any Mongo write
 lock. Disabling the timer leaves retained backups and credentials intact.
+
+## Failure email alerts
+
+After installing the current bundle, use the existing SES provider in Hatchkit:
+
+```sh
+hatchkit backup alerts --to owner@example.com --from noreply@mail.example.com --dry-run
+hatchkit backup alerts --to owner@example.com --from noreply@mail.example.com
+hatchkit backup alert-test
+```
+
+The sender must already be verified in SES and permitted by its sending policy.
+`alerts` reads the existing SES credential from OS Keychain, derives an SMTP
+password, and sends it over Tailscale stdin to
+`/etc/hatchkit-backups/alert-smtp.json` (0600). The SES API secret stays in
+Keychain. Recipients and the credential-file path are stored in the host policy;
+credentials never appear in command arguments, project manifests, or logs.
+Re-run `alerts` after rotating SES credentials or changing the destination.
+
+A failed backup systemd unit starts `hatchkit-backup-alerts.service` immediately.
+The hourly `hatchkit-backup-alerts.timer` also checks for failed/missing project
+captures, captures older than 36 hours, and an inactive daily backup timer.
+Newly registered projects are included automatically. Unchanged issues trigger
+at most one reminder per 24 hours. Changes trigger a new alert; recovery sends
+one confirmation. Normal success sends no mail. SMTP failures leave the alert
+retryable at the next hourly check. `alert-test` sends one clearly labeled test
+without changing backup results or the alert's failure/recovery state.
+
+`backup status` includes alert configuration, last accepted notification/check,
+alert timer state, and whether the alert service itself failed. Acceptance by
+SMTP is not proof of inbox delivery. This monitor runs on the backup host;
+whole-host outages and loss of outbound connectivity need external monitoring.
+
+The host config may also be set manually with
+`"alerts": {"enabled": true, "to": "owner@example.com", "from": "Backup <noreply@mail.example.com>", "smtpFile": "/etc/hatchkit-backups/alert-smtp.json"}`.
+The private SMTP JSON contains `host`, `port`, `username`, `password`, and
+`tls` (`starttls` or `tls`, both with certificate validation).
+
+To disable email only, set `alerts.enabled` to false in the host policy and run
+`systemctl disable --now hatchkit-backup-alerts.timer`. Backup scheduling and
+stored recovery points stay intact. The normal bundle/install includes and
+maintains these alert scripts and units.

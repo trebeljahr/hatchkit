@@ -85,6 +85,8 @@ rotation URL, required scopes, and exact `hatchkit config add <provider>` comman
 | `hatchkit backup configure --config <path>` | Store backup-bucket S3 keys and restic recovery password in OS keychain |
 | `hatchkit backup install [--dry-run]` | Install/update the backup host through Tailscale using Keychain credentials; preserve sources and recovery password |
 | `hatchkit backup register --config <path> [--dry-run]` | Register explicit existing-project database/file sources; refuse replacing a different policy |
+| `hatchkit backup alerts --to <email> --from <verified-ses-email> [--dry-run]` | Configure failure/overdue email using existing SES Keychain credentials |
+| `hatchkit backup alert-test` | Send one test notification to the configured recipient |
 | `hatchkit backup run` | Request a full backup on the configured host |
 | `hatchkit backup plan --json` | Read the current project's intended backup policy, without claiming it is installed |
 | `hatchkit inventory` | Infer/write `.hatchkit.json` metadata |
@@ -171,8 +173,8 @@ deferred steps with a registration retry command. External databases, custom
 file mounts, other hosts, adopted projects and R2 asset objects require explicit
 registration/coverage. A manifest policy is intent; inspect `backup status` for
 actual capture and restore results. Backup host operations use Tailscale SSH with
-no public-SSH fallback. Configure/install/register/run mutate state and require
-the user's applicable authorization. `status`, `plan`, and `--dry-run` are safe
+no public-SSH fallback. Configure/install/register/run/alerts mutate state; alert-test sends email.
+All require the user's applicable authorization. `status`, `plan`, and `--dry-run` are safe
 read-only checks. The maintained bundle README documents installation, restore
 drills, scheduling and how to disable the timer while keeping stored backups.
 

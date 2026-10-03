@@ -1,0 +1,15 @@
+[Unit]
+Description=Email failed or overdue Hatchkit backup alerts
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/hatchkit-backups/alerts.py check
+User=root
+UMask=0077
+TimeoutStartSec=3min
+MemoryMax=128M
+PrivateTmp=true
+ProtectHome=true
+NoNewPrivileges=true
