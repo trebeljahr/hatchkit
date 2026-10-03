@@ -92,6 +92,9 @@ RUN apt-get update \
 
 ENV NODE_ENV=production
 ENV PORT=3000
+# Next's standalone server reads HOSTNAME. Docker otherwise supplies the
+# container ID, binding only its bridge address and failing loopback probes.
+ENV HOSTNAME=0.0.0.0
 
 # Next.js standalone output
 COPY --from=build /app/packages/client/.next/standalone ./

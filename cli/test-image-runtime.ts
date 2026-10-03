@@ -45,6 +45,7 @@ import {
 } from "./src/deploy/migrate-runtime-plan.js";
 import { addManifestFields } from "./src/deploy/migrate-runtime.js";
 import { computeRoutingPlan, needsManagedDatastores } from "./src/deploy/routing.js";
+import { selfHostClientDockerfile } from "./src/features/selfhost/compose.js";
 
 const failures: string[] = [];
 
@@ -607,6 +608,18 @@ check("every Debian runtime stage installs curl for Coolify's health check", () 
       /apt-get install -y --no-install-recommends curl/,
       `${file}: runtime stage installs curl`,
     );
+  }
+});
+
+check("standalone web images bind all IPv4 interfaces without a deployment env override", () => {
+  const source = readFileSync(join(REPO, "starter/packages/client/Dockerfile"), "utf-8");
+  for (const [label, dockerfile] of [
+    ["hosted", source],
+    ["self-hosted", selfHostClientDockerfile(source)],
+  ]) {
+    const runtime = dockerfile.slice(dockerfile.lastIndexOf("FROM "));
+    assert.match(runtime, /^ENV HOSTNAME=0\.0\.0\.0$/m, `${label}: image owns the bind address`);
+    assert.match(runtime, /127\.0\.0\.1/, `${label}: the health probe uses loopback`);
   }
 });
 
