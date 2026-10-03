@@ -339,18 +339,42 @@ export function rollingUpdateBlocker(app: {
   healthCheck?: LiveHealthCheck;
   portsMappings?: string | null;
   customDockerRunOptions?: string | null;
+  isConsistentContainerNameEnabled?: boolean;
+  customInternalName?: string | null;
 }): string | null {
   if (app.buildPack === "dockercompose") {
     return "Docker Compose app — Coolify stops the old container before starting the new one";
   }
+  if (
+    !app.buildPack ||
+    !["dockerimage", "dockerfile", "nixpacks", "static"].includes(app.buildPack)
+  ) {
+    return `unsupported or unknown build pack (${app.buildPack ?? "not returned"}) — rolling updates cannot be verified`;
+  }
+  if (app.isConsistentContainerNameEnabled) {
+    return "consistent container name enabled — Coolify stops the old container before starting its replacement";
+  }
+  if (app.customInternalName?.trim()) {
+    return "custom internal container name set — Coolify stops the old container before starting its replacement";
+  }
   if (app.portsMappings && app.portsMappings.trim() !== "") {
     return `host port mapping (${app.portsMappings}) — two containers can't bind the same port, so Coolify stops the old one first`;
   }
-  if (app.customDockerRunOptions && /--ip6?\b/.test(app.customDockerRunOptions)) {
-    return "custom --ip in docker run options — Coolify stops the old container first";
+  if (app.customDockerRunOptions?.includes("--ip")) {
+    // Match Coolify's substring check, which also catches e.g. --ipc.
+    return "docker run option containing --ip — Coolify stops the old container first";
   }
   if (app.healthCheck?.enabled !== true) {
     return "health check off — Coolify removes the old container the moment the new one starts, before it can serve";
   }
   return null;
+}
+
+/** Some Coolify API builds omit application settings entirely. Missing
+ * naming flags do not prove that rolling updates are enabled. */
+export function rollingUpdateNamingUnknown(app: {
+  isConsistentContainerNameEnabled?: boolean;
+  customInternalName?: string | null;
+}): boolean {
+  return app.isConsistentContainerNameEnabled === undefined || app.customInternalName === undefined;
 }

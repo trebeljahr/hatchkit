@@ -501,13 +501,7 @@ function dropFromNeeds(content: string, removed: Set<string>): string {
  * Remove the Redis service, the server's `REDIS_URL` env line and the
  * `- redis` depends_on entry from a Compose document.
  *
- * Redis exists for the WebSocket feature alone. Without it the scaffold
- * deletes `packages/server/src/ws/` and strips its call sites, yet the
- * starter's compose kept declaring `redis:7-alpine`, so the server
- * waited on a container nothing talked to. It also disagreed with the
- * Terraform side, where `infra.ts` derives `redisEnabled` from the same
- * feature. Only the `static` prune removed it, so every other scaffold
- * without `websocket` shipped the stray service.
+ * Called only when neither room sockets nor client-core sync uses Redis.
  */
 export function stripRedisFromCompose(content: string): string {
   let out = stripComposeServices(content, ["redis"]);

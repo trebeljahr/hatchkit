@@ -90,6 +90,11 @@ export function createApp(options: { accessLogStream?: { write(message: string):
       status: dbReady && redisReady ? "ok" : "degraded",
       db: dbReady,
       redis: redisReady,
+      // ── websocket ──────────────────────────────────────────────
+      // Compatible rolling peers must advertise the same presence protocol.
+      // The first upgrade from a release without this field needs a handoff.
+      roomProtocol: 2,
+      // ── end websocket ──────────────────────────────────────────
       // The commit this image was built from. The deploy pipeline polls
       // this until it matches the commit it just pushed — without it, a
       // deploy that silently kept the previous container reported success

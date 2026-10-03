@@ -386,20 +386,27 @@ async function runScaffoldSteps(
     removeIfExists(join(outputDir, "packages/server/src/ws"));
     removeIfExists(join(outputDir, "packages/client/src/lib/room-socket.ts"));
     removeIfExists(join(outputDir, "packages/client/src/lib/room-socket.test.ts"));
+    removeIfExists(join(outputDir, "packages/server/src/tests/room-transport.test.ts"));
+    const appPath = join(outputDir, "packages/server/src/app.ts");
+    if (existsSync(appPath))
+      rewriteFile(appPath, (content) =>
+        content.replace(
+          /^[ \t]*\/\/ ── websocket ─[^\n]*\n[\s\S]*?^[ \t]*\/\/ ── end websocket ─[^\n]*\n/gm,
+          "",
+        ),
+      );
     modifications.push("removed: ws/ (WebSocket not selected)");
     // Deleting ws/ alone leaves `index.ts` importing ./ws/handler.js —
     // a hard TS2307 on the first `pnpm run build`. Strip the call sites too.
     stripWebSocketFromServerIndex(outputDir);
-    // …and the Redis service that exists only to back the room socket.
-    // Leaving it declared made the server wait on a container nothing
-    // talks to, and contradicted infra.ts, which derives `redisEnabled`
-    // from this same feature. Only the `static` prune removed it, so
-    // every other scaffold without `websocket` shipped it.
+  }
+  if (!config.features.includes("websocket") && !config.features.includes("client-core")) {
+    // Both room sockets and the account sync feed need replica-wide fanout.
     for (const rel of ["docker-compose.yml", "docker-compose.dev.yml"]) {
       const composePath = join(outputDir, rel);
       if (existsSync(composePath)) rewriteFile(composePath, stripRedisFromCompose);
     }
-    modifications.push("removed: the redis compose service (WebSocket not selected)");
+    modifications.push("removed: the redis compose service (no realtime feature selected)");
   }
   if (!config.features.includes("stripe")) {
     removeIfExists(join(outputDir, "packages/server/src/services/stripe.ts"));
@@ -1311,11 +1318,15 @@ function stripWebSocketFromServerIndex(outputDir: string): void {
     /import\s+{\s*(?:roomManager,\s*)?setupWebSocket\s*}\s+from\s+"\.\/ws\/handler\.js";\n/,
     "",
   );
+  // The independently selected sync feed imports its own getSyncRedis alias.
   content = content.replace(
     'import { connectRedis, disconnectRedis, getRedis } from "./db/redis.js";',
     'import { connectRedis, disconnectRedis } from "./db/redis.js";',
   );
-  content = content.replace(/\n {4}const redis = getRedis\(\);\n {4}if \(redis\) await roomManager\.connectPubSub\(redis\);/, "");
+  content = content.replace(
+    /\n {4}const redis = getRedis\(\);\n(?: {4}if \(env\.isProduction && !redis\) throw new Error\([^\n]*\);\n)? {4}if \(redis\) await roomManager\.connectPubSub\(redis\);/,
+    "",
+  );
   content = content.replace(/\n {2}await roomManager\.disconnectPubSub\(\);/, "");
   content = content.replace(/[ \t]*const\s+wss\s*=\s*setupWebSocket\(server\);\n/, "");
   content = content.replace(

@@ -14,11 +14,14 @@ import { initAuth, disconnectAuth } from "./auth/auth.js";
 // the sync feed would be handed to a manual checklist for a project hatchkit
 // generated itself.
 import { setupSyncFeed } from "./sync/handler.js";
+import { getRedis as getSyncRedis } from "./db/redis.js";
+import { syncFeed } from "./sync/feed.js";
 // ── end client-core ──────────────────────────────────────────────
 import { roomManager, setupWebSocket } from "./ws/handler.js";
 import { warnStripeStatus } from "./services/stripe.js";
 import { env } from "./config/env.js";
 import { isDraining, startDraining } from "./drain.js";
+import { closeHttpServer } from "./shutdown.js";
 
 const app = createApp();
 const server = createServer(app);
@@ -45,7 +48,12 @@ async function start(): Promise<void> {
     // 1. Connect to databases
     await connectToDB();
     await connectRedis();
+    // ── client-core ──────────────────────────────────────────────
+    if (env.isProduction && !getSyncRedis()) throw new Error("REDIS_URL is required for production sync across rolling replicas");
+    if (getSyncRedis()) await syncFeed.connectPubSub(getSyncRedis()!);
+    // ── end client-core ──────────────────────────────────────────
     const redis = getRedis();
+    if (env.isProduction && !redis) throw new Error("REDIS_URL is required for production rooms across rolling replicas");
     if (redis) await roomManager.connectPubSub(redis);
 
     // 2. Initialize auth (needs DB connection)
@@ -100,11 +108,15 @@ async function shutdown(signal: string): Promise<void> {
     client.close(1001, "Server shutting down");
   }
 
-  // Stop accepting new connections
-  server.close();
+  // Stop accepting new connections and finish accepted requests before their
+  // databases disappear. The overall 8-second deadline above bounds this wait.
+  await closeHttpServer(server);
 
   // Disconnect from databases and auth
   await disconnectAuth();
+  // ── client-core ────────────────────────────────────────────────
+  await syncFeed.disconnectPubSub();
+  // ── end client-core ────────────────────────────────────────────
   await roomManager.disconnectPubSub();
   await disconnectRedis();
   await disconnectFromDB();

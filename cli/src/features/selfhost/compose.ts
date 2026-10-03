@@ -216,13 +216,14 @@ export function selfHostImageStem(project: OperationalProject): string {
   return `ghcr.io/${project.repoSlug ?? `OWNER/${project.name}`}`;
 }
 
-/** Datastores the project actually uses. Redis follows the `websocket`
- *  feature because that is the only thing the starter wires it for; the
+/** Datastores the project actually uses. Redis backs room sockets and
+ *  the client-core account sync feed; the
  *  document store is always there for a project with a server half. */
 export function selfHostDatastores(project: OperationalProject): SelfHostDatastore[] {
   if (!hasServerHalf(project.surfaces)) return [];
   const stores: SelfHostDatastore[] = ["mongo"];
-  if (project.features.includes("websocket")) stores.push("redis");
+  if (project.features.some((feature) => feature === "websocket" || feature === "client-core"))
+    stores.push("redis");
   return stores;
 }
 

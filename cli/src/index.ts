@@ -2910,7 +2910,10 @@ async function handleCreate(): Promise<void> {
           // managed — under a compose `single-origin` it's a service in
           // the project's own compose, reachable at redis://redis:6379
           // with nothing to create.
-          if (managedOnly && config.features.includes("websocket")) {
+          if (
+            managedOnly &&
+            config.features.some((feature) => feature === "websocket" || feature === "client-core")
+          ) {
             const { provisionCoolifyRedis } = await import("./deploy/coolify-redis.js");
             const redisResult = await provisionCoolifyRedis(config, serverEnvDir);
             ledger?.record({ kind: "coolifyDb", uuid: redisResult.databaseUuid });

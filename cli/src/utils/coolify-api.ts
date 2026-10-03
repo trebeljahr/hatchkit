@@ -962,6 +962,15 @@ export class CoolifyApi {
     const buildPack = (raw.build_pack as CoolifyApplication["buildPack"]) ?? undefined;
     const fqdn = typeof raw.fqdn === "string" ? raw.fqdn : null;
     const dockerComposeDomains = parseDockerComposeDomains(raw.docker_compose_domains);
+    const settings =
+      raw.settings && typeof raw.settings === "object" && !Array.isArray(raw.settings)
+        ? (raw.settings as Record<string, unknown>)
+        : {};
+    const consistentName =
+      settings.is_consistent_container_name_enabled ?? raw.is_consistent_container_name_enabled;
+    const internalName = Object.hasOwn(settings, "custom_internal_name")
+      ? settings.custom_internal_name
+      : raw.custom_internal_name;
     return {
       uuid: typeof raw.uuid === "string" ? raw.uuid : uuid,
       name: typeof raw.name === "string" ? raw.name : "",
@@ -1012,6 +1021,16 @@ export class CoolifyApi {
         retries: coerceCount(raw.health_check_retries),
         startPeriodSeconds: coerceCount(raw.health_check_start_period),
       },
+      isConsistentContainerNameEnabled:
+        typeof consistentName === "boolean"
+          ? consistentName
+          : consistentName === 1 || consistentName === "1"
+            ? true
+            : consistentName === 0 || consistentName === "0"
+              ? false
+              : undefined,
+      customInternalName:
+        internalName === null || typeof internalName === "string" ? internalName : undefined,
       portsMappings: typeof raw.ports_mappings === "string" ? raw.ports_mappings : null,
       customDockerRunOptions:
         typeof raw.custom_docker_run_options === "string" ? raw.custom_docker_run_options : null,
@@ -1496,6 +1515,10 @@ export interface CoolifyApplication {
   /** `custom_docker_run_options`. An `--ip` in here blocks rolling
    *  updates. */
   customDockerRunOptions: string | null;
+  /** Both naming settings force stop-before-start. Undefined means the
+   * API omitted settings, not that the feature is disabled. */
+  isConsistentContainerNameEnabled?: boolean;
+  customInternalName?: string | null;
   /** Coolify's numeric environment id — the only pointer from an
    *  application back to its project on this API. */
   environmentId?: number;

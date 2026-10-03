@@ -192,7 +192,10 @@ function candidateKeys(config: ProjectConfig): string[] {
   // Seeding REDIS_URL regardless documented an env var for a service the
   // scaffold never wrote, so a `websocket + static` project asked the user
   // to fill in a URL for a container that does not exist.
-  if (config.features.includes("websocket") && config.surfaces !== "static") {
+  if (
+    config.features.some((feature) => feature === "websocket" || feature === "client-core") &&
+    config.surfaces !== "static"
+  ) {
     base.push("REDIS_URL");
   }
   return base;

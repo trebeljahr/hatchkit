@@ -98,7 +98,9 @@ export function generateCoolifyEnv(
     clientPort: extras.clientPort ?? 3000,
     mongoEnabled: config.surfaces !== "static" && (config.dbEngine ?? "mongodb") === "mongodb",
     postgresEnabled: config.surfaces !== "static" && config.dbEngine === "postgres",
-    redisEnabled: config.features.includes("websocket") && config.surfaces !== "static",
+    redisEnabled:
+      config.features.some((feature) => feature === "websocket" || feature === "client-core") &&
+      config.surfaces !== "static",
     s3Provider: config.s3Provider === "existing" ? "custom" : config.s3Provider,
     s3Bucket: s3Config?.bucket || "",
     s3Endpoint: s3Config?.endpoint || "",

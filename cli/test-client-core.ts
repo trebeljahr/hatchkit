@@ -194,7 +194,6 @@ function sameCode(a: string, b: string): boolean {
   return normalize(a) === normalize(b);
 }
 
-
 /**
  * Identifiers a marked block brings into scope: imports, and declarations.
  *
@@ -211,7 +210,11 @@ function blockScopedNames(block: string): string[] {
     const imported = /^\s*import\s+(?:type\s+)?\{([^}]*)\}/.exec(line);
     if (imported) {
       for (const part of (imported[1] ?? "").split(",")) {
-        const name = part.trim().split(/\s+as\s+/).pop()?.trim();
+        const name = part
+          .trim()
+          .split(/\s+as\s+/)
+          .pop()
+          ?.trim();
         if (name) names.add(name);
       }
       continue;
@@ -256,8 +259,14 @@ group("markers", () => {
       "strip removes the block and both markers",
       stripMarkedBlocks(file) === "const before = 1;\nconst after = 3;\n",
     ],
-    ["strip is a no-op on an unmarked file", stripMarkedBlocks("const a = 1;\n") === "const a = 1;\n"],
-    ["strip handles short marker rules and indentation", stripMarkedBlocks(indented) === "function f() {\n  const a = 1;\n}"],
+    [
+      "strip is a no-op on an unmarked file",
+      stripMarkedBlocks("const a = 1;\n") === "const a = 1;\n",
+    ],
+    [
+      "strip handles short marker rules and indentation",
+      stripMarkedBlocks(indented) === "function f() {\n  const a = 1;\n}",
+    ],
     ["readMarkedBlocks returns the block body", readMarkedBlocks(file)[0] === "const inside = 2;"],
     ["readMarkedBlocks on an unmarked file is empty", readMarkedBlocks("x\n").length === 0],
     [
@@ -317,7 +326,10 @@ group("chainCoreBuild", () => {
     typecheck: `${shared} && ${seg} && pnpm -r run typecheck && pnpm typecheck:electron`,
     test: `${seg} && node --test`,
   };
-  const chain = (scripts: Record<string, string>, names: string[] = ["typecheck", "test"]): Record<string, string> =>
+  const chain = (
+    scripts: Record<string, string>,
+    names: string[] = ["typecheck", "test"],
+  ): Record<string, string> =>
     (
       JSON.parse(chainCoreBuild(JSON.stringify({ scripts }, null, 2), starter, names)) as {
         scripts: Record<string, string>;
@@ -326,7 +338,9 @@ group("chainCoreBuild", () => {
 
   // Exactly the starter's minus the core segment — the whole starter script
   // comes back, so any other change it carries comes with it.
-  const exact = chain({ typecheck: `${shared} && pnpm -r run typecheck && pnpm typecheck:electron` });
+  const exact = chain({
+    typecheck: `${shared} && pnpm -r run typecheck && pnpm typecheck:electron`,
+  });
   // The shape a real scaffold produces: minus the core segment AND minus the
   // Electron one, because `desktop` was not selected either.
   const twoStripped = chain({ typecheck: `${shared} && pnpm -r run typecheck` });
@@ -341,7 +355,10 @@ group("chainCoreBuild", () => {
   const ambiguous = chain({ typecheck: `${shared} && pnpm -r run typecheck && ${shared}` });
 
   return [
-    ["the starter's script minus the segment is restored whole", exact.typecheck === starter.typecheck],
+    [
+      "the starter's script minus the segment is restored whole",
+      exact.typecheck === starter.typecheck,
+    ],
     [
       "a script missing a SECOND segment still gets the core build",
       twoStripped.typecheck === `${shared} && ${seg} && pnpm -r run typecheck`,
@@ -361,7 +378,10 @@ group("chainCoreBuild", () => {
       "a script the starter does not have is left alone",
       chain({ build: "x" }, ["build"]).build === "x",
     ],
-    ["invalid JSON is returned unchanged", chainCoreBuild("{oops", starter, ["typecheck"]) === "{oops"],
+    [
+      "invalid JSON is returned unchanged",
+      chainCoreBuild("{oops", starter, ["typecheck"]) === "{oops",
+    ],
   ];
 });
 
@@ -488,10 +508,7 @@ if (!existsSync(join(STARTER, "package.json"))) {
       ...CLIENT_CORE_OWNED_PATHS.map(
         (rel) => [`${rel} present`, existsSync(join(STARTER, rel))] as [string, boolean],
       ),
-      [
-        `${CONTRACT_SNAPSHOT_PATH} present`,
-        existsSync(join(STARTER, CONTRACT_SNAPSHOT_PATH)),
-      ],
+      [`${CONTRACT_SNAPSHOT_PATH} present`, existsSync(join(STARTER, CONTRACT_SNAPSHOT_PATH))],
       [
         "the snapshot is under a generated path",
         CLIENT_CORE_GENERATED_PATHS.some((rel) => CONTRACT_SNAPSHOT_PATH.startsWith(`${rel}/`)),
@@ -499,6 +516,74 @@ if (!existsSync(join(STARTER, "package.json"))) {
       [
         "every generated path is an owned path, so the strip removes it",
         CLIENT_CORE_GENERATED_PATHS.every((rel) => CLIENT_CORE_OWNED_PATHS.includes(rel)),
+      ],
+    ];
+  });
+
+  group("Docker images include the core workspace before installing and building", () => {
+    return coreImageChecks(STARTER);
+  });
+
+  group("update repairs Docker dependency closure without replacing customizations", () => {
+    const out = strippedProject("client-core-docker-");
+    const checks: Array<[string, boolean]> = [];
+    for (const role of ["server", "client"]) {
+      const rel = `packages/${role}/Dockerfile`;
+      const path = join(out, rel);
+      const stripped = readFileSync(path, "utf-8");
+      checks.push([
+        `${role}: no missing core paths or build after stripping`,
+        !stripped.includes("packages/core") && !stripped.includes(CORE_PACKAGE_NAME),
+      ]);
+      writeFileSync(path, `${stripped}\n# Keep this project-specific image setting\n`);
+    }
+    const { manual } = apply(out);
+    checks.push(["both edited images were repaired automatically", manual === 0]);
+    checks.push(...coreImageChecks(out));
+    const repaired = snapshot(out);
+    const repeated = apply(out);
+    for (const role of ["server", "client"]) {
+      checks.push([
+        `${role}: custom image setting survives`,
+        readFileSync(join(out, `packages/${role}/Dockerfile`), "utf-8").includes(
+          "# Keep this project-specific image setting",
+        ),
+      ]);
+    }
+    checks.push([
+      "reapplying leaves the repaired project byte-identical",
+      repeated.manual === 0 && sameSnapshot(repaired, snapshot(out)),
+    ]);
+    return checks;
+  });
+
+  group("a changed Docker build stage never receives partial core wiring", () => {
+    const out = strippedProject("client-core-docker-custom-");
+    const rel = "packages/server/Dockerfile";
+    const path = join(out, rel);
+    // Two of the three anchors still match. Inserting only those would leave
+    // core unbuilt, and the markers would falsely mean "done" on the next run.
+    const customized = readFileSync(path, "utf-8").replace(
+      "RUN pnpm --filter @starter/shared run build",
+      "RUN pnpm --filter @starter/shared build",
+    );
+    writeFileSync(path, customized);
+    const first = apply(out);
+    const afterFirst = readFileSync(path, "utf-8");
+    const second = apply(out);
+    const checklist = readFileSync(join(out, CLIENT_CORE_CHECKLIST_PATH), "utf-8");
+    return [
+      ["the custom image is unchanged", afterFirst === customized],
+      ["every step needed by that image is reported", first.manual === 3],
+      ["a rerun still reports incomplete wiring instead of success", second.manual === 3],
+      ["a rerun preserves the image", readFileSync(path, "utf-8") === customized],
+      [
+        "the checklist includes the manifest, source and build",
+        [
+          "COPY packages/core/package.json packages/core/",
+          "COPY packages/core packages/core",
+          "RUN pnpm --filter @starter/core run build",
+        ].every((instruction) => checklist.includes(instruction)),
       ],
     ];
   });
@@ -545,7 +630,10 @@ if (!existsSync(join(STARTER, "package.json"))) {
         "no file names @starter/core",
         referencing.length === 0 || failWith("still referenced by", referencing),
       ],
-      ["no marker is left behind", markerLeft.length === 0 || failWith("marker left in", markerLeft)],
+      [
+        "no marker is left behind",
+        markerLeft.length === 0 || failWith("marker left in", markerLeft),
+      ],
       [
         "the feature's root scripts are gone",
         CLIENT_CORE_ROOT_SCRIPTS.every((name) => rootPkg.scripts?.[name] === undefined),
@@ -592,11 +680,14 @@ if (!existsSync(join(STARTER, "package.json"))) {
           ).scripts?.test ?? ""
         ).includes(CORE_PACKAGE_NAME),
       ],
-      ["stripping twice is a no-op", (() => {
-        const before = readFileSync(join(out, "package.json"), "utf-8");
-        stripClientCore(out);
-        return readFileSync(join(out, "package.json"), "utf-8") === before;
-      })()],
+      [
+        "stripping twice is a no-op",
+        (() => {
+          const before = readFileSync(join(out, "package.json"), "utf-8");
+          stripClientCore(out);
+          return readFileSync(join(out, "package.json"), "utf-8") === before;
+        })(),
+      ],
     ];
   });
 
@@ -653,6 +744,23 @@ if (!existsSync(join(STARTER, "package.json"))) {
   });
 
   // ── the four checks docs/feature-authoring.md requires ─────────────
+
+  group("legacy Redis adapters fail before any update", () => {
+    const out = strippedProject("client-core-legacy-redis-");
+    writeFileSync(
+      join(out, "packages/server/src/db/redis.ts"),
+      "export function getRedis() { return null; }\n",
+    );
+    const before = snapshot(out);
+    const refused = throws(
+      () => apply(out),
+      (error) => error instanceof Error && /replica-aware Redis/.test(error.message),
+    );
+    return [
+      ["missing subscriber readiness is reported", refused],
+      ["no partial feature installation", sameSnapshot(before, snapshot(out))],
+    ];
+  });
 
   group("idempotency", () => {
     const out = strippedProject("client-core-idem-");
@@ -722,15 +830,23 @@ if (!existsSync(join(STARTER, "package.json"))) {
     const conflicts = ledger.conflicts();
 
     return [
-      [`${marked}: the user's line survived`, readFileSync(markedPath, "utf-8").includes("// a line the user added")],
-      [`${marked}: the blocks were still wired in`, hasMarkedBlocks(readFileSync(markedPath, "utf-8"))],
+      [
+        `${marked}: the user's line survived`,
+        readFileSync(markedPath, "utf-8").includes("// a line the user added"),
+      ],
+      [
+        `${marked}: the blocks were still wired in`,
+        hasMarkedBlocks(readFileSync(markedPath, "utf-8")),
+      ],
       [
         "a rewritten script is kept, not reverted",
         readJsonAt(out, "package.json").scripts?.["contract:emit"] === "echo mine",
       ],
       [
         "and the conflict is reported rather than silent",
-        conflicts.some((c) => c.file === "package.json" && (c.detail ?? "").includes("contract:emit")),
+        conflicts.some(
+          (c) => c.file === "package.json" && (c.detail ?? "").includes("contract:emit"),
+        ),
       ],
       [
         "an existing kit file is not overwritten",
@@ -787,10 +903,7 @@ if (!existsSync(join(STARTER, "package.json"))) {
             IDENTIFIER_RENAMES.map((r) => r.from).filter((f) => !starterCarries.includes(f)),
           ),
       ],
-      [
-        "no starter literal survives the apply",
-        applied.length === 0 || failWith("left", applied),
-      ],
+      ["no starter literal survives the apply", applied.length === 0 || failWith("left", applied)],
       [
         "no identifier token survives the apply",
         leftoverTokens.length === 0 || failWith("left", leftoverTokens),
@@ -925,8 +1038,14 @@ if (!existsSync(join(STARTER, "package.json"))) {
         "no owned file imports out of packages/server/src/ws",
         foreign.length === 0 || failWith("imports", foreign),
       ],
-      ["the sync feed resolves the session cookie itself", syncHandler.includes("sessionFromCookie")],
-      ["and the bearer subprotocol path is still there", syncHandler.includes("sessionFromBearerSubprotocol")],
+      [
+        "the sync feed resolves the session cookie itself",
+        syncHandler.includes("sessionFromCookie"),
+      ],
+      [
+        "and the bearer subprotocol path is still there",
+        syncHandler.includes("sessionFromBearerSubprotocol"),
+      ],
     ];
   });
 
@@ -985,6 +1104,10 @@ if (!existsSync(join(STARTER, "package.json"))) {
     const prunedMlExport = !/^export \* from "\.\/ml-types\.js";$/m.test(
       readFileSync(join(scaffolded, "packages/shared/src/index.ts"), "utf-8"),
     );
+    const prunedCoreImages = ["server", "client"].every((role) => {
+      const dockerfile = readFileSync(join(scaffolded, `packages/${role}/Dockerfile`), "utf-8");
+      return !dockerfile.includes("packages/core") && !dockerfile.includes(CORE_PACKAGE_NAME);
+    });
 
     const { manual, ledger } = apply(scaffolded, { name: scaffoldName });
     const rootPkg = readJsonAt(scaffolded, "package.json");
@@ -1000,7 +1123,12 @@ if (!existsSync(join(STARTER, "package.json"))) {
       // testing what they claim to.
       ["the scaffold pruned ws/", prunedWs],
       ["the scaffold pruned the ml-types re-export", prunedMlExport],
-      ["nothing was handed to the checklist", manual === 0 || failWith("manual steps", [String(manual)])],
+      ["images without client-core never copy or build the missing package", prunedCoreImages],
+      ...coreImageChecks(scaffolded),
+      [
+        "nothing was handed to the checklist",
+        manual === 0 || failWith("manual steps", [String(manual)]),
+      ],
       ["no checklist file was written", !existsSync(join(scaffolded, CLIENT_CORE_CHECKLIST_PATH))],
       [
         "every marked file the project has was wired",
@@ -1064,6 +1192,43 @@ group("feature plumbing", () => {
 });
 
 // ── helpers ──────────────────────────────────────────────────────────
+
+/** An image cannot use the host's already-installed workspace or dist output. */
+function coreImageChecks(projectDir: string): Array<[string, boolean]> {
+  const checks: Array<[string, boolean]> = [];
+  for (const role of ["server", "client"]) {
+    const lines = readFileSync(join(projectDir, `packages/${role}/Dockerfile`), "utf-8")
+      .split("\n")
+      .map((line) => line.trim());
+    const manifest = lines.indexOf("COPY packages/core/package.json packages/core/");
+    const install = lines.indexOf("RUN pnpm install --frozen-lockfile");
+    const source = lines.indexOf("COPY packages/core packages/core");
+    const sharedBuild = lines.indexOf("RUN pnpm --filter @starter/shared run build");
+    const coreBuild = lines.indexOf("RUN pnpm --filter @starter/core run build");
+    const appBuild = lines.indexOf(`RUN pnpm --filter @starter/${role} run build`);
+    checks.push(
+      [
+        `${role}: core's workspace manifest exists before frozen install`,
+        manifest >= 0 && install > manifest,
+      ],
+      [
+        `${role}: core source is copied into the build stage`,
+        source > install && coreBuild > source,
+      ],
+      [
+        `${role}: shared and core compile before the dependent app`,
+        sharedBuild >= 0 && coreBuild > sharedBuild && appBuild > coreBuild,
+      ],
+      [
+        `${role}: every core instruction occurs only once`,
+        [manifest, source, coreBuild].every(
+          (at) => at >= 0 && lines.filter((line) => line === lines[at]).length === 1,
+        ),
+      ],
+    );
+  }
+  return checks;
+}
 
 function readJsonAt(
   dir: string,

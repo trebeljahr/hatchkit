@@ -7,9 +7,9 @@ import { SYNC_PATH } from "@starter/shared";
 import { authenticateUpgrade } from "./auth.js";
 import { RoomManager } from "./rooms.js";
 import { env, getTrustedOrigins } from "../config/env.js";
+import { isRedisReady } from "../db/redis.js";
 
 const PING_INTERVAL_MS = 10_000;
-const PONG_TIMEOUT_MS = 5_000;
 
 export const roomManager = new RoomManager();
 
@@ -45,6 +45,11 @@ export function setupWebSocket(server: Server): WebSocketServer {
       return;
     }
 
+    if (!isRedisReady()) {
+      socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+      return;
+    }
+
     // Origin validation in production
     if (env.isProduction) {
       const trusted = getTrustedOrigins();
@@ -56,13 +61,21 @@ export function setupWebSocket(server: Server): WebSocketServer {
     }
 
     // Authenticate
-    const session = await authenticateUpgrade(req);
+    let session;
+    try {
+      session = await authenticateUpgrade(req);
+    } catch {
+      socket.destroy();
+      return;
+    }
+    if (!session?.user || socket.destroyed || !server.listening || !isRedisReady()) {
+      socket.destroy();
+      return;
+    }
 
     wss.handleUpgrade(req, socket, head, (ws) => {
-      (ws as WebSocket & { userId?: string; displayName?: string }).userId =
-        session?.user?.id;
-      (ws as WebSocket & { displayName?: string }).displayName =
-        session?.user?.name ?? "Anonymous";
+      (ws as WebSocket & { userId?: string; displayName?: string }).userId = session?.user?.id;
+      (ws as WebSocket & { displayName?: string }).displayName = session?.user?.name ?? "Anonymous";
       wss.emit("connection", ws, req);
     });
   });
@@ -71,9 +84,19 @@ export function setupWebSocket(server: Server): WebSocketServer {
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
     const roomId = url.searchParams.get("roomId");
 
+    // Serialise this socket's joins, messages and close: Redis joins are async,
+    // so an action sent immediately after upgrade must wait for membership.
+    let pending = Promise.resolve();
+    const run = (work: () => Promise<void>): void => {
+      pending = pending.then(work).catch((error: unknown) => {
+        console.error("[ws] Room operation failed:", error);
+        ws.close(1012, "Room temporarily unavailable");
+      });
+    };
+
     // Auto-join room if roomId provided
     if (roomId && ws.userId) {
-      roomManager.join(roomId, ws.userId, ws.displayName ?? "Anonymous", ws);
+      run(() => roomManager.join(roomId, ws.userId!, ws.displayName ?? "Anonymous", ws));
     }
 
     // Ping/pong heartbeat
@@ -98,14 +121,11 @@ export function setupWebSocket(server: Server): WebSocketServer {
         const message = JSON.parse(data.toString()) as ClientToServerMessage;
 
         if (message.type === "join-room" && ws.userId) {
-          roomManager.join(
-            message.roomId,
-            ws.userId,
-            ws.displayName ?? "Anonymous",
-            ws,
+          run(() =>
+            roomManager.join(message.roomId, ws.userId!, ws.displayName ?? "Anonymous", ws),
           );
         } else {
-          roomManager.handleMessage(ws, message);
+          run(() => roomManager.handleMessage(ws, message));
         }
       } catch {
         roomManager.send(ws, {
@@ -119,14 +139,9 @@ export function setupWebSocket(server: Server): WebSocketServer {
     // Cleanup on close
     ws.on("close", () => {
       clearInterval(pingInterval);
-      roomManager.leave(ws);
+      run(() => roomManager.leave(ws));
     });
   });
-
-  // Periodic room pruning (every 30 minutes)
-  setInterval(() => {
-    roomManager.pruneEmpty();
-  }, 30 * 60 * 1000);
 
   return wss;
 }

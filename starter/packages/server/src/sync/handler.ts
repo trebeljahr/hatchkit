@@ -16,9 +16,10 @@
 import { WebSocketServer, type WebSocket } from "ws";
 import type { IncomingMessage, Server } from "http";
 import { fromNodeHeaders } from "better-auth/node";
-import { SESSION_REVOKED_CLOSE_CODE, SYNC_PATH } from "@starter/shared";
+import { SESSION_REVOKED_CLOSE_CODE, SYNC_EVENT_KINDS, SYNC_PATH } from "@starter/shared";
 import { getAuth } from "../auth/auth.js";
 import { syncFeed } from "./feed.js";
+import { isRedisReady } from "../db/redis.js";
 import { env, getTrustedOrigins } from "../config/env.js";
 
 /**
@@ -164,6 +165,10 @@ export function setupSyncFeed(server: Server): WebSocketServer {
     // immediately closes with no code" and points at neither feature. So this
     // listener claims exactly one path and ignores the rest.
     if (url.pathname !== SYNC_PATH) return;
+    if (!isRedisReady()) {
+      socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nRetry-After: 1\r\n\r\n");
+      return;
+    }
 
     // Origin validation in production, same rule as the room socket. A
     // WebSocket is not subject to CORS and its constructor has no
@@ -183,9 +188,7 @@ export function setupSyncFeed(server: Server): WebSocketServer {
       }
     }
 
-    // Authentication is MANDATORY here, unlike the room socket — which
-    // tolerates an anonymous connection because an anonymous guest in a chat
-    // room is a real use. This feed carries one account's data, so a socket
+    // Authentication is mandatory. This feed carries one account's data, so a socket
     // with no session has no room it may be placed in and nothing it may be
     // sent. It is refused at the upgrade rather than accepted and left idle:
     // an accepted-but-roomless socket is a connection that looks healthy to
@@ -195,6 +198,16 @@ export function setupSyncFeed(server: Server): WebSocketServer {
     // subprotocol for hosts with no cookie jar.
     const authenticated =
       (await sessionFromCookie(req)) ?? (await sessionFromBearerSubprotocol(req));
+
+    if (socket.destroyed) return;
+    if (!server.listening) {
+      socket.destroy();
+      return;
+    }
+    if (!isRedisReady()) {
+      socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nRetry-After: 1\r\n\r\n");
+      return;
+    }
 
     if (!authenticated) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
@@ -233,9 +246,21 @@ export function setupSyncFeed(server: Server): WebSocketServer {
       send: (message) => {
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(message));
       },
+      resync: () => ws.close(1012, "Sync transport reset"),
     });
 
+    const invalidate = () => {
+      if (ws.readyState !== ws.OPEN) return;
+      for (const kind of SYNC_EVENT_KINDS) {
+        ws.send(JSON.stringify({ type: "sync", event: { kind } }));
+      }
+    };
+    // A reconnect is a new subscription, not replay. Ask every consumer to fetch
+    // authoritative state even when its adapter ignores connection status.
+    invalidate();
+
     let isAlive = true;
+    let heartbeatCount = 0;
     ws.on("pong", () => {
       isAlive = true;
     });
@@ -248,6 +273,11 @@ export function setupSyncFeed(server: Server): WebSocketServer {
       }
       isAlive = false;
       ws.ping();
+      // Pub/sub can lose a frame even without this subscriber disconnecting.
+      // Bound stale state to 30 seconds by invalidating authoritative queries.
+      if (++heartbeatCount % 3 === 0 && ws.readyState === ws.OPEN) {
+        invalidate();
+      }
     }, PING_INTERVAL_MS);
 
     // EVERY client frame is discarded. The handler is registered only so the

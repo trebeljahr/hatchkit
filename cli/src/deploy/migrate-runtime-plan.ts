@@ -273,7 +273,7 @@ export function planRuntimeMigration(
   const appServices: string[] = [];
   for (const name of names) {
     const svc = services[name];
-    const image = typeof svc.image === "string" ? svc.image : "";
+    const image = typeof svc.image === "string" ? interpolate(svc.image, envMap).value : "";
     if (DATASTORE_IMAGE.test(image) || DATASTORE_NAME.test(name)) {
       blockers.push(
         `service "${name}" (${image || "no image"}) is a datastore inside this compose app. Its data is in a Docker volume only this app mounts; ` +
@@ -312,6 +312,66 @@ export function planRuntimeMigration(
       blockers.push(
         `${where} overrides the image's command/entrypoint, which a Docker Image app can't carry.`,
       );
+    }
+
+    // These service settings are not copied into the replacement. A
+    // healthy root page cannot prove that losing them is harmless.
+    for (const field of [
+      "configs",
+      "secrets",
+      "tmpfs",
+      "devices",
+      "network_mode",
+      "networks",
+      "extra_hosts",
+      "dns",
+      "user",
+      "working_dir",
+      "stop_signal",
+      "cap_add",
+      "security_opt",
+      "privileged",
+      "links",
+    ] as const) {
+      const value = svc[field];
+      if (
+        value !== undefined &&
+        value !== null &&
+        value !== false &&
+        !(Array.isArray(value) && value.length === 0)
+      ) {
+        blockers.push(
+          `${where} uses \`${field}\`, which the replacement cannot preserve automatically.`,
+        );
+      }
+    }
+    const envFiles = Array.isArray(svc.env_file)
+      ? svc.env_file
+      : svc.env_file === undefined
+        ? []
+        : [svc.env_file];
+    if (envFiles.some((file) => file !== ".env")) {
+      blockers.push(
+        `${where} loads a custom env_file; its values are not available from the Coolify env rows.`,
+      );
+    }
+    for (const label of labelEntries(svc.labels)) {
+      if (/^traefik\.http\.routers\.[^.]+\.rule=/.test(label)) {
+        const rule = label.slice(label.indexOf("=") + 1);
+        // Only a disjunction of bare Host rules is reproduced below.
+        // PathPrefix, auth constraints and negation must never widen to
+        // an entire hostname during migration.
+        if (!/^\s*Host\(`[^`]+`\)(?:\s*\|\|\s*Host\(`[^`]+`\))*\s*$/.test(rule)) {
+          blockers.push(
+            `${where} has a custom Traefik routing rule that cannot be preserved automatically.`,
+          );
+        }
+      }
+      if (/^traefik\.http\.(?:middlewares\.|routers\.[^.]+\.middlewares=)/.test(label)) {
+        blockers.push(
+          `${where} has custom Traefik middleware; preserve it explicitly before migrating.`,
+        );
+      }
     }
 
     // Image.
@@ -404,6 +464,10 @@ export function planRuntimeMigration(
       blockers.push(
         `${where} has no public hostname. A service reached only over the compose network can't be moved on its own.`,
       );
+      continue;
+    }
+    if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) {
+      blockers.push(`${where}: container port is outside the valid range 1–65535.`);
       continue;
     }
     if (port === undefined) {

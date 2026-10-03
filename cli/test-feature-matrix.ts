@@ -56,6 +56,7 @@ process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-${process.pid}`;
 process.env.HATCHKIT_DEV_CONFIG_DIR = mkdtempSync(join(tmpdir(), "matrix-devdir-"));
 
 const { scaffoldApp } = await import("./src/scaffold/app.js");
+const { expandFeatureSelection } = await import("./src/features/all.js");
 const { KNOWN_FEATURES } = await import("./src/utils/flags.js");
 const { SUPPORTED_ADDITIONS } = await import("./src/scaffold/update.js");
 type Feature = import("./src/prompts.js").Feature;
@@ -210,7 +211,7 @@ function workflowMismatches(root: string, features: Feature[]): string[] {
  *  must appear only when its owner is both selected AND scaffoldable on
  *  this surface. */
 function envMismatches(root: string, features: Feature[], surfaces: Surface): string[] {
-  const envPath = join(root, ".env.production");
+  const envPath = join(root, "packages/server/.env.production");
   if (!existsSync(envPath)) return [];
   const content = readFileSync(envPath, "utf-8");
   const hasKey = (k: string) => new RegExp(`^${k}=`, "m").test(content);
@@ -218,7 +219,12 @@ function envMismatches(root: string, features: Feature[], surfaces: Surface): st
 
   const expectations: Array<[key: string, wanted: boolean, why: string]> = [
     // Redis is only wired into compose off a static surface.
-    ["REDIS_URL", features.includes("websocket") && surfaces !== "static", "websocket + a server"],
+    [
+      "REDIS_URL",
+      features.some((feature) => feature === "websocket" || feature === "client-core") &&
+        surfaces !== "static",
+      "realtime + a server",
+    ],
     ["S3_BUCKET_NAME", features.includes("s3"), "s3"],
     ["AWS_ACCESS_KEY_ID", features.includes("s3"), "s3"],
     ["SENTRY_DSN", features.includes("analytics"), "analytics"],
@@ -237,9 +243,11 @@ function composeMismatches(root: string, features: Feature[], surfaces: Surface)
   if (!existsSync(composePath)) return [];
   const content = readFileSync(composePath, "utf-8");
   const hasRedis = /^\s{2}redis:/m.test(content);
-  const wantRedis = features.includes("websocket") && surfaces !== "static";
-  if (hasRedis && !wantRedis) return ["compose declares redis without websocket + a server"];
-  if (!hasRedis && wantRedis) return ["compose has no redis despite websocket"];
+  const wantRedis =
+    features.some((feature) => feature === "websocket" || feature === "client-core") &&
+    surfaces !== "static";
+  if (hasRedis && !wantRedis) return ["compose declares redis without realtime + a server"];
+  if (!hasRedis && wantRedis) return ["compose has no redis despite realtime"];
   return [];
 }
 
@@ -308,14 +316,26 @@ for (const combo of COMBOS) {
   try {
     console.log(`\n── ${combo.label} (${combo.surfaces}) ─────────────────────────────`);
     console.log(`   features: ${combo.features.join(", ") || "(none)"}`);
-    await scaffoldApp(cfg(`mx-${combo.label.replace(/\+/g, "-")}`, combo.features, combo.surfaces), dir);
+    await scaffoldApp(
+      cfg(`mx-${combo.label.replace(/\+/g, "-")}`, combo.features, combo.surfaces),
+      dir,
+    );
+    const effectiveFeatures = [
+      ...new Set([...combo.features, ...expandFeatureSelection(combo.features).ordered]),
+    ];
 
     const checks: Array<[string, string[]]> = [
       ["no dangling relative imports", danglingImports(dir)],
       ["no script points at a file that wasn't scaffolded", scriptsReferencingMissingFiles(dir)],
       ["release workflows match the selected shells", workflowMismatches(dir, combo.features)],
-      ["env model matches the scaffolded services", envMismatches(dir, combo.features, combo.surfaces)],
-      ["compose matches the scaffolded services", composeMismatches(dir, combo.features, combo.surfaces)],
+      [
+        "env model matches the scaffolded services",
+        envMismatches(dir, effectiveFeatures, combo.surfaces),
+      ],
+      [
+        "compose matches the scaffolded services",
+        composeMismatches(dir, effectiveFeatures, combo.surfaces),
+      ],
       // The starter's snapshot records the starter's router. Unselected, the
       // strip removes it; selected, the scaffold does, and `create` writes the
       // project's own after `pnpm install` (features/client-core/snapshot.ts).

@@ -33,6 +33,7 @@ import {
   parseImageRef,
   resolveCoolifyRuntime,
   rollingUpdateBlocker,
+  rollingUpdateNamingUnknown,
   worstCaseDrainDropSeconds,
 } from "./src/deploy/image-runtime.js";
 import {
@@ -190,6 +191,35 @@ check("rollingUpdateBlocker names every Coolify fallback to stop-then-start", ()
   assert.equal(
     rollingUpdateBlocker({ buildPack: "dockerimage", healthCheck: { enabled: true, path: "/" } }),
     null,
+  );
+});
+
+check("container naming, unknown buildpacks and Coolify's --ip substring gate cannot pass", () => {
+  const app = { buildPack: "dockerimage", healthCheck: { enabled: true } };
+  assert.match(
+    rollingUpdateBlocker({ ...app, isConsistentContainerNameEnabled: true }) ?? "",
+    /consistent container name/,
+  );
+  assert.match(
+    rollingUpdateBlocker({ ...app, customInternalName: "fixed-name" }) ?? "",
+    /custom internal/,
+  );
+  assert.match(
+    rollingUpdateBlocker({ ...app, customDockerRunOptions: "--ipc=host" }) ?? "",
+    /--ip/,
+  );
+  assert.match(rollingUpdateBlocker({ ...app, buildPack: "unknown" }) ?? "", /unknown build pack/);
+  assert.match(
+    rollingUpdateBlocker({ healthCheck: { enabled: true } }) ?? "",
+    /unknown build pack/,
+  );
+  assert.equal(rollingUpdateNamingUnknown({}), true);
+  assert.equal(
+    rollingUpdateNamingUnknown({
+      isConsistentContainerNameEnabled: false,
+      customInternalName: null,
+    }),
+    false,
   );
 });
 

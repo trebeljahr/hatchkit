@@ -2,21 +2,28 @@ import { Redis } from "ioredis";
 import { env } from "../config/env.js";
 
 let redis: Redis | null = null;
-let roomSubscriber: Redis | null = null;
-let roomSubscriberRequired = false;
+// A connected subscriber is not ready until Redis acknowledges its subscriptions
+// and its owner has restored any state lost while disconnected.
+const subscribers = new Map<string, { client: Redis | null; ready: boolean }>();
 
 export function getRedis(): Redis | null {
   return redis;
 }
 
 export function isRedisReady(): boolean {
-  return !env.REDIS_URL ||
-    (redis?.status === "ready" && (!roomSubscriberRequired || roomSubscriber?.status === "ready"));
+  return (
+    !env.REDIS_URL ||
+    (redis?.status === "ready" &&
+      [...subscribers.values()].every(({ client, ready }) => ready && client?.status === "ready"))
+  );
 }
 
-export function setRoomSubscriber(client: Redis | null): void {
-  roomSubscriber = client;
-  if (client) roomSubscriberRequired = true;
+export function setRedisSubscriber(name: string, client: Redis | null, ready = false): void {
+  subscribers.set(name, { client, ready });
+}
+
+export function setRoomSubscriber(client: Redis | null, ready = false): void {
+  setRedisSubscriber("rooms", client, ready);
 }
 
 export async function connectRedis(): Promise<void> {
@@ -38,7 +45,6 @@ export async function disconnectRedis(): Promise<void> {
   if (!redis) return;
   await redis.quit();
   redis = null;
-  roomSubscriber = null;
-  roomSubscriberRequired = false;
+  subscribers.clear();
   console.log("[redis] Disconnected from Redis");
 }

@@ -32,14 +32,14 @@ hatchkit create --topology=split
 
 Or answer the **Deployment topology** step in the interactive flow.
 
-## Deploys without downtime: the runtime
+## Rolling deployments and the runtime
 
 A second field, `coolifyRuntime`, decides how each service runs on Coolify.
-It decides whether a push takes the site down.
+It determines whether Coolify can overlap application revisions during a deploy.
 
 | Value | Coolify apps | What a deploy does |
 |---|---|---|
-| `image` (default for new projects) | one **Docker Image** app per service | Starts the new container, waits for its health check, then stops the old one. The site stays up. |
+| `image` (default for new projects) | one **Docker Image** app per service | Starts the new container, waits for its health check, then stops the old one. Continuity also requires readiness, draining and compatible shared state. |
 | `compose` | one **Docker Compose** app | Stops the old container, then starts the new one. The site is down until the new process listens. |
 
 Coolify only does rolling updates for Docker Image, Dockerfile, Nixpacks and
@@ -97,14 +97,58 @@ hatchkit migrate-runtime
 ```
 
 It creates the Docker Image app next to the compose app, with the same image,
-env, port and hostnames. It deploys it while the old app keeps serving and
-checks it through Traefik. Only then does it stop the old app and point the
+env and port on a verification hostname. It deploys it while the old app keeps
+serving and checks it through Traefik. Adding public hostnames requires a second
+deployment to activate their routing labels. It verifies that deployment and
+the public health routes before stopping the old app and pointing the
 repo's deploy secret at the new one. The old app stays, stopped:
 `--rollback` starts it again, `--cleanup` deletes it.
 
 It refuses a compose app that holds data — a mongo, postgres or redis service,
 or any volume. That data lives in the old app's Docker volume and would not
-follow. Move it to a Coolify-managed database first with `hatchkit add`.
+follow. Plan a separate data migration, backup and restore drill before changing
+its runtime. Provisioning a managed database does not transfer existing data.
+
+### WebSockets and shared state
+
+An existing WebSocket closes when its server exits. The client must reconnect,
+authenticate, rejoin its rooms and refetch authoritative state. The starter's
+`RoomSocket` helper gates actions until its `onResync` callback succeeds. Use that
+callback to read durable application state; adopting the helper without a real
+snapshot callback does not restore a running game or pending business action.
+
+The `websocket` and `client-core` features both require Redis in production.
+Room events and per-user sync invalidations cross replicas through Redis;
+room presence uses expiring leases so crashed replicas disappear. Readiness
+requires acknowledged subscriptions, and transport recovery forces a refetch.
+Use a dedicated Redis instance per project: Redis database numbers do not
+isolate Pub/Sub channels, and these starter channels are not project-namespaced.
+
+Redis Pub/Sub is not durable history. Persist important actions and snapshots in
+the database, with stable action IDs and server-side deduplication where retrying
+could duplicate a write. Room messages alone provide neither replay nor
+exactly-once execution. During overlap, old and new clients, servers and schemas
+must remain compatible. Use additive migrations; process-local game state and
+unrenewed job leases need an application-specific handoff design.
+
+The optional offline mutation queue can retry a create after the original write
+committed but its response was lost. The example `items.create` endpoint has no
+idempotency-key contract. Before using queued creates across releases, add a
+stable key on the initial send and server-side deduplication, then test a lost
+response followed by replay against the replacement server.
+
+The shared room presence protocol is a compatibility boundary. Earlier starter
+servers do not register shared leases, so overlapping them with the new server
+cannot produce complete presence snapshots. The new health response advertises
+`roomProtocol: 2`. First adoption requires a controlled reconnect and state
+handoff; only subsequent releases with a compatible room protocol qualify for
+the usual rolling acceptance test.
+
+Before enabling rolling releases for an existing app, test an authenticated
+browser session, cross-replica delivery, reconnect and state convergence, an
+accepted long request, an unhealthy candidate and rollback through the actual
+proxy. Sample HTTP throughout the replacement and verify served image versions.
+Unit tests and a healthy container badge do not establish those properties.
 
 `hatchkit doctor` names every app of the project whose deploys still take
 the site down.

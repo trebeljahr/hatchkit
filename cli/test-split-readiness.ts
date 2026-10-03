@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scaffoldApp } from "./src/scaffold/app.js";
 import type { ProjectConfig } from "./src/prompts.js";
+import { scaffoldApp } from "./src/scaffold/app.js";
 
 function config(name: string, websocket: boolean): ProjectConfig {
   return {
@@ -42,16 +42,30 @@ for (const websocket of [true, false]) {
     assert.equal(manifest.publicService, "client");
     const clientEnv = read("packages/client/.env.example");
     const serverEnv = read("packages/server/.env.example");
-    assert.match(clientEnv, new RegExp(`^NEXT_PUBLIC_API_URL=https://api\\.${name}\\.example\\.test$`, "m"));
-    assert.match(clientEnv, new RegExp(`^NEXT_PUBLIC_WS_URL=wss://api\\.${name}\\.example\\.test$`, "m"));
+    assert.match(
+      clientEnv,
+      new RegExp(`^NEXT_PUBLIC_API_URL=https://api\\.${name}\\.example\\.test$`, "m"),
+    );
+    assert.match(
+      clientEnv,
+      new RegExp(`^NEXT_PUBLIC_WS_URL=wss://api\\.${name}\\.example\\.test$`, "m"),
+    );
     assert.match(serverEnv, new RegExp(`^FRONTEND_URL=https://${name}\\.example\\.test$`, "m"));
-    assert.match(serverEnv, new RegExp(`^BETTER_AUTH_URL=https://api\\.${name}\\.example\\.test$`, "m"));
+    assert.match(
+      serverEnv,
+      new RegExp(`^BETTER_AUTH_URL=https://api\\.${name}\\.example\\.test$`, "m"),
+    );
     assert.match(read("packages/server/Dockerfile"), /deploy --legacy \/prod/);
     const index = read("packages/server/src/index.ts");
     assert.equal(index.includes("roomManager.connectPubSub(redis)"), websocket);
     assert.equal(index.includes("roomManager.disconnectPubSub()"), websocket);
     assert.equal(existsSync(join(dir, "packages/client/src/lib/room-socket.ts")), websocket);
     assert.equal(existsSync(join(dir, "packages/client/src/lib/room-socket.test.ts")), websocket);
+    assert.equal(read("packages/server/src/app.ts").includes("roomProtocol: 2"), websocket);
+    assert.equal(
+      existsSync(join(dir, "packages/server/src/tests/room-transport.test.ts")),
+      websocket,
+    );
     console.log(`split ${websocket ? "WebSocket" : "HTTP"} scaffold passed`);
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -3490,22 +3490,29 @@ export async function checkProjectNginxConfigState(projectDir: string): Promise<
  *  Apps are found by NAME, across both runtimes' naming, rather than via
  *  the run ledger: `migrate-runtime` replaces the app the ledger
  *  recorded, and this check matters most right after that happens. */
-export async function checkProjectRollingDeployState(projectDir: string): Promise<CheckResult[]> {
+export async function checkProjectRollingDeployState(
+  projectDir: string,
+  opts: { api?: Pick<CoolifyApi, "listApplications" | "getApplication"> } = {},
+): Promise<CheckResult[]> {
   const out: CheckResult[] = [];
   const { readManifestWithMigrationInfo } = await import("./scaffold/manifest.js");
   const manifest = readManifestWithMigrationInfo(projectDir)?.manifest;
   if (!manifest?.name || !manifest.domain) return out;
   if (manifest.deploymentMode && manifest.deploymentMode !== "coolify") return out;
 
-  const cfg = await getCoolifyConfig();
-  if (!cfg) return out;
-  const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+  let api = opts.api;
+  if (!api) {
+    const cfg = await getCoolifyConfig();
+    if (!cfg) return out;
+    api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+  }
   const { computeRoutingPlan } = await import("./deploy/routing.js");
   const {
     COOLIFY_STOP_TIMEOUT_SECONDS,
     healthCheckFor,
     healthCheckToConverge,
     rollingUpdateBlocker,
+    rollingUpdateNamingUnknown,
     worstCaseDrainDropSeconds,
   } = await import("./deploy/image-runtime.js");
 
@@ -3547,6 +3554,17 @@ export async function checkProjectRollingDeployState(projectDir: string): Promis
       });
     }
     if (!blocker) {
+      if (rollingUpdateNamingUnknown(app)) {
+        out.push({
+          name,
+          status: "warn",
+          detail: `"${app.name}" has a health check, but Coolify did not expose its container-name settings; rolling updates remain unverified`,
+          hint: [
+            "Inspect Consistent Container Name and Custom Internal Name in Coolify; both must be disabled/empty, then verify a deployment with live traffic.",
+          ],
+        });
+        continue;
+      }
       // A rolling update whose timing can't drain: the old container is
       // still routed when `docker stop` ends it, so the deploy ends in
       // 502s. Timing Coolify didn't return is never reported.
@@ -3595,7 +3613,7 @@ export async function checkProjectRollingDeployState(projectDir: string): Promis
     out.push({
       name,
       status: "warn",
-      detail: `"${app.name}": every deploy takes the site down — ${blocker}`,
+      detail: `"${app.name}": ${blocker}`,
       hint:
         app.buildPack === "dockercompose"
           ? [

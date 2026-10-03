@@ -78,6 +78,25 @@ export function applyClientCore(
     return { manual: [] };
   }
 
+  // Installing a feed that imports a newer Redis API into an older generated
+  // server would break its build and could report false readiness. Refuse before
+  // copying or wiring anything; the existing datastore adapter is user-owned.
+  const redis = ctx.ledger.read("packages/server/src/db/redis.ts") ?? "";
+  const health = ctx.ledger.read("packages/server/src/app.ts") ?? "";
+  if (
+    !["getRedis", "setRedisSubscriber", "isRedisReady"].every((name) =>
+      new RegExp(`export (?:async )?function ${name}\\b`).test(redis),
+    ) ||
+    !health.includes("isRedisReady()")
+  ) {
+    throw new Error(
+      "client-core requires the replica-aware Redis adapter and readiness route before installation. " +
+        "Update packages/server/src/db/redis.ts to expose getRedis, setRedisSubscriber, and isRedisReady; " +
+        "include isRedisReady() in /api/health. Preserve existing datastore settings and configure REDIS_URL " +
+        "before a production rollout. No client-core files were changed.",
+    );
+  }
+
   copyOwnedFiles(ctx, starterRoot);
   mergeManifests(ctx, starterRoot);
   const manual = wireMarkedFiles(ctx, starterRoot);
@@ -269,14 +288,32 @@ function wireMarkedFiles(ctx: FeatureContext, starterRoot: string): ManualWiring
       if (normalize(stripped) === normalize(content)) return rendered;
 
       let next = content;
+      const unresolved: ManualWiring[] = [];
       for (const { anchor, block } of blocks) {
         const inserted = insertAfter(next, anchor, block);
         if (inserted === null) {
-          manual.push({ file: rel, anchor, block, reason: "anchor-not-found" });
+          unresolved.push({ file: rel, anchor, block, reason: "anchor-not-found" });
           continue;
         }
         next = inserted;
       }
+      // Docker's manifest copy, source copy and build form one dependency
+      // chain. A partial insertion leaves a broken image and any inserted
+      // marker would make the next apply incorrectly treat it as complete.
+      if (rel.endsWith("/Dockerfile") && unresolved.length > 0) {
+        manual.push(
+          ...blocks.map(
+            ({ anchor, block }): ManualWiring => ({
+              file: rel,
+              anchor,
+              block,
+              reason: "anchor-not-found",
+            }),
+          ),
+        );
+        return content;
+      }
+      manual.push(...unresolved);
       return next;
     });
   }

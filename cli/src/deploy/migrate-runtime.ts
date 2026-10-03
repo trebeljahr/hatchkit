@@ -5,7 +5,7 @@
  * What gets reproduced and what blocks a move: migrate-runtime-plan.ts.
  *
  * ---------------------------------------------------------------------
- * The cutover, and why it has no gap
+ * Verified side-by-side cutover
  * ---------------------------------------------------------------------
  *
  * Side by side, never in place:
@@ -19,7 +19,9 @@
  *      through Traefik, and Coolify reports the app running.
  *      Any failure here stops the run with the old app untouched and
  *      renamed back. Nobody saw the new container on a public host.
- *   4. Add public hosts, turn off the old app's git auto-deploy, stop it. Until
+ *   4. Add public hosts and deploy again to activate their routing labels.
+ *      Verify a fresh activation host and public health routes, then turn off
+ *      the old app's git auto-deploy and stop it. Until
  *      it stops, both containers carry routers for the same hosts and
  *      either may answer — both serve the same build. After, only the
  *      new one does.
@@ -34,6 +36,7 @@
  * rollback and cleanup never have to guess what this run created.
  */
 
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { dirname, join, resolve } from "node:path";
@@ -77,7 +80,7 @@ export interface MigrateRuntimeOptions {
   keepLiveTag: boolean;
 }
 
-interface MigrationLedger {
+export interface MigrationLedger {
   version: 1;
   source: {
     uuid: string;
@@ -86,10 +89,17 @@ interface MigrationLedger {
     autoDeployWasEnabled?: boolean;
     gitRepository?: string;
   };
-  apps: Array<{ uuid: string; name: string; service: string; steadyTag: string }>;
+  apps: Array<{
+    uuid: string;
+    name: string;
+    service: string;
+    steadyTag: string;
+    verificationHost?: string;
+  }>;
   /** Secrets this run repointed, and the uuid they held before. */
   secrets: Array<{ repo: string; name: string; previousUuid: string }>;
-  phase: "prepared" | "cut-over" | "rolled-back" | "cleaned";
+  phase: "prepared" | "cutting-over" | "cut-over" | "rolled-back" | "cleaned";
+  publicBaseline?: Array<[string, number | null]>;
   updatedAt: string;
 }
 
@@ -194,7 +204,7 @@ export async function runMigrateRuntime(opts: MigrateRuntimeOptions): Promise<bo
     allOk = (await migrate(api, cfg.url, plan, opts)) && allOk;
   }
   if (opts.dryRun) console.log(chalk.dim("\n  Dry run — nothing was changed."));
-  if (!opts.dryRun) await updateManifestIfComplete(opts.projectDir, api);
+  if (!opts.dryRun && allOk) await updateManifestIfComplete(opts.projectDir, api);
   return allOk;
 }
 
@@ -298,17 +308,75 @@ function renderPlan(plan: RuntimeMigrationPlan): void {
 // Migrate
 // ---------------------------------------------------------------------------
 
-async function migrate(
+export async function migrate(
   api: CoolifyApi,
   coolifyUrl: string,
   plan: RuntimeMigrationPlan,
   opts: MigrateRuntimeOptions,
+  dependencies: Partial<MigrationDependencies> = {},
 ): Promise<boolean> {
+  const run = {
+    discoverPublicIps,
+    saveLedger,
+    probeStatus,
+    probeViaHost,
+    deployAndWait,
+    waitFor,
+    ghSecretExists,
+    ...dependencies,
+  };
   const source = await api.getApplication(plan.source.uuid);
   const placement = await resolvePlacement(api, source.environmentId);
   if (!placement || !source.serverUuid) {
     console.log(chalk.red("  Couldn't resolve the Coolify project/server this app lives in."));
     return false;
+  }
+  if (!opts.noSecrets) {
+    const repo = repoSlugFromCoolifyGitRepository(source.gitRepository);
+    if (!repo) {
+      console.log(
+        chalk.red(
+          "  No GitHub repository is attached to the source. Configure deployment targets explicitly with --no-secrets before migrating.",
+        ),
+      );
+      return false;
+    }
+    const names = [
+      "COOLIFY_RESOURCE_UUID",
+      "COOLIFY_WEBHOOK_URL",
+      "COOLIFY_SERVER_RESOURCE_UUID",
+      "COOLIFY_CLIENT_RESOURCE_UUID",
+    ];
+    const present = new Set(
+      (
+        await Promise.all(
+          names.map(async (name) =>
+            (await run.ghSecretExists(opts.projectDir, repo, name)) ? name : undefined,
+          ),
+        )
+      ).filter((name) => name !== undefined),
+    );
+    const split = plan.apps.length > 1 || migrationDeployRole(plan, 0) !== undefined;
+    const targets =
+      plan.apps.length > 1
+        ? plan.apps.map((app) =>
+            app.role === "server" ? "COOLIFY_SERVER_RESOURCE_UUID" : "COOLIFY_CLIENT_RESOURCE_UUID",
+          )
+        : [deploySecretNameFor(plan.source.name)];
+    const targetMissing = split
+      ? targets.some((name) => !present.has(name))
+      : !present.has("COOLIFY_RESOURCE_UUID") && !present.has("COOLIFY_WEBHOOK_URL");
+    const conflicting = split
+      ? present.has("COOLIFY_RESOURCE_UUID") || present.has("COOLIFY_WEBHOOK_URL")
+      : present.has("COOLIFY_SERVER_RESOURCE_UUID") || present.has("COOLIFY_CLIENT_RESOURCE_UUID");
+    if (targetMissing || conflicting) {
+      console.log(
+        chalk.red(
+          "  The deploy workflow's secret topology does not match the replacement apps. Reconcile generic versus client/server targets first, or explicitly manage them with --no-secrets. Leaving both sets would redeploy the legacy app.",
+        ),
+      );
+      return false;
+    }
   }
   const ledger: MigrationLedger = {
     version: 1,
@@ -326,24 +394,52 @@ async function migrate(
     phase: "prepared",
     updatedAt: new Date().toISOString(),
   };
-  saveLedger(ledger);
-
   const serverIp = (await api.listServers()).find((s) => s.uuid === source.serverUuid)?.ip ?? "";
-  const ips = await discoverPublicIps(api, source.serverUuid, serverIp).catch(
-    () => ({}) as { v4?: string },
-  );
+  const ips = await run
+    .discoverPublicIps(api, source.serverUuid, serverIp)
+    .catch(() => ({}) as { v4?: string });
   if (!ips.v4) {
-    console.log(chalk.red("  No public IPv4 address for a private verification host; refusing an unverified cutover."));
+    console.log(
+      chalk.red(
+        "  No public IPv4 address for a private verification host; refusing an unverified cutover.",
+      ),
+    );
     return false;
   }
 
-  // Baseline: what the public routes answer right now, so the cutover
-  // check compares like with like (a server that 404s at `/` today is
-  // not broken by answering 404 tomorrow).
+  const verificationToken = randomUUID().slice(0, 8);
+  const verificationHost = (index: number, stage: "verify" | "activate") =>
+    `hk-${verificationToken}-${index}-${stage}.${ips.v4}.sslip.io`;
+
+  // Readiness must already work publicly. A baseline 404 cannot
+  // distinguish the old application from a missing replacement router.
   const baseline = new Map<string, number | null>();
   for (const app of plan.apps) {
-    for (const url of publicProbeUrls(app)) baseline.set(url, await probeStatus(url));
+    const urls = publicProbeUrls(app);
+    if (urls.length === 0) {
+      console.log(
+        chalk.red(
+          `  ${app.appName} has no public route covering its readiness endpoint; refusing an unverifiable cutover.`,
+        ),
+      );
+      return false;
+    }
+    for (const url of urls) baseline.set(url, await run.probeStatus(url));
   }
+
+  if (
+    baseline.size === 0 ||
+    [...baseline.values()].some((s) => s === null || s < 200 || s >= 400)
+  ) {
+    console.log(
+      chalk.red(
+        "  Public readiness routes must return 2xx/3xx before migration; refusing an unverifiable cutover.",
+      ),
+    );
+    return false;
+  }
+  ledger.publicBaseline = [...baseline];
+  run.saveLedger(ledger);
 
   // ── 1. Rename the compose app out of the way.
   await api.updateApplication(plan.source.uuid, { name: plan.legacyName });
@@ -352,10 +448,30 @@ async function migrate(
   const abort = async (why: string): Promise<boolean> => {
     console.log(chalk.red(`\n  ✗ ${why}`));
     for (const app of ledger.apps) {
-      await api.updateApplication(app.uuid, {
-        domains: [`http://${app.name}-verify.${ips.v4}.sslip.io`],
-        forceDomainOverride: true,
-      }).catch(() => {});
+      // Domain PATCHes do not alter a running container's labels. Stop
+      // the replacement to withdraw any public routes already activated.
+      try {
+        await api.stopApplication(app.uuid);
+        const stopped = await run.waitFor(
+          async () => (await api.getApplication(app.uuid)).status ?? "",
+          (s) => s.startsWith("exited") || s === "stopped",
+          180_000,
+        );
+        if (!stopped)
+          console.log(
+            chalk.yellow(
+              `  ${app.name} has not stopped; inspect its active routes before retrying.`,
+            ),
+          );
+      } catch (err) {
+        console.log(chalk.yellow(`  Could not stop ${app.name}: ${(err as Error).message}`));
+      }
+      await api
+        .updateApplication(app.uuid, {
+          domains: [`http://${app.verificationHost}`],
+          forceDomainOverride: true,
+        })
+        .catch(() => {});
     }
     await api.updateApplication(plan.source.uuid, { name: plan.source.name }).catch(() => {});
     console.log(
@@ -369,8 +485,8 @@ async function migrate(
   };
 
   // ── 2. Create, fill, deploy.
-  for (const app of plan.apps) {
-    const verifyHost = ips.v4 ? `${app.appName}-verify.${ips.v4}.sslip.io` : undefined;
+  for (const [i, app] of plan.apps.entries()) {
+    const verifyHost = verificationHost(i, "verify");
     const create = ora(
       `Creating ${app.appName} (Docker Image, ${formatImageRef(app.image)})`,
     ).start();
@@ -400,14 +516,34 @@ async function migrate(
       create.fail();
       return abort(`Creating ${app.appName} failed: ${(err as Error).message}`);
     }
-    ledger.apps.push({ uuid, name: app.appName, service: app.service, steadyTag: app.steadyTag });
-    saveLedger(ledger);
+    ledger.apps.push({
+      uuid,
+      name: app.appName,
+      service: app.service,
+      steadyTag: app.steadyTag,
+      verificationHost: verifyHost,
+    });
+    run.saveLedger(ledger);
 
-    await api.setAppEnvRows(uuid, app.env);
+    try {
+      await api.setAppEnvRows(uuid, app.env);
+      // Preserve /api and /ws when Coolify builds path routers. Some
+      // versions silently drop this setting; do not cut over on those.
+      if (app.domains.some((domain) => new URL(domain).pathname !== "/")) {
+        const result = await api.updateApplication(uuid, { isStripprefixEnabled: false });
+        if (result.droppedFields.includes("is_stripprefix_enabled")) {
+          return abort(
+            `${app.appName}: Coolify refused to preserve route prefixes; configure this before migrating.`,
+          );
+        }
+      }
+    } catch (err) {
+      return abort(`Configuring ${app.appName} failed: ${(err as Error).message}`);
+    }
     console.log(chalk.dim(`  Copied ${app.env.length} env var(s) (values not shown)`));
 
     const deploy = ora(`Deploying ${app.appName} — the old app keeps serving meanwhile`).start();
-    const outcome = await deployAndWait(api, uuid);
+    const outcome = await run.deployAndWait(api, uuid);
     if (outcome !== "finished") {
       deploy.fail(`Deploy ${outcome}`);
       return abort(
@@ -418,7 +554,7 @@ async function migrate(
     }
     deploy.succeed(`${app.appName} deployed and healthy`);
 
-    const running = await waitFor(
+    const running = await run.waitFor(
       async () => (await api.getApplication(uuid)).status ?? "",
       (s) => s.startsWith("running"),
     );
@@ -426,8 +562,8 @@ async function migrate(
       return abort(`${app.appName} finished deploying but Coolify doesn't report it running.`);
 
     if (verifyHost && ips.v4) {
-      const status = await waitFor(
-        () => probeViaHost(ips.v4 as string, verifyHost, app.healthCheck.path),
+      const status = await run.waitFor(
+        () => run.probeViaHost(ips.v4 as string, verifyHost, app.healthCheck.path),
         (s) => s === 200,
         60_000,
       );
@@ -446,41 +582,68 @@ async function migrate(
   // Add the public routers only after every replacement passed its
   // private verification. The old app keeps serving during overlap.
   for (const [i, app] of plan.apps.entries()) {
-    const verifyHost = `${app.appName}-verify.${ips.v4}.sslip.io`;
+    // This hostname exists only on the activation deployment. A
+    // retained container from the private rehearsal cannot satisfy it.
+    const verifyHost = verificationHost(i, "activate");
     try {
-      await api.updateApplication(ledger.apps[i].uuid, {
+      const uuid = ledger.apps[i].uuid;
+      await api.updateApplication(uuid, {
         domains: [...app.domains, `http://${verifyHost}`],
         forceDomainOverride: true,
       });
+      // Docker labels are immutable. Storing domains in Coolify does
+      // not activate their routers until a new container is deployed.
+      const outcome = await run.deployAndWait(api, uuid);
+      if (outcome !== "finished")
+        return abort(`Activating production routes for ${app.appName}: ${outcome}`);
+      const routed = await run.waitFor(
+        () => run.probeViaHost(ips.v4 as string, verifyHost, app.healthCheck.path),
+        (status) => status === 200,
+        60_000,
+      );
+      if (!routed)
+        return abort(
+          `${app.appName} no longer answers through Traefik after activating its routes.`,
+        );
     } catch (err) {
       return abort(`Couldn't add production routes for ${app.appName}: ${(err as Error).message}`);
     }
   }
   if (source.isAutoDeployEnabled) {
-    await api.updateApplication(plan.source.uuid, { isAutoDeployEnabled: false }).catch(() => {});
+    try {
+      await api.updateApplication(plan.source.uuid, { isAutoDeployEnabled: false });
+    } catch (err) {
+      return abort(`Could not disable the legacy auto-deploy: ${(err as Error).message}`);
+    }
   }
+  // Persist before the asynchronous stop: an interrupted command must
+  // know rollback needs to start the source before removing replacements.
+  ledger.phase = "cutting-over";
+  run.saveLedger(ledger);
   const stop = ora(`Stopping ${plan.legacyName} — traffic moves to the new app(s)`).start();
   await api.stopApplication(plan.source.uuid);
-  const stopped = await waitFor(
+  const stopped = await run.waitFor(
     async () => (await api.getApplication(plan.source.uuid)).status ?? "",
     (s) => s.startsWith("exited") || s === "stopped",
     180_000,
   );
-  if (!stopped)
-    stop.warn(`${plan.legacyName} hasn't reported stopped yet — Coolify may still be draining it`);
-  else stop.succeed(`${plan.legacyName} stopped`);
-  ledger.phase = "cut-over";
-  saveLedger(ledger);
+  if (!stopped) {
+    stop.fail(
+      `${plan.legacyName} hasn't reported stopped — cutover is unverified. Use --rollback before retrying.`,
+    );
+    return false;
+  }
+  stop.succeed(`${plan.legacyName} stopped`);
 
   let publicOk = true;
   for (const [url, before] of baseline) {
-    const after = await waitFor(
-      () => probeStatus(url),
-      (s) => s !== null && (s < 500 || s === before),
+    const after = await run.waitFor(
+      () => run.probeStatus(url),
+      (s) => migrationProbeMatchesBaseline(before, s),
       60_000,
     );
     const shown = after ?? "no answer";
-    if (after === null || (after >= 500 && after !== before)) {
+    if (!migrationProbeMatchesBaseline(before, after)) {
       publicOk = false;
       console.log(chalk.red(`  ✗ ${url} → ${shown} (was ${before ?? "no answer"})`));
     } else {
@@ -498,6 +661,9 @@ async function migrate(
     );
     return false;
   }
+
+  ledger.phase = "cut-over";
+  run.saveLedger(ledger);
 
   // ── 4. Settle the new apps: drop the verification host, move to the
   //    steady tag. Both take effect on the next deploy.
@@ -538,7 +704,7 @@ async function migrate(
 
   // ── 5. Point CI at the new app(s).
   if (!opts.noSecrets) await repointSecrets(api, coolifyUrl, plan, ledger, opts.projectDir);
-  saveLedger(ledger);
+  run.saveLedger(ledger);
 
   console.log(
     chalk.green(
@@ -601,8 +767,7 @@ async function repointSecrets(
   // its secret, repository and branch. Same existing-only rule.
   const { deployHookSecretNames, ensureDeployHook } = await import("./coolify-deploy-hook.js");
   for (let i = 0; i < plan.apps.length; i++) {
-    const role =
-      plan.apps.length === 1 ? undefined : plan.apps[i].role === "server" ? "server" : "client";
+    const role = migrationDeployRole(plan, i);
     const names = deployHookSecretNames(role);
     if (!(await ghSecretExists(cwd, repo, names.secret))) continue;
     const { hook } = await ensureDeployHook(api, ledger.apps[i].uuid, { role });
@@ -618,6 +783,7 @@ async function repointSecrets(
     if (!(await ghSecretExists(cwd, repo, c.name))) continue;
     await ghSecretSet(cwd, repo, c.name, c.value);
     ledger.secrets.push({ repo, name: c.name, previousUuid: plan.source.uuid });
+    saveLedger(ledger);
     updated++;
     console.log(chalk.dim(`  GitHub: ${repo} ${c.name} → ${c.uuid}`));
   }
@@ -635,11 +801,13 @@ async function repointSecrets(
 // Rollback / cleanup
 // ---------------------------------------------------------------------------
 
-async function rollback(
+export async function rollback(
   api: CoolifyApi,
   ledger: MigrationLedger,
   opts: MigrateRuntimeOptions,
+  dependencies: Partial<MigrationDependencies> = {},
 ): Promise<boolean> {
+  const run = { saveLedger, probeStatus, deployAndWait, waitFor, ...dependencies };
   console.log(chalk.bold(`\n  Rolling back ${ledger.source.name}`));
   if (ledger.phase === "cleaned") {
     console.log(
@@ -658,20 +826,57 @@ async function rollback(
     );
     return true;
   }
-  if (ledger.phase === "cut-over") {
+  if (ledger.phase === "cut-over" || ledger.phase === "cutting-over") {
     const start = ora(`Starting ${ledger.source.legacyName} again (a compose deploy)`).start();
-    await api.queueDeploy(ledger.source.uuid);
-    const outcome = await deployAndWait(api, ledger.source.uuid);
+    const outcome = await run.deployAndWait(api, ledger.source.uuid);
     if (outcome !== "finished") {
       start.fail(`${ledger.source.legacyName} deploy ${outcome} — leaving the new app(s) running.`);
       return false;
     }
-    start.succeed(`${ledger.source.legacyName} is serving again`);
+    const running = await run.waitFor(
+      async () => (await api.getApplication(ledger.source.uuid)).status ?? "",
+      (status) => status.startsWith("running"),
+    );
+    if (!running) {
+      start.fail(`${ledger.source.legacyName} is not running — leaving replacements in place.`);
+      return false;
+    }
+    start.succeed(`${ledger.source.legacyName} is running again`);
   }
   for (const app of ledger.apps) {
-    await api.stopApplication(app.uuid).catch(() => {});
-    await api.deleteApplicationKeepingVolumes(app.uuid).catch(() => {});
-    console.log(chalk.dim(`  Removed ${app.name}`));
+    await api.stopApplication(app.uuid);
+    const stopped = await run.waitFor(
+      async () => (await api.getApplication(app.uuid)).status ?? "",
+      (status) => status.startsWith("exited") || status === "stopped",
+      180_000,
+    );
+    if (!stopped) {
+      console.log(
+        chalk.red(
+          `  ${app.name} has not stopped; rollback remains unverified and no replacement was deleted.`,
+        ),
+      );
+      return false;
+    }
+  }
+  // A successful compose deployment does not prove its public labels
+  // route correctly. Check after withdrawing replacement routers, and
+  // keep the replacements recoverable until the source answers.
+  for (const [url, before] of ledger.publicBaseline ?? []) {
+    const after = await run.waitFor(
+      () => run.probeStatus(url),
+      (status) => migrationProbeMatchesBaseline(before, status),
+      60_000,
+    );
+    if (!migrationProbeMatchesBaseline(before, after)) {
+      for (const app of ledger.apps) await run.deployAndWait(api, app.uuid);
+      console.log(
+        chalk.red(
+          `  Legacy route ${url} failed verification; replacement apps were restarted and kept.`,
+        ),
+      );
+      return false;
+    }
   }
   await api.updateApplication(ledger.source.uuid, {
     name: ledger.source.name,
@@ -684,6 +889,7 @@ async function rollback(
   const sourceHook = ledger.secrets.some((s) => /_DEPLOY_(SECRET|REPOSITORY|BRANCH)$/.test(s.name))
     ? (await ensureDeployHook(api, ledger.source.uuid)).hook
     : undefined;
+  let secretsRestored = true;
   for (const s of ledger.secrets) {
     const value =
       s.name === "COOLIFY_WEBHOOK_URL"
@@ -695,12 +901,32 @@ async function rollback(
             : sourceHook && s.name.endsWith("_DEPLOY_BRANCH")
               ? sourceHook.branch
               : s.previousUuid;
-    await ghSecretSet(opts.projectDir, s.repo, s.name, value).catch((err) =>
-      console.log(chalk.yellow(`  Couldn't restore ${s.name}: ${(err as Error).message}`)),
+    await ghSecretSet(opts.projectDir, s.repo, s.name, value).catch((err) => {
+      secretsRestored = false;
+      console.log(chalk.yellow(`  Couldn't restore ${s.name}: ${(err as Error).message}`));
+    });
+  }
+  if (!secretsRestored) {
+    console.log(
+      chalk.red(
+        "  Legacy traffic is restored, but deployment secrets are not; replacements were kept so rollback can be retried.",
+      ),
     );
+    return false;
+  }
+  for (const app of ledger.apps) {
+    await api.deleteApplicationKeepingVolumes(app.uuid);
+    console.log(chalk.dim(`  Removed ${app.name}`));
+  }
+  const manifest = readManifest(opts.projectDir);
+  if (
+    manifest &&
+    (ledger.source.name === manifest.name || ledger.source.name.startsWith(`${manifest.name}-`))
+  ) {
+    setManifestRuntime(opts.projectDir, "compose");
   }
   ledger.phase = "rolled-back";
-  saveLedger(ledger);
+  run.saveLedger(ledger);
   console.log(chalk.green(`  ✓ ${ledger.source.name} is back on its Docker Compose app.`));
   return true;
 }
@@ -717,8 +943,8 @@ async function cleanup(
     );
     return false;
   }
-  const legacy = await api.getApplication(ledger.source.uuid).catch(() => null);
-  if (legacy?.status?.startsWith("running")) {
+  const legacy = await api.getApplication(ledger.source.uuid);
+  if (!legacy.status || (!legacy.status.startsWith("exited") && legacy.status !== "stopped")) {
     console.log(
       chalk.red(`  ${ledger.source.legacyName} is running again — refusing to delete a live app.`),
     );
@@ -751,15 +977,18 @@ async function cleanup(
 // ---------------------------------------------------------------------------
 
 /** Wait for the deployment Coolify queues for `uuid` to end. */
-async function deployAndWait(api: CoolifyApi, uuid: string): Promise<string> {
+export async function deployAndWait(
+  api: Pick<CoolifyApi, "queueDeploy" | "listApplicationDeployments">,
+  uuid: string,
+  pause: (ms: number) => Promise<void> = sleep,
+): Promise<string> {
   const { deploymentUuid } = await api.queueDeploy(uuid);
+  if (!deploymentUuid) return "not queued (Coolify returned no deployment UUID)";
   const deadline = Date.now() + 15 * 60_000;
   while (Date.now() < deadline) {
-    await sleep(5_000);
+    await pause(5_000);
     const deployments = await api.listApplicationDeployments(uuid, 5).catch(() => []);
-    const d = deploymentUuid
-      ? deployments.find((x) => x.deploymentUuid === deploymentUuid)
-      : deployments[0];
+    const d = deployments.find((x) => x.deploymentUuid === deploymentUuid);
     const status = d?.status ?? "";
     if (status === "finished") return "finished";
     if (status === "failed" || status.startsWith("cancelled")) return status;
@@ -786,12 +1015,38 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** Public URLs to compare before and after the cutover: each routed
- *  host (routes with their own path are skipped — `/ws` answers an
- *  upgrade, not a GET) at the app's health path. */
-function publicProbeUrls(app: PlannedImageApp): string[] {
-  return app.domains
-    .filter((d) => new URL(d).pathname === "/")
-    .map((d) => `${new URL(d).origin}${app.healthCheck.path}`);
+ *  host whose path contains the readiness endpoint. /api must be
+ *  checked; /ws alone cannot answer an ordinary health GET. */
+export function publicProbeUrls(app: PlannedImageApp): string[] {
+  return [
+    ...new Set(
+      app.domains
+        .filter((d) => {
+          const path = new URL(d).pathname.replace(/\/+$/, "");
+          return (
+            !path || app.healthCheck.path === path || app.healthCheck.path.startsWith(`${path}/`)
+          );
+        })
+        .map((d) => `${new URL(d).origin}${app.healthCheck.path}`),
+    ),
+  ];
+}
+
+export function migrationProbeMatchesBaseline(
+  before: number | null,
+  after: number | null,
+): boolean {
+  return before !== null && before >= 200 && before < 400 && after === before;
+}
+
+interface MigrationDependencies {
+  discoverPublicIps: typeof discoverPublicIps;
+  saveLedger: typeof saveLedger;
+  probeStatus: typeof probeStatus;
+  probeViaHost: typeof probeViaHost;
+  deployAndWait: typeof deployAndWait;
+  waitFor: typeof waitFor;
+  ghSecretExists: typeof ghSecretExists;
 }
 
 async function probeStatus(url: string): Promise<number | null> {
@@ -899,12 +1154,7 @@ async function updateManifestIfComplete(projectDir: string, api: CoolifyApi): Pr
     if (Number.isFinite(port) && port !== 3000 && routed.role !== "compose")
       ports[routed.role] = port;
   }
-  if (
-    addManifestFields(projectDir, {
-      coolifyRuntime: "image",
-      ...(Object.keys(ports).length > 0 ? { containerPorts: ports } : {}),
-    })
-  ) {
+  if (setManifestRuntime(projectDir, "image", ports)) {
     console.log(chalk.dim(`  .hatchkit.json: coolifyRuntime → "image"`));
   }
 }
@@ -937,4 +1187,54 @@ export function addManifestFields(projectDir: string, fields: Record<string, unk
   const sep = body.trimEnd().endsWith("{") ? "\n" : ",\n";
   writeFileSync(path, `${body}${sep}${entries.join(",\n")}\n}${text.slice(close + 1)}`);
   return true;
+}
+
+/** Change runtime metadata without running unrelated manifest migrations. */
+export function setManifestRuntime(
+  projectDir: string,
+  runtime: "image" | "compose",
+  ports: Record<string, number> = {},
+): boolean {
+  const path = join(projectDir, ".hatchkit.json");
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf-8"));
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  const existingPorts =
+    parsed.containerPorts &&
+    typeof parsed.containerPorts === "object" &&
+    !Array.isArray(parsed.containerPorts)
+      ? (parsed.containerPorts as Record<string, number>)
+      : {};
+  const fields = {
+    coolifyRuntime: runtime,
+    ...(Object.keys(ports).length ? { containerPorts: { ...existingPorts, ...ports } } : {}),
+  };
+  if (
+    Object.entries(fields).every(
+      ([key, value]) => JSON.stringify(parsed[key]) === JSON.stringify(value),
+    )
+  )
+    return false;
+  if (Object.keys(fields).every((key) => !(key in parsed)))
+    return addManifestFields(projectDir, fields);
+  writeFileSync(path, `${JSON.stringify({ ...parsed, ...fields }, null, 2)}\n`);
+  return true;
+}
+
+/** A one-service compose app may itself be one half of a split repo. */
+export function migrationDeployRole(
+  plan: RuntimeMigrationPlan,
+  index: number,
+): "server" | "client" | undefined {
+  if (plan.apps.length > 1) return plan.apps[index].role === "server" ? "server" : "client";
+  const secret = deploySecretNameFor(plan.source.name);
+  return secret === "COOLIFY_SERVER_RESOURCE_UUID"
+    ? "server"
+    : secret === "COOLIFY_CLIENT_RESOURCE_UUID"
+      ? "client"
+      : undefined;
 }

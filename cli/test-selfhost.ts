@@ -230,9 +230,12 @@ check("the self-host web image has its own package name", () => {
   assert.equal(/[^-]-client:/.test(client.image), false, "pulls the domain-baked client image");
 });
 
-check("redis follows the websocket feature; mongo is always there", () => {
+check("redis follows either realtime feature; mongo is always there", () => {
   const withWs = selfHostServices(full).map((s) => s.name);
   assert.ok(withWs.includes("mongo") && withWs.includes("redis"));
+  assert.ok(
+    selfHostServices(project({ features: ["client-core"] })).some((s) => s.name === "redis"),
+  );
   const without = selfHostServices(project({ features: [] })).map((s) => s.name);
   assert.ok(without.includes("mongo"));
   assert.equal(without.includes("redis"), false);

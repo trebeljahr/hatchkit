@@ -4,6 +4,9 @@ RUN corepack enable
 WORKDIR /app
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY packages/shared/package.json packages/shared/
+# ── client-core ──────────────────────────────────────────────────
+COPY packages/core/package.json packages/core/
+# ── end client-core ──────────────────────────────────────────────
 COPY packages/server/package.json packages/server/
 COPY packages/client/package.json packages/client/
 # Install all workspace deps (build stage is discarded)
@@ -13,6 +16,9 @@ RUN pnpm install --frozen-lockfile
 FROM deps AS build
 COPY tsconfig.base.json ./
 COPY packages/shared packages/shared
+# ── client-core ──────────────────────────────────────────────────
+COPY packages/core packages/core
+# ── end client-core ──────────────────────────────────────────────
 COPY packages/server packages/server
 COPY packages/client packages/client
 
@@ -42,6 +48,9 @@ ARG COMMIT_SHA
 ENV COMMIT_SHA=$COMMIT_SHA
 
 RUN pnpm --filter @starter/shared run build
+# ── client-core ──────────────────────────────────────────────────
+RUN pnpm --filter @starter/core run build
+# ── end client-core ──────────────────────────────────────────────
 RUN pnpm --filter @starter/client run build
 
 # Prove the API URL actually reached the browser bundle, and fail the

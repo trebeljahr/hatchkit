@@ -35,6 +35,7 @@ export const CLIENT_CORE_OWNED_PATHS: readonly string[] = [
   "packages/server/src/tests/version-handshake.test.ts",
   "packages/server/src/tests/api-level.test.ts",
   "packages/server/src/tests/trpc-contract.test.ts",
+  "packages/server/src/tests/sync-feed.test.ts",
   "packages/client/src/lib/query-client.ts",
   "docs/versioning.md",
 ];
@@ -59,7 +60,8 @@ export const CLIENT_CORE_OWNED_PATHS: readonly string[] = [
 export const CLIENT_CORE_GENERATED_PATHS: readonly string[] = ["packages/server/contract"];
 
 /**
- * Files the starter always ships that carry `// ── client-core ──` blocks.
+ * Files the starter always ships that carry client-core marker blocks
+ * (`//` in source and `#` in Dockerfiles).
  *
  * These are the ones the handshake cannot avoid touching: a floor that refuses
  * a request lives in the tRPC init, a level a client can read lives in
@@ -81,6 +83,10 @@ export const CLIENT_CORE_MARKED_FILES: readonly string[] = [
   // destroy the socket wins, so without that block the room socket kills every
   // sync connection before the feed sees it.
   "packages/server/src/ws/handler.ts",
+  // Workspace manifests must be present at install time, then the core source
+  // and compiled output before either dependent image is built.
+  "packages/server/Dockerfile",
+  "packages/client/Dockerfile",
 ];
 
 /** Root `package.json` scripts the feature adds. */

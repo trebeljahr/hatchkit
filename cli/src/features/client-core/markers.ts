@@ -29,11 +29,11 @@
  * anywhere in the output.
  */
 
-/** The opening line of a marked block, ignoring the box-drawing padding. */
-const OPEN = /^[ \t]*\/\/[ \t]*──[ \t]*client-core[ \t]*─*[ \t]*$/;
+/** The opening line, using // for source or # for Dockerfiles. */
+const OPEN = /^[ \t]*(?:\/\/|#)[ \t]*──[ \t]*client-core[ \t]*─*[ \t]*$/;
 
 /** The closing line. */
-const CLOSE = /^[ \t]*\/\/[ \t]*──[ \t]*end client-core[ \t]*─*[ \t]*$/;
+const CLOSE = /^[ \t]*(?:\/\/|#)[ \t]*──[ \t]*end client-core[ \t]*─*[ \t]*$/;
 
 export const MARKER_OPEN = "// ── client-core ──────────────────────────────────────────────────";
 export const MARKER_CLOSE = "// ── end client-core ──────────────────────────────────────────────";
