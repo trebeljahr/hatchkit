@@ -4640,6 +4640,16 @@ results.buildRegressionsReported = await run(
         "newsletter server test stripped with the service it imports",
         !existsSync(join(d, "packages/server/src/tests/newsletter.test.ts")),
       ],
+      [
+        "newsletter HTTP security test stripped with its route",
+        !existsSync(join(d, "packages/server/src/tests/newsletter-http-security.test.ts")),
+      ],
+      [
+        "generic HTTP security tests remain without the newsletter",
+        existsSync(join(d, "packages/server/src/tests/http-security.test.ts")) &&
+          !readFileSync(join(d, "packages/server/src/tests/http-security.test.ts"), "utf-8")
+            .includes("/api/newsletter/confirm"),
+      ],
 
       // ── defect 8: server dev env ───────────────────────────────────
       [".env.development exists", existsSync(join(d, "packages/server/.env.development"))],
@@ -4710,6 +4720,10 @@ results.buildRegressionsCommerce = await run(
       [
         "listmonk keeps the double opt-in server test",
         existsSync(join(d, "packages/server/src/tests/newsletter.test.ts")),
+      ],
+      [
+        "listmonk keeps the newsletter HTTP security test",
+        existsSync(join(d, "packages/server/src/tests/newsletter-http-security.test.ts")),
       ],
       ["desktop/mobile flips next.config to a static export", isStaticExport],
       [

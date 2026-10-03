@@ -686,6 +686,7 @@ async function runScaffoldSteps(
   if (!wantsNewsletter) {
     removeIfExists(join(outputDir, "packages/server/src/services/newsletter"));
     removeIfExists(join(outputDir, "packages/server/src/tests/newsletter.test.ts"));
+    removeIfExists(join(outputDir, "packages/server/src/tests/newsletter-http-security.test.ts"));
     removeIfExists(join(outputDir, "packages/client/src/components/subscribe-form.tsx"));
     removeIfExists(join(outputDir, "packages/client/src/app/sub"));
     for (const script of [
