@@ -16,6 +16,8 @@ else
   install -m 600 config.json /etc/hatchkit-backups/config.json
 fi
 install -m 700 runner.py /opt/hatchkit-backups/runner.py
+install -m 700 register.py /opt/hatchkit-backups/register.py
+install -m 700 restore-check.py /opt/hatchkit-backups/restore-check.py
 install -m 644 hatchkit-backups.service hatchkit-backups.timer /etc/systemd/system/
 systemctl daemon-reload
 echo 'Installed. Store credentials, initialize each repository, run and verify a backup, then enable hatchkit-backups.timer.'

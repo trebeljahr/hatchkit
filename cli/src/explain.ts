@@ -62,6 +62,12 @@ const MODEL: ExplainModel = {
   ],
   commands: [
     {
+      name: "hatchkit backup <configure|install|register|run|status|plan|bundle>",
+      summary:
+        "Keep backup-bucket credentials in the OS keychain; manage encrypted daily data backups through Tailscale. Retain three verified generations per project.",
+      when: "Configure once for a backup host. New create deployments register standard databases on that host; register existing projects and custom file paths explicitly. Status reports missing, failed and stale backups.",
+    },
+    {
       name: "hatchkit setup",
       summary: "One-time onboarding — wires up GitHub + Coolify + Hetzner + DNS + optional extras.",
       when: "First time you ever use hatchkit on a machine.",

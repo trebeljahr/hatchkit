@@ -6,14 +6,51 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+import sys
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('runner', Path(__file__).parent / 'src/templates/backups/runner.py')
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
+sys.modules['runner'] = runner
+register_spec = importlib.util.spec_from_file_location('register', Path(__file__).parent / 'src/templates/backups/register.py')
+register = importlib.util.module_from_spec(register_spec)
+register_spec.loader.exec_module(register)
 
 
 class BackupSafety(unittest.TestCase):
+    def test_registration_preserves_existing_sources_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'config.json'
+            old = {'name': 'existing', 'sources': [{'name': 'data', 'kind': 'files', 'paths': ['/srv/existing']}]}
+            new = {'name': 'new', 'sources': [{'name': 'data', 'kind': 'files', 'paths': ['/srv/new']}]}
+            config = {'projects': [old], 'repositoryBase': 's3:https://example.test/backups'}
+            path.write_text(json.dumps(config))
+            with patch.object(runner, 'credential_env', return_value={}), patch.object(runner, 'restic', return_value=b'{}'):
+                self.assertFalse(register.register(new, path)['existing'])
+                self.assertTrue(register.register(new, path)['existing'])
+                self.assertEqual(json.loads(path.read_text())['projects'], [old, new])
+                with self.assertRaises(runner.BackupError):
+                    register.register({**old, 'sources': new['sources']}, path)
+            before = path.read_text()
+            with patch.object(runner, 'credential_env', return_value={}), patch.object(runner, 'restic', side_effect=runner.BackupError('unavailable')):
+                with self.assertRaises(runner.BackupError):
+                    register.register({**new, 'name': 'failed'}, path)
+            self.assertEqual(path.read_text(), before)
+
+    def test_partial_status_keeps_other_projects_and_reports_staleness(self):
+        with tempfile.TemporaryDirectory() as temp:
+            work = Path(temp)
+            now = runner.dt.datetime.now(runner.dt.timezone.utc).isoformat()
+            runner.save_status([{'project': 'a', 'ok': True, 'verifiedAt': now, 'snapshot': 'good'}, {'project': 'b', 'ok': True, 'verifiedAt': '2000-01-01T00:00:00+00:00'}], work)
+            runner.save_status([{'project': 'a', 'ok': False, 'error': 'test failure'}], work)
+            status = runner.read_status([{'name': 'a'}, {'name': 'b'}, {'name': 'c'}], work)
+            self.assertFalse(status['healthy'])
+            self.assertEqual(status['results'][0]['lastGoodSnapshot'], 'good')
+            self.assertFalse(status['results'][0]['stale'])
+            self.assertTrue(status['results'][1]['stale'])
+            self.assertEqual(status['results'][2]['state'], 'never-run')
+
     @unittest.skipUnless(shutil.which('restic'), 'restic binary not installed')
     def test_real_encryption_restore_and_rolling_retention(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -60,6 +97,19 @@ class BackupSafety(unittest.TestCase):
             self.assertFalse((root / 'backup/0/app.db-wal').exists())
             restored.close()
             db.close()
+
+    def test_raw_database_files_require_native_dump_and_exclusion(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / 'data'
+            (source / 'mariadb').mkdir(parents=True)
+            (source / 'mariadb/ibdata1').write_bytes(b'live database pages')
+            (source / 'settings.json').write_text('{}')
+            with self.assertRaisesRegex(runner.BackupError, 'Raw database'):
+                runner.copy_files([str(source)], root / 'unsafe')
+            runner.copy_files([str(source)], root / 'safe', ['mariadb'])
+            self.assertTrue((root / 'safe/0/settings.json').exists())
+            self.assertFalse((root / 'safe/0/mariadb').exists())
 
     def exercise_backup(self, *, corrupt=False, missing=False):
         with tempfile.TemporaryDirectory() as temp:

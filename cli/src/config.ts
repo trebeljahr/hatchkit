@@ -256,6 +256,12 @@ export interface S3ProviderMeta extends ProviderStatus {
   region?: string;
 }
 
+export interface BackupProviderMeta extends ProviderStatus {
+  repositoryBase: string;
+  host: { transport: "tailscale"; target: string; serverUuid: string };
+  autoRegister: boolean;
+}
+
 export interface GpuProviderMeta extends ProviderStatus {
   tokenId?: string;
   endpointId?: string;
@@ -438,6 +444,7 @@ export interface CliConfig {
     dns?: DnsMeta;
     cloudflareWorkers?: CloudflareWorkersMeta;
     s3: Record<string, S3ProviderMeta>;
+    backups?: BackupProviderMeta;
     gpu: Record<string, GpuProviderMeta>;
     glitchtip?: GlitchtipMeta;
     openpanel?: OpenpanelMeta;

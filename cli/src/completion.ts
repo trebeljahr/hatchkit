@@ -20,6 +20,7 @@ const TOP_LEVEL = [
   "server",
   "add",
   "assets",
+  "backup",
   "release",
   "keys",
   "config",
@@ -28,6 +29,7 @@ const TOP_LEVEL = [
 ] as const;
 
 const ASSETS_SUB = ["seed", "push", "pull", "migrate", "list"] as const;
+const BACKUP_SUB = ["configure", "install", "register", "run", "status", "plan", "bundle"] as const;
 
 const CONFIG_ADD = [
   "coolify",
@@ -96,6 +98,9 @@ ${TOP_LEVEL.map((c) => `    '${c}:${topDesc(c)}'`).join("\n")}
         assets)
           _values 'assets subcommand' ${ASSETS_SUB.map((s) => `'${s}'`).join(" ")}
           ;;
+        backup)
+          _values 'backup subcommand' ${BACKUP_SUB.map((s) => `'${s}'`).join(" ")}
+          ;;
         release)
           _values 'release subcommand' ${RELEASE_SUB.map((s) => `'${s}'`).join(" ")}
           ;;
@@ -136,6 +141,7 @@ _hatchkit_complete() {
   local keys_sub="${KEYS_SUB.join(" ")}"
   local server_sub="${SERVER_SUB.join(" ")}"
   local assets_sub="${ASSETS_SUB.join(" ")}"
+  local backup_sub="${BACKUP_SUB.join(" ")}"
   local release_sub="${RELEASE_SUB.join(" ")}"
   local shells="${SHELLS.join(" ")}"
   local providers="${CONFIG_ADD.join(" ")}"
@@ -166,6 +172,11 @@ _hatchkit_complete() {
     assets)
       if [[ $cword -eq 2 ]]; then
         COMPREPLY=( $(compgen -W "$assets_sub" -- "$cur") )
+      fi
+      ;;
+    backup)
+      if [[ $cword -eq 2 ]]; then
+        COMPREPLY=( $(compgen -W "$backup_sub" -- "$cur") )
       fi
       ;;
     release)
@@ -218,6 +229,9 @@ function fish(): string {
   for (const s of ASSETS_SUB) {
     lines.push(`complete -c hatchkit -n "__fish_seen_subcommand_from assets" -a "${s}"`);
   }
+  for (const s of BACKUP_SUB) {
+    lines.push(`complete -c hatchkit -n "__fish_seen_subcommand_from backup" -a "${s}"`);
+  }
   for (const s of RELEASE_SUB) {
     lines.push(`complete -c hatchkit -n "__fish_seen_subcommand_from release" -a "${s}"`);
   }
@@ -254,6 +268,8 @@ function topDesc(cmd: string): string {
       return "Provision GlitchTip / OpenPanel / Plausible / Resend / email / search services";
     case "assets":
       return "Move bytes between local S3 and prod buckets";
+    case "backup":
+      return "Manage encrypted project data backups over Tailscale";
     case "release":
       return "Coordinate one version across every surface";
     case "keys":

@@ -5,9 +5,38 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { backupPlan, exportBackupBundle } from "./src/backups/command.js";
 import { collectStatus } from "./src/status.js";
+import { configureBackupProvider, backupCredentials } from "./src/backups/provider.js";
+import { getConfig } from "./src/config.js";
+import { getSecret, setSecret, SECRET_KEYS } from "./src/utils/secrets.js";
+import { createBackupProject, registerBackupProject, saveBackupRegistration, shouldRegisterBackups } from "./src/backups/register.js";
+import { installBackupHost } from "./src/backups/install.js";
 
 const dir = mkdtempSync(join(tmpdir(), "hatchkit-backups-"));
 try {
+  const credentialsFile = join(dir, "credentials.json");
+  const passwordFile = join(dir, "password");
+  writeFileSync(credentialsFile, JSON.stringify({accessKeyId: "a".repeat(32), secretAccessKey: "b".repeat(64)}), {mode: 0o600});
+  writeFileSync(passwordFile, "test-recovery-password-long-enough", {mode: 0o600});
+  await setSecret(SECRET_KEYS.r2AdminToken, "existing-asset-provisioner");
+  const configured = await configureBackupProvider({status: "configured", repositoryBase: "s3:https://account.eu.r2.cloudflarestorage.com/backups", host: {transport: "tailscale",target: "root@backup-host",serverUuid: "server-uuid"},autoRegister: true, credentialsFile,passwordFile});
+  assert.equal(configured.credentialStore, "OS keychain");
+  assert.equal((await backupCredentials()).password, "test-recovery-password-long-enough");
+  assert.equal(await getSecret(SECRET_KEYS.r2AdminToken), "existing-asset-provisioner");
+  assert.ok(!JSON.stringify(getConfig()).includes("test-recovery-password-long-enough"));
+  assert.ok(!JSON.stringify(getConfig()).includes("b".repeat(64)));
+  const project = createBackupProject({name: "new-app", managed: [{uuid: "db-uuid", kind: "postgres"}], composeAppUuid: "app-uuid", composeServices: ["server", "redis"]});
+  assert.deepEqual(project.sources.map(s => s.selector), [{project: "db-uuid", service: "db-uuid"}, {project: "app-uuid", service: "redis"}]);
+  assert.throws(() => createBackupProject({name: "external", managed: []}), /No managed backup sources/);
+  assert.ok(shouldRegisterBackups("server-uuid"));
+  assert.ok(!shouldRegisterBackups("other-host"));
+  assert.equal((await registerBackupProject(project, {serverUuid: "server-uuid", dryRun: true})).applied, false);
+  await assert.rejects(registerBackupProject(project, {serverUuid: "other-host", dryRun: true}), /differs/);
+  const registration = saveBackupRegistration(project, "server-uuid");
+  assert.deepEqual(JSON.parse(readFileSync(registration, "utf8")).project, project);
+  assert.equal((await installBackupHost(true)).applied, false);
+  writeFileSync(passwordFile, "different-recovery-password-long-enough", {mode: 0o600});
+  await assert.rejects(configureBackupProvider({...configured.provider, credentialsFile, passwordFile}), /Recovery password differs/);
+  assert.equal((await backupCredentials()).password, "test-recovery-password-long-enough");
   const policy = { provider: "r2", schedule: "daily", keepLast: 3 };
   writeFileSync(join(dir, ".hatchkit.json"), JSON.stringify({
     version: 2, name: "demo", features: [], backups: policy,

@@ -94,6 +94,7 @@ export interface RunCoolifySetupOptions {
 }
 
 export interface RunCoolifySetupResult {
+  serverUuid: string;
   /** Coolify uuid of the created (or reused) application. The caller
    *  records this in the run ledger so a partial-create rollback can
    *  delete it via `CoolifyApi.deleteApplication`. */
@@ -404,6 +405,7 @@ export async function runCoolifySetup(
 
   return {
     appUuid,
+    serverUuid,
     projectUuid,
     projectCreated,
     appCreated,

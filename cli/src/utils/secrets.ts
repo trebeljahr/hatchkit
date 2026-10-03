@@ -79,6 +79,8 @@ export const SECRET_KEYS = {
    *  R2 admin endpoints need account-level perms which most users
    *  prefer not to mix into the DNS token (least-privilege rotation). */
   r2AdminToken: "s3:r2:admin-token",
+  /** Backup-bucket S3 keys and the restic recovery password. Never handed to apps. */
+  backupCredentials: "backups:r2:credentials",
   /** The Cloudflare PROVISIONER: a user token that mints account API
    *  tokens (Account API Tokens Write) and edits Workers, routes and DNS.
    *  Used only by hatchkit on this machine; never copied into a project.

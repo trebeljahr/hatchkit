@@ -57,11 +57,13 @@ def validate_project(project):
         if name in names:
             raise BackupError('Duplicate source name')
         names.add(name)
-        if source['kind'] not in ('postgres', 'mongo', 'clickhouse', 'redis', 'files'):
+        if source['kind'] not in ('postgres', 'mongo', 'clickhouse', 'redis', 'kuma-mariadb', 'files'):
             raise BackupError('Unsupported source kind')
         if source['kind'] == 'files':
             if not source.get('paths') or any(not Path(p).is_absolute() or os.path.normpath(p) == '/' or Path(p).resolve() == Path('/') for p in source['paths']):
                 raise BackupError('File sources require explicit absolute paths, never /')
+            if any(Path(p).is_absolute() or '..' in Path(p).parts for p in source.get('exclude', [])):
+                raise BackupError('File exclusions must be relative to each source directory')
         elif not source.get('selector'):
             raise BackupError('Database sources require an exact container selector')
     return project
@@ -102,11 +104,22 @@ fi
 
 def dump_database(source, container, destination):
     kind = source['kind']
-    metadata = {'kind': kind, 'image': container['Config']['Image'], 'selector': source['selector']}
+    metadata = {'kind': kind, 'image': container['Config']['Image'], 'imageId': container['Image'], 'selector': source['selector']}
     if kind == 'postgres':
         with (destination / 'cluster.sql').open('wb') as output:
             docker_shell(container, 'export PGPASSWORD="${POSTGRES_PASSWORD:-}"; exec pg_dumpall -U "${POSTGRES_USER:-postgres}"', output)
         metadata['format'] = 'pg_dumpall SQL (all databases and roles)'
+    elif kind == 'kuma-mariadb':
+        # Kuma v2 embeds MariaDB and authenticates its OS user through a local
+        # socket. Never archive live InnoDB files as ordinary uploads.
+        script = '''const fs=require('fs'); const cp=require('child_process');
+const config=JSON.parse(fs.readFileSync('/app/data/db-config.json','utf8'));
+if(config.type!=='embedded-mariadb') throw new Error('Expected Kuma embedded MariaDB');
+const result=cp.spawnSync('mariadb-dump',['--socket=/app/data/run/mariadb.sock','--user='+require('os').userInfo().username,'--single-transaction','--quick','--routines','--events','--triggers','--hex-blob','--databases','kuma'],{stdio:'inherit'});
+process.exit(result.status??1);'''
+        with (destination / 'mariadb.sql').open('wb') as output:
+            run(['docker', 'exec', container['Id'], 'node', '-e', script], output=output)
+        metadata['format'] = 'MariaDB single-transaction SQL; Kuma database, routines, events and triggers'
     elif kind == 'mongo':
         # A standalone MongoDB has no oplog snapshot. Lock writes only during its
         # dump, and install a bounded watchdog before locking, including on timeout.
@@ -127,8 +140,8 @@ timeout 540 mongodump "$@" --archive --gzip
         auth = 'set --; if [ -n "${CLICKHOUSE_USER:-}" ]; then set -- --user "$CLICKHOUSE_USER" --password "${CLICKHOUSE_PASSWORD:-}"; fi; '
         try:
             docker_shell(container, auth + 'clickhouse-client "$@" --query ' + shell_quote(query))
-            # ClickHouse resolves a relative File path from its server working directory.
-            paths = ['/var/lib/clickhouse/' + backup_path, '/' + backup_path]
+            # Relative File paths resolve below ClickHouse's backup directory.
+            paths = ['/var/lib/clickhouse/backups/' + backup_path, '/var/lib/clickhouse/' + backup_path, '/' + backup_path]
             for path in paths:
                 probe = subprocess.run(['docker', 'exec', container['Id'], 'test', '-f', path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 if probe.returncode == 0:
@@ -138,11 +151,11 @@ timeout 540 mongodump "$@" --archive --gzip
             else:
                 raise BackupError('ClickHouse completed but its archive could not be found')
         finally:
-            docker_shell(container, 'rm -f ' + ' '.join(shell_quote(p) for p in ['/var/lib/clickhouse/' + backup_path, '/' + backup_path]))
+            docker_shell(container, 'rm -f ' + ' '.join(shell_quote(p) for p in ['/var/lib/clickhouse/backups/' + backup_path, '/var/lib/clickhouse/' + backup_path, '/' + backup_path]))
     elif kind == 'redis':
         path = f'/tmp/hatchkit-{uuid.uuid4().hex}.rdb'
         try:
-            docker_shell(container, 'export REDISCLI_AUTH="${REDIS_PASSWORD:-}"; redis-cli --rdb ' + shell_quote(path))
+            docker_shell(container, 'if [ -n "${REDIS_PASSWORD:-}" ]; then export REDISCLI_AUTH="$REDIS_PASSWORD"; else unset REDISCLI_AUTH; fi; redis-cli --rdb ' + shell_quote(path))
             run(['docker', 'cp', f"{container['Id']}:{path}", str(destination / 'redis.rdb')])
         finally:
             docker_shell(container, 'rm -f ' + shell_quote(path))
@@ -181,7 +194,7 @@ def copy_file(source, destination):
         os.chown(destination, stat.st_uid, stat.st_gid)
 
 
-def copy_files(paths, destination):
+def copy_files(paths, destination, exclude=()):
     for index, raw in enumerate(paths):
         source = Path(raw)
         if not source.exists():
@@ -193,7 +206,12 @@ def copy_files(paths, destination):
         root.mkdir(parents=True)
         for current, dirs, files in os.walk(source, followlinks=False):
             rel = Path(current).relative_to(source)
+            if any((Path(current) / marker).exists() for marker in ('PG_VERSION', 'WiredTiger', 'ibdata1')):
+                raise BackupError('Raw database directory detected; use a native database source and exclude its live files')
             for name in dirs[:]:
+                if str(rel / name) in exclude:
+                    dirs.remove(name)
+                    continue
                 p = Path(current) / name
                 target = root / rel / name
                 if p.is_symlink():
@@ -203,6 +221,8 @@ def copy_files(paths, destination):
                 else:
                     target.mkdir(parents=True, exist_ok=True)
             for name in files:
+                if str(rel / name) in exclude:
+                    continue
                 p = Path(current) / name
                 target = root / rel / name
                 # SQLite backup() incorporates committed WAL data itself.
@@ -221,6 +241,8 @@ def copy_files(paths, destination):
         for current, dirs, files in os.walk(source, topdown=False, followlinks=False):
             p = Path(current)
             target = root / p.relative_to(source)
+            if not target.exists() or target.is_symlink():
+                continue
             shutil.copystat(p, target)
             if os.geteuid() == 0:
                 stat = p.stat()
@@ -245,6 +267,19 @@ def restic(args, env):
     return run(['restic', '--quiet', *args], env=env, timeout=7200)
 
 
+def credential_env(config, work):
+    credentials_path = Path(config['credentialsFile'])
+    password_path = Path(config['passwordFile'])
+    for path in (credentials_path, password_path):
+        if path.stat().st_mode & 0o077:
+            raise BackupError('Credential files must be readable only by their owner')
+    credentials = json.loads(credentials_path.read_text())
+    return {**os.environ, 'AWS_ACCESS_KEY_ID': credentials['accessKeyId'],
+            'AWS_SECRET_ACCESS_KEY': credentials['secretAccessKey'], 'AWS_DEFAULT_REGION': 'auto',
+            'RESTIC_PASSWORD_FILE': str(password_path), 'GOMAXPROCS': '2',
+            'RESTIC_CACHE_DIR': str(work / 'cache')}
+
+
 def backup_project(project, config, env, inventory, work):
     validate_project(project)
     name = project['name']
@@ -260,10 +295,13 @@ def backup_project(project, config, env, inventory, work):
             dest = stage / source['name']
             dest.mkdir()
             if source['kind'] == 'files':
-                copy_files(source['paths'], dest)
-                metadata.append({'name': source['name'], 'kind': 'files', 'paths': source['paths']})
+                copy_files(source['paths'], dest, source.get('exclude', []))
+                metadata.append({'name': source['name'], 'kind': 'files', 'paths': source['paths'], 'exclude': source.get('exclude', [])})
             else:
-                item = dump_database(source, resolve_container(source['selector'], inventory), dest)
+                try:
+                    item = dump_database(source, resolve_container(source['selector'], inventory), dest)
+                except BackupError as error:
+                    raise BackupError(f"Source {source['name']} ({source['kind']}): {error}") from error
                 metadata.append({'name': source['name'], **item})
         manifest = make_manifest(stage, metadata)
         # Stable archive paths, even though each run uses a private temporary directory.
@@ -299,6 +337,36 @@ def backup_project(project, config, env, inventory, work):
                 'files': len(manifest['files']), 'verifiedAt': dt.datetime.now(dt.timezone.utc).isoformat()}
 
 
+def read_status(projects, work):
+    path = work / 'status.json'
+    saved = json.loads(path.read_text()) if path.exists() else {'results': []}
+    previous = {r['project']: r for r in saved['results']}
+    results = []
+    for project in projects:
+        result = dict(previous.get(project['name'], {'project': project['name'], 'ok': False, 'state': 'never-run'}))
+        verified = result.get('verifiedAt')
+        result['stale'] = not verified or (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(verified)).total_seconds() > 36 * 3600
+        results.append(result)
+    saved['results'] = results
+    saved['healthy'] = bool(results) and all(r.get('ok') and not r['stale'] for r in results)
+    return saved
+
+
+def save_status(results, work):
+    path = work / 'status.json'
+    previous = json.loads(path.read_text())['results'] if path.exists() else []
+    merged = {r['project']: r for r in previous}
+    for result in results:
+        old = merged.get(result['project'], {})
+        if not result.get('ok') and old.get('verifiedAt'):
+            result = {**result, 'verifiedAt': old['verifiedAt'], 'lastGoodSnapshot': old.get('snapshot', old.get('lastGoodSnapshot'))}
+        merged[result['project']] = result
+    status = {'finishedAt': dt.datetime.now(dt.timezone.utc).isoformat(), 'results': list(merged.values())}
+    temporary = work / 'status.json.tmp'
+    temporary.write_text(json.dumps(status, indent=2) + '\n')
+    temporary.replace(path)
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser()
@@ -319,22 +387,18 @@ def main():
         print(json.dumps({'repositoryBase': config['repositoryBase'], 'projects': projects}, indent=2))
         return
     if args.action == 'status':
-        status = work / 'status.json'
-        print(status.read_text() if status.exists() else '{"state":"never-run"}')
+        status = read_status(projects, work)
+        status['timerEnabled'] = subprocess.run(['systemctl', 'is-enabled', '--quiet', 'hatchkit-backups.timer'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        state = subprocess.run(['systemctl', 'show', '--property=ActiveState', '--value', 'hatchkit-backups.service'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.decode().strip()
+        status['running'] = state in ('active', 'activating')
+        report = work / 'restore-check-all.json'
+        status['restoreCheck'] = json.loads(report.read_text()) if report.exists() else None
+        print(json.dumps(status, indent=2))
         return
     work.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (work / '.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        credentials_path = Path(config['credentialsFile'])
-        password_path = Path(config['passwordFile'])
-        for path in (credentials_path, password_path):
-            if path.stat().st_mode & 0o077:
-                raise BackupError('Credential files must be readable only by their owner')
-        credentials = json.loads(credentials_path.read_text())
-        env = {**os.environ, 'AWS_ACCESS_KEY_ID': credentials['accessKeyId'],
-               'AWS_SECRET_ACCESS_KEY': credentials['secretAccessKey'], 'AWS_DEFAULT_REGION': 'auto',
-               'RESTIC_PASSWORD_FILE': str(password_path), 'GOMAXPROCS': '2',
-               'RESTIC_CACHE_DIR': str(work / 'cache')}
+        env = credential_env(config, work)
         inventory = containers() if args.action == 'run' else []
         results = []
         for project in projects:
@@ -351,10 +415,7 @@ def main():
             results.append(result)
             print(json.dumps(result), flush=True)
         if args.action == 'run':
-            status = {'finishedAt': dt.datetime.now(dt.timezone.utc).isoformat(), 'results': results}
-            temporary = work / 'status.json.tmp'
-            temporary.write_text(json.dumps(status, indent=2) + '\n')
-            temporary.replace(work / 'status.json')
+            save_status(results, work)
         if any(r.get('ok') is False for r in results):
             sys.exit(1)
 

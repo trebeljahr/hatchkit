@@ -153,7 +153,7 @@ async function main(): Promise<void> {
 
   switch (command) {
     case "backup":
-      runBackupCommand(args.slice(1));
+      await runBackupCommand(args.slice(1));
       break;
     case "init":
     case "setup":
@@ -2829,6 +2829,8 @@ async function handleCreate(): Promise<void> {
         // `--yes` accepts the native-client TRUSTED_ORIGINS diff too.
         assumeYes: nonInteractive,
       });
+      const backupDatabases: Array<{ uuid: string; kind: "postgres" | "mongo" | "redis" }> = [];
+      let backupDatabaseProvisioningFailed = false;
       // Order matters: rollback iterates the ledger in REVERSE, so we
       // record parent-before-child (project before app). Otherwise
       // reverse iteration tries to delete the project before the app
@@ -2901,10 +2903,12 @@ async function handleCreate(): Promise<void> {
             const { provisionCoolifyPostgres } = await import("./deploy/coolify-postgres.js");
             const pgResult = await provisionCoolifyPostgres(config, serverEnvDir);
             ledger?.record({ kind: "coolifyDb", uuid: pgResult.databaseUuid });
+            backupDatabases.push({ uuid: pgResult.databaseUuid, kind: "postgres" });
           } else {
             const { provisionCoolifyMongo } = await import("./deploy/coolify-mongo.js");
             const mongoResult = await provisionCoolifyMongo(config, serverEnvDir);
             ledger?.record({ kind: "coolifyDb", uuid: mongoResult.databaseUuid });
+            backupDatabases.push({ uuid: mongoResult.databaseUuid, kind: "mongo" });
           }
           // Redis is only provisioned when the datastores must be
           // managed — under a compose `single-origin` it's a service in
@@ -2917,9 +2921,11 @@ async function handleCreate(): Promise<void> {
             const { provisionCoolifyRedis } = await import("./deploy/coolify-redis.js");
             const redisResult = await provisionCoolifyRedis(config, serverEnvDir);
             ledger?.record({ kind: "coolifyDb", uuid: redisResult.databaseUuid });
+            backupDatabases.push({ uuid: redisResult.databaseUuid, kind: "redis" });
           }
         } catch (err) {
           const engineLabel = config.dbEngine === "postgres" ? "Postgres" : "MongoDB";
+          backupDatabaseProvisioningFailed = true;
           const uriVar = config.dbEngine === "postgres" ? "POSTGRES_URL" : "MONGODB_URI";
           console.log(
             chalk.yellow(`  Couldn't auto-provision ${engineLabel}: ${(err as Error).message}`),
@@ -2930,6 +2936,73 @@ async function handleCreate(): Promise<void> {
                 `  then set ${uriVar} on the app's env (or run\n` +
                 `  \`dotenvx set ${uriVar} <url> -f packages/server/.env.production\`).`,
             ),
+          );
+        }
+      }
+
+      if (config.scaffoldRepo && config.surfaces !== "static") {
+        const {
+          createBackupProject,
+          registerBackupProject,
+          saveBackupRegistration,
+          shouldRegisterBackups,
+        } = await import("./backups/register.js");
+        if (shouldRegisterBackups(coolifyResult.serverUuid)) {
+          let recoveryCommand = "hatchkit backup plan --json";
+          try {
+            if (dbProvider !== "coolify")
+              throw new Error(
+                "External database selected; register its actual data source explicitly before claiming backup coverage.",
+              );
+            if (backupDatabaseProvisioningFailed)
+              throw new Error(
+                "Database provisioning did not finish; complete it before registering backups.",
+              );
+            const { readComposeFile } = await import("./utils/compose.js");
+            const project = createBackupProject({
+              name: config.name,
+              managed: backupDatabases,
+              ...(!managedOnly
+                ? {
+                    composeAppUuid: coolifyResult.appUuid,
+                    composeServices: readComposeFile(appDir)?.services,
+                  }
+                : {}),
+            });
+            const policyPath = saveBackupRegistration(project, coolifyResult.serverUuid);
+            recoveryCommand = `hatchkit backup register --config '${policyPath.replace(/'/g, "'\\''")}'`;
+            await registerBackupProject(project, { serverUuid: coolifyResult.serverUuid });
+            console.log(
+              chalk.green(
+                "  ✓ Daily R2 backups registered; first successful run remains pending deployment.",
+              ),
+            );
+          } catch (error) {
+            deferredSteps.push(
+              deferralForStep({
+                key: "project-backups",
+                label: "Project data backups",
+                kind: "failed",
+                reason: (error as Error).message,
+                command: recoveryCommand,
+              }),
+            );
+            console.log(
+              chalk.yellow(`  Backup registration needs attention: ${(error as Error).message}`),
+            );
+          }
+        } else {
+          deferredSteps.push(
+            deferralForStep({
+              key: "project-backups",
+              label: "Project data backups",
+              kind: "failed",
+              reason: "Automatic backups are not configured for this server.",
+              command: "hatchkit backup plan --json",
+            }),
+          );
+          console.log(
+            chalk.yellow("  Backups pending: configure this server and register its data sources."),
           );
         }
       }

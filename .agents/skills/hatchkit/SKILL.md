@@ -42,6 +42,7 @@ Use JSON where available:
 |---|---|---|
 | `hatchkit status` | Provider state and next step | yes: `--json` |
 | `hatchkit doctor` | Live provider health checks | yes: `--json` |
+| `hatchkit backup status` | Live project backup results, stale/missing captures, timer and restore checks over Tailscale | yes: `--json` |
 | `hatchkit explain` | Mental model, commands, workflows, state | yes: `--json` |
 | `hatchkit overview` | Project overview, optionally `--all` | yes: `--json` |
 | `hatchkit keys show <project>` | Dotenvx private key lookup | yes: `--json` |
@@ -81,6 +82,11 @@ rotation URL, required scopes, and exact `hatchkit config add <provider>` comman
 | `hatchkit regen-infra` | Regenerate project infra files |
 | `hatchkit provision s3` | Create project S3/R2 buckets and env entries |
 | `hatchkit assets pull` | Mirror remote object storage assets locally |
+| `hatchkit backup configure --config <path>` | Store backup-bucket S3 keys and restic recovery password in OS keychain |
+| `hatchkit backup install [--dry-run]` | Install/update the backup host through Tailscale using Keychain credentials; preserve sources and recovery password |
+| `hatchkit backup register --config <path> [--dry-run]` | Register explicit existing-project database/file sources; refuse replacing a different policy |
+| `hatchkit backup run` | Request a full backup on the configured host |
+| `hatchkit backup plan --json` | Read the current project's intended backup policy, without claiming it is installed |
 | `hatchkit inventory` | Infer/write `.hatchkit.json` metadata |
 | `hatchkit completion <shell>` | Print shell completion |
 
@@ -153,6 +159,22 @@ Use Hatchkit context when the user mentions any of:
   explicit user approval.
 - Never assume Hatchkit owns pre-existing resources. Rollback ledgers are meant
   to avoid deleting user-owned state; preserve that model when fixing code.
+
+## Backups for new projects
+
+The backup provider is separate from app asset storage. Credentials live under
+Keychain service `hatchkit`, account `backups:r2:credentials`; never print or copy
+them into app environments. With `autoRegister: true`, create deployments on the
+configured Coolify server register standard managed and Compose databases for
+daily encrypted R2 backups, retaining three verified generations. Failures become
+deferred steps with a registration retry command. External databases, custom
+file mounts, other hosts, adopted projects and R2 asset objects require explicit
+registration/coverage. A manifest policy is intent; inspect `backup status` for
+actual capture and restore results. Backup host operations use Tailscale SSH with
+no public-SSH fallback. Configure/install/register/run mutate state and require
+the user's applicable authorization. `status`, `plan`, and `--dry-run` are safe
+read-only checks. The maintained bundle README documents installation, restore
+drills, scheduling and how to disable the timer while keeping stored backups.
 
 ## Driving `hatchkit create` from flags
 

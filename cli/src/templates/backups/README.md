@@ -4,10 +4,57 @@ Requires Python 3, Docker, GNU tar, and restic 0.16 or newer on the server.
 Use a private R2 Standard bucket and a token restricted to object access in that
 bucket. EU buckets require the `.eu.r2.cloudflarestorage.com` endpoint.
 
-`hatchkit backup bundle` exports this runner with an explicit host config. It
-does not install or enable anything remotely. New Coolify server projects record
-the intended daily, three-generation policy in their manifest; that intent is
-not evidence of an installed or successful backup.
+## Hatchkit integration
+
+Configure one backup host with `hatchkit backup configure --config provider.json`.
+The input JSON has this shape; input credential files must have mode 0600:
+
+```json
+{
+  "repositoryBase": "s3:https://ACCOUNT.eu.r2.cloudflarestorage.com/BUCKET",
+  "host": {"transport": "tailscale", "target": "root@backup-host", "serverUuid": "COOLIFY_SERVER_UUID"},
+  "autoRegister": true,
+  "credentialsFile": "/private/path/credentials.json",
+  "passwordFile": "/private/path/restic-password"
+}
+```
+
+Hatchkit stores the bucket's S3 access key, secret key, and restic recovery
+password in the OS keychain: service `hatchkit`, account
+`backups:r2:credentials`. Provider metadata contains no credentials. Keep a
+separate secure recovery copy: resetting Hatchkit or losing the Mac must not
+lose the only encryption password. Backup keys never enter app environments.
+
+`hatchkit backup install --dry-run` previews the target without reading keys.
+`hatchkit backup install` retrieves those keys and sends the maintained runner
+and root-only credential files over Tailscale SSH stdin. It preserves registered
+sources and refuses a changed repository or recovery password. Dependencies
+must already be installed. It does not enable the schedule. It also updates an
+existing runner and can apply replacement R2 keys while preserving the password.
+
+With `autoRegister: true`, `hatchkit create` registers standard managed
+PostgreSQL/MongoDB/Redis and generated Compose database sources when deploying
+to this exact Coolify server. It initializes each new encrypted repository and
+saves the source mapping under `<config-dir>/backups/<project>.json`. Registration
+failure becomes a deferred step with a retry command. Registration precedes the
+first successful capture; a manifest policy alone is not evidence of protection.
+External databases, custom file mounts, other hosts, existing/adopted projects,
+and R2 asset buckets require explicit coverage decisions. Shared services such
+as analytics and mailing lists are backed up under their service project.
+
+For existing projects, use `hatchkit backup register --config project.json`,
+where the JSON contains `serverUuid` and `project` (one of the project objects
+below). `--dry-run` previews the target and sources. Registration is idempotent
+and refuses to replace a different existing source policy. Policy changes must
+be reviewed and applied to the host config explicitly.
+
+`hatchkit backup run` starts a full capture. `hatchkit backup status --json`
+reads each project's result, missing or stale captures (36 hours), timer state,
+and latest full restore drill. This read requires Tailscale access, not keychain
+access. The host runs independently of the Mac once the timer is enabled.
+
+`hatchkit backup bundle` remains available to export an explicit host policy
+for manual installation. `hatchkit backup plan` reads the current manifest.
 
 Example host config (keep outside application Git repositories):
 
@@ -38,6 +85,13 @@ project/service labels survive redeployments. Supported database kinds:
 inside each container. Custom authentication requires an adapter; a failed
 source aborts that project's backup and retains its previous generations.
 
+`kuma-mariadb` captures Uptime Kuma v2's embedded MariaDB through its local
+socket using a single-transaction SQL dump. Pair it with a file source for
+`/app/data`'s host mount and `"exclude": ["mariadb", "run", "error.log"]`.
+The file adapter rejects recognized raw database directories so they cannot
+silently pass as consistent file backups. SQLite is still copied with its
+online backup API. Update source mappings when applications change engines.
+
 Credentials JSON contains `accessKeyId` and `secretAccessKey`. Both that file and
 the restic password file must have mode 0600. Keep a copy of the password and
 recovery instructions outside the server, in an existing secure store. Never
@@ -54,6 +108,16 @@ timer with `systemctl enable --now hatchkit-backups.timer`. It runs daily from
 hatchkit-backups.service`, and `journalctl -u hatchkit-backups.service`. Connect
 the failed-service status to the operator's existing monitoring. The installer
 does not configure an alert destination.
+
+Run `python3 /opt/hatchkit-backups/restore-check.py` for the maintained restore
+drill (`--project example` limits it). It verifies archive member checksums and
+restores native exports into disposable Docker containers with `--network none`,
+no published ports, existing images only, and CPU/memory limits. It checks SQLite
+integrity from restored files, removes its containers and volumes, and writes
+`/var/lib/hatchkit-backups/restore-check-all.json`. This requires enough free
+host resources and does not modify production data. The initial rollout checks
+every configured source; daily jobs verify downloaded bytes without starting
+restore containers. Repeat native drills after engine upgrades or source changes.
 
 Each project has a separate encrypted restic repository. Every run creates
 native database exports and consistent SQLite copies, uploads an archive,

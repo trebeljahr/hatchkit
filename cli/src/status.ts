@@ -109,6 +109,15 @@ export function collectStatus(projectDir: string = process.cwd()): StatusSnapsho
 
   const s3Providers = Object.keys(config.providers.s3);
   providers.push({
+    key: "backups",
+    label: "Project backups (R2)",
+    configured: config.providers.backups?.status === "configured",
+    detail: config.providers.backups
+      ? `intended daily / 3 snapshots; ${config.providers.backups.host.target}; verify with hatchkit backup status`
+      : undefined,
+    configureCommand: "hatchkit backup configure --config <provider-config.json>",
+  });
+  providers.push({
     key: "s3",
     label: "S3",
     configured: s3Providers.length > 0,
