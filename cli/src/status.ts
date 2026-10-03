@@ -11,7 +11,7 @@ import chalk from "chalk";
 import { getConfig, getConfigPath, getMlServices } from "./config.js";
 import type { Feature } from "./prompts.js";
 import { type DeferredStep, readDeferredSteps } from "./provision/deferrals.js";
-import { readManifestWithMigrationInfo } from "./scaffold/manifest.js";
+import { type ProjectManifest, readManifestWithMigrationInfo } from "./scaffold/manifest.js";
 import { getCliVersion } from "./utils/version.js";
 
 export interface ProviderSnapshot {
@@ -52,6 +52,8 @@ export interface StatusSnapshot {
     features: Feature[];
     addableFeatures: Feature[];
     signing: boolean;
+    /** Intended policy only; live installation and recovery must be checked on the host. */
+    backups?: ProjectManifest["backups"];
   } | null;
   /** Optional steps the user skipped during create / adopt / add, each
    *  with the exact command that finishes it. Always an array (empty
@@ -187,6 +189,7 @@ export function collectStatus(projectDir: string = process.cwd()): StatusSnapsho
         // features' scaffold-time strip is too coarse to re-add cleanly.
         addableFeatures: (["desktop", "mobile"] as Feature[]).filter((f) => !features.includes(f)),
         signing: manifest.signing !== undefined,
+        ...(manifest.backups ? { backups: manifest.backups } : {}),
       };
       deferredSteps = readDeferredSteps(projectDir);
     }
@@ -196,6 +199,12 @@ export function collectStatus(projectDir: string = process.cwd()): StatusSnapsho
 
   const nextStep = computeNextStep(providers, deferredSteps);
   const suggestions = computeSuggestions(providers, deferredSteps);
+  if (project?.backups) {
+    suggestions.push({
+      command: "hatchkit backup plan --json",
+      why: "Review the intended backup policy and register live data sources on the backup host.",
+    });
+  }
 
   return {
     version: getCliVersion(),

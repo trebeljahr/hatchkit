@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily project data backups
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
+Unit=hatchkit-backups.service
+
+[Install]
+WantedBy=timers.target

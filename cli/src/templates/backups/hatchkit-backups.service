@@ -1,0 +1,19 @@
+[Unit]
+Description=Encrypted project data backups to R2
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/hatchkit-backups/runner.py run
+User=root
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=50%
+MemoryMax=768M
+TimeoutStartSec=4h
+TimeoutStopSec=90
+PrivateTmp=true
+ProtectHome=read-only
+NoNewPrivileges=true

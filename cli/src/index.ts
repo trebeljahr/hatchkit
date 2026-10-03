@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { confirm, select } from "@inquirer/prompts";
 import chalk from "chalk";
+import { BACKUP_USAGE, runBackupCommand } from "./backups/command.js";
 import {
   ensureCoolify,
   ensureDns,
@@ -151,6 +152,9 @@ async function main(): Promise<void> {
   }
 
   switch (command) {
+    case "backup":
+      runBackupCommand(args.slice(1));
+      break;
     case "init":
     case "setup":
       await runOnboarding();
@@ -3657,6 +3661,9 @@ function printCommandHelp(cmd: string | undefined): void {
     return;
   }
   switch (cmd) {
+    case "backup":
+      console.log(BACKUP_USAGE);
+      return;
     case "provision":
       printProvisionUsage();
       return;

@@ -108,5 +108,6 @@
   "test-error-reporting.ts",
   "test-raycast.ts",
   "test-mcp.ts",
-  "test-security-baseline.ts"
+  "test-security-baseline.ts",
+  "test-backups.ts"
 ]
