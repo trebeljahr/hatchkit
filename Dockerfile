@@ -39,4 +39,13 @@ FROM nginx:alpine AS runner
 # 403s every docs page — see the header of docs/nginx.conf.
 COPY docs/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/out /usr/share/nginx/html
+COPY --chmod=755 docs/drain-entrypoint.sh /usr/local/bin/drain-entrypoint
+ENV SHUTDOWN_DRAIN_SECONDS=20
+# nginx:alpine defaults to SIGQUIT. Our PID 1 must receive TERM first so
+# loopback readiness can fail before nginx starts its graceful shutdown.
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=2s --timeout=5s --start-period=15s --retries=5 \
+  CMD wget --quiet --tries=1 --spider http://127.0.0.1:80/ || exit 1
+ENTRYPOINT ["/usr/local/bin/drain-entrypoint"]
+CMD ["nginx", "-g", "daemon off;"]
 EXPOSE 80
