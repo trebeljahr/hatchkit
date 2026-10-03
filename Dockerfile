@@ -12,8 +12,7 @@
 # CLI's dev deps. We mirror that here: install + build inside docs/
 # as a standalone project.
 #
-# No build-time secrets: the docs site reads nothing from .env, so
-# the workflow's `dotenvx_private_key` BuildKit secret isn't mounted.
+# No build-time secrets: the docs site reads nothing from .env.
 ARG NODE_VERSION=24
 
 FROM node:${NODE_VERSION}-alpine AS build
@@ -32,7 +31,11 @@ WORKDIR /app
 COPY docs/package.json docs/pnpm-lock.yaml docs/.npmrc docs/next.config.mjs docs/source.config.ts ./
 RUN corepack enable && pnpm install --frozen-lockfile
 COPY docs/ ./
+ARG RELEASE_SHA
+ENV NEXT_PUBLIC_BUILD_COMMIT=${RELEASE_SHA}
 RUN pnpm build
+COPY scripts/write-version.mjs /tmp/write-version.mjs
+RUN node /tmp/write-version.mjs out "$RELEASE_SHA"
 
 FROM nginx:alpine AS runner
 # Maps `/docs/<page>` onto the export's `<page>.html`. The stock config
