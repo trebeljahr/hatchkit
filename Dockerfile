@@ -12,8 +12,7 @@
 # CLI's dev deps. We mirror that here: install + build inside docs/
 # as a standalone project.
 #
-# No build-time secrets: the docs site reads nothing from .env, so
-# the workflow's `dotenvx_private_key` BuildKit secret isn't mounted.
+# No build-time secrets: the docs site reads nothing from .env.
 ARG NODE_VERSION=24
 
 FROM node:${NODE_VERSION}-alpine AS build
@@ -32,11 +31,24 @@ WORKDIR /app
 COPY docs/package.json docs/pnpm-lock.yaml docs/.npmrc docs/next.config.mjs docs/source.config.ts ./
 RUN corepack enable && pnpm install --frozen-lockfile
 COPY docs/ ./
+ARG RELEASE_SHA
+ENV NEXT_PUBLIC_BUILD_COMMIT=${RELEASE_SHA}
 RUN pnpm build
+COPY scripts/write-version.mjs /tmp/write-version.mjs
+RUN node /tmp/write-version.mjs out "$RELEASE_SHA"
 
 FROM nginx:alpine AS runner
 # Maps `/docs/<page>` onto the export's `<page>.html`. The stock config
 # 403s every docs page — see the header of docs/nginx.conf.
 COPY docs/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/out /usr/share/nginx/html
+COPY --chmod=755 docs/drain-entrypoint.sh /usr/local/bin/drain-entrypoint
+ENV SHUTDOWN_DRAIN_SECONDS=20
+# nginx:alpine defaults to SIGQUIT. Our PID 1 must receive TERM first so
+# loopback readiness can fail before nginx starts its graceful shutdown.
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=2s --timeout=5s --start-period=15s --retries=5 \
+  CMD wget --quiet --tries=1 --spider http://127.0.0.1:80/ || exit 1
+ENTRYPOINT ["/usr/local/bin/drain-entrypoint"]
+CMD ["nginx", "-g", "daemon off;"]
 EXPOSE 80
