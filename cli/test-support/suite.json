@@ -113,5 +113,6 @@
   "test-raycast.ts",
   "test-mcp.ts",
   "test-security-baseline.ts",
-  "test-backups.ts"
+  "test-backups.ts",
+  "test-backup-recovery.ts"
 ]

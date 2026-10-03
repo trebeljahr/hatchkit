@@ -27,6 +27,7 @@ import {
 import { join, resolve } from "node:path";
 import chalk from "chalk";
 import ora from "ora";
+import { installBackupScripts } from "../backups/scripts.js";
 import { addUsedPorts, getUsedPorts, removeUsedPorts } from "../config.js";
 import { expandFeatureSelection } from "../features/all.js";
 import { extensionPrerequisiteProblem } from "../features/extension/index.js";
@@ -298,6 +299,8 @@ async function runScaffoldSteps(
     substituteIdentifierTokens(c, identifiers),
   );
   modifications.push("packages/client/public/manifest.json (display names)");
+
+  installBackupScripts(outputDir, config.name);
 
   // Rename the project in package.json
   replaceInFile(join(outputDir, "package.json"), "node-realtime-starter", config.name);

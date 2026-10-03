@@ -18,6 +18,7 @@ fi
 install -m 700 alerts.py /opt/hatchkit-backups/alerts.py
 install -m 700 runner.py /opt/hatchkit-backups/runner.py
 install -m 700 register.py /opt/hatchkit-backups/register.py
+install -m 700 recovery.py /opt/hatchkit-backups/recovery.py
 install -m 700 restore-check.py /opt/hatchkit-backups/restore-check.py
 install -m 644 hatchkit-backup-alerts.service hatchkit-backup-alerts.timer hatchkit-backups.service hatchkit-backups.timer /etc/systemd/system/
 systemctl daemon-reload

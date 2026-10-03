@@ -5,13 +5,18 @@ import { readManifestWithMigrationInfo } from "../scaffold/manifest.js";
 import { configureBackupAlerts } from "./alerts.js";
 import { installBackupHost } from "./install.js";
 import { backupHostExec, backupProvider, configureBackupProvider } from "./provider.js";
+import { backupSnapshots, restoreBackup } from "./recovery.js";
 import { registerBackupProject } from "./register.js";
+import { backupProjectName, installBackupScripts } from "./scripts.js";
 
 export const BACKUP_USAGE = `Usage:
   hatchkit backup plan [--json]
   hatchkit backup bundle --config <host-config.json> --output <new-directory> [--json]
   hatchkit backup configure --config <provider-config.json> [--json]
-  hatchkit backup status [--json]
+  hatchkit backup status [--project <name>] [--json]
+  hatchkit backup snapshots --project <name> [--json]
+  hatchkit backup restore --project <name> [--snapshot <id>] [--dry-run] [--json]
+  hatchkit backup scripts [--project <name>] [--dry-run] [--json]
   hatchkit backup install [--dry-run] [--json]
   hatchkit backup run [--json]
   hatchkit backup alerts --to <email> --from <verified-ses-email> [--dry-run] [--json]
@@ -28,6 +33,12 @@ It preserves registered projects and refuses a different recovery password or re
 run starts a full host backup; inspect status for completion and failures.
 alerts uses the existing SES keychain credential to configure failure/overdue email alerts.
 alert-test sends a test email to the configured recipient without triggering a backup failure.
+
+snapshots lists verified recovery points, newest first.
+restore selects a verified snapshot and restores into retained isolated containers and
+private files on the backup host. It never overwrites production. --dry-run previews.
+scripts adds missing backup:status, backup:list and backup:restore package scripts.
+Existing custom scripts are preserved. Commands require Hatchkit on PATH.
 
 The runner captures native PostgreSQL, MongoDB, ClickHouse and Redis backups and
 SQLite-safe file copies. It encrypts each project with restic, downloads and verifies
@@ -104,7 +115,7 @@ export async function runBackupCommand(args: string[], cwd = process.cwd()): Pro
       continue;
     }
     if (
-      ["--config", "--output", "--to", "--from"].includes(flag) &&
+      ["--config", "--output", "--to", "--from", "--project", "--snapshot"].includes(flag) &&
       args[i + 1]?.startsWith("--") === false
     ) {
       flags.set(flag, args[++i]);
@@ -113,9 +124,23 @@ export async function runBackupCommand(args: string[], cwd = process.cwd()): Pro
     }
   }
   let result: unknown;
-  if (dryRun && !["register", "install", "alerts"].includes(subcommand))
-    throw new Error("--dry-run applies to backup register, install, or alerts.");
-  if (subcommand === "plan" && flags.size === 0) {
+  if (dryRun && !["register", "install", "alerts", "restore", "scripts"].includes(subcommand))
+    throw new Error("--dry-run applies to backup register, install, alerts, restore, or scripts.");
+  const project = flags.get("--project");
+  if (project) backupProjectName(project);
+  if (subcommand === "snapshots" && project && flags.size === 1) {
+    result = { project, snapshots: await backupSnapshots(project) };
+  } else if (
+    subcommand === "restore" &&
+    project &&
+    flags.size === (flags.has("--snapshot") ? 2 : 1)
+  ) {
+    result = await restoreBackup(project, flags.get("--snapshot"), dryRun, args.includes("--json"));
+  } else if (subcommand === "scripts" && flags.size === (project ? 1 : 0)) {
+    const name = project ?? readManifestWithMigrationInfo(cwd)?.manifest.name;
+    if (!name) throw new Error("Specify --project <name> or run from a Hatchkit project.");
+    result = installBackupScripts(cwd, name, dryRun);
+  } else if (subcommand === "plan" && flags.size === 0) {
     result = backupPlan(cwd);
   } else if (subcommand === "configure" && flags.size === 1 && flags.has("--config")) {
     result = await configureBackupProvider(
@@ -135,10 +160,14 @@ export async function runBackupCommand(args: string[], cwd = process.cwd()): Pro
   } else if (subcommand === "run" && flags.size === 0) {
     await backupHostExec("systemctl start --no-block hatchkit-backups.service");
     result = { requested: true, nextStep: "hatchkit backup status --json" };
-  } else if (subcommand === "status" && flags.size === 0) {
+  } else if (subcommand === "status" && flags.size === (project ? 1 : 0)) {
     result = {
       provider: backupProvider(),
-      host: JSON.parse(await backupHostExec("python3 /opt/hatchkit-backups/runner.py status")),
+      host: JSON.parse(
+        await backupHostExec(
+          `python3 /opt/hatchkit-backups/runner.py status${project ? ` --project ${project}` : ""}`,
+        ),
+      ),
     };
   } else if (subcommand === "register" && flags.size === 1 && flags.has("--config")) {
     const input = JSON.parse(readFileSync(resolve(cwd, flags.get("--config")!), "utf8"));
@@ -157,4 +186,5 @@ export async function runBackupCommand(args: string[], cwd = process.cwd()): Pro
     throw new Error(BACKUP_USAGE);
   }
   console.log(JSON.stringify(result, null, 2));
+  if (subcommand === "restore" && (result as { ok?: boolean }).ok === false) process.exitCode = 1;
 }

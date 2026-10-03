@@ -191,3 +191,45 @@ To disable email only, set `alerts.enabled` to false in the host policy and run
 `systemctl disable --now hatchkit-backup-alerts.timer`. Backup scheduling and
 stored recovery points stay intact. The normal bundle/install includes and
 maintains these alert scripts and units.
+
+## Project package scripts and selectable recovery
+
+New scaffolds and `hatchkit update` add `backup:status`, `backup:list`, and
+`backup:restore` to the root package.json, with the backup project name explicit.
+Existing custom scripts are preserved and reported. For a focused retrofit,
+run `hatchkit backup scripts --project NAME --dry-run`, then the same command
+without `--dry-run` from the project directory. Hatchkit must be installed on PATH.
+No credentials are written into package.json. Static/unregistered projects have
+scripts too; registration and a successful capture are still required.
+
+```sh
+pnpm backup:status
+pnpm backup:list
+pnpm backup:restore
+# Select an explicit verified snapshot without a terminal picker:
+pnpm backup:restore --snapshot SNAPSHOT_ID --dry-run --json
+```
+
+The picker lists verified snapshots newest first. Noninteractive recovery requires
+an explicit `--snapshot`; it never silently chooses latest. `--dry-run` lists and
+checks the selection without downloading archives or starting containers.
+Update the host bundle with `hatchkit backup install` before using snapshot and
+recovery commands. Installing is a separate, authorized host operation.
+
+Recovery downloads the selected archive into a new 0700 directory under
+`/var/lib/hatchkit-backups/recovery/`, verifies file checksums, and imports each
+native database into a bounded, network-isolated container using an existing
+engine image. Successful containers are stopped and retained, with their IDs,
+source results and exact cleanup scope in `recovery.json`. Failed imports remove
+their container; earlier successful imports and files remain in the report.
+No application is stopped, production database replaced, or traffic moved.
+The backup/pruning lock prevents a concurrent scheduled capture during recovery.
+
+This is data recovery, not an automatic production cutover. Inspect the result,
+confirm the application's matching code/schema version, identify its actual live
+store, pause writes, preserve the current state, then review the engine-specific
+import or volume switch before changing production. Shared-service restores can
+affect several applications. Do not import a whole shared-service dump into one
+client project's database. File archives preserve original metadata and symlinks;
+the safe inspection copy deliberately extracts regular files only. Use the
+retained original archive when planning a metadata-preserving file recovery.

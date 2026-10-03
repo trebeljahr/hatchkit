@@ -141,6 +141,7 @@ try {
   const output = join(dir, "bundle");
   assert.equal(exportBackupBundle(config, output).installed, false);
   assert.ok(existsSync(join(output, "runner.py")));
+  assert.ok(existsSync(join(output, "recovery.py")));
   assert.ok(existsSync(join(output, "alerts.py")));
   assert.ok(existsSync(join(output, "hatchkit-backup-alerts.timer")));
   assert.equal(

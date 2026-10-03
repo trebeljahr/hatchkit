@@ -30,6 +30,9 @@ const TOP_LEVEL = [
 
 const ASSETS_SUB = ["seed", "push", "pull", "migrate", "list"] as const;
 const BACKUP_SUB = [
+  "snapshots",
+  "restore",
+  "scripts",
   "configure",
   "install",
   "register",

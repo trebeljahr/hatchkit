@@ -37,6 +37,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
+import { installBackupScripts } from "../backups/scripts.js";
 import { addUsedPorts, getUsedPorts } from "../config.js";
 import { repoSlugFromRemote } from "../deploy/gh-actions-secrets.js";
 import { pushNativeOriginsForProject } from "../deploy/trusted-origins.js";
@@ -302,6 +303,11 @@ export async function runUpdate(
   console.log(chalk.dim(`  Supported additions: ${SUPPORTED_ADDITIONS.join(", ")}`));
 
   const dryRun = options.dryRun === true;
+  const backupScripts = installBackupScripts(projectDir, manifest.name, dryRun);
+  if (backupScripts.added.length)
+    console.log(`  Backup scripts: ${backupScripts.added.join(", ")}${dryRun ? " (planned)" : ""}`);
+  if (backupScripts.conflicts.length)
+    console.log(`  Preserved custom backup scripts: ${backupScripts.conflicts.join(", ")}`);
   if (dryRun) {
     console.log(chalk.yellow("  --dry-run — reporting the plan, changing nothing.\n"));
   }

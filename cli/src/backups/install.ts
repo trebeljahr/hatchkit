@@ -22,7 +22,7 @@ with (root/'.register.lock').open('w') as lock:
  with tempfile.TemporaryDirectory(prefix='hatchkit-backup-install-') as temp:
   temp=pathlib.Path(temp)
   for name,content in payload['files'].items():
-   if name not in ('alerts.py','hatchkit-backup-alerts.service','hatchkit-backup-alerts.timer','runner.py','register.py','restore-check.py','install.sh','hatchkit-backups.service','hatchkit-backups.timer'):
+   if name not in ('alerts.py','hatchkit-backup-alerts.service','hatchkit-backup-alerts.timer','runner.py','register.py','restore-check.py','recovery.py','install.sh','hatchkit-backups.service','hatchkit-backups.timer'):
     raise SystemExit('Unexpected installer file')
    (temp/name).write_text(content)
   (temp/'config.json').write_text(config_path.read_text() if config_path.exists() else json.dumps(config,indent=2)+'\\n')
@@ -53,6 +53,7 @@ export async function installBackupHost(dryRun = false) {
       "runner.py",
       "register.py",
       "restore-check.py",
+      "recovery.py",
       "install.sh",
       "hatchkit-backups.service",
       "hatchkit-backups.timer",

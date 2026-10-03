@@ -18,11 +18,14 @@ import runner
 def unpack(archive, destination):
     # Do not follow archived symlinks or allow absolute/parent paths during a drill.
     with tarfile.open(archive) as tar:
-        members = {m.name.removeprefix('./'): m for m in tar.getmembers()}
+        entries = tar.getmembers()
+        members = {m.name.removeprefix('./'): m for m in entries}
+        if len(members) != len(entries):
+            raise runner.BackupError('Duplicate archive member')
         manifest = json.load(tar.extractfile(members['manifest.json']))
         for name, expected in manifest['files'].items():
             path = PurePosixPath(name)
-            if path.is_absolute() or '..' in path.parts or not members[name].isfile():
+            if not name or str(path) != name or path.is_absolute() or '..' in path.parts or not members[name].isfile():
                 raise runner.BackupError('Unsafe archive member')
             target = destination / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -52,7 +55,7 @@ def wait_ready(name, command):
     raise runner.BackupError('Isolated restore container readiness timed out')
 
 
-def restore_source(source, directory):
+def restore_source(source, directory, retain=False):
     kind = source['kind']
     if kind == 'files':
         checked = 0
@@ -76,6 +79,7 @@ def restore_source(source, directory):
     name = 'hatchkit-restore-' + uuid.uuid4().hex[:16]
     admin = 'restore_' + uuid.uuid4().hex[:12]
     common = ['create', '--name', name, '--network', 'none', '--memory', '768m', '--cpus', '0.5', '--pids-limit', '512', '--label', 'hatchkit.restore-check=true']
+    completed = False
     try:
         if kind == 'postgres':
             docker(*common, '-e', 'POSTGRES_USER=' + admin, '-e', 'POSTGRES_HOST_AUTH_METHOD=trust', image)
@@ -121,9 +125,17 @@ def restore_source(source, directory):
             docker('exec', name, 'clickhouse-client', '--query', 'SELECT count() FROM system.tables WHERE database NOT IN (\'system\', \'INFORMATION_SCHEMA\', \'information_schema\')')
         else:
             raise runner.BackupError('Unsupported restore engine')
-        return {'kind': kind, 'image': source['image'], 'nativeRestore': 'passed'}
+        result = {'kind': kind, 'image': source['image'], 'nativeRestore': 'passed'}
+        if retain:
+            # Keep imported data but stop engines to release CPU/memory immediately.
+            docker('stop', name)
+            result['container'] = name
+            result['state'] = 'stopped'
+        completed = True
+        return result
     finally:
-        subprocess.run(['docker', 'rm', '-f', '-v', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if not (retain and completed):
+            subprocess.run(['docker', 'rm', '-f', '-v', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def main():
