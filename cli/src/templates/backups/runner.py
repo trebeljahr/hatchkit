@@ -95,11 +95,51 @@ def docker_shell(container, script, output=None, timeout=1800):
     return run(['docker', 'exec', container['Id'], 'sh', '-ec', script], output=output, timeout=timeout)
 
 
-MONGO_AUTH = '''set --
-if [ -n "${MONGO_INITDB_ROOT_USERNAME:-}" ]; then
-  set -- --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin
-fi
+MONGO_AUTH_JS = r'''const admin = db.getSiblingDB("admin");
+const username = process.env.MONGO_INITDB_ROOT_USERNAME;
+const password = process.env.MONGO_INITDB_ROOT_PASSWORD;
+if (username && !admin.auth(username, password)) throw new Error("Mongo authentication failed");
 '''
+
+# Pass both shell authentication and mongodump's URI through stdin. Expanding
+# secrets in sh "$@" would expose them in child-process argv inside Docker.
+MONGO_AUTH_ASYNC_JS = MONGO_AUTH_JS.replace('admin.auth(username, password)', '(await admin.auth(username, password))')
+MONGO_DUMP_JS = '(async () => {\n' + MONGO_AUTH_ASYNC_JS + r'''
+const cp = require("node:child_process");
+const uri = username
+  ? "mongodb://" + encodeURIComponent(username) + ":" + encodeURIComponent(password) + "@127.0.0.1:27017/?authSource=admin&directConnection=true"
+  : "mongodb://127.0.0.1:27017/?directConnection=true";
+let watchdog, locked = false, failed = false;
+try {
+  if ((await admin.runCommand({currentOp: 1})).fsyncLock) throw new Error("Mongo is already write-locked");
+  watchdog = cp.spawn("mongosh", ["--quiet", "--norc", "--eval", __WATCHDOG__], {stdio: ["ignore", "pipe", "ignore"]});
+  const ready = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Mongo unlock watchdog unavailable")), 10000);
+    const stop = () => { clearTimeout(timer); reject(new Error("Mongo unlock watchdog stopped")); };
+    watchdog.once("error", stop); watchdog.once("exit", stop);
+    watchdog.stdout.once("data", () => { clearTimeout(timer); resolve(); });
+  });
+  await ready;
+  if (!(await admin.fsyncLock()).ok) throw new Error("Mongo write lock failed");
+  locked = true;
+  // Node child stdin is a socket on some hosts; cat supplies a real pipe
+  // that Mongo tools can reopen as /dev/stdin without a credential file.
+  const result = cp.spawnSync("sh", ["-ec", "cat | timeout 540 mongodump --config /dev/stdin --archive --gzip"], {
+    input: JSON.stringify({uri}), stdio: ["pipe", "inherit", "pipe"], timeout: 550000,
+  });
+  if (result.status !== 0 || result.error) throw new Error("Mongo dump failed");
+} catch (_) { failed = true; }
+finally {
+  let released = !locked;
+  if (locked) { try { released = Boolean((await admin.fsyncUnlock()).ok); } catch (_) { failed = true; } }
+  if (released && watchdog) watchdog.kill("SIGTERM");
+  if (!released) failed = true;
+}
+if (failed) quit(1);
+})().catch(() => quit(1));
+'''.replace('__WATCHDOG__', json.dumps(
+    '(async () => {' + MONGO_AUTH_ASYNC_JS + 'print("watchdog-ready"); await new Promise(resolve => setTimeout(resolve, 600000)); try { await admin.fsyncUnlock(); } catch (_) {} })().catch(() => quit(1));'
+))
 
 
 def dump_database(source, container, destination):
@@ -123,15 +163,9 @@ process.exit(result.status??1);'''
     elif kind == 'mongo':
         # A standalone MongoDB has no oplog snapshot. Lock writes only during its
         # dump, and install a bounded watchdog before locking, including on timeout.
-        script = MONGO_AUTH + '''
-unlock() { mongosh "$@" --quiet --eval 'db.getSiblingDB("admin").fsyncUnlock()' >/dev/null; }
-(sleep 600; unlock "$@") >/dev/null 2>&1 & watchdog=$!
-trap 'rc=$?; if unlock "$@"; then kill "$watchdog" 2>/dev/null || true; else rc=1; fi; exit "$rc"' EXIT HUP INT TERM
-mongosh "$@" --quiet --eval 'db.getSiblingDB("admin").fsyncLock()' >/dev/null
-timeout 540 mongodump "$@" --archive --gzip
-'''
         with (destination / 'mongo.archive.gz').open('wb') as output:
-            docker_shell(container, script, output, timeout=660)
+            run(['docker', 'exec', '-i', container['Id'], 'mongosh', '--quiet', '--norc', '--file', '/dev/stdin'],
+                input=MONGO_DUMP_JS.encode(), output=output, timeout=660)
         metadata['format'] = 'mongodump archive+gzip; writes locked during dump'
     elif kind == 'clickhouse':
         filename = f'hatchkit-{uuid.uuid4().hex}.zip'

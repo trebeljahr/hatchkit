@@ -19,6 +19,21 @@ register_spec.loader.exec_module(register)
 
 
 class BackupSafety(unittest.TestCase):
+    def test_mongo_secrets_only_enter_child_stdin(self):
+        container = {'Id': 'synthetic-mongo', 'Image': 'sha256:fixture', 'Config': {'Image': 'mongo:7'}}
+        with tempfile.TemporaryDirectory() as temp, patch.object(runner, 'run') as command:
+            runner.dump_database({'kind': 'mongo', 'selector': {'container': 'synthetic-mongo'}}, container, Path(temp))
+            args, kwargs = command.call_args
+            self.assertEqual(args[0], ['docker', 'exec', '-i', 'synthetic-mongo', 'mongosh', '--quiet', '--norc', '--file', '/dev/stdin'])
+            self.assertEqual(kwargs['input'], runner.MONGO_DUMP_JS.encode())
+            self.assertEqual(kwargs['timeout'], 660)
+        self.assertNotIn('--password', runner.MONGO_DUMP_JS)
+        self.assertIn('mongodump --config /dev/stdin --archive --gzip', runner.MONGO_DUMP_JS)
+        self.assertIn('input: JSON.stringify({uri})', runner.MONGO_DUMP_JS)
+        self.assertLess(runner.MONGO_DUMP_JS.index('await ready'), runner.MONGO_DUMP_JS.index('admin.fsyncLock()'))
+        self.assertIn('if ((await admin.runCommand({currentOp: 1})).fsyncLock)', runner.MONGO_DUMP_JS)
+        self.assertIn('if (released && watchdog)', runner.MONGO_DUMP_JS)
+
     def test_registration_preserves_existing_sources_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'config.json'
