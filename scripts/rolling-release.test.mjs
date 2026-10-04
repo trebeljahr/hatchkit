@@ -1,3 +1,4 @@
+import { prepareDocsBuild, buildBaselineProof, INITIAL_ADOPTION } from "./prepare-docs-build.mjs";
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import test from "node:test";
@@ -34,7 +35,10 @@ function platform(options = {}) {
         os: "linux",
         architecture: "amd64",
         config: {
-          Labels: { "org.opencontainers.image.revision": sha },
+          Labels: { "org.opencontainers.image.revision": sha, ...(sha === NEW ? {
+            "io.hatchkit.docs.parent-digest": options.wrongParent ? "sha256:" + "0".repeat(64) : tags.get(OLD),
+            "io.hatchkit.docs.parent-sha": OLD, "io.hatchkit.docs.retention": "3",
+          } : {}) },
         },
       }),
     );
@@ -419,4 +423,33 @@ test("build, verify and deploy workflow gates all name the fixed source reposito
   );
   assert.ok(repositories.length >= 3);
   assert.deepEqual([...new Set(repositories)], [APP.repository]);
+});
+
+ test("candidate built from another image cannot replace the current release", async () => {
+  const p = platform({ wrongParent: true });
+  await assert.rejects(rollingRelease(config, p.release, p.deps), /exact current image/);
+  assert.equal(writes(p).length, 0);
+});
+
+test("build ancestry pins the verified image and rejects SHA rebuilds or baseline drift", async () => {
+  const p = platform({ initialized: true });
+  await assert.rejects(prepareDocsBuild(config, NEW, p.deps), /already exists/);
+  p.tags.delete(NEW);
+  const result = await prepareDocsBuild(config, NEW, p.deps);
+  assert.equal(result.previousDigest, p.release.expectedCurrentDigest);
+  assert.equal(result.baselineProof, "verified-journal");
+  assert.equal(writes(p).length, 0);
+  const drift = platform({ initialized: true, driftDuringBaseline: true });
+  drift.tags.delete(NEW);
+  await assert.rejects(prepareDocsBuild(config, NEW, drift.deps), /exact verified/);
+  const partial = platform({ initialized: true });
+  partial.tags.delete(NEW); partial.tags.delete("rolling-started");
+  await assert.rejects(prepareDocsBuild(config, NEW, partial.deps), /journal/);
+});
+test("first adoption exception requires exact reviewed A and both journal markers absent", () => {
+  const { sha, digest } = INITIAL_ADOPTION;
+  assert.equal(buildBaselineProof(digest, sha, null, null), "initial-adoption");
+  assert.throws(() => buildBaselineProof(digest, OLD, null, null), /journal/);
+  assert.throws(() => buildBaselineProof(digest, sha, { digest }, null), /journal/);
+  assert.throws(() => buildBaselineProof("sha256:" + "0".repeat(64), sha, null, null), /journal/);
 });

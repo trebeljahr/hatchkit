@@ -4,6 +4,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import Script from "next/script";
 import type { ReactNode } from "react";
+import { ReleaseLifetime } from "@/components/release-lifetime";
 import { SupportedParam } from "@/components/supported-param";
 import { DEFAULT_SOCIAL_IMAGE, DEFAULT_TWITTER_IMAGE, SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/seo";
 
@@ -82,6 +83,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         ) : null}
         <RootProvider search={{ enabled: false }}>
           <SupportedParam />
+          <ReleaseLifetime />
           {children}
         </RootProvider>
       </body>

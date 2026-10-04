@@ -14,6 +14,9 @@
 #
 # No build-time secrets: the docs site reads nothing from .env.
 ARG NODE_VERSION=24
+ARG PREVIOUS_IMAGE
+
+FROM ${PREVIOUS_IMAGE} AS previous
 
 FROM node:${NODE_VERSION}-alpine AS build
 WORKDIR /app
@@ -36,12 +39,22 @@ ENV NEXT_PUBLIC_BUILD_COMMIT=${RELEASE_SHA}
 RUN pnpm build
 COPY scripts/write-version.mjs /tmp/write-version.mjs
 RUN node /tmp/write-version.mjs out "$RELEASE_SHA"
+COPY --from=previous /usr/share/nginx/html /previous-export
+COPY scripts/retain-docs-releases.mjs /tmp/retain-docs-releases.mjs
+ARG PREVIOUS_SHA
+ARG PREVIOUS_DIGEST
+RUN node /tmp/retain-docs-releases.mjs out /previous-export /retained-out "$RELEASE_SHA" "$PREVIOUS_SHA" "$PREVIOUS_DIGEST"
 
 FROM nginx:alpine AS runner
 # Maps `/docs/<page>` onto the export's `<page>.html`. The stock config
 # 403s every docs page — see the header of docs/nginx.conf.
 COPY docs/nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=build /app/out /usr/share/nginx/html
+COPY --from=build /retained-out /usr/share/nginx/html
+ARG PREVIOUS_SHA
+ARG PREVIOUS_DIGEST
+LABEL io.hatchkit.docs.parent-sha=$PREVIOUS_SHA \
+      io.hatchkit.docs.parent-digest=$PREVIOUS_DIGEST \
+      io.hatchkit.docs.retention="3"
 COPY --chmod=755 docs/drain-entrypoint.sh /usr/local/bin/drain-entrypoint
 ENV SHUTDOWN_DRAIN_SECONDS=20
 # nginx:alpine defaults to SIGQUIT. Our PID 1 must receive TERM first so
