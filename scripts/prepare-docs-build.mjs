@@ -4,10 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { APP, openRegistry, ReleaseError, safeFailure } from './lib/rolling-release.mjs';
 import { verifyRelease } from './verify-release.mjs';
 
-export const INITIAL_ADOPTION = Object.freeze({
-  sha: "049d17f7f00d91dbb62f1468a07cf3b2a3e29d20",
-  digest: "sha256:8954373d79c535765f840b230c31bb0d93f6d6d5b5f376fdf6b15616f1c9c9eb",
-});
+import { DOCS_BOOTSTRAP } from "./docs-bootstrap.mjs";
+export const INITIAL_ADOPTION = DOCS_BOOTSTRAP;
 export function buildBaselineProof(previousDigest, previousSha, started, verified) {
   if (!started && !verified && previousDigest === INITIAL_ADOPTION.digest && previousSha === INITIAL_ADOPTION.sha) return "initial-adoption";
   if (started?.digest !== previousDigest || verified?.digest !== previousDigest) throw new ReleaseError("Build baseline has an unfinished or missing release journal.");

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { DOCS_BOOTSTRAP } from "./docs-bootstrap.mjs";
 import { copyFile, mkdir, readFile, readdir, lstat, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +11,7 @@ async function copyTree(source, target, { root = true, collisionCheck = false } 
   if (!(await lstat(source)).isDirectory()) throw new Error('Expected an export directory.');
   await mkdir(target, { recursive: true });
   for (const entry of await readdir(source, { withFileTypes: true })) {
-    if (root && ['__releases', 'releases.json'].includes(entry.name)) continue;
+    if (root && ['__releases', '__legacy-assets', 'releases.json'].includes(entry.name)) continue;
     const from = join(source, entry.name), to = join(target, entry.name);
     if (entry.isSymbolicLink()) throw new Error('Symlinks are not allowed in retained exports.');
     if (entry.isDirectory()) await copyTree(from, to, { root: false, collisionCheck });
@@ -25,7 +27,27 @@ async function copyTree(source, target, { root = true, collisionCheck = false } 
   }
 }
 
-export async function retainDocsReleases({ current, previous, output, sha, previousSha, previousDigest }) {
+
+export async function assetInventoryHash(directory) {
+  const entries = [];
+  async function walk(path, prefix = "") {
+    for (const entry of await readdir(path, { withFileTypes: true })) {
+      const relative = prefix + entry.name;
+      if (entry.isSymbolicLink()) throw new Error("Symlinks are not allowed in bootstrap assets.");
+      if (entry.isDirectory()) await walk(join(path, entry.name), relative + "/");
+      else if (entry.isFile()) {
+        const bytes = await readFile(join(path, entry.name));
+        entries.push({ path: relative, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+      } else throw new Error("Unsupported bootstrap asset.");
+    }
+  }
+  await walk(directory);
+  entries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  return createHash("sha256").update(JSON.stringify(entries)).digest("hex");
+}
+
+// The second argument isolates synthetic tests. The Docker CLI always uses the fixed baseline above.
+export async function retainDocsReleases({ current, previous, output, sha, previousSha, previousDigest }, { bootstrap = DOCS_BOOTSTRAP } = {}) {
   if (!isSha(sha) || !isSha(previousSha) || sha === previousSha || !isDigest(previousDigest)) throw new Error('Invalid release ancestry.');
   if (await version(current) !== sha || await version(previous) !== previousSha) throw new Error('Export revision differs from image ancestry.');
   let old = null;
@@ -33,6 +55,11 @@ export async function retainDocsReleases({ current, previous, output, sha, previ
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (old && (old.schema !== 1 || old.current !== previousSha || !Array.isArray(old.releases) || old.releases.length > 3 || old.releases[0] !== previousSha || old.releases.some(id => !isSha(id)) || new Set(old.releases).size !== old.releases.length)) throw new Error('Invalid retained release metadata.');
   const releases = [sha, previousSha, ...(old?.releases.slice(1, 2) ?? [])];
+  const inherited = old?.legacyAssets;
+  if (inherited && (inherited.sha !== bootstrap.sha || inherited.digest !== bootstrap.digest || inherited.inventorySha256 !== bootstrap.inventorySha256)) throw new Error("Bootstrap asset identity changed.");
+  if (!inherited && (previousSha !== bootstrap.sha || previousDigest !== bootstrap.digest)) throw new Error("The fixed bootstrap image is required before retaining legacy assets.");
+  const legacySource = inherited ? join(previous, "__legacy-assets") : join(previous, "_next", "static");
+  if (await assetInventoryHash(legacySource) !== bootstrap.inventorySha256) throw new Error("Bootstrap asset bytes differ from the fixed image inventory.");
   const destination = resolve(output);
   for (const input of [current, previous]) {
     const source = resolve(input);
@@ -46,10 +73,12 @@ export async function retainDocsReleases({ current, previous, output, sha, previ
     await copyTree(source, join(output, '__releases', id));
   }
   await copyTree(current, output);
+  await copyTree(legacySource, join(output, "__legacy-assets"), { root: false });
+  await copyTree(legacySource, join(output, "_next", "static"), { root: false, collisionCheck: true });
   for (const id of releases) {
     await copyTree(join(output, '__releases', id, '_next', 'static'), join(output, '_next', 'static'), { root: false, collisionCheck: true });
   }
-  const metadata = { schema: 1, current: sha, previousSha, previousDigest, releases };
+  const metadata = { schema: 1, current: sha, previousSha, previousDigest, releases, legacyAssets: bootstrap };
   await writeFile(join(output, 'releases.json'), JSON.stringify(metadata) + '\n');
   return metadata;
 }

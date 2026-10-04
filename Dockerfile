@@ -40,7 +40,7 @@ RUN pnpm build
 COPY scripts/write-version.mjs /tmp/write-version.mjs
 RUN node /tmp/write-version.mjs out "$RELEASE_SHA"
 COPY --from=previous /usr/share/nginx/html /previous-export
-COPY scripts/retain-docs-releases.mjs /tmp/retain-docs-releases.mjs
+COPY scripts/retain-docs-releases.mjs scripts/docs-bootstrap.mjs /tmp/
 ARG PREVIOUS_SHA
 ARG PREVIOUS_DIGEST
 RUN node /tmp/retain-docs-releases.mjs out /previous-export /retained-out "$RELEASE_SHA" "$PREVIOUS_SHA" "$PREVIOUS_DIGEST"

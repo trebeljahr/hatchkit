@@ -7,9 +7,13 @@ validated `x-deployment-id` request header. Missing or expired releases return
 404; malformed IDs return 400. Neither case falls through to current RSC.
 
 The root serves current HTML/version metadata. Its `_next/static` directory is
-an immutable union of the three retained snapshots. Any same-path/different-byte
-collision fails the build. Copying snapshots from their isolated directories
-prevents old unions from growing without bound.
+an immutable union of the three retained snapshots plus one fixed legacy baseline.
+The baseline is the 39 hashed assets (1,649,720 bytes) from the exact A image
+pinned in `docs-bootstrap.mjs`. Its sorted path/size/SHA-256 inventory is checked
+on every build and inherited separately under the inaccessible `__legacy-assets`
+directory. It does not retain old HTML or RSC outside the three-release window.
+Any same-path/different-byte collision fails the build. Copying snapshots from
+their isolated directories prevents old unions from growing without bound.
 
 Next 16 uses `x-nextjs-deployment-id` in the response to compare navigation
 versions. Exported Flight bodies contain build IDs, which can differ from the
@@ -20,14 +24,17 @@ that response header. RSC responses use no-store and vary on x-deployment-id.
 tab reloads its exact URL. It uses `location.reload()`: replacing an identical
 URL with a fragment would only perform same-document navigation. These docs
 have no editor state. Stateful applications need persistence before reloading.
-Legacy tabs loaded before the lifetime guard require separate adoption checks.
+Legacy A tabs have no deployment ID or expiry guard. Their hashed JavaScript
+remains available indefinitely from the fixed baseline, but their unversioned
+page-data requests select the current export. A navigation may therefore switch
+to the current page. This does not promise old RSC compatibility for legacy tabs.
 
 Build ancestry is fixed before Docker starts:
 
 - `latest`, its source-SHA tag, and both journal markers must identify the same
   byte-verified digest, followed by stable public HTML/version verification.
 - The single initial adoption exception names the reviewed A digest/SHA in
-  `prepare-docs-build.mjs`. Both journal markers must be absent. A partial
+  `docs-bootstrap.mjs`. Both journal markers must be absent. A partial
   journal is never accepted, and this exception claims no prior continuity.
 - An existing target-SHA tag is never overwritten or rebuilt. Use its recorded
   image digest, or create a new source commit.

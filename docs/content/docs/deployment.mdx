@@ -44,6 +44,10 @@ Tabs outside the retained window reload their current URL.
 The URL keeps its query and fragment.
 This policy suits documentation pages. Editors and games need durable user state before they can use the same policy.
 
+The first adopted release predates deployment IDs and expiry checks.
+Its fixed JavaScript files remain available, but its unversioned navigation can load the current page.
+The three-release window applies to page data from releases that send a deployment ID.
+
 <ReleaseWindow />
 
 ## Drain the retiring container

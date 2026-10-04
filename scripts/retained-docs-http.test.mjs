@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { retainDocsReleases } from './retain-docs-releases.mjs';
+import { retainDocsReleases, assetInventoryHash } from './retain-docs-releases.mjs';
 
 test('nginx serves pinned old RSC/chunks, current HTML identity, and real missing/invalid failures', { skip: process.env.RUN_DOCKER_TESTS !== '1' }, async () => {
   const temp = await mkdtemp(join(tmpdir(), 'docs-http-retention-'));
@@ -14,7 +14,7 @@ test('nginx serves pinned old RSC/chunks, current HTML identity, and real missin
   const docker = (...args) => execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   let started = false;
   try {
-    let previous;
+    let previous, bootstrap;
     for (let i = 0; i < ids.length; i++) {
       const current = join(temp, `raw-${i}`);
       await mkdir(join(current, '_next/static/chunks'), { recursive: true });
@@ -22,10 +22,10 @@ test('nginx serves pinned old RSC/chunks, current HTML identity, and real missin
       await writeFile(join(current, 'index.html'), `<head><meta name="build-sha" content="${ids[i]}"></head><body>docs</body>`);
       await writeFile(join(current, 'docs.txt'), `RSC-${ids[i]}`);
       await writeFile(join(current, '_next/static/chunks', `${ids[i]}.js`), `export const revision = '${ids[i]}';`);
-      if (i === 0) previous = current;
+      if (i === 0) { previous = current; bootstrap = { sha: ids[0], digest: "sha256:" + "1".repeat(64), inventorySha256: await assetInventoryHash(join(current, "_next/static")) }; }
       else {
         const output = join(temp, `combined-${i}`);
-        await retainDocsReleases({ current, previous, output, sha: ids[i], previousSha: ids[i - 1], previousDigest: 'sha256:' + '1'.repeat(64) });
+        await retainDocsReleases({ current, previous, output, sha: ids[i], previousSha: ids[i - 1], previousDigest: 'sha256:' + '1'.repeat(64) }, { bootstrap });
         previous = output;
       }
     }
@@ -58,9 +58,13 @@ test('nginx serves pinned old RSC/chunks, current HTML identity, and real missin
       assert.match(chunk.headers.get('content-type'), /javascript/);
     }
     assert.equal((await fetch(`${base}/docs.txt`, { headers: { 'x-deployment-id': ids[0] } })).status, 404);
-    assert.equal((await fetch(`${base}/_next/static/chunks/${ids[0]}.js`)).status, 404);
+    assert.equal((await fetch(`${base}/_next/static/chunks/${ids[0]}.js`)).status, 200);
     for (const invalid of ['../../etc', `${ids[1]}/..`, 'latest']) assert.equal((await fetch(`${base}/docs.txt`, { headers: { 'x-deployment-id': invalid } })).status, 400);
     assert.equal((await fetch(`${base}/__releases/${ids[1]}/index.html`)).status, 404);
+    assert.equal((await fetch(`${base}/__legacy-assets/chunks/${ids[0]}.js`)).status, 404);
+    const missing = await fetch(`${base}/_next/static/chunks/missing.js`);
+    assert.equal(missing.status, 404);
+    assert.doesNotMatch(await missing.text(), /build-sha/);
   } finally {
     if (started) docker('rm', '-f', name);
     await rm(temp, { recursive: true, force: true });
