@@ -26,7 +26,7 @@ export function ReleaseLifetime() {
         const response = await fetch(`/releases.json?at=${Date.now()}`, { cache: "no-store", signal: AbortSignal.timeout(5000) });
         if (!response.ok || stopped) return;
         const data = await response.json();
-        if (data.schema === 1 && Array.isArray(data.releases) && data.releases.length <= 3 && data.releases.every((id: unknown) => typeof id === "string" && /^[a-f0-9]{40}$/.test(id)) && !data.releases.includes(commit)) reload();
+        if (data.schema === 2 && Array.isArray(data.releases) && data.releases.length >= 1 && data.releases.length <= 6 && data.releases.every((id: unknown) => typeof id === "string" && /^[a-f0-9]{40}$/.test(id)) && !data.releases.includes(commit)) reload();
       } catch { /* A transient network failure does not discard an open docs page. */ }
     };
     const resourceError = (event: Event) => {

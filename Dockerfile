@@ -3,7 +3,7 @@
 # Static-site image for hatchkit's docs (Next.js + fumadocs at docs/).
 # Built by .github/workflows/deploy.yml, pushed to GHCR, pulled by
 # Coolify for hatchkit.trebeljahr.com. nginx serves the prebuilt
-# bundle — no runtime Node. `next build` with `output: "export"`
+# bundle; a short Node startup check seeds the shared release volume. `next build` with `output: "export"`
 # emits a fully static site to /app/out.
 #
 # docs/ is intentionally outside the root pnpm-workspace.yaml (which
@@ -46,6 +46,8 @@ ARG PREVIOUS_DIGEST
 RUN node /tmp/retain-docs-releases.mjs out /previous-export /retained-out "$RELEASE_SHA" "$PREVIOUS_SHA" "$PREVIOUS_DIGEST"
 
 FROM nginx:alpine AS runner
+RUN apk add --no-cache nodejs
+COPY scripts/shared-docs-releases.mjs scripts/retain-docs-releases.mjs scripts/docs-bootstrap.mjs /usr/local/lib/docs/
 # Maps `/docs/<page>` onto the export's `<page>.html`. The stock config
 # 403s every docs page — see the header of docs/nginx.conf.
 COPY docs/nginx.conf /etc/nginx/conf.d/default.conf
@@ -54,7 +56,8 @@ ARG PREVIOUS_SHA
 ARG PREVIOUS_DIGEST
 LABEL io.hatchkit.docs.parent-sha=$PREVIOUS_SHA \
       io.hatchkit.docs.parent-digest=$PREVIOUS_DIGEST \
-      io.hatchkit.docs.retention="3"
+      io.hatchkit.docs.retention="3" \
+      io.hatchkit.docs.storage="shared-v1"
 COPY --chmod=755 docs/drain-entrypoint.sh /usr/local/bin/drain-entrypoint
 ENV SHUTDOWN_DRAIN_SECONDS=20
 # nginx:alpine defaults to SIGQUIT. Our PID 1 must receive TERM first so

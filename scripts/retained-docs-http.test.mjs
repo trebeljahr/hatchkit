@@ -36,6 +36,9 @@ test('nginx serves pinned old RSC/chunks, current HTML identity, and real missin
     docker('cp', `${previous}/.`, `${name}:/usr/share/nginx/html`);
     docker('cp', config, `${name}:/etc/nginx/conf.d/default.conf`);
     docker('start', name);
+    docker('exec', name, 'mkdir', '-p', '/var/lib/hatchkit-docs-releases/releases');
+    docker('cp', `${previous}/.`, `${name}:/var/lib/hatchkit-docs-releases`);
+    docker('cp', `${previous}/__releases/.`, `${name}:/var/lib/hatchkit-docs-releases/releases`);
     const address = docker('port', name, '80/tcp');
     assert.match(address, /^127\.0\.0\.1:\d+$/);
     const base = `http://${address}`;

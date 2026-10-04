@@ -143,7 +143,8 @@ export async function rollingRelease(config, release, dependencies = {}) {
   if (target.digest !== previous.digest && (
     targetIdentity.labels["io.hatchkit.docs.parent-digest"] !== previous.digest ||
     targetIdentity.labels["io.hatchkit.docs.parent-sha"] !== previousSha ||
-    targetIdentity.labels["io.hatchkit.docs.retention"] !== "3"
+    targetIdentity.labels["io.hatchkit.docs.retention"] !== "3" ||
+    targetIdentity.labels["io.hatchkit.docs.storage"] !== "shared-v1"
   )) throw new ReleaseError("Target retained assets were not built from the exact current image.");
   report.previousSha = previousSha;
   report.previousDigest = previous.digest;

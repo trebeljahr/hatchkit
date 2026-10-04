@@ -36,6 +36,9 @@ The repository variable `HATCHKIT_ROLLOUT_MODE` controls activation:
 ## Keep open tabs usable
 
 Each image contains the current export and up to two prior exports.
+Before accepting traffic, it adds those files to a shared release volume.
+Both containers can serve either release during their overlap.
+A running container keeps its files until it exits.
 Next.js attaches its deployment ID to page-data requests.
 nginx uses that ID to serve the matching export, including its older JavaScript chunks.
 An invalid ID fails without selecting another directory.

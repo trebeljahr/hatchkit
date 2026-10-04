@@ -37,7 +37,7 @@ function platform(options = {}) {
         config: {
           Labels: { "org.opencontainers.image.revision": sha, ...(sha === NEW ? {
             "io.hatchkit.docs.parent-digest": options.wrongParent ? "sha256:" + "0".repeat(64) : tags.get(OLD),
-            "io.hatchkit.docs.parent-sha": OLD, "io.hatchkit.docs.retention": "3",
+            "io.hatchkit.docs.parent-sha": OLD, "io.hatchkit.docs.retention": "3", "io.hatchkit.docs.storage": options.wrongStorage ? "local-only" : "shared-v1",
           } : {}) },
         },
       }),
@@ -425,10 +425,12 @@ test("build, verify and deploy workflow gates all name the fixed source reposito
   assert.deepEqual([...new Set(repositories)], [APP.repository]);
 });
 
- test("candidate built from another image cannot replace the current release", async () => {
-  const p = platform({ wrongParent: true });
-  await assert.rejects(rollingRelease(config, p.release, p.deps), /exact current image/);
-  assert.equal(writes(p).length, 0);
+test("candidate ancestry and shared-storage contract must match before promotion", async () => {
+  for (const options of [{ wrongParent: true }, { wrongStorage: true }]) {
+    const p = platform(options);
+    await assert.rejects(rollingRelease(config, p.release, p.deps), /exact current image/);
+    assert.equal(writes(p).length, 0);
+  }
 });
 
 test("build ancestry pins the verified image and rejects SHA rebuilds or baseline drift", async () => {

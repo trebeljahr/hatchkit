@@ -9,6 +9,19 @@ case "$drain_seconds" in
     ;;
 esac
 
+# A real, app-owned shared mount is required. Hold the release lease until all
+# nginx workers exit; the kernel releases it even after a forced container stop.
+release_sha=$(node /usr/local/lib/docs/shared-docs-releases.mjs check)
+store=/var/lib/hatchkit-docs-releases
+mkdir -p "$store/leases"
+exec 9>"$store/leases/$release_sha.lock"
+flock -s 9
+exec 8>"$store/.publish.lock"
+flock -x 8
+node /usr/local/lib/docs/shared-docs-releases.mjs publish
+flock -u 8
+exec 8>&-
+
 marker=/tmp/hatchkit-site-draining
 rm -f "$marker"
 
