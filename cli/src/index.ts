@@ -5191,6 +5191,8 @@ function printHelp(topic?: HelpTopic): void {
     --no-secrets                  Leave the GitHub Actions secrets alone
     --keep-live-tag               Stay on the deployed sha tag instead of the branch tag —
                                   for repos whose workflow already pins image tags
+    --strip-prefix-safe <svc>     The service answers \`/api/x\` and \`/x\` alike, so go on when
+                                  Coolify won't turn Strip Prefix off (public probes still gate)
     --dir <path>                  Project directory (default: cwd)
 
   With --image, retain the old image digest in the legacy Compose file and pin

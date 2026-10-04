@@ -83,6 +83,11 @@ export interface MigrateRuntimeOptions {
    *  `docker_registry_image_tag` itself — an immutable tag is also what
    *  verified-deploy needs as a rollback target. */
   keepLiveTag: boolean;
+  /** Compose services that serve the same routes with and without their
+   *  path prefix (`/api/x` and `/x`). For these, a Coolify build that
+   *  rejects turning Strip Prefix off is not a reason to stop: the public
+   *  route probes after activation still have to pass. */
+  stripPrefixSafe?: string[];
 }
 
 export interface MigrationLedger {
@@ -167,6 +172,12 @@ export async function runMigrateRuntimeCli(args: string[]): Promise<void> {
       "--rollback-commit requires --image and a reviewed full lowercase Git commit SHA.",
     );
   }
+  const stripPrefixSafe = flagValues("strip-prefix-safe");
+  for (const service of stripPrefixSafe) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(service)) {
+      throw new Error("--strip-prefix-safe takes a compose service name.");
+    }
+  }
   const action = args.includes("--rollback")
     ? "rollback"
     : args.includes("--cleanup")
@@ -184,11 +195,18 @@ export async function runMigrateRuntimeCli(args: string[]): Promise<void> {
     rollbackCommit,
     noSecrets: args.includes("--no-secrets"),
     keepLiveTag: args.includes("--keep-live-tag"),
+    stripPrefixSafe,
   });
   if (!ok) process.exitCode = 1;
 }
 
-const VALUE_FLAGS = new Set(["--dir", "--health-path", "--image", "--rollback-commit"]);
+const VALUE_FLAGS = new Set([
+  "--dir",
+  "--health-path",
+  "--image",
+  "--rollback-commit",
+  "--strip-prefix-safe",
+]);
 
 export async function runMigrateRuntime(opts: MigrateRuntimeOptions): Promise<boolean> {
   const cfg = await getCoolifyConfig();
@@ -602,8 +620,15 @@ export async function migrate(
       if (app.domains.some((domain) => new URL(domain).pathname !== "/")) {
         const result = await api.updateApplication(uuid, { isStripprefixEnabled: false });
         if (result.droppedFields.includes("is_stripprefix_enabled")) {
-          return abort(
-            `${app.appName}: Coolify refused to preserve route prefixes; configure this before migrating.`,
+          if (!opts.stripPrefixSafe?.includes(app.service)) {
+            return abort(
+              `${app.appName}: Coolify refused to preserve route prefixes; configure this before migrating, or pass --strip-prefix-safe ${app.service} if the service serves its routes with and without the prefix.`,
+            );
+          }
+          console.log(
+            chalk.dim(
+              `  ${app.appName}: Coolify kept Strip Prefix on; service "${app.service}" serves both forms, the public probes decide.`,
+            ),
           );
         }
       }

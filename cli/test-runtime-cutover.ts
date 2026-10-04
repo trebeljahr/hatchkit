@@ -349,6 +349,44 @@ try {
     );
   }
   {
+    const f = fixture({ missingPrefixSetting: true });
+    const plan = basePlan();
+    plan.apps[0].domains = ["https://site.example/api"];
+    plan.apps[0].healthCheck.path = "/api/health";
+    assert.equal(
+      await migrate(
+        f.api,
+        "https://coolify.example",
+        plan,
+        { ...options, stripPrefixSafe: ["other"] },
+        f.deps,
+      ),
+      false,
+    );
+    assert.ok(!f.calls.includes("deploy:new1"), "opt-in names a different service");
+  }
+  {
+    const f = fixture({ missingPrefixSetting: true });
+    const plan = basePlan();
+    plan.apps[0].domains = ["https://site.example/api"];
+    plan.apps[0].healthCheck.path = "/api/health";
+    assert.equal(
+      await migrate(
+        f.api,
+        "https://coolify.example",
+        plan,
+        { ...options, stripPrefixSafe: ["app"] },
+        f.deps,
+      ),
+      true,
+    );
+    assert.ok(f.calls.includes("stop:old"), "prefix-tolerant service completes the cutover");
+  }
+  await assert.rejects(
+    runMigrateRuntimeCli(["--strip-prefix-safe", "bad name"]),
+    /--strip-prefix-safe/,
+  );
+  {
     let polls = 0;
     assert.match(
       await deployAndWait(
