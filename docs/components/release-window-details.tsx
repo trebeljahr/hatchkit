@@ -12,6 +12,7 @@ export default function ReleaseWindowDetails() {
   }, []);
   return <div aria-live="polite">
     <p>This site keeps the current release and two prior releases for open tabs.</p>
+    <p>Tabs outside this window reload the same URL, including its query and fragment.</p>
     {releases ? <ul>{releases.map((id, index) => <li key={id}>{index === 0 ? "Current" : `Previous ${index}`}: <code>{id.slice(0, 12)}</code></li>)}</ul> : <p>Release details are unavailable.</p>}
   </div>;
 }

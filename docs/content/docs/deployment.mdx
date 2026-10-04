@@ -39,6 +39,7 @@ Each image contains the current export and up to two prior exports.
 Next.js attaches its deployment ID to page-data requests.
 nginx uses that ID to serve the matching export, including its older JavaScript chunks.
 An invalid ID fails without selecting another directory.
+The release window counts successful generations, so two rapid releases can expire a tab sooner than two slow releases.
 
 Tabs outside the retained window reload their current URL.
 The URL keeps its query and fragment.
