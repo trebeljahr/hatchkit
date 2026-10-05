@@ -991,8 +991,9 @@ export class CoolifyApi {
       dockerComposeLocation:
         typeof raw.docker_compose_location === "string" ? raw.docker_compose_location : undefined,
       serverUuid: extractServerUuid(raw),
-      isAutoDeployEnabled:
-        typeof raw.is_auto_deploy_enabled === "boolean" ? raw.is_auto_deploy_enabled : undefined,
+      isAutoDeployEnabled: coerceFlag(
+        settings.is_auto_deploy_enabled ?? raw.is_auto_deploy_enabled,
+      ),
       baseDirectory: typeof raw.base_directory === "string" ? raw.base_directory : undefined,
       status: typeof raw.status === "string" ? raw.status : undefined,
       restartCount: coerceCount(raw.restart_count),
@@ -1473,8 +1474,13 @@ export interface CoolifyApplication {
    *  Lets inventory resolve the server's IP via `getServerDomains` and
    *  compare against the DNS A record for `fqdn`. */
   serverUuid?: string;
-  /** Coolify's git-webhook auto-deploy flag. Undefined when the API
-   *  doesn't surface it (older Coolify builds). Build-pipeline projects
+  /** Coolify's git-webhook auto-deploy flag. It lives on the
+   *  `application_settings` row, so it is read from the `settings`
+   *  relation when Coolify loads it and from a top-level key on builds
+   *  that flatten it. Undefined when neither is present — 4.0.0-beta.469
+   *  serializes `settings` as `null`, so there the flag is unknowable
+   *  over the API and callers must not read undefined as "off".
+   *  Build-pipeline projects
    *  expect this to be `false` so GHA owns the deploy trigger; doctor's
    *  check surfaces the mismatch. */
   isAutoDeployEnabled?: boolean;
@@ -1671,6 +1677,15 @@ function extractServerUuid(raw: Record<string, unknown>): string | undefined {
     const uuid = (server as { uuid?: unknown }).uuid;
     if (typeof uuid === "string") return uuid;
   }
+  return undefined;
+}
+
+/** Coolify booleans arrive as `true`/`false`, `1`/`0` or `"1"`/`"0"`
+ *  depending on the column and build. Anything else is unknown. */
+function coerceFlag(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (value === 1 || value === "1") return true;
+  if (value === 0 || value === "0") return false;
   return undefined;
 }
 

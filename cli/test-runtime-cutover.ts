@@ -53,6 +53,8 @@ function fixture(
     stopStuck?: boolean;
     gitCommitSha?: string;
     sourceDrifts?: boolean;
+    /** Legacy auto-deploy as getApplication reports it; null = absent. */
+    autoDeploy?: boolean | null;
   } = {},
 ) {
   const calls: string[] = [];
@@ -74,7 +76,10 @@ function fixture(
             ? "d".repeat(40)
             : (settings.gitCommitSha ?? "c".repeat(40)),
         status: states.get(uuid),
-        isAutoDeployEnabled: false,
+        isAutoDeployEnabled:
+          uuid === "old" && settings.autoDeploy !== undefined
+            ? (settings.autoDeploy ?? undefined)
+            : false,
       };
     },
     async listProjectsWithEnvironments() {
@@ -94,8 +99,10 @@ function fixture(
     },
     async updateApplication(
       uuid: string,
-      fields: { domains?: string[]; isStripprefixEnabled?: boolean },
+      fields: { domains?: string[]; isStripprefixEnabled?: boolean; isAutoDeployEnabled?: boolean },
     ) {
+      if (fields.isAutoDeployEnabled !== undefined)
+        calls.push(`autodeploy:${uuid}:${fields.isAutoDeployEnabled}`);
       if (fields.domains) {
         configured.set(uuid, [...fields.domains]);
         calls.push(`routes:${uuid}`);
@@ -286,6 +293,34 @@ try {
     assert.ok(
       !f.calls.some((call) => call.startsWith("create:")),
       "mixed generic and split deployment targets must fail before any mutation",
+    );
+  }
+  for (const [reported, recorded] of [
+    [null, "unknown"],
+    [true, true],
+    [false, false],
+  ] as const) {
+    const f = fixture({ autoDeploy: reported });
+    assert.equal(
+      await migrate(f.api, "https://coolify.example", basePlan(), options, f.deps),
+      true,
+    );
+    assert.equal(f.ledger()?.source.autoDeployWasEnabled, recorded);
+    const disabled = f.calls.indexOf("autodeploy:old:false");
+    if (reported === false) {
+      assert.equal(disabled, -1, "auto-deploy Coolify reports off is left untouched");
+    } else {
+      assert.ok(disabled >= 0, `auto-deploy reported as ${reported} is turned off`);
+      assert.ok(disabled < f.calls.indexOf("stop:old"), "auto-deploy is off before the stop");
+    }
+    const r = fixture({ autoDeploy: reported });
+    r.states.set("old", "exited");
+    r.states.set("new1", "running:healthy");
+    assert.equal(await rollback(r.api, f.ledger()!, options, r.deps), true);
+    assert.deepEqual(
+      r.calls.filter((c) => c.startsWith("autodeploy:")),
+      reported === true ? ["autodeploy:old:true"] : [],
+      "rollback restores only a recorded true",
     );
   }
   {

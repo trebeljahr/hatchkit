@@ -72,6 +72,16 @@ try {
   const topLevel = await api.getApplication("app");
   assert.equal(topLevel.isConsistentContainerNameEnabled, false);
   assert.equal(topLevel.customInternalName, "");
+  // Auto-deploy lives on application_settings; beta.469 sends `settings: null`.
+  for (const [shape, expected] of [
+    [{ settings: null }, undefined],
+    [{ settings: { is_auto_deploy_enabled: 1 } }, true],
+    [{ settings: { is_auto_deploy_enabled: false } }, false],
+    [{ is_auto_deploy_enabled: true }, true],
+  ] as const) {
+    raw = { ...base, ...shape };
+    assert.equal((await api.getApplication("app")).isAutoDeployEnabled, expected);
+  }
   raw = {
     ...base,
     settings: { is_consistent_container_name_enabled: false, custom_internal_name: "custom" },

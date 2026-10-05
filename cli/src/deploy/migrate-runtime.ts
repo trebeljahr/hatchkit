@@ -96,7 +96,11 @@ export interface MigrationLedger {
     uuid: string;
     name: string;
     legacyName: string;
-    autoDeployWasEnabled?: boolean;
+    /** Legacy app's git auto-deploy before cutover. `"unknown"` when
+     *  Coolify did not report it (4.0.0-beta.469): migrate still turns
+     *  it off, and rollback cannot restore what it never saw. Absent on
+     *  ledgers written before the flag was recorded this way. */
+    autoDeployWasEnabled?: boolean | "unknown";
     gitRepository?: string;
     rollbackGitCommitSha?: string;
   };
@@ -469,9 +473,7 @@ export async function migrate(
       uuid: plan.source.uuid,
       name: plan.source.name,
       legacyName: plan.legacyName,
-      ...(source.isAutoDeployEnabled !== undefined
-        ? { autoDeployWasEnabled: source.isAutoDeployEnabled }
-        : {}),
+      autoDeployWasEnabled: source.isAutoDeployEnabled ?? "unknown",
       ...(source.gitRepository ? { gitRepository: source.gitRepository } : {}),
       ...(opts.rollbackCommit ? { rollbackGitCommitSha: opts.rollbackCommit } : {}),
     },
@@ -710,7 +712,10 @@ export async function migrate(
       return abort("Legacy Git source changed during migration; keeping the old app serving.");
     }
   }
-  if (source.isAutoDeployEnabled) {
+  // Unknown is not off: beta.469 never reports the flag, and skipping
+  // here left the stopped legacy app redeploying on every push. The
+  // PATCH is idempotent, so send it unless Coolify said it is off.
+  if (source.isAutoDeployEnabled !== false) {
     try {
       await api.updateApplication(plan.source.uuid, { isAutoDeployEnabled: false });
     } catch (err) {
@@ -995,7 +1000,7 @@ export async function rollback(
   }
   await api.updateApplication(ledger.source.uuid, {
     name: ledger.source.name,
-    ...(ledger.source.autoDeployWasEnabled ? { isAutoDeployEnabled: true } : {}),
+    ...(ledger.source.autoDeployWasEnabled === true ? { isAutoDeployEnabled: true } : {}),
   });
   // A signed-deploy repo gets the legacy app's own hook back: its
   // secret, repository and branch, not its uuid. ensureDeployHook also
@@ -1004,6 +1009,13 @@ export async function rollback(
   const sourceHook = ledger.secrets.some((s) => /_DEPLOY_(SECRET|REPOSITORY|BRANCH)$/.test(s.name))
     ? (await ensureDeployHook(api, ledger.source.uuid)).hook
     : undefined;
+  if (ledger.source.autoDeployWasEnabled === "unknown" && !sourceHook) {
+    console.log(
+      chalk.yellow(
+        `  Coolify did not report whether ${ledger.source.name} had git auto-deploy on before the migration, so it stays off. Re-enable it in the dashboard if this app deployed on push.`,
+      ),
+    );
+  }
   let secretsRestored = true;
   for (const s of ledger.secrets) {
     const value =
