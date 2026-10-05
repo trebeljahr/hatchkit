@@ -12,7 +12,9 @@
  *   · drain.cjs, run for real under node: a loopback probe on `/` or
  *     `/api/health` gets 503 once SIGTERM arrives, any other request is
  *     served, the server's own SIGTERM handler runs only after the drain,
- *     and a server with no handler is closed and exits on its own;
+ *     a server with no handler is closed and exits on its own, and a
+ *     handler whose shutdown stalls is cut short before `docker stop`
+ *     escalates to SIGKILL;
  *   · SHUTDOWN_DRAIN_SECONDS unset leaves a process's SIGTERM alone;
  *   · drain-entrypoint delivers SIGTERM to the drained process past a
  *     parent that never passes it on. In an image that parent is
@@ -31,7 +33,10 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SHUTDOWN_DRAIN_SECONDS } from "./src/deploy/image-runtime.js";
+import {
+  COOLIFY_STOP_TIMEOUT_SECONDS,
+  SHUTDOWN_DRAIN_SECONDS,
+} from "./src/deploy/image-runtime.js";
 import { scaffoldBuildPipeline } from "./src/scaffold/build-pipeline.js";
 
 const failures: string[] = [];
@@ -58,16 +63,32 @@ const read = (rel: string) => readFileSync(join(REPO, rel), "utf-8");
 const work = mkdtempSync(join(tmpdir(), "hatchkit-drain-"));
 const FIXTURE = join(work, "server.mjs");
 // A server that prints its port, logs each SIGTERM its own handler sees,
-// and (with APP_HANDLER) closes and exits 7 from that handler.
+// and (with APP_HANDLER) closes and exits 7 from that handler. With
+// STUCK_HANDLER its handler only calls server.close(), which never
+// finishes while /stream holds a response open — Next's shutdown stalls
+// the same way.
 writeFileSync(
   FIXTURE,
   `import { createServer } from "node:http";
-const server = createServer((req, res) => res.end("ok " + req.url));
+const server = createServer((req, res) => {
+  if (req.url === "/stream") {
+    res.writeHead(200);
+    res.write("x");
+    return;
+  }
+  res.end("ok " + req.url);
+});
 server.listen(0, "127.0.0.1", () => console.log("port " + server.address().port));
 if (process.env.APP_HANDLER) {
   process.once("SIGTERM", () => {
     console.log("app-shutdown");
     server.close(() => process.exit(7));
+  });
+}
+if (process.env.STUCK_HANDLER) {
+  process.once("SIGTERM", () => {
+    console.log("app-shutdown");
+    server.close();
   });
 }
 `,
@@ -153,6 +174,42 @@ await check(
       assert.equal(await status(s.port, "/"), 503);
       assert.equal(await s.exited, 0);
     } finally {
+      s.child.kill("SIGKILL");
+    }
+  },
+);
+
+await check(
+  "a stalled app shutdown is cut and exits 0 before docker stop escalates to SIGKILL",
+  async () => {
+    const closeMs = Number(readFileSync(PRELOAD, "utf-8").match(/CLOSE_TIMEOUT_MS = (\d+)/)?.[1]);
+    assert.ok(closeMs > 0, "drain.cjs declares CLOSE_TIMEOUT_MS");
+    assert.ok(
+      SHUTDOWN_DRAIN_SECONDS + closeMs / 1000 < COOLIFY_STOP_TIMEOUT_SECONDS,
+      `drain ${SHUTDOWN_DRAIN_SECONDS} s + close ${closeMs / 1000} s ends before docker stop -t ${COOLIFY_STOP_TIMEOUT_SECONDS}`,
+    );
+    const s = await start({ SHUTDOWN_DRAIN_SECONDS: "0.5", STUCK_HANDLER: "1" });
+    const stream = new AbortController();
+    try {
+      const open = await fetch(`http://127.0.0.1:${s.port}/stream`, { signal: stream.signal });
+      assert.equal(open.status, 200);
+      const sent = Date.now();
+      s.child.kill("SIGTERM");
+      const code = await Promise.race([
+        s.exited,
+        sleep(500 + closeMs + 3000).then(() => {
+          throw new Error("still running: docker stop would SIGKILL it");
+        }),
+      ]);
+      const elapsed = Date.now() - sent;
+      assert.match(s.output(), /app-shutdown/, "the app's handler still ran");
+      assert.equal(code, 0);
+      assert.ok(
+        elapsed >= 500 + closeMs - 100 && elapsed < 500 + closeMs + 3000,
+        `exited after ${elapsed} ms`,
+      );
+    } finally {
+      stream.abort();
       s.child.kill("SIGKILL");
     }
   },

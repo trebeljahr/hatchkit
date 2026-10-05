@@ -43,8 +43,9 @@ const healthPaths = (process.env.HEALTH_CHECK_PATH || "/,/api/health")
   .split(",")
   .map((p) => p.trim())
   .filter(Boolean);
-// After the drain, how long a server with no SIGTERM handling of its own
-// gets to finish in-flight requests before its connections are cut.
+// After the drain, how long the server's own shutdown (or, without one,
+// in-flight requests) may take before its connections are cut. With the
+// 20 s drain this ends at 28 s, inside `docker stop`'s 30 s before SIGKILL.
 const CLOSE_TIMEOUT_MS = 8000;
 
 // A child this process forks inherits `--require`. Only the process that
@@ -98,11 +99,18 @@ function install() {
     finished = true;
     clearTimeout(timer);
     release();
-    // Held listeners ran on this signal, and now run on the promise
-    // above. With none, nothing else is going to shut this process down.
-    if (heldCalls > 0) return;
-    let open = servers.size;
     const exit = () => process.exit(0);
+    // Held listeners ran on this signal, and now run on the promise
+    // above. They own the shutdown, but must finish before `docker stop`
+    // escalates to SIGKILL; past CLOSE_TIMEOUT_MS cut what is left and exit.
+    if (heldCalls > 0) {
+      setTimeout(() => {
+        for (const server of servers) server.closeAllConnections?.();
+        exit();
+      }, CLOSE_TIMEOUT_MS).unref();
+      return;
+    }
+    let open = servers.size;
     if (open === 0) exit();
     for (const server of servers) {
       server.close(() => {
