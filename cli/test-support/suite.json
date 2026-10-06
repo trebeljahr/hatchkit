@@ -3,6 +3,7 @@
   "test-help-safety.ts",
   "test-dev-setup.ts",
   "test-dns-preflight.ts",
+  "test-dns-link.ts",
   "test-dns-legacy-migration.ts",
   "test-totp.ts",
   "test-inwx-api.ts",

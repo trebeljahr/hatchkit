@@ -5,6 +5,9 @@
 //   look up the Cloudflare nameservers and push them to INWX as the
 //   registrar-level delegation. Useful after importing zones into
 //   Cloudflare when you don't want to click through INWX per-domain.
+//   A freshly added zone is "pending" until exactly this push lands, so
+//   pending zones are the main case; pending zones then get an
+//   activation check queued so Cloudflare looks before its own backoff.
 //
 //   hatchkit dns link-to-cloudflare                   # all matching zones
 //   hatchkit dns link-to-cloudflare fractal.garden    # just one
@@ -36,6 +39,143 @@ export interface DnsLinkOptions {
   /** Empty = all zones. */
   domains: string[];
   dryRun: boolean;
+  /** Queue a Cloudflare activation check for each pending zone once the
+   *  registrar lists its nameservers. Defaults to true. */
+  activationCheck?: boolean;
+}
+
+/**
+ * Why a zone's nameservers must NOT be pushed to the registrar, or null
+ * when delegating is right. "pending" is the normal case, not an error:
+ * Cloudflare keeps a new full-setup zone pending exactly until the
+ * registrar delegates to its nameservers, which is what this command
+ * does. Statuses per https://developers.cloudflare.com/dns/zone-setups/reference/domain-status/
+ */
+export function zoneSkipReason(zone: CloudflareZone): string | null {
+  if (zone.type && zone.type !== "full") {
+    return `zone type is "${zone.type}"; only full-setup zones are delegated by nameserver`;
+  }
+  switch (zone.status) {
+    case "pending":
+    case "active":
+      break;
+    case "initializing":
+      return "setup is unfinished in Cloudflare (no plan picked), so it answers no DNS yet. Finish setup in the dashboard, then re-run";
+    case "moved":
+      return "the registry no longer lists Cloudflare's nameservers, and Cloudflare deletes the zone after 7 days. The move may be deliberate, so hatchkit does not undo it";
+    case "deleted":
+    case "purged":
+      return `zone is ${zone.status}. Re-add the domain in Cloudflare (it gets a new nameserver pair), then re-run`;
+    default:
+      return `unknown zone status "${zone.status}"; not touching the registrar`;
+  }
+  if (zone.name_servers.length < 2) {
+    return "Cloudflare has not assigned nameservers to this zone yet";
+  }
+  return null;
+}
+
+function normalizeNs(ns: string[]): string[] {
+  return [...new Set(ns.map((n) => n.trim().toLowerCase().replace(/\.$/, "")))].sort();
+}
+
+/** Same nameserver set, ignoring case, order and a trailing dot. */
+export function sameNameservers(a: string[], b: string[]): boolean {
+  const x = normalizeNs(a);
+  const y = normalizeNs(b);
+  return x.length === y.length && x.every((n, i) => n === y[i]);
+}
+
+export type ZoneLinkOutcome = "delegated" | "would-delegate" | "unchanged" | "skipped" | "failed";
+
+export interface ZoneLinkResult {
+  zone: string;
+  /** Cloudflare zone status at the time of the run. */
+  status: string;
+  outcome: ZoneLinkOutcome;
+  /** Skip reason or error message. */
+  detail?: string;
+  /** Set when an activation check was attempted for a pending zone. */
+  activationCheck?: "queued" | "failed";
+}
+
+export interface ZoneLinkDeps {
+  /** Logged-in registrar client. Never called in dry-run. */
+  registrar: Pick<InwxApi, "getDomainInfo" | "setDomainNameservers">;
+  cf: Pick<CloudflareApi, "triggerActivationCheck">;
+  dryRun: boolean;
+  activationCheck: boolean;
+  log?: (line: string) => void;
+}
+
+/** Point each zone's registrar delegation at its Cloudflare nameservers.
+ *  Per-zone failures are reported in the result, never thrown. */
+export async function linkZonesAtRegistrar(
+  zones: CloudflareZone[],
+  deps: ZoneLinkDeps,
+): Promise<ZoneLinkResult[]> {
+  const log = deps.log ?? ((line: string) => console.log(line));
+  const results: ZoneLinkResult[] = [];
+
+  for (const zone of zones) {
+    const ns = zone.name_servers;
+    log(chalk.bold(`  ${zone.name}`));
+    log(chalk.dim(`    zone_id:  ${zone.id}`));
+    log(chalk.dim(`    status:   ${zone.status}`));
+    log(chalk.dim(`    ns:       ${ns.join(", ")}`));
+
+    const skip = zoneSkipReason(zone);
+    if (skip) {
+      log(chalk.yellow(`    ! skipped: ${skip}`));
+      results.push({ zone: zone.name, status: zone.status, outcome: "skipped", detail: skip });
+      continue;
+    }
+
+    if (deps.dryRun) {
+      log(chalk.dim("    would set the INWX nameservers to the ones above if they differ"));
+      results.push({ zone: zone.name, status: zone.status, outcome: "would-delegate" });
+      continue;
+    }
+
+    const result: ZoneLinkResult = { zone: zone.name, status: zone.status, outcome: "unchanged" };
+    try {
+      // Compare first: an already-delegated domain needs no write, and
+      // "updated" would be a misleading log line.
+      const current = await deps.registrar.getDomainInfo(zone.name);
+      if (sameNameservers(current.ns, ns)) {
+        log(chalk.dim("    INWX already lists these nameservers, unchanged"));
+      } else {
+        await deps.registrar.setDomainNameservers(zone.name, ns);
+        log(chalk.green(`    ✓ delegated at INWX (was: ${current.ns.join(", ") || "none"})`));
+        result.outcome = "delegated";
+      }
+    } catch (error) {
+      log(chalk.red(`    ✗ failed: ${(error as Error).message}`));
+      results.push({
+        zone: zone.name,
+        status: zone.status,
+        outcome: "failed",
+        detail: (error as Error).message,
+      });
+      continue;
+    }
+
+    // The registrar now delegates to Cloudflare, but a pending zone only
+    // flips once Cloudflare's own check sees that, on a backoff schedule.
+    if (zone.status === "pending" && deps.activationCheck) {
+      try {
+        await deps.cf.triggerActivationCheck(zone.id);
+        log(chalk.dim("    queued a Cloudflare activation check"));
+        result.activationCheck = "queued";
+      } catch (error) {
+        log(chalk.dim(`    activation check not queued: ${(error as Error).message}`));
+        log(chalk.dim("    Cloudflare re-checks on its own; the dashboard can force one."));
+        result.activationCheck = "failed";
+      }
+    }
+    results.push(result);
+  }
+  return results;
 }
 
 export async function runDnsLinkToCloudflare(options: DnsLinkOptions): Promise<void> {
@@ -94,68 +234,47 @@ export async function runDnsLinkToCloudflare(options: DnsLinkOptions): Promise<v
   });
 
   if (options.dryRun) {
-    console.log(chalk.yellow("  [dry-run: no changes will be made]\n"));
+    console.log(chalk.yellow("  [dry-run: INWX is not contacted, no changes will be made]\n"));
   } else {
     await inwx.login();
   }
 
-  let successes = 0;
-  let failures = 0;
-  let skipped = 0;
-
+  let results: ZoneLinkResult[];
   try {
-    for (const zone of zones) {
-      const ns = zone.name_servers;
-      console.log(chalk.bold(`  ${zone.name}`));
-      console.log(chalk.dim(`    zone_id:  ${zone.id}`));
-      console.log(chalk.dim(`    ns:       ${ns.join(", ")}`));
-
-      if (zone.status !== "active") {
-        console.log(
-          chalk.yellow(`    ! Zone status is "${zone.status}", skipping (activate it in CF first)`),
-        );
-        skipped += 1;
-        continue;
-      }
-
-      if (options.dryRun) {
-        console.log(chalk.dim("    would call domain.update { ns: [...] }"));
-        continue;
-      }
-
-      try {
-        // Skip if INWX already has the right NS — saves a write and
-        // avoids logging a misleading "updated" message.
-        const current = await inwx.getDomainInfo(zone.name);
-        const wantNs = ns.map((n) => n.toLowerCase());
-        const haveNs = current.ns.map((n) => n.toLowerCase());
-        const same = haveNs.length === wantNs.length && haveNs.every((n) => wantNs.includes(n));
-        if (same) {
-          console.log(chalk.dim("    already matches — no change"));
-          skipped += 1;
-          continue;
-        }
-
-        await inwx.setDomainNameservers(zone.name, ns);
-        console.log(chalk.green("    ✓ updated at INWX"));
-        successes += 1;
-      } catch (error) {
-        console.log(chalk.red(`    ✗ failed: ${(error as Error).message}`));
-        failures += 1;
-      }
-    }
+    results = await linkZonesAtRegistrar(zones, {
+      registrar: inwx,
+      cf,
+      dryRun: options.dryRun,
+      activationCheck: options.activationCheck ?? true,
+    });
   } finally {
     if (!options.dryRun) {
       await inwx.logout().catch(() => {});
     }
   }
 
+  const count = (outcome: ZoneLinkOutcome) => results.filter((r) => r.outcome === outcome).length;
+  const updated = count(options.dryRun ? "would-delegate" : "delegated");
+  const unchanged = count("unchanged");
+  const skipped = count("skipped");
+  const failures = count("failed");
+  const awaitingActivation = results.filter(
+    (r) => r.status === "pending" && (r.outcome === "delegated" || r.outcome === "unchanged"),
+  ).length;
+
   console.log(chalk.bold("\n  ── Summary ──────────────────────────────────────────────\n"));
-  console.log(`  Updated: ${chalk.green(successes)}`);
-  console.log(`  Skipped: ${chalk.dim(skipped)}`);
-  console.log(`  Failed:  ${failures > 0 ? chalk.red(failures) : chalk.dim(failures)}`);
-  if (!options.dryRun && successes > 0) {
-    console.log(chalk.dim("\n  TLD propagation can take 5 min to a few hours."));
+  const label = (s: string) => `  ${`${s}:`.padEnd(14)}`;
+  console.log(`${label(options.dryRun ? "Would update" : "Updated")}${chalk.green(updated)}`);
+  console.log(`${label("Unchanged")}${chalk.dim(unchanged)}`);
+  console.log(`${label("Skipped")}${skipped > 0 ? chalk.yellow(skipped) : chalk.dim(skipped)}`);
+  console.log(`${label("Failed")}${failures > 0 ? chalk.red(failures) : chalk.dim(failures)}`);
+  if (!options.dryRun && (updated > 0 || awaitingActivation > 0)) {
+    console.log(
+      chalk.dim(
+        "\n  The registry can take a few minutes to a few hours to serve the new nameservers." +
+          "\n  Cloudflare turns a pending zone active once it sees them.",
+      ),
+    );
   }
   if (failures > 0) {
     process.exit(1);

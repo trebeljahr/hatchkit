@@ -3,7 +3,8 @@
 // Used by:
 //   · `hatchkit dns link-to-cloudflare` — verifies a token and lists
 //     zones so we can cross-reference them against domains registered
-//     at INWX (standalone migration / reconciliation).
+//     at INWX (standalone migration / reconciliation), then queues an
+//     activation check for zones still pending.
 //   · `hatchkit gh-pages` — upserts apex A records (or a subdomain
 //     CNAME) for a GitHub Pages site, with proxied=false because the
 //     orange cloud breaks Pages' Let's Encrypt cert issuance.
@@ -16,7 +17,13 @@ export interface CloudflareZone {
   id: string;
   name: string;
   name_servers: string[];
+  /** "initializing" | "pending" | "active" | "moved" | "deleted" |
+   *  "purged". A new full-setup zone stays "pending" until the registrar
+   *  delegates to `name_servers`. */
   status: string;
+  /** "full" (Cloudflare nameservers), "partial" (CNAME setup) or
+   *  "secondary". Only full zones are delegated by NS. */
+  type?: string;
   account?: { id: string; name?: string };
 }
 
@@ -245,6 +252,14 @@ export class CloudflareApi {
     if (this.accountId) query.set("account.id", this.accountId);
     const data = await this.request<CloudflareZone[]>("GET", `/zones?${query.toString()}`);
     return data[0] ?? null;
+  }
+
+  /** Ask Cloudflare to re-check a pending zone's nameservers now instead
+   *  of on its own backoff schedule. Queues the check only — activation
+   *  still waits for the registry to serve the new NS. Rate-limited:
+   *  throws when a check was requested recently. */
+  async triggerActivationCheck(zoneId: string): Promise<void> {
+    await this.request("PUT", `/zones/${zoneId}/activation_check`);
   }
 
   /** Find the closest Cloudflare zone that can manage a hostname.

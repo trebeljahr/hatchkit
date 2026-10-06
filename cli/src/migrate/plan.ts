@@ -963,7 +963,8 @@ export function planManual(input: MigrationPlanInput): MigrationAction[] {
         'the terraform module uses a `data "cloudflare_zone"` lookup, and the',
         "standard DNS token lacks com.cloudflare.api.account.zone.create.",
         "Add the zone in the dashboard, then `hatchkit dns link-to-cloudflare`",
-        "to point the registrar's NS at Cloudflare.",
+        "to point the registrar's NS at Cloudflare. The zone stays pending until",
+        "that push lands; that is expected, not a blocker.",
       ],
     },
     {

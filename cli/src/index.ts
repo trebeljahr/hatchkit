@@ -1950,9 +1950,10 @@ async function handleDns(): Promise<void> {
     case "link-to-cloudflare": {
       const rest = args.slice(2);
       const dryRun = rest.includes("--dry-run");
+      const activationCheck = !rest.includes("--no-activation-check");
       const domains = rest.filter((a) => !a.startsWith("--"));
       const { runDnsLinkToCloudflare } = await import("./dns.js");
-      await runDnsLinkToCloudflare({ domains, dryRun });
+      await runDnsLinkToCloudflare({ domains, dryRun, activationCheck });
       break;
     }
     case "publish": {
@@ -4527,13 +4528,22 @@ function printHelp(topic?: HelpTopic): void {
 
     link-to-cloudflare [domain...]
         For each Cloudflare zone, push its nameservers to INWX as the
-        registrar delegation. Use after importing zones into Cloudflare
-        when you don't want to click through INWX per-domain.
+        registrar delegation. Use after adding a domain to Cloudflare:
+        the zone stays ${chalk.dim("pending")} until this push lands, and that is
+        the case this command is for. Then it queues a Cloudflare
+        activation check; activation takes minutes to a few hours.
+
+        ${chalk.dim("pending")}  → delegated (or unchanged if INWX already matches).
+        ${chalk.dim("active")}   → unchanged when INWX lists the same NS, else re-pushed.
+        Skipped with the reason: ${chalk.dim("initializing")} (finish setup first),
+        ${chalk.dim("moved")} (delegation was changed away; not undone), ${chalk.dim("deleted")},
+        ${chalk.dim("purged")}, and partial (CNAME-setup) zones.
 
         No args  → processes every zone the token can see.
         Args     → space-separated domain names, filters to those.
-        ${chalk.dim("--dry-run")}     → print-only, no API calls.
-        ${chalk.dim("INWX_SANDBOX=1")} → use the OTE sandbox instead of production.
+        ${chalk.dim("--dry-run")}             → read Cloudflare only; no INWX calls, no writes.
+        ${chalk.dim("--no-activation-check")} → don't ask Cloudflare to re-check pending zones.
+        ${chalk.dim("INWX_SANDBOX=1")}        → use the OTE sandbox instead of production.
 
   ${chalk.bold("Prerequisites:")}
     Run ${chalk.cyan("hatchkit config add dns")} (Cloudflare-only). ${chalk.dim("link-to-cloudflare")}
