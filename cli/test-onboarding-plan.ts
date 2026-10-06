@@ -111,8 +111,8 @@ function adoptPlan(overrides: Partial<AdoptPlan> = {}): AdoptPlan {
       provisioning: {
         ...plan.provisioning,
         features: [],
-        analyticsProviders: ["openpanel"],
-        services: ["openpanel", "search-console"],
+        analyticsProviders: ["plausible"],
+        services: ["plausible", "search-console"],
       },
     },
     cfg,
@@ -128,8 +128,8 @@ function adoptPlan(overrides: Partial<AdoptPlan> = {}): AdoptPlan {
   assert.equal(edited.githubRepoVisibility, "private");
   assert.equal(edited.installDeps, false);
   assert.deepEqual(edited.features, []);
-  assert.deepEqual(edited.analyticsProviders, ["openpanel"]);
-  assert.deepEqual(edited.provisionServices, ["openpanel", "search-console"]);
+  assert.deepEqual(edited.analyticsProviders, ["plausible"]);
+  assert.deepEqual(edited.provisionServices, ["plausible", "search-console"]);
 }
 
 {

@@ -34,7 +34,7 @@
  *                                             haven't been renamed yet)
  *
  * By default this is local-only: it does NOT touch provider-side state
- * (Coolify, GitHub, R2, GlitchTip, OpenPanel, Plausible, Listmonk + SES,
+ * (Coolify, GitHub, R2, GlitchTip, Plausible, Listmonk + SES,
  * Tailscale, Keychain). Those are destructive or visible-to-others
  * operations the user should authorize. A follow-up checklist is
  * printed at the end.
@@ -49,7 +49,7 @@
  *               unchanged; their displayed names stay <old>-server etc.
  *               unless you destroy + adopt --resume.
  *   --keys      Re-key every per-project keychain entry (dotenvx,
- *               per-project s3, openpanel, plausible, stripe-per-project)
+ *               per-project s3, plausible, stripe-per-project)
  *               from oldName to newName. Set-before-delete; refuses to
  *               clobber an existing target with a different value.
  *   --ci        After the above, dispatch the build-and-deploy.yml
@@ -64,7 +64,7 @@
  * `${{ github.repository }}` which GitHub resolves to the new slug
  * post-rename, so no workflow edit is needed.
  *
- * R2 buckets / GlitchTip / OpenPanel / Plausible / Listmonk + SES projects
+ * R2 buckets / GlitchTip / Plausible / Listmonk + SES projects
  * still belong to the checklist — those providers have no rename API
  * and recreating drops history. Scope is same-owner-only for the
  * GitHub rename.
@@ -309,9 +309,7 @@ export async function runRenameProject(opts: RenameProjectOptions): Promise<void
       );
     }
     if (opts.keys) {
-      console.log(
-        `  ${chalk.cyan("[keychain]")} re-key dotenvx / s3 / openpanel / plausible / stripe entries`,
-      );
+      console.log(`  ${chalk.cyan("[keychain]")} re-key dotenvx / s3 / plausible / stripe entries`);
     }
     if (opts.ci) {
       console.log(
@@ -993,7 +991,7 @@ function printChecklist(
   if (ctx.executedKeys) {
     console.log(
       chalk.dim(
-        `     ✓ per-project keychain entries re-keyed to ${newName} via --keys (dotenvx / s3 / openpanel / plausible / stripe).`,
+        `     ✓ per-project keychain entries re-keyed to ${newName} via --keys (dotenvx / s3 / plausible / stripe).`,
       ),
     );
   } else {
@@ -1011,7 +1009,6 @@ function printChecklist(
   console.log(chalk.bold("\n  5. Provider clients (if provisioned via hatchkit add)"));
   console.log(chalk.dim(`     No CLI rename available — rename in each dashboard:`));
   console.log(chalk.dim(`       - GlitchTip project slug (if used)`));
-  console.log(chalk.dim(`       - OpenPanel project slug (if used)`));
   console.log(chalk.dim(`       - Plausible site name (rarely matters — keyed by domain)`));
   console.log(
     chalk.dim(

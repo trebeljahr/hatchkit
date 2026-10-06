@@ -17,7 +17,6 @@ import {
   getGoogleSearchConsoleConfig,
   getHetznerConfig,
   getListmonkConfig,
-  getOpenpanelConfig,
   getPlausibleConfig,
   getS3Config,
   getSesConfig,
@@ -577,43 +576,6 @@ async function checkGlitchtip(): Promise<CheckResult> {
         return [
           `Organization "${cfg.organizationSlug}" not found — slug may be wrong.`,
           `Check at ${base}/ and re-run: \`hatchkit config add glitchtip\``,
-        ];
-      }
-      return undefined;
-    },
-  );
-}
-
-async function checkOpenpanel(): Promise<CheckResult> {
-  const cfg = await getOpenpanelConfig();
-  if (!cfg) return { name: "OpenPanel", status: "skip" };
-  const manageBase = `${(cfg.apiUrl ?? cfg.url).replace(/\/$/, "")}/manage`;
-  return check(
-    "OpenPanel",
-    async () => {
-      const res = await fetch(`${manageBase}/projects`, {
-        headers: {
-          "openpanel-client-id": cfg.rootClientId,
-          "openpanel-client-secret": cfg.rootClientSecret,
-        },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return `root client OK`;
-    },
-    (detail) => {
-      const code = httpCode(detail);
-      if (code === 401 || code === 403) {
-        return [
-          "Root client credentials rejected — may have been rotated or lack `write` access.",
-          "Re-run: `hatchkit config add openpanel` and paste the root client id/secret.",
-        ];
-      }
-      if (/Only HTML requests|<html/i.test(detail) || code === 404) {
-        return [
-          `Management API base URL looks wrong — response isn't JSON.`,
-          `Current: ${manageBase}`,
-          "Self-hosted OpenPanel puts the API on a separate subdomain (typically `api.<dashboard>`).",
-          "Re-run: `hatchkit config add openpanel` and set the API URL explicitly.",
         ];
       }
       return undefined;
@@ -1428,7 +1390,6 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const p of ["hetzner", "aws", "r2"] as const) results.push(await checkS3(p));
   for (const p of ["modal", "runpod", "hf", "replicate"]) results.push(await checkGpu(p));
   results.push(await checkGlitchtip());
-  results.push(await checkOpenpanel());
   results.push(await checkPlausible());
   results.push(await checkGoogleSearchConsole());
   for (const r of await checkStripe()) results.push(r);

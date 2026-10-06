@@ -12,10 +12,8 @@
  * same project missing. Between them there was no route to the DSN at
  * all, so SENTRY_DSN stayed at its CHANGE_ME_ placeholder.
  *
- * OpenPanel had the local-ledger half of the same bug: its check
- * returned true whenever the keychain held a cached client secret, which
- * proves hatchkit once created a project — not that the project is
- * still there.
+ * A keychain-cached credential has the same flaw: it proves hatchkit
+ * once created a project, not that the project is still there.
  *
  * Both callers now go through `matchRemoteProjects`, so existence is
  * decided by what the provider's own listing contains. These cases pin
@@ -164,9 +162,9 @@ check("a project reported with only a slug still matches", () => {
   assert.equal(matches[0].identity, "tracktime-api");
 });
 
-// ── OpenPanel: id-keyed projects ──────────────────────────────────
+// ── id-keyed projects ─────────────────────────────────────────────
 
-check("OpenPanel projects match on name and resolve identity to the id", () => {
+check("id-keyed projects match on name and resolve identity to the id", () => {
   const matches = matchProjectsForBaseName(
     [
       { id: "proj_9f2", name: "raptor-runner" },
@@ -175,7 +173,7 @@ check("OpenPanel projects match on name and resolve identity to the id", () => {
     "tracktime",
   );
   assert.equal(matches.length, 1);
-  // OpenPanel addresses projects by id — adoption needs that, not the name.
+  // A provider that addresses projects by id needs that, not the name.
   assert.equal(matches[0].identity, "proj_a41");
   assert.equal(matches[0].id, "proj_a41");
 });

@@ -230,6 +230,35 @@ function seedManifest(dir: string, name: string, extra: Record<string, unknown> 
   assert.equal(serialized.includes("token"), false);
 }
 
+/* ── 3b. Retired services ──────────────────────────────────────────── */
+
+{
+  // Manifests from versions that still provisioned OpenPanel can carry
+  // a `service:openpanel` deferral. Its follow-up command no longer
+  // exists, so it is hidden on read and dropped on the next write.
+  const dir = tempProject("deferrals-retired");
+  seedManifest(dir, "raptor", {
+    deferred: [
+      {
+        key: "service:openpanel",
+        label: "OpenPanel (product analytics)",
+        kind: "declined",
+        reason: "not configured",
+        command: "hatchkit add raptor openpanel",
+        hint: ["hatchkit config add openpanel"],
+        deferredAt: "2026-01-01T00:00:00.000Z",
+      },
+      deferralForService({ service: "s3", project: "raptor", kind: "declined", reason: "x" }),
+    ],
+  });
+  assert.deepEqual(
+    readDeferredSteps(dir).map((s) => s.key),
+    ["service:s3"],
+  );
+  resolveDeferredSteps(dir, [deferralKeyForService("s3")]);
+  assert.equal(readManifest(dir)?.deferred, undefined);
+}
+
 /* ── 4. Summary rendering ──────────────────────────────────────────── */
 
 {
@@ -292,14 +321,14 @@ store.set("providers.plausible", {
   lastVerified: "2026-01-01T00:00:00.000Z",
 });
 await setSecret(SECRET_KEYS.plausibleApiKey, "test-key");
-// OpenPanel is left unconfigured — no TTY, so its gate defers.
+// S3 / R2 is left unconfigured — no TTY, so its gate defers.
 
 const projectDir = tempProject("deferrals-provision");
 seedManifest(projectDir, "raptor", { surfaces: "backend" });
 
 const firstRun = await runProvision({
   baseName: "raptor",
-  services: ["glitchtip", "openpanel", "plausible"],
+  services: ["glitchtip", "s3", "plausible"],
   domain: "raptor.example.com",
   surfaces: { mode: "backend", projectDir, serverEnvDir: projectDir },
   printSummary: false,
@@ -309,7 +338,7 @@ const firstRun = await runProvision({
 assert.deepEqual(firstRun.configured, []);
 assert.equal(firstRun.deferred.length, 3);
 const byKey = new Map(firstRun.deferred.map((s) => [s.key, s]));
-assert.equal(byKey.get("service:openpanel")?.kind, "declined");
+assert.equal(byKey.get("service:s3")?.kind, "declined");
 assert.equal(byKey.get("service:plausible")?.kind, "unavailable");
 assert.equal(byKey.get("service:glitchtip")?.kind, "failed");
 assert.equal(byKey.get("service:glitchtip")?.command, "hatchkit add raptor glitchtip");
@@ -345,7 +374,7 @@ assert.ok(
 const afterResume = readDeferredSteps(projectDir);
 assert.deepEqual(
   afterResume.map((s) => s.key).sort(),
-  ["service:openpanel", "service:plausible"],
+  ["service:plausible", "service:s3"],
   "resuming one step must not disturb the others",
 );
 
@@ -357,7 +386,7 @@ assert.deepEqual(
   assert.equal(snapshot.project?.name, "raptor");
   assert.equal(snapshot.deferredSteps.length, 2);
   assert.ok(
-    snapshot.suggestions.some((s) => s.command === "hatchkit add raptor openpanel"),
+    snapshot.suggestions.some((s) => s.command === "hatchkit add raptor s3"),
     "deferred follow-ups should appear in status suggestions",
   );
 }

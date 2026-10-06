@@ -97,11 +97,10 @@ export function upgradeWorkflowClientBuildArgs(
     `${indent}# hatchkit (kept in sync by \`hatchkit regen-infra\` /\n` +
     `${indent}# \`hatchkit rename-domain\`). The analytics values are optional\n` +
     `${indent}# GitHub Actions repo VARIABLES (not secrets):\n` +
-    `${indent}#   gh variable set NEXT_PUBLIC_OPENPANEL_CLIENT_ID ...\n` +
+    `${indent}#   gh variable set NEXT_PUBLIC_PLAUSIBLE_DOMAIN ...\n` +
     `${indent}build-args: |\n` +
     `${indent}  NEXT_PUBLIC_API_URL=\n` +
     `${indent}  NEXT_PUBLIC_WS_URL=\n` +
-    `${indent}  NEXT_PUBLIC_OPENPANEL_CLIENT_ID=\${{ vars.NEXT_PUBLIC_OPENPANEL_CLIENT_ID }}\n` +
     `${indent}  NEXT_PUBLIC_PLAUSIBLE_DOMAIN=\${{ vars.NEXT_PUBLIC_PLAUSIBLE_DOMAIN }}\n` +
     `${indent}  NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL=\${{ vars.NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL }}\n` +
     `${indent}  NEXT_PUBLIC_SENTRY_DSN=\${{ vars.NEXT_PUBLIC_SENTRY_DSN }}\n`;
@@ -120,13 +119,11 @@ const DOCKERFILE_BUILD_ARG_BLOCK = `
 # NEXT_PUBLIC_API_URL is missing, instead of baking a broken fallback.
 ARG NEXT_PUBLIC_API_URL
 ARG NEXT_PUBLIC_WS_URL
-ARG NEXT_PUBLIC_OPENPANEL_CLIENT_ID
 ARG NEXT_PUBLIC_PLAUSIBLE_DOMAIN
 ARG NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL
 ARG NEXT_PUBLIC_SENTRY_DSN
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \\
     NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL \\
-    NEXT_PUBLIC_OPENPANEL_CLIENT_ID=$NEXT_PUBLIC_OPENPANEL_CLIENT_ID \\
     NEXT_PUBLIC_PLAUSIBLE_DOMAIN=$NEXT_PUBLIC_PLAUSIBLE_DOMAIN \\
     NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL=$NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL \\
     NEXT_PUBLIC_SENTRY_DSN=$NEXT_PUBLIC_SENTRY_DSN \\

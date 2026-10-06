@@ -58,12 +58,12 @@ export type RevokePolicy = "after-verify" | "never" | "immediate";
  *  carried separately inside `NewCred` so it can be redacted from
  *  any structured output the orchestrator produces. */
 export interface EnvKeySpec {
-  /** Env-var name, e.g. `OPENPANEL_CLIENT_SECRET`. */
+  /** Env-var name, e.g. `R2_SECRET_ACCESS_KEY`. */
   name: string;
   /** Where this value lives on disk. */
   scope: EnvScope;
   /** Whether the value is a secret. Non-secret values (e.g. an
-   *  `OPENPANEL_CLIENT_ID` paired with a new secret) may be logged
+   *  `R2_ACCESS_KEY_ID` paired with a new secret) may be logged
    *  in human output; secret values never are. */
   secret: boolean;
 }
@@ -117,8 +117,7 @@ export interface NewCred {
    *  `gh secret set`. */
   readonly values: Readonly<Record<string, string>>;
   /** Adapter-private identifiers needed by `revoke` to delete the
-   *  OLD credential (e.g. Stripe webhook endpoint id, R2 token id,
-   *  OpenPanel client id). Persisted into the rollback store by
+   *  OLD credential (e.g. Stripe webhook endpoint id, R2 token id). Persisted into the rollback store by
    *  the orchestrator so `--resume` works across crashes. */
   readonly handle: Readonly<Record<string, string>>;
 }
@@ -135,7 +134,7 @@ export interface OldCred {
  *  `cli/src/secrets/adapters/index.ts` imports each file for its
  *  side effect (the `register(adapter)` call). */
 export interface ProviderRotator {
-  /** Stable slug used in CLI flags (`--only=openpanel`), audit
+  /** Stable slug used in CLI flags (`--only=glitchtip`), audit
    *  records, and the rollback-store keychain account. Must be
    *  unique across the registry. Snake-case is fine; the
    *  orchestrator does not transform it. */

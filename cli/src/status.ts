@@ -141,12 +141,6 @@ export function collectStatus(projectDir: string = process.cwd()): StatusSnapsho
     configureCommand: "hatchkit config add glitchtip",
   });
   providers.push({
-    key: "openpanel",
-    label: "OpenPanel (analytics)",
-    configured: !!config.providers.openpanel && config.providers.openpanel.status === "configured",
-    configureCommand: "hatchkit config add openpanel",
-  });
-  providers.push({
     key: "plausible",
     label: "Plausible (analytics)",
     configured: !!config.providers.plausible && config.providers.plausible.status === "configured",
@@ -298,7 +292,7 @@ function computeSuggestions(
   });
   out.push({
     command: "hatchkit add <project>",
-    why: "add per-project GlitchTip / OpenPanel / Plausible / Listmonk + SES / Search Console services",
+    why: "add per-project GlitchTip / Plausible / Listmonk + SES / Search Console services",
   });
   out.push({
     command: "hatchkit explain",

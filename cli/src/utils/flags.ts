@@ -119,14 +119,9 @@ export const KNOWN_S3_PROVIDERS: readonly S3Provider[] = [
 export const KNOWN_DB_ENGINES: readonly ("mongodb" | "postgres")[] = ["mongodb", "postgres"];
 export const KNOWN_DB_PROVIDERS: readonly ("coolify" | "external")[] = ["coolify", "external"];
 export const KNOWN_GITHUB_VISIBILITIES: readonly GitHubRepoVisibility[] = ["private", "public"];
-export const KNOWN_ANALYTICS_PROVIDERS: readonly AnalyticsProvider[] = [
-  "glitchtip",
-  "openpanel",
-  "plausible",
-];
+export const KNOWN_ANALYTICS_PROVIDERS: readonly AnalyticsProvider[] = ["glitchtip", "plausible"];
 export const KNOWN_PROVISION_SERVICES: readonly ProvisionService[] = [
   "glitchtip",
-  "openpanel",
   "plausible",
   "listmonk-ses",
   "s3",

@@ -22,7 +22,7 @@
  *      c. Write .hatchkit.json so the project is recognized by
  *         `update`, `add`, `keys`, etc.
  *      d. Optionally run the same observability/email provisioning
- *         that `hatchkit add` does (GlitchTip, OpenPanel, Plausible, Listmonk + SES),
+ *         that `hatchkit add` does (GlitchTip, Plausible, Listmonk + SES),
  *         scoped to whichever surfaces (server/client/both) the user
  *         picked. DSN/clientId/keys land encrypted into the existing
  *         .env.production.
@@ -402,7 +402,7 @@ export async function runAdopt(
     // the cursor on the row in this case so the choice is explicit.
     scaffoldBuildPipeline: !state.unknownWorkspaceLayout,
     // Provisioning is opt-in. Each service mints real resources on a
-    // third-party (GlitchTip project, OpenPanel project, Plausible site, Listmonk lists +
+    // third-party (GlitchTip project, Plausible site, Listmonk lists +
     // SES identity) and cleaning those up after the fact is a chore — better
     // to require an explicit tick than to surprise the user with three
     // new clients they didn't ask for. The user opens the "Provision
@@ -1823,11 +1823,6 @@ async function editAdoptStep(
           checked: plan.services.includes("glitchtip"),
         },
         {
-          name: "OpenPanel (analytics)",
-          value: "openpanel",
-          checked: plan.services.includes("openpanel"),
-        },
-        {
           name: "Plausible (web analytics)",
           value: "plausible",
           checked: plan.services.includes("plausible"),
@@ -1957,13 +1952,12 @@ interface AdoptCaveat {
 /** Canonical env key per service — used by `filterServicesForResume`
  *  to decide whether a service's credentials are already wired into
  *  the project's env files. If the key is present, re-minting on a
- *  resume would orphan whatever's there (OpenPanel mints a fresh
- *  project; Stripe re-creates the webhook endpoint). `email` is
+ *  resume would orphan whatever's there (Stripe re-creates the
+ *  webhook endpoint). `email` is
  *  intentionally absent — Email Routing is zone-state with no env
  *  footprint, and its provisioner is already 409-idempotent. */
 const RESUME_SERVICE_ENV_KEY: Record<ProvisionService, { server?: string; client?: string }> = {
   glitchtip: { server: "GLITCHTIP_DSN", client: "PUBLIC_GLITCHTIP_DSN" },
-  openpanel: { server: "OPENPANEL_CLIENT_ID", client: "PUBLIC_OPENPANEL_CLIENT_ID" },
   plausible: { client: "NEXT_PUBLIC_PLAUSIBLE_DOMAIN" },
   "listmonk-ses": { server: "LISTMONK_URL" },
   s3: { server: "R2_ENDPOINT" },
@@ -2710,8 +2704,8 @@ async function executePlan(
     // client-only `add`.
     //
     // --resume contract: filter out services whose canonical env keys
-    // are already present in the target env files. Re-minting OpenPanel
-    // projects / Stripe webhooks on every resume orphans live
+    // are already present in the target env files. Re-minting provider
+    // resources / Stripe webhooks on every resume orphans live
     // credentials and rotates secrets the user didn't
     // ask to rotate. The keychain caches some of these per-service,
     // but those caches don't survive a fresh machine — the env file
@@ -2765,8 +2759,6 @@ async function executePlan(
         onProvisioned: (event) => {
           if (event.service === "glitchtip") {
             ledger.record({ kind: "glitchtip", project: event.project });
-          } else if (event.service === "openpanel") {
-            ledger.record({ kind: "openpanel", project: event.project });
           } else if (event.service === "plausible" && event.created) {
             ledger.record({ kind: "plausible", project: event.project });
           } else if (event.service === "sesDomain") {

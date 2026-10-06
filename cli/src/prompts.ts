@@ -155,7 +155,7 @@ export type Feature =
    *  Scaffolds no server code of its own. See `cli/src/features/mcp/`. */
   | "mcp";
 
-export type AnalyticsProvider = "glitchtip" | "openpanel" | "plausible";
+export type AnalyticsProvider = "glitchtip" | "plausible";
 
 /** Provider for transactional sends (signup confirmations, password
  *  resets, receipts — single-recipient). `listmonk-ses` is the canonical
@@ -415,11 +415,7 @@ export interface ProjectConfig {
 // Main prompt flow
 // ---------------------------------------------------------------------------
 
-const ANALYTICS_PROVISION_SERVICES: readonly AnalyticsProvider[] = [
-  "glitchtip",
-  "openpanel",
-  "plausible",
-];
+const ANALYTICS_PROVISION_SERVICES: readonly AnalyticsProvider[] = ["glitchtip", "plausible"];
 
 function isAnalyticsProvisionService(service: ProvisionService): service is AnalyticsProvider {
   return (ANALYTICS_PROVISION_SERVICES as readonly ProvisionService[]).includes(service);
@@ -655,11 +651,6 @@ async function promptProvisionServicesEditor(cfg: ProjectConfig): Promise<Provis
         name: "GlitchTip (error tracking)",
         value: "glitchtip",
         checked: cfg.provisionServices.includes("glitchtip"),
-      },
-      {
-        name: "OpenPanel (product analytics)",
-        value: "openpanel",
-        checked: cfg.provisionServices.includes("openpanel"),
       },
       {
         name: "Plausible (web analytics)",
@@ -1136,11 +1127,6 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
               name: "GlitchTip (error tracking)",
               value: "glitchtip",
               checked: c.analyticsProviders?.includes("glitchtip") ?? true,
-            },
-            {
-              name: "OpenPanel (product analytics)",
-              value: "openpanel",
-              checked: c.analyticsProviders?.includes("openpanel") ?? false,
             },
             {
               name: "Plausible (web analytics)",
@@ -2149,7 +2135,7 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
         },
         { name: "stripe (payments)", value: "stripe", checked: cfg.features.includes("stripe") },
         {
-          name: "analytics (GlitchTip + OpenPanel)",
+          name: "analytics (GlitchTip + Plausible)",
           value: "analytics",
           checked: cfg.features.includes("analytics"),
         },
@@ -2227,7 +2213,6 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
         message: "Analytics / observability providers to provision now:",
         choices: [
           { name: "GlitchTip (error tracking)", value: "glitchtip", checked: true },
-          { name: "OpenPanel (product analytics)", value: "openpanel", checked: false },
           { name: "Plausible (web analytics)", value: "plausible", checked: false },
         ],
       });

@@ -2802,6 +2802,8 @@ console.log("\n── adopt ledger: every kind has recipe/describe + safe file u
     type: "A",
   });
   ledger.record({ kind: "glitchtip", project: "test-glitch" });
+  // Legacy kind from versions that provisioned OpenPanel; old ledgers
+  // must still print a recipe.
   ledger.record({ kind: "openpanel", project: "test-op" });
   ledger.record({ kind: "plausible", project: "test-plausible" });
   ledger.record({

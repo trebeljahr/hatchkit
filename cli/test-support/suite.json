@@ -27,6 +27,7 @@
   "test-cloudflare-deploy-token.ts",
   "test-create-flags.ts",
   "test-deferrals.ts",
+  "test-legacy-openpanel-config.ts",
   "test-set-description.ts",
   "test-rename-project.ts",
   "test-migrate-domain.ts",

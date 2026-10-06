@@ -257,7 +257,10 @@ function recipeFor(step: LedgerStep): string | null {
     case "glitchtip":
       return `hatchkit remove ${shellEscape(step.project)} glitchtip --yes`;
     case "openpanel":
-      return `hatchkit remove ${shellEscape(step.project)} openpanel --yes`;
+      // Legacy ledger entry: hatchkit no longer talks to OpenPanel.
+      return chalk.dim(
+        `# manual (legacy): delete OpenPanel project '${step.project}' in the OpenPanel dashboard if it still exists`,
+      );
     case "plausible":
       return `hatchkit remove ${shellEscape(step.project)} plausible --yes`;
     case "sesDomain":
@@ -561,7 +564,7 @@ function describeStep(step: LedgerStep): string {
     case "glitchtip":
       return `delete GlitchTip project ${chalk.cyan(step.project)}`;
     case "openpanel":
-      return `delete OpenPanel project ${chalk.cyan(step.project)}`;
+      return `(legacy) OpenPanel project ${chalk.cyan(step.project)} — manual cleanup`;
     case "plausible":
       return `delete Plausible site for ${chalk.cyan(step.project)}`;
     case "sesDomain":
@@ -811,11 +814,14 @@ async function undoStep(
       }
       return "done";
     }
-    case "openpanel": {
-      const { deleteOpenpanelClient } = await import("../provision/openpanel.js");
-      const result = await deleteOpenpanelClient(step.project);
-      return result === "not-found" ? "not-found" : "done";
-    }
+    case "openpanel":
+      // Legacy ledger entry from versions that provisioned OpenPanel.
+      // Hatchkit no longer holds OpenPanel credentials, so it cannot
+      // delete the project itself.
+      throw new RollbackSkip(
+        "Legacy ledger entry: hatchkit no longer manages OpenPanel; this project (if it exists) must be removed manually.",
+        [`Open the OpenPanel dashboard and delete project '${step.project}' if it's still listed.`],
+      );
     case "plausible": {
       const { deletePlausibleSite } = await import("../provision/plausible.js");
       const result = await deletePlausibleSite(step.project);

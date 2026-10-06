@@ -41,7 +41,6 @@
  *
  * OPTIONAL — declining is a clean skip, recorded here:
  *   · GlitchTip auth token            (service:glitchtip)
- *   · OpenPanel root client id/secret (service:openpanel)
  *   · Plausible API key               (service:plausible)
  *   · SES IAM key + Listmonk token    (service:listmonk-ses)
  *   · Cloudflare R2 admin token       (service:s3)
@@ -200,7 +199,6 @@ export function classifyOptionalStepError(
 
 const SERVICE_LABELS: Record<ProvisionService, string> = {
   glitchtip: "GlitchTip (error tracking)",
-  openpanel: "OpenPanel (product analytics)",
   plausible: "Plausible (web analytics)",
   "listmonk-ses": "Listmonk + SES (email)",
   s3: "S3 / R2 (object storage)",
@@ -213,7 +211,6 @@ const SERVICE_LABELS: Record<ProvisionService, string> = {
  *  next to the follow-up command. */
 const SERVICE_SETUP_COMMANDS: Record<ProvisionService, string[]> = {
   glitchtip: ["hatchkit config add glitchtip"],
-  openpanel: ["hatchkit config add openpanel"],
   plausible: ["hatchkit config add plausible"],
   "listmonk-ses": ["hatchkit config add ses", "hatchkit config add listmonk"],
   s3: ["hatchkit config add s3"],
@@ -347,6 +344,16 @@ export function withoutDeferredSteps(
   return existing.filter((step) => !drop.has(step.key));
 }
 
+/** Deferral keys for services hatchkit no longer provisions. Manifests
+ *  written by older versions can still carry them; their follow-up
+ *  command no longer exists, so they are dropped on read and on the
+ *  next write instead of being shown as pending work. */
+const RETIRED_DEFERRAL_KEYS: ReadonlySet<string> = new Set(["service:openpanel"]);
+
+function withoutRetiredSteps(steps: readonly DeferredStep[]): DeferredStep[] {
+  return steps.filter((step) => !RETIRED_DEFERRAL_KEYS.has(step.key));
+}
+
 /* ─────────────────────────────────────────────────────────────────── */
 /*  Manifest persistence                                               */
 /* ─────────────────────────────────────────────────────────────────── */
@@ -358,7 +365,7 @@ export function readDeferredSteps(projectDir: string | undefined): DeferredStep[
   if (!projectDir) return [];
   try {
     const manifest = readManifestWithMigrationInfo(projectDir)?.manifest;
-    return manifest?.deferred ? [...manifest.deferred] : [];
+    return manifest?.deferred ? withoutRetiredSteps(manifest.deferred) : [];
   } catch {
     return [];
   }
@@ -386,7 +393,10 @@ export function persistDeferredSteps(
   if (!manifest) return null;
 
   const previous = manifest.deferred ?? [];
-  const next = mergeDeferredSteps(withoutDeferredSteps(previous, resolvedKeys), steps);
+  const next = mergeDeferredSteps(
+    withoutDeferredSteps(withoutRetiredSteps(previous), resolvedKeys),
+    steps,
+  );
   if (deferredStepsEqual(previous, next)) return next;
 
   writeManifest(projectDir, { ...manifest, deferred: next.length > 0 ? next : undefined });

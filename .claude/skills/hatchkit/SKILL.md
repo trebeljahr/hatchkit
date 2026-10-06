@@ -1,6 +1,6 @@
 ---
 name: hatchkit
-description: Use when the user mentions Hatchkit, the hatchkit CLI, scaffolding a new full-stack app, deploying to Coolify/Hetzner/DNS, provisioning GlitchTip/OpenPanel/Resend/S3/email/Stripe, pushing dotenvx keys, wiring GitHub Pages, or debugging provider credentials. Start with `hatchkit status --json` before recommending next commands.
+description: Use when the user mentions Hatchkit, the hatchkit CLI, scaffolding a new full-stack app, deploying to Coolify/Hetzner/DNS, provisioning GlitchTip/Plausible/Resend/S3/email/Stripe, pushing dotenvx keys, wiring GitHub Pages, or debugging provider credentials. Start with `hatchkit status --json` before recommending next commands.
 ---
 
 # hatchkit
@@ -69,7 +69,7 @@ rotation URL, required scopes, and exact `hatchkit config add <provider>` comman
 | `hatchkit keys show <project>` | Print stored dotenvx private key |
 | `hatchkit keys push <project>` | Push dotenvx key to Coolify/GitHub Actions |
 | `hatchkit keys rotate <project>` | Rotate dotenvx keypair |
-| `hatchkit secrets rotate <project>` | Rotate one project's provider credentials (R2, local secrets, GlitchTip, OpenPanel); `--dry-run` first |
+| `hatchkit secrets rotate <project>` | Rotate one project's provider credentials (R2, local secrets, GlitchTip); `--dry-run` first |
 | `hatchkit secrets rotate --global ses\|listmonk` | Rotate a shared credential and update every project, Coolify app and ListMonk setting holding it; `--dry-run` first |
 | `hatchkit secrets isolate <project>\|--all` | Replace the Coolify token in a repo with per-app signed deploy webhooks; `--dry-run` first, `--rotate` mints new per-app secrets |
 | `hatchkit doctor` | Read-only live health check of configured providers |
@@ -107,13 +107,13 @@ hatchkit config add runpod
 hatchkit config add hf
 hatchkit config add replicate
 hatchkit config add glitchtip
-hatchkit config add openpanel
+hatchkit config add plausible
 hatchkit config add resend
 hatchkit config add stripe
 ```
 
 `hatchkit add <project> [services]` provisions project-scoped resources. Current
-service names include `glitchtip`, `openpanel`, `resend`, `s3`, and `email`.
+service names include `glitchtip`, `plausible`, `resend`, `s3`, and `email`.
 `all` selects every supported service.
 
 ## Trigger conditions
@@ -124,7 +124,7 @@ Use Hatchkit context when the user mentions any of:
 - scaffolding, making, starting, or creating a full-stack app/project
 - deploying, syncing, or maintaining an app on user-owned infra
 - wiring Coolify, Hetzner, DNS/Cloudflare, R2/S3, or Resend
-- provisioning GlitchTip, OpenPanel, Resend, S3/R2, email, or Stripe
+- provisioning GlitchTip, Plausible, Resend, S3/R2, email, or Stripe
 - pushing, showing, or rotating dotenvx keys
 - wiring GitHub Pages for a static tool
 - adopting an existing repo into Hatchkit conventions
@@ -211,8 +211,8 @@ Flags, with their valid values:
 | `--server-location` | `nbg1` `fsn1` `hel1` |
 | `--server-id`, `--server-ip` | required with `--deploy-target existing` |
 | `--features` | `websocket` `stripe` `analytics` `s3` `workspaces` `desktop` `mobile` `client-core` `extension` `release` `i18n` `raycast` `mcp` (comma-separated; `extension`, `raycast` and `mcp` need a `fullstack`/`split` surface; `raycast` and `mcp` pull in `client-core`, and `mcp` also needs `public-api`) |
-| `--analytics-providers` | `glitchtip` `openpanel` `plausible` |
-| `--services` | `glitchtip` `openpanel` `plausible` `listmonk-ses` `s3` `email` `search-console` |
+| `--analytics-providers` | `glitchtip` `plausible` |
+| `--services` | `glitchtip` `plausible` `listmonk-ses` `s3` `email` `search-console` |
 | `--db-engine` | `mongodb` `postgres` |
 | `--db-provider` | `coolify` `external` |
 | `--s3-provider` | `hetzner` `r2` `aws` `existing` `none` |

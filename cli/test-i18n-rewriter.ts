@@ -139,7 +139,7 @@ console.log("\n── layout.tsx ───────────────�
     );
     // Ahead of the analytics tags: anything above it can paint before the
     // language is known.
-    const analyticsAt = after.indexOf("NEXT_PUBLIC_OPENPANEL_CLIENT_ID");
+    const analyticsAt = after.indexOf("NEXT_PUBLIC_PLAUSIBLE_DOMAIN");
     assert(
       analyticsAt === -1 || scriptAt < analyticsAt,
       "the script comes first in <head>, ahead of the analytics tags",

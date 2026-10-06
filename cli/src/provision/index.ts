@@ -2,7 +2,7 @@
  * Provision orchestrator.
  *
  * Model:
- *   · GlitchTip and OpenPanel are "observability" providers. Per
+ *   · GlitchTip is the "observability" provider. Per
  *     product, one project handles all environments — events are
  *     tagged with `environment: ...` on the SDK side, so dev/staging/
  *     prod share the same DSN/client credentials. This keeps the
@@ -20,7 +20,7 @@
  *   · Surfaces: a project can be fullstack, split into two packages,
  *     backend-only, or pure static. When the project has both a server
  *     and a client surface, the common case is a single shared
- *     GlitchTip/OpenPanel project (same DSN on both SDKs, each tagged
+ *     GlitchTip project (same DSN on both SDKs, each tagged
  *     automatically by `sdk.name`). Strict-isolation setups can opt
  *     into two projects via `Surfaces.mode = "split"`.
  *
@@ -36,7 +36,6 @@ import chalk from "chalk";
 import {
   ensureGlitchtip,
   ensureGoogleSearchConsole,
-  ensureOpenpanel,
   ensurePlausible,
   ensureS3,
   getConfigPath,
@@ -75,22 +74,12 @@ import {
   provisionGlitchtipClient,
 } from "./glitchtip.js";
 import {
-  type OpenpanelClient,
-  adoptOpenpanelClient,
-  deleteOpenpanelClient,
-  provisionOpenpanelClient,
-} from "./openpanel.js";
-import {
   type PlausibleSite,
   deletePlausibleSite,
   plausibleSiteExists,
   provisionPlausibleSite,
 } from "./plausible.js";
-import {
-  type ProjectMatch,
-  resolveGlitchtipProjects,
-  resolveOpenpanelProjects,
-} from "./project-lookup.js";
+import { type ProjectMatch, resolveGlitchtipProjects } from "./project-lookup.js";
 import {
   type ProvisionR2TokensResult,
   provisionR2BucketTokens,
@@ -106,7 +95,6 @@ import { devLocalEnvPath, parseEnvLines, writeDevEnv, writeProdEnv } from "./wri
 
 export type ProvisionService =
   | "glitchtip"
-  | "openpanel"
   | "plausible"
   | "listmonk-ses"
   | "s3"
@@ -146,7 +134,6 @@ export interface Surfaces {
  *  still leaves a complete trail of what to undo. */
 export type ProvisionedEvent =
   | { service: "glitchtip"; project: string }
-  | { service: "openpanel"; project: string }
   | { service: "plausible"; project: string; domain: string; created: boolean }
   /** SES verified-identity event. Emitted once per project provision
    *  when the `mail.<projectDomain>` identity is freshly created (or
@@ -300,9 +287,9 @@ export interface ProvisionOptions {
    *  means "reuse this" rather than "stop". */
   failIfExists?: boolean;
   /** Reuse resources that already exist instead of refusing to run.
-   *  Nothing is created for them; their existing credentials (GlitchTip
-   *  DSN, OpenPanel client id/secret) are read and written into the env
-   *  files exactly as a fresh provision would have. */
+   *  Nothing is created for them; their existing credentials (e.g. the
+   *  GlitchTip DSN) are read and written into the env files exactly as
+   *  a fresh provision would have. */
   adoptExisting?: boolean;
   /** Pre-collected Cloudflare Email Routing answers (addresses +
    *  catch-all). When set, the `"email"` service runs non-interactively
@@ -366,12 +353,11 @@ interface WriteBucket {
  *  adopt instead of create when `--adopt` is on. */
 interface ExistingResources {
   glitchtip: Map<string, ProjectMatch>;
-  openpanel: Map<string, ProjectMatch>;
   plausible: Set<string>;
 }
 
 function emptyExistingResources(): ExistingResources {
-  return { glitchtip: new Map(), openpanel: new Map(), plausible: new Set() };
+  return { glitchtip: new Map(), plausible: new Set() };
 }
 
 /** The exact names this run intends to create for a per-surface
@@ -409,15 +395,6 @@ async function findExistingProviderResources(args: {
     }
   }
 
-  if (args.services.includes("openpanel")) {
-    const cfg = await ensureOpenpanel();
-    const { matches } = await resolveOpenpanelProjects(cfg, names);
-    for (const name of names) {
-      const match = matches.find((m) => m.matchedAs === name);
-      if (match) found.openpanel.set(name, match);
-    }
-  }
-
   if (args.services.includes("plausible") && args.plausibleDomain) {
     if (await plausibleSiteExists(args.plausibleDomain)) found.plausible.add(args.plausibleDomain);
   }
@@ -430,10 +407,6 @@ function describeExisting(found: ExistingResources): string[] {
   for (const [name, match] of found.glitchtip) {
     const where = match.identity !== name ? ` (slug ${match.identity})` : "";
     lines.push(`GlitchTip project ${name}${where}`);
-  }
-  for (const [name, match] of found.openpanel) {
-    const where = match.id && match.id !== name ? ` (id ${match.id})` : "";
-    lines.push(`OpenPanel project ${name}${where}`);
   }
   for (const domain of found.plausible) lines.push(`Plausible site ${domain}`);
   return lines;
@@ -569,19 +542,6 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
     false,
   );
   await runOptionalStep(
-    "openpanel",
-    async () => {
-      const { getOpenpanelConfig } = await import("../config.js");
-      await confirmConfigureOrDefer({
-        label: labelForService("openpanel"),
-        configured: !!(await getOpenpanelConfig()),
-        setupCommands: setupCommandsForService("openpanel"),
-      });
-      await ensureOpenpanel();
-    },
-    false,
-  );
-  await runOptionalStep(
     "plausible",
     async () => {
       const { getPlausibleConfig } = await import("../config.js");
@@ -713,7 +673,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
   // Runtime-shape gate. `static` is the ONLY surface mode without a
   // server runtime; everything else (fullstack, split, backend) does
   // have one and therefore has somewhere to put server-side env. Used
-  // by Listmonk + SES, S3, and the server-side half of GlitchTip/OpenPanel.
+  // by Listmonk + SES, S3, and the server-side half of GlitchTip.
   // The `surfaces === null` branch is cache-only mode (--no-write):
   // env lines still get cached on disk, so treat it as having both
   // surfaces available.
@@ -759,44 +719,6 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
       }
       if (hasClientSurface) {
         pushObsLines(buckets, "client", renderGlitchtipEnv(res, true), enableDevObs);
-      }
-    }
-  });
-
-  /** Same shape as `glitchtipFor`: adopt when the preflight saw the
-   *  project, otherwise create. OpenPanel addresses projects by id, so
-   *  adoption needs the id off the match rather than the name. */
-  const openpanelFor = async (projectName: string): Promise<OpenpanelClient> => {
-    const match = existing.openpanel.get(projectName);
-    if (match?.id) {
-      const projectId = match.id;
-      return await withSpinner(`OpenPanel: adopting project ${projectName}`, () =>
-        adoptOpenpanelClient({ clientName: projectName, projectId }),
-      );
-    }
-    const res = await withSpinner(`OpenPanel: creating project ${projectName}`, () =>
-      provisionOpenpanelClient(projectName),
-    );
-    opts.onProvisioned?.({ service: "openpanel", project: projectName });
-    return res;
-  };
-
-  // ── OpenPanel ──
-  await runOptionalStep("openpanel", async () => {
-    if (surfaces?.mode === "split") {
-      for (const side of ["server", "client"] as const) {
-        const projectName = `${opts.baseName}-${side}`;
-        const res = await openpanelFor(projectName);
-        pushObsLines(buckets, side, renderOpenpanelEnv(res, side === "client"), enableDevObs);
-      }
-    } else {
-      const projectName = opts.baseName;
-      const res = await openpanelFor(projectName);
-      if (hasServerRuntime) {
-        pushObsLines(buckets, "server", renderOpenpanelEnv(res, false), enableDevObs);
-      }
-      if (hasClientSurface) {
-        pushObsLines(buckets, "client", renderOpenpanelEnv(res, true), enableDevObs);
       }
     }
   });
@@ -1498,13 +1420,11 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
   console.log();
   if (
     !enableDevObs &&
-    (opts.services.includes("glitchtip") ||
-      opts.services.includes("openpanel") ||
-      opts.services.includes("plausible"))
+    (opts.services.includes("glitchtip") || opts.services.includes("plausible"))
   ) {
     console.log(
       chalk.dim(
-        "  Note: observability (GlitchTip/OpenPanel/Plausible) values went to prod only.\n" +
+        "  Note: observability (GlitchTip/Plausible) values went to prod only.\n" +
           "  Dev errors/events would pollute real metrics — pass --enable-dev-obs to\n" +
           "  also populate .env.development.local when you need to debug SDK wiring.",
       ),
@@ -1669,7 +1589,7 @@ async function resolvePlausibleDomain(
 
 function servicesNeedEnvSurfaces(services: ProvisionService[]): boolean {
   return services.some((service) =>
-    ["glitchtip", "openpanel", "plausible", "listmonk-ses", "s3"].includes(service),
+    ["glitchtip", "plausible", "listmonk-ses", "s3"].includes(service),
   );
 }
 
@@ -2035,7 +1955,6 @@ export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
 
   // Configure providers before any spinner — same reasoning as runProvision.
   if (opts.services.includes("glitchtip")) await ensureGlitchtip();
-  if (opts.services.includes("openpanel")) await ensureOpenpanel();
   if (opts.services.includes("plausible")) await ensurePlausible();
   if (opts.services.includes("listmonk-ses")) {
     const { ensureListmonk } = await import("../config.js");
@@ -2054,13 +1973,6 @@ export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
     for (const name of observabilityNames(opts.baseName)) {
       await runDelete(`GlitchTip: deleting project ${name}`, opts.dryRun, () =>
         deleteGlitchtipClient(name),
-      );
-    }
-  }
-  if (opts.services.includes("openpanel")) {
-    for (const name of observabilityNames(opts.baseName)) {
-      await runDelete(`OpenPanel: deleting project ${name}`, opts.dryRun, () =>
-        deleteOpenpanelClient(name),
       );
     }
   }
@@ -2338,22 +2250,9 @@ async function withSpinner<T>(label: string, fn: () => Promise<T>): Promise<T> {
 /** Server env uses the plain names; browser env uses a `PUBLIC_`
  *  prefix (Vite / Astro / SvelteKit / Remix convention — bundlers
  *  typically only expose variables with this kind of prefix to
- *  browser code). The client SDK doesn't need OPENPANEL_CLIENT_SECRET
- *  — browser events are anonymous — so we omit it from the client
- *  bundle. */
+ *  browser code). */
 function renderGlitchtipEnv(c: GlitchtipClient, forClient: boolean): string[] {
   return [`${forClient ? "PUBLIC_GLITCHTIP_DSN" : "GLITCHTIP_DSN"}=${c.dsn}`];
-}
-
-function renderOpenpanelEnv(c: OpenpanelClient, forClient: boolean): string[] {
-  if (forClient) {
-    return [`PUBLIC_OPENPANEL_API_URL=${c.apiUrl}`, `PUBLIC_OPENPANEL_CLIENT_ID=${c.clientId}`];
-  }
-  return [
-    `OPENPANEL_API_URL=${c.apiUrl}`,
-    `OPENPANEL_CLIENT_ID=${c.clientId}`,
-    `OPENPANEL_CLIENT_SECRET=${c.clientSecret}`,
-  ];
 }
 
 function renderPlausibleEnv(c: PlausibleSite): string[] {

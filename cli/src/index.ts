@@ -979,7 +979,6 @@ function servicesAlreadyAdded(args: {
   const text = readProjectEnvText(args.projectDir, args.baseName);
   const added = new Set<ProvisionService>();
   if (/(^|\n)(PUBLIC_)?GLITCHTIP_DSN=/m.test(text)) added.add("glitchtip");
-  if (/(^|\n)(PUBLIC_)?OPENPANEL_CLIENT_ID=/m.test(text)) added.add("openpanel");
   if (/(^|\n)(NEXT_PUBLIC_|PUBLIC_)?PLAUSIBLE_DOMAIN=/m.test(text)) added.add("plausible");
   // SES_SMTP_HOST for env files written before hatchkit stopped writing
   // the SMTP login into projects; SES_FROM_EMAIL since.
@@ -1032,7 +1031,6 @@ function addPositionals(rawArgs: string[]): string[] {
 
 function recordProvisionedEvent(ledger: RunLedger, event: ProvisionedEvent): void {
   if (event.service === "glitchtip") ledger.record({ kind: "glitchtip", project: event.project });
-  if (event.service === "openpanel") ledger.record({ kind: "openpanel", project: event.project });
   if (event.service === "plausible" && event.created) {
     ledger.record({ kind: "plausible", project: event.project });
   }
@@ -1292,7 +1290,6 @@ async function handleAdd(): Promise<void> {
 
   const allServices: ProvisionService[] = [
     "glitchtip",
-    "openpanel",
     "plausible",
     "listmonk-ses",
     "s3",
@@ -1393,7 +1390,6 @@ async function handleAdd(): Promise<void> {
     }
     const serviceChoices: Array<{ name: string; value: ProvisionService; checked: boolean }> = [
       { name: "GlitchTip (error tracking)", value: "glitchtip", checked: false },
-      { name: "OpenPanel (product analytics)", value: "openpanel", checked: false },
       { name: "Plausible (web analytics)", value: "plausible", checked: false },
       {
         name: "S3 / R2 (per-bucket scoped credentials from .hatchkit.json)",
@@ -1840,7 +1836,6 @@ async function handleRemove(): Promise<void> {
 
   const allServices: ProvisionService[] = [
     "glitchtip",
-    "openpanel",
     "plausible",
     "listmonk-ses",
     "s3",
@@ -1864,7 +1859,6 @@ async function handleRemove(): Promise<void> {
       message: "Which services to remove?",
       choices: [
         { name: "GlitchTip (deletes the project)", value: "glitchtip", checked: true },
-        { name: "OpenPanel (deletes the project)", value: "openpanel", checked: true },
         { name: "Plausible (deletes the site)", value: "plausible", checked: false },
         {
           name: "Listmonk + SES (deletes the per-project Listmonk lists; keeps the SES identity)",
@@ -2312,13 +2306,11 @@ async function ensureCreateProvisionProviders(services: ProvisionService[]): Pro
     ensureGlitchtip,
     ensureGoogleSearchConsole,
     ensureListmonk,
-    ensureOpenpanel,
     ensurePlausible,
     ensureSes,
   } = await import("./config.js");
 
   if (unique.has("glitchtip")) await ensureGlitchtip();
-  if (unique.has("openpanel")) await ensureOpenpanel();
   if (unique.has("plausible")) await ensurePlausible();
   if (unique.has("listmonk-ses")) {
     await ensureSes();
@@ -3564,7 +3556,7 @@ async function handleConfig(): Promise<void> {
       if (!provider) {
         console.log("Usage: hatchkit config add <provider>");
         console.log(
-          "Providers: coolify, coolify-github-app, ghcr, hetzner, dns, cloudflare-workers, s3, modal, runpod, hf, replicate, glitchtip, openpanel, plausible, listmonk, ses, search-console, stripe",
+          "Providers: coolify, coolify-github-app, ghcr, hetzner, dns, cloudflare-workers, s3, modal, runpod, hf, replicate, glitchtip, plausible, listmonk, ses, search-console, stripe",
         );
         return;
       }
@@ -3581,7 +3573,6 @@ async function handleConfig(): Promise<void> {
         case "dns":
         case "cloudflare-workers":
         case "glitchtip":
-        case "openpanel":
         case "plausible":
         case "ses":
         case "search-console":
@@ -3642,7 +3633,7 @@ async function handleConfig(): Promise<void> {
             console.log(chalk.red(`  Unknown provider: ${provider}`));
             console.log(
               chalk.dim(
-                "  Valid: coolify, coolify-github-app, ghcr, hetzner, dns, cloudflare-workers, s3, modal, runpod, hf, replicate, glitchtip, openpanel, plausible, listmonk, ses, search-console, stripe",
+                "  Valid: coolify, coolify-github-app, ghcr, hetzner, dns, cloudflare-workers, s3, modal, runpod, hf, replicate, glitchtip, plausible, listmonk, ses, search-console, stripe",
               ),
             );
             return;
@@ -3946,7 +3937,7 @@ function printHelp(topic?: HelpTopic): void {
     3. Assigns unique ports per project (server, client, native HMR)
     4. Runs \`pnpm install\` (if pnpm is present and you opt in)
     5. Initializes git, optionally creates a GitHub repo
-    6. Optionally provisions GlitchTip/OpenPanel/Plausible, Listmonk + SES, Email Routing, Search Console
+    6. Optionally provisions GlitchTip/Plausible, Listmonk + SES, Email Routing, Search Console
     7. Generates Terraform tfvars + Coolify .env (Coolify mode)
     8. Deploys: Terraform → Coolify → ML  ${chalk.dim("OR")}  GitHub Pages setup
 
@@ -4067,7 +4058,7 @@ function printHelp(topic?: HelpTopic): void {
     - GitHub (via gh CLI)
     - Coolify (URL + token)
     - Hetzner Cloud, DNS provider, S3 (optional)
-    - GlitchTip, OpenPanel, Listmonk + SES, Search Console (optional)
+    - GlitchTip, Plausible, Listmonk + SES, Search Console (optional)
 
   Tokens go to the OS keychain; metadata to
   ${chalk.dim(getConfigPath())}.
@@ -4169,7 +4160,6 @@ function printHelp(topic?: HelpTopic): void {
                     auth secret signs users out; the newsletter secret
                     breaks confirm/unsubscribe links already sent.
     ${chalk.cyan("glitchtip")}       GLITCHTIP_DSN, PUBLIC_GLITCHTIP_DSN
-    ${chalk.cyan("openpanel")}       OPENPANEL_CLIENT_ID / _SECRET, PUBLIC_OPENPANEL_CLIENT_ID
 
   ${chalk.bold("Global credentials (--global):")}
     ${chalk.cyan("ses")}             IAM user hatchkit-ses → SES_SMTP_USERNAME / SES_SMTP_PASSWORD,
@@ -4705,7 +4695,6 @@ function printHelp(topic?: HelpTopic): void {
     · R2                   buckets (whole account)
     · Hetzner S3 / AWS S3  credential presence (bucket listing not implemented)
     · GlitchTip            projects in the configured org
-    · OpenPanel            projects
     · Stripe               webhook endpoints (test + live)
 
   ${chalk.bold("Cross-references:")}
@@ -4717,7 +4706,7 @@ function printHelp(topic?: HelpTopic): void {
       · App fqdn references an apex with no Cloudflare zone
       · R2 bucket follows the \`<project>-<role>\` convention but has no
         matching Coolify app (orphan from a destroyed project)
-      · GlitchTip / OpenPanel / Plausible project/site with no Coolify app counterpart
+      · GlitchTip / Plausible project/site with no Coolify app counterpart
       · Cloudflare zone with no Coolify app pointing into it
 
   ${chalk.bold("Flags:")}
@@ -4754,7 +4743,6 @@ function printHelp(topic?: HelpTopic): void {
     · R2         — buckets (manifest + naming-convention candidates) + CORS
     · GitHub     — repo visibility, Pages status, relevant repo secrets
     · GlitchTip  — projects in the configured org
-    · OpenPanel  — projects
     · Stripe     — webhook endpoints whose URL contains the project domain
 
   ${chalk.bold("Drift detection (cross-references):")}
@@ -4796,7 +4784,7 @@ function printHelp(topic?: HelpTopic): void {
     hatchkit add [<services>] [flags]   ${chalk.dim("(inside a project with .hatchkit.json)")}
 
   ${chalk.bold("What it does:")}
-    · GlitchTip / OpenPanel: ${chalk.bold("one project per product")}, events tagged by
+    · GlitchTip: ${chalk.bold("one project per product")}, events tagged by
       \`environment\` so dev / staging / prod share the same dashboard.
     · Plausible: one site for the public project domain, with browser tracker env.
       Observability values are written to ${chalk.cyan(".env.production")} only — dev noise pollutes real metrics.
@@ -4838,7 +4826,6 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Services:")}
     glitchtip   GLITCHTIP_DSN (server) / PUBLIC_GLITCHTIP_DSN (client)
-    openpanel   OPENPANEL_* (server) / PUBLIC_OPENPANEL_* (client)
     plausible   NEXT_PUBLIC_PLAUSIBLE_DOMAIN / *_SCRIPT_URL (client only)
     listmonk-ses
                 LISTMONK_URL / _API_USER / _API_TOKEN / _FROM /
@@ -4873,7 +4860,7 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Flags:")}
     --adopt, --reuse            Reuse resources that already exist on the provider
                                 instead of refusing to run: nothing is created, and
-                                the existing GlitchTip DSN / OpenPanel client id is
+                                the existing GlitchTip DSN is
                                 written into your env files. Adopted resources are
                                 not recorded in the run ledger, so \`hatchkit remove\`
                                 will not delete something Hatchkit didn't create.
@@ -4945,7 +4932,7 @@ function printHelp(topic?: HelpTopic): void {
         (DOTENV_PRIVATE_KEY_PRODUCTION + GITHUB_REPO_URL), upserts an
         A record \`<domain> → <server-ip>\` on Cloudflare, and triggers
         the first deploy. Defaults ON when no matching app exists.
-      · Optionally provisions GlitchTip / OpenPanel / Plausible / Listmonk + SES,
+      · Optionally provisions GlitchTip / Plausible / Listmonk + SES,
         Email Routing, and Search Console (same machinery as \`hatchkit add\`).
       · Optionally pushes the dotenvx private key to Coolify
         (redundant when the Coolify+DNS step ran — it already does).
@@ -5004,7 +4991,6 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Services:")}
     glitchtip   Deletes the GlitchTip project
-    openpanel   Deletes the OpenPanel project (and clears cached creds)
     plausible   Deletes the Plausible site cached for this project
     listmonk-ses
                 Deletes the per-project Listmonk lists, and (with the
@@ -5051,7 +5037,7 @@ function printHelp(topic?: HelpTopic): void {
     create + adopt:
     - GitHub repo                              ${chalk.dim("gh repo delete")}
     - dotenvx private key in keychain          ${chalk.dim("keytar deletePassword")}
-    - GlitchTip / OpenPanel / Plausible / Listmonk + SES ${chalk.dim("DELETE")} per-vendor
+    - GlitchTip / Plausible / Listmonk + SES ${chalk.dim("DELETE")} per-vendor
     - Coolify app / project / database         ${chalk.dim("DELETE /api/v1/...")}
 
     adopt-only (fine-grained, never wider than what adopt itself wrote):
@@ -5319,7 +5305,7 @@ function printHelp(topic?: HelpTopic): void {
                     cosmetic only, deploys still work because lookups
                     are uuid-keyed.
     --keys          Re-key every per-project keychain entry (dotenvx,
-                    per-project s3, openpanel, plausible, stripe-per-project)
+                    per-project s3, plausible, stripe-per-project)
                     from ${chalk.dim("<old>")} to ${chalk.dim("<new>")}. Set-before-delete; refuses
                     to clobber an existing target with a different value.
     --ci            Dispatch ${chalk.dim("build-and-deploy.yml")} so new GHCR images
@@ -5329,7 +5315,7 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Still your job (no rename API or destructive):")}
     - Cloudflare R2 buckets ${chalk.dim("<old>-assets / <old>-state")} — R2 has no
       rename; create new, copy objects, update manifest, delete old.
-    - GlitchTip / OpenPanel / Plausible project slugs + Listmonk list
+    - GlitchTip / Plausible project slugs + Listmonk list
       names — no rename API. Recreating drops history; leave them or
       ${chalk.dim("hatchkit add <new> <svc>")} + ${chalk.dim("hatchkit remove <old> <svc>")}.
     - Tailscale local-dev Caddy fragment (re-run dev-setup if enabled).
@@ -5498,7 +5484,7 @@ function printHelp(topic?: HelpTopic): void {
     config              Show status of every configured provider (alias: \`status\`)
     config add <p>      Configure a provider
                         (coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate,
-                         glitchtip, openpanel, plausible, listmonk, ses, search-console, stripe)
+                         glitchtip, plausible, listmonk, ses, search-console, stripe)
     config reset        Clear ALL CLI config (providers, tokens, ML registry, ports)
 `);
     return;
@@ -5605,7 +5591,7 @@ function printHelp(topic?: HelpTopic): void {
     adopt           Bring an existing project under hatchkit management (run in project dir)
     update          Add features to an already-scaffolded project (run in project dir)
     server add      Retrofit a server into a client-only project
-    add             Create GlitchTip / OpenPanel / Plausible / Listmonk + SES / email / search clients for an existing project
+    add             Create GlitchTip / Plausible / Listmonk + SES / email / search clients for an existing project
     add i18n        Give a scaffolded project a second language (writes local files only)
     assets          Move bytes between local S3 and prod buckets (seed/push/pull/migrate)
     remove          Delete the -dev/-prod clients created by 'add' (inverse of add)
@@ -5627,7 +5613,7 @@ function printHelp(topic?: HelpTopic): void {
     keys set <p>    Upsert the key into the OS keychain (after \`dotenvx rotate\`)
     keys rotate <p> Rotate the dotenvx keypair, mirror to keychain + (default) deploy targets
     keys push <p>   Push the key to Coolify (default) and/or GitHub Actions
-    secrets rotate <p>  Rotate provider credentials (R2, local secrets, GlitchTip, OpenPanel; --global ses|listmonk)
+    secrets rotate <p>  Rotate provider credentials (R2, local secrets, GlitchTip; --global ses|listmonk)
 
   ${chalk.bold("Config:")}
     config          Show provider status (same as \`status\`)

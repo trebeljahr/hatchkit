@@ -55,7 +55,6 @@ const CONFIG_ADD = [
   "hf",
   "replicate",
   "glitchtip",
-  "openpanel",
   "plausible",
   "resend",
   "search-console",
@@ -278,7 +277,7 @@ function topDesc(cmd: string): string {
     case "server":
       return "Retrofit a server into a client-only project";
     case "add":
-      return "Provision GlitchTip / OpenPanel / Plausible / Resend / email / search services";
+      return "Provision GlitchTip / Plausible / Resend / email / search services";
     case "assets":
       return "Move bytes between local S3 and prod buckets";
     case "backup":

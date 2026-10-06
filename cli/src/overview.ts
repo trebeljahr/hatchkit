@@ -17,7 +17,6 @@ import {
   getCoolifyConfig,
   getDnsConfig,
   getGlitchtipConfig,
-  getOpenpanelConfig,
   getS3Config,
   getStripeConfig,
 } from "./config.js";
@@ -131,7 +130,6 @@ interface ProbeOutput {
   rawZones?: CloudflareZone[];
   rawR2Buckets?: Array<{ name: string }>;
   rawGlitchtipProjects?: Array<{ slug?: string; name?: string }>;
-  rawOpenpanelProjects?: Array<{ name?: string; id?: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +162,6 @@ export async function collectOverview(): Promise<OverviewReport> {
     probeS3Other("hetzner"),
     probeS3Other("aws"),
     probeGlitchtip(),
-    probeOpenpanel(),
     probeStripe(),
   ]);
 
@@ -503,57 +500,6 @@ async function probeGlitchtip(): Promise<ProbeOutput> {
   }
 }
 
-async function probeOpenpanel(): Promise<ProbeOutput> {
-  const key = "openpanel";
-  const label = "OpenPanel";
-  const cfg = await getOpenpanelConfig();
-  if (!cfg) return { provider: { key, label, status: "skip", detail: "not configured" } };
-  try {
-    const base = (cfg.apiUrl ?? cfg.url).replace(/\/$/, "");
-    const res = await fetch(`${base}/manage/projects`, {
-      headers: {
-        "openpanel-client-id": cfg.rootClientId,
-        "openpanel-client-secret": cfg.rootClientSecret,
-      },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const raw = (await res.json()) as unknown;
-    // Same shape duality as scanOpenpanel — bare array or `{ data }`.
-    const projects: Array<{ name?: string; id?: string }> = Array.isArray(raw)
-      ? (raw as Array<{ name?: string; id?: string }>)
-      : ((raw as { data?: Array<{ name?: string; id?: string }> }).data ?? []);
-    if (projects.length === 0) {
-      return {
-        provider: { key, label, status: "empty", resources: [] },
-        rawOpenpanelProjects: [],
-      };
-    }
-    return {
-      provider: {
-        key,
-        label,
-        status: "present",
-        summary: `${projects.length} project${projects.length === 1 ? "" : "s"}`,
-        preview: projects.map((p) => p.name ?? p.id ?? "?").slice(0, 6),
-        resources: projects.map((p) => ({
-          kind: "project",
-          identity: p.name ?? p.id ?? "?",
-        })),
-      },
-      rawOpenpanelProjects: projects,
-    };
-  } catch (err) {
-    return {
-      provider: {
-        key,
-        label,
-        status: "error",
-        detail: `OpenPanel list failed: ${(err as Error).message.split("\n")[0]}`,
-      },
-    };
-  }
-}
-
 async function probeStripe(): Promise<ProbeOutput> {
   const key = "stripe";
   const label = "Stripe";
@@ -635,7 +581,6 @@ async function probeStripe(): Promise<ProbeOutput> {
 //                                  any Coolify app or project
 //   · `orphan-glitchtip-project` — GlitchTip project name has no
 //                                  Coolify app counterpart
-//   · `orphan-openpanel-project` — same for OpenPanel
 //   · `unused-cloudflare-zone`   — zone with no Coolify app fqdn
 //                                  pointing into it
 //
@@ -684,14 +629,6 @@ const CROSS_REFERENCE_KINDS: OverviewCrossReferenceKind[] = [
     ],
   },
   {
-    kind: "orphan-openpanel-project",
-    severity: "info",
-    headline: "OpenPanel projects with no matching Coolify app",
-    description: [
-      "Could be orphans from destroyed apps, or projects for something hatchkit doesn't manage.",
-    ],
-  },
-  {
     kind: "unused-cloudflare-zone",
     severity: "info",
     headline: "Cloudflare zones with no Coolify app pointing into them",
@@ -708,7 +645,6 @@ async function runCrossReferences(probes: ProbeOutput[]): Promise<OverviewCrossR
   const zones = probes.flatMap((p) => p.rawZones ?? []);
   const r2Buckets = probes.flatMap((p) => p.rawR2Buckets ?? []);
   const glitchtipProjects = probes.flatMap((p) => p.rawGlitchtipProjects ?? []);
-  const openpanelProjects = probes.flatMap((p) => p.rawOpenpanelProjects ?? []);
 
   const appNames = new Set(coolifyApps.map((a) => a.name));
   // Strip a single trailing `-<role>` segment so "foo-server" + "foo-client"
@@ -790,7 +726,7 @@ async function runCrossReferences(probes: ProbeOutput[]): Promise<OverviewCrossR
     }
   }
 
-  // CR4 + CR5: orphan obs projects (GlitchTip + OpenPanel). Match by
+  // CR4: orphan GlitchTip projects. Match by
   // name OR slug against Coolify app names + stems.
   for (const p of glitchtipProjects) {
     const label = p.slug ?? p.name;
@@ -799,17 +735,6 @@ async function runCrossReferences(probes: ProbeOutput[]): Promise<OverviewCrossR
     if (appNames.has(label) || appNames.has(stem) || projectStems.has(stem)) continue;
     out.push({
       kind: "orphan-glitchtip-project",
-      severity: "info",
-      subject: label,
-    });
-  }
-  for (const p of openpanelProjects) {
-    const label = p.name ?? p.id;
-    if (!label) continue;
-    const stem = label.replace(/-(server|client|web|api|prod|dev|staging)$/, "");
-    if (appNames.has(label) || appNames.has(stem) || projectStems.has(stem)) continue;
-    out.push({
-      kind: "orphan-openpanel-project",
       severity: "info",
       subject: label,
     });

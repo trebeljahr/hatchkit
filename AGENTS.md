@@ -110,7 +110,7 @@ Source layout:
 - `cli/src/explain.ts`: mental model output.
 - `cli/src/scaffold/`: project scaffolding.
 - `cli/src/deploy/`: Coolify, Terraform, GitHub, keys, pages, rollback.
-- `cli/src/provision/`: GlitchTip/OpenPanel/Resend/S3/email/Stripe provisioning.
+- `cli/src/provision/`: GlitchTip/Plausible/Resend/S3/email/Stripe provisioning.
 - `starter/`: scaffold template used by `hatchkit create`.
 - `infra/`: Terraform/Coolify automation.
 - `services/`: ML service templates.

@@ -34,7 +34,7 @@
  * Scoping: every test registers a fresh fake adapter (with a unique
  * name per test, since `registry.register()` throws on duplicates) and
  * passes `only: [adapter.name]` to `runSecretsRotate`, so concrete
- * adapters (openpanel/glitchtip) in the registry are filtered out.
+ * adapters (glitchtip/r2/local-secrets) in the registry are filtered out.
  *
  * Push targets: most tests pass `noPush: true`, so Coolify + GitHub
  * are never touched. The happy-path test uses `noPush: true` too —

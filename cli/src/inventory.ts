@@ -32,7 +32,6 @@ import {
   getCoolifyConfig,
   getDnsConfig,
   getGlitchtipConfig,
-  getOpenpanelConfig,
   getS3Config,
   getStripeConfig,
 } from "./config.js";
@@ -43,11 +42,7 @@ import {
   renderDeployedRef,
 } from "./deploy/deployed-ref.js";
 import { locateEnvKeysFile, locateEnvProductionFile } from "./deploy/keys.js";
-import {
-  projectNameCandidates,
-  resolveGlitchtipProjects,
-  resolveOpenpanelProjects,
-} from "./provision/project-lookup.js";
+import { projectNameCandidates, resolveGlitchtipProjects } from "./provision/project-lookup.js";
 import {
   MANIFEST_FILENAME,
   MANIFEST_VERSION,
@@ -294,7 +289,6 @@ export async function collectInventory(
     scanS3Other(identity),
     scanGitHub(identity, { github: expectations.github, githubPages: expectations.githubPages }),
     scanGlitchtip(identity, expectations.glitchtip),
-    scanOpenpanel(identity, expectations.openpanel),
     scanStripe(identity, expectations.stripe),
     scanSesMailFrom(identity, local.manifest, expectations.sesMailFrom),
   ]);
@@ -558,7 +552,6 @@ function collectEnvSignals(
     { re: /^\s*SES_(SMTP_|FROM_EMAIL)/m, signal: "SES" },
     { re: /^\s*GLITCHTIP_DSN|^\s*PUBLIC_GLITCHTIP_DSN/m, signal: "GLITCHTIP" },
     { re: /^\s*SENTRY_DSN|^\s*PUBLIC_SENTRY_DSN/m, signal: "SENTRY" },
-    { re: /^\s*OPENPANEL_|^\s*PUBLIC_OPENPANEL_/m, signal: "OPENPANEL" },
     { re: /^\s*(NEXT_PUBLIC_)?PLAUSIBLE_|^\s*PUBLIC_PLAUSIBLE_/m, signal: "PLAUSIBLE" },
     { re: /^\s*STRIPE_/m, signal: "STRIPE" },
     { re: /^\s*R2_/m, signal: "R2" },
@@ -1009,7 +1002,6 @@ export interface ProviderExpectations {
   github: boolean;
   githubPages: boolean;
   glitchtip: boolean;
-  openpanel: boolean;
   plausible: boolean;
   stripe: boolean;
   /** True when the project sends mail via the Listmonk + SES bundle —
@@ -1050,8 +1042,6 @@ export function computeExpectations(
       env.has("SENTRY") ||
       deps.has("glitchtip") ||
       hasDepMatching(deps, /^@sentry\//),
-    openpanel:
-      env.has("OPENPANEL") || hasDepMatching(deps, /^@openpanel\//) || deps.has("openpanel"),
     plausible: env.has("PLAUSIBLE") || deps.has("plausible-tracker") || deps.has("next-plausible"),
     stripe: env.has("STRIPE") || deps.has("stripe") || deps.has("@stripe/stripe-js"),
     sesMailFrom: (() => {
@@ -1696,51 +1686,6 @@ async function scanGlitchtip(input: InventoryInput, expected: boolean): Promise<
     skipped.push({
       provider,
       reason: `GlitchTip lookup failed: ${(err as Error).message.split("\n")[0]}`,
-    });
-  }
-  return { provider, findings, skipped };
-}
-
-async function scanOpenpanel(input: InventoryInput, expected: boolean): Promise<ScanResult> {
-  const provider = "openpanel";
-  const findings: InventoryFinding[] = [];
-  const skipped: Array<{ provider: string; reason: string }> = [];
-  const cfg = await getOpenpanelConfig();
-  if (!cfg) {
-    skipped.push({ provider, reason: "not configured" });
-    return { provider, findings, skipped };
-  }
-  if (!input.name) {
-    skipped.push({ provider, reason: "no project name to match against OpenPanel projects" });
-    return { provider, findings, skipped };
-  }
-  try {
-    const wanted = nameAliases(input.name);
-    const { projects, matches } = await resolveOpenpanelProjects(cfg, wanted);
-    if (matches.length === 0) {
-      findings.push({
-        provider,
-        kind: "project",
-        identity: input.name,
-        status: "missing",
-        expected,
-        detail: `no OpenPanel project matching ${wanted.join(" / ")} (${projects.length} total)`,
-      });
-    } else {
-      for (const p of matches) {
-        findings.push({
-          provider,
-          kind: "project",
-          identity: p.name ?? p.identity,
-          status: "present",
-          detail: `client id: hatchkit add ${input.name} openpanel --adopt`,
-        });
-      }
-    }
-  } catch (err) {
-    skipped.push({
-      provider,
-      reason: `OpenPanel lookup failed: ${(err as Error).message.split("\n")[0]}`,
     });
   }
   return { provider, findings, skipped };
@@ -2448,8 +2393,7 @@ function summarizePresent(
       }
       return "enabled";
     }
-    case "glitchtip":
-    case "openpanel": {
+    case "glitchtip": {
       const projects = present.filter((f) => f.kind === "project").map((f) => f.identity);
       return projects.join(", ") + partial;
     }
@@ -2483,7 +2427,6 @@ function summarizeMissing(providerKey: string): string {
     case "github-pages":
       return "Pages not enabled";
     case "glitchtip":
-    case "openpanel":
       return "no matching project";
     case "stripe":
       return "no webhook for this domain";
@@ -2512,8 +2455,6 @@ function providerLabel(key: string): string {
       return "Pages";
     case "glitchtip":
       return "GlitchTip";
-    case "openpanel":
-      return "OpenPanel";
     case "stripe":
       return "Stripe";
     case "ses-mail-from":

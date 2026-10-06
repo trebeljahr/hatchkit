@@ -25,7 +25,7 @@ One-time onboarding. Walks through every provider hatchkit knows about:
 - GitHub (via `gh` CLI)
 - Coolify (URL + token)
 - Hetzner Cloud, DNS provider (INWX / Cloudflare), S3 (Hetzner / AWS / R2)
-- GlitchTip, OpenPanel, Listmonk, AWS SES, Google Search Console
+- GlitchTip, Plausible, Listmonk, AWS SES, Google Search Console
 - GPU platforms — Modal, RunPod, Hugging Face, Replicate
 
 Everything is optional; you'll be prompted again the first time a command actually needs that provider.
@@ -86,8 +86,8 @@ prompting. That makes `create` CI-safe.
 | Flag | Values / effect |
 |---|---|
 | `--features <list>` | `websocket`, `stripe`, `analytics`, `s3`, `workspaces`, `token-client-auth`, `desktop`, `mobile`, `release`, `client-core`, `extension`, `server-migrations`, `scheduler`, `public-api`, `auth-account-security`, `i18n`, `raycast`, `mcp`. Comma-separated; pass empty for none. `extension`, `raycast` and `mcp` need a `fullstack` or `split` surface. `raycast` and `mcp` pull in `client-core`; `mcp` also pulls in `public-api`. |
-| `--analytics-providers <list>` | `glitchtip`, `openpanel`, `plausible` |
-| `--services <list>` | `glitchtip`, `openpanel`, `plausible`, `listmonk-ses`, `s3`, `email`, `search-console` |
+| `--analytics-providers <list>` | `glitchtip`, `plausible` |
+| `--services <list>` | `glitchtip`, `plausible`, `listmonk-ses`, `s3`, `email`, `search-console` |
 | `--db-engine <value>` | `mongodb` · `postgres` |
 | `--db-provider <value>` | `coolify` (provision a container) · `external` (you supply a URI) |
 
@@ -153,7 +153,7 @@ hatchkit create --yes --name blog --domain blog.example.com \
 3. Auto-wires local-dev unless disabled: `.hatchkit.json` gets `localDev.slug`, `docs/dev-setup.md` is generated, and the Next/Vite dev plugin plus Caddy fragment are added.
 4. Installs deps (if `pnpm` is available and you opt in).
 5. `git init` + first commit + GitHub repo.
-6. Optionally provisions GlitchTip/OpenPanel/Plausible, Listmonk + SES, Email Routing, and Search Console via the same path as `hatchkit add`.
+6. Optionally provisions GlitchTip/Plausible, Listmonk + SES, Email Routing, and Search Console via the same path as `hatchkit add`.
 7. Generates Terraform tfvars + Coolify `.env`.
 8. Runs Terraform (DNS + optionally server).
 9. Runs Coolify app setup and pushes the dotenvx private key.
@@ -345,7 +345,6 @@ hatchkit add raptor-runner search-console        # verify domain + add Search Co
 | Name | Creates | Returns |
 |---|---|---|
 | `glitchtip` | GlitchTip project | `GLITCHTIP_DSN` |
-| `openpanel` | OpenPanel client | `OPENPANEL_CLIENT_ID`, `OPENPANEL_CLIENT_SECRET` |
 | `plausible` | Plausible site | `NEXT_PUBLIC_PLAUSIBLE_DOMAIN`, `NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL` |
 | `listmonk-ses` | SES sending identity, Listmonk lists and templates | `LISTMONK_*`, `SES_FROM_EMAIL` |
 | `s3` | Project object-storage buckets and credentials | `R2_*` or provider-specific S3 keys |
@@ -626,7 +625,7 @@ hatchkit config add <provider>       # (re-)configure a provider
 hatchkit config reset                # clear ALL CLI config (confirmed)
 ```
 
-Valid providers: `coolify`, `coolify-github-app`, `ghcr`, `hetzner`, `dns`, `cloudflare-workers`, `s3`, `glitchtip`, `openpanel`, `plausible`, `listmonk`, `ses`, `search-console`, `stripe`, `modal`, `runpod`, `hf`, `replicate`.
+Valid providers: `coolify`, `coolify-github-app`, `ghcr`, `hetzner`, `dns`, `cloudflare-workers`, `s3`, `glitchtip`, `plausible`, `listmonk`, `ses`, `search-console`, `stripe`, `modal`, `runpod`, `hf`, `replicate`.
 
 ---
 

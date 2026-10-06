@@ -46,10 +46,10 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   a feature. The list lives in `SUPPORTED_ADDITIONS`
   (`cli/src/scaffold/update.ts`) — read it rather than this line, which has
   gone stale before.
-- `hatchkit add <project> [services]`: provision GlitchTip/OpenPanel/Resend/S3/email.
+- `hatchkit add <project> [services]`: provision GlitchTip/Plausible/Resend/S3/email.
 - `hatchkit keys show|push|rotate <project>`: manage dotenvx private keys.
 - `hatchkit secrets rotate <project>`: rotate one project's provider
-  credentials (`r2`, `local-secrets`, `glitchtip`, `openpanel`).
+  credentials (`r2`, `local-secrets`, `glitchtip`).
   `hatchkit secrets rotate --global ses|listmonk`: rotate a credential shared
   across projects and update every local project, Coolify app and ListMonk
   setting that holds it. Both refuse while the dotenvx key is in git history

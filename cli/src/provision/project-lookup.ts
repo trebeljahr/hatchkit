@@ -17,12 +17,11 @@
  * once created something, not that it is still there).
  */
 
-import type { GlitchtipConfig, OpenpanelConfig } from "../config.js";
+import type { GlitchtipConfig } from "../config.js";
 import { listGlitchtipProjects } from "./glitchtip.js";
-import { listOpenpanelProjects } from "./openpanel.js";
 
 /** A project as the provider reports it. Providers fill different
- *  subsets: GlitchTip has name+slug, OpenPanel has name+id. */
+ *  subsets: GlitchTip has name+slug. */
 export interface RemoteProject {
   name?: string;
   slug?: string;
@@ -32,7 +31,7 @@ export interface RemoteProject {
 
 export interface ProjectMatch extends RemoteProject {
   /** How to address this project in the provider's API paths —
-   *  GlitchTip routes by slug, OpenPanel by id. Falls back to the
+   *  GlitchTip routes by slug. Falls back to the
    *  display name when the provider reports neither. */
   identity: string;
   /** Which candidate name matched, so callers can say *why* something
@@ -113,13 +112,5 @@ export async function resolveGlitchtipProjects(
   candidates: string[],
 ): Promise<{ projects: RemoteProject[]; matches: ProjectMatch[] }> {
   const projects = await listGlitchtipProjects(cfg);
-  return { projects, matches: matchRemoteProjects(projects, candidates) };
-}
-
-export async function resolveOpenpanelProjects(
-  cfg: OpenpanelConfig,
-  candidates: string[],
-): Promise<{ projects: RemoteProject[]; matches: ProjectMatch[] }> {
-  const projects = await listOpenpanelProjects(cfg);
   return { projects, matches: matchRemoteProjects(projects, candidates) };
 }

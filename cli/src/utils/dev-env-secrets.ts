@@ -31,7 +31,8 @@ export const PROVISIONED_DEV_SECRET_KEYS: readonly string[] = [
   "LISTMONK_API_TOKEN",
   "SES_SMTP_PASSWORD",
   "SES_PROJECT_SECRET_ACCESS_KEY",
-  // OpenPanel, with `--enable-dev-obs`.
+  // OpenPanel, written with `--enable-dev-obs` by hatchkit versions that
+  // still provisioned it; kept so older projects stay guarded.
   "OPENPANEL_CLIENT_SECRET",
   // Stripe sandbox keys (`renderStripeEnv`). Test-mode keys still read
   // and write the sandbox account.

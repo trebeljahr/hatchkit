@@ -276,19 +276,6 @@ export interface GlitchtipMeta extends ProviderStatus {
   teamSlug?: string;
 }
 
-export interface OpenpanelMeta extends ProviderStatus {
-  /** Dashboard URL (where the user logs in / manages projects). */
-  url: string;
-  /** Management API URL — typically a separate subdomain in self-hosted
-   *  setups (e.g. `https://api.op.example.com`). Falls back to
-   *  `https://api.openpanel.dev` for cloud. Paths under this base are
-   *  `/manage/projects`, `/manage/clients`, etc. */
-  apiUrl?: string;
-  /** Default organization slug, used as the "project group" when
-   *  creating a new project/client via the dashboard. */
-  organizationSlug?: string;
-}
-
 export interface PlausibleMeta extends ProviderStatus {
   /** Dashboard/API base URL. Cloud default is https://plausible.io. */
   url: string;
@@ -389,11 +376,6 @@ export interface GpuProviderConfig extends GpuProviderMeta {
 export interface GlitchtipConfig extends GlitchtipMeta {
   token: string;
 }
-export interface OpenpanelConfig extends OpenpanelMeta {
-  /** Root-mode credentials for the Management API. */
-  rootClientId: string;
-  rootClientSecret: string;
-}
 export interface PlausibleConfig extends PlausibleMeta {
   apiKey: string;
 }
@@ -447,7 +429,9 @@ export interface CliConfig {
     backups?: BackupProviderMeta;
     gpu: Record<string, GpuProviderMeta>;
     glitchtip?: GlitchtipMeta;
-    openpanel?: OpenpanelMeta;
+    // Configs written before OpenPanel support was removed may still
+    // carry a `providers.openpanel` block. Conf has no schema, so it
+    // loads untouched and nothing reads it; `config reset` clears it.
     plausible?: PlausibleMeta;
     listmonk?: ListmonkMeta;
     ses?: SesMeta;
@@ -473,7 +457,7 @@ export interface CliConfig {
     /** Default *root* domain for new projects (e.g. `example.com`).
      *  `hatchkit create` suggests `<project>.<defaultDomain>` as the
      *  full project domain. Also feeds the suggested URLs for
-     *  self-hosted services (GlitchTip / OpenPanel / Plausible). */
+     *  self-hosted services (GlitchTip / Plausible). */
     rootDomain?: string;
     /** Personal email local-part used as an opt-in alias preset when
      *  configuring Cloudflare Email Routing (e.g. "alice" yields
@@ -1887,158 +1871,6 @@ export async function getGlitchtipConfig(): Promise<GlitchtipConfig | null> {
   const token = await getSecret(SECRET_KEYS.glitchtipToken);
   if (!token) return null;
   return { ...meta, token };
-}
-
-// ---------------------------------------------------------------------------
-// Provider: OpenPanel (self-hosted product analytics)
-// ---------------------------------------------------------------------------
-
-export async function ensureOpenpanel(): Promise<OpenpanelConfig> {
-  const existing = store.get("providers.openpanel") as OpenpanelMeta | undefined;
-  const existingId = await getSecret(SECRET_KEYS.openpanelRootClientId);
-  const existingSecret = await getSecret(SECRET_KEYS.openpanelRootClientSecret);
-
-  // Short-circuit only if *every* field is present. `apiUrl` was added
-  // after 0.1.x — configs written by earlier versions lack it, which is
-  // why a previously-"configured" setup now hits the dashboard URL
-  // instead of the API host. Fall through to the prompt flow so we can
-  // top it up without losing the rest of the config.
-  if (existing?.status === "configured" && existing.apiUrl && existingId && existingSecret) {
-    return { ...existing, rootClientId: existingId, rootClientSecret: existingSecret };
-  }
-
-  if (existing?.status === "configured" && !existing.apiUrl) {
-    console.log(
-      chalk.yellow("\n  OpenPanel config is missing the Management API URL — let's fill that in."),
-    );
-  } else {
-    console.log(chalk.yellow("\n  OpenPanel is not configured yet. Let's set it up."));
-  }
-
-  interface OpenpanelSetupState {
-    url: string;
-    apiUrl: string;
-    organizationSlug: string;
-    rootClientId: string;
-    rootClientSecret: string;
-  }
-
-  const rootForOpenpanel = getDefaultRootDomain();
-  const opSteps: Step<OpenpanelSetupState>[] = [
-    {
-      name: "Dashboard URL",
-      run: async (s) => ({
-        ...s,
-        url: (
-          await input({
-            message: "OpenPanel dashboard URL:",
-            default:
-              s.url ||
-              existing?.url ||
-              (rootForOpenpanel ? `https://analytics.${rootForOpenpanel}` : ""),
-            validate: (v) => validateUrl(v.trim()),
-          })
-        ).trim(),
-      }),
-    },
-    {
-      name: "API URL",
-      run: async (s) => {
-        const defaultApiUrl =
-          s.apiUrl ||
-          existing?.apiUrl ||
-          s.url.replace(/^https?:\/\//, (m) => `${m}api.`).replace(/\/$/, "");
-        return {
-          ...s,
-          apiUrl: (
-            await input({
-              message: "OpenPanel API URL (Management API base — usually api.<dashboard>):",
-              default: defaultApiUrl,
-              validate: (v) => validateUrl(v.trim()),
-            })
-          )
-            .trim()
-            .replace(/\/$/, ""),
-        };
-      },
-    },
-    {
-      name: "Organization slug",
-      run: async (s) => ({
-        ...s,
-        organizationSlug: (
-          await input({
-            message: "OpenPanel organization slug:",
-            default: s.organizationSlug || existing?.organizationSlug,
-            validate: validateRequired,
-          })
-        ).trim(),
-      }),
-    },
-    {
-      name: "Root client ID",
-      run: async (s) => {
-        console.log(
-          chalk.dim(
-            `\n  OpenPanel auth uses a client id/secret pair, not a bearer token.\n` +
-              `  Create a root-mode client once so hatchkit can auto-create\n` +
-              `  per-project clients via the Management API.\n\n` +
-              `  Where to create it:\n` +
-              `    1. Open ${chalk.cyan(`${s.url.replace(/\/$/, "")}/${s.organizationSlug}`)}\n` +
-              `    2. Pick any project (or create a placeholder "hatchkit-root" project)\n` +
-              `    3. Project → Settings → Clients → New client\n` +
-              `    4. Type: ${chalk.cyan("root")} (Management API access — full org-wide)\n` +
-              `    5. Copy the clientId and clientSecret (secret is shown once)\n`,
-          ),
-        );
-        return {
-          ...s,
-          rootClientId: (
-            await input({ message: "OpenPanel root clientId:", validate: validateRequired })
-          ).trim(),
-        };
-      },
-    },
-    {
-      name: "Root client secret",
-      run: async (s) => ({
-        ...s,
-        rootClientSecret: await confirmPastedSecret(
-          "OpenPanel root clientSecret (shown once at creation)",
-        ),
-      }),
-    },
-  ];
-
-  const op = await runSteps(opSteps, {
-    url: "",
-    apiUrl: "",
-    organizationSlug: "",
-    rootClientId: "",
-    rootClientSecret: "",
-  });
-
-  const meta: OpenpanelMeta = {
-    status: "configured",
-    url: op.url.replace(/\/$/, ""),
-    apiUrl: op.apiUrl,
-    organizationSlug: op.organizationSlug,
-    lastVerified: new Date().toISOString(),
-  };
-  store.set("providers.openpanel", meta);
-  await setSecret(SECRET_KEYS.openpanelRootClientId, op.rootClientId);
-  await setSecret(SECRET_KEYS.openpanelRootClientSecret, op.rootClientSecret);
-  console.log(chalk.green("  ✓ OpenPanel configured"));
-  return { ...meta, rootClientId: op.rootClientId, rootClientSecret: op.rootClientSecret };
-}
-
-export async function getOpenpanelConfig(): Promise<OpenpanelConfig | null> {
-  const meta = store.get("providers.openpanel") as OpenpanelMeta | undefined;
-  if (!meta || meta.status !== "configured") return null;
-  const rootClientId = await getSecret(SECRET_KEYS.openpanelRootClientId);
-  const rootClientSecret = await getSecret(SECRET_KEYS.openpanelRootClientSecret);
-  if (!rootClientId || !rootClientSecret) return null;
-  return { ...meta, rootClientId, rootClientSecret };
 }
 
 // ---------------------------------------------------------------------------
@@ -3523,7 +3355,6 @@ type ReconfigurableProvider =
   | "dns"
   | "cloudflare-workers"
   | "glitchtip"
-  | "openpanel"
   | "plausible"
   | "listmonk"
   | "ses"
@@ -3568,12 +3399,6 @@ export async function reconfigureProvider(
   } else if (name === "glitchtip") {
     await wipeProvider("providers.glitchtip", [SECRET_KEYS.glitchtipToken]);
     await ensureGlitchtip();
-  } else if (name === "openpanel") {
-    await wipeProvider("providers.openpanel", [
-      SECRET_KEYS.openpanelRootClientId,
-      SECRET_KEYS.openpanelRootClientSecret,
-    ]);
-    await ensureOpenpanel();
   } else if (name === "plausible") {
     await wipeProvider("providers.plausible", [SECRET_KEYS.plausibleApiKey]);
     await ensurePlausible();
@@ -3819,15 +3644,6 @@ function buildSetupGroups(): SetupGroup[] {
           run: () => reconfigureProvider("glitchtip"),
         },
         {
-          key: "openpanel",
-          label: "OpenPanel (product analytics)",
-          status: () => {
-            const m = store.get("providers.openpanel") as OpenpanelMeta | undefined;
-            return { configured: m?.status === "configured", summary: m?.url };
-          },
-          run: () => reconfigureProvider("openpanel"),
-        },
-        {
           key: "plausible",
           label: "Plausible (web analytics)",
           status: () => {
@@ -3958,7 +3774,7 @@ export async function runOnboarding(): Promise<void> {
   }
 
   // Summary — show both what's configured and what's still missing so
-  // the user notices optional-but-important steps (GlitchTip / OpenPanel / Plausible
+  // the user notices optional-but-important steps (GlitchTip / Plausible
   // / Listmonk + SES) they may have skipped.
   const configured = allSteps.filter((s) => s.status().configured);
   const unconfigured = allSteps.filter((s) => !s.status().configured);

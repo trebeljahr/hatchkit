@@ -481,6 +481,15 @@ await test("bad enum values fail early listing the valid ones", () => {
   throwsWith(() => parseCreateFlags(["--db-provider", "rds"]), "coolify, external");
   throwsWith(() => parseCreateFlags(["--github-visibility", "internal"]), "private, public");
   throwsWith(() => parseCreateFlags(["--email", "resend"]), "none, transactional, mailing-list");
+  // OpenPanel was retired: the old value is rejected, not silently dropped.
+  throwsWith(
+    () => parseCreateFlags(["--analytics-providers", "openpanel"]),
+    "glitchtip, plausible",
+  );
+  throwsWith(
+    () => parseCreateFlags(["--services", "openpanel"]),
+    "glitchtip, plausible, listmonk-ses",
+  );
 });
 
 await test("bad list values name the offenders and the valid set", () => {
@@ -588,7 +597,7 @@ await test("--yes carries flag-supplied values through to the resolved plan", as
     "--features",
     "analytics",
     "--analytics-providers",
-    "glitchtip,openpanel",
+    "glitchtip,plausible",
     "--email",
     "both",
     "--email-forwarding",
@@ -612,7 +621,7 @@ await test("--yes carries flag-supplied values through to the resolved plan", as
   assert.deepEqual(config.email, { transactional: "listmonk-ses", mailingList: "listmonk-ses" });
   assert.ok(config.provisionServices.includes("listmonk-ses"));
   assert.ok(config.provisionServices.includes("glitchtip"));
-  assert.ok(config.provisionServices.includes("openpanel"));
+  assert.ok(config.provisionServices.includes("plausible"));
   assert.ok(config.provisionServices.includes("email"));
 });
 

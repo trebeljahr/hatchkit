@@ -1,6 +1,6 @@
 ---
 title: Providers
-description: External systems hatchkit talks to — GitHub, Coolify, Hetzner, DNS, S3, Listmonk, SES, GlitchTip, OpenPanel, and GPU platforms.
+description: External systems hatchkit talks to — GitHub, Coolify, Hetzner, DNS, S3, Listmonk, SES, GlitchTip, Plausible, and GPU platforms.
 ---
 
 Hatchkit talks to a handful of external systems. Every one is optional until a command actually needs it — you can start with just GitHub + Coolify and add the rest later.
@@ -145,14 +145,6 @@ See [Email — Listmonk + SES](/docs/email) for the full setup walkthrough and t
 Hatchkit provisions a GlitchTip project and returns a DSN ready to drop into Sentry-compatible SDKs.
 
 Configure: `hatchkit config add glitchtip`.
-
----
-
-## Product analytics — OpenPanel
-
-Uses the **OpenPanel Management API** to provision client credentials against your self-hosted instance. Returns `OPENPANEL_CLIENT_ID` + `OPENPANEL_CLIENT_SECRET`.
-
-Configure: `hatchkit config add openpanel`.
 
 ---
 

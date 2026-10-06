@@ -96,11 +96,6 @@ export const SECRET_KEYS = {
   cloudflareWorkersToken: "cloudflare:workers:token",
   gpuApiKey: (platform: string) => `gpu:${platform}:api-key`,
   glitchtipToken: "glitchtip:auth-token",
-  /** Root-mode OpenPanel client used by the Management API to auto-create
-   *  per-project clients. Created once in the OpenPanel dashboard. */
-  openpanelRootClientId: "openpanel:root-client-id",
-  openpanelRootClientSecret: "openpanel:root-client-secret",
-  openpanelClientSecret: (name: string) => `openpanel:${name}:client-secret`,
   plausibleApiKey: "plausible:api-key",
   plausibleSiteDomain: (name: string) => `plausible:${name}:site-domain`,
   /** Listmonk API user token. The API user *name* lives in meta JSON
@@ -247,7 +242,7 @@ export async function clearAllSecrets(): Promise<void> {
  *  keychain. Used by `hatchkit rename-project --keys`.
  *
  *  Matches the project-name segment in every well-known per-project key
- *  shape — dotenvx, per-project S3 (across all providers), OpenPanel,
+ *  shape — dotenvx, per-project S3 (across all providers),
  *  Plausible, Stripe-per-project (both `test`/`live` modes, all subkeys).
  *
  *  Strategy: enumerate live keychain entries with `keytar.findCredentials`,
@@ -272,7 +267,6 @@ export async function migrateProjectSecrets(
   const patterns: RegExp[] = [
     new RegExp(`^(dotenvx:)(${escaped})(:.+)$`),
     new RegExp(`^(s3:[^:]+:)(${escaped})(:(?:access-key|secret-key|token-id))$`),
-    new RegExp(`^(openpanel:)(${escaped})(:client-secret)$`),
     new RegExp(`^(plausible:)(${escaped})(:site-domain)$`),
     new RegExp(
       `^(stripe:project:)(${escaped})(:(?:test|live):(?:secret-key|publishable-key|webhook-secret|webhook-id))$`,

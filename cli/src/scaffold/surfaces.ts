@@ -196,7 +196,7 @@ function pruneToClientOnly(outputDir: string, modifications: string[]): void {
   patchClientDockerfileForClientOnly(outputDir, modifications);
 
   // packages/client/package.json: drop the deps we no longer use. The
-  // client still keeps Next.js, React, Sentry, OpenPanel, Tailwind,
+  // client still keeps Next.js, React, Sentry, Tailwind,
   // class-variance-authority, etc.
   stripPackageJsonDeps(join(outputDir, "packages/client"), [
     "@trpc/client",

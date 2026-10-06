@@ -13,7 +13,6 @@
  */
 
 import "./glitchtip.js";
-import "./openpanel.js";
 import "./r2.js";
 import "./local-secrets.js";
 // Global credentials (SES, ListMonk) are shared across projects and are

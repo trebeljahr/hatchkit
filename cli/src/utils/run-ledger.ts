@@ -42,6 +42,9 @@ export type LedgerStep =
   | { kind: "scaffold"; path: string }
   | { kind: "github"; repo: string }
   | { kind: "glitchtip"; project: string }
+  /** LEGACY: OpenPanel project created by hatchkit versions that still
+   *  provisioned OpenPanel. New runs never record this kind; rollback
+   *  recognizes it on old ledgers and prints a manual-cleanup hint. */
   | { kind: "openpanel"; project: string }
   | { kind: "plausible"; project: string }
   /** SES verified identity hatchkit created. Destroy issues

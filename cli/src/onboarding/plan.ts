@@ -12,11 +12,7 @@ import type {
 import type { ProvisionService } from "../provision/index.js";
 import { parseDomain } from "../utils/validate.js";
 
-const ANALYTICS_PROVISION_SERVICES: readonly AnalyticsProvider[] = [
-  "glitchtip",
-  "openpanel",
-  "plausible",
-];
+const ANALYTICS_PROVISION_SERVICES: readonly AnalyticsProvider[] = ["glitchtip", "plausible"];
 
 function isAnalyticsProvisionService(service: ProvisionService): service is AnalyticsProvider {
   return (ANALYTICS_PROVISION_SERVICES as readonly ProvisionService[]).includes(service);

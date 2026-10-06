@@ -40,7 +40,7 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
 - `hatchkit setup` / `init`: interactive credential onboarding.
 - `hatchkit create`: interactive scaffold/deploy flow.
 - `hatchkit update`: add supported features to an existing project.
-- `hatchkit add <project> [services]`: provision GlitchTip/OpenPanel/Resend/S3/email.
+- `hatchkit add <project> [services]`: provision GlitchTip/Plausible/Resend/S3/email.
 - `hatchkit keys show|push|rotate <project>`: manage dotenvx private keys.
 - `hatchkit gh-pages`: configure GitHub Pages for the current repo.
 - `hatchkit adopt`: bring an existing repo under Hatchkit conventions.
