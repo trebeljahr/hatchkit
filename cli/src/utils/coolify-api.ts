@@ -1137,6 +1137,8 @@ export class CoolifyApi {
     healthCheck: HealthCheckSpec;
     forceDomainOverride?: boolean;
     instantDeploy?: boolean;
+    /** `custom_docker_run_options`, e.g. `--cap-drop=ALL`. */
+    customDockerRunOptions?: string;
   }): Promise<{ uuid: string; domains?: string }> {
     const body: Record<string, unknown> = {
       project_uuid: input.projectUuid,
@@ -1156,6 +1158,7 @@ export class CoolifyApi {
     // no public surface (never the case today) should say so explicitly.
     if (input.domains.length === 0) body.autogenerate_domain = false;
     if (input.forceDomainOverride) body.force_domain_override = true;
+    if (input.customDockerRunOptions) body.custom_docker_run_options = input.customDockerRunOptions;
     return this.request("POST", "/applications/dockerimage", body);
   }
 

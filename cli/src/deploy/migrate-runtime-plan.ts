@@ -98,6 +98,9 @@ export interface PlannedImageApp {
   /** `https://host[/path]` routes, primary first. */
   domains: string[];
   healthCheck: HealthCheckSpec;
+  /** Coolify `custom_docker_run_options` that carry the service's
+   *  container hardening (only `--cap-drop=…` today). */
+  dockerRunOptions?: string;
   /** Full env for the replacement. Secret values. */
   env: Array<{ key: string; value: string; isLiteral: boolean; isMultiline: boolean }>;
 }
@@ -235,6 +238,15 @@ export function planRuntimeMigration(
     healthPaths?: Record<string, string>;
     /** Replacement-only digest pins; never changes the legacy Compose image. */
     images?: Record<string, string>;
+    /** Per service, the user the replacement image itself runs as
+     *  (`uid:gid`), checked by the operator against the image config. A
+     *  Docker Image app cannot set `user`; a compose `user` equal to this
+     *  is preserved by the image instead. */
+    imageUsers?: Record<string, string>;
+    /** Services whose `security_opt: [no-new-privileges…]` may be dropped.
+     *  Coolify cannot express it for an image app; the operator accepts
+     *  the loss (e.g. after removing setuid/setgid files from the image). */
+    dropNoNewPrivileges?: string[];
   } = {},
 ): RuntimeMigrationPlan {
   const blockers: string[] = [];
@@ -348,11 +360,9 @@ export function planRuntimeMigration(
       "networks",
       "extra_hosts",
       "dns",
-      "user",
       "working_dir",
       "stop_signal",
       "cap_add",
-      "security_opt",
       "privileged",
       "links",
     ] as const) {
@@ -366,6 +376,54 @@ export function planRuntimeMigration(
         blockers.push(
           `${where} uses \`${field}\`, which the replacement cannot preserve automatically.`,
         );
+      }
+    }
+    // Container hardening. A Docker Image app cannot carry `user` or
+    // `security_opt`, and dropping `cap_drop` silently would hand the
+    // replacement every default capability back.
+    if (svc.user !== undefined && svc.user !== null && svc.user !== "") {
+      const expected = opts.imageUsers?.[service];
+      if (expected === undefined || String(svc.user) !== expected) {
+        blockers.push(
+          `${where} uses \`user\`, which the replacement cannot preserve automatically. If the image itself runs as ${JSON.stringify(String(svc.user))}, confirm it from the image config and pass --image-user ${service}=${String(svc.user)}.`,
+        );
+      } else {
+        warnings.push(
+          `${where}: \`user: ${expected}\` is preserved by the image's own USER, not by Coolify. Check the running container's user after cutover.`,
+        );
+      }
+    }
+    const securityOpts = Array.isArray(svc.security_opt)
+      ? svc.security_opt.map((o) => String(o))
+      : svc.security_opt === undefined || svc.security_opt === null
+        ? []
+        : [String(svc.security_opt)];
+    if (securityOpts.length > 0) {
+      const onlyNoNewPrivileges = securityOpts.every((o) =>
+        /^no-new-privileges(?::true|=true)?$/.test(o.trim()),
+      );
+      if (!onlyNoNewPrivileges || !opts.dropNoNewPrivileges?.includes(service)) {
+        blockers.push(
+          `${where} uses \`security_opt\`, which the replacement cannot preserve automatically.` +
+            (onlyNoNewPrivileges
+              ? ` Coolify cannot set no-new-privileges on an image app; remove setuid/setgid files from the image, then accept the loss with --drop-no-new-privileges ${service}.`
+              : ""),
+        );
+      } else {
+        warnings.push(
+          `${where}: \`no-new-privileges\` is dropped (accepted with --drop-no-new-privileges).`,
+        );
+      }
+    }
+    let dockerRunOptions: string | undefined;
+    if (svc.cap_drop !== undefined && svc.cap_drop !== null) {
+      const caps = Array.isArray(svc.cap_drop)
+        ? svc.cap_drop.map((c) => String(c))
+        : [String(svc.cap_drop)];
+      if (caps.length > 0 && caps.every((c) => /^[A-Z][A-Z_]*$/.test(c))) {
+        dockerRunOptions = caps.map((c) => `--cap-drop=${c}`).join(" ");
+      } else if (caps.length > 0) {
+        blockers.push(`${where} uses a \`cap_drop\` value the replacement cannot reproduce.`);
       }
     }
     const envFiles = Array.isArray(svc.env_file)
@@ -533,6 +591,7 @@ export function planRuntimeMigration(
       healthCheck: healthCheckFor(role === "server" ? "server" : "app", {
         ...(healthPath ? { path: healthPath } : {}),
       }),
+      ...(dockerRunOptions ? { dockerRunOptions } : {}),
       env: [...env].map(([key, v]) => ({ key, ...v })),
     });
   }

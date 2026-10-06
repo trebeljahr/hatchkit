@@ -88,6 +88,10 @@ export interface MigrateRuntimeOptions {
    *  rejects turning Strip Prefix off is not a reason to stop: the public
    *  route probes after activation still have to pass. */
   stripPrefixSafe?: string[];
+  /** Per service, the operator-verified user the replacement image runs as. */
+  imageUsers?: Record<string, string>;
+  /** Services whose `no-new-privileges` security option may be dropped. */
+  dropNoNewPrivileges?: string[];
 }
 
 export interface MigrationLedger {
@@ -182,6 +186,26 @@ export async function runMigrateRuntimeCli(args: string[]): Promise<void> {
       throw new Error("--strip-prefix-safe takes a compose service name.");
     }
   }
+  const imageUsers: Record<string, string> = {};
+  for (const spec of flagValues("image-user")) {
+    const eq = spec.indexOf("=");
+    const service = spec.slice(0, eq);
+    if (
+      eq <= 0 ||
+      !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(service) ||
+      !/^\d+(?::\d+)?$/.test(spec.slice(eq + 1)) ||
+      imageUsers[service]
+    ) {
+      throw new Error("--image-user takes a unique <service>=<uid>[:<gid>].");
+    }
+    imageUsers[service] = spec.slice(eq + 1);
+  }
+  const dropNoNewPrivileges = flagValues("drop-no-new-privileges");
+  for (const service of dropNoNewPrivileges) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(service)) {
+      throw new Error("--drop-no-new-privileges takes a compose service name.");
+    }
+  }
   const action = args.includes("--rollback")
     ? "rollback"
     : args.includes("--cleanup")
@@ -200,6 +224,8 @@ export async function runMigrateRuntimeCli(args: string[]): Promise<void> {
     noSecrets: args.includes("--no-secrets"),
     keepLiveTag: args.includes("--keep-live-tag"),
     stripPrefixSafe,
+    imageUsers,
+    dropNoNewPrivileges,
   });
   if (!ok) process.exitCode = 1;
 }
@@ -210,6 +236,8 @@ const VALUE_FLAGS = new Set([
   "--image",
   "--rollback-commit",
   "--strip-prefix-safe",
+  "--image-user",
+  "--drop-no-new-privileges",
 ]);
 
 export async function runMigrateRuntime(opts: MigrateRuntimeOptions): Promise<boolean> {
@@ -335,7 +363,12 @@ async function loadPlan(
       composeDomains: live.dockerComposeDomains,
     },
     envRows,
-    { healthPaths: opts.healthPaths, images: opts.images },
+    {
+      healthPaths: opts.healthPaths,
+      images: opts.images,
+      imageUsers: opts.imageUsers,
+      dropNoNewPrivileges: opts.dropNoNewPrivileges,
+    },
   );
 }
 
@@ -359,6 +392,7 @@ function renderPlan(plan: RuntimeMigrationPlan): void {
     );
     console.log(chalk.dim(`        port    ${app.port}  (from ${app.portSource})`));
     for (const d of app.domains) console.log(chalk.dim(`        route   ${d}`));
+    if (app.dockerRunOptions) console.log(chalk.dim(`        run     ${app.dockerRunOptions}`));
     console.log(
       chalk.dim(
         `        health  GET ${app.healthCheck.path} — up to ${app.healthCheck.startPeriodSeconds + app.healthCheck.retries * app.healthCheck.intervalSeconds}s to pass`,
@@ -593,6 +627,7 @@ export async function migrate(
         // passed both container health and a Traefik request.
         domains: [`http://${verifyHost}`],
         healthCheck: app.healthCheck,
+        ...(app.dockerRunOptions ? { customDockerRunOptions: app.dockerRunOptions } : {}),
         // The old app holds these hostnames until the cutover; sharing
         // them for that window is the point.
         forceDomainOverride: true,

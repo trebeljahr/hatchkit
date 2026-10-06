@@ -671,6 +671,51 @@ check("migration overrides preserve legacy refs and require the same immutable r
   }
 });
 
+check("migration keeps container hardening or refuses it explicitly", () => {
+  const hardened = {
+    uuid: "old",
+    name: "site",
+    buildPack: "dockercompose",
+    composeRaw:
+      "services:\n  app:\n    image: ghcr.io/test/site:latest\n    expose: ['8080']\n    user: '1000:1000'\n    cap_drop: [ALL]\n    security_opt: ['no-new-privileges:true']\n",
+    composeDomains: [{ name: "app", domain: "https://site.example" }],
+  };
+  const refused = planRuntimeMigration(hardened, []);
+  assert.match(refused.blockers.join(" "), /uses `user`.*--image-user app=1000:1000/);
+  assert.match(refused.blockers.join(" "), /security_opt.*--drop-no-new-privileges app/);
+  const wrongUser = planRuntimeMigration(hardened, [], {
+    imageUsers: { app: "0:0" },
+    dropNoNewPrivileges: ["app"],
+  });
+  assert.match(wrongUser.blockers.join(" "), /uses `user`/);
+  const accepted = planRuntimeMigration(hardened, [], {
+    imageUsers: { app: "1000:1000" },
+    dropNoNewPrivileges: ["app"],
+  });
+  assert.deepEqual(accepted.blockers, []);
+  assert.equal(accepted.apps[0].dockerRunOptions, "--cap-drop=ALL");
+  assert.match(accepted.warnings.join(" "), /preserved by the image's own USER/);
+  assert.match(accepted.warnings.join(" "), /no-new-privileges` is dropped/);
+  const otherOpt = planRuntimeMigration(
+    {
+      ...hardened,
+      composeRaw: hardened.composeRaw.replace("no-new-privileges:true", "seccomp=unconfined"),
+    },
+    [],
+    { imageUsers: { app: "1000:1000" }, dropNoNewPrivileges: ["app"] },
+  );
+  assert.match(otherOpt.blockers.join(" "), /security_opt/);
+  const badCap = planRuntimeMigration(
+    {
+      ...hardened,
+      composeRaw: hardened.composeRaw.replace("cap_drop: [ALL]", "cap_drop: ['net-raw']"),
+    },
+    [],
+    { imageUsers: { app: "1000:1000" }, dropNoNewPrivileges: ["app"] },
+  );
+  assert.match(badCap.blockers.join(" "), /cap_drop/);
+});
+
 if (failures.length > 0) {
   console.error(`\n${failures.length} failure(s):\n${failures.join("\n")}`);
   process.exit(1);

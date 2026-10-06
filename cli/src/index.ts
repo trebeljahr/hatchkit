@@ -5179,7 +5179,14 @@ function printHelp(topic?: HelpTopic): void {
                                   for repos whose workflow already pins image tags
     --strip-prefix-safe <svc>     The service answers \`/api/x\` and \`/x\` alike, so go on when
                                   Coolify won't turn Strip Prefix off (public probes still gate)
+    --image-user <svc>=<uid:gid>  The replacement image itself runs as this user (check its
+                                  config); lets a matching compose \`user\` through
+    --drop-no-new-privileges <svc>
+                                  Accept losing \`security_opt: no-new-privileges\`, which an
+                                  image app cannot set (strip setuid/setgid files first)
     --dir <path>                  Project directory (default: cwd)
+
+  A compose \`cap_drop\` is carried over as Coolify run options (\`--cap-drop=…\`).
 
   With --image, retain the old image digest in the legacy Compose file and pin
   its Git source commit before cutover. Rollback fetches that source again;
