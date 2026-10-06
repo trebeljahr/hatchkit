@@ -104,7 +104,7 @@ is separate from backup so an authentication failure never resets a repository.
 
 After the first verified backups and an isolated database restore, enable the
 timer with `systemctl enable --now hatchkit-backups.timer`. It runs daily from
-03:15–03:30 UTC. Inspect `runner.py status`, `systemctl status
+16:00–16:15 UTC (03:00–03:15 AEDT), outside release hours. Inspect `runner.py status`, `systemctl status
 hatchkit-backups.service`, and `journalctl -u hatchkit-backups.service`. Connect
 the failed-service status to the operator's existing monitoring or enable email
 alerts below. The installer preserves existing alert settings and timer state.
