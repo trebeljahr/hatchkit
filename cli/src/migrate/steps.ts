@@ -189,7 +189,11 @@ export const stepDnsPublish: StepFn = async (ctx) => {
 
 export const stepCoolifySync: StepFn = async (ctx) => {
   const { runSync } = await import("../deploy/sync.js");
-  await runSync({ projectDir: ctx.projectDir });
+  const result = await runSync({ projectDir: ctx.projectDir });
+  // A sync that refused or failed left the old routing in place. The
+  // orchestrator records a thrown step as deferred, with its retry.
+  if (!result.ok)
+    throw new Error(`hatchkit sync failed: ${result.error ?? "see the output above"}`);
   return {
     status: "done",
     message: "Coolify routing updated",

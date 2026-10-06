@@ -44,8 +44,10 @@
  * Sync now drives the whole desired state, in five passes, each
  * idempotent and each skippable with a `--no-*` flag:
  *
- *   1. locate      find each app the topology requires, by hatchkit's
- *                  name or an accepted alias
+ *   1. locate      find each app the topology requires, by recorded
+ *                  uuid, hatchkit's name or an accepted alias — or, on
+ *                  a single-origin project, the one image app named
+ *                  after the project (see `locateSyncApps`)
  *   2. create      provision the ones Coolify doesn't have, through the
  *                  same `provisionRoutedApp` that `create` uses
  *   3. routing     PATCH domain / ports_exposes / stripprefix
@@ -99,7 +101,11 @@ import { join } from "node:path";
 import chalk from "chalk";
 import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
-import { manifestHostnames, readManifestWithMigrationInfo } from "../scaffold/manifest.js";
+import {
+  type ProjectManifest,
+  manifestHostnames,
+  readManifestWithMigrationInfo,
+} from "../scaffold/manifest.js";
 import { hasNativeClient } from "../scaffold/native-origins.js";
 import { listComposeServices, readComposeFile } from "../utils/compose.js";
 import {
@@ -134,17 +140,22 @@ import {
   setCoolifyDeploySecrets,
 } from "./gh-actions-secrets.js";
 import {
+  type CoolifyRuntime,
   type HealthCheckSpec,
+  formatImageRef,
   healthCheckFor,
   healthCheckToConverge,
   resolveCoolifyRuntime,
 } from "./image-runtime.js";
 import {
   type RoutedApp,
+  type RoutingInput,
+  type RoutingPlan,
   type Topology,
   collapseComposeDomains,
   computeRoutingPlan,
   inferTopology,
+  projectImageApp,
 } from "./routing.js";
 import {
   type NativeOriginsOutcome,
@@ -300,9 +311,11 @@ export interface AppSyncPlan {
    *  reads as a successful sync followed by a fully-503 site. */
   blocked?: {
     reason: string;
-    missingServices: string[];
-    declaredServices: string[];
-    composeFile: string;
+    /** Set when the block is a phantom compose service. Absent when it
+     *  is a runtime mismatch: an image plan for a compose app. */
+    missingServices?: string[];
+    declaredServices?: string[];
+    composeFile?: string;
     fix: string[];
   };
 }
@@ -391,7 +404,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     topology: manifest.topology,
     composeServices: compose?.services,
   });
-  const routing = computeRoutingPlan({
+  const routingInput: RoutingInput = {
     name: manifest.name,
     domain: manifest.domain,
     // Normalized extra hostnames (manifest `aliases[]`) — primary is
@@ -412,7 +425,8 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
           ...(manifest.containerPorts ? { containerPorts: manifest.containerPorts } : {}),
         }
       : {}),
-  });
+  };
+  const routing = computeRoutingPlan(routingInput);
 
   if (!opts.json) {
     console.log(chalk.bold(`\n  ${manifest.name}`) + chalk.dim(` → ${manifest.domain}`));
@@ -457,12 +471,25 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   // was scaffolded but never fully deployed had nothing that would
   // finish the job. Now sync will.
   let legacyDomainHolder: string | undefined;
-  const locations = new Map<string, { uuid: string; name: string }>();
-  for (const routed of routing.apps) {
-    const found = await locateApp(api, routed, opts);
-    if (found) locations.set(routed.appName, found);
+  const located = await locateSyncApps({
+    api,
+    projectName: manifest.name,
+    topology: inference.topology,
+    runtime,
+    routing,
+    projectApp: projectImageApp(routingInput),
+    recorded: manifest.coolifyApps,
+    json: opts.json,
+  });
+  // The apps this run reconciles: the routing plan's, or the one
+  // project app that stands in for them (see locateSyncApps).
+  const routedApps = located.apps;
+  const locations = located.locations;
+  const missing = routedApps.filter((r) => !locations.has(r.appName));
+  if (located.noCreate) {
+    errors.push(located.noCreate);
+    if (!opts.json) console.log(chalk.yellow(`\n  ${located.noCreate}`));
   }
-  const missing = routing.apps.filter((r) => !locations.has(r.appName));
 
   // ── Preflight: is each app's compose file actually IN the commit
   //    Coolify will clone?
@@ -479,7 +506,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     deployedRef.push(
       ...(await preflightDeployedRefs({
         api,
-        routed: routing.apps,
+        routed: routedApps,
         locations,
         projectDir: opts.projectDir,
         projectSubdir: manifest.projectSubdir || undefined,
@@ -555,7 +582,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
       }
     }
   }
-  if (missing.length > 0 && opts.create !== false) {
+  if (missing.length > 0 && opts.create !== false && !located.noCreate) {
     if (opts.dryRun) {
       wouldCreate.push(...missing.map((m) => m.appName));
       if (!opts.json) {
@@ -564,8 +591,11 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
           console.log(
             `    + ${routed.appName} ${chalk.dim(`(${routed.role})`)}\n` +
               chalk.dim(
-                `        compose: ${routed.composeLocation}\n` +
-                  `        domains: ${routed.composeDomains.map((d) => `${d.name}=${d.domain}`).join(", ")}`,
+                routed.runtime === "image"
+                  ? `        image:   ${routed.image ? formatImageRef(routed.image) : "(unknown)"}\n` +
+                      `        domains: ${routed.flatDomains.join(",")}`
+                  : `        compose: ${routed.composeLocation}\n` +
+                      `        domains: ${routed.composeDomains.map((d) => `${d.name}=${d.domain}`).join(", ")}`,
               ),
           );
         }
@@ -606,7 +636,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
         errors.push(`create: ${message}`);
       }
     }
-  } else if (missing.length > 0 && !opts.json) {
+  } else if (missing.length > 0 && !located.noCreate && !opts.json) {
     console.log(
       chalk.yellow(
         `\n  ${missing.length} app(s) missing and --no-create given — routing for them can't be reconciled.`,
@@ -615,7 +645,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   }
 
   // ── Pass 2: reconcile routing on every app that now exists.
-  for (const routed of routing.apps) {
+  for (const routed of routedApps) {
     const found = locations.get(routed.appName);
     if (!found) {
       notFound.push([routed.appName, ...routed.aliases].join(" / "));
@@ -648,7 +678,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
       dbReferences,
     );
     apps.push(plan);
-    if (!opts.json) renderPlan(plan);
+    if (!opts.json) renderPlan(plan, !!opts.dryRun);
 
     if (plan.blocked) {
       errors.push(`${plan.name}: ${plan.blocked.reason}`);
@@ -793,7 +823,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
       if (manifest.surfaces !== "static") {
         baseline.FRONTEND_URL = `https://${manifest.domain}`;
       }
-      for (const routed of routing.apps) {
+      for (const routed of routedApps) {
         const found = locations.get(routed.appName);
         if (!found) continue;
         const values: Record<string, string> = { ...baseline, ...resolvedEnv.values };
@@ -864,7 +894,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   //    TRUSTED_ORIGINS. Runs after the env pass so it merges into what
   //    that pass just wrote. Server app only, chosen by routing role.
   if (opts.nativeOrigins !== false && hasNativeClient(manifest.features)) {
-    const serverCandidates = routing.apps
+    const serverCandidates = routedApps
       .map((routed) => {
         const found = locations.get(routed.appName);
         return found
@@ -929,7 +959,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   // ── Pass 6: GitHub Actions deploy secrets, paired under `split` so
   //    CI can trigger BOTH apps. See deploy/gh-actions-secrets.ts.
   if (opts.secrets !== false && locations.size > 0) {
-    const deployApps: CoolifyDeployApp[] = routing.apps
+    const deployApps: CoolifyDeployApp[] = routedApps
       .map((routed) => {
         const found = locations.get(routed.appName);
         if (!found) return null;
@@ -1405,28 +1435,155 @@ function describeClonedCommit(reports: DeployedRefReport[]): string | undefined 
   return `${usable.ref} @ ${usable.refSha.slice(0, 7)} "${usable.refSubject ?? "?"}"`;
 }
 
-/** Find the Coolify app for one routing-plan entry. Tries hatchkit's
- *  canonical name first, then the accepted aliases — a hand-rolled
+/** What {@link locateSyncApps} settled on. */
+export interface SyncLocation {
+  /** The apps this run reconciles: the routing plan's, or the one
+   *  project app that stands in for them. */
+  apps: RoutedApp[];
+  /** The Coolify app found for each `RoutedApp.appName`. */
+  locations: Map<string, { uuid: string; name: string }>;
+  /** Set when this run must create nothing, with the reason. */
+  noCreate?: string;
+}
+
+/** Pass 1 of sync: find the Coolify app behind each app the plan needs.
+ *
+ *  A single-origin project is first checked for an app named after the
+ *  project itself (by its recorded uuid, when the manifest has one).
+ *  When that app is a Docker Image app, it IS the deployment: one
+ *  container serving every public hostname. That is what
+ *  `migrate-runtime` makes of a compose app that ran one service, even
+ *  when the manifest says `fullstack` and the image plan therefore names
+ *  `<name>-client` + `<name>-server`. The run then reconciles that one
+ *  app ({@link projectImageApp}) and creates nothing.
+ *
+ *  Before this, the per-role names were the only ones tried. A dry run
+ *  in chemistry-sketcher (one image app, `chemistry-sketcher`) found
+ *  neither, planned to create both, and a real run — or the Coolify
+ *  step of `migrate-domain` — would have built two stray apps and
+ *  pointed the site's domains at them.
+ *
+ *  When the project app exists but is NOT an image app while the
+ *  manifest says `coolifyRuntime: "image"`, the two disagree about what
+ *  is deployed. Nothing is created; `buildPlan` refuses to push an image
+ *  plan onto a compose app as well. */
+export async function locateSyncApps(args: {
+  api: Pick<CoolifyApi, "findApplicationByName" | "getApplication">;
+  projectName: string;
+  topology: Topology;
+  runtime: CoolifyRuntime;
+  routing: RoutingPlan;
+  /** The one-app plan that applies once the project app turns out to
+   *  be a Docker Image app. */
+  projectApp: RoutedApp;
+  /** Manifest `coolifyApps`: uuids `migrate-runtime` recorded. */
+  recorded?: ProjectManifest["coolifyApps"];
+  json?: boolean;
+}): Promise<SyncLocation> {
+  const { api, json } = args;
+  const locations = new Map<string, { uuid: string; name: string }>();
+  let noCreate: string | undefined;
+
+  if (args.topology === "single-origin") {
+    const found = await findApp(
+      api,
+      args.projectName,
+      [args.projectName],
+      args.recorded?.app,
+      json,
+    );
+    if (found) {
+      let live: CoolifyApplication | undefined;
+      try {
+        live = await api.getApplication(found.uuid);
+      } catch {
+        // Unknown build pack — handled below.
+      }
+      if (live?.buildPack === "dockerimage") {
+        if (!json) {
+          console.log(
+            chalk.dim(
+              `    "${found.name}" is a Docker Image app — reconciling it as the project's only app`,
+            ),
+          );
+        }
+        // The port the container binds is the live app's. The manifest
+        // default would push a wrong PORT into its env.
+        const port = live.portsExposes?.split(",")[0]?.trim();
+        locations.set(args.projectApp.appName, found);
+        return {
+          apps: [port ? { ...args.projectApp, portsExposes: port } : args.projectApp],
+          locations,
+        };
+      }
+      if (args.runtime === "image") {
+        noCreate = live
+          ? `"${found.name}" (${found.uuid}) is a ${live.buildPack ?? "non-image"} app, but .hatchkit.json ` +
+            `says coolifyRuntime "image". Not creating apps beside it. Move it with ` +
+            '`hatchkit migrate-runtime --dry-run`, or set "coolifyRuntime": "compose" if it stays.'
+          : `Couldn't read "${found.name}" (${found.uuid}) to tell whether it is this project's ` +
+            "Docker Image app. Not creating apps beside it; re-run once Coolify answers.";
+      }
+      // The compose single-origin plan names exactly this app.
+      if (args.routing.apps.some((r) => r.appName === args.projectName)) {
+        locations.set(args.projectName, found);
+      }
+    }
+  }
+
+  for (const routed of args.routing.apps) {
+    if (locations.has(routed.appName)) continue;
+    const recordedUuid = routed.role === "compose" ? undefined : args.recorded?.[routed.role];
+    const found = await findApp(
+      api,
+      routed.appName,
+      [routed.appName, ...routed.aliases],
+      recordedUuid,
+      json,
+    );
+    if (found) locations.set(routed.appName, found);
+  }
+  return { apps: args.routing.apps, locations, ...(noCreate ? { noCreate } : {}) };
+}
+
+/** Find one Coolify app: by its recorded uuid first, then by hatchkit's
+ *  canonical name, then by the accepted aliases — a hand-rolled
  *  `<name>-backend` / `<name>-frontend` pair (tiao's shape) is a real
  *  deployment sync should reconcile, not skip. */
-async function locateApp(
-  api: CoolifyApi,
-  routed: RoutedApp,
-  opts: SyncOptions,
+async function findApp(
+  api: Pick<CoolifyApi, "findApplicationByName" | "getApplication">,
+  appName: string,
+  candidates: string[],
+  recordedUuid: string | undefined,
+  json: boolean | undefined,
 ): Promise<{ uuid: string; name: string } | null> {
-  const candidates = [routed.appName, ...routed.aliases];
-  const spinner = opts.json ? null : ora(`Coolify: locating "${routed.appName}"`).start();
+  const spinner = json ? null : ora(`Coolify: locating "${appName}"`).start();
+  if (recordedUuid) {
+    try {
+      const live = await api.getApplication(recordedUuid);
+      spinner?.succeed(
+        `Coolify: found "${live.name || appName}" (${recordedUuid}) — uuid from .hatchkit.json`,
+      );
+      return { uuid: recordedUuid, name: live.name || appName };
+    } catch {
+      // Deleted or unreadable: fall back to names, and say so.
+      if (!json) {
+        spinner?.warn(`Coolify: no app with recorded uuid ${recordedUuid} — trying names`);
+        spinner?.start(`Coolify: locating "${appName}"`);
+      }
+    }
+  }
   for (const name of candidates) {
     const found = await api.findApplicationByName(name);
     if (!found) continue;
     spinner?.succeed(
-      name === routed.appName
+      name === appName
         ? `Coolify: found "${name}" (${found.uuid})`
-        : `Coolify: found "${name}" (${found.uuid}) — alias for "${routed.appName}"`,
+        : `Coolify: found "${name}" (${found.uuid}) — alias for "${appName}"`,
     );
     return { uuid: found.uuid, name: found.name || name };
   }
-  spinner?.warn(`Coolify: no app named ${candidates.map((c) => `"${c}"`).join(" or ")} — skipping`);
+  spinner?.warn(`Coolify: no app named ${candidates.map((c) => `"${c}"`).join(" or ")}`);
   return null;
 }
 
@@ -1497,7 +1654,19 @@ function buildPlan(
   // labels, total outage. Only meaningful for compose apps — a
   // dockerfile/static app has no services to name.
   let blocked: AppSyncPlan["blocked"];
-  if (isCompose && compose) {
+  if (isCompose && routed.runtime === "image") {
+    // An image plan carries no compose domains. Pushed onto a compose
+    // app it would empty `docker_compose_domains`, and the next deploy
+    // would drop every route. The manifest and Coolify disagree about
+    // what runs here; don't guess which one is right.
+    blocked = {
+      reason: `.hatchkit.json says coolifyRuntime "image", but Coolify runs "${current.name || routed.appName}" as a Docker Compose app`,
+      fix: [
+        "Move it to a Docker Image app: hatchkit migrate-runtime --dry-run",
+        'Or, if it should stay on Compose, set "coolifyRuntime": "compose" in .hatchkit.json.',
+      ],
+    };
+  } else if (isCompose && compose) {
     const missing = routed.requiredComposeServices.filter((n) => !compose.services.includes(n));
     if (missing.length > 0) {
       blocked = {
@@ -1634,7 +1803,7 @@ function buildPlan(
 // Plan rendering
 // ---------------------------------------------------------------------------
 
-function renderPlan(plan: AppSyncPlan): void {
+function renderPlan(plan: AppSyncPlan, dryRun = false): void {
   console.log(
     chalk.bold(`\n  ${plan.name}`) + chalk.dim(` (${plan.uuid.slice(0, 8)}… · ${plan.role})`),
   );
@@ -1669,10 +1838,12 @@ function renderPlan(plan: AppSyncPlan): void {
 
   if (plan.blocked) {
     console.log(chalk.red(`    ✗ REFUSING to sync — ${plan.blocked.reason}.`));
-    console.log(
-      chalk.dim(`        declared in ${plan.blocked.composeFile}: `) +
-        chalk.dim(plan.blocked.declaredServices.join(", ")),
-    );
+    if (plan.blocked.composeFile) {
+      console.log(
+        chalk.dim(`        declared in ${plan.blocked.composeFile}: `) +
+          chalk.dim((plan.blocked.declaredServices ?? []).join(", ")),
+      );
+    }
     for (const line of plan.blocked.fix) console.log(chalk.yellow(`        ${line}`));
     return;
   }
@@ -1687,16 +1858,25 @@ function renderPlan(plan: AppSyncPlan): void {
       console.log(chalk.yellow("    · docker_compose_domains:"));
       console.log(chalk.dim(`        before: ${formatDockerComposeDomains(before)}`));
       console.log(chalk.dim(`        after:  ${formatDockerComposeDomains(after)}`));
+      if (dryRun) {
+        console.log(
+          chalk.dim(`        would PATCH docker_compose_domains=${JSON.stringify(after)}`),
+        );
+      }
     }
   } else if (plan.desiredDomains) {
     const before = splitFqdn(plan.current.fqdn);
     const after = plan.desiredDomains;
+    // The exact string Coolify's `domains` field receives — what the
+    // dashboard shows as the app's Domains — not a reformatted list.
+    const value = after.join(",");
     if (sameStringList(before, after)) {
-      console.log(chalk.green(`    ✓ domains: in sync (${after.join(", ")})`));
+      console.log(chalk.green(`    ✓ domains: in sync (${value})`));
     } else {
       console.log(chalk.yellow("    · domains:"));
-      console.log(chalk.dim(`        before: ${before.join(", ") || "(empty)"}`));
-      console.log(chalk.dim(`        after:  ${after.join(", ")}`));
+      console.log(chalk.dim(`        before: ${plan.current.fqdn || "(empty)"}`));
+      console.log(chalk.dim(`        after:  ${value}`));
+      if (dryRun) console.log(chalk.dim(`        would PATCH domains="${value}"`));
     }
   }
 

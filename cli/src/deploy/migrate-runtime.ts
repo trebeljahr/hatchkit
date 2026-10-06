@@ -60,7 +60,7 @@ import {
   parseMigrationImageOverride,
   planRuntimeMigration,
 } from "./migrate-runtime-plan.js";
-import { computeRoutingPlan } from "./routing.js";
+import { type RoutedApp, computeRoutingPlan, projectImageApp } from "./routing.js";
 
 export interface MigrateRuntimeOptions {
   /** Coolify app names or uuids. Empty → the compose apps of the
@@ -1331,30 +1331,56 @@ function findLedgers(targets: string[], projectDir: string): MigrationLedger[] {
 
 /** Record the move in `.hatchkit.json`, once every app of the project is
  *  an image app — a half-migrated split project is still read as
- *  compose, which is the shape that can still describe it. */
-async function updateManifestIfComplete(projectDir: string, api: CoolifyApi): Promise<void> {
+ *  compose, which is the shape that can still describe it.
+ *
+ *  Two shapes count as complete. A compose app that ran ONE service
+ *  becomes one image app that keeps the project's name, whatever the
+ *  manifest's `surfaces` say (chemistry-sketcher: `fullstack`, one
+ *  `client` service, one app `chemistry-sketcher`). Several services
+ *  become the per-role apps the image routing plan names. Checking only
+ *  the second left a one-service project's manifest on `compose`, and
+ *  `sync` then planned two new apps beside the one that serves it.
+ *
+ *  Each app's uuid is recorded under `coolifyApps`, so `sync` finds it
+ *  by uuid rather than by a name that can be renamed or shared. */
+export async function updateManifestIfComplete(
+  projectDir: string,
+  api: Pick<CoolifyApi, "listApplications" | "getApplication">,
+): Promise<void> {
   const manifest = readManifest(projectDir);
-  if (!manifest || manifest.coolifyRuntime === "image") return;
+  if (!manifest) return;
   const byName = new Map((await api.listApplications()).map((a) => [a.name, a.uuid]));
-  const plan = computeRoutingPlan({
+  const input = {
     name: manifest.name,
     domain: manifest.domain,
     topology: manifest.topology ?? "single-origin",
     surfaces: manifest.surfaces,
-    runtime: "image",
-  });
-  const ports: NonNullable<typeof manifest.containerPorts> = {};
-  for (const routed of plan.apps) {
-    const uuid = [routed.appName, ...routed.aliases].map((n) => byName.get(n)).find(Boolean);
-    if (!uuid) return;
-    const live = await api.getApplication(uuid);
-    if (live.buildPack !== "dockerimage") return;
-    const port = Number(live.portsExposes?.split(",")[0]);
-    if (Number.isFinite(port) && port !== 3000 && routed.role !== "compose")
-      ports[routed.role] = port;
-  }
-  if (setManifestRuntime(projectDir, "image", ports)) {
-    console.log(chalk.dim(`  .hatchkit.json: coolifyRuntime → "image"`));
+    runtime: "image" as const,
+  };
+  const shapes: RoutedApp[][] = [
+    ...(input.topology === "single-origin" ? [[projectImageApp(input)]] : []),
+    computeRoutingPlan(input).apps,
+  ];
+  for (const apps of shapes) {
+    const ports: NonNullable<typeof manifest.containerPorts> = {};
+    const uuids: NonNullable<typeof manifest.coolifyApps> = {};
+    let complete = true;
+    for (const routed of apps) {
+      const uuid = [routed.appName, ...routed.aliases].map((n) => byName.get(n)).find(Boolean);
+      const live = uuid ? await api.getApplication(uuid) : undefined;
+      if (!uuid || live?.buildPack !== "dockerimage" || routed.role === "compose") {
+        complete = false;
+        break;
+      }
+      uuids[routed.role] = uuid;
+      const port = Number(live.portsExposes?.split(",")[0]);
+      if (Number.isFinite(port) && port !== 3000) ports[routed.role] = port;
+    }
+    if (!complete) continue;
+    if (setManifestRuntime(projectDir, "image", ports, uuids)) {
+      console.log(chalk.dim(`  .hatchkit.json: coolifyRuntime → "image"`));
+    }
+    return;
   }
 }
 
@@ -1388,11 +1414,16 @@ export function addManifestFields(projectDir: string, fields: Record<string, unk
   return true;
 }
 
-/** Change runtime metadata without running unrelated manifest migrations. */
+/** Change runtime metadata without running unrelated manifest migrations.
+ *
+ *  `apps` replaces `coolifyApps` outright: it is the full set of image
+ *  apps a completed migration found. Moving back to `compose` drops the
+ *  field, since the apps it names are the ones a rollback deletes. */
 export function setManifestRuntime(
   projectDir: string,
   runtime: "image" | "compose",
   ports: Record<string, number> = {},
+  apps: Record<string, string> = {},
 ): boolean {
   const path = join(projectDir, ".hatchkit.json");
   let parsed: Record<string, unknown>;
@@ -1411,16 +1442,21 @@ export function setManifestRuntime(
   const fields = {
     coolifyRuntime: runtime,
     ...(Object.keys(ports).length ? { containerPorts: { ...existingPorts, ...ports } } : {}),
+    ...(runtime === "image" && Object.keys(apps).length ? { coolifyApps: apps } : {}),
   };
+  const dropApps = runtime === "compose" && "coolifyApps" in parsed;
   if (
+    !dropApps &&
     Object.entries(fields).every(
       ([key, value]) => JSON.stringify(parsed[key]) === JSON.stringify(value),
     )
   )
     return false;
-  if (Object.keys(fields).every((key) => !(key in parsed)))
+  if (!dropApps && Object.keys(fields).every((key) => !(key in parsed)))
     return addManifestFields(projectDir, fields);
-  writeFileSync(path, `${JSON.stringify({ ...parsed, ...fields }, null, 2)}\n`);
+  const next: Record<string, unknown> = { ...parsed, ...fields };
+  if (dropApps) delete next.coolifyApps;
+  writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`);
   return true;
 }
 

@@ -104,6 +104,12 @@ the public health routes before stopping the old app and pointing the
 repo's deploy secret at the new one. The old app stays, stopped:
 `--rollback` starts it again, `--cleanup` deletes it.
 
+A compose app that ran one service becomes one Docker Image app with the
+project's own name. Several services become one app per service. When every app
+has moved, `.hatchkit.json` records `coolifyRuntime: "image"`, each container
+port other than 3000 under `containerPorts`, and each app's uuid under
+`coolifyApps`. `hatchkit sync` looks apps up by that uuid before their names.
+
 It refuses a compose app that holds data — a mongo, postgres or redis service,
 or any volume. That data lives in the old app's Docker volume and would not
 follow. Plan a separate data migration, backup and restore drill before changing

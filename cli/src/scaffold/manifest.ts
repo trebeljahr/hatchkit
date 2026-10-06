@@ -281,6 +281,14 @@ export interface ProjectManifest {
    *  read by `sync` only when it has to CREATE a missing app (an
    *  existing image app's port is never overwritten). */
   containerPorts?: { app?: number; client?: number; server?: number };
+  /** Coolify application uuid of each image-runtime app, by role.
+   *  `app` is the one image app named after the project (see
+   *  `projectImageApp` in deploy/routing.ts). Written by `hatchkit
+   *  migrate-runtime` once the move is complete. `sync` looks an app up
+   *  by this uuid before it tries names, because Coolify names are
+   *  neither unique across projects nor stable under a dashboard
+   *  rename. */
+  coolifyApps?: { app?: string; client?: string; server?: string };
   /** Path from the repo root to the deployable subdir, posix-slashed,
    *  no leading "./", no trailing slash. Absent / undefined means the
    *  deployable lives at the repo root (the historical default).

@@ -536,6 +536,15 @@ doesn't declare. Coolify answers such a PATCH with a 200 OK and then emits no
 Traefik labels at all, so the app 503s every request — a silent outage that
 looks like a successful sync.
 
+On a single-origin project, sync first looks for an application named after
+the project. A Docker Image app with that name is the whole deployment: it is
+what `migrate-runtime` makes of a compose app that ran one service. Sync sets
+its domains to the manifest's `domain` plus `aliases[]`. It creates no
+`<name>-client` or `<name>-server` app beside it. `--dry-run` prints the exact
+`domains` value it would send. If the manifest says `coolifyRuntime: "image"`
+but that application is still a Docker Compose app, sync creates nothing and
+changes nothing on it.
+
 | Flag | Effect |
 |---|---|
 | `--dir <path>` | Project root (defaults to cwd). |

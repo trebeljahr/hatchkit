@@ -502,28 +502,12 @@ function imagePlan(input: RoutingInput): RoutingPlan {
   const bare = `https://${input.domain}`;
 
   if (input.surfaces === "static" || input.surfaces === "backend") {
-    const backing = input.surfaces === "backend" ? "server" : "client";
     // A backend under `split` keeps answering on api.<domain> too, the
     // same way the compose split plan routes it.
     const withApi = input.surfaces === "backend" && input.topology === "split";
-    const publics = publicUrls(input).filter((u) => !withApi || u !== apiUrl);
     return {
       topology: input.topology,
-      apps: [
-        {
-          appName: input.name,
-          aliases: [],
-          role: "app",
-          runtime: "image",
-          image: imageOf("app") ?? imageOf(backing),
-          healthCheck: healthCheckFor("app", { surfaces: input.surfaces }),
-          composeDomains: [],
-          flatDomains: withApi ? [...publics, apiUrl] : publics,
-          portsExposes: portOf("app", input.containerPorts?.[backing]),
-          composeLocation: "",
-          requiredComposeServices: [],
-        },
-      ],
+      apps: [projectImageApp(input)],
       extraDnsHostnames: withApi ? [apiHost] : [],
     };
   }
@@ -565,6 +549,41 @@ function imagePlan(input: RoutingInput): RoutingPlan {
     topology: input.topology,
     apps: [clientApp, serverApp],
     extraDnsHostnames: split ? [apiHost] : [],
+  };
+}
+
+/** The one Docker Image application named after the project itself,
+ *  carrying every public hostname.
+ *
+ *  It is the plan's only app for a static site or a backend-only
+ *  project. It is ALSO what `migrate-runtime` makes of a compose app
+ *  that ran one service — chemistry-sketcher's single `client` became
+ *  one image app called `chemistry-sketcher` — even when the manifest
+ *  says `fullstack`, whose image plan names `<name>-client` +
+ *  `<name>-server`. `sync` uses this shape once it finds that app (see
+ *  `locateSyncApps` in deploy/sync.ts), so it reconciles the app that
+ *  serves the site instead of creating two beside it.
+ *
+ *  One container owns the whole host: no `/api` route, no stripprefix
+ *  opinion. A backend under `split` also answers on api.<domain>. */
+export function projectImageApp(input: RoutingInput): RoutedApp {
+  const backing = input.surfaces === "backend" ? "server" : "client";
+  const ref = input.images?.app ?? input.images?.[backing];
+  const apiUrl = `https://api.${input.domain}`;
+  const withApi = input.surfaces === "backend" && input.topology === "split";
+  const publics = publicUrls(input).filter((u) => !withApi || u !== apiUrl);
+  return {
+    appName: input.name,
+    aliases: [],
+    role: "app",
+    runtime: "image",
+    image: ref ? parseImageRef(ref) : undefined,
+    healthCheck: healthCheckFor("app", { surfaces: input.surfaces }),
+    composeDomains: [],
+    flatDomains: withApi ? [...publics, apiUrl] : publics,
+    portsExposes: String(input.containerPorts?.app ?? input.containerPorts?.[backing] ?? 3000),
+    composeLocation: "",
+    requiredComposeServices: [],
   };
 }
 
