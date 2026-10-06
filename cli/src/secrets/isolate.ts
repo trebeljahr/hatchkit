@@ -60,7 +60,13 @@ import {
 import { PROMOTE_STEP_NAME, upgradeWorkflowToSignedDeploy } from "../scaffold/signed-deploy.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { exec } from "../utils/exec.js";
-import { parseImageName, promoteTag, readManifest, registryToken } from "../utils/oci-registry.js";
+import {
+  type FetchLike,
+  parseImageName,
+  promoteTag,
+  readManifest,
+  registryToken,
+} from "../utils/oci-registry.js";
 
 export interface IsolateOptions {
   dryRun: boolean;
@@ -157,12 +163,46 @@ async function seedLive(
   image: string,
   fromTag: string,
   auth: { username: string; password: string },
+  fetchImpl: FetchLike = fetch,
 ): Promise<"exists" | "seeded"> {
   const name = parseImageName(image);
-  const token = await registryToken(fetch, name, auth, true);
-  if (await readManifest(fetch, name, LIVE_TAG, token)) return "exists";
-  await promoteTag(fetch, { image, from: fromTag, to: LIVE_TAG, auth });
+  const token = await registryToken(fetchImpl, name, auth, true);
+  if (await readManifest(fetchImpl, name, LIVE_TAG, token)) return "exists";
+  await promoteTag(fetchImpl, { image, from: fromTag, to: LIVE_TAG, auth });
   return "seeded";
+}
+
+/** The registry reference a Docker Image app's stored tag stands for.
+ *  `migrate-runtime --image <repo>@sha256:<hex>` stores the digest as
+ *  Coolify's `sha256-<hex>` tag, which is no tag in the registry — the
+ *  manifest is addressed as `sha256:<hex>` instead. */
+export function registryReferenceOfTag(tag: string): string {
+  return /^sha256-[a-f0-9]{64}$/.test(tag) ? `sha256:${tag.slice(7)}` : tag;
+}
+
+/** Point a Docker Image app at `:live`, seeding `:live` from whatever it
+ *  pulls today. Returns the line for the report, or null when the app
+ *  already runs `:live`. */
+export async function switchImageAppToLive(
+  api: Pick<CoolifyApi, "updateApplication">,
+  uuid: string,
+  image: string,
+  tag: string | undefined,
+  opts: {
+    dryRun: boolean;
+    auth: { username: string; password: string } | null;
+    fetchImpl?: FetchLike;
+  },
+): Promise<string | null> {
+  const from = tag || "latest";
+  if (from === LIVE_TAG) return null;
+  const source = registryReferenceOfTag(from);
+  if (!opts.dryRun && opts.auth) {
+    await seedLive(image, source, opts.auth, opts.fetchImpl);
+    await api.updateApplication(uuid, { dockerRegistryImageTag: LIVE_TAG });
+  }
+  const shown = source === from ? `:${from}` : `@${source}`;
+  return `${image}:${LIVE_TAG} (from ${shown})`;
 }
 
 const tagOf = (ref: string): string => {
@@ -276,14 +316,14 @@ export async function isolateProject(
         try {
           const detail = await api.getApplication(app.uuid);
           if (detail.buildPack === "dockerimage" && detail.dockerRegistryImageName) {
-            const image = detail.dockerRegistryImageName;
-            const from = detail.dockerRegistryImageTag || "latest";
-            if (from === LIVE_TAG) continue;
-            if (!opts.dryRun && auth) {
-              await seedLive(image, from, auth);
-              await api.updateApplication(app.uuid, { dockerRegistryImageTag: LIVE_TAG });
-            }
-            result.live.push(`${label}: ${image}:${LIVE_TAG} (from :${from})`);
+            const line = await switchImageAppToLive(
+              api,
+              app.uuid,
+              detail.dockerRegistryImageName,
+              detail.dockerRegistryImageTag,
+              { dryRun: opts.dryRun, auth },
+            );
+            if (line) result.live.push(`${label}: ${line}`);
           } else {
             const current = composeImageVarsToSwitch(await api.listAppEnvRows(app.uuid));
             const updates: Record<string, string> = {};

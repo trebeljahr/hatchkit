@@ -53,7 +53,9 @@ const { parseBearerChallenge, parseImageName, promoteTag } = await import(
 const { findProvisionerSecretNames, findProvisionerValuesInEnv, findWorkflowTokenReads } =
   await import("./src/secrets/isolation.js");
 const { workflowsReading } = await import("./src/deploy/gh-actions-secrets.js");
-const { composeImageVarsToSwitch } = await import("./src/secrets/isolate.js");
+const { composeImageVarsToSwitch, registryReferenceOfTag, switchImageAppToLive } = await import(
+  "./src/secrets/isolate.js"
+);
 
 const failures: string[] = [];
 async function check(label: string, fn: () => void | Promise<void>): Promise<void> {
@@ -599,6 +601,67 @@ await check("promote copies the manifest bytes verbatim and reads the tag back",
       auth: { username: "u", password: "p" },
     }),
     /does not exist/,
+  );
+});
+
+await check("a digest-pinned image app seeds :live from its digest, then runs :live", async () => {
+  // `migrate-runtime --image <repo>@sha256:<hex> --keep-live-tag` stores
+  // the digest as Coolify's `sha256-<hex>` tag. The registry has no such
+  // tag: the source must be read as `sha256:<hex>`.
+  const body = '{"mediaType":"application/vnd.oci.image.manifest.v1+json","layers":[]}';
+  const hex = createHash("sha256").update(body).digest("hex");
+  const refs: Record<string, string> = { [`sha256:${hex}`]: body };
+  const fakeFetch = async (
+    url: string,
+    init?: { method?: string; headers?: Record<string, string>; body?: string },
+  ) => {
+    const res = (status: number, text = "", headers: Record<string, string> = {}) => ({
+      status,
+      ok: status < 400,
+      headers: { get: (n: string) => headers[n.toLowerCase()] ?? null },
+      text: async () => text,
+    });
+    if (url === "https://ghcr.io/v2/") {
+      return res(401, "", {
+        "www-authenticate": 'Bearer realm="https://ghcr.io/token",service="ghcr.io"',
+      });
+    }
+    if (url.startsWith("https://ghcr.io/token")) return res(200, JSON.stringify({ token: "t" }));
+    const ref = url.split("/manifests/")[1];
+    assert.notEqual(ref, `sha256-${hex}`, "the Coolify tag was read as a registry tag");
+    if (init?.method === "PUT") {
+      refs[ref] = init.body as string;
+      return res(201);
+    }
+    return refs[ref]
+      ? res(200, refs[ref], {
+          "content-type": "application/vnd.oci.image.manifest.v1+json",
+          "docker-content-digest": `sha256:${hex}`,
+        })
+      : res(404);
+  };
+  const updates: unknown[] = [];
+  const api = {
+    updateApplication: async (uuid: string, fields: unknown) => {
+      updates.push([uuid, fields]);
+    },
+  } as unknown as Parameters<typeof switchImageAppToLive>[0];
+  const line = await switchImageAppToLive(api, "app-1", "ghcr.io/acme/app", `sha256-${hex}`, {
+    dryRun: false,
+    auth: { username: "u", password: "p" },
+    fetchImpl: fakeFetch,
+  });
+  assert.equal(refs.live, body);
+  assert.deepEqual(updates, [["app-1", { dockerRegistryImageTag: "live" }]]);
+  assert.equal(line, `ghcr.io/acme/app:live (from @sha256:${hex})`);
+  assert.equal(registryReferenceOfTag("main"), "main");
+  assert.equal(registryReferenceOfTag("sha256-abc"), "sha256-abc");
+  assert.equal(
+    await switchImageAppToLive(api, "app-1", "ghcr.io/acme/app", "live", {
+      dryRun: false,
+      auth: null,
+    }),
+    null,
   );
 });
 

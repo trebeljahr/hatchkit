@@ -21,7 +21,7 @@
 
 import { createHash } from "node:crypto";
 
-type FetchLike = (
+export type FetchLike = (
   url: string,
   init?: { method?: string; headers?: Record<string, string>; body?: string },
 ) => Promise<{
@@ -138,7 +138,10 @@ export async function promoteTag(
   const name = parseImageName(input.image);
   const token = await registryToken(fetchImpl, name, input.auth, true);
   const source = await readManifest(fetchImpl, name, input.from, token);
-  if (!source) throw new Error(`${name.registry}/${name.repository}:${input.from} does not exist.`);
+  if (!source) {
+    const ref = input.from.startsWith("sha256:") ? `@${input.from}` : `:${input.from}`;
+    throw new Error(`${name.registry}/${name.repository}${ref} does not exist.`);
+  }
   const put = await fetchImpl(
     `https://${name.registry}/v2/${name.repository}/manifests/${input.to}`,
     {
