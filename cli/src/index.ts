@@ -1804,6 +1804,19 @@ async function handleDestroy(): Promise<void> {
 
   const { printRecipe } = await import("./deploy/rollback.js");
   printRecipe(ledger);
+  // Backup sources that read the deleted containers would fail every
+  // nightly run from now on. Collected before rollback rewrites the ledger.
+  const deletedUuids = ledger.steps.flatMap((step) =>
+    step.kind === "coolifyApp" || step.kind === "coolifyDb" ? [step.uuid] : [],
+  );
+  if (deletedUuids.length && getConfig().providers.backups?.status === "configured") {
+    console.log(
+      chalk.dim(
+        "  Backups: sources reading these Coolify resources are removed once the host confirms the containers are gone (snapshots stay in the bucket).\n" +
+          `           Check by hand: hatchkit backup sources --project ${name}\n`,
+      ),
+    );
+  }
 
   if (recipeOnly) return;
 
@@ -1819,6 +1832,15 @@ async function handleDestroy(): Promise<void> {
   }
 
   await runRollback(ledger, { yes: skipConfirm });
+
+  const { reconcileBackupsAfterRemoval } = await import("./backups/sources.js");
+  const backups = await reconcileBackupsAfterRemoval({
+    uuids: deletedUuids,
+    dryRun: false,
+    settleMs: 30_000,
+  });
+  for (const line of backups.lines)
+    console.log(backups.failed ? chalk.yellow(`  ${line}`) : chalk.dim(`  ${line}`));
 }
 
 async function handleRemove(): Promise<void> {

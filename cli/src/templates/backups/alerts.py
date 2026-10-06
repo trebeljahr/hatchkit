@@ -31,7 +31,11 @@ def issues_for(config, work):
             issues.append('No projects are registered for backup.')
         for result in status['results']:
             name = result['project']
-            if not result.get('ok'):
+            if not result.get('ok') and result.get('state') == 'source-missing':
+                issues.append(name + ': registered source(s) ' + ', '.join(result.get('missingSources', []))
+                              + ' no longer exist on this host (database moved or removed?). '
+                              + 'Fix: hatchkit backup sources --project ' + name)
+            elif not result.get('ok'):
                 issues.append(name + ': latest backup failed or has never completed.')
             elif result['stale']:
                 issues.append(name + ': no verified backup within 36 hours.')

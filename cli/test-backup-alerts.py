@@ -48,6 +48,17 @@ class BackupAlerts(unittest.TestCase):
             with patch.object(alerts, 'unit_value', side_effect=['inactive', 'active']):
                 self.assertIn('could not be read', alerts.issues_for(config, work)[0])
 
+    def test_missing_source_is_its_own_issue_with_the_fix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            (work / 'status.json').write_text(json.dumps({'results': [
+                {'project': 'chess-app', 'ok': False, 'state': 'source-missing', 'missingSources': ['app-redis'], 'error': 'x'}]}))
+            with patch.object(alerts, 'unit_value', side_effect=['inactive', 'active']):
+                issues = alerts.issues_for({'projects': [{'name': 'chess-app'}]}, work)
+            self.assertEqual(len(issues), 1)
+            self.assertIn('app-redis no longer exist', issues[0])
+            self.assertIn('hatchkit backup sources --project chess-app', issues[0])
+
     def test_test_email_does_not_change_failure_state(self):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)

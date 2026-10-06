@@ -68,6 +68,11 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
 - `hatchkit dns publish [--dry-run]`: upsert Cloudflare A/AAAA records for the manifest's domain + aliases, pointing at the Coolify server.
 - `hatchkit plausible rename <old> <new>`: move a Plausible site to a new domain (stats history preserved).
 - `hatchkit listmonk user <project> [--dry-run]`: give a project its own Listmonk API user (user role + list role + API user, needs the `hatchkit-admin` token in keychain `listmonk:admin-api-token`) and rewrite LISTMONK_API_USER/TOKEN in its env. Never pushes; `hatchkit sync` after. `hatchkit add … listmonk-ses` does the same for new projects.
+- `hatchkit backup sources [--project <name>]`: read-only; resolves every
+  registered backup selector on the host and prints the exact fix for stale
+  ones (`backup update-source … --container|--remove`, `backup deregister`,
+  both `--dry-run` first). Also part of `backup status` and `doctor`.
+  `destroy` and `migrate-runtime --cleanup` remove sources of what they delete.
 - `hatchkit explain --json`: source-of-truth mental model.
 
 Check `hatchkit help <command>` before using flags you have not verified.

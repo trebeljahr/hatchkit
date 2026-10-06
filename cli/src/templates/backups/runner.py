@@ -22,6 +22,23 @@ class BackupError(RuntimeError):
     pass
 
 
+class SourceMissing(BackupError):
+    """A registered source no longer exists on this host.
+
+    Kept distinct from a capture failure: the usual cause is a database that
+    was moved or removed without updating the backup policy, and the fix is a
+    policy change, not a retry. It still fails the run. The host cannot tell
+    a removed database from one that crashed, and skipping it would let
+    retention prune the last snapshots that contain its data."""
+
+    def __init__(self, project=None, sources=()):
+        self.sources = list(sources)
+        super().__init__(
+            f"Registered source(s) {', '.join(self.sources)} not found on this host (moved or removed?). "
+            f"Previous snapshots retained. Fix: hatchkit backup sources --project {project}"
+            if project else 'Source selector matches 0 running containers; expected one')
+
+
 def run(argv, *, env=None, output=None, input=None, stdin=None, timeout=1800):
     result = subprocess.run(argv, input=input, stdin=stdin, stdout=output or subprocess.PIPE,
                             stderr=subprocess.PIPE, env=env, timeout=timeout)
@@ -74,7 +91,7 @@ def containers():
     return json.loads(run(['docker', 'inspect', *ids])) if ids else []
 
 
-def resolve_container(selector, inventory):
+def selector_matches(selector, inventory):
     allowed = {'container', 'project', 'service'}
     if not selector or not set(selector).issubset(allowed):
         raise BackupError('Invalid container selector')
@@ -86,9 +103,71 @@ def resolve_container(selector, inventory):
                   'service': labels.get('com.docker.compose.service')}
         if all(values[k] == v for k, v in selector.items()):
             matches.append(item)
+    return matches
+
+
+def resolve_container(selector, inventory):
+    matches = selector_matches(selector, inventory)
+    if not matches:
+        raise SourceMissing()
     if len(matches) != 1:
         raise BackupError(f'Source selector matches {len(matches)} running containers; expected one')
     return matches[0]
+
+
+# Names only. Image-baked env keys identify official images whose tag was
+# replaced by an image ID; values are never read.
+KIND_TEXT = {'postgres': ('postgres', 'postgis', 'timescale'), 'mongo': ('mongo',),
+             'redis': ('redis', 'valkey', 'keydb'), 'clickhouse': ('clickhouse',),
+             'kuma-mariadb': ('uptime-kuma',)}
+KIND_ENV = {'postgres': ('PG_MAJOR',), 'mongo': ('MONGO_VERSION', 'MONGO_MAJOR'),
+            'redis': ('REDIS_VERSION',), 'clickhouse': ('CLICKHOUSE_VERSION',)}
+
+
+def container_kinds(item):
+    labels = item['Config'].get('Labels') or {}
+    text = ' '.join(filter(None, [item['Config'].get('Image'), item['Name'], labels.get('com.docker.compose.service'),
+                                  labels.get('coolify.resourceName')])).lower()
+    env = {entry.split('=', 1)[0] for entry in item['Config'].get('Env') or []}
+    return {kind for kind, words in KIND_TEXT.items()
+            if any(word in text for word in words) or env.intersection(KIND_ENV.get(kind, ()))}
+
+
+def describe_container(item):
+    labels = item['Config'].get('Labels') or {}
+    name = item['Name'].lstrip('/')
+    project, service = labels.get('com.docker.compose.project'), labels.get('com.docker.compose.service')
+    return {'container': name, 'image': item['Config'].get('Image'),
+            'selector': {'project': project, 'service': service} if project and service else {'container': name},
+            'coolifyProject': labels.get('coolify.projectName'), 'coolifyResource': labels.get('coolify.resourceName'),
+            'kinds': sorted(container_kinds(item))}
+
+
+def source_report(projects, inventory, path_exists=os.path.exists):
+    """Resolve every registered source against the running containers. Read-only."""
+    rows, claimed = [], set()
+    for project in projects:
+        for source in project['sources']:
+            row = {'project': project['name'], 'source': source['name'], 'kind': source['kind']}
+            if source['kind'] == 'files':
+                missing = [p for p in source['paths'] if not path_exists(p)]
+                row.update(paths=source['paths'], missingPaths=missing, state='missing' if missing else 'ok')
+            else:
+                matches = selector_matches(source['selector'], inventory)
+                row.update(selector=source['selector'], matches=len(matches),
+                           state='ok' if len(matches) == 1 else 'missing' if not matches else 'ambiguous')
+                if len(matches) == 1:
+                    claimed.add(matches[0]['Id'])
+                    row['container'] = matches[0]['Name'].lstrip('/')
+                elif matches:
+                    row['candidates'] = [describe_container(item) for item in matches]
+            rows.append(row)
+    # Offer only running, unclaimed containers of the same engine as replacements.
+    for row in rows:
+        if row['state'] == 'missing' and row['kind'] != 'files':
+            row['candidates'] = [describe_container(item) for item in inventory
+                                 if item['Id'] not in claimed and row['kind'] in container_kinds(item)]
+    return rows
 
 
 def docker_shell(container, script, output=None, timeout=1800):
@@ -318,6 +397,22 @@ def backup_project(project, config, env, inventory, work):
     validate_project(project)
     name = project['name']
     project_env = {**env, 'RESTIC_REPOSITORY': config['repositoryBase'].rstrip('/') + '/' + name}
+    # Resolve every source before capturing any. A moved or removed source is
+    # reported by name, as a policy problem, without dumping the others first.
+    resolved, missing = {}, []
+    for source in project['sources']:
+        if source['kind'] == 'files':
+            if any(not Path(p).exists() for p in source['paths']):
+                missing.append(source['name'])
+            continue
+        try:
+            resolved[source['name']] = resolve_container(source['selector'], inventory)
+        except SourceMissing:
+            missing.append(source['name'])
+        except BackupError as error:
+            raise BackupError(f"Source {source['name']} ({source['kind']}): {error}") from error
+    if missing:
+        raise SourceMissing(name, missing)
     # Initialisation is explicit. A network/auth failure must never be mistaken for an empty repo.
     restic(['cat', 'config'], project_env)
     with tempfile.TemporaryDirectory(prefix=name + '-', dir=work) as temp:
@@ -333,7 +428,7 @@ def backup_project(project, config, env, inventory, work):
                 metadata.append({'name': source['name'], 'kind': 'files', 'paths': source['paths'], 'exclude': source.get('exclude', [])})
             else:
                 try:
-                    item = dump_database(source, resolve_container(source['selector'], inventory), dest)
+                    item = dump_database(source, resolved[source['name']], dest)
                 except BackupError as error:
                     raise BackupError(f"Source {source['name']} ({source['kind']}): {error}") from error
                 metadata.append({'name': source['name'], **item})
@@ -404,7 +499,7 @@ def save_status(results, work):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['plan', 'init', 'run', 'status'])
+    parser.add_argument('action', choices=['plan', 'init', 'run', 'status', 'sources'])
     parser.add_argument('--config', default='/etc/hatchkit-backups/config.json')
     parser.add_argument('--project')
     args = parser.parse_args()
@@ -412,6 +507,16 @@ def main():
     projects = [validate_project(p) for p in config['projects']]
     if len({p['name'] for p in projects}) != len(projects):
         raise BackupError('Duplicate project name')
+    if args.action == 'sources':
+        # Claims are computed across every project, so a container another
+        # project backs up is never offered as a replacement.
+        rows = source_report(projects, containers())
+        if args.project:
+            if args.project not in {p['name'] for p in projects}:
+                raise BackupError('Unknown project')
+            rows = [r for r in rows if r['project'] == args.project]
+        print(json.dumps({'sources': rows, 'stale': sum(r['state'] != 'ok' for r in rows)}, indent=2))
+        return
     if args.project:
         projects = [p for p in projects if p['name'] == args.project]
         if not projects:
@@ -452,6 +557,8 @@ def main():
                     result = backup_project(project, config, env, inventory, work)
             except Exception as error:
                 result = {'project': project['name'], 'ok': False, 'error': str(error) if isinstance(error, BackupError) else type(error).__name__}
+                if isinstance(error, SourceMissing):
+                    result.update(state='source-missing', missingSources=error.sources)
             results.append(result)
             print(json.dumps(result), flush=True)
         if args.action == 'run':

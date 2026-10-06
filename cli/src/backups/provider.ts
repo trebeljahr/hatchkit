@@ -121,11 +121,23 @@ export function backupHostExec(
       if (code === 0) resolve(stdout);
       else {
         const auth = stderr.match(/https:\/\/login\.tailscale\.com\/a\/[a-zA-Z0-9]+/)?.[0];
+        // The host scripts print only sanitized BackupError text as
+        // {"ok": false, "error": …}; anything else stays generic.
+        const hostError = (() => {
+          try {
+            const parsed = JSON.parse(stdout.trim().split("\n").pop() ?? "");
+            return parsed?.ok === false && typeof parsed.error === "string" ? parsed.error : null;
+          } catch {
+            return null;
+          }
+        })();
         reject(
           new Error(
             auth
               ? `Complete the Tailscale SSH check: ${auth}`
-              : `Backup host command failed (exit ${code ?? "timeout"}). Check Tailscale and the host journal.`,
+              : hostError
+                ? `Backup host: ${hostError}`
+                : `Backup host command failed (exit ${code ?? "timeout"}). Check Tailscale and the host journal.`,
           ),
         );
       }

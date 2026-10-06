@@ -285,6 +285,29 @@ export async function runMigrateRuntime(opts: MigrateRuntimeOptions): Promise<bo
       allOk = false;
       continue;
     }
+    // The cut-over stops this app. A backup source that reads its
+    // containers means it holds data the plan did not see.
+    const { backupSourcesReading } = await import("../backups/sources.js");
+    const readers = await backupSourcesReading([source.uuid]);
+    if (readers.error)
+      console.log(
+        chalk.yellow(
+          `  Couldn't check backup sources (${readers.error}). Check by hand: hatchkit backup sources --json`,
+        ),
+      );
+    if (readers.rows.length > 0) {
+      console.log(chalk.red("  Blocked: registered backups read this app's containers:"));
+      for (const row of readers.rows)
+        console.log(chalk.red(`    · ${row.project}/${row.source} (${row.kind})`));
+      console.log(
+        chalk.dim(
+          "    Move that data out of the compose app first, then point the backup at it:\n" +
+            "    hatchkit backup update-source --project <name> --source <source> --container <new> --dry-run",
+        ),
+      );
+      allOk = false;
+      continue;
+    }
     if (opts.dryRun) continue;
     if (!opts.yes) {
       const go = await confirm({
@@ -1112,12 +1135,19 @@ async function cleanup(
     );
     return false;
   }
+  const { reconcileBackupsAfterRemoval } = await import("../backups/sources.js");
   if (opts.dryRun) {
     console.log(
       chalk.dim(
         `    would delete ${ledger.source.legacyName} (${ledger.source.uuid}), keeping its volumes.`,
       ),
     );
+    // The legacy app is already stopped, so its sources already read as missing.
+    const backups = await reconcileBackupsAfterRemoval({
+      uuids: [ledger.source.uuid],
+      dryRun: true,
+    });
+    for (const line of backups.lines) console.log(chalk.dim(`    ${line}`));
     return true;
   }
   if (!opts.yes) {
@@ -1131,6 +1161,13 @@ async function cleanup(
   ledger.phase = "cleaned";
   saveLedger(ledger);
   console.log(chalk.green(`  ✓ Deleted ${ledger.source.legacyName}.`));
+  const backups = await reconcileBackupsAfterRemoval({
+    uuids: [ledger.source.uuid],
+    dryRun: false,
+    settleMs: 30_000,
+  });
+  for (const line of backups.lines)
+    console.log(backups.failed ? chalk.yellow(`  ${line}`) : chalk.dim(`  ${line}`));
   return true;
 }
 

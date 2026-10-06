@@ -1,7 +1,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getConfig, getConfigPath } from "../config.js";
-import { backupHostExec, backupProvider } from "./provider.js";
+import { backupProvider } from "./provider.js";
+import { hostRegisterProject } from "./sources.js";
 
 export interface BackupSource {
   name: string;
@@ -73,7 +74,5 @@ export async function registerBackupProject(
       "Project server differs from the configured backup host. Configure that host before registration.",
     );
   if (options.dryRun) return { project, host: provider.host, applied: false };
-  return JSON.parse(
-    await backupHostExec("python3 /opt/hatchkit-backups/register.py", JSON.stringify(project)),
-  ) as { project: string; registered: boolean; existing: boolean };
+  return hostRegisterProject(project);
 }

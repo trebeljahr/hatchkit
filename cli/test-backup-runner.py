@@ -192,6 +192,74 @@ class BackupSafety(unittest.TestCase):
         with self.assertRaises(runner.BackupError):
             runner.validate_project({'name': 'app', 'sources': [{'name': 'data', 'kind': 'files', 'paths': ['/var/..']}]})
 
+    @staticmethod
+    def container(cid, name, image, project=None, service=None, coolify_project=None, resource=None, env=()):
+        labels = {'com.docker.compose.project': project, 'com.docker.compose.service': service,
+                  'coolify.projectName': coolify_project, 'coolify.resourceName': resource}
+        return {'Id': cid, 'Name': '/' + name, 'Config': {'Image': image, 'Env': list(env),
+                'Labels': {k: v for k, v in labels.items() if v}}}
+
+    def test_source_report_names_missing_sources_and_offers_unclaimed_same_engine(self):
+        # mood-magic's compose app-mongo moved to a Coolify-managed mongo.
+        # The image is pinned by ID, so the engine comes from image env names.
+        moved = self.container('m1', 'gbbs', 'dce1a146801e', 'gbbs', 'gbbs', 'mood-magic', 'mood-magic-mongo', ['MONGO_VERSION=7', 'MONGO_INITDB_ROOT_PASSWORD=SECRET'])
+        other = self.container('m2', 'r79p', 'mongo:7', 'r79p', 'r79p', 'broadcastdock', 'broadcastdock-mongo')
+        cache = self.container('r1', 'hz02', 'redis:7.2', 'hz02', 'hz02', 'chess-app', 'chess-redis')
+        projects = [
+            {'name': 'mood-magic', 'sources': [{'name': 'app-mongo', 'kind': 'mongo', 'selector': {'project': 'old-compose', 'service': 'mongo'}}]},
+            {'name': 'broadcastdock', 'sources': [{'name': 'standalone-mongo', 'kind': 'mongo', 'selector': {'project': 'r79p', 'service': 'r79p'}}]},
+            {'name': 'chess-app', 'sources': [{'name': 'app-data', 'kind': 'files', 'paths': ['/srv/chess', '/srv/gone']}]},
+        ]
+        rows = runner.source_report(projects, [moved, other, cache], path_exists=lambda p: p == '/srv/chess')
+        by = {r['project']: r for r in rows}
+        self.assertEqual(by['broadcastdock']['state'], 'ok')
+        self.assertEqual(by['broadcastdock']['container'], 'r79p')
+        self.assertEqual(by['mood-magic']['state'], 'missing')
+        # broadcastdock's mongo is claimed; the redis is the wrong engine.
+        self.assertEqual([c['container'] for c in by['mood-magic']['candidates']], ['gbbs'])
+        self.assertEqual(by['mood-magic']['candidates'][0]['selector'], {'project': 'gbbs', 'service': 'gbbs'})
+        self.assertEqual(by['mood-magic']['candidates'][0]['coolifyProject'], 'mood-magic')
+        self.assertNotIn('SECRET', json.dumps(rows))
+        self.assertEqual(by['chess-app']['state'], 'missing')
+        self.assertEqual(by['chess-app']['missingPaths'], ['/srv/gone'])
+        ambiguous = runner.source_report([{'name': 'x', 'sources': [{'name': 'db', 'kind': 'redis', 'selector': {'project': 'p'}}]}],
+                                         [self.container('a', 'a', 'redis', 'p', 'a'), self.container('b', 'b', 'redis', 'p', 'b')])
+        self.assertEqual((ambiguous[0]['state'], ambiguous[0]['matches']), ('ambiguous', 2))
+
+    def test_missing_source_fails_the_project_by_name_before_any_capture(self):
+        project = {'name': 'chess-app', 'sources': [
+            {'name': 'app-data', 'kind': 'files', 'paths': ['/']},
+            {'name': 'app-redis', 'kind': 'redis', 'selector': {'project': 'gone', 'service': 'redis'}}]}
+        with tempfile.TemporaryDirectory() as temp:
+            project['sources'][0]['paths'] = [temp]
+            with patch.object(runner, 'restic') as restic, patch.object(runner, 'dump_database') as dump:
+                with self.assertRaises(runner.SourceMissing) as caught:
+                    runner.backup_project(project, {'repositoryBase': 's3:https://example.test/b'}, {}, [], Path(temp))
+            restic.assert_not_called()
+            dump.assert_not_called()
+        self.assertEqual(caught.exception.sources, ['app-redis'])
+        self.assertIn('hatchkit backup sources --project chess-app', str(caught.exception))
+
+    def test_policy_replace_and_remove_require_the_policy_that_was_read(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'config.json'
+            keep = {'name': 'keep', 'sources': [{'name': 'data', 'kind': 'files', 'paths': ['/srv/keep']}]}
+            old = {'name': 'app', 'sources': [{'name': 'mongo', 'kind': 'mongo', 'selector': {'project': 'a', 'service': 'a'}},
+                                              {'name': 'redis', 'kind': 'redis', 'selector': {'project': 'b', 'service': 'b'}}]}
+            path.write_text(json.dumps({'projects': [keep, old]}))
+            new = {**old, 'sources': old['sources'][:1]}
+            with self.assertRaisesRegex(runner.BackupError, 'changed since'):
+                register.replace(new, {**old, 'sources': []}, path)
+            self.assertTrue(register.replace(new, old, path)['replaced'])
+            self.assertEqual(json.loads(path.read_text())['projects'], [keep, new])
+            self.assertTrue(register.replace(new, new, path)['unchanged'])
+            with self.assertRaisesRegex(runner.BackupError, 'changed since'):
+                register.remove('app', old, path)
+            self.assertTrue(register.remove('app', new, path)['snapshotsKept'])
+            self.assertEqual(json.loads(path.read_text())['projects'], [keep])
+            with self.assertRaisesRegex(runner.BackupError, 'not registered'):
+                register.remove('app', new, path)
+
 
 if __name__ == '__main__':
     unittest.main()

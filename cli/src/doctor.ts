@@ -1377,6 +1377,58 @@ export async function checkSesBounceFeedback(source?: {
   return out;
 }
 
+/** Every registered backup source must resolve on the backup host, or the
+ *  nightly run fails for that project. Runs only when backups are
+ *  configured; reads the host over Tailscale and changes nothing. */
+async function checkBackupSources(): Promise<CheckResult[]> {
+  const { backupProvider } = await import("./backups/provider.js");
+  try {
+    backupProvider();
+  } catch {
+    return [];
+  }
+  const { fetchSourceReport } = await import("./backups/sources.js");
+  let report: Awaited<ReturnType<typeof fetchSourceReport>>;
+  try {
+    report = await fetchSourceReport();
+  } catch (err) {
+    return [
+      {
+        name: "Backup sources resolve on the host",
+        status: "warn",
+        detail: `couldn't read the backup host: ${(err as Error).message.split("\n")[0]}`,
+        hint: ["Retry: hatchkit backup sources --json"],
+      },
+    ];
+  }
+  if (report.stale.length === 0)
+    return [
+      {
+        name: "Backup sources resolve on the host",
+        status: "ok",
+        detail: `${report.sources.length} source(s) on ${report.host}`,
+      },
+    ];
+  return report.stale.map((row) => ({
+    name: `Backup source ${row.project}/${row.source}`,
+    status: "fail" as const,
+    detail:
+      row.state === "ambiguous"
+        ? `selector matches ${row.matches} running containers`
+        : row.kind === "files"
+          ? `path(s) missing: ${(row.missingPaths ?? []).join(", ")}`
+          : `no running container matches ${JSON.stringify(row.selector)}; tonight's ${row.project} backup will fail`,
+    hint: row.fix
+      ? [
+          row.fix.summary,
+          `Preview: ${row.fix.preview}`,
+          `Apply:   ${row.fix.command}`,
+          ...(row.fix.alternatives ?? []).map((alt) => `Or:      ${alt}`),
+        ]
+      : undefined,
+  }));
+}
+
 export async function collectDoctorResults(): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   results.push(await checkGitHub());
@@ -1394,6 +1446,7 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   results.push(await checkGoogleSearchConsole());
   for (const r of await checkStripe()) results.push(r);
   for (const r of await checkSesBounceFeedback()) results.push(r);
+  for (const r of await checkBackupSources()) results.push(r);
   // Local-dev (Tailscale-served per-project URLs). Returns [] when the
   // user hasn't run `hatchkit dev-setup init`, so doctor stays quiet for
   // anyone not opted in.

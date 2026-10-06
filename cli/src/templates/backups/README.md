@@ -45,8 +45,41 @@ as analytics and mailing lists are backed up under their service project.
 For existing projects, use `hatchkit backup register --config project.json`,
 where the JSON contains `serverUuid` and `project` (one of the project objects
 below). `--dry-run` previews the target and sources. Registration is idempotent
-and refuses to replace a different existing source policy. Policy changes must
-be reviewed and applied to the host config explicitly.
+and refuses to replace a different existing source policy; `--replace` swaps it.
+
+## When a database moves or is removed
+
+Each source names its container by an exact selector. When a database moves
+(a compose `app-mongo` becomes a Coolify-managed database) or is removed (a
+dropped cache, a retired service), the selector matches nothing and that
+project's run fails with `state: "source-missing"` and the source names. The
+alert email names them too. The run keeps failing on purpose: from the host, a
+removed database looks the same as a crashed one, and skipping it would let
+retention prune the last snapshots that contain its data.
+
+```sh
+hatchkit backup sources [--project NAME] --json   # read-only; exit 1 if stale
+```
+
+resolves every source against the running containers and prints the fix for
+each stale one. `backup status` and `hatchkit doctor` run the same check, so a
+stale source shows up before the nightly run. The fixes:
+
+```sh
+# The database moved: point the source at the new container. Only running,
+# same-engine containers that no other source backs up are accepted.
+hatchkit backup update-source --project NAME --source SOURCE --container NEW --dry-run
+# The database was removed on purpose.
+hatchkit backup update-source --project NAME --source SOURCE --remove --dry-run
+# The whole project is gone. Snapshots stay in the bucket.
+hatchkit backup deregister --project NAME --dry-run
+```
+
+Drop `--dry-run` to apply. Each change carries the policy it read and the host
+refuses it if the policy changed in between. `hatchkit destroy` and
+`hatchkit migrate-runtime --cleanup` remove the sources of the Coolify resources
+they delete, once the host confirms the containers are gone.
+`migrate-runtime` refuses an app that a registered source reads.
 
 `hatchkit backup run` starts a full capture. `hatchkit backup status --json`
 reads each project's result, missing or stale captures (36 hours), timer state,
@@ -90,7 +123,8 @@ socket using a single-transaction SQL dump. Pair it with a file source for
 `/app/data`'s host mount and `"exclude": ["mariadb", "run", "error.log"]`.
 The file adapter rejects recognized raw database directories so they cannot
 silently pass as consistent file backups. SQLite is still copied with its
-online backup API. Update source mappings when applications change engines.
+online backup API. Update source mappings when applications change engines
+(see "When a database moves or is removed").
 
 Credentials JSON contains `accessKeyId` and `secretAccessKey`. Both that file and
 the restic password file must have mode 0600. Keep a copy of the password and

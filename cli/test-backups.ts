@@ -13,6 +13,13 @@ import {
   saveBackupRegistration,
   shouldRegisterBackups,
 } from "./src/backups/register.js";
+import {
+  type SourceRow,
+  attachFixes,
+  policyWithout,
+  sourceReferences,
+  updateBackupSource,
+} from "./src/backups/sources.js";
 import { getConfig } from "./src/config.js";
 import { collectStatus } from "./src/status.js";
 import { SECRET_KEYS, getSecret, setSecret } from "./src/utils/secrets.js";
@@ -81,6 +88,112 @@ try {
   await assert.rejects(
     registerBackupProject(project, { serverUuid: "other-host", dryRun: true }),
     /differs/,
+  );
+  // Stale source fixes: the four hand edits from 2026-10-05/06, as data.
+  const rows: SourceRow[] = [
+    {
+      project: "mood-magic",
+      source: "app-mongo",
+      kind: "mongo",
+      state: "missing",
+      selector: { project: "compose-uuid", service: "mongo" },
+      matches: 0,
+      candidates: [
+        {
+          container: "gbbs",
+          selector: { project: "gbbs", service: "gbbs" },
+          coolifyProject: "mood-magic",
+          coolifyResource: "mood-magic-mongo",
+          kinds: ["mongo"],
+        },
+        {
+          container: "t32m",
+          selector: { project: "t32m", service: "t32m" },
+          coolifyProject: "streaks",
+          coolifyResource: "streaks-mongo",
+          kinds: ["mongo"],
+        },
+      ],
+    },
+    {
+      project: "chess-app",
+      source: "app-data",
+      kind: "files",
+      state: "ok",
+      paths: ["/srv/chess"],
+    },
+    {
+      project: "chess-app",
+      source: "app-redis",
+      kind: "redis",
+      state: "missing",
+      selector: { project: "chess-compose", service: "redis" },
+      matches: 0,
+      candidates: [],
+    },
+    {
+      project: "glitchtip",
+      source: "postgres",
+      kind: "postgres",
+      state: "missing",
+      selector: { project: "gt-uuid", service: "postgres" },
+      matches: 0,
+      candidates: [],
+    },
+    {
+      project: "glitchtip",
+      source: "uploads",
+      kind: "files",
+      state: "missing",
+      paths: ["/data/gt-uuid/uploads"],
+      missingPaths: ["/data/gt-uuid/uploads"],
+    },
+  ];
+  const fixed = attachFixes(rows);
+  const fix = (project: string, source: string) =>
+    fixed.find((r) => r.project === project && r.source === source)?.fix;
+  assert.equal(fix("mood-magic", "app-mongo")?.action, "retarget");
+  assert.equal(
+    fix("mood-magic", "app-mongo")?.command,
+    "hatchkit backup update-source --project mood-magic --source app-mongo --container gbbs",
+  );
+  assert.match(fix("mood-magic", "app-mongo")?.preview ?? "", / --dry-run$/);
+  assert.equal(fix("chess-app", "app-redis")?.action, "remove-source");
+  assert.equal(
+    fix("chess-app", "app-redis")?.command,
+    "hatchkit backup update-source --project chess-app --source app-redis --remove",
+  );
+  assert.equal(fix("chess-app", "app-data"), undefined);
+  assert.equal(
+    fix("glitchtip", "postgres")?.command,
+    "hatchkit backup deregister --project glitchtip",
+  );
+  assert.equal(fix("glitchtip", "uploads")?.action, "deregister");
+  assert.ok(sourceReferences(rows[4], ["gt-uuid"]));
+  assert.ok(sourceReferences(rows[0], ["compose-uuid"]));
+  assert.ok(!sourceReferences(rows[1], ["compose-uuid"]));
+  const chessPolicy = {
+    name: "chess-app",
+    keepLast: 3 as const,
+    sources: [
+      { name: "app-data", kind: "files" as const, paths: ["/srv/chess"] },
+      { name: "app-redis", kind: "redis" as const, selector: { project: "c", service: "redis" } },
+    ],
+  };
+  assert.deepEqual(
+    policyWithout(chessPolicy, ["app-redis"]).after?.sources.map((s) => s.name),
+    ["app-data"],
+  );
+  assert.equal(policyWithout(chessPolicy, ["app-redis", "app-data"]).action, "deregister");
+  await assert.rejects(
+    updateBackupSource({
+      project: "chess-app",
+      source: "app-redis",
+      container: "x",
+      remove: true,
+      dryRun: true,
+    }),
+    /exactly one of --container/,
   );
   const registration = saveBackupRegistration(project, "server-uuid");
   assert.deepEqual(JSON.parse(readFileSync(registration, "utf8")).project, project);
