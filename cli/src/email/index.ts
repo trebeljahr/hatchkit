@@ -294,14 +294,20 @@ export async function runEmailForward(rest: string[], cwd: string = process.cwd(
     ? addressArg.slice(0, addressArg.indexOf("@"))
     : addressArg;
   if (!localPart || !/^[a-z0-9][a-z0-9.!#$%&'*+/=?^_`{|}~-]*$/i.test(localPart)) {
-    throw new Error("Give one valid local part or full address: hatchkit email forward support --domain example.com");
+    throw new Error(
+      "Give one valid local part or full address: hatchkit email forward support --domain example.com",
+    );
   }
-  if (addressArg?.includes("@") && addressArg.slice(addressArg.indexOf("@") + 1).toLowerCase() !== domain.toLowerCase()) {
+  if (
+    addressArg?.includes("@") &&
+    addressArg.slice(addressArg.indexOf("@") + 1).toLowerCase() !== domain.toLowerCase()
+  ) {
     throw new Error(`Address must belong to ${domain}.`);
   }
   const address = `${localPart.toLowerCase()}@${domain.toLowerCase()}`;
   const dns = await getDnsConfig();
-  if (!dns?.apiToken) throw new Error("Cloudflare API token not configured. Run `hatchkit config add dns`.");
+  if (!dns?.apiToken)
+    throw new Error("Cloudflare API token not configured. Run `hatchkit config add dns`.");
   const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
   const zone = await cf.resolveZoneForName(domain);
   if (!zone) throw new Error(`No Cloudflare zone for ${domain}.`);
@@ -309,32 +315,57 @@ export async function runEmailForward(rest: string[], cwd: string = process.cwd(
   if (!accountId) throw new Error("Cloudflare account id could not be resolved.");
   await assertForwardingReady(cf, zone.id, domain, accountId);
   const rules = await cf.listEmailRoutingRules(zone.id);
-  const existing = rules.find((r) => r.matchers?.some((m) =>
-    m.field === "to" && m.type === "literal" && m.value?.toLowerCase() === address));
+  const existing = rules.find((r) =>
+    r.matchers?.some(
+      (m) => m.field === "to" && m.type === "literal" && m.value?.toLowerCase() === address,
+    ),
+  );
   const destination = flags.to?.trim() || getDefaultForwardingEmail();
   if (!destination || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(destination)) {
-    throw new Error("Set a forwarding destination with --to <email> or in hatchkit setup defaults.");
+    throw new Error(
+      "Set a forwarding destination with --to <email> or in hatchkit setup defaults.",
+    );
   }
   if (existing) {
-    const targets = existing.actions?.filter((a) => a.type === "forward").flatMap((a) => a.value ?? []) ?? [];
-    if (existing.enabled !== false && targets.length === 1 && targets[0].toLowerCase() === destination.toLowerCase()) {
+    const targets =
+      existing.actions?.filter((a) => a.type === "forward").flatMap((a) => a.value ?? []) ?? [];
+    if (
+      existing.enabled !== false &&
+      targets.length === 1 &&
+      targets[0].toLowerCase() === destination.toLowerCase()
+    ) {
       recordForwarding(cwd, domain, localPart.toLowerCase(), destination);
       console.log(chalk.dim(`  · ${address} already forwards to ${destination}`));
       return;
     }
-    throw new Error(`${address} already has a different routing rule. Inspect it with hatchkit email status --domain ${domain}; no changes made.`);
+    throw new Error(
+      `${address} already has a different routing rule. Inspect it with hatchkit email status --domain ${domain}; no changes made.`,
+    );
   }
   const saved = await cf.addEmailDestination(accountId, destination);
   if (saved.verified !== "active") {
-    console.log(chalk.yellow(`  ${destination} is pending verification. Click the Cloudflare email, then re-run this command. No rule created.`));
+    console.log(
+      chalk.yellow(
+        `  ${destination} is pending verification. Click the Cloudflare email, then re-run this command. No rule created.`,
+      ),
+    );
     return;
   }
-  await cf.upsertEmailRoutingRule(zone.id, { address, forwardTo: [destination], name: `Forward ${address}` });
+  await cf.upsertEmailRoutingRule(zone.id, {
+    address,
+    forwardTo: [destination],
+    name: `Forward ${address}`,
+  });
   recordForwarding(cwd, domain, localPart.toLowerCase(), destination);
   console.log(chalk.green(`  ✓ ${address} → ${destination}`));
 }
 
-export function recordForwarding(cwd: string, domain: string, localPart: string, destination: string): void {
+export function recordForwarding(
+  cwd: string,
+  domain: string,
+  localPart: string,
+  destination: string,
+): void {
   const manifest = readManifest(cwd);
   if (manifest?.domain?.toLowerCase() === domain.toLowerCase()) {
     const old = manifest.integrations?.email;
@@ -362,15 +393,24 @@ export function recordForwarding(cwd: string, domain: string, localPart: string,
   }
 }
 
-async function assertForwardingReady(cf: CloudflareApi, zoneId: string, domain: string, accountId: string): Promise<void> {
+async function assertForwardingReady(
+  cf: CloudflareApi,
+  zoneId: string,
+  domain: string,
+  accountId: string,
+): Promise<void> {
   await assertEmailRoutingAccess(cf, domain, { accountId });
   const routing = await cf.getEmailRouting(zoneId);
   const mx = await cf.findRecordsByName(zoneId, domain, "MX");
   if (!routing?.enabled || !mx.some((r) => /(^|\.)mx\.cloudflare\.net\.?$/i.test(r.content))) {
-    throw new Error(`Email Routing is not receiving for ${domain}. Run hatchkit email setup --domain ${domain} first.`);
+    throw new Error(
+      `Email Routing is not receiving for ${domain}. Run hatchkit email setup --domain ${domain} first.`,
+    );
   }
   if (mx.some((r) => !/(^|\.)mx\.cloudflare\.net\.?$/i.test(r.content))) {
-    throw new Error(`${domain} has non-Cloudflare MX records. Resolve mail delivery before adding a rule.`);
+    throw new Error(
+      `${domain} has non-Cloudflare MX records. Resolve mail delivery before adding a rule.`,
+    );
   }
 }
 
@@ -393,7 +433,8 @@ export function parseEmailFlags(rest: string[]): EmailCommandFlags {
     else if (a.startsWith("--dmarc="))
       flags.dmarcPolicy = a.slice("--dmarc=".length) as EmailCommandFlags["dmarcPolicy"];
     else if (a === "--no-resend-spf") flags.noResendSpf = true;
-    else if (a.startsWith("-")) throw new Error(`Unknown email flag: ${a}. Run hatchkit email --help.`);
+    else if (a.startsWith("-"))
+      throw new Error(`Unknown email flag: ${a}. Run hatchkit email --help.`);
   }
   return flags;
 }

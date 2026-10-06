@@ -132,10 +132,10 @@ const HEALTH_REPLACEMENT = `    // Answers EVERY origin, deliberately. A client 
             }),
       db: isDatabaseReady(),`;
 
-const HEALTH_READY_REPLACEMENT = HEALTH_REPLACEMENT
-  .replace('    res.json({\n      status: "ok",',
-    '    res.status(dbReady && redisReady ? 200 : 503).json({\n      status: dbReady && redisReady ? "ok" : "degraded",')
-  .replace("      db: isDatabaseReady(),", "      db: dbReady,");
+const HEALTH_READY_REPLACEMENT = HEALTH_REPLACEMENT.replace(
+  '    res.json({\n      status: "ok",',
+  '    res.status(dbReady && redisReady ? 200 : 503).json({\n      status: dbReady && redisReady ? "ok" : "degraded",',
+).replace("      db: isDatabaseReady(),", "      db: dbReady,");
 
 export function wireServerApp(content: string): PatchResult {
   let out = content;

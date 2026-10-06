@@ -69,7 +69,11 @@
  */
 
 import chalk from "chalk";
-import { readManifest, readManifestWithMigrationInfo, writeManifest } from "../scaffold/manifest.js";
+import {
+  readManifest,
+  readManifestWithMigrationInfo,
+  writeManifest,
+} from "../scaffold/manifest.js";
 import type { ProvisionService } from "./index.js";
 
 /** Why a step didn't run. All three continue the flow; only the

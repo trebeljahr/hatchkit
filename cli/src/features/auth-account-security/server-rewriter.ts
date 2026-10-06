@@ -168,7 +168,8 @@ async function deliverAuthMail(
 `,
   );
 
-  const verificationPolicy = /requireEmailVerification:\s*([^,\n]+),/.exec(out)?.[1] ?? "isEmailDeliveryConfigured()";
+  const verificationPolicy =
+    /requireEmailVerification:\s*([^,\n]+),/.exec(out)?.[1] ?? "isEmailDeliveryConfigured()";
   const blocks: string[] = [];
 
   if (options.wantsEmailVerification) {

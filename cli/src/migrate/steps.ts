@@ -742,7 +742,9 @@ export const stepEmailRoutingSetup: StepFn = async (ctx) => {
   for (const [, email] of alternateDestinations) {
     const saved = await cf.addEmailDestination(accountId!, email);
     if (saved.verified !== "active") {
-      throw new Error(`Forwarding destination ${email} needs Cloudflare verification before migration can continue.`);
+      throw new Error(
+        `Forwarding destination ${email} needs Cloudflare verification before migration can continue.`,
+      );
     }
   }
 
@@ -753,8 +755,9 @@ export const stepEmailRoutingSetup: StepFn = async (ctx) => {
     accountId: probe.accountId,
     domain: ctx.newDomain,
     destination,
-    addresses: forwarding.addresses.filter((localPart) =>
-      !alternateDestinations.some(([alternate]) => alternate === localPart)),
+    addresses: forwarding.addresses.filter(
+      (localPart) => !alternateDestinations.some(([alternate]) => alternate === localPart),
+    ),
     catchAll: forwarding.catchAll,
     extraSpfIncludes: await detectExtraSpfIncludes(dns.apiToken, probe.zone.id, ctx.newDomain),
     // Additive: a DMARC policy already on the new zone is someone's choice.
