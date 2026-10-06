@@ -66,3 +66,9 @@ secrets/
 *.pem
 *.key
 !**/authorized_keys
+
+# Stray output from sandboxed agent runs: `npm install -g .` with the npm
+# prefix pointed at the repo, and a repo-local pnpm store.
+/bin/
+/lib/
+.pnpm-store/
