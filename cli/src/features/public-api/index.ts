@@ -38,6 +38,7 @@ import {
   patchSourceFile,
   renderFeatureTemplate,
   resolveServerDir,
+  shutdownCloseAnchor,
   writeFeatureFiles,
   writeManaged,
 } from "../server-platform/kit.js";
@@ -709,10 +710,10 @@ function wireSweeper(
         insert: startInsert,
       },
       {
-        // AFTER `server.close()`, not before: stop accepting new work first,
-        // then stop the loop that is still holding outbound requests open.
+        // AFTER the HTTP server closes, not before: stop accepting new work
+        // first, then stop the loop that is still holding outbound requests open.
         guard: "stopWebhookSweeper()",
-        anchor: "server.close();",
+        anchor: shutdownCloseAnchor(source),
         insert:
           "\n\n  // Stop the delivery loop before the database connection goes away,\n" +
           "  // or an in-flight sweep writes its outcome into a closed client.\n" +

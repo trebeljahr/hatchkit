@@ -66,6 +66,7 @@ import { initAuth, disconnectAuth } from "./auth/auth.js";
 import { setupWebSocket } from "./ws/handler.js";
 import { warnStripeStatus } from "./services/stripe.js";
 import { env } from "./config/env.js";
+import { closeHttpServer } from "./shutdown.js";
 
 const app = createApp();
 const server = createServer(app);
@@ -103,8 +104,9 @@ async function shutdown(signal: string): Promise<void> {
     client.close(1001, "Server shutting down");
   }
 
-  // Stop accepting new connections
-  server.close();
+  // Stop accepting new connections and finish accepted requests before their
+  // databases disappear. The overall 8-second deadline above bounds this wait.
+  await closeHttpServer(server);
 
   // Disconnect from databases and auth
   await disconnectAuth();
@@ -215,9 +217,9 @@ try {
   );
   assert(index.includes("await stopScheduler();"), "shutdown() stops the scheduler");
   assert(
-    index.indexOf("server.close();") < index.indexOf("await stopScheduler();") &&
+    index.indexOf("await closeHttpServer(server);") < index.indexOf("await stopScheduler();") &&
       index.indexOf("await stopScheduler();") < index.indexOf("await disconnectFromDB();"),
-    "the loop is stopped after server.close() and before the DB goes away",
+    "the loop is stopped after the HTTP server closes and before the DB goes away",
   );
 
   // ── the switch ───────────────────────────────────────────────────

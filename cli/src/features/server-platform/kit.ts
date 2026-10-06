@@ -268,6 +268,19 @@ export function patchSourceFile(
   return outcome;
 }
 
+/** The line in the starter's `shutdown()` that stops the HTTP server —
+ *  the anchor every feature hangs its own shutdown step after. Newest
+ *  first: the starter awaits `closeHttpServer(server)` (src/shutdown.ts)
+ *  today, and projects scaffolded before that still call `server.close()`.
+ *  Pinned to the real starter by cli/test-public-api.ts. */
+const SHUTDOWN_CLOSE_ANCHORS = ["  await closeHttpServer(server);", "  server.close();"] as const;
+
+/** The shutdown close anchor present in `source`, or the newest one so a
+ *  missing-anchor note names what the starter writes today. */
+export function shutdownCloseAnchor(source: string): string {
+  return SHUTDOWN_CLOSE_ANCHORS.find((a) => source.includes(a)) ?? SHUTDOWN_CLOSE_ANCHORS[0];
+}
+
 // ── package.json ────────────────────────────────────────────────────
 
 function readJson(path: string): Record<string, unknown> | null {

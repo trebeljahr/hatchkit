@@ -28,6 +28,7 @@ import {
   patchEnvConfig,
   patchSourceFile,
   resolveServerDir,
+  shutdownCloseAnchor,
   writeFeatureFiles,
 } from "../server-platform/kit.js";
 
@@ -71,12 +72,12 @@ const ENV_FILE_LINES = [
  *  no feature strip removes — `env` is read by `server.listen` itself. */
 const INDEX_IMPORT_ANCHOR = 'import { env } from "./config/env.js";';
 
-/** `server.listen(...)` and `server.close()` survive every strip
- *  (`stripStripeFromServer`, `stripWebSocketFromServerIndex`) and the
- *  step-comment renumbering, which is why the patches hang off them
- *  rather than off `warnStripeStatus()` or `// 4. Start listening`. */
+/** `server.listen(...)` and the HTTP close in `shutdown()` (see
+ *  `shutdownCloseAnchor`) survive every strip (`stripStripeFromServer`,
+ *  `stripWebSocketFromServerIndex`) and the step-comment renumbering, which
+ *  is why the patches hang off them rather than off `warnStripeStatus()` or
+ *  `// 4. Start listening`. */
 const INDEX_LISTEN_ANCHOR = "    server.listen(env.PORT, () => {";
-const INDEX_CLOSE_ANCHOR = "  server.close();";
 
 const CLAUDE_MD_HEADING = "### Background jobs (scheduler)";
 
@@ -163,6 +164,9 @@ export function applyScheduler(input: ServerFeatureInput): ServerFeatureResult {
 
   // ── boot and shutdown ────────────────────────────────────────────
   const indexPath = join(serverDir, "src", "index.ts");
+  const closeAnchor = shutdownCloseAnchor(
+    existsSync(indexPath) ? readFileSync(indexPath, "utf-8") : "",
+  );
   const index = patchSourceFile(
     indexPath,
     [
@@ -189,7 +193,7 @@ export function applyScheduler(input: ServerFeatureInput): ServerFeatureResult {
       },
       {
         guard: "await stopScheduler()",
-        anchor: INDEX_CLOSE_ANCHOR,
+        anchor: closeAnchor,
         position: "after",
         insert: [
           "",

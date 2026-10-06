@@ -191,6 +191,11 @@ try {
   assert(index.includes("startWebhookSweeper();"), "index.ts starts the sweeper");
   assert(index.includes("stopWebhookSweeper();"), "index.ts stops the sweeper on shutdown");
   assert(
+    index.indexOf("await closeHttpServer(server);") < index.indexOf("stopWebhookSweeper();") &&
+      index.indexOf("stopWebhookSweeper();") < index.indexOf("await disconnectFromDB();"),
+    "the sweeper stops after the HTTP server closes and before the DB goes away",
+  );
+  assert(
     index.indexOf("startWebhookSweeper();") < index.indexOf("server.listen(env.PORT"),
     "the sweeper starts before the server listens",
   );
