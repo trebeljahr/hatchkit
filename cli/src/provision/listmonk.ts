@@ -608,20 +608,44 @@ function planSesSmtp(
   return { kind: "write", smtp };
 }
 
+/** The bare address in a sender value: `Name <a@b>` → `a@b`, lowercased. */
+export function senderAddress(value: string): string {
+  const trimmed = value.trim();
+  const angle = trimmed.match(/<([^>]+)>\s*$/);
+  return (angle ? angle[1] : trimmed).trim().toLowerCase();
+}
+
+/** Whether a sender is a project's own SES sender. `hatchkit add
+ *  listmonk-ses` verifies `mail.<domain>` per project and sends as
+ *  `noreply@mail.<domain>`, so a `mail.` host is some project's brand,
+ *  never a neutral instance default. */
+export function isProjectSender(value: unknown): boolean {
+  if (typeof value !== "string" || !value.trim()) return false;
+  const host = senderAddress(value).split("@")[1] ?? "";
+  return host.startsWith("mail.");
+}
+
 export interface ApplySesSmtpResult {
   /** The SMTP list was written this run. */
   written: boolean;
   /** Why not: "already in place", or what stopped the write. */
   reason?: string;
-  /** Listmonk's instance-wide default sender after this run. */
+  /** Listmonk's instance-wide default sender after this run. `value`
+   *  is "" when Listmonk has none. */
   fromEmail?: { value: string; written: boolean };
+  /** Something about the default sender the operator should fix:
+   *  unset with no neutral sender configured, or a project's sender. */
+  fromEmailWarning?: string;
   /** A campaign was running, so Listmonk saved the write but loads it
    *  only on its next restart. */
   needsRestart?: boolean;
 }
 
-/** Put the SES SMTP relay into Listmonk, and set its default sender
- *  when it has none.
+const SET_NEUTRAL_SENDER =
+  "Set a neutral sender with `hatchkit config add listmonk --default-from \"Newsletter <noreply@your-domain>\"` and re-run, or set Settings → General → Default 'from' email by hand.";
+
+/** Put the SES SMTP relay into Listmonk, and set its default sender to
+ *  the operator's neutral sender when it has none.
  *
  *  The relay is written with the per-key `PUT /api/settings/smtp`, and
  *  only when host, port, username or password differ (first
@@ -629,22 +653,25 @@ export interface ApplySesSmtpResult {
  *  name, UUID and tuning; only the connection fields change.
  *
  *  `app.from_email` is shared by every project on the instance: it sends
- *  Listmonk's own mail (opt-in confirmations, notifications) and any
- *  campaign or tx call that names no sender. Apps from the starter pass
- *  `from_email` (LISTMONK_FROM) on every call, so they never need it.
- *  It is written only when unset (`listmonkFromEmailUnset`), never over
- *  another project's sender.
+ *  Listmonk's own mail (opt-in confirmations from public forms,
+ *  notifications) and any campaign or tx call that names no sender.
+ *  A project's sender there would brand every other project's opt-in
+ *  mail, so this never writes one. It writes `neutralFromEmail` (from
+ *  `hatchkit config add listmonk --default-from`) when the setting is
+ *  unset (`listmonkFromEmailUnset`), and otherwise leaves it alone and
+ *  reports a warning. Apps from the starter pass `from_email`
+ *  (LISTMONK_FROM) on every call, so they never need it.
  *
  *  Throws when the API user lacks `Settings: All` or Listmonk predates
  *  the per-key endpoint; the caller downgrades that to a warning plus
  *  the manual-paste fallback. */
 export async function applySesSmtpToListmonk(
   ses: SesSmtpRelay & {
+    /** This project's sender, only to recognise it in `app.from_email`. */
     fromEmail: string;
-    fromName?: string;
   },
   authOverride?: ListmonkAuth,
-  opts: { reloadDelayMs?: number } = {},
+  opts: { reloadDelayMs?: number; neutralFromEmail?: string } = {},
 ): Promise<ApplySesSmtpResult> {
   const auth = authOverride ?? (await ensureListmonk());
   const settings = await getListmonkSettings(auth);
@@ -672,17 +699,36 @@ export async function applySesSmtpToListmonk(
   }
 
   const currentFrom = settings["app.from_email"];
+  const neutral = opts.neutralFromEmail?.trim();
   let fromEmail: ApplySesSmtpResult["fromEmail"];
+  let fromEmailWarning: string | undefined;
   if (listmonkFromEmailUnset(currentFrom)) {
-    const display = ses.fromName ? `${ses.fromName} <${ses.fromEmail}>` : ses.fromEmail;
-    await write(
-      "app.from_email",
-      display,
-      `Set Settings → General → Default 'from' email to "${display}" by hand.`,
-    );
-    fromEmail = { value: display, written: true };
+    if (neutral) {
+      await write(
+        "app.from_email",
+        neutral,
+        `Set Settings → General → Default 'from' email to "${neutral}" by hand.`,
+      );
+      fromEmail = { value: neutral, written: true };
+    } else {
+      const value = typeof currentFrom === "string" ? currentFrom.trim() : "";
+      fromEmail = { value, written: false };
+      fromEmailWarning =
+        `Listmonk's default sender is ${value ? `still the install default (${value})` : "unset"}. ` +
+        "Its opt-in confirmations from public forms go out under it. " +
+        SET_NEUTRAL_SENDER;
+    }
   } else {
-    fromEmail = { value: String(currentFrom), written: false };
+    const value = String(currentFrom).trim();
+    fromEmail = { value, written: false };
+    if (isProjectSender(value) && (!neutral || senderAddress(value) !== senderAddress(neutral))) {
+      const whose =
+        senderAddress(value) === senderAddress(ses.fromEmail) ? "this project's" : "a project's";
+      fromEmailWarning =
+        `Listmonk's default sender is ${whose} sender (${value}). ` +
+        "Every project's opt-in confirmations and any call without a sender go out under it. " +
+        'Set a neutral sender with `hatchkit config add listmonk --default-from "Newsletter <noreply@your-domain>"`, then run `hatchkit doctor --fix` to put it in place.';
+    }
   }
 
   return {
@@ -690,6 +736,7 @@ export async function applySesSmtpToListmonk(
     ...(plan.kind === "in-place" ? { reason: "already in place" } : {}),
     ...(plan.kind === "blocked" ? { reason: plan.reason } : {}),
     fromEmail,
+    ...(fromEmailWarning ? { fromEmailWarning } : {}),
     ...(needsRestart ? { needsRestart } : {}),
   };
 }

@@ -20,9 +20,10 @@
  *
  *  - `applySesSmtpToListmonk` writes through the per-key
  *    `PUT /api/settings/<key>` only, never sends a masked secret back,
- *    and sets the shared `app.from_email` only when it is unset. One
- *    Listmonk serves every project, so any other sender is another
- *    project's.
+ *    and never writes a project's sender into the shared
+ *    `app.from_email`: only the operator's neutral sender, and only
+ *    when the setting is unset. One Listmonk serves every project, so a
+ *    project's sender there brands every other project's opt-in mail.
  *
  * Run: `pnpm test` (via the script in cli/package.json).
  */
@@ -32,10 +33,12 @@ import {
   applySesSmtpToListmonk,
   createListmonkList,
   findListmonkSubscriberByEmail,
+  isProjectSender,
   listmonkAuthHeader,
   listmonkEmailSearch,
   listmonkFromEmailUnset,
   normalizeListmonkUrl,
+  senderAddress,
 } from "./src/provision/listmonk.js";
 
 const failures: string[] = [];
@@ -200,6 +203,7 @@ const ses = {
   fromName: "tracktime",
 };
 const fast = { reloadDelayMs: 0 };
+const neutral = "Newsletter <noreply@trebeljahr.com>";
 
 function sesEntry(overrides: Partial<ListmonkSmtpEntry> = {}): ListmonkSmtpEntry {
   return {
@@ -304,7 +308,7 @@ await expectAsync("same key but a wrong-length password is rewritten", async () 
 });
 
 await expectAsync(
-  "fresh install: drops the samples and sets the unset default sender",
+  "fresh install: drops the samples and sets the neutral default sender",
   async () => {
     const sample = {
       enabled: true,
@@ -326,7 +330,7 @@ await expectAsync(
       "app.from_email": "listmonk <noreply@listmonk.yoursite.com>",
       smtp: [sample, gmail],
     });
-    const result = await applySesSmtpToListmonk(ses, auth, fast);
+    const result = await applySesSmtpToListmonk(ses, auth, { ...fast, neutralFromEmail: neutral });
     assert.deepEqual(route(calls), [
       "GET /api/settings",
       "PUT /api/settings/smtp",
@@ -340,11 +344,9 @@ await expectAsync(
     assert.ok(smtp[0].uuid, "the per-key PUT assigns no uuid, so hatchkit must");
     assert.equal(smtp[0].host, ses.host);
     assert.equal(smtp[0].password, ses.password);
-    assert.equal(calls[3].body, "tracktime <noreply@mail.tracktime.app>");
-    assert.deepEqual(result.fromEmail, {
-      value: "tracktime <noreply@mail.tracktime.app>",
-      written: true,
-    });
+    assert.equal(calls[3].body, neutral);
+    assert.deepEqual(result.fromEmail, { value: neutral, written: true });
+    assert.equal(result.fromEmailWarning, undefined);
   },
 );
 
@@ -354,7 +356,7 @@ await expectAsync("a blank default sender is set even when SMTP is already in pl
   ]);
   settings["app.from_email"] = "  ";
   const calls = stubSettingsFetch(settings);
-  const result = await applySesSmtpToListmonk(ses, auth, fast);
+  const result = await applySesSmtpToListmonk(ses, auth, { ...fast, neutralFromEmail: neutral });
   assert.deepEqual(route(calls), [
     "GET /api/settings",
     "PUT /api/settings/app.from_email",
@@ -417,6 +419,68 @@ await expectAsync("a Listmonk without the per-key endpoint gets the manual fallb
     applySesSmtpToListmonk(ses, auth, fast),
     /needs v6\+\)\. Paste the SES SMTP credentials into Settings → SMTP by hand/,
   );
+});
+
+await expectAsync(
+  "unset sender without a neutral one: leaves it alone, never writes the project's",
+  async () => {
+    const settings = sharedSettings([
+      sesEntry({ username: ses.username, password: mask(ses.password) }),
+    ]);
+    settings["app.from_email"] = "listmonk <noreply@listmonk.yoursite.com>";
+    const calls = stubSettingsFetch(settings);
+    const result = await applySesSmtpToListmonk(ses, auth, fast);
+    assert.deepEqual(route(calls), ["GET /api/settings"]);
+    assert.equal(result.fromEmail?.written, false);
+    assert.match(result.fromEmailWarning ?? "", /install default/);
+    assert.match(result.fromEmailWarning ?? "", /--default-from/);
+  },
+);
+
+await expectAsync("this project's sender as the default: warns and leaves it", async () => {
+  const settings = sharedSettings([
+    sesEntry({ username: ses.username, password: mask(ses.password) }),
+  ]);
+  settings["app.from_email"] = "tracktime <noreply@mail.tracktime.app>";
+  const calls = stubSettingsFetch(settings);
+  const result = await applySesSmtpToListmonk(ses, auth, { ...fast, neutralFromEmail: neutral });
+  assert.deepEqual(route(calls), ["GET /api/settings"]);
+  assert.deepEqual(result.fromEmail, {
+    value: "tracktime <noreply@mail.tracktime.app>",
+    written: false,
+  });
+  assert.match(result.fromEmailWarning ?? "", /this project's sender/);
+  assert.match(result.fromEmailWarning ?? "", /doctor --fix/);
+});
+
+await expectAsync("another project's sender as the default: warns", async () => {
+  const calls = stubSettingsFetch(
+    sharedSettings([sesEntry({ username: ses.username, password: mask(ses.password) })]),
+  );
+  const result = await applySesSmtpToListmonk(ses, auth, fast);
+  assert.deepEqual(route(calls), ["GET /api/settings"]);
+  assert.match(result.fromEmailWarning ?? "", /a project's sender \(Collection of Beauty/);
+});
+
+await expectAsync("a neutral default sender: no write, no warning", async () => {
+  const settings = sharedSettings([
+    sesEntry({ username: ses.username, password: mask(ses.password) }),
+  ]);
+  settings["app.from_email"] = neutral;
+  stubSettingsFetch(settings);
+  const result = await applySesSmtpToListmonk(ses, auth, { ...fast, neutralFromEmail: neutral });
+  assert.deepEqual(result.fromEmail, { value: neutral, written: false });
+  assert.equal(result.fromEmailWarning, undefined);
+});
+
+expect("isProjectSender: a mail.<domain> host, with or without a display name", () => {
+  assert.ok(isProjectSender("chemistry-sketcher <noreply@mail.chemistry.trebeljahr.com>"));
+  assert.ok(isProjectSender("noreply@MAIL.tracktime.app"));
+  assert.ok(!isProjectSender("Newsletter <noreply@trebeljahr.com>"));
+  assert.ok(!isProjectSender("noreply@mailer.example.com"));
+  assert.ok(!isProjectSender(""));
+  assert.ok(!isProjectSender(undefined));
+  assert.equal(senderAddress("A <X@Mail.Example.com> "), "x@mail.example.com");
 });
 
 expect("listmonkFromEmailUnset: blank or the install default, nothing else", () => {

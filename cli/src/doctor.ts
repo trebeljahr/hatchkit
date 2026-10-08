@@ -17,6 +17,7 @@ import {
   getGoogleSearchConsoleConfig,
   getHetznerConfig,
   getListmonkConfig,
+  getListmonkDefaultFromEmail,
   getPlausibleConfig,
   getS3Config,
   getSesConfig,
@@ -615,6 +616,143 @@ async function checkPlausible(): Promise<CheckResult> {
       return undefined;
     },
   );
+}
+
+/**
+ * The global Listmonk credential and the instance's default sender.
+ *
+ *   · API user — `GET /api/profile`, which any user may read about
+ *     itself. A deleted API user or a rotated token answers 401/403
+ *     here; the stored config alone still says "configured".
+ *   · Default sender — `app.from_email` sends Listmonk's own mail
+ *     (opt-in confirmations from public forms) and any call without a
+ *     sender, for every project on the instance. A project's
+ *     `mail.<domain>` sender there brands every other project's mail.
+ *     `--fix` writes the neutral sender from `hatchkit config add
+ *     listmonk --default-from` when one is set.
+ */
+export async function checkListmonk(source?: {
+  auth: { url: string; apiUser: string; apiToken: string };
+  neutralFromEmail?: string;
+}): Promise<CheckResult[]> {
+  let src = source;
+  if (!src) {
+    const cfg = await getListmonkConfig();
+    if (!cfg) return [{ name: "Listmonk", status: "skip" }];
+    src = { auth: cfg, neutralFromEmail: getListmonkDefaultFromEmail() };
+  }
+  const { auth } = src;
+  const base = auth.url.replace(/\/+$/, "");
+  const { listmonkAuthHeader, isProjectSender, listmonkFromEmailUnset, senderAddress } =
+    await import("./provision/listmonk.js");
+  const headers = { Authorization: listmonkAuthHeader(auth) };
+
+  const profile = await check(
+    "Listmonk",
+    async () => {
+      const res = await fetch(`${base}/api/profile`, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status} from ${base}/api/profile`);
+      const body = (await res.json()) as {
+        data?: { username?: string; type?: string; user_role?: { name?: string } };
+      };
+      const d = body.data ?? {};
+      const role = d.user_role?.name ? `, role ${d.user_role.name}` : "";
+      return `authenticated as ${d.username ?? auth.apiUser} (${d.type ?? "user"}${role})`;
+    },
+    (detail) => {
+      const code = httpCode(detail);
+      if (code === 401 || code === 403) {
+        return [
+          `Listmonk rejected API user "${auth.apiUser}": it was deleted, disabled, or its token changed.`,
+          `Create an API user in ${base}/admin/users (Lists, Subscribers, Campaigns and Settings: All).`,
+          "Then re-run: `hatchkit config add listmonk`",
+          "Projects that use this credential (LISTMONK_API_USER in their env) need `hatchkit secrets rotate --global listmonk` afterwards.",
+        ];
+      }
+      return undefined;
+    },
+  );
+  if (profile.status !== "ok") return [profile];
+
+  const name = "Listmonk default sender";
+  const neutral = src.neutralFromEmail?.trim();
+  let current: unknown;
+  try {
+    const res = await fetch(`${base}/api/settings`, { headers });
+    if (res.status === 403) {
+      return [
+        profile,
+        {
+          name,
+          status: "skip",
+          detail: `API user "${auth.apiUser}" cannot read settings (needs Settings: All)`,
+        },
+      ];
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status} from ${base}/api/settings`);
+    current = ((await res.json()) as { data?: Record<string, unknown> }).data?.["app.from_email"];
+  } catch (err) {
+    return [
+      profile,
+      { name, status: "fail", detail: err instanceof Error ? err.message : String(err) },
+    ];
+  }
+
+  const repair = neutral
+    ? {
+        prompt: `Set Listmonk's default sender to "${neutral}"?`,
+        run: async () => {
+          const { putListmonkSetting, waitForListmonk } = await import("./provision/listmonk.js");
+          const res = await putListmonkSetting("app.from_email", neutral, auth);
+          if (res.needsRestart) {
+            return `Listmonk saved the default sender "${neutral}"; a campaign is running, so restart Listmonk after it to load it`;
+          }
+          await waitForListmonk(auth, { initialDelayMs: 1_500 });
+          return `Listmonk default sender is now "${neutral}"`;
+        },
+      }
+    : undefined;
+  const setNeutral = neutral
+    ? `Run \`hatchkit doctor --fix\` to set it to the configured neutral sender "${neutral}".`
+    : 'Set a neutral sender with `hatchkit config add listmonk --default-from "Newsletter <noreply@your-domain>"`, then run `hatchkit doctor --fix`.';
+  const optinNote =
+    "Listmonk sends opt-in confirmations from public subscription forms, and any call without a sender, under this one address for every project.";
+
+  if (listmonkFromEmailUnset(current)) {
+    const value = typeof current === "string" ? current.trim() : "";
+    return [
+      profile,
+      {
+        name,
+        status: "warn",
+        detail: value ? `still the install default: ${value}` : "unset",
+        hint: [optinNote, setNeutral],
+        ...(repair ? { repair } : {}),
+      },
+    ];
+  }
+  const value = String(current).trim();
+  if (isProjectSender(value) && (!neutral || senderAddress(value) !== senderAddress(neutral))) {
+    const domain =
+      senderAddress(value)
+        .split("@")[1]
+        ?.replace(/^mail\./, "") ?? "";
+    return [
+      profile,
+      {
+        name,
+        status: "warn",
+        detail: `${value} is the sender of the project on ${domain}`,
+        hint: [
+          optinNote,
+          `Every other project's opt-in mail goes out branded as ${domain}.`,
+          setNeutral,
+        ],
+        ...(repair ? { repair } : {}),
+      },
+    ];
+  }
+  return [profile, { name, status: "ok", detail: value }];
 }
 
 async function checkGoogleSearchConsole(): Promise<CheckResult> {
@@ -1443,6 +1581,7 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const p of ["modal", "runpod", "hf", "replicate"]) results.push(await checkGpu(p));
   results.push(await checkGlitchtip());
   results.push(await checkPlausible());
+  for (const r of await checkListmonk()) results.push(r);
   results.push(await checkGoogleSearchConsole());
   for (const r of await checkStripe()) results.push(r);
   for (const r of await checkSesBounceFeedback()) results.push(r);

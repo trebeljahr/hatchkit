@@ -133,6 +133,10 @@ export interface ListmonkSesProvisionOptions {
    *  ensureListmonk). Tests pass overrides to avoid keychain. */
   sesAuth?: SesAuth;
   listmonkAuth?: ListmonkAuth;
+  /** Neutral instance-wide default sender to write into an unset
+   *  `app.from_email`. Defaults to `hatchkit config add listmonk
+   *  --default-from`. Never this project's sender. */
+  listmonkDefaultFrom?: string;
   /** Subdomain label prepended to the sending domain to form the
    *  custom MAIL FROM domain (default `"bounce"` →
    *  `bounce.mail.<projectDomain>`). Recorded into the manifest so a
@@ -548,7 +552,8 @@ export async function provisionListmonkSesForProject(
   // 6. Push the SES SMTP relay into Listmonk's runtime settings so the
   //    user doesn't have to paste it into Settings → SMTP by hand. The
   //    default sender (`app.from_email`) is shared by every project on
-  //    the instance, so it is set only when Listmonk has none.
+  //    the instance, so it never gets this project's sender: only the
+  //    operator's neutral sender, and only when Listmonk has none.
   //    Best-effort: when the API user's role doesn't cover `Settings:
   //    All` the helper throws — downgrade to a warning and let the
   //    caller print the manual-paste fallback.
@@ -561,9 +566,12 @@ export async function provisionListmonkSesForProject(
         username: smtp.username,
         password: smtp.password,
         fromEmail,
-        fromName: opts.projectName,
       },
       opts.listmonkAuth,
+      {
+        neutralFromEmail:
+          opts.listmonkDefaultFrom ?? (await import("../config.js")).getListmonkDefaultFromEmail(),
+      },
     );
   } catch (err) {
     const msg = (err as Error).message;

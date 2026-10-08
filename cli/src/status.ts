@@ -21,6 +21,12 @@ export interface ProviderSnapshot {
   detail?: string;
   /** If not configured, how to configure it. */
   configureCommand?: string;
+  /** Live credential check from `verifyProviderCredentials`: false when
+   *  the stored credential is configured but the provider rejects it.
+   *  Absent when no live check ran. */
+  verified?: boolean;
+  /** Why `verified` is false. */
+  problem?: string;
 }
 
 export interface StatusSnapshot {
@@ -148,6 +154,13 @@ export function collectStatus(projectDir: string = process.cwd()): StatusSnapsho
     configureCommand: "hatchkit config add plausible",
   });
   providers.push({
+    key: "listmonk",
+    label: "Listmonk (newsletter)",
+    configured: config.providers.listmonk?.status === "configured",
+    detail: config.providers.listmonk?.url,
+    configureCommand: "hatchkit config add listmonk",
+  });
+  providers.push({
     key: "search-console",
     label: "Google Search Console",
     configured: googleSearchConsoleConfigured,
@@ -220,6 +233,59 @@ export function collectStatus(projectDir: string = process.cwd()): StatusSnapsho
     project,
     deferredSteps,
   };
+}
+
+export interface CredentialProbes {
+  /** The stored Listmonk credential, or null when its token is missing. */
+  listmonk?: () => Promise<{ url: string; apiUser: string; apiToken: string } | null>;
+}
+
+/**
+ * Authenticate the stored credentials that `collectStatus` only reads
+ * from config. A provider whose API user was deleted still reads as
+ * "configured" there; this marks it `verified: false` and puts the fix
+ * first in `suggestions`.
+ *
+ * Covers Listmonk (`GET /api/profile`, which any API user may read about
+ * itself). `hatchkit doctor` checks every provider; this is the cheap
+ * subset `hatchkit status` runs.
+ */
+export async function verifyProviderCredentials(
+  s: StatusSnapshot,
+  probes: CredentialProbes = {},
+): Promise<StatusSnapshot> {
+  const row = s.providers.find((p) => p.key === "listmonk");
+  if (!row?.configured) return s;
+  const load = probes.listmonk ?? (async () => (await import("./config.js")).getListmonkConfig());
+  let problem: string | undefined;
+  try {
+    const auth = await load();
+    if (!auth) {
+      problem = "API token missing from the keychain";
+    } else {
+      const { listmonkAuthHeader, normalizeListmonkUrl } = await import("./provision/listmonk.js");
+      const res = await fetch(`${normalizeListmonkUrl(auth.url)}/api/profile`, {
+        headers: { Authorization: listmonkAuthHeader(auth) },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (res.status === 401 || res.status === 403) {
+        problem = `API user "${auth.apiUser}" rejected (HTTP ${res.status}): deleted, disabled, or token changed`;
+      } else if (!res.ok) {
+        problem = `GET /api/profile answered HTTP ${res.status}`;
+      }
+    }
+  } catch (err) {
+    problem = `unreachable: ${(err instanceof Error ? err.message : String(err)).split("\n")[0]}`;
+  }
+  row.verified = !problem;
+  if (problem) {
+    row.problem = problem;
+    s.suggestions.unshift({
+      command: "hatchkit config add listmonk",
+      why: `Listmonk credential is broken (${problem}); \`hatchkit doctor\` has the fix steps`,
+    });
+  }
+  return s;
 }
 
 function stripeDetail(
@@ -310,9 +376,14 @@ export function renderStatusHuman(s: StatusSnapshot): string {
   lines.push(chalk.bold("  Provider Status:"));
   lines.push("");
   for (const p of s.providers) {
-    const icon = p.configured ? chalk.green("✓") : chalk.dim("·");
+    const broken = p.configured && p.verified === false;
+    const icon = broken ? chalk.red("✗") : p.configured ? chalk.green("✓") : chalk.dim("·");
     const detail = p.detail ? chalk.dim(` (${p.detail})`) : "";
-    const hint = p.configured ? "" : chalk.dim(`  — ${p.configureCommand ?? "not configured"}`);
+    const hint = broken
+      ? chalk.red(`  — ${p.problem}; run hatchkit doctor`)
+      : p.configured
+        ? ""
+        : chalk.dim(`  — ${p.configureCommand ?? "not configured"}`);
     lines.push(`  ${icon} ${p.label.padEnd(24)}${detail}${hint}`);
   }
   lines.push("");

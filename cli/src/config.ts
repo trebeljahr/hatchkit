@@ -293,6 +293,13 @@ export interface ListmonkMeta extends ProviderStatus {
    *  Not a secret on its own; the matching token is what goes in the
    *  keychain (`listmonk:api-token`). */
   apiUser: string;
+  /** Neutral instance-wide default sender (`app.from_email`), e.g.
+   *  `Newsletter <noreply@mail.example.com>`. Listmonk sends its own
+   *  opt-in confirmations under it for every project, so it must not be
+   *  any one project's sender. Set with `hatchkit config add listmonk
+   *  --default-from`; `hatchkit add <project> listmonk-ses` writes it
+   *  only into an unset setting. */
+  defaultFromEmail?: string;
 }
 
 export interface SesMeta extends ProviderStatus {
@@ -2063,11 +2070,21 @@ export async function ensureListmonk(opts: { deploy?: boolean } = {}): Promise<L
     }
   }
 
+  const defaultFromEmail = (
+    await input({
+      message:
+        "Neutral default sender for Listmonk's own mail, shared by every project (blank to skip):",
+      default: existing?.defaultFromEmail ?? "",
+      validate: (v) => validateListmonkDefaultFrom(v.trim()),
+    })
+  ).trim();
+
   const meta: ListmonkMeta = {
     status: "configured",
     url,
     apiUser,
     lastVerified: new Date().toISOString(),
+    ...(defaultFromEmail ? { defaultFromEmail } : {}),
   };
   store.set("providers.listmonk", meta);
   await setSecret(SECRET_KEYS.listmonkApiToken, apiToken);
@@ -2081,6 +2098,45 @@ export async function getListmonkConfig(): Promise<ListmonkConfig | null> {
   const apiToken = await getSecret(SECRET_KEYS.listmonkApiToken);
   if (!apiToken) return null;
   return { ...meta, apiToken };
+}
+
+/** The operator's neutral Listmonk default sender, or undefined. Reads
+ *  the config store only (no keychain), so provisioning can call it
+ *  with an auth override. */
+export function getListmonkDefaultFromEmail(): string | undefined {
+  const meta = store.get("providers.listmonk") as ListmonkMeta | undefined;
+  return meta?.defaultFromEmail?.trim() || undefined;
+}
+
+/** `true`, or why `value` cannot be the shared default sender. Blank is
+ *  allowed (no neutral sender). A `mail.<domain>` host is a project's
+ *  SES sender, which would brand every other project's opt-in mail. */
+export function validateListmonkDefaultFrom(value: string): true | string {
+  if (!value) return true;
+  const address = (value.match(/<([^>]+)>\s*$/)?.[1] ?? value).trim();
+  if (!/^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$/.test(address)) {
+    return 'Expected an address, optionally with a name: "Newsletter <noreply@example.com>".';
+  }
+  if (/@mail\./i.test(address)) {
+    return "That is a project's SES sender (mail.<domain>). Use an address no single project owns.";
+  }
+  return true;
+}
+
+/** Store the neutral default sender without re-prompting the rest of
+ *  the Listmonk config. Empty clears it. Does not touch Listmonk. */
+export function setListmonkDefaultFromEmail(value: string): void {
+  const meta = store.get("providers.listmonk") as ListmonkMeta | undefined;
+  if (!meta) {
+    throw new Error("Listmonk is not configured. Run `hatchkit config add listmonk` first.");
+  }
+  const check = validateListmonkDefaultFrom(value.trim());
+  if (check !== true) throw new Error(check);
+  const { defaultFromEmail: _old, ...rest } = meta;
+  store.set(
+    "providers.listmonk",
+    value.trim() ? { ...rest, defaultFromEmail: value.trim() } : rest,
+  );
 }
 
 /** Listmonk username of the admin credential. The operator creates this

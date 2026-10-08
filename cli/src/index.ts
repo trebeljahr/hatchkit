@@ -163,8 +163,10 @@ async function main(): Promise<void> {
       await handleConfig();
       break;
     case "status": {
-      const { collectStatus, renderStatusHuman } = await import("./status.js");
-      const s = collectStatus();
+      const { collectStatus, renderStatusHuman, verifyProviderCredentials } = await import(
+        "./status.js"
+      );
+      const s = await verifyProviderCredentials(collectStatus());
       if (isJson) {
         console.log(JSON.stringify(s, null, 2));
       } else {
@@ -3617,6 +3619,25 @@ async function handleConfig(): Promise<void> {
           // URL/api-user/token prompts. Plumbed via the opts arg on
           // reconfigureProvider rather than a parallel path so the
           // wipe-then-ensure invariant stays in one place.
+          //
+          // `--default-from <sender>` only stores the neutral instance
+          // default sender; it leaves the credential alone.
+          const defaultFrom = flagValue("--default-from");
+          if (defaultFrom !== undefined) {
+            const { setListmonkDefaultFromEmail } = await import("./config.js");
+            setListmonkDefaultFromEmail(defaultFrom);
+            console.log(
+              defaultFrom.trim()
+                ? chalk.green(`  ✓ Listmonk neutral default sender: ${defaultFrom.trim()}`)
+                : chalk.green("  ✓ Listmonk neutral default sender cleared"),
+            );
+            console.log(
+              chalk.dim(
+                "  Listmonk itself is unchanged. `hatchkit doctor --fix` puts it into Settings → General when the current default is unset or a project's sender.",
+              ),
+            );
+            break;
+          }
           const deploy = args.includes("--deploy");
           await reconfigureProvider("listmonk", { deploy });
           break;

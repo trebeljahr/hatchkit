@@ -1037,9 +1037,11 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
         if (smtpApplied.fromEmail?.written) {
           console.log(
             chalk.green(
-              `  ✓ Listmonk default sender was unset; set to ${smtpApplied.fromEmail.value}.`,
+              `  ✓ Listmonk default sender was unset; set to the neutral ${smtpApplied.fromEmail.value}.`,
             ),
           );
+        } else if (smtpApplied.fromEmailWarning) {
+          console.log(chalk.yellow(`  ! ${smtpApplied.fromEmailWarning}`));
         } else if (smtpApplied.fromEmail) {
           console.log(
             chalk.dim(
