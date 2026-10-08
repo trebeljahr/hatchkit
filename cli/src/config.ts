@@ -2108,22 +2108,20 @@ export function getListmonkDefaultFromEmail(): string | undefined {
   return meta?.defaultFromEmail?.trim() || undefined;
 }
 
-/** `true`, or why `value` cannot be the shared default sender. Blank is
- *  allowed (no neutral sender). A `mail.<domain>` host is a project's
- *  SES sender, which would brand every other project's opt-in mail. */
+/** `true`, or why `value` is not a sender address. Blank is allowed (no
+ *  default sender). Any SES-verified address works, a project's own
+ *  `mail.<domain>` included: it is the operator's explicit choice, and
+ *  doctor stops flagging the configured value. */
 export function validateListmonkDefaultFrom(value: string): true | string {
   if (!value) return true;
   const address = (value.match(/<([^>]+)>\s*$/)?.[1] ?? value).trim();
   if (!/^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$/.test(address)) {
     return 'Expected an address, optionally with a name: "Newsletter <noreply@example.com>".';
   }
-  if (/@mail\./i.test(address)) {
-    return "That is a project's SES sender (mail.<domain>). Use an address no single project owns.";
-  }
   return true;
 }
 
-/** Store the neutral default sender without re-prompting the rest of
+/** Store the default sender without re-prompting the rest of
  *  the Listmonk config. Empty clears it. Does not touch Listmonk. */
 export function setListmonkDefaultFromEmail(value: string): void {
   const meta = store.get("providers.listmonk") as ListmonkMeta | undefined;

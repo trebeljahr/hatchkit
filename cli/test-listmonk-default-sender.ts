@@ -10,8 +10,9 @@
  *    its own opt-in mail goes out under that one address.
  *  - `verifyProviderCredentials` (status) marks a rejected credential
  *    `verified: false` and puts the fix first in the suggestions.
- *  - `validateListmonkDefaultFrom` refuses a project's sender as the
- *    neutral default; `setListmonkDefaultFromEmail` stores it without
+ *  - It warns about `public` lists: their signups skip the app, so
+ *    Listmonk's own opt-in mail goes out under the instance sender.
+ *  - `validateListmonkDefaultFrom` checks the address format only; `setListmonkDefaultFromEmail` stores it without
  *    touching the credential.
  *
  * Run: `pnpm test` (via the script in cli/package.json).
@@ -48,6 +49,7 @@ function stubListmonk(opts: {
   profileStatus?: number;
   settingsStatus?: number;
   fromEmail?: string;
+  lists?: Array<{ id: number; name: string; type: string }>;
 }) {
   const calls: Array<{ method: string; path: string; auth?: string; body?: unknown }> = [];
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -69,6 +71,7 @@ function stubListmonk(opts: {
       if (opts.settingsStatus) return new Response("denied", { status: opts.settingsStatus });
       return ok({ "app.from_email": opts.fromEmail ?? "" });
     }
+    if (path === "/api/lists") return ok({ results: opts.lists ?? [], total: 0 });
     if (method === "PUT" && path === "/api/settings/app.from_email") return ok(true);
     if (path === "/api/health") return ok(true);
     return new Response("unexpected", { status: 500 });
@@ -138,6 +141,24 @@ await expectAsync("an API user without Settings: All skips the sender check", as
   assert.equal(sender.status, "skip");
 });
 
+await expectAsync("a public list warns with its id and name; private lists are ok", async () => {
+  stubListmonk({
+    fromEmail: neutral,
+    lists: [
+      { id: 15, name: "Live and Learn", type: "public" },
+      { id: 21, name: "mesozoic-protocol", type: "private" },
+    ],
+  });
+  const results = await checkListmonk({ auth, neutralFromEmail: neutral });
+  const lists = results.find((r) => r.name === "Listmonk public lists");
+  assert.equal(lists?.status, "warn");
+  assert.equal(lists?.detail, '15 "Live and Learn"');
+  assert.match((lists?.hint ?? []).join("\n"), /Private/);
+  stubListmonk({ fromEmail: neutral, lists: [{ id: 21, name: "x", type: "private" }] });
+  const ok = (await checkListmonk({ auth })).find((r) => r.name === "Listmonk public lists");
+  assert.equal(ok?.status, "ok");
+});
+
 console.log("\nstatus verifyProviderCredentials:");
 
 getStore().set("providers.listmonk", {
@@ -177,11 +198,11 @@ await expectAsync("a working credential is verified", async () => {
 
 console.log("\nconfig neutral default sender:");
 
-await expectAsync("refuses a project's mail.<domain> sender and malformed input", () => {
+await expectAsync("accepts any address, a chosen project sender included; refuses junk", () => {
   assert.equal(validateListmonkDefaultFrom(""), true);
   assert.equal(validateListmonkDefaultFrom(neutral), true);
   assert.equal(validateListmonkDefaultFrom("noreply@trebeljahr.com"), true);
-  assert.match(String(validateListmonkDefaultFrom(chemistry)), /project's SES sender/);
+  assert.equal(validateListmonkDefaultFrom(chemistry), true);
   assert.match(String(validateListmonkDefaultFrom("not an address")), /Expected an address/);
 });
 
@@ -189,7 +210,7 @@ await expectAsync("stores and clears the sender, keeping the credential", () => 
   setListmonkDefaultFromEmail(` ${neutral} `);
   assert.equal(getListmonkDefaultFromEmail(), neutral);
   assert.equal((getStore().get("providers.listmonk") as { apiUser: string }).apiUser, "hatchkit");
-  assert.throws(() => setListmonkDefaultFromEmail(chemistry), /project's SES sender/);
+  assert.throws(() => setListmonkDefaultFromEmail("nope"), /Expected an address/);
   assert.equal(getListmonkDefaultFromEmail(), neutral);
   setListmonkDefaultFromEmail("");
   assert.equal(getListmonkDefaultFromEmail(), undefined);

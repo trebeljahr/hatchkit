@@ -631,16 +631,63 @@ async function checkPlausible(): Promise<CheckResult> {
  *     `--fix` writes the neutral sender from `hatchkit config add
  *     listmonk --default-from` when one is set.
  */
-export async function checkListmonk(source?: {
-  auth: { url: string; apiUser: string; apiToken: string };
-  neutralFromEmail?: string;
-}): Promise<CheckResult[]> {
+export async function checkListmonk(source?: ListmonkCheckSource): Promise<CheckResult[]> {
   let src = source;
   if (!src) {
     const cfg = await getListmonkConfig();
     if (!cfg) return [{ name: "Listmonk", status: "skip" }];
     src = { auth: cfg, neutralFromEmail: getListmonkDefaultFromEmail() };
   }
+  const results = await checkListmonkCredentialAndSender(src);
+  if (results[0]?.status === "ok") results.push(await checkListmonkPublicLists(src.auth));
+  return results;
+}
+
+interface ListmonkCheckSource {
+  auth: { url: string; apiUser: string; apiToken: string };
+  neutralFromEmail?: string;
+}
+
+/**
+ * A `public` list accepts signups through Listmonk's own subscription
+ * form, which skips the app. Listmonk then sends its own opt-in email
+ * from the instance default sender, not the project's. Lists that
+ * hatchkit creates are private; the app-side double opt-in is the only
+ * signup path that carries a project's sender.
+ */
+async function checkListmonkPublicLists(auth: ListmonkCheckSource["auth"]): Promise<CheckResult> {
+  const name = "Listmonk public lists";
+  const base = auth.url.replace(/\/+$/, "");
+  const { listmonkAuthHeader } = await import("./provision/listmonk.js");
+  try {
+    const res = await fetch(`${base}/api/lists?per_page=all`, {
+      headers: { Authorization: listmonkAuthHeader(auth) },
+    });
+    if (res.status === 403) {
+      return { name, status: "skip", detail: `API user "${auth.apiUser}" cannot read lists` };
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status} from ${base}/api/lists`);
+    const body = (await res.json()) as {
+      data?: { results?: Array<{ id: number; name: string; type: string }> };
+    };
+    const open = (body.data?.results ?? []).filter((l) => l.type === "public");
+    if (open.length === 0) return { name, status: "ok", detail: "every list is private" };
+    return {
+      name,
+      status: "warn",
+      detail: open.map((l) => `${l.id} "${l.name}"`).join(", "),
+      hint: [
+        "Anyone can subscribe to a public list through Listmonk's /subscription/form, which skips the app.",
+        "Listmonk then sends its own opt-in email from the instance default sender, not the project's.",
+        "Keep signups on the app-side double opt-in: set each list to Private in Listmonk → Lists → edit.",
+      ],
+    };
+  } catch (err) {
+    return { name, status: "fail", detail: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function checkListmonkCredentialAndSender(src: ListmonkCheckSource): Promise<CheckResult[]> {
   const { auth } = src;
   const base = auth.url.replace(/\/+$/, "");
   const { listmonkAuthHeader, isProjectSender, listmonkFromEmailUnset, senderAddress } =

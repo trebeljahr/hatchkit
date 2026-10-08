@@ -166,7 +166,11 @@ async function main(): Promise<void> {
       const { collectStatus, renderStatusHuman, verifyProviderCredentials } = await import(
         "./status.js"
       );
-      const s = await verifyProviderCredentials(collectStatus());
+      // `--offline` skips the live credential check (one request with a
+      // 10 s timeout) and reports stored config only.
+      const s = args.includes("--offline")
+        ? collectStatus()
+        : await verifyProviderCredentials(collectStatus());
       if (isJson) {
         console.log(JSON.stringify(s, null, 2));
       } else {
@@ -3628,8 +3632,8 @@ async function handleConfig(): Promise<void> {
             setListmonkDefaultFromEmail(defaultFrom);
             console.log(
               defaultFrom.trim()
-                ? chalk.green(`  ✓ Listmonk neutral default sender: ${defaultFrom.trim()}`)
-                : chalk.green("  ✓ Listmonk neutral default sender cleared"),
+                ? chalk.green(`  ✓ Listmonk default sender: ${defaultFrom.trim()}`)
+                : chalk.green("  ✓ Listmonk default sender cleared"),
             );
             console.log(
               chalk.dim(
@@ -5554,10 +5558,13 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("hatchkit status")} — show provider status + next-step hint
 
   ${chalk.bold("Usage:")}
-    hatchkit status [--json]
+    hatchkit status [--json] [--offline]
+
+  ${chalk.bold("Flags:")}
+    --offline  Skip the live Listmonk credential check (GET /api/profile).
 
   ${chalk.bold("Output:")}
-    Human: ✓/· per provider, next-best-step, config path.
+    Human: ✓/✗/· per provider, next-best-step, config path.
     JSON:  full StatusSnapshot — stable shape for agents / scripts.
 `);
     return;

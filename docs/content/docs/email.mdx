@@ -132,9 +132,9 @@ Hatchkit never writes a project's sender into this setting. Set a neutral sender
 hatchkit config add listmonk --default-from "Newsletter <noreply@example.com>"
 ```
 
-Use an address on a domain that SES has verified and that no single project owns. Hatchkit refuses a `mail.<domain>` address, because that is a project's sender. The flag only stores the value. `hatchkit add <project> listmonk-ses` writes it into Listmonk when the setting is empty or still the install default (`listmonk <noreply@listmonk.yoursite.com>`). Without a neutral sender, the run leaves the setting alone and prints a warning.
+Use an address that SES has verified. A neutral address that no single project owns is best. When every list is private (see below), Listmonk uses this sender only for a call that names no sender, so one project's sender is also acceptable. The flag only stores the value. `hatchkit add <project> listmonk-ses` writes it into Listmonk when the setting is empty or still the install default (`listmonk <noreply@listmonk.yoursite.com>`). Without a neutral sender, the run leaves the setting alone and prints a warning.
 
-`hatchkit doctor` warns when the setting is empty, the install default, or a project's `mail.<domain>` sender. `hatchkit doctor --fix` then writes the neutral sender.
+`hatchkit doctor` warns when the setting is empty, the install default, or a project's `mail.<domain>` sender other than the one you configured. `hatchkit doctor --fix` then writes the configured sender. Doctor also warns about every `public` list: anyone can subscribe to it through Listmonk's own form, which skips the app's double opt-in.
 
 If the API user lacks `Settings: All`, hatchkit downgrades to a warning and you paste manually. Print the values with:
 
@@ -227,7 +227,7 @@ The lists are `optin: double`, so a campaign reaches `confirmed` members only. T
 - On a **single** opt-in list, Listmonk sends a campaign to every member not `unsubscribed`, `unconfirmed` included. An address added before the click would get every campaign without confirming.
 - On a **double** opt-in list, Listmonk sends its own opt-in email whenever a subscriber is created or updated with `preconfirm_subscriptions: false` and has an `unconfirmed` membership on that list (with `app.send_optin_confirmation` on, the default). An address added before the click would get two confirmation emails.
 
-Listmonk's built-in opt-in email and its public subscription form (`/subscription/form`) always send from the instance default sender. Listmonk has no per-list sender. On a shared instance, an opt-in email that carries a project's own sender is possible only with the app-side double opt-in above, because the app passes `from_email` on its `/api/tx` call. Do not point a project's signup at Listmonk's public form if its confirmation email must come from that project.
+Listmonk's built-in opt-in email and its public subscription form (`/subscription/form`) always send from the instance default sender. Listmonk has no per-list sender. On a shared instance, an opt-in email that carries a project's own sender is possible only with the app-side double opt-in above, because the app passes `from_email` on its `/api/tx` call. Keep every list private. Listmonk's public form then refuses it, so every signup goes through the app. `hatchkit add` creates private lists, and `hatchkit doctor` warns about any public one.
 
 Lists that `hatchkit add` created before this change are single opt-in. `hatchkit doctor`, run in the project directory, reports them. Switch one only after the app that writes to it runs the confirm-only code, then set **Listmonk → Lists → edit → Opt-in: Double**.
 
@@ -295,7 +295,7 @@ The credentials belong to one machine's keychain. A run on a machine without the
 
 **The email arrives, but shows HTML tags as text** — the project's `<project>-tx` template renders a bare `{{ .Tx.Data.body }}`. Listmonk parses a tx template body with Go `html/template`, which escapes the app's HTML. Hatchkit seeded this body in earlier versions. `hatchkit doctor`, run in the project directory, reports it, and `hatchkit doctor --fix` changes it to `{{ .Tx.Data.body | Safe }}`. You can also make that edit in **Listmonk → Campaigns → Templates**.
 
-**`hatchkit status` shows `✗ Listmonk` or `hatchkit doctor` says Listmonk rejected the API user** — the global API user (normally `hatchkit`) was deleted or disabled, or its token changed. Both commands authenticate with `GET /api/profile`, so the stored config alone does not count as configured. Create the API user again in **Admin → Users**, then run `hatchkit config add listmonk`. Projects that hold this token need `hatchkit secrets rotate --global listmonk` afterwards.
+**`hatchkit status` shows `✗ Listmonk` or `hatchkit doctor` says Listmonk rejected the API user** — the global API user (normally `hatchkit`) was deleted or disabled, or its token changed. Both commands authenticate with `GET /api/profile`, so the stored config alone does not count as configured. `hatchkit status --offline` skips that request. Create the API user again in **Admin → Users**, then run `hatchkit config add listmonk`. Projects that hold this token need `hatchkit secrets rotate --global listmonk` afterwards.
 
 **Send fails: `Email address is not verified`** — your SES account is still in sandbox mode. Request production access in the AWS console.
 
