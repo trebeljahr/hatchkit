@@ -29,6 +29,11 @@ paths = [
 #     us-west-2 (cli/test-ses-smtp.ts).
 #   - Repeating "abcdef0123456789" dotenvx private-key fixture
 #     (cli/test-scaffold.ts).
+#   - PEM private keys whose body is the single character "x", used as
+#     AuthKey_ABC123.p8 and certs/server.pem denylist fixtures
+#     (cli/test-secret-hygiene.ts). The private-key rule runs on to the next
+#     "KEY-----", so the reported secret is this prefix plus whatever source
+#     follows it; anchor on the prefix only.
 [[allowlists]]
 description = "Reviewed test vectors and fixtures (exact values)."
 regexes = [
@@ -38,6 +43,8 @@ regexes = [
   '''^BMW5RDrXmmVs0lV7GpI4oLkHXpZ4stDsk6q91z1g38Pk$''',
   '''^BF2PynzbSCAjX08zhZZnP\/kW\+T9P5zs\/1Er0pi5vTEmd$''',
   '''^abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789$''',
+  '''^-----BEGIN PRIVATE KEY-----\\nx\\n-----END PRIVATE KEY-----\\n"''',
+  '''^-----BEGIN RSA PRIVATE KEY-----\\nx\\n-----END RSA PRIVATE KEY-----\\n"''',
 ]
 
 # Documentation placeholders such as TF_VAR_inwx_password="your-inwx-pass"
