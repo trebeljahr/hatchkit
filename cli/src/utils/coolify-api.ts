@@ -1209,11 +1209,114 @@ export class CoolifyApi {
   /** Delete an application WITHOUT touching its volumes. Coolify's
    *  DELETE defaults `delete_volumes` to true; an app being retired after
    *  a migration may still hold data somebody wants, so this spells the
-   *  safe value out. */
+   *  safe value out.
+   *
+   *  With a carried volume this is the difference between a rollback and
+   *  data loss: `delete_volumes=true` runs `docker compose down -v` for a
+   *  compose app and `docker volume rm -f <storage name>` for an image
+   *  app (Application::deleteVolumes), and both name the volume the other
+   *  app is serving from. test-runtime-carry-volume.ts fails on any
+   *  DELETE from rollback or cleanup that does not say `false`. */
   async deleteApplicationKeepingVolumes(uuid: string): Promise<"deleted" | "not-found"> {
     return this.delete(
       `/applications/${uuid}?delete_volumes=false&delete_connected_networks=false&delete_configurations=true&docker_cleanup=true`,
     );
+  }
+
+  // ---------------------------------------------------------------------
+  // Persistent storages
+  // ---------------------------------------------------------------------
+  //
+  // Read against the Coolify source, not guessed:
+  //
+  //   · v4.0.0-beta.469 (routes/api.php, ApplicationsController): GET and
+  //     PATCH `/applications/{uuid}/storages` only. There is no POST, so
+  //     the API cannot create a storage on that build.
+  //   · Later builds add POST (`create_storage`). It stores the name as
+  //     `<app uuid>-<name>`, exactly like the dashboard does
+  //     (Livewire/Project/Service/Storage.php, `submitPersistentVolume`).
+  //   · PATCH takes `id` + `type` and may change `name` and `mount_path`
+  //     of a storage that is not read-only (a compose app's own volumes
+  //     are). `host_path` is accepted by 469 and REJECTED by later
+  //     builds, so it is never sent.
+  //   · A deployment mounts `host_path ?? name` at `mount_path`
+  //     (ApplicationDeploymentJob::generate_local_persistent_volumes).
+  //     A storage named after an existing Docker volume mounts that
+  //     volume — which is how `migrate-runtime --carry-volume` hands a
+  //     compose app's data to its replacement.
+
+  /** An application's persistent storages, oldest first. */
+  async listApplicationStorages(uuid: string): Promise<{
+    persistent: CoolifyPersistentStorage[];
+    fileCount: number;
+  }> {
+    const raw = (await this.request("GET", `/applications/${uuid}/storages`)) as {
+      persistent_storages?: unknown;
+      file_storages?: unknown;
+    } | null;
+    const rows = Array.isArray(raw?.persistent_storages) ? raw.persistent_storages : [];
+    const persistent: CoolifyPersistentStorage[] = [];
+    for (const r of rows) {
+      if (!r || typeof r !== "object") continue;
+      const s = r as Record<string, unknown>;
+      if (typeof s.id !== "number" || typeof s.name !== "string") continue;
+      persistent.push({
+        id: s.id,
+        name: s.name,
+        mountPath: typeof s.mount_path === "string" ? s.mount_path : "",
+        hostPath: typeof s.host_path === "string" && s.host_path !== "" ? s.host_path : null,
+      });
+    }
+    return {
+      persistent,
+      fileCount: Array.isArray(raw?.file_storages) ? raw.file_storages.length : 0,
+    };
+  }
+
+  /** Create a volume storage. `"unsupported"` on a Coolify without the
+   *  POST route (4.0.0-beta.469 answers 404, a router that knows the path
+   *  for other verbs answers 405) — the caller then needs the dashboard.
+   *  Coolify stores the name as `<app uuid>-<name>`; rename it afterwards
+   *  with {@link updatePersistentStorage}. */
+  async createPersistentStorage(
+    uuid: string,
+    storage: { name: string; mountPath: string },
+  ): Promise<"created" | "unsupported"> {
+    const path = `/applications/${uuid}/storages`;
+    const res = await fetch(`${this.url}/api/v1${path}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        type: "persistent",
+        name: storage.name,
+        mount_path: storage.mountPath,
+      }),
+    });
+    if (res.status === 404 || res.status === 405) return "unsupported";
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(
+        `Coolify API POST ${path} failed: ${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`,
+      );
+    }
+    return "created";
+  }
+
+  /** Rename and/or re-mount one persistent storage. */
+  async updatePersistentStorage(
+    uuid: string,
+    storage: { id: number; name?: string; mountPath?: string },
+  ): Promise<void> {
+    await this.request("PATCH", `/applications/${uuid}/storages`, {
+      id: storage.id,
+      type: "persistent",
+      ...(storage.name !== undefined ? { name: storage.name } : {}),
+      ...(storage.mountPath !== undefined ? { mount_path: storage.mountPath } : {}),
+    });
   }
 
   /** Every project with its environments. Lets a caller holding only an
@@ -1433,6 +1536,16 @@ export class CoolifyApi {
     if (Array.isArray(raw)) return raw;
     return raw?.data ?? [];
   }
+}
+
+/** One row of an application's Persistent Storage. A deployment mounts
+ *  `hostPath ?? name` at `mountPath`. */
+export interface CoolifyPersistentStorage {
+  id: number;
+  name: string;
+  mountPath: string;
+  /** Null for a named volume; a path makes the row a bind mount. */
+  hostPath: string | null;
 }
 
 /** Subset of an application's state that hatchkit cares about. Used

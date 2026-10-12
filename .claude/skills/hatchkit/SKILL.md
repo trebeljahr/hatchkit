@@ -79,7 +79,7 @@ rotation URL, required scopes, and exact `hatchkit config add <provider>` comman
 | `hatchkit adopt` | Adopt an existing repo into Hatchkit conventions |
 | `hatchkit sync` | Sync/deploy state for an existing Hatchkit project (incl. manifest `aliases[]` multi-hostname routing) |
 | `hatchkit dns publish` | Upsert A/AAAA records for the manifest's domain + aliases (supports `--dry-run`) |
-| `hatchkit migrate-runtime [app]` | Move a deployed Coolify compose app to Docker Image apps so deploys stop taking the site down (`--dry-run`, `--rollback`, `--cleanup`) |
+| `hatchkit migrate-runtime [app]` | Move a deployed Coolify compose app to Docker Image apps so deploys stop taking the site down (`--dry-run`, `--rollback`, `--cleanup`). Refuses a volume unless named with `--carry-volume <service>=<volume>`, which mounts the same Docker volume on the new app; pair it with `--same-json <service>=/path:<field>` |
 | `hatchkit plausible rename <old> <new>` | Move a Plausible site to a new domain, keeping stats history |
 | `hatchkit listmonk user <project>` | Give a project its own Listmonk API user + roles and rewrite its env (`--dry-run` first; needs the `hatchkit-admin` keychain token; never pushes) |
 | `hatchkit rename-domain` | Rename project domain and related deploy config |

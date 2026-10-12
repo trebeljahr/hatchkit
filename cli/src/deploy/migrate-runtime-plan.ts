@@ -47,11 +47,36 @@
  *     data lives in THIS compose app's Docker volume and would not
  *     follow a replacement app. Move it to a Coolify-managed database
  *     first (`hatchkit add`), then migrate.
+ *     The one exception is asked for by name: `--carry-volume
+ *     <service>=<volume>` mounts the SAME Docker volume on the
+ *     replacement (see "Carrying a named volume" below).
  *   · host port mappings, `build:`, `command:`/`entrypoint:`: an image
  *     app can't express them.
  *   · a service with no hostname, or one service addressing another by
  *     its compose name (`http://server:3000`): that hostname only exists
  *     on the compose network, which the split removes.
+ *
+ * ---------------------------------------------------------------------
+ * Carrying a named volume
+ * ---------------------------------------------------------------------
+ *
+ * An app that keeps its state in a file (SQLite) has no managed database
+ * to move to. Its volume can follow the replacement because Coolify
+ * mounts an image app's storage by NAME: a storage row named after an
+ * existing Docker volume mounts that volume (`ApplicationDeploymentJob::
+ * generate_local_persistent_volumes`, `host_path ?? name`). No data is
+ * copied.
+ *
+ * Coolify names a compose app's volume `<app uuid>_<slug of the compose
+ * name>` (`parsers.php`, `applicationParser`) and records it as a storage
+ * of that app. The plan derives the name the same way and then requires
+ * Coolify's own record to agree — a wrong name would not fail, it would
+ * mount a new, empty volume.
+ *
+ * The cost is stated in the plan, not hidden: from the first deploy of
+ * the replacement until the compose app stops, and again for the overlap
+ * of every later rolling deploy, TWO containers have the volume mounted
+ * read-write. That is only safe for an app built for it.
  */
 
 import { parse } from "yaml";
@@ -81,6 +106,28 @@ export interface LiveComposeApp {
   composeRaw: string | null;
   /** Parsed `docker_compose_domains`, one entry per FQDN. */
   composeDomains?: Array<{ name: string; domain: string }>;
+  /** The volumes Coolify recorded for this app (`GET …/storages`). Only
+   *  read when a volume is carried, and then required: it is what
+   *  confirms the derived Docker volume name. */
+  persistentStorages?: Array<{ name: string; mountPath: string }>;
+}
+
+/** A compose named volume the replacement mounts by its Docker name. */
+export interface CarriedVolume {
+  /** Name in the compose file (`auth-data`). */
+  volume: string;
+  /** Name on the Docker host (`<compose app uuid>_auth-data`). */
+  dockerVolume: string;
+  mountPath: string;
+}
+
+/** One `--same-json` comparison: this field of this public URL must have
+ *  the same value on the replacement before any traffic moves. */
+export interface SameJsonCheck {
+  path: string;
+  /** Dot-separated path into the JSON body (`databaseId`, `db.id`). */
+  field: string;
+  publicUrl: string;
 }
 
 export interface PlannedImageApp {
@@ -101,6 +148,9 @@ export interface PlannedImageApp {
   /** Coolify `custom_docker_run_options` that carry the service's
    *  container hardening (only `--cap-drop=…` today). */
   dockerRunOptions?: string;
+  /** Compose volumes mounted on the replacement by Docker volume name. */
+  carriedVolumes?: CarriedVolume[];
+  sameJson?: SameJsonCheck[];
   /** Full env for the replacement. Secret values. */
   env: Array<{ key: string; value: string; isLiteral: boolean; isMultiline: boolean }>;
 }
@@ -132,16 +182,23 @@ function isComposeOnlyEnv(key: string): boolean {
 }
 
 /** Compose-style interpolation: `${VAR}`, `${VAR:-default}`,
- *  `${VAR-default}`, `$VAR`, `$$` → `$`. Unset with no default → "".
+ *  `${VAR-default}`, `${VAR:?error}`, `${VAR?error}`, `${VAR:+value}`,
+ *  `${VAR+value}`, `$VAR`, `$$` → `$`. Unset with no default → "".
  *  Returns the names it could not resolve so a caller can tell a real
- *  empty value from a missing one. */
+ *  empty value from a missing one, and separately the `:?`/`?` names
+ *  compose itself would have refused to start without.
+ *
+ *  `:?` is not optional to support: left unmatched, the text
+ *  `${SECRET:?must be set}` would be copied to the replacement as the
+ *  secret's VALUE. */
 export function interpolate(
   text: string,
   env: ReadonlyMap<string, string>,
-): { value: string; missing: string[] } {
+): { value: string; missing: string[]; required: string[] } {
   const missing: string[] = [];
+  const required: string[] = [];
   const value = text.replace(
-    /\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?-)([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+    /\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?+])([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
     (
       match,
       braced: string | undefined,
@@ -153,14 +210,79 @@ export function interpolate(
       const name = braced ?? bare ?? "";
       const has = env.has(name);
       const current = env.get(name) ?? "";
-      if (op === ":-") return has && current !== "" ? current : (def ?? "");
-      if (op === "-") return has ? current : (def ?? "");
+      // The colon forms treat an empty value as unset.
+      const set = op?.startsWith(":") ? has && current !== "" : has;
+      if (op === ":-" || op === "-") return set ? current : (def ?? "");
+      if (op === ":+" || op === "+") return set ? (def ?? "") : "";
+      if (op === ":?" || op === "?") {
+        if (!set) required.push(name);
+        return set ? current : "";
+      }
       if (!has) missing.push(name);
       return current;
     },
   );
-  return { value, missing };
+  return { value, missing, required };
 }
+
+/** Laravel's `Str::slug($name, '-')`, which Coolify applies to a compose
+ *  volume name before prefixing the app uuid: `_` becomes `-`, anything
+ *  that is not a letter, digit, `-` or whitespace is dropped. */
+export function coolifyVolumeSlug(name: string): string {
+  return name
+    .replace(/_+/g, "-")
+    .replace(/@/g, "-at-")
+    .toLowerCase()
+    .replace(/[^-\p{L}\p{N}\s]+/gu, "")
+    .replace(/[-\s]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/** The Docker volume Coolify created for a compose app's named volume. */
+export function composeDockerVolumeName(appUuid: string, volume: string): string {
+  return `${appUuid}_${coolifyVolumeSlug(volume)}`;
+}
+
+const VOLUME_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+
+interface ServiceMount {
+  /** Set only for a plain named volume — the one shape that can be carried. */
+  named?: string;
+  target?: string;
+  readOnly: boolean;
+}
+
+/** A service's `volumes:` in either compose syntax. Anything that is not
+ *  a plain named volume (a bind mount, an anonymous volume, a mount with
+ *  `volume:`/`bind:` options) comes back without `named`. */
+function serviceMounts(raw: unknown): ServiceMount[] {
+  if (!Array.isArray(raw)) return [{ readOnly: false }];
+  return raw.map((entry): ServiceMount => {
+    if (typeof entry === "string") {
+      const [source, target, mode] = entry.split(":");
+      if (target === undefined || !VOLUME_NAME.test(source)) return { readOnly: false };
+      return { named: source, target, readOnly: (mode ?? "").split(",").includes("ro") };
+    }
+    if (entry && typeof entry === "object") {
+      const e = entry as Record<string, unknown>;
+      const plain = Object.keys(e).every((k) =>
+        ["type", "source", "target", "read_only"].includes(k),
+      );
+      if (
+        plain &&
+        e.type === "volume" &&
+        typeof e.source === "string" &&
+        VOLUME_NAME.test(e.source) &&
+        typeof e.target === "string"
+      ) {
+        return { named: e.source, target: e.target, readOnly: e.read_only === true };
+      }
+    }
+    return { readOnly: false };
+  });
+}
+
+const trimPath = (path: string): string => path.replace(/\/+$/, "") || "/";
 
 /** The `:-default` of an `image:` like `${CLIENT_IMAGE:-ghcr.io/o/r:main}`,
  *  or the literal image. */
@@ -247,6 +369,12 @@ export function planRuntimeMigration(
      *  Coolify cannot express it for an image app; the operator accepts
      *  the loss (e.g. after removing setuid/setgid files from the image). */
     dropNoNewPrivileges?: string[];
+    /** Per service, the compose named volumes the replacement mounts by
+     *  their Docker volume name instead of the move being refused. */
+    carryVolumes?: Record<string, string[]>;
+    /** Per service, JSON fields that must read the same on production and
+     *  on the replacement before the cutover. */
+    sameJson?: Record<string, Array<{ path: string; field: string }>>;
   } = {},
 ): RuntimeMigrationPlan {
   const blockers: string[] = [];
@@ -291,6 +419,17 @@ export function planRuntimeMigration(
     if (!names.includes(service))
       blockers.push(`Image override names unknown service "${service}".`);
   }
+  for (const [flag, services] of [
+    ["--carry-volume", Object.keys(opts.carryVolumes ?? {})],
+    ["--same-json", Object.keys(opts.sameJson ?? {})],
+  ] as const) {
+    for (const service of services) {
+      if (!names.includes(service)) blockers.push(`${flag} names unknown service "${service}".`);
+    }
+  }
+  const topLevelVolumes = (
+    doc.volumes && typeof doc.volumes === "object" && !Array.isArray(doc.volumes) ? doc.volumes : {}
+  ) as Record<string, unknown>;
 
   // Production env, and whether we could read it at all.
   const prodRows = envRows.filter((r) => !r.isPreview);
@@ -330,9 +469,76 @@ export function planRuntimeMigration(
   for (const service of appServices) {
     const svc = services[service];
     const where = `service "${service}"`;
-    if (svc.volumes && (!Array.isArray(svc.volumes) || svc.volumes.length > 0)) {
+    const wanted = opts.carryVolumes?.[service] ?? [];
+    const carriedVolumes: CarriedVolume[] = [];
+    const mounts =
+      svc.volumes && (!Array.isArray(svc.volumes) || svc.volumes.length > 0)
+        ? serviceMounts(svc.volumes)
+        : [];
+    const carried = (m: ServiceMount): boolean => m.named !== undefined && wanted.includes(m.named);
+    const left = mounts.filter((m) => !carried(m));
+    if (left.length > 0) {
+      const carriable = [...new Set(left.flatMap((m) => (m.named ? [m.named] : [])))];
       blockers.push(
-        `${where} mounts volumes (${JSON.stringify(svc.volumes)}). Whatever it writes there would not follow a replacement app.`,
+        `${where} mounts volumes (${JSON.stringify(svc.volumes)}). Whatever it writes there would not follow a replacement app.` +
+          (carriable.length > 0
+            ? ` If the app is built for two containers writing a volume at once, ${carriable.map((v) => `--carry-volume ${service}=${v}`).join(" ")} mounts the same Docker volume on the replacement.`
+            : ""),
+      );
+    }
+    for (const name of wanted) {
+      if (!mounts.some((m) => m.named === name)) {
+        blockers.push(
+          `--carry-volume ${service}=${name}: ${where} mounts no named volume "${name}".`,
+        );
+      }
+    }
+    for (const mount of mounts.filter(carried)) {
+      const name = mount.named as string;
+      const target = mount.target ?? "";
+      const dockerVolume = composeDockerVolumeName(app.uuid, name);
+      const declared = topLevelVolumes[name];
+      if (mount.readOnly) {
+        blockers.push(
+          `${where}: volume "${name}" is mounted read-only, which a Coolify storage cannot express.`,
+        );
+      } else if (!/^\/[A-Za-z0-9._/-]*$/.test(target)) {
+        blockers.push(
+          `${where}: volume "${name}" is mounted at \`${target}\`, not a plain absolute path.`,
+        );
+      } else if (declared && typeof declared === "object" && Object.keys(declared).length > 0) {
+        // `external`, `name`, `driver`, `driver_opts`: the volume is not
+        // (only) the one Coolify named after this app.
+        blockers.push(
+          `${where}: volume "${name}" sets ${Object.keys(declared).join(", ")} in the compose file, so its Docker volume is not simply ${dockerVolume}.`,
+        );
+      } else if (!app.persistentStorages) {
+        blockers.push(
+          `${where}: Coolify did not report this app's storages, so ${dockerVolume} cannot be confirmed as the Docker volume behind "${name}". Mounting a wrong name would start the replacement on an empty volume.`,
+        );
+      } else {
+        const recorded = app.persistentStorages.find((s) => s.name === dockerVolume);
+        if (!recorded) {
+          blockers.push(
+            `${where}: Coolify records no volume ${dockerVolume} for this app (it has: ${app.persistentStorages.map((s) => s.name).join(", ") || "none"}). Mounting a wrong name would start the replacement on an empty volume.`,
+          );
+        } else if (trimPath(recorded.mountPath) !== trimPath(target)) {
+          blockers.push(
+            `${where}: Coolify records ${dockerVolume} at ${recorded.mountPath}, the compose file mounts "${name}" at ${target}. Deploy the compose app once so both agree.`,
+          );
+        } else {
+          carriedVolumes.push({ volume: name, dockerVolume, mountPath: trimPath(target) });
+        }
+      }
+    }
+    for (const v of carriedVolumes) {
+      warnings.push(
+        `${where}: Docker volume ${v.dockerVolume} (${v.mountPath}) is mounted on the replacement while the Compose container still has it. Two containers write it during verification, until the Compose app stops, and again for the overlap of every later rolling deploy. Carry it only if the app is built for that.`,
+      );
+    }
+    if (carriedVolumes.length > 0 && !opts.sameJson?.[service]?.length) {
+      warnings.push(
+        `${where}: nothing compares the replacement's data with production's before the cutover. If the app reports an identity for its data, pass --same-json ${service}=/path:field.`,
       );
     }
     if (svc.ports && (!Array.isArray(svc.ports) || svc.ports.length > 0)) {
@@ -497,11 +703,18 @@ export function planRuntimeMigration(
       env.set(r.key, { value: r.value ?? "", isLiteral: r.isLiteral, isMultiline: r.isMultiline });
     }
     const unresolved = new Set<string>();
+    const requiredUnset = new Set<string>();
     for (const [key, raw] of envEntries(svc.environment)) {
       if (raw === null) continue; // pass-through: the .env copy above already has it
-      const { value, missing } = interpolate(raw, envMap);
+      const { value, missing, required } = interpolate(raw, envMap);
       for (const m of missing) unresolved.add(m);
+      for (const r of required) requiredUnset.add(r);
       env.set(key, { value, isLiteral: true, isMultiline: value.includes("\n") });
+    }
+    if (requiredUnset.size > 0) {
+      blockers.push(
+        `${where}: ${[...requiredUnset].join(", ")} is required by the compose file (\`\${VAR:?…}\`) but not set on the app. Compose would refuse to start it; the replacement would start with an empty value.`,
+      );
     }
     if (unresolved.size > 0) {
       warnings.push(
@@ -576,6 +789,21 @@ export function planRuntimeMigration(
       continue;
     }
 
+    const sameJson: SameJsonCheck[] = [];
+    for (const check of opts.sameJson?.[service] ?? []) {
+      const route = routes.find((d) => {
+        const prefix = new URL(d).pathname.replace(/\/+$/, "");
+        return !prefix || check.path === prefix || check.path.startsWith(`${prefix}/`);
+      });
+      if (!route) {
+        blockers.push(
+          `--same-json ${service}=${check.path}:${check.field}: no public route of ${where} covers ${check.path}.`,
+        );
+        continue;
+      }
+      sameJson.push({ ...check, publicUrl: `${new URL(route).origin}${check.path}` });
+    }
+
     const role = roleFor(service, appServices.length);
     const healthPath = opts.healthPaths?.[service];
     planned.push({
@@ -592,6 +820,8 @@ export function planRuntimeMigration(
         ...(healthPath ? { path: healthPath } : {}),
       }),
       ...(dockerRunOptions ? { dockerRunOptions } : {}),
+      ...(carriedVolumes.length > 0 ? { carriedVolumes } : {}),
+      ...(sameJson.length > 0 ? { sameJson } : {}),
       env: [...env].map(([key, v]) => ({ key, ...v })),
     });
   }

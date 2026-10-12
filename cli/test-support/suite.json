@@ -39,6 +39,7 @@
   "test-image-runtime.ts",
   "test-split-readiness.ts",
   "test-runtime-cutover.ts",
+  "test-runtime-carry-volume.ts",
   "test-doctor-rolling.ts",
   "test-shutdown-drain.ts",
   "test-site-drain.ts",

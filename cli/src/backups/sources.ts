@@ -217,6 +217,29 @@ export function sourceReferences(row: SourceRow, uuids: string[]): boolean {
   return uuids.some((uuid) => uuid && values.some((value) => value.includes(uuid)));
 }
 
+/** Pure: is `row` a files source whose every path lies inside one of
+ *  these Docker volumes?
+ *
+ *  `migrate-runtime --carry-volume` mounts a compose app's volume on its
+ *  replacement by name. A source that reads the volume by host path
+ *  (`/var/lib/docker/volumes/<name>/_data/…`) reads the same bytes
+ *  before, during and after the move, so it neither blocks the move nor
+ *  needs repointing. A container selector is never this: it names the
+ *  compose container, which the move stops. */
+export function readsOnlyCarriedVolumes(row: SourceRow, dockerVolumes: string[]): boolean {
+  if (row.kind !== "files" || row.selector || row.container) return false;
+  const paths = row.paths ?? [];
+  return (
+    paths.length > 0 &&
+    paths.every((path) =>
+      dockerVolumes.some(
+        (volume) =>
+          volume && (path.endsWith(`/volumes/${volume}`) || path.includes(`/volumes/${volume}/`)),
+      ),
+    )
+  );
+}
+
 export interface PolicyChange {
   project: string;
   action: "replace" | "deregister";
@@ -349,8 +372,14 @@ export async function reconcileBackupsAfterRemoval(input: {
   dryRun: boolean;
   /** Wait for Coolify's asynchronous container teardown. */
   settleMs?: number;
+  /** Docker volumes that outlive the removed resource because another
+   *  app mounts them now. Sources reading only these stay registered
+   *  whatever the host reports: dropping one would end the backup of
+   *  live data. */
+  carriedVolumes?: string[];
 }): Promise<{ lines: string[]; changes: PolicyChange[]; failed: boolean }> {
   const lines: string[] = [];
+  const carried = input.carriedVolumes ?? [];
   try {
     backupProvider();
   } catch {
@@ -360,13 +389,22 @@ export async function reconcileBackupsAfterRemoval(input: {
   if (uuids.length === 0) return { lines, changes: [], failed: false };
   try {
     let affected: SourceRow[] = [];
+    let kept: SourceRow[] = [];
     const deadline = Date.now() + (input.settleMs ?? 0);
     for (;;) {
       const report = await fetchSourceReport();
-      affected = report.sources.filter((row) => sourceReferences(row, uuids));
+      const reading = report.sources.filter((row) => sourceReferences(row, uuids));
+      kept = reading.filter((row) => readsOnlyCarriedVolumes(row, carried));
+      affected = reading.filter((row) => !readsOnlyCarriedVolumes(row, carried));
       if (affected.every((row) => row.state === "missing") || Date.now() >= deadline) break;
       await new Promise((r) => setTimeout(r, 5_000));
     }
+    for (const row of kept)
+      lines.push(
+        row.state === "ok"
+          ? `Backup source ${row.project}/${row.source} reads the carried volume; left registered.`
+          : `Backup source ${row.project}/${row.source} reads a carried volume, but the host no longer finds ${(row.missingPaths ?? []).join(", ") || "its paths"}. Left registered; check now: hatchkit backup sources --project ${row.project}`,
+      );
     if (affected.length === 0) return { lines, changes: [], failed: false };
     const changes: PolicyChange[] = [];
     for (const project of [...new Set(affected.map((r) => r.project))]) {

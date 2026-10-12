@@ -535,7 +535,11 @@ check("interpolate follows compose: :-, -, $$ and unset → empty", () => {
     interpolate("${A}-${B:-two}-${EMPTY:-d}-${EMPTY-d}-$$-$A", env).value,
     "1-two-d--$-1",
   );
-  assert.deepEqual(interpolate("${MISSING}", env), { value: "", missing: ["MISSING"] });
+  assert.deepEqual(interpolate("${MISSING}", env), {
+    value: "",
+    missing: ["MISSING"],
+    required: [],
+  });
 });
 
 check("Host() rules are read from every router rule label", () => {

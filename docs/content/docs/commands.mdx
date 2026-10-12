@@ -480,10 +480,62 @@ undone. Every step is recorded under the hatchkit config directory, so
 | `--health-path <service>=/path` | Health endpoint for one service. Default: `/api/health` for a service named `server`, `api` or `backend`, `/` otherwise. |
 | `--keep-live-tag` | Keep the deployed commit's tag. Use it when the repo's workflow already pins image tags. |
 | `--no-secrets` | Leave the GitHub Actions secrets alone. |
+| `--carry-volume <service>=<volume>` | Mount this compose named volume on the new app. Repeat it for each volume. |
+| `--same-json <service>=/path:<field>` | Require the same JSON field value on production and on the new app before any traffic moves. |
 | `--yes` | Don't ask. |
 
 It refuses apps with a datastore service or a volume, apps that publish host
 ports, and apps that never deployed.
+
+### Carry a named volume
+
+Some apps keep their state in a file. A SQLite database in a Docker volume is
+the common case, and there is no managed database to move it to. Name the
+volume and the new app mounts it:
+
+```bash
+hatchkit migrate-runtime \
+  --carry-volume client=auth-data \
+  --health-path client=/api/health \
+  --same-json client=/api/health:databaseId \
+  --dry-run
+```
+
+The new app mounts the same Docker volume the compose app created,
+`<compose app uuid>_<volume>`. Hatchkit copies no data. The plan prints the
+Docker volume and the mount path, and it checks both against the storage
+Coolify recorded for the compose app.
+
+**Two containers write the volume at the same time.** This happens during
+verification, until the compose app stops. It happens again for the overlap of
+every later rolling deploy. Carry a volume only when the app is built for two
+writers. For SQLite that means WAL mode, a busy timeout, and background jobs
+that tolerate a second runner.
+
+`--same-json` protects against a wrong mount. A new app on an empty volume can
+start, create a fresh database and pass its health check. With the flag,
+hatchkit reads one JSON field from the production URL and from the new app's
+private verification host. The values must be equal. If they differ, the run
+stops, the new app gets no public route, and the compose app keeps serving.
+Hatchkit reads the field once more on the public URL after the cutover.
+
+Coolify 4.0.0-beta.469 can't create a storage through its API. On that version
+the run pauses once and prints one step for the dashboard: open the new app's
+Persistent Storage page and add a Volume Mount with the mount path.
+Hatchkit then renames that storage to the Docker volume, reads it back, and
+deploys. A Coolify version that can create a storage through the API needs no
+manual step.
+
+Only a plain named volume can be carried. Hatchkit still refuses bind mounts,
+read-only mounts, and volumes with `external`, `name` or driver options.
+
+`--rollback` and `--cleanup` keep the volume. After the move, Coolify lists
+the volume as a storage of the new app. If you delete that app in the Coolify
+dashboard with "Delete volumes" ticked, Coolify deletes the data.
+
+A registered backup that reads the volume by host path keeps running
+unchanged, because the path stays the same. A backup that reads the compose
+app's container still blocks the move.
 
 ## `hatchkit sync`
 

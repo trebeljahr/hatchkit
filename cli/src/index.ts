@@ -5222,6 +5222,20 @@ function printHelp(topic?: HelpTopic): void {
   volume in the compose): that data would not follow. Move it to a
   Coolify-managed database first (${chalk.cyan("hatchkit add")}).
 
+  ${chalk.bold("A named volume can follow")} when you ask for it by name:
+    hatchkit migrate-runtime --carry-volume client=auth-data \\
+      --same-json client=/api/health:databaseId --dry-run
+  The new app mounts the same Docker volume (${chalk.dim("<compose app uuid>_<volume>")}). No data
+  is copied. ${chalk.yellow("Two containers then write the volume at once:")} during verification,
+  until the compose app stops, and for the overlap of every later rolling
+  deploy. Use it only for an app built for that (SQLite in WAL mode with a
+  busy timeout, jobs that tolerate a second runner).
+  Coolify 4.0.0-beta.469 cannot create a storage through its API. The run
+  pauses once and asks you to add a Volume Mount in the dashboard; it then
+  renames that storage to the Docker volume, reads it back, and deploys.
+  ${chalk.cyan("--rollback")} and ${chalk.cyan("--cleanup")} keep the volume. Deleting the new app in the
+  Coolify dashboard with "Delete volumes" ticked deletes it.
+
   ${chalk.bold("Options:")}
     --dry-run                     Plan only
     --yes                         Don't ask before migrating / deleting
@@ -5241,6 +5255,13 @@ function printHelp(topic?: HelpTopic): void {
     --drop-no-new-privileges <svc>
                                   Accept losing \`security_opt: no-new-privileges\`, which an
                                   image app cannot set (strip setuid/setgid files first)
+    --carry-volume <svc>=<volume> Mount this compose named volume on the new app instead of
+                                  refusing the move. Repeat per volume. Bind mounts, read-only
+                                  mounts and volumes with compose options are still refused
+    --same-json <svc>=/path:<field>
+                                  Before any traffic moves, GET the path on production and on
+                                  the new app and require the same JSON field value (dot path).
+                                  A difference stops the run with the compose app serving
     --dir <path>                  Project directory (default: cwd)
 
   A compose \`cap_drop\` is carried over as Coolify run options (\`--cap-drop=…\`).

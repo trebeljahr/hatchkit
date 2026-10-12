@@ -79,7 +79,11 @@ Drop `--dry-run` to apply. Each change carries the policy it read and the host
 refuses it if the policy changed in between. `hatchkit destroy` and
 `hatchkit migrate-runtime --cleanup` remove the sources of the Coolify resources
 they delete, once the host confirms the containers are gone.
-`migrate-runtime` refuses an app that a registered source reads.
+`migrate-runtime` refuses an app that a registered source reads. One case
+passes: with `--carry-volume`, a `files` source whose paths all lie inside the
+carried Docker volume keeps running unchanged, because the new app mounts the
+same volume and the host path stays the same. `--cleanup` leaves such a source
+registered.
 
 `hatchkit backup run` starts a full capture. `hatchkit backup status --json`
 reads each project's result, missing or stale captures (36 hours), timer state,
