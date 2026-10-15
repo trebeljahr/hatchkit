@@ -76,15 +76,18 @@
  * it gives up on any request that was already written upstream.
  *
  * The fix is to DRAIN: the old container has to leave Traefik before it
- * stops serving. The one lever is Docker health — Traefik skips every
- * container that is not `healthy`. So every hatchkit image, on SIGTERM:
+ * stops serving. Two levers do that: Docker health — Traefik skips every
+ * container that is not `healthy` — and Traefik's own load-balancer
+ * health check, which hatchkit adds to an app's labels once its image
+ * answers it (deploy/traefik-drain.ts). So every hatchkit image, on
+ * SIGTERM:
  *
- *   1. answers the health probe with 503 while still serving real
+ *   1. answers the health probes with 503 while still serving real
  *      traffic. Coolify's probe runs inside the container against
- *      127.0.0.1 and visitors arrive from Traefik, so only a loopback
- *      request to the health path gets the 503;
- *   2. waits {@link SHUTDOWN_DRAIN_SECONDS} — long enough for Docker to
- *      count `retries` failed probes and for Traefik to drop it;
+ *      127.0.0.1, Traefik's comes without X-Forwarded-For, and visitors
+ *      arrive forwarded by Traefik, so only the probes get the 503;
+ *   2. waits {@link SHUTDOWN_DRAIN_SECONDS} — long enough for Traefik's
+ *      check, or Docker's `retries` failed probes, to drop it;
  *   3. only then closes its listener and exits.
  *
  * The images read the delay from `SHUTDOWN_DRAIN_SECONDS`, baked in as
@@ -110,6 +113,10 @@
  * `retries × interval` stays short. Its cost is latency, not downtime —
  * Coolify sleeps the whole start period before its first poll, and the
  * old container serves all the while.
+ *
+ * Once Traefik's own check drains the app, Docker's check carries the
+ * boot budget alone and can probe far less often
+ * ({@link TRAEFIK_DRAIN_TIMING} vs {@link DOCKER_DRAIN_TIMING}).
  */
 
 /** How the project's services are placed on Coolify. Persisted in the
@@ -181,35 +188,76 @@ export interface HealthCheckSpec {
   startPeriodSeconds: number;
 }
 
-/** Health-check timing for every hatchkit app. See "The last second"
- *  at the top of this file for the two budgets these serve.
+/** Docker health-check timing for an app whose drain runs on Docker's
+ *  check — every app until `hatchkit sync` gives it Traefik's own check
+ *  ({@link TRAEFIK_DRAIN_TIMING}). See "The last second" at the top of
+ *  this file for the two budgets these serve.
  *
- *  · Drain: 5 failed probes 2 s apart. A stopping container is
- *    unhealthy ~10–12 s after SIGTERM and out of Traefik ≤ 2 s later
- *    ({@link worstCaseDrainDropSeconds}).
- *  · Boot: Coolify sleeps 15 s, then polls 5 times ~3 s apart (2 s plus
- *    a round trip to the server), so a new container gets ~27 s to turn
- *    healthy. Measured 2026-09-29: an nginx image is healthy at Coolify's
- *    first poll; collection-of-beauty (Next.js standalone behind dotenvx)
- *    took 5–15 s. A deploy that needs longer fails and the old container
- *    keeps serving — safe, just not shipped.
+ *  · Drain: 3 failed probes 4 s apart. A stopping container is
+ *    unhealthy ~9–13.5 s after SIGTERM and out of Traefik ≤ 2 s later,
+ *    15.5 s at worst ({@link worstCaseDrainDropSeconds}) — 4.5 s inside
+ *    the 20 s drain.
+ *  · Boot: Coolify sleeps 15 s, then polls 3 times ~5 s apart (4 s plus
+ *    a round trip to the server). Docker's own count ends first: its
+ *    third failed probe after the start period, ~24 s in, marks the
+ *    container unhealthy. Measured 2026-09-29: an nginx image is healthy
+ *    at Coolify's first poll; collection-of-beauty (Next.js standalone
+ *    behind dotenvx) took 5–15 s. A deploy that needs longer fails and
+ *    the old container keeps serving — safe, just not shipped.
  *
- *  The price of 5 × 2 s is flap sensitivity. In steady state a container
- *  drops out of Traefik after ~10 s of FAST failures (a health path
- *  answering 5xx) — it was 60 s. A stalled process takes longer, ~35 s,
- *  because each probe waits out its 5 s timeout. It is back in on the
- *  first passing probe (≤ 2 s, plus the throttle). Fewer retries would
- *  drain sooner and flap on a blip of a few seconds; this is the
- *  shortest window that still needs a real outage to trip.
- *
- *  The interval is also Docker's steady-state probe rate: one exec of
- *  curl every 2 s per container — cheap, but not free, so no lower. */
-const HEALTH_TIMING = {
-  intervalSeconds: 2,
+ *  The interval is Docker's probe rate for the container's whole life,
+ *  not just a deploy: one `docker exec` of curl per probe, per container.
+ *  Until 2026-10-15 this was 2 s × 5 — ~10 execs a second across 21
+ *  containers on one VPS. 4 s × 3 halves that and still drains in time;
+ *  5 s × 3 would leave 1.5 s of margin, too little for a busy host.
+ *  Tripping it in steady state still takes failures spanning
+ *  `(retries - 1) × interval` = 8 s, as before. */
+export const DOCKER_DRAIN_TIMING = {
+  intervalSeconds: 4,
   timeoutSeconds: 5,
-  retries: 5,
+  retries: 3,
   startPeriodSeconds: 15,
 } as const;
+
+/** Docker health-check timing for an app whose drain runs on Traefik's
+ *  own check (deploy/traefik-drain.ts). Docker's check then only has to
+ *  tell Coolify the new container is ready, so it probes every 10 s:
+ *  a fifth of the execs of {@link DOCKER_DRAIN_TIMING}.
+ *
+ *  · Boot: Coolify sleeps 15 s and polls at ~15, ~26 and ~37 s; Docker
+ *    probes every 10 s and marks the container unhealthy at its third
+ *    failure after the start period, ~40 s in. So a new container that
+ *    answers by ~30 s ships. One healthy by 10 s is seen at Coolify's
+ *    first poll, as before — Coolify sleeps the start period anyway.
+ *  · Steady state: a container whose health path fails leaves Traefik
+ *    after ~20–30 s instead of ~8–12 s. Traefik's check doesn't cover
+ *    that: the images answer it without asking the app. */
+export const TRAEFIK_DRAIN_TIMING = {
+  intervalSeconds: 10,
+  timeoutSeconds: 5,
+  retries: 3,
+  startPeriodSeconds: 15,
+} as const;
+
+/** Traefik's load-balancer health check on an app's containers
+ *  (deploy/traefik-drain.ts). One failed check takes a container out of
+ *  the pool, one passing check puts it back, and it is a plain HTTP
+ *  request from Traefik — no exec. The interval also bounds how long a
+ *  draining container is routed again after any Traefik reload, which
+ *  resets every check to "up". */
+export const TRAEFIK_HEALTH = {
+  intervalSeconds: 2,
+  timeoutSeconds: 5,
+} as const;
+
+/** How long after SIGTERM a draining image keeps PASSING Traefik's check
+ *  (capped at a quarter of the drain). Coolify stops the old container
+ *  as soon as Docker calls the new one healthy, and Traefik can take its
+ *  2 s throttle to add the new one; failing at once could leave Traefik
+ *  no server at all, and it answers 503. Docker's probe fails at once.
+ *  Hardcoded in each image (drain.cjs, the nginx entrypoint, the starter
+ *  server's drain.ts) and pinned to this by test-shutdown-drain.ts. */
+export const TRAEFIK_PROBE_GRACE_SECONDS = 4;
 
 /** How long a stopping hatchkit container keeps serving while failing
  *  its health probe, before it closes. Baked into every image as
@@ -218,7 +266,8 @@ const HEALTH_TIMING = {
  *  test-image-runtime.ts.
  *
  *  Has to sit between two bounds (the same test checks both):
- *  above {@link worstCaseDrainDropSeconds} plus a margin, or requests
+ *  above {@link worstCaseDrainDropSeconds} (and its Traefik twin) plus a
+ *  margin, or requests
  *  still reach the container after it closes; and below Coolify's 30 s
  *  `docker stop` minus the time to close, or Docker SIGKILLs it
  *  mid-request. */
@@ -241,12 +290,19 @@ export const PROBE_OVERHEAD_SECONDS = 0.5;
  *  interval, `retries` failures later Docker flips it to unhealthy, and
  *  Traefik applies that within its throttle. */
 export function worstCaseDrainDropSeconds(
-  timing: Pick<HealthCheckSpec, "intervalSeconds" | "retries"> = HEALTH_TIMING,
+  timing: Pick<HealthCheckSpec, "intervalSeconds" | "retries"> = DOCKER_DRAIN_TIMING,
 ): number {
   return (
     timing.retries * (timing.intervalSeconds + PROBE_OVERHEAD_SECONDS) +
     TRAEFIK_PROVIDER_THROTTLE_SECONDS
   );
+}
+
+/** The same bound when Traefik's own check drains: the image passes it
+ *  for the grace, the next check fails within one interval, and Traefik
+ *  takes the container out at once — no provider reload involved. */
+export function worstCaseTraefikDrainDropSeconds(): number {
+  return TRAEFIK_PROBE_GRACE_SECONDS + TRAEFIK_HEALTH.intervalSeconds + PROBE_OVERHEAD_SECONDS;
 }
 
 /** Which half of a deployment an image app is. `app` is the single
@@ -261,15 +317,18 @@ export type ImageAppRole = "app" | "client" | "server";
  *  Everything else is probed at `/`: a static nginx or a Next.js server
  *  that answers `/` is ready to serve. `curl -f` treats a 3xx as success,
  *  so a root that redirects still passes. A backend-only project's single
- *  app IS the server, so it gets the server's endpoint. */
+ *  app IS the server, so it gets the server's endpoint.
+ *
+ *  `traefikDrain`: the app carries Traefik's own check, so Docker's can
+ *  be slow ({@link TRAEFIK_DRAIN_TIMING}). */
 export function healthCheckFor(
   role: ImageAppRole,
-  opts: { surfaces?: string; path?: string } = {},
+  opts: { surfaces?: string; path?: string; traefikDrain?: boolean } = {},
 ): HealthCheckSpec {
   const serverish = role === "server" || (role === "app" && opts.surfaces === "backend");
   return {
     path: opts.path ?? (serverish ? "/api/health" : "/"),
-    ...HEALTH_TIMING,
+    ...(opts.traefikDrain ? TRAEFIK_DRAIN_TIMING : DOCKER_DRAIN_TIMING),
   };
 }
 
@@ -316,10 +375,11 @@ export interface LiveHealthCheck {
  *
  *  · Off → `fallback`, the role's full check. Without it there is no
  *    rolling update at all.
- *  · On, with timing other than {@link HEALTH_TIMING} → the same check
- *    with hatchkit's timing. An app created before draining has
- *    5 s × 12: its old container stays routed for 60 s after SIGTERM,
- *    long after it has exited, so every deploy ends in 502s. The path is
+ *  · On, with timing other than `fallback`'s → the same check with
+ *    `fallback`'s timing. An app created before draining has 5 s × 12:
+ *    its old container stays routed for 60 s after SIGTERM, long after
+ *    it has exited, so every deploy ends in 502s. One created before
+ *    2026-10-15 has 2 s × 5: it drains, at twice the probes. The path is
  *    kept — one somebody chose is theirs.
  *  · Timing Coolify didn't return can't be compared, so it never forces
  *    a PATCH on its own. */
@@ -330,9 +390,9 @@ export function healthCheckToConverge(
   if (live.enabled !== true) return fallback;
   const drifted = (["intervalSeconds", "timeoutSeconds", "retries", "startPeriodSeconds"] as const)
     .filter((k) => live[k] !== undefined)
-    .some((k) => live[k] !== HEALTH_TIMING[k]);
+    .some((k) => live[k] !== fallback[k]);
   if (!drifted) return undefined;
-  return { ...fallback, path: live.path || fallback.path, ...HEALTH_TIMING };
+  return { ...fallback, path: live.path || fallback.path };
 }
 
 /** Why an application will NOT get a zero-downtime deploy, or `null`

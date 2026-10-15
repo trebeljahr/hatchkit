@@ -27,6 +27,10 @@ import { join } from "node:path";
 import {
   COOLIFY_STOP_TIMEOUT_SECONDS,
   SHUTDOWN_DRAIN_SECONDS,
+  TRAEFIK_DRAIN_TIMING,
+  TRAEFIK_HEALTH,
+  TRAEFIK_PROBE_GRACE_SECONDS,
+  TRAEFIK_PROVIDER_THROTTLE_SECONDS,
   formatImageRef,
   healthCheckFor,
   healthCheckPayload,
@@ -36,6 +40,7 @@ import {
   rollingUpdateBlocker,
   rollingUpdateNamingUnknown,
   worstCaseDrainDropSeconds,
+  worstCaseTraefikDrainDropSeconds,
 } from "./src/deploy/image-runtime.js";
 import {
   type EnvRow,
@@ -109,7 +114,7 @@ check("health timing drains a stopping container well inside docker stop", () =>
   const t = healthCheckFor("server");
   assert.deepEqual(
     [t.intervalSeconds, t.retries, t.startPeriodSeconds, t.timeoutSeconds],
-    [2, 5, 15, 5],
+    [4, 3, 15, 5],
   );
   // Out of Traefik before the drain ends, with room for a slow probe or
   // a late refresh…
@@ -127,6 +132,31 @@ check("health timing drains a stopping container well inside docker stop", () =>
   // The pre-drain timing (5 s × 12) could never drain: 60 s+ of routing
   // to a container that exits after 30.
   assert.ok(worstCaseDrainDropSeconds({ intervalSeconds: 5, retries: 12 }) > 30);
+});
+
+// Once Traefik's own check drains (deploy/traefik-drain.ts), Docker's
+// only gates readiness and can probe far less often.
+check("Traefik's check drains well inside docker stop, with Docker slow", () => {
+  const t = healthCheckFor("server", { traefikDrain: true });
+  assert.deepEqual(
+    [t.intervalSeconds, t.retries, t.startPeriodSeconds, t.timeoutSeconds],
+    [10, 3, 15, 5],
+  );
+  assert.equal(TRAEFIK_HEALTH.intervalSeconds, 2);
+  // Out of Traefik before the drain ends, with the same margin…
+  assert.ok(
+    worstCaseTraefikDrainDropSeconds() + 3 <= SHUTDOWN_DRAIN_SECONDS,
+    `drop by ${worstCaseTraefikDrainDropSeconds()}s + 3s margin must fit in the drain`,
+  );
+  // …but not before Traefik can have added the new container: its
+  // provider throttle, plus room for Docker's health event to land.
+  assert.ok(TRAEFIK_PROBE_GRACE_SECONDS >= TRAEFIK_PROVIDER_THROTTLE_SECONDS + 1);
+  // A fifth of the execs of Docker's own drain timing.
+  assert.ok(TRAEFIK_DRAIN_TIMING.intervalSeconds >= 2.5 * healthCheckFor("server").intervalSeconds);
+  // Boot: Coolify sleeps the start period, then polls `retries` times;
+  // Docker's probe that turns it healthy comes up to one interval late.
+  const lastPoll = t.startPeriodSeconds + (t.retries - 1) * (t.intervalSeconds + 1);
+  assert.ok(lastPoll - t.intervalSeconds >= 25, `ready by ${lastPoll - t.intervalSeconds}s ships`);
 });
 
 check("health timing still gives a booting container ~25 s", () => {
@@ -155,18 +185,32 @@ check("sync converges health timing, keeps the path, and leaves a match alone", 
   const pushed = healthCheckToConverge(old, fallback);
   assert.ok(pushed);
   assert.equal(pushed.path, "/healthz");
-  assert.equal(pushed.intervalSeconds, 2);
-  assert.equal(pushed.retries, 5);
+  assert.equal(pushed.intervalSeconds, 4);
+  assert.equal(pushed.retries, 3);
   assert.equal(pushed.startPeriodSeconds, 15);
+  // The 2 s × 5 every app had until 2026-10-15 drains, but probes twice as
+  // often — sync moves it to the current timing too.
+  const fast = { ...old, path: "/", intervalSeconds: 2, retries: 5, startPeriodSeconds: 15 };
+  assert.equal(healthCheckToConverge(fast, fallback)?.intervalSeconds, 4);
+  // An app Traefik's check drains converges on the slow Docker timing,
+  // and back again when it loses the check.
+  const docker = { ...fast, intervalSeconds: 4, retries: 3 };
+  const traefik = healthCheckFor("client", { traefikDrain: true });
+  assert.equal(healthCheckToConverge(docker, traefik)?.intervalSeconds, 10);
+  assert.equal(healthCheckToConverge({ ...docker, intervalSeconds: 10 }, traefik), undefined);
+  assert.equal(
+    healthCheckToConverge({ ...docker, intervalSeconds: 10 }, fallback)?.intervalSeconds,
+    4,
+  );
   // Already converged → nothing to PATCH.
   assert.equal(
     healthCheckToConverge(
       {
         enabled: true,
         path: "/",
-        intervalSeconds: 2,
+        intervalSeconds: 4,
         timeoutSeconds: 5,
-        retries: 5,
+        retries: 3,
         startPeriodSeconds: 15,
       },
       fallback,

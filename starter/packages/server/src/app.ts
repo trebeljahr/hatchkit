@@ -11,7 +11,7 @@ import { handleStripeWebhook } from "./services/stripe.js";
 import { registerNewsletterRoutes } from "./services/newsletter/routes.js";
 import { isDatabaseReady } from "./db/connection.js";
 import { isRedisReady } from "./db/redis.js";
-import { isDraining, isLoopback } from "./drain.js";
+import { isDraining, isLoopback, isProxyDraining, isTraefikProbe } from "./drain.js";
 import { notFoundHandler, errorHandler } from "./middleware/error-handler.js";
 import { env, getTrustedOrigins } from "./config/env.js";
 // ── client-core ──────────────────────────────────────────────────
@@ -22,6 +22,20 @@ export function createApp(options: { accessLogStream?: { write(message: string):
   const app = express();
 
   app.set("trust proxy", 1);
+
+  // ── 0. Traefik's drain probe — ahead of everything, so a request that
+  // arrives every few seconds skips CORS, logging and the database. It
+  // reports only whether this container is draining; readiness is the
+  // /api/health check Docker runs. See ./drain.ts.
+  app.use((req, res, next) => {
+    if (!isTraefikProbe(req.headers)) return next();
+    const draining = isProxyDraining();
+    res
+      .status(draining ? 503 : 200)
+      .set("cache-control", "no-store")
+      .type("text/plain")
+      .send(draining ? "draining\n" : "serving\n");
+  });
 
   // ── 0. CORS — must be before all route handlers so preflight works ─
   const trustedOrigins = getTrustedOrigins();

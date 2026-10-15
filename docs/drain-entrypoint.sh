@@ -23,12 +23,20 @@ flock -u 8
 exec 8>&-
 
 marker=/tmp/hatchkit-site-draining
-rm -f "$marker"
+rm -f "$marker" "$marker-proxy"
 
 drain() {
   trap '' TERM INT
   touch "$marker"
-  sleep "$drain_seconds"
+  # Traefik drops a backend on ONE failed check, and Coolify stops this one
+  # as soon as Docker calls the new one healthy, which Traefik can take 2 s
+  # more to add. So its check fails a quarter of the drain (at most 4 s)
+  # after Docker's.
+  grace=$((drain_seconds / 4))
+  [ "$grace" -gt 4 ] && grace=4
+  sleep "$grace"
+  touch "$marker-proxy"
+  sleep "$((drain_seconds - grace))"
   # QUIT lets accepted requests finish. Keep PID 1 alive until the master
   # exits; leaving the interrupted wait would kill its remaining workers.
   kill -QUIT "$nginx_pid" 2>/dev/null || true

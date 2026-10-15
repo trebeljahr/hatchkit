@@ -10,8 +10,10 @@
  *
  * These pin:
  *   · drain.cjs, run for real under node: a loopback probe on `/` or
- *     `/api/health` gets 503 once SIGTERM arrives, any other request is
- *     served, the server's own SIGTERM handler runs only after the drain,
+ *     `/api/health` gets 503 once SIGTERM arrives; Traefik's probe (the
+ *     X-Hatchkit-Drain header, no X-Forwarded-For) gets a 200 without
+ *     reaching the app, and a 503 only after its grace; any other
+ *     request — a forwarded one with the header included — is served, the server's own SIGTERM handler runs only after the drain,
  *     a server with no handler is closed and exits on its own, and a
  *     handler whose shutdown stalls is cut short before `docker stop`
  *     escalates to SIGKILL;
@@ -24,7 +26,8 @@
  *     build-pipeline templates — bakes in the SAME drain as the CLI's
  *     health timing is built for, and loads/implements it; compose files,
  *     where a drain only delays the restart, turn it off;
- *   · the starter's copy of drain.cjs is the template's, byte for byte.
+ *   · the starter's copy of drain.cjs is the template's, byte for byte;
+ *   · every image waits the same grace before failing Traefik's probe.
  *
  * Run: `pnpm test` (via the script in cli/package.json).
  */
@@ -36,6 +39,7 @@ import { join } from "node:path";
 import {
   COOLIFY_STOP_TIMEOUT_SECONDS,
   SHUTDOWN_DRAIN_SECONDS,
+  TRAEFIK_PROBE_GRACE_SECONDS,
 } from "./src/deploy/image-runtime.js";
 import { scaffoldBuildPipeline } from "./src/scaffold/build-pipeline.js";
 
@@ -215,6 +219,31 @@ await check(
   },
 );
 
+await check("Traefik's probe: 200 without the app, 503 only after the grace", async () => {
+  const s = await start({ SHUTDOWN_DRAIN_SECONDS: "2" });
+  const get = async (headers: Record<string, string>) => {
+    const res = await fetch(`http://127.0.0.1:${s.port}/page`, { headers });
+    return `${res.status} ${(await res.text()).trim()}`;
+  };
+  const probe = { "x-hatchkit-drain": "1" };
+  const visitor = { ...probe, "x-forwarded-for": "203.0.113.9" };
+  try {
+    assert.equal(await get(probe), "200 serving", "answered before the app");
+    assert.equal(await get(visitor), "200 ok /page", "a forwarded request reaches the app");
+    s.child.kill("SIGTERM");
+    await sleep(100);
+    // Grace = a quarter of the 2 s drain here, 4 s in an image.
+    assert.equal(await get(probe), "200 serving", "still passing inside the grace");
+    assert.equal(await status(s.port, "/"), 503, "Docker's probe fails at once");
+    await sleep(600);
+    assert.equal(await get(probe), "503 draining", "failing after the grace");
+    assert.equal(await get(visitor), "200 ok /page", "visitors still served");
+    await s.exited;
+  } finally {
+    s.child.kill("SIGKILL");
+  }
+});
+
 await check("HEALTH_CHECK_PATH narrows the probe to the path Coolify uses", async () => {
   const s = await start({ SHUTDOWN_DRAIN_SECONDS: "0.5", HEALTH_CHECK_PATH: "/healthz" });
   try {
@@ -346,7 +375,42 @@ await check("static (nginx) image: TERM trap, SIGTERM stop signal, conf fails th
   assert.match(dockerfile, /touch "\$flag"/);
   assert.ok(nginx, "nginx.conf written");
   assert.match(nginx, /if \(-f \/tmp\/hatchkit-draining\)/);
-  assert.match(nginx, /if \(\$drain = "on-probe"\) \{\s*return 503;/);
+  assert.match(nginx, /if \(-f \/tmp\/hatchkit-draining-proxy\)/);
+  // Docker's probe over loopback; Traefik's by header, never forwarded.
+  assert.ok(
+    nginx.includes(
+      'map "$remote_addr|$http_x_hatchkit_drain|$http_x_forwarded_for" $hatchkit_probe',
+    ),
+  );
+  assert.ok(nginx.includes('"~^(127\\.0\\.0\\.1|::1)\\|" docker;'));
+  assert.ok(nginx.includes('"~^[^|]*\\|[^|]+\\|$"       traefik;'));
+  assert.match(
+    nginx,
+    /if \(\$drain ~ "\^on-\(proxy-\)\?docker\$\|\^on-proxy-traefik\$"\) \{\s*return 503;/,
+  );
+  assert.match(nginx, /if \(\$drain ~ "traefik\$"\) \{\s*return 200 "serving\\n";/);
+  assert.match(dockerfile, /rm -f "\$flag" "\$flag-proxy"/);
+  assert.match(dockerfile, /touch "\$flag-proxy"/);
+});
+
+await check("every image waits the same grace before failing Traefik's probe", () => {
+  const ms = TRAEFIK_PROBE_GRACE_SECONDS * 1000;
+  assert.ok(readFileSync(PRELOAD, "utf-8").includes(`Math.min(${ms}, drainMs / 4)`), "drain.cjs");
+  assert.ok(
+    read("starter/packages/server/src/drain.ts").includes(
+      `Math.min(${ms}, (drainSeconds * 1000) / 4)`,
+    ),
+    "starter server",
+  );
+  const cap = `[ "$grace" -gt ${TRAEFIK_PROBE_GRACE_SECONDS} ] && grace=${TRAEFIK_PROBE_GRACE_SECONDS}`;
+  assert.ok(read("cli/src/templates/build-pipeline/Dockerfile.client.hbs").includes(cap), "nginx");
+  assert.ok(read("docs/drain-entrypoint.sh").includes(cap), "hatchkit's site");
+  const app = read("starter/packages/server/src/app.ts");
+  assert.match(app, /if \(!isTraefikProbe\(req\.headers\)\) return next\(\);/);
+  assert.ok(
+    app.indexOf("isTraefikProbe(req.headers)") < app.indexOf("app.use(morgan("),
+    "the probe is answered before access logging",
+  );
 });
 
 await check("Node images inline drain.cjs and load it ahead of the server", () => {

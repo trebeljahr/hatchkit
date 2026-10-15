@@ -37,6 +37,7 @@
   "test-manifest.ts",
   "test-routing.ts",
   "test-image-runtime.ts",
+  "test-traefik-drain.ts",
   "test-split-readiness.ts",
   "test-runtime-cutover.ts",
   "test-runtime-carry-volume.ts",

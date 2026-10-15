@@ -838,6 +838,12 @@ export class CoolifyApi {
        *  deploy is not a rolling update in any useful sense — see
        *  deploy/image-runtime.ts. */
       healthCheck?: HealthCheckSpec;
+      /** `custom_labels`: the WHOLE container label set, one per line —
+       *  it replaces Coolify's generated labels on every deploy. Sent
+       *  base64-encoded. A PATCH that also carries `domains` loses it
+       *  (Coolify regenerates the labels after applying the request), so
+       *  send it on its own. See deploy/traefik-drain.ts. */
+      customLabels?: string;
     },
   ): Promise<{ droppedFields: string[] }> {
     const body: Record<string, unknown> = {};
@@ -850,6 +856,9 @@ export class CoolifyApi {
     }
     if (fields.healthCheck !== undefined)
       Object.assign(body, healthCheckPayload(fields.healthCheck));
+    if (fields.customLabels !== undefined) {
+      body.custom_labels = Buffer.from(fields.customLabels, "utf8").toString("base64");
+    }
     if (fields.buildPack !== undefined) body.build_pack = fields.buildPack;
     if (fields.portsExposes !== undefined) body.ports_exposes = fields.portsExposes;
     if (fields.dockerComposeLocation !== undefined) {
@@ -1035,6 +1044,7 @@ export class CoolifyApi {
       portsMappings: typeof raw.ports_mappings === "string" ? raw.ports_mappings : null,
       customDockerRunOptions:
         typeof raw.custom_docker_run_options === "string" ? raw.custom_docker_run_options : null,
+      customLabels: decodeCustomLabels(raw.custom_labels),
       environmentId: typeof raw.environment_id === "number" ? raw.environment_id : undefined,
     };
   }
@@ -1637,6 +1647,11 @@ export interface CoolifyApplication {
   /** `custom_docker_run_options`. An `--ip` in here blocks rolling
    *  updates. */
   customDockerRunOptions: string | null;
+  /** `custom_labels`, decoded: the app's whole container label set, one
+   *  per line, which every deploy uses verbatim. Undefined when the API
+   *  left it out — it does unless the token has `read:sensitive`. See
+   *  deploy/traefik-drain.ts. */
+  customLabels?: string;
   /** Both naming settings force stop-before-start. Undefined means the
    * API omitted settings, not that the feature is disabled. */
   isConsistentContainerNameEnabled?: boolean;
@@ -1798,6 +1813,18 @@ function extractServerUuid(raw: Record<string, unknown>): string | undefined {
 
 /** Coolify booleans arrive as `true`/`false`, `1`/`0` or `"1"`/`"0"`
  *  depending on the column and build. Anything else is unknown. */
+/** Coolify stores `custom_labels` base64-encoded and returns it that way;
+ *  plain text is accepted too, in case a build ever returns it decoded. */
+export function decodeCustomLabels(raw: unknown): string | undefined {
+  if (typeof raw !== "string" || raw.trim() === "") return undefined;
+  const compact = raw.replace(/\s+/g, "");
+  if (/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+    const text = Buffer.from(compact, "base64").toString("utf8");
+    if (text.includes("=") && !text.includes("\uFFFD")) return text;
+  }
+  return raw;
+}
+
 function coerceFlag(value: unknown): boolean | undefined {
   if (typeof value === "boolean") return value;
   if (value === 1 || value === "1") return true;

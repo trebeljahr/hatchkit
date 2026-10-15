@@ -63,15 +63,49 @@ Coolify stops the old container, the requests sent to it in that moment fail
 with a 502, or hang until they end in a 504.
 
 The Dockerfiles hatchkit writes drain the old container first. On
-`docker stop`, the container answers the health check with a 503 and keeps
-serving every other request. Docker marks it unhealthy after 5 failed checks,
-and Traefik stops sending it traffic. The container closes 20 seconds after
-the stop (`SHUTDOWN_DRAIN_SECONDS`).
+`docker stop`, the container fails its health checks with a 503 and keeps
+serving every other request. Traefik stops sending it traffic. The container
+closes 20 seconds after the stop (`SHUTDOWN_DRAIN_SECONDS`).
 
-The drain depends on hatchkit's health-check timing: a check every 2 seconds,
-5 retries, and a 15-second start period. `hatchkit doctor` reports an app with
-other values, and `hatchkit sync` sets them. The first deploy after a change
-still stops a container that has no drain.
+Two checks can take the old container out of Traefik:
+
+- **Docker's health check.** Coolify runs it inside the container. Docker
+  marks the container unhealthy after 3 failed checks, 4 seconds apart. The
+  old container leaves Traefik at most 15.5 seconds after the stop.
+- **Traefik's own health check.** Traefik sends a request with an
+  `X-Hatchkit-Drain` header to each container every 2 seconds. One failed
+  check takes the container out. The image starts to fail it 4 seconds after
+  the stop. That gives Traefik time to add the new container first. The old
+  container leaves Traefik at most 6.5 seconds after the stop.
+
+Docker runs its check for the whole life of the container, not only during a
+deploy. Each check starts `curl` or `wget` inside the container, so a short
+interval costs CPU on the server all the time. Traefik's check is a plain HTTP
+request, and the image answers it without the app. When Traefik's check
+drains an app, Docker's check only has to report that a new container is
+ready. It then runs every 10 seconds instead of every 4.
+
+`hatchkit sync` turns on Traefik's check when the repo's image answers the
+`X-Hatchkit-Drain` header. Coolify has no setting for this check, so sync
+rewrites the app's container labels. It renames Coolify's routers and services
+(`https-0-<uuid>` becomes `hk-https-0-<uuid>`) and adds the check to them. The
+renamed routers get a priority one below Coolify's own. So when the old and the
+new container have different labels, the Coolify-named routers carry the
+traffic, and no deploy loses its routes.
+
+Coolify writes new labels when you change a domain or save the app in its UI.
+That removes Traefik's check. `hatchkit doctor` reports it, and
+`hatchkit sync` puts it back. `hatchkit sync --no-traefik-drain` turns the
+check off: it writes Coolify's own labels back and sets Docker's check to
+4 seconds again. The next deploy hands over to Coolify's routers.
+
+An image without the header answers Traefik's check like any other request,
+so the check always passes. The app then drains on Docker's check, and sync
+keeps that check at 4 seconds.
+
+`hatchkit doctor` reports health-check timing that differs from hatchkit's,
+and `hatchkit sync` sets it. The first deploy after a change still stops a
+container that has no drain.
 
 A compose deploy stops the old container before it starts the new one. The
 compose files set `SHUTDOWN_DRAIN_SECONDS=0`, because a drain there only

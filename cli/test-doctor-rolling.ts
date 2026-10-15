@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkProjectRollingDeployState } from "./src/doctor.js";
+import { withTraefikDrain } from "./src/deploy/traefik-drain.js";
 import { CoolifyApi } from "./src/utils/coolify-api.js";
 
 const dir = mkdtempSync(join(tmpdir(), "hatchkit-doctor-rolling-"));
@@ -14,9 +15,9 @@ const base = {
   build_pack: "dockerimage",
   health_check_enabled: true,
   health_check_path: "/",
-  health_check_interval: 2,
+  health_check_interval: 4,
   health_check_timeout: 5,
-  health_check_retries: 5,
+  health_check_retries: 3,
   health_check_start_period: 15,
 };
 let raw: Record<string, unknown> = { ...base };
@@ -99,6 +100,41 @@ try {
   });
   assert.equal(results[0].status, "warn");
   assert.match(results[0].detail, /custom internal/);
+
+  // Traefik's drain check (deploy/traefik-drain.ts): on, it is reported;
+  // wiped by Coolify while Docker's check is slow, the deploy can't drain.
+  const settings = { is_consistent_container_name_enabled: false, custom_internal_name: null };
+  const coolifyLabels = [
+    "traefik.enable=true",
+    "traefik.http.routers.https-0-app.rule=Host(`site.example`) && PathPrefix(`/`)",
+    "traefik.http.routers.https-0-app.service=https-0-app",
+    "traefik.http.services.https-0-app.loadbalancer.server.port=80",
+  ].join("\n");
+  const doctorOn = async (labels: string, interval: number) => {
+    raw = {
+      ...base,
+      settings,
+      health_check_interval: interval,
+      custom_labels: Buffer.from(labels).toString("base64"),
+    };
+    const app = await api.getApplication("app");
+    return checkProjectRollingDeployState(dir, {
+      api: {
+        async listApplications() {
+          return [{ uuid: "app", name: "site" }];
+        },
+        async getApplication() {
+          return app;
+        },
+      },
+    });
+  };
+  const on = await doctorOn(withTraefikDrain(coolifyLabels, { uuid: "app", healthPath: "/" }), 10);
+  assert.equal(on[0].status, "ok");
+  assert.match(on[0].detail, /Traefik's own check drains it/);
+  const wiped = await doctorOn(coolifyLabels, 10);
+  assert.equal(wiped[0].status, "warn");
+  assert.match(wiped[0].detail, /lost Traefik's drain check/);
   console.log("✓ Coolify name-setting mappings and doctor rolling-deployment qualification");
 } finally {
   globalThis.fetch = originalFetch;

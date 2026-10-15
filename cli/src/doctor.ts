@@ -3713,10 +3713,13 @@ export async function checkProjectRollingDeployState(
     healthCheckToConverge,
     rollingUpdateBlocker,
     rollingUpdateNamingUnknown,
+    TRAEFIK_DRAIN_TIMING,
     worstCaseDrainDropSeconds,
   } = await import("./deploy/image-runtime.js");
+  const { drainLabelState, imageAnswersDrainProbe } = await import("./deploy/traefik-drain.js");
 
   const names = new Set<string>();
+  const roles = new Map<string, "compose" | "app" | "client" | "server">();
   for (const runtime of ["compose", "image"] as const) {
     for (const topology of ["single-origin", "split"] as const) {
       for (const routed of computeRoutingPlan({
@@ -3728,6 +3731,7 @@ export async function checkProjectRollingDeployState(
       }).apps) {
         names.add(routed.appName);
         for (const alias of routed.aliases) names.add(alias);
+        if (runtime === "image") roles.set(routed.appName, routed.role);
       }
     }
   }
@@ -3787,7 +3791,28 @@ export async function checkProjectRollingDeployState(
         });
         continue;
       }
-      if (healthCheckToConverge(app.healthCheck, healthCheckFor("app")) !== undefined) {
+      // Traefik's own check drains an app whose labels hatchkit rewrote
+      // (deploy/traefik-drain.ts); Docker's then only gates readiness.
+      const labels =
+        app.customLabels !== undefined ? drainLabelState(app.customLabels, app.uuid) : undefined;
+      const traefikDrain = labels === "hatchkit";
+      const target = healthCheckFor("app", { traefikDrain });
+      if (labels === "coolify" && intervalSeconds >= TRAEFIK_DRAIN_TIMING.intervalSeconds) {
+        out.push({
+          name,
+          status: "warn",
+          detail:
+            `"${app.name}" lost Traefik's drain check — Coolify regenerated its labels (a domain ` +
+            `change or a save in its UI) — and Docker's check alone (every ${intervalSeconds}s) ` +
+            `is too slow to drain, so its next deploys end in 502s`,
+          hint: [
+            "Put the check back (labels from Coolify's current set):",
+            "  hatchkit sync --dry-run   # then without --dry-run",
+          ],
+        });
+        continue;
+      }
+      if (healthCheckToConverge(app.healthCheck, target) !== undefined) {
         out.push({
           name,
           status: "warn",
@@ -3795,7 +3820,9 @@ export async function checkProjectRollingDeployState(
             `"${app.name}" deploys as a rolling update, but its health check (every ${intervalSeconds}s, ${retries} retries) ` +
             (lingers > COOLIFY_STOP_TIMEOUT_SECONDS
               ? `keeps a stopping container routed for up to ${Math.round(lingers)}s — past the ${COOLIFY_STOP_TIMEOUT_SECONDS}s docker stop, so each deploy ends in 502s`
-              : "isn't hatchkit's, which the images' shutdown drain is timed against"),
+              : intervalSeconds < target.intervalSeconds
+                ? `probes more often than hatchkit's (every ${target.intervalSeconds}s, ${target.retries} retries) — one docker exec per probe, all day`
+                : `isn't hatchkit's (every ${target.intervalSeconds}s, ${target.retries} retries), which the images' shutdown drain is timed against`),
           hint: [
             "Push hatchkit's health-check timing:",
             "  hatchkit sync --dry-run   # then without --dry-run",
@@ -3803,10 +3830,21 @@ export async function checkProjectRollingDeployState(
         });
         continue;
       }
+      const role = roles.get(app.name) ?? "app";
+      const canMove =
+        !traefikDrain &&
+        role !== "compose" &&
+        imageAnswersDrainProbe(projectDir, role, manifest.projectSubdir || undefined);
       out.push({
         name,
         status: "ok",
-        detail: `"${app.name}" deploys as a rolling update (health check GET ${app.healthCheck.path ?? "/"})`,
+        detail: traefikDrain
+          ? `"${app.name}" deploys as a rolling update; Traefik's own check drains it ` +
+            `(Docker's, GET ${app.healthCheck.path ?? "/"}, every ${intervalSeconds}s)`
+          : `"${app.name}" deploys as a rolling update (health check GET ${app.healthCheck.path ?? "/"})` +
+            (canMove
+              ? " — its image answers Traefik's drain probe; hatchkit sync moves the drain there and slows Docker's check"
+              : ""),
       });
       continue;
     }

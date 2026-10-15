@@ -93,13 +93,13 @@ COPY --from=build /prod/node_modules ./node_modules
 # for it to turn healthy, then running `docker stop` on this one — and
 # Traefik keeps routing here until the process has EXITED, so requests
 # caught in between fail with a 502 or hang into a 504. On SIGTERM the
-# server fails its health probe (so Docker marks this container unhealthy
-# and Traefik drops it), keeps serving for SHUTDOWN_DRAIN_SECONDS, then
+# server fails its health probes (so Traefik drops this container),
+# keeps serving for SHUTDOWN_DRAIN_SECONDS, then
 # shuts down — see the "Graceful shutdown" section of src/index.ts.
 #
-# SHUTDOWN_DRAIN_SECONDS is timed against the health check hatchkit sets
-# on the Coolify app (every 2 s, 5 retries) and has to stay under the
-# 30 s `docker stop` allows. 0 turns the drain off.
+# SHUTDOWN_DRAIN_SECONDS is timed against the health checks hatchkit sets
+# on the Coolify app and has to stay under the 30 s `docker stop` allows.
+# 0 turns the drain off.
 ENV SHUTDOWN_DRAIN_SECONDS=20
 
 USER node

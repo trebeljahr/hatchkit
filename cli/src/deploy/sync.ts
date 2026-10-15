@@ -141,7 +141,10 @@ import {
 } from "./gh-actions-secrets.js";
 import {
   type CoolifyRuntime,
+  DOCKER_DRAIN_TIMING,
   type HealthCheckSpec,
+  TRAEFIK_DRAIN_TIMING,
+  TRAEFIK_HEALTH,
   formatImageRef,
   healthCheckFor,
   healthCheckToConverge,
@@ -157,6 +160,14 @@ import {
   inferTopology,
   projectImageApp,
 } from "./routing.js";
+import {
+  DRAIN_PROBE_HEADER,
+  coolifyLabelsFrom,
+  drainLabelState,
+  hasTraefikDrain,
+  imageAnswersDrainProbe,
+  withTraefikDrain,
+} from "./traefik-drain.js";
 import {
   type NativeOriginsOutcome,
   TRUSTED_ORIGINS_KEY,
@@ -202,6 +213,10 @@ export interface SyncOptions {
   dns?: boolean;
   /** Push the GitHub Actions deploy secrets. Default ON. */
   secrets?: boolean;
+  /** Traefik's own drain check on image apps whose image answers it
+   *  (deploy/traefik-drain.ts). Default on; `false` (`--no-traefik-drain`)
+   *  writes Coolify's own labels back and restores Docker's fast timing. */
+  traefikDrain?: boolean;
   /** Before creating, patching or deploying anything, verify that the
    *  commit Coolify will CLONE contains the compose file each app is
    *  configured to build from. Default ON and blocking, because an app
@@ -275,6 +290,19 @@ export interface AppSyncPlan {
    *  the old container is still routed when it exits — see
    *  deploy/image-runtime.ts. A path somebody chose is left alone. */
   desiredHealthCheck?: HealthCheckSpec;
+  /** Traefik's own drain check on an image app (deploy/traefik-drain.ts):
+   *  `on` when its labels carry it after this run, otherwise why not. */
+  traefikDrain?: "on" | "off" | "image-lacks-probe" | "labels-unreadable" | "no-routes";
+  /** Whether the app's label set has to be written: hatchkit's rewrite
+   *  when `traefikDrain` is `on`, Coolify's own set back under
+   *  `--no-traefik-drain`. Only a flag — the labels themselves are built
+   *  at write time from a fresh read (a routing PATCH just before makes
+   *  Coolify regenerate them), and kept out of `--json` output: they can
+   *  hold a basic-auth hash. */
+  writeCustomLabels?: boolean;
+  /** Whether the routing PATCH (domains, ports, health check, …) is
+   *  needed. `changed` also counts a label-only change. */
+  routingChanged: boolean;
   /** Snapshot of the same fields as Coolify currently reports them. */
   current: {
     /** Whether Coolify runs a health check on this app. */
@@ -676,6 +704,14 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
       composeForApp(opts.projectDir, routed, compose),
       manifest.projectSubdir || undefined,
       dbReferences,
+      opts.traefikDrain === false
+        ? "off"
+        : routed.role !== "compose" &&
+            imageAnswersDrainProbe(
+              opts.projectDir,
+              routed.role,
+              manifest.projectSubdir || undefined,
+            ),
     );
     apps.push(plan);
     if (!opts.json) renderPlan(plan, !!opts.dryRun);
@@ -687,98 +723,115 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     if (!plan.changed) continue;
     if (opts.dryRun) continue;
 
-    const patch = ora(`Coolify: updating "${plan.name}"`).start();
-    try {
-      const result = await api.updateApplication(plan.uuid, {
-        // Skipped for compose apps — Coolify re-derives it from the
-        // compose file and our value would be discarded anyway — and for
-        // image apps, whose port is the container's own (see buildPlan).
-        ...(plan.buildPack === "dockercompose" || plan.buildPack === "dockerimage"
-          ? {}
-          : { portsExposes: plan.desiredPortsExposes }),
-        ...(plan.desiredHealthCheck ? { healthCheck: plan.desiredHealthCheck } : {}),
-        ...(plan.desiredStripPrefix !== undefined
-          ? { isStripprefixEnabled: plan.desiredStripPrefix }
-          : {}),
-        // Rides along on every PATCH for an app that needs it, and is
-        // the reason for the PATCH when `dbNetworkRepair` forced one.
-        // Never diffed: Coolify does not return the field on GET.
-        ...(plan.desiredConnectToDockerNetwork
-          ? { connectToDockerNetwork: plan.desiredConnectToDockerNetwork }
-          : {}),
-        // Push the manifest's `projectSubdir` onto Coolify's
-        // `base_directory`. Empty string resets to repo root — the
-        // case where a manifest drops `projectSubdir` after an earlier
-        // adopt set one. Coolify's API treats `""` and `"/"` as
-        // equivalent (both mean repo root).
-        ...(plan.buildPack === "dockerimage"
-          ? {}
-          : { baseDirectory: plan.desiredBaseDirectory ?? "" }),
-        ...(plan.desiredDockerComposeDomains
-          ? { dockerComposeDomains: plan.desiredDockerComposeDomains }
-          : {}),
-        ...(plan.desiredDomains ? { domains: plan.desiredDomains } : {}),
-        ...(opts.force ? { forceDomainOverride: true } : {}),
-      });
-      patch.succeed(`Coolify: updated "${plan.name}"`);
-      // A field this Coolify build refuses is dropped so the domains
-      // still land, but it is never silent: the user has to know the
-      // setting didn't take, and what to do instead.
-      if (result.droppedFields.length > 0) {
-        plan.droppedFields = result.droppedFields;
-        if (!opts.json) {
-          for (const field of result.droppedFields) {
-            console.log(
-              chalk.yellow(`    · Coolify rejected \`${field}\` — pushed the rest without it.`),
-            );
-            const limit = describeCoolifyPatchLimit(field);
-            if (limit) console.log(chalk.dim(`        ${limit}`));
+    let routingPatched = false;
+    if (plan.routingChanged) {
+      const patch = ora(`Coolify: updating "${plan.name}"`).start();
+      try {
+        const result = await api.updateApplication(plan.uuid, {
+          // Skipped for compose apps — Coolify re-derives it from the
+          // compose file and our value would be discarded anyway — and for
+          // image apps, whose port is the container's own (see buildPlan).
+          ...(plan.buildPack === "dockercompose" || plan.buildPack === "dockerimage"
+            ? {}
+            : { portsExposes: plan.desiredPortsExposes }),
+          ...(plan.desiredHealthCheck ? { healthCheck: plan.desiredHealthCheck } : {}),
+          ...(plan.desiredStripPrefix !== undefined
+            ? { isStripprefixEnabled: plan.desiredStripPrefix }
+            : {}),
+          // Rides along on every PATCH for an app that needs it, and is
+          // the reason for the PATCH when `dbNetworkRepair` forced one.
+          // Never diffed: Coolify does not return the field on GET.
+          ...(plan.desiredConnectToDockerNetwork
+            ? { connectToDockerNetwork: plan.desiredConnectToDockerNetwork }
+            : {}),
+          // Push the manifest's `projectSubdir` onto Coolify's
+          // `base_directory`. Empty string resets to repo root — the
+          // case where a manifest drops `projectSubdir` after an earlier
+          // adopt set one. Coolify's API treats `""` and `"/"` as
+          // equivalent (both mean repo root).
+          ...(plan.buildPack === "dockerimage"
+            ? {}
+            : { baseDirectory: plan.desiredBaseDirectory ?? "" }),
+          ...(plan.desiredDockerComposeDomains
+            ? { dockerComposeDomains: plan.desiredDockerComposeDomains }
+            : {}),
+          ...(plan.desiredDomains ? { domains: plan.desiredDomains } : {}),
+          ...(opts.force ? { forceDomainOverride: true } : {}),
+        });
+        patch.succeed(`Coolify: updated "${plan.name}"`);
+        // A field this Coolify build refuses is dropped so the domains
+        // still land, but it is never silent: the user has to know the
+        // setting didn't take, and what to do instead.
+        if (result.droppedFields.length > 0) {
+          plan.droppedFields = result.droppedFields;
+          if (!opts.json) {
+            for (const field of result.droppedFields) {
+              console.log(
+                chalk.yellow(`    · Coolify rejected \`${field}\` — pushed the rest without it.`),
+              );
+              const limit = describeCoolifyPatchLimit(field);
+              if (limit) console.log(chalk.dim(`        ${limit}`));
+            }
           }
         }
-      }
-      patched.push(plan);
-    } catch (err) {
-      const message = (err as Error).message;
-      patch.fail(`Coolify: PATCH failed: ${message}`);
-      routingFailed.push(plan.name);
-      // When this PATCH existed to repair the database network, saying
-      // "routing failed" alone buries the thing the user came for. The
-      // app is still crash-looping, and Coolify will still call it
-      // healthy, so hand over the standalone repair.
-      if (plan.dbNetworkRepair && !opts.json) {
-        console.log(
-          chalk.yellow(
-            `    "${plan.name}" is still not on its database's network — it will keep crash-looping.`,
-          ),
-        );
-        for (const line of connectToDockerNetworkRecipe(cfg.url, plan.uuid)) {
-          console.log(chalk.dim(`      ${line}`));
+        patched.push(plan);
+        routingPatched = true;
+      } catch (err) {
+        const message = (err as Error).message;
+        patch.fail(`Coolify: PATCH failed: ${message}`);
+        routingFailed.push(plan.name);
+        // When this PATCH existed to repair the database network, saying
+        // "routing failed" alone buries the thing the user came for. The
+        // app is still crash-looping, and Coolify will still call it
+        // healthy, so hand over the standalone repair.
+        if (plan.dbNetworkRepair && !opts.json) {
+          console.log(
+            chalk.yellow(
+              `    "${plan.name}" is still not on its database's network — it will keep crash-looping.`,
+            ),
+          );
+          for (const line of connectToDockerNetworkRecipe(cfg.url, plan.uuid)) {
+            console.log(chalk.dim(`      ${line}`));
+          }
         }
-      }
-      if (/409|conflict|already/i.test(message)) {
-        console.log(
-          chalk.dim(
-            "    Coolify reports this domain as claimed by another resource. Re-run with `--force`\n" +
-              "    once you've confirmed the other resource is a stale app for this same project.",
-          ),
+        if (/409|conflict|already/i.test(message)) {
+          console.log(
+            chalk.dim(
+              "    Coolify reports this domain as claimed by another resource. Re-run with `--force`\n" +
+                "    once you've confirmed the other resource is a stale app for this same project.",
+            ),
+          );
+        }
+        // A rejected field hatchkit already understands reads as a known
+        // API limit with a way forward, not as a raw validation error.
+        // The compose-domains case is the one that matters most: an app
+        // that has never deployed CANNOT be given a domain over the API,
+        // and no amount of re-running sync will change that.
+        const explained = parseRejectedFields(message)
+          .map((field) => [field, describeCoolifyPatchLimit(field)] as const)
+          .filter((pair): pair is readonly [string, string] => pair[1] !== undefined);
+        for (const [field, limit] of explained) {
+          if (!opts.json) console.log(chalk.yellow(`    ${field}: ${limit}`));
+        }
+        const suffix = explained.length > 0 ? ` — ${explained.map(([, l]) => l).join(" ")}` : "";
+        errors.push(
+          `PATCH ${plan.name}: ${message}${suffix}\n` +
+            `      → "${plan.name}" still has the routing it had before this run.`,
         );
       }
-      // A rejected field hatchkit already understands reads as a known
-      // API limit with a way forward, not as a raw validation error.
-      // The compose-domains case is the one that matters most: an app
-      // that has never deployed CANNOT be given a domain over the API,
-      // and no amount of re-running sync will change that.
-      const explained = parseRejectedFields(message)
-        .map((field) => [field, describeCoolifyPatchLimit(field)] as const)
-        .filter((pair): pair is readonly [string, string] => pair[1] !== undefined);
-      for (const [field, limit] of explained) {
-        if (!opts.json) console.log(chalk.yellow(`    ${field}: ${limit}`));
-      }
-      const suffix = explained.length > 0 ? ` — ${explained.map(([, l]) => l).join(" ")}` : "";
-      errors.push(
-        `PATCH ${plan.name}: ${message}${suffix}\n` +
-          `      → "${plan.name}" still has the routing it had before this run.`,
-      );
+    }
+
+    // Traefik's drain check rides on the label set, which Coolify
+    // regenerates from scratch on a routing PATCH carrying domains
+    // (deploy/traefik-drain.ts). So it is written on its own, after,
+    // from labels re-read once that PATCH has landed.
+    if (
+      (plan.traefikDrain === "on" && (routingPatched || plan.writeCustomLabels)) ||
+      (plan.traefikDrain === "off" && plan.writeCustomLabels)
+    ) {
+      const labels = await applyTraefikDrainLabels(api, plan, !!opts.json);
+      if (labels.status === "written" && !patched.includes(plan)) patched.push(plan);
+      if (labels.error) errors.push(labels.error);
     }
   }
 
@@ -1629,6 +1682,10 @@ function buildPlan(
    *  read from Coolify before the plan is built (the lookup is async;
    *  everything else here is pure). Empty for apps that don't use one. */
   coolifyDbReferences: CoolifyDbReference[] = [],
+  /** Whether the repo's image for this app answers Traefik's drain probe
+   *  ({@link imageAnswersDrainProbe}) — read from disk by the caller —
+   *  or `"off"` for `--no-traefik-drain`. */
+  drainProbe: boolean | "off" = false,
 ): AppSyncPlan {
   const isCompose = current.buildPack === "dockercompose";
   // An image app has no git checkout, so `base_directory` means nothing
@@ -1727,14 +1784,45 @@ function buildPlan(
   // (its old container is still routed when docker stop ends it).
   // Turning the check on and converging its timing are the health-check
   // changes sync makes; the path stays whatever it is.
+  //
+  // Once Traefik's own check drains the app, Docker's only has to say
+  // when the new container is ready, and slows down (TRAEFIK_DRAIN_TIMING).
+  // That needs both halves: labels sync can read and rewrite, and an image
+  // that answers the probe — one that doesn't drains on Docker's check
+  // alone, which then has to stay fast.
+  const baseHealthCheck =
+    routed.healthCheck ??
+    healthCheckFor(
+      routed.role === "server" ? "server" : routed.role === "client" ? "client" : "app",
+    );
+  const labelState =
+    isImage && current.customLabels !== undefined
+      ? drainLabelState(current.customLabels, current.uuid)
+      : undefined;
+  const traefikDrain: AppSyncPlan["traefikDrain"] = !isImage
+    ? undefined
+    : drainProbe === "off"
+      ? "off"
+      : !drainProbe
+        ? "image-lacks-probe"
+        : labelState === undefined
+          ? "labels-unreadable"
+          : labelState === "none"
+            ? "no-routes"
+            : "on";
+  const drainOpts = {
+    uuid: current.uuid,
+    healthPath: current.healthCheck.path || baseHealthCheck.path,
+  };
+  const writeCustomLabels =
+    current.customLabels !== undefined &&
+    ((traefikDrain === "on" && !hasTraefikDrain(current.customLabels, drainOpts)) ||
+      (traefikDrain === "off" && labelState === "hatchkit"));
   const desiredHealthCheck = isImage
-    ? healthCheckToConverge(
-        current.healthCheck,
-        routed.healthCheck ??
-          healthCheckFor(
-            routed.role === "server" ? "server" : routed.role === "client" ? "client" : "app",
-          ),
-      )
+    ? healthCheckToConverge(current.healthCheck, {
+        ...baseHealthCheck,
+        ...(traefikDrain === "on" ? TRAEFIK_DRAIN_TIMING : DOCKER_DRAIN_TIMING),
+      })
     : undefined;
 
   // `connect_to_docker_network`. Also write-only, so like strip_prefix
@@ -1762,6 +1850,8 @@ function buildPlan(
     ...(routed.stripPrefix !== undefined ? { desiredStripPrefix: routed.stripPrefix } : {}),
     ...(desiredBaseDirectory ? { desiredBaseDirectory } : {}),
     ...(desiredHealthCheck ? { desiredHealthCheck } : {}),
+    ...(traefikDrain ? { traefikDrain } : {}),
+    ...(writeCustomLabels ? { writeCustomLabels } : {}),
     current: {
       ...(current.healthCheck.enabled !== undefined
         ? { healthCheckEnabled: current.healthCheck.enabled }
@@ -1788,15 +1878,122 @@ function buildPlan(
     ...(wantsDbNetwork ? { desiredConnectToDockerNetwork: true } : {}),
     ...(coolifyDbReferences.length > 0 ? { coolifyDbReferences } : {}),
     ...(dbNetworkRepair ? { dbNetworkRepair: true } : {}),
-    changed:
+    routingChanged:
       portsChanged ||
       domainsChanged ||
       stripChanged ||
       baseDirectoryChanged ||
       dbNetworkRepair ||
       desiredHealthCheck !== undefined,
+    changed:
+      portsChanged ||
+      domainsChanged ||
+      stripChanged ||
+      baseDirectoryChanged ||
+      dbNetworkRepair ||
+      desiredHealthCheck !== undefined ||
+      writeCustomLabels,
     ...(blocked ? { blocked } : {}),
   };
+}
+
+/** Write hatchkit's Traefik drain labels onto an image app, from its
+ *  labels as Coolify holds them NOW (a routing PATCH just before may have
+ *  regenerated them), and read them back.
+ *
+ *  If they don't stick, Docker's check goes back to its fast timing:
+ *  this run or an earlier one may have slowed it for Traefik's check,
+ *  and slow, it can't drain inside `docker stop`. */
+async function applyTraefikDrainLabels(
+  api: CoolifyApi,
+  plan: AppSyncPlan,
+  json: boolean,
+): Promise<{ status: "written" | "unchanged" | "failed"; error?: string }> {
+  const spinner = json ? null : ora(`Coolify: Traefik drain check on "${plan.name}"`).start();
+  let opts = { uuid: plan.uuid, healthPath: plan.desiredHealthCheck?.path ?? "/" };
+  if (plan.traefikDrain === "off") {
+    // `--no-traefik-drain`: Coolify's own set back. The routing PATCH in
+    // this run already restored Docker's fast timing.
+    try {
+      const app = await api.getApplication(plan.uuid);
+      if (
+        app.customLabels !== undefined &&
+        drainLabelState(app.customLabels, plan.uuid) === "hatchkit"
+      ) {
+        await api.updateApplication(plan.uuid, {
+          customLabels: coolifyLabelsFrom(app.customLabels, plan.uuid),
+        });
+      }
+      spinner?.succeed(`Coolify: Traefik drain check off on "${plan.name}" — from its next deploy`);
+      return { status: "written" };
+    } catch (err) {
+      const message = (err as Error).message;
+      spinner?.fail(`Coolify: Traefik drain check off on "${plan.name}" failed: ${message}`);
+      return {
+        status: "failed",
+        error: `${plan.name}: Traefik drain check not removed — ${message}. Reset the labels in Coolify's UI.`,
+      };
+    }
+  }
+  try {
+    const app = await api.getApplication(plan.uuid);
+    if (app.customLabels === undefined) {
+      throw new Error("Coolify returned no custom_labels (the token needs read:sensitive)");
+    }
+    opts = { uuid: plan.uuid, healthPath: app.healthCheck.path || opts.healthPath };
+    if (drainLabelState(app.customLabels, plan.uuid) === "none") {
+      throw new Error("its labels have no Traefik router for this app");
+    }
+    // With Coolify's "readonly labels" off, a domains PATCH does not
+    // regenerate them: a rewrite would keep routing the old hosts.
+    const unrouted = (plan.desiredDomains ?? [])
+      .map((d) => {
+        try {
+          return new URL(d).hostname;
+        } catch {
+          return d;
+        }
+      })
+      .filter((host) => !app.customLabels?.includes(`Host(\`${host}\`)`));
+    if (unrouted.length > 0) {
+      throw new Error(
+        `its labels don't route ${unrouted.join(", ")} — Coolify did not regenerate them for the new ` +
+          "domains (readonly labels off?). Reset the labels in Coolify's UI, then re-run sync",
+      );
+    }
+    if (hasTraefikDrain(app.customLabels, opts)) {
+      spinner?.succeed(`Coolify: Traefik drain check already on "${plan.name}"`);
+      return { status: "unchanged" };
+    }
+    await api.updateApplication(plan.uuid, {
+      customLabels: withTraefikDrain(app.customLabels, opts),
+    });
+    const back = await api.getApplication(plan.uuid);
+    if (back.customLabels === undefined || !hasTraefikDrain(back.customLabels, opts)) {
+      throw new Error("Coolify did not keep the labels");
+    }
+    spinner?.succeed(`Coolify: Traefik drain check on "${plan.name}" — from its next deploy`);
+    return { status: "written" };
+  } catch (err) {
+    const message = (err as Error).message;
+    spinner?.fail(`Coolify: Traefik drain check on "${plan.name}" failed: ${message}`);
+    let timing = "";
+    try {
+      await api.updateApplication(plan.uuid, {
+        healthCheck: { path: opts.healthPath, ...DOCKER_DRAIN_TIMING },
+      });
+    } catch (revertErr) {
+      timing =
+        " Docker's check may be left too slow to drain on its own;" +
+        ` re-run hatchkit sync (${(revertErr as Error).message}).`;
+    }
+    return {
+      status: "failed",
+      error:
+        `${plan.name}: Traefik drain check not written — ${message}. ` +
+        `Its deploys drain on Docker's check as before.${timing}`,
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1830,10 +2027,37 @@ function renderPlan(plan: AppSyncPlan, dryRun = false): void {
       plan.current.healthCheckRetries !== undefined
         ? `every ${plan.current.healthCheckIntervalSeconds}s × ${plan.current.healthCheckRetries}`
         : "custom timing";
+    const fewerProbes =
+      plan.current.healthCheckIntervalSeconds !== undefined &&
+      plan.current.healthCheckIntervalSeconds < intervalSeconds;
     console.log(
       `    health check: ${chalk.red(was)} → ${chalk.green(`every ${intervalSeconds}s × ${retries}`)}` +
-        chalk.dim(" (lets a stopping container leave Traefik before it exits)"),
+        chalk.dim(
+          plan.traefikDrain === "on"
+            ? " (Traefik's own check drains it now; Docker's only gates readiness)"
+            : fewerProbes
+              ? " (fewer probes; a stopping container still leaves Traefik before it exits)"
+              : " (lets a stopping container leave Traefik before it exits)",
+        ),
     );
+  }
+  if (plan.writeCustomLabels && plan.traefikDrain === "on") {
+    console.log(
+      `    traefik drain check: ${chalk.red("off")} → ${chalk.green(`every ${TRAEFIK_HEALTH.intervalSeconds}s`)}` +
+        chalk.dim(" (labels renamed + health check added; takes effect on the next deploy)"),
+    );
+  } else if (plan.writeCustomLabels && plan.traefikDrain === "off") {
+    console.log(
+      `    traefik drain check: ${chalk.red("on")} → ${chalk.green("off")}` +
+        chalk.dim(" (Coolify's own labels back; takes effect on the next deploy)"),
+    );
+  } else if (plan.traefikDrain && plan.traefikDrain !== "on" && plan.traefikDrain !== "off") {
+    const why = {
+      "image-lacks-probe": `the repo's image doesn't answer the ${DRAIN_PROBE_HEADER} probe yet`,
+      "labels-unreadable": "Coolify returned no custom_labels — the API token needs read:sensitive",
+      "no-routes": "its labels have no Traefik router for this app",
+    }[plan.traefikDrain];
+    console.log(chalk.dim(`    traefik drain check: off — ${why}`));
   }
 
   if (plan.blocked) {
@@ -2033,6 +2257,7 @@ export async function runSyncCli(args: string[]): Promise<void> {
   // pushing past a finding.
   const preflight = !args.includes("--no-preflight");
   const nativeOrigins = !args.includes("--no-native-origins");
+  const traefikDrain = !args.includes("--no-traefik-drain");
   const yes = args.includes("--yes") || args.includes("-y");
   const dirArg = ((): string | undefined => {
     const i = args.findIndex((a) => a === "--dir");
@@ -2053,6 +2278,7 @@ export async function runSyncCli(args: string[]): Promise<void> {
     secrets,
     preflight,
     nativeOrigins,
+    traefikDrain,
     yes,
   });
   if (json) {

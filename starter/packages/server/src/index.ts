@@ -126,16 +126,16 @@ async function shutdown(signal: string): Promise<void> {
 }
 
 // SIGTERM is `docker stop` — in production, a deploy replacing this
-// container. Drain first: fail the health probe so Traefik stops routing
+// container. Drain first: fail the health probes so Traefik stops routing
 // here, keep serving what it still sends, and only then shut down (see
 // ./drain.ts). SHUTDOWN_DRAIN_SECONDS comes from the Dockerfile; unset (dev,
 // tests) or 0 skips the wait, and so does a second SIGTERM. SIGINT (Ctrl-C)
 // never waits.
 process.on("SIGTERM", () => {
   if (env.SHUTDOWN_DRAIN_SECONDS > 0 && !isDraining()) {
-    startDraining();
+    startDraining(env.SHUTDOWN_DRAIN_SECONDS);
     console.log(
-      `[server] SIGTERM received, failing the health check for ${env.SHUTDOWN_DRAIN_SECONDS}s before shutting down`,
+      `[server] SIGTERM received, failing the health checks for ${env.SHUTDOWN_DRAIN_SECONDS}s before shutting down`,
     );
     setTimeout(() => shutdown("SIGTERM"), env.SHUTDOWN_DRAIN_SECONDS * 1000);
     return;

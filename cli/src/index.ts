@@ -5505,6 +5505,17 @@ function printHelp(topic?: HelpTopic): void {
     --yes, -y      Accept the TRUSTED_ORIGINS diff below without a prompt.
     --no-native-origins
                    Skip the native-client origins pass.
+    --no-traefik-drain
+                   Turn Traefik's drain check off: Coolify's own labels
+                   back, Docker's health check fast again (see below).
+
+  ${chalk.bold("Traefik drain check (image apps):")}
+    When the repo's image answers the ${chalk.dim("X-Hatchkit-Drain")} probe, sync
+    rewrites the app's container labels so Traefik's own health check
+    (every 2s) takes a stopping container out of rotation, and slows
+    Docker's check to every 10s — a fifth of the ${chalk.dim("docker exec")} calls.
+    Coolify regenerates the labels on a domain change or a UI save;
+    ${chalk.cyan("hatchkit doctor")} reports that and sync puts them back.
 
   ${chalk.bold("Native clients (mobile / desktop):")}
     Capacitor and Electron load the client from their own origin

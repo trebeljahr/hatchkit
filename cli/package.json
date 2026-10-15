@@ -46,6 +46,7 @@
     "test:help-safety": "node scripts/test.mjs test-help-safety.ts",
     "test:routing": "node scripts/test.mjs test-routing.ts",
     "test:image-runtime": "node scripts/test.mjs test-image-runtime.ts",
+    "test:traefik-drain": "node scripts/test.mjs test-traefik-drain.ts",
     "test:runtime-carry-volume": "node scripts/test.mjs test-runtime-carry-volume.ts",
     "test:project-isolation": "node scripts/test.mjs test-project-isolation.ts",
     "test:shutdown-drain": "node scripts/test.mjs test-shutdown-drain.ts",

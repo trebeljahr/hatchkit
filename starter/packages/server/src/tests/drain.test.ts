@@ -1,16 +1,19 @@
 /**
  * The shutdown drain (src/drain.ts), as `/api/health` serves it.
  *
- * Two claims, and getting either wrong costs a deploy its zero downtime:
+ * Three claims, and getting any wrong costs a deploy its zero downtime:
  *
  *  - Once draining, the in-container health probe (a loopback request) gets a
  *    503. That is what makes Docker mark the stopping container unhealthy and
  *    Traefik drop it before it closes; answered 200, Traefik routes to it
  *    until it exits and the requests caught in between fail.
+ *  - Traefik's own probe (the X-Hatchkit-Drain header, no X-Forwarded-For)
+ *    gets a 200 without touching the app, and a 503 once draining.
  *  - A request from anywhere else still gets the normal answer. Visitors, a
  *    monitor and the deploy job's /api/health poll all come through Traefik —
  *    a 503 for them would be an outage the drain itself caused. Checked over a
- *    non-loopback interface when the machine has one.
+ *    non-loopback interface when the machine has one, and with the probe's
+ *    header on a forwarded request.
  */
 import assert from "node:assert/strict";
 import type { Server } from "node:http";
@@ -19,7 +22,7 @@ import { networkInterfaces } from "node:os";
 import { after, test } from "node:test";
 
 import { createApp } from "../app.js";
-import { isDraining, isLoopback, startDraining } from "../drain.js";
+import { isDraining, isLoopback, isTraefikProbe, startDraining } from "../drain.js";
 
 const servers: Server[] = [];
 after(() => {
@@ -52,18 +55,35 @@ test("isLoopback knows every spelling of the container's own address", () => {
   assert.equal(isLoopback(undefined), false);
 });
 
-test("draining fails the loopback probe and nothing else", async () => {
+test("isTraefikProbe needs the header and no X-Forwarded-For", () => {
+  assert.equal(isTraefikProbe({ "x-hatchkit-drain": "1" }), true);
+  assert.equal(isTraefikProbe({ "x-hatchkit-drain": "1", "x-forwarded-for": "203.0.113.9" }), false);
+  assert.equal(isTraefikProbe({}), false);
+});
+
+test("draining fails both probes and nothing else", async () => {
   const port = await listen("0.0.0.0");
   const probe = `http://127.0.0.1:${port}/api/health`;
+  const traefik = { "x-hatchkit-drain": "1" };
+  const forwarded = { ...traefik, "x-forwarded-for": "203.0.113.9" };
 
   assert.equal(isDraining(), false);
   const before = await fetch(probe);
   const beforeStatus = before.status;
+  const serving = await fetch(`http://127.0.0.1:${port}/`, { headers: traefik });
+  assert.equal(serving.status, 200, "Traefik's probe passes on any path");
+  assert.equal(await serving.text(), "serving\n");
 
   startDraining();
   const drained = await fetch(probe);
   assert.equal(drained.status, 503);
   assert.deepEqual(await drained.json(), { status: "draining" });
+  assert.equal((await fetch(probe, { headers: traefik })).status, 503, "Traefik's probe fails");
+
+  // Over loopback, so `/` rather than the health path Docker probes.
+  const visitor = await fetch(`http://127.0.0.1:${port}/`, { headers: forwarded });
+  assert.notEqual(visitor.status, 503, "a forwarded request with the header is a visitor");
+  assert.notEqual(await visitor.text(), "draining\n");
 
   const ip = externalIPv4();
   if (ip) {
