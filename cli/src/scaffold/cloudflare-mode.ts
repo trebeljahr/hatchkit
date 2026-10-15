@@ -11,8 +11,9 @@
 //
 //   wrangler.jsonc                 — what to serve and how to 404
 //   .node-version                  — pin the CI toolchain
-//   packages/client/public/_headers — immutable caching for hashed output
-//   .github/workflows/deploy.yml   — build + `wrangler deploy`
+//   packages/client/public/_headers — no-cache rules (see worker-assets.ts)
+//   scripts/carry-static.mjs       — carries old hashed chunks into each upload
+//   .github/workflows/deploy.yml   — build, carry, upload, then activate
 //
 // Everything here is idempotent: each step checks for the desired end
 // state first, so re-running against an already-converted project is a
@@ -22,6 +23,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readPackageName, readWorkspacePackageNames } from "./pkg-json.js";
 import { removeIfExists } from "./starter-files.js";
+import {
+  CARRY_SCRIPT_REL_PATH,
+  WRANGLER_PACKAGE,
+  migrateHeaders,
+  renderWorkerHeaders,
+  writeCarryScript,
+} from "./worker-assets.js";
 
 /** Repo-relative directory `pnpm build` static-exports the client into.
  *  Kept as a named export because three other modules need to agree on
@@ -60,6 +68,10 @@ export interface CloudflareModeInput {
   defaultBranch?: string;
   /** Node major written to `.node-version`. */
   nodeVersion?: string;
+  /** Public URL the site is served at (`https://<domain>`). The deploy
+   *  workflow's carry step reads the live release manifest from here.
+   *  Absent (a site on *.workers.dev only) skips the carry. */
+  siteUrl?: string;
 }
 
 /** Apply every cloudflare-specific change to a scaffolded project that
@@ -77,7 +89,8 @@ export function applyCloudflareMode(
   writeWranglerConfig(outputDir, input.workerName, compatibilityDate, modifications);
   writeNodeVersion(outputDir, nodeVersion, modifications);
   writeHeaders(outputDir, modifications);
-  writeDeployWorkflow(outputDir, branch, modifications);
+  writeCarryScript(outputDir, modifications);
+  writeDeployWorkflow(outputDir, branch, input.siteUrl, modifications);
   dropCoolifyWorkflow(outputDir, modifications);
 }
 
@@ -181,34 +194,29 @@ function writeNodeVersion(outputDir: string, nodeVersion: string, modifications:
   modifications.push(`cloudflare: wrote .node-version (${nodeVersion})`);
 }
 
-/** Immutable caching for content-hashed build output.
+/** No-cache rules for the served output.
  *
  *  Next copies `public/` verbatim into `out/`, so the file lands at the
  *  root of what the Worker serves, which is where Cloudflare looks for
- *  it. Everything under `/_next/static/` carries a content hash in its
- *  filename, so a year of immutable caching is safe by construction.
+ *  it. A project scaffolded before 2026-10-15 has an immutable rule on
+ *  `/_next/static/*` that caches 404s for a year; a re-run removes
+ *  hatchkit's own copy of that rule (see worker-assets.ts).
  */
 function writeHeaders(outputDir: string, modifications: string[]): void {
   const publicDir = join(outputDir, CLOUDFLARE_PUBLIC_DIR);
   mkdirSync(publicDir, { recursive: true });
   const path = join(publicDir, "_headers");
-  if (existsSync(path)) return;
-  writeFileSync(
-    path,
-    `# Content-hashed build output never changes under the same URL.
-/_next/static/*
-  Cache-Control: public, max-age=31536000, immutable
-
-# /version.json must never be cached: a tab that outlived a deploy fetches it
-# to find out, and a cached copy answers with the commit that tab already has.
-# The rule belongs here rather than in next.config's headers() — a static
-# export serves files directly and ignores that block entirely.
-/version.json
-  Cache-Control: no-store, must-revalidate
-`,
-    "utf-8",
-  );
-  modifications.push(`cloudflare: wrote ${CLOUDFLARE_HEADERS_REL_PATH} (immutable /_next/static)`);
+  if (existsSync(path)) {
+    const migrated = migrateHeaders(readFileSync(path, "utf-8"));
+    if (migrated === null) return;
+    writeFileSync(path, migrated, "utf-8");
+    modifications.push(
+      `cloudflare: updated ${CLOUDFLARE_HEADERS_REL_PATH} (no immutable 404s, release manifest no-store)`,
+    );
+    return;
+  }
+  writeFileSync(path, renderWorkerHeaders(), "utf-8");
+  modifications.push(`cloudflare: wrote ${CLOUDFLARE_HEADERS_REL_PATH}`);
 }
 
 /** Write the deploy workflow.
@@ -224,23 +232,127 @@ function writeHeaders(outputDir: string, modifications: string[]): void {
  *  the checkout time, which silently breaks any build step that
  *  derives dates from the filesystem (a sitemap's `lastmod` is the
  *  usual victim).
+ *
+ *  A workflow hatchkit wrote before 2026-10-15 (one-step `wrangler
+ *  deploy`, no carry) is replaced; any other existing file is left alone.
  */
-function writeDeployWorkflow(outputDir: string, branch: string, modifications: string[]): void {
+function writeDeployWorkflow(
+  outputDir: string,
+  branch: string,
+  siteUrl: string | undefined,
+  modifications: string[],
+): void {
   const path = join(outputDir, CLOUDFLARE_WORKFLOW_REL_PATH);
   mkdirSync(join(outputDir, ".github", "workflows"), { recursive: true });
+  const body = renderDeployWorkflow(branch, siteUrl);
   if (existsSync(path)) {
+    const current = readFileSync(path, "utf-8");
+    if (current === body) return;
+    if (current !== renderLegacyDeployWorkflow(branch)) {
+      modifications.push(
+        `cloudflare: ${CLOUDFLARE_WORKFLOW_REL_PATH} already exists — left untouched`,
+      );
+      return;
+    }
+    writeFileSync(path, body, "utf-8");
     modifications.push(
-      `cloudflare: ${CLOUDFLARE_WORKFLOW_REL_PATH} already exists — left untouched`,
+      `cloudflare: replaced ${CLOUDFLARE_WORKFLOW_REL_PATH} (upload, then activate; carry old chunks)`,
     );
     return;
   }
-  writeFileSync(path, renderDeployWorkflow(branch), "utf-8");
+  writeFileSync(path, body, "utf-8");
   modifications.push(`cloudflare: wrote ${CLOUDFLARE_WORKFLOW_REL_PATH}`);
 }
 
 /** Exported for the test suite and for `hatchkit cloudflare`, which
- *  writes the same workflow into an already-scaffolded repo. */
-export function renderDeployWorkflow(branch: string): string {
+ *  writes the same workflow into an already-scaffolded repo.
+ *
+ *  Upload, wait, then activate: a one-step `wrangler deploy` left about
+ *  15 s in which the new HTML was live and its chunks answered 404
+ *  (canary, 2026-10-12). `versions upload`, a 43 s pause and `versions
+ *  deploy` had no 404 in 14 samples. The pause here is 30 s. */
+export function renderDeployWorkflow(branch: string, siteUrl?: string): string {
+  return `name: Deploy to Cloudflare
+
+on:
+  push:
+    branches: [${branch}]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-cloudflare
+  # Never cancel a run between upload and activation.
+  cancel-in-progress: false
+
+env:
+  # Live site the carry step reads /release-assets.json from. Blank skips
+  # the carry (a site on *.workers.dev only).
+  SITE_URL: "${siteUrl ?? ""}"
+  WRANGLER: ${WRANGLER_PACKAGE}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # A shallow clone stamps every file's mtime with the checkout
+          # time. Build steps that read dates off the filesystem (e.g. a
+          # sitemap's lastmod) need the real history.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      # Not --frozen-lockfile: the static scaffold prunes deps out of
+      # package.json without regenerating the starter's lockfile. Run
+      # \`pnpm install\` locally, commit the refreshed lockfile, then
+      # tighten this to --frozen-lockfile.
+      - run: pnpm install --no-frozen-lockfile
+
+      # Writes the static site to ${CLOUDFLARE_PUBLISH_DIR}, which
+      # wrangler.jsonc serves.
+      - run: pnpm run build
+
+      # A Worker version serves only its own files. Carry the hashed files
+      # of the last two releases so tabs opened before this deploy keep
+      # loading their chunks.
+      - name: Carry earlier releases' hashed files
+        if: env.SITE_URL != ''
+        run: node ${CARRY_SCRIPT_REL_PATH} --site "$SITE_URL" --out ${CLOUDFLARE_PUBLISH_DIR}
+
+      - name: Upload a new Worker version (not live yet)
+        id: upload
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_OUTPUT_FILE_PATH: \${{ runner.temp }}/wrangler-upload.ndjson
+        run: |
+          pnpm dlx "$WRANGLER" versions upload --tag "$GITHUB_SHA" --message "$GITHUB_SHA"
+          id=$(node -e 'const rows=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\\n").map((l)=>JSON.parse(l));const row=rows.find((r)=>r.type==="version-upload");if(!row?.version_id)process.exit(1);console.log(row.version_id)' "$WRANGLER_OUTPUT_FILE_PATH")
+          echo "version_id=$id" >> "$GITHUB_OUTPUT"
+          echo "Uploaded version $id"
+
+      # Measured on the canary: activating right after a one-step deploy
+      # left ~15 s of 404s on new chunks; upload, wait, activate left none.
+      - name: Let the upload settle
+        run: sleep 30
+
+      - name: Activate the version
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm dlx "$WRANGLER" versions deploy "\${{ steps.upload.outputs.version_id }}@100%" --message "$GITHUB_SHA" --yes
+`;
+}
+
+/** The workflow hatchkit wrote before 2026-10-15, kept only so a re-run
+ *  can recognise and replace its own file. */
+function renderLegacyDeployWorkflow(branch: string): string {
   return `name: Deploy to Cloudflare
 
 on:

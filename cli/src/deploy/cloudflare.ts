@@ -117,7 +117,15 @@ async function executeCloudflareSetup(
   //    applyCloudflareMode is idempotent, so calling it twice is fine.
   const workerName = opts.workerName ?? readWorkerName(cwd) ?? repo.repo;
   const modifications: string[] = [];
-  applyCloudflareMode(cwd, { workerName, defaultBranch: repo.defaultBranch }, modifications);
+  applyCloudflareMode(
+    cwd,
+    {
+      workerName,
+      defaultBranch: repo.defaultBranch,
+      siteUrl: opts.domain ? `https://${opts.domain}` : undefined,
+    },
+    modifications,
+  );
   for (const m of modifications) console.log(chalk.dim(`  · ${m}`));
 
   // 3. The Worker's own deploy token, pushed as the repo's CI secret. A

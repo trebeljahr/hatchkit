@@ -61,7 +61,14 @@ export function pruneToSurface(
     // can run.
     if (config.deploymentMode === "gh-pages") applyPagesMode(outputDir, modifications);
     else if (config.deploymentMode === "cloudflare") {
-      applyCloudflareMode(outputDir, { workerName: config.name }, modifications);
+      applyCloudflareMode(
+        outputDir,
+        {
+          workerName: config.name,
+          siteUrl: config.domain ? `https://${config.domain}` : undefined,
+        },
+        modifications,
+      );
     }
   }
 }

@@ -21,7 +21,7 @@
  * Run: `pnpm test` (via the script in cli/package.json).
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -41,12 +41,62 @@ const { scaffoldApp } = await import("./src/scaffold/app.js");
 const { applyCloudflareMode, renderDeployWorkflow } = await import(
   "./src/scaffold/cloudflare-mode.js"
 );
+const { carryScriptSource, findImmutable404Rules } = await import(
+  "./src/scaffold/worker-assets.js"
+);
 const { isStaticHostMode } = await import("./src/prompts.js");
 const { collectProjectConfig } = await import("./src/prompts.js");
 const { readWorkerName } = await import("./src/deploy/cloudflare.js");
 type ProjectConfig = import("./src/prompts.js").ProjectConfig;
 
 const results: Record<string, boolean> = {};
+
+/** Byte-for-byte the deploy.yml hatchkit wrote before 2026-10-15. */
+const LEGACY_WORKFLOW = `name: Deploy to Cloudflare
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-cloudflare
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # A shallow clone stamps every file's mtime with the checkout
+          # time. Build steps that read dates off the filesystem (e.g. a
+          # sitemap's lastmod) need the real history.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      # Not --frozen-lockfile: the static scaffold prunes deps out of
+      # package.json without regenerating the starter's lockfile. Run
+      # \`pnpm install\` locally, commit the refreshed lockfile, then
+      # tighten this to --frozen-lockfile.
+      - run: pnpm install --no-frozen-lockfile
+
+      # Writes the static site to packages/client/out, which
+      # wrangler.jsonc serves.
+      - run: pnpm run build
+
+      - uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: \${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: \${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: pnpm
+`;
 
 function test(name: string, fn: () => void | Promise<void>): Promise<void> {
   return (async () => {
@@ -117,17 +167,79 @@ await test(".node-version is written", () => {
   assert.match(read(".node-version"), /^\d+\s*$/);
 });
 
-await test("_headers caches hashed build output immutably", () => {
+await test("_headers puts no long cache on hashed output", () => {
+  // Cloudflare applies _headers to 404s too, and the edge caches them: an
+  // immutable /_next/static/* rule kept a missing chunk's 404 for a year
+  // (canary, 2026-10-12).
   const h = read("packages/client/public/_headers");
-  assert.match(h, /\/_next\/static\/\*/);
-  assert.match(h, /max-age=31536000, immutable/);
+  assert.ok(!/^\/_next\/static\/\*/m.test(h), "no /_next/static/* rule");
+  assert.ok(!/immutable/.test(h.replace(/^#.*$/gm, "")), "no immutable directive");
+  assert.deepEqual(findImmutable404Rules(h), []);
 });
 
-await test("deploy workflow uses wrangler-action and reads the secrets", () => {
+await test("_headers keeps the release manifest uncacheable", () => {
+  assert.match(
+    read("packages/client/public/_headers"),
+    /^\/release-assets\.json\n {2}Cache-Control: no-store/m,
+  );
+});
+
+await test("the carry script ships with the project", () => {
+  assert.equal(read("scripts/carry-static.mjs"), carryScriptSource());
+});
+
+await test("deploy workflow uploads, waits, then activates", () => {
   const wf = read(".github/workflows/deploy.yml");
-  assert.match(wf, /cloudflare\/wrangler-action@v4/);
+  const upload = wf.indexOf("versions upload");
+  const settle = wf.indexOf("sleep 30");
+  const activate = wf.indexOf("versions deploy");
+  assert.ok(upload > 0 && settle > upload && activate > settle, "upload < sleep < deploy");
+  assert.ok(!/wrangler-action/.test(wf), "no one-step wrangler deploy");
+  assert.match(wf, /--tag "\$GITHUB_SHA"/);
+  assert.match(wf, /steps\.upload\.outputs\.version_id/);
   assert.match(wf, /secrets\.CLOUDFLARE_API_TOKEN/);
   assert.match(wf, /secrets\.CLOUDFLARE_ACCOUNT_ID/);
+  assert.match(wf, /cancel-in-progress: false/);
+});
+
+await test("deploy workflow carries old chunks from the live domain before upload", () => {
+  const wf = read(".github/workflows/deploy.yml");
+  assert.match(wf, /SITE_URL: "https:\/\/cf-static\.example\.com"/);
+  const carryAt = wf.indexOf("node scripts/carry-static.mjs");
+  assert.ok(carryAt > wf.indexOf("pnpm run build"), "after the build");
+  assert.ok(carryAt < wf.indexOf("versions upload"), "before the upload");
+  assert.match(wf, /--out packages\/client\/out/);
+});
+
+await test("a re-run fixes a pre-2026-10-15 project in place", () => {
+  // Old _headers block and the old one-step workflow are hatchkit's own
+  // files: a re-run of `hatchkit cloudflare` replaces both.
+  const legacyDir = mkdtempSync(join(tmpdir(), "cf-mode-legacy-"));
+  mkdirSync(join(legacyDir, "packages/client/public"), { recursive: true });
+  mkdirSync(join(legacyDir, ".github/workflows"), { recursive: true });
+  writeFileSync(
+    join(legacyDir, "packages/client/public/_headers"),
+    "# Content-hashed build output never changes under the same URL.\n/_next/static/*\n  Cache-Control: public, max-age=31536000, immutable\n\n/version.json\n  Cache-Control: no-store, must-revalidate\n",
+  );
+  writeFileSync(join(legacyDir, ".github/workflows/deploy.yml"), LEGACY_WORKFLOW);
+  const mods: string[] = [];
+  applyCloudflareMode(legacyDir, { workerName: "legacy" }, mods);
+  const h = readFileSync(join(legacyDir, "packages/client/public/_headers"), "utf-8");
+  assert.deepEqual(findImmutable404Rules(h), []);
+  assert.match(h, /\/release-assets\.json/);
+  assert.match(h, /\/version\.json/);
+  assert.match(
+    readFileSync(join(legacyDir, ".github/workflows/deploy.yml"), "utf-8"),
+    /versions upload/,
+  );
+  // A hand-written workflow is never replaced.
+  writeFileSync(join(legacyDir, ".github/workflows/deploy.yml"), "name: mine\n");
+  applyCloudflareMode(legacyDir, { workerName: "legacy" }, []);
+  assert.equal(
+    readFileSync(join(legacyDir, ".github/workflows/deploy.yml"), "utf-8"),
+    "name: mine\n",
+  );
+  rmSync(legacyDir, { recursive: true, force: true });
 });
 
 await test("deploy workflow clones full history", () => {
@@ -322,9 +434,7 @@ await test("probe reports every missing grant, not just the first", async () => 
 
 await test("a 404 is a pass, not a missing permission", async () => {
   // An account without a workers.dev subdomain may return 404.
-  const probes = await probeWith((url) =>
-    url.includes("workers/subdomain") ? ABSENT : OK,
-  );
+  const probes = await probeWith((url) => (url.includes("workers/subdomain") ? ABSENT : OK));
   assert.ok(probes.every((p) => p.ok));
 });
 
