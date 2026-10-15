@@ -1,7 +1,14 @@
 # syntax=docker/dockerfile:1
 #
 # Static-site image for hatchkit's docs (Next.js + fumadocs at docs/).
-# Built by .github/workflows/deploy.yml, pushed to GHCR, pulled by
+#
+# RETIRED: since 2026-10 hatchkit.trebeljahr.com is served by the Cloudflare
+# Worker `hatchkit-docs` (.github/workflows/deploy.yml). CI no longer builds
+# this image. It stays only while the Coolify app soaks as the rollback;
+# delete it with docs/nginx.conf, docs/drain-entrypoint.sh and the
+# retained/rolling release scripts when that app is retired.
+#
+# Was built by .github/workflows/deploy.yml, pushed to GHCR, pulled by
 # Coolify for hatchkit.trebeljahr.com. nginx serves the prebuilt
 # bundle; a short Node startup check seeds the shared release volume. `next build` with `output: "export"`
 # emits a fully static site to /app/out.

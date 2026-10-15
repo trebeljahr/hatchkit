@@ -1,0 +1,25 @@
+// hatchkit.trebeljahr.com: the static docs export on Cloudflare Workers.
+//
+// Assets only. No `main`: no Worker code runs, so requests never count
+// toward the Workers Free daily cap. Never add `main`, `run_worker_first`
+// or `cache` — each turns asset requests into billed invocations.
+//
+// No `routes`: the zone routes are made once by hand (see the header of
+// .github/workflows/deploy.yml), and Wrangler leaves routes alone only
+// while this file has no `routes` key. That also lets CI deploy with a
+// token scoped to this one Worker.
+{
+  "name": "hatchkit-docs",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    // Written by `pnpm build` plus scripts/write-version.mjs,
+    // scripts/carry-static.mjs and scripts/docs-worker-files.mjs.
+    "directory": "./out",
+    // The export writes `<page>.html`; nginx served it at `/<page>` and
+    // sent `/<page>/` there. _redirects keeps that a 301.
+    "html_handling": "drop-trailing-slash",
+    "not_found_handling": "404-page"
+  }
+}

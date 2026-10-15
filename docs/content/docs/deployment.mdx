@@ -1,67 +1,49 @@
 ---
 title: Deploying the docs site
-description: Build and release the Hatchkit documentation through Coolify while keeping open tabs usable.
+description: Build and release the Hatchkit documentation on Cloudflare Workers while keeping open tabs usable.
 ---
 
 import { ReleaseWindow } from '@/components/release-window';
 
-An open documentation tab can outlive the container that served it. This site keeps older files so navigation still works after a release.
+An open documentation tab can outlive the release that served it. This site keeps older files so navigation still works after a release.
 
-The production site at [hatchkit.trebeljahr.com](https://hatchkit.trebeljahr.com) runs as a Docker Image application in Coolify.
-Next.js exports the pages during the build. nginx serves those files without a Node server.
+The production site at [hatchkit.trebeljahr.com](https://hatchkit.trebeljahr.com) is a static export on a Cloudflare Worker.
+The Worker has static assets and no script, so Cloudflare serves the files directly.
+Asset requests do not count toward the Workers daily request limit.
+A Workers route on the `trebeljahr.com` zone sends the hostname to the Worker.
 
 ## Release a new version
 
-The [release workflow](https://github.com/trebeljahr/hatchkit/blob/main/.github/workflows/deploy.yml) builds an image tagged with the full source commit.
-A build does not move the serving `latest` tag.
+The [release workflow](https://github.com/trebeljahr/hatchkit/blob/main/.github/workflows/deploy.yml) runs on each push to `main` that changes the docs.
 
-Before the build, the workflow verifies the current public version and its registry journal.
-It pins that image by digest and retains its exported files.
-An existing commit tag cannot be rebuilt with different inputs.
-The build artifact records the new digest and its parent image.
+1. It exports the pages with `next build`.
+2. It copies the hashed JavaScript files of the two previous releases into the export. The file list comes from `/release-assets.json` on the live site. Each file must match its recorded SHA-256 hash.
+3. It writes `_headers`, `_redirects` and `releases.json`, and checks the Workers Free limits.
+4. It uploads a new Worker version with `wrangler versions upload`. Visitors still get the current version.
+5. The deploy job activates the new version with `wrangler versions deploy`. It then waits until the homepage and `/version.json` report the new commit for 30 seconds.
 
-Deployment checks that the parent still matches the serving baseline.
-It then promotes the candidate and queues one deployment of this site.
-The public version and HTML must report the new commit throughout the verification window.
-An uncertain queue result stops further automatic releases until an operator checks the exact deployment.
+Upload and activation are separate steps. A one-step deploy can serve new HTML a few seconds before its JavaScript files are available.
 
-The repository variable `HATCHKIT_ROLLOUT_MODE` controls activation:
-
-| Value | Behavior |
-| --- | --- |
-| Unset or `off` | Build images without deploying them. |
-| `manual` | Deploy an explicitly reviewed commit and digest. |
-| `automatic` | Deploy successful main-branch builds through the same checks. |
+To roll back, run the workflow by hand with operation `deploy`, an earlier version ID and that version's commit.
+`wrangler versions list` in `docs/` shows each version's commit as its tag.
 
 ## Keep open tabs usable
 
-Each image contains the current export and up to two prior exports.
-Before accepting traffic, it adds those files to a shared release volume.
-Both containers can serve either release during their overlap.
-A running container keeps its files until it exits.
-Next.js attaches its deployment ID to page-data requests.
-nginx uses that ID to serve the matching export, including its older JavaScript chunks.
-An invalid ID fails without selecting another directory.
-The release window counts successful generations, so two rapid releases can expire a tab sooner than two slow releases.
+A Worker version serves only the files it was uploaded with.
+Each upload therefore carries the JavaScript files of the two releases before it.
+A tab from one of those releases can still load the rest of its code.
 
-Tabs outside the retained window reload their current URL.
+Next.js sends its deployment ID with each page-data request.
+Every response from this site names the current deployment ID.
+When a tab from an older release navigates, Next.js sees the different ID and loads the target page in full.
+The tab never mixes page data from one build with code from another.
+
+Tabs outside the three-release window reload their current URL.
 The URL keeps its query and fragment.
+The window counts releases, so two quick releases can expire a tab sooner than two slow releases.
 This policy suits documentation pages. Editors and games need durable user state before they can use the same policy.
 
-The first adopted release predates deployment IDs and expiry checks.
-Its fixed JavaScript files remain available, but its unversioned navigation can load the current page.
-The three-release window applies to page data from releases that send a deployment ID.
-
 <ReleaseWindow />
-
-## Drain the retiring container
-
-On SIGTERM, the entrypoint makes the local health probe fail while public requests continue.
-It waits 20 seconds before asking nginx to exit.
-Coolify's health checks and proxy removal must fit inside that interval.
-The host must provide a stop deadline longer than the drain.
-
-Test the exact host behavior during adoption. A health check alone does not prove uninterrupted traffic or graceful shutdown.
 
 ## Build the static export locally
 
@@ -72,6 +54,5 @@ pnpm install
 pnpm build
 ```
 
-The output is `docs/out/`. A standalone export can run on a static host.
-The retained-release routing described here requires the repository's nginx image.
+The output is `docs/out/`. `npx wrangler dev` in `docs/` serves it with the production trailing-slash and 404 handling.
 For a separate GitHub Pages setup, see [the `gh-pages` reference](./gh-pages).

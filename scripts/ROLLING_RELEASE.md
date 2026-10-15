@@ -1,5 +1,9 @@
 # Rolling image release contract
 
+> **Retired.** Since 2026-10 the docs are served by the Cloudflare Worker
+> `hatchkit-docs` (see `.github/workflows/deploy.yml`). This describes the
+> Coolify nginx image, kept only as the rollback until its app is retired.
+
 This controller manages only `ijpxc4soyekuadgra0bjy9x5` (Hatchkit site), source `trebeljahr/hatchkit` on `main`, image `ghcr.io/trebeljahr/hatchkit`. Builds publish full-SHA candidate tags and a `release-<sha>-<run>-<attempt>` digest artifact. Building does not move `latest`.
 
 `HATCHKIT_ROLLOUT_MODE` defaults to unset/off. `manual` permits an explicit **Build & Release** dispatch with operation `deploy`, `target_sha`, `image_digest`, and `expected_current_digest`. `automatic` also releases successful future pushes. Repository/ref guards and a single workflow concurrency group serialize this controller. Keep the gate off until the operator completes first adoption and reviews the exact app settings below.

@@ -1,5 +1,9 @@
 # Retained documentation releases
 
+> **Retired.** Since 2026-10 the docs are served by the Cloudflare Worker
+> `hatchkit-docs` (see `.github/workflows/deploy.yml`). This describes the
+> Coolify nginx image, kept only as the rollback until its app is retired.
+
 The site image keeps the current static export and two prior exports. Each
 snapshot has its own `version.json` and directory under `__releases/<SHA>`.
 Those directories cannot be fetched directly. nginx selects one only from a

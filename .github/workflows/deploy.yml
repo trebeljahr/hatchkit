@@ -1,27 +1,53 @@
-# Candidate builds never move a live tag. Deployment requires explicit activation.
-# HATCHKIT_ROLLOUT_MODE: unset/off, manual, or automatic.
+# hatchkit.trebeljahr.com: the docs export on Cloudflare Workers static assets.
+#
+# build   Export docs/, carry the hashed files of the two releases before it
+#         (scripts/carry-static.mjs, from the live /release-assets.json),
+#         write _headers/_redirects/releases.json and check the Workers Free
+#         limits (scripts/docs-worker-files.mjs), then `wrangler versions
+#         upload`. Nothing is live yet.
+# deploy  `wrangler versions deploy <version>@100%`, then wait until the
+#         homepage and /version.json name this commit (scripts/verify-release.mjs).
+#
+# Upload and activation are separate steps on purpose: one-step `wrangler
+# deploy` left a few seconds where new HTML was live and its chunks 404'd
+# (hatchkit-test canary, 2026-10-12).
+#
+# Set up once by hand, never by this workflow (wrangler.jsonc has no
+# `routes`, so deploys leave them alone):
+#   zone trebeljahr.com  hatchkit.trebeljahr.com/.well-known/acme-challenge/*  → no Worker
+#                        hatchkit.trebeljahr.com/*                             → hatchkit-docs
+#   secrets              CLOUDFLARE_API_TOKEN (Individual Workers Editor on hatchkit-docs only)
+#                        CLOUDFLARE_ACCOUNT_ID
+#
+# Rollback: dispatch `deploy` with an earlier version_id and its target_sha
+# (`wrangler versions list` in docs/ shows each version's commit as its tag).
+# To hand the hostname back to the Coolify nginx app, delete the
+# hatchkit.trebeljahr.com/* route; Traefik answers again within seconds.
 name: Build & Release
 
 on:
   push:
     branches: [main]
+    paths:
+      - "docs/**"
+      - "scripts/write-version.mjs"
+      - "scripts/carry-static.mjs"
+      - "scripts/docs-worker-files.mjs"
+      - "scripts/verify-release.mjs"
+      - ".github/workflows/deploy.yml"
   workflow_dispatch:
     inputs:
       operation:
-        description: Build, deploy a reviewed image, or verify a release
+        description: Build a new version, deploy an uploaded one, or verify the live site
         type: choice
         options: [build, deploy, verify]
         default: build
+      version_id:
+        description: Worker version ID to activate (deploy only)
+        type: string
+        required: false
       target_sha:
-        description: Full commit SHA required for deploy or verify
-        type: string
-        required: false
-      image_digest:
-        description: Exact sha256 image digest from the build artifact (deploy only)
-        type: string
-        required: false
-      expected_current_digest:
-        description: Reviewed current latest digest (deploy only)
+        description: Full commit SHA that version serves (deploy and verify)
         type: string
         required: false
 
@@ -29,91 +55,97 @@ permissions:
   contents: read
 
 concurrency:
-  group: image-release-main
+  group: docs-release-main
   cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  WRANGLER: wrangler@4.145.0
+  SITE: https://hatchkit.trebeljahr.com
 
 jobs:
   build:
-    outputs:
-      digest: ${{ steps.image.outputs.digest }}
-    if: github.repository == 'trebeljahr/hatchkit' && github.ref == 'refs/heads/main' && inputs.operation != 'verify' && inputs.operation != 'deploy'
+    if: github.repository == 'trebeljahr/hatchkit' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.operation == 'build')
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    timeout-minutes: 20
+    outputs:
+      version_id: ${{ steps.upload.outputs.version_id }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
-      - run: node --test scripts/release.test.mjs scripts/rolling-release.test.mjs scripts/retained-docs.test.mjs scripts/shared-docs-releases.test.mjs
-      - name: Test retained export routing with nginx
-        run: RUN_DOCKER_TESTS=1 node --test --test-concurrency=1 scripts/retained-docs-http.test.mjs scripts/shared-docs-http.test.mjs
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - id: baseline
-        name: Pin the verified serving image and reject SHA rebuilds
+      - run: node --test scripts/docs-worker-files.test.mjs
+      - name: Export the docs
+        working-directory: docs
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/prepare-docs-build.mjs
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/trebeljahr/hatchkit
-          flavor: latest=false
-          tags: |
-            type=raw,value=${{ github.sha }}
-      - id: image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=site-release
-          cache-to: type=gha,mode=max,scope=site-release
-          platforms: linux/amd64
-          build-args: |
-            RELEASE_SHA=${{ github.sha }}
-            PREVIOUS_IMAGE=${{ steps.baseline.outputs.previous_image }}
-            PREVIOUS_SHA=${{ steps.baseline.outputs.previous_sha }}
-            PREVIOUS_DIGEST=${{ steps.baseline.outputs.previous_digest }}
-
-      - name: Record immutable release identity
-        env:
-          IMAGE: ghcr.io/trebeljahr/hatchkit
-          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          NEXT_PUBLIC_BUILD_COMMIT: ${{ github.sha }}
         run: |
-          node --input-type=module <<'NODE'
-          import { readFileSync, writeFileSync } from 'node:fs';
-          const { GITHUB_SHA: commit, IMAGE: image, IMAGE_DIGEST: digest } = process.env;
-          if (!/^[a-f0-9]{40}$/.test(commit) || !/^sha256:[a-f0-9]{64}$/.test(digest)) throw new Error('Missing full release identity.');
-          const ancestry = JSON.parse(readFileSync('build-inputs.json', 'utf8'));
-          if (ancestry.commit !== commit) throw new Error('Build ancestry does not match source.');
-          writeFileSync('release.json', JSON.stringify({ ...ancestry, commit, image, digest, reference: `${image}@${digest}` }, null, 2) + '\n');
-          NODE
-      - uses: actions/upload-artifact@v4
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Prepare the upload
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          node scripts/write-version.mjs docs/out "$RELEASE_SHA"
+          node scripts/carry-static.mjs --site "$SITE" --out docs/out --release "$RELEASE_SHA" --keep 2
+          node scripts/docs-worker-files.mjs docs/out "$RELEASE_SHA"
+      - id: upload
+        name: Upload a version without activating it
+        working-directory: docs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RELEASE_SHA: ${{ github.sha }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.ndjson
+          WRANGLER_SEND_METRICS: "false"
+        run: |
+          npx --yes "$WRANGLER" versions upload --tag "$RELEASE_SHA" --message "docs $RELEASE_SHA"
+          version_id=$(node -e '
+            const rows = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map((line) => JSON.parse(line));
+            const id = rows.find((row) => row.type === "version-upload")?.version_id ?? "";
+            if (!/^[0-9a-f-]{36}$/.test(id)) throw new Error("wrangler reported no version id");
+            console.log(id);
+          ' "$WRANGLER_OUTPUT_FILE_PATH")
+          echo "version_id=$version_id" >> "$GITHUB_OUTPUT"
+          echo "Uploaded version $version_id for $RELEASE_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: build
+    if: >-
+      always() && !cancelled() &&
+      github.repository == 'trebeljahr/hatchkit' && github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'push' && needs.build.result == 'success') ||
+       (github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
         with:
-          name: release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            release.json
-            build-inputs.json
-          if-no-files-found: error
+          node-version: '24'
+      - name: Activate the version
+        working-directory: docs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VERSION_ID: ${{ github.event_name == 'push' && needs.build.outputs.version_id || inputs.version_id }}
+          TARGET_SHA: ${{ github.event_name == 'push' && github.sha || inputs.target_sha }}
+          WRANGLER_SEND_METRICS: "false"
+        run: |
+          [[ "$VERSION_ID" =~ ^[0-9a-f-]{36}$ ]] || { echo "::error::version_id is required"; exit 1; }
+          [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::target_sha must be a full commit SHA"; exit 1; }
+          npx --yes "$WRANGLER" versions deploy "$VERSION_ID@100%" --yes --message "docs $TARGET_SHA"
+      - name: Wait until the site serves this commit
+        env:
+          TARGET_SHA: ${{ github.event_name == 'push' && github.sha || inputs.target_sha }}
+        run: node scripts/verify-release.mjs "$TARGET_SHA"
 
   verify:
     if: github.repository == 'trebeljahr/hatchkit' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.operation == 'verify'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v6
@@ -121,42 +153,5 @@ jobs:
           node-version: '24'
       - name: Verify the serving commit without deploying
         env:
-          EXPECTED_SHA: ${{ inputs.target_sha }}
-        run: node scripts/verify-release.mjs "$EXPECTED_SHA"
-
-  deploy:
-    needs: build
-    if: >-
-      always() && !cancelled() &&
-      github.repository == 'trebeljahr/hatchkit' && github.ref == 'refs/heads/main' &&
-      ((github.event_name == 'push' && vars.HATCHKIT_ROLLOUT_MODE == 'automatic' && needs.build.result == 'success') ||
-       (github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy'))
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-      - name: Promote, queue this app, and verify the release
-        env:
-          ROLLOUT_MODE: ${{ vars.HATCHKIT_ROLLOUT_MODE }}
-          TARGET_SHA: ${{ github.event_name == 'push' && github.sha || inputs.target_sha }}
-          TARGET_DIGEST: ${{ github.event_name == 'push' && needs.build.outputs.digest || inputs.image_digest }}
-          EXPECTED_CURRENT_DIGEST: ${{ inputs.expected_current_digest }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
-          COOLIFY_RESOURCE_UUID: ${{ secrets.COOLIFY_RESOURCE_UUID }}
-          COOLIFY_DEPLOY_SECRET: ${{ secrets.COOLIFY_DEPLOY_SECRET }}
-          COOLIFY_DEPLOY_REPOSITORY: ${{ secrets.COOLIFY_DEPLOY_REPOSITORY }}
-          COOLIFY_DEPLOY_BRANCH: ${{ secrets.COOLIFY_DEPLOY_BRANCH }}
-        run: node scripts/rolling-release.mjs
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: rollout-${{ github.run_id }}-${{ github.run_attempt }}
-          path: rollout.json
-          if-no-files-found: warn
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: node scripts/verify-release.mjs "$TARGET_SHA"
