@@ -442,6 +442,8 @@ export async function uploadFirstVersion(args: {
     join(out, "version.json"),
     `${JSON.stringify({ commit: args.commit, apiUrl: plan.apiUrl })}\n`,
   );
+  // A distinct release id for the locally built seed: CI's build of the
+  // same commit then carries the seed's chunks under their own entry.
   await run(
     "node",
     [
@@ -451,7 +453,7 @@ export async function uploadFirstVersion(args: {
       "--out",
       CLIENT_EXPORT_DIR,
       "--release",
-      args.commit,
+      `${args.commit}-local`,
     ],
     projectDir,
     {},

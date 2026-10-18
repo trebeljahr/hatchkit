@@ -183,16 +183,20 @@ await test("keep=2 drops the third release back", async () => {
   assert.ok(has(D, "_next/static/chunks/main-bbb.js"));
 });
 
-await test("a re-run of the live commit carries the releases behind it, not itself", async () => {
+await test("a rebuild of the live commit still carries the live build's own chunks", async () => {
+  // A seed uploaded from a laptop and CI's build of the same commit differ
+  // in a few chunks; the rebuild must keep the seed's tabs working.
   const again = build("c-again", {
-    "_next/static/chunks/main-ccc2.js": "C main",
-    "_next/static/buildC/_buildManifest.js": "C manifest",
+    "_next/static/chunks/main-ccc3.js": "C main, rebuilt elsewhere",
+    "_next/static/buildC2/_buildManifest.js": "C manifest",
   });
   const summary = await carry({ site, out: again, release: "ccccccc" });
   assert.deepEqual(
     summary.carried.map((r) => r.sha),
-    ["bbbbbbb", "aaaaaaa"],
+    ["ccccccc", "bbbbbbb"],
   );
+  assert.ok(has(again, "_next/static/chunks/main-ccc2.js"), "the live build's chunk is carried");
+  assert.ok(has(again, "_next/static/chunks/main-bbb.js"));
 });
 
 await test("one path with two contents fails the build", async () => {
