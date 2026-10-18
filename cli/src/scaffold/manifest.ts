@@ -759,10 +759,29 @@ export function readManifestWithMigrationInfo(projectDir: string): ReadManifestR
   // keep the id it registered.
   if (fileVersion !== undefined && fileVersion < 5 && obj.identifiers === undefined) {
     if (typeof obj.name === "string") {
-      obj.identifiers = legacyIdentifiers(obj.name);
-      migrationNotes.push(
-        `Seeded identifiers from the pre-v5 rule (bundle id ${(obj.identifiers as ProjectIdentifiers).bundleId})`,
-      );
+      // The bundle id a project ships is the one that matters, and a
+      // project may have set its own in its native configs: the pre-v5
+      // rule gave mesozoic-protocol `com.example.mesozoicprotocol` while
+      // its Tauri and Capacitor configs ship `com.ricoslabs.…`
+      // (2026-10-18). Seed from what ships; refuse to guess when the
+      // configs disagree.
+      const shipped = shippedBundleIds(projectDir);
+      if (shipped.length > 1) {
+        migrationNotes.push(
+          `Did not seed identifiers: the native configs ship different bundle ids (${shipped.join(", ")}). Set "identifiers" by hand.`,
+        );
+      } else {
+        const legacy = legacyIdentifiers(obj.name);
+        obj.identifiers =
+          shipped.length === 1 && shipped[0] !== legacy.bundleId
+            ? { ...legacy, bundleId: shipped[0], orgDomain: orgDomainOf(shipped[0]) }
+            : legacy;
+        migrationNotes.push(
+          shipped.length === 1
+            ? `Seeded identifiers with the bundle id the native configs ship (${shipped[0]})`
+            : `Seeded identifiers from the pre-v5 rule (bundle id ${(obj.identifiers as ProjectIdentifiers).bundleId})`,
+        );
+      }
     }
   }
 
@@ -778,6 +797,56 @@ export function readManifestWithMigrationInfo(projectDir: string): ReadManifestR
     migrated: migrationNotes.length > 0,
     migrationNotes,
   };
+}
+
+/** Distinct bundle ids the project's native shells ship: Tauri
+ *  `identifier`, Capacitor `appId`, electron-builder `appId`. Empty when
+ *  none is found. Read-only; tolerant of missing or odd files. */
+export function shippedBundleIds(projectDir: string): string[] {
+  const ids = new Set<string>();
+  const read = (rel: string): string | null => {
+    const path = join(projectDir, rel);
+    try {
+      return existsSync(path) ? readFileSync(path, "utf-8") : null;
+    } catch {
+      return null;
+    }
+  };
+  const tauri = read("src-tauri/tauri.conf.json");
+  if (tauri) {
+    try {
+      const id = (JSON.parse(tauri) as { identifier?: unknown }).identifier;
+      if (typeof id === "string" && id) ids.add(id);
+    } catch {
+      // not JSON: skip
+    }
+  }
+  for (const rel of [
+    "capacitor.config.ts",
+    "capacitor.config.json",
+    "electron-builder.config.mjs",
+    "electron-builder.config.js",
+    "electron-builder.json",
+  ]) {
+    const text = read(rel);
+    const m = text?.match(/["']?appId["']?\s*:\s*["']([A-Za-z0-9.-]+)["']/);
+    if (m) ids.add(m[1]);
+  }
+  const pkg = read("package.json");
+  if (pkg) {
+    try {
+      const id = (JSON.parse(pkg) as { build?: { appId?: unknown } }).build?.appId;
+      if (typeof id === "string" && id) ids.add(id);
+    } catch {
+      // not JSON: skip
+    }
+  }
+  return [...ids];
+}
+
+/** `com.ricoslabs.mesozoicprotocol` → `ricoslabs.com`. */
+function orgDomainOf(bundleId: string): string {
+  return bundleId.split(".").slice(0, -1).reverse().join(".");
 }
 
 /** Normalize a `projectSubdir` candidate into the canonical manifest

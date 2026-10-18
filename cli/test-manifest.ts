@@ -17,16 +17,16 @@
  * Run: `pnpm test` (via the script in cli/package.json).
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { legacyIdentifiers, resolveIdentifiers } from "./src/scaffold/identifiers.js";
 import {
   MANIFEST_FILENAME,
   MANIFEST_VERSION,
   readManifestWithMigrationInfo,
   writeManifest,
 } from "./src/scaffold/manifest.js";
-import { legacyIdentifiers, resolveIdentifiers } from "./src/scaffold/identifiers.js";
 
 type ManifestSurfaces = NonNullable<
   ReturnType<typeof readManifestWithMigrationInfo>
@@ -329,6 +329,56 @@ for (const c of CASES) {
     console.log("  ✓ v4 → v5: identifiers seeded from the old rule, desktop-tauri dropped");
   } catch (err) {
     failures.push(`  ✗ v4 → v5 identifiers: ${(err as Error).message}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// v4 → v5 seeds the bundle id the native configs ship, not the old rule's
+// guess (mesozoic-protocol: com.example.* vs com.ricoslabs.*, 2026-10-18).
+{
+  const dir = mkdtempSync(join(tmpdir(), "manifest-shipped-id-"));
+  try {
+    const v4 = {
+      version: 4,
+      cliVersion: "test",
+      scaffoldedAt: "2025-01-01T00:00:00.000Z",
+      name: "mesozoic-protocol",
+      domain: "test.example.com",
+      features: [],
+      mlServices: [],
+      s3Provider: "none",
+      deployTarget: "existing",
+      surfaces: "static",
+    };
+    writeFileSync(join(dir, ".hatchkit.json"), JSON.stringify(v4, null, 2), "utf-8");
+    mkdirSync(join(dir, "src-tauri"));
+    writeFileSync(
+      join(dir, "src-tauri", "tauri.conf.json"),
+      JSON.stringify({ identifier: "com.ricoslabs.mesozoicprotocol" }),
+    );
+    writeFileSync(
+      join(dir, "capacitor.config.ts"),
+      'const config = { appId: "com.ricoslabs.mesozoicprotocol", appName: "Mesozoic" };\nexport default config;\n',
+    );
+    const one = readManifestWithMigrationInfo(dir);
+    assert.equal(one?.manifest.identifiers?.bundleId, "com.ricoslabs.mesozoicprotocol");
+    assert.equal(one?.manifest.identifiers?.orgDomain, "ricoslabs.com");
+    assert.equal(
+      one?.manifest.identifiers?.token,
+      legacyIdentifiers("mesozoic-protocol").token,
+      "everything but the bundle id keeps the old rule",
+    );
+    assert.ok(one?.migrationNotes.some((n) => n.includes("native configs ship")));
+
+    // Two configs that disagree: no guess at all.
+    writeFileSync(join(dir, "capacitor.config.ts"), 'export default { appId: "com.other.app" };\n');
+    const two = readManifestWithMigrationInfo(dir);
+    assert.equal(two?.manifest.identifiers, undefined, "nothing seeded when the configs disagree");
+    assert.ok(two?.migrationNotes.some((n) => n.includes("Did not seed identifiers")));
+    console.log("  ✓ v4 → v5: the shipped bundle id wins; disagreeing configs seed nothing");
+  } catch (err) {
+    failures.push(`  ✗ v4 → v5 shipped bundle id: ${(err as Error).message}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
