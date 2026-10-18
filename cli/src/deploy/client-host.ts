@@ -180,6 +180,14 @@ export function renderHostRedirectRule(
   };
 }
 
+/** hatchkit's redirect rule for `host` in a zone's redirect ruleset. */
+export function findHostRedirectRule(
+  ruleset: CfRuleset | null,
+  host: string,
+): CfRedirectRule | undefined {
+  return ruleset?.rules?.find((r) => isHostRedirectRule(r, host));
+}
+
 /** hatchkit's redirect rule for `host`: by `ref`, or — for one made in
  *  the dashboard from hatchkit's values, which gets no ref — by its
  *  description. */
@@ -360,7 +368,7 @@ export async function upsertHostRedirect(
 ): Promise<"created" | "updated" | "unchanged"> {
   const rule = renderHostRedirectRule(host, targetOrigin, status);
   const ruleset = await ctx.api.getRedirectRuleset(ctx.zoneId);
-  const ours = ruleset?.rules?.find((r) => isHostRedirectRule(r, host));
+  const ours = findHostRedirectRule(ruleset, host);
   const foreign = ruleset?.rules?.find(
     (r) => r !== ours && r.expression.includes(`http.host eq "${host.toLowerCase()}"`),
   );
@@ -391,7 +399,7 @@ export async function removeHostRedirect(
   host: string,
 ): Promise<"deleted" | "not-found"> {
   const ruleset = await api.getRedirectRuleset(zoneId);
-  const ours = ruleset?.rules?.find((r) => isHostRedirectRule(r, host));
+  const ours = findHostRedirectRule(ruleset, host);
   if (!ours?.id || !ruleset) return "not-found";
   return api.deleteRedirectRule(zoneId, ruleset.id, ours.id);
 }

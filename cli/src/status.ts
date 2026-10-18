@@ -9,7 +9,11 @@
 
 import chalk from "chalk";
 import { getConfig, getConfigPath, getMlServices } from "./config.js";
-import { clientWorkerName } from "./deploy/routed-worker-site.js";
+import {
+  clientWorkerName,
+  isRoutedWorkerSite,
+  siteWorkerMap,
+} from "./deploy/routed-worker-site.js";
 import type { Feature } from "./prompts.js";
 import { type DeferredStep, readDeferredSteps } from "./provision/deferrals.js";
 import {
@@ -84,8 +88,13 @@ export interface ProjectDeployment {
   mode: NonNullable<ProjectManifest["deploymentMode"]>;
   /** Manifest `clientHost`; null when absent. */
   clientHost: NonNullable<ProjectManifest["clientHost"]> | null;
-  /** Worker serving the client, when `clientHost` is `cloudflare`. */
+  /** Worker serving the client, when `clientHost` is `cloudflare`. With
+   *  `workers`, the Worker of every host that map does not name. */
   worker?: string;
+  /** A site with no server whose hosts are not all on one Worker
+   *  (manifest `clientWorkers`): each host → its Worker, null for a host
+   *  the zone redirects, then each extra route pattern → its Worker. */
+  workers?: Record<string, string | null>;
   /** Hostnames the project serves, primary first. */
   hosts: string[];
   clientRelease: NonNullable<ProjectManifest["clientRelease"]>;
@@ -101,10 +110,24 @@ export function describeDeployment(
     ...(manifest.clientHost === "cloudflare"
       ? { worker: clientWorkerName(manifest, projectDir) }
       : {}),
+    ...siteWorkersField(manifest, projectDir),
     // Hand-written and early manifests may carry no domain.
     hosts: manifest.domain ? manifestHostnames(manifest) : [],
     clientRelease: manifest.clientRelease ?? "hatchkit",
   };
+}
+
+function siteWorkersField(
+  manifest: ProjectManifest,
+  projectDir: string,
+): Pick<ProjectDeployment, "workers"> {
+  if (!manifest.clientWorkers || !isRoutedWorkerSite(manifest)) return {};
+  try {
+    return { workers: siteWorkerMap(manifest, projectDir) };
+  } catch {
+    // A map that does not fit the hosts: `doctor` names the entry.
+    return {};
+  }
 }
 
 export function collectStatus(projectDir: string = process.cwd()): StatusSnapshot {
@@ -416,6 +439,12 @@ function computeSuggestions(
 function deploymentLine(d: ProjectDeployment): string {
   const hosts = d.hosts.join(", ");
   const release = d.clientRelease === "repo" ? ", released by the repo's CI" : "";
+  if (d.workers) {
+    const each = Object.entries(d.workers).map(([key, w]) =>
+      w === null ? `${key} redirected` : `${key} → ${w}`,
+    );
+    return `no server, Workers on Workers routes (${each.join(", ")})${release}`;
+  }
   if (d.clientHost === "cloudflare") {
     const api = d.mode === "coolify" ? "API on Coolify, " : "no server, ";
     return `${api}Worker ${d.worker} on Workers routes (${hosts})${release}`;

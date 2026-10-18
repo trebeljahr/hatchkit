@@ -3107,9 +3107,20 @@ export async function checkProjectClientHostState(
     routesOwnedByHatchkit: manifest.clientHost === "cloudflare",
   });
   const wranglerName = wranglerWorkerName(projectDir);
-  if (manifest.clientWorker && wranglerName && wranglerName !== manifest.clientWorker) {
+  const named = Object.values(manifest.clientWorkers ?? {});
+  if (
+    manifest.clientWorker &&
+    wranglerName &&
+    wranglerName !== manifest.clientWorker &&
+    !named.includes(wranglerName)
+  ) {
     local.push(
       `.hatchkit.json names Worker ${manifest.clientWorker}, wrangler.jsonc deploys ${wranglerName}; make them agree.`,
+    );
+  }
+  if (manifest.clientWorkers && !isRoutedWorkerSite(manifest)) {
+    local.push(
+      '.hatchkit.json clientWorkers is read only for a site with no server (deploymentMode and clientHost "cloudflare"); this project serves one Worker, clientWorker.',
     );
   }
   out.push(

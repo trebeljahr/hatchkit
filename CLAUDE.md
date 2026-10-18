@@ -72,11 +72,14 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   (its Worker is on routes, not a Custom Domain).
 - A site with no server on an assets-only Worker attached by Workers
   routes: manifest `deploymentMode: "cloudflare"` + `clientHost:
-  "cloudflare"` (+ optional `clientWorker`; `clientRelease: "repo"` when
-  the repo's CI owns wrangler.jsonc, `_headers` and the release
-  workflow). `sync`, `regen-infra`, `dns publish` and `rename-domain`
-  leave it alone; `doctor` reads the routes, Worker and HTTPS rule per
-  zone; `status --json` prints `project.deployment`. See
+  "cloudflare"` (+ optional `clientWorker`; `clientWorkers` when the
+  hosts are not all on one Worker: host → Worker, null for a host
+  hatchkit's redirect rule answers, or an exact route pattern → another
+  Worker; `clientRelease: "repo"` when the repo's CI owns wrangler.jsonc,
+  `_headers` and the release workflow). `sync`, `regen-infra`, `dns
+  publish` and `rename-domain` leave it alone; `doctor` reads the routes,
+  Workers, redirect rules and HTTPS rule per zone; `status --json` prints
+  `project.deployment`. See
   `cli/src/deploy/routed-worker-site.ts`.
 - `hatchkit adopt`: bring an existing repo under Hatchkit conventions.
 - `hatchkit sync`, `rename-domain`, `regen-infra`, `provision s3`: maintain deployed projects. `sync` pushes the manifest's `domain` + `aliases[]` (multi-hostname) onto Coolify. On an image app whose image answers the `X-Hatchkit-Drain` probe, `sync` also rewrites its Coolify labels so Traefik's own health check drains a stopping container, and slows Docker's check; `--no-traefik-drain` undoes it. See `cli/src/deploy/traefik-drain.ts` for why the routers are renamed.

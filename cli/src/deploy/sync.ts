@@ -151,7 +151,7 @@ import {
   healthCheckToConverge,
   resolveCoolifyRuntime,
 } from "./image-runtime.js";
-import { isRoutedWorkerSite, routedWorkerSiteEdge } from "./routed-worker-site.js";
+import { isRoutedWorkerSite, routedWorkerSiteEdge, workersPhrase } from "./routed-worker-site.js";
 import {
   type EdgePlan,
   type RoutedApp,
@@ -503,12 +503,14 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     if (!opts.json) console.log(chalk.dim(`  ${note}`));
     // A site on Workers routes: sync never writes those routes either.
     if (!opts.json && isRoutedWorkerSite(manifest)) {
-      const edge = routedWorkerSiteEdge(manifest, opts.projectDir);
-      console.log(
-        chalk.dim(
-          `  Worker ${edge.worker} serves ${edge.hosts.join(", ")} by Workers routes; \`hatchkit doctor\` checks them.`,
-        ),
-      );
+      let line: string;
+      try {
+        const edge = routedWorkerSiteEdge(manifest, opts.projectDir);
+        line = `${workersPhrase(edge)} on Workers routes for ${edge.hosts.join(", ")}; \`hatchkit doctor\` checks them.`;
+      } catch (err) {
+        line = `${(err as Error).message} \`hatchkit doctor\` reports it too.`;
+      }
+      console.log(chalk.dim(`  ${line}`));
     }
     return { ...emptyResult(opts), ok: true };
   }

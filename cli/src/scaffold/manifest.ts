@@ -317,6 +317,23 @@ export interface ProjectManifest {
    *  look, or to make the manifest name the Worker; `doctor` checks it
    *  against a root wrangler.jsonc. */
   clientWorker?: string;
+  /** A site with no server (`deploymentMode` and `clientHost` both
+   *  `cloudflare`) whose hosts are not all on one Worker. Each key is
+   *  one of:
+   *
+   *    · a host (the domain or an alias): the Worker on its `<host>/*`
+   *      route. Hosts not named here use {@link clientWorker}. `null`:
+   *      no Worker and no route; hatchkit's redirect rule for the host
+   *      (`hatchkit cloudflare redirect add`) answers it.
+   *    · a route pattern on one of those hosts, matched exactly
+   *      (`play.example.com/api/feedback*`): a more specific route to
+   *      another Worker, an API Worker with code for example.
+   *
+   *  `doctor` checks every route against it, each Worker's deployed
+   *  version and each redirect rule. Ignored by every other shape
+   *  (`migrate-client` serves one Worker). See
+   *  deploy/routed-worker-site.ts. */
+  clientWorkers?: Record<string, string | null>;
   /** Who writes a Workers site's repo files: the wrangler config,
    *  `_headers`, the carry script and the release workflow.
    *

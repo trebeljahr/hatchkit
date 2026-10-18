@@ -258,8 +258,9 @@ export interface EdgeRoute {
    *  requests past Workers to the origin. */
   script: string | null;
   /** `origin` — an API path; `acme` — Traefik's HTTP-01 challenge path;
-   *  `client` — the Worker serving the site. */
-  purpose: "origin" | "acme" | "client";
+   *  `client` — the Worker serving the site; `worker` — a more specific
+   *  route to another Worker (a site with no server, `clientWorkers`). */
+  purpose: "origin" | "acme" | "client" | "worker";
 }
 
 /** The Cloudflare side of a project whose client is on Workers. */
