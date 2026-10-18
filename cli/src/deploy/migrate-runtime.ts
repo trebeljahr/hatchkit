@@ -1162,7 +1162,9 @@ async function repointSecrets(
     const role = migrationDeployRole(plan, i);
     const names = deployHookSecretNames(role);
     if (!(await ghSecretExists(cwd, repo, names.secret))) continue;
-    const { hook } = await ensureDeployHook(api, ledger.apps[i].uuid, { role });
+    // A new image app holds Coolify's placeholder repository; the legacy
+    // app's repo is the one whose CI signs.
+    const { hook } = await ensureDeployHook(api, ledger.apps[i].uuid, { role, repository: repo });
     candidates.push(
       { name: names.secret, value: hook.secret, uuid: hook.uuid },
       { name: names.repository, value: hook.repository, uuid: hook.uuid },

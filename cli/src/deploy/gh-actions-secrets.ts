@@ -214,14 +214,36 @@ export function computeCoolifyDeploySecrets(input: {
  *  the push on a split project and leave its second app permanently
  *  untriggered — which is the bug this whole area keeps producing. */
 export function coolifyDeploySecretNames(apps: CoolifyDeployApp[]): string[] {
-  if (apps.length === 0) return [];
+  return planCoolifyDeploySecretNames(apps, { keepProvisioner: false }).set;
+}
+
+/** The names a push for `apps` sets, the stale names it deletes, and the
+ *  provisioner-token names it leaves in place because a workflow still
+ *  reads them (`keepProvisioner`). Pure.
+ *
+ *  {@link setCoolifyDeploySecrets} deletes exactly `remove`, and `secrets
+ *  isolate --dry-run` prints this same plan, so a dry run cannot name a
+ *  different set than the push writes: split iff any app has a role, and
+ *  then the unprefixed set is deleted — even for ONE app named
+ *  `--app <uuid>:server`. */
+export function planCoolifyDeploySecretNames(
+  apps: CoolifyDeployApp[],
+  opts: { keepProvisioner: boolean },
+): { set: string[]; remove: string[]; keep: string[] } {
+  if (apps.length === 0) return { set: [], remove: [], keep: [] };
   // Values are irrelevant to the key set; placeholders keep this pure.
-  return Object.keys(
-    computeCoolifyDeploySecrets({
-      hooks: apps.map((a) => ({ ...a, secret: "x", repository: "x/x", branch: "x" })),
-      coolifyUrl: "https://x",
-    }).secrets,
-  );
+  const { secrets, staleToRemove } = computeCoolifyDeploySecrets({
+    hooks: apps.map((a) => ({ ...a, secret: "x", repository: "x/x", branch: "x" })),
+    coolifyUrl: "https://x",
+  });
+  const keep = opts.keepProvisioner
+    ? staleToRemove.filter((n) => PROVISIONER_SECRETS.includes(n))
+    : [];
+  return {
+    set: Object.keys(secrets),
+    remove: staleToRemove.filter((n) => !keep.includes(n)),
+    keep,
+  };
 }
 
 /** Workflow files (repo-relative) that still read one of `names`. */
@@ -266,6 +288,7 @@ export async function setCoolifyDeploySecrets(
       const { hook, changes } = await ensureDeployHook(api, app.uuid, {
         role: app.role,
         rotate: input.rotate,
+        repository: input.repoSlug,
       });
       hooks.push(hook);
       if (changes.length > 0) {
@@ -279,7 +302,7 @@ export async function setCoolifyDeploySecrets(
     return none;
   }
 
-  const { secrets, staleToRemove } = computeCoolifyDeploySecrets({
+  const { secrets } = computeCoolifyDeploySecrets({
     hooks,
     coolifyUrl: cfg.url,
   });
@@ -312,14 +335,13 @@ export async function setCoolifyDeploySecrets(
   const stillRead = input.clearProvisionerSecrets
     ? []
     : workflowsReading(input.projectDir, PROVISIONER_SECRETS);
-  const keepProvisioner = stillRead.length > 0;
+  const plan = planCoolifyDeploySecretNames(input.apps, { keepProvisioner: stillRead.length > 0 });
   const removed: string[] = [];
   const keptProvisioner: string[] = [];
-  for (const name of staleToRemove) {
-    if (keepProvisioner && PROVISIONER_SECRETS.includes(name)) {
-      if (await ghSecretExists(input.projectDir, input.repoSlug, name)) keptProvisioner.push(name);
-      continue;
-    }
+  for (const name of plan.keep) {
+    if (await ghSecretExists(input.projectDir, input.repoSlug, name)) keptProvisioner.push(name);
+  }
+  for (const name of plan.remove) {
     // Best-effort: a token without the scope to delete secrets still got
     // the push it came for, so a failure here degrades to a note.
     try {

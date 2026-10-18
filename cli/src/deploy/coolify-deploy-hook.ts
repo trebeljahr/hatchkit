@@ -47,6 +47,12 @@
  *     before CI has built the image. With it, only a payload that names
  *     that path (i.e. the one CI signs) deploys.
  *
+ * The endpoint finds candidate apps by `git_repository` and `git_branch`
+ * first. A Docker Image app has no git source, and Coolify stores the
+ * placeholder {@link COOLIFY_PLACEHOLDER_REPOSITORY} there, which no
+ * signed payload matches; hatchkit writes the signing repo's `owner/repo`
+ * in its place, once the watch path is in place.
+ *
  * The image to deploy is chosen in the REGISTRY, not in Coolify: apps
  * pull the moving tag {@link LIVE_TAG}, and CI promotes `:live` to the
  * commit it just built (with the job's own GITHUB_TOKEN, which can write
@@ -100,7 +106,8 @@ export interface DeployHook {
   secret: string;
   /** `owner/repo` exactly as the endpoint will match it against the
    *  app's `git_repository` (a `LIKE %…%` match). For a Docker Image app
-   *  this is whatever placeholder Coolify stored, not the project repo. */
+   *  this is the project repo, written there by {@link ensureDeployHook}
+   *  in place of Coolify's placeholder. */
   repository: string;
   /** The app's `git_branch`: the payload's `ref` must name it. */
   branch: string;
@@ -235,6 +242,44 @@ export function hookRepositoryOf(gitRepository: string | undefined): string | un
   return undefined;
 }
 
+/** What Coolify stores in `git_repository` of an app made without a git
+ *  source — every Docker Image app (`createDockerImageApplication` sends
+ *  no git field). A payload naming it matches no deploy. */
+export const COOLIFY_PLACEHOLDER_REPOSITORY = "coollabsio/coolify";
+
+/**
+ * The `owner/repo` an app's signed webhook matches on, and the value
+ * hatchkit has to write into `git_repository` first, if any. Pure.
+ *
+ * Only a Docker Image app is written to: its `git_repository` is no
+ * clone source, only the key the webhook matches on, so the repo whose
+ * CI signs (`repoSlug`, from its `origin`) replaces Coolify's
+ * placeholder. A real repository already there is kept — it was set on
+ * purpose, and the payload can name it. A git-based app's
+ * `git_repository` is what Coolify builds, and is never touched.
+ */
+export function planHookRepository(input: {
+  uuid: string;
+  gitRepository?: string;
+  buildPack?: string;
+  repoSlug?: string;
+}): { repository: string; write?: string } {
+  const stored = hookRepositoryOf(input.gitRepository);
+  const placeholder = !stored || stored.toLowerCase() === COOLIFY_PLACEHOLDER_REPOSITORY;
+  if (input.buildPack !== "dockerimage" || !placeholder) {
+    if (stored) return { repository: stored };
+    throw new Error(
+      `Coolify app ${input.uuid} has no git_repository hatchkit can read (${JSON.stringify(input.gitRepository ?? null)}); the signed webhook matches on it.`,
+    );
+  }
+  if (input.repoSlug) return { repository: input.repoSlug, write: input.repoSlug };
+  throw new Error(
+    `Coolify app ${input.uuid} is a Docker Image app whose git_repository is ${JSON.stringify(input.gitRepository ?? null)}, which no signed webhook matches. ` +
+      `Run \`hatchkit secrets isolate <repo-dir> --app ${input.uuid}[:client|:server]\` from the repo whose CI deploys it (hatchkit writes that repo's origin there), ` +
+      `or set it by hand: PATCH /api/v1/applications/${input.uuid} {"git_repository":"<owner>/<repo>"} after watch_paths is ${DEPLOY_HOOK_WATCH_PATH}.`,
+  );
+}
+
 export interface EnsureDeployHookResult {
   hook: DeployHook;
   /** What changed on the app, for the caller's log line. Empty when the
@@ -254,6 +299,13 @@ export interface EnsureDeployHookResult {
  *
  * `rotate: true` always mints new values — the per-project revocation
  * path. The caller pushes the result to the repo afterwards.
+ *
+ * A Docker Image app still holding Coolify's placeholder repository gets
+ * `repository` (the signing repo's `owner/repo`) written into
+ * `git_repository` — in a PATCH of its own, after the watch path is read
+ * back, so no ordinary push of that repo can deploy it. Without
+ * `repository` such an app is refused with the fix
+ * ({@link planHookRepository}).
  */
 export async function ensureDeployHook(
   api: Pick<CoolifyApi, "getDeployHookState" | "updateDeployHook">,
@@ -262,6 +314,9 @@ export async function ensureDeployHook(
     role?: DeployRole;
     rotate?: boolean;
     dryRun?: boolean;
+    /** `owner/repo` of the repo whose CI signs this app's webhook — its
+     *  `origin`. */
+    repository?: string;
     /** Where the per-app secret is kept. The keychain unless a test
      *  passes a map. */
     store?: SecretStore;
@@ -269,12 +324,12 @@ export async function ensureDeployHook(
 ): Promise<EnsureDeployHookResult> {
   const store = opts.store ?? keychainStore;
   const state = await api.getDeployHookState(uuid);
-  const repository = hookRepositoryOf(state.gitRepository);
-  if (!repository) {
-    throw new Error(
-      `Coolify app ${uuid} has no git_repository hatchkit can read (${JSON.stringify(state.gitRepository ?? null)}); the signed webhook matches on it.`,
-    );
-  }
+  const { repository, write: writeRepository } = planHookRepository({
+    uuid,
+    gitRepository: state.gitRepository,
+    buildPack: state.buildPack,
+    repoSlug: opts.repository,
+  });
   const branch = state.gitBranch?.trim() || "main";
   const changes: string[] = [];
 
@@ -308,16 +363,31 @@ export async function ensureDeployHook(
   // Not readable back on this API (the settings relation serialises as
   // null), so always asserted. Harmless when already true.
   patch.autoDeploy = true;
+  if (writeRepository) changes.push(`git_repository=${writeRepository}`);
 
   if (!opts.dryRun) {
     // Keychain FIRST: a PATCH that lands with the new value while the
     // keychain write fails would leave nobody holding the secret.
     if (patch.webhookSecrets?.github) await store.set(deployHookKeychainKey(uuid), secret);
     await api.updateDeployHook(uuid, patch);
-    if (patch.webhookSecrets?.github) {
+    if (patch.webhookSecrets?.github || writeRepository) {
       const after = await api.getDeployHookState(uuid);
-      if (after.githubSecret !== secret) {
+      if (patch.webhookSecrets?.github && after.githubSecret !== secret) {
         throw new Error(`Coolify app ${uuid} did not keep the new deploy secret.`);
+      }
+      if (writeRepository) {
+        // Auto-deploy is on from here. A real repository with any other
+        // watch path would let an ordinary push deploy before CI built.
+        if (after.watchPaths?.trim() !== DEPLOY_HOOK_WATCH_PATH) {
+          throw new Error(
+            `Coolify app ${uuid} did not keep watch_paths=${DEPLOY_HOOK_WATCH_PATH}; git_repository was left alone.`,
+          );
+        }
+        await api.updateDeployHook(uuid, { gitRepository: writeRepository });
+        const written = await api.getDeployHookState(uuid);
+        if (hookRepositoryOf(written.gitRepository) !== writeRepository) {
+          throw new Error(`Coolify app ${uuid} did not keep git_repository=${writeRepository}.`);
+        }
       }
     }
   }

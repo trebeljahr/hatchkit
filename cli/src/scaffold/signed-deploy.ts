@@ -211,6 +211,21 @@ function reindent(block: string, indent: number): string[] {
     .map((l) => (l.trim() === "" ? l : shift >= 0 ? " ".repeat(shift) + l : l.slice(-shift)));
 }
 
+/** Whether a workflow signs a Coolify deploy hook in a step of its own —
+ *  it posts to the manual webhook with a `COOLIFY[_<ROLE>]_DEPLOY_SECRET`
+ *  and is not hatchkit's {@link SIGNED_DEPLOY_STEP_NAME}. Such a job was
+ *  written to deploy exactly the apps it names — a server-only job reads
+ *  the `COOLIFY_SERVER_*` set while the repo's unprefixed set may still
+ *  name a stopped legacy app — so no rewrite may add hatchkit's step,
+ *  which deploys every set the repo holds. */
+export function signsDeployHookItself(content: string): boolean {
+  return (
+    content.includes(COOLIFY_MANUAL_WEBHOOK_PATH) &&
+    /\bsecrets\.COOLIFY_(?:SERVER_|CLIENT_)?DEPLOY_SECRET\b/.test(content) &&
+    !content.includes(`- name: ${SIGNED_DEPLOY_STEP_NAME}`)
+  );
+}
+
 /**
  * Convert a workflow's deploy steps from "hatchkit's Coolify token" to
  * "promote in GHCR + signed per-app webhook". Idempotent; returns the
@@ -230,8 +245,13 @@ function reindent(block: string, indent: number): string[] {
  * A workflow with no pin step gets no promote step: its apps pull a
  * moving tag the build pushes (`:latest`, `:main`), and adding a promote
  * without also pointing the apps at `:live` would change nothing.
+ *
+ * A workflow that already signs a deploy hook itself
+ * ({@link signsDeployHookItself}) is returned unchanged, token steps and
+ * all: a person converts those.
  */
 export function upgradeWorkflowToSignedDeploy(originalContent: string): string {
+  if (signsDeployHookItself(originalContent)) return originalContent;
   // Existing signed workflows need the same app-specific acceptance rule.
   // An unscoped skip can describe another app or a deployment never queued.
   const content = originalContent.replaceAll(

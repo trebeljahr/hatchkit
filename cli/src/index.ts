@@ -641,7 +641,7 @@ async function handleKeys(): Promise<void> {
 async function handleSecrets(): Promise<void> {
   const sub = args[1];
   const usage =
-    "Usage: hatchkit secrets rotate <project-name> [flags]\n       hatchkit secrets rotate --global <ses|listmonk> [flags]\n       hatchkit secrets isolate <project> | --all [--dry-run] [--rotate] [--json]";
+    "Usage: hatchkit secrets rotate <project-name> [flags]\n       hatchkit secrets rotate --global <ses|listmonk> [flags]\n       hatchkit secrets isolate <project> | --all [--app <uuid>[:client|:server]] [--dry-run] [--rotate] [--json]";
   if (!sub) {
     console.log(usage);
     process.exit(1);
@@ -4236,7 +4236,8 @@ function printHelp(topic?: HelpTopic): void {
                                apps that carry the key name, and
                                ListMonk's SMTP settings (ses).
 
-    secrets isolate <project> | --all [--dry-run] [--rotate]
+    secrets isolate <project> | --all [--app <uuid>[:client|:server]]
+                    [--dry-run] [--rotate]
                                Take hatchkit's Coolify token out of a
                                project. Each Coolify app gets its own
                                signed deploy webhook (a secret that can
@@ -4246,9 +4247,21 @@ function printHelp(topic?: HelpTopic): void {
                                COOLIFY_TOKEN / COOLIFY_WEBHOOK_URL are
                                deleted from the repo. Deploys pause until
                                the rewritten workflow is pushed.
+                               A Docker Image app's git_repository (Coolify
+                               stores a placeholder) is set to the repo's
+                               origin, after the watch path is in place.
                                Worker repos get a per-Worker Editor token
                                with no DNS or zone grants. Per-Worker scope
                                failure stops; there is no broad fallback.
+                               A Worker repo with its API on Coolify
+                               (${chalk.cyan("--app")}, or clientHost "cloudflare") gets both:
+                               the Worker token, then hooks for those apps.
+                               A role in ${chalk.cyan("--app")} picks the COOLIFY_<ROLE>_* set
+                               and deletes the unprefixed one; a run whose
+                               set no workflow reads stops before writing.
+                               A workflow that signs a hook itself is
+                               never rewritten. ${chalk.cyan("--dry-run")} prints the secrets
+                               the real run sets and deletes.
                                ${chalk.cyan("--rotate")} replaces the recorded deploy credential.
 
   ${chalk.bold("Providers (per project):")}

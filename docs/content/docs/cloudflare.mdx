@@ -104,6 +104,12 @@ hatchkit secrets isolate /path/to/repo
 
 The repo must have a `wrangler.jsonc` Worker name and a workflow reading `CLOUDFLARE_API_TOKEN`, or a Cloudflare deployment manifest.
 Use an explicit path for repos without a manifest. `--all` discovers manifest-backed projects only.
+
+A repo whose client is a Worker and whose API runs on Coolify gets both: the Worker token, then a signed deploy hook per Coolify app. Name the apps with `--app <uuid>[:client|:server]`; a manifest with `clientHost: "cloudflare"` names its server app itself.
+
+```bash
+hatchkit secrets isolate /path/to/repo --app <server-uuid>:server --dry-run
+```
 Keep routes and custom domains out of CI's deployment configuration. Configure those separately with the provisioner.
 
 Run one repo first, then rerun its deployment workflow. Verify the deployed revision, pages, assets, and existing custom domain.

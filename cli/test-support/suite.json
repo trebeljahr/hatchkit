@@ -112,6 +112,7 @@
   "test-lint-gate.ts",
   "test-verified-deploy.ts",
   "test-project-isolation.ts",
+  "test-secrets-isolate.ts",
   "test-topology-guidance.ts",
   "test-env-agreement.ts",
   "test-selfhost.ts",

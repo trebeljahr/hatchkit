@@ -54,11 +54,17 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   across projects and update every local project, Coolify app and ListMonk
   setting that holds it. Both refuse while the dotenvx key is in git history
   (`keys rotate` first). Start with `--dry-run`; never pushes.
-- `hatchkit secrets isolate <project> | --all [--dry-run] [--rotate]`: take
+- `hatchkit secrets isolate <project> | --all [--app <uuid>[:client|:server]] [--dry-run] [--rotate]`: take
   hatchkit's Coolify token out of a project — per-app signed deploy webhooks,
-  `:live` promoted in GHCR, token secrets deleted. See
-  `cli/src/deploy/coolify-deploy-hook.ts` for why no Coolify token can be
-  scoped to one app.
+  `:live` promoted in GHCR, token secrets deleted. A Docker Image app's
+  placeholder `git_repository` becomes the repo's origin (after the watch
+  path). A Worker repo with its API on Coolify (`--app`, or `clientHost:
+  "cloudflare"` → the server app) gets the Worker token AND the hooks. A role
+  in `--app` picks `COOLIFY_<ROLE>_*` and deletes the unprefixed set; a run
+  whose set no workflow reads stops before writing; a workflow that signs a
+  hook itself is never rewritten. `--dry-run` prints the real run's
+  set/delete plan. See `cli/src/deploy/coolify-deploy-hook.ts` for why no
+  Coolify token can be scoped to one app.
 - `hatchkit gh-pages`: configure GitHub Pages for the current repo.
 - `hatchkit cloudflare`: configure Cloudflare Workers Static Assets for the
   current repo (static sites; free, unmetered asset requests).

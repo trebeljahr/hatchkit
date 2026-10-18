@@ -32,9 +32,22 @@
  * price of taking the root token out of the repo at once, and the
  * summary says so.
  *
- * `--dry-run` reads everything and writes nothing. `--rotate` mints new
- * per-app deploy secrets even when the current ones are in sync — the
- * per-project revocation path.
+ * A repo with a Worker client AND a Coolify API — `--app` names the
+ * Coolify apps, or the manifest says `clientHost: "cloudflare"` — takes
+ * both paths: the Worker token first, then the hooks above for those
+ * apps only (with `clientHost`, the server app; the Coolify client app
+ * migrate-client leaves running gets none).
+ *
+ * Two refusals keep a hand-built deploy job deploying what it names:
+ * a workflow that signs a hook in a step of its own is never rewritten
+ * (scaffold/signed-deploy.ts), and a run whose secret set (split iff an
+ * app has a role) no workflow reads stops before writing, with the
+ * `--app <uuid>:<role>` that matches.
+ *
+ * `--dry-run` reads everything and writes nothing, and prints the same
+ * secret plan the real run executes (`planCoolifyDeploySecretNames`).
+ * `--rotate` mints new per-app deploy secrets even when the current ones
+ * are in sync — the per-project revocation path.
  */
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -43,6 +56,7 @@ import chalk from "chalk";
 import { getCoolifyConfig } from "../config.js";
 import { readWorkerName } from "../deploy/cloudflare.js";
 import {
+  type DeployRole,
   LIVE_TAG,
   deployHookSecretNames,
   ensureDeployHook,
@@ -52,12 +66,21 @@ import {
   type CloudflareDeploySecretsResult,
   type CoolifyDeployApp,
   PROVISIONER_SECRETS,
+  listRepoSecrets,
+  planCoolifyDeploySecretNames,
   repoSlugFromRemote,
   setCloudflareDeploySecrets,
   setCoolifyDeploySecrets,
   workflowsReading,
 } from "../deploy/gh-actions-secrets.js";
-import { PROMOTE_STEP_NAME, upgradeWorkflowToSignedDeploy } from "../scaffold/signed-deploy.js";
+import { clientWorkerName } from "../deploy/routed-worker-site.js";
+import { computeRoutingPlan } from "../deploy/routing.js";
+import type { ProjectManifest } from "../scaffold/manifest.js";
+import {
+  PROMOTE_STEP_NAME,
+  signsDeployHookItself,
+  upgradeWorkflowToSignedDeploy,
+} from "../scaffold/signed-deploy.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { exec } from "../utils/exec.js";
 import {
@@ -99,37 +122,144 @@ export interface IsolateResult {
    *  steps the retrofit does not recognise. The token stays until a
    *  person converts them. */
   workflowsManual: string[];
+  /** Workflows left as they are because they sign a deploy hook in a
+   *  step of their own. */
+  workflowsSigned: string[];
   /** `:live` switches, as `<app>: <image> (from :<tag>)`. */
   live: string[];
+  /** Every secret set (or that would be): the Worker's, then Coolify's. */
   secretsPushed: string[];
   secretsRemoved: string[];
   keptProvisioner: string[];
-  /** Set for a Worker repo, which takes the Cloudflare path. */
+  /** A dry run could not list the repo's secrets, so `secretsRemoved`
+   *  and `keptProvisioner` name every candidate, present or not. */
+  secretsUnlisted?: boolean;
+  /** Set for a repo with a Worker, which takes the Cloudflare path. */
   cloudflare?: CloudflareDeploySecretsResult & { workerName: string };
   errors: string[];
 }
 
-/** The Worker a repo deploys, when it is a Worker repo: a `cloudflare`
- *  manifest, or no manifest and a workflow that reads
- *  CLOUDFLARE_API_TOKEN next to a wrangler.jsonc. */
+/** The Worker a repo deploys, when it has one: a `cloudflare` manifest,
+ *  a manifest whose client is on Workers (`clientHost: "cloudflare"`),
+ *  or no manifest and a workflow that reads CLOUDFLARE_API_TOKEN next to
+ *  a wrangler.jsonc. */
 export function workerRepoName(
   projectDir: string,
-  manifest: { name?: string; deploymentMode?: string } | null,
+  manifest: Pick<ProjectManifest, "deploymentMode" | "clientHost" | "clientWorker"> &
+    Partial<Pick<ProjectManifest, "name">>
+    | null,
 ): string | null {
   const worker = readWorkerName(projectDir);
   if (manifest?.deploymentMode === "cloudflare") return worker ?? manifest.name ?? null;
+  if (manifest?.clientHost === "cloudflare" && manifest.name) {
+    return clientWorkerName({ name: manifest.name, clientWorker: manifest.clientWorker }, projectDir);
+  }
   if (manifest) return null;
   return worker && workflowsReading(projectDir, ["CLOUDFLARE_API_TOKEN"]).length > 0
     ? worker
     : null;
 }
 
-/** Workflow files and their content after conversion. Pure apart from
- *  reading the directory. */
+/** Whether a repo with a Worker also has Coolify apps to hook: apps
+ *  named with `--app`, or a manifest whose client is on Workers while
+ *  its API stays on Coolify. Without either, a Worker repo takes only
+ *  the Cloudflare path. */
+export function deploysCoolifyBesideWorker(
+  manifest: Pick<ProjectManifest, "deploymentMode" | "clientHost"> | null,
+  apps: readonly CoolifyDeployApp[] | undefined,
+): boolean {
+  if (apps && apps.length > 0) return true;
+  return manifest?.clientHost === "cloudflare" && deploysToCoolify(manifest.deploymentMode);
+}
+
+/** The Coolify apps of a project whose client is on Workers: the routing
+ *  plan's server app (`<name>-server` or an alias) with role `server`.
+ *  The Coolify client app `migrate-client` leaves running until
+ *  `--cleanup` is not in the plan, so it gets no hook. Pure. */
+export function coolifyAppsBesideWorker(
+  manifest: Pick<ProjectManifest, "name" | "topology" | "surfaces"> &
+    Partial<Pick<ProjectManifest, "domain">>,
+  coolifyApps: ReadonlyArray<{ uuid: string; name: string }>,
+): CoolifyDeployApp[] {
+  const plan = computeRoutingPlan({
+    name: manifest.name,
+    // The domain does not change the app NAMES, which is all this reads.
+    domain: manifest.domain || "example.invalid",
+    topology: manifest.topology ?? "single-origin",
+    surfaces: manifest.surfaces,
+    runtime: "image",
+    clientHost: "cloudflare",
+  });
+  const byName = new Map(coolifyApps.map((a) => [a.name, a.uuid]));
+  const out: CoolifyDeployApp[] = [];
+  for (const routed of plan.apps) {
+    const uuid = [routed.appName, ...routed.aliases].map((n) => byName.get(n)).find(Boolean);
+    if (!uuid) continue;
+    out.push(routed.role === "server" || routed.role === "client" ? { uuid, role: routed.role } : { uuid });
+  }
+  return out;
+}
+
+const HOOK_SETS: ReadonlyArray<DeployRole | undefined> = [undefined, "server", "client"];
+
+/** `COOLIFY_*`, `COOLIFY_SERVER_*`, `COOLIFY_CLIENT_*`. */
+const hookSetLabel = (role?: DeployRole): string =>
+  `${deployHookSecretNames(role).uuid.replace(/RESOURCE_UUID$/, "")}*`;
+
+/** Why pushing hooks for `apps` would leave the workflows deploying
+ *  nothing, or null. The push writes ONE layout — the role sets when any
+ *  app has a role, else the unprefixed set — and deletes the other
+ *  (`planCoolifyDeploySecretNames`). A job that reads only the other
+ *  set then finds its secrets gone. Null when no workflow reads any set:
+ *  nothing to compare with. Pure. */
+export function hookSetMismatch(
+  workflows: ReadonlyArray<{ file: string; after: string }>,
+  apps: readonly CoolifyDeployApp[],
+): string | null {
+  const readsSet = (text: string, role?: DeployRole) =>
+    new RegExp(`\\bsecrets\\.${deployHookSecretNames(role).uuid}\\b`).test(text);
+  const read = HOOK_SETS.filter((r) => workflows.some((w) => readsSet(w.after, r)));
+  if (read.length === 0 || apps.length === 0) return null;
+  const written = apps.some((a) => a.role) ? apps.map((a) => a.role) : [undefined];
+  const unread = written.filter((r) => !read.includes(r));
+  if (unread.length === 0) return null;
+  const files = workflows.filter((w) => read.some((r) => readsSet(w.after, r))).map((w) => w.file);
+  const fix =
+    apps.length === 1 && read.length === 1
+      ? `--app ${apps[0].uuid}${read[0] ? `:${read[0]}` : ""}`
+      : "--app <uuid>:client|server for each app, matching the set its job reads";
+  return (
+    `${files.join(", ")} read${files.length === 1 ? "s" : ""} ${read.map(hookSetLabel).join(", ")}, ` +
+    `but this run would set ${unread.map(hookSetLabel).join(", ")} and delete the other set — ` +
+    `nothing would deploy. Re-run with ${fix}.`
+  );
+}
+
+/** What a dry run reports for the repo's secrets: the push's own plan,
+ *  narrowed to the names the repo holds when its list could be read
+ *  (the real run only reports what it deleted). Pure. */
+export function dryRunSecretChanges(
+  apps: CoolifyDeployApp[],
+  opts: { keepProvisioner: boolean; present: readonly string[] | null },
+): { set: string[]; remove: string[]; keep: string[] } {
+  const plan = planCoolifyDeploySecretNames(apps, { keepProvisioner: opts.keepProvisioner });
+  const present = opts.present;
+  if (!present) return plan;
+  return {
+    set: plan.set,
+    remove: plan.remove.filter((n) => present.includes(n)),
+    keep: plan.keep.filter((n) => present.includes(n)),
+  };
+}
+
+/** Workflow files and their content after conversion. A workflow that
+ *  signs a deploy hook itself is left as it is (`signsItself`). Pure
+ *  apart from reading the directory. */
 export function planWorkflowConversion(projectDir: string): Array<{
   file: string;
   before: string;
   after: string;
+  signsItself: boolean;
 }> {
   const dir = join(projectDir, ".github", "workflows");
   if (!existsSync(dir)) return [];
@@ -137,7 +267,12 @@ export function planWorkflowConversion(projectDir: string): Array<{
     .filter((f) => /\.ya?ml$/.test(f))
     .map((f) => {
       const before = readFileSync(join(dir, f), "utf8");
-      return { file: `.github/workflows/${f}`, before, after: upgradeWorkflowToSignedDeploy(before) };
+      return {
+        file: `.github/workflows/${f}`,
+        before,
+        after: upgradeWorkflowToSignedDeploy(before),
+        signsItself: signsDeployHookItself(before),
+      };
     });
 }
 
@@ -248,6 +383,7 @@ export async function isolateProject(
     apps: [],
     workflowsConverted: [],
     workflowsManual: [],
+    workflowsSigned: [],
     live: [],
     secretsPushed: [],
     secretsRemoved: [],
@@ -255,7 +391,11 @@ export async function isolateProject(
     errors: [],
   };
   const worker = workerRepoName(projectDir, manifest);
-  if (worker) return isolateWorkerRepo(projectDir, worker, opts, result);
+  if (worker) {
+    await isolateWorkerRepo(projectDir, worker, opts, result);
+    // A Worker client with its API on Coolify: the hooks too, below.
+    if (!deploysCoolifyBesideWorker(manifest, opts.apps) || !result.repo) return result;
+  }
   if (!manifest && !opts.apps?.length) {
     result.errors.push("no .hatchkit.json — name the apps with --app <uuid>[:client|:server]");
     return result;
@@ -284,7 +424,9 @@ export async function isolateProject(
   const apps: CoolifyDeployApp[] =
     opts.apps && opts.apps.length > 0
       ? opts.apps
-      : await findCoolifyAppsForProject(name, manifest?.topology);
+      : manifest?.clientHost === "cloudflare"
+        ? coolifyAppsBesideWorker(manifest, await api.listApplications())
+        : await findCoolifyAppsForProject(name, manifest?.topology);
   if (apps.length === 0) {
     result.errors.push(`no Coolify app named after ${name} was found`);
     return result;
@@ -295,6 +437,14 @@ export async function isolateProject(
   for (const w of workflows) {
     if (w.after !== w.before) result.workflowsConverted.push(w.file);
     if (readsToken(w.after)) result.workflowsManual.push(w.file);
+    if (w.signsItself) result.workflowsSigned.push(w.file);
+  }
+  // Before anything is written: the secret set this run pushes must be
+  // one the workflows read, or their deploy finds its secrets deleted.
+  const mismatch = hookSetMismatch(workflows, apps);
+  if (mismatch) {
+    result.errors.push(mismatch);
+    return result;
   }
   const promotesLive = workflows.some(
     (w) => w.after.includes(`- name: ${PROMOTE_STEP_NAME}`) || w.after.includes("hatchkit-deploy.mjs"),
@@ -349,6 +499,7 @@ export async function isolateProject(
           role: app.role,
           rotate: opts.rotate,
           dryRun: true,
+          repository: result.repo,
         });
         const state = await api.getDeployHookState(app.uuid);
         result.apps.push({ uuid: app.uuid, role: app.role, buildPack: state.buildPack, changes });
@@ -356,14 +507,17 @@ export async function isolateProject(
         result.errors.push(`${app.role ?? "app"}: ${(err as Error).message}`);
       }
     }
-    result.secretsPushed = [
-      "COOLIFY_BASE_URL",
-      ...(apps.length > 1
-        ? apps.flatMap((a) => Object.values(deployHookSecretNames(a.role)))
-        : Object.values(deployHookSecretNames())),
-    ];
-    result.keptProvisioner = result.workflowsManual.length > 0 ? [...PROVISIONER_SECRETS] : [];
-    result.secretsRemoved = result.workflowsManual.length > 0 ? [] : [...PROVISIONER_SECRETS];
+    // The real run rewrites the workflows first and keeps the token while
+    // one still reads it; workflowsManual is that check on the rewrite.
+    const present = (await listRepoSecrets(result.repo))?.map((s) => s.name) ?? null;
+    const plan = dryRunSecretChanges(apps, {
+      keepProvisioner: result.workflowsManual.length > 0,
+      present,
+    });
+    result.secretsPushed = [...result.secretsPushed, ...plan.set];
+    result.secretsRemoved = plan.remove;
+    result.keptProvisioner = plan.keep;
+    if (!present) result.secretsUnlisted = true;
     return result;
   }
 
@@ -378,7 +532,7 @@ export async function isolateProject(
     rotate: opts.rotate,
   });
   if (!pushed.ok) result.errors.push("deploy hook / GitHub secret push failed (see above)");
-  result.secretsPushed = pushed.pushed;
+  result.secretsPushed = [...result.secretsPushed, ...pushed.pushed];
   result.secretsRemoved = pushed.removed;
   result.keptProvisioner = pushed.keptProvisioner;
   return result;
@@ -443,10 +597,10 @@ function printResult(r: IsolateResult, dryRun: boolean): void {
   const would = dryRun ? "would " : "";
   console.log(chalk.bold(`\n  ${r.name}`) + chalk.dim(`  ${r.repo ?? r.dir}`));
   for (const e of r.errors) console.log(chalk.red(`    ✗ ${e}`));
-  if (r.cloudflare) {
-    printCloudflare(r.cloudflare, dryRun);
-    return;
-  }
+  // A Worker-only repo stops after this; a Worker client with its API on
+  // Coolify goes on to the apps' lines.
+  if (r.cloudflare) printCloudflare(r.cloudflare, dryRun);
+  const coolifySecrets = r.secretsPushed.filter((n) => !r.cloudflare?.pushed.includes(n));
   for (const a of r.apps) {
     const kind = a.buildPack === "dockercompose" ? " (compose)" : a.buildPack ? ` (${a.buildPack})` : "";
     console.log(
@@ -457,12 +611,22 @@ function printResult(r: IsolateResult, dryRun: boolean): void {
   if (r.workflowsConverted.length) {
     console.log(`    · ${would}rewrite ${r.workflowsConverted.join(", ")}`);
   }
+  if (r.workflowsSigned.length) {
+    console.log(
+      chalk.dim(`    · leave ${r.workflowsSigned.join(", ")} as is: signs its own deploy hook`),
+    );
+  }
   for (const l of r.live) console.log(`    · ${would}point ${l}`);
-  if (r.secretsPushed.length) {
-    console.log(chalk.dim(`    · ${would}set ${r.secretsPushed.join(", ")}`));
+  if (coolifySecrets.length) {
+    console.log(chalk.dim(`    · ${would}set ${coolifySecrets.join(", ")}`));
   }
   if (r.secretsRemoved.length) {
-    console.log(chalk.green(`    · ${would}delete ${r.secretsRemoved.join(", ")}`));
+    console.log(
+      chalk.green(
+        `    · ${would}delete ${r.secretsRemoved.join(", ")}` +
+          (r.secretsUnlisted ? " (each one the repo holds — its secret list was unreadable)" : ""),
+      ),
+    );
   }
   if (r.workflowsManual.length) {
     console.log(
@@ -563,6 +727,7 @@ export async function runSecretsIsolate(args: string[]): Promise<number> {
         apps: [],
         workflowsConverted: [],
         workflowsManual: [],
+        workflowsSigned: [],
         live: [],
         secretsPushed: [],
         secretsRemoved: [],

@@ -1127,6 +1127,10 @@ export class CoolifyApi {
       webhookSecrets?: { github?: string; gitlab?: string; bitbucket?: string; gitea?: string };
       watchPaths?: string;
       autoDeploy?: boolean;
+      /** The `owner/repo` the webhook matches on. Only for a Docker Image
+       *  app, whose `git_repository` is no clone source — see
+       *  `planHookRepository` in deploy/coolify-deploy-hook.ts. */
+      gitRepository?: string;
     },
   ): Promise<void> {
     const body: Record<string, unknown> = {};
@@ -1135,6 +1139,7 @@ export class CoolifyApi {
     }
     if (fields.watchPaths !== undefined) body.watch_paths = fields.watchPaths;
     if (fields.autoDeploy !== undefined) body.is_auto_deploy_enabled = fields.autoDeploy;
+    if (fields.gitRepository !== undefined) body.git_repository = fields.gitRepository;
     if (Object.keys(body).length === 0) return;
     try {
       await this.request("PATCH", `/applications/${uuid}`, body);

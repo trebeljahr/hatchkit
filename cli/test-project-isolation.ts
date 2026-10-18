@@ -155,7 +155,8 @@ await check("the hook repository is read from every shape Coolify stores", () =>
   assert.equal(hookRepositoryOf("trebeljahr/gamedev"), "trebeljahr/gamedev");
   assert.equal(hookRepositoryOf("https://github.com/trebeljahr/gamedev.git"), "trebeljahr/gamedev");
   assert.equal(hookRepositoryOf("git@github.com:trebeljahr/gamedev.git"), "trebeljahr/gamedev");
-  // A Docker Image app keeps Coolify's placeholder; the payload must name it.
+  // Read as stored. A Docker Image app's placeholder is replaced before
+  // any payload names it (planHookRepository, test-secrets-isolate.ts).
   assert.equal(hookRepositoryOf("coollabsio/coolify"), "coollabsio/coolify");
   assert.equal(hookRepositoryOf(undefined), undefined);
 });
