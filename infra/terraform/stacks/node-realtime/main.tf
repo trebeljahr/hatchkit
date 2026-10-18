@@ -184,14 +184,14 @@ resource "hcloud_server" "main" {
   # `file()` reads a local file at plan time. The path is relative to
   # the directory where you run `terraform plan`.
   user_data = file("${path.module}/../../../cloud-init/ubuntu-24.04-hardened.yaml")
+  # path.module = directory of THIS .tf file (terraform/stacks/node-realtime/)
+  # We go up 3 levels to reach the repo root, then into cloud-init/.
 
   # user_data and the SSH key only matter at first boot; the cloud-init file
   # is shared by every stack, so an edit to it must not rebuild live servers.
   lifecycle {
     ignore_changes = [user_data, ssh_keys, image]
   }
-  # path.module = directory of THIS .tf file (terraform/stacks/node-realtime/)
-  # We go up 3 levels to reach the repo root, then into cloud-init/.
 
   # Attach the firewall if enabled.
   # `one()` extracts the single element from a list, or null if empty.
