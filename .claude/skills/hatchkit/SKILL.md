@@ -75,7 +75,7 @@ rotation URL, required scopes, and exact `hatchkit config add <provider>` comman
 | `hatchkit doctor` | Read-only live health check of configured providers |
 | `hatchkit explain` | One-page mental model |
 | `hatchkit gh-pages` | Wire GitHub Pages for the current repo |
-| `hatchkit cloudflare` | Wire Cloudflare Workers Static Assets for the current repo |
+| `hatchkit cloudflare` | Wire Cloudflare Workers Static Assets for the current repo. Refuses setup and `--undo` when the manifest has `clientHost: "cloudflare"`. A site with no server on Workers routes is `deploymentMode` + `clientHost` both `"cloudflare"` (`clientRelease: "repo"` when its CI owns the Worker files): sync/regen-infra/dns publish/rename-domain leave it alone, doctor checks routes, Worker and HTTPS rule |
 | `hatchkit adopt` | Adopt an existing repo into Hatchkit conventions |
 | `hatchkit sync` | Sync/deploy state for an existing Hatchkit project (incl. manifest `aliases[]` multi-hostname routing) |
 | `hatchkit dns publish` | Upsert A/AAAA records for the manifest's domain + aliases (supports `--dry-run`) |

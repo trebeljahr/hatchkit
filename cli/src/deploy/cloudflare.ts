@@ -32,6 +32,7 @@ import {
   CLOUDFLARE_WRANGLER_REL_PATH,
   applyCloudflareMode,
 } from "../scaffold/cloudflare-mode.js";
+import { readManifest } from "../scaffold/manifest.js";
 import { type CfDnsRecord, CloudflareApi } from "../utils/cloudflare-api.js";
 import { exec } from "../utils/exec.js";
 import type { RunLedger } from "../utils/run-ledger.js";
@@ -43,6 +44,7 @@ import {
   listRepoSecrets,
   setCloudflareDeploySecrets,
 } from "./gh-actions-secrets.js";
+import { cloudflareSetupRefusal, repoOwnsWorkerFiles } from "./routed-worker-site.js";
 
 interface RepoInfo {
   owner: string;
@@ -66,6 +68,7 @@ export interface CloudflareSetupResult {
 
 export async function runCloudflareSetup(cwd: string): Promise<void> {
   console.log(chalk.bold("\n  ── hatchkit cloudflare ────────────────────────────────────\n"));
+  refuseRoutedClient(cwd, "setup");
   const repo = await detectRepo(cwd);
   console.log(chalk.dim(`  Repo:  ${repo.fullName}`));
 
@@ -88,9 +91,17 @@ export async function runCloudflareSetupProgrammatic(
   cwd: string,
   opts: { domain: string | null; workerName?: string; ledger?: RunLedger },
 ): Promise<CloudflareSetupResult> {
+  refuseRoutedClient(cwd, "setup");
   const repo = await detectRepo(cwd);
   console.log(chalk.dim(`  Repo:  ${repo.fullName}`));
   return executeCloudflareSetup(cwd, repo, opts);
+}
+
+/** A client on Workers routes has no Custom Domain for `hatchkit
+ *  cloudflare` to attach or detach, and its files are not this mode's. */
+function refuseRoutedClient(cwd: string, action: "setup" | "undo"): void {
+  const reason = cloudflareSetupRefusal(readManifest(cwd), cwd, action);
+  if (reason) throw new Error(reason);
 }
 
 // ---------------------------------------------------------------------------
@@ -115,17 +126,25 @@ async function executeCloudflareSetup(
   // 2. Files. A scaffolded project already has them (the create flow
   //    wrote them during the prune); an adopted repo does not.
   //    applyCloudflareMode is idempotent, so calling it twice is fine.
+  //    `clientRelease: "repo"`: the repo's CI owns them; write nothing.
   const workerName = opts.workerName ?? readWorkerName(cwd) ?? repo.repo;
   const modifications: string[] = [];
-  applyCloudflareMode(
-    cwd,
-    {
-      workerName,
-      defaultBranch: repo.defaultBranch,
-      siteUrl: opts.domain ? `https://${opts.domain}` : undefined,
-    },
-    modifications,
-  );
+  const manifest = readManifest(cwd);
+  if (manifest && repoOwnsWorkerFiles(manifest)) {
+    modifications.push(
+      'clientRelease is "repo": wrangler.jsonc, _headers and the deploy workflow are left to the repo',
+    );
+  } else {
+    applyCloudflareMode(
+      cwd,
+      {
+        workerName,
+        defaultBranch: repo.defaultBranch,
+        siteUrl: opts.domain ? `https://${opts.domain}` : undefined,
+      },
+      modifications,
+    );
+  }
   for (const m of modifications) console.log(chalk.dim(`  · ${m}`));
 
   // 3. The Worker's own deploy token, pushed as the repo's CI secret. A
@@ -366,6 +385,7 @@ export interface CloudflareUndoOptions {
  */
 export async function runCloudflareUndo(cwd: string, opts: CloudflareUndoOptions): Promise<void> {
   console.log(chalk.bold("\n  ── hatchkit cloudflare --undo ─────────────────────────────\n"));
+  refuseRoutedClient(cwd, "undo");
   const repo = await detectRepo(cwd);
   console.log(chalk.dim(`  Repo:  ${repo.fullName}`));
 
@@ -373,10 +393,15 @@ export async function runCloudflareUndo(cwd: string, opts: CloudflareUndoOptions
   const prov = await getCloudflareProvisioner();
   const api = prov ? new CloudflareApi({ token: prov.token, accountId: prov.accountId }) : null;
 
-  const files = [
-    join(cwd, ".github", "workflows", "deploy.yml"),
-    join(cwd, CLOUDFLARE_WRANGLER_REL_PATH),
-  ].filter((p) => existsSync(p));
+  // The repo's own release files are never hatchkit's to delete.
+  const manifest = readManifest(cwd);
+  const files =
+    manifest && repoOwnsWorkerFiles(manifest)
+      ? []
+      : [
+          join(cwd, ".github", "workflows", "deploy.yml"),
+          join(cwd, CLOUDFLARE_WRANGLER_REL_PATH),
+        ].filter((p) => existsSync(p));
 
   let domains: Array<{ id: string; hostname: string }> = [];
   let tokens: Array<{ id: string; name: string }> = [];

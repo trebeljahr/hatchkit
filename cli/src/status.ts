@@ -9,9 +9,14 @@
 
 import chalk from "chalk";
 import { getConfig, getConfigPath, getMlServices } from "./config.js";
+import { clientWorkerName } from "./deploy/routed-worker-site.js";
 import type { Feature } from "./prompts.js";
 import { type DeferredStep, readDeferredSteps } from "./provision/deferrals.js";
-import { type ProjectManifest, readManifestWithMigrationInfo } from "./scaffold/manifest.js";
+import {
+  type ProjectManifest,
+  manifestHostnames,
+  readManifestWithMigrationInfo,
+} from "./scaffold/manifest.js";
 import { getCliVersion } from "./utils/version.js";
 
 export interface ProviderSnapshot {
@@ -60,11 +65,46 @@ export interface StatusSnapshot {
     signing: boolean;
     /** Intended policy only; live installation and recovery must be checked on the host. */
     backups?: ProjectManifest["backups"];
+    /** Where the project runs, from the manifest. An agent reads this
+     *  before running a command that writes Coolify, DNS or the Worker's
+     *  repo files: `mode` other than `coolify` means nothing on Coolify,
+     *  `clientHost: "cloudflare"` means an assets-only Worker on Workers
+     *  routes (`worker`), and `clientRelease: "repo"` means the repo's CI,
+     *  not hatchkit, writes the wrangler config, `_headers` and the
+     *  release workflow. */
+    deployment: ProjectDeployment;
   } | null;
   /** Optional steps the user skipped during create / adopt / add, each
    *  with the exact command that finishes it. Always an array (empty
    *  outside a project), so `--json` consumers never have to nullcheck. */
   deferredSteps: DeferredStep[];
+}
+
+export interface ProjectDeployment {
+  mode: NonNullable<ProjectManifest["deploymentMode"]>;
+  /** Manifest `clientHost`; null when absent. */
+  clientHost: NonNullable<ProjectManifest["clientHost"]> | null;
+  /** Worker serving the client, when `clientHost` is `cloudflare`. */
+  worker?: string;
+  /** Hostnames the project serves, primary first. */
+  hosts: string[];
+  clientRelease: NonNullable<ProjectManifest["clientRelease"]>;
+}
+
+export function describeDeployment(
+  manifest: ProjectManifest,
+  projectDir: string,
+): ProjectDeployment {
+  return {
+    mode: manifest.deploymentMode ?? "coolify",
+    clientHost: manifest.clientHost ?? null,
+    ...(manifest.clientHost === "cloudflare"
+      ? { worker: clientWorkerName(manifest, projectDir) }
+      : {}),
+    // Hand-written and early manifests may carry no domain.
+    hosts: manifest.domain ? manifestHostnames(manifest) : [],
+    clientRelease: manifest.clientRelease ?? "hatchkit",
+  };
 }
 
 export function collectStatus(projectDir: string = process.cwd()): StatusSnapshot {
@@ -206,6 +246,7 @@ export function collectStatus(projectDir: string = process.cwd()): StatusSnapsho
         addableFeatures: (["desktop", "mobile"] as Feature[]).filter((f) => !features.includes(f)),
         signing: manifest.signing !== undefined,
         ...(manifest.backups ? { backups: manifest.backups } : {}),
+        deployment: describeDeployment(manifest, projectDir),
       };
       deferredSteps = readDeferredSteps(projectDir);
     }
@@ -371,6 +412,17 @@ function computeSuggestions(
 // Renderers
 // ---------------------------------------------------------------------------
 
+/** One line: what serves the project and who releases it. */
+function deploymentLine(d: ProjectDeployment): string {
+  const hosts = d.hosts.join(", ");
+  const release = d.clientRelease === "repo" ? ", released by the repo's CI" : "";
+  if (d.clientHost === "cloudflare") {
+    const api = d.mode === "coolify" ? "API on Coolify, " : "no server, ";
+    return `${api}Worker ${d.worker} on Workers routes (${hosts})${release}`;
+  }
+  return `${d.mode} (${hosts})${release}`;
+}
+
 export function renderStatusHuman(s: StatusSnapshot): string {
   const lines: string[] = [];
   lines.push(chalk.bold("  Provider Status:"));
@@ -417,6 +469,7 @@ export function renderStatusHuman(s: StatusSnapshot): string {
     lines.push(
       `    Signing:  ${s.project.signing ? chalk.green("configured") : chalk.dim("not configured")}`,
     );
+    lines.push(`    Deploy:   ${deploymentLine(s.project.deployment)}`);
     lines.push("");
   }
   if (s.deferredSteps.length > 0) {

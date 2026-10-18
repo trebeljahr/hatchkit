@@ -33,6 +33,7 @@ import {
 import { setWorkflowDeployVerifyUrls } from "../scaffold/deploy-verification.js";
 import { type ProjectManifest, findManifestDirUpward, readManifest } from "../scaffold/manifest.js";
 import { parseDomain, validateDomain } from "../utils/validate.js";
+import { isRoutedWorkerSite, routedWorkerSiteEdge } from "./routed-worker-site.js";
 
 // ---------------------------------------------------------------------------
 // Public entrypoint
@@ -65,6 +66,15 @@ export async function runRenameDomain(opts: RenameDomainOptions): Promise<void> 
   // resolve identically to the historical behaviour.
   const projectDir = findManifestDirUpward(opts.projectDir) ?? opts.projectDir;
   const manifest = readManifest(projectDir);
+  if (manifest && isRoutedWorkerSite(manifest)) {
+    const edge = routedWorkerSiteEdge(manifest, projectDir);
+    throw new Error(
+      `${manifest.name} is served by Worker ${edge.worker} through Workers routes on ${edge.hosts.join(", ")}, with no Coolify app. ` +
+        "rename-domain moves Coolify, DNS and tfvars, none of which this site has. Move it by hand: " +
+        `a route <new-host>/* → ${edge.worker} in the dashboard, \`hatchkit cloudflare https add <new-host>\`, ` +
+        "then domain/aliases in .hatchkit.json (`hatchkit plausible rename` for analytics).",
+    );
+  }
   if (manifest?.clientHost === "cloudflare") {
     throw new Error(
       `${manifest.name}'s client is served by Cloudflare Workers routes on ${manifest.domain}. ` +

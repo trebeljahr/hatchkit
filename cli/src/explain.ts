@@ -50,6 +50,11 @@ const MODEL: ExplainModel = {
         ".hatchkit.json at the project root (= the enclosing git root). Records which features were scaffolded so `hatchkit update` knows what's already there. When the deployable lives in a subfolder of a larger repo (CLI + sibling marketing site, monorepo apps/<app>), the optional `projectSubdir` field captures that path — Coolify's Base Directory, the GitHub Actions workflow's `context:`, and every later `keys push` / `sync` / `regen-infra` then resolve relative to that subdir.",
     },
     {
+      name: "Where a project runs",
+      description:
+        'Manifest `deploymentMode`, `clientHost` and `clientRelease`. `coolify` (default): Coolify apps; with `clientHost: "cloudflare"` the client is an assets-only Worker on Workers routes and the API stays on Coolify (`migrate-client`). `cloudflare` alone: the static site `hatchkit cloudflare` set up on a Custom Domain. `cloudflare` with `clientHost: "cloudflare"`: no server; the whole site is an assets-only Worker attached by routes `<host>/*` (Worker: `clientWorker`, else wrangler.jsonc `name`). Nothing is on Coolify, so `sync`, `regen-infra`, `dns publish` and `rename-domain` leave it alone and `doctor` checks the routes, the Worker and the HTTPS rule. `clientRelease: "repo"`: the repo\'s CI owns the wrangler config, `_headers` and the release workflow, and no hatchkit command writes or deletes them. `hatchkit status --json` prints all of it under `project.deployment`.',
+    },
+    {
       name: "dotenvx key",
       description:
         "Per-project private key that decrypts .env.production at runtime. Generated at scaffold time; lives in the OS keychain under service `hatchkit`; pushed to Coolify via `hatchkit keys push`.",

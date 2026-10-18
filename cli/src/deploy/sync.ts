@@ -151,6 +151,7 @@ import {
   healthCheckToConverge,
   resolveCoolifyRuntime,
 } from "./image-runtime.js";
+import { isRoutedWorkerSite, routedWorkerSiteEdge } from "./routed-worker-site.js";
 import {
   type EdgePlan,
   type RoutedApp,
@@ -500,6 +501,15 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   if (manifest.deploymentMode && manifest.deploymentMode !== "coolify") {
     const note = `deploymentMode is "${manifest.deploymentMode}": no Coolify app to sync.`;
     if (!opts.json) console.log(chalk.dim(`  ${note}`));
+    // A site on Workers routes: sync never writes those routes either.
+    if (!opts.json && isRoutedWorkerSite(manifest)) {
+      const edge = routedWorkerSiteEdge(manifest, opts.projectDir);
+      console.log(
+        chalk.dim(
+          `  Worker ${edge.worker} serves ${edge.hosts.join(", ")} by Workers routes; \`hatchkit doctor\` checks them.`,
+        ),
+      );
+    }
     return { ...emptyResult(opts), ok: true };
   }
   const cfg = await getCoolifyConfig();

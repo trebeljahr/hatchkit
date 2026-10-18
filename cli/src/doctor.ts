@@ -3065,8 +3065,8 @@ export async function checkProjectPublicServiceState(projectDir: string): Promis
  *  names the command that checks the live state (`hatchkit sync
  *  --dry-run`, which is read-only) rather than doing network I/O here.
  *
- *  Skipped silently for gh-pages / scaffold-only projects — they don't
- *  route through Coolify at all. */
+ *  Skipped silently for gh-pages / scaffold-only / cloudflare projects —
+ *  they don't route through Coolify at all. */
 /**
  * A client on Cloudflare Workers, and any Workers static site.
  *
@@ -3100,9 +3100,18 @@ export async function checkProjectClientHostState(
   if (!onWorkers) return out;
   const name = `Project ${manifest.name} (Cloudflare client)`;
   const { workerConfigFindings } = await import("./deploy/client-host-repo.js");
+  const { checkRoutedWorkerSite, isRoutedWorkerSite, wranglerWorkerName } = await import(
+    "./deploy/routed-worker-site.js"
+  );
   const local = workerConfigFindings(projectDir, {
     routesOwnedByHatchkit: manifest.clientHost === "cloudflare",
   });
+  const wranglerName = wranglerWorkerName(projectDir);
+  if (manifest.clientWorker && wranglerName && wranglerName !== manifest.clientWorker) {
+    local.push(
+      `.hatchkit.json names Worker ${manifest.clientWorker}, wrangler.jsonc deploys ${wranglerName}; make them agree.`,
+    );
+  }
   out.push(
     local.length
       ? {
@@ -3118,6 +3127,28 @@ export async function checkProjectClientHostState(
         },
   );
   if (manifest.clientHost !== "cloudflare") return out;
+
+  // No server: the routes, the Worker and the HTTPS rule are the whole
+  // deployment. Nothing on Coolify, no /api/health.
+  if (isRoutedWorkerSite(manifest)) {
+    const { getCloudflareProvisioner, getDnsConfig } = await import("./config.js");
+    const { CloudflareApi } = await import("./utils/cloudflare-api.js");
+    const prov = await getCloudflareProvisioner().catch(() => null);
+    const dns = prov ? await getDnsConfig().catch(() => null) : null;
+    out.push(
+      ...(await checkRoutedWorkerSite(projectDir, manifest, {
+        cloudflare: prov
+          ? {
+              api: new CloudflareApi({ token: prov.token, accountId: prov.accountId }),
+              accountId: prov.accountId,
+              ...(dns?.apiToken ? { dnsApi: new CloudflareApi({ token: dns.apiToken }) } : {}),
+            }
+          : null,
+        fetch: deps.fetch,
+      })),
+    );
+    return out;
+  }
 
   const { planClientMigration } = await import("./deploy/migrate-client.js");
   let edgePlan: import("./deploy/routing.js").EdgePlan;
@@ -3244,9 +3275,9 @@ export async function checkProjectRoutingState(projectDir: string): Promise<Chec
     return out;
   }
   if (!manifest.name || !manifest.domain) return out;
-  if (manifest.deploymentMode === "gh-pages" || manifest.deploymentMode === "scaffold-only") {
-    return out;
-  }
+  // Coolify routing only. A Workers site's routes are the Cloudflare
+  // client check's (checkProjectClientHostState).
+  if (!isCoolifyManagedMode(manifest.deploymentMode)) return out;
 
   const { computeRoutingPlan, inferTopology } = await import("./deploy/routing.js");
   const { manifestHostnames } = await import("./scaffold/manifest.js");

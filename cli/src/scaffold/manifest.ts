@@ -303,8 +303,30 @@ export interface ProjectManifest {
    *  this answers "what serves the client". Needs `coolifyRuntime:
    *  "image"`. Absent means `coolify`; never inferred. Written by
    *  `hatchkit migrate-client` once the cutover is verified. See
-   *  `cloudflareClientPlan` in deploy/routing.ts. */
+   *  `cloudflareClientPlan` in deploy/routing.ts.
+   *
+   *  With `deploymentMode: "cloudflare"` there is no server: the whole
+   *  site is the assets-only Worker on routes `<host>/*`, and nothing
+   *  runs on Coolify. Without `clientHost` that mode is the site
+   *  `hatchkit cloudflare` sets up on a Custom Domain. See
+   *  deploy/routed-worker-site.ts. */
   clientHost?: ClientHost;
+  /** Worker that serves the client when `clientHost` is `cloudflare`.
+   *  Absent means wrangler.jsonc's `name`, then `<name>-client`. Set it
+   *  when the repo keeps its wrangler config where hatchkit does not
+   *  look, or to make the manifest name the Worker; `doctor` checks it
+   *  against a root wrangler.jsonc. */
+  clientWorker?: string;
+  /** Who writes a Workers site's repo files: the wrangler config,
+   *  `_headers`, the carry script and the release workflow.
+   *
+   *    · `hatchkit` — `hatchkit cloudflare` / `migrate-client` wrote
+   *      them and may replace hatchkit's own earlier versions.
+   *    · `repo` — the repo's own CI uploads and activates versions. No
+   *      hatchkit command writes or deletes those files.
+   *
+   *  Absent means `hatchkit`. */
+  clientRelease?: "hatchkit" | "repo";
   /** Path prefixes on `domain` that must keep reaching the Coolify
    *  origin when `clientHost` is `cloudflare`. Default `["/api"]` under
    *  single-origin, none under split. Each becomes a no-Worker route
