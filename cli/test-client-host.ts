@@ -928,6 +928,97 @@ await test("cloudflare token: flags", async () => {
   assert.throws(() => parseCloudflareTokenArgs(["--yes"]), /Unknown argument --yes/);
 });
 
+await test("cloudflare https add: merges, reads back, and catches a lost host", async () => {
+  const { getStore } = await import("./src/config.js");
+  const { setSecret } = await import("./src/utils/secrets.js");
+  const { runCloudflareHttps } = await import("./src/deploy/cloudflare.js");
+  getStore().set("providers.cloudflareWorkers", { status: "configured", accountId: "acct" });
+  await setSecret("cloudflare:provisioner", "fixture-token");
+  let rules: CfRedirectRule[] = [
+    { ...renderHttpsRedirectRule(["names.example.com"]), id: "h1" },
+    { ...raptor },
+  ];
+  /** Simulates another session writing between our write and read-back. */
+  let racer: (() => void) | null = null;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" ? input : input.toString());
+    const method = init?.method ?? "GET";
+    const ok = (result: unknown) =>
+      new Response(JSON.stringify({ success: true, errors: [], messages: [], result }), {
+        status: 200,
+      });
+    if (url.pathname.endsWith("/zones") && method === "GET") {
+      return ok(
+        url.searchParams.get("name") === "example.com" ? [{ id: "zone", name: "example.com" }] : [],
+      );
+    }
+    if (url.pathname.endsWith("/http_request_dynamic_redirect/entrypoint") && method === "GET") {
+      return ok({ id: "rs", rules: structuredClone(rules) });
+    }
+    if (url.pathname.includes("/rulesets/rs/rules/") && method === "PATCH") {
+      const id = url.pathname.split("/").pop();
+      const body = JSON.parse(String(init?.body)) as CfRedirectRule;
+      rules = rules.map((r) => (r.id === id ? { ...body, id } : r));
+      racer?.();
+      return ok({ id: "rs", rules });
+    }
+    return new Response(
+      JSON.stringify({
+        success: false,
+        errors: [{ code: 0, message: `unexpected ${method} ${url.pathname}` }],
+      }),
+      { status: 500 },
+    );
+  }) as typeof globalThis.fetch;
+  try {
+    assert.equal(
+      await runCloudflareHttps("add", ["sprites.example.com", "gamedev.example.com"], {
+        dryRun: true,
+      }),
+      true,
+    );
+    assert.deepEqual(
+      parseHttpsRuleHosts(rules[0]),
+      ["names.example.com"],
+      "dry run writes nothing",
+    );
+    assert.equal(
+      await runCloudflareHttps("add", ["sprites.example.com", "gamedev.example.com"], {
+        dryRun: false,
+      }),
+      true,
+    );
+    assert.deepEqual(parseHttpsRuleHosts(rules[0]), [
+      "gamedev.example.com",
+      "names.example.com",
+      "sprites.example.com",
+    ]);
+    assert.equal(rules[1].id, "raptor", "the other rule is untouched");
+    // Another session writes its own host list over ours right after our write.
+    racer = () => {
+      rules = rules.map((r) =>
+        r.id === "h1"
+          ? { ...renderHttpsRedirectRule(["names.example.com", "conv3d.example.com"]), id: "h1" }
+          : r,
+      );
+      racer = null;
+    };
+    assert.equal(
+      await runCloudflareHttps("add", ["chess.example.com"], { dryRun: false }),
+      false,
+      "lost hosts are reported",
+    );
+    assert.equal(
+      await runCloudflareHttps("remove", ["conv3d.example.com"], { dryRun: false }),
+      true,
+    );
+    assert.deepEqual(parseHttpsRuleHosts(rules[0]), ["names.example.com"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 await test("sync: a client on Workers never adopts the project-named image app", async () => {
   const plan = computeRoutingPlan(base);
   const api = {

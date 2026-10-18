@@ -546,6 +546,141 @@ export async function runCloudflareToken(
 }
 
 // ---------------------------------------------------------------------------
+// HTTPS redirect hosts
+// ---------------------------------------------------------------------------
+
+/**
+ * `hatchkit cloudflare https add|remove <host…>`: put hosts into (or take
+ * them out of) hatchkit's one HTTP→HTTPS Single Redirect rule per zone
+ * (deploy/client-host.ts). For a Worker-served host whose project does not
+ * go through `migrate-client`.
+ *
+ * Several sessions edit the one rule, each as read-merge-write, so a
+ * write can lose another's host in a race. The rule is read back after
+ * every write and the run fails, naming the hosts, when any host that was
+ * there before (or was just added) is missing.
+ */
+export async function runCloudflareHttps(
+  action: "add" | "remove",
+  hosts: string[],
+  opts: { dryRun: boolean },
+): Promise<boolean> {
+  const { addHttpsRedirectHosts, findHttpsRule, parseHttpsRuleHosts, removeHttpsRedirectHosts } =
+    await import("./client-host.js");
+  if (hosts.length === 0) throw new Error("Name at least one host.");
+  const prov = await getCloudflareProvisioner();
+  if (!prov)
+    throw new Error("No Cloudflare provisioner — `hatchkit config add cloudflare-workers`.");
+  const api = new CloudflareApi({ token: prov.token, accountId: prov.accountId });
+  const byZone = new Map<string, { name: string; hosts: string[] }>();
+  for (const raw of hosts) {
+    const host = raw.toLowerCase();
+    const zone = await api.resolveZoneForName(host);
+    if (!zone) throw new Error(`No zone in this account manages ${host}.`);
+    const entry = byZone.get(zone.id) ?? { name: zone.name, hosts: [] };
+    entry.hosts.push(host);
+    byZone.set(zone.id, entry);
+  }
+  let ok = true;
+  for (const [zoneId, zone] of byZone) {
+    const readHosts = async (): Promise<string[] | null> => {
+      const rule = findHttpsRule(await api.getRedirectRuleset(zoneId));
+      return rule ? parseHttpsRuleHosts(rule) : [];
+    };
+    const before = await readHosts();
+    if (before === null) {
+      console.log(
+        chalk.red(`  ${zone.name}: hatchkit's HTTPS rule was edited by hand; not touching it.`),
+      );
+      ok = false;
+      continue;
+    }
+    const want =
+      action === "add"
+        ? [...new Set([...before, ...zone.hosts])].sort()
+        : before.filter((h) => !zone.hosts.includes(h));
+    console.log(chalk.dim(`  ${zone.name}: ${before.length ? before.join(", ") : "(no rule)"}`));
+    console.log(chalk.dim(`    → ${want.length ? want.join(", ") : "(rule deleted)"}`));
+    if (opts.dryRun) continue;
+    if (action === "add") {
+      await addHttpsRedirectHosts(
+        { api, accountId: prov.accountId, zoneId, zoneName: zone.name },
+        zone.hosts,
+      );
+    } else {
+      await removeHttpsRedirectHosts(api, zoneId, zone.hosts);
+    }
+    const after = (await readHosts()) ?? [];
+    const lost = want.filter((h) => !after.includes(h));
+    const stray = action === "remove" ? zone.hosts.filter((h) => after.includes(h)) : [];
+    if (lost.length || stray.length) {
+      console.log(
+        chalk.red(
+          `  ${zone.name}: read-back differs (another session edited the rule at the same time?)` +
+            (lost.length ? ` — missing ${lost.join(", ")}` : "") +
+            (stray.length ? ` — still has ${stray.join(", ")}` : "") +
+            ". Re-run the command.",
+        ),
+      );
+      ok = false;
+    } else {
+      console.log(
+        chalk.green(
+          `  ✓ ${zone.name}: rule covers ${after.length ? after.join(", ") : "nothing (deleted)"}`,
+        ),
+      );
+    }
+  }
+  if (opts.dryRun) console.log(chalk.dim("\n  --dry-run: nothing written."));
+  return ok;
+}
+
+/**
+ * `hatchkit cloudflare redirect add <host> <https-origin> [--status 301|308]`
+ * / `remove <host>`: a host that only redirects to a project's new domain,
+ * served by the zone instead of a Coolify app (path and query kept,
+ * `/.well-known/` left to the origin). One hatchkit rule per host.
+ */
+export async function runCloudflareRedirect(
+  action: "add" | "remove",
+  host: string,
+  target: string | undefined,
+  opts: { status: 301 | 302 | 307 | 308; dryRun: boolean },
+): Promise<boolean> {
+  const { removeHostRedirect, renderHostRedirectRule, upsertHostRedirect } = await import(
+    "./client-host.js"
+  );
+  const prov = await getCloudflareProvisioner();
+  if (!prov)
+    throw new Error("No Cloudflare provisioner — `hatchkit config add cloudflare-workers`.");
+  const api = new CloudflareApi({ token: prov.token, accountId: prov.accountId });
+  const zone = await api.resolveZoneForName(host);
+  if (!zone) throw new Error(`No zone in this account manages ${host}.`);
+  if (action === "add") {
+    if (!target) throw new Error("Usage: hatchkit cloudflare redirect add <host> <https-origin>");
+    const rule = renderHostRedirectRule(host, target, opts.status);
+    console.log(chalk.dim(`  ${zone.name}: ${rule.expression}`));
+    console.log(
+      chalk.dim(`    → ${opts.status} ${rule.action_parameters.from_value.target_url.expression}`),
+    );
+    if (opts.dryRun) {
+      console.log(chalk.dim("\n  --dry-run: nothing written."));
+      return true;
+    }
+    const res = await upsertHostRedirect({ api, zoneId: zone.id }, host, target, opts.status);
+    console.log(chalk.green(`  ✓ ${host}: ${res}`));
+    return true;
+  }
+  if (opts.dryRun) {
+    console.log(chalk.dim(`  would delete hatchkit's redirect rule for ${host} on ${zone.name}`));
+    return true;
+  }
+  const res = await removeHostRedirect(api, zone.id, host);
+  console.log(chalk.dim(`  ${host}: ${res}`));
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

@@ -71,6 +71,8 @@ const DANGEROUS_ARGV: string[][] = [
   ["migrate-domain", "--to", "example.com", "--phase", "cutover", "--help"],
   ["migrate-client", "--help"],
   ["cloudflare", "token", "--worker", "x", "--help"],
+  ["cloudflare", "https", "add", "x.example.com", "--help"],
+  ["cloudflare", "redirect", "add", "x.example.com", "https://y.example", "--help"],
   ["migrate-client", "--rollback", "--yes", "--help"],
   ["migrate-client", "--cleanup", "--yes", "--help"],
 ];

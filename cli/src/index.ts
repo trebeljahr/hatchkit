@@ -418,6 +418,46 @@ async function main(): Promise<void> {
     }
     case "cloudflare": {
       if (args.includes("--help")) return printHelp("cloudflare");
+      if (args[1] === "https") {
+        const action = args[2];
+        if (action !== "add" && action !== "remove") {
+          throw new Error("Usage: hatchkit cloudflare https add|remove <host…> [--dry-run]");
+        }
+        const rest = args.slice(3);
+        const unknown = rest.filter((a) => a.startsWith("--") && a !== "--dry-run");
+        if (unknown.length) throw new Error(`Unknown option ${unknown[0]}`);
+        const { runCloudflareHttps } = await import("./deploy/cloudflare.js");
+        const ok = await runCloudflareHttps(
+          action,
+          rest.filter((a) => !a.startsWith("--")),
+          { dryRun: rest.includes("--dry-run") },
+        );
+        if (!ok) process.exitCode = 1;
+        break;
+      }
+      if (args[1] === "redirect") {
+        const action = args[2];
+        const rest = args.slice(3);
+        const statusAt = rest.indexOf("--status");
+        const status = statusAt >= 0 ? Number(rest[statusAt + 1]) : 301;
+        const positional = rest.filter((a, i) => !a.startsWith("--") && rest[i - 1] !== "--status");
+        if (
+          (action !== "add" && action !== "remove") ||
+          !positional[0] ||
+          ![301, 302, 307, 308].includes(status)
+        ) {
+          throw new Error(
+            "Usage: hatchkit cloudflare redirect add <host> <https-origin> [--status 301|308] [--dry-run] | remove <host> [--dry-run]",
+          );
+        }
+        const { runCloudflareRedirect } = await import("./deploy/cloudflare.js");
+        const ok = await runCloudflareRedirect(action, positional[0], positional[1], {
+          status: status as 301 | 302 | 307 | 308,
+          dryRun: rest.includes("--dry-run"),
+        });
+        if (!ok) process.exitCode = 1;
+        break;
+      }
       if (args[1] === "token") {
         const { parseCloudflareTokenArgs, runCloudflareToken } = await import(
           "./deploy/cloudflare.js"
@@ -4440,6 +4480,16 @@ function printHelp(topic?: HelpTopic): void {
     cd <project-dir> && hatchkit cloudflare
     cd <project-dir> && hatchkit cloudflare --undo [--dry-run] [--yes]
     cd <project-dir> && hatchkit cloudflare token [--worker <name>] [--create-worker] [--rotate] [--dry-run]
+    hatchkit cloudflare https add|remove <host…> [--dry-run]
+    hatchkit cloudflare redirect add <host> <https-origin> [--status 301|308] [--dry-run]
+    hatchkit cloudflare redirect remove <host> [--dry-run]
+
+  ${chalk.bold("redirect")} sends a host that only redirects (a project that moved domains) to another
+  origin from the zone, path and query kept, so its Coolify app can retire.
+
+  ${chalk.bold("https")} edits hatchkit's one HTTP→HTTPS redirect rule per zone (hosts a Worker serves;
+  /.well-known/ excluded). It reads the rule back after each write and fails when a
+  concurrent edit lost a host. Never the zone's Always Use HTTPS (see deploy/client-host.ts).
 
   ${chalk.bold("token")} mints this repo's own deploy token for one Worker (Workers Scripts Edit on
   that Worker only) and sets CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID — nothing

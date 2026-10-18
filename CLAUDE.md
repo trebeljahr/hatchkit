@@ -64,6 +64,10 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   current repo (static sites; free, unmetered asset requests).
   `hatchkit cloudflare token [--worker <name>] [--dry-run]` only mints the
   repo's per-Worker deploy token and sets the two CLOUDFLARE_* secrets.
+  `hatchkit cloudflare https add|remove <host…>` edits hatchkit's one
+  HTTP→HTTPS redirect rule per zone (re-read after each write);
+  `hatchkit cloudflare redirect add <host> <https-origin>` moves a
+  redirect-only host from a Coolify app to the zone. `--dry-run` first.
 - `hatchkit adopt`: bring an existing repo under Hatchkit conventions.
 - `hatchkit sync`, `rename-domain`, `regen-infra`, `provision s3`: maintain deployed projects. `sync` pushes the manifest's `domain` + `aliases[]` (multi-hostname) onto Coolify. On an image app whose image answers the `X-Hatchkit-Drain` probe, `sync` also rewrites its Coolify labels so Traefik's own health check drains a stopping container, and slows Docker's check; `--no-traefik-drain` undoes it. See `cli/src/deploy/traefik-drain.ts` for why the routers are renamed.
 - `hatchkit migrate-runtime [app] [--dry-run|--rollback|--cleanup]`: move a deployed Coolify compose app to Docker Image apps (rolling, zero-downtime deploys). Side by side with a verified cutover; refuses apps holding data, except a named volume asked for with `--carry-volume <service>=<volume>` (the new app mounts the same Docker volume; two containers write it during verification and every rolling deploy; `--same-json <service>=/path:<field>` compares production and the new app before the cutover). See `cli/src/deploy/image-runtime.ts` for why compose apps go down on every deploy.
