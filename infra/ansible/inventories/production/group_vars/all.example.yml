@@ -93,6 +93,7 @@ ssh_max_auth_tries: 3
 # ssh_ports: [22, 2222]
 # ufw_tailnet_tcp_ports: [2222]
 # ssh_coolify_compatibility: true
+# docker_install: true   # Coolify's API does not install Docker on a new server
 # ssh_coolify_match_addresses: "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1,100.64.0.0/10"
 ssh_client_alive_interval: 300
 ssh_client_alive_count_max: 2

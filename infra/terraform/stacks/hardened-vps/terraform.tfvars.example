@@ -17,4 +17,6 @@ firewall_enabled = true
 # Public SSH only from your own address while Ansible runs; [] once Tailscale SSH works.
 # ssh_source_ips = ["203.0.113.7/32"]
 tailscale_direct_udp = true
+# Origin behind Cloudflare only (curl https://www.cloudflare.com/ips-v4 and ips-v6):
+# http_source_ips = ["173.245.48.0/20", "103.21.244.0/22", …, "2400:cb00::/32", …]
 backups              = false

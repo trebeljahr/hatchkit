@@ -6,7 +6,9 @@
 # 2. ufw     — firewall (allow SSH before enabling, so we don't lock out)
 # 3. ssh_hardening — SSH config (after firewall ensures port 22 is open)
 # 4. tailscale — VPN + optional SSH restriction (after SSH is hardened)
-# 5. lynis   — security audit (last, to score the final state)
+# 5. docker  — Docker Engine, only with docker_install: true (a server another
+#              box's Coolify will manage)
+# 6. lynis   — security audit (last, to score the final state)
 #
 # Usage:
 #   ansible-playbook -i ansible/inventories/production/hosts.ini ansible/playbooks/harden.yml
@@ -23,5 +25,7 @@
     - ssh_hardening
     - role: tailscale
       when: tailscale_enabled | bool
+    - role: docker
+      when: docker_install | default(false) | bool
     - role: lynis
       when: lynis_enabled | default(true) | bool

@@ -1,0 +1,22 @@
+# Docker Engine from Docker's apt repository. Off by default: Coolify's own
+# installer sets Docker up on the box it runs on, but a second server added
+# through Coolify's API is never given Docker (only the dashboard's
+# "Validate & install" button installs it).
+docker_install: false
+
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+
+# What Coolify writes on the servers it installs.
+docker_daemon_config:
+  log-driver: json-file
+  log-opts:
+    max-size: "10m"
+    max-file: "3"
+  default-address-pools:
+    - base: 10.0.0.0/8
+      size: 24

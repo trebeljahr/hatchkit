@@ -92,7 +92,7 @@ resource "hcloud_firewall" "hardened" {
     direction   = "in"
     protocol    = "tcp"
     port        = "80"
-    source_ips  = ["0.0.0.0/0", "::/0"]
+    source_ips  = var.http_source_ips
   }
 
   rule {
@@ -100,7 +100,7 @@ resource "hcloud_firewall" "hardened" {
     direction   = "in"
     protocol    = "tcp"
     port        = "443"
-    source_ips  = ["0.0.0.0/0", "::/0"]
+    source_ips  = var.http_source_ips
   }
 
   # Outbound — allow all. Restricting outbound at the Hetzner level is

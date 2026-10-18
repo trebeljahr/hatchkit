@@ -70,6 +70,12 @@ variable "ssh_source_ips" {
   default     = ["0.0.0.0/0", "::/0"]
 }
 
+variable "http_source_ips" {
+  description = "Source CIDRs allowed on 80/443. Set to Cloudflare's ranges (https://www.cloudflare.com/ips/) when every hostname is proxied, so scanners cannot reach the origin directly. Let's Encrypt HTTP-01 still works through the proxy."
+  type        = list(string)
+  default     = ["0.0.0.0/0", "::/0"]
+}
+
 variable "tailscale_direct_udp" {
   description = "Open UDP 41641 so Tailscale peers can connect directly."
   type        = bool
