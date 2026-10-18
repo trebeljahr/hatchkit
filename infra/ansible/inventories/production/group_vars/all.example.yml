@@ -21,6 +21,11 @@ base_packages:
 
 swapfile_size: 2G
 
+# Sudo user with key-only login. Must match ssh_allowed_users below.
+admin_user: deploy
+admin_user_ssh_keys:
+  - "ssh-ed25519 AAAA... you@machine"
+
 # Services to disable on the server (safe defaults for Hetzner VPS).
 # Services not installed are silently skipped.
 disabled_services:
@@ -76,6 +81,14 @@ ssh_allowed_users:
   # you out — verify SSH access in a second terminal before disconnecting.
   - deploy
 ssh_max_auth_tries: 3
+
+# Remote Coolify (a second server managed from another box's Coolify):
+# Tailscale SSH owns 22 on the tailnet address, so give Coolify its own port,
+# reachable only from the tailnet, and let root in from there:
+# ssh_ports: [22, 2222]
+# ufw_tailnet_tcp_ports: [2222]
+# ssh_coolify_compatibility: true
+# ssh_coolify_match_addresses: "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1,100.64.0.0/10"
 ssh_client_alive_interval: 300
 ssh_client_alive_count_max: 2
 

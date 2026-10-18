@@ -1,5 +1,9 @@
 server_timezone: UTC
 
+# Sudo user with key-only login (hardening guide 1.1). "" skips it.
+admin_user: ""
+admin_user_ssh_keys: []
+
 base_packages:
   - ca-certificates
   - curl

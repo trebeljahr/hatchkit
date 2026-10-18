@@ -1,6 +1,15 @@
 # Managed by Ansible — do not edit manually.
 # See docs/hardening-guide.md for explanations of each setting.
 
+{% if ssh_ports | list != [22] %}
+# ===========================================================================
+# Listen ports
+# ===========================================================================
+{% for port in ssh_ports %}
+Port {{ port }}
+{% endfor %}
+
+{% endif %}
 # ===========================================================================
 # Authentication
 # ===========================================================================

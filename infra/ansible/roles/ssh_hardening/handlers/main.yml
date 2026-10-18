@@ -1,4 +1,13 @@
+# Ubuntu 24.04 starts sshd from ssh.socket, whose listen ports come from
+# sshd_config via a systemd generator. daemon-reload regenerates them and
+# restarting the socket applies a changed Port; open sessions survive.
 - name: Restart ssh
-  ansible.builtin.service:
-    name: ssh
-    state: restarted
+  ansible.builtin.shell: |
+    set -eu
+    systemctl daemon-reload
+    if systemctl is-enabled --quiet ssh.socket 2>/dev/null; then
+      systemctl restart ssh.socket
+    fi
+    systemctl restart ssh.service
+  args:
+    executable: /bin/bash

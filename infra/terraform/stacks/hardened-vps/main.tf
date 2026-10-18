@@ -30,9 +30,21 @@ provider "hcloud" {
 # SSH key
 # ---------------------------------------------------------------------------
 
+# Hetzner refuses a second key with the same fingerprint, so a project that
+# already holds your key names it in existing_ssh_key_name instead.
 resource "hcloud_ssh_key" "deploy" {
+  count      = var.existing_ssh_key_name == "" ? 1 : 0
   name       = var.ssh_key_name
   public_key = var.ssh_public_key
+}
+
+data "hcloud_ssh_key" "existing" {
+  count = var.existing_ssh_key_name == "" ? 0 : 1
+  name  = var.existing_ssh_key_name
+}
+
+locals {
+  ssh_key_id = var.existing_ssh_key_name == "" ? hcloud_ssh_key.deploy[0].id : data.hcloud_ssh_key.existing[0].id
 }
 
 # ---------------------------------------------------------------------------
@@ -50,12 +62,29 @@ resource "hcloud_firewall" "hardened" {
   # SSH — needed for Ansible and emergency access.
   # After Tailscale is configured, this can be restricted further via UFW
   # (the Hetzner firewall allows it, UFW restricts to tailnet only).
-  rule {
-    description = "SSH"
-    direction   = "in"
-    protocol    = "tcp"
-    port        = "22"
-    source_ips  = ["0.0.0.0/0", "::/0"]
+  # Narrow ssh_source_ips to your own address for the first Ansible run, and
+  # set it to [] once Tailscale SSH works to close public 22 entirely.
+  dynamic "rule" {
+    for_each = length(var.ssh_source_ips) > 0 ? [1] : []
+    content {
+      description = "SSH"
+      direction   = "in"
+      protocol    = "tcp"
+      port        = "22"
+      source_ips  = var.ssh_source_ips
+    }
+  }
+
+  # Lets Tailscale peers connect directly instead of through a DERP relay.
+  dynamic "rule" {
+    for_each = var.tailscale_direct_udp ? [1] : []
+    content {
+      description = "Tailscale direct"
+      direction   = "in"
+      protocol    = "udp"
+      port        = "41641"
+      source_ips  = ["0.0.0.0/0", "::/0"]
+    }
   }
 
   rule {
@@ -78,25 +107,25 @@ resource "hcloud_firewall" "hardened" {
   # too coarse (breaks apt, Tailscale, Docker pulls). Use UFW for
   # fine-grained outbound control if needed.
   rule {
-    description = "All TCP outbound"
-    direction   = "out"
-    protocol    = "tcp"
-    port        = "1-65535"
+    description     = "All TCP outbound"
+    direction       = "out"
+    protocol        = "tcp"
+    port            = "1-65535"
     destination_ips = ["0.0.0.0/0", "::/0"]
   }
 
   rule {
-    description = "All UDP outbound"
-    direction   = "out"
-    protocol    = "udp"
-    port        = "1-65535"
+    description     = "All UDP outbound"
+    direction       = "out"
+    protocol        = "udp"
+    port            = "1-65535"
     destination_ips = ["0.0.0.0/0", "::/0"]
   }
 
   rule {
-    description = "ICMP outbound"
-    direction   = "out"
-    protocol    = "icmp"
+    description     = "ICMP outbound"
+    direction       = "out"
+    protocol        = "icmp"
     destination_ips = ["0.0.0.0/0", "::/0"]
   }
 }
@@ -110,7 +139,8 @@ resource "hcloud_server" "main" {
   image       = "ubuntu-24.04"
   server_type = var.server_type
   location    = var.server_location
-  ssh_keys    = [hcloud_ssh_key.deploy.id]
+  ssh_keys    = [local.ssh_key_id]
+  backups     = var.backups
 
   # Hardened cloud-init: packages, sysctl, fail2ban, UFW, swap.
   # Full hardening is completed by Ansible after this first boot.
@@ -119,7 +149,7 @@ resource "hcloud_server" "main" {
   firewall_ids = var.firewall_enabled ? [one(hcloud_firewall.hardened[*].id)] : []
 
   labels = {
-    role = "hardened-vps"
+    role = var.server_role
     env  = "production"
     app  = var.server_name
   }

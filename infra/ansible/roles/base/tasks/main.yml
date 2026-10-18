@@ -29,6 +29,43 @@
     fi
   changed_when: false
 
+# Hardening guide 1.1: a sudo user with key-only login, so ssh_hardening can
+# turn off root login without locking you out. Skipped when admin_user is "".
+- name: Create admin user
+  ansible.builtin.user:
+    name: "{{ admin_user }}"
+    groups: sudo
+    append: true
+    shell: /bin/bash
+    password: "!"
+  when: admin_user | length > 0
+
+- name: Create admin user's .ssh directory
+  ansible.builtin.file:
+    path: "/home/{{ admin_user }}/.ssh"
+    state: directory
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0700"
+  when: admin_user | length > 0
+
+- name: Install admin user's SSH keys
+  ansible.builtin.copy:
+    content: "{{ admin_user_ssh_keys | join('\n') }}\n"
+    dest: "/home/{{ admin_user }}/.ssh/authorized_keys"
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0600"
+  when: admin_user | length > 0 and admin_user_ssh_keys | length > 0
+
+- name: Let the admin user sudo without a password
+  ansible.builtin.copy:
+    content: "{{ admin_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    dest: "/etc/sudoers.d/90-{{ admin_user }}"
+    mode: "0440"
+    validate: visudo -cf %s
+  when: admin_user | length > 0
+
 - name: Update apt cache
   ansible.builtin.apt:
     update_cache: true
@@ -110,7 +147,7 @@
 # --- Filesystem mount hardening ---
 
 - name: Mount /tmp with noexec,nosuid,nodev
-  ansible.builtin.mount:
+  ansible.posix.mount:
     name: /tmp
     src: tmpfs
     fstype: tmpfs
@@ -119,7 +156,7 @@
   when: harden_tmp_mount
 
 - name: Mount /dev/shm with noexec,nosuid,nodev
-  ansible.builtin.mount:
+  ansible.posix.mount:
     name: /dev/shm
     src: tmpfs
     fstype: tmpfs
@@ -128,7 +165,7 @@
   when: harden_shm_mount
 
 - name: Bind mount /var/tmp to /tmp
-  ansible.builtin.mount:
+  ansible.posix.mount:
     name: /var/tmp
     src: /tmp
     fstype: none
@@ -224,7 +261,7 @@
   changed_when: swap_on.rc == 0
 
 - name: Persist swap in fstab
-  ansible.builtin.mount:
+  ansible.posix.mount:
     name: none
     src: /swapfile
     fstype: swap

@@ -3,7 +3,7 @@ INVENTORY ?= ansible/inventories/production/hosts.ini
 STACK ?= node-realtime
 TF_DIR := terraform/stacks/$(STACK)
 
-.PHONY: help bootstrap harden lockdown verify tf-init tf-plan tf-apply tf-destroy create
+.PHONY: help ansible-deps bootstrap harden lockdown verify tf-init tf-plan tf-apply tf-destroy create
 
 help:
 	@echo "Targets:"
@@ -26,8 +26,12 @@ help:
 	@echo "    create         Interactive project scaffolder    (or: hatchkit create)"
 
 # Full security hardening (Tier 1 + Tier 2 from docs/hardening-guide.md)
-harden:
+harden: ansible-deps
 	ansible-playbook -i $(INVENTORY) ansible/playbooks/harden.yml
+
+# Collections the roles call (community.general.ufw, ansible.posix.mount, …)
+ansible-deps:
+	ansible-galaxy collection install -r ansible/requirements.yml
 
 # Post-Coolify lockdown: remove bootstrap ports (8000, 6001, 6002)
 lockdown:

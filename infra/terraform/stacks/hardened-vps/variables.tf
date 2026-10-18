@@ -25,7 +25,7 @@ variable "server_name" {
 }
 
 variable "server_type" {
-  description = "Hetzner server type. cpx21 = 3 vCPU / 4 GB, cpx31 = 4 vCPU / 8 GB."
+  description = "Hetzner server type. e.g. cx23 = 2 vCPU / 4 GB, cx33 = 4 vCPU / 8 GB (shared x86)."
   type        = string
   default     = "cpx21"
 }
@@ -37,8 +37,15 @@ variable "server_location" {
 }
 
 variable "ssh_public_key" {
-  description = "Your SSH public key content (from ~/.ssh/id_ed25519.pub)."
+  description = "Your SSH public key content (from ~/.ssh/id_ed25519.pub). Unused when existing_ssh_key_name is set."
   type        = string
+  default     = ""
+}
+
+variable "existing_ssh_key_name" {
+  description = "Name of an SSH key already in the Hetzner project. When set, the stack uses it instead of uploading ssh_public_key."
+  type        = string
+  default     = ""
 }
 
 variable "ssh_key_name" {
@@ -55,4 +62,32 @@ variable "firewall_enabled" {
   description = "Whether to create a Hetzner Cloud firewall. Recommended: true."
   type        = bool
   default     = true
+}
+
+variable "ssh_source_ips" {
+  description = "Source CIDRs allowed to reach public SSH (22). [] closes public SSH at the provider firewall."
+  type        = list(string)
+  default     = ["0.0.0.0/0", "::/0"]
+}
+
+variable "tailscale_direct_udp" {
+  description = "Open UDP 41641 so Tailscale peers can connect directly."
+  type        = bool
+  default     = true
+}
+
+# ---------------------------------------------------------------------------
+# Server options
+# ---------------------------------------------------------------------------
+
+variable "backups" {
+  description = "Enable Hetzner's daily server backups (+20% of the server price)."
+  type        = bool
+  default     = false
+}
+
+variable "server_role" {
+  description = "Value of the server's `role` label."
+  type        = string
+  default     = "hardened-vps"
 }

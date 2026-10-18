@@ -8,6 +8,10 @@ ufw_allowed_tcp_ports:
 # These get removed by the lockdown playbook.
 ufw_extra_tcp_ports: []
 
+# TCP ports open only to the tailnet (100.64.0.0/10), e.g. a second sshd port
+# for a remote Coolify. The provider firewall should keep them closed publicly.
+ufw_tailnet_tcp_ports: []
+
 # Restrict SSH to Tailscale CGNAT range only.
 # When true, port 22 is removed from the general allow list and replaced
 # with a rule allowing 100.64.0.0/10 only.

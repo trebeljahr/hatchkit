@@ -62,6 +62,15 @@
     comment: "Bootstrap port {{ item }} (remove after setup)"
   loop: "{{ ufw_extra_tcp_ports }}"
 
+- name: Allow tailnet-only TCP ports
+  community.general.ufw:
+    rule: allow
+    from_ip: 100.64.0.0/10
+    port: "{{ item }}"
+    proto: tcp
+    comment: "Tailnet only: {{ item }}"
+  loop: "{{ ufw_tailnet_tcp_ports }}"
+
 - name: Enable UFW
   community.general.ufw:
     state: enabled

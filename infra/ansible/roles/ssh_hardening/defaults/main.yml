@@ -19,6 +19,11 @@ ssh_allowed_users: []
 ssh_coolify_compatibility: false
 ssh_coolify_match_addresses: "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1"
 
+# Ports sshd listens on. Add a second port (e.g. 2222) for a remote Coolify,
+# because Tailscale SSH takes over 22 on the tailnet address. Pair it with
+# ufw_tailnet_tcp_ports so only tailnet peers reach it.
+ssh_ports: [22]
+
 # Session limits
 ssh_max_auth_tries: 3
 ssh_client_alive_interval: 300
