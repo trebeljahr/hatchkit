@@ -1111,7 +1111,9 @@ export function traefikBasicAuthLabels(o: TraefikBasicAuthOptions): string[] {
       `tls.certresolver=${o.certResolver ?? "letsencrypt"}`,
     ]),
     ...router("http", o.httpEntryPoint ?? "http", []),
-    ...(o.service ? [] : [`traefik.http.services.${service}.loadbalancer.server.port=${o.port ?? 9000}`]),
+    ...(o.service
+      ? []
+      : [`traefik.http.services.${service}.loadbalancer.server.port=${o.port ?? 9000}`]),
   ];
   return o.escapeDollars ? labels.map((l) => l.replaceAll("$", "$$$$")) : labels;
 }
