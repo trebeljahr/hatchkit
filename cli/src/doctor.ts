@@ -43,7 +43,7 @@ import {
   dockerManifestInspectViaSsh,
   sshProbe,
 } from "./utils/coolify-ssh.js";
-import { errorDetail } from "./utils/error-detail.js";
+import { errorDetail, isTransportError } from "./utils/error-detail.js";
 import { execOk } from "./utils/exec.js";
 import { type LedgerStep, loadAllLedgers } from "./utils/run-ledger.js";
 import {
@@ -148,7 +148,7 @@ async function checkCoolify(): Promise<CheckResult> {
           "Then re-run: `hatchkit config add coolify`",
         ];
       }
-      if (/ENOTFOUND|ECONNREFUSED|fetch failed/i.test(detail)) {
+      if (isTransportError(detail)) {
         return [
           `Can't reach Coolify at ${cfg.url}.`,
           "Check the URL is reachable from this machine, or re-run `hatchkit config add coolify`.",
@@ -294,24 +294,33 @@ async function checkHetzner(): Promise<CheckResult> {
       };
       return `${body.meta?.pagination?.total_entries ?? "?"} server(s)`;
     },
-    (detail) => {
-      const code = httpCode(detail);
-      if (code === 401) {
-        return [
-          "Hetzner API token is invalid or was revoked.",
-          "Create a new one: https://console.hetzner.cloud/ → project → Security → API tokens (Read & Write)",
-          "Then re-run: `hatchkit config add hetzner`",
-        ];
-      }
-      if (code === 403) {
-        return [
-          "Token lacks permissions — needs Read & Write on the project.",
-          "Re-create it and re-run `hatchkit config add hetzner`.",
-        ];
-      }
-      return undefined;
-    },
+    hetznerHint,
   );
+}
+
+/** A timeout here is the network, not the token (2026-10-18). */
+export function hetznerHint(detail: string): string[] | undefined {
+  const code = httpCode(detail);
+  if (code === 401) {
+    return [
+      "Hetzner API token is invalid or was revoked.",
+      "Create a new one: https://console.hetzner.cloud/ → project → Security → API tokens (Read & Write)",
+      "Then re-run: `hatchkit config add hetzner`",
+    ];
+  }
+  if (code === 403) {
+    return [
+      "Token lacks permissions — needs Read & Write on the project.",
+      "Re-create it and re-run `hatchkit config add hetzner`.",
+    ];
+  }
+  if (isTransportError(detail)) {
+    return [
+      "Can't reach api.hetzner.cloud from this machine — network or Hetzner outage, not a credential problem.",
+      "Re-run `hatchkit doctor`. Hetzner status: https://status.hetzner.com",
+    ];
+  }
+  return undefined;
 }
 
 async function checkDns(): Promise<CheckResult> {
@@ -4787,15 +4796,26 @@ export async function runDoctor(
     console.log(chalk.bold("  How to fix"));
     for (const r of failed) {
       console.log(`\n  ${chalk.red("✗")} ${chalk.bold(r.name)}`);
-      const lines = r.hint ?? [
-        "No specific hint — try re-running the relevant `hatchkit config add <provider>` to re-enter credentials.",
-      ];
+      const lines = r.hint ?? fallbackHint(r);
       for (const line of lines) console.log(`    ${chalk.dim("→")} ${line}`);
     }
     console.log();
     const standing = opts.fix ? await offerRepairs(failed, opts.yes ?? false) : failed.length;
     if (standing > 0) process.exit(1);
   }
+}
+
+/** The line under a failing row whose check wrote no hint. A request
+ *  that never got an answer is no reason to re-enter a credential. */
+export function fallbackHint(r: Pick<CheckResult, "name" | "detail">): string[] {
+  if (isTransportError(r.detail ?? "")) {
+    return [
+      `Network error reaching ${r.name}; re-run \`hatchkit doctor\` before changing credentials.`,
+    ];
+  }
+  return [
+    "No specific hint — try re-running the relevant `hatchkit config add <provider>` to re-enter credentials.",
+  ];
 }
 
 /**

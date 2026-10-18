@@ -14,6 +14,9 @@
  *   5. No Coolify GitHub App source is a skip, not a failure.
  *   6. Manifest migration notes print once per process, with the command
  *      that writes the migrated file.
+ *   7. A provider check that got no answer (2026-10-18: Hetzner, `fetch
+ *      failed (ETIMEDOUT)`) hints at the network, never at re-entering
+ *      a working credential. An HTTP 401 still asks for a new token.
  *
  * Run: `node scripts/test.mjs test-doctor-false-failures.ts`.
  */
@@ -32,11 +35,13 @@ import {
   checkCoolifyGithubApp,
   checkPlausibleCommunityEdition,
   describeProbeFailures,
+  fallbackHint,
+  hetznerHint,
   pausedResult,
 } from "./src/doctor.js";
 import { MANIFEST_FILENAME, readManifest } from "./src/scaffold/manifest.js";
 import { CloudflareApi } from "./src/utils/cloudflare-api.js";
-import { errorDetail } from "./src/utils/error-detail.js";
+import { errorDetail, isTransportError } from "./src/utils/error-detail.js";
 
 const failures: string[] = [];
 
@@ -276,6 +281,40 @@ await check("migration notes print once per process, with the persisting command
   const hints = lines.filter((l) => l.includes("hatchkit update"));
   assert.equal(hints.length, 1);
   assert.match(hints[0], /migrated in memory only/);
+});
+
+// ── 7. a network error is not a credential error ────────────────────
+
+await check("transport failures are recognised from errorDetail", () => {
+  for (const code of ["ETIMEDOUT", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_SOCKET"]) {
+    assert.ok(isTransportError(errorDetail(fetchFailed(code))), code);
+  }
+  const timeout = new DOMException("The operation was aborted due to timeout", "TimeoutError");
+  assert.ok(isTransportError(errorDetail(timeout)), "doctor's own 15 s timeout");
+  assert.equal(isTransportError("HTTP 401"), false);
+  assert.equal(isTransportError("HTTP 503"), false);
+});
+
+await check("Hetzner ETIMEDOUT hints at the network, 401 at the token", () => {
+  const network = (hetznerHint(errorDetail(fetchFailed("ETIMEDOUT"))) ?? []).join("\n");
+  assert.match(network, /Can't reach api\.hetzner\.cloud/);
+  assert.match(network, /not a credential problem/);
+  assert.doesNotMatch(network, /config add/);
+
+  const denied = (hetznerHint("HTTP 401") ?? []).join("\n");
+  assert.match(denied, /invalid or was revoked/);
+  assert.match(denied, /hatchkit config add hetzner/);
+});
+
+await check("the generic fallback says retry on ETIMEDOUT, re-enter on 401", () => {
+  const network = fallbackHint({ name: "Hetzner Cloud", detail: "fetch failed (ETIMEDOUT)" });
+  assert.deepEqual(network, [
+    "Network error reaching Hetzner Cloud; re-run `hatchkit doctor` before changing credentials.",
+  ]);
+
+  const denied = fallbackHint({ name: "Some provider", detail: "HTTP 401" }).join("\n");
+  assert.match(denied, /re-enter credentials/);
+  assert.match(fallbackHint({ name: "Some provider" }).join("\n"), /re-enter credentials/);
 });
 
 if (failures.length > 0) {

@@ -32,3 +32,15 @@ function causeReason(err: unknown): string | undefined {
   }
   return message;
 }
+
+const TRANSPORT_ERROR =
+  /\b(?:ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|UND_ERR_\w+|AbortError|TimeoutError)\b|fetch failed|operation was aborted|timed out/i;
+
+/** True when an `errorDetail` string says the request never got an
+ *  answer: DNS, connect, reset, or a timeout. That says nothing about
+ *  the credential, so a hint must not send the user off to replace a
+ *  token that works. A Node `AbortSignal.timeout` reads "The operation
+ *  was aborted due to timeout". */
+export function isTransportError(detail: string): boolean {
+  return TRANSPORT_ERROR.test(detail);
+}
