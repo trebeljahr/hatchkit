@@ -418,6 +418,14 @@ async function main(): Promise<void> {
     }
     case "cloudflare": {
       if (args.includes("--help")) return printHelp("cloudflare");
+      if (args[1] === "token") {
+        const { parseCloudflareTokenArgs, runCloudflareToken } = await import(
+          "./deploy/cloudflare.js"
+        );
+        const ok = await runCloudflareToken(resolve("."), parseCloudflareTokenArgs(args.slice(2)));
+        if (!ok) process.exitCode = 1;
+        break;
+      }
       if (args.includes("--undo")) {
         const { runCloudflareUndo } = await import("./deploy/cloudflare.js");
         await runCloudflareUndo(resolve("."), {
@@ -4431,6 +4439,12 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Usage:")}
     cd <project-dir> && hatchkit cloudflare
     cd <project-dir> && hatchkit cloudflare --undo [--dry-run] [--yes]
+    cd <project-dir> && hatchkit cloudflare token [--worker <name>] [--create-worker] [--rotate] [--dry-run]
+
+  ${chalk.bold("token")} mints this repo's own deploy token for one Worker (Workers Scripts Edit on
+  that Worker only) and sets CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID — nothing
+  else. For a Coolify project whose client or docs deploy to a Worker. The Worker
+  name defaults to wrangler.jsonc's; it must exist unless --create-worker.
 
   ${chalk.bold("Why:")}
     Workers Static Assets serves asset requests free and unmetered. Only

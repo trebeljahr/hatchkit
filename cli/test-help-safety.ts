@@ -70,6 +70,7 @@ const DANGEROUS_ARGV: string[][] = [
   ["gh-pages", "--undo", "--help"],
   ["migrate-domain", "--to", "example.com", "--phase", "cutover", "--help"],
   ["migrate-client", "--help"],
+  ["cloudflare", "token", "--worker", "x", "--help"],
   ["migrate-client", "--rollback", "--yes", "--help"],
   ["migrate-client", "--cleanup", "--yes", "--help"],
 ];

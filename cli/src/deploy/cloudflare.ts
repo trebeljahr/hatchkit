@@ -476,6 +476,76 @@ export async function runCloudflareUndo(cwd: string, opts: CloudflareUndoOptions
 }
 
 // ---------------------------------------------------------------------------
+// Token only
+// ---------------------------------------------------------------------------
+
+export interface CloudflareTokenOptions {
+  worker?: string;
+  createWorker: boolean;
+  rotate: boolean;
+  dryRun: boolean;
+}
+
+export function parseCloudflareTokenArgs(args: string[]): CloudflareTokenOptions {
+  const known = new Set(["--worker", "--create-worker", "--rotate", "--dry-run"]);
+  for (let i = 0; i < args.length; i++) {
+    if (!known.has(args[i]))
+      throw new Error(`Unknown argument ${args[i]} (see \`hatchkit help cloudflare\`).`);
+    if (args[i] === "--worker") {
+      if (!args[i + 1] || args[i + 1].startsWith("--"))
+        throw new Error("--worker takes a Worker name.");
+      i++;
+    }
+  }
+  const at = args.indexOf("--worker");
+  return {
+    ...(at >= 0 ? { worker: args[at + 1] } : {}),
+    createWorker: args.includes("--create-worker"),
+    rotate: args.includes("--rotate"),
+    dryRun: args.includes("--dry-run"),
+  };
+}
+
+/**
+ * `hatchkit cloudflare token`: give this repo its own deploy token for
+ * one Worker and push CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID — and
+ * nothing else. For a repo that deploys a Worker but is not a static
+ * `hatchkit cloudflare` site (a Coolify project whose client or docs moved
+ * to Workers). No file is written; the Worker must exist unless
+ * `--create-worker`.
+ */
+export async function runCloudflareToken(
+  cwd: string,
+  opts: CloudflareTokenOptions,
+): Promise<boolean> {
+  const repo = await detectRepo(cwd);
+  const workerName = opts.worker ?? readWorkerName(cwd);
+  if (!workerName) {
+    throw new Error("No Worker name: pass --worker <name>, or run where wrangler.jsonc names it.");
+  }
+  console.log(chalk.dim(`  Repo:    ${repo.fullName}`));
+  console.log(chalk.dim(`  Worker:  ${workerName}`));
+  const res = await setCloudflareDeploySecrets({
+    projectDir: cwd,
+    repoSlug: repo.fullName,
+    workerName,
+    createWorker: opts.createWorker,
+    rotate: opts.rotate,
+    dryRun: opts.dryRun,
+  });
+  for (const line of res.plan) console.log(chalk.dim(`  · ${line}`));
+  if (!res.ok) {
+    console.log(chalk.red(`  ${res.error ?? "failed"}`));
+    return false;
+  }
+  if (opts.dryRun) console.log(chalk.dim("\n  --dry-run: nothing minted or pushed."));
+  else if (res.inSync)
+    console.log(chalk.green("  ✓ the repo already holds this Worker's active token"));
+  else console.log(chalk.green(`  ✓ ${res.pushed.join(", ")} set on ${repo.fullName}`));
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

@@ -890,6 +890,18 @@ await test("CLI flags", () => {
   assert.throws(() => parseMigrateClientArgs(["--force"], "/p"), /Unknown option --force/);
 });
 
+await test("cloudflare token: flags", async () => {
+  const { parseCloudflareTokenArgs } = await import("./src/deploy/cloudflare.js");
+  assert.deepEqual(parseCloudflareTokenArgs(["--worker", "conv3d-docs", "--dry-run"]), {
+    worker: "conv3d-docs",
+    createWorker: false,
+    rotate: false,
+    dryRun: true,
+  });
+  assert.throws(() => parseCloudflareTokenArgs(["--worker"]), /takes a Worker name/);
+  assert.throws(() => parseCloudflareTokenArgs(["--yes"]), /Unknown argument --yes/);
+});
+
 await test("sync: a client on Workers never adopts the project-named image app", async () => {
   const plan = computeRoutingPlan(base);
   const api = {
