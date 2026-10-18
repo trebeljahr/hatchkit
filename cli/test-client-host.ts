@@ -923,6 +923,79 @@ await test("plan: refuses a compose runtime and a static site, picks the Worker 
   for (const dir of [ok, compose]) rmSync(dir, { recursive: true, force: true });
 });
 
+await test("cleanup: deletes only what the guards cleared", async () => {
+  const { planClientCleanup } = await import("./src/deploy/migrate-client.js");
+  const base = {
+    domain: "mood.example.com",
+    worker: "mood-client",
+    packageName: "mood-client",
+    cutOverAt: "2026-10-18T11:18:00Z",
+    now: new Date("2026-10-26T00:00:00Z"),
+    secrets: ["COOLIFY_CLIENT_RESOURCE_UUID"],
+    facts: {
+      versionCommit: "542399b",
+      manifestNewest: "542399bc4828",
+      clientRoute: "mood-client",
+      app: {
+        uuid: "u1",
+        name: "mood-client",
+        fqdn: "https://mood.example.com",
+        buildPack: "dockerimage",
+      },
+      packageExists: true,
+    },
+  };
+  const ok = planClientCleanup(base);
+  assert.deepEqual(ok.blocking, []);
+  assert.deepEqual(ok.deleteApp, { uuid: "u1", name: "mood-client" });
+  assert.equal(ok.deletePackage, "mood-client");
+  assert.equal(planClientCleanup({ ...base, keepPackage: true }).deletePackage, undefined);
+
+  const early = planClientCleanup({ ...base, now: new Date("2026-10-20T00:00:00Z") });
+  assert.match(early.blocking.join(), /soak runs until 2026-10-25/);
+  assert.deepEqual(
+    planClientCleanup({ ...base, now: new Date("2026-10-20T00:00:00Z"), skipSoak: true }).blocking,
+    [],
+  );
+
+  const cases: Array<[Record<string, unknown>, RegExp]> = [
+    [{ manifestNewest: "36d57b4" }, /not answered by the Worker/],
+    [{ manifestNewest: undefined }, /not answered by the Worker/],
+    [{ poweredBy: "Next.js" }, /still answered by Next\.js/],
+    [{ clientRoute: undefined }, /points at nothing/],
+    [{ clientRoute: "someone-else" }, /points at someone-else/],
+    [
+      {
+        app: { uuid: "u1", name: "x", fqdn: "https://other.example.com", buildPack: "dockerimage" },
+      },
+      /no longer looks like this project's client/,
+    ],
+    [
+      {
+        app: {
+          uuid: "u1",
+          name: "x",
+          fqdn: "https://mood.example.com/api",
+          buildPack: "dockercompose",
+        },
+      },
+      /no longer looks like/,
+    ],
+  ];
+  for (const [change, pattern] of cases) {
+    const plan = planClientCleanup({ ...base, facts: { ...base.facts, ...change } });
+    assert.match(plan.blocking.join(" "), pattern, JSON.stringify(change));
+  }
+  // Already gone: nothing to delete there, and not a blocker.
+  const gone = planClientCleanup({
+    ...base,
+    facts: { ...base.facts, app: null, packageExists: false },
+  });
+  assert.deepEqual(gone.blocking, []);
+  assert.equal(gone.deleteApp, undefined);
+  assert.equal(gone.deletePackage, undefined);
+});
+
 await test("CLI flags", () => {
   assert.deepEqual(
     parseMigrateClientArgs(
@@ -939,6 +1012,13 @@ await test("CLI flags", () => {
     },
   );
   assert.equal(parseMigrateClientArgs(["--rollback"], "/p").action, "rollback");
+  const c = parseMigrateClientArgs(
+    ["--cleanup", "--skip-soak", "--keep-package", "--dry-run"],
+    "/p",
+  );
+  assert.equal(c.action, "cleanup");
+  assert.equal(c.skipSoak, true);
+  assert.equal(c.keepPackage, true);
   assert.throws(() => parseMigrateClientArgs(["--rollback", "--cleanup"], "/p"), /separate/);
   assert.throws(() => parseMigrateClientArgs(["--force"], "/p"), /Unknown option --force/);
 });

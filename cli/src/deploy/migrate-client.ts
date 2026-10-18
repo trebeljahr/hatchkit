@@ -85,6 +85,10 @@ export interface MigrateClientOptions {
   worker?: string;
   /** Override `originPaths` (each a path prefix such as `/api`). */
   originPaths?: string[];
+  /** `--cleanup` before the 7-day soak is over. */
+  skipSoak?: boolean;
+  /** `--cleanup` keeps the GHCR client image package. */
+  keepPackage?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +108,8 @@ export interface ClientMigrationState {
   /** Patterns of routes this migration created. */
   routesCreated: string[];
   firstVersionId?: string;
+  /** When the cutover was verified; the soak runs from here. */
+  cutOverAt?: string;
   /** The Coolify client app left running for --rollback. */
   coolifyClientApp?: { uuid: string; name: string };
   updatedAt: string;
@@ -776,6 +782,7 @@ export async function runMigrateClient(opts: MigrateClientOptions): Promise<bool
       );
     }
     state.phase = "cut-over";
+    state.cutOverAt = new Date().toISOString();
     saveState(state);
     console.log(chalk.bold("\n  Done. Next:"));
     console.log(
@@ -850,9 +857,178 @@ async function rollbackClient(opts: MigrateClientOptions): Promise<boolean> {
   return true;
 }
 
+/** Days between the cutover and `--cleanup`. */
+export const SOAK_DAYS = 7;
+
+export interface CleanupFacts {
+  /** `/version.json` commit, or undefined. */
+  versionCommit?: string;
+  /** Newest release in `/release-assets.json`: only the Worker serves it. */
+  manifestNewest?: string;
+  /** `x-powered-by` of `/` (Next.js = the Coolify client container). */
+  poweredBy?: string;
+  /** Script of the `<domain>/*` route, null for none, undefined when absent. */
+  clientRoute?: string | null;
+  /** The recorded Coolify client app as Coolify reports it now; null when
+   *  it is already gone. */
+  app?: { uuid: string; name: string; fqdn: string | null; buildPack?: string } | null;
+  /** Whether the GHCR client package exists. */
+  packageExists?: boolean;
+}
+
+export interface CleanupPlan {
+  blocking: string[];
+  deleteApp?: { uuid: string; name: string };
+  deletePackage?: string;
+  deleteSecrets: string[];
+}
+
+/**
+ * What `--cleanup` may delete, and what stops it. Pure. Deletes only what
+ * it has checked (the convention in the vault's coolify-retirement-index):
+ *
+ *   · the soak is over (or --skip-soak);
+ *   · the site answers from the Worker: `/release-assets.json` (a file only
+ *     the Worker serves) names the commit `/version.json` reports, and `/`
+ *     carries no `x-powered-by`;
+ *   · `<domain>/*` routes to this project's Worker;
+ *   · the Coolify app is still this project's client: its domains include
+ *     the project's domain and it is a Docker Image app.
+ *
+ * Never a DNS record (the route needs it proxied), the server app, a
+ * database, or the ACME route (the server still holds a certificate for
+ * the host under single-origin).
+ */
+export function planClientCleanup(args: {
+  domain: string;
+  worker: string;
+  packageName: string;
+  cutOverAt?: string;
+  now: Date;
+  skipSoak?: boolean;
+  keepPackage?: boolean;
+  secrets: string[];
+  facts: CleanupFacts;
+}): CleanupPlan {
+  const { facts } = args;
+  const blocking: string[] = [];
+  if (!args.skipSoak) {
+    const from = args.cutOverAt ? Date.parse(args.cutOverAt) : Number.NaN;
+    const ends = from + SOAK_DAYS * 86_400_000;
+    if (!Number.isFinite(from))
+      blocking.push("cutover time unknown; pass --skip-soak to clean up anyway.");
+    else if (args.now.getTime() < ends) {
+      blocking.push(
+        `soak runs until ${new Date(ends).toISOString().slice(0, 10)}; pass --skip-soak to clean up earlier.`,
+      );
+    }
+  }
+  if (!facts.versionCommit)
+    blocking.push(`https://${args.domain}/version.json does not answer with a commit.`);
+  else if (!facts.manifestNewest?.startsWith(facts.versionCommit)) {
+    blocking.push(
+      `https://${args.domain} is not answered by the Worker: /release-assets.json newest is ${facts.manifestNewest ?? "<none>"}, /version.json says ${facts.versionCommit}.`,
+    );
+  }
+  if (facts.poweredBy)
+    blocking.push(`https://${args.domain}/ is still answered by ${facts.poweredBy}.`);
+  if (facts.clientRoute !== args.worker) {
+    blocking.push(
+      `route ${args.domain}/* points at ${facts.clientRoute === undefined ? "nothing (no route)" : (facts.clientRoute ?? "no Worker")}, not ${args.worker}.`,
+    );
+  }
+  let deleteApp: CleanupPlan["deleteApp"];
+  if (facts.app) {
+    const routesDomain = (facts.app.fqdn ?? "").split(",").some(
+      (u) =>
+        u
+          .trim()
+          .replace(/^https?:\/\//, "")
+          .replace(/\/.*$/, "") === args.domain,
+    );
+    if (!routesDomain || facts.app.buildPack !== "dockerimage") {
+      blocking.push(
+        `Coolify app ${facts.app.name} (${facts.app.uuid}) no longer looks like this project's client (domains ${facts.app.fqdn ?? "none"}, ${facts.app.buildPack ?? "?"}); not deleting it.`,
+      );
+    } else deleteApp = { uuid: facts.app.uuid, name: facts.app.name };
+  }
+  return {
+    blocking,
+    ...(deleteApp ? { deleteApp } : {}),
+    ...(facts.packageExists && !args.keepPackage ? { deletePackage: args.packageName } : {}),
+    deleteSecrets: args.secrets,
+  };
+}
+
+/** GitHub API path of the client image package: user or org. */
+async function packageApiPath(slug: string, pkg: string): Promise<string> {
+  const owner = slug.split("/")[0];
+  const me = await exec("gh", ["api", "/user", "--jq", ".login"], { silent: true });
+  return me.exitCode === 0 && me.stdout.trim() === owner
+    ? `/user/packages/container/${pkg}`
+    : `/orgs/${owner}/packages/container/${pkg}`;
+}
+
+async function gatherCleanupFacts(args: {
+  domain: string;
+  appUuid?: string;
+  packagePath: string;
+  edge: EdgePlan;
+}): Promise<CleanupFacts> {
+  const facts: CleanupFacts = {};
+  const site = `https://${args.domain}`;
+  const get = (path: string) =>
+    fetch(`${site}${path}${path.includes("?") ? "&" : "?"}${cb()}`, {
+      signal: AbortSignal.timeout(15_000),
+    }).catch(() => null);
+  const version = await get("/version.json");
+  if (version?.ok)
+    facts.versionCommit = (
+      (await version.json().catch(() => null)) as { commit?: string } | null
+    )?.commit;
+  const assets = await get("/release-assets.json");
+  if (assets?.ok) {
+    const body = (await assets.json().catch(() => null)) as {
+      releases?: Array<{ sha?: string }>;
+    } | null;
+    facts.manifestNewest = body?.releases?.[0]?.sha;
+  }
+  const page = await get("/");
+  facts.poweredBy = page?.headers.get("x-powered-by") ?? undefined;
+
+  const ctx = await cloudflareContext(args.edge);
+  if (ctx) {
+    const routes = await ctx.api.listWorkerRoutes(ctx.zoneId);
+    const route = routes.find((r) => r.pattern === `${args.domain}/*`);
+    facts.clientRoute = route ? (route.script ?? null) : undefined;
+  }
+  if (args.appUuid) {
+    const { getCoolifyConfig } = await import("../config.js");
+    const cfg = await getCoolifyConfig();
+    if (!cfg) throw new Error("Coolify is not configured.");
+    const { CoolifyApi } = await import("../utils/coolify-api.js");
+    try {
+      const app = await new CoolifyApi({ url: cfg.url, token: cfg.token }).getApplication(
+        args.appUuid,
+      );
+      facts.app = { uuid: args.appUuid, name: app.name, fqdn: app.fqdn, buildPack: app.buildPack };
+    } catch (err) {
+      if (
+        (err as { status?: number }).status === 404 ||
+        /404|not found/i.test((err as Error).message)
+      ) {
+        facts.app = null;
+      } else throw err;
+    }
+  }
+  const pkg = await exec("gh", ["api", args.packagePath], { silent: true });
+  facts.packageExists = pkg.exitCode === 0;
+  return facts;
+}
+
 async function cleanupClient(opts: MigrateClientOptions): Promise<boolean> {
-  const manifest = readManifest(opts.projectDir);
-  if (!manifest) throw new Error(`No .hatchkit.json in ${opts.projectDir}.`);
+  const plan = planClientMigration(opts.projectDir, opts);
+  const { manifest } = plan;
   const state = loadState(manifest.name);
   if (state?.phase !== "cut-over" || manifest.clientHost !== "cloudflare") {
     console.log(
@@ -864,48 +1040,124 @@ async function cleanupClient(opts: MigrateClientOptions): Promise<boolean> {
   }
   const { deployHookSecretNames } = await import("./coolify-deploy-hook.js");
   const secrets = Object.values(deployHookSecretNames("client"));
-  const app = state.coolifyClientApp;
+  const slug = await repoSlug(opts.projectDir);
+  const packageName = `${slug.split("/")[1]}-client`;
+  const packagePath = await packageApiPath(slug, packageName);
+  const facts = await gatherCleanupFacts({
+    domain: manifest.domain,
+    appUuid: state.coolifyClientApp?.uuid,
+    packagePath,
+    edge: plan.edge,
+  });
+  const cleanup = planClientCleanup({
+    domain: manifest.domain,
+    worker: plan.worker,
+    packageName,
+    cutOverAt: state.cutOverAt ?? state.updatedAt,
+    now: new Date(),
+    skipSoak: opts.skipSoak,
+    keepPackage: opts.keepPackage,
+    secrets,
+    facts,
+  });
+
+  console.log(chalk.bold("  Checks:"));
+  console.log(
+    chalk.dim(
+      `    /version.json ${facts.versionCommit ?? "—"}, release-assets newest ${facts.manifestNewest ?? "—"}`,
+    ),
+  );
+  console.log(chalk.dim(`    route ${manifest.domain}/* → ${facts.clientRoute ?? "—"}`));
+  for (const b of cleanup.blocking) console.log(chalk.red(`    ✗ ${b}`));
   console.log(chalk.bold("  Plan:"));
-  if (app)
-    console.log(chalk.dim(`    delete Coolify app ${app.name} (${app.uuid}) — ends --rollback`));
-  else console.log(chalk.dim("    no Coolify client app recorded"));
+  if (cleanup.deleteApp) {
+    console.log(
+      chalk.dim(
+        `    delete Coolify app ${cleanup.deleteApp.name} (${cleanup.deleteApp.uuid}), volumes kept — ends --rollback`,
+      ),
+    );
+  } else
+    console.log(
+      chalk.dim(`    Coolify client app: ${facts.app === null ? "already gone" : "none recorded"}`),
+    );
+  if (cleanup.deletePackage)
+    console.log(
+      chalk.dim(
+        `    delete GHCR package ghcr.io/${slug.split("/")[0]}/${cleanup.deletePackage} (GitHub can restore it for 30 days)`,
+      ),
+    );
   console.log(chalk.dim(`    delete repo secrets ${secrets.join(", ")}`));
+  console.log(
+    chalk.dim(
+      `    keep: the server app, databases, DNS, the /api/* and ACME routes, Worker ${plan.worker}`,
+    ),
+  );
+  if (cleanup.blocking.length) return false;
   if (opts.dryRun) return true;
-  if (
-    !opts.yes &&
-    !(await confirm({
-      message: "Delete the Coolify client app? This ends --rollback.",
-      default: false,
-    }))
-  ) {
-    return false;
+  if (!opts.yes) {
+    const { input } = await import("@inquirer/prompts");
+    const answer = await input({ message: "Type DELETE to delete the items above:" });
+    if (answer.trim() !== "DELETE") return false;
   }
-  if (app) {
-    const { getCoolifyConfig } = await import("../config.js");
+
+  let ok = true;
+  const { getCoolifyConfig } = await import("../config.js");
+  const { CoolifyApi } = await import("../utils/coolify-api.js");
+  if (cleanup.deleteApp) {
     const cfg = await getCoolifyConfig();
     if (!cfg) throw new Error("Coolify is not configured.");
-    const { CoolifyApi } = await import("../utils/coolify-api.js");
-    await new CoolifyApi({ url: cfg.url, token: cfg.token }).deleteApplicationKeepingVolumes(
-      app.uuid,
-    );
-    console.log(chalk.green(`  ✓ deleted ${app.name}`));
+    const coolify = new CoolifyApi({ url: cfg.url, token: cfg.token });
+    await coolify.deleteApplicationKeepingVolumes(cleanup.deleteApp.uuid);
     const { reconcileBackupsAfterRemoval } = await import("../backups/sources.js");
     const backups = await reconcileBackupsAfterRemoval({
-      uuids: [app.uuid],
+      uuids: [cleanup.deleteApp.uuid],
       dryRun: false,
       settleMs: 30_000,
     });
     for (const line of backups.lines) console.log(chalk.dim(`    ${line}`));
+    const gone = await coolify.getApplication(cleanup.deleteApp.uuid).then(
+      () => false,
+      () => true,
+    );
+    console.log(
+      gone
+        ? chalk.green(`  ✓ deleted ${cleanup.deleteApp.name}`)
+        : chalk.red(`  ✗ ${cleanup.deleteApp.name} still exists`),
+    );
+    ok &&= gone;
+  }
+  if (cleanup.deletePackage) {
+    const del = await exec("gh", ["api", "-X", "DELETE", packagePath], { silent: true });
+    const still = await exec("gh", ["api", packagePath], { silent: true });
+    const gone = del.exitCode === 0 && still.exitCode !== 0;
+    console.log(
+      gone
+        ? chalk.green(`  ✓ deleted GHCR ${cleanup.deletePackage}`)
+        : chalk.red(`  ✗ GHCR ${cleanup.deletePackage}: ${del.stderr.trim() || "still there"}`),
+    );
+    ok &&= gone;
   }
   const { ghSecretDelete } = await import("./gh-actions-secrets.js");
-  const slug = await repoSlug(opts.projectDir);
   for (const name of secrets) {
     const res = await ghSecretDelete(slug, name).catch((err) => (err as Error).message);
     console.log(chalk.dim(`    ${name}: ${res}`));
   }
-  state.phase = "cleaned";
-  saveState(state);
-  return true;
+  const after = await gatherCleanupFacts({ domain: manifest.domain, packagePath, edge: plan.edge });
+  const stillWorker =
+    !!after.versionCommit &&
+    !!after.manifestNewest?.startsWith(after.versionCommit) &&
+    !after.poweredBy;
+  console.log(
+    stillWorker
+      ? chalk.green(`  ✓ ${manifest.domain} still answers from ${plan.worker}`)
+      : chalk.red(`  ✗ ${manifest.domain} no longer answers from the Worker — check now`),
+  );
+  ok &&= stillWorker;
+  if (ok) {
+    state.phase = "cleaned";
+    saveState(state);
+  }
+  return ok;
 }
 
 /** Remove keys from .hatchkit.json without running manifest migrations
@@ -935,6 +1187,8 @@ export function parseMigrateClientArgs(args: string[], cwd: string): MigrateClie
     "--rollback",
     "--cleanup",
     "--yes",
+    "--skip-soak",
+    "--keep-package",
     "--worker",
     "--origin-path",
     "--dir",
@@ -961,6 +1215,8 @@ export function parseMigrateClientArgs(args: string[], cwd: string): MigrateClie
     dryRun: args.includes("--dry-run"),
     repoOnly: args.includes("--repo-only"),
     yes: args.includes("--yes"),
+    ...(args.includes("--skip-soak") ? { skipSoak: true } : {}),
+    ...(args.includes("--keep-package") ? { keepPackage: true } : {}),
     ...(value("--worker") ? { worker: value("--worker") } : {}),
     ...(originPaths.length ? { originPaths } : {}),
   };

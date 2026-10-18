@@ -5290,6 +5290,15 @@ function printHelp(topic?: HelpTopic): void {
     --origin-path <path>   Path that stays on Coolify (repeatable; default /api under
                            single-origin, none under split)
     --yes                  Don't ask
+    --skip-soak            --cleanup before the 7-day soak is over
+    --keep-package         --cleanup keeps the GHCR client image package
+
+  ${chalk.bold("--cleanup")} deletes only what it checked: the site answers from the Worker
+  (/release-assets.json names the /version.json commit, no x-powered-by), <domain>/*
+  routes to the Worker, and the Coolify app still carries the domain. It then deletes
+  that app (volumes kept), the GHCR <repo>-client package and the COOLIFY_CLIENT_* secrets,
+  verifies each delete and that the site still answers. It never touches DNS, the server
+  app, databases, or the /api/* and ACME routes.
 `);
     return;
   }
