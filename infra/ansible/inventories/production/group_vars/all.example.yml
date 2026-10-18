@@ -44,6 +44,11 @@ disabled_services:
 fail2ban_maxretry: 3
 fail2ban_findtime: 600
 fail2ban_bantime: 86400
+fail2ban_ignoreip:
+  - 127.0.0.1/8
+  - ::1
+  - 100.64.0.0/10   # tailnet
+  # - 203.0.113.7/32  # your address, while public SSH is open
 
 # Unattended upgrades
 unattended_upgrades_auto_reboot: "true"

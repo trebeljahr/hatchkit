@@ -37,6 +37,13 @@ disabled_services:
 fail2ban_maxretry: 3
 fail2ban_findtime: 600
 fail2ban_bantime: 86400
+# Never banned. The tailnet is trusted; add your own address while public SSH
+# is open for bootstrap: an agent offering several keys to a user sshd
+# rejects counts as several failures, and a ban lasts a day.
+fail2ban_ignoreip:
+  - 127.0.0.1/8
+  - ::1
+  - 100.64.0.0/10
 
 # Unattended upgrades
 unattended_upgrades_auto_reboot: "true"

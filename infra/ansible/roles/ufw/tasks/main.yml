@@ -120,3 +120,5 @@
       exit 1
     fi
   changed_when: false
+  args:
+    executable: /bin/bash

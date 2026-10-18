@@ -28,6 +28,8 @@
       exit 1
     fi
   changed_when: false
+  args:
+    executable: /bin/bash
 
 # Hardening guide 1.1: a sudo user with key-only login, so ssh_hardening can
 # turn off root login without locking you out. Skipped when admin_user is "".
@@ -96,6 +98,7 @@
       findtime = {{ fail2ban_findtime }}
       bantime = {{ fail2ban_bantime }}
       banaction = ufw
+      ignoreip = {{ fail2ban_ignoreip | join(' ') }}
   notify: Restart fail2ban
 
 - name: Enable fail2ban
@@ -145,6 +148,10 @@
   failed_when: false
 
 # --- Filesystem mount hardening ---
+#
+# Ansible unpacks each module under $TMPDIR (/tmp by default). Mounting over
+# /tmp or /var/tmp would hide the running module's own files, so these tasks
+# unpack under /root instead.
 
 - name: Mount /tmp with noexec,nosuid,nodev
   ansible.posix.mount:
@@ -154,6 +161,8 @@
     opts: rw,noexec,nosuid,nodev,size=2G,mode=1777
     state: mounted
   when: harden_tmp_mount
+  environment:
+    TMPDIR: /root
 
 - name: Mount /dev/shm with noexec,nosuid,nodev
   ansible.posix.mount:
@@ -163,6 +172,8 @@
     opts: rw,noexec,nosuid,nodev,size=1G
     state: mounted
   when: harden_shm_mount
+  environment:
+    TMPDIR: /root
 
 - name: Bind mount /var/tmp to /tmp
   ansible.posix.mount:
@@ -172,6 +183,8 @@
     opts: bind
     state: mounted
   when: harden_tmp_mount
+  environment:
+    TMPDIR: /root
 
 # --- Core dumps ---
 
@@ -249,16 +262,20 @@
     group: root
     mode: "0600"
 
+# mkswap refuses an active swap file, and cloud-init has usually enabled it
+# already, so format and enable only when it is not in use.
+- name: Check whether the swap file is active
+  ansible.builtin.command: swapon --show=NAME --noheadings
+  register: swap_active
+  changed_when: false
+
 - name: Mark swap file as swap
   ansible.builtin.command: mkswap /swapfile
-  register: swap_mkswap
-  changed_when: swap_mkswap.rc == 0
+  when: "'/swapfile' not in swap_active.stdout_lines"
 
 - name: Enable swap immediately
   ansible.builtin.command: swapon /swapfile
-  register: swap_on
-  failed_when: false
-  changed_when: swap_on.rc == 0
+  when: "'/swapfile' not in swap_active.stdout_lines"
 
 - name: Persist swap in fstab
   ansible.posix.mount:

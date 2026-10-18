@@ -43,6 +43,7 @@ write_files:
       findtime = 600
       bantime = 86400
       banaction = ufw
+      ignoreip = 127.0.0.1/8 ::1 100.64.0.0/10
 
   # sysctl — full hardening applied on first boot.
   # Matches the Ansible template (roles/base/templates/99-hardening.conf.j2)
@@ -137,7 +138,10 @@ runcmd:
   - [sh, -lc, "grep -q '/var/tmp.*/tmp.*bind' /etc/fstab || echo '/tmp /var/tmp none bind 0 0' >> /etc/fstab"]
   # Harden /dev/shm mount (noexec)
   - [sh, -lc, "grep -q '/dev/shm.*noexec' /etc/fstab || echo 'tmpfs /dev/shm tmpfs rw,noexec,nosuid,nodev,size=1G 0 0' >> /etc/fstab"]
-  # All three take effect on reboot (first boot completes with a reboot anyway)
+  # Mount them now: left for the next reboot, systemd can mount them in the
+  # middle of a later Ansible run (any daemon-reload during apt does it) and
+  # hide the files of the module that is running.
+  - [sh, -lc, "mount /tmp && mount /var/tmp && mount -o remount /dev/shm"]
   # Set umask to 027
   - [sh, -lc, "sed -i 's/^UMASK.*/UMASK\\t\\t027/' /etc/login.defs"]
   # Completion marker
