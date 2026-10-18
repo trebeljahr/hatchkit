@@ -148,6 +148,13 @@ resource "hcloud_server" "main" {
 
   firewall_ids = var.firewall_enabled ? [one(hcloud_firewall.hardened[*].id)] : []
 
+  # user_data and the SSH key only matter at first boot. The cloud-init file
+  # is shared by every stack, so without this an edit to it (or a new key)
+  # would destroy and rebuild every live server on the next apply.
+  lifecycle {
+    ignore_changes = [user_data, ssh_keys, image]
+  }
+
   labels = {
     role = var.server_role
     env  = "production"

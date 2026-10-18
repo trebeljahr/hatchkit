@@ -142,6 +142,12 @@ resource "hcloud_server" "main" {
 
   user_data = file("${path.module}/../../../cloud-init/ubuntu-24.04-hardened.yaml")
 
+  # user_data and the SSH key only matter at first boot; the cloud-init file
+  # is shared by every stack, so an edit to it must not rebuild live servers.
+  lifecycle {
+    ignore_changes = [user_data, ssh_keys, image]
+  }
+
   firewall_ids = var.firewall_enabled ? [one(hcloud_firewall.web[*].id)] : []
 
   labels = {
