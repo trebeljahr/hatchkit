@@ -10,9 +10,10 @@
  *   permission groups  Zone Read + DNS Write
  *   resource           com.cloudflare.api.account.zone.<zone id>
  *   expires_on         one hour ahead
+ *   name               hatchkit-terraform-<project>-<time>
  *
- * The caller revokes it when the run ends; if that fails, it expires on
- * its own. The minted policy is read back before use and the run fails
+ * `withTerraformCloudflareToken` revokes it in a `finally` when the run
+ * ends; if that fails or the process dies, it expires on its own. The minted policy is read back before use and the run fails
  * closed on anything broader.
  *
  * A token from the legacy `dns:cloudflare:token` slot is passed through
@@ -73,6 +74,8 @@ export async function terraformCloudflareToken(params: {
   zone: CloudflareZone;
   /** Used when the zone lookup did not report its account. */
   accountId?: string;
+  /** Project name for the token's display name; the zone when absent. */
+  label?: string;
   api?: TerraformTokenApi;
   now?: () => Date;
 }): Promise<TerraformCloudflareToken> {
@@ -96,7 +99,7 @@ export async function terraformCloudflareToken(params: {
     const groupIds = await api.permissionGroupIds(accountId, TERRAFORM_TOKEN_GROUPS);
     created = await api.createAccountToken({
       accountId,
-      name: `hatchkit-terraform-${zone.name}-${cloudflareTime(now).replace(/[-:]/g, "")}`,
+      name: `hatchkit-terraform-${params.label ?? zone.name}-${cloudflareTime(now).replace(/[-:]/g, "")}`,
       policies: [
         {
           effect: "allow",
@@ -134,4 +137,20 @@ export async function terraformCloudflareToken(params: {
     throw fail("the minted token's policy is not Zone Read + DNS Write on this zone alone");
   }
   return { value: created.value, minted: true, revoke };
+}
+
+/** Run `fn` with the token from `terraformCloudflareToken` and revoke it
+ *  afterwards, whether `fn` returns or throws. `fn` gets the value for
+ *  `TF_VAR_cloudflare_api_token`; hatchkit's own token never reaches it
+ *  unless it is the legacy DNS-only one. */
+export async function withTerraformCloudflareToken<T>(
+  params: Parameters<typeof terraformCloudflareToken>[0],
+  fn: (tfToken: string) => Promise<T>,
+): Promise<T> {
+  const token = await terraformCloudflareToken(params);
+  try {
+    return await fn(token.value);
+  } finally {
+    await token.revoke();
+  }
 }

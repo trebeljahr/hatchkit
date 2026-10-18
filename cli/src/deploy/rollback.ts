@@ -715,27 +715,31 @@ async function undoStep(
       )?.[1];
       if (!domain) throw new Error(`no \`domain\` in ${step.tfvarsPath}`);
       const { requireCloudflareZoneForTerraform } = await import("./terraform.js");
-      const { terraformCloudflareToken } = await import("./terraform-token.js");
+      const { withTerraformCloudflareToken } = await import("./terraform-token.js");
       const zone = await requireCloudflareZoneForTerraform(domain, dns);
-      const tfToken = await terraformCloudflareToken({
-        token: dns.apiToken,
-        source: dns.apiTokenSource,
-        zone,
-        accountId: dns.accountId,
-      });
-      env.TF_VAR_cloudflare_api_token = tfToken.value;
-      try {
-        const res = await exec(
-          "terraform",
-          ["destroy", "-auto-approve", `-var-file=${step.tfvarsPath}`],
-          { cwd: step.stackDir, env, silent: true },
-        );
-        if (res.exitCode !== 0) {
-          throw new Error(`terraform destroy failed: ${res.stderr || res.stdout}`);
-        }
-      } finally {
-        await tfToken.revoke();
-      }
+      await withTerraformCloudflareToken(
+        {
+          token: dns.apiToken,
+          source: dns.apiTokenSource,
+          zone,
+          accountId: dns.accountId,
+          label: ledgerName,
+        },
+        async (tfToken) => {
+          const res = await exec(
+            "terraform",
+            ["destroy", "-auto-approve", `-var-file=${step.tfvarsPath}`],
+            {
+              cwd: step.stackDir,
+              env: { ...env, TF_VAR_cloudflare_api_token: tfToken },
+              silent: true,
+            },
+          );
+          if (res.exitCode !== 0) {
+            throw new Error(`terraform destroy failed: ${res.stderr || res.stdout}`);
+          }
+        },
+      );
       return "done";
     }
     case "coolifyApp": {

@@ -34,9 +34,12 @@ const { SECRET_KEYS, deleteSecret, getCloudflareToken, getSecret, setSecret } = 
   "./src/utils/secrets.js"
 );
 const { CloudflareApi } = await import("./src/utils/cloudflare-api.js");
-const { terraformCloudflareToken, zoneResource, TERRAFORM_TOKEN_GROUPS } = await import(
-  "./src/deploy/terraform-token.js"
-);
+const {
+  terraformCloudflareToken,
+  withTerraformCloudflareToken,
+  zoneResource,
+  TERRAFORM_TOKEN_GROUPS,
+} = await import("./src/deploy/terraform-token.js");
 const { checkCloudflareOperator } = await import("./src/doctor.js");
 
 const ACCOUNT = "a".repeat(32);
@@ -398,6 +401,72 @@ await test("a legacy DNS-only token is passed through unchanged", async () => {
   assert.equal(tf.value, "dns-old");
   assert.equal(tf.minted, false);
   assert.equal(calls.create, undefined);
+});
+
+await test("a run gets the minted value, never the operator, and is revoked after", async () => {
+  const { api, calls } = fakeMintApi();
+  const seen: string[] = [];
+  const result = await withTerraformCloudflareToken(
+    {
+      token: "op",
+      source: SECRET_KEYS.cloudflareOperatorToken,
+      zone: ZONE,
+      accountId: ACCOUNT,
+      label: "mesozoic-protocol",
+      api: api as never,
+      now: () => new Date("2026-10-19T10:00:00.000Z"),
+    },
+    async (tfToken) => {
+      seen.push(tfToken);
+      assert.deepEqual(calls.deleted, [], "still alive while Terraform runs");
+      return "applied";
+    },
+  );
+  assert.equal(result, "applied");
+  assert.deepEqual(seen, ["minted-value"]);
+  assert.equal(calls.create?.name, "hatchkit-terraform-mesozoic-protocol-20261019T100000Z");
+  assert.deepEqual(calls.deleted, ["tok1"]);
+});
+
+await test("a failed Terraform run still revokes its token", async () => {
+  const { api, calls } = fakeMintApi();
+  await assert.rejects(
+    withTerraformCloudflareToken(
+      {
+        token: "op",
+        source: SECRET_KEYS.cloudflareOperatorToken,
+        zone: ZONE,
+        accountId: ACCOUNT,
+        api: api as never,
+      },
+      async () => {
+        throw new Error("Terraform apply failed");
+      },
+    ),
+    /Terraform apply failed/,
+  );
+  assert.deepEqual(calls.deleted, ["tok1"]);
+});
+
+await test("a failed mint never runs Terraform", async () => {
+  const { api } = fakeMintApi({ failCreate: true });
+  let ran = false;
+  await assert.rejects(
+    withTerraformCloudflareToken(
+      {
+        token: "op",
+        source: SECRET_KEYS.cloudflareOperatorToken,
+        zone: ZONE,
+        accountId: ACCOUNT,
+        api: api as never,
+      },
+      async () => {
+        ran = true;
+      },
+    ),
+    /Could not mint/,
+  );
+  assert.equal(ran, false);
 });
 
 console.log("5. doctor:");

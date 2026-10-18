@@ -13,7 +13,7 @@ import { resolveStackDir } from "../scaffold/infra.js";
 import { CloudflareApi, type CloudflareZone } from "../utils/cloudflare-api.js";
 import { exec, execStream } from "../utils/exec.js";
 import { InwxApi } from "../utils/inwx-api.js";
-import { terraformCloudflareToken } from "./terraform-token.js";
+import { withTerraformCloudflareToken } from "./terraform-token.js";
 
 /**
  * Outcome of the registrar-flip preflight. Decided before plan; consumed
@@ -129,18 +129,24 @@ export async function runTerraform(
   const zone = await requireCloudflareZoneForTerraform(config.baseDomain, dnsConfig);
   // A one-zone DNS token minted for this run, not hatchkit's own token
   // (deploy/terraform-token.ts). Revoked when the run ends.
-  const tfToken = await terraformCloudflareToken({
-    token: dnsConfig.apiToken,
-    source: dnsConfig.apiTokenSource,
-    zone,
-    accountId: dnsConfig.accountId,
-  });
-  env.TF_VAR_cloudflare_api_token = tfToken.value;
-  try {
-    return await applyTerraform({ config, dnsConfig, zone, env, stackDir, tfvarsFile });
-  } finally {
-    await tfToken.revoke();
-  }
+  return withTerraformCloudflareToken(
+    {
+      token: dnsConfig.apiToken,
+      source: dnsConfig.apiTokenSource,
+      zone,
+      accountId: dnsConfig.accountId,
+      label: config.name,
+    },
+    (tfToken) =>
+      applyTerraform({
+        config,
+        dnsConfig,
+        zone,
+        env: { ...env, TF_VAR_cloudflare_api_token: tfToken },
+        stackDir,
+        tfvarsFile,
+      }),
+  );
 }
 
 /** Init, plan and apply the stack, then the registrar NS flip. */
