@@ -1115,10 +1115,16 @@ async function cleanupClient(opts: MigrateClientOptions): Promise<boolean> {
       settleMs: 30_000,
     });
     for (const line of backups.lines) console.log(chalk.dim(`    ${line}`));
-    const gone = await coolify.getApplication(cleanup.deleteApp.uuid).then(
-      () => false,
-      () => true,
-    );
+    // Coolify deletes asynchronously: the app still answers for a while
+    // after the DELETE is accepted (mood-magic, 2026-10-18).
+    let gone = false;
+    for (let i = 0; i < 24 && !gone; i++) {
+      gone = await coolify.getApplication(cleanup.deleteApp.uuid).then(
+        () => false,
+        () => true,
+      );
+      if (!gone) await new Promise((r) => setTimeout(r, 5_000));
+    }
     console.log(
       gone
         ? chalk.green(`  ✓ deleted ${cleanup.deleteApp.name}`)
