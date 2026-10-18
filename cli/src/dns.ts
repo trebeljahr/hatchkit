@@ -303,6 +303,16 @@ export async function runDnsPublish(options: DnsPublishOptions): Promise<void> {
         "Run from a hatchkit project root (or `hatchkit adopt` first).",
     );
   }
+  // dns publish points records at the Coolify server. A site Coolify does
+  // not run keeps its records where its host put them: a Worker Custom
+  // Domain's own record, or a proxied record a Workers route needs (any
+  // address; mesozoic-protocol after its Coolify app was deleted).
+  if (manifest.deploymentMode && manifest.deploymentMode !== "coolify") {
+    throw new Error(
+      `deploymentMode is "${manifest.deploymentMode}": no Coolify server to point DNS at. ` +
+        "Its records belong to its host (Workers routes need them proxied; Custom Domains own theirs).",
+    );
+  }
   const hostnames = manifestHostnames(manifest);
 
   const dns = await getDnsConfig();

@@ -1145,6 +1145,25 @@ await test("sync: a project Coolify does not run is left alone", async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+await test("dns publish: refuses a project Coolify does not run, before any network", async () => {
+  const { runDnsPublish } = await import("./src/dns.js");
+  const dir = project({
+    ".hatchkit.json": JSON.stringify({
+      version: 5,
+      name: "labs",
+      domain: "labs.example.com",
+      surfaces: "static",
+      deploymentMode: "cloudflare",
+      features: [],
+    }),
+  });
+  await assert.rejects(
+    runDnsPublish({ projectDir: dir, dryRun: true } as never),
+    /no Coolify server/,
+  );
+  rmSync(dir, { recursive: true, force: true });
+});
+
 await test("sync: a client on Workers never adopts the project-named image app", async () => {
   const plan = computeRoutingPlan(base);
   const api = {
