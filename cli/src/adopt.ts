@@ -3044,7 +3044,7 @@ async function executePlan(
             recovery: isAdminTokenIssue
               ? [
                   "Looks like an R2 admin-token problem.",
-                  "Fix globally with: hatchkit config add s3 r2  (re-paste + verify perms)",
+                  "Fix globally with: hatchkit config add cloudflare  (re-paste + verify perms)",
                   `Then re-run from the project dir: cd ${plan.name} && hatchkit provision s3`,
                 ]
               : [

@@ -594,8 +594,7 @@ export async function runCloudflareHttps(
     await import("./client-host.js");
   if (hosts.length === 0) throw new Error("Name at least one host.");
   const prov = await getCloudflareProvisioner();
-  if (!prov)
-    throw new Error("No Cloudflare provisioner — `hatchkit config add cloudflare-workers`.");
+  if (!prov) throw new Error("No Cloudflare token — `hatchkit config add cloudflare`.");
   const api = new CloudflareApi({ token: prov.token, accountId: prov.accountId });
   const byZone = new Map<string, { name: string; hosts: string[] }>();
   for (const raw of hosts) {
@@ -676,8 +675,7 @@ export async function runCloudflareRedirect(
     "./client-host.js"
   );
   const prov = await getCloudflareProvisioner();
-  if (!prov)
-    throw new Error("No Cloudflare provisioner — `hatchkit config add cloudflare-workers`.");
+  if (!prov) throw new Error("No Cloudflare token — `hatchkit config add cloudflare`.");
   const api = new CloudflareApi({ token: prov.token, accountId: prov.accountId });
   const zone = await api.resolveZoneForName(host);
   if (!zone) throw new Error(`No zone in this account manages ${host}.`);

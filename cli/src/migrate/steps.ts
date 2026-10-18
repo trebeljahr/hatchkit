@@ -73,7 +73,7 @@ import {
 } from "../provision/ses.js";
 import { type ProjectManifest, readManifest, writeManifest } from "../scaffold/manifest.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
-import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
+import { getCloudflareTokenValue } from "../utils/secrets.js";
 import { readSesFromEnv, rewriteFromAddress, rewriteSesFromEnv } from "./ses-env.js";
 
 // ---------------------------------------------------------------------------
@@ -965,7 +965,7 @@ async function r2Context(manifest: ProjectManifest): Promise<R2Context> {
   const bucket = manifest.s3Buckets?.assets?.name;
   if (!bucket) throw new Error("Manifest records no assets bucket.");
 
-  const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
+  const adminToken = await getCloudflareTokenValue("r2");
   if (!adminToken) {
     throw new Error("R2 admin token not in the keychain. Run `hatchkit config add s3 r2`.");
   }

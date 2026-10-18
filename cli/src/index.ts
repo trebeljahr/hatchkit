@@ -1686,30 +1686,22 @@ async function handleProvisionS3(): Promise<void> {
     process.exit(1);
   }
 
-  // Admin token check — `s3:r2:admin-token` is the keys-to-the-kingdom
-  // for hatchkit's R2 setup. It (a) creates buckets, (b) attaches
-  // custom domains, (c) MINTS per-project S3 credentials scoped to
-  // that project's buckets. Per-project access/secret pairs are
-  // generated on the fly and never pasted by the user — see
-  // CloudflareApi.createR2ApiToken.
-  //
-  // Required permissions on this token (BOTH must be set):
-  //   · Account > Workers R2 Storage > Edit  — for bucket admin
-  //   · User    > API Tokens         > Edit  — for child-token issuance
-  // Optional:
-  //   · Zone    > Zone               > Read  — needed only if you
-  //     want custom-domain attach instead of the managed r2.dev URL
+  // Cloudflare token check. hatchkit's operator token (or, before
+  // migration, the legacy `s3:r2:admin-token`) creates buckets, attaches
+  // custom domains and MINTS per-project S3 credentials scoped to this
+  // project's buckets (CloudflareApi.createR2AccountToken). The user
+  // never pastes per-project keys.
   //
   // If it's missing, defer to `ensureS3("r2")` — the same global setup
-  // path `hatchkit config add s3 r2` runs, including token verification
-  // against both required perms. Keeps the global vs. per-project
-  // boundary clean: this command (provision s3) only does per-project
-  // work; the admin token is a global concern.
-  const existingAdmin = await getSecret(SK.r2AdminToken);
+  // path `hatchkit config add s3 r2` runs, which asks for the operator
+  // token and verifies every grant. This command only does per-project
+  // work; the token is a global concern.
+  const { getCloudflareTokenValue } = await import("./utils/secrets.js");
+  const existingAdmin = await getCloudflareTokenValue("r2");
   if (!existingAdmin) {
     console.log(
       chalk.yellow(
-        "\n  R2 admin token not configured — running global setup first (same as `hatchkit config add s3 r2`).",
+        "\n  Cloudflare token not configured — running global setup first (same as `hatchkit config add cloudflare`).",
       ),
     );
     await ensureS3("r2");
@@ -3643,7 +3635,7 @@ async function handleConfig(): Promise<void> {
       if (!provider) {
         console.log("Usage: hatchkit config add <provider>");
         console.log(
-          "Providers: coolify, coolify-github-app, ghcr, hetzner, dns, cloudflare-workers, s3, modal, runpod, hf, replicate, glitchtip, plausible, listmonk, ses, search-console, stripe",
+          "Providers: coolify, coolify-github-app, ghcr, hetzner, cloudflare, dns, cloudflare-workers, s3, modal, runpod, hf, replicate, glitchtip, plausible, listmonk, ses, search-console, stripe",
         );
         return;
       }
@@ -3658,6 +3650,7 @@ async function handleConfig(): Promise<void> {
         case "coolify-github-app":
         case "hetzner":
         case "dns":
+        case "cloudflare":
         case "cloudflare-workers":
         case "glitchtip":
         case "plausible":
@@ -3739,7 +3732,7 @@ async function handleConfig(): Promise<void> {
             console.log(chalk.red(`  Unknown provider: ${provider}`));
             console.log(
               chalk.dim(
-                "  Valid: coolify, coolify-github-app, ghcr, hetzner, dns, cloudflare-workers, s3, modal, runpod, hf, replicate, glitchtip, plausible, listmonk, ses, search-console, stripe",
+                "  Valid: coolify, coolify-github-app, ghcr, hetzner, cloudflare, dns, cloudflare-workers, s3, modal, runpod, hf, replicate, glitchtip, plausible, listmonk, ses, search-console, stripe",
               ),
             );
             return;
@@ -4571,8 +4564,8 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("What it does:")}
     1. Reads the repo via \`gh repo view\`.
-    2. Prompts for the Cloudflare account id + provisioner token if not stored
-       (${chalk.dim("hatchkit config add cloudflare-workers")}).
+    2. Prompts for the Cloudflare account id + operator token if not stored
+       (${chalk.dim("hatchkit config add cloudflare")}).
     3. Writes what's missing, idempotently:
          ${chalk.cyan("wrangler.jsonc")}                  assets dir, 404 handling, workers_dev
          ${chalk.cyan(".node-version")}                   toolchain pin for CI
@@ -5761,7 +5754,7 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Subcommands:")}
     config              Show status of every configured provider (alias: \`status\`)
     config add <p>      Configure a provider
-                        (coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate,
+                        (coolify, ghcr, hetzner, cloudflare, dns, s3, modal, runpod, hf, replicate,
                          glitchtip, plausible, listmonk, ses, search-console, stripe)
     config pause <p> --reason "<why>" [--since YYYY-MM-DD]
                         Mark a provider stopped on purpose; doctor skips it
@@ -5903,7 +5896,7 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Config:")}
     config          Show provider status (same as \`status\`)
-    config add <p>  Configure a provider (coolify, hetzner, dns, cloudflare-workers, s3, modal, …)
+    config add <p>  Configure a provider (coolify, hetzner, cloudflare, dns, s3, modal, …)
     config pause <p> / resume <p>  Have doctor skip a provider stopped on purpose
     config reset    Clear ALL CLI config (providers, tokens, ML registry, ports)
 

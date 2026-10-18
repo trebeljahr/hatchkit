@@ -24,7 +24,7 @@ import { CloudflareApi, type CloudflareZone } from "./utils/cloudflare-api.js";
 import { CoolifyApi, type CoolifyApplication } from "./utils/coolify-api.js";
 import { execOk } from "./utils/exec.js";
 import { listS3Buckets } from "./utils/s3-admin.js";
-import { SECRET_KEYS, getSecret } from "./utils/secrets.js";
+import { getCloudflareTokenValue } from "./utils/secrets.js";
 import { getCliVersion } from "./utils/version.js";
 
 // ---------------------------------------------------------------------------
@@ -342,7 +342,7 @@ async function probeR2(): Promise<ProbeOutput> {
   const label = "R2";
   const cfg = await getS3Config("r2");
   if (!cfg) return { provider: { key, label, status: "skip", detail: "not configured" } };
-  const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
+  const adminToken = await getCloudflareTokenValue("r2");
   if (!adminToken) {
     return {
       provider: {

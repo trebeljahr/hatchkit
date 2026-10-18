@@ -393,7 +393,7 @@ hatchkit cloudflare
 hatchkit cloudflare --undo [--dry-run] [--yes]
 ```
 
-Needs `hatchkit config add cloudflare-workers` first (account ID + API token). Four token permissions matter: Account → Workers Scripts → Edit, and Zone → Workers Routes / DNS / Dynamic Redirect → Edit. `hatchkit doctor` probes all four and names every missing one.
+Needs `hatchkit config add cloudflare` first (account ID + the Cloudflare operator token; see [Providers → Cloudflare](./providers#cloudflare)). `hatchkit doctor` probes every permission and names every missing one.
 
 The custom domain is attached automatically **only** when the hostname has no existing DNS records. Cloudflare refuses to attach over existing records (`code: 100117`), and clearing them first means downtime — so for a live domain hatchkit prints the records, the cutover order, and stops.
 
@@ -690,7 +690,7 @@ hatchkit config reset                # clear ALL CLI config (confirmed)
 
 `config pause` is for a provider you stopped on purpose, such as a self-hosted GlitchTip you switched off. `hatchkit doctor` shows it as skipped with the reason and date, and does not fail on it. The credentials stay stored. Pausable providers: `coolify`, `hetzner`, `dns`, `cloudflare-workers`, `glitchtip`, `plausible`, `listmonk`, `search-console`, `stripe`, `ses`.
 
-Valid providers: `coolify`, `coolify-github-app`, `ghcr`, `hetzner`, `dns`, `cloudflare-workers`, `s3`, `glitchtip`, `plausible`, `listmonk`, `ses`, `search-console`, `stripe`, `modal`, `runpod`, `hf`, `replicate`.
+Valid providers: `coolify`, `coolify-github-app`, `ghcr`, `hetzner`, `cloudflare`, `dns`, `cloudflare-workers` (alias of `cloudflare`), `s3`, `glitchtip`, `plausible`, `listmonk`, `ses`, `search-console`, `stripe`, `modal`, `runpod`, `hf`, `replicate`.
 
 ---
 

@@ -13,6 +13,7 @@ import { resolveStackDir } from "../scaffold/infra.js";
 import { CloudflareApi, type CloudflareZone } from "../utils/cloudflare-api.js";
 import { exec, execStream } from "../utils/exec.js";
 import { InwxApi } from "../utils/inwx-api.js";
+import { terraformCloudflareToken } from "./terraform-token.js";
 
 /**
  * Outcome of the registrar-flip preflight. Decided before plan; consumed
@@ -120,14 +121,40 @@ export async function runTerraform(
   // Preflight + DNS creds. Cloudflare-only path; INWX creds flow through
   // only when the user told us their domain is *registered* at INWX
   // (registrarUsername present), and only for the post-apply NS flip.
-  let registrarPlan: RegistrarPlan | null = null;
   if (!dnsConfig?.apiToken) {
     throw new Error(
-      "Cloudflare API token is missing from the keychain. Re-run `hatchkit config add dns`.",
+      "Cloudflare API token is missing from the keychain. Run `hatchkit config add cloudflare`.",
     );
   }
-  env.TF_VAR_cloudflare_api_token = dnsConfig.apiToken;
   const zone = await requireCloudflareZoneForTerraform(config.baseDomain, dnsConfig);
+  // A one-zone DNS token minted for this run, not hatchkit's own token
+  // (deploy/terraform-token.ts). Revoked when the run ends.
+  const tfToken = await terraformCloudflareToken({
+    token: dnsConfig.apiToken,
+    source: dnsConfig.apiTokenSource,
+    zone,
+    accountId: dnsConfig.accountId,
+  });
+  env.TF_VAR_cloudflare_api_token = tfToken.value;
+  try {
+    return await applyTerraform({ config, dnsConfig, zone, env, stackDir, tfvarsFile });
+  } finally {
+    await tfToken.revoke();
+  }
+}
+
+/** Init, plan and apply the stack, then the registrar NS flip. */
+async function applyTerraform(params: {
+  config: ProjectConfig;
+  dnsConfig: DnsConfig;
+  zone: CloudflareZone;
+  env: Record<string, string>;
+  stackDir: string;
+  tfvarsFile: string;
+}): Promise<RunTerraformResult> {
+  const { config, dnsConfig, zone, env, stackDir, tfvarsFile } = params;
+  const dnsProvider = "cloudflare" as const;
+  let registrarPlan: RegistrarPlan | null = null;
 
   if (config.deployTarget === "new") {
     if (dnsConfig.registrarUsername && dnsConfig.registrarPassword) {

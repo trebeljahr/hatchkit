@@ -13,19 +13,15 @@ The mode encodes a migration verified end to end on fractal.garden in September 
 
 ## What you need
 
-Keep the Cloudflare provisioner in Hatchkit's local keychain:
+Keep Hatchkit's Cloudflare operator token in the local keychain:
 
 ```bash
-hatchkit config add cloudflare-workers
+hatchkit config add cloudflare
 ```
 
-Setup asks for your account ID and provisioner token. It checks read access before storing the token.
-Hatchkit can reuse the configured R2 admin token when both providers use the same account.
-That token still needs the Workers permissions below.
-
-### Provisioner permissions
-
-Create a user token at [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens).
+Setup asks for your account ID and the token. It runs a read probe for every permission and stores the token only when all of them pass.
+The same token serves DNS and R2; the full list of permissions is in [Providers → Cloudflare](./providers#cloudflare).
+The Workers mode uses these:
 
 | Scope | Permission | Purpose |
 |---|---|---|
@@ -33,8 +29,9 @@ Create a user token at [Cloudflare API Tokens](https://dash.cloudflare.com/profi
 | Account, Workers product | Admin | Look up and create Workers |
 | Zone | Workers Routes → Edit | Attach custom domains |
 | Zone | DNS → Edit | Inspect existing hostname records |
+| Zone | Single Redirect → Edit | HTTP→HTTPS rule for a client on Workers |
 
-Limit zone grants to domains you serve. These grants stay on the local provisioner.
+Limit zone grants to domains you serve. These grants stay on the local operator token.
 Doctor runs read probes. Passing these probes does not prove write access.
 
 CI receives **Editor on one existing Worker**, with no DNS or zone permissions.

@@ -938,7 +938,8 @@ export class CloudflareApi {
   }
 
   /** Mint an account API token with the given policies. Returns the value
-   *  once; Cloudflare never shows it again. */
+   *  once; Cloudflare never shows it again. `expiresOn` (ISO 8601) makes
+   *  Cloudflare disable it at that time even if nobody revokes it. */
   async createAccountToken(params: {
     accountId: string;
     name: string;
@@ -947,11 +948,16 @@ export class CloudflareApi {
       permission_groups: Array<{ id: string }>;
       resources: Record<string, unknown>;
     }>;
+    expiresOn?: string;
   }): Promise<{ id: string; value: string }> {
     return this.request<{ id: string; value: string }>(
       "POST",
       `/accounts/${params.accountId}/tokens`,
-      { name: params.name, policies: params.policies },
+      {
+        name: params.name,
+        policies: params.policies,
+        ...(params.expiresOn ? { expires_on: params.expiresOn } : {}),
+      },
     );
   }
 
@@ -1656,6 +1662,54 @@ export class CloudflareApi {
           "GET",
           `/zones/${params.zoneId}/rulesets/phases/http_request_dynamic_redirect/entrypoint`,
         ),
+      ),
+    );
+    return out;
+  }
+
+  /** Every grant of hatchkit's ONE Cloudflare operator token, each
+   *  through its cheapest read (see `probeProvisionerPermissions` for the
+   *  Workers and token-minting probes it reuses). Labels match
+   *  `CLOUDFLARE_OPERATOR_GRANTS` in config.ts.
+   *
+   *  The extra probes:
+   *    Workers R2 Storage:Edit       — GET /accounts/{a}/r2/buckets
+   *    Email Routing Addresses:Edit  — GET /accounts/{a}/email/routing/addresses
+   *    Zone Settings:Edit            — GET /zones/{z}/email/routing (a Zone
+   *                                    Settings read; the 2026-10-19 gap)
+   *    Email Routing Rules:Edit      — GET /zones/{z}/email/routing/rules
+   *
+   *  Read-only; a write grant is only proven by a live write. `zoneId`
+   *  is optional; the zone probes are skipped without one. */
+  async probeOperatorPermissions(params: {
+    accountId: string;
+    zoneId?: string;
+  }): Promise<CfPermissionProbe[]> {
+    const base = await this.probeProvisionerPermissions(params);
+    const out = base.slice(0, 2);
+    out.push(
+      await this.probe("Account → Workers R2 Storage → Edit", () =>
+        this.request<unknown>("GET", `/accounts/${params.accountId}/r2/buckets?per_page=1`),
+      ),
+    );
+    out.push(
+      await this.probe("Account → Email Routing Addresses → Edit", () =>
+        this.request<unknown>(
+          "GET",
+          `/accounts/${params.accountId}/email/routing/addresses?per_page=1`,
+        ),
+      ),
+    );
+    if (!params.zoneId) return out;
+    out.push(...base.slice(2));
+    out.push(
+      await this.probe("Zone → Zone Settings → Edit", () =>
+        this.request<unknown>("GET", `/zones/${params.zoneId}/email/routing`),
+      ),
+    );
+    out.push(
+      await this.probe("Zone → Email Routing Rules → Edit", () =>
+        this.request<unknown>("GET", `/zones/${params.zoneId}/email/routing/rules?per_page=1`),
       ),
     );
     return out;

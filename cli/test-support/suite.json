@@ -26,6 +26,7 @@
   "test-onboarding-plan.ts",
   "test-cloudflare-mode.ts",
   "test-cloudflare-deploy-token.ts",
+  "test-cloudflare-operator-token.ts",
   "test-carry-static.ts",
   "test-create-flags.ts",
   "test-deferrals.ts",

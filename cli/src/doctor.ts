@@ -7,6 +7,7 @@
 
 import chalk from "chalk";
 import {
+  CLOUDFLARE_OPERATOR_GRANTS,
   CLOUDFLARE_PROVISIONER_GRANTS,
   PAUSABLE_PROVIDERS,
   type PausableProvider,
@@ -45,7 +46,13 @@ import {
 import { errorDetail } from "./utils/error-detail.js";
 import { execOk } from "./utils/exec.js";
 import { type LedgerStep, loadAllLedgers } from "./utils/run-ledger.js";
-import { SECRET_KEYS, getSecret } from "./utils/secrets.js";
+import {
+  LEGACY_CLOUDFLARE_TOKEN_SLOTS,
+  SECRET_KEYS,
+  getCloudflareToken,
+  getCloudflareTokenValue,
+  getSecret,
+} from "./utils/secrets.js";
 
 // A stalled provider must not prevent later checks from reporting. Keep
 // this local to doctor so production API calls retain their own policies.
@@ -310,6 +317,13 @@ async function checkHetzner(): Promise<CheckResult> {
 async function checkDns(): Promise<CheckResult> {
   const cfg = await getDnsConfig();
   if (!cfg) return { name: "DNS", status: "skip" };
+  if (cfg.apiTokenSource === SECRET_KEYS.cloudflareOperatorToken) {
+    return {
+      name: "DNS (Cloudflare)",
+      status: "ok",
+      detail: `token from ${cfg.apiTokenSource}; its grants are the "Cloudflare operator token" row`,
+    };
+  }
   return check(
     "DNS (Cloudflare)",
     async () => {
@@ -318,7 +332,7 @@ async function checkDns(): Promise<CheckResult> {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = (await res.json()) as { result?: { status?: string } };
-      return body.result?.status ?? "active";
+      return `${body.result?.status ?? "active"} (from ${cfg.apiTokenSource ?? "no keychain slot"})`;
     },
     (detail) => {
       const code = httpCode(detail);
@@ -326,14 +340,14 @@ async function checkDns(): Promise<CheckResult> {
         return [
           "Cloudflare API token is invalid, expired, or revoked.",
           "Create a new one: https://dash.cloudflare.com/profile/api-tokens",
-          "Required permissions: Zone:DNS:Edit + Zone:Zone:Read (scope to the zones you'll use).",
-          "Then re-run: `hatchkit config add dns`",
+          "Replace it with ONE operator token for everything Cloudflare:",
+          "`hatchkit config add cloudflare` lists the grants and verifies them before saving.",
         ];
       }
       if (code === 403) {
         return [
           "Token authenticates but lacks Zone:DNS:Edit + Zone:Zone:Read on the target zones.",
-          "Edit the token at https://dash.cloudflare.com/profile/api-tokens or create a new one, then `hatchkit config add dns`.",
+          "Replace it with ONE operator token: `hatchkit config add cloudflare`.",
         ];
       }
       return undefined;
@@ -378,16 +392,24 @@ async function checkS3(provider: "hetzner" | "aws" | "r2"): Promise<CheckResult>
   // user exactly which one to add. Per-project access/secret pairs are
   // checked separately by `checkProjectR2CredsState`, which runs from
   // `collectDoctorResults` when invoked inside a hatchkit project.
-  const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
+  const r2Token = await getCloudflareToken("r2");
+  const adminToken = r2Token?.token;
   if (!adminToken) {
     return {
       name,
       status: "ok",
-      detail: "configured; admin token not set (bucket provisioning will prompt)",
+      detail: "configured; no Cloudflare token (bucket provisioning will prompt)",
       hint: [
         "Optional unless you want bucket auto-create / public-URL setup.",
-        "When ready: `hatchkit config add s3 r2` to store + verify the admin token globally.",
+        "When ready: `hatchkit config add cloudflare` to store + verify the operator token.",
       ],
+    };
+  }
+  if (r2Token.source === SECRET_KEYS.cloudflareOperatorToken) {
+    return {
+      name,
+      status: "ok",
+      detail: `token from ${r2Token.source}; its grants are the "Cloudflare operator token" row`,
     };
   }
   const accountId = cfg.endpoint?.match(
@@ -439,7 +461,7 @@ async function checkS3(provider: "hetzner" | "aws" | "r2"): Promise<CheckResult>
         } | null;
         const aCode = aBody?.errors?.[0]?.code;
         throw new Error(
-          `HTTP ${accountTokenRes.status}${aCode ? ` (CF code ${aCode})` : ""} (account-tokens list — needs Account Settings:Edit)`,
+          `HTTP ${accountTokenRes.status}${aCode ? ` (CF code ${aCode})` : ""} (account-tokens list — needs Account API Tokens:Edit)`,
         );
       }
 
@@ -454,34 +476,32 @@ async function checkS3(provider: "hetzner" | "aws" | "r2"): Promise<CheckResult>
         ? "; legacy User>API Tokens also OK"
         : "; legacy User>API Tokens missing (migration of pre-account-tokens projects may leave orphans)";
 
-      return `R2 perm OK (${n} bucket(s)); Account Settings:Edit OK (can mint per-project tokens)${legacyNote}`;
+      return `R2 perm OK (${n} bucket(s)); Account API Tokens:Edit OK (can mint per-project tokens)${legacyNote} (from ${r2Token.source})`;
     },
     (detail) => {
       const code = httpCode(detail);
       if (code === 401) {
         return [
-          "R2 admin Bearer token is invalid or revoked.",
-          "Create a new one: https://dash.cloudflare.com/profile/api-tokens → Custom token",
-          "Permissions:    Account > Workers R2 Storage > Edit",
-          "                Account > Account Settings   > Edit",
-          "Then re-run: `hatchkit config add s3 r2` to re-paste + verify globally.",
+          `R2 admin Bearer token (${r2Token.source}) is invalid or revoked.`,
+          "Replace it with ONE operator token for everything Cloudflare:",
+          "`hatchkit config add cloudflare` lists the grants and verifies them before saving.",
         ];
       }
       if (/account-tokens list/i.test(detail)) {
         return [
-          "Admin token has R2 perm but lacks `Account > Account Settings > Edit`.",
+          "Admin token has R2 perm but lacks `Account > Account API Tokens > Edit`.",
           "Without it, hatchkit can't mint per-project R2 credentials via account tokens",
           "(POST /accounts/{id}/tokens). Provision will revoke any legacy token first and",
           "then fail to mint its replacement, leaving the project without working creds.",
           "Edit at https://dash.cloudflare.com/profile/api-tokens, add the perm, save —",
-          "or re-run `hatchkit config add s3 r2` to paste a fresh token.",
+          "or store ONE operator token with `hatchkit config add cloudflare`.",
         ];
       }
       if (code === 403 || /10000|10001|9109/.test(detail)) {
         return [
           "Token verifies but lacks `Account > Workers R2 Storage > Edit`.",
           "Edit at https://dash.cloudflare.com/profile/api-tokens, add the perm, save —",
-          "or re-run `hatchkit config add s3 r2` to paste a fresh token.",
+          "or store ONE operator token with `hatchkit config add cloudflare`.",
         ];
       }
       return undefined;
@@ -1316,10 +1336,17 @@ async function checkCloudflareWorkers(): Promise<CheckResult> {
       name,
       status: "fail",
       detail: "No Cloudflare provisioner in the keychain.",
-      hint: ["Re-run: `hatchkit config add cloudflare-workers`"],
+      hint: ["Re-run: `hatchkit config add cloudflare`"],
     };
   }
   const legacy = await getSecret(SECRET_KEYS.cloudflareWorkersToken);
+  if (prov.source === SECRET_KEYS.cloudflareOperatorToken && !legacy) {
+    return {
+      name,
+      status: "ok",
+      detail: `token from ${prov.source}; its grants are the "Cloudflare operator token" row`,
+    };
+  }
 
   return check(
     name,
@@ -1358,7 +1385,7 @@ async function checkCloudflareWorkers(): Promise<CheckResult> {
           `The provisioner (${prov.source}) is invalid, expired, or revoked.`,
           "Create a new User API Token: https://dash.cloudflare.com/profile/api-tokens",
           ...grants,
-          "Then re-run: `hatchkit config add cloudflare-workers`",
+          "Or replace all three Cloudflare tokens with one: `hatchkit config add cloudflare`.",
         ];
       }
       if (/missing permissions/.test(detail)) {
@@ -1366,8 +1393,8 @@ async function checkCloudflareWorkers(): Promise<CheckResult> {
           `The provisioner (${prov.source}) works but is missing the grants named above.`,
           "It needs all of these:",
           ...grants,
-          "Edit it at https://dash.cloudflare.com/profile/api-tokens, or store a dedicated",
-          "one with `hatchkit config add cloudflare-workers`. CI never gets these grants.",
+          "Edit it at https://dash.cloudflare.com/profile/api-tokens, or replace all three",
+          "Cloudflare tokens with one: `hatchkit config add cloudflare`. CI never gets these grants.",
         ];
       }
       if (/^probes could not run/.test(detail)) {
@@ -1388,6 +1415,103 @@ async function checkCloudflareWorkers(): Promise<CheckResult> {
   );
 }
 
+/**
+ * hatchkit's ONE Cloudflare operator token (`cloudflare:operator`): every
+ * grant of `CLOUDFLARE_OPERATOR_GRANTS` through one read probe each, the
+ * zone probes on the project's zone (or the first zone). The DNS, R2 and
+ * Workers rows defer to this row while the operator token answers.
+ *
+ * Before migration, the old three slots still serve and keep their own
+ * rows; this row then warns, naming which old slots answer.
+ */
+export async function checkCloudflareOperator(
+  deps: {
+    makeApi?: (
+      token: string,
+      accountId: string,
+    ) => import("./utils/cloudflare-api.js").CloudflareApi;
+  } = {},
+): Promise<CheckResult> {
+  const name = "Cloudflare operator token";
+  const token = await getSecret(SECRET_KEYS.cloudflareOperatorToken);
+  const legacy: string[] = [];
+  for (const slot of LEGACY_CLOUDFLARE_TOKEN_SLOTS) {
+    if (await getSecret(slot)) legacy.push(slot);
+  }
+  if (!token) {
+    if (legacy.length === 0) return { name, status: "skip" };
+    return {
+      name,
+      status: "warn",
+      detail: `not set; ${legacy.length} old Cloudflare token slot(s) answer instead: ${legacy.join(", ")}`,
+      hint: [
+        "hatchkit now reads ONE Cloudflare token. The old slots keep working until you move.",
+        "Create one token with all of these (zone grants on all zones you serve):",
+        ...CLOUDFLARE_OPERATOR_GRANTS.map((g) => `  • ${g}`),
+        "Then run `hatchkit config add cloudflare`: it verifies every grant before saving",
+        "and removes the old slots. Delete the old tokens in the dashboard afterwards.",
+      ],
+    };
+  }
+  const store = getStore();
+  const accountId =
+    (store.get("providers.cloudflare") as { accountId?: string } | undefined)?.accountId ??
+    (await getCloudflareProvisioner().catch(() => null))?.accountId;
+  if (!accountId) {
+    return {
+      name,
+      status: "fail",
+      detail: "token stored without an account ID",
+      hint: ["Re-run: `hatchkit config add cloudflare`"],
+    };
+  }
+  return check(
+    name,
+    async () => {
+      const { CloudflareApi } = await import("./utils/cloudflare-api.js");
+      const api = deps.makeApi?.(token, accountId) ?? new CloudflareApi({ token, accountId });
+      if ((await api.verifyToken()) !== "active") throw new Error("Token is not active");
+      const zone = await provisionerProbeZone(api, accountId);
+      const probes = await api.probeOperatorPermissions({ accountId, zoneId: zone?.id });
+      const failure = describeProbeFailures(
+        probes,
+        zone && `${zone.name}${zone.note ? `, ${zone.note}` : ""}`,
+      );
+      if (failure) throw new Error(failure);
+      if (!zone)
+        throw new Error("missing permissions: Zone → Zone → Read [the token lists no zone]");
+      const old = legacy.length > 0 ? `; old slots still set: ${legacy.join(", ")}` : "";
+      return `${probes.length}/${probes.length} read probes passed (zone ${zone.name}${zone.note ? `, ${zone.note}` : ""}; from ${SECRET_KEYS.cloudflareOperatorToken})${old}; write grants unverified`;
+    },
+    (detail) => {
+      const grants = CLOUDFLARE_OPERATOR_GRANTS.map((g) => `  • ${g}`);
+      if (httpCode(detail) === 401 || /not active/.test(detail)) {
+        return [
+          `The operator token (${SECRET_KEYS.cloudflareOperatorToken}) is invalid, expired, or revoked.`,
+          "Create a new one with all of these, then `hatchkit config add cloudflare`:",
+          ...grants,
+        ];
+      }
+      if (/missing permissions/.test(detail)) {
+        return [
+          "The operator token works but is missing the grants named above.",
+          "It needs all of these (zone grants on all zones you serve):",
+          ...grants,
+          "Edit it at https://dash.cloudflare.com/profile/api-tokens (or Manage account →",
+          "Account API tokens for an account token). No re-paste needed after an edit.",
+        ];
+      }
+      if (/^probes could not run/.test(detail)) {
+        return [
+          "Cloudflare gave no answer about these grants (network error or a 5xx), so this run",
+          "says nothing about the token. Re-run `hatchkit doctor`; if it repeats, check the error above.",
+        ];
+      }
+      return undefined;
+    },
+  );
+}
+
 /** The zone to run the provisioner's zone probes on. A token's zone
  *  grants can cover some zones only, so inside a project probe the zone
  *  serving the manifest's domain; outside one, fall back to the first
@@ -1400,7 +1524,10 @@ async function provisionerProbeZone(
   const { CloudflareApi } = await import("./utils/cloudflare-api.js");
   const dns = await getDnsConfig();
   const readers = [
-    ...(dns?.apiToken ? [new CloudflareApi({ token: dns.apiToken, accountId })] : []),
+    // The operator token is the provisioner itself; read it once.
+    ...(dns?.apiToken && dns.apiTokenSource !== SECRET_KEYS.cloudflareOperatorToken
+      ? [new CloudflareApi({ token: dns.apiToken, accountId })]
+      : []),
     provisioner,
   ];
   const domain = (await cwdManifest())?.domain;
@@ -1806,6 +1933,7 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
     ])),
   );
   results.push(...(await unlessPaused("hetzner", checkHetzner)));
+  results.push(await checkCloudflareOperator());
   results.push(...(await unlessPaused("dns", checkDns)));
   results.push(...(await unlessPaused("cloudflare-workers", checkCloudflareWorkers)));
   for (const p of ["hetzner", "aws", "r2"] as const) results.push(await checkS3(p));
@@ -2999,7 +3127,7 @@ export async function checkProjectS3CorsState(projectDir: string): Promise<Check
     return out;
   }
 
-  const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
+  const adminToken = await getCloudflareTokenValue("r2");
   if (!adminToken) {
     out.push({
       name: `Project ${manifest.name} (R2 CORS)`,

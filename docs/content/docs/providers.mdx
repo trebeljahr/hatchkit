@@ -90,28 +90,40 @@ Hatchkit creates the apex + `api.` records pointing at the deploy target.
 **Supported:**
 
 - **INWX** — username + password + optional 2FA shared secret
-- **Cloudflare** — API token scoped to the zone
+- **Cloudflare** — the Cloudflare operator token (see [Cloudflare](#cloudflare))
 
-Configure: `hatchkit config add dns`.
+Configure: `hatchkit config add dns` (asks for the INWX registrar details; the token comes from `hatchkit config add cloudflare`).
 
 ---
 
-## Cloudflare Workers
+## Cloudflare
 
-Static-asset hosting for the `cloudflare` deployment mode. Stores a Cloudflare account ID (metadata) and an API token (keychain).
+Hatchkit keeps ONE Cloudflare operator token, in the local keychain only (`cloudflare:operator`). DNS, R2, Workers and Email Routing all use it. It never leaves this machine:
 
-Kept separate from the DNS and R2 Cloudflare tokens on purpose: this is the only Cloudflare credential hatchkit copies out to a third party — as `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repo secrets on GitHub — so it has to be revocable without taking DNS or R2 down with it.
+- Each Worker repo's CI gets a token minted for that one Worker.
+- Each project's R2 keys are minted for that project's buckets.
+- Each Terraform run gets a one-zone DNS token that expires within the hour and is revoked when the run ends.
 
-**Token permissions:**
+**Token permissions** (zone grants on all zones you serve):
 
-- Account → Workers Scripts → Edit
-- Zone → Workers Routes → Edit
-- Zone → DNS → Edit
-- Zone → Dynamic Redirect → Edit — needed for `www` → apex redirects, and the one people forget
+| Scope | Permission | Used for |
+|---|---|---|
+| Account | Account API Tokens → Edit | Mint the Worker CI, project R2 and Terraform tokens |
+| Account | Workers → Admin | Look up and create Workers |
+| Account | Workers R2 Storage → Edit | Buckets, custom domains, CORS |
+| Account | Email Routing Addresses → Edit | Forwarding destinations |
+| Zone | Zone → Read | Find the zone for a hostname |
+| Zone | Workers Routes → Edit | Attach a Worker custom domain |
+| Zone | DNS → Edit | Publish records |
+| Zone | Single Redirect → Edit | HTTP→HTTPS rule for a client on Workers |
+| Zone | Zone Settings → Edit | Email Routing settings, edge hardening |
+| Zone | Email Routing Rules → Edit | Forward rules, catch-all |
 
-Scope the three zone permissions to every domain you plan to serve. `hatchkit doctor` probes all four and names every missing one.
+Configure: `hatchkit config add cloudflare`. Setup runs one read probe per permission and saves the token only when all of them pass. `hatchkit doctor` runs the same probes in its "Cloudflare operator token" row.
 
-Configure: `hatchkit config add cloudflare-workers`. Full guide: [Cloudflare Workers](./cloudflare).
+Older setups used three tokens (`dns:cloudflare:token`, `cloudflare:provisioner`, `s3:r2:admin-token`). Hatchkit still reads them until the operator token is stored, and doctor names the ones that still answer. `hatchkit config add cloudflare` removes them from the keychain after it saves the new token; delete the old tokens in the dashboard yourself.
+
+Full guide for the `cloudflare` deployment mode: [Cloudflare Workers](./cloudflare).
 
 ---
 

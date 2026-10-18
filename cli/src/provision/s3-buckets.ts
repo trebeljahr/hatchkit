@@ -58,7 +58,7 @@ import {
 import { CloudflareApi, type R2CorsRule } from "../utils/cloudflare-api.js";
 import { dotenvxSet } from "../utils/dotenvx-safe.js";
 import { locateEnvFile, resolveEnvFileTarget, resolveEnvSearchRoot } from "../utils/env-files.js";
-import { SECRET_KEYS, deleteSecret, getSecret } from "../utils/secrets.js";
+import { SECRET_KEYS, deleteSecret, getCloudflareTokenValue, getSecret } from "../utils/secrets.js";
 import { readEnvKeys } from "./write-env.js";
 
 export type EnvPrefix = "R2" | "S3" | "AWS";
@@ -319,10 +319,10 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
   // (handleProvisionS3) is responsible for prompting + storing this
   // when missing — this function fails fast so non-interactive callers
   // (adopt's auto-step) get a clear hint instead of an opaque 10000.
-  const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
+  const adminToken = await getCloudflareTokenValue("r2");
   if (!adminToken) {
     throw new Error(
-      "R2 admin token not configured. Run `hatchkit config add s3 r2` to paste + verify it globally, " +
+      "Cloudflare token not configured. Run `hatchkit config add cloudflare` to paste + verify it globally, " +
         "then re-run `hatchkit provision s3` to create this project's buckets.",
     );
   }
@@ -1065,7 +1065,7 @@ export async function reconcileAssetsCorsFromManifest(
     })());
   if (!accountId) return null;
 
-  const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
+  const adminToken = await getCloudflareTokenValue("r2");
   if (!adminToken) return null;
 
   const cf = new CloudflareApi({ token: adminToken });

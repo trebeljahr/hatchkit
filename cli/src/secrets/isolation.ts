@@ -92,6 +92,11 @@ export async function collectProvisionerValues(): Promise<ProvisionerValue[]> {
   add("coolify", "hatchkit's Coolify token", await getSecret(SECRET_KEYS.coolifyToken));
   add(
     "cloudflare",
+    "hatchkit's Cloudflare operator token",
+    await getSecret(SECRET_KEYS.cloudflareOperatorToken),
+  );
+  add(
+    "cloudflare",
     "hatchkit's Cloudflare DNS token",
     await getSecret(SECRET_KEYS.dnsCloudflareToken),
   );

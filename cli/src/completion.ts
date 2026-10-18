@@ -51,6 +51,7 @@ const CONFIG_ADD = [
   "coolify",
   "ghcr",
   "hetzner",
+  "cloudflare",
   "dns",
   "s3",
   "modal",

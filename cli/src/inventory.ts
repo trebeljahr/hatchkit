@@ -53,7 +53,7 @@ import { CloudflareApi } from "./utils/cloudflare-api.js";
 import { CoolifyApi, type CoolifyApplication } from "./utils/coolify-api.js";
 import { exec, execOk } from "./utils/exec.js";
 import { listS3Buckets } from "./utils/s3-admin.js";
-import { SECRET_KEYS, getSecret } from "./utils/secrets.js";
+import { getCloudflareTokenValue } from "./utils/secrets.js";
 import { type Step, runSteps } from "./utils/step-runner.js";
 import { getCliVersion } from "./utils/version.js";
 
@@ -1312,7 +1312,7 @@ async function scanR2(
     skipped.push({ provider, reason: "R2 not configured (`hatchkit config add s3` → r2)" });
     return { provider, findings, skipped };
   }
-  const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
+  const adminToken = await getCloudflareTokenValue("r2");
   if (!adminToken) {
     skipped.push({ provider, reason: "R2 admin token not in keychain; can't list buckets" });
     return { provider, findings, skipped };

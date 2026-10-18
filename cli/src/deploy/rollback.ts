@@ -16,7 +16,7 @@
  * don't abort the rest of the rollback — we want to claw back as much
  * state as we can and surface what's left.
  */
-import { existsSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { confirm, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { getCoolifyConfig, getDnsConfig } from "../config.js";
@@ -24,7 +24,7 @@ import { CoolifyApi } from "../utils/coolify-api.js";
 import { dockerLogoutViaSsh } from "../utils/coolify-ssh.js";
 import { exec } from "../utils/exec.js";
 import { type LedgerStep, RunLedger, loadAllLedgers } from "../utils/run-ledger.js";
-import { SECRET_KEYS, deleteSecret, getSecret } from "../utils/secrets.js";
+import { deleteSecret, getCloudflareTokenValue } from "../utils/secrets.js";
 import { ghSecretDelete } from "./gh-actions-secrets.js";
 
 /** Pull the R2 admin token from the OS keychain. Used by rollback
@@ -32,7 +32,7 @@ import { ghSecretDelete } from "./gh-actions-secrets.js";
  *  Returns undefined when the user has wiped their keychain or never
  *  configured R2; callers surface that as a "re-add the token" error. */
 async function getR2AdminToken(): Promise<string | undefined> {
-  return (await getSecret(SECRET_KEYS.r2AdminToken)) ?? undefined;
+  return (await getCloudflareTokenValue("r2")) ?? undefined;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((res) => setTimeout(res, ms));
@@ -705,18 +705,36 @@ async function undoStep(
       // the destroy won't work and we say so.
       const dns = await getDnsConfig();
       const env: Record<string, string> = {};
-      if (dns?.apiToken) {
-        env.TF_VAR_cloudflare_api_token = dns.apiToken;
-      } else {
-        throw new Error("DNS credentials no longer in keychain — re-add them, then retry");
+      if (!dns?.apiToken) {
+        throw new Error("Cloudflare token no longer in keychain — re-add it, then retry");
       }
-      const res = await exec(
-        "terraform",
-        ["destroy", "-auto-approve", `-var-file=${step.tfvarsPath}`],
-        { cwd: step.stackDir, env, silent: true },
-      );
-      if (res.exitCode !== 0) {
-        throw new Error(`terraform destroy failed: ${res.stderr || res.stdout}`);
+      // Same one-zone DNS token `runTerraform` mints, for the zone the
+      // stack's tfvars name (deploy/terraform-token.ts).
+      const domain = readFileSync(step.tfvarsPath, "utf-8").match(
+        /^\s*domain\s*=\s*"([^"]+)"/m,
+      )?.[1];
+      if (!domain) throw new Error(`no \`domain\` in ${step.tfvarsPath}`);
+      const { requireCloudflareZoneForTerraform } = await import("./terraform.js");
+      const { terraformCloudflareToken } = await import("./terraform-token.js");
+      const zone = await requireCloudflareZoneForTerraform(domain, dns);
+      const tfToken = await terraformCloudflareToken({
+        token: dns.apiToken,
+        source: dns.apiTokenSource,
+        zone,
+        accountId: dns.accountId,
+      });
+      env.TF_VAR_cloudflare_api_token = tfToken.value;
+      try {
+        const res = await exec(
+          "terraform",
+          ["destroy", "-auto-approve", `-var-file=${step.tfvarsPath}`],
+          { cwd: step.stackDir, env, silent: true },
+        );
+        if (res.exitCode !== 0) {
+          throw new Error(`terraform destroy failed: ${res.stderr || res.stdout}`);
+        }
+      } finally {
+        await tfToken.revoke();
       }
       return "done";
     }
@@ -941,7 +959,7 @@ async function undoStep(
       const adminToken = await getR2AdminToken();
       if (!adminToken) {
         throw new Error(
-          "R2 admin token not in keychain — re-add via `hatchkit config add s3 r2`, then retry destroy.",
+          "Cloudflare token not in keychain — re-add via `hatchkit config add cloudflare`, then retry destroy.",
         );
       }
       const { CloudflareApi } = await import("../utils/cloudflare-api.js");
@@ -962,7 +980,7 @@ async function undoStep(
       const adminToken = await getR2AdminToken();
       if (!adminToken) {
         throw new Error(
-          "R2 admin token not in keychain — re-add via `hatchkit config add s3 r2`, then retry destroy.",
+          "Cloudflare token not in keychain — re-add via `hatchkit config add cloudflare`, then retry destroy.",
         );
       }
       const { CloudflareApi } = await import("../utils/cloudflare-api.js");
@@ -1067,7 +1085,7 @@ async function undoStep(
       const prov = await getCloudflareProvisioner();
       if (!prov) {
         throw new Error(
-          "Cloudflare provisioner not in keychain — re-add via `hatchkit config add cloudflare-workers`, then retry destroy.",
+          "Cloudflare token not in keychain — re-add via `hatchkit config add cloudflare`, then retry destroy.",
         );
       }
       if (prov.accountId !== step.accountId) {

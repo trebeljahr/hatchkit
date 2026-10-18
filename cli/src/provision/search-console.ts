@@ -177,7 +177,7 @@ export async function provisionSearchConsoleForDomain(
   const siteUrl = searchConsoleSiteUrl(domain);
   const dnsCfg = await ensureDns();
   if (!dnsCfg.apiToken) {
-    throw new Error("Cloudflare API token not configured. Run `hatchkit config add dns`.");
+    throw new Error("Cloudflare API token not configured. Run `hatchkit config add cloudflare`.");
   }
 
   const accessToken = await getSearchConsoleAccessToken();

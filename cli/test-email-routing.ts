@@ -144,7 +144,7 @@ await expect(
       "not the groups it has",
     );
     assert.match(hint, /dash\.cloudflare\.com\/profile\/api-tokens/);
-    assert.match(hint, /hatchkit config add dns/);
+    assert.match(hint, /hatchkit config add cloudflare/);
   },
 );
 

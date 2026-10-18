@@ -35,7 +35,7 @@ import {
   writeManifest,
 } from "../../scaffold/manifest.js";
 import { CloudflareApi, type CfTokenPolicy } from "../../utils/cloudflare-api.js";
-import { SECRET_KEYS, getSecret } from "../../utils/secrets.js";
+import { SECRET_KEYS, getCloudflareTokenValue, getSecret } from "../../utils/secrets.js";
 import { readEncryptedProd } from "../env-writer.js";
 import { register } from "../registry.js";
 import type {
@@ -192,7 +192,7 @@ function scopeFromManifest(manifest: ProjectManifest, group: TokenGroup): string
 }
 
 async function adminApi(): Promise<CloudflareApi> {
-  const token = await getSecret(SECRET_KEYS.r2AdminToken);
+  const token = await getCloudflareTokenValue("r2");
   if (!token) {
     throw new Error(
       "R2 admin token not in the keychain. Run `hatchkit config add s3 r2` to store it, then retry.",

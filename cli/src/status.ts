@@ -161,6 +161,13 @@ export function collectStatus(projectDir: string = process.cwd()): StatusSnapsho
     configureCommand: "hatchkit config add hetzner",
   });
   providers.push({
+    key: "cloudflare",
+    label: "Cloudflare (operator token)",
+    configured: config.providers.cloudflare?.status === "configured",
+    detail: config.providers.cloudflare?.accountId,
+    configureCommand: "hatchkit config add cloudflare",
+  });
+  providers.push({
     key: "dns",
     label: "DNS",
     configured: config.providers.dns?.status === "configured",

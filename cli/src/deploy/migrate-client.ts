@@ -622,7 +622,7 @@ export async function runMigrateClient(opts: MigrateClientOptions): Promise<bool
   if (!ctx) {
     console.log(
       chalk.red(
-        "\n  Cloudflare provisioner needed for the live steps (`hatchkit config add cloudflare-workers`).",
+        "\n  Cloudflare token needed for the live steps (`hatchkit config add cloudflare`).",
       ),
     );
     return false;

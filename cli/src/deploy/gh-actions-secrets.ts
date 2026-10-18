@@ -455,7 +455,7 @@ export async function setCloudflareDeploySecrets(
     const provisioner = await config.getCloudflareProvisioner();
     if (!provisioner) {
       result.error =
-        "no Cloudflare provisioner in the keychain — run `hatchkit config add cloudflare-workers`";
+        "no Cloudflare provisioner in the keychain — run `hatchkit config add cloudflare`";
       return result;
     }
     const { CloudflareApi } = await import("../utils/cloudflare-api.js");

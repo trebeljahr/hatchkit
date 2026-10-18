@@ -39,7 +39,7 @@ import ora from "ora";
 import { type ProjectManifest, readManifest, writeManifest } from "../scaffold/manifest.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { resolveEnvFileTarget } from "../utils/env-files.js";
-import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
+import { getCloudflareTokenValue } from "../utils/secrets.js";
 import { accountIdFromR2Endpoint } from "./s3-buckets.js";
 
 /** One bucket entry from `.hatchkit.json` paired with its minted creds. */
@@ -127,10 +127,10 @@ export async function provisionR2BucketTokens(
   }
   const accountId = accountIdFromR2Endpoint(meta.endpoint);
 
-  const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
+  const adminToken = await getCloudflareTokenValue("r2");
   if (!adminToken) {
     throw new Error(
-      "R2 admin token missing from the keychain. Run `hatchkit config add s3 r2` to paste + verify it, then re-run.",
+      "Cloudflare token missing from the keychain. Run `hatchkit config add cloudflare` to paste + verify it, then re-run.",
     );
   }
   const cf = new CloudflareApi({ token: adminToken });
@@ -333,10 +333,10 @@ export async function unprovisionR2BucketTokens(opts: {
   if (buckets.length === 0) return out;
 
   const accountId = manifest.s3Buckets?.accountId ?? deriveAccountId();
-  const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
+  const adminToken = await getCloudflareTokenValue("r2");
   if (!adminToken) {
     throw new Error(
-      "R2 admin token not in keychain — re-add via `hatchkit config add s3 r2`, then retry remove.",
+      "Cloudflare token not in keychain — re-add via `hatchkit config add cloudflare`, then retry remove.",
     );
   }
   const cf = new CloudflareApi({ token: adminToken });

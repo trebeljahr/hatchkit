@@ -16,9 +16,12 @@ import {
 } from "./utils/gh-token.js";
 import { pickPort } from "./utils/ports.js";
 import {
+  LEGACY_CLOUDFLARE_TOKEN_SLOTS,
   SECRET_KEYS,
   clearAllSecrets,
   deleteSecret,
+  getCloudflareToken,
+  getCloudflareTokenValue,
   getSecret,
   setSecret,
 } from "./utils/secrets.js";
@@ -59,105 +62,12 @@ export function validateS3KeyPair(
 
 /** Pretty-print "where to create this token" hint before a password prompt.
  *  Optional `notes` lines render below the permissions line at the same
- *  indent — used by the Cloudflare branches to explain why the token has
- *  to be a User API Token (vs Account-owned) and that DNS + R2 deliberately
- *  use two separate tokens that both live at /profile/api-tokens. */
+ *  indent. */
 function tokenHint(url: string, scope: string, ...notes: string[]): void {
   console.log(chalk.dim(`  → Create at: ${chalk.cyan(url)}`));
   console.log(chalk.dim(`    Permissions: ${scope}`));
   for (const note of notes) {
     console.log(chalk.dim(`    ${note}`));
-  }
-}
-
-/** Verify an R2 admin Bearer token has BOTH perms hatchkit needs:
- *
- *   1. `Account > Workers R2 Storage > Edit` — bucket admin (for
- *      `hatchkit provision s3` to create/list/configure buckets).
- *   2. `User > API Tokens > Edit` — child-token issuance (for minting
- *      per-project scoped S3 credentials at provision-time).
- *
- *  This is the same set of calls `hatchkit doctor` makes, kept in sync
- *  on purpose: the config-time and health-check verdicts must match so
- *  doctor never fails on a token we just accepted. Returns a structured
- *  verdict so the caller can render a precise error and decide whether
- *  to retry. */
-export async function verifyR2AdminToken(
-  token: string,
-  accountId: string,
-): Promise<{ ok: true; detail: string } | { ok: false; detail: string }> {
-  try {
-    const verifyRes = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!verifyRes.ok) {
-      return {
-        ok: false,
-        detail: `Token rejected by Cloudflare (HTTP ${verifyRes.status}). Likely invalid or revoked.`,
-      };
-    }
-    const r2Res = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    );
-    if (!r2Res.ok) {
-      const body = (await r2Res.json().catch(() => null)) as {
-        errors?: Array<{ code: number; message: string }>;
-      } | null;
-      const code = body?.errors?.[0]?.code;
-      return {
-        ok: false,
-        detail: `Token lacks \`Account > Workers R2 Storage > Edit\` (HTTP ${r2Res.status}${code ? ` / CF code ${code}` : ""}).`,
-      };
-    }
-    const body = (await r2Res.json()) as { result?: { buckets?: unknown[] } };
-    const bucketCount = body.result?.buckets?.length ?? 0;
-
-    // Account-tokens permission probe. Hatchkit provisions per-project
-    // R2 credentials via `POST /accounts/{id}/tokens` (account-owned
-    // tokens, visible in `R2 → Manage R2 API Tokens`). That endpoint
-    // requires `Account Settings:Edit` on the calling token. The legacy
-    // `User > API Tokens:Edit` perm is no longer sufficient on its own —
-    // doctor checks both so users with one-but-not-the-other see the gap
-    // before provisioning crashes mid-flight (revoking a legacy token
-    // they need without being able to mint its replacement). The probe
-    // hits `/accounts/{id}/tokens/permission_groups`, which is the same
-    // call `createR2AccountToken` makes first; a 9109/403 here tells us
-    // we'd fail there too.
-    const accountTokenRes = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${accountId}/tokens/permission_groups?per_page=1`,
-      { headers: { Authorization: `Bearer ${token}` } },
-    );
-    if (!accountTokenRes.ok) {
-      const body = (await accountTokenRes.json().catch(() => null)) as {
-        errors?: Array<{ code: number; message: string }>;
-      } | null;
-      const code = body?.errors?.[0]?.code;
-      return {
-        ok: false,
-        detail: `Token has R2 perm but lacks \`Account Settings > Edit\` (HTTP ${accountTokenRes.status}${code ? ` / CF code ${code}` : ""}). Without it hatchkit can't mint per-project R2 credentials via account tokens.`,
-      };
-    }
-
-    // Legacy probe: kept for back-compat with the migration flow that
-    // revokes pre-account-tokens user-tokens. Failing here means the
-    // migration step would silently leave orphans — the user should
-    // know. We don't *require* this perm anymore (account tokens are
-    // the new default), so a failure is downgraded to a non-fatal
-    // mention instead of a hard fail.
-    const legacyRes = await fetch("https://api.cloudflare.com/client/v4/user/tokens?per_page=1", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const legacyPerm = legacyRes.ok ? "(legacy User>API Tokens also OK)" : "";
-    return {
-      ok: true,
-      detail: `${bucketCount} bucket(s) visible; can mint account tokens${legacyPerm ? ` ${legacyPerm}` : ""}`,
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      detail: `Network error verifying token: ${(err as Error).message}`,
-    };
   }
 }
 
@@ -235,6 +145,14 @@ export interface DnsMeta extends ProviderStatus {
    *  Cloudflare, but the domain itself is still registered at INWX, so
    *  we need creds to flip the delegated NS after deploys. Non-sensitive. */
   registrarUsername?: string;
+}
+
+/** hatchkit's ONE Cloudflare operator token (`cloudflare:operator`). */
+export interface CloudflareMeta extends ProviderStatus {
+  /** The account every Cloudflare call targets. Non-sensitive. */
+  accountId: string;
+  /** When `hatchkit config add cloudflare` last passed every probe. */
+  lastVerified?: string;
 }
 
 export interface CloudflareWorkersMeta extends ProviderStatus {
@@ -363,6 +281,9 @@ export interface HetznerConfig extends HetznerMeta {
 }
 export interface DnsConfig extends DnsMeta {
   apiToken?: string;
+  /** Keychain slot `apiToken` came from: `cloudflare:operator`, or the
+   *  legacy `dns:cloudflare:token` before migration. */
+  apiTokenSource?: string;
   /** Paired with `registrarUsername` — from the keychain. Present only
    *  when the user told us INWX is their registrar during onboarding. */
   registrarPassword?: string;
@@ -431,6 +352,7 @@ export interface CliConfig {
     coolify?: CoolifyMeta;
     hetzner?: HetznerMeta;
     dns?: DnsMeta;
+    cloudflare?: CloudflareMeta;
     cloudflareWorkers?: CloudflareWorkersMeta;
     s3: Record<string, S3ProviderMeta>;
     backups?: BackupProviderMeta;
@@ -850,21 +772,26 @@ async function migrateLegacyDnsProvider(
     ),
   );
 
-  const preservedCfToken = await getSecret(SECRET_KEYS.dnsCloudflareToken);
+  const preserved = await getCloudflareToken("dns");
+  const preservedCfToken = preserved?.token;
 
   // Wipe only the legacy-provider-specific secret + the stale meta.
   // The CF token (if any) is left intact in the keychain.
   await wipeProvider("providers.dns", [SECRET_KEYS.dnsInwxPassword]);
 
-  if (!preservedCfToken) {
+  if (!preserved || !preservedCfToken) {
     console.log(chalk.dim("    Re-prompting for Cloudflare API token below."));
     return null;
   }
 
   const verified = await verify(preservedCfToken);
   if (!verified) {
-    // Stored token is dead. Drop it and fall through to the prompt path.
-    await deleteSecret(SECRET_KEYS.dnsCloudflareToken);
+    // Stored token is dead. Drop a dead legacy DNS token and fall through
+    // to the prompt path; the operator token is only replaced by
+    // `hatchkit config add cloudflare`.
+    if (preserved.source === SECRET_KEYS.dnsCloudflareToken) {
+      await deleteSecret(SECRET_KEYS.dnsCloudflareToken);
+    }
     console.log(
       chalk.dim("    · Stored Cloudflare token failed verification — re-prompting below."),
     );
@@ -873,13 +800,13 @@ async function migrateLegacyDnsProvider(
 
   const meta: DnsMeta = { status: "configured", provider: "cloudflare" };
   store.set("providers.dns", meta);
-  await setSecret(SECRET_KEYS.dnsCloudflareToken, preservedCfToken);
   const registrarPassword = await getSecret(SECRET_KEYS.dnsInwxRegistrarPassword);
   const registrarTotpSecret = await getSecret(SECRET_KEYS.dnsInwxRegistrarTotpSecret);
   console.log(chalk.dim("    · Existing Cloudflare token preserved (verified)."));
   return {
     ...meta,
     apiToken: preservedCfToken,
+    apiTokenSource: preserved.source,
     registrarPassword: registrarPassword ?? undefined,
     registrarTotpSecret: registrarTotpSecret ?? undefined,
   };
@@ -902,13 +829,14 @@ export async function ensureDns(): Promise<DnsConfig> {
   }
   const existing = legacyProvider ? undefined : (existingRaw as DnsMeta | undefined);
   if (existing?.status === "configured") {
-    const apiToken = await getSecret(SECRET_KEYS.dnsCloudflareToken);
+    const cfToken = await getCloudflareToken("dns");
     const registrarPassword = await getSecret(SECRET_KEYS.dnsInwxRegistrarPassword);
     const registrarTotpSecret = await getSecret(SECRET_KEYS.dnsInwxRegistrarTotpSecret);
     return {
       ...existing,
       provider: "cloudflare",
-      apiToken: apiToken ?? undefined,
+      apiToken: cfToken?.token,
+      apiTokenSource: cfToken?.source,
       registrarPassword: registrarPassword ?? undefined,
       registrarTotpSecret: registrarTotpSecret ?? undefined,
     };
@@ -920,9 +848,11 @@ export async function ensureDns(): Promise<DnsConfig> {
     ),
   );
 
+  // The Cloudflare side is the operator token; DNS only adds the INWX
+  // registrar bits on top.
+  const cf = await ensureCloudflare();
+
   interface DnsSetupState {
-    apiToken: string;
-    accountId: string;
     wireInwx: boolean;
     registrarUsername: string;
     registrarPassword: string;
@@ -930,29 +860,6 @@ export async function ensureDns(): Promise<DnsConfig> {
   }
 
   const dnsSteps: Step<DnsSetupState>[] = [
-    {
-      name: "Cloudflare API token",
-      run: async (s) => {
-        tokenHint(
-          "https://dash.cloudflare.com/profile/api-tokens → Create Token",
-          "Zone:DNS:Edit + Zone:Zone:Read (scope to the zones you'll use)",
-          "Note: User API Token. Lives at /profile/api-tokens alongside the R2 admin token",
-          "      (hatchkit deliberately uses one token per concern — DNS vs R2 — both visible",
-          "      together so you can audit and rotate them in one place).",
-        );
-        return { ...s, apiToken: await confirmPastedSecret("Cloudflare API token") };
-      },
-    },
-    {
-      name: "Cloudflare account ID",
-      run: async (s) => ({
-        ...s,
-        accountId: await input({
-          message: "Cloudflare account ID (optional — leave blank to span all accounts):",
-          default: "",
-        }),
-      }),
-    },
     {
       name: "INWX registrar",
       run: async (s) => ({
@@ -1002,8 +909,6 @@ export async function ensureDns(): Promise<DnsConfig> {
   ];
 
   const dns = await runSteps(dnsSteps, {
-    apiToken: "",
-    accountId: "",
     wireInwx: false,
     registrarUsername: "",
     registrarPassword: "",
@@ -1013,11 +918,10 @@ export async function ensureDns(): Promise<DnsConfig> {
   const meta: DnsMeta = {
     status: "configured",
     provider: "cloudflare",
-    accountId: dns.accountId.trim() || undefined,
+    accountId: cf.accountId,
     registrarUsername: dns.wireInwx ? dns.registrarUsername : undefined,
   };
   store.set("providers.dns", meta);
-  await setSecret(SECRET_KEYS.dnsCloudflareToken, dns.apiToken);
   if (dns.wireInwx && dns.registrarPassword) {
     await setSecret(SECRET_KEYS.dnsInwxRegistrarPassword, dns.registrarPassword);
   }
@@ -1033,7 +937,8 @@ export async function ensureDns(): Promise<DnsConfig> {
   }
   return {
     ...meta,
-    apiToken: dns.apiToken,
+    apiToken: cf.token,
+    apiTokenSource: cf.source,
     registrarPassword: dns.wireInwx ? dns.registrarPassword : undefined,
     registrarTotpSecret:
       dns.wireInwx && dns.registrarTotpSecret ? dns.registrarTotpSecret : undefined,
@@ -1243,41 +1148,65 @@ export async function getDnsConfig(): Promise<DnsConfig | null> {
   // is that DNS is on Cloudflare. Callers should treat a non-cloudflare
   // value as "needs reconfigure" (ensureDns handles that explicitly).
   if (meta.provider !== "cloudflare") return null;
-  const apiToken = await getSecret(SECRET_KEYS.dnsCloudflareToken);
+  const cfToken = await getCloudflareToken("dns");
   const registrarPassword = await getSecret(SECRET_KEYS.dnsInwxRegistrarPassword);
   const registrarTotpSecret = await getSecret(SECRET_KEYS.dnsInwxRegistrarTotpSecret);
   return {
     ...meta,
     provider: "cloudflare",
-    apiToken: apiToken ?? undefined,
+    apiToken: cfToken?.token,
+    apiTokenSource: cfToken?.source,
     registrarPassword: registrarPassword ?? undefined,
     registrarTotpSecret: registrarTotpSecret ?? undefined,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Provider: Cloudflare Workers (the `cloudflare` deployment mode)
+// Provider: Cloudflare (one operator token)
 // ---------------------------------------------------------------------------
 //
-// Hatchkit holds ONE Cloudflare provisioner token, only in the keychain.
-// It never reaches a repo: each Worker repo's CI gets a token minted for
-// that Worker alone (deploy/cloudflare-deploy-token.ts). So what this
-// provider asks for is the provisioner, not a CI token.
+// Hatchkit holds ONE Cloudflare operator token, only in the keychain
+// (`cloudflare:operator`). It serves DNS, R2, Workers and Email Routing.
+// It never reaches a repo or a child process: each Worker repo's CI gets
+// a token minted for that Worker alone (deploy/cloudflare-deploy-token.ts),
+// each project's R2 keys are minted for its buckets, and Terraform gets a
+// one-zone DNS token per run (deploy/terraform-token.ts).
+//
+// Before the operator token, three tokens did this work. Their slots are
+// still read as fallbacks (`getCloudflareToken`), so nothing breaks
+// before the operator token is stored.
+
+/** What the operator token needs, as the dashboard's token editor spells
+ *  it. Same order and labels as `CloudflareApi.probeOperatorPermissions`.
+ *  Zone grants apply to all zones hatchkit serves. */
+export const CLOUDFLARE_OPERATOR_GRANTS = [
+  "Account → Account API Tokens → Edit       (mint Worker CI, project R2 and Terraform tokens)",
+  "Account → Workers → Admin                 (look up / create the Worker)",
+  "Account → Workers R2 Storage → Edit       (buckets, custom domains, CORS)",
+  "Account → Email Routing Addresses → Edit  (forwarding destinations)",
+  "Zone → Zone → Read                        (find the zone for a hostname)",
+  "Zone → Workers Routes → Edit              (attach a Worker custom domain)",
+  "Zone → DNS → Edit                         (publish records)",
+  "Zone → Single Redirect → Edit             (HTTP→HTTPS rule for a client on Workers)",
+  "Zone → Zone Settings → Edit               (Email Routing settings, edge hardening)",
+  "Zone → Email Routing Rules → Edit         (forward rules, catch-all)",
+] as const;
 
 /** The Cloudflare provisioner, resolved from the keychain. */
 export interface CloudflareProvisioner {
   token: string;
   accountId: string;
-  /** Keychain entry the token came from. `s3:r2:admin-token` is the
-   *  documented reuse: hatchkit's R2 admin token already carries Account
-   *  API Tokens Write, so it can mint the per-Worker tokens as well. */
+  /** Keychain slot the token came from: `cloudflare:operator`, or before
+   *  migration `cloudflare:provisioner` / `s3:r2:admin-token` (the R2
+   *  admin token carries Account API Tokens Write, so it can mint the
+   *  per-Worker tokens as well). */
   source: string;
   workersSubdomain?: string;
 }
 
-/** What the provisioner token needs, as the dashboard's token editor
- *  spells it. CI needs none of the zone grants — they are for attaching
- *  a new project's custom domain from this machine. */
+/** What the legacy provisioner token needed. Doctor names these while
+ *  `cloudflare:provisioner` still answers; the operator token needs
+ *  `CLOUDFLARE_OPERATOR_GRANTS`. */
 export const CLOUDFLARE_PROVISIONER_GRANTS = [
   "Account → Account API Tokens → Edit   (mint one token per Worker)",
   "Account → Workers → Admin             (look up / create the Worker)",
@@ -1291,21 +1220,37 @@ function r2AccountId(): string | undefined {
   return r2?.endpoint?.match(/^https?:\/\/([0-9a-f]{32})\.r2\.cloudflarestorage\.com/i)?.[1];
 }
 
-/** The provisioner token and account, or null when neither
- *  `cloudflare:provisioner` nor the R2 admin token is stored. Reads only. */
+/** The account the operator token works on, from the first metadata
+ *  that names one. */
+function cloudflareAccountId(): string | undefined {
+  const cf = store.get("providers.cloudflare") as CloudflareMeta | undefined;
+  const workers = store.get("providers.cloudflareWorkers") as CloudflareWorkersMeta | undefined;
+  const dns = store.get("providers.dns") as DnsMeta | undefined;
+  return cf?.accountId || workers?.accountId || r2AccountId() || dns?.accountId || undefined;
+}
+
+/** The provisioner token and account, or null when no slot that can
+ *  provision holds a token (see `CLOUDFLARE_TOKEN_SLOTS.provisioner`).
+ *  Reads only. */
 export async function getCloudflareProvisioner(): Promise<CloudflareProvisioner | null> {
   const meta = store.get("providers.cloudflareWorkers") as CloudflareWorkersMeta | undefined;
-  const own = await getSecret(SECRET_KEYS.cloudflareProvisionerToken);
-  const token = own ?? (await getSecret(SECRET_KEYS.r2AdminToken));
-  if (!token) return null;
-  // Never pair an R2 token with a different provider's account metadata.
-  const accountId = own ? meta?.accountId : r2AccountId();
-  if (!own && meta?.accountId && meta.accountId !== accountId) return null;
+  const found = await getCloudflareToken("provisioner");
+  if (!found) return null;
+  let accountId: string | undefined;
+  if (found.source === SECRET_KEYS.cloudflareOperatorToken) {
+    accountId = cloudflareAccountId();
+  } else if (found.source === SECRET_KEYS.cloudflareProvisionerToken) {
+    accountId = meta?.accountId;
+  } else {
+    // Never pair an R2 token with a different provider's account metadata.
+    accountId = r2AccountId();
+    if (meta?.accountId && meta.accountId !== accountId) return null;
+  }
   if (!accountId) return null;
   return {
-    token,
+    token: found.token,
     accountId,
-    source: own ? SECRET_KEYS.cloudflareProvisionerToken : SECRET_KEYS.r2AdminToken,
+    source: found.source,
     workersSubdomain: meta?.workersSubdomain,
   };
 }
@@ -1340,8 +1285,199 @@ export async function verifyCloudflareProvisionerToken(
   }
 }
 
-/** The provisioner, prompting for it when none is stored (or when
- *  `force`, which is `hatchkit config add cloudflare-workers`). */
+/** The calls `verifyCloudflareOperatorToken` makes. Tests pass a fake. */
+export type CloudflareOperatorProbeApi = Pick<
+  CloudflareApi,
+  "verifyToken" | "listZones" | "probeOperatorPermissions"
+>;
+
+/** Run every probe of `CLOUDFLARE_OPERATOR_GRANTS`: the account probes,
+ *  then the zone probes on the first zone the token lists. A token that
+ *  lists no zone fails: it lacks Zone → Zone → Read everywhere. All read
+ *  probes must pass; write grants are only proven by a live write. */
+export async function verifyCloudflareOperatorToken(
+  token: string,
+  accountId: string,
+  api: CloudflareOperatorProbeApi = new CloudflareApi({ token, accountId }),
+): Promise<{ ok: true; detail: string } | { ok: false; detail: string }> {
+  try {
+    const status = await api.verifyToken().catch(() => null);
+    if (status !== "active") {
+      return { ok: false, detail: "Token rejected by Cloudflare. Likely invalid or revoked." };
+    }
+    const zone = (await api.listZones().catch(() => []))[0];
+    const probes = await api.probeOperatorPermissions({ accountId, zoneId: zone?.id });
+    const missing = probes.filter((p) => !p.ok).map((p) => p.permission);
+    if (!zone) missing.push("Zone → Zone → Read (the token lists no zone)");
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        detail: `Token lacks ${missing.join(", ")}${zone ? ` (zone probes on ${zone.name})` : ""}.`,
+      };
+    }
+    return {
+      ok: true,
+      detail: `${probes.length}/${probes.length} read probes passed (zone probes on ${zone?.name}); write grants are proven by the first live write`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      detail: `Could not verify token (${(err as Error).message}); check connectivity`,
+    };
+  }
+}
+
+/** The operator token as `ensureCloudflare` returns it. */
+export interface CloudflareOperator {
+  token: string;
+  accountId: string;
+  /** Keychain slot it came from (legacy slots before migration). */
+  source: string;
+}
+
+/** Test seams for `ensureCloudflare`. */
+export interface EnsureCloudflareDeps {
+  verify?: typeof verifyCloudflareOperatorToken;
+  promptAccountId?: (fallback: string | undefined) => Promise<string>;
+  promptToken?: () => Promise<string>;
+  confirmRetry?: () => Promise<boolean>;
+  lookupWorkersSubdomain?: (token: string, accountId: string) => Promise<string | null>;
+}
+
+/** The operator token, prompting for it when none is stored (or when
+ *  `force`, which is `hatchkit config add cloudflare`).
+ *
+ *  Without `force`, an existing token is returned as is — including a
+ *  legacy one, so DNS/R2/Workers setup keeps working before migration.
+ *  A new token is saved only after every grant probe passes; declining
+ *  a re-paste throws and leaves the keychain untouched. After a save the
+ *  three legacy slots are deleted from the keychain (the dashboard
+ *  tokens themselves stay until the operator deletes them). */
+export async function ensureCloudflare(
+  opts: { force?: boolean } = {},
+  deps: EnsureCloudflareDeps = {},
+): Promise<CloudflareOperator> {
+  if (!opts.force) {
+    const found = await getCloudflareToken("provisioner");
+    const accountId = cloudflareAccountId();
+    if (found && accountId && found.source === SECRET_KEYS.cloudflareOperatorToken) {
+      return { token: found.token, accountId, source: found.source };
+    }
+  }
+
+  const verify = deps.verify ?? verifyCloudflareOperatorToken;
+  const promptAccountId =
+    deps.promptAccountId ??
+    (async (fallback: string | undefined) => {
+      console.log(
+        chalk.dim(
+          "  Your account ID is in the dashboard URL:\n" +
+            "    dash.cloudflare.com/<account-id>/home/overview",
+        ),
+      );
+      return input({
+        message: "Cloudflare account ID:",
+        default: fallback,
+        validate: validateRequired,
+      });
+    });
+  const promptToken =
+    deps.promptToken ??
+    (async () => {
+      tokenHint(
+        "https://dash.cloudflare.com/profile/api-tokens → Create Token → Custom token",
+        "all of these (zone grants on all zones you serve):",
+        ...CLOUDFLARE_OPERATOR_GRANTS.map((g) => `  • ${g}`),
+        "An account token (Manage account → Account API tokens) works as well.",
+        "This token stays in your keychain. CI, project R2 keys and Terraform get",
+        "narrow tokens minted from it.",
+      );
+      return confirmPastedSecret("Cloudflare operator token");
+    });
+  const confirmRetry =
+    deps.confirmRetry ?? (() => confirm({ message: "Paste a different token?", default: true }));
+
+  console.log(chalk.bold("\n  Cloudflare (one operator token)"));
+  const accountId = (await promptAccountId(cloudflareAccountId())).trim();
+  let token: string;
+  for (;;) {
+    token = await promptToken();
+    const verdict = await verify(token, accountId);
+    if (verdict.ok) {
+      console.log(chalk.dim(`    · Verified — ${verdict.detail}`));
+      break;
+    }
+    console.log(chalk.yellow(`    ! ${verdict.detail}`));
+    if (!(await confirmRetry())) {
+      throw new Error(`Cloudflare token not saved: ${verdict.detail}`);
+    }
+  }
+
+  // Cache the *.workers.dev subdomain so the deploy command can print
+  // the preview URL offline. Best-effort: an account that has never
+  // deployed a Worker has no subdomain yet, and that is not an error.
+  const lookupWorkersSubdomain =
+    deps.lookupWorkersSubdomain ??
+    ((t: string, a: string) =>
+      new CloudflareApi({ token: t, accountId: a }).getWorkersSubdomain(a));
+  let workersSubdomain: string | undefined;
+  try {
+    workersSubdomain = (await lookupWorkersSubdomain(token, accountId)) ?? undefined;
+  } catch {
+    workersSubdomain = undefined;
+  }
+
+  await setSecret(SECRET_KEYS.cloudflareOperatorToken, token);
+  store.set("providers.cloudflare", {
+    status: "configured",
+    accountId,
+    lastVerified: new Date().toISOString(),
+  } satisfies CloudflareMeta);
+  const workers = store.get("providers.cloudflareWorkers") as CloudflareWorkersMeta | undefined;
+  if (workers?.status === "configured" || workersSubdomain) {
+    store.set("providers.cloudflareWorkers", {
+      status: "configured",
+      accountId,
+      workersSubdomain: workersSubdomain ?? workers?.workersSubdomain,
+    } satisfies CloudflareWorkersMeta);
+  }
+  const dns = store.get("providers.dns") as DnsMeta | undefined;
+  if (!dns) {
+    store.set("providers.dns", {
+      status: "configured",
+      provider: "cloudflare",
+      accountId,
+    } satisfies DnsMeta);
+  }
+  const r2Account = r2AccountId();
+  if (r2Account && r2Account !== accountId) {
+    console.log(
+      chalk.yellow(
+        `    ! R2 is configured for account ${r2Account}, not ${accountId}. Re-run \`hatchkit config add s3 r2\`.`,
+      ),
+    );
+  }
+
+  const removed: string[] = [];
+  for (const slot of LEGACY_CLOUDFLARE_TOKEN_SLOTS) {
+    if (await deleteSecret(slot)) removed.push(slot);
+  }
+  console.log(
+    chalk.green(`  ✓ Cloudflare operator token saved (${SECRET_KEYS.cloudflareOperatorToken})`),
+  );
+  if (removed.length > 0) {
+    console.log(
+      chalk.dim(
+        `    · Removed the old keychain slots it replaces: ${removed.join(", ")}.\n` +
+          "      Delete their tokens in the dashboard (hatchkit-dns, hatchkit-workers-provisioner, hatchkit-r2).",
+      ),
+    );
+  }
+  return { token, accountId, source: SECRET_KEYS.cloudflareOperatorToken };
+}
+
+/** The provisioner, prompting for the operator token when none is stored
+ *  (or when `force`, which is `hatchkit config add cloudflare-workers`). */
 export async function ensureCloudflareProvisioner(
   opts: { force?: boolean } = {},
 ): Promise<CloudflareProvisioner> {
@@ -1357,96 +1493,19 @@ export async function ensureCloudflareProvisioner(
     return existing;
   }
 
-  console.log(chalk.bold("\n  Cloudflare Workers (static assets hosting)"));
-  console.log(
-    chalk.dim(
-      "  Hatchkit stores ONE Cloudflare provisioner token here and never copies it\n" +
-        "  anywhere. Each Worker repo gets its own token, minted for that one Worker.",
-    ),
-  );
-
-  interface ProvisionerSetupState {
-    accountId: string;
-    apiToken: string;
+  const cf = await ensureCloudflare({ force: opts.force });
+  const meta = store.get("providers.cloudflareWorkers") as CloudflareWorkersMeta | undefined;
+  if (meta?.status !== "configured" || meta.accountId !== cf.accountId) {
+    store.set("providers.cloudflareWorkers", {
+      status: "configured",
+      accountId: cf.accountId,
+      workersSubdomain: meta?.accountId === cf.accountId ? meta.workersSubdomain : undefined,
+    } satisfies CloudflareWorkersMeta);
   }
-  const previous = store.get("providers.cloudflareWorkers") as CloudflareWorkersMeta | undefined;
-
-  const steps: Step<ProvisionerSetupState>[] = [
-    {
-      name: "Cloudflare account ID",
-      run: async (s) => {
-        console.log(
-          chalk.dim(
-            "  Your account ID is in the dashboard URL:\n" +
-              "    dash.cloudflare.com/<account-id>/home/overview",
-          ),
-        );
-        return {
-          ...s,
-          accountId: await input({
-            message: "Cloudflare account ID:",
-            default: s.accountId || previous?.accountId || r2AccountId(),
-            validate: validateRequired,
-          }),
-        };
-      },
-    },
-    {
-      name: "Cloudflare provisioner token",
-      run: async (s) => {
-        tokenHint(
-          "https://dash.cloudflare.com/profile/api-tokens → Create Token → Custom token",
-          "these four (a User API Token — the zone grants on every zone you serve):",
-          ...CLOUDFLARE_PROVISIONER_GRANTS.map((g) => `  • ${g}`),
-          "This token stays in your keychain. CI gets a token that can deploy one Worker",
-          "(Individual Workers Editor) and has no DNS or zone permission.",
-        );
-        for (;;) {
-          const apiToken = await confirmPastedSecret("Cloudflare provisioner token");
-          const verdict = await verifyCloudflareProvisionerToken(apiToken, s.accountId.trim());
-          if (verdict.ok) {
-            console.log(chalk.dim(`    · Verified — ${verdict.detail}`));
-            return { ...s, apiToken };
-          }
-          console.log(chalk.yellow(`    ! ${verdict.detail}`));
-          const retry = await confirm({
-            message: "Paste a different token?",
-            default: true,
-          });
-          if (!retry) return { ...s, apiToken };
-        }
-      },
-    },
-  ];
-
-  const answers = await runSteps(steps, { accountId: "", apiToken: "" });
-  const accountId = answers.accountId.trim();
-
-  // Cache the *.workers.dev subdomain so the deploy command can print
-  // the preview URL offline. Best-effort: an account that has never
-  // deployed a Worker has no subdomain yet, and that is not an error.
-  let workersSubdomain: string | undefined;
-  try {
-    const api = new CloudflareApi({ token: answers.apiToken, accountId });
-    workersSubdomain = (await api.getWorkersSubdomain(accountId)) ?? undefined;
-  } catch {
-    workersSubdomain = undefined;
-  }
-
-  const meta: CloudflareWorkersMeta = {
-    status: "configured",
-    accountId,
-    workersSubdomain,
-  };
-  store.set("providers.cloudflareWorkers", meta);
-  await setSecret(SECRET_KEYS.cloudflareProvisionerToken, answers.apiToken);
-  console.log(chalk.green("  ✓ Cloudflare provisioner configured"));
-  return {
-    token: answers.apiToken,
-    accountId,
-    source: SECRET_KEYS.cloudflareProvisionerToken,
-    workersSubdomain,
-  };
+  const workersSubdomain = (
+    store.get("providers.cloudflareWorkers") as CloudflareWorkersMeta | undefined
+  )?.workersSubdomain;
+  return { token: cf.token, accountId: cf.accountId, source: cf.source, workersSubdomain };
 }
 
 /** Whether the `cloudflare` deployment mode was ever set up here. The
@@ -1522,16 +1581,14 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
   await migrateSecret(`providers.s3.${provider}.secretKey`, SECRET_KEYS.s3SecretKey(provider));
   const existing = store.get(`providers.s3.${provider}`) as S3ProviderMeta | undefined;
 
-  // R2 path: no access/secret prompts. The admin Bearer token is
-  // the global "key to the kingdom" — it gates bucket admin AND the
-  // minting of per-project scoped credentials at provision-time.
-  // Once it's stored + verified here, every project-level flow
-  // (`hatchkit create`, `adopt`, `provision s3`) consumes it without
-  // re-prompting. The recovery path when doctor flags it as
-  // invalid/revoked is `hatchkit config add s3 r2` — which clears the
-  // token and re-runs this branch.
+  // R2 path: no access/secret prompts. The Cloudflare operator token
+  // (or, before migration, the legacy `s3:r2:admin-token`) gates bucket
+  // admin AND the minting of per-project scoped credentials at
+  // provision-time. Once it's stored + verified, every project-level
+  // flow (`hatchkit create`, `adopt`, `provision s3`) consumes it
+  // without re-prompting. R2 itself only adds the endpoint metadata.
   if (provider === "r2") {
-    const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
+    const adminToken = await getCloudflareTokenValue("r2");
     if (existing?.status === "configured" && adminToken) {
       return {
         ...existing,
@@ -1540,89 +1597,17 @@ export async function ensureS3(provider: "hetzner" | "aws" | "r2"): Promise<S3Pr
       };
     }
 
-    // Pre-fill the account ID prompt from any existing endpoint so
-    // the rotation-only flow (token wiped, meta kept) doesn't make
-    // the user re-type the account ID. Extracted by regex rather than
-    // imported from `provision/s3-buckets.ts` so config.ts stays a
-    // leaf module.
-    const previousAccountId = existing?.endpoint?.match(
-      /^https?:\/\/([0-9a-f]{32})\.r2\.cloudflarestorage\.com/i,
-    )?.[1];
-    const reconfiguring = !!existing && !adminToken;
-    if (reconfiguring) {
-      console.log(chalk.yellow("\n  Rotating R2 admin token."));
-    } else {
-      console.log(chalk.yellow("\n  R2 is not configured yet. Let's set it up."));
-      console.log(
-        chalk.dim(
-          "  Your Cloudflare account ID is in the dashboard URL:\n" +
-            "    dash.cloudflare.com/<account-id>/home/overview",
-        ),
-      );
-    }
-    const r2Steps: Step<{ accountId: string; token: string }>[] = [
-      {
-        name: "Cloudflare account ID",
-        run: async (s) => ({
-          ...s,
-          accountId: (
-            await input({
-              message: "Cloudflare account ID:",
-              default: s.accountId || previousAccountId,
-              validate: validateRequired,
-            })
-          ).trim(),
-        }),
-      },
-      {
-        name: "R2 admin token",
-        run: async (s) => {
-          tokenHint(
-            "https://dash.cloudflare.com/profile/api-tokens → Create Token → Custom token",
-            "Account > Workers R2 Storage > Edit  +  User > API Tokens > Edit  (+ optional Zone > Zone > Read)",
-            "  • R2 Storage:Edit  — create and manage the project buckets.",
-            "  • API Tokens:Edit  — mint per-project bucket-scoped tokens at provision time.",
-            "  • Zone:Read        — optional, only for attaching a custom domain (assets.example.com).",
-            "Note: must be a User API Token. Account API Tokens can't carry API Tokens:Edit",
-            "      (it's a User-scoped permission), so they can't mint per-project credentials.",
-            "      DNS uses a separate User API Token; both live at /profile/api-tokens.",
-          );
-          for (;;) {
-            const candidate = await confirmPastedSecret("R2 admin Bearer token");
-            const spinner = ora("Verifying R2 admin token (both perms)...").start();
-            const verdict = await verifyR2AdminToken(candidate, s.accountId);
-            if (verdict.ok) {
-              spinner.succeed(`R2 admin token verified — ${verdict.detail}`);
-              return { ...s, token: candidate };
-            }
-            spinner.fail(verdict.detail);
-            console.log(chalk.dim(`  Fix at https://dash.cloudflare.com/profile/api-tokens.`));
-            const retry = await confirm({ message: "Try a different token?", default: true });
-            if (!retry) {
-              throw new Error(`R2 admin token rejected: ${verdict.detail}`);
-            }
-          }
-        },
-      },
-    ];
-
-    const r2 = await runSteps(r2Steps, { accountId: "", token: "" });
-    const accountId = r2.accountId;
-    const endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
-    const region = "auto";
-
-    await setSecret(SECRET_KEYS.r2AdminToken, r2.token);
-
+    const cf = await ensureCloudflare();
     const meta: S3ProviderMeta = {
       status: "configured",
-      endpoint,
-      region,
+      endpoint: `https://${cf.accountId}.r2.cloudflarestorage.com`,
+      region: "auto",
       lastVerified: new Date().toISOString(),
     };
     store.set(`providers.s3.${provider}`, meta);
     console.log(
       chalk.green(
-        "  ✓ R2 admin configured — `hatchkit create`/`adopt` will mint per-project bucket credentials automatically.",
+        "  ✓ R2 configured — `hatchkit create`/`adopt` will mint per-project bucket credentials automatically.",
       ),
     );
     return { ...meta, accessKey: "", secretKey: "" };
@@ -1731,7 +1716,7 @@ export async function getS3Config(provider: string): Promise<S3ProviderConfig | 
   // access/secret strings on the returned shape so callers that don't
   // care about per-project context still get a meta-only object.
   if (provider === "r2") {
-    const adminToken = await getSecret(SECRET_KEYS.r2AdminToken);
+    const adminToken = await getCloudflareTokenValue("r2");
     if (!adminToken) return null;
     return { ...meta, accessKey: "", secretKey: "" };
   }
@@ -3467,6 +3452,7 @@ type ReconfigurableProvider =
   | "coolify-github-app"
   | "hetzner"
   | "dns"
+  | "cloudflare"
   | "cloudflare-workers"
   | "glitchtip"
   | "plausible"
@@ -3507,9 +3493,10 @@ export async function reconfigureProvider(
       SECRET_KEYS.dnsCloudflareToken,
     ]);
     await ensureDns();
-  } else if (name === "cloudflare-workers") {
+  } else if (name === "cloudflare" || name === "cloudflare-workers") {
     // Preserve the old credential if setup is cancelled or verification fails.
-    await ensureCloudflareProvisioner({ force: true });
+    await ensureCloudflare({ force: true });
+    if (name === "cloudflare-workers") await ensureCloudflareProvisioner();
   } else if (name === "glitchtip") {
     await wipeProvider("providers.glitchtip", [SECRET_KEYS.glitchtipToken]);
     await ensureGlitchtip();
@@ -3553,12 +3540,13 @@ export async function reconfigureProvider(
   } else if (name.startsWith("s3.")) {
     const p = name.slice(3) as "hetzner" | "aws" | "r2";
     if (p === "r2") {
-      // R2 reconfigure = "rotate the admin Bearer token". Keep the
-      // meta (so the account ID survives — user re-pastes only the
-      // token) and clear the admin token + any legacy keys. Per-
-      // project minted access/secret pairs are NOT touched here —
-      // they're scoped to bucket-level resources and stay valid even
-      // after the admin token rotates.
+      // R2 reconfigure: drop the legacy admin token + any legacy keys
+      // and re-derive the endpoint from the operator token's account
+      // (prompting for the operator when none is stored). Rotating the
+      // token itself is `hatchkit config add cloudflare`. Per-project
+      // minted access/secret pairs are NOT touched here — they're
+      // scoped to bucket-level resources and stay valid.
+      store.delete(`providers.s3.${p}`);
       await deleteSecret(SECRET_KEYS.r2AdminToken);
       await deleteSecret(SECRET_KEYS.s3AccessKey(p));
       await deleteSecret(SECRET_KEYS.s3SecretKey(p));

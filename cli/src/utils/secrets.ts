@@ -38,6 +38,9 @@ export const SECRET_KEYS = {
   coolifyDeployHook: (appUuid: string) => `coolify:deploy-webhook:${appUuid}`,
   hetznerToken: "hetzner:token",
   dnsInwxPassword: "dns:inwx:password",
+  /** @deprecated Legacy Cloudflare DNS token (`hatchkit-dns`). Read only
+   *  as a fallback when `cloudflare:operator` is empty; see
+   *  `getCloudflareToken`. Never written by new code. */
   dnsCloudflareToken: "dns:cloudflare:token",
   /** Registrar password when DNS is on Cloudflare but the domain is
    *  registered at INWX. Used by the post-apply NS flip in deploy/terraform
@@ -71,25 +74,22 @@ export const SECRET_KEYS = {
    *  delete the token (DELETE /user/tokens/<id>) instead of
    *  leaving orphaned tokens in the user's CF account. */
   s3ProjectTokenId: (provider: string, project: string) => `s3:${provider}:${project}:token-id`,
-  /** Cloudflare API token with `Account > Workers R2 Storage > Edit`
-   *  permission. Used by `hatchkit provision s3` to create R2 buckets,
-   *  enable the managed `r2.dev` URL, and attach custom domains. Kept
-   *  separate from `dns:cloudflare:token` because the DNS token is
-   *  typically scoped narrowly to Zone:DNS:Edit + Zone:Zone:Read; the
-   *  R2 admin endpoints need account-level perms which most users
-   *  prefer not to mix into the DNS token (least-privilege rotation). */
+  /** @deprecated Legacy R2 admin token (`hatchkit-r2`). Read only as a
+   *  fallback when `cloudflare:operator` is empty; see
+   *  `getCloudflareToken`. Never written by new code. */
   r2AdminToken: "s3:r2:admin-token",
   /** Backup-bucket S3 keys and the restic recovery password. Never handed to apps. */
   backupCredentials: "backups:r2:credentials",
-  /** The Cloudflare PROVISIONER: a user token that mints account API
-   *  tokens (Account API Tokens Write) and edits Workers, routes and DNS.
-   *  Used only by hatchkit on this machine; never copied into a project.
-   *  Each Worker repo gets its own token minted from it instead
-   *  (deploy/cloudflare-deploy-token.ts).
-   *
-   *  Optional: when absent, `getCloudflareProvisioner` falls back to
-   *  `s3:r2:admin-token`, which carries the same token-minting grant. */
+  /** @deprecated Legacy Workers provisioner token
+   *  (`hatchkit-workers-provisioner`). Read only as a fallback when
+   *  `cloudflare:operator` is empty; see `getCloudflareToken`. */
   cloudflareProvisionerToken: "cloudflare:provisioner",
+  /** hatchkit's ONE Cloudflare operator token (`hatchkit-cloudflare`):
+   *  DNS, R2, Workers, Email Routing and token minting, on this machine
+   *  only. Never copied into a project: Worker CI, project R2 keys and
+   *  Terraform each get a token minted from it. Grants:
+   *  `CLOUDFLARE_OPERATOR_GRANTS` in config.ts. */
+  cloudflareOperatorToken: "cloudflare:operator",
   /** @deprecated The ONE Cloudflare token older hatchkit pushed to every
    *  Worker repo as `CLOUDFLARE_API_TOKEN`. Never read for a push any
    *  more; kept so doctor can flag a copy of it and reset can clear it. */
@@ -233,6 +233,46 @@ export async function deleteSecret(key: string): Promise<boolean> {
 }
 
 /** Wipe every secret belonging to this CLI from the keychain. */
+/** What a Cloudflare token is read for. Each use falls back to the
+ *  legacy slot that served it before `cloudflare:operator` existed. */
+export type CloudflareTokenUse = "dns" | "r2" | "provisioner";
+
+/** Slots read for each use, operator first. The provisioner keeps its
+ *  old R2 fallback: the R2 admin token carries the same minting grant. */
+export const CLOUDFLARE_TOKEN_SLOTS: Record<CloudflareTokenUse, readonly string[]> = {
+  dns: [SECRET_KEYS.cloudflareOperatorToken, SECRET_KEYS.dnsCloudflareToken],
+  r2: [SECRET_KEYS.cloudflareOperatorToken, SECRET_KEYS.r2AdminToken],
+  provisioner: [
+    SECRET_KEYS.cloudflareOperatorToken,
+    SECRET_KEYS.cloudflareProvisionerToken,
+    SECRET_KEYS.r2AdminToken,
+  ],
+};
+
+/** The three slots `cloudflare:operator` replaces. */
+export const LEGACY_CLOUDFLARE_TOKEN_SLOTS = [
+  SECRET_KEYS.dnsCloudflareToken,
+  SECRET_KEYS.cloudflareProvisionerToken,
+  SECRET_KEYS.r2AdminToken,
+] as const;
+
+/** The Cloudflare token for `use` and the keychain slot that answered,
+ *  or null when none of its slots is set. Reads only. */
+export async function getCloudflareToken(
+  use: CloudflareTokenUse,
+): Promise<{ token: string; source: string } | null> {
+  for (const slot of CLOUDFLARE_TOKEN_SLOTS[use]) {
+    const token = await getSecret(slot);
+    if (token) return { token, source: slot };
+  }
+  return null;
+}
+
+/** `getCloudflareToken(use)`'s value alone. */
+export async function getCloudflareTokenValue(use: CloudflareTokenUse): Promise<string | null> {
+  return (await getCloudflareToken(use))?.token ?? null;
+}
+
 export async function clearAllSecrets(): Promise<void> {
   const entries = await withKeychain((store) => store.findCredentials(SERVICE));
   for (const entry of entries) await deleteSecret(entry.account);

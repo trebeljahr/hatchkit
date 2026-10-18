@@ -78,19 +78,19 @@ export function emailRoutingScopeHint(zoneName?: string, call?: EmailRoutingProb
   const on = zoneName ? ` on ${zoneName}` : "";
   const tail = [
     "(keep Zone → DNS → Edit + Zone → Zone → Read; scope the zone permissions to the zones you use)",
-    "Then re-run `hatchkit config add dns` if you created a new token instead of editing the old one.",
+    "Then run `hatchkit config add cloudflare` if you created a new token instead of editing the old one.",
   ];
   if (call) {
     const c = EMAIL_ROUTING_PROBE_CALLS[call];
     return [
-      `The Cloudflare DNS token may not ${c.what}${on} (${c.call}) — it is missing a permission, not expired.`,
+      `The Cloudflare token may not ${c.what}${on} (${c.call}) — it is missing a permission, not expired.`,
       `Edit the token at https://dash.cloudflare.com/profile/api-tokens and add: ${c.permission}`,
       `(${c.edit}.)`,
       ...tail,
     ];
   }
   return [
-    `The Cloudflare DNS token cannot read Email Routing${on} — it is missing permissions, not expired.`,
+    `The Cloudflare token cannot read Email Routing${on} — it is missing permissions, not expired.`,
     `Edit the token at https://dash.cloudflare.com/profile/api-tokens and add: ${EMAIL_ROUTING_TOKEN_PERMISSIONS.join(" + ")}`,
     ...tail,
   ];

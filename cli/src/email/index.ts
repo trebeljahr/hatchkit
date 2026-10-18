@@ -177,7 +177,7 @@ export async function runEmailSetupForDomain(
   let dns = await getDnsConfig();
   if (!dns || !dns.apiToken) dns = await ensureDns();
   if (!dns?.apiToken) {
-    throw new Error("Cloudflare API token not configured. Run `hatchkit config add dns`.");
+    throw new Error("Cloudflare API token not configured. Run `hatchkit config add cloudflare`.");
   }
 
   const domain = await resolveDomain(flags.domain, cwd);
@@ -307,7 +307,7 @@ export async function runEmailForward(rest: string[], cwd: string = process.cwd(
   const address = `${localPart.toLowerCase()}@${domain.toLowerCase()}`;
   const dns = await getDnsConfig();
   if (!dns?.apiToken)
-    throw new Error("Cloudflare API token not configured. Run `hatchkit config add dns`.");
+    throw new Error("Cloudflare API token not configured. Run `hatchkit config add cloudflare`.");
   const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
   const zone = await cf.resolveZoneForName(domain);
   if (!zone) throw new Error(`No Cloudflare zone for ${domain}.`);
