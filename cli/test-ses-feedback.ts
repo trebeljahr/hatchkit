@@ -918,7 +918,15 @@ await expect("Traefik labels: auth router above Listmonk's, bcrypt hash of the p
     credentials: CREDS,
     hash,
   });
-  assert.ok(!raw.some((l) => l.includes(".service=")), "no service: container default");
+  // Coolify 4.2+ gives the container one service per site router, so the
+  // labels must name a service; by default they define their own.
+  for (const r of ["listmonk-sns-https", "listmonk-sns-http"]) {
+    assert.ok(raw.includes(`traefik.http.routers.${r}.service=listmonk-sns`), `${r} names its service`);
+  }
+  assert.ok(
+    raw.includes("traefik.http.services.listmonk-sns.loadbalancer.server.port=9000"),
+    "own service on Listmonk's port",
+  );
   const compose = traefikBasicAuthLabels({
     host: "listmonk.example.com",
     credentials: CREDS,

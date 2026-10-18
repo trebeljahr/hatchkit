@@ -1044,9 +1044,13 @@ export interface TraefikBasicAuthOptions {
   /** Listmonk's public hostname. */
   host: string;
   credentials: WebhookCredentials;
-  /** The Traefik service to route to. Optional when Traefik can infer
-   *  the container's only service. Required with multiple services. */
+  /** An existing Traefik service to route to. Without it the labels
+   *  define their own service on `port`: Coolify 4.2+ generates one service
+   *  per site router, so a router left to Traefik's inference matches two
+   *  services, is dropped, and the webhook answers 404. */
   service?: string;
+  /** Listmonk's container port, for the labels' own service. */
+  port?: number;
   /** Same as Listmonk's own HTTPS router. Coolify uses `letsencrypt`. */
   certResolver?: string;
   httpsEntryPoint?: string;
@@ -1081,6 +1085,7 @@ export function traefikBasicAuthLabels(o: TraefikBasicAuthOptions): string[] {
   const name = o.name ?? "listmonk-sns";
   const middleware = `${name}-auth`;
   const priority = o.priority ?? 1000;
+  const service = o.service ?? name;
   const hash = o.hash ?? htpasswdBcrypt(o.credentials.password);
   const rule = `Host(\`${o.host}\`) && PathPrefix(\`/webhooks/service\`)`;
   const router = (suffix: string, entryPoint: string, tls: string[]) => {
@@ -1091,7 +1096,7 @@ export function traefikBasicAuthLabels(o: TraefikBasicAuthOptions): string[] {
       `${r}.priority=${priority}`,
       ...tls.map((t) => `${r}.${t}`),
       `${r}.middlewares=${middleware}`,
-      ...(o.service ? [`${r}.service=${o.service}`] : []),
+      `${r}.service=${service}`,
     ];
   };
   // Traefik label keys are case-insensitive. Coolify scans lowercase
@@ -1106,6 +1111,7 @@ export function traefikBasicAuthLabels(o: TraefikBasicAuthOptions): string[] {
       `tls.certresolver=${o.certResolver ?? "letsencrypt"}`,
     ]),
     ...router("http", o.httpEntryPoint ?? "http", []),
+    ...(o.service ? [] : [`traefik.http.services.${service}.loadbalancer.server.port=${o.port ?? 9000}`]),
   ];
   return o.escapeDollars ? labels.map((l) => l.replaceAll("$", "$$$$")) : labels;
 }
