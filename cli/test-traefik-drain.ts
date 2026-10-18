@@ -235,6 +235,12 @@ await expect("build-pipeline shape: Dockerfile or nginx.conf, under the project 
   assert.equal(imageAnswersDrainProbe(repo({ Dockerfile: "FROM nginx:alpine" }), "app"), false);
 });
 
+await expect("an Express server that drains in its own code", () => {
+  const dir = repo({ "packages/server/src/readiness.ts": `headers["x-hatchkit-drain"]` });
+  assert.equal(imageAnswersDrainProbe(dir, "server"), true);
+  assert.equal(imageAnswersDrainProbe(dir, "client"), false);
+});
+
 await expect("a file the Dockerfile copies in", () => {
   const dir = repo({
     Dockerfile:

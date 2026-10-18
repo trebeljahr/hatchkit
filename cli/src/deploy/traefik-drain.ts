@@ -270,7 +270,17 @@ export function imageAnswersDrainProbe(
   };
   for (const dir of buildDirsFor(role, projectSubdir)) {
     const at = (f: string) => (dir ? `${dir}/${f}` : f);
-    if (["Dockerfile", "nginx.conf", "drain.cjs", "src/drain.ts"].some((f) => mentions(at(f)))) {
+    // `src/app.ts` and `src/readiness.ts`: Express servers that drain in
+    // their own code answer the probe from a middleware there.
+    const files = [
+      "Dockerfile",
+      "nginx.conf",
+      "drain.cjs",
+      "src/drain.ts",
+      "src/readiness.ts",
+      "src/app.ts",
+    ];
+    if (files.some((f) => mentions(at(f)))) {
       return true;
     }
     let dockerfile = "";
