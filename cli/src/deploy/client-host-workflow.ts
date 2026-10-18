@@ -120,15 +120,41 @@ export function readBuildArgs(lines: string[], job: JobBlock): Array<[string, st
   return out;
 }
 
-/** The `if:` condition of the step that sends the Coolify webhook, so
- *  the client follows the same rollout gate as the server. */
-function readWebhookCondition(lines: string[], job: JobBlock): string | undefined {
-  let stepIf: string | undefined;
+/** The `if:` condition of the step that sends the Coolify webhook, and
+ *  the `env:` lines that condition reads, so the client follows the same
+ *  rollout gate as the server. The env lines matter: a step's `if:` sees
+ *  that step's own `env:` block, so `env.COOLIFY_BASE_URL` is empty in a
+ *  step that does not set it (mood-magic's first run skipped the switch
+ *  that way, 2026-10-18). */
+export function readWebhookGate(
+  lines: string[],
+  job: JobBlock,
+): { condition: string; env: string[] } | undefined {
+  let stepStart = -1;
   for (let i = job.start + 1; i < job.end; i++) {
-    if (/^ {6}- /.test(lines[i])) stepIf = undefined;
-    const m = lines[i].match(/^ {8}if:\s*(.+?)\s*$/);
-    if (m) stepIf = m[1];
-    if (/webhooks\/source\/github\/events\/manual/.test(lines[i]) && stepIf) return stepIf;
+    if (/^ {6}- /.test(lines[i])) stepStart = i;
+    if (!/webhooks\/source\/github\/events\/manual/.test(lines[i]) || stepStart < 0) continue;
+    let condition: string | undefined;
+    const env = new Map<string, string>();
+    let inEnv = false;
+    for (let j = stepStart; j < job.end; j++) {
+      if (j > stepStart && /^ {6}- /.test(lines[j])) break;
+      const line = lines[j].replace(/^ {6}- /, "        ");
+      const ifMatch = line.match(/^ {8}if:\s*(.+?)\s*$/);
+      if (ifMatch) condition = ifMatch[1];
+      if (/^ {8}env:\s*$/.test(line)) {
+        inEnv = true;
+        continue;
+      }
+      if (inEnv) {
+        const kv = line.match(/^ {10}([A-Za-z_][A-Za-z0-9_]*):\s*.*$/);
+        if (kv) env.set(kv[1], line);
+        else if (!/^ {10}/.test(line)) inEnv = false;
+      }
+    }
+    if (!condition) return undefined;
+    const read = [...condition.matchAll(/\benv\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]);
+    return { condition, env: read.flatMap((k) => (env.has(k) ? [env.get(k) as string] : [])) };
   }
   return undefined;
 }
@@ -138,6 +164,23 @@ function readWebhookCondition(lines: string[], job: JobBlock): string | undefine
 // ---------------------------------------------------------------------------
 
 const yamlQuote = (v: string): string => (/^[A-Za-z0-9_./:@-]*$/.test(v) ? v : JSON.stringify(v));
+
+/** A workflow rewritten before 2026-10-18 has a "Record that the server
+ *  half was deployed" step with the webhook's `if:` but not the env that
+ *  `if:` reads, so it never ran. Give it that env. */
+export function fixRecordStepEnv(yaml: string): string {
+  const lines = yaml.split("\n");
+  const deploy = listJobs(lines).find((j) => j.name === "deploy");
+  if (!deploy) return yaml;
+  const gate = readWebhookGate(lines, deploy);
+  if (!gate?.env.length) return yaml;
+  const at = lines.findIndex(
+    (l, i) => i > deploy.start && i < deploy.end && /^ {8}id: server-deployed\s*$/.test(l),
+  );
+  if (at < 0 || /^ {8}env:\s*$/.test(lines[at + 1] ?? "")) return yaml;
+  lines.splice(at + 1, 0, "        env:", ...gate.env);
+  return lines.join("\n");
+}
 
 export function renderBuildClientJob(
   input: ClientWorkflowInput,
@@ -312,7 +355,13 @@ export function rewriteWorkflowForWorkerClient(
 ): WorkflowRewrite {
   const notes: string[] = [];
   if (/^ {2}deploy-client:\s*$/m.test(yaml)) {
-    return { text: yaml, notes: ["workflow already deploys the client to Cloudflare"] };
+    const fixed = fixRecordStepEnv(yaml);
+    return fixed === yaml
+      ? { text: yaml, notes: ["workflow already deploys the client to Cloudflare"] }
+      : {
+          text: fixed,
+          notes: ["deploy: the server-deployed step now sees the env its gate reads"],
+        };
   }
   let lines = yaml.split("\n");
   let jobs = listJobs(lines);
@@ -340,7 +389,7 @@ export function rewriteWorkflowForWorkerClient(
       `build-client builds against NEXT_PUBLIC_API_URL=${apiArg}, but the manifest's API origin is ${input.apiUrl}.`,
     );
   }
-  const webhookIf = readWebhookCondition(lines, deploy);
+  const webhookGate = readWebhookGate(lines, deploy);
   const replacement = renderBuildClientJob(input, {
     needs: readNeeds(lines, buildClient),
     env,
@@ -385,7 +434,8 @@ export function rewriteWorkflowForWorkerClient(
     "",
     "      - name: Record that the server half was deployed",
     "        id: server-deployed",
-    ...(webhookIf ? [`        if: ${webhookIf}`] : []),
+    ...(webhookGate?.env.length ? ["        env:", ...webhookGate.env] : []),
+    ...(webhookGate ? [`        if: ${webhookGate.condition}`] : []),
     `        run: echo "deployed=true" >> "$GITHUB_OUTPUT"`,
   );
   lines = [...lines.slice(0, dep.start), ...rewritten, ...lines.slice(dep.end)];

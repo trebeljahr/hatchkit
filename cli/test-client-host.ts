@@ -592,7 +592,12 @@ await test("workflow: server first, then the Worker switch, then /version.json",
     deployBody,
     /server_deployed: \$\{\{ steps\.server-deployed\.outputs\.deployed \}\}/,
   );
-  assert.match(deployBody, /id: server-deployed\n {8}if: env\.COOLIFY_BASE_URL != ''/);
+  // The step's `if:` sees only its own env, so it must carry the
+  // COOLIFY_BASE_URL its gate reads (mood-magic's first run, 2026-10-18).
+  assert.match(
+    deployBody,
+    /id: server-deployed\n {8}env:\n {10}COOLIFY_BASE_URL: \$\{\{ secrets\.COOLIFY_BASE_URL \}\}\n {8}if: env\.COOLIFY_BASE_URL != ''/,
+  );
   const clientBody = lines.slice(client.start, client.end).join("\n");
   assert.match(clientBody, /needs: \[build-client, deploy\]/);
   assert.match(clientBody, /if: needs\.deploy\.outputs\.server_deployed == 'true'/);
@@ -613,6 +618,18 @@ await test("workflow: release-summary always runs and names the live half", () =
   assert.match(body, /needs: \[build-server, build-client, deploy, deploy-client\]/);
   assert.match(body, /Server \$GITHUB_SHA is LIVE\. The client is NOT/);
   assert.match(body, /The client was NOT switched: the previous Worker version still serves/);
+});
+
+await test("workflow: a rewrite from before the env fix is repaired in place", async () => {
+  const { fixRecordStepEnv } = await import("./src/deploy/client-host-workflow.js");
+  const good = rewriteWorkflowForWorkerClient(STARTER_WORKFLOW, wfInput).text;
+  const broken = good.replace(
+    /(id: server-deployed\n) {8}env:\n {10}COOLIFY_BASE_URL: [^\n]+\n/,
+    "$1",
+  );
+  assert.notEqual(broken, good);
+  assert.equal(fixRecordStepEnv(broken), good);
+  assert.equal(rewriteWorkflowForWorkerClient(broken, wfInput).text, good);
 });
 
 await test("workflow: second run is a no-op; a foreign workflow is refused", () => {
