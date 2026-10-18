@@ -80,9 +80,12 @@ jobs:
         working-directory: docs
         env:
           NEXT_PUBLIC_BUILD_COMMIT: ${{ github.sha }}
+        # --ignore-workspace: docs/ is its own project (docs/.npmrc), but pnpm
+        # finds the root pnpm-workspace.yaml first and installs cli/ + mcp/
+        # instead. The Docker build never saw this: it copied docs/ alone.
         run: |
           corepack enable
-          pnpm install --frozen-lockfile
+          pnpm install --frozen-lockfile --ignore-workspace
           pnpm build
       - name: Prepare the upload
         env:
