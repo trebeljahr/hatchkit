@@ -447,6 +447,10 @@ export interface CliConfig {
     ghcr?: GhcrMeta;
   };
   mlServices: Record<string, MlServiceEntry>;
+  /** Providers the user stopped on purpose, keyed by
+   *  {@link PAUSABLE_PROVIDERS} id. `hatchkit doctor` reports them as
+   *  skipped instead of failing on their unreachable API. */
+  pausedProviders?: Record<string, ProviderPause>;
   /** Per-Worker deploy tokens hatchkit minted, keyed by Worker name. Ids
    *  only; see `CloudflareDeployTokenRecord`. */
   cloudflareDeployTokens?: Record<string, CloudflareDeployTokenRecord>;
@@ -542,6 +546,61 @@ export function getConfig(): CliConfig {
 
 export function getConfigPath(): string {
   return store.path;
+}
+
+// ---------------------------------------------------------------------------
+// Paused providers — a self-hosted service stopped on purpose (GlitchTip
+// switched off to save memory, say) answers 503 to every doctor run.
+// Marking it paused turns that row into a skip with the reason and date,
+// so doctor's failures stay real faults. The credentials stay stored.
+// ---------------------------------------------------------------------------
+
+export interface ProviderPause {
+  reason: string;
+  /** YYYY-MM-DD the provider was stopped. */
+  since: string;
+}
+
+/** Providers doctor can skip, by the id `hatchkit config pause` takes,
+ *  with the doctor row name each one covers. */
+export const PAUSABLE_PROVIDERS = {
+  coolify: "Coolify",
+  hetzner: "Hetzner Cloud",
+  dns: "DNS (Cloudflare)",
+  "cloudflare-workers": "Cloudflare Workers provisioner",
+  glitchtip: "GlitchTip",
+  plausible: "Plausible",
+  listmonk: "Listmonk",
+  "search-console": "Google Search Console",
+  stripe: "Stripe",
+  ses: "SES bounce feedback",
+} as const;
+
+export type PausableProvider = keyof typeof PAUSABLE_PROVIDERS;
+
+export function isPausableProvider(id: string): id is PausableProvider {
+  return Object.hasOwn(PAUSABLE_PROVIDERS, id);
+}
+
+export function getProviderPauses(): Partial<Record<PausableProvider, ProviderPause>> {
+  return { ...(store.get("pausedProviders") ?? {}) };
+}
+
+export function getProviderPause(id: PausableProvider): ProviderPause | undefined {
+  return store.get("pausedProviders")?.[id];
+}
+
+export function setProviderPause(id: PausableProvider, pause: ProviderPause): void {
+  store.set("pausedProviders", { ...(store.get("pausedProviders") ?? {}), [id]: pause });
+}
+
+/** Returns false when the provider was not paused. */
+export function clearProviderPause(id: PausableProvider): boolean {
+  const all = { ...(store.get("pausedProviders") ?? {}) };
+  if (!all[id]) return false;
+  delete all[id];
+  store.set("pausedProviders", all);
+  return true;
 }
 
 /** Reset all CLI config. Clears providers and ML registry, plus every

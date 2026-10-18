@@ -8,6 +8,8 @@
 import chalk from "chalk";
 import {
   CLOUDFLARE_PROVISIONER_GRANTS,
+  PAUSABLE_PROVIDERS,
+  type PausableProvider,
   getCloudflareDeployTokenRecords,
   getCloudflareProvisioner,
   getCloudflareWorkersMeta,
@@ -19,6 +21,7 @@ import {
   getListmonkConfig,
   getListmonkDefaultFromEmail,
   getPlausibleConfig,
+  getProviderPause,
   getS3Config,
   getSesConfig,
   getStore,
@@ -39,6 +42,7 @@ import {
   dockerManifestInspectViaSsh,
   sshProbe,
 } from "./utils/coolify-ssh.js";
+import { errorDetail } from "./utils/error-detail.js";
 import { execOk } from "./utils/exec.js";
 import { type LedgerStep, loadAllLedgers } from "./utils/run-ledger.js";
 import { SECRET_KEYS, getSecret } from "./utils/secrets.js";
@@ -64,6 +68,10 @@ interface CheckResult {
   detail?: string;
   /** Multi-line troubleshooting hint, shown under a failing check. */
   hint?: string[];
+  /** Set on the `skip` row of a provider `hatchkit config pause` marked
+   *  as stopped on purpose, so the summary counts it apart from the
+   *  providers that were never configured. */
+  paused?: boolean;
   /** A fix doctor can apply itself, offered only under `--fix`. Plain
    *  doctor never calls it. `run` must be idempotent and returns the
    *  line to print on success. */
@@ -81,7 +89,7 @@ async function check(
     const detail = await fn();
     return { name, status: "ok", detail: detail || undefined };
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = errorDetail(err);
     return { name, status: "fail", detail, hint: hintFn?.(detail) };
   }
 }
@@ -159,8 +167,11 @@ async function checkCoolify(): Promise<CheckResult> {
  *  Step (2) is skipped when `gh` is missing/unauthenticated (we can't
  *  enumerate installations) or when the source's html_url doesn't
  *  resolve to a GitHub App URL. */
-async function checkCoolifyGithubApp(): Promise<CheckResult[]> {
-  const cfg = await getCoolifyConfig();
+export async function checkCoolifyGithubApp(source?: {
+  url: string;
+  token: string;
+}): Promise<CheckResult[]> {
+  const cfg = source ?? (await getCoolifyConfig());
   if (!cfg) return [{ name: "Coolify GitHub App", status: "skip" }];
 
   const sourcesUrl = `${cfg.url.replace(/\/$/, "")}/sources`;
@@ -175,7 +186,7 @@ async function checkCoolifyGithubApp(): Promise<CheckResult[]> {
       {
         name: "Coolify GitHub App (sources)",
         status: "fail",
-        detail: err instanceof Error ? err.message : String(err),
+        detail: errorDetail(err),
         hint: [
           "Couldn't list /github-apps on Coolify — likely the API token lacks the right scope.",
           "Re-run `hatchkit config add coolify` to refresh the token.",
@@ -184,11 +195,15 @@ async function checkCoolifyGithubApp(): Promise<CheckResult[]> {
     ];
   }
 
+  // Optional: only `hatchkit create --private` needs a GitHub App
+  // source, so an instance without one is not a fault. A skip names the
+  // command in its detail, because doctor prints no hint under a skip.
   if (sources.length === 0) {
     out.push({
       name: "Coolify GitHub App (sources)",
-      status: "fail",
-      detail: "no GitHub sources in Coolify",
+      status: "skip",
+      detail:
+        "no GitHub sources (optional: only `hatchkit create --private` needs one; `hatchkit config add coolify-github-app`)",
       hint: [
         "Needed only if you plan to use `hatchkit create --private`. Public repos skip this.",
         "Set up with: `hatchkit config add coolify-github-app`",
@@ -588,7 +603,7 @@ async function checkPlausible(): Promise<CheckResult> {
   const cfg = await getPlausibleConfig();
   if (!cfg) return { name: "Plausible", status: "skip" };
   const base = cfg.url.replace(/\/$/, "");
-  return check(
+  const result = await check(
     "Plausible",
     async () => {
       const res = await fetch(`${base}/api/v1/sites?limit=1`, {
@@ -606,16 +621,113 @@ async function checkPlausible(): Promise<CheckResult> {
           "Then re-run: `hatchkit config add plausible`",
         ];
       }
-      if (code === 404 || code === 406) {
-        return [
-          `Plausible Sites API is not available at ${base}.`,
-          "If this is Plausible Community Edition/self-hosted, auto-provisioning sites is not supported there.",
-          "Use a Plausible Cloud/Enterprise account with Sites API access, or create the site manually and set NEXT_PUBLIC_PLAUSIBLE_DOMAIN + NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL yourself.",
-        ];
-      }
       return undefined;
     },
   );
+  const code = result.status === "fail" ? httpCode(result.detail ?? "") : undefined;
+  if (code !== 404 && code !== 406) return result;
+  return checkPlausibleCommunityEdition(base, cfg.apiKey, await plausibleProbeDomains());
+}
+
+const PLAUSIBLE_CE = "Community Edition: no Sites API, add sites in the dashboard";
+
+/**
+ * Plausible Community Edition never serves the Sites API, so the 404 or
+ * 406 on `/api/v1/sites` is its normal answer, not a fault. Prove the
+ * instance another way:
+ *
+ *   1. `GET /api/health` (no auth) — the instance and its databases are up.
+ *   2. The Stats API, which CE does serve, for each domain this project
+ *      reports to. A 200 proves the key; a refusal on every domain means
+ *      the site is not registered there (events are dropped) or the key
+ *      is wrong, which is worth a warning.
+ *
+ * With no domain to try (doctor run outside a project), a healthy
+ * instance is `ok` and the detail says the key went unverified.
+ */
+export async function checkPlausibleCommunityEdition(
+  base: string,
+  apiKey: string,
+  domains: string[],
+): Promise<CheckResult> {
+  const name = "Plausible";
+  let health: string;
+  try {
+    const res = await fetch(`${base}/api/health`, { headers: { Accept: "application/json" } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    health = "instance healthy";
+  } catch (err) {
+    return {
+      name,
+      status: "fail",
+      detail: `${PLAUSIBLE_CE}; ${base}/api/health failed: ${errorDetail(err)}`,
+      hint: [
+        `The Plausible instance at ${base} is down or unreachable.`,
+        "Check its container on the host, or the URL in `hatchkit config add plausible`.",
+      ],
+    };
+  }
+
+  const refused: string[] = [];
+  for (const domain of domains) {
+    const url =
+      `${base}/api/v1/stats/aggregate` +
+      `?site_id=${encodeURIComponent(domain)}&period=7d&metrics=visitors`;
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+      });
+      if (res.ok) {
+        return {
+          name,
+          status: "ok",
+          detail: `${PLAUSIBLE_CE}; ${health}; Stats API key valid for ${domain}`,
+        };
+      }
+      refused.push(`${domain}: HTTP ${res.status}`);
+    } catch (err) {
+      refused.push(`${domain}: ${errorDetail(err)}`);
+    }
+  }
+
+  if (refused.length === 0) {
+    return { name, status: "ok", detail: `${PLAUSIBLE_CE}; ${health}; API key not verified` };
+  }
+  return {
+    name,
+    status: "warn",
+    detail: `${PLAUSIBLE_CE}; ${health}; Stats API refused ${refused.join(", ")}`,
+    hint: [
+      "The Stats API answered no for this project's domain: either the site is not registered",
+      `in Plausible (its pageviews are dropped), or the API key is wrong. Check ${base}/sites,`,
+      "add or rename the site in the dashboard, or re-run `hatchkit config add plausible`.",
+    ],
+  };
+}
+
+/** Domains the project in cwd reports to Plausible: the cached site
+ *  domain, then the manifest domain. Empty outside a project. */
+async function plausibleProbeDomains(): Promise<string[]> {
+  const manifest = await cwdManifest();
+  if (!manifest) return [];
+  const cached = manifest.name
+    ? await getSecret(SECRET_KEYS.plausibleSiteDomain(manifest.name)).catch(() => null)
+    : null;
+  return [...new Set([cached, manifest.domain].filter((d): d is string => !!d))];
+}
+
+/** The manifest of the project doctor runs in, read without printing
+ *  migration notes. Undefined outside a project or for a broken file;
+ *  the project checks report a broken manifest themselves. */
+async function cwdManifest(): Promise<
+  import("./scaffold/manifest.js").ProjectManifest | undefined
+> {
+  const { readManifestWithMigrationInfo } = await import("./scaffold/manifest.js");
+  try {
+    return readManifestWithMigrationInfo(process.cwd())?.manifest;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -683,7 +795,7 @@ async function checkListmonkPublicLists(auth: ListmonkCheckSource["auth"]): Prom
       ],
     };
   } catch (err) {
-    return { name, status: "fail", detail: err instanceof Error ? err.message : String(err) };
+    return { name, status: "fail", detail: errorDetail(err) };
   }
 }
 
@@ -739,10 +851,7 @@ async function checkListmonkCredentialAndSender(src: ListmonkCheckSource): Promi
     if (!res.ok) throw new Error(`HTTP ${res.status} from ${base}/api/settings`);
     current = ((await res.json()) as { data?: Record<string, unknown> }).data?.["app.from_email"];
   } catch (err) {
-    return [
-      profile,
-      { name, status: "fail", detail: err instanceof Error ? err.message : String(err) },
-    ];
+    return [profile, { name, status: "fail", detail: errorDetail(err) }];
   }
 
   const repair = neutral
@@ -1182,8 +1291,10 @@ function isCoolifyManagedMode(mode: string | undefined): boolean {
  *
  *   1. `/user/tokens/verify` — the token is live at all.
  *   2. A permission probe per grant the provisioner needs. The account
- *      ones always run; the zone ones need a zone, which comes from the
- *      DNS provider's token if one is configured.
+ *      ones always run; the zone ones need a zone. Inside a project that
+ *      is the zone serving the manifest's domain, since a grant can be
+ *      scoped to some zones only; elsewhere it is the first zone the DNS
+ *      token lists. The row names the zone it probed.
  *
  * Reports every missing permission at once rather than failing on the
  * first. A user re-editing a Cloudflare token should get the whole list
@@ -1221,38 +1332,22 @@ async function checkCloudflareWorkers(): Promise<CheckResult> {
 
       if ((await api.verifyToken()) !== "active") throw new Error("Token is not active");
 
-      // The zone-scoped probes need a zone id. Borrow one from the DNS
-      // token's zone list — it's the same Cloudflare account, and any
-      // zone is representative enough to tell whether the provisioner
-      // carries the zone grants at all.
-      let zoneId: string | undefined;
-      let zoneName: string | undefined;
-      const dns = await getDnsConfig();
-      if (dns?.apiToken) {
-        try {
-          const zones = await new CloudflareApi({
-            token: dns.apiToken,
-            accountId: prov.accountId,
-          }).listZones();
-          zoneId = zones[0]?.id;
-          zoneName = zones[0]?.name;
-        } catch {
-          // No zone to probe against — handled below.
-        }
-      }
-
+      const zone = await provisionerProbeZone(api, prov.accountId);
       const probes = await api.probeProvisionerPermissions({
         accountId: prov.accountId,
-        zoneId,
+        zoneId: zone?.id,
       });
-      const missing = probes.filter((p) => !p.ok);
-      if (missing.length > 0) {
-        throw new Error(`missing permissions: ${missing.map((p) => p.permission).join(", ")}`);
-      }
+      const failure = describeProbeFailures(
+        probes,
+        zone && `${zone.name}${zone.note ? `, ${zone.note}` : ""}`,
+      );
+      if (failure) throw new Error(failure);
       if (legacy) {
         throw new Error("legacy shared token `cloudflare:workers:token` still in the keychain");
       }
-      const scope = zoneName ? `account + zone ${zoneName}` : "account only (no zone to probe)";
+      const scope = zone
+        ? `account + zone ${zone.name}${zone.note ? ` (${zone.note})` : ""}`
+        : "account only (no zone to probe)";
       return `${probes.length}/${probes.length} read probes passed (${scope}; from ${prov.source}); write grants unverified`;
     },
     (detail) => {
@@ -1268,10 +1363,17 @@ async function checkCloudflareWorkers(): Promise<CheckResult> {
       }
       if (/missing permissions/.test(detail)) {
         return [
-          `The provisioner (${prov.source}) works but is missing the grants listed above:`,
+          `The provisioner (${prov.source}) works but is missing the grants named above.`,
+          "It needs all of these:",
           ...grants,
           "Edit it at https://dash.cloudflare.com/profile/api-tokens, or store a dedicated",
           "one with `hatchkit config add cloudflare-workers`. CI never gets these grants.",
+        ];
+      }
+      if (/^probes could not run/.test(detail)) {
+        return [
+          "Cloudflare gave no answer about these grants (network error or a 5xx), so this run",
+          "says nothing about the token. Re-run `hatchkit doctor`; if it repeats, check the error above.",
         ];
       }
       if (/legacy shared token/.test(detail)) {
@@ -1284,6 +1386,61 @@ async function checkCloudflareWorkers(): Promise<CheckResult> {
       return undefined;
     },
   );
+}
+
+/** The zone to run the provisioner's zone probes on. A token's zone
+ *  grants can cover some zones only, so inside a project probe the zone
+ *  serving the manifest's domain; outside one, fall back to the first
+ *  zone the DNS token lists. Zones are looked up with the DNS token,
+ *  then the provisioner itself. Undefined when neither finds one. */
+async function provisionerProbeZone(
+  provisioner: import("./utils/cloudflare-api.js").CloudflareApi,
+  accountId: string,
+): Promise<{ id: string; name: string; note?: string } | undefined> {
+  const { CloudflareApi } = await import("./utils/cloudflare-api.js");
+  const dns = await getDnsConfig();
+  const readers = [
+    ...(dns?.apiToken ? [new CloudflareApi({ token: dns.apiToken, accountId })] : []),
+    provisioner,
+  ];
+  const domain = (await cwdManifest())?.domain;
+  if (domain) {
+    for (const reader of readers) {
+      const zone = await reader.resolveZoneForName(domain).catch(() => null);
+      if (zone) return { id: zone.id, name: zone.name };
+    }
+  }
+  for (const reader of readers) {
+    const first = (await reader.listZones().catch(() => []))[0];
+    if (first) {
+      const note = domain ? `first DNS zone; none found for ${domain}` : "first DNS zone";
+      return { id: first.id, name: first.name, note };
+    }
+  }
+  return undefined;
+}
+
+/** The error for a provisioner probe run, or undefined when every probe
+ *  passed. A denied grant and a probe that got no answer read
+ *  differently, and each names the call's own error, so a scope gap is
+ *  never mistaken for a network blip or the reverse. */
+export function describeProbeFailures(
+  probes: import("./utils/cloudflare-api.js").CfPermissionProbe[],
+  zoneName: string | undefined,
+): string | undefined {
+  const line = (p: (typeof probes)[number]) =>
+    `${p.permission} [${(p.detail ?? "no detail").replace(/^Cloudflare \S+ \S+ failed: /, "")}]`;
+  const denied = probes.filter((p) => !p.ok && p.reason !== "error");
+  const errored = probes.filter((p) => !p.ok && p.reason === "error");
+  const where = zoneName ? ` (zone ${zoneName})` : "";
+  const parts: string[] = [];
+  if (denied.length > 0) parts.push(`missing permissions${where}: ${denied.map(line).join("; ")}`);
+  if (errored.length > 0) {
+    parts.push(
+      `${denied.length > 0 ? "and " : ""}probes could not run${where}: ${errored.map(line).join("; ")}`,
+    );
+  }
+  return parts.length > 0 ? parts.join(" ") : undefined;
 }
 
 /**
@@ -1614,24 +1771,51 @@ async function checkBackupSources(): Promise<CheckResult[]> {
   }));
 }
 
+/** The skip row for a provider `hatchkit config pause` marked as
+ *  stopped on purpose, or undefined when it should be checked. */
+export function pausedResult(id: PausableProvider): CheckResult | undefined {
+  const pause = getProviderPause(id);
+  if (!pause) return undefined;
+  return {
+    name: PAUSABLE_PROVIDERS[id],
+    status: "skip",
+    paused: true,
+    detail: `paused since ${pause.since}: ${pause.reason} (\`hatchkit config resume ${id}\` checks it again)`,
+  };
+}
+
+async function unlessPaused(
+  id: PausableProvider,
+  run: () => Promise<CheckResult | CheckResult[]>,
+): Promise<CheckResult[]> {
+  const paused = pausedResult(id);
+  if (paused) return [paused];
+  const out = await run();
+  return Array.isArray(out) ? out : [out];
+}
+
 export async function collectDoctorResults(): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   results.push(await checkGitHub());
-  results.push(await checkCoolify());
-  for (const r of await checkCoolifyGithubApp()) results.push(r);
-  for (const r of await checkCoolifyGhcrSsh()) results.push(r);
-  for (const r of await checkCoolifyComposePullPolicy()) results.push(r);
-  results.push(await checkHetzner());
-  results.push(await checkDns());
-  results.push(await checkCloudflareWorkers());
+  results.push(
+    ...(await unlessPaused("coolify", async () => [
+      await checkCoolify(),
+      ...(await checkCoolifyGithubApp()),
+      ...(await checkCoolifyGhcrSsh()),
+      ...(await checkCoolifyComposePullPolicy()),
+    ])),
+  );
+  results.push(...(await unlessPaused("hetzner", checkHetzner)));
+  results.push(...(await unlessPaused("dns", checkDns)));
+  results.push(...(await unlessPaused("cloudflare-workers", checkCloudflareWorkers)));
   for (const p of ["hetzner", "aws", "r2"] as const) results.push(await checkS3(p));
   for (const p of ["modal", "runpod", "hf", "replicate"]) results.push(await checkGpu(p));
-  results.push(await checkGlitchtip());
-  results.push(await checkPlausible());
-  for (const r of await checkListmonk()) results.push(r);
-  results.push(await checkGoogleSearchConsole());
-  for (const r of await checkStripe()) results.push(r);
-  for (const r of await checkSesBounceFeedback()) results.push(r);
+  results.push(...(await unlessPaused("glitchtip", checkGlitchtip)));
+  results.push(...(await unlessPaused("plausible", checkPlausible)));
+  results.push(...(await unlessPaused("listmonk", () => checkListmonk())));
+  results.push(...(await unlessPaused("search-console", checkGoogleSearchConsole)));
+  results.push(...(await unlessPaused("stripe", checkStripe)));
+  results.push(...(await unlessPaused("ses", () => checkSesBounceFeedback())));
   for (const r of await checkBackupSources()) results.push(r);
   // Local-dev (Tailscale-served per-project URLs). Returns [] when the
   // user hasn't run `hatchkit dev-setup init`, so doctor stays quiet for
@@ -4379,7 +4563,8 @@ export async function runDoctor(
   const results = await collectDoctorResults();
   const okCount = results.filter((r) => r.status === "ok").length;
   const failCount = results.filter((r) => r.status === "fail").length;
-  const skipCount = results.filter((r) => r.status === "skip").length;
+  const skipCount = results.filter((r) => r.status === "skip" && !r.paused).length;
+  const pausedCount = results.filter((r) => r.paused).length;
   const deferredResults = results.filter((r) => r.status === "deferred");
   const warnResults = results.filter((r) => r.status === "warn");
 
@@ -4390,11 +4575,13 @@ export async function runDoctor(
         failing: failCount,
         warnings: warnResults.length,
         not_configured: skipCount,
+        paused: pausedCount,
         deferred: deferredResults.length,
       },
       checks: results.map((r) => ({
         name: r.name,
         status: r.status,
+        ...(r.paused ? { paused: true } : {}),
         detail: r.detail,
         hint: r.hint,
       })),
@@ -4434,7 +4621,9 @@ export async function runDoctor(
       deferredResults.length
         ? chalk.yellow(`${deferredResults.length} deferred`)
         : chalk.dim("0 deferred")
-    }  ${chalk.dim(`${skipCount} not configured`)}\n`,
+    }  ${chalk.dim(`${skipCount} not configured`)}${
+      pausedCount ? chalk.dim(`  ${pausedCount} paused`) : ""
+    }\n`,
   );
 
   // Deferred steps come before the failure block: they're the user's

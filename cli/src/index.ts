@@ -7,6 +7,8 @@ import { confirm, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { BACKUP_USAGE, runBackupCommand } from "./backups/command.js";
 import {
+  PAUSABLE_PROVIDERS,
+  clearProviderPause,
   ensureCoolify,
   ensureDns,
   ensureGitHub,
@@ -17,10 +19,13 @@ import {
   getCoolifyConfig,
   getGhcrConfig,
   getMlServices,
+  getProviderPauses,
   isFirstRun,
+  isPausableProvider,
   reconfigureProvider,
   resetConfig,
   runOnboarding,
+  setProviderPause,
 } from "./config.js";
 import { runCoolifySetup } from "./deploy/coolify.js";
 import { setupGitHub } from "./deploy/github.js";
@@ -3743,6 +3748,48 @@ async function handleConfig(): Promise<void> {
       }
       break;
     }
+    case "pause":
+    case "resume": {
+      const provider = args[2];
+      const valid = Object.keys(PAUSABLE_PROVIDERS).join(", ");
+      if (!provider || !isPausableProvider(provider)) {
+        if (provider) console.log(chalk.red(`  Unknown provider: ${provider}`));
+        console.log(
+          subcommand === "pause"
+            ? '  Usage: hatchkit config pause <provider> --reason "<why>" [--since YYYY-MM-DD]'
+            : "  Usage: hatchkit config resume <provider>",
+        );
+        console.log(chalk.dim(`  Providers: ${valid}`));
+        process.exitCode = 1;
+        return;
+      }
+      if (subcommand === "resume") {
+        console.log(
+          clearProviderPause(provider)
+            ? chalk.green(`  ✓ ${provider} resumed — \`hatchkit doctor\` checks it again.`)
+            : chalk.dim(`  ${provider} was not paused.`),
+        );
+        return;
+      }
+      const reason = flagValue("--reason")?.trim();
+      const since = flagValue("--since") ?? new Date().toISOString().slice(0, 10);
+      if (!reason) {
+        console.log(chalk.red('  --reason "<why>" is required, so doctor can say why it skips.'));
+        process.exitCode = 1;
+        return;
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(since) || Number.isNaN(Date.parse(since))) {
+        console.log(chalk.red(`  --since must be a date as YYYY-MM-DD, got ${since}.`));
+        process.exitCode = 1;
+        return;
+      }
+      setProviderPause(provider, { reason, since });
+      console.log(
+        chalk.green(`  ✓ ${provider} paused since ${since}: ${reason}`) +
+          chalk.dim(`\n  doctor skips it until \`hatchkit config resume ${provider}\`.`),
+      );
+      return;
+    }
     case "reset": {
       const ok = await confirm({
         message: "Clear ALL CLI config (providers, tokens, ML registry)?",
@@ -3785,6 +3832,14 @@ async function handleConfig(): Promise<void> {
       console.log(
         `  GPU:      ${gpuProviders.length > 0 ? chalk.green(`✓ (${gpuProviders.join(", ")})`) : chalk.dim("not configured")}`,
       );
+
+      const pauses = Object.entries(getProviderPauses());
+      if (pauses.length > 0) {
+        console.log(chalk.bold("\n  Paused (doctor skips these):"));
+        for (const [id, p] of pauses) {
+          console.log(chalk.dim(`    ${id}: since ${p?.since} — ${p?.reason}`));
+        }
+      }
 
       const services = getMlServices();
       const serviceCount = Object.keys(services).length;
@@ -5708,6 +5763,10 @@ function printHelp(topic?: HelpTopic): void {
     config add <p>      Configure a provider
                         (coolify, ghcr, hetzner, dns, s3, modal, runpod, hf, replicate,
                          glitchtip, plausible, listmonk, ses, search-console, stripe)
+    config pause <p> --reason "<why>" [--since YYYY-MM-DD]
+                        Mark a provider stopped on purpose; doctor skips it
+                        and shows the reason. Credentials stay stored.
+    config resume <p>   Check a paused provider again
     config reset        Clear ALL CLI config (providers, tokens, ML registry, ports)
 `);
     return;
@@ -5845,6 +5904,7 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Config:")}
     config          Show provider status (same as \`status\`)
     config add <p>  Configure a provider (coolify, hetzner, dns, cloudflare-workers, s3, modal, …)
+    config pause <p> / resume <p>  Have doctor skip a provider stopped on purpose
     config reset    Clear ALL CLI config (providers, tokens, ML registry, ports)
 
   ${chalk.bold("For agents / scripts:")}

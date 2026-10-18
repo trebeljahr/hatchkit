@@ -103,6 +103,7 @@ import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import {
   type ProjectManifest,
+  logManifestMigrationNotes,
   manifestHostnames,
   readManifestWithMigrationInfo,
 } from "../scaffold/manifest.js";
@@ -482,7 +483,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   const read = readManifestWithMigrationInfo(opts.projectDir);
   const manifest = read?.manifest;
   if (read?.migrated && !opts.json) {
-    for (const note of read.migrationNotes) console.log(`  ${note}`);
+    logManifestMigrationNotes(opts.projectDir, read.migrationNotes);
   }
   if (!manifest) {
     const err = `No .hatchkit.json found in ${opts.projectDir}.`;

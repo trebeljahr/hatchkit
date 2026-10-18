@@ -683,8 +683,12 @@ Inspect or modify stored provider config.
 ```bash
 hatchkit config                      # show provider status
 hatchkit config add <provider>       # (re-)configure a provider
+hatchkit config pause <provider> --reason "<why>" [--since YYYY-MM-DD]
+hatchkit config resume <provider>    # check a paused provider again
 hatchkit config reset                # clear ALL CLI config (confirmed)
 ```
+
+`config pause` is for a provider you stopped on purpose, such as a self-hosted GlitchTip you switched off. `hatchkit doctor` shows it as skipped with the reason and date, and does not fail on it. The credentials stay stored. Pausable providers: `coolify`, `hetzner`, `dns`, `cloudflare-workers`, `glitchtip`, `plausible`, `listmonk`, `search-console`, `stripe`, `ses`.
 
 Valid providers: `coolify`, `coolify-github-app`, `ghcr`, `hetzner`, `dns`, `cloudflare-workers`, `s3`, `glitchtip`, `plausible`, `listmonk`, `ses`, `search-console`, `stripe`, `modal`, `runpod`, `hf`, `replicate`.
 

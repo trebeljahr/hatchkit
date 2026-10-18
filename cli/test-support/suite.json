@@ -52,6 +52,7 @@
   "test-doctor-pull-policy.ts",
   "test-doctor-nginx-config.ts",
   "test-doctor-env-keys.ts",
+  "test-doctor-false-failures.ts",
   "test-trusted-origins.ts",
   "test-coolify-patch-limits.ts",
   "test-coolify-db-network.ts",

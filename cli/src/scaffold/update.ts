@@ -94,6 +94,7 @@ import {
   MANIFEST_FILENAME,
   type ProjectManifest,
   findManifestDirUpward,
+  logManifestMigrationNotes,
   readManifestWithMigrationInfo,
   writeManifest,
 } from "./manifest.js";
@@ -280,7 +281,7 @@ export async function runUpdate(
   const manifestDir = findManifestDirUpward(invokedDir) ?? invokedDir;
   const manifestRead = readManifestWithMigrationInfo(manifestDir);
   if (manifestRead?.migrated) {
-    for (const note of manifestRead.migrationNotes) console.log(`  ${note}`);
+    logManifestMigrationNotes(manifestDir, manifestRead.migrationNotes, { persistHint: false });
   }
   const manifest = manifestRead?.manifest ?? null;
   if (!manifest) {

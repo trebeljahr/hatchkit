@@ -13,6 +13,8 @@
 // go through Terraform (modules/cloudflare-dns) — this client is for
 // command-line paths that don't run a full Terraform stack.
 
+import { errorDetail } from "./error-detail.js";
+
 export interface CloudflareZone {
   id: string;
   name: string;
@@ -178,6 +180,9 @@ export interface CfPermissionProbe {
   /** Permission as it is spelled in the token editor UI. */
   permission: string;
   ok: boolean;
+  /** Why a failed probe failed: `denied` = the token lacks the grant;
+   *  `error` = the call never got an answer about it (network, 5xx). */
+  reason?: "denied" | "error";
   detail?: string;
 }
 
@@ -227,7 +232,9 @@ export class CloudflareApi {
         signal: AbortSignal.timeout(CF_API_TIMEOUT_MS),
       });
     } catch (err) {
-      throw new Error(`Cloudflare ${method} ${path} failed: ${(err as Error).message}`);
+      throw new Error(`Cloudflare ${method} ${path} failed: ${(err as Error).message}`, {
+        cause: err,
+      });
     }
 
     const json = (await res.json().catch(() => null)) as CfResponse<T> | null;
@@ -272,7 +279,9 @@ export class CloudflareApi {
           signal: AbortSignal.timeout(CF_API_TIMEOUT_MS),
         });
       } catch (err) {
-        throw new Error(`Cloudflare GET /zones failed: ${(err as Error).message}`);
+        throw new Error(`Cloudflare GET /zones failed: ${(err as Error).message}`, {
+          cause: err,
+        });
       }
       const json = (await res.json().catch(() => null)) as CfResponse<CloudflareZone[]> | null;
       if (!res.ok || !json || !json.success) {
@@ -1686,10 +1695,10 @@ export class CloudflareApi {
       const msg = (err as Error).message;
       const status = (err as { status?: number }).status;
       if (status === 401 || status === 403 || /\b(9109|10000)\b|\bHTTP (401|403)\b/.test(msg)) {
-        return { permission, ok: false, detail: msg };
+        return { permission, ok: false, reason: "denied", detail: msg };
       }
       if (status === 404 || /\b404\b|not\s*found/i.test(msg)) return { permission, ok: true };
-      return { permission, ok: false, detail: msg };
+      return { permission, ok: false, reason: "error", detail: errorDetail(err) };
     }
   }
 }

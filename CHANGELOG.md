@@ -28,6 +28,15 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 - `hatchkit migrate-runtime --carry-volume <service>=<volume>` moves a compose app that keeps its state in a named volume, for example a SQLite database. The new app mounts the same Docker volume, so no data is copied. Two containers write the volume during verification and during the overlap of every later rolling deploy, and the plan says so. On Coolify 4.0.0-beta.469 the run pauses for one dashboard step, because that version cannot create a storage through its API. `--rollback` and `--cleanup` keep the volume. Without the flag, a volume still blocks the move.
 - `hatchkit migrate-runtime --same-json <service>=/path:<field>` compares one JSON field between production and the new app before any traffic moves. A difference stops the run with the compose app serving.
 - `hatchkit doctor` warns for every app of the project whose deploys still take the site down, and names the command that fixes it.
+- `hatchkit config pause <provider> --reason "<why>" [--since YYYY-MM-DD]` marks a provider you stopped on purpose, such as a self-hosted GlitchTip. `hatchkit doctor` then shows it as skipped with the reason and date instead of failing on its 503. `hatchkit config resume <provider>` checks it again. The credentials stay stored.
+
+### Fixed
+
+- `hatchkit doctor` no longer fails on Plausible Community Edition, which never serves the Sites API. It checks `/api/health` and, inside a project, the Stats API for the project's domain, and warns only when the Stats API refuses that domain.
+- doctor's Cloudflare Workers provisioner row probes the zone grants on the zone of the project's domain, names the zone it probed, and prints each failing probe's error. A denied grant and a probe that got no answer are reported apart.
+- A provider check whose request failed in the network now names the reason, for example `fetch failed (ECONNRESET)`, instead of `fetch failed` alone.
+- "Coolify GitHub App (sources)" with no sources is a skip, not a failure: only `hatchkit create --private` needs one.
+- Manifest migration notes print once per run, with the command that writes the migrated file (`hatchkit update`). doctor used to print them once per manifest read.
 
 ### Removed
 

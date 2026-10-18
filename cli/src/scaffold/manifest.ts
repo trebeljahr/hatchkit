@@ -29,7 +29,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { localDevDomainFromProjectDomain } from "@hatchkit/dev-shared";
 import { type CoolifyRuntime, DEFAULT_NEW_PROJECT_RUNTIME } from "../deploy/image-runtime.js";
 import {
@@ -678,6 +678,39 @@ interface ReadManifestResult {
   migrationNotes: string[];
 }
 
+/** Migration notes already printed in this process, keyed by manifest
+ *  path. One command reads the same manifest many times (doctor reads it
+ *  once per project check), and the file only changes when something
+ *  writes it, so each note is news once. */
+const printedMigrationNotes = new Map<string, Set<string>>();
+
+/** Print a manifest's migration notes, each once per process, plus one
+ *  line saying the migration is in memory only and which command writes
+ *  it. `persistHint: false` for `hatchkit update`, which is that command. */
+export function logManifestMigrationNotes(
+  projectDir: string,
+  notes: string[],
+  opts: { persistHint?: boolean } = {},
+): void {
+  const key = resolve(projectDir, MANIFEST_FILENAME);
+  let printed = printedMigrationNotes.get(key);
+  const fresh = notes.filter((n) => !printed?.has(n));
+  if (fresh.length === 0) return;
+  if (!printed) {
+    printed = new Set();
+    printedMigrationNotes.set(key, printed);
+  }
+  for (const note of fresh) {
+    printed.add(note);
+    console.log(`  ${note}`);
+  }
+  if (opts.persistHint !== false) {
+    console.log(
+      `  (migrated in memory only; run \`hatchkit update\` in ${projectDir} to write ${MANIFEST_FILENAME})`,
+    );
+  }
+}
+
 /** Read + validate a manifest from a scaffolded project directory.
  *  Returns null if the file doesn't exist. Throws on malformed JSON
  *  or an unknown schema version so downstream code doesn't silently
@@ -686,15 +719,12 @@ interface ReadManifestResult {
  *  Transparently migrates v1 manifests (and the rename-map aliases)
  *  to v2 in memory. The on-disk file isn't touched here — the next
  *  call to {@link writeManifest} re-emits the file at the current
- *  schema version, which is the natural moment to upgrade. */
+ *  schema version, which is the natural moment to upgrade. Migration
+ *  notes print once per process ({@link logManifestMigrationNotes}). */
 export function readManifest(projectDir: string): ProjectManifest | null {
   const result = readManifestWithMigrationInfo(projectDir);
   if (!result) return null;
-  if (result.migrated) {
-    for (const note of result.migrationNotes) {
-      console.log(`  ${note}`);
-    }
-  }
+  if (result.migrated) logManifestMigrationNotes(projectDir, result.migrationNotes);
   return result.manifest;
 }
 
