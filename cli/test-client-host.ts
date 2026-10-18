@@ -391,7 +391,7 @@ await test("HTTPS rule: http only, host set, /.well-known/ excluded, 301 keeping
   const rule = renderHttpsRedirectRule(["b.example.com", "a.example.com", "a.example.com"]);
   assert.equal(
     rule.expression,
-    '(http.request.scheme eq "http" and http.host in {"a.example.com" "b.example.com"} and not starts_with(http.request.uri.path, "/.well-known/"))',
+    '(not ssl and http.host in {"a.example.com" "b.example.com"} and not starts_with(http.request.uri.path, "/.well-known/"))',
   );
   assert.equal(rule.action_parameters.from_value.status_code, 301);
   assert.equal(rule.action_parameters.from_value.preserve_query_string, true);
@@ -401,6 +401,14 @@ await test("HTTPS rule: http only, host set, /.well-known/ excluded, 301 keeping
   );
   assert.deepEqual(parseHttpsRuleHosts(rule), ["a.example.com", "b.example.com"]);
   assert.equal(parseHttpsRuleHosts({ expression: `${rule.expression} or true` }), null);
+  // The form trackyourtime made in the dashboard (no ref) is hatchkit's.
+  assert.deepEqual(
+    parseHttpsRuleHosts({
+      expression:
+        '(not ssl and http.host in {"trackyourtime.dev"} and not starts_with(http.request.uri.path, "/.well-known/"))',
+    }),
+    ["trackyourtime.dev"],
+  );
   assert.throws(() => renderHttpsRedirectRule(['x" or true or "']), /Not a hostname/);
 });
 

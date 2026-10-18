@@ -17,7 +17,7 @@
  * E6); Traefik used to redirect. The fix is ONE Single Redirect rule per
  * zone, owned by hatchkit, listing every Worker-served host:
  *
- *   http.request.scheme eq "http" and http.host in {…}
+ *   not ssl and http.host in {…}
  *   and not starts_with(http.request.uri.path, "/.well-known/")
  *
  * Not the zone's Always Use HTTPS. That one redirects
@@ -109,7 +109,10 @@ export function renderHttpsRedirectRule(hosts: string[]): CfRedirectRule {
     ref: HTTPS_RULE_REF,
     description: HTTPS_RULE_DESCRIPTION,
     expression:
-      `(http.request.scheme eq "http" and http.host in {${set.map((h) => `"${h}"`).join(" ")}}` +
+      // `not ssl`, not `http.request.scheme eq "http"`: a Free zone's rule
+      // validator rejects that field as an unknown identifier
+      // (trackyourtime.dev, 2026-10-18).
+      `(not ssl and http.host in {${set.map((h) => `"${h}"`).join(" ")}}` +
       ` and not starts_with(http.request.uri.path, "/.well-known/"))`,
     action: "redirect",
     enabled: true,
@@ -127,7 +130,7 @@ export function renderHttpsRedirectRule(hosts: string[]): CfRedirectRule {
  *  shape {@link renderHttpsRedirectRule} writes (hand-edited). */
 export function parseHttpsRuleHosts(rule: Pick<CfRedirectRule, "expression">): string[] | null {
   const m = rule.expression.match(
-    /^\(http\.request\.scheme eq "http" and http\.host in \{([^}]*)\} and not starts_with\(http\.request\.uri\.path, "\/\.well-known\/"\)\)$/,
+    /^\((?:not ssl|http\.request\.scheme eq "http") and http\.host in \{([^}]*)\} and not starts_with\(http\.request\.uri\.path, "\/\.well-known\/"\)\)$/,
   );
   if (!m) return null;
   return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
