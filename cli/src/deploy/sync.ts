@@ -495,6 +495,13 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     }
     return { ...emptyResult(opts), error: err };
   }
+  // A project Coolify does not run has nothing to sync there. Without this
+  // a static site on Workers or Pages would get a Coolify app created for it.
+  if (manifest.deploymentMode && manifest.deploymentMode !== "coolify") {
+    const note = `deploymentMode is "${manifest.deploymentMode}": no Coolify app to sync.`;
+    if (!opts.json) console.log(chalk.dim(`  ${note}`));
+    return { ...emptyResult(opts), ok: true };
+  }
   const cfg = await getCoolifyConfig();
   if (!cfg) {
     const err = "Coolify is not configured. Run `hatchkit config add coolify` first.";

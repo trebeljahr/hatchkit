@@ -1029,6 +1029,25 @@ await test("cloudflare https add: merges, reads back, and catches a lost host", 
   }
 });
 
+await test("sync: a project Coolify does not run is left alone", async () => {
+  const { runSync } = await import("./src/deploy/sync.js");
+  const dir = project({
+    ".hatchkit.json": JSON.stringify({
+      version: 5,
+      name: "labs",
+      domain: "labs.example.com",
+      surfaces: "static",
+      deploymentMode: "cloudflare",
+      features: [],
+    }),
+  });
+  const res = await runSync({ projectDir: dir, json: true });
+  assert.equal(res.ok, true);
+  assert.deepEqual(res.created, []);
+  assert.deepEqual(res.apps, []);
+  rmSync(dir, { recursive: true, force: true });
+});
+
 await test("sync: a client on Workers never adopts the project-named image app", async () => {
   const plan = computeRoutingPlan(base);
   const api = {
