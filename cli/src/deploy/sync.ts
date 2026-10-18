@@ -116,6 +116,7 @@ import {
 } from "../utils/coolify-api.js";
 import { discoverPublicIps } from "../utils/coolify-server-ips.js";
 import { exec } from "../utils/exec.js";
+import { readWorkerName } from "./cloudflare.js";
 import { normalizeCoolifyGitRepository, wireDns } from "./coolify-app.js";
 import {
   type CoolifyDbReference,
@@ -151,6 +152,7 @@ import {
   resolveCoolifyRuntime,
 } from "./image-runtime.js";
 import {
+  type EdgePlan,
   type RoutedApp,
   type RoutingInput,
   type RoutingPlan,
@@ -391,6 +393,81 @@ export interface SyncResult {
   nativeOrigins: NativeOriginsOutcome[];
   /** When dryRun, no PATCH was made even if `changed` was true. */
   dryRun: boolean;
+  /** Cloudflare routes of a client on Workers (`clientHost`). */
+  edge?: EdgeSyncReport;
+}
+
+export interface EdgeSyncReport {
+  zone?: string;
+  present: string[];
+  created: string[];
+  wouldCreate: string[];
+  problems: string[];
+}
+
+/** Reconcile the zone's Workers routes with `edge`. Needs the Cloudflare
+ *  provisioner; without it the edge is reported as unchecked. */
+async function syncEdge(
+  edge: EdgePlan,
+  opts: { dryRun: boolean; json: boolean },
+): Promise<EdgeSyncReport> {
+  const report: EdgeSyncReport = { present: [], created: [], wouldCreate: [], problems: [] };
+  const log = (line: string): void => {
+    if (!opts.json) console.log(line);
+  };
+  const { getCloudflareProvisioner } = await import("../config.js");
+  const prov = await getCloudflareProvisioner().catch(() => null);
+  if (!prov) {
+    log(chalk.yellow("    edge: no Cloudflare provisioner — routes not checked"));
+    return report;
+  }
+  const { CloudflareApi } = await import("../utils/cloudflare-api.js");
+  const { applyEdgeRoutes, diffEdge, resolveEdgeContext } = await import("./client-host.js");
+  try {
+    const ctx = await resolveEdgeContext(
+      new CloudflareApi({ token: prov.token, accountId: prov.accountId }),
+      prov.accountId,
+      edge,
+    );
+    report.zone = ctx.zoneName;
+    const diff = diffEdge(edge, await ctx.api.listWorkerRoutes(ctx.zoneId));
+    report.present = diff.present.map((p) => p.want.pattern);
+    for (const r of diff.foreign) {
+      report.problems.push(
+        `foreign route ${r.pattern} → ${r.script || "no Worker"} (${r.id}) on a client host`,
+      );
+    }
+    for (const { want, have } of diff.wrongScript) {
+      report.problems.push(
+        `${have.pattern} → ${have.script || "no Worker"}, expected ${want.script ?? "no Worker"}`,
+      );
+    }
+    log(
+      chalk.dim(
+        `    edge (${ctx.zoneName}): ${report.present.length}/${edge.routes.length} routes in place`,
+      ),
+    );
+    if (diff.missing.length === 0 || report.problems.length) {
+      for (const p of report.problems) log(chalk.red(`    edge: ${p}`));
+      return report;
+    }
+    if (opts.dryRun) {
+      report.wouldCreate = diff.missing.map((r) => r.pattern);
+      for (const p of report.wouldCreate) log(chalk.dim(`    edge: would create ${p}`));
+      return report;
+    }
+    const made = await applyEdgeRoutes(ctx, edge, {
+      onRoute: (r, o) => {
+        if (o === "created")
+          log(chalk.green(`    edge: created ${r.pattern} → ${r.script ?? "no Worker"}`));
+      },
+    });
+    report.created = made.map((r) => r.pattern);
+  } catch (err) {
+    report.problems.push((err as Error).message);
+    log(chalk.red(`    edge: ${(err as Error).message}`));
+  }
+  return report;
 }
 
 /** Top-level entrypoint. Reads the project manifest, finds the Coolify
@@ -444,6 +521,15 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     publicService: manifest.publicService,
     composeServices: compose?.services,
     runtime,
+    // A client on Cloudflare Workers: the plan has no client app and
+    // carries the zone routes instead (deploy/client-host.ts).
+    ...(manifest.clientHost === "cloudflare"
+      ? {
+          clientHost: "cloudflare" as const,
+          clientWorker: readWorkerName(opts.projectDir) ?? undefined,
+          ...(manifest.originPaths ? { originPaths: manifest.originPaths } : {}),
+        }
+      : {}),
     ...(runtime === "image"
       ? {
           images: imageRefsForProject({
@@ -454,7 +540,14 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
         }
       : {}),
   };
-  const routing = computeRoutingPlan(routingInput);
+  let routing: RoutingPlan;
+  try {
+    routing = computeRoutingPlan(routingInput);
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (!opts.json) console.log(chalk.red(`  ${msg}`));
+    return { ...emptyResult(opts), error: msg };
+  }
 
   if (!opts.json) {
     console.log(chalk.bold(`\n  ${manifest.name}`) + chalk.dim(` → ${manifest.domain}`));
@@ -1109,8 +1202,18 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     );
   }
 
+  // ── Pass 7: the Cloudflare edge of a client on Workers. Missing
+  //    routes are created (no-Worker ones first); foreign ones and ones
+  //    pointing at another Worker are reported, never changed.
+  let edge: EdgeSyncReport | undefined;
+  if (routing.edge) {
+    edge = await syncEdge(routing.edge, { dryRun: !!opts.dryRun, json: !!opts.json });
+    for (const problem of edge.problems) errors.push(`edge: ${problem}`);
+  }
+
   const base = {
     topology: inference.topology,
+    ...(edge ? { edge } : {}),
     deployed,
     created,
     envPushed,
@@ -1537,7 +1640,9 @@ export async function locateSyncApps(args: {
   const locations = new Map<string, { uuid: string; name: string }>();
   let noCreate: string | undefined;
 
-  if (args.topology === "single-origin") {
+  // A client on Workers leaves only the server on Coolify, so the one
+  // image app named after the project cannot stand in for the plan.
+  if (args.topology === "single-origin" && !args.routing.edge) {
     const found = await findApp(
       api,
       args.projectName,

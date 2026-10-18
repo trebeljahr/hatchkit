@@ -39,6 +39,7 @@ export type HelpTopic =
   | "rename-domain"
   | "migrate-domain"
   | "migrate-runtime"
+  | "migrate-client"
   | "rename-project"
   | "set-description"
   | "sync"
@@ -88,6 +89,7 @@ const HELP_TOPIC_BY_COMMAND: Readonly<Record<string, HelpTopic>> = {
   "rename-domain": "rename-domain",
   "migrate-domain": "migrate-domain",
   "migrate-runtime": "migrate-runtime",
+  "migrate-client": "migrate-client",
   "set-description": "set-description",
   "rename-project": "rename-project",
   sync: "sync",

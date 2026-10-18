@@ -37,6 +37,7 @@
   "test-assets-mirror.ts",
   "test-manifest.ts",
   "test-routing.ts",
+  "test-client-host.ts",
   "test-image-runtime.ts",
   "test-traefik-drain.ts",
   "test-split-readiness.ts",

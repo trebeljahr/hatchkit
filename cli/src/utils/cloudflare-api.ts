@@ -122,6 +122,48 @@ export interface CfWorkerCustomDomain {
   environment: string;
 }
 
+/** A zone's Workers route. `script` absent or null means the route
+ *  sends matching requests past Workers to the origin — which is how a
+ *  path such as `<host>/api/*` keeps reaching Traefik while `<host>/*`
+ *  goes to an assets-only Worker. */
+export interface CfWorkerRoute {
+  id: string;
+  pattern: string;
+  script?: string | null;
+}
+
+/** One deployment of a Worker: which versions serve, by percentage. */
+export interface CfWorkerDeployment {
+  id: string;
+  created_on: string;
+  source?: string;
+  versions: Array<{ version_id: string; percentage: number }>;
+  annotations?: Record<string, string>;
+}
+
+/** A rule in a zone's `http_request_dynamic_redirect` phase (Single
+ *  Redirects). Only the fields hatchkit reads or writes. */
+export interface CfRedirectRule {
+  id?: string;
+  ref?: string;
+  description?: string;
+  expression: string;
+  action: "redirect";
+  enabled?: boolean;
+  action_parameters: {
+    from_value: {
+      status_code: 301 | 302 | 307 | 308;
+      target_url: { expression?: string; value?: string };
+      preserve_query_string?: boolean;
+    };
+  };
+}
+
+export interface CfRuleset {
+  id: string;
+  rules?: CfRedirectRule[];
+}
+
 /** Outcome of probing one Cloudflare API-token permission. `ok` means
  *  the probe call succeeded; `detail` explains a failure in terms the
  *  user can act on. */
@@ -1415,6 +1457,119 @@ export class CloudflareApi {
   ): Promise<"deleted" | "not-found"> {
     try {
       await this.request<unknown>("DELETE", `/accounts/${accountId}/workers/domains/${domainId}`);
+      return "deleted";
+    } catch (err) {
+      if ((err as { status?: number }).status === 404) return "not-found";
+      throw err;
+    }
+  }
+
+  // ── Workers routes ───────────────────────────────────────────────────
+
+  /** Every Workers route on the zone. */
+  async listWorkerRoutes(zoneId: string): Promise<CfWorkerRoute[]> {
+    return this.request<CfWorkerRoute[]>("GET", `/zones/${zoneId}/workers/routes`);
+  }
+
+  /** Create a route. Omit `script` for a route that sends matching
+   *  requests to the origin with no Worker (it negates any less specific
+   *  pattern on the same host). */
+  async createWorkerRoute(
+    zoneId: string,
+    pattern: string,
+    script?: string | null,
+  ): Promise<CfWorkerRoute> {
+    const created = await this.request<{ id: string }>("POST", `/zones/${zoneId}/workers/routes`, {
+      pattern,
+      ...(script ? { script } : {}),
+    });
+    return { id: created.id, pattern, script: script ?? null };
+  }
+
+  /** Delete a route. "not-found" when it is already gone, so rollback
+   *  can run twice. */
+  async deleteWorkerRoute(zoneId: string, routeId: string): Promise<"deleted" | "not-found"> {
+    try {
+      await this.request<unknown>("DELETE", `/zones/${zoneId}/workers/routes/${routeId}`);
+      return "deleted";
+    } catch (err) {
+      if ((err as { status?: number }).status === 404) return "not-found";
+      throw err;
+    }
+  }
+
+  /** A Worker's deployments, newest first. Empty for a Worker that has
+   *  never had a version deployed — a route to it would serve nothing. */
+  async listWorkerDeployments(accountId: string, script: string): Promise<CfWorkerDeployment[]> {
+    let data: { deployments?: CfWorkerDeployment[] };
+    try {
+      data = await this.request<{ deployments?: CfWorkerDeployment[] }>(
+        "GET",
+        `/accounts/${accountId}/workers/scripts/${encodeURIComponent(script)}/deployments`,
+      );
+    } catch (err) {
+      // A Worker created empty has no script yet: nothing deployed.
+      if ((err as { status?: number }).status === 404) return [];
+      throw err;
+    }
+    return [...(data?.deployments ?? [])].sort((a, b) => b.created_on.localeCompare(a.created_on));
+  }
+
+  // ── Single Redirects (http_request_dynamic_redirect) ─────────────────
+
+  /** The zone's Single Redirects ruleset, or null when the zone has
+   *  never had one. */
+  async getRedirectRuleset(zoneId: string): Promise<CfRuleset | null> {
+    try {
+      return await this.request<CfRuleset>(
+        "GET",
+        `/zones/${zoneId}/rulesets/phases/http_request_dynamic_redirect/entrypoint`,
+      );
+    } catch (err) {
+      if ((err as { status?: number }).status === 404) return null;
+      throw err;
+    }
+  }
+
+  /** Add `rule` to the zone's Single Redirects, creating the phase's
+   *  ruleset when the zone has none. Returns the ruleset after the write. */
+  async addRedirectRule(zoneId: string, rule: CfRedirectRule): Promise<CfRuleset> {
+    const existing = await this.getRedirectRuleset(zoneId);
+    if (!existing) {
+      return this.request<CfRuleset>(
+        "PUT",
+        `/zones/${zoneId}/rulesets/phases/http_request_dynamic_redirect/entrypoint`,
+        { rules: [rule] },
+      );
+    }
+    return this.request<CfRuleset>("POST", `/zones/${zoneId}/rulesets/${existing.id}/rules`, rule);
+  }
+
+  /** Replace one rule of the zone's Single Redirects in place. */
+  async updateRedirectRule(
+    zoneId: string,
+    rulesetId: string,
+    ruleId: string,
+    rule: CfRedirectRule,
+  ): Promise<CfRuleset> {
+    return this.request<CfRuleset>(
+      "PATCH",
+      `/zones/${zoneId}/rulesets/${rulesetId}/rules/${ruleId}`,
+      rule,
+    );
+  }
+
+  /** Delete one rule of the zone's Single Redirects. */
+  async deleteRedirectRule(
+    zoneId: string,
+    rulesetId: string,
+    ruleId: string,
+  ): Promise<"deleted" | "not-found"> {
+    try {
+      await this.request<unknown>(
+        "DELETE",
+        `/zones/${zoneId}/rulesets/${rulesetId}/rules/${ruleId}`,
+      );
       return "deleted";
     } catch (err) {
       if ((err as { status?: number }).status === 404) return "not-found";

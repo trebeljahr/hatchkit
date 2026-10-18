@@ -170,6 +170,13 @@ export async function runRegenInfra(opts: RegenArgs): Promise<void> {
       console.log(chalk.dim(`  ${label}: not present — skipped`));
       continue;
     }
+    // A client on Cloudflare Workers has no client image: these retrofits
+    // would put the Docker client build back into a workflow that
+    // migrate-client rewrote.
+    if (manifest.clientHost === "cloudflare" && relPath === CLIENT_WORKFLOW_REL_PATH) {
+      console.log(chalk.dim(`  ${label}: client on Cloudflare Workers — skipped`));
+      continue;
+    }
     const before = readFileSync(path, "utf-8");
     projectFilesTouched += renderFileChange(label, path, before, fn(before), dryRun);
   }

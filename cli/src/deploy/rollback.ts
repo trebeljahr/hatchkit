@@ -345,6 +345,18 @@ function recipeFor(step: LedgerStep): string | null {
       return chalk.dim(
         `# manual: detach custom domain ${step.hostname} at https://dash.cloudflare.com/${step.accountId}/workers/overview`,
       );
+    case "cloudflareWorkerRoute":
+      return chalk.dim(
+        `# manual: delete Workers route ${step.pattern} (${step.routeId}) in Cloudflare zone ${step.zoneId}`,
+      );
+    case "cloudflareRedirectHosts":
+      return chalk.dim(
+        `# manual: remove ${step.hosts.join(", ")} from the "hatchkit: HTTP to HTTPS for Worker-served hosts" redirect rule in zone ${step.zoneId}`,
+      );
+    case "cloudflareHostRedirect":
+      return chalk.dim(
+        `# manual: delete the "hatchkit: redirect ${step.host} …" redirect rule in zone ${step.zoneId}`,
+      );
     case "cloudflareWorkerToken":
       return chalk.dim(
         `# manual: revoke account API token hatchkit-${step.worker}-worker (${step.tokenId.slice(0, 4)}…) at https://dash.cloudflare.com/${step.accountId}/api-tokens`,
@@ -628,6 +640,12 @@ function describeStep(step: LedgerStep): string {
       return `tear down GitHub Pages for ${chalk.cyan(step.repo)}`;
     case "cloudflareWorkerDomain":
       return `detach Worker custom domain ${chalk.cyan(step.hostname)}`;
+    case "cloudflareWorkerRoute":
+      return `delete Workers route ${chalk.cyan(step.pattern)}`;
+    case "cloudflareRedirectHosts":
+      return `remove ${chalk.cyan(step.hosts.join(", "))} from hatchkit's HTTPS redirect rule`;
+    case "cloudflareHostRedirect":
+      return `delete the redirect rule for ${chalk.cyan(step.host)}`;
     case "cloudflareWorkerToken":
       return `revoke Worker deploy token ${chalk.cyan(`hatchkit-${step.worker}-worker`)}`;
     case "localDevFragment":
@@ -1015,6 +1033,29 @@ async function undoStep(
         accountId: step.accountId,
       });
       const res = await api.deleteWorkerCustomDomain(step.accountId, step.domainId);
+      return res === "not-found" ? "not-found" : "done";
+    }
+    case "cloudflareWorkerRoute":
+    case "cloudflareHostRedirect":
+    case "cloudflareRedirectHosts": {
+      // Safe unconditionally: both describe only what hatchkit made — a
+      // route it created, hosts it added to its own rule.
+      const { getCloudflareProvisioner } = await import("../config.js");
+      const prov = await getCloudflareProvisioner();
+      if (!prov) return "skipped";
+      const { CloudflareApi } = await import("../utils/cloudflare-api.js");
+      const api = new CloudflareApi({ token: prov.token, accountId: prov.accountId });
+      if (step.kind === "cloudflareWorkerRoute") {
+        const res = await api.deleteWorkerRoute(step.zoneId, step.routeId);
+        return res === "not-found" ? "not-found" : "done";
+      }
+      if (step.kind === "cloudflareHostRedirect") {
+        const { removeHostRedirect } = await import("./client-host.js");
+        const res = await removeHostRedirect(api, step.zoneId, step.host);
+        return res === "not-found" ? "not-found" : "done";
+      }
+      const { removeHttpsRedirectHosts } = await import("./client-host.js");
+      const res = await removeHttpsRedirectHosts(api, step.zoneId, step.hosts);
       return res === "not-found" ? "not-found" : "done";
     }
     case "cloudflareWorkerToken": {

@@ -33,6 +33,7 @@ import { dirname, join } from "node:path";
 import { localDevDomainFromProjectDomain } from "@hatchkit/dev-shared";
 import { type CoolifyRuntime, DEFAULT_NEW_PROJECT_RUNTIME } from "../deploy/image-runtime.js";
 import {
+  type ClientHost,
   type Topology,
   defaultPublicServiceForSurfaces as routingDefaultPublicService,
 } from "../deploy/routing.js";
@@ -289,6 +290,26 @@ export interface ProjectManifest {
    *  neither unique across projects nor stable under a dashboard
    *  rename. */
   coolifyApps?: { app?: string; client?: string; server?: string };
+  /** What serves the client of a fullstack project.
+   *
+   *    · `coolify` — a Coolify app (the `<name>-client` image app).
+   *    · `cloudflare` — an assets-only Cloudflare Worker attached to the
+   *      hostname by a Workers route `<domain>/*`. Routes with no Worker
+   *      keep the {@link originPaths} (and Traefik's ACME challenge path)
+   *      on the Coolify origin, so the API stays where `topology` puts
+   *      it. The Worker's name is wrangler.jsonc's `name`.
+   *
+   *  Independent of `topology`: topology answers "where is the API",
+   *  this answers "what serves the client". Needs `coolifyRuntime:
+   *  "image"`. Absent means `coolify`; never inferred. Written by
+   *  `hatchkit migrate-client` once the cutover is verified. See
+   *  `cloudflareClientPlan` in deploy/routing.ts. */
+  clientHost?: ClientHost;
+  /** Path prefixes on `domain` that must keep reaching the Coolify
+   *  origin when `clientHost` is `cloudflare`. Default `["/api"]` under
+   *  single-origin, none under split. Each becomes a no-Worker route
+   *  `<domain><path>/*`. */
+  originPaths?: string[];
   /** Path from the repo root to the deployable subdir, posix-slashed,
    *  no leading "./", no trailing slash. Absent / undefined means the
    *  deployable lives at the repo root (the historical default).

@@ -68,6 +68,12 @@ const MODEL: ExplainModel = {
       when: "Configure once for a backup host. New create deployments register standard databases on that host; register existing projects and custom file paths explicitly. Status reports missing, failed and stale backups, and `backup sources` (also in status and doctor) names every registered source that no longer matches a running container, with the exact `update-source`/`deregister` fix. A missing source still fails that project's run. `destroy` and `migrate-runtime --cleanup` remove the sources of what they delete. Project package scripts list verified snapshots and select an isolated recovery; production cutover is separate.",
     },
     {
+      name: "hatchkit migrate-client [--dry-run|--repo-only|--rollback|--cleanup]",
+      summary:
+        "Serve a deployed fullstack project's client from Cloudflare Workers static assets; the API stays on Coolify on the same hostname.",
+      when: 'A project on the image runtime whose client builds as a static export. Workers routes send `<domain>/api/*` (and Traefik\'s ACME path) to Coolify and `<domain>/*` to an assets-only Worker; asset requests are free. Writes `clientHost: "cloudflare"` only after the cutover checks pass. The Coolify client app keeps running until `--cleanup`, so `--rollback` is one route deletion.',
+    },
+    {
       name: "hatchkit setup",
       summary: "One-time onboarding — wires up GitHub + Coolify + Hetzner + DNS + optional extras.",
       when: "First time you ever use hatchkit on a machine.",

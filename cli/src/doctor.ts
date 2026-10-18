@@ -1661,6 +1661,8 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   for (const r of publicSvcChecks) results.push(r);
   const routingChecks = await checkProjectRoutingState(process.cwd());
   for (const r of routingChecks) results.push(r);
+  const clientHostChecks = await checkProjectClientHostState(process.cwd());
+  for (const r of clientHostChecks) results.push(r);
   const autoDeployChecks = await checkProjectCoolifyAutoDeployState(process.cwd());
   for (const r of autoDeployChecks) results.push(r);
   const isolationChecks = await checkProjectCredentialIsolationState(process.cwd());
@@ -3065,6 +3067,156 @@ export async function checkProjectPublicServiceState(projectDir: string): Promis
  *
  *  Skipped silently for gh-pages / scaffold-only projects — they don't
  *  route through Coolify at all. */
+/**
+ * A client on Cloudflare Workers, and any Workers static site.
+ *
+ * Local, always: a wrangler config with `main`, `run_worker_first` or
+ * `cache` (each makes free asset requests count against the Workers
+ * Free cap), `routes` on a hatchkit-routed client, and a `_headers` rule
+ * that caches hashed output for a day or more (Cloudflare applies it to
+ * 404s).
+ *
+ * With `clientHost: "cloudflare"` and the provisioner: the Worker has a
+ * deployed version, the zone carries every planned route and nothing
+ * foreign on the client hosts, the hosts are proxied, the HTTPS rule
+ * covers them. Then through the edge: `/api/health` answers and
+ * `/version.json` names the API origin the manifest implies.
+ */
+export async function checkProjectClientHostState(
+  projectDir: string,
+  deps: { fetch?: typeof fetch } = {},
+): Promise<CheckResult[]> {
+  const out: CheckResult[] = [];
+  const { readManifest } = await import("./scaffold/manifest.js");
+  let manifest: ReturnType<typeof readManifest>;
+  try {
+    manifest = readManifest(projectDir);
+  } catch {
+    return out;
+  }
+  if (!manifest) return out;
+  const onWorkers =
+    manifest.clientHost === "cloudflare" || manifest.deploymentMode === "cloudflare";
+  if (!onWorkers) return out;
+  const name = `Project ${manifest.name} (Cloudflare client)`;
+  const { workerConfigFindings } = await import("./deploy/client-host-repo.js");
+  const local = workerConfigFindings(projectDir, {
+    routesOwnedByHatchkit: manifest.clientHost === "cloudflare",
+  });
+  out.push(
+    local.length
+      ? {
+          name: `${name}: config`,
+          status: "fail",
+          detail: local[0],
+          hint: local,
+        }
+      : {
+          name: `${name}: config`,
+          status: "ok",
+          detail: "wrangler.jsonc and _headers are free of billing keys and immutable 404s",
+        },
+  );
+  if (manifest.clientHost !== "cloudflare") return out;
+
+  const { planClientMigration } = await import("./deploy/migrate-client.js");
+  let edgePlan: import("./deploy/routing.js").EdgePlan;
+  let apiUrl: string;
+  try {
+    const plan = planClientMigration(projectDir);
+    edgePlan = plan.edge;
+    apiUrl = plan.apiUrl;
+  } catch (err) {
+    out.push({ name, status: "fail", detail: (err as Error).message });
+    return out;
+  }
+
+  const { getCloudflareProvisioner } = await import("./config.js");
+  const prov = await getCloudflareProvisioner().catch(() => null);
+  if (!prov) {
+    out.push({
+      name: `${name}: routes`,
+      status: "skip",
+      detail: "no Cloudflare provisioner to read the zone",
+    });
+  } else {
+    try {
+      const { CloudflareApi } = await import("./utils/cloudflare-api.js");
+      const { preflightEdge, resolveEdgeContext } = await import("./deploy/client-host.js");
+      const ctx = await resolveEdgeContext(
+        new CloudflareApi({ token: prov.token, accountId: prov.accountId }),
+        prov.accountId,
+        edgePlan,
+      );
+      const pre = await preflightEdge(ctx, edgePlan);
+      const problems = [
+        ...pre.blocking,
+        ...pre.diff.missing.map(
+          (r) => `route ${r.pattern} → ${r.script ?? "no Worker"} is missing`,
+        ),
+        ...(pre.httpsMissing.length
+          ? [`HTTPS redirect does not cover ${pre.httpsMissing.join(", ")}`]
+          : []),
+      ];
+      out.push(
+        problems.length
+          ? {
+              name: `${name}: routes`,
+              status: "fail",
+              detail: problems[0],
+              hint: [
+                ...problems,
+                "Reconcile with `hatchkit sync` (it never deletes foreign routes).",
+              ],
+            }
+          : {
+              name: `${name}: routes`,
+              status: "ok",
+              detail: `${edgePlan.routes.length} routes on ${ctx.zoneName}, Worker ${edgePlan.worker} live (${pre.liveVersions.join(", ")})`,
+            },
+      );
+    } catch (err) {
+      out.push({ name: `${name}: routes`, status: "fail", detail: (err as Error).message });
+    }
+  }
+
+  const doFetch = deps.fetch ?? fetch;
+  const site = `https://${manifest.domain}`;
+  try {
+    const health = await doFetch(`${apiUrl}/api/health?hatchkit_cb=${Date.now()}`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    const version = await doFetch(`${site}/version.json?hatchkit_cb=${Date.now()}`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    const body = version.ok
+      ? ((await version.json().catch(() => null)) as { apiUrl?: string; commit?: string } | null)
+      : null;
+    const problems = [
+      ...(health.status === 200 ? [] : [`${apiUrl}/api/health answered ${health.status}`]),
+      ...(body?.apiUrl === apiUrl
+        ? []
+        : [`${site}/version.json names API ${body?.apiUrl ?? "<none>"}, expected ${apiUrl}`]),
+    ];
+    out.push(
+      problems.length
+        ? { name: `${name}: live`, status: "fail", detail: problems.join("; ") }
+        : {
+            name: `${name}: live`,
+            status: "ok",
+            detail: `client ${body?.commit?.slice(0, 7)} built against ${apiUrl}; API answers`,
+          },
+    );
+  } catch (err) {
+    out.push({
+      name: `${name}: live`,
+      status: "warn",
+      detail: `couldn't reach ${site}: ${(err as Error).message}`,
+    });
+  }
+  return out;
+}
+
 export async function checkProjectRoutingState(projectDir: string): Promise<CheckResult[]> {
   const out: CheckResult[] = [];
   const { existsSync, readFileSync } = await import("node:fs");

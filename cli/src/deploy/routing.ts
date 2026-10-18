@@ -80,6 +80,27 @@
  *   mongo/redis become Coolify-managed databases instead of compose
  *   services. Needs a second DNS record for `api.<domain>` and puts the
  *   API cross-origin (CORS + cookie config carry the weight).
+ *
+ * ---------------------------------------------------------------------
+ * Client on Cloudflare Workers (`clientHost: "cloudflare"`)
+ * ---------------------------------------------------------------------
+ *
+ * Independent of topology: topology says where the API lives, clientHost
+ * says what serves the client. With `cloudflare` the plan has no client
+ * app; the server app is unchanged. The `edge` part lists the Workers
+ * routes on the zone, proven on the hatchkit-test canary (2026-10-12):
+ *
+ *     <domain>/api/*                         → no Worker (origin paths;
+ *                                              single-origin only)
+ *     <domain>/.well-known/acme-challenge/*  → no Worker (while Traefik
+ *                                              holds a certificate there)
+ *     <domain>/*                             → <name>-client
+ *     <alias>/*                              → <name>-client
+ *
+ * A route with no Worker negates any less specific pattern on the same
+ * host, so Cloudflare sends `/api/…` to Traefik and everything else to
+ * the assets-only Worker. No Worker code runs on either path, so neither
+ * counts toward the Workers Free daily request cap.
  */
 
 import type { Surface } from "../prompts.js";
@@ -101,6 +122,29 @@ export const TOPOLOGIES: readonly Topology[] = ["single-origin", "split"] as con
 
 export function isTopology(v: unknown): v is Topology {
   return typeof v === "string" && (TOPOLOGIES as readonly string[]).includes(v);
+}
+
+/** What serves a fullstack project's client. Persisted in the manifest
+ *  as `clientHost`; absent means `coolify`, and it is never inferred. */
+export type ClientHost = "coolify" | "cloudflare";
+
+export const CLIENT_HOSTS: readonly ClientHost[] = ["coolify", "cloudflare"] as const;
+
+export function isClientHost(v: unknown): v is ClientHost {
+  return typeof v === "string" && (CLIENT_HOSTS as readonly string[]).includes(v);
+}
+
+/** Path prefixes on `<domain>` that reach the Coolify origin under
+ *  single-origin when no `originPaths` is set: the API router. */
+export const DEFAULT_ORIGIN_PATHS: readonly string[] = ["/api"];
+
+/** The path Traefik answers HTTP-01 challenges on. */
+export const ACME_CHALLENGE_PATH = "/.well-known/acme-challenge";
+
+/** Worker name a new client gets. An existing project's wrangler.jsonc
+ *  `name` wins (callers pass it as {@link RoutingInput.clientWorker}). */
+export function defaultClientWorkerName(projectName: string): string {
+  return `${projectName}-client`;
 }
 
 /** Compose file the single Coolify app of a `single-origin` project
@@ -193,6 +237,44 @@ export interface RoutingInput {
    *  it has to be the container's real one, not the dev-server port in
    *  `ports`. Defaults to 3000, what the starter's Node images bind. */
   containerPorts?: { app?: number; client?: number; server?: number };
+  /** What serves the client. Default `coolify`. */
+  clientHost?: ClientHost;
+  /** Path prefixes on the primary domain that must keep reaching the
+   *  Coolify origin when the client is on Cloudflare (`/api`). Default
+   *  {@link DEFAULT_ORIGIN_PATHS} under single-origin, none under split. */
+  originPaths?: string[];
+  /** Worker that serves the client. Default `<name>-client`. */
+  clientWorker?: string;
+}
+
+/** One Workers route on the zone. */
+export interface EdgeRoute {
+  /** Route pattern: `<host><path>*`, no scheme (one pattern covers http
+   *  and https). */
+  pattern: string;
+  /** Hostname the pattern is on. */
+  host: string;
+  /** Worker the route sends to, or null for a route that sends matching
+   *  requests past Workers to the origin. */
+  script: string | null;
+  /** `origin` — an API path; `acme` — Traefik's HTTP-01 challenge path;
+   *  `client` — the Worker serving the site. */
+  purpose: "origin" | "acme" | "client";
+}
+
+/** The Cloudflare side of a project whose client is on Workers. */
+export interface EdgePlan {
+  /** Assets-only Worker serving the client. */
+  worker: string;
+  /** Hostnames the Worker serves, primary first. Each needs a proxied
+   *  DNS record and an HTTP→HTTPS redirect (the Worker answers plain
+   *  HTTP otherwise). */
+  hosts: string[];
+  /** Every route, in CREATION order: the no-Worker routes first, the
+   *  Worker routes last. A no-Worker route with no Worker route above it
+   *  changes nothing, so the last call is the whole cutover. Remove in
+   *  the opposite order ({@link edgeRemovalOrder}). */
+  routes: EdgeRoute[];
 }
 
 /** One Coolify application the plan expects to exist, plus the exact
@@ -267,6 +349,8 @@ export interface RoutingPlan {
   /** Extra hostnames beyond the bare domain that need a DNS record for
    *  this plan to resolve. `api.<domain>` in split; empty otherwise. */
   extraDnsHostnames: string[];
+  /** Present only when the client is served by Cloudflare Workers. */
+  edge?: EdgePlan;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +427,7 @@ export function resolveApiService(input: RoutingInput, publicService: string): s
  *  no network — so `--dry-run` never has to reach the API to render a
  *  plan, and the whole thing is unit-testable. */
 export function computeRoutingPlan(input: RoutingInput): RoutingPlan {
+  if (input.clientHost === "cloudflare") return cloudflareClientPlan(input);
   if (input.runtime === "image") return imagePlan(input);
   return input.topology === "split" ? splitPlan(input) : singleOriginPlan(input);
 }
@@ -550,6 +635,110 @@ function imagePlan(input: RoutingInput): RoutingPlan {
     apps: [clientApp, serverApp],
     extraDnsHostnames: split ? [apiHost] : [],
   };
+}
+
+/** `clientHost: "cloudflare"`: the image plan without its client app,
+ *  plus the Workers routes that put the client on Cloudflare.
+ *
+ *  Requires the image runtime: a compose app runs client and server in
+ *  one application, so the client cannot leave it (`hatchkit
+ *  migrate-runtime` goes first). Requires a fullstack project: a static
+ *  site uses `deploymentMode: "cloudflare"` and has no server to keep. */
+function cloudflareClientPlan(input: RoutingInput): RoutingPlan {
+  if (input.runtime !== "image") {
+    throw new Error(
+      'clientHost "cloudflare" needs coolifyRuntime "image" — run `hatchkit migrate-runtime` first.',
+    );
+  }
+  if (input.surfaces === "static" || input.surfaces === "backend") {
+    throw new Error(
+      `clientHost "cloudflare" is for a project with a client and a server; surfaces is "${input.surfaces}". ` +
+        (input.surfaces === "static" ? "A static site uses `hatchkit cloudflare`." : ""),
+    );
+  }
+  const base = imagePlan({ ...input, clientHost: "coolify" });
+  const apps = base.apps.filter((app) => app.role !== "client");
+  return { ...base, apps, edge: computeEdgePlan(input, apps) };
+}
+
+/** Workers routes for {@link cloudflareClientPlan}. Pure. */
+export function computeEdgePlan(input: RoutingInput, coolifyApps: RoutedApp[]): EdgePlan {
+  const worker = input.clientWorker || defaultClientWorkerName(input.name);
+  const apiHost = `api.${input.domain}`;
+  const hosts = [input.domain];
+  for (const h of input.hostnameAliases ?? []) {
+    // Under split the API host belongs to the server app, never the Worker.
+    if (h && !hosts.includes(h) && !(input.topology === "split" && h === apiHost)) hosts.push(h);
+  }
+
+  const originPaths = normaliseOriginPaths(
+    input.originPaths ?? (input.topology === "split" ? [] : [...DEFAULT_ORIGIN_PATHS]),
+  );
+  const routes: EdgeRoute[] = originPaths.map((path) => ({
+    pattern: `${input.domain}${path}/*`,
+    host: input.domain,
+    script: null,
+    purpose: "origin" as const,
+  }));
+
+  // Traefik requests a Let's Encrypt certificate (HTTP-01) for every host
+  // a Coolify app still routes. Under single-origin the server app keeps
+  // `https://<domain>/api`, so <domain> keeps its certificate and the
+  // challenge path must not land on the Worker. Measured on the canary:
+  // Traefik answers that path itself on port 80.
+  const traefikHosts = new Set(
+    coolifyApps.flatMap((app) => app.flatDomains.map(hostOf)).filter(Boolean),
+  );
+  for (const host of hosts) {
+    if (!traefikHosts.has(host)) continue;
+    routes.push({
+      pattern: `${host}${ACME_CHALLENGE_PATH}/*`,
+      host,
+      script: null,
+      purpose: "acme",
+    });
+  }
+
+  for (const host of hosts) {
+    routes.push({ pattern: `${host}/*`, host, script: worker, purpose: "client" });
+  }
+  return { worker, hosts, routes };
+}
+
+/** Routes in REMOVAL order: the Worker routes first (traffic goes back
+ *  to Traefik at once), then the no-Worker routes, which are inert once
+ *  nothing above them sends a host to a Worker. */
+export function edgeRemovalOrder(edge: EdgePlan): EdgeRoute[] {
+  return [
+    ...edge.routes.filter((r) => r.script !== null).reverse(),
+    ...edge.routes.filter((r) => r.script === null).reverse(),
+  ];
+}
+
+/** Validate and normalise `originPaths`: each a path prefix starting with
+ *  `/`, no `*`, no query, no trailing slash, deduped. `/api` becomes the
+ *  route `<domain>/api/*` — not `/api*`, which would also match
+ *  `/apiary`. */
+export function normaliseOriginPaths(paths: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const raw of paths) {
+    const path = String(raw).trim().replace(/\/+$/, "");
+    if (!path.startsWith("/") || path === "" || /[*?#\s]/.test(path) || path.includes("//")) {
+      throw new Error(
+        `originPaths entry ${JSON.stringify(raw)} must be a path prefix like "/api" (no "*", query or trailing slash).`,
+      );
+    }
+    if (!out.includes(path)) out.push(path);
+  }
+  return out;
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
 }
 
 /** The one Docker Image application named after the project itself,

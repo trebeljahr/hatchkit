@@ -69,6 +69,9 @@ const DANGEROUS_ARGV: string[][] = [
   ["server", "add", "--help"],
   ["gh-pages", "--undo", "--help"],
   ["migrate-domain", "--to", "example.com", "--phase", "cutover", "--help"],
+  ["migrate-client", "--help"],
+  ["migrate-client", "--rollback", "--yes", "--help"],
+  ["migrate-client", "--cleanup", "--yes", "--help"],
 ];
 
 for (const argv of DANGEROUS_ARGV) {

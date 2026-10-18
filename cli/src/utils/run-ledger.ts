@@ -234,6 +234,31 @@ export type LedgerStep =
       tokenId: string;
       worker: string;
     }
+  /** A zone Workers route `hatchkit migrate-client` created for a client
+   *  on Cloudflare (deploy/client-host.ts). `script` null is a route with
+   *  no Worker (an origin path or Traefik's ACME path). Undo deletes it
+   *  by id, 404-tolerant; ledgers undo in reverse, so `<host>/*` (made
+   *  last) goes first and traffic returns to Traefik before the
+   *  no-Worker routes are touched. */
+  | {
+      kind: "cloudflareWorkerRoute";
+      zoneId: string;
+      routeId: string;
+      pattern: string;
+      script: string | null;
+    }
+  /** Hosts hatchkit ADDED to its one HTTP→HTTPS Single Redirect rule on
+   *  the zone. Undo removes exactly these hosts (and the rule once it
+   *  lists none); other projects' hosts stay. */
+  | {
+      kind: "cloudflareRedirectHosts";
+      zoneId: string;
+      hosts: string[];
+    }
+  /** hatchkit's redirect rule for one host that only redirects to a
+   *  project's new domain (deploy/client-host.ts). Undo deletes that
+   *  rule by its `ref`. */
+  | { kind: "cloudflareHostRedirect"; zoneId: string; host: string }
   /** Tailscale-served local-dev Caddy fragment dropped at
    *  `~/.config/dev/projects/<slug>.caddy`. Recorded only when the
    *  project opted into the local-dev integration. Destroy removes the

@@ -65,6 +65,12 @@ export async function runRenameDomain(opts: RenameDomainOptions): Promise<void> 
   // resolve identically to the historical behaviour.
   const projectDir = findManifestDirUpward(opts.projectDir) ?? opts.projectDir;
   const manifest = readManifest(projectDir);
+  if (manifest?.clientHost === "cloudflare") {
+    throw new Error(
+      `${manifest.name}'s client is served by Cloudflare Workers routes on ${manifest.domain}. ` +
+        "rename-domain does not move those routes yet: run `hatchkit migrate-client --rollback`, rename, then migrate-client again.",
+    );
+  }
   if (!manifest) {
     throw new Error(
       `No .hatchkit.json found in ${opts.projectDir} (or any parent). Run rename-domain from inside a hatchkit-managed project (or pass --dir <repo-root>).`,

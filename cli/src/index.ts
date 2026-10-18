@@ -243,6 +243,11 @@ async function main(): Promise<void> {
       await runMigrateRuntimeCli(args.slice(1));
       break;
     }
+    case "migrate-client": {
+      const { runMigrateClientCli } = await import("./deploy/migrate-client.js");
+      await runMigrateClientCli(args.slice(1));
+      break;
+    }
     case "set-description": {
       const { runSetDescriptionCli } = await import("./deploy/set-description.js");
       await runSetDescriptionCli(args.slice(1));
@@ -5189,6 +5194,41 @@ function printHelp(topic?: HelpTopic): void {
 `);
     return;
   }
+  if (topic === "migrate-client") {
+    console.log(`
+  ${chalk.bold("hatchkit migrate-client")} — serve the client from Cloudflare Workers, keep the API on Coolify
+
+  ${chalk.bold("Usage:")}
+    hatchkit migrate-client --dry-run      ${chalk.dim("# plan, client scan, live probes — writes nothing")}
+    hatchkit migrate-client --repo-only    ${chalk.dim("# write the repo files and stop (no provider touched)")}
+    hatchkit migrate-client                ${chalk.dim("# the move (asks first)")}
+    hatchkit migrate-client --rollback     ${chalk.dim("# delete the routes: Coolify serves the client again")}
+    hatchkit migrate-client --cleanup      ${chalk.dim("# after the soak: delete the Coolify client app")}
+
+  Run in the project directory (or ${chalk.cyan("--dir")}). Needs ${chalk.dim('coolifyRuntime: "image"')} and a
+  client that builds as a static export.
+
+  ${chalk.bold("What it does:")}
+    1. Writes wrangler.jsonc (assets only), _headers, _redirects (from next.config
+       redirects()), scripts/carry-static.mjs and the workflow rewrite. Not committed.
+    2. Creates the Worker, its own deploy token and the repo's CLOUDFLARE_* secrets.
+    3. Builds HEAD as a static export locally and uploads it as the first version.
+    4. Adds the hosts to hatchkit's HTTP→HTTPS redirect rule on the zone.
+    5. Creates the no-Worker routes (<domain>/api/*, the ACME path), then
+       <domain>/* → the Worker. Checks page, /version.json, /api/health, the
+       sign-in origin probe, /api/ws, a 404 and http→https against a baseline
+       taken before; any failure deletes the Worker route again.
+    6. Writes clientHost "cloudflare" into .hatchkit.json.
+  The Coolify client app is not touched: it keeps running unrouted for --rollback.
+
+  ${chalk.bold("Options:")}
+    --worker <name>        Worker name (default: wrangler.jsonc name, else <name>-client)
+    --origin-path <path>   Path that stays on Coolify (repeatable; default /api under
+                           single-origin, none under split)
+    --yes                  Don't ask
+`);
+    return;
+  }
   if (topic === "migrate-runtime") {
     console.log(`
   ${chalk.bold("hatchkit migrate-runtime")} — stop deploys from taking the site down
@@ -5698,6 +5738,7 @@ function printHelp(topic?: HelpTopic): void {
     rename-domain   Move a scaffolded project to a new domain (rewrites tfvars/env/manifest)
     migrate-domain  Move a LIVE project to a new domain (files + SES/R2/DNS/Coolify/Stripe)
     migrate-runtime Move a LIVE Coolify compose app to Docker Image apps (deploys stop taking the site down)
+    migrate-client  Serve a LIVE project's client from Cloudflare Workers; the API stays on Coolify
     rename-project  Change a scaffolded project's slug (rewrites manifest/pkg.json/tfvars/env/ledger)
     set-description Update a project's description across manifest, package.json, Coolify, GitHub
     sync            Push the manifest's domain/ports onto the matching Coolify app(s)
