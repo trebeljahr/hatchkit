@@ -145,10 +145,20 @@ export function scanNextConfig(text: string, file: string, scan: ClientScan): vo
       `${file}: no \`output: "export"\` branch. Add one behind NEXT_FILE_EXPORT=1 (see the starter's next.config.ts).`,
     );
   }
-  if (/assetPrefix\s*:\s*["']\.\/?["']/.test(text)) {
-    scan.blocking.push(
-      `${file}: a relative assetPrefix ("./") makes every nested route 404 its chunks on a real origin. Drop it for the web export.`,
-    );
+  // A relative prefix gated on a native-build flag (Electron/Capacitor
+  // shells load from file://) never reaches the web export, so it only
+  // warns. The text cannot prove the gate holds; checkExportDir can, and
+  // the upload and the CI workflow both refuse HTML that has "./_next.
+  for (const m of text.matchAll(/assetPrefix\s*:\s*["']\.\/?["']/g)) {
+    if (NATIVE_FLAG.test(assetPrefixContext(text, m.index))) {
+      scan.warnings.push(
+        `${file}: a relative assetPrefix ("./") behind a native-build flag; the web export must not set it (the upload checks the exported HTML).`,
+      );
+    } else {
+      scan.blocking.push(
+        `${file}: a relative assetPrefix ("./") makes every nested route 404 its chunks on a real origin. Drop it for the web export.`,
+      );
+    }
   }
   const trailingSlash = /trailingSlash:\s*true/.test(text);
   if (!trailingSlash) {
@@ -181,6 +191,26 @@ export function scanNextConfig(text: string, file: string, scan: ClientScan): vo
       );
     }
   }
+}
+
+const NATIVE_FLAG = /native|capacitor|electron/i;
+
+/** The line holding an assetPrefix match, from the `...(` of a
+ *  conditional spread that is still open there (it may start on an
+ *  earlier line), with `//` comments dropped. */
+function assetPrefixContext(text: string, index: number): string {
+  let start = text.lastIndexOf("\n", index) + 1;
+  const spread = text.lastIndexOf("...(", index);
+  if (spread !== -1) {
+    let depth = 0;
+    for (let i = spread + 3; i < index; i++) {
+      if (text[i] === "(") depth++;
+      else if (text[i] === ")") depth--;
+    }
+    if (depth > 0) start = Math.min(start, spread);
+  }
+  const end = text.indexOf("\n", index);
+  return text.slice(start, end === -1 ? text.length : end).replace(/\/\/.*$/gm, "");
 }
 
 /** The text between the braces of `async <name>() { … }` (or

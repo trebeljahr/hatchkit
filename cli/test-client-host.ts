@@ -762,6 +762,60 @@ await test("scan: what a static export cannot serve is named by file", () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+await test("scan: a relative assetPrefix blocks unless a native-build flag gates it", () => {
+  const scanConfig = (config: string) => {
+    const dir = project({ "packages/client/next.config.ts": config });
+    const scan = scanClientProject(dir);
+    rmSync(dir, { recursive: true, force: true });
+    return {
+      blocked: scan.blocking.some((b) => /relative assetPrefix/.test(b)),
+      warned: scan.warnings.some((w) => /relative assetPrefix/.test(w)),
+    };
+  };
+  assert.deepEqual(
+    scanConfig(`export default { output: "export", assetPrefix: "./", trailingSlash: true };`),
+    { blocked: true, warned: false },
+  );
+  // streaks' original config: the prefix only reaches the Electron/Capacitor build.
+  assert.deepEqual(
+    scanConfig(`const isNativeBuild = process.env.NATIVE_BUILD === "1";
+const isExport = process.env.NEXT_FILE_EXPORT === "1";
+export default {
+  ...(isExport || isNativeBuild ? { output: "export" } : { output: "standalone" }),
+  ...(isNativeBuild ? { assetPrefix: "./" } : {}),
+  trailingSlash: true,
+};`),
+    { blocked: false, warned: true },
+  );
+  assert.deepEqual(
+    scanConfig(`export default {
+  output: "export",
+  ...(process.env.CAPACITOR_BUILD === "1"
+    ? { assetPrefix: "./" }
+    : {}),
+  trailingSlash: true,
+};`),
+    { blocked: false, warned: true },
+  );
+  assert.equal(
+    scanConfig(`const isNativeBuild = process.env.NATIVE_BUILD === "1";
+export default { output: "export", assetPrefix: isNativeBuild ? "./" : undefined, trailingSlash: true };`)
+      .blocked,
+    false,
+  );
+  // A native flag elsewhere in the file does not clear an unconditional prefix.
+  assert.deepEqual(
+    scanConfig(`const isNativeBuild = process.env.NATIVE_BUILD === "1";
+export default {
+  ...(isNativeBuild ? { images: { unoptimized: true } } : {}),
+  output: "export",
+  assetPrefix: "./", // native shells need this
+  trailingSlash: true,
+};`),
+    { blocked: true, warned: false },
+  );
+});
+
 await test("scan: the starter's dev-only /api rewrite is fine", () => {
   const dir = project({
     "packages/client/next.config.ts": `export default { output: "export", trailingSlash: true,
