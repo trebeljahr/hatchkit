@@ -45,7 +45,6 @@
   "test-runtime-carry-volume.ts",
   "test-doctor-rolling.ts",
   "test-shutdown-drain.ts",
-  "test-site-drain.ts",
   "test-deployed-ref.ts",
   "test-deploy-verification.ts",
   "test-static-nginx.ts",

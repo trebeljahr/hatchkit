@@ -21,8 +21,8 @@
 #
 # Rollback: dispatch `deploy` with an earlier version_id and its target_sha
 # (`wrangler versions list` in docs/ shows each version's commit as its tag).
-# To hand the hostname back to the Coolify nginx app, delete the
-# hatchkit.trebeljahr.com/* route; Traefik answers again within seconds.
+# There is no other origin: the Coolify nginx app was retired on 2026-10-18,
+# so never delete the hatchkit.trebeljahr.com/* route.
 name: Build & Release
 
 on:
@@ -34,6 +34,7 @@ on:
       - "scripts/carry-static.mjs"
       - "scripts/docs-worker-files.mjs"
       - "scripts/verify-release.mjs"
+      - "scripts/*.test.mjs"
       - ".github/workflows/deploy.yml"
   workflow_dispatch:
     inputs:
@@ -75,7 +76,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
-      - run: node --test scripts/docs-worker-files.test.mjs
+      - run: node --test scripts/docs-worker-files.test.mjs scripts/release.test.mjs
       - name: Export the docs
         working-directory: docs
         env:

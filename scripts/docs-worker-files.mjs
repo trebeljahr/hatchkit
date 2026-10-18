@@ -9,7 +9,7 @@
  * when the upload would break a Workers Free limit or still holds a file
  * only nginx could serve safely.
  *
- * What each file does that docs/nginx.conf did before:
+ * What each file does that the retired nginx image's config did before:
  *
  *   x-nextjs-deployment-id   Next compares this response header with its own
  *     deployment ID on every RSC fetch, and falls back to the Flight body's

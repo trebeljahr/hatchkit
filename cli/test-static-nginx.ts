@@ -5,7 +5,7 @@
  * The stock nginx:alpine config maps a URL straight onto a file. A Vite
  * SPA then 404s on a reload of any client-side route, and a build that
  * writes `about.html` 404s on `/about`. hatchkit's own docs image hit the
- * same gap on 2026-09-28 (see docs/nginx.conf).
+ * same gap on 2026-09-28 (that image was retired on 2026-10-18).
  *
  * Covers:
  *   · The Dockerfile copies the config over the stock default.conf.

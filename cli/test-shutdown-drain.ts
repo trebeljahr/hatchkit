@@ -404,7 +404,6 @@ await check("every image waits the same grace before failing Traefik's probe", (
   );
   const cap = `[ "$grace" -gt ${TRAEFIK_PROBE_GRACE_SECONDS} ] && grace=${TRAEFIK_PROBE_GRACE_SECONDS}`;
   assert.ok(read("cli/src/templates/build-pipeline/Dockerfile.client.hbs").includes(cap), "nginx");
-  assert.ok(read("docs/drain-entrypoint.sh").includes(cap), "hatchkit's site");
   const app = read("starter/packages/server/src/app.ts");
   assert.match(app, /if \(!isTraefikProbe\(req\.headers\)\) return next\(\);/);
   assert.ok(
