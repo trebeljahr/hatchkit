@@ -21,7 +21,7 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -1162,6 +1162,25 @@ await test("dns publish: refuses a project Coolify does not run, before any netw
     /no Coolify server/,
   );
   rmSync(dir, { recursive: true, force: true });
+});
+
+await test("regen-infra: writes no Coolify infra for a project Coolify does not run", async () => {
+  const { runRegenInfra } = await import("./src/deploy/regen-infra.js");
+  const dir = project({
+    ".hatchkit.json": JSON.stringify({
+      version: 5,
+      name: "labs",
+      domain: "labs.example.com",
+      surfaces: "static",
+      deploymentMode: "cloudflare",
+      features: [],
+      mlServices: [],
+    }),
+  });
+  const monorepo = mkdtempSync(join(tmpdir(), "client-host-mono-"));
+  await runRegenInfra({ projectDir: dir, monorepoRoot: monorepo, dryRun: false } as never);
+  assert.ok(!existsSync(join(monorepo, "infra")), "no infra/ written");
+  for (const d of [dir, monorepo]) rmSync(d, { recursive: true, force: true });
 });
 
 await test("sync: a client on Workers never adopts the project-named image app", async () => {

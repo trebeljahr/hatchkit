@@ -79,6 +79,17 @@ export async function runRegenInfra(opts: RegenArgs): Promise<void> {
       `No .hatchkit.json in ${opts.projectDir} (or any parent). Run from inside a scaffolded project, or pass --dir <project-dir>.`,
     );
   }
+  // Every file below is a Coolify deployment's (tfvars, the Coolify env,
+  // the image workflow). A site Coolify does not run would gain stray
+  // infra files for a server it does not have.
+  if (manifest.deploymentMode && manifest.deploymentMode !== "coolify") {
+    console.log(
+      chalk.dim(
+        `  deploymentMode is "${manifest.deploymentMode}": no Coolify infra to regenerate.`,
+      ),
+    );
+    return;
+  }
 
   // Locate the existing tfvars file. We try the same three stack dirs
   // `resolveStackDir` knows about and pick the first hit — matches what
