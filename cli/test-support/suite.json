@@ -122,5 +122,6 @@
   "test-mcp.ts",
   "test-security-baseline.ts",
   "test-backups.ts",
-  "test-backup-recovery.ts"
+  "test-backup-recovery.ts",
+  "test-backup-host-exec.ts"
 ]

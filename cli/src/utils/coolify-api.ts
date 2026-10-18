@@ -34,6 +34,9 @@ export interface CoolifyServer {
 export interface CoolifyApiOptions {
   url: string;
   token: string;
+  /** Fail a request that gets no full answer within this many ms. Unset,
+   *  Node's fetch waits up to 300 s for headers and again for the body. */
+  timeoutMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,14 +204,32 @@ export function describeCoolifyPatchLimit(field: string): string | undefined {
 export class CoolifyApi {
   private url: string;
   private token: string;
+  private timeoutMs?: number;
 
   constructor(options: CoolifyApiOptions) {
     this.url = options.url.replace(/\/$/, "");
     this.token = options.token;
+    this.timeoutMs = options.timeoutMs;
+  }
+
+  /** fetch under `/api/v1`, bounded by `timeoutMs` when it is set. */
+  private async send(path: string, init: RequestInit): Promise<Response> {
+    if (!this.timeoutMs) return fetch(`${this.url}/api/v1${path}`, init);
+    try {
+      return await fetch(`${this.url}/api/v1${path}`, {
+        ...init,
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (err) {
+      if ((err as Error).name !== "TimeoutError") throw err;
+      throw new Error(
+        `Coolify API ${init.method ?? "GET"} ${path}: no answer within ${this.timeoutMs / 1000} s`,
+      );
+    }
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const res = await fetch(`${this.url}/api/v1${path}`, {
+    const res = await this.send(path, {
       method,
       headers: {
         Authorization: `Bearer ${this.token}`,
@@ -244,7 +265,7 @@ export class CoolifyApi {
    *  plain-text version string on modern Coolify, but older builds
    *  wrap it as `{ version: "..." }` — accept either. */
   async getVersion(): Promise<string> {
-    const res = await fetch(`${this.url}/api/v1/version`, {
+    const res = await this.send("/version", {
       headers: {
         Authorization: `Bearer ${this.token}`,
         Accept: "application/json, text/plain;q=0.9",
@@ -557,7 +578,7 @@ export class CoolifyApi {
   /** Raw DELETE that handles both 404 (already gone) and empty bodies
    *  (Coolify returns 200 with no body for some delete endpoints). */
   private async delete(path: string): Promise<"deleted" | "not-found"> {
-    const res = await fetch(`${this.url}/api/v1${path}`, {
+    const res = await this.send(path, {
       method: "DELETE",
       headers: {
         Authorization: `Bearer ${this.token}`,
@@ -1293,7 +1314,7 @@ export class CoolifyApi {
     storage: { name: string; mountPath: string },
   ): Promise<"created" | "unsupported"> {
     const path = `/applications/${uuid}/storages`;
-    const res = await fetch(`${this.url}/api/v1${path}`, {
+    const res = await this.send(path, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${this.token}`,

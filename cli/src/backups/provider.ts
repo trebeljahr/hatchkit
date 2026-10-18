@@ -91,7 +91,52 @@ export async function backupCredentials(): Promise<BackupCredentials> {
   return parsed;
 }
 
-/** Always use Tailscale's authenticated SSH transport. No public SSH fallback. */
+/** Process groups of host commands still running (see backupHostExec). */
+const liveGroups = new Set<number>();
+const PARENT_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
+function killGroup(pgid: number, signal: NodeJS.Signals) {
+  try {
+    process.kill(-pgid, signal);
+  } catch {
+    // ESRCH: every process of the group has exited.
+  }
+}
+
+function killLiveGroups() {
+  for (const pgid of liveGroups) killGroup(pgid, "SIGKILL");
+  liveGroups.clear();
+}
+
+function watchParent(on: boolean) {
+  for (const signal of PARENT_SIGNALS) {
+    if (on) process.on(signal, onParentSignal);
+    else process.removeListener(signal, onParentSignal);
+  }
+  if (on) process.on("exit", killLiveGroups);
+  else process.removeListener("exit", killLiveGroups);
+}
+
+/** A command in its own process group no longer gets the terminal's
+ *  Ctrl+C. Take it down with us, then die of the signal as Node would. */
+function onParentSignal(signal: NodeJS.Signals) {
+  killLiveGroups();
+  watchParent(false);
+  if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+}
+
+/**
+ * Always use Tailscale's authenticated SSH transport. No public SSH fallback.
+ *
+ * Settles within `timeoutMs` plus a few seconds, whatever the child does.
+ * `tailscale` on macOS is a shell wrapper that runs the app binary, which
+ * execs ssh, so ssh is a grandchild. Signalling the child stopped only the
+ * wrapper, the orphaned ssh kept the stdio pipes open, "close" never came,
+ * and `migrate-client --cleanup` hung for good (broadcastdock, 2026-10-19).
+ * So the child leads its own process group, the timeout stops the whole
+ * group, and the call settles on "exit" when something else keeps the
+ * pipes open.
+ */
 export function backupHostExec(
   command: string,
   input?: string,
@@ -101,10 +146,62 @@ export function backupHostExec(
   return new Promise((resolve, reject) => {
     const child = spawn("tailscale", ["ssh", provider.host.target, command], {
       stdio: ["pipe", "pipe", "pipe"],
+      detached: true,
     });
+    const pgid = child.pid;
+    if (pgid) {
+      if (liveGroups.size === 0) watchParent(true);
+      liveGroups.add(pgid);
+    }
     let stdout = "";
     let stderr = "";
-    const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
+    let timedOut = false;
+    let settled = false;
+    let drain: NodeJS.Timeout | undefined;
+    const failure = (code: number | null) => {
+      const auth = stderr.match(/https:\/\/login\.tailscale\.com\/a\/[a-zA-Z0-9]+/)?.[0];
+      // The host scripts print only sanitized BackupError text as
+      // {"ok": false, "error": …}; anything else stays generic.
+      const hostError = (() => {
+        try {
+          const parsed = JSON.parse(stdout.trim().split("\n").pop() ?? "");
+          return parsed?.ok === false && typeof parsed.error === "string" ? parsed.error : null;
+        } catch {
+          return null;
+        }
+      })();
+      return new Error(
+        auth
+          ? `Complete the Tailscale SSH check: ${auth}`
+          : hostError
+            ? `Backup host: ${hostError}`
+            : timedOut
+              ? `Backup host command timed out after ${timeoutMs / 1000} s and was stopped. Check \`tailscale ssh ${provider.host.target}\` and the host journal.`
+              : `Backup host command failed (exit ${code ?? "signal"}). Check Tailscale and the host journal.`,
+      );
+    };
+    /** `stop`: something may still run in the group, and it belongs to
+     *  this command. A clean "close" means every pipe holder is gone. */
+    const finish = (code: number | null, stop: boolean, error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(drain);
+      if (pgid) {
+        if (stop) killGroup(pgid, "SIGKILL");
+        if (liveGroups.delete(pgid) && liveGroups.size === 0) watchParent(false);
+      }
+      for (const stream of [child.stdin, child.stdout, child.stderr]) stream.destroy();
+      if (error) reject(error);
+      else if (code === 0 && !timedOut) resolve(stdout);
+      else reject(failure(code));
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      if (pgid) killGroup(pgid, "SIGTERM");
+      // What ignores SIGTERM gets SIGKILL from finish().
+      drain = setTimeout(() => finish(null, true), 2_000);
+    }, timeoutMs);
     child.stdout.on("data", (data) => {
       stdout += data.toString();
     });
@@ -112,36 +209,14 @@ export function backupHostExec(
       stderr += data.toString();
     });
     child.stdin.on("error", () => {});
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
+    child.on("error", (error) => finish(null, true, error));
+    // "close" waits for every process holding the pipes. After "exit",
+    // read what is already buffered, then stop waiting for the rest.
+    child.on("exit", (code) => {
+      clearTimeout(drain);
+      drain = setTimeout(() => finish(code, true), 1_000);
     });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code === 0) resolve(stdout);
-      else {
-        const auth = stderr.match(/https:\/\/login\.tailscale\.com\/a\/[a-zA-Z0-9]+/)?.[0];
-        // The host scripts print only sanitized BackupError text as
-        // {"ok": false, "error": …}; anything else stays generic.
-        const hostError = (() => {
-          try {
-            const parsed = JSON.parse(stdout.trim().split("\n").pop() ?? "");
-            return parsed?.ok === false && typeof parsed.error === "string" ? parsed.error : null;
-          } catch {
-            return null;
-          }
-        })();
-        reject(
-          new Error(
-            auth
-              ? `Complete the Tailscale SSH check: ${auth}`
-              : hostError
-                ? `Backup host: ${hostError}`
-                : `Backup host command failed (exit ${code ?? "timeout"}). Check Tailscale and the host journal.`,
-          ),
-        );
-      }
-    });
+    child.on("close", (code) => finish(code, false));
     child.stdin.end(input);
   });
 }

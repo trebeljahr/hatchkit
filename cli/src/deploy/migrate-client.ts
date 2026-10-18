@@ -1013,17 +1013,41 @@ async function gatherCleanupFacts(args: {
       );
       facts.app = { uuid: args.appUuid, name: app.name, fqdn: app.fqdn, buildPack: app.buildPack };
     } catch (err) {
-      if (
-        (err as { status?: number }).status === 404 ||
-        /404|not found/i.test((err as Error).message)
-      ) {
-        facts.app = null;
-      } else throw err;
+      if (isCoolifyNotFound(err)) facts.app = null;
+      else throw err;
     }
   }
   const pkg = await exec("gh", ["api", args.packagePath], { silent: true });
   facts.packageExists = pkg.exitCode === 0;
   return facts;
+}
+
+function isCoolifyNotFound(err: unknown): boolean {
+  return (
+    (err as { status?: number }).status === 404 || /404|not found/i.test((err as Error).message)
+  );
+}
+
+/** Poll until Coolify answers 404 for the app. Coolify deletes
+ *  asynchronously: the app still answers for a while after the DELETE is
+ *  accepted (mood-magic, 2026-10-18). Only a 404 counts: a timeout or a
+ *  500 does not show that the app is gone. */
+export async function waitForAppGone(
+  getApp: () => Promise<unknown>,
+  opts: { attempts: number; intervalMs: number },
+): Promise<{ gone: boolean; lastError?: string }> {
+  let lastError: string | undefined;
+  for (let i = 0; i < opts.attempts; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, opts.intervalMs));
+    try {
+      await getApp();
+      lastError = undefined;
+    } catch (err) {
+      if (isCoolifyNotFound(err)) return { gone: true };
+      lastError = (err as Error).message;
+    }
+  }
+  return { gone: false, lastError };
 }
 
 async function cleanupClient(opts: MigrateClientOptions): Promise<boolean> {
@@ -1106,31 +1130,38 @@ async function cleanupClient(opts: MigrateClientOptions): Promise<boolean> {
   if (cleanup.deleteApp) {
     const cfg = await getCoolifyConfig();
     if (!cfg) throw new Error("Coolify is not configured.");
-    const coolify = new CoolifyApi({ url: cfg.url, token: cfg.token });
-    await coolify.deleteApplicationKeepingVolumes(cleanup.deleteApp.uuid);
+    const coolify = new CoolifyApi({ url: cfg.url, token: cfg.token, timeoutMs: 30_000 });
+    const { name, uuid } = cleanup.deleteApp;
+    console.log(chalk.dim(`    Deleting Coolify app ${name}…`));
+    const deleted = await coolify.deleteApplicationKeepingVolumes(uuid);
+    console.log(
+      chalk.dim(
+        `    ${deleted === "deleted" ? "Coolify accepted the delete" : "Coolify no longer has the app"}.`,
+      ),
+    );
+    console.log(chalk.dim("    Checking the backup sources that read it…"));
     const { reconcileBackupsAfterRemoval } = await import("../backups/sources.js");
     const backups = await reconcileBackupsAfterRemoval({
-      uuids: [cleanup.deleteApp.uuid],
+      uuids: [uuid],
       dryRun: false,
       settleMs: 30_000,
     });
-    for (const line of backups.lines) console.log(chalk.dim(`    ${line}`));
-    // Coolify deletes asynchronously: the app still answers for a while
-    // after the DELETE is accepted (mood-magic, 2026-10-18).
-    let gone = false;
-    for (let i = 0; i < 24 && !gone; i++) {
-      gone = await coolify.getApplication(cleanup.deleteApp.uuid).then(
-        () => false,
-        () => true,
-      );
-      if (!gone) await new Promise((r) => setTimeout(r, 5_000));
-    }
+    for (const line of backups.lines)
+      console.log(backups.failed ? chalk.yellow(`    ${line}`) : chalk.dim(`    ${line}`));
+    if (backups.lines.length === 0) console.log(chalk.dim("    No backup source to change."));
+    console.log(chalk.dim("    Waiting for Coolify to remove the app (24 checks, 5 s apart)…"));
+    const wait = await waitForAppGone(() => coolify.getApplication(uuid), {
+      attempts: 24,
+      intervalMs: 5_000,
+    });
     console.log(
-      gone
-        ? chalk.green(`  ✓ deleted ${cleanup.deleteApp.name}`)
-        : chalk.red(`  ✗ ${cleanup.deleteApp.name} still exists`),
+      wait.gone
+        ? chalk.green(`  ✓ deleted ${name}`)
+        : chalk.red(
+            `  ✗ ${name} still exists${wait.lastError ? ` (last check: ${wait.lastError})` : ""}`,
+          ),
     );
-    ok &&= gone;
+    ok &&= wait.gone;
   }
   if (cleanup.deletePackage) {
     const del = await exec("gh", ["api", "-X", "DELETE", packagePath], { silent: true });
