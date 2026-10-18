@@ -2,22 +2,29 @@
  * Cloudflare Email Routing — access preflight and read-only state probe.
  *
  * The DNS token most hatchkit installs carry is scoped to Zone:DNS:Edit +
- * Zone:Zone:Read. Email Routing lives behind two further permission
+ * Zone:Zone:Read. Email Routing lives behind three further permission
  * groups, and a token without them does not get a 403 with a useful
  * message — Cloudflare answers `10000: Authentication error` on the very
  * first GET. Surfacing that raw string sends people looking for an
- * expired token when the token is fine and just lacks two scopes.
+ * expired token when the token is fine and just lacks scopes.
  *
  * So everything that touches Email Routing (`email setup`, `email
  * status`, migrate-domain's email-routing step, `doctor`) goes through
  * the probe here first, and a missing scope becomes an
- * {@link EmailRoutingScopeError} carrying the exact permissions to add.
+ * {@link EmailRoutingScopeError} naming the call that was refused and
+ * the one permission group that call needs.
+ *
+ * Which group guards which call, measured 2026-10-19 with a token that
+ * held Email Routing Rules + Email Routing Addresses + DNS on every zone:
+ * rules and addresses answered 200, but the zone's routing settings
+ * (`GET /zones/{id}/email/routing`) and its DNS view (`…/routing/dns`)
+ * answered `10000`. Those two are Zone Settings, not Email Routing.
  *
  * Cloudflare offers no way for a token to list its own permissions
  * without a third scope (API Tokens:Read), so the probe is behavioural:
  * a GET against each permission group's cheapest endpoint. That proves
- * Read, not Edit — the hint names the Edit groups, because Edit is what
- * setup needs and the dashboard's Edit implies Read.
+ * Read, not Edit. The full list names the Edit groups, because Edit is
+ * what setup needs and the dashboard's Edit implies Read.
  */
 
 import type {
@@ -26,12 +33,34 @@ import type {
   CloudflareZone,
 } from "../utils/cloudflare-api.js";
 
-/** The permission groups Email Routing needs on the DNS token, in the
- *  dashboard's own wording so they can be found in the token editor. */
+/** The permission groups `hatchkit email setup` needs on the DNS token,
+ *  in the dashboard's own wording so they can be found in the token
+ *  editor. Zone Settings carries the zone's routing settings, the enable
+ *  call and Cloudflare's routing DNS view. */
 export const EMAIL_ROUTING_TOKEN_PERMISSIONS = [
+  "Zone → Zone Settings → Edit",
   "Zone → Email Routing Rules → Edit",
   "Account → Email Routing Addresses → Edit",
 ] as const;
+
+/** The reads the probe makes, each with the call it is and the one
+ *  permission group that guards it. */
+export const EMAIL_ROUTING_PROBE_CALLS = {
+  settings: {
+    call: "GET /zones/{zone}/email/routing",
+    what: "read the zone's Email Routing settings",
+    permission: "Zone → Zone Settings → Read",
+    edit: "Edit instead of Read only if `hatchkit email setup` should enable routing on the zone",
+  },
+  destinations: {
+    call: "GET /accounts/{account}/email/routing/addresses",
+    what: "read the account's forwarding destinations",
+    permission: "Account → Email Routing Addresses → Edit",
+    edit: "Edit, because `hatchkit email setup` adds and verifies destinations",
+  },
+} as const;
+
+export type EmailRoutingProbeCall = keyof typeof EMAIL_ROUTING_PROBE_CALLS;
 
 /** Cloudflare's "this token may not do that" responses. `10000` is what
  *  a scope-less token gets on the Email Routing endpoints; `9109` is the
@@ -42,13 +71,28 @@ export function isCloudflareAuthError(message: string): boolean {
   );
 }
 
-/** Fix-it lines for a token without the Email Routing scopes. */
-export function emailRoutingScopeHint(zoneName?: string): string[] {
-  return [
-    `The Cloudflare DNS token cannot read Email Routing${zoneName ? ` on ${zoneName}` : ""} — it is missing permissions, not expired.`,
-    `Edit the token at https://dash.cloudflare.com/profile/api-tokens and add: ${EMAIL_ROUTING_TOKEN_PERMISSIONS.join(" + ")}`,
+/** Fix-it lines for a token without the Email Routing scopes. With the
+ *  refused call, name that call and only the group it needs; without one,
+ *  name every group setup needs. */
+export function emailRoutingScopeHint(zoneName?: string, call?: EmailRoutingProbeCall): string[] {
+  const on = zoneName ? ` on ${zoneName}` : "";
+  const tail = [
     "(keep Zone → DNS → Edit + Zone → Zone → Read; scope the zone permissions to the zones you use)",
     "Then re-run `hatchkit config add dns` if you created a new token instead of editing the old one.",
+  ];
+  if (call) {
+    const c = EMAIL_ROUTING_PROBE_CALLS[call];
+    return [
+      `The Cloudflare DNS token may not ${c.what}${on} (${c.call}) — it is missing a permission, not expired.`,
+      `Edit the token at https://dash.cloudflare.com/profile/api-tokens and add: ${c.permission}`,
+      `(${c.edit}.)`,
+      ...tail,
+    ];
+  }
+  return [
+    `The Cloudflare DNS token cannot read Email Routing${on} — it is missing permissions, not expired.`,
+    `Edit the token at https://dash.cloudflare.com/profile/api-tokens and add: ${EMAIL_ROUTING_TOKEN_PERMISSIONS.join(" + ")}`,
+    ...tail,
   ];
 }
 
@@ -57,14 +101,21 @@ export function emailRoutingScopeHint(zoneName?: string): string[] {
 export class EmailRoutingScopeError extends Error {
   readonly hint: string[];
   readonly zoneName?: string;
+  /** The probe call Cloudflare refused, when known. */
+  readonly call?: EmailRoutingProbeCall;
 
-  constructor(zoneName: string | undefined, cause: string) {
+  constructor(zoneName: string | undefined, cause: string, call?: EmailRoutingProbeCall) {
+    const answer = cause.replace(/^Cloudflare [A-Z]+ \S+ failed: /, "");
+    const where = zoneName ? ` for ${zoneName}` : "";
     super(
-      `Cloudflare token lacks Email Routing permissions${zoneName ? ` for ${zoneName}` : ""} (${cause.replace(/^Cloudflare [A-Z]+ \S+ failed: /, "")})`,
+      call
+        ? `Cloudflare token lacks ${EMAIL_ROUTING_PROBE_CALLS[call].permission}${where}: ${EMAIL_ROUTING_PROBE_CALLS[call].call} answered ${answer}`
+        : `Cloudflare token lacks Email Routing permissions${where} (${answer})`,
     );
     this.name = "EmailRoutingScopeError";
     this.zoneName = zoneName;
-    this.hint = emailRoutingScopeHint(zoneName);
+    this.call = call;
+    this.hint = emailRoutingScopeHint(zoneName, call);
   }
 }
 
@@ -126,7 +177,7 @@ export async function probeEmailRouting(
       access: "unauthorized",
       domain: name,
       zone: zoneRef,
-      error: new EmailRoutingScopeError(zone.name, msg),
+      error: new EmailRoutingScopeError(zone.name, msg, "settings"),
     };
   }
 
@@ -144,7 +195,7 @@ export async function probeEmailRouting(
         access: "unauthorized",
         domain: name,
         zone: zoneRef,
-        error: new EmailRoutingScopeError(zone.name, msg),
+        error: new EmailRoutingScopeError(zone.name, msg, "destinations"),
       };
     }
   }

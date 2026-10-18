@@ -4776,10 +4776,10 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Prerequisites:")}
     DNS must be on Cloudflare (${chalk.cyan("hatchkit config add dns")}). The token
-    needs Zone:DNS:Edit + Zone:Email Routing Rules:Edit +
-    Account:Email Routing Addresses:Edit. Without the two Email Routing
-    groups Cloudflare answers "10000: Authentication error"; hatchkit
-    checks for that first and names the missing permissions.
+    needs Zone:DNS:Edit + Zone:Zone Settings:Edit + Zone:Email Routing
+    Rules:Edit + Account:Email Routing Addresses:Edit. Without them
+    Cloudflare answers "10000: Authentication error"; hatchkit checks for
+    that first and names the call refused and the permission it needs.
 `);
     return;
   }

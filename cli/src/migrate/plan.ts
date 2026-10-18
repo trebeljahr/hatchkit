@@ -649,7 +649,7 @@ export function planEmailRouting(input: MigrationPlanInput): MigrationAction[] {
   ];
   if (facts.state === "unauthorized") {
     detail.push(
-      "needs Zone → Email Routing Rules → Edit + Account → Email Routing Addresses → Edit on the DNS token",
+      "needs Zone → Zone Settings → Edit + Zone → Email Routing Rules → Edit + Account → Email Routing Addresses → Edit on the DNS token",
     );
   }
 

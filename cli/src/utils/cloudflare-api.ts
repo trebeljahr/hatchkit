@@ -1196,8 +1196,9 @@ export class CloudflareApi {
   // anywhere on the public internet that receives forwarded mail).
   //
   // Token permission requirements (all on the same Bearer):
-  //   · `Zone > Email Routing Rules > Edit` (rules + zone enable/disable)
-  //   · `Zone > Email Routing Addresses > Read`
+  //   · `Zone > Zone Settings > Edit` (routing settings, enable, routing/dns;
+  //     measured 2026-10-19: Email Routing Rules alone gets 10000 there)
+  //   · `Zone > Email Routing Rules > Edit` (rules)
   //   · `Account > Email Routing Addresses > Edit` (destinations create + verify)
   //   · `Zone > DNS > Edit`  (already required for the rest of hatchkit)
   //

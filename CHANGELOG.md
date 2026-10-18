@@ -36,6 +36,7 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 - doctor's Cloudflare Workers provisioner row probes the zone grants on the zone of the project's domain, names the zone it probed, and prints each failing probe's error. A denied grant and a probe that got no answer are reported apart.
 - A provider check whose request failed in the network now names the reason, for example `fetch failed (ECONNRESET)`, instead of `fetch failed` alone.
 - "Coolify GitHub App (sources)" with no sources is a skip, not a failure: only `hatchkit create --private` needs one.
+- An Email Routing permission error names the call Cloudflare refused and the one permission it needs. Reading a zone's routing settings needs Zone → Zone Settings → Read (Edit to enable routing), not Email Routing Rules, which the hint used to ask for.
 - Manifest migration notes print once per run, with the command that writes the migrated file (`hatchkit update`). doctor used to print them once per manifest read.
 
 ### Removed

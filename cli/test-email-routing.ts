@@ -10,7 +10,9 @@
  * because the DNS token lacked the Email Routing scopes. Locked down:
  *
  *   1. A scope-less token becomes an EmailRoutingScopeError naming the
- *      two permission groups — never a bare 10000.
+ *      refused call and the one permission group it needs — never a bare
+ *      10000. The zone's routing settings need Zone Settings, not Email
+ *      Routing Rules (measured 2026-10-19).
  *   2. The migrate plan sets up routing on the new domain when the old
  *      side used it, the manifest records it, or the state can't be
  *      read; and stands down for a receiving zone or another provider's
@@ -118,7 +120,7 @@ await expect("10000 / 9109 / 403 read as auth errors; 404 and timeouts do not", 
 });
 
 await expect(
-  "a 10000 on the zone endpoint is 'unauthorized', with the permissions named",
+  "a 10000 on the zone settings is 'unauthorized', naming the call and Zone Settings",
   async () => {
     const probe = await probeEmailRouting(
       fakeReader({ zone: "collectionofbeauty.com", routing: new Error(AUTH_10000) }),
@@ -127,13 +129,20 @@ await expect(
     assert.equal(probe.access, "unauthorized");
     if (probe.access !== "unauthorized") return;
     assert.ok(probe.error instanceof EmailRoutingScopeError);
+    assert.equal(probe.error.call, "settings");
     assert.match(
       probe.error.message,
-      /lacks Email Routing permissions for collectionofbeauty\.com/,
+      /lacks Zone → Zone Settings → Read for collectionofbeauty\.com: GET \/zones\/\{zone\}\/email\/routing answered 10000/,
     );
-    assert.doesNotMatch(probe.error.message, /Cloudflare GET/, "the request path is noise here");
+    assert.doesNotMatch(probe.error.message, /Cloudflare GET/, "the client's prefix is noise here");
     const hint = probe.error.hint.join("\n");
-    for (const perm of EMAIL_ROUTING_TOKEN_PERMISSIONS) assert.ok(hint.includes(perm), perm);
+    assert.match(hint, /add: Zone → Zone Settings → Read/);
+    assert.match(hint, /GET \/zones\/\{zone\}\/email\/routing/);
+    assert.doesNotMatch(
+      hint,
+      /Email Routing Rules|Email Routing Addresses/,
+      "not the groups it has",
+    );
     assert.match(hint, /dash\.cloudflare\.com\/profile\/api-tokens/);
     assert.match(hint, /hatchkit config add dns/);
   },
@@ -148,6 +157,17 @@ await expect("the account-scoped destinations group is checked separately", asyn
     "example.com",
   );
   assert.equal(probe.access, "unauthorized");
+  if (probe.access !== "unauthorized") return;
+  assert.equal(probe.error.call, "destinations");
+  const hint = probe.error.hint.join("\n");
+  assert.match(hint, /add: Account → Email Routing Addresses → Edit/);
+  assert.doesNotMatch(hint, /Zone Settings/);
+});
+
+await expect("without a known call, the hint lists every group setup needs", () => {
+  const hint = new EmailRoutingScopeError("example.com", AUTH_10000).hint.join("\n");
+  for (const perm of EMAIL_ROUTING_TOKEN_PERMISSIONS) assert.ok(hint.includes(perm), perm);
+  assert.ok(hint.includes("Zone → Zone Settings → Edit"));
 });
 
 await expect("non-auth failures propagate instead of posing as a scope problem", async () => {
@@ -322,16 +342,21 @@ await expect("manifest-recorded forwarding is planned even when the old zone is 
 await expect("recording an existing rule keeps its own forwarding destination", () => {
   const dir = mkdtempSync(join(tmpdir(), "email-forward-manifest-"));
   try {
-    writeFileSync(join(dir, ".hatchkit.json"), JSON.stringify({
-      ...COB,
-      domain: COB_OLD,
-      integrations: { email: {
+    writeFileSync(
+      join(dir, ".hatchkit.json"),
+      JSON.stringify({
+        ...COB,
         domain: COB_OLD,
-        configuredAt: "2026-01-01T00:00:00.000Z",
-        destinationEmail: "main@example.com",
-        addresses: ["hello"],
-      } },
-    }));
+        integrations: {
+          email: {
+            domain: COB_OLD,
+            configuredAt: "2026-01-01T00:00:00.000Z",
+            destinationEmail: "main@example.com",
+            addresses: ["hello"],
+          },
+        },
+      }),
+    );
     recordForwarding(dir, COB_OLD, "support", "support@example.org");
     const email = readManifest(dir)?.integrations?.email;
     assert.deepEqual(email?.addresses, ["hello", "support"]);
@@ -564,7 +589,7 @@ await expect(
     try {
       await assert.rejects(runEmailSetup(setupOpts), (err) => {
         assert.ok(err instanceof EmailRoutingScopeError);
-        assert.match(err.hint.join("\n"), /Email Routing Addresses → Edit/);
+        assert.match(err.hint.join("\n"), /Zone → Zone Settings → Read/);
         return true;
       });
     } finally {
@@ -594,8 +619,10 @@ await expect(
     const [row] = await doctorFor(COB, fakeReader({ routing: new Error(AUTH_10000) }));
     assert.equal(row.status, "fail");
     assert.equal(row.name, "Email Routing (collectionofbeauty.com)");
-    assert.match(row.detail ?? "", /lacks Email Routing permissions/);
-    assert.ok((row.hint ?? []).some((h) => h.includes("Email Routing Rules → Edit")));
+    assert.match(row.detail ?? "", /lacks Zone → Zone Settings → Read/);
+    assert.match(row.detail ?? "", /GET \/zones\/\{zone\}\/email\/routing answered/);
+    assert.ok((row.hint ?? []).some((h) => h.includes("add: Zone → Zone Settings → Read")));
+    assert.ok(!(row.hint ?? []).some((h) => h.includes("Email Routing Rules")));
   },
 );
 

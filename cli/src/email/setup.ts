@@ -48,8 +48,8 @@ export const CLOUDFLARE_EMAIL_ROUTING_MX = [
 ];
 
 export interface EmailSetupOptions {
-  /** Bearer token with Zone:DNS:Edit + Zone:Email Routing Rules:Edit +
-   *  Account:Email Routing Addresses:Edit. */
+  /** Bearer token with Zone:DNS:Edit + Zone:Zone Settings:Edit +
+   *  Zone:Email Routing Rules:Edit + Account:Email Routing Addresses:Edit. */
   token: string;
   /** Optional Cloudflare account id. Discovered from the zone when
    *  absent (since the destinations API is account-scoped, we always
