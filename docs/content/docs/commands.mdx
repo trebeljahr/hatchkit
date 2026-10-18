@@ -659,7 +659,36 @@ With SES and Listmonk configured, `doctor` checks the [bounce feedback path](/do
 
 Run from inside a project directory and it also lists that project's [deferred steps](#deferred-steps) with the command to finish each one. Deferred steps never make `doctor` exit non-zero — they're work you postponed, not a broken credential.
 
+With a backup host configured, `doctor` also runs the [host integrity scan](#hatchkit-host-integrity) on it and reports whether the daily check is installed and mailing.
+
 `hatchkit doctor --fix` adds one step after the report: for each failure that doctor can repair itself, it asks `y/N` (default No) and applies the repair on a yes. Today that covers a project's Listmonk tx template that HTML-escapes the email body, and each broken piece of the SES bounce feedback path. `--yes` applies every offered repair without asking. Without a terminal and without `--yes`, nothing is applied. `--fix` is ignored with `--json`, so `doctor --json` stays read-only.
+
+---
+
+## `hatchkit host integrity`
+
+Scans the backup host (the Coolify server in `providers.backups.host`) over Tailscale SSH for signs that a container was taken over. It only reads.
+
+```bash
+hatchkit host integrity [--cpu-window <seconds>] [--json]   # scan now; exits 1 on a finding
+hatchkit host integrity install [--dry-run]                 # daily check that mails findings
+hatchkit host integrity uninstall [--dry-run]
+hatchkit host integrity test                                # send a test mail
+```
+
+It reports:
+
+- a process whose binary was deleted from disk;
+- a container process that does not run a binary its image ships, or runs one under a name that neither the binary nor the image family explains (Node's `MainThread`, `next-server`, Postgres, Mongo, Redis, ClickHouse, Erlang, Traefik, Coolify's s6 helpers, …). A binary the container added or changed in its writable layer, or runs from a volume, is not one its image ships;
+- a new file in `/tmp`, `/var/tmp` or `/dev/shm` of a container, or a process that runs a binary from one of them;
+- a container above 50 % of one core over the CPU window;
+- an outbound TCP peer outside private ranges and [Cloudflare's published ranges](https://www.cloudflare.com/ips/), connected in at least half of the samples. The scan samples once a minute; a shorter window samples at both ends. A peer behind Cloudflare is not reported, because apps reach R2, Workers and every proxied hostname there.
+
+The report never holds environment values, command lines or file contents. Process and file names are escaped, because an attacker chooses them. A check that could not run (a failed `docker diff`, a container that restarted inside the window, a container on the host network) is listed as not checked, never as clean. The default window is 10 seconds, and a CPU finding over a window shorter than 50 minutes is a warning; `--cpu-window 3600` averages over an hour.
+
+`install` writes the script next to the backup runner in `/opt/hatchkit-backups` and enables a daily timer (05:00 UTC). Each run samples for one hour, then mails its findings through the backup-alert SMTP that [`hatchkit backup alerts`](#other-command-routes) set up. A run with findings mails every day; the first clean run after them sends one all-clear. A run that systemd stops before it finishes sends its own mail. `install` refuses a host without the backup runner or its alert mail, and runs one read-only scan before it writes anything. `--dry-run` runs only that scan and lists what the first mail would contain.
+
+When a finding is expected and you know what causes it, add its `allow` entry from `--json` to `/etc/hatchkit-backups/host-integrity.json` on the host. The keys are `processes` (container-name or image glob to process names), `tempFiles` (path globs), `peers` (CIDRs, for every container), `peerContainers` (globs whose outbound peers are not checked) and `cpuLimits` (glob to percent of one core). Deleted binaries, executables in temp dirs and binaries run from a temp dir have no exception: restart the container once you know why.
 
 ---
 
@@ -708,5 +737,6 @@ These routes have their own CLI help. Run the command with `--help` before using
 | `dns publish|link-to-cloudflare` | Reconcile DNS records and zone links. |
 | `email setup|forward|status|ses-mail-from` | Manage inbound routing and SES MAIL FROM. See [Email](./email). |
 | `ses`, `listmonk`, `plausible`, `provision s3` | Manage provider-specific resources. See [Providers](./providers). |
+| `backup` | Encrypted project data backups on the Coolify host, and the alert mail that `host integrity` reuses. |
 | `signing`, `release`, `secrets rotate` | Manage signing, releases, and credential rotation. See [Signing](./signing) and [Secrets rotation](./secrets-rotation). |
 | `completion` | Generate zsh, bash, or fish completion. |

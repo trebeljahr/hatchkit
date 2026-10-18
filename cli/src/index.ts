@@ -41,6 +41,7 @@ import { handleCreateFailure, runRollback } from "./deploy/rollback.js";
 import { requireCloudflareZoneForTerraform, runTerraform } from "./deploy/terraform.js";
 import { printReleaseUsage } from "./features/release/command.js";
 import { type HelpTopic, helpTopicForCommand, isHelpRequest } from "./help-routing.js";
+import { HOST_USAGE, runHostCommand } from "./host/integrity.js";
 import {
   type Feature,
   type GpuPlatform,
@@ -159,6 +160,9 @@ async function main(): Promise<void> {
   switch (command) {
     case "backup":
       await runBackupCommand(args.slice(1));
+      break;
+    case "host":
+      await runHostCommand(args.slice(1));
       break;
     case "init":
     case "setup":
@@ -3880,6 +3884,9 @@ function printCommandHelp(cmd: string | undefined): void {
     case "backup":
       console.log(BACKUP_USAGE);
       return;
+    case "host":
+      console.log(HOST_USAGE);
+      return;
     case "provision":
       printProvisionUsage();
       return;
@@ -5887,6 +5894,7 @@ function printHelp(topic?: HelpTopic): void {
     dns             DNS reconciliation helpers (publish, link-to-cloudflare)
     plausible       Plausible site helpers (rename — domain change with history kept)
     listmonk user   Give a project its own Listmonk API user (roles + env rewrite)
+    host integrity  Scan the Coolify host for signs of a compromised container (read-only; install = daily mail)
     email           Set up Cloudflare Email Routing + MX/SPF/DMARC (setup/status)
     keys show <p>   Print the dotenvx private key for a project
     keys set <p>    Upsert the key into the OS keychain (after \`dotenvx rotate\`)

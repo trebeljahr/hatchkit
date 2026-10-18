@@ -1945,6 +1945,11 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   results.push(...(await unlessPaused("stripe", checkStripe)));
   results.push(...(await unlessPaused("ses", () => checkSesBounceFeedback())));
   for (const r of await checkBackupSources()) results.push(r);
+  // Read-only scan of the same host for signs of a compromised container
+  // (the 2026-10-18 Plausible miner ran for days unnoticed). [] when no
+  // backup host is configured.
+  const { checkHostIntegrity } = await import("./host/integrity.js");
+  for (const r of await checkHostIntegrity()) results.push(r);
   // Local-dev (Tailscale-served per-project URLs). Returns [] when the
   // user hasn't run `hatchkit dev-setup init`, so doctor stays quiet for
   // anyone not opted in.

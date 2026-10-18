@@ -21,6 +21,7 @@ const TOP_LEVEL = [
   "add",
   "assets",
   "backup",
+  "host",
   "release",
   "keys",
   "config",
@@ -286,6 +287,8 @@ function topDesc(cmd: string): string {
       return "Move bytes between local S3 and prod buckets";
     case "backup":
       return "Manage encrypted project data backups over Tailscale";
+    case "host":
+      return "Scan the Coolify host for signs of a compromised container";
     case "release":
       return "Coordinate one version across every surface";
     case "keys":

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Hatchkit host integrity check
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
+Unit=hatchkit-host-integrity.service
+
+[Install]
+WantedBy=timers.target

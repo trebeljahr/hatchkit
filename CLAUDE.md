@@ -99,6 +99,14 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   ones (`backup update-source … --container|--remove`, `backup deregister`,
   both `--dry-run` first). Also part of `backup status` and `doctor`.
   `destroy` and `migrate-runtime --cleanup` remove sources of what they delete.
+- `hatchkit host integrity [--cpu-window <s>] [--json]`: read-only scan of
+  the backup host for a compromised container (deleted binaries, process
+  names the image does not explain, new files in /tmp, /var/tmp, /dev/shm,
+  >50 % of a core, outbound peers outside private ranges and Cloudflare).
+  Also a `doctor` row. `install [--dry-run]` adds a daily timer that mails
+  findings through the backup-alert SMTP (production write; ask first).
+  Exceptions: `/etc/hatchkit-backups/host-integrity.json` on the host. See
+  `cli/src/host/integrity.ts`.
 - `hatchkit explain --json`: source-of-truth mental model.
 
 Check `hatchkit help <command>` before using flags you have not verified.

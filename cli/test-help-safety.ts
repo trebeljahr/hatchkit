@@ -75,6 +75,8 @@ const DANGEROUS_ARGV: string[][] = [
   ["cloudflare", "redirect", "add", "x.example.com", "https://y.example", "--help"],
   ["migrate-client", "--rollback", "--yes", "--help"],
   ["migrate-client", "--cleanup", "--yes", "--help"],
+  ["host", "integrity", "install", "--help"],
+  ["host", "integrity", "uninstall", "--help"],
 ];
 
 for (const argv of DANGEROUS_ARGV) {
@@ -203,6 +205,7 @@ checkHelpRun(["email", "setup", "--help"], "hatchkit email — Cloudflare Email 
 checkHelpRun(["add", "i18n", "--help"], "hatchkit add i18n");
 checkHelpRun(["create", "--help"], "--topology");
 checkHelpRun(["listmonk", "user", "demo", "--help"], "hatchkit listmonk — Listmonk helpers");
+checkHelpRun(["host", "integrity", "install", "--help"], "hatchkit host integrity install");
 
 // The topic has to be the command's own — root help would satisfy a
 // looser assertion while telling the user nothing about what they

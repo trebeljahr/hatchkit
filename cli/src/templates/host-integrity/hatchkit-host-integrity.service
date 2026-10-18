@@ -1,0 +1,20 @@
+[Unit]
+Description=Hatchkit host integrity check (deleted binaries, odd processes, temp files, CPU, outbound peers)
+Wants=network-online.target
+After=network-online.target docker.service
+OnFailure=hatchkit-host-integrity-failed.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/hatchkit-backups/host-integrity.py check
+User=root
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=50%
+MemoryMax=1G
+# One hour of CPU and peer samples, then a docker diff of every container.
+TimeoutStartSec=3h
+PrivateTmp=true
+ProtectHome=read-only
+NoNewPrivileges=true

@@ -126,5 +126,6 @@
   "test-security-baseline.ts",
   "test-backups.ts",
   "test-backup-recovery.ts",
-  "test-backup-host-exec.ts"
+  "test-backup-host-exec.ts",
+  "test-host-integrity.ts"
 ]

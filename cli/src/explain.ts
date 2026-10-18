@@ -73,6 +73,12 @@ const MODEL: ExplainModel = {
       when: "Configure once for a backup host. New create deployments register standard databases on that host; register existing projects and custom file paths explicitly. Status reports missing, failed and stale backups, and `backup sources` (also in status and doctor) names every registered source that no longer matches a running container, with the exact `update-source`/`deregister` fix. A missing source still fails that project's run. `destroy` and `migrate-runtime --cleanup` remove the sources of what they delete. Project package scripts list verified snapshots and select an isolated recovery; production cutover is separate.",
     },
     {
+      name: "hatchkit host integrity [--cpu-window <s>] | install|uninstall [--dry-run] | test",
+      summary:
+        "Read-only scan of the backup host for signs of a compromised container: deleted binaries, process names the image does not explain, new files in /tmp, /var/tmp and /dev/shm, a container above 50 % of a core, and outbound peers outside private ranges and Cloudflare that stay connected (sampled once a minute).",
+      when: "`hatchkit doctor` runs it with a 10 s CPU sample (a CPU finding there only warns). `install` adds a daily timer next to the backup runner that averages CPU over one hour and mails findings through the backup-alert SMTP; it needs `backup install` and `backup alerts` first. Never prints env values, command lines or file contents. Exceptions go in /etc/hatchkit-backups/host-integrity.json; each finding in --json carries the entry that would allow it.",
+    },
+    {
       name: "hatchkit migrate-client [--dry-run|--repo-only|--rollback|--cleanup]",
       summary:
         "Serve a deployed fullstack project's client from Cloudflare Workers static assets; the API stays on Coolify on the same hostname.",
