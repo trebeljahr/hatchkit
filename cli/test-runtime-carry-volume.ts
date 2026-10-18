@@ -822,7 +822,7 @@ try {
     const status = new Map(Object.entries(statuses));
     const http = coolifyHttp((method, path) => {
       const app = path.match(/^\/applications\/([^/?]+)/)?.[1] ?? "";
-      if (method === "GET" && /\/stop\?/.test(path)) status.set(app, "exited");
+      if (method === "POST" && /\/stop\?/.test(path)) status.set(app, "exited");
       if (method === "GET" && path === `/applications/${app}`)
         return json({ uuid: app, name: app, status: status.get(app) });
       return undefined;

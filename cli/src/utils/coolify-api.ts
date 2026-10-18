@@ -1199,13 +1199,15 @@ export class CoolifyApi {
   }
 
   /** Queue a deploy through `/deploy?uuid=`, the same endpoint the GitHub
-   *  Actions job calls. Returns the queued deployment's uuid. */
+   *  Actions job calls. Returns the queued deployment's uuid. POST: Coolify
+   *  4.2+ answers 405 to a GET on any state-changing endpoint; beta.469
+   *  accepts both. */
   async queueDeploy(
     uuid: string,
     opts: { force?: boolean } = {},
   ): Promise<{ deploymentUuid?: string }> {
     const raw = (await this.request(
-      "GET",
+      "POST",
       `/deploy?uuid=${encodeURIComponent(uuid)}&force=${opts.force ? "true" : "false"}`,
     )) as { deployments?: Array<{ deployment_uuid?: string }> } | undefined;
     const deploymentUuid = raw?.deployments?.find(
@@ -1237,9 +1239,10 @@ export class CoolifyApi {
   /** Ask Coolify to stop an application's containers. Asynchronous: the
    *  request is queued, so callers poll `getApplication().status` for
    *  `exited`. `docker_cleanup=false` keeps the images, so starting the
-   *  app again (a rollback) doesn't have to re-pull anything. */
+   *  app again (a rollback) doesn't have to re-pull anything. POST for the
+   *  same reason as `queueDeploy`. */
   async stopApplication(uuid: string): Promise<void> {
-    await this.request("GET", `/applications/${uuid}/stop?docker_cleanup=false`);
+    await this.request("POST", `/applications/${uuid}/stop?docker_cleanup=false`);
   }
 
   /** Delete an application WITHOUT touching its volumes. Coolify's
