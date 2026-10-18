@@ -764,6 +764,12 @@ await test("repo files: wrangler, _headers, _redirects, carry script, workflow; 
   rmSync(dir, { recursive: true, force: true });
 });
 
+await test("a new Worker's compatibility_date is two weeks back, not today", async () => {
+  // wrangler 4.148's workerd refused a date two days newer than its own.
+  const { defaultCompatibilityDate } = await import("./src/scaffold/worker-assets.js");
+  assert.equal(defaultCompatibilityDate(new Date("2026-10-18T12:00:00Z")), "2026-10-04");
+});
+
 await test("config findings: billing keys and immutable 404 rules", () => {
   assert.deepEqual(
     findWranglerBillingKeys(

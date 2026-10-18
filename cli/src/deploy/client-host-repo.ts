@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { dirname, join, relative } from "node:path";
 import { CLOUDFLARE_WRANGLER_REL_PATH } from "../scaffold/cloudflare-mode.js";
 import {
+  defaultCompatibilityDate,
   findImmutable404Rules,
   findWranglerBillingKeys,
   migrateHeaders,
@@ -357,7 +358,7 @@ export function writeClientRepoFiles(
       CLOUDFLARE_WRANGLER_REL_PATH,
       renderClientWranglerConfig(
         input.worker,
-        input.compatibilityDate ?? new Date().toISOString().slice(0, 10),
+        input.compatibilityDate ?? defaultCompatibilityDate(),
       ),
       "wrote",
     );

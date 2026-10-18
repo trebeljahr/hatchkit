@@ -37,6 +37,15 @@ const TEMPLATE = join(
   "carry-static.mjs",
 );
 
+/** `compatibility_date` for a new Worker: two weeks back, not today.
+ *  A wrangler whose bundled workerd is a few days older than the date
+ *  refuses to run the Worker locally ("This Worker requires
+ *  compatibility date …, but the newest date supported by this server
+ *  binary is …"), seen with wrangler 4.148 on 2026-10-18. */
+export function defaultCompatibilityDate(now: Date = new Date()): string {
+  return new Date(now.getTime() - 14 * 86_400_000).toISOString().slice(0, 10);
+}
+
 /** The carry script's source, as shipped in hatchkit's templates. */
 export function carryScriptSource(): string {
   return readFileSync(TEMPLATE, "utf-8");

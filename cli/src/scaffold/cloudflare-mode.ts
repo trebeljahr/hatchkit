@@ -26,6 +26,7 @@ import { removeIfExists } from "./starter-files.js";
 import {
   CARRY_SCRIPT_REL_PATH,
   WRANGLER_PACKAGE,
+  defaultCompatibilityDate,
   migrateHeaders,
   renderWorkerHeaders,
   writeCarryScript,
@@ -61,7 +62,7 @@ export interface CloudflareModeInput {
   /** Worker name. Must be unique within the Cloudflare account and is
    *  what `<name>.<subdomain>.workers.dev` is built from. */
   workerName: string;
-  /** `compatibility_date` for the Worker runtime. Defaults to today —
+  /** `compatibility_date` for the Worker runtime. Defaults to two weeks back —
    *  injectable so tests get a stable fixture. */
   compatibilityDate?: string;
   /** Default branch the deploy workflow triggers on. */
@@ -81,7 +82,7 @@ export function applyCloudflareMode(
   input: CloudflareModeInput,
   modifications: string[],
 ): void {
-  const compatibilityDate = input.compatibilityDate ?? todayIso();
+  const compatibilityDate = input.compatibilityDate ?? defaultCompatibilityDate();
   const branch = input.defaultBranch ?? "main";
   const nodeVersion = input.nodeVersion ?? DEFAULT_NODE_VERSION;
 
@@ -92,10 +93,6 @@ export function applyCloudflareMode(
   writeCarryScript(outputDir, modifications);
   writeDeployWorkflow(outputDir, branch, input.siteUrl, modifications);
   dropCoolifyWorkflow(outputDir, modifications);
-}
-
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
 }
 
 /** Rewrite `packages/client/next.config.ts` to a static-export config.
