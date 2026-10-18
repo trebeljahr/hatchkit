@@ -48,6 +48,7 @@
     "test:carry-static": "node scripts/test.mjs test-carry-static.ts",
     "test:client-host": "node scripts/test.mjs test-client-host.ts",
     "test:backup-host-exec": "node scripts/test.mjs test-backup-host-exec.ts",
+    "test:backup-hosts": "node scripts/test.mjs test-backup-hosts.ts",
     "test:host-integrity": "node scripts/test.mjs test-host-integrity.ts",
     "test:host-integrity-docker": "node scripts/test.mjs test-host-integrity-docker.ts",
     "test:routed-worker-site": "node scripts/test.mjs test-routed-worker-site.ts",

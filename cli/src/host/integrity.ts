@@ -26,7 +26,7 @@
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { backupHostExec, backupProvider } from "../backups/provider.js";
+import { type BackupHost, backupHost, backupHostExec, backupHosts } from "../backups/provider.js";
 
 export const SITE_FILE = "/etc/hatchkit-backups/host-integrity.json";
 const MAX_WINDOW = 3600;
@@ -130,10 +130,14 @@ export function parseWindow(value: string | undefined, fallback: number): number
 }
 
 /** Read-only: run the CLI's copy of the script on the backup host. */
-export async function fetchIntegrityReport(cpuWindow = 10): Promise<IntegrityReport> {
+export async function fetchIntegrityReport(
+  cpuWindow = 10,
+  host: BackupHost = backupHost(),
+): Promise<IntegrityReport> {
   parseWindow(String(cpuWindow), 10);
   return lastJson(
     await backupHostExec(
+      host,
       `python3 - scan --cpu-window ${cpuWindow}`,
       template("host-integrity.py"),
       (cpuWindow + 150) * 1000,
@@ -385,26 +389,34 @@ export function integrityRows(
   return rows;
 }
 
-/** doctor: [] when no backup host is configured; never throws. */
+/** doctor: every backup host, [] when none is configured; never throws.
+ *  With several hosts each row names its host. */
 export async function checkHostIntegrity(): Promise<IntegrityRow[]> {
-  let target: string;
+  let hosts: BackupHost[];
   try {
-    target = backupProvider().host.target;
+    hosts = backupHosts();
   } catch {
     return [];
   }
-  try {
-    return integrityRows(await fetchIntegrityReport(10), target);
-  } catch (err) {
-    return [
-      {
-        name: "Host integrity",
-        status: "warn",
-        detail: `couldn't scan the host: ${(err as Error).message.split("\n")[0]}`,
-        hint: ["Retry: hatchkit host integrity --json"],
-      },
-    ];
-  }
+  const several = hosts.length > 1;
+  const perHost = await Promise.all(
+    hosts.map(async (host): Promise<IntegrityRow[]> => {
+      try {
+        const rows = integrityRows(await fetchIntegrityReport(10, host), host.target);
+        return several ? rows.map((row) => ({ ...row, name: `${row.name} (${host.name})` })) : rows;
+      } catch (err) {
+        return [
+          {
+            name: several ? `Host integrity (${host.name})` : "Host integrity",
+            status: "warn",
+            detail: `couldn't scan the host: ${(err as Error).message.split("\n")[0]}`,
+            hint: [`Retry: hatchkit host integrity${several ? ` --host ${host.name}` : ""} --json`],
+          },
+        ];
+      }
+    }),
+  );
+  return perHost.flat();
 }
 
 const UNITS = [
@@ -477,21 +489,28 @@ if not dry:
 print(json.dumps({'applied':not dry,'removed':present,'kept':kept}))
 `;
 
-function hostPython(script: string, args: string, input?: string, timeoutMs?: number) {
+function hostPython(
+  host: BackupHost,
+  script: string,
+  args: string,
+  input?: string,
+  timeoutMs?: number,
+) {
   const encoded = Buffer.from(script).toString("base64");
   return backupHostExec(
+    host,
     `python3 -c 'import base64,sys;sys.argv=["hatchkit"${args ? `,"${args}"` : ""}];exec(base64.b64decode("${encoded}"))'`,
     input,
     timeoutMs,
   );
 }
 
-export async function installHostIntegrity(dryRun: boolean) {
+export async function installHostIntegrity(dryRun: boolean, host: BackupHost = backupHost()) {
   const files = Object.fromEntries(
     ["host-integrity.py", ...UNITS].map((name) => [name, template(name)]),
   );
   const result = lastJson(
-    await hostPython(INSTALL, "", JSON.stringify({ dryRun, files }), 360_000),
+    await hostPython(host, INSTALL, "", JSON.stringify({ dryRun, files }), 360_000),
   ) as Record<string, unknown>;
   return {
     ...result,
@@ -507,21 +526,26 @@ export async function installHostIntegrity(dryRun: boolean) {
   };
 }
 
-export async function uninstallHostIntegrity(dryRun: boolean) {
-  return lastJson(await hostPython(UNINSTALL, dryRun ? "dry" : "apply"));
+export async function uninstallHostIntegrity(dryRun: boolean, host: BackupHost = backupHost()) {
+  return lastJson(await hostPython(host, UNINSTALL, dryRun ? "dry" : "apply"));
 }
 
-export async function sendHostIntegrityTest() {
-  return lastJson(await backupHostExec("python3 /opt/hatchkit-backups/host-integrity.py test"));
+export async function sendHostIntegrityTest(host: BackupHost = backupHost()) {
+  return lastJson(
+    await backupHostExec(host, "python3 /opt/hatchkit-backups/host-integrity.py test"),
+  );
 }
 
 export const HOST_USAGE = `Usage:
-  hatchkit host integrity [--cpu-window <seconds>] [--json]
-  hatchkit host integrity install [--dry-run] [--json]
-  hatchkit host integrity uninstall [--dry-run] [--json]
-  hatchkit host integrity test [--json]
+  hatchkit host integrity [--cpu-window <seconds>] [--host <name>] [--json]
+  hatchkit host integrity install [--host <name>] [--dry-run] [--json]
+  hatchkit host integrity uninstall [--host <name>] [--dry-run] [--json]
+  hatchkit host integrity test [--host <name>] [--json]
 
-integrity scans the backup host (providers.backups.host, over Tailscale SSH)
+--host picks one of the backup hosts (hatchkit backup hosts); it is needed once
+there are several. doctor scans every backup host.
+
+integrity scans the backup host (providers.backups.hosts, over Tailscale SSH)
 for signs that a container was taken over, and changes nothing:
   - a process whose binary was deleted from disk
   - a container process whose name its image does not explain
@@ -572,26 +596,30 @@ export async function runHostCommand(args: string[]): Promise<void> {
   if (dryRun && action !== "install" && action !== "uninstall")
     throw new Error("--dry-run applies to host integrity install and uninstall.");
   let window: number | undefined;
+  let hostName: string | undefined;
   while (rest.length) {
     const flag = rest.shift();
     if (flag === "--cpu-window" && action === "scan" && window === undefined && rest.length)
       window = parseWindow(rest.shift(), 10);
+    else if (flag === "--host" && hostName === undefined && rest[0] && !rest[0].startsWith("--"))
+      hostName = rest.shift();
     else throw new Error(`Unknown or incomplete host integrity option: ${flag}\n\n${HOST_USAGE}`);
   }
+  const host = backupHost(hostName);
   if (action === "scan") {
-    const report = await fetchIntegrityReport(window ?? 10);
+    const report = await fetchIntegrityReport(window ?? 10, host);
     if (json) console.log(JSON.stringify(report, null, 2));
     else {
-      printRows(integrityRows(report, backupProvider().host.target));
+      printRows(integrityRows(report, host.target));
       for (const note of report.notes) console.log(printable(`  · ${note}`));
     }
     if (report.findings.length) process.exitCode = 1;
     return;
   }
   let result: unknown;
-  if (action === "install") result = await installHostIntegrity(dryRun);
-  else if (action === "uninstall") result = await uninstallHostIntegrity(dryRun);
-  else if (action === "test") result = await sendHostIntegrityTest();
+  if (action === "install") result = await installHostIntegrity(dryRun, host);
+  else if (action === "uninstall") result = await uninstallHostIntegrity(dryRun, host);
+  else if (action === "test") result = await sendHostIntegrityTest(host);
   else throw new Error(HOST_USAGE);
   console.log(JSON.stringify(result, null, 2));
 }

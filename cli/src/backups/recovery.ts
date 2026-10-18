@@ -1,16 +1,23 @@
 import { confirm, select } from "@inquirer/prompts";
-import { backupHostExec } from "./provider.js";
+import { type BackupHost, backupHostExec } from "./provider.js";
 import { backupProjectName } from "./scripts.js";
+import { projectHost } from "./sources.js";
 
 export interface BackupSnapshot {
   id: string;
   time: string;
 }
 
-export async function backupSnapshots(project: string): Promise<BackupSnapshot[]> {
+/** Verified snapshots, read on the host whose policy holds `project`. */
+export async function backupSnapshots(
+  project: string,
+  host?: BackupHost,
+): Promise<BackupSnapshot[]> {
   backupProjectName(project);
+  const on = host ?? (await projectHost(project));
   const values: unknown = JSON.parse(
     await backupHostExec(
+      on,
       `python3 /opt/hatchkit-backups/recovery.py snapshots --project ${project}`,
     ),
   );
@@ -42,9 +49,12 @@ export async function restoreBackup(
   id: string | undefined,
   dryRun: boolean,
   json: boolean,
+  hostName?: string,
 ) {
   let selectedId = id;
-  const snapshots = await backupSnapshots(project);
+  backupProjectName(project);
+  const host = await projectHost(project, hostName);
+  const snapshots = await backupSnapshots(project, host);
   if (!snapshots.length) throw new Error(`No verified backups available for ${project}.`);
   if (!selectedId) {
     if (json || !process.stdin.isTTY || !process.stdout.isTTY) {
@@ -63,6 +73,7 @@ export async function restoreBackup(
   const snapshot = selectBackupSnapshot(snapshots, selectedId);
   const plan = {
     project,
+    host: host.name,
     snapshot: snapshot.id,
     time: snapshot.time,
     mode: "isolated",
@@ -81,6 +92,7 @@ export async function restoreBackup(
   }
   return JSON.parse(
     await backupHostExec(
+      host,
       `python3 /opt/hatchkit-backups/recovery.py restore --project ${project} --snapshot ${snapshot.id}`,
       undefined,
       7_200_000,

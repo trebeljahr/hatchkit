@@ -8,7 +8,7 @@
  */
 
 import chalk from "chalk";
-import { getConfig, getConfigPath, getMlServices } from "./config.js";
+import { type BackupProviderMeta, getConfig, getConfigPath, getMlServices } from "./config.js";
 import {
   clientWorkerName,
   isRoutedWorkerSite,
@@ -130,6 +130,18 @@ function siteWorkersField(
   }
 }
 
+/** "root@a, root@b": the backup hosts, from `hosts` or a single-host
+ *  config written before multi-host support. Never throws. */
+function backupTargets(backups: BackupProviderMeta): string {
+  const hosts = backups.hosts ?? (backups.host ? { host: backups.host } : {});
+  return (
+    Object.values(hosts)
+      .map((host) => host?.target)
+      .filter(Boolean)
+      .join(", ") || "no host"
+  );
+}
+
 export function collectStatus(projectDir: string = process.cwd()): StatusSnapshot {
   const config = getConfig();
   const providers: ProviderSnapshot[] = [];
@@ -189,7 +201,7 @@ export function collectStatus(projectDir: string = process.cwd()): StatusSnapsho
     label: "Project backups (R2)",
     configured: config.providers.backups?.status === "configured",
     detail: config.providers.backups
-      ? `intended daily / 3 snapshots; ${config.providers.backups.host.target}; verify with hatchkit backup status`
+      ? `intended daily / 3 snapshots; ${backupTargets(config.providers.backups)}; verify with hatchkit backup status`
       : undefined,
     configureCommand: "hatchkit backup configure --config <provider-config.json>",
   });

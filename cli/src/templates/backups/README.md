@@ -6,7 +6,7 @@ bucket. EU buckets require the `.eu.r2.cloudflarestorage.com` endpoint.
 
 ## Hatchkit integration
 
-Configure one backup host with `hatchkit backup configure --config provider.json`.
+Configure the provider with `hatchkit backup configure --config provider.json`.
 The input JSON has this shape; input credential files must have mode 0600:
 
 ```json
@@ -18,6 +18,9 @@ The input JSON has this shape; input credential files must have mode 0600:
   "passwordFile": "/private/path/restic-password"
 }
 ```
+
+`"hosts": {"NAME": {...host, "schedule": "16:00"}}` configures several hosts at
+once; the single `"host"` form names its host after the Tailscale hostname.
 
 Hatchkit stores the bucket's S3 access key, secret key, and restic recovery
 password in the OS keychain: service `hatchkit`, account
@@ -34,11 +37,11 @@ existing runner and can apply replacement R2 keys while preserving the password.
 
 With `autoRegister: true`, `hatchkit create` registers standard managed
 PostgreSQL/MongoDB/Redis and generated Compose database sources when deploying
-to this exact Coolify server. It initializes each new encrypted repository and
+to the Coolify server of a configured backup host. It initializes each new encrypted repository and
 saves the source mapping under `<config-dir>/backups/<project>.json`. Registration
 failure becomes a deferred step with a retry command. Registration precedes the
 first successful capture; a manifest policy alone is not evidence of protection.
-External databases, custom file mounts, other hosts, existing/adopted projects,
+External databases, custom file mounts, servers without a backup host, existing/adopted projects,
 and R2 asset buckets require explicit coverage decisions. Shared services such
 as analytics and mailing lists are backed up under their service project.
 
@@ -46,6 +49,38 @@ For existing projects, use `hatchkit backup register --config project.json`,
 where the JSON contains `serverUuid` and `project` (one of the project objects
 below). `--dry-run` previews the target and sources. Registration is idempotent
 and refuses to replace a different existing source policy; `--replace` swaps it.
+
+## More than one backup host
+
+Every host uses the same bucket, repository base and keychain credential.
+Each project lives in exactly one host's policy: its restic repository is
+`<repositoryBase>/<project>`, and two hosts writing it would prune each
+other's snapshots.
+
+```sh
+hatchkit backup hosts
+hatchkit backup add-host --name shared-vps --target root@shared-vps \
+  --server-uuid COOLIFY_SERVER_UUID --schedule 17:00 --dry-run
+hatchkit backup install --host shared-vps --dry-run
+```
+
+`add-host` only changes the local config. `--schedule` is the host's daily
+start in UTC (default 16:00); start hosts that share a Coolify fleet an hour
+apart. `install` writes it into the host's timer. Commands with `--project`
+find the project's host by reading every host's policy; `--host` skips that.
+`install`, `timer`, `alerts` and `alert-test` need `--host` once there are
+several hosts. `status`, `sources`, `run` and `doctor` cover every host.
+
+`register` targets the host whose `serverUuid` matches the registration. When
+another host's policy holds the project, registration moves it: it is added to
+the new host, then removed from the old one with the policy read before the
+add as the guard. If the old host's policy changed in between, the add is
+undone and nothing moves. `register --replace` never moves a project.
+`remove-host --host NAME` refuses while that host's policy holds a project.
+
+A config written before multi-host support keeps working: its one `host` reads
+as a host named after its Tailscale hostname, and the next host change stores
+`hosts`. Hatchkit builds from before this change cannot read that config.
 
 ## When a database moves or is removed
 
@@ -141,14 +176,17 @@ Run `sh install.sh`. Initialize a new project with
 is separate from backup so an authentication failure never resets a repository.
 
 After the first verified backups and an isolated database restore, enable the
-timer with `systemctl enable --now hatchkit-backups.timer`. It runs daily from
-16:00–16:15 UTC (03:00–03:15 AEDT), outside release hours. Inspect `runner.py status`, `systemctl status
+timer with `hatchkit backup timer --enable [--host NAME]` (or
+`systemctl enable --now hatchkit-backups.timer` on the host). It refuses until
+every registered project has a fresh verified capture. The default schedule runs
+daily from 16:00–16:15 UTC (03:00–03:15 AEDT), outside release hours; a host's
+`schedule` moves it. Inspect `runner.py status`, `systemctl status
 hatchkit-backups.service`, and `journalctl -u hatchkit-backups.service`. Connect
 the failed-service status to the operator's existing monitoring or enable email
 alerts below. The installer preserves existing alert settings and timer state.
 
-Run `python3 /opt/hatchkit-backups/restore-check.py` for the maintained restore
-drill (`--project example` limits it). It verifies archive member checksums and
+Run `hatchkit backup restore-check [--project example]` (on the host:
+`python3 /opt/hatchkit-backups/restore-check.py`) for the maintained restore drill. It verifies archive member checksums and
 restores native exports into disposable Docker containers with `--network none`,
 no published ports, existing images only, and CPU/memory limits. It checks SQLite
 integrity from restored files, removes its containers and volumes, and writes

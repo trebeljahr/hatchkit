@@ -21,7 +21,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { backupHostExec } from "./src/backups/provider.js";
+import { backupHost, backupHostExec } from "./src/backups/provider.js";
 import { getStore } from "./src/config.js";
 import { CoolifyApi } from "./src/utils/coolify-api.js";
 
@@ -89,7 +89,7 @@ try {
   const stuckSsh = `echo $$ >> "${pidFile}"\ntrap '' TERM\nexec sleep 60`;
   fakeTailscale(stuckSsh);
   {
-    const run = await settles(backupHostExec("python3 - sources", "script", 300));
+    const run = await settles(backupHostExec(backupHost(), "python3 - sources", "script", 300));
     assert.equal(run.ok, false);
     assert.match((run as { error: Error }).error.message, /timed out after 0\.3 s/);
     assert.ok(run.ms < 5_000, `settled after ${run.ms} ms`);
@@ -102,7 +102,7 @@ try {
     `printf '{"sources": []}\\n'\nsleep 60 &\necho $! >> "${pidFile}"\nsleep 0.2\nexit 0`,
   );
   {
-    const run = await settles(backupHostExec("python3 - sources", "script", 20_000));
+    const run = await settles(backupHostExec(backupHost(), "python3 - sources", "script", 20_000));
     assert.equal(run.ok, true, run.ok ? "" : (run as { error: Error }).error.message);
     assert.equal((run as { stdout: string }).stdout.trim(), '{"sources": []}');
     assert.ok(run.ms < 5_000, `settled after ${run.ms} ms`);
@@ -112,9 +112,9 @@ try {
   // 3. Unchanged: a host error still reaches the caller.
   fakeTailscale(`printf '{"ok": false, "error": "runner broke"}\\n'\nexit 1`);
   {
-    const run = await settles(backupHostExec("python3 - sources", "script", 20_000));
+    const run = await settles(backupHostExec(backupHost(), "python3 - sources", "script", 20_000));
     assert.equal(run.ok, false);
-    assert.equal((run as { error: Error }).error.message, "Backup host: runner broke");
+    assert.equal((run as { error: Error }).error.message, "Backup host backup-host: runner broke");
   }
 
   // 4. Ctrl+C: the command runs in its own process group, which the
@@ -128,7 +128,7 @@ try {
         "--import",
         "tsx",
         "-e",
-        'import("./src/backups/provider.js").then((m) => m.backupHostExec("python3 - sources", "script", 60_000))',
+        'import("./src/backups/provider.js").then((m) => m.backupHostExec(m.backupHost(), "python3 - sources", "script", 60_000))',
       ],
       { stdio: "ignore" },
     );

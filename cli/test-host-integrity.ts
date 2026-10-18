@@ -372,7 +372,7 @@ try {
     {
       name: "Host integrity",
       status: "warn",
-      detail: "couldn't scan the host: Backup host: docker ps failed",
+      detail: "couldn't scan the host: Backup host dedicated-vps: docker ps failed",
       hint: ["Retry: hatchkit host integrity --json"],
     },
   ]);
@@ -446,7 +446,7 @@ try {
     },
   );
   assert.equal(help.status, 0, help.stderr);
-  assert.match(help.stdout, /hatchkit host integrity install \[--dry-run\]/);
+  assert.match(help.stdout, /hatchkit host integrity install \[--host <name>\] \[--dry-run\]/);
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

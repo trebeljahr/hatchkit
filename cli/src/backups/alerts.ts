@@ -1,6 +1,6 @@
 import { ensureSes, getConfig } from "../config.js";
 import { sesSmtpCredentials } from "../provision/ses.js";
-import { backupHostExec, backupProvider } from "./provider.js";
+import { backupHost, backupHostExec } from "./provider.js";
 
 const CONFIGURE = `import fcntl,json,os,pathlib,subprocess,sys
 os.umask(0o077)
@@ -26,18 +26,23 @@ subprocess.run(['systemctl','enable','--now','hatchkit-backup-alerts.timer'],che
 print(json.dumps({'configured':True,'to':payload['to'],'from':payload['from'],'timerEnabled':True,'testSent':False}))
 `;
 
-export async function configureBackupAlerts(to: string, from: string, dryRun = false) {
+export async function configureBackupAlerts(
+  to: string,
+  from: string,
+  dryRun = false,
+  hostName?: string,
+) {
   for (const address of [to, from]) {
     if (!/^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(address))
       throw new Error("Use a single plain email address for --to and --from.");
   }
-  const provider = backupProvider();
+  const host = backupHost(hostName);
   if (dryRun)
     return {
       applied: false,
       to,
       from,
-      host: provider.host,
+      host,
       transport: "SES SMTP",
     };
   if (getConfig().providers.ses?.status !== "configured")
@@ -48,6 +53,7 @@ export async function configureBackupAlerts(to: string, from: string, dryRun = f
   const script = Buffer.from(CONFIGURE).toString("base64");
   return JSON.parse(
     await backupHostExec(
+      host,
       `python3 -c 'import base64;exec(base64.b64decode("${script}"))'`,
       JSON.stringify({ to, from, smtp }),
     ),

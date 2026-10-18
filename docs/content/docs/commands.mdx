@@ -659,7 +659,7 @@ With SES and Listmonk configured, `doctor` checks the [bounce feedback path](/do
 
 Run from inside a project directory and it also lists that project's [deferred steps](#deferred-steps) with the command to finish each one. Deferred steps never make `doctor` exit non-zero — they're work you postponed, not a broken credential.
 
-With a backup host configured, `doctor` also runs the [host integrity scan](#hatchkit-host-integrity) on it and reports whether the daily check is installed and mailing.
+With a backup host configured, `doctor` also runs the [host integrity scan](#hatchkit-host-integrity) on each backup host and reports whether the daily check is installed and mailing.
 
 `hatchkit doctor --fix` adds one step after the report: for each failure that doctor can repair itself, it asks `y/N` (default No) and applies the repair on a yes. Today that covers a project's Listmonk tx template that HTML-escapes the email body, and each broken piece of the SES bounce feedback path. `--yes` applies every offered repair without asking. Without a terminal and without `--yes`, nothing is applied. `--fix` is ignored with `--json`, so `doctor --json` stays read-only.
 
@@ -667,7 +667,7 @@ With a backup host configured, `doctor` also runs the [host integrity scan](#hat
 
 ## `hatchkit host integrity`
 
-Scans the backup host (the Coolify server in `providers.backups.host`) over Tailscale SSH for signs that a container was taken over. It only reads.
+Scans a backup host (a Coolify server in `providers.backups.hosts`) over Tailscale SSH for signs that a container was taken over. It only reads. With several backup hosts, `--host <name>` picks one.
 
 ```bash
 hatchkit host integrity [--cpu-window <seconds>] [--json]   # scan now; exits 1 on a finding
@@ -737,6 +737,6 @@ These routes have their own CLI help. Run the command with `--help` before using
 | `dns publish|link-to-cloudflare` | Reconcile DNS records and zone links. |
 | `email setup|forward|status|ses-mail-from` | Manage inbound routing and SES MAIL FROM. See [Email](./email). |
 | `ses`, `listmonk`, `plausible`, `provision s3` | Manage provider-specific resources. See [Providers](./providers). |
-| `backup` | Encrypted project data backups on the Coolify host, and the alert mail that `host integrity` reuses. |
+| `backup` | Encrypted project data backups on one or more Coolify hosts (`hosts`, `add-host`; each project on one host, `register` moves it), and the alert mail that `host integrity` reuses. |
 | `signing`, `release`, `secrets rotate` | Manage signing, releases, and credential rotation. See [Signing](./signing) and [Secrets rotation](./secrets-rotation). |
 | `completion` | Generate zsh, bash, or fish completion. |

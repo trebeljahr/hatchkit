@@ -1,6 +1,12 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { backupCredentials, backupHostExec, backupProvider } from "./provider.js";
+import {
+  DEFAULT_BACKUP_SCHEDULE,
+  backupCredentials,
+  backupHost,
+  backupHostExec,
+  backupProvider,
+} from "./provider.js";
 
 // The payload travels only over Tailscale SSH stdin. Secrets never become argv,
 // application env variables, provider metadata, or generated project files.
@@ -19,6 +25,8 @@ with (root/'.register.lock').open('w') as lock:
  password_path=root/'password'
  if password_path.exists() and password_path.read_text().strip()!=credentials['password']:
   raise SystemExit('Recovery password differs; existing backup access was preserved')
+ timer=pathlib.Path('/etc/systemd/system/hatchkit-backups.timer')
+ before=timer.read_text() if timer.exists() else None
  with tempfile.TemporaryDirectory(prefix='hatchkit-backup-install-') as temp:
   temp=pathlib.Path(temp)
   for name,content in payload['files'].items():
@@ -32,14 +40,28 @@ with (root/'.register.lock').open('w') as lock:
   key_path.chmod(0o600)
   if not password_path.exists(): password_path.write_text(credentials['password']+'\\n')
   password_path.chmod(0o600)
-print(json.dumps({'installed':True,'scheduleChanged':False,'credentials':'root-only host files; recovery copy in OS keychain'}))
+print(json.dumps({'installed':True,'scheduleChanged':before is not None and before!=payload['files']['hatchkit-backups.timer'],'credentials':'root-only host files; recovery copy in OS keychain'}))
 `;
 
-export async function installBackupHost(dryRun = false) {
+/** The timer unit with the host's daily start. Hosts sharing a Coolify
+ *  fleet start an hour apart, so two captures never compete for it. */
+export function backupTimer(unit: string, schedule: string): string {
+  if ((unit.match(/^OnCalendar=.*$/gm) ?? []).length !== 1)
+    throw new Error("hatchkit-backups.timer must have exactly one OnCalendar line.");
+  return unit.replace(/^OnCalendar=.*$/m, `OnCalendar=*-*-* ${schedule}:00 UTC`);
+}
+
+export async function installBackupHost(dryRun = false, hostName?: string) {
   const provider = backupProvider();
+  const host = backupHost(hostName);
+  const schedule = host.schedule ?? DEFAULT_BACKUP_SCHEDULE;
+  const summary = {
+    host,
+    schedule: `daily ${schedule} UTC (+ up to 15 min); the installer does not enable the timer`,
+  };
   if (dryRun)
     return {
-      host: provider.host,
+      ...summary,
       repositoryBase: provider.repositoryBase,
       applied: false,
       scheduleChanged: false,
@@ -59,16 +81,21 @@ export async function installBackupHost(dryRun = false) {
       "hatchkit-backups.timer",
     ].map((name) => [name, readFileSync(`${directory}/${name}`, "utf8")]),
   );
+  files["hatchkit-backups.timer"] = backupTimer(files["hatchkit-backups.timer"], schedule);
   const payload = {
     repositoryBase: provider.repositoryBase,
     credentials: await backupCredentials(),
     files,
   };
   const script = Buffer.from(INSTALL).toString("base64");
-  return JSON.parse(
-    await backupHostExec(
-      `python3 -c 'import base64;exec(base64.b64decode("${script}"))'`,
-      JSON.stringify(payload),
+  return {
+    ...summary,
+    ...JSON.parse(
+      await backupHostExec(
+        host,
+        `python3 -c 'import base64;exec(base64.b64decode("${script}"))'`,
+        JSON.stringify(payload),
+      ),
     ),
-  );
+  };
 }

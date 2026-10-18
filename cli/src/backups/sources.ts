@@ -19,10 +19,16 @@
  * Every host program here runs the CLI's own copy of the script over
  * Tailscale SSH, so a host installed before this change gets the same
  * answers without a reinstall. `sources` and `plan` only read.
+ *
+ * With several backup hosts, a project lives in exactly one host's
+ * policy: two hosts writing one restic repository would each prune the
+ * other's snapshots. A command finds the project's host by asking every
+ * host (or takes `--host`), and registering on another host removes the
+ * project from the old one in the same step.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { backupHostExec, backupProvider } from "./provider.js";
+import { type BackupHost, backupHost, backupHostExec, backupHosts } from "./provider.js";
 import type { BackupProject, BackupSource } from "./register.js";
 import { backupProjectName } from "./scripts.js";
 
@@ -46,6 +52,8 @@ export interface SourceFix {
 }
 
 export interface SourceRow {
+  /** The backup host whose policy holds the project. */
+  host?: string;
   project: string;
   source: string;
   kind: BackupSource["kind"];
@@ -60,9 +68,12 @@ export interface SourceRow {
 }
 
 export interface SourceReport {
-  host: string;
+  /** The hosts that answered. */
+  hosts: string[];
   sources: SourceRow[];
   stale: SourceRow[];
+  /** Hosts that could not be read. A report with no host read throws. */
+  errors: { host: string; error: string }[];
 }
 
 function template(name: string): string {
@@ -73,26 +84,31 @@ function template(name: string): string {
 }
 
 /** Run the bundled runner.py with `args`, the script itself on stdin. */
-async function hostRunner(args: string[]): Promise<string> {
+async function hostRunner(host: BackupHost, args: string[]): Promise<string> {
   for (const arg of args) {
     if (!/^[a-z0-9_-]+$/.test(arg)) throw new Error("Unsafe runner argument.");
   }
-  return backupHostExec(`python3 - ${args.join(" ")}`, template("runner.py"), 60_000);
+  return backupHostExec(host, `python3 - ${args.join(" ")}`, template("runner.py"), 60_000);
 }
 
 /** Run the bundled register.py next to the installed runner, payload on stdin. */
-async function hostRegister(mode: "add" | "replace" | "remove", payload: unknown) {
+async function hostRegister(
+  host: BackupHost,
+  mode: "add" | "replace" | "remove",
+  payload: unknown,
+) {
   const script = Buffer.from(template("register.py")).toString("base64");
   return JSON.parse(
     await backupHostExec(
+      host,
       `cd /opt/hatchkit-backups && python3 -c 'import base64,sys;sys.argv=["register.py","${mode}"];exec(base64.b64decode("${script}"))'`,
       JSON.stringify(payload),
     ),
   ) as Record<string, unknown>;
 }
 
-export function hostRegisterProject(project: BackupProject) {
-  return hostRegister("add", project) as Promise<{
+export function hostRegisterProject(host: BackupHost, project: BackupProject) {
+  return hostRegister(host, "add", project) as Promise<{
     project: string;
     registered: boolean;
     existing: boolean;
@@ -100,27 +116,105 @@ export function hostRegisterProject(project: BackupProject) {
 }
 
 /** The policy exactly as the host holds it; the guard for every change. */
-export async function hostPolicy(project: string): Promise<BackupProject> {
+export async function hostPolicy(host: BackupHost, project: string): Promise<BackupProject> {
   backupProjectName(project);
-  const plan = JSON.parse(await hostRunner(["plan", "--project", project])) as {
+  const plan = JSON.parse(await hostRunner(host, ["plan", "--project", project])) as {
     projects: BackupProject[];
   };
   const policy = plan.projects.find((p) => p.name === project);
-  if (!policy) throw new Error(`${project} is not registered for backups on the host.`);
+  if (!policy) throw new Error(`${project} is not registered for backups on ${host.name}.`);
   return policy;
 }
 
-/** Read-only: resolve every registered source on the host. */
-export async function fetchSourceReport(project?: string): Promise<SourceReport> {
+// A host without /etc/hatchkit-backups/config.json is configured locally
+// but not installed yet: it holds no project.
+const PROJECTS = `import json,pathlib
+path=pathlib.Path('/etc/hatchkit-backups/config.json')
+print(json.dumps({'installed':path.exists(),'projects':json.loads(path.read_text())['projects'] if path.exists() else []}))
+`;
+
+/** Read-only: every policy `host` holds, exactly as stored. */
+export async function hostProjects(
+  host: BackupHost,
+): Promise<{ installed: boolean; projects: BackupProject[] }> {
+  const script = Buffer.from(PROJECTS).toString("base64");
+  return JSON.parse(
+    await backupHostExec(host, `python3 -c 'import base64;exec(base64.b64decode("${script}"))'`),
+  );
+}
+
+export interface ProjectLocation {
+  host: BackupHost;
+  policy: BackupProject;
+}
+
+/** Every host whose policy holds `project`. Throws when a host cannot be
+ *  read: where a project lives is known only once every host answered. */
+export async function locateBackupProject(project: string): Promise<ProjectLocation[]> {
+  backupProjectName(project);
+  const hosts = backupHosts();
+  const answers = await Promise.allSettled(hosts.map((host) => hostProjects(host)));
+  const found: ProjectLocation[] = [];
+  answers.forEach((answer, i) => {
+    if (answer.status === "rejected")
+      throw new Error(
+        `Couldn't read backup host ${hosts[i].name} to find ${project}'s host: ${(answer.reason as Error).message} Pass --host <name> to skip the lookup.`,
+      );
+    const policy = answer.value.projects.find((p) => p.name === project);
+    if (policy) found.push({ host: hosts[i], policy });
+  });
+  return found;
+}
+
+/** `--host`, the only host, or the one host whose policy holds `project`. */
+export async function projectHost(project: string, name?: string): Promise<BackupHost> {
+  if (name) return backupHost(name);
+  const hosts = backupHosts();
+  if (hosts.length === 1) return hosts[0];
+  const found = await locateBackupProject(project);
+  if (found.length === 1) return found[0].host;
+  if (found.length === 0)
+    throw new Error(
+      `${project} is not registered on any backup host (${hosts.map((h) => h.name).join(", ")}). Pass --host <name>.`,
+    );
+  throw new Error(
+    `${project} is registered on ${found.map((f) => f.host.name).join(" and ")}, and a project belongs to one host. Deregister it from the wrong one: hatchkit backup deregister --project ${project} --host <name> --dry-run`,
+  );
+}
+
+/** Read-only: resolve every registered source on one host, the project's
+ *  host, or every host. Unreadable hosts land in `errors`; throws only
+ *  when no host answered. */
+export async function fetchSourceReport(project?: string, host?: string): Promise<SourceReport> {
   if (project) backupProjectName(project);
-  const raw = JSON.parse(
-    await hostRunner(["sources", ...(project ? ["--project", project] : [])]),
-  ) as { sources: SourceRow[] };
-  const sources = attachFixes(raw.sources);
+  const hosts = host ? [backupHost(host)] : project ? [await projectHost(project)] : backupHosts();
+  const answers = await Promise.allSettled(
+    hosts.map(async (h) => {
+      const raw = JSON.parse(
+        await hostRunner(h, ["sources", ...(project ? ["--project", project] : [])]),
+      ) as { sources: SourceRow[] };
+      return raw.sources.map((row) => ({ ...row, host: h.name }));
+    }),
+  );
+  const errors: SourceReport["errors"] = [];
+  const rows: SourceRow[] = [];
+  const read: string[] = [];
+  answers.forEach((answer, i) => {
+    if (answer.status === "fulfilled") {
+      read.push(hosts[i].name);
+      rows.push(...answer.value);
+    } else errors.push({ host: hosts[i].name, error: (answer.reason as Error).message });
+  });
+  if (read.length === 0) {
+    if (errors.length === 1) throw new Error(errors[0].error);
+    throw new Error(errors.map((e) => `${e.host}: ${e.error}`).join("; "));
+  }
+  const sources = attachFixes(rows, { hostFlag: backupHosts().length > 1 });
   return {
-    host: backupProvider().host.target,
+    hosts: read,
     sources,
     stale: sources.filter((row) => row.state !== "ok"),
+    errors,
   };
 }
 
@@ -138,17 +232,19 @@ export function ownedCandidates(project: string, candidates: SourceCandidate[] =
 
 const cmd = (args: string) => `hatchkit backup ${args}`;
 
-/** Pure: decide the fix for each stale row. */
-export function attachFixes(rows: SourceRow[]): SourceRow[] {
+/** Pure: decide the fix for each stale row. `hostFlag` names the row's
+ *  host in every command, so a fix needs no lookup across hosts. */
+export function attachFixes(rows: SourceRow[], opts: { hostFlag?: boolean } = {}): SourceRow[] {
   return rows.map((row) => {
     if (row.state === "ok") return row;
-    const siblings = rows.filter((r) => r.project === row.project);
+    const on = opts.hostFlag && row.host ? ` --host ${row.host}` : "";
+    const siblings = rows.filter((r) => r.project === row.project && r.host === row.host);
     const allStale = siblings.every((r) => r.state !== "ok");
     const remove =
       siblings.length === 1 || allStale
         ? {
             action: "deregister" as const,
-            args: `deregister --project ${row.project}`,
+            args: `deregister --project ${row.project}${on}`,
             summary:
               siblings.length === 1
                 ? `${row.project}'s only backup source is gone. Deregister the project; its snapshots stay in the bucket.`
@@ -156,21 +252,23 @@ export function attachFixes(rows: SourceRow[]): SourceRow[] {
           }
         : {
             action: "remove-source" as const,
-            args: `update-source --project ${row.project} --source ${row.source} --remove`,
+            args: `update-source --project ${row.project} --source ${row.source} --remove${on}`,
             summary: `Drop ${row.source} from ${row.project}'s backups; the other sources keep running.`,
           };
     const retarget = (c: SourceCandidate) =>
-      `update-source --project ${row.project} --source ${row.source} --container ${c.container}`;
+      `update-source --project ${row.project} --source ${row.source} --container ${c.container}${on}`;
     let fix: SourceFix;
     if (row.state === "ambiguous") {
       const options = row.candidates ?? [];
       fix = {
         action: "review",
         summary: `${row.source} matches ${row.matches} running containers; pin it to one.`,
-        command: options[0] ? cmd(retarget(options[0])) : cmd(`sources --project ${row.project}`),
+        command: options[0]
+          ? cmd(retarget(options[0]))
+          : cmd(`sources --project ${row.project}${on}`),
         preview: options[0]
           ? cmd(`${retarget(options[0])} --dry-run`)
-          : cmd(`sources --project ${row.project}`),
+          : cmd(`sources --project ${row.project}${on}`),
         alternatives: options.slice(1).map((c) => cmd(retarget(c))),
       };
     } else if (row.kind === "files") {
@@ -262,10 +360,10 @@ export function policyWithout(policy: BackupProject, drop: string[]): PolicyChan
       };
 }
 
-export async function applyPolicyChange(change: PolicyChange) {
+export async function applyPolicyChange(host: BackupHost, change: PolicyChange) {
   return change.action === "deregister"
-    ? hostRegister("remove", { name: change.project, expected: change.before })
-    : hostRegister("replace", { project: change.after, expected: change.before });
+    ? hostRegister(host, "remove", { name: change.project, expected: change.before })
+    : hostRegister(host, "replace", { project: change.after, expected: change.before });
 }
 
 /** `backup update-source`: point one source at another running container,
@@ -276,11 +374,13 @@ export async function updateBackupSource(input: {
   source: string;
   container?: string;
   remove?: boolean;
+  host?: string;
   dryRun: boolean;
 }) {
   if (!!input.container === !!input.remove)
     throw new Error("Pass exactly one of --container <name> or --remove.");
-  const policy = await hostPolicy(input.project);
+  const host = await projectHost(input.project, input.host);
+  const policy = await hostPolicy(host, input.project);
   const current = policy.sources.find((s) => s.name === input.source);
   if (!current)
     throw new Error(
@@ -294,7 +394,7 @@ export async function updateBackupSource(input: {
         `${input.source} is ${input.project}'s last source. Run hatchkit backup deregister --project ${input.project} instead.`,
       );
   } else {
-    const report = await fetchSourceReport(input.project);
+    const report = await fetchSourceReport(input.project, host.name);
     const row = report.sources.find((r) => r.source === input.source);
     if (row?.state === "ok")
       throw new Error(
@@ -320,14 +420,24 @@ export async function updateBackupSource(input: {
       removedSources: [],
     };
   }
-  if (input.dryRun) return { ...change, applied: false };
-  return { ...change, applied: true, host: await applyPolicyChange(change) };
+  if (input.dryRun) return { ...change, backupHost: host.name, applied: false };
+  return {
+    ...change,
+    backupHost: host.name,
+    applied: true,
+    host: await applyPolicyChange(host, change),
+  };
 }
 
 /** `backup deregister`: drop a whole project from the schedule. */
-export async function deregisterBackupProject(input: { project: string; dryRun: boolean }) {
-  const policy = await hostPolicy(input.project);
-  const report = await fetchSourceReport(input.project);
+export async function deregisterBackupProject(input: {
+  project: string;
+  host?: string;
+  dryRun: boolean;
+}) {
+  const host = await projectHost(input.project, input.host);
+  const policy = await hostPolicy(host, input.project);
+  const report = await fetchSourceReport(input.project, host.name);
   const change = policyWithout(
     policy,
     policy.sources.map((s) => s.name),
@@ -338,24 +448,31 @@ export async function deregisterBackupProject(input: { project: string; dryRun: 
     // Deregistering live data is allowed (it is an explicit command), but say so.
     stillRunning: live,
     snapshotsKept: true,
+    backupHost: host.name,
   };
   if (input.dryRun) return { ...result, applied: false };
-  return { ...result, applied: true, host: await applyPolicyChange(change) };
+  return { ...result, applied: true, host: await applyPolicyChange(host, change) };
 }
 
-/** Registered sources that read anything under `uuids`. [] when backups
- *  are not configured; `error` when the host could not be read. */
+/** Registered sources, on every host, that read anything under `uuids`.
+ *  [] when backups are not configured; `error` when a host could not be
+ *  read. */
 export async function backupSourcesReading(
   uuids: string[],
 ): Promise<{ rows: SourceRow[]; error?: string }> {
   try {
-    backupProvider();
+    backupHosts();
   } catch {
     return { rows: [] };
   }
   try {
     const report = await fetchSourceReport();
-    return { rows: report.sources.filter((row) => sourceReferences(row, uuids)) };
+    return {
+      rows: report.sources.filter((row) => sourceReferences(row, uuids)),
+      ...(report.errors.length
+        ? { error: report.errors.map((e) => `${e.host}: ${e.error}`).join("; ") }
+        : {}),
+    };
   } catch (error) {
     return { rows: [], error: (error as Error).message };
   }
@@ -381,7 +498,7 @@ export async function reconcileBackupsAfterRemoval(input: {
   const lines: string[] = [];
   const carried = input.carriedVolumes ?? [];
   try {
-    backupProvider();
+    backupHosts();
   } catch {
     return { lines, changes: [], failed: false };
   }
@@ -390,9 +507,11 @@ export async function reconcileBackupsAfterRemoval(input: {
   try {
     let affected: SourceRow[] = [];
     let kept: SourceRow[] = [];
+    let errors: SourceReport["errors"] = [];
     const deadline = Date.now() + (input.settleMs ?? 0);
     for (;;) {
       const report = await fetchSourceReport();
+      errors = report.errors;
       const reading = report.sources.filter((row) => sourceReferences(row, uuids));
       kept = reading.filter((row) => readsOnlyCarriedVolumes(row, carried));
       affected = reading.filter((row) => !readsOnlyCarriedVolumes(row, carried));
@@ -405,17 +524,24 @@ export async function reconcileBackupsAfterRemoval(input: {
           ? `Backup source ${row.project}/${row.source} reads the carried volume; left registered.`
           : `Backup source ${row.project}/${row.source} reads a carried volume, but the host no longer finds ${(row.missingPaths ?? []).join(", ") || "its paths"}. Left registered; check now: hatchkit backup sources --project ${row.project}`,
       );
-    if (affected.length === 0) return { lines, changes: [], failed: false };
+    for (const { host, error } of errors)
+      lines.push(
+        `Couldn't read backup host ${host}: ${error}`,
+        `Check and fix by hand: hatchkit backup sources --host ${host} --json`,
+      );
+    const failed = errors.length > 0;
+    if (affected.length === 0) return { lines, changes: [], failed };
     const changes: PolicyChange[] = [];
     for (const project of [...new Set(affected.map((r) => r.project))]) {
       const rows = affected.filter((r) => r.project === project);
+      const host = backupHost(rows[0].host);
       for (const row of rows.filter((r) => r.state !== "missing"))
         lines.push(
           `Backup source ${project}/${row.source} still resolves on the host; left registered. Check later: hatchkit backup sources --project ${project}`,
         );
       const gone = rows.filter((r) => r.state === "missing").map((r) => r.source);
       if (gone.length === 0) continue;
-      const change = policyWithout(await hostPolicy(project), gone);
+      const change = policyWithout(await hostPolicy(host, project), gone);
       changes.push(change);
       const what =
         change.action === "deregister"
@@ -424,11 +550,11 @@ export async function reconcileBackupsAfterRemoval(input: {
       if (input.dryRun) {
         lines.push(`Would be applied: ${what}.`);
       } else {
-        await applyPolicyChange(change);
+        await applyPolicyChange(host, change);
         lines.push(`Applied: ${what}.`);
       }
     }
-    return { lines, changes, failed: false };
+    return { lines, changes, failed };
   } catch (error) {
     lines.push(
       `Couldn't update backup sources: ${(error as Error).message}`,

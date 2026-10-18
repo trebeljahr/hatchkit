@@ -67,10 +67,10 @@ const MODEL: ExplainModel = {
   ],
   commands: [
     {
-      name: "hatchkit backup <configure|install|register|sources|update-source|deregister|run|status|snapshots|restore|scripts|plan|bundle|alerts|alert-test>",
+      name: "hatchkit backup <configure|hosts|add-host|remove-host|install|timer|register|sources|update-source|deregister|run|status|snapshots|restore|restore-check|scripts|plan|bundle|alerts|alert-test>",
       summary:
         "Keep backup-bucket credentials in the OS keychain; manage encrypted daily data backups through Tailscale. Retain three verified generations per project.",
-      when: "Configure once for a backup host. New create deployments register standard databases on that host; register existing projects and custom file paths explicitly. Status reports missing, failed and stale backups, and `backup sources` (also in status and doctor) names every registered source that no longer matches a running container, with the exact `update-source`/`deregister` fix. A missing source still fails that project's run. `destroy` and `migrate-runtime --cleanup` remove the sources of what they delete. Project package scripts list verified snapshots and select an isolated recovery; production cutover is separate.",
+      when: "Configure once; add more backup hosts with `add-host` (same bucket and keychain credential, own daily start). Each project lives in one host's policy: `--host` picks the host, otherwise commands find the project's host, and `register` on another host moves the project there in one guarded step. New create deployments register standard databases on the host of their Coolify server; register existing projects and custom file paths explicitly. Status reports missing, failed and stale backups, and `backup sources` (also in status and doctor) names every registered source that no longer matches a running container, with the exact `update-source`/`deregister` fix. A missing source still fails that project's run. `destroy` and `migrate-runtime --cleanup` remove the sources of what they delete. Project package scripts list verified snapshots and select an isolated recovery; production cutover is separate.",
     },
     {
       name: "hatchkit host integrity [--cpu-window <s>] | install|uninstall [--dry-run] | test",

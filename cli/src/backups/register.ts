@@ -1,8 +1,14 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getConfig, getConfigPath } from "../config.js";
-import { backupProvider } from "./provider.js";
-import { hostRegisterProject } from "./sources.js";
+import { type BackupHost, backupHost, backupHostForServer, backupHosts } from "./provider.js";
+import {
+  type ProjectLocation,
+  applyPolicyChange,
+  hostRegisterProject,
+  locateBackupProject,
+  policyWithout,
+} from "./sources.js";
 
 export interface BackupSource {
   name: string;
@@ -47,11 +53,42 @@ export function createBackupProject(input: {
 
 export function shouldRegisterBackups(serverUuid: string): boolean {
   const provider = getConfig().providers.backups;
-  return (
-    provider?.status === "configured" &&
-    provider.autoRegister &&
-    provider.host.serverUuid === serverUuid
-  );
+  if (provider?.status !== "configured" || !provider.autoRegister) return false;
+  try {
+    return !!backupHostForServer(serverUuid);
+  } catch {
+    return false;
+  }
+}
+
+/** The host a registration targets: `--host`, the host of the project's
+ *  Coolify server, or the only host. */
+export function registrationHost(options: { serverUuid?: string; host?: string }): BackupHost {
+  const differs =
+    "Project server differs from the configured backup hosts. Configure that host before registration (hatchkit backup add-host).";
+  if (options.host) {
+    const host = backupHost(options.host);
+    if (options.serverUuid && host.serverUuid !== options.serverUuid)
+      throw new Error(
+        `Project server differs from backup host ${host.name}'s Coolify server. Pass the host that runs the project.`,
+      );
+    return host;
+  }
+  if (options.serverUuid) {
+    const host = backupHostForServer(options.serverUuid);
+    if (!host) throw new Error(differs);
+    return host;
+  }
+  return backupHost();
+}
+
+/** Other hosts holding `project`. With one host there is nothing to ask. */
+export async function registeredElsewhere(
+  project: string,
+  host: BackupHost,
+): Promise<ProjectLocation[]> {
+  if (backupHosts().length === 1) return [];
+  return (await locateBackupProject(project)).filter((found) => found.host.name !== host.name);
 }
 
 export function saveBackupRegistration(project: BackupProject, serverUuid: string): string {
@@ -64,15 +101,48 @@ export function saveBackupRegistration(project: BackupProject, serverUuid: strin
   return path;
 }
 
+/**
+ * Register `project` on its host. When another host's policy holds the
+ * project, this is a move: add it here, then remove it there with the
+ * policy read before the add as the guard. If that host's policy changed
+ * in between, the add is undone and nothing moved.
+ */
 export async function registerBackupProject(
   project: BackupProject,
-  options: { serverUuid?: string; dryRun?: boolean } = {},
+  options: { serverUuid?: string; host?: string; dryRun?: boolean } = {},
 ) {
-  const provider = backupProvider();
-  if (options.serverUuid && provider.host.serverUuid !== options.serverUuid)
-    throw new Error(
-      "Project server differs from the configured backup host. Configure that host before registration.",
+  const host = registrationHost(options);
+  const elsewhere = await registeredElsewhere(project.name, host);
+  const movedFrom = elsewhere.map((found) => found.host.name);
+  if (options.dryRun) return { project, host, movedFrom, applied: false };
+  const added = await hostRegisterProject(host, project);
+  for (const found of elsewhere) {
+    const change = policyWithout(
+      found.policy,
+      found.policy.sources.map((source) => source.name),
     );
-  if (options.dryRun) return { project, host: provider.host, applied: false };
-  return hostRegisterProject(project);
+    try {
+      await applyPolicyChange(found.host, change);
+    } catch (error) {
+      let undo = `${host.name} held the same policy before, so it stays registered on both hosts. Deregister it from one: hatchkit backup deregister --project ${project.name} --host <name> --dry-run`;
+      if (!added.existing) {
+        try {
+          await applyPolicyChange(
+            host,
+            policyWithout(
+              project,
+              project.sources.map((s) => s.name),
+            ),
+          );
+          undo = `The registration on ${host.name} was undone; nothing moved. Re-run to review ${found.host.name}'s current policy.`;
+        } catch (undoError) {
+          undo = `Undoing the registration on ${host.name} failed too (${(undoError as Error).message}), so ${project.name} is registered on both hosts. Deregister it from one: hatchkit backup deregister --project ${project.name} --host <name> --dry-run`;
+        }
+      }
+      throw new Error(
+        `Couldn't remove ${project.name} from ${found.host.name}: ${(error as Error).message} ${undo}`,
+      );
+    }
+  }
+  return { ...added, host: host.name, movedFrom, applied: true };
 }

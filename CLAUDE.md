@@ -99,6 +99,9 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   ones (`backup update-source … --container|--remove`, `backup deregister`,
   both `--dry-run` first). Also part of `backup status` and `doctor`.
   `destroy` and `migrate-runtime --cleanup` remove sources of what they delete.
+  Several backup hosts: `backup hosts`, `backup add-host`; `--host <name>`
+  picks one, else a `--project` command finds the project's host. A project
+  lives on one host; `backup register` on another host moves it (guarded).
 - `hatchkit host integrity [--cpu-window <s>] [--json]`: read-only scan of
   the backup host for a compromised container (deleted binaries, process
   names the image does not explain, new files in /tmp, /var/tmp, /dev/shm,

@@ -127,5 +127,6 @@
   "test-backups.ts",
   "test-backup-recovery.ts",
   "test-backup-host-exec.ts",
+  "test-backup-hosts.ts",
   "test-host-integrity.ts"
 ]

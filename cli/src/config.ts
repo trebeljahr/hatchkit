@@ -174,9 +174,23 @@ export interface S3ProviderMeta extends ProviderStatus {
   region?: string;
 }
 
+export interface BackupHostMeta {
+  transport: "tailscale";
+  target: string;
+  serverUuid: string;
+  /** Daily start of `hatchkit-backups.timer`, "HH:MM" UTC. Default 16:00. */
+  schedule?: string;
+}
+
+/** Every host shares the repository base and the keychain credentials;
+ *  each project's restic repository lives on exactly one host's policy. */
 export interface BackupProviderMeta extends ProviderStatus {
   repositoryBase: string;
-  host: { transport: "tailscale"; target: string; serverUuid: string };
+  /** Backup hosts by name. */
+  hosts: Record<string, BackupHostMeta>;
+  /** Before multi-host support: the one host. Read as `hosts`, named
+   *  after its Tailscale hostname; the next write stores `hosts`. */
+  host?: BackupHostMeta;
   autoRegister: boolean;
 }
 

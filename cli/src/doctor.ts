@@ -1859,9 +1859,9 @@ export async function checkSesBounceFeedback(source?: {
  *  nightly run fails for that project. Runs only when backups are
  *  configured; reads the host over Tailscale and changes nothing. */
 async function checkBackupSources(): Promise<CheckResult[]> {
-  const { backupProvider } = await import("./backups/provider.js");
+  const { backupHosts } = await import("./backups/provider.js");
   try {
-    backupProvider();
+    backupHosts();
   } catch {
     return [];
   }
@@ -1879,32 +1879,42 @@ async function checkBackupSources(): Promise<CheckResult[]> {
       },
     ];
   }
+  const unread: CheckResult[] = report.errors.map(({ host, error }) => ({
+    name: `Backup sources resolve on ${host}`,
+    status: "warn",
+    detail: `couldn't read the backup host: ${error.split("\n")[0]}`,
+    hint: [`Retry: hatchkit backup sources --host ${host} --json`],
+  }));
   if (report.stale.length === 0)
     return [
       {
         name: "Backup sources resolve on the host",
         status: "ok",
-        detail: `${report.sources.length} source(s) on ${report.host}`,
+        detail: `${report.sources.length} source(s) on ${report.hosts.join(", ")}`,
       },
+      ...unread,
     ];
-  return report.stale.map((row) => ({
-    name: `Backup source ${row.project}/${row.source}`,
-    status: "fail" as const,
-    detail:
-      row.state === "ambiguous"
-        ? `selector matches ${row.matches} running containers`
-        : row.kind === "files"
-          ? `path(s) missing: ${(row.missingPaths ?? []).join(", ")}`
-          : `no running container matches ${JSON.stringify(row.selector)}; tonight's ${row.project} backup will fail`,
-    hint: row.fix
-      ? [
-          row.fix.summary,
-          `Preview: ${row.fix.preview}`,
-          `Apply:   ${row.fix.command}`,
-          ...(row.fix.alternatives ?? []).map((alt) => `Or:      ${alt}`),
-        ]
-      : undefined,
-  }));
+  return [
+    ...unread,
+    ...report.stale.map((row) => ({
+      name: `Backup source ${row.project}/${row.source}`,
+      status: "fail" as const,
+      detail:
+        row.state === "ambiguous"
+          ? `selector matches ${row.matches} running containers`
+          : row.kind === "files"
+            ? `path(s) missing: ${(row.missingPaths ?? []).join(", ")}`
+            : `no running container matches ${JSON.stringify(row.selector)}; tonight's ${row.project} backup will fail`,
+      hint: row.fix
+        ? [
+            row.fix.summary,
+            `Preview: ${row.fix.preview}`,
+            `Apply:   ${row.fix.command}`,
+            ...(row.fix.alternatives ?? []).map((alt) => `Or:      ${alt}`),
+          ]
+        : undefined,
+    })),
+  ];
 }
 
 /** The skip row for a provider `hatchkit config pause` marked as
