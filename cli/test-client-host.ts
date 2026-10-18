@@ -158,10 +158,19 @@ await test("originPaths and the Worker name come from the input", () => {
 });
 
 await test("originPaths: path prefixes only", () => {
-  assert.deepEqual(normaliseOriginPaths(["/api", "/api/", "/ws"]), ["/api", "/ws"]);
-  for (const bad of ["/", "api", "/api*", "/a?b", "/a b", "//x"]) {
+  assert.deepEqual(normaliseOriginPaths(["/api", "/api/", "/api/*", "/ws"]), ["/api", "/ws"]);
+  for (const bad of ["/", "/*", "*", "api", "/a*b", "/a**", "/a?b", "/a b", "//x"]) {
     assert.throws(() => normaliseOriginPaths([bad]), /path prefix/, bad);
   }
+});
+
+await test("originPaths: a trailing * keeps the bare path on the origin (WebSocket at /trpc)", () => {
+  assert.deepEqual(normaliseOriginPaths(["/trpc*", "/trpc/*", "/trpc*"]), ["/trpc*", "/trpc"]);
+  const edge = computeRoutingPlan({ ...base, originPaths: ["/trpc*", "/api"] }).edge;
+  assert.deepEqual(
+    edge?.routes.filter((r) => r.purpose === "origin").map((r) => r.pattern),
+    ["mood.example.com/trpc*", "mood.example.com/api/*"],
+  );
 });
 
 await test("refuses a compose runtime, a static site and a backend", () => {

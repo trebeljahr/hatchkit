@@ -5288,7 +5288,8 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Options:")}
     --worker <name>        Worker name (default: wrangler.jsonc name, else <name>-client)
     --origin-path <path>   Path that stays on Coolify (repeatable; default /api under
-                           single-origin, none under split)
+                           single-origin, none under split). /trpc keeps /trpc/*;
+                           /trpc* also keeps the bare /trpc (a WebSocket there)
     --yes                  Don't ask
     --skip-soak            --cleanup before the 7-day soak is over
     --keep-package         --cleanup keeps the GHCR client image package

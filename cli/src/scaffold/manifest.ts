@@ -330,7 +330,9 @@ export interface ProjectManifest {
   /** Path prefixes on `domain` that must keep reaching the Coolify
    *  origin when `clientHost` is `cloudflare`. Default `["/api"]` under
    *  single-origin, none under split. Each becomes a no-Worker route
-   *  `<domain><path>/*`. */
+   *  `<domain><path>/*`; an entry with one trailing `*` (`/trpc*`)
+   *  becomes `<domain>/trpc*`, which also matches the bare path (a
+   *  WebSocket at `wss://<domain>/trpc`). */
   originPaths?: string[];
   /** Path from the repo root to the deployable subdir, posix-slashed,
    *  no leading "./", no trailing slash. Absent / undefined means the

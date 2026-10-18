@@ -675,7 +675,7 @@ export function computeEdgePlan(input: RoutingInput, coolifyApps: RoutedApp[]): 
     input.originPaths ?? (input.topology === "split" ? [] : [...DEFAULT_ORIGIN_PATHS]),
   );
   const routes: EdgeRoute[] = originPaths.map((path) => ({
-    pattern: `${input.domain}${path}/*`,
+    pattern: originRoutePattern(input.domain, path),
     host: input.domain,
     script: null,
     purpose: "origin" as const,
@@ -716,21 +716,41 @@ export function edgeRemovalOrder(edge: EdgePlan): EdgeRoute[] {
 }
 
 /** Validate and normalise `originPaths`: each a path prefix starting with
- *  `/`, no `*`, no query, no trailing slash, deduped. `/api` becomes the
- *  route `<domain>/api/*` — not `/api*`, which would also match
- *  `/apiary`. */
+ *  `/`, no query, no trailing slash, deduped. `/api` (or `/api/*`) becomes
+ *  the route `<domain>/api/*` — not `/api*`, which would also match
+ *  `/apiary`. One trailing `*` (`/trpc*`) asks for exactly that: the bare
+ *  path is a request of its own there, see {@link originRoutePattern}. */
 export function normaliseOriginPaths(paths: readonly string[]): string[] {
   const out: string[] = [];
   for (const raw of paths) {
-    const path = String(raw).trim().replace(/\/+$/, "");
-    if (!path.startsWith("/") || path === "" || /[*?#\s]/.test(path) || path.includes("//")) {
+    let text = String(raw).trim();
+    let bare = false;
+    if (text.endsWith("/*")) text = text.slice(0, -2);
+    else if (text.endsWith("*")) {
+      text = text.slice(0, -1);
+      bare = true;
+    }
+    const path = text.replace(/\/+$/, "");
+    if (!path.startsWith("/") || /[*?#\s]/.test(path) || path.includes("//")) {
       throw new Error(
-        `originPaths entry ${JSON.stringify(raw)} must be a path prefix like "/api" (no "*", query or trailing slash).`,
+        `originPaths entry ${JSON.stringify(raw)} must be a path prefix like "/api", or "/trpc*" to also match the bare path (no query, no other "*").`,
       );
     }
-    if (!out.includes(path)) out.push(path);
+    const entry = bare ? `${path}*` : path;
+    if (!out.includes(entry)) out.push(entry);
   }
   return out;
+}
+
+/** Route pattern for one normalised `originPaths` entry: `/api` →
+ *  `<domain>/api/*`; `/trpc*` → `<domain>/trpc*`. The second form is for
+ *  a path whose bare URL is a request too: tRPC's wsLink opens
+ *  `wss://<domain>/trpc` with no slash and no query, which no `/trpc/*`
+ *  route matches, so the upgrade would land on the Worker and fail
+ *  (chess-app, 2026-10-18). It also matches `/trpcfoo`, as Traefik's
+ *  PathPrefix rule does on the origin. */
+export function originRoutePattern(domain: string, path: string): string {
+  return path.endsWith("*") ? `${domain}${path}` : `${domain}${path}/*`;
 }
 
 function hostOf(url: string): string {
