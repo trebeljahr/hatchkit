@@ -673,7 +673,7 @@ With SES and Listmonk configured, `doctor` checks the [bounce feedback path](/do
 
 Run from inside a project directory and it also lists that project's [deferred steps](#deferred-steps) with the command to finish each one. Deferred steps never make `doctor` exit non-zero — they're work you postponed, not a broken credential.
 
-With a backup host configured, `doctor` also runs the [host integrity scan](#hatchkit-host-integrity) on each backup host and reports whether the daily check is installed and mailing.
+With a backup host configured, `doctor` also runs the [host integrity scan](#hatchkit-host-integrity) on each backup host and reports whether the daily check is installed and mailing. It also shows one [update watch](#hatchkit-host-updates) row for the shared services on every backup host.
 
 `hatchkit doctor --fix` adds one step after the report: for each failure that doctor can repair itself, it asks `y/N` (default No) and applies the repair on a yes. Today that covers a project's Listmonk tx template that HTML-escapes the email body, and each broken piece of the SES bounce feedback path. `--yes` applies every offered repair without asking. Without a terminal and without `--yes`, nothing is applied. `--fix` is ignored with `--json`, so `doctor --json` stays read-only.
 
@@ -703,6 +703,30 @@ The report never holds environment values, command lines or file contents. Proce
 `install` writes the script next to the backup runner in `/opt/hatchkit-backups` and enables a daily timer (05:00 UTC). Each run samples for one hour, then mails its findings through the backup-alert SMTP that [`hatchkit backup alerts`](#other-command-routes) set up. A run with findings mails every day; the first clean run after them sends one all-clear. A run that systemd stops before it finishes sends its own mail. `install` refuses a host without the backup runner or its alert mail, and runs one read-only scan before it writes anything. `--dry-run` runs only that scan and lists what the first mail would contain.
 
 When a finding is expected and you know what causes it, add its `allow` entry from `--json` to `/etc/hatchkit-backups/host-integrity.json` on the host. The keys are `processes` (container-name or image glob to process names), `tempFiles` (path globs), `peers` (CIDRs, for every container), `peerContainers` (globs whose outbound peers are not checked) and `cpuLimits` (glob to percent of one core). Deleted binaries, executables in temp dirs and binaries run from a temp dir have no exception: restart the container once you know why.
+
+---
+
+## `hatchkit host updates`
+
+Reads the running version of each shared service on every backup host over Tailscale SSH and compares it with upstream security advisories. It only reads.
+
+```bash
+hatchkit host updates [--host <name>] [--json]         # check now; exits 1 on a finding
+hatchkit host updates install --host <name> [--dry-run] # weekly check that mails findings
+hatchkit host updates uninstall --host <name> [--dry-run]
+hatchkit host updates test --host <name>                # send a test mail
+```
+
+It watches Coolify, Traefik (`coolify-proxy`), Plausible CE, Listmonk, Uptime Kuma, GlitchTip and ClickHouse. For each running container of those images it reports:
+
+- the running version. It comes from the image's version label or env, else from a tag that names one release, else from the binary in the container. A floating tag such as `traefik:v3.6` or `louislam/uptime-kuma:2` names a line, not a release;
+- every `high` or `critical` advisory in the repository's [GitHub security advisories](https://docs.github.com/en/code-security/security-advisories) whose vulnerable range covers that version, with its fixed version and the latest release. A version at or past a patched release on its own branch is not covered. GlitchTip publishes no advisories; it is compared with its latest GitLab tag only;
+- Coolify's own auto-update failing: the newest `/data/coolify/source/upgrade-*.log` ends in an error, with the number of failed runs in a row;
+- Cloudflare's [published IP ranges](https://api.cloudflare.com/client/v4/ips) differing from the snapshot the origin firewalls were built from (`update-watch-cloudflare.json`), from the host's `HATCHKIT-CF` iptables chain, or from a Hetzner firewall that allows 80/443 only from a source list. An origin that allows only Cloudflare drops traffic from a new edge. `doctor` reads the Hetzner firewalls with your Hetzner token; the weekly check sees the snapshot and the chain.
+
+A check it could not make (a feed error, a version nothing names, an advisory range it cannot read) is listed as not checked, never as clean. `hatchkit doctor` and `hatchkit host updates` read GitHub through your `gh` login; whatever fails there, the host reads itself.
+
+`install` writes the script next to the backup runner in `/opt/hatchkit-backups` and enables a weekly timer (Monday 06:00 UTC), so a new advisory is flagged within a week. Each run mails its findings and anything it could not check through the backup-alert SMTP that [`hatchkit backup alerts`](#other-command-routes) set up; the first clean run after them sends one all-clear. `install` refuses a host without the backup runner or its alert mail, and runs one read-only check before it writes anything. `--dry-run` runs only that check.
 
 ---
 

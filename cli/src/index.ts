@@ -42,6 +42,7 @@ import { requireCloudflareZoneForTerraform, runTerraform } from "./deploy/terraf
 import { printReleaseUsage } from "./features/release/command.js";
 import { type HelpTopic, helpTopicForCommand, isHelpRequest } from "./help-routing.js";
 import { HOST_USAGE, runHostCommand } from "./host/integrity.js";
+import { UPDATES_USAGE, runUpdatesCommand } from "./host/updates.js";
 import {
   type Feature,
   type GpuPlatform,
@@ -162,7 +163,8 @@ async function main(): Promise<void> {
       await runBackupCommand(args.slice(1));
       break;
     case "host":
-      await runHostCommand(args.slice(1));
+      if (args[1] === "updates") await runUpdatesCommand(args.slice(2));
+      else await runHostCommand(args.slice(1));
       break;
     case "init":
     case "setup":
@@ -3886,6 +3888,7 @@ function printCommandHelp(cmd: string | undefined): void {
       return;
     case "host":
       console.log(HOST_USAGE);
+      console.log(UPDATES_USAGE);
       return;
     case "provision":
       printProvisionUsage();
@@ -5904,6 +5907,7 @@ function printHelp(topic?: HelpTopic): void {
     plausible       Plausible site helpers (rename — domain change with history kept)
     listmonk user   Give a project its own Listmonk API user (roles + env rewrite)
     host integrity  Scan the Coolify host for signs of a compromised container (read-only; install = daily mail)
+    host updates    Flag shared services (Coolify, Traefik, Plausible, …) that a high/critical advisory covers (read-only; install = weekly mail)
     email           Set up Cloudflare Email Routing + MX/SPF/DMARC (setup/status)
     keys show <p>   Print the dotenvx private key for a project
     keys set <p>    Upsert the key into the OS keychain (after \`dotenvx rotate\`)

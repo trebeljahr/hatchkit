@@ -1,0 +1,4256 @@
+{
+ "https://api.cloudflare.com/client/v4/ips": {
+  "errors": [],
+  "messages": [],
+  "result": {
+   "etag": "38f79d050aa027e3be3865e495dcc9bc",
+   "ipv4_cidrs": [
+    "173.245.48.0/20",
+    "103.21.244.0/22",
+    "103.22.200.0/22",
+    "103.31.4.0/22",
+    "141.101.64.0/18",
+    "108.162.192.0/18",
+    "190.93.240.0/20",
+    "188.114.96.0/20",
+    "197.234.240.0/22",
+    "198.41.128.0/17",
+    "162.158.0.0/15",
+    "104.16.0.0/13",
+    "104.24.0.0/14",
+    "172.64.0.0/13",
+    "131.0.72.0/22"
+   ],
+   "ipv6_cidrs": [
+    "2400:cb00::/32",
+    "2606:4700::/32",
+    "2803:f800::/32",
+    "2405:b500::/32",
+    "2405:8100::/32",
+    "2a06:98c0::/29",
+    "2c0f:f248::/32"
+   ]
+  },
+  "success": true
+ },
+ "https://api.github.com/repos/ClickHouse/ClickHouse/releases/latest": {
+  "published_at": "2026-10-18T13:46:32Z",
+  "tag_name": "v26.7.34.3-stable"
+ },
+ "https://api.github.com/repos/ClickHouse/ClickHouse/security-advisories?per_page=100&state=published": [
+  {
+   "ghsa_id": "GHSA-8j36-9622-f5cj",
+   "html_url": "https://github.com/ClickHouse/ClickHouse/security/advisories/GHSA-8j36-9622-f5cj",
+   "published_at": "2025-04-10T05:19:16Z",
+   "severity": "medium",
+   "summary": "ClickHouse HTTP header CRLF injection",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "clickhouse",
+      "name": "23.7.6.111"
+     },
+     "patched_versions": "23.7.6.111",
+     "vulnerable_version_range": "< 23.7.6.111"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-5phv-x8x4-83x5",
+   "html_url": "https://github.com/ClickHouse/ClickHouse/security/advisories/GHSA-5phv-x8x4-83x5",
+   "published_at": "2025-03-20T07:16:45Z",
+   "severity": "high",
+   "summary": "CVE-2025-1385- Fail input validation in clickhouse-library-bridge API could lead to RCE",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "ClickHouse"
+     },
+     "patched_versions": "24.3.18.6",
+     "vulnerable_version_range": "< 24.3.18.6"
+    },
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "ClickHouse"
+     },
+     "patched_versions": "24.8.14.27",
+     "vulnerable_version_range": "< 24.8.14.27"
+    },
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "ClickHouse"
+     },
+     "patched_versions": "24.11.5.34",
+     "vulnerable_version_range": "< 24.11.5.34"
+    },
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "ClickHouse"
+     },
+     "patched_versions": "24.12.5.65",
+     "vulnerable_version_range": "< 24.12.5.65"
+    },
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "ClickHouse"
+     },
+     "patched_versions": "25.1.5.5",
+     "vulnerable_version_range": "< 25.1.5.5"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-432f-r822-j66f",
+   "html_url": "https://github.com/ClickHouse/ClickHouse/security/advisories/GHSA-432f-r822-j66f",
+   "published_at": "2024-08-01T16:08:41Z",
+   "severity": "high",
+   "summary": "Specially crafted request could caused undefined behavior which may lead to Remote Code Execution.",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "clickhouse oss",
+      "name": "ClickHouse v24.5"
+     },
+     "patched_versions": "v24.5.1.1763",
+     "vulnerable_version_range": "< v24.5.1.1763"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse oss",
+      "name": "ClickHouse v23.8"
+     },
+     "patched_versions": "v23.8.15.35-lts",
+     "vulnerable_version_range": "< v23.8.15.35-lts"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse oss",
+      "name": "ClickHouse v24.4"
+     },
+     "patched_versions": "v24.4.2.141-stable",
+     "vulnerable_version_range": "< v24.4.2.141-stable"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse oss",
+      "name": "ClickHouse v24.3"
+     },
+     "patched_versions": "v24.3.4.147-lts",
+     "vulnerable_version_range": "< v24.3.4.147-lts"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse oss",
+      "name": "ClickHouse v24.6"
+     },
+     "patched_versions": "v24.6.1.4423-stable",
+     "vulnerable_version_range": "< v24.6.1.4423-stable"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse cloud",
+      "name": "ClickHouse Cloud"
+     },
+     "patched_versions": "v24.2",
+     "vulnerable_version_range": "< v24.1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-45h5-f7g3-gr8r",
+   "html_url": "https://github.com/ClickHouse/ClickHouse/security/advisories/GHSA-45h5-f7g3-gr8r",
+   "published_at": "2024-03-18T07:39:41Z",
+   "severity": "low",
+   "summary": "Role-based Access Control is bypassed when query caching is enabled.",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "clickhouse cloud",
+      "name": "ClickHouse Cloud"
+     },
+     "patched_versions": ">= 24.0.2.54535",
+     "vulnerable_version_range": "< 24.0.2.54535"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse v24",
+      "name": "ClickHouse"
+     },
+     "patched_versions": ">= v24.1.1.2048",
+     "vulnerable_version_range": "< v24.1.1.2048"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse v23.12",
+      "name": "ClickHouse"
+     },
+     "patched_versions": ">= v23.12.6.19",
+     "vulnerable_version_range": "< v23.12.6.19"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse v23.8",
+      "name": "ClickHouse"
+     },
+     "patched_versions": ">= v23.8.12.13",
+     "vulnerable_version_range": "< v23.8.12.13"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse v23.3",
+      "name": "ClickHouse"
+     },
+     "patched_versions": ">= v23.3.22.3",
+     "vulnerable_version_range": "< v23.3.22.3"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-5rmf-5g48-xv63",
+   "html_url": "https://github.com/ClickHouse/ClickHouse/security/advisories/GHSA-5rmf-5g48-xv63",
+   "published_at": "2023-12-18T19:02:12Z",
+   "severity": "high",
+   "summary": "Unauthenticated heap buffer overflow in Gorrila codec decompression",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "clickhouse v23.10",
+      "name": "ClickHouse v23.10"
+     },
+     "patched_versions": "v23.10.5.20",
+     "vulnerable_version_range": "< v23.10.5.20"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse v23.9",
+      "name": "ClickHouse v23.9"
+     },
+     "patched_versions": "v23.9.6.20",
+     "vulnerable_version_range": "< v23.9.6.20"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse v23.8",
+      "name": "ClickHouse v23.8"
+     },
+     "patched_versions": "v23.8.8.20",
+     "vulnerable_version_range": "< v23.8.8.20"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse v23.3",
+      "name": "ClickHouse v23.3"
+     },
+     "patched_versions": "v23.3.18.15",
+     "vulnerable_version_range": "< v23.3.18.15"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse cloud",
+      "name": "ClickHouse Cloud"
+     },
+     "patched_versions": "v23.9.2.47551",
+     "vulnerable_version_range": "< v23.9.2.47551"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-qw9f-qv29-8938",
+   "html_url": "https://github.com/ClickHouse/ClickHouse/security/advisories/GHSA-qw9f-qv29-8938",
+   "published_at": "2023-12-18T19:02:17Z",
+   "severity": "medium",
+   "summary": "Unauthenticated Integer underflow leading to stack overflow in FPC codec decompression",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "clickhouse v23.10",
+      "name": "ClickHouse v23.10"
+     },
+     "patched_versions": "v23.10.4.25",
+     "vulnerable_version_range": "< v23.10.4.25"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse v23.9",
+      "name": "ClickHouse v23.9"
+     },
+     "patched_versions": "v23.9.5.29",
+     "vulnerable_version_range": "< v23.9.5.29"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse v23.8",
+      "name": "ClickHouse v23.8"
+     },
+     "patched_versions": "v23.8.7.24",
+     "vulnerable_version_range": "< 23.8.7.24"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse v23.3",
+      "name": "ClickHouse v23.3"
+     },
+     "patched_versions": "v23.3.17.13",
+     "vulnerable_version_range": "< 23.3.17.13"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse cloud",
+      "name": "ClickHouse Cloud"
+     },
+     "patched_versions": "v23.9.2.47475",
+     "vulnerable_version_range": "< 23.9.2.47475"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-g22g-p6q2-x39v",
+   "html_url": "https://github.com/ClickHouse/ClickHouse/security/advisories/GHSA-g22g-p6q2-x39v",
+   "published_at": "2023-12-18T19:02:25Z",
+   "severity": "high",
+   "summary": "Heap buffer overflow in T64 codec decompression",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "clickhouse v23.10",
+      "name": "ClickHouse v23.10"
+     },
+     "patched_versions": "v23.10.2.13",
+     "vulnerable_version_range": "< v23.10.2.13"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse v23.9",
+      "name": "ClickHouse v23.9"
+     },
+     "patched_versions": "v23.8.6.16",
+     "vulnerable_version_range": "< v23.8.6.16"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse v23.8",
+      "name": "ClickHouse v23.8"
+     },
+     "patched_versions": "v23.9.4.11",
+     "vulnerable_version_range": "< v23.9.4.11"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse v23.3",
+      "name": "ClickHouse v23.3"
+     },
+     "patched_versions": "v23.3.16.7",
+     "vulnerable_version_range": "< v23.3.16.7"
+    },
+    {
+     "package": {
+      "ecosystem": "clickhouse cloud",
+      "name": "ClickHouse Cloud"
+     },
+     "patched_versions": "v23.9.2.47475",
+     "vulnerable_version_range": "< v23.9.2.47475"
+    }
+   ],
+   "withdrawn_at": null
+  }
+ ],
+ "https://api.github.com/repos/coollabsio/coolify/releases/latest": {
+  "published_at": "2026-10-09T18:42:05Z",
+  "tag_name": "v4.4.6"
+ },
+ "https://api.github.com/repos/coollabsio/coolify/security-advisories?per_page=100&state=published": [
+  {
+   "ghsa_id": "GHSA-chg4-63hm-xv9x",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-chg4-63hm-xv9x",
+   "published_at": "2026-07-02T16:35:28Z",
+   "severity": "high",
+   "summary": "Authenticated RCE via SHELL_SAFE_COMMAND_PATTERN regression \u2192 host root",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.474",
+     "vulnerable_version_range": ">= 4.0.0-beta.471, <= 4.0.0-beta.473"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-w8wm-r924-f65v",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-w8wm-r924-f65v",
+   "published_at": "2026-06-25T15:26:05Z",
+   "severity": "high",
+   "summary": "Unauthenticated Deployment Trigger via Webhook HMAC Bypass with Null Secret",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "v4.0.0-beta.474",
+     "vulnerable_version_range": "<= 4.0.0-beta.473"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-f35h-g2c2-q36v",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-f35h-g2c2-q36v",
+   "published_at": "2026-07-02T16:35:51Z",
+   "severity": "low",
+   "summary": "OS Command Injection via Database Credential Fields in Docker Compose Service Commands",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.474",
+     "vulnerable_version_range": "<= 4.0.0-beta.473"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-725v-f5gh-22q9",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-725v-f5gh-22q9",
+   "published_at": "2026-06-28T12:31:47Z",
+   "severity": "critical",
+   "summary": "Cross-Team IDOR: Livewire Components Accept Unscoped server_id and destination_uuid \u2014 Deploy to Other Teams' Servers",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "v4.0.0-beta.474",
+     "vulnerable_version_range": "< v4.0.0-beta.474"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-c83f-5ph7-x8xv",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-c83f-5ph7-x8xv",
+   "published_at": "2026-07-02T16:36:02Z",
+   "severity": "low",
+   "summary": "Sanctum API Tokens Have No Expiration \u2014 Leaked Tokens Grant Permanent Access",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.474",
+     "vulnerable_version_range": "<= 4.0.0-beta.473"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-6pmw-6m96-4v4m",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-6pmw-6m96-4v4m",
+   "published_at": "2026-07-02T16:36:14Z",
+   "severity": "high",
+   "summary": "OS Command Injection via Persistent Volume Names - Root RCE on Managed Servers",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.474",
+     "vulnerable_version_range": "<= 4.0.0-beta.473"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-gvc4-f276-r88p",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-gvc4-f276-r88p",
+   "published_at": "2026-07-02T16:36:22Z",
+   "severity": "high",
+   "summary": "PostgreSQL Healthcheck Command Injection Allows Root Code Execution in Container",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.474",
+     "vulnerable_version_range": "<= 4.0.0-beta.473"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-mv4c-9x67-rrmv",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-mv4c-9x67-rrmv",
+   "published_at": "2026-07-02T16:36:32Z",
+   "severity": "high",
+   "summary": "PostgreSQL Init Script Path Traversal Leads to Arbitrary File Write and Root RCE",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.474",
+     "vulnerable_version_range": "<= 4.0.0-beta.473"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-x9qh-w4c4-54f9",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-x9qh-w4c4-54f9",
+   "published_at": "2026-07-02T16:36:42Z",
+   "severity": "low",
+   "summary": "Command Injection via Unescaped Version String in Docker Build",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.474",
+     "vulnerable_version_range": "<= 4.0.0-beta.473"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-qfcc-2fm3-9q42",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-qfcc-2fm3-9q42",
+   "published_at": "2026-06-25T15:25:39Z",
+   "severity": "high",
+   "summary": "Cross-Team IDOR via Unscoped Server and Project Lookups Exposes SSH Keys and Infrastructure",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "other",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "v4.0.0-beta.471",
+     "vulnerable_version_range": "< 4.0.0-beta.374"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-mf8p-rj62-9f9m",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-mf8p-rj62-9f9m",
+   "published_at": "2026-06-25T15:25:07Z",
+   "severity": "high",
+   "summary": "Authenticated Remote Code Execution via Command Injection in Destination Network Management",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "v4.0.0-beta.471",
+     "vulnerable_version_range": "<= v4.0.0-beta.470 "
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-q9j6-xcvx-px63",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-q9j6-xcvx-px63",
+   "published_at": "2026-07-02T16:36:49Z",
+   "severity": "high",
+   "summary": "Authenticated Remote Code Execution in GetLogs Livewire Component",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.471",
+     "vulnerable_version_range": "<= 4.0.0-beta.470"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-9pp4-wcmj-rq73",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-9pp4-wcmj-rq73",
+   "published_at": "2026-06-25T15:24:54Z",
+   "severity": "high",
+   "summary": " Authenticated Host RCE in Coolify v4",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "php",
+      "name": "coollabsio/coolify        and this file >> name                ApplicationDeploymentJob.php"
+     },
+     "patched_versions": ">= v4.0.0-beta.470",
+     "vulnerable_version_range": "<= v4.0.0-beta.469"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-mh8x-fppq-cp77",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-mh8x-fppq-cp77",
+   "published_at": "2026-07-02T16:37:00Z",
+   "severity": "high",
+   "summary": "Command injection via unsanitized persistent storage name in docker volume commands",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.471",
+     "vulnerable_version_range": "<= 4.0.0-beta.470"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-pwm4-w33c-wjf3",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-pwm4-w33c-wjf3",
+   "published_at": "2026-07-02T16:37:17Z",
+   "severity": "medium",
+   "summary": "SSRF via S3 Storage Endpoint in testConnection()",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.474",
+     "vulnerable_version_range": "<= 4.0.0-beta.473"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-4mpw-wcj4-v9pp",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-4mpw-wcj4-v9pp",
+   "published_at": "2026-07-02T16:37:26Z",
+   "severity": "low",
+   "summary": "Incomplete fix for CVE-2025-66209: Command Injection via unsanitized MongoDB collection names in database backup",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.471",
+     "vulnerable_version_range": ">= 4.0.0-beta.451, <= 4.0.0-beta.470"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-mw6q-2hmg-mhxv",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-mw6q-2hmg-mhxv",
+   "published_at": "2026-07-02T16:37:38Z",
+   "severity": "critical",
+   "summary": "Missing authorization on terminal websocket bootstrap routes allows low-privileged members to execute commands on team servers",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.471",
+     "vulnerable_version_range": "<= 4.0.0-beta.470"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-652w-qv22-2r7c",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-652w-qv22-2r7c",
+   "published_at": "2026-07-02T16:37:49Z",
+   "severity": "critical",
+   "summary": "WebSocket Endpoint Access Control Flaw Leading to Remote Code Execution",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.471",
+     "vulnerable_version_range": "<= 4.0.0-beta.470"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-6r3g-w7x8-54fj",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-6r3g-w7x8-54fj",
+   "published_at": "2026-07-02T16:37:57Z",
+   "severity": "high",
+   "summary": "Authenticated Remote Code Execution via Command Injection in Database Import Container Name",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.471",
+     "vulnerable_version_range": "<= 4.0.0-beta.470"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-rh5x-qx77-fq9v",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-rh5x-qx77-fq9v",
+   "published_at": "2026-07-02T16:38:04Z",
+   "severity": "high",
+   "summary": "OS Command Injection via Unmanaged Container Operations - Remote Code Execution",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.471",
+     "vulnerable_version_range": "<= 4.0.0-beta.470"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-5qp8-9gg7-4c86",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-5qp8-9gg7-4c86",
+   "published_at": "2026-07-02T16:38:13Z",
+   "severity": "high",
+   "summary": "Command Injection via Newline in Pre/Post Deployment Commands (Heredoc Transport)",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.471",
+     "vulnerable_version_range": "<= 4.0.0-beta.470"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-46hp-7m8g-7622",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-46hp-7m8g-7622",
+   "published_at": "2026-07-02T16:38:22Z",
+   "severity": "high",
+   "summary": "Coolify RCE via LocalFileVolume `fs_path`",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.471",
+     "vulnerable_version_range": "<= 4.0.0-beta.470"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-782c-3jq5-fw4j",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-782c-3jq5-fw4j",
+   "published_at": "2026-07-02T16:38:45Z",
+   "severity": "low",
+   "summary": "Multiple Low-Severity Security Issues (Email Verification Bypass, CLI Injection, Weak Hashing)",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.474",
+     "vulnerable_version_range": "<= 4.0.0-beta.473"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-c339-w3cq-2rjr",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-c339-w3cq-2rjr",
+   "published_at": "2026-07-02T16:38:53Z",
+   "severity": "medium",
+   "summary": "Settings/Updates Livewire Component Missing isInstanceAdmin() Authorization Check",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.471",
+     "vulnerable_version_range": "< 4.0.0-beta.471"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-66gv-g2w9-6wxp",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-66gv-g2w9-6wxp",
+   "published_at": "2026-07-02T16:39:03Z",
+   "severity": "low",
+   "summary": "File Upload Without Type or Size Validation in Database Backup Restore",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.474",
+     "vulnerable_version_range": "< 4.0.0-beta.474"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-v64c-v633-58xp",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-v64c-v633-58xp",
+   "published_at": "2026-07-02T16:39:09Z",
+   "severity": "medium",
+   "summary": "Unauthenticated Feedback Endpoint Allows Abuse (No Auth, No Rate Limit)",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.474",
+     "vulnerable_version_range": "< 4.0.0-beta.474"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-f47p-xrgc-977v",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-f47p-xrgc-977v",
+   "published_at": "2026-07-02T16:39:13Z",
+   "severity": "medium",
+   "summary": "API ability mismatch allows mutation with `read` token",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.466",
+     "vulnerable_version_range": "< 4.0.0-beta.466"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-565g-9j4m-wqmr",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-565g-9j4m-wqmr",
+   "published_at": "2026-07-02T16:39:21Z",
+   "severity": "high",
+   "summary": "Cross-team IDOR in logs component (resource lookup not team-scoped)",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.466",
+     "vulnerable_version_range": "< 4.0.0-beta.466"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-rpr8-p7jc-x844",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-rpr8-p7jc-x844",
+   "published_at": "2026-07-02T16:39:26Z",
+   "severity": "high",
+   "summary": "Host RCE via Sentinel token injection",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.466",
+     "vulnerable_version_range": "< 4.0.0-beta.466"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-3xm2-hqg8-4m2p",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-3xm2-hqg8-4m2p",
+   "published_at": "2026-07-02T16:39:32Z",
+   "severity": "high",
+   "summary": "Host RCE via Log Drain secret/env command injection",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.466",
+     "vulnerable_version_range": "< 4.0.0-beta.466"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-4vff-6j8j-qhcg",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-4vff-6j8j-qhcg",
+   "published_at": "2026-07-02T16:21:16Z",
+   "severity": "low",
+   "summary": "Authenticated Host-Level RCE via Unescaped Database Credentials in Backup Jobs",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.471",
+     "vulnerable_version_range": "< 4.0.0-beta.471"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-389w-cc6x-wr2m",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-389w-cc6x-wr2m",
+   "published_at": "2026-07-02T16:19:30Z",
+   "severity": "high",
+   "summary": "Account takeover via CSRF-able GET endpoint that resets password to attacker-known value",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "coolify"
+     },
+     "patched_versions": "v4.0.0-beta.471",
+     "vulnerable_version_range": "< v4.0.0-beta.471"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-cgj8-7m5q-x5gv",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-cgj8-7m5q-x5gv",
+   "published_at": "2026-07-02T16:16:44Z",
+   "severity": "medium",
+   "summary": "Password reset link poisoning via X-Forwarded-Host header spoofing",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "coolify"
+     },
+     "patched_versions": "v4.0.0-beta.471",
+     "vulnerable_version_range": "< v4.0.0-beta.471"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-3g6r-cxv5-3c7h",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-3g6r-cxv5-3c7h",
+   "published_at": "2026-07-02T16:15:16Z",
+   "severity": "medium",
+   "summary": "Server-Side Request Forgery via attacker-controlled GitHub App API URL",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "coolify"
+     },
+     "patched_versions": "v4.0.0-beta.471",
+     "vulnerable_version_range": "< v4.0.0-beta.471"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-962v-gxmw-56hc",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-962v-gxmw-56hc",
+   "published_at": "2026-07-02T16:11:34Z",
+   "severity": "medium",
+   "summary": "Cross-tenant activity log disclosure via unlocked Livewire property in ActivityMonitor",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "coolify"
+     },
+     "patched_versions": ">= v4.0.0-beta.471",
+     "vulnerable_version_range": "<= v4.0.0-beta.470"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-j6j2-frv3-g6f7",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-j6j2-frv3-g6f7",
+   "published_at": "2026-07-02T16:08:56Z",
+   "severity": "high",
+   "summary": "Command injection via single-quote breakout in Docker Compose custom commands",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "coolify"
+     },
+     "patched_versions": ">= 4.0.0-beta.469",
+     "vulnerable_version_range": "v4.0.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-ggrr-wrvr-x83v",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-ggrr-wrvr-x83v",
+   "published_at": "2026-07-02T16:39:39Z",
+   "severity": "critical",
+   "summary": "Cross-Tenant Resource Cloning via Broken Object-Level Authorization in cloneTo()",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "4.0.0-beta.464",
+     "vulnerable_version_range": "< 4.0.0-beta.464"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-6h8g-wpxp-cq98",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-6h8g-wpxp-cq98",
+   "published_at": "2026-06-25T15:24:31Z",
+   "severity": "medium",
+   "summary": "Command Injection via Single-Quote Breakout in `executeInDocker()`",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "coolify"
+     },
+     "patched_versions": "v4.0.0-beta.464",
+     "vulnerable_version_range": "<4.0.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-9x6p-29p3-h466",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-9x6p-29p3-h466",
+   "published_at": "2026-06-25T15:24:20Z",
+   "severity": "medium",
+   "summary": "Cross-team application domain enumeration via domains_by_server endpoint",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "other",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "v4.0.0-beta.464",
+     "vulnerable_version_range": "<= 4.0.0-beta.406"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-5p5w-h58c-2h5m",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-5p5w-h58c-2h5m",
+   "published_at": "2026-06-25T15:24:08Z",
+   "severity": "medium",
+   "summary": "Cross-team deployment information disclosure via GET /api/v1/deployments/{uuid} (IDOR)",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "v4.0.0-beta.464",
+     "vulnerable_version_range": "<= 4.0.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-f6h4-qx26-76jv",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-f6h4-qx26-76jv",
+   "published_at": "2026-06-25T15:23:58Z",
+   "severity": "medium",
+   "summary": "IDOR in Deployment API - Cross-Team Deployment Information Disclosure",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "v4.0.0-beta.464",
+     "vulnerable_version_range": "<= 4.0.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-7g97-c4xv-3cjx",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-7g97-c4xv-3cjx",
+   "published_at": "2026-06-25T09:55:12Z",
+   "severity": "high",
+   "summary": "Authenticated RCE via command injection in CA certificate management feature",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": ""
+     },
+     "patched_versions": "v4.0.0-beta.464",
+     "vulnerable_version_range": "<= 4.0.0-beta.463"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-qqrq-r9h4-x6wp",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-qqrq-r9h4-x6wp",
+   "published_at": "2026-07-02T10:54:58Z",
+   "severity": "critical",
+   "summary": "Authenticated Remote Command Injection leading to RCE and Secrets Exfiltration",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": ">= v4.0.0-beta.469",
+     "vulnerable_version_range": "<= 4.0.0-beta.462"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-x525-46rq-mr8c",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-x525-46rq-mr8c",
+   "published_at": "2026-06-25T09:54:56Z",
+   "severity": "medium",
+   "summary": "Timing Attack in GitLab Webhook Token Validation",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": ">= 4.0.0-beta.461",
+     "vulnerable_version_range": "<= 4.0.0-beta.460"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-4fhp-xqqp-w7vv",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-4fhp-xqqp-w7vv",
+   "published_at": "2026-07-02T13:35:48Z",
+   "severity": "high",
+   "summary": "OS Command Injection in Health Check Configuration Allows Remote Code Execution",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": ">= v4.0.0-beta.469",
+     "vulnerable_version_range": "<= 4.0.0-beta.460"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-cj2c-9jx8-j427",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-cj2c-9jx8-j427",
+   "published_at": "2026-01-03T15:13:11Z",
+   "severity": "critical",
+   "summary": "Authenticated Remote Code Execution via Command Injection in File Storage Directory Mount Path",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": ">= 4.0.0-beta.451",
+     "vulnerable_version_range": "<= 4.0.0-beta.450"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-q7rg-2j7p-83gp",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-q7rg-2j7p-83gp",
+   "published_at": "2026-01-03T15:13:18Z",
+   "severity": "critical",
+   "summary": "Authenticated Remote Code Execution via Command Injection in Dynamic Proxy Configuration Filename",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": ">= 4.0.0-beta.451",
+     "vulnerable_version_range": "<= 4.0.0-beta.450"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-24mp-fc9q-c884",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-24mp-fc9q-c884",
+   "published_at": "2026-01-03T15:13:38Z",
+   "severity": "critical",
+   "summary": "Authenticated Remote Code Execution via Command Injection in PostgreSQL Init Script Filename",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": ">= 4.0.0-beta.451",
+     "vulnerable_version_range": "<= 4.0.0-beta.448"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-vm5p-43qh-7pmq",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-vm5p-43qh-7pmq",
+   "published_at": "2026-01-03T15:13:27Z",
+   "severity": "critical",
+   "summary": "Authenticated Remote Code Execution via Command Injection in Database Backup",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": ">= 4.0.0-beta.451",
+     "vulnerable_version_range": "<= 4.0.0-beta.448"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-q33h-22xm-4cgh",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-q33h-22xm-4cgh",
+   "published_at": "2026-01-03T15:13:56Z",
+   "severity": "critical",
+   "summary": "Authenticated Remote Code Execution via Command Injection in Database Import",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "coolify"
+     },
+     "patched_versions": ">= 4.0.0-beta.451",
+     "vulnerable_version_range": "<= 4.0.0-beta.448"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-234r-xrrg-m8f3",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-234r-xrrg-m8f3",
+   "published_at": "2026-01-03T15:14:44Z",
+   "severity": "critical",
+   "summary": "Command injection via docker-compose.yaml parameters",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": ""
+     },
+     "patched_versions": "v4.0.0-beta.437",
+     "vulnerable_version_range": "< v4.0.0-beta.436"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-qwxj-qch7-whpc",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-qwxj-qch7-whpc",
+   "published_at": "2026-01-03T15:14:58Z",
+   "severity": "critical",
+   "summary": "Members can see private key of root user",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "Coolify"
+     },
+     "patched_versions": "",
+     "vulnerable_version_range": "<= v4.0.0-beta.434"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-688j-rm43-5r8x",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-688j-rm43-5r8x",
+   "published_at": "2026-01-03T15:15:13Z",
+   "severity": "low",
+   "summary": "Rate-limit bypass on login via X-Forwarded-Host header",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "Coolify"
+     },
+     "patched_versions": "v4.0.0-beta.436",
+     "vulnerable_version_range": "< v4.0.0-beta.435"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-4p6r-m39m-9cm9",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-4p6r-m39m-9cm9",
+   "published_at": "2026-01-03T15:15:26Z",
+   "severity": "high",
+   "summary": "Privilege escalation - Low privileged user can invite themselves as an admin user",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "Coolify"
+     },
+     "patched_versions": "",
+     "vulnerable_version_range": "<= v4.0.0-beta.434"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-4fqm-797g-7m6j",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-4fqm-797g-7m6j",
+   "published_at": "2026-01-03T15:15:46Z",
+   "severity": "high",
+   "summary": "Privilege Escalation - low privileged users can see and use admin invitation links",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "Coolify"
+     },
+     "patched_versions": "",
+     "vulnerable_version_range": "<= v4.0.0-beta.434"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-qx24-jhwj-8w6x",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-qx24-jhwj-8w6x",
+   "published_at": "2026-01-03T15:15:53Z",
+   "severity": "critical",
+   "summary": "Command injection in project git source",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "Coolify"
+     },
+     "patched_versions": "",
+     "vulnerable_version_range": "<= v4.0.0-beta.434"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-f737-2p93-g2cw",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-f737-2p93-g2cw",
+   "published_at": "2026-01-03T15:16:08Z",
+   "severity": "high",
+   "summary": "Host header injection in forgot password",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "Coolify"
+     },
+     "patched_versions": "v4.0.0-beta.436",
+     "vulnerable_version_range": "< v4.0.0-beta.435"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-927g-56xp-6427",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-927g-56xp-6427",
+   "published_at": "2026-01-03T15:16:17Z",
+   "severity": "high",
+   "summary": "Sensitive information `email_change_code` leaked in `/api/v1/teams/{team_id | current}/members` API endpoint",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "composer",
+      "name": "coollabsio/coolify"
+     },
+     "patched_versions": "v4.0.0-beta.429",
+     "vulnerable_version_range": "v4.0.0-beta.428"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-h5xw-7xvp-xrxr",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-h5xw-7xvp-xrxr",
+   "published_at": "2026-01-03T15:16:35Z",
+   "severity": "critical",
+   "summary": "Docker Compose Injection in Coolify",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "Coolify"
+     },
+     "patched_versions": "v4.0.0-beta.420.7",
+     "vulnerable_version_range": "v4.0.0-beta.420.6"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-h52r-jxv9-9vhf",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-h52r-jxv9-9vhf",
+   "published_at": "2026-01-03T15:16:42Z",
+   "severity": "critical",
+   "summary": "Stored XSS in Project Name",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "Coolify"
+     },
+     "patched_versions": "v4.0.0-beta.420.7",
+     "vulnerable_version_range": "v4.0.0-beta.420.6"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-5cg9-38qj-8mc3",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-5cg9-38qj-8mc3",
+   "published_at": "2026-01-03T15:16:53Z",
+   "severity": "critical",
+   "summary": "Git Repository RCE in Coolify",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "Coolify"
+     },
+     "patched_versions": "v4.0.0-beta.420.7  ",
+     "vulnerable_version_range": "v4.0.0-beta.420.6 "
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-wg8x-cgq4-vjxj",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-wg8x-cgq4-vjxj",
+   "published_at": "2025-01-24T10:36:50Z",
+   "severity": "critical",
+   "summary": "Private Key Enumeration on Onboarding resulting in Remote Command Execution (RCE)",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "coollabsio",
+      "name": "coolify"
+     },
+     "patched_versions": "v4.0.0-beta.374",
+     "vulnerable_version_range": "< v4.0.0-beta.374"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-9w72-9qww-qj6g",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-9w72-9qww-qj6g",
+   "published_at": "2025-01-24T10:36:38Z",
+   "severity": "critical",
+   "summary": "Privilege Escalation resulting in Remote Command Execution (RCE)",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "coollabsio",
+      "name": "coolify"
+     },
+     "patched_versions": "v4.0.0-beta.361",
+     "vulnerable_version_range": "< v4.0.0-beta.361"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-496v-9q38-2x6c",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-496v-9q38-2x6c",
+   "published_at": "2025-01-24T10:36:14Z",
+   "severity": "medium",
+   "summary": "OAuth Secrets Leak",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "coollabsio",
+      "name": "coolify"
+     },
+     "patched_versions": "v4.0.0-beta.361",
+     "vulnerable_version_range": "< v4.0.0-beta.361"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-3w2c-jfr2-9pg9",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-3w2c-jfr2-9pg9",
+   "published_at": "2025-01-24T10:36:26Z",
+   "severity": "critical",
+   "summary": "Private Key Hijacking / Remote Command Execution (RCE)",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "coollabsio",
+      "name": "coolify"
+     },
+     "patched_versions": "v4.0.0-beta.361",
+     "vulnerable_version_range": "< v4.0.0-beta.361"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-qmxm-wvm9-wvxx",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-qmxm-wvm9-wvxx",
+   "published_at": "2025-01-24T10:36:03Z",
+   "severity": "medium",
+   "summary": "Revoke Arbitrary Team Invitations (DOS)",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "coollabsio",
+      "name": "coolify"
+     },
+     "patched_versions": "v4.0.0-beta.361",
+     "vulnerable_version_range": "< v4.0.0-beta.361"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-f2gf-jvmh-vq73",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-f2gf-jvmh-vq73",
+   "published_at": "2025-01-24T10:35:37Z",
+   "severity": "medium",
+   "summary": "Reflected XSS on Tag Search",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "coollabsio",
+      "name": "coolify"
+     },
+     "patched_versions": "v4.0.0-beta.361",
+     "vulnerable_version_range": "< v4.0.0-beta.361"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-8w24-gfgq-jg72",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-8w24-gfgq-jg72",
+   "published_at": "2025-01-24T10:35:54Z",
+   "severity": "high",
+   "summary": "GitHub / GitLab OAuth Secrets Leak",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "coollabsio",
+      "name": "coolify"
+     },
+     "patched_versions": "v4.0.0-beta.361",
+     "vulnerable_version_range": "< v4.0.0-beta.361"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-ccp8-v65g-m526",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-ccp8-v65g-m526",
+   "published_at": "2025-01-24T10:37:07Z",
+   "severity": "critical",
+   "summary": "Command Injection in Project Name",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": ""
+     },
+     "patched_versions": "v4.0.0-beta.359",
+     "vulnerable_version_range": "v4.0.0-beta.358"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-9wqm-fg79-4748",
+   "html_url": "https://github.com/coollabsio/coolify/security/advisories/GHSA-9wqm-fg79-4748",
+   "published_at": "2025-01-24T10:37:17Z",
+   "severity": "critical",
+   "summary": "OS Command Injection Vulnerability in SSH Command Generation",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "coolify"
+     },
+     "patched_versions": ">= v4.0.0-beta.253 ",
+     "vulnerable_version_range": ">= 4.0.0-beta.18"
+    }
+   ],
+   "withdrawn_at": null
+  }
+ ],
+ "https://api.github.com/repos/knadh/listmonk/releases/latest": {
+  "published_at": "2026-06-26T10:24:34Z",
+  "tag_name": "v6.2.0"
+ },
+ "https://api.github.com/repos/knadh/listmonk/releases/tags/v6.0.0": {
+  "published_at": "2026-01-02T17:51:28Z",
+  "tag_name": "v6.0.0"
+ },
+ "https://api.github.com/repos/knadh/listmonk/releases/tags/v6.2.0": {
+  "published_at": "2026-06-26T10:24:34Z",
+  "tag_name": "v6.2.0"
+ },
+ "https://api.github.com/repos/knadh/listmonk/security-advisories?per_page=100&state=published": [
+  {
+   "ghsa_id": "GHSA-xgjr-7j9q-2h4r",
+   "html_url": "https://github.com/knadh/listmonk/security/advisories/GHSA-xgjr-7j9q-2h4r",
+   "published_at": "2026-06-26T10:36:18Z",
+   "severity": "medium",
+   "summary": "SQL Injection in `/api/subscribers/export` bypasses table access control, leaking admin password hashes and SMTP credentials",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/knadh/listmonk"
+     },
+     "patched_versions": "6.2.0",
+     "vulnerable_version_range": "<= 6.1.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-85j8-5c6w-gcpv",
+   "html_url": "https://github.com/knadh/listmonk/security/advisories/GHSA-85j8-5c6w-gcpv",
+   "published_at": "2026-03-31T04:53:42Z",
+   "severity": "medium",
+   "summary": "List permission bypass in multiple hotpaths",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "knadh/listmonk"
+     },
+     "patched_versions": "v6.1.0",
+     "vulnerable_version_range": ">= v4.1.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-h5j9-cvrw-v5qh",
+   "html_url": "https://github.com/knadh/listmonk/security/advisories/GHSA-h5j9-cvrw-v5qh",
+   "published_at": "2026-04-01T07:08:41Z",
+   "severity": "high",
+   "summary": "Active sessions remain valid after password reset and password change",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/knadh/listmonk"
+     },
+     "patched_versions": "6.1.0",
+     "vulnerable_version_range": "> 4.1.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-jmr4-p576-v565",
+   "html_url": "https://github.com/knadh/listmonk/security/advisories/GHSA-jmr4-p576-v565",
+   "published_at": "2026-01-02T18:50:43Z",
+   "severity": "high",
+   "summary": "Stored XSS Leading to Admin Account Takeover",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "listmonk"
+     },
+     "patched_versions": "6.0.0",
+     "vulnerable_version_range": "\u2264 5.1.0 "
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-rf24-wg77-gq7w",
+   "html_url": "https://github.com/knadh/listmonk/security/advisories/GHSA-rf24-wg77-gq7w",
+   "published_at": "2025-09-09T18:07:48Z",
+   "severity": "critical",
+   "summary": "CSRF to XSS to Admin Takeover",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": ""
+     },
+     "patched_versions": "",
+     "vulnerable_version_range": "latest"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-jc7g-x28f-3v3h",
+   "html_url": "https://github.com/knadh/listmonk/security/advisories/GHSA-jc7g-x28f-3v3h",
+   "published_at": "2025-06-08T10:28:39Z",
+   "severity": "critical",
+   "summary": "`env` Sprig template function allows reading environment variables on the host on campaign templates.",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": ""
+     },
+     "patched_versions": "5.0.2",
+     "vulnerable_version_range": "4.0.0 - 5.0.1"
+    }
+   ],
+   "withdrawn_at": null
+  }
+ ],
+ "https://api.github.com/repos/louislam/uptime-kuma/releases/latest": {
+  "published_at": "2026-10-09T15:46:26Z",
+  "tag_name": "2.5.6"
+ },
+ "https://api.github.com/repos/louislam/uptime-kuma/security-advisories?per_page=100&state=published": [
+  {
+   "ghsa_id": "GHSA-wf2j-5mc7-5c4w",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-wf2j-5mc7-5c4w",
+   "published_at": "2026-10-09T02:30:47Z",
+   "severity": "high",
+   "summary": "Unauthenticated resource exhaustion DoS in ping badge endpoint via arbitrary monitor IDs",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "uptime-kuma"
+     },
+     "patched_versions": "2.5.4",
+     "vulnerable_version_range": "<=2.5.3"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-v832-4r73-wx5j",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-v832-4r73-wx5j",
+   "published_at": "2026-03-16T05:46:42Z",
+   "severity": "medium",
+   "summary": "Another Server-side Template Injection (SSTI) in Notification Templates Allows Arbitrary File Read",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "uptime-kuma"
+     },
+     "patched_versions": "2.2.1",
+     "vulnerable_version_range": ">= 1.23.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-c7hf-c5p5-5g6h",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-c7hf-c5p5-5g6h",
+   "published_at": "2026-03-11T06:52:49Z",
+   "severity": "medium",
+   "summary": "Missing Authorization Check on Ping Badge Endpoint Leaks Ping times of montors without needing to be on a status page",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "uptime-kuma"
+     },
+     "patched_versions": "2.2.0",
+     "vulnerable_version_range": ">= 2.0.0 && <= 2.1.3 "
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-9fg7-wgm7-57fh",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-9fg7-wgm7-57fh",
+   "published_at": "2026-02-08T15:49:41Z",
+   "severity": "low",
+   "summary": "RSS status feed does not set content type, leading to a Stored XSS in Public Status Page RSS Feed via CDATA escaped Monitor Name IF USING AN UNSECURE CLIENT",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "uptime-kuma"
+     },
+     "patched_versions": "2.1.0",
+     "vulnerable_version_range": ">= 2.0.0 && <= 2.0.2"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-vffh-c9pq-4crh",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-vffh-c9pq-4crh",
+   "published_at": "2025-10-20T14:33:43Z",
+   "severity": "medium",
+   "summary": "Server-side Template Injection (SSTI) in Notification Templates Allows Arbitrary File Read",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "uptime-kuma"
+     },
+     "patched_versions": "1.23.17",
+     "vulnerable_version_range": ">= 1.23.0 && <= 1.23.16"
+    },
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "uptime-kuma"
+     },
+     "patched_versions": "2.0.0",
+     "vulnerable_version_range": "<= 2.0.0-beta.4"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-5px6-fx2w-459r",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-5px6-fx2w-459r",
+   "published_at": "2025-06-04T05:16:23Z",
+   "severity": "high",
+   "summary": "Unauthenticated file read of files that begin with `index.`",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "uptime-kuma"
+     },
+     "patched_versions": "2.0.0-beta.3",
+     "vulnerable_version_range": ">= 2.0.0-beta.0, <= 2.0.0-beta.2"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-qjxc-h5jf-c7rj",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-qjxc-h5jf-c7rj",
+   "published_at": "2025-10-13T13:19:51Z",
+   "severity": "medium",
+   "summary": "GCP and selected cloud providers provide metadata endpoints to the local network which can be queried to extract sensitive information via authentificated accounts in uptime kuma",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "uptime-kuma"
+     },
+     "patched_versions": "",
+     "vulnerable_version_range": "*"
+    },
+    {
+     "package": {
+      "ecosystem": "docker",
+      "name": "uptime-kuma"
+     },
+     "patched_versions": "",
+     "vulnerable_version_range": "*"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-hx7h-9vf7-5xhg",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-hx7h-9vf7-5xhg",
+   "published_at": "2025-03-29T00:18:45Z",
+   "severity": "medium",
+   "summary": "Regular Expression in pushdeeer and whapi file Leads to ReDoS Vulnerability Due to Catastrophic Backtracking",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "uptime-kuma"
+     },
+     "patched_versions": "",
+     "vulnerable_version_range": ">= 1.15.0 && <= 1.23.16"
+    },
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "uptime-kuma"
+     },
+     "patched_versions": "2.0.0-beta.2",
+     "vulnerable_version_range": "2.0.0-beta.0, 2.0.0-beta.1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-2qgm-m29m-cj2h",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-2qgm-m29m-cj2h",
+   "published_at": "2024-12-20T14:23:08Z",
+   "severity": "medium",
+   "summary": "Local File Inclusion (LFI) via Improper URL Handling in `Real-Browser` monitor",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "uptime-kuma"
+     },
+     "patched_versions": "1.23.16",
+     "vulnerable_version_range": "1.23.0 - 1.23.15"
+    },
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "uptime-kuma"
+     },
+     "patched_versions": "2.0.0-beta.1",
+     "vulnerable_version_range": "2.0.0-beta.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-23q2-5gf8-gjpp",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-23q2-5gf8-gjpp",
+   "published_at": "2024-04-19T03:24:03Z",
+   "severity": "low",
+   "summary": "Enabling Authentication does not close all logged in socket connections immediately ",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "docker",
+      "name": "louislam/uptime-kuma"
+     },
+     "patched_versions": "1.23.12",
+     "vulnerable_version_range": "<=1.23.11"
+    },
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "louislam/uptime-kuma"
+     },
+     "patched_versions": "1.23.12",
+     "vulnerable_version_range": "<=1.23.11"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-88j4-pcx8-q4q3",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-88j4-pcx8-q4q3",
+   "published_at": "2023-12-10T17:56:02Z",
+   "severity": "medium",
+   "summary": "Changing Password does not close all logged in socket connections immediately",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "docker",
+      "name": "louislam/uptime-kuma"
+     },
+     "patched_versions": "1.23.9",
+     "vulnerable_version_range": "<= 1.23.8"
+    },
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "louislam/uptime-kuma"
+     },
+     "patched_versions": "1.23.9",
+     "vulnerable_version_range": "<= 1.23.8"
+    },
+    {
+     "package": {
+      "ecosystem": "docker",
+      "name": "louislam/dockge"
+     },
+     "patched_versions": "1.3.3",
+     "vulnerable_version_range": "<= 1.3.2"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-mj22-23ff-2hrr",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-mj22-23ff-2hrr",
+   "published_at": "2023-12-10T17:55:38Z",
+   "severity": "medium",
+   "summary": "Missing Origin Validation in WebSockets",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "docker",
+      "name": " louislam/dockge"
+     },
+     "patched_versions": "1.3.3",
+     "vulnerable_version_range": "<= 1.3.2"
+    },
+    {
+     "package": {
+      "ecosystem": "docker",
+      "name": " louislam/uptime-kuma"
+     },
+     "patched_versions": " 1.23.9",
+     "vulnerable_version_range": " <= 1.23.8"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-hfxh-rjv7-2369",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-hfxh-rjv7-2369",
+   "published_at": "2023-11-24T17:20:45Z",
+   "severity": "medium",
+   "summary": "Authenticated remote code execution via TailscalePing",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": ""
+     },
+     "patched_versions": "1.23.7",
+     "vulnerable_version_range": ">= 1.23.0 && <= 1.23.6"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-v4v2-8h88-65qj",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-v4v2-8h88-65qj",
+   "published_at": "2023-11-24T12:08:33Z",
+   "severity": "medium",
+   "summary": "Attribute Injection leading to XSS(Cross-Site-Scripting)",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "uptime-kuma"
+     },
+     "patched_versions": "1.23.7",
+     "vulnerable_version_range": ">= 1.20.0 && <= 1.23.6"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-g9v2-wqcj-j99g",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-g9v2-wqcj-j99g",
+   "published_at": "2023-10-09T12:49:48Z",
+   "severity": "medium",
+   "summary": "Persistentent User Sessions ",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "docker",
+      "name": "louislam/uptime-kuma"
+     },
+     "patched_versions": "v1.23.3",
+     "vulnerable_version_range": "<= v1.23.2"
+    },
+    {
+     "package": {
+      "ecosystem": "node.js",
+      "name": "louislam/uptime-kuma"
+     },
+     "patched_versions": "v1.23.3",
+     "vulnerable_version_range": "<= v1.23.2"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-vr8x-74pm-6vj7",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-vr8x-74pm-6vj7",
+   "published_at": "2023-07-04T13:03:10Z",
+   "severity": "medium",
+   "summary": "Authenticated path traversal via plugin repository name leading to unavailability or data loss",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "docker",
+      "name": "louislam/uptime-kuma"
+     },
+     "patched_versions": "1.22.1",
+     "vulnerable_version_range": "<= 1.22.0"
+    },
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "louislam/uptime-kuma"
+     },
+     "patched_versions": "1.22.1",
+     "vulnerable_version_range": "<= 1.22.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-7grx-f945-mj96",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-7grx-f945-mj96",
+   "published_at": "2023-07-04T13:02:46Z",
+   "severity": "high",
+   "summary": "Authenticated remote code execution via malicious plugin installation",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "docker",
+      "name": "louislam/uptime-kuma"
+     },
+     "patched_versions": "1.22.1",
+     "vulnerable_version_range": "<= 1.22.0"
+    },
+    {
+     "package": {
+      "ecosystem": "npm",
+      "name": "louislam/uptime-kuma"
+     },
+     "patched_versions": "1.22.1",
+     "vulnerable_version_range": "<= 1.22.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-wh8j-xr66-f296",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-wh8j-xr66-f296",
+   "published_at": "2023-02-13T10:27:22Z",
+   "severity": "medium",
+   "summary": "Persistent XSS through description in status page",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": ""
+     },
+     "patched_versions": "1.20.0",
+     "vulnerable_version_range": "<= 1.19.6"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-553g-fcpf-m3wp",
+   "html_url": "https://github.com/louislam/uptime-kuma/security/advisories/GHSA-553g-fcpf-m3wp",
+   "published_at": "2023-02-13T10:28:01Z",
+   "severity": "medium",
+   "summary": "Persistent XSS through \"new status page --> name\"",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": ""
+     },
+     "patched_versions": "1.20.0",
+     "vulnerable_version_range": "<= 1.19.6"
+    }
+   ],
+   "withdrawn_at": null
+  }
+ ],
+ "https://api.github.com/repos/plausible/analytics/releases/latest": {
+  "published_at": "2026-05-15T09:15:56Z",
+  "tag_name": "v3.2.1"
+ },
+ "https://api.github.com/repos/plausible/analytics/security-advisories?per_page=100&state=published": [
+  {
+   "ghsa_id": "GHSA-mhcv-h7gf-57cf",
+   "html_url": "https://github.com/plausible/analytics/security/advisories/GHSA-mhcv-h7gf-57cf",
+   "published_at": "2026-06-03T14:06:12Z",
+   "severity": "critical",
+   "summary": "Unauthenticated remote code execution via /storybook endpoint",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": "ghcr.io/plausible/community-edition"
+     },
+     "patched_versions": "3.2.1",
+     "vulnerable_version_range": ">=3 and < 3.2.1"
+    }
+   ],
+   "withdrawn_at": null
+  }
+ ],
+ "https://api.github.com/repos/traefik/traefik/releases/latest": {
+  "published_at": "2026-10-15T14:41:49Z",
+  "tag_name": "v3.7.15"
+ },
+ "https://api.github.com/repos/traefik/traefik/security-advisories?per_page=100&state=published": [
+  {
+   "ghsa_id": "GHSA-p8wx-ph99-xgcr",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-p8wx-ph99-xgcr",
+   "published_at": "2026-10-16T08:00:58Z",
+   "severity": "high",
+   "summary": "ingress-nginx provider: mTLS (auth-tls-secret) silently disabled for a host when another Ingress on the same host has no matching auth-tls annotation",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.15",
+     "vulnerable_version_range": ">= v3.7.0-ea.1, <= v3.7.14"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-fh26-gfpp-7xxx",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-fh26-gfpp-7xxx",
+   "published_at": "2026-10-07T08:47:28Z",
+   "severity": "high",
+   "summary": "snicheck skips the check when `req.TLS` is nil (HTTP/2 `:scheme http`)",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.58",
+     "vulnerable_version_range": "<= v2.11.57"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.14",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.7.13"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-qvj7-gq9c-hp7q",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-qvj7-gq9c-hp7q",
+   "published_at": "2026-10-07T08:47:51Z",
+   "severity": "high",
+   "summary": "Kubernetes Ingress NGINX provider: ssl-passthrough sibling HTTP router serves the auth-protected backend without auth",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.14",
+     "vulnerable_version_range": ">= v3.7.13, <= v3.7.13"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-53qr-784g-cj35",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-53qr-784g-cj35",
+   "published_at": "2026-10-07T08:47:35Z",
+   "severity": "high",
+   "summary": "FastProxy backend connection pool leaks connection-bound NTLM/Negotiate identity to unauthenticated clients",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.14",
+     "vulnerable_version_range": ">= v3.2.0, <= v3.7.13"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-rv2h-qh7j-xrjw",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-rv2h-qh7j-xrjw",
+   "published_at": "2026-10-07T08:47:52Z",
+   "severity": "high",
+   "summary": "Ingress-NGINX provider: colliding auth-tls-secret names merge two client CAs into one TLS option, so a host is gated by another host's CA",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.14",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.13"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-qm9f-w54v-q2qh",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-qm9f-w54v-q2qh",
+   "published_at": "2026-10-07T08:47:33Z",
+   "severity": "high",
+   "summary": "Preauthenticated Negotiate contaminates Traefik's globally shared backend connection pool",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.58",
+     "vulnerable_version_range": ">= v2.11.0, <= v2.11.57"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.14",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.7.13"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-mwrr-6hp4-pxr6",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-mwrr-6hp4-pxr6",
+   "published_at": "2026-10-07T08:47:36Z",
+   "severity": "high",
+   "summary": "Ingress-NGINX provider forwards forged Ssl-Client-* identity headers on its HTTP route",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.14",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.13"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-28hp-c82p-8vqj",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-28hp-c82p-8vqj",
+   "published_at": "2026-10-16T08:01:00Z",
+   "severity": "low",
+   "summary": "Kubernetes Ingress NGINX provider: a TLS-option cache hit skips the cross-namespace authorization check, letting an Ingress use another namespace's CA secret",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.15",
+     "vulnerable_version_range": ">= v3.7.11, <= v3.7.14"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-v67p-phpq-fc8x",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-v67p-phpq-fc8x",
+   "published_at": "2026-09-07T09:24:07Z",
+   "severity": "high",
+   "summary": "Traefik entrypoint header-name sanitization bypassed via request trailers",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.13",
+     "vulnerable_version_range": ">= v3.2.0, <= v3.7.12"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-qqjf-53cj-pwvv",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-qqjf-53cj-pwvv",
+   "published_at": "2026-09-07T09:24:05Z",
+   "severity": "critical",
+   "summary": "Traefik HTTP/3 Backend NTLM Connection Reuse",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.13",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.7.12"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.57",
+     "vulnerable_version_range": ">= v2.11.0, <= v2.11.56"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-ww7c-q3mv-xx22",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-ww7c-q3mv-xx22",
+   "published_at": "2026-10-16T08:00:59Z",
+   "severity": "high",
+   "summary": "Data race on the shared bufio.Reader after an HTTP/1 upgrade in FastProxy panics the whole process",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.15",
+     "vulnerable_version_range": ">= v3.2.0, <= v3.7.14"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-mhjw-hmjv-p99x",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-mhjw-hmjv-p99x",
+   "published_at": "2026-10-07T08:47:54Z",
+   "severity": "medium",
+   "summary": "Unsynchronized write to the per-connection sticky round tripper shared by concurrent HTTP/2 streams",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.58",
+     "vulnerable_version_range": ">= v2.11.0, <= v2.11.57"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.14",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.7.13"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-cw35-4q88-3rmp",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-cw35-4q88-3rmp",
+   "published_at": "2026-10-07T08:47:34Z",
+   "severity": "high",
+   "summary": "Connection-scoped NTLM/Kerberos sticky round tripper is not keyed by service, applying one service TLS client config to another",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.58",
+     "vulnerable_version_range": ">= v2.11.0, <= v2.11.57"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.14",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.7.13"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-2272-4vv8-65ww",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-2272-4vv8-65ww",
+   "published_at": "2026-10-07T08:47:53Z",
+   "severity": "medium",
+   "summary": "Negated Host matcher causes a TLS option conflict that disables client-certificate authentication on the excluded host",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.58",
+     "vulnerable_version_range": "<= v2.11.57"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.13",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.7.12"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-8fcf-v89g-xpg6",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-8fcf-v89g-xpg6",
+   "published_at": "2026-09-07T09:24:08Z",
+   "severity": "medium",
+   "summary": "BasicAuth singleflight coalescing reintroduces an unauthenticated username-enumeration timing oracle",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.13",
+     "vulnerable_version_range": ">= v3.6.11, <= v3.7.12"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-f52w-8j3h-j724",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-f52w-8j3h-j724",
+   "published_at": "2026-09-07T09:24:04Z",
+   "severity": "high",
+   "summary": "Rootless HTTP/1 request-target routes as \"/\" but is forwarded verbatim, bypassing path-scoped routing, middleware guards and access logging",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.13",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.7.12"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.57",
+     "vulnerable_version_range": "<= v2.11.56"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-w4v4-9rw7-5326",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-w4v4-9rw7-5326",
+   "published_at": "2026-09-07T09:24:06Z",
+   "severity": "high",
+   "summary": "Inconsistent Interpretation of HTTP Requests ('HTTP Request/Response Smuggling') and Incorrect Authorization in github.com/traefik/traefik/v3",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.13",
+     "vulnerable_version_range": ">= v3.4.2, <= v3.7.12"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.57",
+     "vulnerable_version_range": ">= v2.11.26, <= v2.11.56"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-cjr6-pf59-jq29",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-cjr6-pf59-jq29",
+   "published_at": "2026-08-27T07:50:13Z",
+   "severity": "high",
+   "summary": "ingress-nginx from-to-www-redirect sibling router serves the auth-protected backend without auth",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.12",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.11"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-7ghq-v6jf-g56c",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-7ghq-v6jf-g56c",
+   "published_at": "2026-08-27T07:50:09Z",
+   "severity": "medium",
+   "summary": "respondingTimeouts.readTimeout is not applied to HTTP/3, leaving slow-body uploads unbounded",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.56",
+     "vulnerable_version_range": ">= v2.8.2, <= v2.11.55"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.12",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.7.11"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-m6wx-622r-48r9",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-m6wx-622r-48r9",
+   "published_at": "2026-08-21T09:45:53Z",
+   "severity": "high",
+   "summary": "Kubernetes Ingress service middleware bypasses crossProviderNamespaces",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.11",
+     "vulnerable_version_range": ">= v3.7.1, <= v3.7.10"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-rf44-j88r-hh8c",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-rf44-j88r-hh8c",
+   "published_at": "2026-08-27T07:50:06Z",
+   "severity": "medium",
+   "summary": "ForwardAuth identity spoofing via dot-form header alias",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.56",
+     "vulnerable_version_range": "<= v2.11.55"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.12",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.7.11"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-5w68-77r2-r64c",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-5w68-77r2-r64c",
+   "published_at": "2026-08-21T09:45:51Z",
+   "severity": "critical",
+   "summary": "Complete authentication bypass in the `digestAuth` middleware",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.55",
+     "vulnerable_version_range": "<= v2.11.54"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.11",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.7.10"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-j994-9gqj-9hwq",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-j994-9gqj-9hwq",
+   "published_at": "2026-08-21T09:45:53Z",
+   "severity": "high",
+   "summary": "Same-host Ingress TLS option conflict disables client-certificate authentication",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.11",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.10"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-g55h-rg46-x9c5",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-g55h-rg46-x9c5",
+   "published_at": "2026-08-21T09:45:52Z",
+   "severity": "high",
+   "summary": "TLS option confusion in multi-host routers can bypass mTLS for protected hosts",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.55",
+     "vulnerable_version_range": "<= v2.11.54"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.11",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.7.10"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-fgjj-px3w-67xx",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-fgjj-px3w-67xx",
+   "published_at": "2026-08-03T14:18:25Z",
+   "severity": "high",
+   "summary": "Gateway API route identity collision allows cross-namespace backend hijacking",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.25",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.6.24"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.10",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.9"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-6765-c87h-8mrf",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-6765-c87h-8mrf",
+   "published_at": "2026-08-03T14:22:05Z",
+   "severity": "low",
+   "summary": "BasicAuth singleflight key collision allows authenticated identity spoofing",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.25",
+     "vulnerable_version_range": ">= v3.6.11, <= v3.6.24"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.10",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.9"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-62fc-8686-hfmq",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-62fc-8686-hfmq",
+   "published_at": "2026-08-03T14:21:54Z",
+   "severity": "medium",
+   "summary": "`allowCrossNamespace=false` bypass via `@kubernetescrd` TraefikService backendRef",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.54",
+     "vulnerable_version_range": "<= v2.11.53"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.25",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.6.24"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.10",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.9"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-3ccp-42pg-hgv6",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-3ccp-42pg-hgv6",
+   "published_at": "2026-07-27T09:02:31Z",
+   "severity": "high",
+   "summary": "Cross-user response poisoning via proxied CONNECT on Traefik's shared backend keep-alive pool",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.53",
+     "vulnerable_version_range": "<= v2.11.52"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.24",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.6.23"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.9",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.8"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-8rxv-jg7p-wvg3",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-8rxv-jg7p-wvg3",
+   "published_at": "2026-07-16T08:26:12Z",
+   "severity": "high",
+   "summary": "Kubernetes Ingress NGINX RewriteTarget Path Traversal Allows Route-Level Authentication Bypass",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.8",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.7"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-cxjq-mrr5-89rv",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-cxjq-mrr5-89rv",
+   "published_at": "2026-07-09T08:51:09Z",
+   "severity": "high",
+   "summary": "Authentication Bypass via Path Traversal in ReplacePathRegex Middleware",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.52",
+     "vulnerable_version_range": "<= v2.11.51"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.23",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.6.22"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.7",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.6"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-qq9q-x9w4-chhj",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-qq9q-x9w4-chhj",
+   "published_at": "2026-07-09T08:51:09Z",
+   "severity": "medium",
+   "summary": "Traefik Gateway API HTTPRoute BackendRef ExtensionRef Namespace Confusion",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.7",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.6"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-42cj-m3vj-89wv",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-42cj-m3vj-89wv",
+   "published_at": "2026-07-09T08:51:10Z",
+   "severity": "medium",
+   "summary": "Traefik CRD IngressRouteTCP ServersTransport Cross-Provider Namespace Bypass",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.23",
+     "vulnerable_version_range": ">= v3.6.17, <= v3.6.22"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.7",
+     "vulnerable_version_range": ">= v3.7.1, <= v3.7.6"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-6p8f-p8j2-rqmv",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-6p8f-p8j2-rqmv",
+   "published_at": "2026-07-01T15:21:51Z",
+   "severity": "medium",
+   "summary": "Gateway HTTPRoute backendRef filters can leak backend context across routes sharing a Service:port",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/traefik/traefik/v3"
+     },
+     "patched_versions": "v3.7.6",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.5"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-3g6v-2r68-prfc",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-3g6v-2r68-prfc",
+   "published_at": "2026-06-11T08:30:06Z",
+   "severity": "medium",
+   "summary": "Kubernetes Gateway crossProviderNamespaces bypass allows HTTPRoute outside the allowlist to expose internal Traefik services",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.21",
+     "vulnerable_version_range": ">= v3.6.17, <= v3.6.20"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.5",
+     "vulnerable_version_range": ">= v3.7.1, <= v3.7.4"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-4mr2-fg2p-w63c",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-4mr2-fg2p-w63c",
+   "published_at": "2026-06-19T08:27:41Z",
+   "severity": "medium",
+   "summary": "Traefik Kubernetes Ingress NGINX provider fails open when auth-secret resolution fails",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.5",
+     "vulnerable_version_range": ">= v3.7.0-ea.1, <= v3.7.4"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-3q9r-p662-5j8m",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-3q9r-p662-5j8m",
+   "published_at": "2026-07-01T15:21:52Z",
+   "severity": "medium",
+   "summary": "ForwardAuth middleware leaks X-Forwarded-Port spoofing via untrusted X-Forwarded-Proto when trustForwardHeader=false",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.51",
+     "vulnerable_version_range": "<= v2.11.50"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.22",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.6.21"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.6",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.5"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-x677-9fxg-v5c5",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-x677-9fxg-v5c5",
+   "published_at": "2026-07-01T15:21:52Z",
+   "severity": "high",
+   "summary": "Incomplete fix for CVE-2026-33433 + CVE-2026-39858 cross-cohort: headerField underscore-variant identity spoofing in BasicAuth / DigestAuth / ForwardAuth",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.51",
+     "vulnerable_version_range": "<= v2.11.50"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.22",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.6.21"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.6",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.5"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-xf64-8mw2-4gr2",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-xf64-8mw2-4gr2",
+   "published_at": "2026-06-05T10:19:45Z",
+   "severity": "high",
+   "summary": "Traefik StripPrefix Route-Level Auth Bypass via Path Normalization",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.48",
+     "vulnerable_version_range": "<= v2.11.46"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.19",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.6.17"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.3",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-5r4w-85f3-pw66",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-5r4w-85f3-pw66",
+   "published_at": "2026-06-05T10:26:32Z",
+   "severity": "high",
+   "summary": "SNICheck ignores wildcard TLSOptions mappings, allowing domain-fronted mTLS bypass",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.3",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-9cr8-q42q-g8m7",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-9cr8-q42q-g8m7",
+   "published_at": "2026-06-05T10:26:43Z",
+   "severity": "high",
+   "summary": "HTTP/3 mTLS bypass via exact SNI TLSOptions lookup for wildcard and mixed-case hosts",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.19",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.6.17"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.3",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-96qj-4jj5-wcjc",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-96qj-4jj5-wcjc",
+   "published_at": "2026-05-11T15:10:49Z",
+   "severity": "medium",
+   "summary": "Gateway API TraefikService backend accepts rest@internal, allowing unauthorized exposure of the REST provider despite providers.rest.insecure=false",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.46",
+     "vulnerable_version_range": "<= v2.11.45"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.17",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.6.16"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.1",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-xhjw-95fp-8vgq",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-xhjw-95fp-8vgq",
+   "published_at": "2026-04-24T10:15:49Z",
+   "severity": "medium",
+   "summary": "Traefik Kubernetes CRD allows unauthorized cross-namespace middleware binding",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.43, v3.6.14, v3.7.0-rc.2",
+     "vulnerable_version_range": "<= v2.11.42, <= v3.6.13, <= v3.7.0-rc.1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-p6hg-qh38-555r",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-p6hg-qh38-555r",
+   "published_at": "2026-05-04T16:54:31Z",
+   "severity": "medium",
+   "summary": "Errors middleware forwards Authorization and Cookie headers to separate error page service",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.44",
+     "vulnerable_version_range": "<= v2.11.43"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.15",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.6.14"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.0-rc.3",
+     "vulnerable_version_range": ">= v3.7.0-ea.1, <= v3.7.0-rc.2"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-6x2q-h3cr-8j2h",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-6x2q-h3cr-8j2h",
+   "published_at": "2026-04-24T10:16:47Z",
+   "severity": "medium",
+   "summary": "BasicAuth middleware: timing side-channel vulnerability",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.43, v3.6.14, v3.7.0-rc.2",
+     "vulnerable_version_range": "<= v2.11.42, <= v3.6.13, <= v3.7.0-rc.1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-5m6w-wvh7-57vm",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-5m6w-wvh7-57vm",
+   "published_at": "2026-04-24T10:17:03Z",
+   "severity": "high",
+   "summary": "Forwarded alias spoofing top pre-auth decision bypass",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.43, v3.6.14, v3.7.0-rc.2",
+     "vulnerable_version_range": "<= v2.11.42, <= v3.6.13, <= v3.7.0-rc.1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-6384-m2mw-rf54",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-6384-m2mw-rf54",
+   "published_at": "2026-04-24T10:17:31Z",
+   "severity": "high",
+   "summary": "ForwardAuth trustForwardHeader=false allows spoofed X-Forwarded-Prefix to bypass auth",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.43, v3.6.14, v3.7.0-rc.2",
+     "vulnerable_version_range": "<= v2.11.42, <= v3.6.13, <= v3.7.0-rc.1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-6jwx-7vp4-9847",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-6jwx-7vp4-9847",
+   "published_at": "2026-04-24T10:17:54Z",
+   "severity": "high",
+   "summary": "StripPrefixRegex auth bypass via Path/RawPath desync",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.43, v3.6.14, v3.7.0-rc.2",
+     "vulnerable_version_range": "<= v2.11.42, <= v3.6.13, <= v3.7.0-rc.1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-46wh-3698-f2cx",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-46wh-3698-f2cx",
+   "published_at": "2026-03-27T10:33:48Z",
+   "severity": "high",
+   "summary": "Fix CVE-2026-33186",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.42, v3.6.12, v3.7.0-ea.3",
+     "vulnerable_version_range": "<= v2.11.41, <= v3.6.11, <= v3.7.0-ea.2"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-qr99-7898-vr7c",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-qr99-7898-vr7c",
+   "published_at": "2026-03-27T10:29:14Z",
+   "severity": "medium",
+   "summary": "BasicAuth/DigestAuth Identity Spoofing via Non-Canonical headerField",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.42, v3.6.12, v3.7.0-ea.3",
+     "vulnerable_version_range": "<= v2.11.41, <= v3.6.11, <= v3.7.0-ea.2"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-67jx-r9pv-98rj",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-67jx-r9pv-98rj",
+   "published_at": "2026-03-27T09:47:29Z",
+   "severity": "medium",
+   "summary": "Ingress Rule Injection Allows Host Restriction Bypass in Traefik",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "github.com/traefik/traefik"
+     },
+     "patched_versions": "v3.6.11, v3.7.0-ea.2",
+     "vulnerable_version_range": "<= v3.6.10, <= v3.7.0-ea.1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-wvvq-wgcr-9q48",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-wvvq-wgcr-9q48",
+   "published_at": "2026-03-20T09:45:14Z",
+   "severity": "high",
+   "summary": "Potential mTLS Bypass via Fragmented TLS ClientHello Causing Pre-SNI Sniff Fallback to Default Non-mTLS TLS Config",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.41, v3.6.11, v3.7.0-ea.2",
+     "vulnerable_version_range": "<= v2.11.40, <= v3.6.10, <= v3.7.0-ea.1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-g3hg-j4jv-cwfr",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-g3hg-j4jv-cwfr",
+   "published_at": "2026-03-20T09:44:00Z",
+   "severity": "medium",
+   "summary": "BasicAuth Middleware Timing Attack Allows Username Enumeration",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.41, v3.6.11, v3.7.0-ea.2",
+     "vulnerable_version_range": "<= v2.11.40, <= v3.6.10, <= v3.7.0-ea.1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-4hjq-9h5c-252j",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-4hjq-9h5c-252j",
+   "published_at": "2026-03-11T11:32:40Z",
+   "severity": "high",
+   "summary": "HTTP/2 frames can cause a running server to panic",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.40",
+     "vulnerable_version_range": "<= v2.11.39"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.10",
+     "vulnerable_version_range": "<= v3.6.9"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-8q2w-wr49-whqj",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-8q2w-wr49-whqj",
+   "published_at": "2026-03-11T11:29:40Z",
+   "severity": "medium",
+   "summary": "Kubernetes gateway rule injection via unescaped backticks in HTTPRoute match values",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.10",
+     "vulnerable_version_range": "<= v3.6.9"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-fw45-f5q2-2p4x",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-fw45-f5q2-2p4x",
+   "published_at": "2026-03-04T13:09:56Z",
+   "severity": "medium",
+   "summary": "ForwardAuth Middleware Allows Unbounded Response Body, Causing Potential Denial of Service",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.38",
+     "vulnerable_version_range": "<= v2.11.37"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.9",
+     "vulnerable_version_range": "<= v3.6.8"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-xw98-5q62-jx94",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-xw98-5q62-jx94",
+   "published_at": "2026-03-04T13:10:46Z",
+   "severity": "high",
+   "summary": "TLS Handshake Error Handling Allows Stalled Connections on TCP Routers",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.38",
+     "vulnerable_version_range": "<= v2.11.37"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.9",
+     "vulnerable_version_range": "<= v3.6.8 "
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-92mv-8f8w-wq52",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-92mv-8f8w-wq52",
+   "published_at": "2026-03-04T13:10:10Z",
+   "severity": "high",
+   "summary": "Case-Sensitive Bypass in Connection Header Allows Removal of X-Forwarded Headers",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.38",
+     "vulnerable_version_range": ">= v2.11.9, <= v2.11.37"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.9",
+     "vulnerable_version_range": ">= v3.1.3, <= v3.6.8"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-89p3-4642-cr2w",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-89p3-4642-cr2w",
+   "published_at": "2026-02-12T09:30:50Z",
+   "severity": "high",
+   "summary": "TCP readTimeout bypass via STARTTLS on Postgres",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.8",
+     "vulnerable_version_range": ">=v3.0.0, <= v3.6.7"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-gv8r-9rw9-9697",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-gv8r-9rw9-9697",
+   "published_at": "2026-02-20T08:07:45Z",
+   "severity": "high",
+   "summary": "TLS ClientAuth Bypass on HTTP/3",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.37, v3.6.8",
+     "vulnerable_version_range": "<= v2.11.36, <= v3.6.7"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-cwjm-3f7h-9hwq",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-cwjm-3f7h-9hwq",
+   "published_at": "2026-01-15T20:07:55Z",
+   "severity": "medium",
+   "summary": "ACME TLS-ALPN fast path lacks timeouts and close on handshake stall",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.35, v3.6.7",
+     "vulnerable_version_range": "<= v2.11.34, <= v3.6.6"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-rh7m-2m44-x32f",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-rh7m-2m44-x32f",
+   "published_at": "2026-10-05T12:05:46Z",
+   "severity": "medium",
+   "summary": "Traefik: Kubernetes Ingress and Service annotations allow cross-namespace references to Middlewares, ServersTransports, and TLSOptions",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.46",
+     "vulnerable_version_range": "<= v2.11.45"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.17",
+     "vulnerable_version_range": ">= v3.0.0, <= v3.6.16"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.7.1",
+     "vulnerable_version_range": ">= v3.7.0, <= v3.7.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-7vww-mvcr-x6vj",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-7vww-mvcr-x6vj",
+   "published_at": "2025-12-08T08:43:00Z",
+   "severity": "medium",
+   "summary": " Inverted TLS Verification Logic in Kubernetes NGINX Provider",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v3.6.3",
+     "vulnerable_version_range": ">= v3.5.0, <= v3.6.2"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-gm3x-23wp-hc2c",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-gm3x-23wp-hc2c",
+   "published_at": "2025-12-08T08:43:15Z",
+   "severity": "high",
+   "summary": "Path Normalization Bypass in Traefik Router + Middleware Rules",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.32, v3.6.3",
+     "vulnerable_version_range": "<= v2.11.31, <= v3.6.2"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-q6gg-9f92-r9wg",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-q6gg-9f92-r9wg",
+   "published_at": "2025-08-01T13:51:28Z",
+   "severity": "high",
+   "summary": "Path Traversal in WASM Client Plugin",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.28, v3.4.5, v3.5.0",
+     "vulnerable_version_range": "<= v2.11.27, <= v3.4.4, <= v3.5.0-rc2"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-vrch-868g-9jx5",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-vrch-868g-9jx5",
+   "published_at": "2025-05-28T09:20:40Z",
+   "severity": "low",
+   "summary": "Path traversal still possible using url encoding",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.25, v3.4.1",
+     "vulnerable_version_range": "<= v2.11.24, <= v3.4.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-5423-jcjm-2gpv",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-5423-jcjm-2gpv",
+   "published_at": "2025-04-18T15:37:38Z",
+   "severity": "critical",
+   "summary": "Security Vulnerability: Go 1.23.x < 1.23.8 - HTTP Request Smuggling Vulnerability - 1.23.8",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "The Go Programming Language"
+     },
+     "patched_versions": "1.23.8",
+     "vulnerable_version_range": "< 1.23.8"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-3wqc-mwfx-672p",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-3wqc-mwfx-672p",
+   "published_at": "2025-04-18T15:37:33Z",
+   "severity": "high",
+   "summary": "Fix CVE-2025-22868",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "golang.org/x/oauth2/jws"
+     },
+     "patched_versions": "v0.27.0",
+     "vulnerable_version_range": "< v0.27.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-6p68-w45g-48j7",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-6p68-w45g-48j7",
+   "published_at": "2025-04-21T06:18:49Z",
+   "severity": "high",
+   "summary": "Path Matchers Vulnerability",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.23, v3.3.6, v3.4.0-rc2",
+     "vulnerable_version_range": "<= v2.11.22, <= v3.3.5, <= v3.4.0-rc1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-hxr6-2p24-hf98",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-hxr6-2p24-hf98",
+   "published_at": "2024-12-17T14:26:38Z",
+   "severity": "medium",
+   "summary": "Fix CVE-2024-53259",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.15, v3.2.2",
+     "vulnerable_version_range": "<= v2.11.14, <= v3.2.1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-h924-8g65-j9wg",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-h924-8g65-j9wg",
+   "published_at": "2024-11-29T08:18:40Z",
+   "severity": "low",
+   "summary": "X-Forwarded-Prefix Header allows for Open Redirect",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.14, v3.2.1",
+     "vulnerable_version_range": "<= v2.11.13, <= v3.2.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-62c8-mh53-4cqv",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-62c8-mh53-4cqv",
+   "published_at": "2024-09-19T13:44:39Z",
+   "severity": "critical",
+   "summary": "HTTP client can remove the X-Forwarded headers",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.9, v3.1.3",
+     "vulnerable_version_range": "<= v2.11.8, <= v3.1.2"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-gxrv-wf35-62w9",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-gxrv-wf35-62w9",
+   "published_at": "2024-07-04T14:13:15Z",
+   "severity": "high",
+   "summary": "Bypassing IP allow-lists via HTTP/3 early data requests in QUIC 0-RTT handshakes",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.6, v3.0.4, v3.1.0-rc3",
+     "vulnerable_version_range": "<= v2.11.5, <= v3.0.3, <= v3.1.0-rc2"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-rvj4-q8q5-8grf",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-rvj4-q8q5-8grf",
+   "published_at": "2024-06-20T14:05:25Z",
+   "severity": "medium",
+   "summary": "ACME DNS: Azure Identity Libraries Elevation of Privilege Vulnerability",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.4, v3.0.3",
+     "vulnerable_version_range": "<= v2.11.4, <= v3.0.2"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-7jmw-8259-q9jx",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-7jmw-8259-q9jx",
+   "published_at": "2024-06-11T09:37:48Z",
+   "severity": "medium",
+   "summary": "Unexpected behavior with IPv4-mapped IPv6 addresses",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.4, v3.0.2",
+     "vulnerable_version_range": "<= v2.11.3, <= v3.0.1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-f7cq-5v43-8pwp",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-f7cq-5v43-8pwp",
+   "published_at": "2024-05-23T14:25:32Z",
+   "severity": "medium",
+   "summary": "Malformed DNS message can cause infinite loop",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.3, v3.0.1",
+     "vulnerable_version_range": "<= v2.11.2, <= v3.0.0"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-7f4j-64p6-5h5v",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-7f4j-64p6-5h5v",
+   "published_at": "2024-04-15T13:30:34Z",
+   "severity": "medium",
+   "summary": "Fix CVE-2023-45288 - HTTP/2 CONTINUATION flood in net/http",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.2, v3.0.0-rc5",
+     "vulnerable_version_range": "<= v2.11.1, <= v3.0.0-rc4"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-4vwx-54mw-vqfw",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-4vwx-54mw-vqfw",
+   "published_at": "2024-04-12T07:10:59Z",
+   "severity": "high",
+   "summary": "Possible DoS vulnerability with Content-length header",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.11.2, v3.0.0-rc5",
+     "vulnerable_version_range": "<= v2.11.0, <= v3.0.0-rc3"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-8g85-whqh-cr2f",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-8g85-whqh-cr2f",
+   "published_at": "2023-12-04T08:30:31Z",
+   "severity": "medium",
+   "summary": "Potential DDoS whith ACME HTTPChallenge",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.10.6, v3.0.0-beta5",
+     "vulnerable_version_range": "<= v2.10.5, <= v3.0.0-beta4"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-6fwg-jrfw-ff7p",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-6fwg-jrfw-ff7p",
+   "published_at": "2023-12-04T08:28:41Z",
+   "severity": "medium",
+   "summary": "Uses 100% CPU after request to with host `traefik-service`",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.10.6, v3.0.0-beta5",
+     "vulnerable_version_range": "<= v2.10.5, <= v3.0.0-beta4"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-fvhj-4qfh-q2hm",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-fvhj-4qfh-q2hm",
+   "published_at": "2023-12-04T08:28:24Z",
+   "severity": "low",
+   "summary": "Incorrect processing of fragment in the URL leads to Authorization Bypass",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.10.6, v3.0.0-beta5",
+     "vulnerable_version_range": "<= v2.10.5, <= v3.0.0-beta4"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-7v4p-328v-8v5g",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-7v4p-328v-8v5g",
+   "published_at": "2023-10-12T12:58:23Z",
+   "severity": "medium",
+   "summary": "HTTP/2 request  could cause a deny of service ",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Go"
+     },
+     "patched_versions": "1.21.3, 1.20.10",
+     "vulnerable_version_range": "<=1.21.2, <=1.20.9"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "v2.10.5, v3.0.0-beta4",
+     "vulnerable_version_range": "<= v2.10.4, <= v3.0.0-beta3"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-7hj9-rv74-5g92",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-7hj9-rv74-5g92",
+   "published_at": "2023-04-11T08:13:33Z",
+   "severity": "high",
+   "summary": "HTTP header parsing could cause a deny of service ",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Traefik"
+     },
+     "patched_versions": "2.9.10, v2.10.0-rc2",
+     "vulnerable_version_range": "<= 2.9.9, <= 2.10.0-rc1"
+    },
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": "Go"
+     },
+     "patched_versions": "1.20.3",
+     "vulnerable_version_range": "1.20.2"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-h2ph-vhm7-g4hp",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-h2ph-vhm7-g4hp",
+   "published_at": "2022-12-08T08:12:51Z",
+   "severity": "medium",
+   "summary": "Authorization header displayed in the debug logs",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": ""
+     },
+     "patched_versions": "2.9.6",
+     "vulnerable_version_range": "< 2.9.6"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-468w-8x39-gj5v",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-468w-8x39-gj5v",
+   "published_at": "2022-12-08T08:12:35Z",
+   "severity": "high",
+   "summary": "Routes exposed with an empty TLSOption",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": ""
+     },
+     "patched_versions": "2.9.6",
+     "vulnerable_version_range": "< 2.9.6"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-c6hx-pjc3-7fqr",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-c6hx-pjc3-7fqr",
+   "published_at": "2022-10-10T08:01:32Z",
+   "severity": "high",
+   "summary": "HTTP/2 connections management could cause a deny of service",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "go",
+      "name": ""
+     },
+     "patched_versions": "2.8.8, 2.9.0-rc5",
+     "vulnerable_version_range": "< 2.8.8, < 2.9.0-rc5"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-hrhx-6h34-j5hc",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-hrhx-6h34-j5hc",
+   "published_at": "2022-02-16T13:59:45Z",
+   "severity": "high",
+   "summary": "Wrong TLS configuration choice",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "traefik",
+      "name": ""
+     },
+     "patched_versions": "2.6.1",
+     "vulnerable_version_range": "<2.6.1"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-m697-4v8f-55qg",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-m697-4v8f-55qg",
+   "published_at": "2021-08-03T20:22:44Z",
+   "severity": "low",
+   "summary": "Drop Headers via Malicious Connection Header ",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": ""
+     },
+     "patched_versions": "2.4.13",
+     "vulnerable_version_range": "<2.4.13, <=v1.7.30"
+    }
+   ],
+   "withdrawn_at": null
+  },
+  {
+   "ghsa_id": "GHSA-6qq8-5wq3-86rp",
+   "html_url": "https://github.com/traefik/traefik/security/advisories/GHSA-6qq8-5wq3-86rp",
+   "published_at": "2020-07-30T13:28:36Z",
+   "severity": "low",
+   "summary": "X-Forwarded-Prefix Header Validation Vulnerability",
+   "vulnerabilities": [
+    {
+     "package": {
+      "ecosystem": "",
+      "name": ""
+     },
+     "patched_versions": "v2.2.8, v2.3.0-rc3, v1.7.26",
+     "vulnerable_version_range": "<v2.2.8, < v2.3.0-rc3, < v1.7.26"
+    }
+   ],
+   "withdrawn_at": null
+  }
+ ],
+ "https://gitlab.com/api/v4/projects/glitchtip%2Fglitchtip-backend/repository/tags?order_by=version&sort=desc&per_page=20": [
+  {
+   "commit": {
+    "created_at": "2026-08-07T21:54:10.000-04:00"
+   },
+   "name": "v6.2.6"
+  },
+  {
+   "commit": {
+    "created_at": "2026-08-07T16:40:33.000+00:00"
+   },
+   "name": "v6.2.5"
+  },
+  {
+   "commit": {
+    "created_at": "2026-07-31T13:17:02.000+00:00"
+   },
+   "name": "v6.2.3"
+  },
+  {
+   "commit": {
+    "created_at": "2026-07-17T13:54:16.000-04:00"
+   },
+   "name": "v6.2.2"
+  },
+  {
+   "commit": {
+    "created_at": "2026-07-15T15:13:25.000+00:00"
+   },
+   "name": "v6.2.1"
+  },
+  {
+   "commit": {
+    "created_at": "2026-06-19T21:39:45.000-04:00"
+   },
+   "name": "v6.2.0"
+  },
+  {
+   "commit": {
+    "created_at": "2026-06-05T14:03:26.000+00:00"
+   },
+   "name": "v6.1.8"
+  },
+  {
+   "commit": {
+    "created_at": "2026-06-04T15:49:27.000-04:00"
+   },
+   "name": "v6.1.7"
+  },
+  {
+   "commit": {
+    "created_at": "2026-04-18T09:55:26.000-04:00"
+   },
+   "name": "v6.1.6"
+  },
+  {
+   "commit": {
+    "created_at": "2026-04-14T12:50:30.000-04:00"
+   },
+   "name": "v6.1.5"
+  },
+  {
+   "commit": {
+    "created_at": "2026-04-04T06:10:32.000+00:00"
+   },
+   "name": "v6.1.4"
+  },
+  {
+   "commit": {
+    "created_at": "2026-03-28T08:03:50.000-04:00"
+   },
+   "name": "v6.1.3"
+  },
+  {
+   "commit": {
+    "created_at": "2026-03-23T19:28:35.000+00:00"
+   },
+   "name": "v6.1.1"
+  },
+  {
+   "commit": {
+    "created_at": "2026-03-21T14:20:27.000+00:00"
+   },
+   "name": "v6.1.0"
+  },
+  {
+   "commit": {
+    "created_at": "2026-03-17T12:17:44.000-04:00"
+   },
+   "name": "v6.0.11"
+  },
+  {
+   "commit": {
+    "created_at": "2026-03-07T19:12:05.000+00:00"
+   },
+   "name": "v6.0.10"
+  },
+  {
+   "commit": {
+    "created_at": "2026-03-05T13:46:16.000-05:00"
+   },
+   "name": "v6.0.9"
+  },
+  {
+   "commit": {
+    "created_at": "2026-03-04T07:10:18.000+00:00"
+   },
+   "name": "v6.0.8"
+  },
+  {
+   "commit": {
+    "created_at": "2026-02-20T20:37:06.000-05:00"
+   },
+   "name": "v6.0.7"
+  },
+  {
+   "commit": {
+    "created_at": "2026-02-07T20:17:30.000-05:00"
+   },
+   "name": "v6.0.5"
+  }
+ ]
+}

@@ -288,7 +288,7 @@ function topDesc(cmd: string): string {
     case "backup":
       return "Manage encrypted project data backups over Tailscale";
     case "host":
-      return "Scan the Coolify host for signs of a compromised container";
+      return "Scan the Coolify hosts for a compromised container or a shared service with a known advisory";
     case "release":
       return "Coordinate one version across every surface";
     case "keys":

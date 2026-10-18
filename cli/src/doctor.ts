@@ -1969,6 +1969,11 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
   // backup host is configured.
   const { checkHostIntegrity } = await import("./host/integrity.js");
   for (const r of await checkHostIntegrity()) results.push(r);
+  // Shared services (Coolify, Traefik, Plausible, …) against their upstream
+  // advisories: Plausible ran four months past a critical fix. One row for
+  // every backup host; [] when none is configured.
+  const { checkUpdateWatch } = await import("./host/updates.js");
+  for (const r of await checkUpdateWatch()) results.push(r);
   // Local-dev (Tailscale-served per-project URLs). Returns [] when the
   // user hasn't run `hatchkit dev-setup init`, so doctor stays quiet for
   // anyone not opted in.

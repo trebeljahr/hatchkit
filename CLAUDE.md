@@ -110,6 +110,13 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   findings through the backup-alert SMTP (production write; ask first).
   Exceptions: `/etc/hatchkit-backups/host-integrity.json` on the host. See
   `cli/src/host/integrity.ts`.
+- `hatchkit host updates [--host <name>] [--json]`: read-only; the running
+  version of Coolify, Traefik, Plausible CE, Listmonk, Uptime Kuma, GlitchTip
+  and ClickHouse on every backup host against each repo's GitHub security
+  advisories and latest release, plus Coolify's failing auto-update and
+  Cloudflare IP ranges that drifted from `HATCHKIT-CF` / Hetzner firewalls /
+  the pinned snapshot. One `doctor` row. `install --host <name> [--dry-run]` adds a weekly timer that
+  mails findings (production write; ask first). See `cli/src/host/updates.ts`.
 - `hatchkit explain --json`: source-of-truth mental model.
 
 Check `hatchkit help <command>` before using flags you have not verified.

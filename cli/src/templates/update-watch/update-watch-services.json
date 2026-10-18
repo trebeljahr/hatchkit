@@ -1,0 +1,76 @@
+[
+  {
+    "key": "coolify",
+    "name": "Coolify",
+    "images": ["coollabsio/coolify"],
+    "github": "coollabsio/coolify",
+    "labels": [],
+    "env": [],
+    "probe": {
+      "argv": ["grep", "-m1", "'version'", "/var/www/html/config/constants.php"],
+      "pattern": "'version'\\s*=>.*'v?(\\d[^']*)'"
+    },
+    "packageWords": ["coolify"]
+  },
+  {
+    "key": "traefik",
+    "name": "Traefik",
+    "images": ["traefik"],
+    "github": "traefik/traefik",
+    "labels": ["org.opencontainers.image.version"],
+    "env": [],
+    "probe": { "argv": ["traefik", "version"], "pattern": "Version:\\s*v?(\\S+)" },
+    "packageWords": ["traefik"]
+  },
+  {
+    "key": "plausible",
+    "name": "Plausible CE",
+    "images": ["plausible/community-edition", "plausible/analytics"],
+    "github": "plausible/analytics",
+    "labels": ["org.opencontainers.image.version"],
+    "env": [],
+    "packageWords": ["plausible"]
+  },
+  {
+    "key": "listmonk",
+    "name": "Listmonk",
+    "images": ["listmonk/listmonk", "knadh/listmonk"],
+    "github": "knadh/listmonk",
+    "labels": ["org.opencontainers.image.version"],
+    "env": [],
+    "packageWords": ["listmonk"]
+  },
+  {
+    "key": "uptime-kuma",
+    "name": "Uptime Kuma",
+    "images": ["louislam/uptime-kuma"],
+    "github": "louislam/uptime-kuma",
+    "labels": [],
+    "env": [],
+    "probe": {
+      "argv": ["node", "-p", "require('/app/package.json').version"],
+      "pattern": "^v?(\\d\\S*)"
+    },
+    "packageWords": ["uptime-kuma", "uptime kuma"]
+  },
+  {
+    "key": "glitchtip",
+    "name": "GlitchTip",
+    "images": ["glitchtip/glitchtip"],
+    "gitlab": "glitchtip/glitchtip-backend",
+    "labels": [],
+    "env": ["GLITCHTIP_VERSION"],
+    "packageWords": ["glitchtip"]
+  },
+  {
+    "key": "clickhouse",
+    "name": "ClickHouse",
+    "images": ["clickhouse/clickhouse-server", "yandex/clickhouse-server"],
+    "github": "ClickHouse/ClickHouse",
+    "labels": ["com.clickhouse.build.version"],
+    "env": [],
+    "probe": { "argv": ["clickhouse-server", "--version"], "pattern": "version (\\d\\S*)" },
+    "packageWords": ["clickhouse"],
+    "skipWords": ["cloud"]
+  }
+]

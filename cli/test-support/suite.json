@@ -129,5 +129,6 @@
   "test-backup-recovery.ts",
   "test-backup-host-exec.ts",
   "test-backup-hosts.ts",
-  "test-host-integrity.ts"
+  "test-host-integrity.ts",
+  "test-update-watch.ts"
 ]

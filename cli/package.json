@@ -51,6 +51,7 @@
     "test:backup-hosts": "node scripts/test.mjs test-backup-hosts.ts",
     "test:host-integrity": "node scripts/test.mjs test-host-integrity.ts",
     "test:host-integrity-docker": "node scripts/test.mjs test-host-integrity-docker.ts",
+    "test:update-watch": "node scripts/test.mjs test-update-watch.ts",
     "test:routed-worker-site": "node scripts/test.mjs test-routed-worker-site.ts",
     "test:image-runtime": "node scripts/test.mjs test-image-runtime.ts",
     "test:traefik-drain": "node scripts/test.mjs test-traefik-drain.ts",

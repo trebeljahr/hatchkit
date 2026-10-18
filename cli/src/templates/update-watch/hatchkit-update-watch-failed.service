@@ -1,0 +1,15 @@
+[Unit]
+Description=Mail that the Hatchkit update watch did not finish
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/hatchkit-backups/update-watch.py failed
+User=root
+UMask=0077
+TimeoutStartSec=5min
+MemoryMax=128M
+PrivateTmp=true
+ProtectHome=true
+NoNewPrivileges=true

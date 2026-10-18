@@ -79,6 +79,12 @@ const MODEL: ExplainModel = {
       when: "`hatchkit doctor` runs it with a 10 s CPU sample (a CPU finding there only warns). `install` adds a daily timer next to the backup runner that averages CPU over one hour and mails findings through the backup-alert SMTP; it needs `backup install` and `backup alerts` first. Never prints env values, command lines or file contents. Exceptions go in /etc/hatchkit-backups/host-integrity.json; each finding in --json carries the entry that would allow it.",
     },
     {
+      name: "hatchkit host updates [--host <name>] | install|uninstall --host <name> [--dry-run] | test --host <name>",
+      summary:
+        "Read-only check of the shared services on every backup host (Coolify, Traefik, Plausible CE, Listmonk, Uptime Kuma, GlitchTip, ClickHouse): the running version, resolved from labels or the binary when the tag floats, against each GitHub repository's security advisories and latest release. Flags every high or critical advisory that covers the running version, and Coolify's auto-update failing.",
+      when: "`hatchkit doctor` shows it as one row (GitHub read through the local gh login). `install` adds a weekly timer next to the backup runner that mails findings through the backup-alert SMTP; it needs `backup install` and `backup alerts` on that host first. GlitchTip publishes no advisories and is compared with its latest tag only.",
+    },
+    {
       name: "hatchkit migrate-client [--dry-run|--repo-only|--rollback|--cleanup]",
       summary:
         "Serve a deployed fullstack project's client from Cloudflare Workers static assets; the API stays on Coolify on the same hostname.",
