@@ -404,9 +404,9 @@ const ABSENT = {
   },
 };
 
-await test("probe reports all four permissions when a zone is known", async () => {
+await test("probe reports all five permissions when a zone is known", async () => {
   const probes = await probeWith(() => OK);
-  assert.equal(probes.length, 4);
+  assert.equal(probes.length, 5);
   assert.ok(probes.every((p) => p.ok));
   assert.deepEqual(
     probes.map((p) => p.permission),
@@ -415,6 +415,7 @@ await test("probe reports all four permissions when a zone is known", async () =
       "Account → Workers → Admin (read preflight)",
       "Zone → Workers Routes → Edit",
       "Zone → DNS → Edit",
+      "Zone → Single Redirect → Edit",
     ],
   );
 });

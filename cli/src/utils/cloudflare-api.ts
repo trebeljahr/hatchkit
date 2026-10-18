@@ -1526,7 +1526,16 @@ export class CloudflareApi {
         `/zones/${zoneId}/rulesets/phases/http_request_dynamic_redirect/entrypoint`,
       );
     } catch (err) {
-      if ((err as { status?: number }).status === 404) return null;
+      const status = (err as { status?: number }).status;
+      if (status === 404) return null;
+      if (status === 401 || status === 403 || /\b(9109|10000)\b/.test((err as Error).message)) {
+        throw Object.assign(
+          new Error(
+            `${(err as Error).message} — the token lacks Zone → Single Redirect → Edit. Add it to hatchkit's Cloudflare provisioner token at https://dash.cloudflare.com/profile/api-tokens, then retry.`,
+          ),
+          { status },
+        );
+      }
       throw err;
     }
   }
@@ -1586,6 +1595,8 @@ export class CloudflareApi {
    *    Workers Routes:Edit     — attach a custom domain (zone).
    *    DNS:Edit                — read the hostname's records first; the
    *                              attach is only automated on an empty one.
+   *    Single Redirect:Edit    — hatchkit's HTTP→HTTPS rule for a client
+   *                              on Workers (zone).
    *
    *  None of these ever reach CI: the per-Worker token hatchkit mints
    *  carries Individual Workers Editor on one Worker and nothing else.
@@ -1625,6 +1636,16 @@ export class CloudflareApi {
     out.push(
       await this.probe("Zone → DNS → Edit", () =>
         this.request<unknown>("GET", `/zones/${params.zoneId}/dns_records?per_page=1`),
+      ),
+    );
+    // A client on Workers needs hatchkit's HTTP→HTTPS rule on the zone
+    // (deploy/client-host.ts). 404 = no redirect ruleset yet = readable.
+    out.push(
+      await this.probe("Zone → Single Redirect → Edit", () =>
+        this.request<unknown>(
+          "GET",
+          `/zones/${params.zoneId}/rulesets/phases/http_request_dynamic_redirect/entrypoint`,
+        ),
       ),
     );
     return out;

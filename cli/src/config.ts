@@ -1224,6 +1224,7 @@ export const CLOUDFLARE_PROVISIONER_GRANTS = [
   "Account → Workers → Admin             (look up / create the Worker)",
   "Zone → Workers Routes → Edit          (attach a custom domain; zones you serve)",
   "Zone → DNS → Edit                     (read the hostname's records first)",
+  "Zone → Single Redirect → Edit         (HTTP→HTTPS rule for a client on Workers)",
 ] as const;
 
 function r2AccountId(): string | undefined {
