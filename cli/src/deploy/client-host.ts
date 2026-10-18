@@ -203,6 +203,11 @@ export interface EdgeContext {
   accountId: string;
   zoneId: string;
   zoneName: string;
+  /** Client for DNS reads: hatchkit's DNS token (`config add dns`), which
+   *  reads every zone's records. The Workers provisioner may not hold
+   *  Zone → DNS on a zone (trebeljahr.com, 2026-10-18). Falls back to
+   *  `api`. */
+  dnsApi?: Pick<CloudflareApi, "findRecordsByName">;
 }
 
 /** Resolve the zone of the primary host. Every host of one project must
@@ -261,7 +266,7 @@ export async function preflightEdge(ctx: EdgeContext, edge: EdgePlan): Promise<E
   }
 
   for (const host of edge.hosts) {
-    const records = await ctx.api.findRecordsByName(ctx.zoneId, host);
+    const records = await (ctx.dnsApi ?? ctx.api).findRecordsByName(ctx.zoneId, host);
     const web = records.filter((r) => r.type === "A" || r.type === "AAAA" || r.type === "CNAME");
     if (web.length === 0) blocking.push(`${host} has no A/AAAA/CNAME record.`);
     else if (web.some((r) => !r.proxied)) {

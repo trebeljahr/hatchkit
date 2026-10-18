@@ -3143,11 +3143,16 @@ export async function checkProjectClientHostState(
     try {
       const { CloudflareApi } = await import("./utils/cloudflare-api.js");
       const { preflightEdge, resolveEdgeContext } = await import("./deploy/client-host.js");
-      const ctx = await resolveEdgeContext(
+      const { getDnsConfig } = await import("./config.js");
+      const dns = await getDnsConfig().catch(() => null);
+      const edgeCtx = await resolveEdgeContext(
         new CloudflareApi({ token: prov.token, accountId: prov.accountId }),
         prov.accountId,
         edgePlan,
       );
+      const ctx = dns?.apiToken
+        ? { ...edgeCtx, dnsApi: new CloudflareApi({ token: dns.apiToken }) }
+        : edgeCtx;
       const pre = await preflightEdge(ctx, edgePlan);
       const problems = [
         ...pre.blocking,

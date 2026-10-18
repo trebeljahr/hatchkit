@@ -377,6 +377,16 @@ await test("preflight blocks DNS-only hosts, a Worker with no version and foreig
     edge,
   );
   assert.ok(foreign.blocking.some((b) => /Foreign Workers route \*\.example\.com/.test(b)));
+  // DNS reads go through the DNS token when the provisioner cannot read DNS.
+  const noDns = fakeCloudflare({});
+  noDns.api.findRecordsByName = async () => {
+    throw Object.assign(new Error("10000: Authentication error"), { status: 403 });
+  };
+  const viaDnsToken = await preflightEdge(
+    { ...noDns.ctx, dnsApi: fakeCloudflare({}).api as never },
+    edge,
+  );
+  assert.deepEqual(viaDnsToken.blocking, []);
   const clean = await preflightEdge(fakeCloudflare({}).ctx, edge);
   assert.deepEqual(clean.blocking, []);
   assert.deepEqual(clean.liveVersions, ["v1"]);

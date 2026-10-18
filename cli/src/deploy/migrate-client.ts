@@ -497,7 +497,10 @@ async function cloudflareContext(edge: EdgePlan): Promise<EdgeContext | null> {
   if (!prov) return null;
   const { CloudflareApi } = await import("../utils/cloudflare-api.js");
   const api = new CloudflareApi({ token: prov.token, accountId: prov.accountId });
-  return resolveEdgeContext(api, prov.accountId, edge);
+  const ctx = await resolveEdgeContext(api, prov.accountId, edge);
+  const { getDnsConfig } = await import("../config.js");
+  const dns = await getDnsConfig().catch(() => null);
+  return dns?.apiToken ? { ...ctx, dnsApi: new CloudflareApi({ token: dns.apiToken }) } : ctx;
 }
 
 async function headCommit(projectDir: string): Promise<string> {
