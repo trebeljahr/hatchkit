@@ -503,6 +503,24 @@ await test("host redirect: path and query kept, /.well-known/ on the origin, ups
     /already matches raptor\.example\.com/,
   );
   assert.equal(await removeHostRedirect(cf.api as never, "zone", "beauty.example.com"), "deleted");
+  // A rule made in the dashboard from hatchkit's values has no ref.
+  const dash = fakeCloudflare({
+    ruleset: {
+      id: "rs",
+      rules: [
+        {
+          ...renderHostRedirectRule("p.example.com", "https://q.example", 301),
+          ref: undefined,
+          id: "d1",
+        },
+      ],
+    },
+  });
+  assert.equal(
+    await upsertHostRedirect(dash.ctx, "p.example.com", "https://q.example", 301),
+    "unchanged",
+  );
+  assert.equal(await removeHostRedirect(dash.api as never, "zone", "p.example.com"), "deleted");
   assert.deepEqual(
     (cf.ruleset()?.rules ?? []).map((r) => r.id),
     ["raptor"],
