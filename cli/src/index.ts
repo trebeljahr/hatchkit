@@ -1648,16 +1648,18 @@ async function handleAdd(): Promise<void> {
 
   // The env files alone don't reach a deployed app: an empty Coolify
   // SENTRY_DSN wins over .env.production, and the client build reads
-  // the repo variable. See provision/glitchtip-delivery.ts.
+  // the repo variable. See provision/glitchtip-delivery.ts. A delivery
+  // that leaves nothing open also clears the deferral create recorded.
   if (provisioned.glitchtip) {
-    const { deliverGlitchtipDsn } = await import("./provision/glitchtip-delivery.js");
-    const outcomes = await deliverGlitchtipDsn({
+    const { deliverProvisionedDsn } = await import("./provision/glitchtip-delivery.js");
+    const { followUp } = await deliverProvisionedDsn({
+      project: baseName,
       projectDir: provisioned.glitchtip.projectDir ?? inferredProjectDir,
       server: provisioned.glitchtip.server,
       client: provisioned.glitchtip.client,
       write: !noWrite,
     });
-    if (outcomes.some((o) => o.status === "failed")) process.exitCode = 1;
+    if (followUp?.kind === "failed") process.exitCode = 1;
   }
 }
 
@@ -2706,6 +2708,9 @@ async function handleCreate(): Promise<void> {
   // can read them. Declared with let so they can be reassigned inside.
   let scaffoldResult: Awaited<ReturnType<typeof scaffoldApp>> | undefined;
   let installedDeps = false;
+  // The DSNs the provisioning step below produced. They reach Coolify
+  // and the repo variable only at Step 6.4, once both exist.
+  let provisionedGlitchtip: Awaited<ReturnType<typeof runProvision>>["glitchtip"];
   // Optional-step bookkeeping. Every deferrable step appends here
   // instead of throwing, so the run always reaches the Done banner and
   // the user gets one list of what's still outstanding plus the exact
@@ -2780,6 +2785,7 @@ async function handleCreate(): Promise<void> {
           });
           configuredSteps.push(...provisionResult.configured.map((s) => labelForService(s)));
           deferredSteps.push(...provisionResult.deferred);
+          provisionedGlitchtip = provisionResult.glitchtip;
         } catch (err) {
           console.log(
             chalk.yellow(`  Couldn't auto-provision services: ${(err as Error).message}`),
@@ -3302,6 +3308,28 @@ async function handleCreate(): Promise<void> {
           chalk.dim(`  Run \`hatchkit cloudflare\` from ${appDir} once the issue is resolved.`),
         );
       }
+    }
+
+    // Step 6.4: GlitchTip DSN → Coolify SENTRY_DSN on the server app
+    // and the NEXT_PUBLIC_SENTRY_DSN repo variable. The env files alone
+    // don't reach production: the compose file gives Coolify an EMPTY
+    // SENTRY_DSN, which hides .env.production, and the client build
+    // reads the repo variable. Not at Step 1, where the DSN is minted:
+    // neither the server app nor the repo exists there. Before the push,
+    // so the first build and the first boot already carry it. A target
+    // left without it (no deploy this run, no GitHub repo, a failed
+    // write) becomes one deferred step. See provision/glitchtip-delivery.ts.
+    if (provisionedGlitchtip) {
+      const { deliverProvisionedDsn } = await import("./provision/glitchtip-delivery.js");
+      const { followUp } = await deliverProvisionedDsn({
+        project: config.name,
+        projectDir: provisionedGlitchtip.projectDir ?? appDir,
+        server: provisionedGlitchtip.server,
+        client: provisionedGlitchtip.client,
+        write: true,
+        firstDeployPending: true,
+      });
+      if (followUp) deferredSteps.push(deferralForStep(followUp));
     }
 
     // Step 6.5: push the working branch to origin. Done AFTER Coolify
@@ -4149,6 +4177,11 @@ function printHelp(topic?: HelpTopic): void {
     6. Optionally provisions GlitchTip/Plausible, Listmonk + SES, Email Routing, Search Console
     7. Generates Terraform tfvars + Coolify .env (Coolify mode)
     8. Deploys: Terraform → Coolify → ML  ${chalk.dim("OR")}  GitHub Pages setup
+    9. GlitchTip: writes the DSN to ${chalk.cyan("SENTRY_DSN")} on the server's Coolify app and
+       to the ${chalk.cyan("NEXT_PUBLIC_SENTRY_DSN")} repo variable before the first push, so
+       the first build and boot read it. A target it can't reach (no app
+       with --no-deploy, no GitHub repo) is listed as deferred, with
+       \`hatchkit add <name> glitchtip --adopt\` to finish it.
 
   ${chalk.bold("Flags and prompts:")}
     Every question above has a matching flag. Anything you pass is used
@@ -5230,6 +5263,10 @@ function printHelp(topic?: HelpTopic): void {
         the first deploy. Defaults ON when no matching app exists.
       · Optionally provisions GlitchTip / Plausible / Listmonk + SES,
         Email Routing, and Search Console (same machinery as \`hatchkit add\`).
+        GlitchTip's DSN also goes to ${chalk.cyan("SENTRY_DSN")} on the server's Coolify
+        app and to the ${chalk.cyan("NEXT_PUBLIC_SENTRY_DSN")} repo variable (redeploy the
+        app afterwards). A target it can't reach is listed under Caveats,
+        with \`hatchkit add <name> glitchtip --adopt\` to finish it.
       · Optionally pushes the dotenvx private key to Coolify
         (redundant when the Coolify+DNS step ran — it already does).
 

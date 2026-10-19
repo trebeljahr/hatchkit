@@ -46,17 +46,41 @@
  * secret; it is still printed only inside the `gh variable set` command
  * the user is asked to run (under `--no-write`, or when hatchkit could
  * not run it itself).
+ *
+ * ---------------------------------------------------------------------
+ * Who runs it, and when
+ * ---------------------------------------------------------------------
+ *
+ *   · `hatchkit add … glitchtip`, right after provisioning.
+ *   · `hatchkit create`, once the Coolify apps and the GitHub repo exist
+ *     and before the first push, so the first build and the first boot
+ *     already carry the DSN. Its provisioning step runs much earlier,
+ *     before either target exists.
+ *   · `hatchkit adopt`, after its provisioning step, which already comes
+ *     after the Coolify wiring and the push.
+ *
+ * create and adopt go through `deliverProvisionedDsn`: a target left
+ * without the DSN becomes one entry in the flow's own end-of-run list
+ * (create's deferred steps, adopt's caveats), and its command is
+ * `hatchkit add <project> glitchtip --adopt`. That entry never holds the
+ * DSN, because create persists it in `.hatchkit.json`.
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import chalk from "chalk";
 import { getCoolifyConfig, getGlitchtipConfig } from "../config.js";
 import { findServerAppsForProject } from "../deploy/trusted-origins.js";
-import { type ProjectManifest, readManifest } from "../scaffold/manifest.js";
+import {
+  type ProjectManifest,
+  findManifestDirUpward,
+  readManifest,
+  resolveProjectDir,
+} from "../scaffold/manifest.js";
 import { detectRepoSlug } from "../secrets/push.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { exec } from "../utils/exec.js";
+import { type DeferralKind, resolveDeferredSteps } from "./deferrals.js";
 import { CLIENT_DSN_VAR, SENTRY_DSN_KEY, dsnHostMismatch } from "./glitchtip.js";
 
 /** What a target holds right now. `hidden` = the key exists but the
@@ -136,7 +160,8 @@ type DeliveryCoolify = Pick<
 >;
 
 export interface DeliverGlitchtipDsnArgs {
-  /** Project root holding `.hatchkit.json`. */
+  /** Project root holding `.hatchkit.json`, or the subdir a project in
+   *  a monorepo deploys from (its manifest is at the repo root). */
   projectDir?: string;
   /** DSN the server reads as SENTRY_DSN. */
   server?: string;
@@ -144,6 +169,9 @@ export interface DeliverGlitchtipDsnArgs {
   client?: string;
   /** False under `--no-write`: probe and print, change nothing. */
   write: boolean;
+  /** create: no app has booted yet, and the push that ends the run
+   *  deploys them, so there is nothing to tell the user to redeploy. */
+  firstDeployPending?: boolean;
   /** Test seams. Default: the configured Coolify / GlitchTip, the
    *  project's `origin` remote, console.log. */
   api?: DeliveryCoolify | null;
@@ -159,7 +187,7 @@ export async function deliverGlitchtipDsn(
   args: DeliverGlitchtipDsnArgs,
 ): Promise<DsnDeliveryOutcome[]> {
   const log = args.log ?? ((line: string) => console.log(line));
-  const manifest = args.projectDir ? readManifest(args.projectDir) : null;
+  const project = args.projectDir ? locateProject(args.projectDir) : null;
   const glitchtipUrl = args.glitchtipUrl ?? (await getGlitchtipConfig().catch(() => null))?.url;
   const outcomes: DsnDeliveryOutcome[] = [];
   if (!args.server && !args.client) return outcomes;
@@ -168,19 +196,19 @@ export async function deliverGlitchtipDsn(
 
   if (args.server) {
     outcomes.push(
-      ...(await deliverServer({ ...args, server: args.server, manifest, glitchtipUrl, log })),
+      ...(await deliverServer({ ...args, server: args.server, project, glitchtipUrl, log })),
     );
   }
-  if (args.client && manifest?.surfaces !== "backend") {
+  if (args.client && project?.manifest.surfaces !== "backend") {
     outcomes.push(
-      await deliverClient({ ...args, client: args.client, manifest, glitchtipUrl, log }),
+      await deliverClient({ ...args, client: args.client, project, glitchtipUrl, log }),
     );
   }
 
   const restart = outcomes.filter(
     (o) => o.target === "coolify" && (o.status === "created" || o.status === "updated"),
   );
-  if (restart.length > 0) {
+  if (restart.length > 0 && !args.firstDeployPending) {
     log(
       chalk.yellow(
         `  The server reads ${SENTRY_DSN_KEY} once, at boot: redeploy ${restart.map((o) => `"${o.where}"`).join(", ")} to start reporting.`,
@@ -201,27 +229,140 @@ export async function deliverGlitchtipDsn(
   return outcomes;
 }
 
+/** A project's manifest, the directory that holds it, and the directory
+ *  it deploys from (where its compose file is). The two differ for a
+ *  project deployed from a subdir of its repo: create and adopt keep
+ *  `.hatchkit.json` at the repo root but provision from the subdir. A
+ *  manifest further up whose `projectSubdir` doesn't lead back to
+ *  `projectDir` is another project's, and is ignored. */
+interface LocatedProject {
+  manifest: ProjectManifest;
+  rootDir: string;
+  deployDir: string;
+}
+
+function locateProject(projectDir: string): LocatedProject | null {
+  const rootDir = findManifestDirUpward(projectDir);
+  const manifest = rootDir ? readManifest(rootDir) : null;
+  if (!rootDir || !manifest) return null;
+  const deployDir = resolveProjectDir(rootDir, manifest);
+  if (resolve(rootDir) !== resolve(projectDir) && resolve(deployDir) !== resolve(projectDir)) {
+    return null;
+  }
+  return { manifest, rootDir, deployDir };
+}
+
+// ── create / adopt ───────────────────────────────────────────────────
+
+/** Deferral key create records when a target was left without the DSN.
+ *  Any later delivery that leaves nothing open clears it. */
+export const DSN_DELIVERY_STEP_KEY = "glitchtip-dsn-delivery";
+const DSN_DELIVERY_LABEL = "GlitchTip DSN → Coolify / repo variable";
+
+export interface DsnDeliveryFollowUp {
+  key: string;
+  label: string;
+  /** `failed` when a read or write went wrong; `declined` (shown as
+   *  "skipped") when a target wasn't there or couldn't be read. */
+  kind: Extract<DeferralKind, "failed" | "declined">;
+  /** One line per open target. Never holds the DSN. */
+  reason: string;
+  command: string;
+}
+
+/** The targets a run left without the DSN, as one follow-up for the
+ *  flow's end-of-run list. Null when nothing is left: every target
+ *  holds the DSN, or holds another tracker's DSN on purpose (`kept`). */
+export function dsnDeliveryFollowUp(
+  project: string,
+  outcomes: readonly DsnDeliveryOutcome[],
+): DsnDeliveryFollowUp | null {
+  const open = outcomes.filter(
+    (o) => o.status === "failed" || o.status === "skipped" || o.status === "unreadable",
+  );
+  if (open.length === 0) return null;
+  return {
+    key: DSN_DELIVERY_STEP_KEY,
+    label: DSN_DELIVERY_LABEL,
+    kind: open.some((o) => o.status === "failed") ? "failed" : "declined",
+    reason: open
+      .map(
+        (o) =>
+          `${o.target === "coolify" ? `Coolify ${SENTRY_DSN_KEY}` : `${CLIENT_DSN_VAR} repo variable`}: ${firstSentence(o.detail ?? o.status)}`,
+      )
+      .join("; "),
+    command: `hatchkit add ${project} glitchtip --adopt`,
+  };
+}
+
+/** The opening sentence of a detail, without the `Run: gh variable set
+ *  … --body <DSN>` instruction some details end with. */
+function firstSentence(detail: string): string {
+  return detail.split(" Run: ")[0].split(/\.\s/)[0].replace(/[.:]$/, "");
+}
+
+/** create / adopt: deliver the DSNs `runProvision` returned. Unlike
+ *  `deliverGlitchtipDsn` it cannot throw (an unreadable manifest, a
+ *  keychain error), because a throw inside either flow reaches its
+ *  rollback prompt. When nothing is left open, a recorded
+ *  {@link DSN_DELIVERY_STEP_KEY} deferral is cleared. */
+export async function deliverProvisionedDsn(
+  args: DeliverGlitchtipDsnArgs & { project: string },
+): Promise<{ outcomes: DsnDeliveryOutcome[]; followUp: DsnDeliveryFollowUp | null }> {
+  let outcomes: DsnDeliveryOutcome[];
+  try {
+    outcomes = await deliverGlitchtipDsn(args);
+  } catch (err) {
+    const reason = firstLine(err);
+    (args.log ?? ((line: string) => console.log(line)))(
+      chalk.red(`  ✗ GlitchTip DSN delivery: ${reason}`),
+    );
+    return {
+      outcomes: [],
+      followUp: {
+        key: DSN_DELIVERY_STEP_KEY,
+        label: DSN_DELIVERY_LABEL,
+        kind: "failed",
+        reason,
+        command: `hatchkit add ${args.project} glitchtip --adopt`,
+      },
+    };
+  }
+  const followUp = dsnDeliveryFollowUp(args.project, outcomes);
+  if (!followUp && args.write && args.projectDir) {
+    try {
+      const rootDir = locateProject(args.projectDir)?.rootDir;
+      if (rootDir) resolveDeferredSteps(rootDir, [DSN_DELIVERY_STEP_KEY]);
+    } catch {
+      // The DSN is delivered. A stale entry only repeats a command that
+      // now finds both targets in sync.
+    }
+  }
+  return { outcomes, followUp };
+}
+
 // ── Coolify ──────────────────────────────────────────────────────────
 
 async function deliverServer(
   args: DeliverGlitchtipDsnArgs & {
     server: string;
-    manifest: ProjectManifest | null;
+    project: LocatedProject | null;
     glitchtipUrl?: string;
     log: (line: string) => void;
   },
 ): Promise<DsnDeliveryOutcome[]> {
-  const { manifest, log } = args;
+  const { project, log } = args;
   const skip = (where: string, detail: string): DsnDeliveryOutcome[] => {
     log(chalk.dim(`  · Coolify ${SENTRY_DSN_KEY}: ${detail}`));
     return [{ target: "coolify", where, key: SENTRY_DSN_KEY, status: "skipped", detail }];
   };
-  if (!manifest || !args.projectDir) {
+  if (!project) {
     return skip(
       "-",
       `no .hatchkit.json to find the server app from. If it runs on Coolify, set ${SENTRY_DSN_KEY} there to the DSN in .env.production.`,
     );
   }
+  const { manifest } = project;
   if ((manifest.deploymentMode ?? "coolify") !== "coolify" || manifest.surfaces === "static") {
     return [];
   }
@@ -238,7 +379,7 @@ async function deliverServer(
   }
   let apps: Array<{ uuid: string; name: string }>;
   try {
-    apps = await findServerAppsForProject({ api, projectDir: args.projectDir, manifest });
+    apps = await findServerAppsForProject({ api, projectDir: project.deployDir, manifest });
   } catch (err) {
     return [
       failed(
@@ -370,7 +511,7 @@ async function readRepoVariable(repo: string): Promise<LiveDsn> {
 async function deliverClient(
   args: DeliverGlitchtipDsnArgs & {
     client: string;
-    manifest: ProjectManifest | null;
+    project: LocatedProject | null;
     glitchtipUrl?: string;
     log: (line: string) => void;
   },
@@ -393,7 +534,8 @@ async function deliverClient(
     log(`      ${command}`);
     return { ...base, status: "skipped", detail };
   }
-  warnIfNoWorkflowReads(args.projectDir, log);
+  // Workflows live at the repo root, above a subdir-deployed project.
+  warnIfNoWorkflowReads(args.project?.rootDir ?? args.projectDir, log);
 
   let live: LiveDsn | undefined;
   try {

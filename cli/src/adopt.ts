@@ -2882,6 +2882,32 @@ async function executePlan(
           recovery: [step.command, ...(step.hint ?? [])],
         });
       }
+
+      // Step 4-dsn: GlitchTip DSN → Coolify SENTRY_DSN on the server app
+      // and the NEXT_PUBLIC_SENTRY_DSN repo variable. The env files alone
+      // don't reach production: the compose file gives Coolify an EMPTY
+      // SENTRY_DSN, which hides .env.production, and the client build
+      // reads the repo variable. Steps 3 and 3b made the repo and the
+      // app, so both exist by now unless the plan skipped them; then the
+      // delivery says what's left and it lands in the caveats. See
+      // provision/glitchtip-delivery.ts.
+      if (provisionResult.glitchtip) {
+        const { deliverProvisionedDsn } = await import("./provision/glitchtip-delivery.js");
+        const { followUp } = await deliverProvisionedDsn({
+          project: plan.name,
+          projectDir: provisionResult.glitchtip.projectDir ?? state.projectDir,
+          server: provisionResult.glitchtip.server,
+          client: provisionResult.glitchtip.client,
+          write: true,
+        });
+        if (followUp) {
+          caveats.push({
+            title: "GlitchTip DSN not delivered to production",
+            reason: followUp.reason,
+            recovery: [followUp.command],
+          });
+        }
+      }
     }
 
     // Step 4a-mailfrom: SES Custom MAIL FROM retrofit. Adopt --resume

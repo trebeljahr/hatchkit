@@ -157,7 +157,8 @@ hatchkit create --yes --name blog --domain blog.example.com \
 7. Generates Terraform tfvars + Coolify `.env`.
 8. Runs Terraform (DNS + optionally server).
 9. Runs Coolify app setup and pushes the dotenvx private key.
-10. Deploys ML services and prints env endpoints to set.
+10. With GlitchTip selected, writes the DSN to `SENTRY_DSN` on the server's Coolify app and to the `NEXT_PUBLIC_SENTRY_DSN` repo variable, then pushes the first commit. The first build and the first boot read it. See [GlitchTip DSN delivery](#glitchtip-dsn-delivery).
+11. Deploys ML services and prints env endpoints to set.
 
 ---
 
@@ -371,6 +372,13 @@ Each write is read back. A missing key, an empty value, a `CHANGE_ME_` placehold
 `add` refuses a DSN whose host is not the configured GlitchTip URL. GlitchTip builds every DSN from its `GLITCHTIP_DOMAIN` setting, and a wrong value (the compose default is `https://glitchtip.example.com`) sends every event elsewhere. Fix the setting, redeploy GlitchTip, and re-run with `--adopt`.
 
 For a project that already has GlitchTip, `hatchkit add <project> glitchtip --adopt` re-reads the existing project's DSN and writes it under every name and to both targets. This is the repair for a project wired before `add` wrote `SENTRY_DSN`.
+
+`hatchkit create` and `hatchkit adopt` deliver the DSN the same way, with the same rules:
+
+- **`create`** mints the DSN early, before the GitHub repo and the Coolify apps exist. It writes both targets after the Coolify setup and before the first push, so the first build and the first boot already have the DSN. It prints no redeploy notice, because no app has started yet.
+- **`adopt`** writes both targets right after its provisioning step. That step comes after the Coolify wiring and the push, so `adopt` tells you which app to redeploy.
+
+A target that is still without the DSN does not stop the run. Examples: `--no-deploy` (no server app yet), no GitHub remote, or a write that was not confirmed. `create` lists it once under **Deferred** and records it in `.hatchkit.json`. `adopt` lists it under **Caveats**. Both name the follow-up command `hatchkit add <project> glitchtip --adopt`. When a later run delivers to every target, the recorded entry clears itself. The entry never contains the DSN. A project deployed from a subdirectory of its repo is found through the `.hatchkit.json` at the repo root.
 
 ---
 

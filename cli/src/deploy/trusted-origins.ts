@@ -65,6 +65,7 @@ import {
 } from "../scaffold/native-origins.js";
 import { readComposeFile } from "../utils/compose.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
+import { resolveCoolifyRuntime } from "./image-runtime.js";
 import { type RoutedApp, computeRoutingPlan, inferTopology } from "./routing.js";
 
 export const TRUSTED_ORIGINS_KEY = "TRUSTED_ORIGINS";
@@ -384,7 +385,12 @@ export async function pushNativeOriginsForProject(args: {
  *  an accepted alias. Empty for a project that isn't on Coolify, has no
  *  server, or whose apps don't exist yet. Shared by every writer of a
  *  server-only env var (TRUSTED_ORIGINS here, SENTRY_DSN in
- *  provision/glitchtip-delivery.ts), so they agree on "which app". */
+ *  provision/glitchtip-delivery.ts), so they agree on "which app".
+ *
+ *  The runtime decides the names: an image-runtime project (what
+ *  `create` writes by default) runs its server as `<name>-server`, a
+ *  compose one as `<name>`. Without it, every image project's server
+ *  app reads as "not created yet". */
 export async function findServerAppsForProject(args: {
   api: Pick<CoolifyApi, "findApplicationByName">;
   projectDir: string;
@@ -407,6 +413,7 @@ export async function findServerAppsForProject(args: {
     ports: manifest.ports,
     publicService: manifest.publicService,
     composeServices: compose?.services,
+    runtime: resolveCoolifyRuntime(manifest.coolifyRuntime),
   });
   const apps: Array<{ uuid: string; name: string; role: RoutedApp["role"] }> = [];
   for (const routed of serverAppsOf(plan.apps, manifest.surfaces)) {
