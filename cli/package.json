@@ -113,11 +113,11 @@
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test",
     "install-local": "pnpm run build && npm install -g .",
     "changelog": "node scripts/print-changelog.mjs",
-    "release": "pnpm run release:patch",
-    "release:patch": "node scripts/release-prep.mjs && node scripts/release-bump.mjs patch && pnpm run _release:finish",
-    "release:minor": "node scripts/release-prep.mjs && node scripts/release-bump.mjs minor && pnpm run _release:finish",
-    "release:major": "node scripts/release-prep.mjs && node scripts/release-bump.mjs major && pnpm run _release:finish",
-    "_release:finish": "pnpm run build && pnpm run typecheck && git push --follow-tags && node scripts/release-packages.mjs && npm publish --access public && npm install -g .",
+    "release": "node scripts/release.mjs patch",
+    "release:patch": "node scripts/release.mjs patch",
+    "release:minor": "node scripts/release.mjs minor",
+    "release:major": "node scripts/release.mjs major",
+    "release:resume": "node scripts/release.mjs resume",
     "prepublishOnly": "pnpm run build",
     "test:token-client-auth": "node scripts/test.mjs test-token-client-auth.ts",
     "test:workspaces": "node scripts/test.mjs test-workspaces.ts",
@@ -136,7 +136,8 @@
     "test:ses-feedback": "node scripts/test.mjs test-ses-feedback.ts",
     "test:keychain-isolation": "node scripts/test.mjs test-keychain-isolation.ts",
     "test:ses-project-sender": "node scripts/test.mjs test-ses-project-sender.ts",
-    "test:ses-project-runtime": "node scripts/test.mjs test-ses-project-runtime.ts"
+    "test:ses-project-runtime": "node scripts/test.mjs test-ses-project-runtime.ts",
+    "test:release-flow": "node scripts/test.mjs test-release-flow.ts"
   },
   "dependencies": {
     "@aws-sdk/client-iam": "^3.1143.0",

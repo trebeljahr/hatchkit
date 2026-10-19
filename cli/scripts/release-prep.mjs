@@ -13,6 +13,10 @@
  * to the bump generating a number that's already taken and the
  * publish step crashing after build/typecheck. Catch it up front.
  *
+ * And refuses when HEAD is the tagged version commit of a release that
+ * never reached npm: a new bump would skip that version. `pnpm
+ * release:resume` finishes it instead.
+ *
  * Skip with RELEASE_SKIP_PREP=1 (e.g. a CI-driven release that's
  * already vouched for cleanliness). RELEASE_SKIP_NPM_CHECK=1 only
  * skips the npm-version comparison, useful offline.
@@ -111,6 +115,19 @@ function checkNpmDrift(repoRoot) {
   }
   if (!registry) return null;
 
+  // An earlier release bumped, committed and tagged, then stopped
+  // before the CLI reached npm (the CLI publishes last).
+  if (compareSemver(local, registry) > 0 && tagsAtHead(repoRoot).includes(`v${local}`)) {
+    return [
+      `v${local} is committed and tagged at HEAD, but npm's latest ${name} is ${registry}.`,
+      "",
+      "  An earlier release stopped before it finished, and a new one would skip",
+      `  v${local}. Finish it instead (packages already on npm are skipped):`,
+      "",
+      "      pnpm release:resume",
+    ].join("\n");
+  }
+
   // Only refuse when local is BEHIND registry. Equal is the post-sync
   // state — `npm version patch` increments past it cleanly.
   if (compareSemver(local, registry) < 0) {
@@ -125,12 +142,20 @@ function checkNpmDrift(repoRoot) {
       `      cd ${repoRoot}`,
       `      git add cli/package.json`,
       `      git commit -m "chore: release v${registry}"`,
-      `      git tag v${registry}`,
+      `      git tag -a v${registry} -m v${registry}`,
       "",
       "  Then re-run the release; it'll bump cleanly past that.",
     ].join("\n");
   }
   return null;
+}
+
+function tagsAtHead(repoRoot) {
+  try {
+    return sh("git tag --points-at HEAD", { cwd: repoRoot }).split("\n");
+  } catch {
+    return [];
+  }
 }
 
 /** Tiny semver compare — returns -1 / 0 / 1 for a vs b. We only feed

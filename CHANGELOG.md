@@ -44,6 +44,10 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 - "Coolify GitHub App (sources)" with no sources is a skip, not a failure: only `hatchkit create --private` needs one.
 - An Email Routing permission error names the call Cloudflare refused and the one permission it needs. Reading a zone's routing settings needs Zone → Zone Settings → Read (Edit to enable routing), not Email Routing Rules, which the hint used to ask for.
 - Manifest migration notes print once per run, with the command that writes the migrated file (`hatchkit update`). doctor used to print them once per manifest read.
+- `npm install hatchkit` works again with the next release. hatchkit 0.2.16 to 0.2.19 on npm list `@hatchkit/dev-shared` as `workspace:*`, and npm rejects that with `EUNSUPPORTEDPROTOCOL`. The release published the CLI with `npm publish`, which keeps `workspace:*`. It now uses `pnpm publish`, which writes the real version.
+- `pnpm release` (maintainers) now finishes with an npm account that requires 2FA to publish. Each publish runs in the terminal, so npm can show its "Authenticate your account" prompt instead of failing with `EOTP`. Every package is published before the commit and tag are pushed. A version already on npm is skipped, so `pnpm release:resume` finishes a release that stopped, and a new `pnpm release` on top of one refuses to bump past it.
+- The release tag is now annotated and pushed with the version commit. `git push --follow-tags` skipped the lightweight tag, so v0.2.19 reached GitHub only by hand.
+- The release also runs where `pnpm` is not on PATH, for example a shell on Homebrew's Node, which ships no corepack. Nested `pnpm` calls use the pnpm that started the release. With no pnpm at all, it stops before the version bump.
 
 ### Removed
 

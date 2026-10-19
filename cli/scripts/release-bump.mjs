@@ -12,7 +12,7 @@
  * drifted from git history.
  *
  * Doing the three steps ourselves is unambiguous: bump, stage, commit,
- * tag. release-prep.mjs has already verified the working tree is
+ * tag (annotated). release-prep.mjs has already verified the working tree is
  * clean before this runs, so the commit only contains the version bump.
  *
  * Usage: node scripts/release-bump.mjs <patch|minor|major>
@@ -58,8 +58,8 @@ console.log(`  release-bump: ${current} → ${next}`);
 // The CLI's runtime references the plugin version range as
 // `^${cliVersion}` (see devPluginNextVersionRange in dev-setup.ts), so
 // every release must guarantee the plugin packages exist on npm at the
-// same version. release-packages.mjs publishes them right after this
-// script bumps + commits the lockstep set.
+// same version. release-packages.mjs publishes them after this script
+// bumps + commits the lockstep set.
 const stagedPaths = [join("cli", "package.json")];
 const lockstepPackages = ["dev-shared", "dev-plugin-next", "dev-plugin-vite"];
 for (const name of lockstepPackages) {
@@ -79,10 +79,12 @@ for (const name of lockstepPackages) {
 }
 
 // Stage + commit + tag from the repo root so the paths in the commit
-// are repo-relative regardless of where the script was invoked.
+// are repo-relative regardless of where the script was invoked. The tag
+// is annotated: `git push --follow-tags` skips lightweight tags, which
+// left v0.2.19 off GitHub until it was pushed by hand.
 for (const p of stagedPaths) {
   sh(`git add ${JSON.stringify(p)}`, { cwd: repoRoot });
 }
 sh(`git commit -m ${JSON.stringify(`chore: release v${next}`)}`, { cwd: repoRoot });
-sh(`git tag ${JSON.stringify(`v${next}`)}`, { cwd: repoRoot });
+sh(`git tag -a ${JSON.stringify(`v${next}`)} -m ${JSON.stringify(`v${next}`)}`, { cwd: repoRoot });
 console.log(`  release-bump: committed + tagged v${next}`);

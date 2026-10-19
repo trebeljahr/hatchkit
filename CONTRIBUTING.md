@@ -49,3 +49,15 @@ Please include:
 ## Release Notes
 
 User-visible changes should add or update an entry in `CHANGELOG.md`.
+
+## Releasing
+
+Maintainers release from a clean `main`:
+
+```bash
+pnpm release
+```
+
+`pnpm release` makes a patch release; `release:minor` and `release:major` work the same way. The script bumps every package, commits, tags, builds, publishes the four npm packages, and then pushes the commit and the tag. With 2FA on the npm account, npm asks for authentication in the terminal for each publish.
+
+Nothing is pushed until every package is on npm. If a step fails, fix the cause and run `pnpm release:resume`. It skips the packages already on npm.

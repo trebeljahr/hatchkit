@@ -137,5 +137,6 @@
   "test-host-integrity.ts",
   "test-update-watch.ts",
   "test-cloudflare-audit.ts",
-  "test-mac-runner.ts"
+  "test-mac-runner.ts",
+  "test-release-flow.ts"
 ]
