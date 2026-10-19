@@ -15,6 +15,7 @@ function sampleRequest(): NonNullable<ErrorEvent["request"]> {
       Cookie: "better-auth.session_token=abc.def",
       "Set-Cookie": "better-auth.session_token=abc.def; Path=/; HttpOnly",
       AUTHORIZATION: "Bearer abc.def",
+      "Sec-WebSocket-Protocol": "bearer.abc.def",
       "user-agent": "node-test",
       "content-type": "application/json",
     },
@@ -43,6 +44,25 @@ describe("sentryOptions", () => {
     const event: TransactionEvent = { type: "transaction", request: sampleRequest() };
     const sent = await options.beforeSendTransaction?.(event, {});
     assert.deepEqual(sent?.request, KEPT);
+    assert.doesNotMatch(JSON.stringify(sent), SECRETS);
+  });
+
+  test("transactions lose credential headers copied onto span data", async () => {
+    const headerData = (): Record<string, string> => ({
+      "http.request.header.sec_websocket_protocol": "bearer.abc.def",
+      "http.request.header.cookie.better_auth.session_token": "[Filtered]",
+      "http.request.header.user_agent": "node-test",
+      "http.route": "/boom",
+    });
+    const event: TransactionEvent = {
+      type: "transaction",
+      contexts: { trace: { span_id: "1", trace_id: "2", data: headerData() } },
+      spans: [{ span_id: "3", trace_id: "2", start_timestamp: 0, data: headerData() }],
+    };
+    const sent = await options.beforeSendTransaction?.(event, {});
+    const kept = { "http.request.header.user_agent": "node-test", "http.route": "/boom" };
+    assert.deepEqual(sent?.contexts?.trace?.data, kept);
+    assert.deepEqual(sent?.spans?.[0]?.data, kept);
     assert.doesNotMatch(JSON.stringify(sent), SECRETS);
   });
 

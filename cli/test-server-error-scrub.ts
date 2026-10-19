@@ -10,19 +10,23 @@
  *  1. **Old file.** The pre-fix starter `instrument.ts` gets
  *     `sentry-options.ts`, its test and the new `instrument.ts`, all byte
  *     for byte the starter's. A second pass writes nothing.
- *  2. **Already fixed.** broadcastdock, mood-magic and streaks were fixed by
- *     hand with the starter's files; a project with `sentry-options.ts`, or
- *     with a `beforeSend` of its own, is left alone.
- *  3. **Customized.** Any other `instrument.ts` is never rewritten. The
+ *  2. **Already fixed.** A project with the current `sentry-options.ts`, its
+ *     own edit of it, or a `beforeSend` of its own, is left alone.
+ *  3. **Superseded.** broadcastdock, mood-magic and streaks copied the first
+ *     `sentry-options.ts` (55d07a1) by hand. It kept the WebSocket bearer
+ *     token and the span header attributes. That exact file is replaced; a
+ *     test the project edited is kept.
+ *  4. **Customized.** Any other `instrument.ts` is never rewritten. The
  *     ledger records a conflict and `update` prints what to add.
- *  4. **Missing.** No `instrument.ts` means no server to scrub.
- *  5. **Dry run.** Names the three files and writes none of them, both at
- *     the module and through `runUpdate`.
+ *  5. **Missing.** No `instrument.ts` means no server to scrub.
+ *  6. **Dry run.** Names the files and writes none of them, both at the
+ *     module and through `runUpdate`.
  *
  * Run: `pnpm test` (via the script in cli/package.json).
  */
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -44,7 +48,10 @@ const {
   SENTRY_OPTIONS_REL_PATH,
   SENTRY_OPTIONS_TEST_REL_PATH,
   SERVER_INSTRUMENT_REL_PATH,
+  SUPERSEDED_SENTRY_OPTIONS_SHA256,
+  SUPERSEDED_SENTRY_OPTIONS_TEST_SHA256,
   classifyServerInstrument,
+  normalizeSource,
   retrofitServerErrorScrub,
 } = await import("./src/scaffold/server-error-scrub.js");
 
@@ -54,6 +61,22 @@ const SCRUB_FILES = [
   SENTRY_OPTIONS_TEST_REL_PATH,
   SERVER_INSTRUMENT_REL_PATH,
 ];
+
+/** The first sentry-options.ts and its test, exactly as 55d07a1 shipped them. */
+const OPTIONS_55D07A1 = readFileSync(
+  join(import.meta.dirname, "test-support", "sentry-options-55d07a1.ts.txt"),
+  "utf-8",
+);
+const OPTIONS_TEST_55D07A1 = readFileSync(
+  join(import.meta.dirname, "test-support", "sentry-options-55d07a1.test.ts.txt"),
+  "utf-8",
+);
+/** broadcastdock's test: the 55d07a1 test with its own example URL. */
+const OWN_OPTIONS_TEST = OPTIONS_TEST_55D07A1.replaceAll("app.example", "broadcastdock.example");
+
+function sha256(source: string): string {
+  return createHash("sha256").update(normalizeSource(source)).digest("hex");
+}
 
 const failures: string[] = [];
 function expect(label: string, fn: () => void | Promise<void>): Promise<void> {
@@ -92,7 +115,7 @@ function snapshot(dir: string): Record<string, string | undefined> {
   );
 }
 
-/** The starter's three files, as broadcastdock, mood-magic and streaks have them. */
+/** The starter's three files, as a project scaffolded today has them. */
 function fixedByHand(): Record<string, string> {
   return Object.fromEntries(SCRUB_FILES.map((rel) => [rel, starterFile(rel)]));
 }
@@ -107,12 +130,37 @@ const CUSTOM_INSTRUMENT_TS = PRE_SCRUB_INSTRUMENT_TS.replace(
 console.log("\nstarter:");
 
 await expect("the starter's own files classify as already fixed", () => {
-  assert.equal(classifyServerInstrument(starterFile(SERVER_INSTRUMENT_REL_PATH), true), "already");
+  assert.equal(
+    classifyServerInstrument(
+      starterFile(SERVER_INSTRUMENT_REL_PATH),
+      starterFile(SENTRY_OPTIONS_REL_PATH),
+    ),
+    "already",
+  );
   assert.match(
     starterFile(SERVER_INSTRUMENT_REL_PATH),
     /sentryOptions\(process\.env\.SENTRY_DSN\)/,
   );
   assert.match(starterFile(SENTRY_OPTIONS_REL_PATH), /beforeSend: scrubRequest/);
+});
+
+await expect("the starter strips the WebSocket bearer token and span header attributes", () => {
+  const options = starterFile(SENTRY_OPTIONS_REL_PATH);
+  assert.match(options, /"sec-websocket-protocol",/);
+  assert.match(options, /scrubSpanData\(event\.contexts\?\.trace\?\.data\)/);
+  assert.match(options, /for \(const span of event\.spans \?\? \[\]\) scrubSpanData\(span\.data\)/);
+  assert.match(
+    starterFile(SENTRY_OPTIONS_TEST_REL_PATH),
+    /"Sec-WebSocket-Protocol": "bearer\.abc\.def"/,
+  );
+});
+
+await expect("the 55d07a1 fixtures are the superseded hashes, and not the starter", () => {
+  assert.deepEqual(SUPERSEDED_SENTRY_OPTIONS_SHA256, [sha256(OPTIONS_55D07A1)]);
+  assert.deepEqual(SUPERSEDED_SENTRY_OPTIONS_TEST_SHA256, [sha256(OPTIONS_TEST_55D07A1)]);
+  assert.notEqual(sha256(starterFile(SENTRY_OPTIONS_REL_PATH)), sha256(OPTIONS_55D07A1));
+  assert.notEqual(sha256(starterFile(SENTRY_OPTIONS_TEST_REL_PATH)), sha256(OPTIONS_TEST_55D07A1));
+  assert.doesNotMatch(OPTIONS_55D07A1, /sec-websocket-protocol/);
 });
 
 await expect("the pre-fix file is not what the starter ships now", () => {
@@ -142,7 +190,7 @@ await expect("writes sentry-options.ts, its test and the new instrument.ts", () 
 
 await expect("CRLF line endings and trailing whitespace still count as the old file", () => {
   const crlf = PRE_SCRUB_INSTRUMENT_TS.replace(/\n/g, "  \r\n");
-  assert.equal(classifyServerInstrument(crlf, false), "patched");
+  assert.equal(classifyServerInstrument(crlf, undefined), "patched");
 });
 
 await expect("a second pass writes nothing", () => {
@@ -185,7 +233,7 @@ await expect("the hand-fixed starter files are a no-op", () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-await expect("sentry-options.ts alone marks the project fixed", () => {
+await expect("a sentry-options.ts of the project's own marks the project fixed", () => {
   const dir = makeProject({
     [SERVER_INSTRUMENT_REL_PATH]: PRE_SCRUB_INSTRUMENT_TS,
     [SENTRY_OPTIONS_REL_PATH]: "export {};\n",
@@ -213,7 +261,98 @@ await expect("an instrument.ts with its own beforeSend is a no-op", () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-// ── 3. Customized ─────────────────────────────────────────────────────
+await expect("an edited 55d07a1 file is the project's own", () => {
+  const edited = OPTIONS_55D07A1.replace(
+    '"proxy-authorization"',
+    '"proxy-authorization", "x-api-key"',
+  );
+  assert.notEqual(edited, OPTIONS_55D07A1);
+  const dir = makeProject({
+    [SERVER_INSTRUMENT_REL_PATH]: starterFile(SERVER_INSTRUMENT_REL_PATH),
+    [SENTRY_OPTIONS_REL_PATH]: edited,
+  });
+  const ledger = new FeatureLedger(dir, false);
+  assert.equal(retrofitServerErrorScrub(ledger, STARTER).outcome, "already");
+  assert.deepEqual(ledger.entries, []);
+  assert.equal(readFileSync(join(dir, SENTRY_OPTIONS_REL_PATH), "utf-8"), edited);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── 3. Superseded ─────────────────────────────────────────────────────
+console.log("\nthe 55d07a1 sentry-options.ts:");
+
+/** broadcastdock, mood-magic and streaks as they are: the 55d07a1 options,
+ *  their own copy of its test, and the current instrument.ts. */
+function copiedBy55d07a1(test: string = OWN_OPTIONS_TEST): Record<string, string> {
+  return {
+    [SERVER_INSTRUMENT_REL_PATH]: starterFile(SERVER_INSTRUMENT_REL_PATH),
+    [SENTRY_OPTIONS_REL_PATH]: OPTIONS_55D07A1,
+    [SENTRY_OPTIONS_TEST_REL_PATH]: test,
+  };
+}
+
+await expect("is replaced; the project's own test and instrument.ts are kept", () => {
+  const dir = makeProject(copiedBy55d07a1());
+  const ledger = new FeatureLedger(dir, false);
+  const result = retrofitServerErrorScrub(ledger, STARTER);
+  assert.equal(result.outcome, "upgraded");
+  assert.deepEqual(result.writes, [SENTRY_OPTIONS_REL_PATH]);
+  assert.equal(
+    readFileSync(join(dir, SENTRY_OPTIONS_REL_PATH), "utf-8"),
+    starterFile(SENTRY_OPTIONS_REL_PATH),
+  );
+  assert.equal(readFileSync(join(dir, SENTRY_OPTIONS_TEST_REL_PATH), "utf-8"), OWN_OPTIONS_TEST);
+  assert.equal(
+    readFileSync(join(dir, SERVER_INSTRUMENT_REL_PATH), "utf-8"),
+    starterFile(SERVER_INSTRUMENT_REL_PATH),
+  );
+  assert.deepEqual(ledger.conflicts(), []);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+await expect("the 55d07a1 test is replaced along with it", () => {
+  const dir = makeProject(copiedBy55d07a1(OPTIONS_TEST_55D07A1));
+  const result = retrofitServerErrorScrub(new FeatureLedger(dir, false), STARTER);
+  assert.equal(result.outcome, "upgraded");
+  assert.deepEqual(result.writes, [SENTRY_OPTIONS_REL_PATH, SENTRY_OPTIONS_TEST_REL_PATH]);
+  assert.deepEqual(snapshot(dir), fixedByHand());
+  rmSync(dir, { recursive: true, force: true });
+});
+
+await expect("CRLF line endings still count as the 55d07a1 file", () => {
+  const instrument = starterFile(SERVER_INSTRUMENT_REL_PATH);
+  assert.equal(
+    classifyServerInstrument(instrument, OPTIONS_55D07A1.replace(/\n/g, "\r\n")),
+    "upgraded",
+  );
+});
+
+await expect("a second pass writes nothing", () => {
+  const dir = makeProject(copiedBy55d07a1());
+  retrofitServerErrorScrub(new FeatureLedger(dir, false), STARTER);
+  const before = snapshot(dir);
+  const ledger = new FeatureLedger(dir, false);
+  assert.equal(retrofitServerErrorScrub(ledger, STARTER).outcome, "already");
+  assert.deepEqual(ledger.entries, []);
+  assert.deepEqual(snapshot(dir), before);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+await expect("a dry run names sentry-options.ts and writes nothing", () => {
+  const dir = makeProject(copiedBy55d07a1());
+  const before = snapshot(dir);
+  const ledger = new FeatureLedger(dir, true);
+  const result = retrofitServerErrorScrub(ledger, STARTER);
+  assert.equal(result.outcome, "upgraded");
+  assert.deepEqual(
+    ledger.entries.map((e) => [e.file, e.action]),
+    [[SENTRY_OPTIONS_REL_PATH, "would-write"]],
+  );
+  assert.deepEqual(snapshot(dir), before);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── 4. Customized ─────────────────────────────────────────────────────
 console.log("\ncustomized instrument.ts:");
 
 await expect("is left alone and recorded as a conflict with the manual step", () => {
@@ -230,6 +369,8 @@ await expect("is left alone and recorded as a conflict with the manual step", ()
   assert.equal(conflict?.file, SERVER_INSTRUMENT_REL_PATH);
   assert.match(conflict?.detail ?? "", /maxIncomingRequestBodySize: "none"/);
   assert.match(conflict?.detail ?? "", /beforeSend \+ beforeSendTransaction/);
+  assert.match(conflict?.detail ?? "", /sec-websocket-protocol/);
+  assert.match(conflict?.detail ?? "", /http\.request\.header\.\* keys/);
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -241,7 +382,7 @@ await expect("an instrument.ts without the Sentry SDK is not reported", () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-// ── 4. Missing ────────────────────────────────────────────────────────
+// ── 5. Missing ────────────────────────────────────────────────────────
 console.log("\nno instrument.ts:");
 
 await expect("a project without a server is skipped", () => {
@@ -255,7 +396,7 @@ await expect("a project without a server is skipped", () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-// ── 5. Dry run ────────────────────────────────────────────────────────
+// ── 6. Dry run ────────────────────────────────────────────────────────
 console.log("\ndry run:");
 
 await expect("names the three files and writes none of them", () => {
@@ -383,6 +524,38 @@ await expect("a real run brings the starter's files in", async () => {
   }
 });
 
+await expect("a project with the 55d07a1 sentry-options.ts gets the current one", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "server-error-scrub-upgrade-"));
+  try {
+    await scaffoldApp(cfg("scrub-upgrade"), dir);
+    writeFileSync(join(dir, SENTRY_OPTIONS_REL_PATH), OPTIONS_55D07A1, "utf-8");
+    writeFileSync(join(dir, SENTRY_OPTIONS_TEST_REL_PATH), OWN_OPTIONS_TEST, "utf-8");
+    const before = snapshot(dir);
+    const dry = await runUpdateQuietly(dir, true);
+    assert.match(
+      dry,
+      /~ would write packages\/server\/src\/sentry-options\.ts: server error reports also drop the WebSocket bearer token/,
+    );
+    assert.doesNotMatch(
+      dry,
+      /would write packages\/server\/src\/(tests\/sentry-options\.test|instrument)\.ts/,
+    );
+    assert.deepEqual(snapshot(dir), before);
+    const real = await runUpdateQuietly(dir, false);
+    assert.match(
+      real,
+      /✓ packages\/server\/src\/sentry-options\.ts: server error reports also drop/,
+    );
+    assert.equal(
+      readFileSync(join(dir, SENTRY_OPTIONS_REL_PATH), "utf-8"),
+      starterFile(SENTRY_OPTIONS_REL_PATH),
+    );
+    assert.equal(readFileSync(join(dir, SENTRY_OPTIONS_TEST_REL_PATH), "utf-8"), OWN_OPTIONS_TEST);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 await expect("a customized instrument.ts is kept and the note says what to add", async () => {
   const dir = await oldScaffold("custom");
   try {
@@ -393,6 +566,7 @@ await expect("a customized instrument.ts is kept and the note says what to add",
       /⚠ packages\/server\/src\/instrument\.ts is not the file hatchkit scaffolded/,
     );
     assert.match(output, /Sentry\.init\(sentryOptions\(process\.env\.SENTRY_DSN\)\)/);
+    assert.match(output, /proxy-authorization and sec-websocket-protocol headers/);
     assert.match(
       output,
       /requestDataIntegration\(\{ include: \{ cookies: false, data: false \} \}\)/,

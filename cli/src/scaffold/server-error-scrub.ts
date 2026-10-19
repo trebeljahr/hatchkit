@@ -18,8 +18,17 @@
  * starter's, but only when `instrument.ts` is still the old starter file
  * byte for byte (line endings and trailing whitespace aside). Any other
  * shape is the project's own and gets a manual step instead.
+ *
+ * The first `sentry-options.ts` (55d07a1, copied by hand into three apps)
+ * kept `Sec-WebSocket-Protocol`, where a client with no cookie jar sends
+ * its session token as `bearer.<token>`, and the `http.request.header.*`
+ * attributes the HTTP instrumentation copies onto spans. A project whose
+ * file is still that version byte for byte gets the current one. Its
+ * superseded versions are recognised by hash, so a project's own edit of
+ * the file is never replaced.
  */
 
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FeatureLedger, FileAction } from "../features/contract.js";
@@ -45,18 +54,34 @@ export const PRE_SCRUB_INSTRUMENT_TS = [
   "",
 ].join("\n");
 
+/** SHA-256 of {@link normalizeSource} over each `sentry-options.ts` the
+ *  starter has shipped and since replaced. The files themselves are kept
+ *  in `cli/test-support/`, where the test checks these hashes. */
+export const SUPERSEDED_SENTRY_OPTIONS_SHA256: readonly string[] = [
+  "e125ed65bded0df1855ea4f5c0a0935444faef42cde2352cd7cfd9e532746d14", // 55d07a1
+];
+
+/** The same, for `tests/sentry-options.test.ts`. */
+export const SUPERSEDED_SENTRY_OPTIONS_TEST_SHA256: readonly string[] = [
+  "a92f2251e4646bf3d1bd3dd0e4c956cf48361aa13682b1a8b28f198d34ddddb9", // 55d07a1
+];
+
 /** The manual step for an `instrument.ts` hatchkit did not write. */
 export const SERVER_ERROR_SCRUB_MANUAL_STEP =
   "pass the starter's sentryOptions() to Sentry.init by hand: " +
   'httpIntegration({ maxIncomingRequestBodySize: "none" }), ' +
   "requestDataIntegration({ include: { cookies: false, data: false } }), and a " +
   "beforeSend + beforeSendTransaction that delete request.cookies, request.data and the " +
-  "cookie, set-cookie, authorization and proxy-authorization headers";
+  "cookie, set-cookie, authorization, proxy-authorization and sec-websocket-protocol " +
+  "headers, and the matching http.request.header.* keys of contexts.trace.data and spans[].data";
 
 export type ServerErrorScrubOutcome =
   /** `instrument.ts` was the old starter file: the scrub was copied in. */
   | "patched"
-  /** `sentry-options.ts` exists, or `instrument.ts` already sets `beforeSend`. */
+  /** `sentry-options.ts` was a superseded starter version: it was replaced. */
+  | "upgraded"
+  /** `sentry-options.ts` is current or the project's own, or
+   *  `instrument.ts` sets its own `beforeSend`. */
   | "already"
   /** `instrument.ts` does not use the Sentry SDK at all. */
   | "not-sentry"
@@ -70,7 +95,8 @@ export interface ServerErrorScrubRetrofit {
   writes: string[];
 }
 
-function normalize(source: string): string {
+/** Line endings and trailing whitespace are not an edit. */
+export function normalizeSource(source: string): string {
   return source
     .replace(/\r\n/g, "\n")
     .split("\n")
@@ -79,14 +105,25 @@ function normalize(source: string): string {
     .trimEnd();
 }
 
-/** Decide what the retrofit does with this project's files. Pure. */
+function isSuperseded(source: string, hashes: readonly string[]): boolean {
+  const hash = createHash("sha256").update(normalizeSource(source)).digest("hex");
+  return hashes.includes(hash);
+}
+
+/** Decide what the retrofit does with this project's files. Pure.
+ *  `options` is the project's `sentry-options.ts`, when it has one. */
 export function classifyServerInstrument(
   instrument: string,
-  hasSentryOptions: boolean,
+  options: string | undefined,
 ): ServerErrorScrubOutcome {
-  if (hasSentryOptions || /\bbeforeSend\b/.test(instrument)) return "already";
+  if (options !== undefined) {
+    return isSuperseded(options, SUPERSEDED_SENTRY_OPTIONS_SHA256) ? "upgraded" : "already";
+  }
+  if (/\bbeforeSend\b/.test(instrument)) return "already";
   if (!instrument.includes("@sentry/")) return "not-sentry";
-  return normalize(instrument) === normalize(PRE_SCRUB_INSTRUMENT_TS) ? "patched" : "customized";
+  return normalizeSource(instrument) === normalizeSource(PRE_SCRUB_INSTRUMENT_TS)
+    ? "patched"
+    : "customized";
 }
 
 /**
@@ -95,7 +132,8 @@ export function classifyServerInstrument(
  * `starterRoot` is the `starter/` template the three files are read from,
  * so the copy is always the shipped version. A project with no
  * `instrument.ts` (a server-less scaffold) is `absent`. A customized one is
- * recorded as a ledger conflict carrying the manual fix.
+ * recorded as a ledger conflict carrying the manual fix. A test file the
+ * project wrote or edited is kept.
  */
 export function retrofitServerErrorScrub(
   ledger: FeatureLedger,
@@ -103,37 +141,38 @@ export function retrofitServerErrorScrub(
 ): ServerErrorScrubRetrofit {
   const instrument = ledger.read(SERVER_INSTRUMENT_REL_PATH);
   if (instrument === undefined) return { outcome: "absent", writes: [] };
-  const outcome = classifyServerInstrument(instrument, ledger.exists(SENTRY_OPTIONS_REL_PATH));
+  const outcome = classifyServerInstrument(instrument, ledger.read(SENTRY_OPTIONS_REL_PATH));
   if (outcome === "customized") {
     ledger.conflict(SERVER_INSTRUMENT_REL_PATH, SERVER_ERROR_SCRUB_MANUAL_STEP);
     return { outcome, writes: [] };
   }
-  if (outcome !== "patched") return { outcome, writes: [] };
+  if (outcome !== "patched" && outcome !== "upgraded") return { outcome, writes: [] };
 
-  // Checked before any write: an instrument.ts that imports a
+  // Read before any write: an instrument.ts that imports a
   // sentry-options.ts nobody copied would stop the server from booting.
-  const sources = [
-    SENTRY_OPTIONS_REL_PATH,
-    SENTRY_OPTIONS_TEST_REL_PATH,
-    SERVER_INSTRUMENT_REL_PATH,
-  ];
-  for (const rel of sources) {
-    if (!existsSync(join(starterRoot, rel))) {
-      throw new Error(`Starter file ${rel} not found under ${starterRoot}.`);
-    }
-  }
+  const starter = (rel: string): string => {
+    const abs = join(starterRoot, rel);
+    if (!existsSync(abs)) throw new Error(`Starter file ${rel} not found under ${starterRoot}.`);
+    return readFileSync(abs, "utf-8");
+  };
+  const starterOptions = starter(SENTRY_OPTIONS_REL_PATH);
+  const starterTest = starter(SENTRY_OPTIONS_TEST_REL_PATH);
+  const starterInstrument = starter(SERVER_INSTRUMENT_REL_PATH);
 
   const writes: string[] = [];
-  const record = (rel: string, action: FileAction): void => {
+  const write = (rel: string, content: string): void => {
+    const action: FileAction = ledger.writeIfChanged(rel, content);
     if (action === "written" || action === "would-write") writes.push(rel);
   };
-  for (const rel of [SENTRY_OPTIONS_REL_PATH, SENTRY_OPTIONS_TEST_REL_PATH]) {
-    record(rel, ledger.copyIfAbsent(rel, join(starterRoot, rel)));
+  write(SENTRY_OPTIONS_REL_PATH, starterOptions);
+  const test = ledger.read(SENTRY_OPTIONS_TEST_REL_PATH);
+  if (test === undefined || isSuperseded(test, SUPERSEDED_SENTRY_OPTIONS_TEST_SHA256)) {
+    write(SENTRY_OPTIONS_TEST_REL_PATH, starterTest);
   }
-  const starterInstrument = readFileSync(join(starterRoot, SERVER_INSTRUMENT_REL_PATH), "utf-8");
-  record(
-    SERVER_INSTRUMENT_REL_PATH,
-    ledger.writeIfChanged(SERVER_INSTRUMENT_REL_PATH, starterInstrument),
-  );
+  // An upgrade leaves the project's instrument.ts alone unless it is the
+  // pre-scrub file, which only ever pairs with a hand copy gone wrong.
+  if (normalizeSource(instrument) === normalizeSource(PRE_SCRUB_INSTRUMENT_TS)) {
+    write(SERVER_INSTRUMENT_REL_PATH, starterInstrument);
+  }
   return { outcome, writes };
 }

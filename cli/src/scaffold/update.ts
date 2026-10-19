@@ -512,15 +512,17 @@ export async function runUpdate(
   // puts the Cookie header, the parsed session cookie and up to 10 KB of
   // the request body on every server event. Reporting starts as soon as
   // SENTRY_DSN is set, and nothing flags what the events carry. No flag,
-  // same rationale as above. Only the old starter file is rewritten.
+  // same rationale as above. Only files hatchkit wrote are rewritten: the
+  // old instrument.ts, and the first sentry-options.ts, which kept the
+  // WebSocket bearer token and the header attributes on spans.
   const errorScrub = retrofitServerErrorScrub(new FeatureLedger(projectDir, dryRun), STARTER_ROOT);
-  if (errorScrub.outcome === "patched") {
+  if (errorScrub.outcome === "patched" || errorScrub.outcome === "upgraded") {
+    const what =
+      errorScrub.outcome === "patched"
+        ? "server error reports drop cookies, credential headers and the body"
+        : "server error reports also drop the WebSocket bearer token and span header attributes";
     for (const rel of errorScrub.writes) {
-      console.log(
-        chalk.green(
-          `  ${dryRun ? "~ would write" : "✓"} ${rel}: server error reports drop cookies, credential headers and the body`,
-        ),
-      );
+      console.log(chalk.green(`  ${dryRun ? "~ would write" : "✓"} ${rel}: ${what}`));
     }
   } else if (errorScrub.outcome === "customized") {
     console.log(
@@ -532,8 +534,10 @@ export async function runUpdate(
           '      integrations: [httpIntegration({ maxIncomingRequestBodySize: "none" }),\n' +
           "        requestDataIntegration({ include: { cookies: false, data: false } })]\n" +
           "      beforeSend and beforeSendTransaction: delete event.request.cookies and\n" +
-          "        event.request.data, and the cookie, set-cookie, authorization and\n" +
-          "        proxy-authorization headers (any case)",
+          "        event.request.data, and the cookie, set-cookie, authorization,\n" +
+          "        proxy-authorization and sec-websocket-protocol headers (any case),\n" +
+          "        and the matching http.request.header.* keys of event.contexts.trace.data\n" +
+          "        and of each event.spans[].data",
       ),
     );
   }

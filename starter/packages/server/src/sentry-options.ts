@@ -8,10 +8,34 @@
 
 import * as Sentry from "@sentry/node";
 
-const CREDENTIAL_HEADERS = new Set(["cookie", "set-cookie", "authorization", "proxy-authorization"]);
+// `sec-websocket-protocol` carries the session token of a client with no
+// cookie jar as a `bearer.<token>` subprotocol (client-core's sync socket).
+const CREDENTIAL_HEADERS = new Set([
+  "cookie",
+  "set-cookie",
+  "authorization",
+  "proxy-authorization",
+  "sec-websocket-protocol",
+]);
 
-/** Removes cookies, credential headers and the body from an event's request. */
+// The HTTP instrumentation also copies request headers onto spans as
+// `http.request.header.<name>` (cookies as `….cookie.<cookie name>`). Its
+// own filter misses `sec-websocket-protocol`.
+const HEADER_ATTRIBUTE = "http.request.header.";
+
+function scrubSpanData(data: Record<string, unknown> | undefined): void {
+  if (!data) return;
+  for (const key of Object.keys(data)) {
+    if (!key.startsWith(HEADER_ATTRIBUTE)) continue;
+    const header = key.slice(HEADER_ATTRIBUTE.length).split(".")[0].replace(/_/g, "-");
+    if (CREDENTIAL_HEADERS.has(header)) delete data[key];
+  }
+}
+
+/** Removes cookies, credential headers and the body from an event's request and spans. */
 export function scrubRequest<T extends Sentry.Event>(event: T): T {
+  scrubSpanData(event.contexts?.trace?.data);
+  for (const span of event.spans ?? []) scrubSpanData(span.data);
   const request = event.request;
   if (!request) return event;
   delete request.cookies;
