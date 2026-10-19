@@ -1322,11 +1322,20 @@ export class CloudflareApi {
 
   /** Create a destination address. CF sends a verification email to the
    *  address. If the destination already exists (any verification state),
-   *  returns the existing record with `existed: true` instead of erroring. */
+   *  returns the existing record with `existed: true` instead of erroring.
+   *
+   *  Lists first: Cloudflare answers a POST for an address it already has
+   *  with success and the old record, not an error, so the POST alone
+   *  reported the account's shared, verified inbox as created by this run
+   *  — and the run ledger then had destroy revoke it (2026-10-19). */
   async addEmailDestination(
     accountId: string,
     email: string,
   ): Promise<CfEmailDestination & { existed: boolean }> {
+    const known = (await this.listEmailDestinations(accountId)).find(
+      (d) => d.email.toLowerCase() === email.toLowerCase(),
+    );
+    if (known) return { ...known, existed: true };
     try {
       const created = await this.request<CfEmailDestination>(
         "POST",

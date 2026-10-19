@@ -465,6 +465,8 @@ interface FakeCloudflareState {
   recommended?: Rec[];
   /** Every request, in order. */
   calls?: Array<{ method: string; path: string; body?: Record<string, unknown> }>;
+  /** Email Routing destinations on the account. */
+  destinations?: Array<{ id: string; email: string; verified: string | null }>;
 }
 
 /** Cloudflare's own MX records for a registered name: locked, stored
@@ -541,7 +543,14 @@ function installFakeCloudflare(state: FakeCloudflareState) {
       return ok({ name: body.name });
     }
     if (path === "/accounts/acc1/email/routing/addresses") {
-      return method === "GET" ? ok([]) : ok({ id: "d1", email: body.email, verified: "active" });
+      const known = state.destinations ?? [];
+      if (method === "GET") return ok(known);
+      // Like Cloudflare: a POST for a known address succeeds with the old record.
+      const old = known.find((d) => d.email === body.email);
+      if (old) return ok(old);
+      const created = { id: `d${++seq}`, email: body.email, verified: null };
+      state.destinations = [...known, created];
+      return ok(created);
     }
     if (path === "/zones/z1/email/routing/rules") {
       return method === "GET" ? ok([]) : ok({ id: `rule${++seq}` });
@@ -779,6 +788,36 @@ await expect("an already registered hostname is not registered again", async () 
       .filter((r) => r.type !== "TXT" || r.name === "mail.example.com")
       .every((r) => !r.created && !r.updated),
   );
+});
+
+await expect("a destination already on the account is never reported as created", async () => {
+  const verified = { id: "d-old", email: "me@example.org", verified: "2026-04-10T09:23:18Z" };
+  const state: FakeCloudflareState = {
+    records: [],
+    routingEnabled: true,
+    destinations: [verified],
+  };
+  const restore = installFakeCloudflare(state);
+  let result: Awaited<ReturnType<typeof runEmailSetup>>;
+  try {
+    result = await runEmailSetup(setupOpts);
+  } finally {
+    restore();
+  }
+  // createdThisRun puts it in the run ledger, and destroy would revoke it.
+  assert.equal(result.destination.createdThisRun, false);
+  assert.equal(result.destination.record.id, "d-old");
+  assert.equal(isEmailDestinationVerified(result.destination.verified), true);
+
+  const fresh: FakeCloudflareState = { records: [], routingEnabled: true };
+  const restoreFresh = installFakeCloudflare(fresh);
+  try {
+    result = await runEmailSetup(setupOpts);
+  } finally {
+    restoreFresh();
+  }
+  assert.equal(result.destination.createdThisRun, true);
+  assert.equal(isEmailDestinationVerified(result.destination.verified), false);
 });
 
 await expect("the zone apex is never registered as a subdomain", async () => {
