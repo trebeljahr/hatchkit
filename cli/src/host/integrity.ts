@@ -389,6 +389,26 @@ export function integrityRows(
   return rows;
 }
 
+/** Pure: with several backup hosts, point every command in `text` that
+ *  acts on one host at `host`; a command without --host would refuse. */
+export function forHost(text: string, host: string): string {
+  return text.replace(
+    /\bhatchkit (host integrity(?: (?:install|uninstall|test))?|backup (?:install|alerts|alert-test))(?![\w-])/g,
+    `hatchkit $1 --host ${host}`,
+  );
+}
+
+/** `rows` named after and pointed at `host` when there are several. */
+function rowsFor(rows: IntegrityRow[], host: BackupHost, several: boolean): IntegrityRow[] {
+  if (!several) return rows;
+  return rows.map((row) => ({
+    ...row,
+    name: `${row.name} (${host.name})`,
+    ...(row.detail ? { detail: forHost(row.detail, host.name) } : {}),
+    ...(row.hint ? { hint: row.hint.map((line) => forHost(line, host.name)) } : {}),
+  }));
+}
+
 /** doctor: every backup host, [] when none is configured; never throws.
  *  With several hosts each row names its host. */
 export async function checkHostIntegrity(): Promise<IntegrityRow[]> {
@@ -402,8 +422,11 @@ export async function checkHostIntegrity(): Promise<IntegrityRow[]> {
   const perHost = await Promise.all(
     hosts.map(async (host): Promise<IntegrityRow[]> => {
       try {
-        const rows = integrityRows(await fetchIntegrityReport(10, host), host.target);
-        return several ? rows.map((row) => ({ ...row, name: `${row.name} (${host.name})` })) : rows;
+        return rowsFor(
+          integrityRows(await fetchIntegrityReport(10, host), host.target),
+          host,
+          several,
+        );
       } catch (err) {
         return [
           {
@@ -512,17 +535,19 @@ export async function installHostIntegrity(dryRun: boolean, host: BackupHost = b
   const result = lastJson(
     await hostPython(host, INSTALL, "", JSON.stringify({ dryRun, files }), 360_000),
   ) as Record<string, unknown>;
+  const on = (text: string) => (backupHosts().length > 1 ? forHost(text, host.name) : text);
   return {
     ...result,
     schedule: "daily 05:00 UTC (+ up to 15 min); CPU averaged over the following hour",
     mail: "through the backup-alert SMTP; findings every run, one all-clear after they clear",
-    nextSteps: dryRun
+    nextSteps: (dryRun
       ? ["Install: hatchkit host integrity install"]
       : [
           "Send a test mail: hatchkit host integrity test",
           "Check from here any time: hatchkit doctor",
-        ],
-    rollback: "hatchkit host integrity uninstall (keeps the site file and the last status)",
+        ]
+    ).map(on),
+    rollback: on("hatchkit host integrity uninstall (keeps the site file and the last status)"),
   };
 }
 
@@ -610,7 +635,7 @@ export async function runHostCommand(args: string[]): Promise<void> {
     const report = await fetchIntegrityReport(window ?? 10, host);
     if (json) console.log(JSON.stringify(report, null, 2));
     else {
-      printRows(integrityRows(report, host.target));
+      printRows(rowsFor(integrityRows(report, host.target), host, backupHosts().length > 1));
       for (const note of report.notes) console.log(printable(`  · ${note}`));
     }
     if (report.findings.length) process.exitCode = 1;

@@ -26,6 +26,7 @@ import {
   reconcileBackupsAfterRemoval,
 } from "./src/backups/sources.js";
 import { getConfig, getStore } from "./src/config.js";
+import { forHost } from "./src/host/integrity.js";
 import { collectStatus } from "./src/status.js";
 
 const dir = mkdtempSync(join(tmpdir(), "hatchkit-backup-hosts-"));
@@ -247,6 +248,38 @@ try {
   assert.match(
     collectStatus(dir).providers.find((p) => p.key === "backups")?.detail ?? "",
     /root@dedicated-vps, root@shared-vps/,
+  );
+
+  // Host-integrity hints name the host once a command would need --host.
+  assert.equal(
+    forHost(
+      "Install (writes the script and a timer to the host): hatchkit host integrity install",
+      "shared-vps",
+    ),
+    "Install (writes the script and a timer to the host): hatchkit host integrity install --host shared-vps",
+  );
+  assert.equal(
+    forHost("Preview (reads only): hatchkit host integrity install --dry-run", "shared-vps"),
+    "Preview (reads only): hatchkit host integrity install --host shared-vps --dry-run",
+  );
+  assert.equal(
+    forHost("Re-check: hatchkit host integrity --json", "shared-vps"),
+    "Re-check: hatchkit host integrity --host shared-vps --json",
+  );
+  assert.equal(
+    forHost(
+      "Needs the backup runner and its alert mail first: hatchkit backup install, then hatchkit backup alerts --to <email>",
+      "shared-vps",
+    ),
+    "Needs the backup runner and its alert mail first: hatchkit backup install --host shared-vps, then hatchkit backup alerts --host shared-vps --to <email>",
+  );
+  assert.equal(
+    forHost("Check from here any time: hatchkit doctor", "shared-vps"),
+    "Check from here any time: hatchkit doctor",
+  );
+  assert.equal(
+    forHost("hatchkit backup alert-test", "shared-vps"),
+    "hatchkit backup alert-test --host shared-vps",
   );
 
   // --- configure with an old single-host file keeps the second host ------
