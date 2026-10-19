@@ -64,6 +64,12 @@
  * Rollback at any step: put the old `destination_id` back (0 for
  * `coolify` on dedicated-vps) and redeploy or restart. The `coolify`
  * network is never removed.
+ *
+ * infra/scripts/move-project-network.sh runs these steps. On 2026-10-19 it
+ * moved all ten projects on dedicated-vps; `coolify` now holds only
+ * Coolify's own containers. App moves cost 0 failed requests; each
+ * database restart cost 3–23 s on that project's database-backed routes
+ * (Mongo the slowest). Data, volumes and backup sources were unchanged.
  */
 
 import type { CoolifyApi, CoolifyDestinationRef } from "../utils/coolify-api.js";
