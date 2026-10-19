@@ -4911,24 +4911,69 @@ export async function checkProjectOperationalState(projectDir: string): Promise<
     "./features/env-agreement/index.js"
   );
   try {
+    // The module's `missing` covers two cases, and only one of them can
+    // ship a wrong origin. A file that is there and sets no origin builds
+    // with an empty one: the failure this check exists for. A file that
+    // is not there holds no value at all, because the project releases
+    // some other way (sprite-tools ships from a rolling-release
+    // `deploy.yml`, never `build-and-deploy.yml`), and a red row naming a
+    // file it never had sends someone to write a workflow nothing runs.
+    // The reader returns null only for a file that is not there, so its
+    // nulls tell the two apart.
+    const readProjectFile = projectFileReader(projectDir);
+    const notInRepo = new Set<string>();
     const agreement = checkApiOriginAgreement({
       project,
-      readFile: projectFileReader(projectDir),
+      readFile: (relPath) => {
+        const content = readProjectFile(relPath);
+        if (content === null) notInRepo.add(relPath);
+        return content;
+      },
     });
     // `enforced` is not a disagreement: a release workflow whose plan job
     // refuses the run when its secret is empty, or one carrying a poison
     // default so a build with no variable fails loudly, has declined to
     // guess an origin. That is the correct behaviour, not a finding.
+    //
+    // Nor is `unreadable`. Doctor never fetches the platform's environment
+    // (nothing here talks to a platform), so the server's own base URL is
+    // unreadable on every run, and counting it turned this row red for
+    // every project with a server. It is named as not verified instead —
+    // the rule the module's own `ok` already follows.
     const wrong = agreement.sites.filter(
-      (s) => s.status === "differs" || s.status === "missing" || s.status === "unreadable",
+      (s) => s.status === "differs" || (s.status === "missing" && !notInRepo.has(s.path)),
     );
+    const compared = agreement.sites.filter(
+      (s) => s.status === "agrees" || s.status === "enforced",
+    );
+    const unverified = agreement.sites.filter((s) => s.status === "unreadable");
+    const absentFiles = [
+      ...new Set(
+        agreement.sites
+          .filter((s) => s.status === "missing" && notInRepo.has(s.path))
+          .map((s) => s.path),
+      ),
+    ];
+    const aside = [
+      unverified.length > 0 ? `not verified: ${unverified.map((s) => s.path).join(", ")}` : "",
+      absentFiles.length > 0 ? `not in this repo: ${absentFiles.join(", ")}` : "",
+    ]
+      .filter(Boolean)
+      .join("; ");
+    const asideSuffix = aside ? ` (${aside})` : "";
     out.push({
       name: `Project ${manifest.name} (API origin agreement)`,
-      status: wrong.length === 0 ? "ok" : "fail",
+      // Nothing compared is a skip, not a warning. The platform value is
+      // never read here and a file the project does not have has nothing
+      // to fix, so a yellow row would sit on every project that releases
+      // its own way with no step that clears it.
+      status: wrong.length > 0 ? "fail" : compared.length === 0 ? "skip" : "ok",
       detail:
-        wrong.length === 0
-          ? `${agreement.expected} — every applicable place agrees`
-          : `${wrong.length} of ${agreement.sites.length} disagree with ${agreement.expected}`,
+        wrong.length > 0
+          ? `${wrong.length} of ${agreement.sites.length} disagree with ${agreement.expected}`
+          : compared.length === 0
+            ? `${agreement.expected} — nothing to compare${asideSuffix}`
+            : `${agreement.expected} — every applicable place agrees${asideSuffix}`,
       hint:
         wrong.length === 0
           ? undefined
@@ -4936,6 +4981,7 @@ export async function checkProjectOperationalState(projectDir: string): Promise<
               ...wrong.map(
                 (s) => `${s.label} (${s.path}): ${s.status}${s.found ? ` — ${s.found}` : ""}`,
               ),
+              ...unverified.map((s) => `${s.label} (${s.path}): not verified — could not be read`),
               "",
               "The client bundle inlines its API origin when the IMAGE is built, so a",
               "wrong value there builds green and points the browser at a dead API;",

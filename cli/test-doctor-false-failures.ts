@@ -17,13 +17,18 @@
  *   7. A provider check that got no answer (2026-10-18: Hetzner, `fetch
  *      failed (ETIMEDOUT)`) hints at the network, never at re-entering
  *      a working credential. An HTTP 401 still asks for a new token.
+ *   8. API origin agreement (2026-10-19, sprite-tools: "3 of 6
+ *      disagree"): a workflow file the project does not have, and the
+ *      platform's BETTER_AUTH_URL that doctor never fetches, are not
+ *      disagreements. A file that is there and sets no origin, or sets
+ *      the wrong one, still fails.
  *
  * Run: `node scripts/test.mjs test-doctor-false-failures.ts`.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   clearProviderPause,
   getProviderPause,
@@ -34,12 +39,13 @@ import {
 import {
   checkCoolifyGithubApp,
   checkPlausibleCommunityEdition,
+  checkProjectOperationalState,
   describeProbeFailures,
   fallbackHint,
   hetznerHint,
   pausedResult,
 } from "./src/doctor.js";
-import { MANIFEST_FILENAME, readManifest } from "./src/scaffold/manifest.js";
+import { MANIFEST_FILENAME, MANIFEST_VERSION, readManifest } from "./src/scaffold/manifest.js";
 import { CloudflareApi } from "./src/utils/cloudflare-api.js";
 import { errorDetail, isTransportError } from "./src/utils/error-detail.js";
 
@@ -315,6 +321,96 @@ await check("the generic fallback says retry on ETIMEDOUT, re-enter on 401", () 
   const denied = fallbackHint({ name: "Some provider", detail: "HTTP 401" }).join("\n");
   assert.match(denied, /re-enter credentials/);
   assert.match(fallbackHint({ name: "Some provider" }).join("\n"), /re-enter credentials/);
+});
+
+// ── 8. API origin agreement counts only values that are there ───────
+
+const ORIGIN = "https://origin.example.com";
+const DEPLOY_WORKFLOW = ".github/workflows/build-and-deploy.yml";
+
+/** The API origin row for a single-origin project holding `files`. */
+async function originRow(files: Record<string, string>) {
+  const dir = mkdtempSync(join(tmpdir(), "hatchkit-doctor-origin-"));
+  try {
+    writeFileSync(
+      join(dir, MANIFEST_FILENAME),
+      JSON.stringify({
+        version: MANIFEST_VERSION,
+        name: "origin-app",
+        domain: "origin.example.com",
+        surfaces: "fullstack",
+        topology: "single-origin",
+        deploymentMode: "coolify",
+        coolifyRuntime: "image",
+        features: [],
+      }),
+    );
+    for (const [rel, body] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, rel)), { recursive: true });
+      writeFileSync(join(dir, rel), body);
+    }
+    const rows = await checkProjectOperationalState(dir);
+    const row = rows.find((r) => r.name === "Project origin-app (API origin agreement)");
+    assert.ok(row, `no API origin row in ${JSON.stringify(rows)}`);
+    return row;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The starter's deploy workflow shape; `null` leaves a line out. */
+function deployWorkflow(buildArg: string | null, probe: string | null): string {
+  return [
+    "jobs:",
+    "  build-client:",
+    "    steps:",
+    "      - uses: docker/build-push-action@v6",
+    "        with:",
+    "          build-args: |",
+    buildArg === null ? "            OTHER=1" : `            NEXT_PUBLIC_API_URL=${buildArg}`,
+    "  verify:",
+    "    env:",
+    probe === null ? "      OTHER: 1" : `      HATCHKIT_API_URL: ${probe}`,
+    "",
+  ].join("\n");
+}
+
+await check("no build-and-deploy.yml and an unfetched server URL is a skip", async () => {
+  // sprite-tools: releases from its own deploy.yml, and doctor never
+  // reads BETTER_AUTH_URL from the platform.
+  const row = await originRow({ ".github/workflows/deploy.yml": `env:\n  SITE: ${ORIGIN}\n` });
+  assert.equal(row.status, "skip", row.detail);
+  assert.match(row.detail ?? "", /nothing to compare/);
+  assert.match(row.detail ?? "", /not verified: BETTER_AUTH_URL/);
+  assert.match(row.detail ?? "", /not in this repo: \.github\/workflows\/build-and-deploy\.yml/);
+  assert.equal(row.hint, undefined);
+});
+
+await check("every value that is there agreeing is ok, the server URL not verified", async () => {
+  const row = await originRow({ [DEPLOY_WORKFLOW]: deployWorkflow(ORIGIN, ORIGIN) });
+  assert.equal(row.status, "ok", row.detail);
+  assert.match(row.detail ?? "", /every applicable place agrees \(not verified: BETTER_AUTH_URL\)/);
+});
+
+await check("a build arg naming another host still fails", async () => {
+  const row = await originRow({
+    [DEPLOY_WORKFLOW]: deployWorkflow("https://old.example.com", ORIGIN),
+  });
+  assert.equal(row.status, "fail");
+  assert.equal(row.detail, `1 of 6 disagree with ${ORIGIN}`);
+  const hint = (row.hint ?? []).join("\n");
+  assert.match(hint, /build argument \(\.github\/workflows\/build-and-deploy\.yml\): differs/);
+  assert.match(hint, /https:\/\/old\.example\.com/);
+  assert.match(hint, /\(BETTER_AUTH_URL\): not verified/);
+});
+
+await check("a deploy workflow that is there and sets no origin still fails", async () => {
+  const row = await originRow({ [DEPLOY_WORKFLOW]: deployWorkflow(null, null) });
+  assert.equal(row.status, "fail");
+  assert.equal(row.detail, `2 of 6 disagree with ${ORIGIN}`);
+  const hint = (row.hint ?? []).join("\n");
+  assert.match(hint, /build argument \(\.github\/workflows\/build-and-deploy\.yml\): missing/);
+  assert.match(hint, /probe URL \(\.github\/workflows\/build-and-deploy\.yml\): missing/);
 });
 
 if (failures.length > 0) {
