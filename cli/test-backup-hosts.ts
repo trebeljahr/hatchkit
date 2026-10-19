@@ -26,7 +26,7 @@ import {
   reconcileBackupsAfterRemoval,
 } from "./src/backups/sources.js";
 import { getConfig, getStore } from "./src/config.js";
-import { forHost } from "./src/host/integrity.js";
+import { forHost, rowsFor } from "./src/host/integrity.js";
 import { collectStatus } from "./src/status.js";
 
 const dir = mkdtempSync(join(tmpdir(), "hatchkit-backup-hosts-"));
@@ -280,6 +280,36 @@ try {
   assert.equal(
     forHost("hatchkit backup alert-test", "shared-vps"),
     "hatchkit backup alert-test --host shared-vps",
+  );
+
+  // Each row names its host once, whether or not the scan already did.
+  const shared = {
+    name: "shared-vps",
+    transport: "tailscale" as const,
+    target: SHARED,
+    serverUuid: "shared-uuid",
+  };
+  assert.deepEqual(
+    rowsFor(
+      [
+        { name: "Host integrity (shared-vps)", status: "ok" },
+        {
+          name: "Host integrity daily check",
+          status: "warn",
+          hint: ["hatchkit host integrity install"],
+        },
+      ],
+      shared,
+      true,
+    ),
+    [
+      { name: "Host integrity (shared-vps)", status: "ok" },
+      {
+        name: "Host integrity daily check (shared-vps)",
+        status: "warn",
+        hint: ["hatchkit host integrity install --host shared-vps"],
+      },
+    ],
   );
 
   // --- configure with an old single-host file keeps the second host ------

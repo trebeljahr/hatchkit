@@ -398,12 +398,13 @@ export function forHost(text: string, host: string): string {
   );
 }
 
-/** `rows` named after and pointed at `host` when there are several. */
-function rowsFor(rows: IntegrityRow[], host: BackupHost, several: boolean): IntegrityRow[] {
+/** `rows` named after and pointed at `host` when there are several. The
+ *  scan row already names the host the script reported. */
+export function rowsFor(rows: IntegrityRow[], host: BackupHost, several: boolean): IntegrityRow[] {
   if (!several) return rows;
   return rows.map((row) => ({
     ...row,
-    name: `${row.name} (${host.name})`,
+    name: row.name.includes(`(${host.name})`) ? row.name : `${row.name} (${host.name})`,
     ...(row.detail ? { detail: forHost(row.detail, host.name) } : {}),
     ...(row.hint ? { hint: row.hint.map((line) => forHost(line, host.name)) } : {}),
   }));
