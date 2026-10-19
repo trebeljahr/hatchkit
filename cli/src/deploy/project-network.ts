@@ -31,25 +31,39 @@
  * change destination. The only in-place move is editing the
  * `destination_id` of the app and its databases in Coolify's own
  * database. Container names, volumes, env and Traefik routes stay the
- * same, so nothing else changes. One project at a time, on the host:
+ * same, so nothing else changes. One project at a time, on the host.
+ * Proven on sprite-tools 2026-10-19 (app id 55 + Postgres id 1), run as
+ * Coolify's own code (`docker exec -u www-data coolify php artisan tinker
+ * --execute '…'`), so no API token is needed:
  *
- *   1. Create the destination (Coolify makes the network and joins the
- *      proxy to it): `POST /servers/{uuid}/destinations {"network":
- *      "hk-<project>"}`.
- *   2. `docker network connect hk-<project> <db container>` for each of
- *      the project's databases — live, no restart, so the app can reach
- *      them on either network during the move.
- *   3. Set the app's `destination_id` to the new destination and deploy
- *      it. An image app rolls, so this costs no downtime.
- *   4. Set each database's `destination_id` and restart it through
- *      Coolify: a few seconds of database downtime, after which it is on
- *      `hk-<project>` only.
- *   5. Check: the app is healthy, `docker network inspect coolify` no
- *      longer lists any of the project's containers, `hatchkit backup
- *      sources` resolves, and `hatchkit doctor` shows the network row ok.
+ *   1. Create the destination. The model's `created` hook makes the
+ *      network (`--attachable`) and connects coolify-proxy:
+ *        App\Models\StandaloneDocker::create(["name" => "hk-<p>",
+ *          "network" => "hk-<p>", "server_id" => 0]);
+ *      (or `POST /servers/{uuid}/destinations {"network": "hk-<p>"}`).
+ *   2. `docker network connect hk-<p> <db container>` for each of the
+ *      project's databases. Live, no restart: the database answers by the
+ *      same name on both networks during the move.
+ *   3. App: `$a = App\Models\Application::find(<id>); $a->destination_id =
+ *      <new id>; $a->save();` then `queue_application_deployment(
+ *      application: $a, deployment_uuid: (string) new Visus\Cuid2\Cuid2(),
+ *      force_rebuild: false);`. An image app rolls: its health check must
+ *      reach the database over the new network before the old container
+ *      stops. sprite-tools: 50 s, 0 failed requests.
+ *   4. Each database: set `destination_id` the same way, then
+ *      `App\Actions\Database\RestartDatabase::run($db);`. Coolify recreates
+ *      the container on the new network only, with the same name and
+ *      volume. sprite-tools: about 9 s in which its DB-backed endpoint
+ *      answered 503.
+ *   5. Check: the app is healthy; `docker network inspect coolify` lists
+ *      none of the project's containers; inside the app, `getent hosts
+ *      <its db>` resolves and another project's database does not;
+ *      `hatchkit backup sources --project <p>` is ok; `hatchkit doctor`
+ *      shows the network row ok.
  *
- * Rollback at any step: put the old `destination_id` back and redeploy
- * or restart. The `coolify` network is never removed.
+ * Rollback at any step: put the old `destination_id` back (0 for
+ * `coolify` on dedicated-vps) and redeploy or restart. The `coolify`
+ * network is never removed.
  */
 
 import type { CoolifyApi, CoolifyDestinationRef } from "../utils/coolify-api.js";
