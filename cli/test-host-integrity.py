@@ -6,6 +6,7 @@ holding a connection to 103.189.234.47:80. Each detector must name it. The
 clean fixture is what the shared Coolify host runs on a good day; it must
 raise nothing.
 """
+from contextlib import contextmanager
 import datetime as dt
 import ipaddress
 import json
@@ -134,6 +135,23 @@ class Fixture:
     def host(self):
         return hi.Host(proc=self.proc, cgroup=self.cgroup, docker=self.docker, sleep=self.sleep,
                        clock=lambda: self.now)
+
+    @contextmanager
+    def execve(self, pid, comm, exe, after):
+        """While open, `pid` runs execve right after the `after`-th read of its comm or exe."""
+        base, reads = self.proc / str(pid), [0]
+        real_readlink, real_read_text = os.readlink, Path.read_text
+        def counted(path, value):
+            if Path(path) in (base / 'comm', base / 'exe'):
+                reads[0] += 1
+                if reads[0] == after:
+                    (base / 'comm').write_text(comm + '\n')
+                    (base / 'exe').unlink()
+                    os.symlink(exe, base / 'exe')
+            return value
+        with patch.object(os, 'readlink', lambda path: counted(path, real_readlink(path))):
+            with patch.object(Path, 'read_text', lambda path: counted(path, real_read_text(path))):
+                yield
 
 
 def clean_host(fx):
@@ -347,6 +365,33 @@ class Detectors(unittest.TestCase):
         self.assertEqual(hi.image_glob('host:5000/team/app:sha'), 'host:5000/team/app*')
         self.assertEqual(hi.image_glob('mongo'), 'mongo*')
         self.assertEqual(hi.image_glob('ghcr.io/x/app@sha256:ab'), 'ghcr.io/x/app*')
+
+    def test_a_process_caught_in_execve_raises_nothing(self):
+        """2026-10-19: a mongo healthcheck's exec read as runc's name beside /usr/bin/echo."""
+        runc = '/memfd:runc_cloned:/proc/self/exe (deleted)'
+        # runc's init runs execve between two reads; or the kernel has set the
+        # new binary but not yet the new name through the first three reads.
+        for exe, after in ((runc, 1), ('/usr/bin/echo', 3)):
+            with self.subTest(exe=exe), tempfile.TemporaryDirectory() as directory:
+                fx = Fixture(directory)
+                cid = fx.container('mongo-x3rnoe4qdk846u4q3wjw2fw0', 'mongo:7', 300, argv0=('docker-entrypoi', 'mongod'))
+                fx.process(300, 'mongod', '/usr/bin/mongod', cid)
+                fx.process(2635850, 'runc:[2:INIT]', exe, cid, age=0.2)
+                with fx.execve(2635850, 'echo', '/usr/bin/echo', after):
+                    processes = hi.read_processes(fx.host())
+                self.assertEqual([(p['pid'], p['comm'], p['exe']) for p in processes][1:],
+                                 [(300, 'mongod', '/usr/bin/mongod'), (2635850, 'echo', '/usr/bin/echo')])
+                findings, _ = hi.unexpected_processes(processes, fx.containers, {}, {cid: set()}, {cid: ['/']})
+                self.assertEqual(findings, [])
+
+    def test_runc_name_beside_another_binary_is_reported(self):
+        """Only runc's own memfd binary is exempt, and only while young: a miner can take the name."""
+        cid = self.fx.container('mongo-x3rnoe4qdk846u4q3wjw2fw0', 'mongo:7', 300, argv0=('docker-entrypoi', 'mongod'))
+        self.fx.process(300, 'mongod', '/usr/bin/mongod', cid)
+        self.fx.process(2635850, 'runc:[2:INIT]', '/usr/bin/echo', cid, age=0.2)
+        findings = self.scan(0)['findings']
+        self.assertEqual([(f['detector'], f['process'], f['pids'], f['exe']) for f in findings],
+                         [('unexpected-process', 'runc:[2:INIT]', [2635850], '/usr/bin/echo')])
 
     def test_temp_files(self):
         cid = self.fx.container('app', 'node:22', 10)

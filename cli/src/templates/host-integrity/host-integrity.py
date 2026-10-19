@@ -242,20 +242,53 @@ def process_age(host, entry, uptime):
         return None
 
 
+IDENTITY_TRIES = 5
+
+
+def read_identity(entry):
+    """(comm, exe) of one program, or None while the process keeps running execve.
+
+    A process caught in execve pairs the old name with the new binary: on
+    2026-10-19 runc's init, mid-exec of a healthcheck, read as runc:[2:INIT]
+    running /usr/bin/echo. So the name is read between two reads of the
+    binary, and read again while those differ."""
+    for _ in range(IDENTITY_TRIES):
+        exe = os.readlink(entry / 'exe')
+        comm = (entry / 'comm').read_text().rstrip('\n')
+        if os.readlink(entry / 'exe') == exe:
+            return comm, exe
+    return None
+
+
+def read_process(host, entry, uptime):
+    try:
+        identity = read_identity(entry)
+        cgroup = (entry / 'cgroup').read_text()
+    except OSError:
+        return None  # a kernel thread, or the process exited
+    if identity is None:
+        return None
+    return {'pid': int(entry.name), 'comm': identity[0], 'exe': identity[1],
+            'container': container_id(cgroup), 'age': process_age(host, entry, uptime)}
+
+
 def read_processes(host):
     uptime = read_uptime(host)
+    first = [read_process(host, entry, uptime) for entry in host.proc.iterdir() if entry.name.isdigit()]
+    # execve sets the new binary a moment before the new name, so both reads
+    # of the binary can fall inside that moment. Once the whole table is read,
+    # milliseconds later, each pair is read again; one that changed is read
+    # afresh, not left out (a miner can rename itself in a loop).
     processes = []
-    for entry in host.proc.iterdir():
-        if not entry.name.isdigit():
-            continue
+    for process in filter(None, first):
+        entry = host.proc / str(process['pid'])
         try:
-            comm = (entry / 'comm').read_text().rstrip('\n')
-            cgroup = (entry / 'cgroup').read_text()
-            exe = os.readlink(entry / 'exe')
+            same = read_identity(entry) == (process['comm'], process['exe'])
         except OSError:
-            continue  # a kernel thread, or the process exited
-        processes.append({'pid': int(entry.name), 'comm': comm, 'exe': exe,
-                          'container': container_id(cgroup), 'age': process_age(host, entry, uptime)})
+            continue  # it exited
+        process = process if same else read_process(host, entry, uptime)
+        if process:
+            processes.append(process)
     return sorted(processes, key=lambda p: p['pid'])
 
 
