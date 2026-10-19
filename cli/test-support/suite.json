@@ -69,6 +69,7 @@
   "test-listmonk-tx-mode.ts",
   "test-listmonk-tx-from.ts",
   "test-newsletter-confirm-origin.ts",
+  "test-server-error-scrub.ts",
   "test-ses-policy-verification.ts",
   "test-ses-operator.ts",
   "test-listmonk-isolation-plan.ts",

@@ -64,6 +64,7 @@
     "test:secrets-isolate": "node scripts/test.mjs test-secrets-isolate.ts",
     "test:shutdown-drain": "node scripts/test.mjs test-shutdown-drain.ts",
     "test:deploy-verification": "node scripts/test.mjs test-deploy-verification.ts",
+    "test:server-error-scrub": "node scripts/test.mjs test-server-error-scrub.ts",
     "test:static-nginx": "node scripts/test.mjs test-static-nginx.ts",
     "test:doctor-pull-policy": "node scripts/test.mjs test-doctor-pull-policy.ts",
     "test:doctor-nginx-config": "node scripts/test.mjs test-doctor-nginx-config.ts",

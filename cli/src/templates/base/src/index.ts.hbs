@@ -7,7 +7,6 @@ import { createServer } from "node:http";
 import { setupWebSocket } from "./ws.js";
 {{/if}}
 {{#if analytics}}
-import { initSentry } from "./analytics/sentry.js";
 import { errorTrackingMiddleware } from "./analytics/middleware.js";
 {{/if}}
 import { connectDb } from "./db.js";
@@ -20,9 +19,6 @@ import { checkoutRouter } from "./stripe/checkout.js";
 import { config } from "./config.js";
 
 const app = express();
-{{#if analytics}}
-initSentry(app);
-{{/if}}
 
 {{#if stripe}}
 // Stripe webhook needs raw body — mount BEFORE json parser

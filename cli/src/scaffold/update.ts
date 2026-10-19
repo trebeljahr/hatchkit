@@ -106,6 +106,11 @@ import {
 import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
 import { setPackageJsonScript } from "./pkg-json.js";
 import {
+  SENTRY_OPTIONS_REL_PATH,
+  SERVER_INSTRUMENT_REL_PATH,
+  retrofitServerErrorScrub,
+} from "./server-error-scrub.js";
+import {
   STATIC_EXPORT_MARKER,
   applyPorts,
   flipNextConfigToStaticExport,
@@ -498,6 +503,37 @@ export async function runUpdate(
           "    could not patch it. Build that link on process.env.BETTER_AUTH_URL instead, and keep\n" +
           "    the /sub/* redirects on the site URL. When the client and the API are on different\n" +
           "    hosts, the client host has no /api/newsletter/confirm route and the link 404s.",
+      ),
+    );
+  }
+
+  // Retrofit the server error-report scrub. Until 2026-10-19 the starter's
+  // instrument.ts called Sentry.init with no scrub, and @sentry/node 10
+  // puts the Cookie header, the parsed session cookie and up to 10 KB of
+  // the request body on every server event. Reporting starts as soon as
+  // SENTRY_DSN is set, and nothing flags what the events carry. No flag,
+  // same rationale as above. Only the old starter file is rewritten.
+  const errorScrub = retrofitServerErrorScrub(new FeatureLedger(projectDir, dryRun), STARTER_ROOT);
+  if (errorScrub.outcome === "patched") {
+    for (const rel of errorScrub.writes) {
+      console.log(
+        chalk.green(
+          `  ${dryRun ? "~ would write" : "✓"} ${rel}: server error reports drop cookies, credential headers and the body`,
+        ),
+      );
+    }
+  } else if (errorScrub.outcome === "customized") {
+    console.log(
+      chalk.yellow(
+        `  ⚠ ${SERVER_INSTRUMENT_REL_PATH} is not the file hatchkit scaffolded, so it was left alone.\n` +
+          "    Its error reports still carry the request's cookies, Authorization header and body.\n" +
+          `    Copy ${SENTRY_OPTIONS_REL_PATH} from the hatchkit starter and call\n` +
+          "    Sentry.init(sentryOptions(process.env.SENTRY_DSN)), or add these to your Sentry.init:\n" +
+          '      integrations: [httpIntegration({ maxIncomingRequestBodySize: "none" }),\n' +
+          "        requestDataIntegration({ include: { cookies: false, data: false } })]\n" +
+          "      beforeSend and beforeSendTransaction: delete event.request.cookies and\n" +
+          "        event.request.data, and the cookie, set-cookie, authorization and\n" +
+          "        proxy-authorization headers (any case)",
       ),
     );
   }
