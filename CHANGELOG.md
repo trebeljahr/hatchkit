@@ -4,7 +4,7 @@ All notable user-facing changes should be documented here.
 
 This project follows npm package versions for the `hatchkit` CLI. Dates use `YYYY-MM-DD`.
 
-## Unreleased
+## 0.3.0
 
 ### Security
 
