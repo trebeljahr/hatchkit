@@ -760,6 +760,24 @@ The operator token can still replace or delete the Worker. So a local run also c
 
 The read-only token is a user token (My Profile → API Tokens) with User · API Tokens · Read; Account · Account API Tokens · Read, Account Settings · Read, Workers Scripts · Read, Workers R2 Storage · Read, Email Routing Addresses · Read; Zone · Zone · Read and Email Routing Rules · Read on all zones; optionally Account · OAuth Clients · Read. The SES key belongs to an IAM user that may only call `ses:SendEmail` from the sender to your address.
 
+
+---
+
+## `hatchkit infra`
+
+Runs one of hatchkit's own Terraform stacks, the ones that belong to no single project. Today that is `ota-updates`: the live-update endpoint `ota.ricoslabs.com` (one Worker and one R2 bucket) for the Capacitor apps. See `infra/ota-updates/README.md`.
+
+```bash
+hatchkit infra plan ota-updates             # saves tfplan and lists every change
+hatchkit infra apply ota-updates            # applies exactly that saved plan
+hatchkit infra output ota-updates [name]    # reads the local state; no token
+```
+
+`plan` and `apply` each mint a Cloudflare account token with only the grants the stack lists, valid for one hour, and revoke it when the run ends. Terraform gets it as `CLOUDFLARE_API_TOKEN`; the operator token never reaches Terraform. The minted token is read back first, and the run stops when its policy is broader than asked. Its name, `hatchkit-terraform-<stack>-<time>`, is one the Cloudflare audit expects.
+
+`plan` marks each resource that must be replaced or destroyed. `apply` refuses without a saved plan, and Terraform refuses a plan the state has moved past. After an apply the stack's Workers and buckets are accepted in the Cloudflare audit, and the expected state is republished when the audit Worker is deployed.
+
+The Terraform state stays in the stack directory of the checkout that ran it (gitignored). Run `infra` from the same checkout every time.
 ---
 
 ## `hatchkit mac-runner`

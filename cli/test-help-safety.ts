@@ -82,6 +82,8 @@ const DANGEROUS_ARGV: string[][] = [
   ["mac-runner", "on", "--repo", "a/b", "--help"],
   ["mac-runner", "serve", "--help"],
   ["mac-runner", "run", "build-macos.yml", "-f", "upload=true", "--help"],
+  ["infra", "plan", "ota-updates", "--help"],
+  ["infra", "apply", "ota-updates", "--help"],
   ["host", "integrity", "uninstall", "--help"],
   ["host", "updates", "install", "--host", "dedicated-vps", "--help"],
   ["host", "updates", "uninstall", "--host", "dedicated-vps", "--help"],
@@ -219,6 +221,10 @@ checkHelpRun(
   "hatchkit host updates install --host <name>",
 );
 checkHelpRun(["audit", "cloudflare", "publish", "--help"], "hatchkit audit cloudflare publish");
+checkHelpRun(
+  ["infra", "apply", "ota-updates", "--help"],
+  "Usage: hatchkit infra <plan|apply|output>",
+);
 checkHelpRun(
   ["audit", "cloudflare", "deploy", "--from", "a@b.c", "--help"],
   "hatchkit audit cloudflare deploy",

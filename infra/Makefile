@@ -65,3 +65,7 @@ create:
 .PHONY: test-static-deployer
 test-static-deployer:
 	$(MAKE) -C cloudflare-static-deployer check
+
+.PHONY: test-ota-updates
+test-ota-updates:
+	$(MAKE) -C ota-updates check

@@ -1,0 +1,5 @@
+# Every variable has a working default for Rico's Labs; override only to
+# run a second copy (for example a staging endpoint).
+# hostname    = "ota-staging.ricoslabs.com"
+# worker_name = "ota-updates-staging"
+# bucket_name = "ota-updates-staging"

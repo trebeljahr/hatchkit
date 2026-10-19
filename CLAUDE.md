@@ -135,6 +135,12 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   jobs until the watched runs finish, `run` dispatches and serves. A job
   nobody serves fails after 24 h. Jobs get a minimal environment (no
   operator tokens). See `cli/src/mac-runner/`.
+- `hatchkit infra plan|apply|output <stack>`: run hatchkit's own Terraform
+  stacks (today `ota-updates`, the Capacitor live-update endpoint at
+  ota.ricoslabs.com, code in `infra/ota-updates/`). Each run mints a 1 h
+  token with only the stack's grants (`INFRA_STACKS` in
+  `cli/src/infra/command.ts`); `apply` applies only the saved `tfplan`.
+  Ask before `apply`, and show the plan first.
 - `hatchkit explain --json`: source-of-truth mental model.
 
 Check `hatchkit help <command>` before using flags you have not verified.

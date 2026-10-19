@@ -7,6 +7,11 @@ Opinionated, reusable infrastructure for deploying small SaaS apps on dedicated 
 The [trusted static deployer](cloudflare-static-deployer/README.md) keeps Worker tokens outside source-project builds.
 Its local security tests run with `make test-static-deployer`. Workflow templates remain inactive until a separate trusted repository and disposable canary are reviewed.
 
+## Live updates for the Capacitor apps
+
+[`ota-updates/`](ota-updates/README.md) is the self-hosted endpoint for `@capgo/capacitor-updater` at `ota.ricoslabs.com`: a Worker, an R2 bucket and the publish script app CI calls.
+Its Cloudflare resources are the `terraform/stacks/ota-updates` stack, run with `hatchkit infra plan ota-updates` and `hatchkit infra apply ota-updates`. Its offline tests run with `make test-ota-updates`.
+
 ## Philosophy
 
 - **Coolify is the deployment control plane.** It handles containers, reverse proxy (Traefik), TLS certs (Let's Encrypt), and deploy triggers.

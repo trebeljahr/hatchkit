@@ -1,0 +1,12 @@
+{
+  "name": "ota-updates",
+  "private": true,
+  "type": "module",
+  "description": "Self-hosted live-update endpoint for @capgo/capacitor-updater (Cloudflare Worker + R2) and its publish script.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test worker.test.mjs publish.test.mjs"
+  }
+}

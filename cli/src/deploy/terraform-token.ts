@@ -16,6 +16,10 @@
  * ends; if that fails or the process dies, it expires on its own. The minted policy is read back before use and the run fails
  * closed on anything broader.
  *
+ * Stacks that need more than DNS (`hatchkit infra`, cli/src/infra/) get
+ * the same treatment through `mintTerraformToken`: exactly the grants the
+ * stack lists, read back and compared before Terraform sees the value.
+ *
  * A token from the legacy `dns:cloudflare:token` slot is passed through
  * unchanged: it is DNS-scoped already and may not hold the minting
  * grant. When minting fails with any other token, the run stops; the
@@ -54,16 +58,113 @@ function cloudflareTime(date: Date): string {
   return date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+export const accountResource = (accountId: string): string =>
+  `com.cloudflare.api.account.${accountId}`;
+
+/** One grant of a per-run token: these permission groups on one resource. */
+export interface TerraformTokenGrant {
+  groups: readonly string[];
+  /** `accountResource(id)` or `zoneResource(id)`. */
+  resource: string;
+}
+
+const sortedNames = (names: readonly string[]): string => JSON.stringify([...names].sort());
+
+/** True when `policies` grant exactly `grants`: one allow policy per
+ *  grant, each on its one resource with exactly its groups, and nothing
+ *  else. Pure. */
+export function policiesMatchGrants(
+  policies: readonly CfTokenPolicy[],
+  grants: readonly TerraformTokenGrant[],
+): boolean {
+  if (policies.length !== grants.length) return false;
+  const remaining = [...grants];
+  for (const policy of policies) {
+    if (policy.effect !== "allow") return false;
+    const resources = Object.entries(policy.resources);
+    if (resources.length !== 1 || resources[0][1] !== "*") return false;
+    const names = sortedNames(policy.permission_groups.map((g) => g.name ?? ""));
+    const i = remaining.findIndex(
+      (grant) => grant.resource === resources[0][0] && sortedNames(grant.groups) === names,
+    );
+    if (i < 0) return false;
+    remaining.splice(i, 1);
+  }
+  return remaining.length === 0;
+}
+
 /** True when the policies grant exactly `TERRAFORM_TOKEN_GROUPS` on the one zone. Pure. */
 export function isOneZoneDnsPolicy(policies: readonly CfTokenPolicy[], zoneId: string): boolean {
-  if (policies.length !== 1) return false;
-  const [policy] = policies;
-  if (policy.effect !== "allow") return false;
-  const resources = Object.entries(policy.resources);
-  if (resources.length !== 1 || resources[0][0] !== zoneResource(zoneId) || resources[0][1] !== "*")
-    return false;
-  const names = policy.permission_groups.map((g) => g.name).sort();
-  return JSON.stringify(names) === JSON.stringify([...TERRAFORM_TOKEN_GROUPS].sort());
+  return policiesMatchGrants(policies, [
+    { groups: TERRAFORM_TOKEN_GROUPS, resource: zoneResource(zoneId) },
+  ]);
+}
+
+/** Mint an account token with exactly `grants`, read it back, and revoke
+ *  it again unless the read-back policy is exactly what was asked for.
+ *  `fail` words the error for the caller's case. */
+export async function mintTerraformToken(params: {
+  token: string;
+  accountId: string;
+  /** Goes into the name `hatchkit-terraform-<label>-<time>`, which the
+   *  Cloudflare audit recognises (audit/cloudflare.ts TERRAFORM_TOKEN_NAME). */
+  label: string;
+  grants: readonly TerraformTokenGrant[];
+  fail: (why: string) => Error;
+  /** Error text when the read-back policy differs from `grants`. */
+  mismatch: string;
+  api?: TerraformTokenApi;
+  now?: () => Date;
+}): Promise<TerraformCloudflareToken> {
+  const { accountId, fail } = params;
+  const api = params.api ?? new CloudflareApi({ token: params.token, accountId });
+  const now = params.now?.() ?? new Date();
+
+  let created: { id: string; value: string };
+  try {
+    const policies = [];
+    for (const grant of params.grants) {
+      const groupIds = await api.permissionGroupIds(accountId, grant.groups);
+      policies.push({
+        effect: "allow" as const,
+        permission_groups: groupIds.map((id) => ({ id })),
+        resources: { [grant.resource]: "*" },
+      });
+    }
+    created = await api.createAccountToken({
+      accountId,
+      name: `hatchkit-terraform-${params.label}-${cloudflareTime(now).replace(/[-:]/g, "")}`,
+      policies,
+      expiresOn: cloudflareTime(new Date(now.getTime() + TERRAFORM_TOKEN_TTL_MS)),
+    });
+  } catch (err) {
+    throw fail((err as Error).message);
+  }
+
+  const revoke = async () => {
+    try {
+      await api.deleteAccountToken(accountId, created.id);
+    } catch (err) {
+      console.log(
+        chalk.yellow(
+          `  ! Could not revoke the Terraform token ${created.id} (${(err as Error).message}); it expires within the hour.`,
+        ),
+      );
+    }
+  };
+
+  let policies: CfTokenPolicy[] | undefined;
+  try {
+    policies = (await api.getAccountToken(accountId, created.id))?.policies;
+  } catch (err) {
+    await revoke();
+    throw fail(`could not read the minted token back (${(err as Error).message})`);
+  }
+  if (!policies || !policiesMatchGrants(policies, params.grants)) {
+    await revoke();
+    throw fail(params.mismatch);
+  }
+  return { value: created.value, minted: true, revoke };
 }
 
 /** The token one Terraform run uses for `zone`. See the file header. */
@@ -91,52 +192,16 @@ export async function terraformCloudflareToken(params: {
         "  hatchkit does not hand its own Cloudflare token to Terraform.",
     );
   if (!accountId) throw fail("the zone's account is unknown");
-  const api = params.api ?? new CloudflareApi({ token: params.token, accountId });
-  const now = params.now?.() ?? new Date();
-
-  let created: { id: string; value: string };
-  try {
-    const groupIds = await api.permissionGroupIds(accountId, TERRAFORM_TOKEN_GROUPS);
-    created = await api.createAccountToken({
-      accountId,
-      name: `hatchkit-terraform-${params.label ?? zone.name}-${cloudflareTime(now).replace(/[-:]/g, "")}`,
-      policies: [
-        {
-          effect: "allow",
-          permission_groups: groupIds.map((id) => ({ id })),
-          resources: { [zoneResource(zone.id)]: "*" },
-        },
-      ],
-      expiresOn: cloudflareTime(new Date(now.getTime() + TERRAFORM_TOKEN_TTL_MS)),
-    });
-  } catch (err) {
-    throw fail((err as Error).message);
-  }
-
-  const revoke = async () => {
-    try {
-      await api.deleteAccountToken(accountId, created.id);
-    } catch (err) {
-      console.log(
-        chalk.yellow(
-          `  ! Could not revoke the Terraform token ${created.id} (${(err as Error).message}); it expires within the hour.`,
-        ),
-      );
-    }
-  };
-
-  let policies: CfTokenPolicy[] | undefined;
-  try {
-    policies = (await api.getAccountToken(accountId, created.id))?.policies;
-  } catch (err) {
-    await revoke();
-    throw fail(`could not read the minted token back (${(err as Error).message})`);
-  }
-  if (!policies || !isOneZoneDnsPolicy(policies, zone.id)) {
-    await revoke();
-    throw fail("the minted token's policy is not Zone Read + DNS Write on this zone alone");
-  }
-  return { value: created.value, minted: true, revoke };
+  return mintTerraformToken({
+    token: params.token,
+    accountId,
+    label: params.label ?? zone.name,
+    grants: [{ groups: TERRAFORM_TOKEN_GROUPS, resource: zoneResource(zone.id) }],
+    fail,
+    mismatch: "the minted token's policy is not Zone Read + DNS Write on this zone alone",
+    api: params.api,
+    now: params.now,
+  });
 }
 
 /** Run `fn` with the token from `terraformCloudflareToken` and revoke it

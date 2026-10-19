@@ -44,6 +44,7 @@ import { printReleaseUsage } from "./features/release/command.js";
 import { type HelpTopic, helpTopicForCommand, isHelpRequest } from "./help-routing.js";
 import { HOST_USAGE, runHostCommand } from "./host/integrity.js";
 import { UPDATES_USAGE, runUpdatesCommand } from "./host/updates.js";
+import { INFRA_USAGE, runInfraCommand } from "./infra/command.js";
 import { MAC_RUNNER_USAGE, runMacRunnerCommand } from "./mac-runner/command.js";
 import {
   type Feature,
@@ -173,6 +174,9 @@ async function main(): Promise<void> {
       break;
     case "mac-runner":
       await runMacRunnerCommand(args.slice(1));
+      break;
+    case "infra":
+      await runInfraCommand(args.slice(1), { infraRoot: INFRA_ROOT });
       break;
     case "init":
     case "setup":
@@ -3904,6 +3908,9 @@ function printCommandHelp(cmd: string | undefined): void {
     case "mac-runner":
       console.log(MAC_RUNNER_USAGE);
       return;
+    case "infra":
+      console.log(INFRA_USAGE);
+      return;
     case "provision":
       printProvisionUsage();
       return;
@@ -5924,6 +5931,7 @@ function printHelp(topic?: HelpTopic): void {
     host integrity  Scan the Coolify host for signs of a compromised container (read-only; install = daily mail)
     host updates    Flag shared services (Coolify, Traefik, Plausible, …) that a high/critical advisory covers (read-only; install = weekly mail)
     audit cloudflare  Report tokens, audit-log entries and resources hatchkit did not create (read-only)
+    infra plan|apply <stack>  Run one of hatchkit's own Terraform stacks (ota-updates) with a minted run token
     email           Set up Cloudflare Email Routing + MX/SPF/DMARC (setup/status)
     keys show <p>   Print the dotenvx private key for a project
     keys set <p>    Upsert the key into the OS keychain (after \`dotenvx rotate\`)
