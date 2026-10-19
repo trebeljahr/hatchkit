@@ -28,7 +28,6 @@ import {
   runOnboarding,
   setProviderPause,
 } from "./config.js";
-import { COOLIFY_ACCESS_USAGE } from "./deploy/coolify-access.js";
 import { runCoolifySetup } from "./deploy/coolify.js";
 import { setupGitHub } from "./deploy/github.js";
 import { deployMlServices } from "./deploy/gpu.js";
@@ -173,16 +172,6 @@ async function main(): Promise<void> {
     case "audit":
       await runAuditCommand(args.slice(1));
       break;
-    case "coolify": {
-      const { runCoolifyAccess } = await import("./deploy/coolify-access.js");
-      if (args[1] !== "access") {
-        console.log(COOLIFY_ACCESS_USAGE);
-        if (args[1]) process.exitCode = 1;
-        break;
-      }
-      if (!(await runCoolifyAccess(args.slice(2)))) process.exitCode = 1;
-      break;
-    }
     case "mac-runner":
       await runMacRunnerCommand(args.slice(1));
       break;
@@ -3945,9 +3934,6 @@ function printCommandHelp(cmd: string | undefined): void {
     case "audit":
       console.log(AUDIT_USAGE);
       return;
-    case "coolify":
-      console.log(COOLIFY_ACCESS_USAGE);
-      return;
     case "mac-runner":
       console.log(MAC_RUNNER_USAGE);
       return;
@@ -6023,7 +6009,6 @@ function printHelp(topic?: HelpTopic): void {
     host integrity  Scan the Coolify host for signs of a compromised container (read-only; install = daily mail)
     host updates    Flag shared services (Coolify, Traefik, Plausible, …) that a high/critical advisory covers (read-only; install = weekly mail)
     audit cloudflare  Report tokens, audit-log entries and resources hatchkit did not create (read-only)
-    coolify access  Give hatchkit a Cloudflare Access service token for Coolify's hostname (keychain)
     infra plan|apply <stack>  Run one of hatchkit's own Terraform stacks (ota-updates) with a minted run token
     email           Set up Cloudflare Email Routing + MX/SPF/DMARC (setup/status)
     keys show <p>   Print the dotenvx private key for a project

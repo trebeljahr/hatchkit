@@ -149,15 +149,6 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   token with only the stack's grants (`INFRA_STACKS` in
   `cli/src/infra/command.ts`); `apply` applies only the saved `tfplan`.
   Ask before `apply`, and show the plan first.
-- `hatchkit coolify access [--dry-run] [--rotate] [--close-api-bypass]`:
-  Coolify's hostname is behind a Cloudflare Access application (only
-  Rico's address; GitHub deploy webhooks and Sentinel push bypass it). This
-  creates an Access service token with the operator token, stores it in
-  the keychain (never printed) and adds a Service Auth policy; every
-  CoolifyApi call then sends CF-Access-Client-Id/-Secret.
-  `--close-api-bypass` deletes the temporary `/api/v1` bypass once the
-  token works (restores it on failure). An Access sign-in instead of
-  Coolify is reported as such. See `cli/src/deploy/coolify-access.ts`.
 - `hatchkit explain --json`: source-of-truth mental model.
 
 Check `hatchkit help <command>` before using flags you have not verified.

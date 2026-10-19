@@ -200,61 +200,6 @@ export function describeCoolifyPatchLimit(field: string): string | undefined {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Cloudflare Access in front of Coolify
-// ---------------------------------------------------------------------------
-
-/** Service-token credentials per Coolify origin. Filled by
- *  `getCoolifyConfig()` from the keychain, so the 40-odd places that build
- *  a CoolifyApi from that config get the headers without being changed. */
-const accessByOrigin = new Map<string, { clientId: string; clientSecret: string }>();
-
-function originOf(url: string): string {
-  try {
-    return new URL(url).origin;
-  } catch {
-    return url.replace(/\/$/, "");
-  }
-}
-
-/** Register (or clear, with null) the Access service token hatchkit sends
- *  to the Coolify at `url`. See deploy/coolify-access.ts. */
-export function registerCoolifyAccess(
-  url: string,
-  creds: { clientId: string; clientSecret: string } | null,
-): void {
-  if (creds?.clientId && creds.clientSecret) accessByOrigin.set(originOf(url), creds);
-  else accessByOrigin.delete(originOf(url));
-}
-
-/** `headers` plus CF-Access-Client-Id/-Secret for `url`: from the registry,
- *  else from HATCHKIT_COOLIFY_ACCESS_CLIENT_ID/_SECRET. */
-export function accessHeaders(url: string, headers: HeadersInit | undefined): Headers {
-  const out = new Headers(headers);
-  const creds = accessByOrigin.get(originOf(url)) ?? {
-    clientId: process.env.HATCHKIT_COOLIFY_ACCESS_CLIENT_ID ?? "",
-    clientSecret: process.env.HATCHKIT_COOLIFY_ACCESS_CLIENT_SECRET ?? "",
-  };
-  if (creds.clientId && creds.clientSecret) {
-    out.set("CF-Access-Client-Id", creds.clientId);
-    out.set("CF-Access-Client-Secret", creds.clientSecret);
-  }
-  return out;
-}
-
-/** True when a response is Cloudflare Access's sign-in, not Coolify: fetch
- *  followed the redirect to `<team>.cloudflareaccess.com`. */
-export function isAccessSignIn(res: Pick<Response, "url">): boolean {
-  try {
-    const u = new URL(res.url);
-    return (
-      u.hostname.endsWith(".cloudflareaccess.com") || u.pathname.startsWith("/cdn-cgi/access/login")
-    );
-  } catch {
-    return false;
-  }
-}
-
 /** Coolify REST API client. */
 export class CoolifyApi {
   private url: string;
@@ -267,35 +212,20 @@ export class CoolifyApi {
     this.timeoutMs = options.timeoutMs;
   }
 
-  /** fetch under `/api/v1`, bounded by `timeoutMs` when it is set. Carries
-   *  the Cloudflare Access service token when one is registered for this
-   *  Coolify (see {@link registerCoolifyAccess}). */
+  /** fetch under `/api/v1`, bounded by `timeoutMs` when it is set. */
   private async send(path: string, init: RequestInit): Promise<Response> {
-    const withAccess = { ...init, headers: accessHeaders(this.url, init.headers) };
-    let res: Response;
-    if (!this.timeoutMs) {
-      res = await fetch(`${this.url}/api/v1${path}`, withAccess);
-    } else {
-      try {
-        res = await fetch(`${this.url}/api/v1${path}`, {
-          ...withAccess,
-          signal: AbortSignal.timeout(this.timeoutMs),
-        });
-      } catch (err) {
-        if ((err as Error).name !== "TimeoutError") throw err;
-        throw new Error(
-          `Coolify API ${init.method ?? "GET"} ${path}: no answer within ${this.timeoutMs / 1000} s`,
-        );
-      }
-    }
-    if (isAccessSignIn(res)) {
+    if (!this.timeoutMs) return fetch(`${this.url}/api/v1${path}`, init);
+    try {
+      return await fetch(`${this.url}/api/v1${path}`, {
+        ...init,
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (err) {
+      if ((err as Error).name !== "TimeoutError") throw err;
       throw new Error(
-        `Coolify API ${init.method ?? "GET"} ${path}: Cloudflare Access answered with its sign-in page ` +
-          "instead of Coolify. hatchkit needs an Access service token for this hostname: " +
-          "`hatchkit coolify access` (run it in your own terminal; it stores the token in the keychain).",
+        `Coolify API ${init.method ?? "GET"} ${path}: no answer within ${this.timeoutMs / 1000} s`,
       );
     }
-    return res;
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {

@@ -36,11 +36,6 @@ export const SECRET_KEYS = {
    *  application. Kept here so sync can tell whether Coolify still holds
    *  the value the repo was given. */
   coolifyDeployHook: (appUuid: string) => `coolify:deploy-webhook:${appUuid}`,
-  /** Cloudflare Access service token in front of Coolify's hostname
-   *  (deploy/coolify-access.ts). Sent as CF-Access-Client-Id/-Secret on
-   *  every Coolify API call; without it Access answers with its sign-in. */
-  coolifyAccessClientId: "coolify:access-client-id",
-  coolifyAccessClientSecret: "coolify:access-client-secret",
   hetznerToken: "hetzner:token",
   dnsInwxPassword: "dns:inwx:password",
   /** @deprecated Legacy Cloudflare DNS token (`hatchkit-dns`). Read only

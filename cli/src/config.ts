@@ -6,7 +6,7 @@ import Conf from "conf";
 import ora from "ora";
 import type { CloudflareAuditConfig } from "./audit/expected.js";
 import { CloudflareApi } from "./utils/cloudflare-api.js";
-import { registerCoolifyAccess, verifyCoolify } from "./utils/coolify-api.js";
+import { verifyCoolify } from "./utils/coolify-api.js";
 import { execOk } from "./utils/exec.js";
 import {
   ghAuthToken,
@@ -617,7 +617,6 @@ export async function ensureCoolify(): Promise<CoolifyConfig> {
     }
     // Verify connection is still valid
     try {
-      await loadCoolifyAccess(existing.url);
       await verifyCoolify(existing.url, existingToken);
       store.set("providers.coolify.lastVerified", new Date().toISOString());
       return { ...existing, token: existingToken };
@@ -656,7 +655,6 @@ export async function ensureCoolify(): Promise<CoolifyConfig> {
           const candidate = await confirmPastedSecret("Coolify API token");
           const spinner = ora("Testing Coolify connection...").start();
           try {
-            await loadCoolifyAccess(s.url);
             const version = await verifyCoolify(s.url, candidate);
             spinner.succeed(`Connected to Coolify v${version}`);
             return { ...s, token: candidate };
@@ -697,18 +695,7 @@ export async function getCoolifyConfig(): Promise<CoolifyConfig | null> {
   if (!meta || meta.status !== "configured") return null;
   const token = await getSecret(SECRET_KEYS.coolifyToken);
   if (!token) return null;
-  await loadCoolifyAccess(meta.url);
   return { ...meta, token };
-}
-
-/** Cloudflare Access in front of Coolify (deploy/coolify-access.ts): every
- *  CoolifyApi built for `url` sends the stored service token from here on. */
-async function loadCoolifyAccess(url: string): Promise<void> {
-  const [clientId, clientSecret] = await Promise.all([
-    getSecret(SECRET_KEYS.coolifyAccessClientId),
-    getSecret(SECRET_KEYS.coolifyAccessClientSecret),
-  ]);
-  if (clientId && clientSecret) registerCoolifyAccess(url, { clientId, clientSecret });
 }
 
 // ---------------------------------------------------------------------------
