@@ -95,8 +95,10 @@ finally:
 if proc.returncode != 0:
     if step.get("out"):
         os.unlink(step["out"])
-    lines = proc.stderr.decode("utf-8", "replace").strip().splitlines()
-    done(False, error=" / ".join(lines[-6:]) or "%s exited %d" % (step["argv"][0], proc.returncode))
+    # psql, clickhouse-client and Elixir all print the message first and a
+    # stack trace after it.
+    lines = [l.strip() for l in proc.stderr.decode("utf-8", "replace").splitlines() if l.strip()]
+    done(False, error=" / ".join(lines[:6]) or "%s exited %d" % (step["argv"][0], proc.returncode))
 if step.get("out"):
     done(True, stdout=str(os.path.getsize(step["out"])))
 done(True, stdout=proc.stdout.decode("utf-8", "replace"))
@@ -186,7 +188,9 @@ async function resolveDatabases(run: HostRunner, stack: PlausibleStack): Promise
     ],
   });
   const [pg, ch] = out.split("\n").map((line) => line.replace(/\?.*$/, "").trim());
-  const valid = (name: string | undefined) => !!name && /^[A-Za-z0-9_]+$/.test(name);
+  // Coolify's template names the Postgres database plausible-db (shared-vps,
+  // 2026-10-19). The names only ever travel as argv, never into SQL.
+  const valid = (name: string | undefined) => !!name && /^[A-Za-z0-9_-]+$/.test(name);
   if (!valid(pg) || !valid(ch))
     throw new Error(
       `Could not read the database names from DATABASE_URL and CLICKHOUSE_DATABASE_URL in ${stack.app}.`,

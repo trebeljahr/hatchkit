@@ -137,16 +137,16 @@ class FakeHost {
     if (container === `plausible-${UUID}` && rest.includes("rpc"))
       return this.rpc(rest[rest.length - 1]);
     if (container === `plausible-${UUID}`)
-      return "plausible_db?sslmode=disable\nplausible_events_db\n";
+      return "plausible-db?sslmode=disable\nplausible_events_db\n";
     if (container === `plausible-db-${UUID}` && step.out) {
-      assert.equal(rest.at(-1), "plausible_db");
+      assert.equal(rest.at(-1), "plausible-db");
       if (this.files.has(step.out))
         throw new Error(`Backup host shared-vps: cannot write ${step.out}`);
       this.files.add(step.out);
       return "48213";
     }
     if (container === `plausible-db-${UUID}`) {
-      assert.equal(rest.at(-1), "plausible_db");
+      assert.equal(rest.at(-1), "plausible-db");
       return this.postgres(step.input ?? "");
     }
     if (container === `plausible-events-db-${UUID}`) {
@@ -444,7 +444,7 @@ for (const bad of ["beauty'.trebeljahr.com", "localhost", "a.com/x", "-a.com", "
   assert.match(text, /Plausible merge on shared-vps \(plausible-c8378br07og1w4ta45uxh57l\)/);
   assert.match(
     text,
-    /1\. pg_dump -Fc of plausible_db to \/root\/plausible-site-merge-2026-10-19\//,
+    /1\. pg_dump -Fc of plausible-db to \/root\/plausible-site-merge-2026-10-19\//,
   );
   assert.match(
     text,
@@ -746,7 +746,7 @@ with open(os.path.join(os.environ["FAKE_DIR"], "docker.json"), "w") as f:
     json.dump({"argv": sys.argv[1:], "stdin": data}, f)
 mode = os.environ.get("FAKE_DOCKER", "ok")
 if mode == "fail":
-    sys.stderr.write("psql: warming up\\nERROR:  relation \\"sites\\" does not exist\\n")
+    sys.stderr.write("psql: warming up\\n\\nERROR:  relation \\"sites\\" does not exist\\n" + "".join("    at frame %d\\n" % i for i in range(8)))
     sys.exit(3)
 sys.stdout.write("dump-bytes" if mode == "dump" else "1|row\\n")
 `,
@@ -787,7 +787,8 @@ sys.stdout.write("dump-bytes" if mode == "dump" else "1|row\\n")
   process.env.FAKE_DOCKER = "fail";
   await assert.rejects(
     run({ argv: ["docker", "exec", "db"], input: "SELECT 1;" }),
-    /Backup host shared-vps: psql: warming up \/ ERROR: {2}relation "sites" does not exist/,
+    // The message first, blank lines dropped, at most six lines of the trace after it.
+    /Backup host shared-vps: psql: warming up \/ ERROR: {2}relation "sites" does not exist \/ at frame 0 \/ at frame 1 \/ at frame 2 \/ at frame 3$/,
   );
   const partial = join(dir, "backup", "second.pgdump");
   await assert.rejects(run({ argv: ["docker", "exec", "db"], out: partial }), /relation "sites"/);
