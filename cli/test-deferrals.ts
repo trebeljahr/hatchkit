@@ -289,7 +289,9 @@ const stub = createServer((req, res) => {
   glitchtipHits.push(`${req.method} ${req.url}`);
   if (req.url?.endsWith("/keys/")) {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify([{ dsn: { public: "https://key@glitchtip.test/1" } }]));
+    // On the stub's own host: provision refuses a DSN whose host isn't
+    // the configured GlitchTip URL (a wrong GLITCHTIP_DOMAIN).
+    res.end(JSON.stringify([{ dsn: { public: `http://key@127.0.0.1:${stubPort}/1` } }]));
     return;
   }
   res.writeHead(201, { "content-type": "application/json" });

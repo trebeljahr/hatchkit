@@ -1449,7 +1449,18 @@ async function handleAdd(): Promise<void> {
     manifest: inferredManifest,
   });
   const impossible = servicesImpossibleForProject(inferredManifest);
-  const rerunnableServices = new Set<ProvisionService>(["search-console"]);
+  // Reuse resources that already exist upstream instead of refusing to
+  // run. Without this, a project that exists on the provider is a dead
+  // end: `add` won't run, so its DSN / client id never reaches the env
+  // files. `--reuse` is accepted as the more obvious synonym.
+  const adoptExisting = args.includes("--adopt") || args.includes("--reuse");
+  // GlitchTip with --adopt re-reads the existing project's DSN and writes
+  // it under every name and to Coolify + the repo variable: the repair
+  // for a project wired before `add` wrote SENTRY_DSN.
+  const rerunnableServices = new Set<ProvisionService>([
+    "search-console",
+    ...(adoptExisting ? (["glitchtip"] as const) : []),
+  ]);
   const addableServices = allServices.filter(
     (service) => !alreadyAdded.has(service) && !impossible.has(service),
   );
@@ -1570,11 +1581,6 @@ async function handleAdd(): Promise<void> {
   //   (no surface flags)              → prompt interactively
   const noWrite = args.includes("--no-write");
   const enableDevObs = args.includes("--enable-dev-obs");
-  // Reuse resources that already exist upstream instead of refusing to
-  // run. Without this, a project that exists on the provider is a dead
-  // end: `add` won't run, so its DSN / client id never reaches the env
-  // files. `--reuse` is accepted as the more obvious synonym.
-  const adoptExisting = args.includes("--adopt") || args.includes("--reuse");
 
   const validSurfaceModes = ["fullstack", "split", "backend", "static"] as const;
   const noEnvServices = new Set<ProvisionService>(["email", "search-console"]);
@@ -1638,7 +1644,7 @@ async function handleAdd(): Promise<void> {
   }
 
   const ledger = RunLedger.resumeOrStart(baseName);
-  await runProvision({
+  const provisioned = await runProvision({
     baseName,
     services,
     surfaces,
@@ -1650,6 +1656,20 @@ async function handleAdd(): Promise<void> {
     onProvisioned: (event) => recordProvisionedEvent(ledger, event),
   });
   ledger.complete();
+
+  // The env files alone don't reach a deployed app: an empty Coolify
+  // SENTRY_DSN wins over .env.production, and the client build reads
+  // the repo variable. See provision/glitchtip-delivery.ts.
+  if (provisioned.glitchtip) {
+    const { deliverGlitchtipDsn } = await import("./provision/glitchtip-delivery.js");
+    const outcomes = await deliverGlitchtipDsn({
+      projectDir: provisioned.glitchtip.projectDir ?? inferredProjectDir,
+      server: provisioned.glitchtip.server,
+      client: provisioned.glitchtip.client,
+      write: !noWrite,
+    });
+    if (outcomes.some((o) => o.status === "failed")) process.exitCode = 1;
+  }
 }
 
 async function handleProvisionS3(): Promise<void> {
@@ -4366,7 +4386,11 @@ function printHelp(topic?: HelpTopic): void {
                     New value: 32 random bytes (hex). Side effects: the
                     auth secret signs users out; the newsletter secret
                     breaks confirm/unsubscribe links already sent.
-    ${chalk.cyan("glitchtip")}       GLITCHTIP_DSN, PUBLIC_GLITCHTIP_DSN
+    ${chalk.cyan("glitchtip")}       GLITCHTIP_DSN, PUBLIC_GLITCHTIP_DSN, and SENTRY_DSN /
+                    NEXT_PUBLIC_SENTRY_DSN when they hold this GlitchTip's DSN
+                    (or a CHANGE_ME_ placeholder). Pushed to a Coolify env and
+                    the repo VARIABLE of the same name; a name not in
+                    .env.production only where it holds the old DSN.
 
   ${chalk.bold("Global credentials (--global):")}
     ${chalk.cyan("ses")}             IAM user hatchkit-ses → SES_SMTP_USERNAME / SES_SMTP_PASSWORD,
@@ -4834,7 +4858,11 @@ function printHelp(topic?: HelpTopic): void {
   With Coolify configured it also reads every compose app's source file and
   warns about ghcr images on a mutable tag (:latest, :main) without
   ${chalk.cyan("pull_policy: always")} — those can keep serving the previous build
-  after a green deploy.
+  after a green deploy. It also warns about apps whose ${chalk.cyan("SENTRY_DSN")} is set
+  but empty: the empty value hides the DSN in .env.production.
+
+  The GlitchTip row fails when the DSNs the server hands out point at a
+  host other than the configured URL (its GLITCHTIP_DOMAIN is wrong).
 
   Inside a static-site project it warns when the Dockerfile's final stage
   runs nginx with its stock config, which 404s on reload of any deep link.
@@ -5018,6 +5046,12 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("What it does:")}
     · GlitchTip: ${chalk.bold("one project per product")}, events tagged by
       \`environment\` so dev / staging / prod share the same dashboard.
+      The DSN also goes where the deployed app reads it: ${chalk.cyan("SENTRY_DSN")} on the
+      server's Coolify app (an empty value there hides .env.production), and
+      the ${chalk.cyan("NEXT_PUBLIC_SENTRY_DSN")} repo variable the client build reads
+      (\`gh variable set\`). Each is read back; a value holding another
+      tracker's DSN is kept. Refuses a DSN whose host isn't the configured
+      GlitchTip URL (the server's GLITCHTIP_DOMAIN is wrong).
     · Plausible: one site for the public project domain, with browser tracker env.
       Observability values are written to ${chalk.cyan(".env.production")} only — dev noise pollutes real metrics.
       Pass ${chalk.cyan("--enable-dev-obs")} to populate ${chalk.cyan(".env.development.local")} too.
@@ -5057,7 +5091,9 @@ function printHelp(topic?: HelpTopic): void {
     ${chalk.dim("packages/server/.env.production")}, ${chalk.dim("packages/client/.env.production")}).
 
   ${chalk.bold("Services:")}
-    glitchtip   GLITCHTIP_DSN (server) / PUBLIC_GLITCHTIP_DSN (client)
+    glitchtip   SENTRY_DSN + GLITCHTIP_DSN (server) /
+                NEXT_PUBLIC_SENTRY_DSN + PUBLIC_GLITCHTIP_DSN (client),
+                plus Coolify SENTRY_DSN and the NEXT_PUBLIC_SENTRY_DSN repo variable
     plausible   NEXT_PUBLIC_PLAUSIBLE_DOMAIN / *_SCRIPT_URL (client only)
     listmonk-ses
                 LISTMONK_URL / _API_USER / _API_TOKEN / _FROM /
@@ -5096,8 +5132,12 @@ function printHelp(topic?: HelpTopic): void {
                                 written into your env files. Adopted resources are
                                 not recorded in the run ledger, so \`hatchkit remove\`
                                 will not delete something Hatchkit didn't create.
+                                \`glitchtip --adopt\` also re-runs on a project that
+                                already has it, to rewrite the DSN everywhere.
     --enable-dev-obs            Also populate .env.development.local with obs creds.
-    --no-write                  Skip writing; save 0600 cache only.
+    --no-write                  Skip writing; save 0600 cache only. Prints the
+                                \`gh variable set NEXT_PUBLIC_SENTRY_DSN …\` command
+                                instead of running it.
     --regenerate-listmonk-token The project's Listmonk API user exists but no working
                                 token is stored: delete and recreate it without
                                 asking. Its deployed old token stops working.

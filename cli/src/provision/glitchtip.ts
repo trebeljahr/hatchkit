@@ -15,13 +15,81 @@
  * `project-lookup.ts` is the one place that asks.
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { GlitchtipConfig } from "../config.js";
 import { ensureGlitchtip } from "../config.js";
+import { ERROR_REPORTING_DSN_VAR } from "../features/error-reporting/render.js";
 import type { RemoteProject } from "./project-lookup.js";
 
 export interface GlitchtipClient {
   projectSlug: string;
   dsn: string;
+}
+
+/** The server env var hatchkit's starter reads its DSN from
+ *  (`packages/server/src/config/env.ts`, `instrument.ts`). */
+export const SENTRY_DSN_KEY = "SENTRY_DSN";
+
+/** The client build variable (a repo VARIABLE, see
+ *  `features/error-reporting/render.ts`). */
+export const CLIENT_DSN_VAR = ERROR_REPORTING_DSN_VAR;
+
+/** Every name a DSN is written under, per side. The `GLITCHTIP_*` names
+ *  are the original ones, still read by projects scaffolded from the
+ *  legacy templates and by `hatchkit add`'s "already added" check; the
+ *  Sentry names are what the starter reads. Writing only the first pair
+ *  produced a DSN no scaffolded app ever read (2026-10-19). */
+export const GLITCHTIP_SERVER_ENV_KEYS = ["GLITCHTIP_DSN", SENTRY_DSN_KEY] as const;
+export const GLITCHTIP_CLIENT_ENV_KEYS = ["PUBLIC_GLITCHTIP_DSN", CLIENT_DSN_VAR] as const;
+
+/** `KEY=dsn` lines for one side of a project. */
+export function renderGlitchtipEnv(c: GlitchtipClient, forClient: boolean): string[] {
+  const keys = forClient ? GLITCHTIP_CLIENT_ENV_KEYS : GLITCHTIP_SERVER_ENV_KEYS;
+  return keys.map((key) => `${key}=${c.dsn}`);
+}
+
+function hostOf(url: string): string | undefined {
+  try {
+    return new URL(url).host.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+/** The DSN's host when it is not the host hatchkit reaches GlitchTip at,
+ *  else undefined.
+ *
+ *  GlitchTip builds every DSN from its own `GLITCHTIP_DOMAIN` setting,
+ *  not from the address the API was called on. On 2026-10-19 the
+ *  shared server ran with the compose default
+ *  `GLITCHTIP_DOMAIN=https://glitchtip.example.com`, so every DSN it
+ *  handed out sent events to example.com, and nothing noticed. */
+export function dsnHostMismatch(
+  dsn: string,
+  configuredUrl: string,
+): { dsnHost: string; configuredHost: string } | undefined {
+  const dsnHost = hostOf(dsn);
+  const configuredHost = hostOf(configuredUrl);
+  if (!dsnHost || !configuredHost || dsnHost === configuredHost) return undefined;
+  return { dsnHost, configuredHost };
+}
+
+/** Throws when `dsn` points somewhere other than `cfg.url`. Writing it
+ *  would wire an app to a host that never receives its events. `next`
+ *  finishes the message with how to retry once the server is fixed. */
+export function assertDsnHost(cfg: GlitchtipConfig, dsn: string, next: string): void {
+  const mismatch = dsnHostMismatch(dsn, cfg.url);
+  if (!mismatch) return;
+  throw new Error(
+    `GlitchTip returned a DSN for ${mismatch.dsnHost}, but hatchkit reaches GlitchTip at ${mismatch.configuredHost}. ` +
+      `The server's GLITCHTIP_DOMAIN points at ${mismatch.dsnHost}, so no event sent with this DSN would arrive. ` +
+      `Set GLITCHTIP_DOMAIN=${cfg.url.replace(/\/$/, "")} in the GlitchTip service env and redeploy it, then ${next}`,
+  );
+}
+
+function adoptNext(projectSlug: string): string {
+  return `re-run with --adopt (project '${projectSlug}' exists). Nothing was written.`;
 }
 
 function requireOrg(cfg: GlitchtipConfig): { base: string; org: string } {
@@ -106,10 +174,53 @@ export async function adoptGlitchtipClient(projectSlug: string): Promise<Glitcht
       `GlitchTip project '${projectSlug}' exists but has no client keys — create one in the GlitchTip UI (Settings → Client Keys) and re-run.`,
     );
   }
+  assertDsnHost(cfg, dsn, adoptNext(projectSlug));
   return { projectSlug, dsn };
 }
 
-export async function provisionGlitchtipClient(clientName: string): Promise<GlitchtipClient> {
+/** The SDK label a new project gets. GlitchTip uses it for the project
+ *  icon and the setup instructions it shows; events work either way.
+ *  Every project used to be `javascript-node`, browser-only apps too. */
+export type GlitchtipPlatform = "javascript-node" | "javascript-nextjs" | "javascript-browser";
+
+/** Which events the project receives: a server's, a client's, or both
+ *  through one shared DSN. */
+export type GlitchtipProjectRole = "server" | "client" | "shared";
+
+/** The platform for a project by what reports to it. `javascript-node`
+ *  only when a server does (a shared project is mostly the server's);
+ *  a client-only project is Next.js or plain browser JavaScript. */
+export function glitchtipPlatformFor(
+  role: GlitchtipProjectRole,
+  clientIsNext: boolean,
+): GlitchtipPlatform {
+  if (role !== "client") return "javascript-node";
+  return clientIsNext ? "javascript-nextjs" : "javascript-browser";
+}
+
+/** True when the first `package.json` found in `dirs` depends on `next`. */
+export function packageUsesNext(dirs: ReadonlyArray<string | undefined>): boolean {
+  for (const dir of dirs) {
+    if (!dir) continue;
+    const path = join(dir, "package.json");
+    if (!existsSync(path)) continue;
+    try {
+      const pkg = JSON.parse(readFileSync(path, "utf-8")) as {
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
+      return !!(pkg.dependencies?.next ?? pkg.devDependencies?.next);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+export async function provisionGlitchtipClient(
+  clientName: string,
+  platform: GlitchtipPlatform = "javascript-node",
+): Promise<GlitchtipClient> {
   const cfg = await ensureGlitchtip();
   const { base, org } = requireOrg(cfg);
   const { teamSlug, token } = cfg;
@@ -128,7 +239,7 @@ export async function provisionGlitchtipClient(clientName: string): Promise<Glit
     body: JSON.stringify({
       name: clientName,
       slug: clientName,
-      platform: "javascript-node",
+      platform,
     }),
   });
 
@@ -149,6 +260,7 @@ export async function provisionGlitchtipClient(clientName: string): Promise<Glit
 
   const dsn = await getGlitchtipDsn(cfg, slug);
   if (!dsn) throw new Error(`GlitchTip project '${slug}' has no client keys`);
+  assertDsnHost(cfg, dsn, adoptNext(slug));
   return { projectSlug: slug, dsn };
 }
 

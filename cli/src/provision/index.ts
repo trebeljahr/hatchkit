@@ -69,9 +69,13 @@ import {
 } from "./deferrals.js";
 import {
   type GlitchtipClient,
+  type GlitchtipProjectRole,
   adoptGlitchtipClient,
   deleteGlitchtipClient,
+  glitchtipPlatformFor,
+  packageUsesNext,
   provisionGlitchtipClient,
+  renderGlitchtipEnv,
 } from "./glitchtip.js";
 import {
   type PlausibleSite,
@@ -324,6 +328,12 @@ export interface ProvisionRunResult {
   configured: ProvisionService[];
   /** Optional steps that were skipped, each with its follow-up command. */
   deferred: DeferredStep[];
+  /** The DSNs the GlitchTip step produced, per side, and the project
+   *  directory the run resolved. Present only when that step succeeded.
+   *  `hatchkit add` hands them to `deliverGlitchtipDsn`, which puts them
+   *  where the app reads them in production (Coolify `SENTRY_DSN`, the
+   *  `NEXT_PUBLIC_SENTRY_DSN` repo variable). */
+  glitchtip?: { server?: string; client?: string; projectDir?: string };
 }
 
 export interface SearchConsoleDomainGuess {
@@ -627,6 +637,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
   }
 
   const buckets = initBuckets(surfaces);
+  const glitchtipDsn: { server?: string; client?: string } = {};
 
   /** Persist deferrals + resolutions into `.hatchkit.json` and print the
    *  end-of-run block. Called on every exit path (cache-only mode, the
@@ -646,7 +657,13 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
       });
       if (block) console.log(block);
     }
-    return { configured: [...configured], deferred: [...deferred] };
+    return {
+      configured: [...configured],
+      deferred: [...deferred],
+      ...(glitchtipDsn.server || glitchtipDsn.client
+        ? { glitchtip: { ...glitchtipDsn, projectDir: surfaces?.projectDir } }
+        : {}),
+    };
   };
 
   // Read-only provider survey. Runs for `failIfExists` (abort on a
@@ -684,7 +701,10 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
    *  already there. Adoption never records a `onProvisioned` event —
    *  the run ledger drives `hatchkit remove`, and hatchkit must not
    *  offer to delete a resource it did not create. */
-  const glitchtipFor = async (projectName: string): Promise<GlitchtipClient> => {
+  const glitchtipFor = async (
+    projectName: string,
+    role: GlitchtipProjectRole,
+  ): Promise<GlitchtipClient> => {
     const match = existing.glitchtip.get(projectName);
     if (match) {
       const res = await withSpinner(`GlitchTip: adopting project ${match.identity}`, () =>
@@ -692,8 +712,9 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
       );
       return res;
     }
+    const clientIsNext = packageUsesNext([surfaces?.clientEnvDir, surfaces?.projectDir]);
     const res = await withSpinner(`GlitchTip: creating project ${projectName}`, () =>
-      provisionGlitchtipClient(projectName),
+      provisionGlitchtipClient(projectName, glitchtipPlatformFor(role, clientIsNext)),
     );
     opts.onProvisioned?.({ service: "glitchtip", project: projectName });
     return res;
@@ -704,21 +725,26 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
     if (surfaces?.mode === "split") {
       for (const side of ["server", "client"] as const) {
         const projectName = `${opts.baseName}-${side}`;
-        const res = await glitchtipFor(projectName);
+        const res = await glitchtipFor(projectName, side);
         pushObsLines(buckets, side, renderGlitchtipEnv(res, side === "client"), enableDevObs);
+        glitchtipDsn[side] = res.dsn;
       }
     } else {
       const projectName = opts.baseName;
-      const res = await glitchtipFor(projectName);
-      // Shared-DSN case: the server SDK reads GLITCHTIP_DSN; the client
-      // SDK reads GLITCHTIP_DSN_CLIENT (same value). Both SDKs tag
-      // events with `sdk.name`, so filtering by surface in the UI is
-      // automatic.
+      // A static project has no server: only the browser reports.
+      const res = await glitchtipFor(projectName, hasServerRuntime ? "shared" : "client");
+      // Shared-DSN case: the server SDK reads SENTRY_DSN (GLITCHTIP_DSN
+      // for legacy templates); the client build reads
+      // NEXT_PUBLIC_SENTRY_DSN (PUBLIC_GLITCHTIP_DSN). Same value on
+      // both. Both SDKs tag events with `sdk.name`, so filtering by
+      // surface in the UI is automatic.
       if (hasServerRuntime) {
         pushObsLines(buckets, "server", renderGlitchtipEnv(res, false), enableDevObs);
+        glitchtipDsn.server = res.dsn;
       }
       if (hasClientSurface) {
         pushObsLines(buckets, "client", renderGlitchtipEnv(res, true), enableDevObs);
+        glitchtipDsn.client = res.dsn;
       }
     }
   });
@@ -2253,10 +2279,6 @@ async function withSpinner<T>(label: string, fn: () => Promise<T>): Promise<T> {
  *  prefix (Vite / Astro / SvelteKit / Remix convention — bundlers
  *  typically only expose variables with this kind of prefix to
  *  browser code). */
-function renderGlitchtipEnv(c: GlitchtipClient, forClient: boolean): string[] {
-  return [`${forClient ? "PUBLIC_GLITCHTIP_DSN" : "GLITCHTIP_DSN"}=${c.dsn}`];
-}
-
 function renderPlausibleEnv(c: PlausibleSite): string[] {
   return [
     `PUBLIC_PLAUSIBLE_DOMAIN=${c.domain}`,

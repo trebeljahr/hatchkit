@@ -19,9 +19,26 @@
  *
  * Project-slug shape:
  *   · surfaces === "split" — two GlitchTip projects: `<name>-server`
- *     (owns GLITCHTIP_DSN) and `<name>-client` (owns PUBLIC_GLITCHTIP_DSN).
- *   · all other surfaces  — one project `<name>`; both env vars carry
- *     the same DSN.
+ *     (owns GLITCHTIP_DSN + SENTRY_DSN) and `<name>-client` (owns
+ *     PUBLIC_GLITCHTIP_DSN + NEXT_PUBLIC_SENTRY_DSN).
+ *   · all other surfaces  — one project `<name>`; every name carries the
+ *     same DSN.
+ *
+ * Which names rotate (`planFor`):
+ *   · GLITCHTIP_DSN / PUBLIC_GLITCHTIP_DSN — whenever present; only
+ *     hatchkit writes them.
+ *   · SENTRY_DSN / NEXT_PUBLIC_SENTRY_DSN — the starter's names, which a
+ *     project can just as well point at sentry.io. They rotate only when
+ *     `.env.production` holds a DSN on the configured GlitchTip host, the
+ *     same DSN as the GLITCHTIP_* name beside it, or a `CHANGE_ME_`
+ *     placeholder next to an owned GLITCHTIP_* name (the scaffold seeds
+ *     one, and `hatchkit add` used to leave it).
+ *   · A name of a rotating DSN that is NOT in `.env.production` is
+ *     `deployOnly`: the new DSN goes only to deploy targets that hold the
+ *     OLD DSN under that name — a Coolify SENTRY_DSN, or the
+ *     NEXT_PUBLIC_SENTRY_DSN repo variable the client build reads. In a
+ *     starter layout the client names live in packages/client, which
+ *     this file never reads, so this is how the repo variable follows.
  *
  * captureOld decrypts .env.production via the sanctioned `readEncryptedProd`
  * wrapper, parses each DSN, and resolves the upstream key id by listing
@@ -30,8 +47,14 @@
  * downgrades revoke policy on empty captures.
  */
 
-import type { GlitchtipConfig } from "../../config.js";
-import { getGlitchtipConfig } from "../../config.js";
+import type { GlitchtipConfig, GlitchtipMeta } from "../../config.js";
+import { getGlitchtipConfig, getStore } from "../../config.js";
+import {
+  GLITCHTIP_CLIENT_ENV_KEYS,
+  GLITCHTIP_SERVER_ENV_KEYS,
+  assertDsnHost,
+  dsnHostMismatch,
+} from "../../provision/glitchtip.js";
 import { readEncryptedProd } from "../env-writer.js";
 import { register } from "../registry.js";
 import type {
@@ -43,8 +66,17 @@ import type {
   VerifyOutcome,
 } from "../types.js";
 
-const SERVER_KEY = "GLITCHTIP_DSN";
-const CLIENT_KEY = "PUBLIC_GLITCHTIP_DSN";
+const SERVER_KEYS: readonly string[] = GLITCHTIP_SERVER_ENV_KEYS;
+const CLIENT_KEYS: readonly string[] = GLITCHTIP_CLIENT_ENV_KEYS;
+const ALL_KEYS: readonly string[] = [...SERVER_KEYS, ...CLIENT_KEYS];
+/** The hatchkit-only name per side; index 0 of each list. */
+const LEGACY_KEY = { server: SERVER_KEYS[0], client: CLIENT_KEYS[0] } as const;
+
+type Side = "server" | "client";
+
+function sideOf(envKey: string): Side {
+  return CLIENT_KEYS.includes(envKey) ? "client" : "server";
+}
 
 interface ParsedDsn {
   /** Public key portion (the `<key>` in `https://<key>@host/<id>`). */
@@ -161,19 +193,96 @@ async function deleteProjectKey(
  *  side); all other surfaces share a single project. */
 function projectSlugFor(envKey: string, ctx: RotationContext): string {
   if (ctx.manifest.surfaces === "split") {
-    return envKey === CLIENT_KEY ? `${ctx.projectName}-client` : `${ctx.projectName}-server`;
+    return sideOf(envKey) === "client"
+      ? `${ctx.projectName}-client`
+      : `${ctx.projectName}-server`;
   }
   return ctx.projectName;
+}
+
+interface RotationPlan {
+  /** Names in the env file whose value rotates. */
+  inFile: string[];
+  /** Names of a rotating DSN that only deploy targets may hold. */
+  deployOnly: string[];
+  /** The OLD value behind each name in `inFile` (absent when the file
+   *  can't be read) and the old DSN behind each `deployOnly` name. */
+  oldDsn: Record<string, string>;
+}
+
+function isPlaceholder(value: string | undefined): boolean {
+  return value !== undefined && (value.trim() === "" || value.startsWith("CHANGE_ME"));
+}
+
+/** Which names rotate, and from which old DSN — see the module header.
+ *  Read-only (one decrypt, no network) and cached on `ctx.scratch`, so
+ *  detect / envKeys / captureOld / createNew can never disagree. */
+function planFor(ctx: RotationContext): RotationPlan {
+  const cached = ctx.scratch.glitchtipPlan as RotationPlan | undefined;
+  if (cached) return cached;
+  let env: Record<string, string> = {};
+  try {
+    env = readEncryptedProd(ctx.projectDir);
+  } catch {
+    // Unreadable: GLITCHTIP_* names still rotate by presence, as before.
+  }
+  const meta = getStore().get("providers.glitchtip") as GlitchtipMeta | undefined;
+  const glitchtipUrl = meta?.status === "configured" ? meta.url : undefined;
+  const isOurDsn = (value: string | undefined): boolean =>
+    !!value && !!parseDsn(value) && !!glitchtipUrl && !dsnHostMismatch(value, glitchtipUrl);
+
+  const owned = new Set<string>();
+  for (const side of ["server", "client"] as const) {
+    const legacy = LEGACY_KEY[side];
+    const legacyOwned = ctx.envPresence.has(legacy);
+    if (legacyOwned) owned.add(legacy);
+    for (const key of side === "server" ? SERVER_KEYS : CLIENT_KEYS) {
+      if (key === legacy || !ctx.envPresence.has(key)) continue;
+      const value = env[key];
+      const sameAsLegacy = !!value && !!parseDsn(value) && value === env[legacy];
+      if (isOurDsn(value) || sameAsLegacy || (legacyOwned && isPlaceholder(value))) {
+        owned.add(key);
+      }
+    }
+  }
+
+  // Rotating groups: one DSN for the whole project, or one per side.
+  const split = ctx.manifest.surfaces === "split";
+  const groups: string[][] = split ? [[...SERVER_KEYS], [...CLIENT_KEYS]] : [[...ALL_KEYS]];
+  const plan: RotationPlan = { inFile: [], deployOnly: [], oldDsn: {} };
+  for (const group of groups) {
+    const inFile = group.filter((key) => owned.has(key));
+    if (inFile.length === 0) continue;
+    const old = inFile.map((key) => env[key]).find((v) => !!v && !!parseDsn(v));
+    for (const key of group) {
+      if (owned.has(key)) {
+        plan.inFile.push(key);
+        if (env[key]) plan.oldDsn[key] = env[key];
+      } else if (!ctx.envPresence.has(key) && old) {
+        // A name in the file that isn't ours (a sentry.io DSN) is left
+        // alone everywhere; a name that isn't in the file follows on
+        // deploy targets only, matched against the old DSN. Without an
+        // old DSN to match there is nothing to follow, and no key to mint.
+        plan.deployOnly.push(key);
+        plan.oldDsn[key] = old;
+      }
+    }
+  }
+  ctx.scratch.glitchtipPlan = plan;
+  return plan;
 }
 
 /** The env-var names this adapter manages for `ctx`, filtered to those
  *  the project actually has. Adapter call-sites use this so envKeys
  *  matches captureOld/createNew without re-deriving. */
 function targetEnvKeys(ctx: RotationContext): string[] {
-  const out: string[] = [];
-  if (ctx.envPresence.has(SERVER_KEY)) out.push(SERVER_KEY);
-  if (ctx.envPresence.has(CLIENT_KEY)) out.push(CLIENT_KEY);
-  return out;
+  return planFor(ctx).inFile;
+}
+
+/** Every name the new DSN is handed to: the file's and the deploy-only. */
+function deliveredKeys(ctx: RotationContext): string[] {
+  const plan = planFor(ctx);
+  return [...plan.inFile, ...plan.deployOnly];
 }
 
 const glitchtipRotator: ProviderRotator = {
@@ -181,15 +290,31 @@ const glitchtipRotator: ProviderRotator = {
   label: "GlitchTip DSN",
 
   detect(ctx: RotationContext): boolean {
-    return ctx.envPresence.has(SERVER_KEY) || ctx.envPresence.has(CLIENT_KEY);
+    return targetEnvKeys(ctx).length > 0;
   },
 
   envKeys(ctx: RotationContext): ReadonlyArray<EnvKeySpec> {
-    return targetEnvKeys(ctx).map((name) => ({
+    const plan = planFor(ctx);
+    // Client names are build-time values shipped in the bundle, so they
+    // may live in a repo VARIABLE (`secret: false` lets push update one).
+    const spec = (name: string, deployOnly: boolean): EnvKeySpec => ({
       name,
       scope: "production",
-      secret: true,
-    }));
+      secret: sideOf(name) === "server",
+      ...(deployOnly ? { deployOnly: true } : {}),
+    });
+    return [
+      ...plan.inFile.map((name) => spec(name, false)),
+      ...plan.deployOnly.map((name) => spec(name, true)),
+    ];
+  },
+
+  sideEffects(ctx: RotationContext): string[] {
+    const plan = planFor(ctx);
+    if (plan.deployOnly.length === 0) return [];
+    return [
+      `${plan.deployOnly.join(", ")}: not in .env.production; updated on Coolify and the repo's Actions variables only where they hold the old DSN.`,
+    ];
   },
 
   async captureOld(ctx: RotationContext): Promise<OldCred> {
@@ -204,9 +329,14 @@ const glitchtipRotator: ProviderRotator = {
     }
 
     const cfg = await getGlitchtipConfig();
+    const plan = planFor(ctx);
+    // Up to four names share one project; list its keys once.
+    const keysBySlug = new Map<string, Promise<GlitchtipKeyRecord[]>>();
 
-    for (const envKey of targetEnvKeys(ctx)) {
-      const dsn = prodEnv[envKey];
+    for (const envKey of deliveredKeys(ctx)) {
+      // Deploy-only names carry the old DSN of their group: push uses it
+      // to update only targets that still hold exactly that value.
+      const dsn = plan.inFile.includes(envKey) ? prodEnv[envKey] : plan.oldDsn[envKey];
       if (!dsn) continue;
       values[envKey] = dsn;
       if (!cfg) continue;
@@ -214,7 +344,12 @@ const glitchtipRotator: ProviderRotator = {
       if (!parsed) continue;
       const slug = projectSlugFor(envKey, ctx);
       try {
-        const keys = await listProjectKeys(cfg, slug);
+        let listed = keysBySlug.get(slug);
+        if (!listed) {
+          listed = listProjectKeys(cfg, slug);
+          keysBySlug.set(slug, listed);
+        }
+        const keys = await listed;
         const match = keys.find(
           (k) => k.public === parsed.publicKey || k.dsn?.public === dsn,
         );
@@ -241,34 +376,30 @@ const glitchtipRotator: ProviderRotator = {
     const values: Record<string, string> = {};
     const handle: Record<string, string> = {};
 
-    if (ctx.manifest.surfaces === "split") {
-      // Two distinct GlitchTip projects, two distinct DSNs.
-      for (const envKey of targetEnvKeys(ctx)) {
-        const slug = projectSlugFor(envKey, ctx);
-        const label = `hatchkit-rotate-${new Date().toISOString().slice(0, 19)}`;
-        const fresh = await createProjectKey(cfg, slug, label);
-        const dsn = fresh.dsn?.public;
+    // One key per GlitchTip project: two for a split project (one per
+    // side), one shared by every name otherwise.
+    const minted = new Map<string, { id: string; dsn: string }>();
+    const label = `hatchkit-rotate-${new Date().toISOString().slice(0, 19)}`;
+    for (const envKey of deliveredKeys(ctx)) {
+      const slug = projectSlugFor(envKey, ctx);
+      let fresh = minted.get(slug);
+      if (!fresh) {
+        const created = await createProjectKey(cfg, slug, label);
+        const dsn = created.dsn?.public;
         if (!dsn) {
           throw new Error(`GlitchTip create key for ${slug} returned no DSN`);
         }
-        values[envKey] = dsn;
-        handle[handleKey("keyId", envKey)] = fresh.id;
-        handle[handleKey("projectSlug", envKey)] = slug;
+        assertDsnHost(
+          cfg,
+          dsn,
+          `re-run \`hatchkit secrets rotate --only glitchtip\`. Nothing was written; delete key ${created.id} of ${slug} in GlitchTip.`,
+        );
+        fresh = { id: created.id, dsn };
+        minted.set(slug, fresh);
       }
-    } else {
-      // Shared-DSN: mint once, use the same value for both env vars.
-      const slug = projectSlugFor(SERVER_KEY, ctx);
-      const label = `hatchkit-rotate-${new Date().toISOString().slice(0, 19)}`;
-      const fresh = await createProjectKey(cfg, slug, label);
-      const dsn = fresh.dsn?.public;
-      if (!dsn) {
-        throw new Error(`GlitchTip create key for ${slug} returned no DSN`);
-      }
-      for (const envKey of targetEnvKeys(ctx)) {
-        values[envKey] = dsn;
-        handle[handleKey("keyId", envKey)] = fresh.id;
-        handle[handleKey("projectSlug", envKey)] = slug;
-      }
+      values[envKey] = fresh.dsn;
+      handle[handleKey("keyId", envKey)] = fresh.id;
+      handle[handleKey("projectSlug", envKey)] = slug;
     }
 
     return { values, handle };
@@ -330,7 +461,7 @@ const glitchtipRotator: ProviderRotator = {
     }
     // Dedup (keyId, projectSlug) tuples so a shared DSN doesn't double-delete.
     const seen = new Set<string>();
-    for (const envKey of [SERVER_KEY, CLIENT_KEY]) {
+    for (const envKey of ALL_KEYS) {
       const keyId = old.handle[handleKey("keyId", envKey)];
       const slug = old.handle[handleKey("projectSlug", envKey)];
       if (!keyId || !slug) continue;

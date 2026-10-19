@@ -91,6 +91,7 @@
   "test-auth-account-security.ts",
   "test-project-subdir.ts",
   "test-project-lookup.ts",
+  "test-glitchtip-env.ts",
   "test-provision-s3-env.ts",
   "test-plausible-ce.ts",
   "test-release-channels.ts",

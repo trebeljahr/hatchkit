@@ -22,6 +22,15 @@
  * overrides the file, so it must move with the rotation. Creating a
  * new plaintext copy where none existed would spread the credential to
  * one more place it can leak from.
+ *
+ * Two refinements:
+ *   · A pair marked `secret: false` also updates an Actions VARIABLE of
+ *     the same name — a client build value like NEXT_PUBLIC_SENTRY_DSN
+ *     lives there, because it ships in the bundle anyway.
+ *   · A pair with `previous` (a name that isn't in the env file) updates
+ *     a target only where it holds exactly that old value, read back
+ *     first. Actions secrets can't be read, so such a pair never touches
+ *     one.
  */
 
 import { getCoolifyConfig } from "../config.js";
@@ -46,6 +55,13 @@ export interface PushResult {
 export interface PushPair {
   key: string;
   value: string;
+  /** `false` lets the pair update a repo VARIABLE of the same name.
+   *  Default: secret — Actions secrets only. */
+  secret?: boolean;
+  /** Update a target only where it currently holds exactly this value.
+   *  Set for names that live on deploy targets alone, so a same-named
+   *  value someone set for another service is never overwritten. */
+  previous?: string;
 }
 
 /** Push the given pairs to the Coolify application for `projectName`.
@@ -99,8 +115,24 @@ export async function pushToCoolify(
 
   let onTarget: PushPair[];
   try {
-    const present = new Set(await api.listAppEnvKeys(uuid));
-    onTarget = pairs.filter((p) => present.has(p.key));
+    if (pairs.some((p) => p.previous !== undefined)) {
+      // Comparing against `previous` needs the live values. They stay in
+      // this block: compared, never printed or returned. A value the
+      // token can't read (no read:sensitive) can't be confirmed, so it
+      // isn't overwritten.
+      const live = new Map<string, string | undefined>();
+      for (const row of await api.listAppEnvRows(uuid)) {
+        if (!row.isPreview) live.set(row.key, row.value);
+      }
+      onTarget = pairs.filter((p) => {
+        if (!live.has(p.key)) return false;
+        if (p.previous === undefined) return true;
+        return live.get(p.key)?.trim() === p.previous;
+      });
+    } else {
+      const present = new Set(await api.listAppEnvKeys(uuid));
+      onTarget = pairs.filter((p) => present.has(p.key));
+    }
     if (onTarget.length === 0) return { target: "coolify", pushed: [] };
     const envs: Record<string, string> = {};
     for (const { key, value } of onTarget) envs[key] = value;
@@ -118,6 +150,8 @@ export async function pushToCoolify(
 /** Update repo-level GitHub Actions secrets that already exist, via
  *  `gh secret set <name>` with the value on stdin (never in argv, where
  *  `ps` can read it). The `gh` CLI must be installed and authenticated.
+ *  Pairs marked `secret: false` also update an existing repo variable of
+ *  the same name (`gh variable set`, value on stdin as well).
  *
  *  When `repoSlug` is omitted, auto-detects from `git remote get-url
  *  origin`. Returns `skipReason: 'no-git-remote'` when no slug can be
@@ -134,9 +168,12 @@ export async function pushToGithub(
     return { target: "gh", pushed: [], skipReason: "no-git-remote" };
   }
 
-  const present = await listGithubSecretNames(slug);
   const pushed: string[] = [];
-  for (const { key, value } of pairs) {
+  // A secret's value can't be read back, so a pair that must match an
+  // old value never updates one.
+  const secretPairs = pairs.filter((p) => p.previous === undefined);
+  const present = secretPairs.length > 0 ? await listGithubSecretNames(slug) : new Set<string>();
+  for (const { key, value } of secretPairs) {
     if (!present.has(key)) continue;
     const res = await exec("gh", ["secret", "set", key, "--repo", slug], {
       silent: true,
@@ -149,7 +186,49 @@ export async function pushToGithub(
     }
     pushed.push(key);
   }
+
+  const variablePairs = pairs.filter((p) => p.secret === false);
+  if (variablePairs.length > 0) {
+    const variables = await listGithubVariables(slug);
+    for (const { key, value, previous } of variablePairs) {
+      if (!variables.has(key)) continue;
+      if (previous !== undefined && variables.get(key)?.trim() !== previous) continue;
+      const res = await exec("gh", ["variable", "set", key, "--repo", slug], {
+        silent: true,
+        input: value,
+      });
+      if (res.exitCode !== 0) {
+        throw new Error(
+          redactErrorMessage(`gh variable set ${key} exited ${res.exitCode}: ${res.stderr.trim()}`),
+        );
+      }
+      if (!pushed.includes(key)) pushed.push(key);
+    }
+  }
   return { target: "gh", pushed };
+}
+
+/** Repo-level Actions variables on `slug`, name → value. Variables are
+ *  not secret (the API returns their values); only names reach output. */
+export async function listGithubVariables(slug: string): Promise<Map<string, string>> {
+  const res = await exec("gh", ["variable", "list", "--repo", slug, "--json", "name,value"], {
+    silent: true,
+  });
+  if (res.exitCode !== 0) {
+    throw new Error(
+      redactErrorMessage(
+        `gh variable list --repo ${slug} exited ${res.exitCode}: ${res.stderr.trim()}`,
+      ),
+    );
+  }
+  try {
+    const rows = JSON.parse(res.stdout || "[]") as Array<{ name?: string; value?: string }>;
+    return new Map(
+      rows.filter((r) => r.name).map((r) => [r.name as string, r.value ?? ""] as const),
+    );
+  } catch {
+    throw new Error(`gh variable list --repo ${slug} returned output that is not JSON`);
+  }
 }
 
 /** Names of the repo-level Actions secrets on `slug`. Names only — the

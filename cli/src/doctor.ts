@@ -9,6 +9,7 @@ import chalk from "chalk";
 import {
   CLOUDFLARE_OPERATOR_GRANTS,
   CLOUDFLARE_PROVISIONER_GRANTS,
+  type GlitchtipConfig,
   PAUSABLE_PROVIDERS,
   type PausableProvider,
   getCloudflareDeployTokenRecords,
@@ -31,6 +32,7 @@ import {
 } from "./config.js";
 import { appSlugFromHtmlUrl, listUserInstallations } from "./deploy/github-app-access.js";
 import { readDeferredSteps } from "./provision/deferrals.js";
+import { SENTRY_DSN_KEY, dsnHostMismatch } from "./provision/glitchtip.js";
 import type {
   SesFeedbackAws,
   SesFeedbackListmonk,
@@ -598,6 +600,79 @@ async function checkGpu(platform: string): Promise<CheckResult> {
 async function checkGlitchtip(): Promise<CheckResult> {
   const cfg = await getGlitchtipConfig();
   if (!cfg) return { name: "GlitchTip", status: "skip" };
+  return checkGlitchtipWith(cfg);
+}
+
+/** The GlitchTip row for a known config: the token reaches the org, and
+ *  the DSNs the server hands out point at the host hatchkit uses.
+ *
+ *  GlitchTip renders every DSN from its own GLITCHTIP_DOMAIN. On
+ *  2026-10-19 the shared server ran with the compose default
+ *  `https://glitchtip.example.com`: the API answered fine, and every DSN
+ *  sent events to example.com. Only the DSN itself shows that. */
+export async function checkGlitchtipWith(cfg: GlitchtipConfig): Promise<CheckResult> {
+  const result = await checkGlitchtipOrg(cfg);
+  if (result.status !== "ok") return result;
+  const base = cfg.url.replace(/\/$/, "");
+  let sample: { project: string; dsn: string } | undefined;
+  try {
+    sample = await sampleGlitchtipDsn(cfg);
+  } catch (err) {
+    return {
+      ...result,
+      status: "warn",
+      detail: `${result.detail}; DSN host not checked: ${errorDetail(err)}`,
+      hint: [`Read a project's client keys at ${base}/ to compare the DSN host by hand.`],
+    };
+  }
+  if (!sample) {
+    return { ...result, detail: `${result.detail}; no project with a DSN to check the host on` };
+  }
+  const mismatch = dsnHostMismatch(sample.dsn, cfg.url);
+  if (!mismatch) {
+    return { ...result, detail: `${result.detail}; DSNs point at ${new URL(base).host}` };
+  }
+  return {
+    name: "GlitchTip",
+    status: "fail",
+    detail: `DSNs point at ${mismatch.dsnHost}, not ${mismatch.configuredHost} (project ${sample.project})`,
+    hint: [
+      `GlitchTip builds every DSN from its GLITCHTIP_DOMAIN setting, which is ${mismatch.dsnHost} on this server.`,
+      `Apps using those DSNs send their events to ${mismatch.dsnHost}, and none arrive here.`,
+      `Fix: set GLITCHTIP_DOMAIN=${base} in the GlitchTip service env (Coolify) and redeploy it.`,
+      "Then, from each project's checkout wired while it was wrong, rewrite its DSN in the env",
+      "files, Coolify and the repo variable: `hatchkit add <project> glitchtip --adopt`.",
+    ],
+  };
+}
+
+/** One DSN from the org: the first project (first page) that has a
+ *  client key. GLITCHTIP_DOMAIN is server-wide, so one is enough. */
+async function sampleGlitchtipDsn(
+  cfg: GlitchtipConfig,
+): Promise<{ project: string; dsn: string } | undefined> {
+  const base = cfg.url.replace(/\/$/, "");
+  const headers = { Authorization: `Bearer ${cfg.token}` };
+  const res = await fetch(`${base}/api/0/organizations/${cfg.organizationSlug}/projects/`, {
+    headers,
+  });
+  if (!res.ok) throw new Error(`list projects: HTTP ${res.status}`);
+  const projects = (await res.json()) as Array<{ slug?: string }>;
+  for (const project of (Array.isArray(projects) ? projects : []).slice(0, 5)) {
+    if (!project.slug) continue;
+    const keysRes = await fetch(
+      `${base}/api/0/projects/${cfg.organizationSlug}/${project.slug}/keys/`,
+      { headers },
+    );
+    if (!keysRes.ok) throw new Error(`list keys of ${project.slug}: HTTP ${keysRes.status}`);
+    const keys = (await keysRes.json()) as Array<{ dsn?: { public?: string } }>;
+    const dsn = (Array.isArray(keys) ? keys : []).find((k) => k.dsn?.public)?.dsn?.public;
+    if (dsn) return { project: project.slug, dsn };
+  }
+  return undefined;
+}
+
+async function checkGlitchtipOrg(cfg: GlitchtipConfig): Promise<CheckResult> {
   return check(
     "GlitchTip",
     async () => {
@@ -1302,6 +1377,86 @@ export async function checkCoolifyComposePullPolicy(source?: {
   return out;
 }
 
+/** Coolify apps whose SENTRY_DSN exists but is empty.
+ *
+ *  The starter's compose passes `SENTRY_DSN: ${SENTRY_DSN:-}`, so Coolify
+ *  creates the key with no value. The container then starts with
+ *  SENTRY_DSN="", and dotenvx never overrides a variable that is already
+ *  set, so the DSN in `.env.production` never reaches the server. Seen on
+ *  every project wired on 2026-10-19. A WARN: an app that is meant not
+ *  to report looks the same. Values are compared, never printed. */
+export async function checkCoolifyEmptySentryDsn(source?: {
+  api: Pick<CoolifyApi, "listApplications" | "listAppEnvRows">;
+}): Promise<CheckResult[]> {
+  let api = source?.api;
+  if (!api) {
+    const cfg = await getCoolifyConfig();
+    if (!cfg) return [];
+    api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+  }
+  const name = `Coolify ${SENTRY_DSN_KEY} values`;
+  let apps: Array<{ uuid: string; name: string }>;
+  try {
+    apps = await api.listApplications();
+  } catch (err) {
+    // The Coolify row above already reports an unreachable instance.
+    return [
+      {
+        name,
+        status: "skip",
+        detail: `couldn't list applications: ${(err as Error).message.split("\n")[0]}`,
+      },
+    ];
+  }
+  const empty: string[] = [];
+  const unread: string[] = [];
+  let holding = 0;
+  // A few at a time: one GET per app.
+  for (let i = 0; i < apps.length; i += 6) {
+    await Promise.all(
+      apps.slice(i, i + 6).map(async (app) => {
+        try {
+          const row = (await api.listAppEnvRows(app.uuid)).find(
+            (r) => !r.isPreview && r.key === SENTRY_DSN_KEY,
+          );
+          if (!row) return;
+          holding++;
+          if (row.value === undefined) unread.push(app.name);
+          else if (row.value.trim() === "") empty.push(app.name);
+        } catch {
+          unread.push(app.name);
+        }
+      }),
+    );
+  }
+  if (holding === 0 && unread.length === 0) return [];
+  const unreadNote =
+    unread.length > 0 ? ` (${unread.length} not readable: ${unread.sort().join(", ")})` : "";
+  if (empty.length === 0) {
+    return [
+      {
+        name,
+        status: "ok",
+        detail: `${holding} app(s) set ${SENTRY_DSN_KEY}, none empty${unreadNote}`,
+      },
+    ];
+  }
+  return [
+    {
+      name,
+      status: "warn",
+      detail: `${SENTRY_DSN_KEY} is set but empty on ${empty.sort().join(", ")}${unreadNote}`,
+      hint: [
+        `An empty ${SENTRY_DSN_KEY} hides the DSN in the app's .env.production: dotenvx never overrides`,
+        "a variable that is already set, even to an empty string, so the server reports nothing.",
+        "Fix, from the project checkout: `hatchkit add <project> glitchtip --adopt` writes the DSN",
+        "into Coolify and the NEXT_PUBLIC_SENTRY_DSN repo variable, then redeploy the app.",
+        "An app that is meant not to report can keep the empty value.",
+      ],
+    },
+  ];
+}
+
 /** True when a manifest's deploymentMode means "there is a Coolify app
  *  behind this domain". Absent = legacy manifest = coolify. */
 function isCoolifyManagedMode(mode: string | undefined): boolean {
@@ -1949,6 +2104,7 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
       ...(await checkCoolifyGithubApp()),
       ...(await checkCoolifyGhcrSsh()),
       ...(await checkCoolifyComposePullPolicy()),
+      ...(await checkCoolifyEmptySentryDsn()),
     ])),
   );
   results.push(...(await unlessPaused("hetzner", checkHetzner)));

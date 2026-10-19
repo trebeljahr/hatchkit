@@ -359,6 +359,41 @@ export async function pushNativeOriginsForProject(args: {
     return null;
   }
   const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
+  const apps = await findServerAppsForProject({ api, projectDir: args.projectDir, manifest });
+  if (apps.length === 0) {
+    console.log(
+      chalk.yellow(
+        `\n  No Coolify server app found for "${manifest.name}" — ${TRUSTED_ORIGINS_KEY} not checked.`,
+      ),
+    );
+    console.log(later);
+    return null;
+  }
+  return pushNativeOriginsToServerApps({
+    api,
+    apps,
+    features: manifest.features,
+    surfaces: manifest.surfaces,
+    dryRun: args.dryRun,
+    yes: args.yes,
+  });
+}
+
+/** The Coolify apps that run a project's server, located the way `sync`
+ *  names them: the routing plan's server role, then hatchkit's name or
+ *  an accepted alias. Empty for a project that isn't on Coolify, has no
+ *  server, or whose apps don't exist yet. Shared by every writer of a
+ *  server-only env var (TRUSTED_ORIGINS here, SENTRY_DSN in
+ *  provision/glitchtip-delivery.ts), so they agree on "which app". */
+export async function findServerAppsForProject(args: {
+  api: Pick<CoolifyApi, "findApplicationByName">;
+  projectDir: string;
+  manifest: ProjectManifest;
+}): Promise<Array<{ uuid: string; name: string; role: RoutedApp["role"] }>> {
+  const { api, manifest } = args;
+  if ((manifest.deploymentMode ?? "coolify") !== "coolify" || manifest.surfaces === "static") {
+    return [];
+  }
   const compose = readComposeFile(args.projectDir);
   const topology = inferTopology({
     topology: manifest.topology,
@@ -383,23 +418,7 @@ export async function pushNativeOriginsForProject(args: {
       }
     }
   }
-  if (apps.length === 0) {
-    console.log(
-      chalk.yellow(
-        `\n  No Coolify server app found for "${manifest.name}" — ${TRUSTED_ORIGINS_KEY} not checked.`,
-      ),
-    );
-    console.log(later);
-    return null;
-  }
-  return pushNativeOriginsToServerApps({
-    api,
-    apps,
-    features: manifest.features,
-    surfaces: manifest.surfaces,
-    dryRun: args.dryRun,
-    yes: args.yes,
-  });
+  return apps;
 }
 
 /** The lines telling the user their running server still has the old

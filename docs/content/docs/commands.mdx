@@ -344,7 +344,7 @@ hatchkit add raptor-runner search-console        # verify domain + add Search Co
 
 | Name | Creates | Returns |
 |---|---|---|
-| `glitchtip` | GlitchTip project | `GLITCHTIP_DSN` |
+| `glitchtip` | GlitchTip project | `SENTRY_DSN` + `GLITCHTIP_DSN` (server), `NEXT_PUBLIC_SENTRY_DSN` + `PUBLIC_GLITCHTIP_DSN` (client); also Coolify `SENTRY_DSN` and the `NEXT_PUBLIC_SENTRY_DSN` repo variable |
 | `plausible` | Plausible site | `NEXT_PUBLIC_PLAUSIBLE_DOMAIN`, `NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL` |
 | `listmonk-ses` | SES sending identity, Listmonk lists and templates | `LISTMONK_*`, `SES_FROM_EMAIL` |
 | `s3` | Project object-storage buckets and credentials | `R2_*` or provider-specific S3 keys |
@@ -356,6 +356,21 @@ hatchkit add raptor-runner search-console        # verify domain + add Search Co
 `stripe` and `signing` are standalone targets — run them by name; they are not part of `all`.
 
 Values are written into the project, never to stdout: production values encrypted into `.env.production`, development values into the gitignored `.env.development.local`. The committed `.env.development` keeps only local defaults; `add` moves any provisioned credential it finds there into `.env.development.local` and warns. A 0600 copy of every value is also cached under `<config-dir>/provisioned/<project>.*.env`.
+
+A new GlitchTip project's platform is `javascript-node` when a server reports to it (backend, fullstack, the `-server` project of a split one). A client-only project (static, or split `-client`) gets `javascript-nextjs` when the client's `package.json` depends on `next`, else `javascript-browser`.
+
+### GlitchTip DSN delivery
+
+The env files alone do not reach a deployed app, so `add … glitchtip` also writes the DSN to the two places production reads it:
+
+- **`SENTRY_DSN` on the server's Coolify app.** The starter's compose file passes `SENTRY_DSN: ${SENTRY_DSN:-}`, so Coolify creates the key with an empty value. dotenvx never overrides a variable that is already set, even to an empty string, so an empty Coolify value hides the DSN in `.env.production`. The server reads it at boot: redeploy the app afterwards.
+- **The `NEXT_PUBLIC_SENTRY_DSN` repo variable** (`gh variable set`). The client build inlines it from `vars.NEXT_PUBLIC_SENTRY_DSN`; the next client build picks it up. `add` warns when no workflow in the checkout reads that variable.
+
+Each write is read back. A missing key, an empty value, a `CHANGE_ME_` placeholder, a DSN on the same GlitchTip host, or the same key under another host (rendered while `GLITCHTIP_DOMAIN` was wrong) is replaced. A DSN for another host (for example sentry.io) is kept and reported. A Coolify token without `read:sensitive` only creates a missing key. With `--no-write` nothing changes: `add` names the Coolify app it would write and prints the exact `gh variable set` command.
+
+`add` refuses a DSN whose host is not the configured GlitchTip URL. GlitchTip builds every DSN from its `GLITCHTIP_DOMAIN` setting, and a wrong value (the compose default is `https://glitchtip.example.com`) sends every event elsewhere. Fix the setting, redeploy GlitchTip, and re-run with `--adopt`.
+
+For a project that already has GlitchTip, `hatchkit add <project> glitchtip --adopt` re-reads the existing project's DSN and writes it under every name and to both targets. This is the repair for a project wired before `add` wrote `SENTRY_DSN`.
 
 ---
 
@@ -666,6 +681,10 @@ and for repairing a project deployed before 0.2.19.
 Runs read-only checks against configured providers, including Coolify, Hetzner, Cloudflare, SES, and Listmonk. Reports `ok` / `fail` / `warn` / `deferred` / `not configured` and exits non-zero if any check fails. A warning prints its fix without failing the run.
 
 With Coolify configured, `doctor` also reads the compose file of every `dockercompose` app on the instance. It warns about each service that runs a `ghcr.io/...` image on a mutable tag (`:latest`, `:main`, no tag) without `pull_policy: always`. Docker starts the image it cached for that tag, so a deploy can finish green, report `running:healthy`, and still serve the previous build. The hint names the app, the repo and the compose file. For a hatchkit project, `hatchkit update` or `hatchkit regen-infra` adds the line.
+
+It also warns about Coolify apps whose `SENTRY_DSN` is set but empty. The empty value hides the DSN in the app's `.env.production` (see [GlitchTip DSN delivery](#glitchtip-dsn-delivery)); `hatchkit add <project> glitchtip --adopt` fills it. Values are compared, never printed.
+
+The GlitchTip row reads one project's DSN and fails when its host is not the configured GlitchTip URL. That means the server's `GLITCHTIP_DOMAIN` is wrong and every DSN it hands out sends events elsewhere.
 
 Run from inside a project whose Dockerfile's final stage is `FROM nginx`, and `doctor` checks that the image gets a config under `/etc/nginx/`. nginx's stock config maps a URL straight onto a file, so a reload on a client-side route or on a page URL without `.html` returns a 404. Projects adopted before hatchkit wrote `nginx.conf` have this Dockerfile. The warning prints the config for your build and the one `COPY` line to add. `hatchkit adopt --resume --regenerate-pipeline` also fixes it, but it re-renders the Dockerfile, compose file and deploy workflow too.
 

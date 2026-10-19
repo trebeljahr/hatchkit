@@ -178,7 +178,7 @@ export async function runSecretsRotate(
     if (ctx.dryRun) {
       auditEntries.push({
         provider: adapter.name,
-        envKeysChanged: specs.map((s) => s.name),
+        envKeysChanged: specs.filter((s) => !s.deployOnly).map((s) => s.name),
         deployTargetsUpdated: [...ctx.pushTargets],
         verificationResult: "skipped",
         oldRevoked: adapter.revocable === false ? "not-applicable" : "held",
@@ -271,9 +271,19 @@ async function rotateOneAdapter(
 
   const prodPairs: EnvPair[] = [];
   const devPairs: EnvPair[] = [];
+  // Names that live on deploy targets only. Each carries the old value,
+  // so push touches a target only where that value is still in place.
+  const deployOnlyPairs: PushPair[] = [];
   for (const spec of specs) {
     const value = newCred.values[spec.name];
     if (value === undefined) continue;
+    if (spec.deployOnly) {
+      const previous = oldCred.values[spec.name];
+      if (previous !== undefined && previous !== value) {
+        deployOnlyPairs.push({ key: spec.name, value, secret: spec.secret, previous });
+      }
+      continue;
+    }
     if (spec.scope === "production" || spec.scope === "both") {
       prodPairs.push({ key: spec.name, value });
     }
@@ -306,7 +316,15 @@ async function rotateOneAdapter(
 
   // Push only production-scope values to deploy targets. Coolify
   // and GH Actions are production-only surfaces in hatchkit's model.
-  const pushPairs: PushPair[] = prodPairs.map((p) => ({ key: p.key, value: p.value }));
+  const secretByName = new Map(specs.map((s) => [s.name, s.secret]));
+  const pushPairs: PushPair[] = [
+    ...prodPairs.map((p) => ({
+      key: p.key,
+      value: p.value,
+      secret: secretByName.get(p.key) ?? true,
+    })),
+    ...deployOnlyPairs,
+  ];
   let pushResults: PushResult[] = [];
   // When push() throws (Coolify 5xx, gh auth expired, network), the
   // env file is already on disk (the in-disk new value is good) but

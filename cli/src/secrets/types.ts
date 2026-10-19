@@ -64,8 +64,16 @@ export interface EnvKeySpec {
   scope: EnvScope;
   /** Whether the value is a secret. Non-secret values (e.g. an
    *  `R2_ACCESS_KEY_ID` paired with a new secret) may be logged
-   *  in human output; secret values never are. */
+   *  in human output; secret values never are. Only a non-secret value
+   *  is pushed to a GitHub Actions VARIABLE of the same name (a client
+   *  build value such as `NEXT_PUBLIC_SENTRY_DSN`); a secret one only
+   *  ever updates an Actions secret. */
   secret: boolean;
+  /** The name is not in the env file: the orchestrator writes nothing to
+   *  disk for it and pushes it only to deploy targets that hold exactly
+   *  the old value (`OldCred.values[name]`). A spec without an old value
+   *  is not pushed anywhere. Not listed in `envKeysChanged`. */
+  deployOnly?: boolean;
 }
 
 /** Context passed to every adapter method. Constructed once per

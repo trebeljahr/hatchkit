@@ -1,0 +1,493 @@
+/*
+ * GlitchTip DSN delivery — getting the DSN `hatchkit add glitchtip`
+ * provisioned to the two places a deployed app actually reads it.
+ *
+ * ---------------------------------------------------------------------
+ * The failure this closes
+ * ---------------------------------------------------------------------
+ *
+ * On 2026-10-19 GlitchTip was wired into six projects and every one had
+ * to bypass `hatchkit add glitchtip`:
+ *
+ *   · The server reads `SENTRY_DSN` at boot. The starter's compose file
+ *     passes `SENTRY_DSN: ${SENTRY_DSN:-}`, so Coolify creates the key
+ *     with an EMPTY value. dotenvx never overrides a variable that is
+ *     already set, even to "", so the encrypted `.env.production` value
+ *     never reached the process. The Coolify value has to be the DSN.
+ *   · The client bundle inlines `NEXT_PUBLIC_SENTRY_DSN` at build time
+ *     from the repo VARIABLE `vars.NEXT_PUBLIC_SENTRY_DSN`
+ *     (scaffold/client-build-args.ts). An unset variable builds as "",
+ *     which again wins over any env file. The repo variable has to hold
+ *     the DSN.
+ *
+ * ---------------------------------------------------------------------
+ * Rules every write here follows
+ * ---------------------------------------------------------------------
+ *
+ *   1. Read before writing. A value that already matches is left alone.
+ *   2. Replace only what is ours or empty: a missing key, "", a
+ *      `CHANGE_ME_` placeholder, a DSN on this GlitchTip host (a
+ *      superseded key), or the same public key under another host (a DSN
+ *      rendered while GLITCHTIP_DOMAIN was wrong). Any other DSN
+ *      (sentry.io, say) is kept and reported; overwriting it could
+ *      silently move a project's errors to a different tracker.
+ *   3. A Coolify token that can't read values (no `read:sensitive`) only
+ *      writes a key that doesn't exist yet; an existing one is reported.
+ *   4. Confirm the write by reading it back, as deploy/trusted-origins.ts
+ *      does. A missing key after the bulk PATCH is created explicitly.
+ *   5. `--no-write` (`write: false`) changes nothing and prints the exact
+ *      `gh variable set` command instead.
+ *   6. Server apps only, located by deploy/trusted-origins.ts's
+ *      `findServerAppsForProject`. The client's NEXT_PUBLIC_* value is
+ *      baked in at build time, so a Coolify value on the client app
+ *      would change nothing.
+ *
+ * The DSN's public key ships in every client bundle, so it is not a
+ * secret; it is still printed only inside the `gh variable set` command
+ * the user is asked to run (under `--no-write`, or when hatchkit could
+ * not run it itself).
+ */
+
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import chalk from "chalk";
+import { getCoolifyConfig, getGlitchtipConfig } from "../config.js";
+import { findServerAppsForProject } from "../deploy/trusted-origins.js";
+import { type ProjectManifest, readManifest } from "../scaffold/manifest.js";
+import { detectRepoSlug } from "../secrets/push.js";
+import { CoolifyApi } from "../utils/coolify-api.js";
+import { exec } from "../utils/exec.js";
+import { CLIENT_DSN_VAR, SENTRY_DSN_KEY, dsnHostMismatch } from "./glitchtip.js";
+
+/** What a target holds right now. `hidden` = the key exists but the
+ *  credential can't read its value. */
+export type LiveDsn = { kind: "absent" } | { kind: "hidden" } | { kind: "value"; value: string };
+
+export type DsnWriteDecision = "create" | "replace" | "in-sync" | "keep" | "unreadable";
+
+/** Rules 1–3 of the module header, for one target. */
+export function decideDsnWrite(
+  live: LiveDsn,
+  dsn: string,
+  glitchtipUrl?: string,
+): DsnWriteDecision {
+  if (live.kind === "absent") return "create";
+  if (live.kind === "hidden") return "unreadable";
+  const value = live.value.trim();
+  if (value === dsn) return "in-sync";
+  if (value === "" || value.startsWith("CHANGE_ME")) return "replace";
+  // The same public key under another host is this very key, rendered
+  // while the server's GLITCHTIP_DOMAIN was wrong.
+  const key = dsnKey(value);
+  if (key && key === dsnKey(dsn)) return "replace";
+  // A DSN on the GlitchTip host hatchkit talks to is a superseded key of
+  // ours. Without a configured URL to compare against, nothing is ours.
+  if (glitchtipUrl && key && !dsnHostMismatch(value, glitchtipUrl)) return "replace";
+  return "keep";
+}
+
+/** The DSN's public key, or undefined for anything that isn't a DSN. */
+function dsnKey(value: string): string | undefined {
+  try {
+    return new URL(value).username || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function hostOf(value: string): string {
+  try {
+    return new URL(value).host;
+  } catch {
+    return "another host";
+  }
+}
+
+export type DsnDeliveryStatus =
+  /** The key was absent and now holds the DSN (read back). */
+  | "created"
+  /** An empty, placeholder or superseded value was replaced (read back). */
+  | "updated"
+  | "in-sync"
+  /** Holds a DSN for another host — left as is. */
+  | "kept"
+  /** Coolify token can't read the existing value — left as is. */
+  | "unreadable"
+  /** `write: false` — what a real run would do. */
+  | "would-write"
+  /** Nowhere to deliver to (no Coolify, no app, no repo). */
+  | "skipped"
+  | "failed";
+
+export interface DsnDeliveryOutcome {
+  target: "coolify" | "gh-variable";
+  /** Coolify app name, or `owner/repo`. */
+  where: string;
+  key: string;
+  status: DsnDeliveryStatus;
+  detail?: string;
+  /** The exact command that delivers the value (gh only). */
+  command?: string;
+}
+
+type DeliveryCoolify = Pick<
+  CoolifyApi,
+  "findApplicationByName" | "listAppEnvRows" | "setAppEnv" | "createAppEnv"
+>;
+
+export interface DeliverGlitchtipDsnArgs {
+  /** Project root holding `.hatchkit.json`. */
+  projectDir?: string;
+  /** DSN the server reads as SENTRY_DSN. */
+  server?: string;
+  /** DSN the client build reads as NEXT_PUBLIC_SENTRY_DSN. */
+  client?: string;
+  /** False under `--no-write`: probe and print, change nothing. */
+  write: boolean;
+  /** Test seams. Default: the configured Coolify / GlitchTip, the
+   *  project's `origin` remote, console.log. */
+  api?: DeliveryCoolify | null;
+  glitchtipUrl?: string;
+  repoSlug?: string | null;
+  log?: (line: string) => void;
+}
+
+/** Deliver the DSNs to Coolify (`SENTRY_DSN` on each server app) and the
+ *  repo variable (`NEXT_PUBLIC_SENTRY_DSN`). Never throws: every target
+ *  gets an outcome, and a failed one says how to finish it by hand. */
+export async function deliverGlitchtipDsn(
+  args: DeliverGlitchtipDsnArgs,
+): Promise<DsnDeliveryOutcome[]> {
+  const log = args.log ?? ((line: string) => console.log(line));
+  const manifest = args.projectDir ? readManifest(args.projectDir) : null;
+  const glitchtipUrl = args.glitchtipUrl ?? (await getGlitchtipConfig().catch(() => null))?.url;
+  const outcomes: DsnDeliveryOutcome[] = [];
+  if (!args.server && !args.client) return outcomes;
+
+  log(chalk.bold("\n  ── GlitchTip DSN delivery ────────────────────────────────\n"));
+
+  if (args.server) {
+    outcomes.push(
+      ...(await deliverServer({ ...args, server: args.server, manifest, glitchtipUrl, log })),
+    );
+  }
+  if (args.client && manifest?.surfaces !== "backend") {
+    outcomes.push(
+      await deliverClient({ ...args, client: args.client, manifest, glitchtipUrl, log }),
+    );
+  }
+
+  const restart = outcomes.filter(
+    (o) => o.target === "coolify" && (o.status === "created" || o.status === "updated"),
+  );
+  if (restart.length > 0) {
+    log(
+      chalk.yellow(
+        `  The server reads ${SENTRY_DSN_KEY} once, at boot: redeploy ${restart.map((o) => `"${o.where}"`).join(", ")} to start reporting.`,
+      ),
+    );
+  }
+  if (
+    outcomes.some(
+      (o) => o.target === "gh-variable" && (o.status === "created" || o.status === "updated"),
+    )
+  ) {
+    log(
+      chalk.yellow(
+        `  The client bundle inlines ${CLIENT_DSN_VAR} at build time: the next client build picks it up.`,
+      ),
+    );
+  }
+  return outcomes;
+}
+
+// ── Coolify ──────────────────────────────────────────────────────────
+
+async function deliverServer(
+  args: DeliverGlitchtipDsnArgs & {
+    server: string;
+    manifest: ProjectManifest | null;
+    glitchtipUrl?: string;
+    log: (line: string) => void;
+  },
+): Promise<DsnDeliveryOutcome[]> {
+  const { manifest, log } = args;
+  const skip = (where: string, detail: string): DsnDeliveryOutcome[] => {
+    log(chalk.dim(`  · Coolify ${SENTRY_DSN_KEY}: ${detail}`));
+    return [{ target: "coolify", where, key: SENTRY_DSN_KEY, status: "skipped", detail }];
+  };
+  if (!manifest || !args.projectDir) {
+    return skip(
+      "-",
+      `no .hatchkit.json to find the server app from. If it runs on Coolify, set ${SENTRY_DSN_KEY} there to the DSN in .env.production.`,
+    );
+  }
+  if ((manifest.deploymentMode ?? "coolify") !== "coolify" || manifest.surfaces === "static") {
+    return [];
+  }
+  let api = args.api;
+  if (api === undefined) {
+    const cfg = await getCoolifyConfig();
+    api = cfg ? new CoolifyApi({ url: cfg.url, token: cfg.token }) : null;
+  }
+  if (!api) {
+    return skip(
+      manifest.name,
+      `Coolify isn't configured. Set ${SENTRY_DSN_KEY} on the server app to the DSN in .env.production.`,
+    );
+  }
+  let apps: Array<{ uuid: string; name: string }>;
+  try {
+    apps = await findServerAppsForProject({ api, projectDir: args.projectDir, manifest });
+  } catch (err) {
+    return [
+      failed(
+        log,
+        manifest.name,
+        `couldn't list Coolify apps: ${firstLine(err)}. Set ${SENTRY_DSN_KEY} on the server app by hand.`,
+      ),
+    ];
+  }
+  if (apps.length === 0) {
+    return skip(
+      manifest.name,
+      `no Coolify server app for "${manifest.name}" yet. Once it exists, re-run \`hatchkit add ${manifest.name} glitchtip --adopt\` to set ${SENTRY_DSN_KEY} on it.`,
+    );
+  }
+  const out: DsnDeliveryOutcome[] = [];
+  for (const app of apps) {
+    out.push(await deliverToCoolifyApp({ ...args, api, app }));
+  }
+  return out;
+}
+
+async function readCoolifyDsn(api: DeliveryCoolify, uuid: string): Promise<LiveDsn> {
+  const rows = (await api.listAppEnvRows(uuid)).filter(
+    (r) => !r.isPreview && r.key === SENTRY_DSN_KEY,
+  );
+  if (rows.length === 0) return { kind: "absent" };
+  const value = rows[0].value;
+  return value === undefined ? { kind: "hidden" } : { kind: "value", value };
+}
+
+async function deliverToCoolifyApp(args: {
+  api: DeliveryCoolify;
+  app: { uuid: string; name: string };
+  server: string;
+  write: boolean;
+  glitchtipUrl?: string;
+  log: (line: string) => void;
+}): Promise<DsnDeliveryOutcome> {
+  const { api, app, server: dsn, log } = args;
+  const base = { target: "coolify" as const, where: app.name, key: SENTRY_DSN_KEY };
+  let live: LiveDsn;
+  try {
+    live = await readCoolifyDsn(api, app.uuid);
+  } catch (err) {
+    return failed(log, app.name, `couldn't read env on "${app.name}": ${firstLine(err)}`);
+  }
+  const decision = decideDsnWrite(live, dsn, args.glitchtipUrl);
+  if (decision === "in-sync") {
+    log(chalk.green(`  ✓ Coolify "${app.name}": ${SENTRY_DSN_KEY} already holds this DSN`));
+    return { ...base, status: "in-sync" };
+  }
+  if (decision === "keep") {
+    const detail = `${SENTRY_DSN_KEY} holds a DSN for ${live.kind === "value" ? hostOf(live.value) : "another host"}; left as is. It overrides .env.production, so this app keeps reporting there. Replace it in Coolify if it is stale.`;
+    log(chalk.yellow(`  ! Coolify "${app.name}": ${detail}`));
+    return { ...base, status: "kept", detail };
+  }
+  if (decision === "unreadable") {
+    const detail = `${SENTRY_DSN_KEY} exists, but this Coolify token can't read values (it lacks read:sensitive), so hatchkit won't overwrite it blind. An empty value hides the DSN in .env.production: set it in Coolify → "${app.name}" → Environment Variables.`;
+    log(chalk.yellow(`  ! Coolify "${app.name}": ${detail}`));
+    return { ...base, status: "unreadable", detail };
+  }
+  const verb = decision === "create" ? "create" : `replace the ${describeLive(live)}`;
+  if (!args.write) {
+    const detail = `would ${verb} ${SENTRY_DSN_KEY} (the DSN is in the provisioned cache)`;
+    log(chalk.dim(`  · Coolify "${app.name}": ${detail}`));
+    return { ...base, status: "would-write", detail };
+  }
+  try {
+    await api.setAppEnv(app.uuid, { [SENTRY_DSN_KEY]: dsn });
+    let check = await readCoolifyDsn(api, app.uuid);
+    if (check.kind === "absent") {
+      await api.createAppEnv(app.uuid, SENTRY_DSN_KEY, dsn);
+      check = await readCoolifyDsn(api, app.uuid);
+    }
+    if (check.kind === "absent") {
+      throw new Error(`Coolify accepted the write but ${SENTRY_DSN_KEY} is absent on read-back`);
+    }
+    if (check.kind === "value" && check.value.trim() !== dsn) {
+      throw new Error("read-back doesn't match the DSN that was written");
+    }
+  } catch (err) {
+    return failed(
+      log,
+      app.name,
+      `${SENTRY_DSN_KEY} write to "${app.name}" not confirmed: ${firstLine(err)}`,
+    );
+  }
+  const status = decision === "create" ? "created" : "updated";
+  log(
+    chalk.green(
+      `  ✓ Coolify "${app.name}": ${SENTRY_DSN_KEY} ${status === "created" ? "set" : `replaced the ${describeLive(live)}`} (read back)`,
+    ),
+  );
+  return { ...base, status };
+}
+
+function describeLive(live: LiveDsn): string {
+  if (live.kind !== "value") return "value";
+  const v = live.value.trim();
+  if (v === "") return "empty value";
+  if (v.startsWith("CHANGE_ME")) return "placeholder";
+  return "superseded DSN";
+}
+
+// ── GitHub repo variable ─────────────────────────────────────────────
+
+/** Quote for a command the reader pastes into a shell. */
+function shellQuote(value: string): string {
+  return /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+export function ghVariableSetCommand(repo: string | undefined, dsn: string): string {
+  return `gh variable set ${CLIENT_DSN_VAR} --repo ${repo ?? "<owner/name>"} --body ${shellQuote(dsn)}`;
+}
+
+async function readRepoVariable(repo: string): Promise<LiveDsn> {
+  const res = await exec("gh", ["api", `repos/${repo}/actions/variables/${CLIENT_DSN_VAR}`], {
+    silent: true,
+  });
+  if (res.exitCode !== 0) {
+    if (/404|Not Found/.test(res.stderr + res.stdout)) return { kind: "absent" };
+    throw new Error((res.stderr || res.stdout).trim() || `gh api exited ${res.exitCode}`);
+  }
+  const value = (JSON.parse(res.stdout) as { value?: string }).value ?? "";
+  return { kind: "value", value };
+}
+
+async function deliverClient(
+  args: DeliverGlitchtipDsnArgs & {
+    client: string;
+    manifest: ProjectManifest | null;
+    glitchtipUrl?: string;
+    log: (line: string) => void;
+  },
+): Promise<DsnDeliveryOutcome> {
+  const { client: dsn, log } = args;
+  const repo =
+    args.repoSlug === undefined
+      ? await detectRepoSlug(args.projectDir ?? process.cwd())
+      : (args.repoSlug ?? undefined);
+  const command = ghVariableSetCommand(repo, dsn);
+  const base = {
+    target: "gh-variable" as const,
+    where: repo ?? "-",
+    key: CLIENT_DSN_VAR,
+    command,
+  };
+  if (!repo) {
+    const detail = `no GitHub origin remote to set ${CLIENT_DSN_VAR} on. Run, with the repo filled in:`;
+    log(chalk.yellow(`  ! Repo variable: ${detail}`));
+    log(`      ${command}`);
+    return { ...base, status: "skipped", detail };
+  }
+  warnIfNoWorkflowReads(args.projectDir, log);
+
+  let live: LiveDsn | undefined;
+  try {
+    live = await readRepoVariable(repo);
+  } catch (err) {
+    if (args.write) {
+      return failed(
+        log,
+        repo,
+        `couldn't read ${CLIENT_DSN_VAR} on ${repo}: ${firstLine(err)}. Run: ${command}`,
+        "gh-variable",
+        CLIENT_DSN_VAR,
+        command,
+      );
+    }
+  }
+  const decision = live ? decideDsnWrite(live, dsn, args.glitchtipUrl) : "create";
+  if (decision === "in-sync") {
+    log(chalk.green(`  ✓ ${repo}: ${CLIENT_DSN_VAR} already holds this DSN`));
+    return { ...base, status: "in-sync" };
+  }
+  if (decision === "keep") {
+    const detail = `${CLIENT_DSN_VAR} holds a DSN for ${live?.kind === "value" ? hostOf(live.value) : "another host"}; left as is. To switch the client to this project, run: ${command}`;
+    log(chalk.yellow(`  ! ${repo}: ${detail}`));
+    return { ...base, status: "kept", detail };
+  }
+  if (!args.write) {
+    log(chalk.dim(`  · ${repo}: not written (--no-write). To set ${CLIENT_DSN_VAR}, run:`));
+    log(`      ${command}`);
+    return { ...base, status: "would-write" };
+  }
+  try {
+    const res = await exec(
+      "gh",
+      ["variable", "set", CLIENT_DSN_VAR, "--repo", repo, "--body", dsn],
+      { silent: true },
+    );
+    if (res.exitCode !== 0) {
+      throw new Error((res.stderr || res.stdout).trim() || `gh exited ${res.exitCode}`);
+    }
+    const check = await readRepoVariable(repo);
+    if (check.kind !== "value" || check.value.trim() !== dsn) {
+      throw new Error("read-back doesn't match the DSN that was written");
+    }
+  } catch (err) {
+    return failed(
+      log,
+      repo,
+      `${CLIENT_DSN_VAR} on ${repo} not confirmed: ${firstLine(err)}. Run: ${command}`,
+      "gh-variable",
+      CLIENT_DSN_VAR,
+      command,
+    );
+  }
+  const status = live?.kind === "absent" ? "created" : "updated";
+  log(
+    chalk.green(
+      `  ✓ ${repo}: ${CLIENT_DSN_VAR} ${status === "created" ? "set" : `replaced the ${describeLive(live ?? { kind: "absent" })}`} (read back)`,
+    ),
+  );
+  return { ...base, status };
+}
+
+/** Like mac-runner's check: the variable does nothing unless a workflow
+ *  passes it into the client build. Silent when there's no checkout. */
+function warnIfNoWorkflowReads(projectDir: string | undefined, log: (line: string) => void): void {
+  if (!projectDir) return;
+  const dir = join(projectDir, ".github", "workflows");
+  if (!existsSync(dir)) return;
+  const reads = readdirSync(dir)
+    .filter((f) => /\.ya?ml$/.test(f))
+    .some((f) => readFileSync(join(dir, f), "utf-8").includes(`vars.${CLIENT_DSN_VAR}`));
+  if (reads) return;
+  log(
+    chalk.yellow(
+      `  ! No workflow in ${dir} reads vars.${CLIENT_DSN_VAR}, so the client build won't see it. Pass it as a build arg: ${CLIENT_DSN_VAR}=\${{ vars.${CLIENT_DSN_VAR} }}.`,
+    ),
+  );
+}
+
+// ── shared ───────────────────────────────────────────────────────────
+
+function failed(
+  log: (line: string) => void,
+  where: string,
+  detail: string,
+  target: DsnDeliveryOutcome["target"] = "coolify",
+  key: string = SENTRY_DSN_KEY,
+  command?: string,
+): DsnDeliveryOutcome {
+  log(chalk.red(`  ✗ ${detail}`));
+  return { target, where, key, status: "failed", detail, ...(command ? { command } : {}) };
+}
+
+function firstLine(err: unknown): string {
+  return (err instanceof Error ? err.message : String(err)).split("\n")[0];
+}
