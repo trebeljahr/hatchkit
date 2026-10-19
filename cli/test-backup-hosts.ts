@@ -183,22 +183,25 @@ async function cli(...args: string[]) {
   return JSON.parse(printed);
 }
 
-// test-support/setup.mjs refuses a real `tailscale ssh` or ssh, also from
-// an env without PATH (libuv then searches /usr/bin:/bin), and a caller
-// that swallows the error (status, sources) still fails the run. Were the
-// guard open, these would only print usage and a version.
+// test-support/setup.mjs refuses a real `tailscale ssh`, ssh, and even a
+// `tailscale status` that only reads this machine's daemon, also from an
+// env without PATH (libuv then searches /usr/bin:/bin) and through
+// promisify(execFile), and a caller that swallows the error (status,
+// sources) still fails the run. Were the guard open, these would only
+// print usage, a version and the local status.
 const realHost = spawnSync(
   process.execPath,
   [
     "-e",
     `const { spawnSync } = require("node:child_process");
-for (const [bin, args, options] of [["tailscale", ["ssh", "--help"]], ["ssh", ["-V"]], ["ssh", ["-V"], { env: {} }]])
-  try { spawnSync(bin, args, options); } catch {}`,
+for (const [bin, args, options] of [["tailscale", ["ssh", "--help"]], ["tailscale", ["status", "--json"]], ["ssh", ["-V"]], ["ssh", ["-V"], { env: {} }]])
+  try { spawnSync(bin, args, options); } catch {}
+try { require("node:util").promisify(require("node:child_process").execFile)("tailscale", ["status", "--json"]).catch(() => {}); } catch {}`,
   ],
   { encoding: "utf8" },
 );
 assert.equal(realHost.status, 1, realHost.stderr);
-assert.equal(realHost.stderr.match(/Tests cannot reach a real host/g)?.length, 3, realHost.stderr);
+assert.equal(realHost.stderr.match(/Tests cannot run a real /g)?.length, 5, realHost.stderr);
 
 try {
   // --- A config from before multi-host support reads as one host ---------

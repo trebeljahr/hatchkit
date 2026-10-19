@@ -3,6 +3,7 @@ import { constants, accessSync, realpathSync, statSync } from "node:fs";
 import { registerHooks, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, delimiter, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 
 if (!process.env.HATCHKIT_TEST_KEYCHAIN_DIR) {
   throw new Error("Run CLI tests with node scripts/test.mjs [test-file.ts].");
@@ -22,14 +23,14 @@ registerHooks({
 });
 globalThis[Symbol.for("hatchkit.test-keychain-loaded")] = true;
 
-// ssh, scp, sftp and `tailscale ssh` reach real hosts, so a test may run
-// them only as a fixture it wrote into the temp dir. The call throws, and
-// the process exits 1 even when the caller swallows the error: `backup
-// status` and `backup sources` report an unreachable host instead of
-// failing. `tailscale status`, `ip` and `serve status` ask the local
-// daemon only.
-const REMOTE = new Set(["ssh", "scp", "sftp"]);
-const TAILSCALE_REMOTE = new Set(["ssh", "nc", "ping", "file"]);
+// ssh, scp, sftp and `tailscale ssh` reach real hosts. `tailscale status`
+// and `serve status` read this machine's daemon, whose answer changes
+// with the tailnet up or down and on CI, and `serve --bg` changes it. So
+// a test may run them only as a fixture it wrote into the temp dir. The
+// call throws, and the process exits 1 even when the caller swallows the
+// error: `backup status` and `backup sources` report an unreachable host,
+// and the tailscale probes report the daemon offline, instead of failing.
+const FIXTURE_ONLY = new Set(["ssh", "scp", "sftp", "tailscale"]);
 const tempRoots = [...new Set([tmpdir(), realpathSync(tmpdir())])].map((root) =>
   root.endsWith(sep) ? root : root + sep,
 );
@@ -65,12 +66,6 @@ function isFixture(path) {
   return [path, real].every((p) => tempRoots.some((root) => p.startsWith(root)));
 }
 
-function reachesHost(command, args) {
-  const name = basename(command);
-  if (name !== "tailscale") return REMOTE.has(name);
-  return TAILSCALE_REMOTE.has(args.find((arg) => !arg.startsWith("-")));
-}
-
 /** Each command a shell line runs, split on ; & | ( and $(, as words. */
 function shellCommands(line) {
   return line
@@ -84,30 +79,42 @@ function assertNoRealHost(name, command, rest) {
   const options = rest.find((arg) => arg && typeof arg === "object" && !Array.isArray(arg));
   const shell = name === "exec" || name === "execSync" || options?.shell;
   const args = Array.isArray(rest[0]) ? rest[0].map(String) : [];
-  const runs = shell ? shellCommands([command, ...args].join(" ")) : [[command, ...args]];
-  for (const [word, ...words] of runs) {
-    if (!reachesHost(word, words)) continue;
+  const runs = shell ? shellCommands([command, ...args].join(" ")) : [[command]];
+  for (const [word] of runs) {
+    if (!FIXTURE_ONLY.has(basename(word))) continue;
     const path = findExecutable(word, options);
     if (path && isFixture(path)) continue;
     realHostSpawns.push(path ?? word);
-    const message = `Tests cannot reach a real host: ${word} resolves to ${path ?? "nothing on PATH"}. Put a fake ${basename(word)} in a temp dir on PATH.`;
+    const message = `Tests cannot run a real ${basename(word)}: ${word} resolves to ${path ?? "nothing on PATH"}. Put a fake ${basename(word)} in a temp dir on PATH.`;
     process.stderr.write(`${message}\n`);
     throw new Error(message);
   }
 }
 
-// Fail if a test tries the shell fallback, instead of displaying a dialog.
+function assertAllowed(name, command, args) {
+  // Fail if a test tries the shell fallback, instead of displaying a dialog.
+  if (typeof command === "string" && /(?:^|[\s/])(?:security|secret-tool)(?:$|\s)/.test(command)) {
+    throw new Error("Tests cannot invoke the OS keychain CLI; use the fixture store.");
+  }
+  assertNoRealHost(name, command, args);
+}
+
 for (const name of ["spawn", "spawnSync", "execFile", "execFileSync", "exec", "execSync"]) {
   const original = childProcess[name];
-  childProcess[name] = function (command, ...args) {
-    if (
-      typeof command === "string" &&
-      /(?:^|[\s/])(?:security|secret-tool)(?:$|\s)/.test(command)
-    ) {
-      throw new Error("Tests cannot invoke the OS keychain CLI; use the fixture store.");
-    }
-    assertNoRealHost(name, command, args);
+  const guarded = function (command, ...args) {
+    assertAllowed(name, command, args);
     return original.call(this, command, ...args);
   };
+  // promisify(execFile) resolves { stdout, stderr } only through this
+  // hook. Without it the promise resolves stdout alone, so
+  // tailscaleIdentity() read every answer as "daemon offline".
+  const custom = original[promisify.custom];
+  if (custom) {
+    guarded[promisify.custom] = (command, ...args) => {
+      assertAllowed(name, command, args);
+      return custom(command, ...args);
+    };
+  }
+  childProcess[name] = guarded;
 }
 syncBuiltinESMExports();
