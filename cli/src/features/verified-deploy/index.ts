@@ -58,6 +58,7 @@ import {
   type OperationalContext,
   type OperationalOutcome,
   applied,
+  notDeployedToCoolify,
   skipped,
 } from "../operational-context.js";
 import { planVerifiedDeploy } from "./plan.js";
@@ -144,6 +145,14 @@ export function applyVerifiedDeploy(
   ctx: OperationalContext,
   overrides: VerifiedDeployOverrides = {},
 ): OperationalOutcome {
+  // The deploy script promotes `:live` images and asks Coolify which
+  // commit each app serves. A site with no Coolify app has its own
+  // release workflow, and this one would run beside it doing nothing.
+  const offCoolify = notDeployedToCoolify(ctx.project);
+  if (offCoolify) {
+    return skipped(`${offCoolify}, so there is no Coolify app to verify or roll back`);
+  }
+
   const plan = planVerifiedDeploy(ctx, overrides);
 
   if (plan.apps.length === 0) {

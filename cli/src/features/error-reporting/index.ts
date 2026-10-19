@@ -89,6 +89,9 @@ export function ancestorPackageJsonPaths(dir: string): string[] {
   return paths;
 }
 
+/** The phrase every file this module generates carries in its header. */
+export const GENERATED_MARKER = "OWNED by hatchkit";
+
 /** The generated modules' directory, under a client source root. */
 export function errorReportingDir(sourceRootRel: string): string {
   return sourceRootRel ? `${sourceRootRel}/lib/error-reporting` : "lib/error-reporting";
@@ -166,6 +169,27 @@ export function applyErrorReporting(ctx: OperationalContext): OperationalOutcome
   const version = pkg.version ?? "0.0.0";
 
   const files = errorReportingFiles(ctx.project, { version, dir });
+
+  // A reporter the project wrote itself is the project's, not hatchkit's
+  // to replace: conv3d's scrubs local file paths hatchkit's does not know
+  // about. hatchkit's three files each say so in their header, so a
+  // directory where files exist and none carries that header was never
+  // generated. One generated file that a person edited down to nothing
+  // still has generated siblings, and is regenerated as before. `force`
+  // replaces the project's own as well; it is the caller's decision.
+  const existing = files
+    .map((file) => ctx.ledger.read(file.path))
+    .filter((content): content is string => content !== undefined);
+  if (
+    ctx.force !== true &&
+    existing.length > 0 &&
+    !existing.some((content) => content.includes(GENERATED_MARKER))
+  ) {
+    return skipped(
+      `${dir}/ holds the project's own reporter, which hatchkit did not generate, so it is left alone (--force replaces it)`,
+    );
+  }
+
   for (const file of files) {
     ctx.ledger.writeIfChanged(file.path, file.contents);
   }

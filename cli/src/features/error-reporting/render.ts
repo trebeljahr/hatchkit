@@ -219,10 +219,22 @@ export function stripUrl(url: string): string {
   return bare.replace(/^([a-z][\\w+.-]*:\\/\\/)[^/@]*@/i, "$1");
 }
 
-/** Free text with URLs stripped, and email addresses and bearer tokens
- *  replaced. A server refusal can quote the address it refused. */
+/**
+ * A path on someone's own disk: a \`file:\` URL, a home directory, a
+ * macOS volume or temporary folder, a Windows drive or share, with the
+ * file name at its end. An app that opens the user's files puts their
+ * names in its errors. Free text only: a desktop shell's stack frames
+ * are paths of the app itself.
+ */
+const LOCAL_PATH =
+  /\\bfile:\\/\\/[^\\s"'<>]*|(?<![\\w.:/])(?:\\/(?:Users|home)\\/[^/\\s"'<>]+\\/|\\/(?:Volumes|var\\/folders)\\/|~\\/|[A-Za-z]:[\\\\/]|\\\\\\\\)[^\\s"'<>]*/g;
+
+/** Free text with local paths replaced, URLs stripped, and email
+ *  addresses and bearer tokens replaced. A server refusal can quote the
+ *  address it refused. */
 export function scrubText(text: string): string {
   return text
+    .replace(LOCAL_PATH, "[local path]")
     .replace(BEARER, "Bearer [redacted]")
     .replace(URL_IN_TEXT, (url) => stripUrl(url))
     .replace(QUERY_IN_TEXT, (rest) => (rest.includes("=") ? "" : rest))

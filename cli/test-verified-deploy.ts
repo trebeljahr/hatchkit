@@ -1171,6 +1171,20 @@ check("a single-origin project checks no preflight and carries both image variab
   rmSync(singleDir, { recursive: true, force: true });
 });
 
+check("a site that is not deployed to Coolify is skipped, and touches nothing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "verified-deploy-cloudflare-"));
+  try {
+    for (const deploymentMode of ["cloudflare", "gh-pages", "scaffold-only"] as const) {
+      const ctx = contextFor(dir, { surfaces: "static", deploymentMode });
+      const result = applyVerifiedDeploy(ctx);
+      assert.match(result.skipped ?? "", /not deployed to Coolify/);
+      assert.deepEqual(ctx.ledger.entries, []);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 check("a project with no half at all is skipped with a reason", () => {
   const noneDir = mkdtempSync(join(tmpdir(), "verified-deploy-none-"));
   try {

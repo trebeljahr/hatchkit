@@ -731,6 +731,16 @@ check("a backend project is skipped with a reason, and touches nothing", () => {
   });
 });
 
+check("a site whose repo owns its release is skipped, and touches nothing", () => {
+  withTempProject((dir) => {
+    const { ctx, ledger } = contextFor(dir, { surfaces: "static" });
+    ctx.project = { ...ctx.project, deploymentMode: "cloudflare", clientRelease: "repo" };
+    const outcome = applyDeployRecovery(ctx);
+    assert.match(outcome.skipped ?? "", /clientRelease is "repo"/);
+    assert.deepEqual(ledger.entries, []);
+  });
+});
+
 check("a fullstack project gets the client modules and the retrofits", () => {
   withTempProject((dir) => {
     makeProject(dir);

@@ -97,6 +97,13 @@ export interface OperationalProject {
   features: readonly string[];
   /** `owner/repo`, when known. */
   repoSlug?: string;
+  /** How the project is deployed (the manifest's `deploymentMode`).
+   *  Absent means Coolify, as it does everywhere else. */
+  deploymentMode?: "coolify" | "gh-pages" | "cloudflare" | "scaffold-only";
+  /** Who writes a Workers site's release files (the manifest's
+   *  `clientRelease`). `repo` means the repo's own CI uploads and
+   *  activates versions. Absent means hatchkit. */
+  clientRelease?: "hatchkit" | "repo";
 }
 
 /** Everything one operational module is handed. Mirrors
@@ -149,6 +156,21 @@ export function hasServerHalf(surfaces: Surface): boolean {
 /** True when the project has a browser half a module can serve. */
 export function hasClientHalf(surfaces: Surface): boolean {
   return surfaces !== "backend";
+}
+
+/**
+ * Why a module that works on Coolify applications has nothing to do
+ * here, or `undefined` when the project deploys to Coolify.
+ *
+ * A `cloudflare`, `gh-pages` or `scaffold-only` project has no Coolify
+ * application, no client image and no hatchkit deploy workflow, so a
+ * module that writes any of those would write files nothing runs.
+ */
+export function notDeployedToCoolify(project: OperationalProject): string | undefined {
+  const mode = project.deploymentMode ?? "coolify";
+  return mode === "coolify"
+    ? undefined
+    : `the project is not deployed to Coolify (deploymentMode "${mode}")`;
 }
 
 /** Tell whether a project-relative path is there. Modules pass

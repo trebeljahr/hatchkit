@@ -24,6 +24,8 @@ import {
   type OperationalContext,
   type OperationalOutcome,
   applied,
+  notDeployedToCoolify,
+  skipped,
 } from "../operational-context.js";
 import { recommendedDomainLayout, topologyAdvice } from "./advice.js";
 import {
@@ -90,6 +92,13 @@ export {
  *  note nobody needs to act on is what teaches people to stop reading
  *  notes. */
 export function applyTopologyGuidance(ctx: OperationalContext): OperationalOutcome {
+  // The write-up explains why the Coolify applications are split the way
+  // they are. A site with no Coolify application has nothing it explains.
+  const offCoolify = notDeployedToCoolify(ctx.project);
+  if (offCoolify) {
+    return skipped(`${offCoolify}, so there are no Coolify applications whose split to explain`);
+  }
+
   const notes: string[] = [];
 
   ctx.ledger.writeIfChanged(TOPOLOGY_DOC_REL, renderTopologyDoc(ctx.project));

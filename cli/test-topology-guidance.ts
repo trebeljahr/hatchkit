@@ -620,6 +620,22 @@ check("apply notes the actionable findings and stays quiet about the information
   }
 });
 
+check("a site that is not deployed to Coolify gets no topology write-up", () => {
+  const dir = mkdtempSync(join(tmpdir(), "topology-guidance-cloudflare-"));
+  try {
+    writeFileSync(join(dir, "CLAUDE.md"), ANCHORED, "utf8");
+    const ledger = new FeatureLedger(dir, false);
+    const outcome = applyTopologyGuidance(
+      contextFor(ledger, { surfaces: "static", deploymentMode: "cloudflare" }),
+    );
+    assert.match(outcome.skipped ?? "", /not deployed to Coolify/);
+    assert.deepEqual(ledger.entries, []);
+    assert.equal(readFileSync(join(dir, "CLAUDE.md"), "utf8"), ANCHORED);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 check("a project with no CLAUDE.md is an absent ledger entry, not a note", () => {
   // The ledger reports what did not happen to a file. A note is for what
   // a person still has to do, and nobody has to create a CLAUDE.md.

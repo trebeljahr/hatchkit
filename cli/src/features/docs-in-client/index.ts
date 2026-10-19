@@ -62,10 +62,12 @@ import {
   type OperationalOutcome,
   applied,
   hasClientHalf,
+  notDeployedToCoolify,
   skipped,
 } from "../operational-context.js";
 import {
   CLIENT_DOCKERFILE_REL_PATH,
+  CLIENT_PACKAGE_DIR,
   DEPLOY_WORKFLOW_REL_PATH,
   DOCS_LINKS_REL_PATH,
   DOCS_SCRIPT_REL_PATH,
@@ -159,6 +161,18 @@ export function applyDocsInClientAt(
   // different feature (a site of its own), not this one with a flag.
   if (!hasClientHalf(ctx.project.surfaces)) {
     return skipped("no client image to build the docs into (the project is backend-only)");
+  }
+  const offCoolify = notDeployedToCoolify(ctx.project);
+  if (offCoolify) {
+    return skipped(`${offCoolify}, so there is no client image to build the docs into`);
+  }
+  // Every path this module writes or edits is under the starter's client
+  // package (see CLIENT_PACKAGE_DIR). A project laid out differently is
+  // left alone, rather than given files in a package it does not have.
+  if (!ctx.ledger.exists(CLIENT_PACKAGE_DIR)) {
+    return skipped(
+      `no ${CLIENT_PACKAGE_DIR}/ — the docs are built into the starter's client image, and a client laid out differently is left alone`,
+    );
   }
 
   const layout = docsLayout({

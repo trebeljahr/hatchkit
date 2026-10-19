@@ -120,6 +120,16 @@ export function applyDeployRecovery(ctx: OperationalContext): OperationalOutcome
   if (!hasClientHalf(ctx.project.surfaces)) {
     return skipped("a backend project has no browser tab that can outlive a deploy");
   }
+  // `clientRelease: "repo"` hands the release to the repo's own CI: it
+  // writes the build-info file and decides how an open tab learns of a
+  // new version. A second mechanism here would poll a file the repo's
+  // release may not write, and reload a tab the repo's own code also
+  // reloads.
+  if (ctx.project.clientRelease === "repo") {
+    return skipped(
+      'clientRelease is "repo": the repo\'s own release workflow owns the build-info file and how an open tab learns of a deploy',
+    );
+  }
 
   const { ledger } = ctx;
   const exists: PathExists = (rel) => ledger.exists(rel);

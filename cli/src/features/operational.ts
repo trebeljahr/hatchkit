@@ -177,6 +177,8 @@ export function operationalProjectFromManifest(
     surfaces: (manifest.surfaces ?? "fullstack") as Surface,
     features: manifest.features,
     repoSlug,
+    deploymentMode: manifest.deploymentMode,
+    clientRelease: manifest.clientRelease,
   };
 }
 

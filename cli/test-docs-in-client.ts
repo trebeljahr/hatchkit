@@ -1071,6 +1071,26 @@ check("a backend-only project is skipped with a reason", () => {
   assert.ok(!existsSync(join(dir, "scripts/docs/build-into-client.mjs")));
 });
 
+check("a site that is not deployed to Coolify is skipped", () => {
+  const dir = makeProject("cloudflare", true);
+  const ctx = makeContext(dir, { surfaces: "static" });
+  ctx.project = { ...ctx.project, deploymentMode: "cloudflare" };
+  const result = applyDocsInClient(ctx);
+  assert.deepEqual(ctx.ledger.entries, []);
+  assert.match(result.skipped ?? "", /not deployed to Coolify/);
+});
+
+check("a client that is not the starter's packages/client is left alone", () => {
+  const dir = join(tmp, "projects", "no-client-package");
+  mkdirSync(join(dir, "docs/app"), { recursive: true });
+  writeFileSync(join(dir, "docs/package.json"), "{}\n", "utf-8");
+  const ctx = makeContext(dir, { surfaces: "static" });
+  const result = applyDocsInClient(ctx);
+  assert.deepEqual(ctx.ledger.entries, [], "no file is written into a package that does not exist");
+  assert.match(result.skipped ?? "", /no packages\/client\//);
+  assert.ok(!existsSync(join(dir, "packages")));
+});
+
 check("a static project still gets the docs", () => {
   // No server half is no reason to have no documentation.
   const dir = makeProject("static", true);

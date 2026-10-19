@@ -245,6 +245,40 @@ check("keeps package paths that only look like addresses", () => {
   assert.equal(scrubText("mailto:me@example.com"), "mailto:[email]");
 });
 
+/** Messages that name a file on the user's own disk, and what each becomes. */
+const LOCAL_PATH_CASES: Array<[string, string]> = [
+  [
+    "Could not load /Users/jane/models/robot.fbx: bad header",
+    "Could not load [local path] bad header",
+  ],
+  ["ENOENT: open '/home/sam/assets/ship.glb'", "ENOENT: open '[local path]'"],
+  ["failed C:\\Users\\Sam\\Downloads\\tank.gltf", "failed [local path]"],
+  ["at file:///Volumes/Work/hero.obj:12:4", "at [local path]"],
+  ["gone: ~/Downloads/car.fbx", "gone: [local path]"],
+  ["share \\\\nas\\models\\boat.glb", "share [local path]"],
+];
+
+/** Messages with paths that are an app's routes or a server's own files. */
+const NOT_LOCAL_PATHS = [
+  "GET /home failed",
+  "GET /users/42 returned 404",
+  "GET /users/42/posts failed",
+  `The module '${PNPM_PATH}' was compiled`,
+];
+
+check("replaces a path on the user's own disk, file name included", () => {
+  for (const [message, expected] of LOCAL_PATH_CASES) assert.equal(scrubText(message), expected);
+  for (const message of NOT_LOCAL_PATHS) assert.equal(scrubText(message), message);
+});
+
+check("keeps a desktop shell's stack frame paths, which are the app's own files", () => {
+  const event = fullEvent();
+  const frame = { filename: "file:///Applications/Demo.app/Contents/Resources/app/main.js" };
+  event.exception = { values: [{ type: "Error", value: "x", stacktrace: { frames: [frame] } }] };
+  const scrubbed = scrubEvent(event);
+  assert.equal(scrubbed.exception?.values?.[0]?.stacktrace?.frames?.[0]?.filename, frame.filename);
+});
+
 check("strips the query string from the page URL", () => {
   const event = scrubEvent(fullEvent());
   assert.equal(event.request?.url, "https://hatchdemo.dev/invite/");
@@ -398,6 +432,13 @@ const generatedScrubPath = join(generatedScrubDir, "scrub.ts");
 writeFileSync(generatedScrubPath, renderScrubModule(), "utf-8");
 const generatedScrub = await import(pathToFileURL(generatedScrubPath).href);
 rmSync(generatedScrubDir, { recursive: true, force: true });
+
+check("the generated scrubber replaces local paths the same way", () => {
+  for (const [message, expected] of LOCAL_PATH_CASES) {
+    assert.equal(generatedScrub.scrubText(message), expected);
+  }
+  for (const message of NOT_LOCAL_PATHS) assert.equal(generatedScrub.scrubText(message), message);
+});
 
 check("the generated scrubber keeps package paths that only look like addresses", () => {
   const message = `The module '${PNPM_PATH}' was compiled`;
@@ -739,6 +780,32 @@ check("a generated file the user edited is regenerated, because the module owns 
       /RELEASE = "hatchdemo@2\.1\.0"/,
       "an owned file says so in its header; a tightened scrubber has to reach the project",
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+check("a reporter the project wrote itself is left alone", () => {
+  const dir = mkdtempSync(join(tmpdir(), "error-reporting-"));
+  try {
+    writeJson(dir, "packages/client/package.json", { name: "hatchdemo", version: "2.1.0" });
+    const own = "export const startErrorReporting = () => Promise.resolve(false);\n";
+    mkdirSync(join(dir, "packages/client/src/lib/error-reporting"), { recursive: true });
+    writeFileSync(join(dir, GENERATED[2]), own, "utf-8");
+    writeFileSync(join(dir, GENERATED[0]), "export {};\n", "utf-8");
+
+    const ctx = context(dir);
+    const outcome = applyErrorReporting(ctx);
+    assert.match(String(outcome.skipped), /project's own reporter/);
+    assert.equal(readFileSync(join(dir, GENERATED[2]), "utf-8"), own);
+    assert.ok(!existsSync(join(dir, GENERATED[1])), "no generated file is added beside it");
+    const client = JSON.parse(readFileSync(join(dir, "packages/client/package.json"), "utf-8")) as {
+      dependencies?: Record<string, string>;
+    };
+    assert.equal(client.dependencies, undefined, "and its dependencies are not touched");
+
+    applyErrorReporting(context(dir, { force: true }));
+    assert.match(readFileSync(join(dir, GENERATED[2]), "utf-8"), /RELEASE = "hatchdemo@2\.1\.0"/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

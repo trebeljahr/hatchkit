@@ -70,13 +70,33 @@ export function stripUrl(url: string): string {
   return bare.replace(/^([a-z][\w+.-]*:\/\/)[^/@]*@/i, "$1");
 }
 
-/** Free text with URLs stripped, and email addresses and bearer tokens
- *  replaced. Used on every message and every exception value. */
+/**
+ * A path on someone's own disk inside free text: a `file:` URL, a home
+ * directory on macOS or Linux, a macOS volume or temporary folder, a
+ * Windows drive or share. It runs to the next whitespace or quote, so
+ * the file name at its end goes with it. An app that opens the user's
+ * files puts their names in its errors ("could not read
+ * /Users/jane/models/robot.fbx"), and the name is the user's content.
+ * Only free text: a desktop shell's stack frames are `file:` paths of
+ * the app itself, and a report without them cannot be read. Case
+ * matters, so a web route such as `/users/42/posts` is not a home folder.
+ */
+const LOCAL_PATH =
+  /\bfile:\/\/[^\s"'<>]*|(?<![\w.:/])(?:\/(?:Users|home)\/[^/\s"'<>]+\/|\/(?:Volumes|var\/folders)\/|~\/|[A-Za-z]:[\\/]|\\\\)[^\s"'<>]*/g;
+
+/** What a removed local path is replaced with. */
+export const LOCAL_PATH_MARK = "[local path]";
+
+/** Free text with local paths replaced, URLs stripped, and email
+ *  addresses and bearer tokens replaced. Used on every message and every
+ *  exception value. */
 export function scrubText(text: string): string {
-  // URLs first. Stripping a URL removes any `user:password@` before the
+  // Local paths first, so the URL rule never keeps a home directory.
+  // URLs next. Stripping a URL removes any `user:password@` before the
   // email rule could half-match it, and removes any address that was
   // only ever present inside a query string.
   return text
+    .replace(LOCAL_PATH, LOCAL_PATH_MARK)
     .replace(BEARER, "Bearer [redacted]")
     .replace(URL_IN_TEXT, (url) => stripUrl(url))
     .replace(QUERY_IN_TEXT, (rest) => (rest.includes("=") ? "" : rest))
