@@ -45,6 +45,11 @@ public.
 `POST /stats` is accepted and logged (Workers Logs), not stored. `/channel_self` refuses every
 change: the channel is fixed by the build.
 
+Workers Logs keep only the Worker's own lines: app, platform, channel and versions. Invocation
+logs are off, because they would store each device's IP address, user agent and IP-derived
+location. The apps' privacy pages and store privacy labels rely on that, so keep them off.
+Workers Logs delete entries after 3 days on Workers Free and 7 days on Workers Paid.
+
 ## Pointers and rollback
 
 ```

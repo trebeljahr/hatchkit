@@ -102,9 +102,17 @@ resource "cloudflare_workers_script" "ota" {
     },
   ]
 
+  # Invocation logs store each device's IP address, user agent and the
+  # location Cloudflare derives from it. The Worker's own console.log lines
+  # carry only app, platform, channel and versions. The apps' privacy pages
+  # and store privacy labels assume no IP address or location is logged.
   observability = {
     enabled            = true
     head_sampling_rate = 1
+    logs = {
+      enabled         = true
+      invocation_logs = false
+    }
   }
 }
 
