@@ -134,10 +134,25 @@ export async function runCoolifyAccess(args: string[]): Promise<boolean> {
   const cf = cloudflare(prov.token);
   const acct = prov.accountId;
 
-  const apps = await cf<AccessApp[]>("GET", `/accounts/${acct}/access/apps`);
+  const apps = (await cf<AccessApp[] | null>("GET", `/accounts/${acct}/access/apps`)) ?? [];
   const found = findCoolifyAccessApps(apps, host);
   if (!found.main) {
-    console.log(chalk.yellow(`  No Cloudflare Access application for ${host}; nothing to do.`));
+    // Cloudflare filters this list by the token's permissions instead of
+    // refusing: a token without Access permissions sees an empty list.
+    console.log(
+      chalk.yellow(
+        `  No Cloudflare Access application for ${host} among the ${apps.length} the operator token can see (account ${acct}).`,
+      ),
+    );
+    if (apps.length === 0) {
+      console.log(
+        chalk.dim(
+          "    A token without Access permissions sees none. Add to hatchkit's operator token at\n" +
+            "    https://dash.cloudflare.com/profile/api-tokens: Account · Access: Apps and Policies · Edit\n" +
+            "    and Account · Access: Service Tokens · Edit, then re-run.",
+        ),
+      );
+    }
     return false;
   }
   console.log(chalk.dim(`  Access application: ${found.main.name} (${host})`));
