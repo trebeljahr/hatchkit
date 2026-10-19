@@ -28,7 +28,9 @@ import { getCoolifyConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { dotenvxSet } from "../utils/dotenvx-safe.js";
+import { findCoolifyAppsForProject } from "./coolify-app.js";
 import { joinProjectAppsToDatabaseNetwork } from "./coolify-db-network.js";
+import { placeProjectResource } from "./project-network.js";
 
 export interface MongoProvisionResult {
   /** Coolify uuid of the new database — useful for later teardown. */
@@ -94,6 +96,14 @@ export async function provisionCoolifyMongo(
     throw err;
   }
 
+  // The project's own Docker network, or the one its app already runs on.
+  const apps = await findCoolifyAppsForProject(config.name, config.topology).catch(() => []);
+  const { placement, note } = await placeProjectResource(api, {
+    serverUuid,
+    projectName: config.name,
+    appUuids: apps.map((a) => a.uuid),
+  });
+
   const create = ora("Coolify: creating MongoDB container (this takes ~30s)").start();
   let databaseUuid: string;
   let internalUrl: string;
@@ -101,6 +111,7 @@ export async function provisionCoolifyMongo(
     const res = await api.createMongodbDatabase({
       serverUuid,
       projectUuid,
+      destinationUuid: placement?.uuid,
       // Use the project name as the db name — matches what the starter's
       // local docker-compose Mongo would call it, so dev↔prod schemas
       // line up with no surprises.
@@ -120,7 +131,7 @@ export async function provisionCoolifyMongo(
         "Coolify created the database but didn't return an internal_db_url. Set MONGODB_URI manually from the dashboard.",
       );
     }
-    create.succeed(`MongoDB ready (uuid: ${databaseUuid})`);
+    create.succeed(`MongoDB ready (uuid: ${databaseUuid}), ${note}`);
   } catch (err) {
     create.fail();
     throw err;

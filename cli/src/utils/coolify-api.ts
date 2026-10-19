@@ -460,6 +460,9 @@ export class CoolifyApi {
     initdbRootPassword?: string;
     /** Start the container immediately on creation. */
     instantDeploy?: boolean;
+    /** Docker network to run on (see deploy/project-network.ts). Omitted:
+     *  Coolify picks the server's first destination, the shared `coolify`. */
+    destinationUuid?: string;
   }): Promise<{ uuid: string; internal_db_url: string }> {
     const body: Record<string, unknown> = {
       server_uuid: params.serverUuid,
@@ -469,6 +472,7 @@ export class CoolifyApi {
       instant_deploy: params.instantDeploy ?? true,
     };
     if (params.environmentUuid) body.environment_uuid = params.environmentUuid;
+    if (params.destinationUuid) body.destination_uuid = params.destinationUuid;
     if (params.initdbDatabase) body.mongo_initdb_database = params.initdbDatabase;
     if (params.initdbRootUsername) body.mongo_initdb_root_username = params.initdbRootUsername;
     if (params.initdbRootPassword) body.mongo_initdb_root_password = params.initdbRootPassword;
@@ -489,6 +493,8 @@ export class CoolifyApi {
     postgresPassword?: string;
     postgresDb?: string;
     instantDeploy?: boolean;
+    /** See {@link createMongodbDatabase}. */
+    destinationUuid?: string;
   }): Promise<{ uuid: string; internal_db_url: string }> {
     const body: Record<string, unknown> = {
       server_uuid: params.serverUuid,
@@ -498,6 +504,7 @@ export class CoolifyApi {
       instant_deploy: params.instantDeploy ?? true,
     };
     if (params.environmentUuid) body.environment_uuid = params.environmentUuid;
+    if (params.destinationUuid) body.destination_uuid = params.destinationUuid;
     if (params.postgresUser) body.postgres_user = params.postgresUser;
     if (params.postgresPassword) body.postgres_password = params.postgresPassword;
     if (params.postgresDb) body.postgres_db = params.postgresDb;
@@ -519,6 +526,8 @@ export class CoolifyApi {
     /** Coolify auto-generates one if omitted. */
     redisPassword?: string;
     instantDeploy?: boolean;
+    /** See {@link createMongodbDatabase}. */
+    destinationUuid?: string;
   }): Promise<{ uuid: string; internal_db_url: string }> {
     const body: Record<string, unknown> = {
       server_uuid: params.serverUuid,
@@ -528,6 +537,7 @@ export class CoolifyApi {
       instant_deploy: params.instantDeploy ?? true,
     };
     if (params.environmentUuid) body.environment_uuid = params.environmentUuid;
+    if (params.destinationUuid) body.destination_uuid = params.destinationUuid;
     if (params.redisPassword) body.redis_password = params.redisPassword;
     return this.request("POST", "/databases/redis", body);
   }
@@ -535,8 +545,57 @@ export class CoolifyApi {
   /** Get a database (any engine) by uuid. We use this to read the
    *  `internal_db_url` post-creation when the create response didn't
    *  include it (older Coolify builds). */
-  async getDatabase(uuid: string): Promise<{ uuid: string; internal_db_url?: string }> {
-    return this.request("GET", `/databases/${uuid}`);
+  async getDatabase(uuid: string): Promise<{
+    uuid: string;
+    internal_db_url?: string;
+    destination?: CoolifyDestinationRef;
+  }> {
+    const raw = (await this.request("GET", `/databases/${uuid}`)) as Record<string, unknown>;
+    return {
+      uuid: typeof raw.uuid === "string" ? raw.uuid : uuid,
+      internal_db_url: typeof raw.internal_db_url === "string" ? raw.internal_db_url : undefined,
+      destination: extractDestination(raw),
+    };
+  }
+
+  /** The Docker networks ("destinations") Coolify knows on one server. */
+  async listServerDestinations(serverUuid: string): Promise<CoolifyDestination[]> {
+    const raw = await this.request<unknown>("GET", `/servers/${serverUuid}/destinations`);
+    if (!Array.isArray(raw)) return [];
+    const out: CoolifyDestination[] = [];
+    for (const r of raw) {
+      if (!r || typeof r !== "object") continue;
+      const e = r as Record<string, unknown>;
+      if (typeof e.uuid !== "string" || typeof e.network !== "string") continue;
+      out.push({
+        uuid: e.uuid,
+        name: typeof e.name === "string" ? e.name : e.network,
+        network: e.network,
+      });
+    }
+    return out;
+  }
+
+  /** Create a destination: Coolify runs `docker network create
+   *  --attachable <network>` on the server and connects its proxy to it,
+   *  so apps on it are routable at once. 409 when the network exists. */
+  async createServerDestination(
+    serverUuid: string,
+    network: string,
+    name?: string,
+  ): Promise<CoolifyDestination> {
+    const raw = (await this.request("POST", `/servers/${serverUuid}/destinations`, {
+      network,
+      ...(name ? { name } : {}),
+    })) as Record<string, unknown>;
+    if (typeof raw.uuid !== "string") {
+      throw new Error(`Coolify created destination "${network}" but returned no uuid`);
+    }
+    return {
+      uuid: raw.uuid,
+      name: typeof raw.name === "string" ? raw.name : network,
+      network: typeof raw.network === "string" ? raw.network : network,
+    };
   }
 
   /** Delete an application by uuid. Idempotent: 404 → no-op. Used by
@@ -694,6 +753,7 @@ export class CoolifyApi {
     const body: Record<string, unknown> = {
       project_uuid: input.projectUuid,
       server_uuid: input.serverUuid,
+      ...(input.destinationUuid ? { destination_uuid: input.destinationUuid } : {}),
       environment_name: input.environmentName ?? "production",
       git_repository: input.gitRepository,
       git_branch: input.gitBranch ?? "main",
@@ -1021,6 +1081,7 @@ export class CoolifyApi {
       dockerComposeLocation:
         typeof raw.docker_compose_location === "string" ? raw.docker_compose_location : undefined,
       serverUuid: extractServerUuid(raw),
+      destination: extractDestination(raw),
       isAutoDeployEnabled: coerceFlag(
         settings.is_auto_deploy_enabled ?? raw.is_auto_deploy_enabled,
       ),
@@ -1175,6 +1236,9 @@ export class CoolifyApi {
     instantDeploy?: boolean;
     /** `custom_docker_run_options`, e.g. `--cap-drop=ALL`. */
     customDockerRunOptions?: string;
+    /** Docker network to run on — the one the project's databases are on.
+     *  See deploy/project-network.ts. */
+    destinationUuid?: string;
   }): Promise<{ uuid: string; domains?: string }> {
     const body: Record<string, unknown> = {
       project_uuid: input.projectUuid,
@@ -1195,6 +1259,7 @@ export class CoolifyApi {
     if (input.domains.length === 0) body.autogenerate_domain = false;
     if (input.forceDomainOverride) body.force_domain_override = true;
     if (input.customDockerRunOptions) body.custom_docker_run_options = input.customDockerRunOptions;
+    if (input.destinationUuid) body.destination_uuid = input.destinationUuid;
     return this.request("POST", "/applications/dockerimage", body);
   }
 
@@ -1629,6 +1694,9 @@ export interface CoolifyApplication {
    *  Lets inventory resolve the server's IP via `getServerDomains` and
    *  compare against the DNS A record for `fqdn`. */
   serverUuid?: string;
+  /** The Docker network the app runs on. `coolify` is the network every
+   *  resource shares unless it was given its own (deploy/project-network.ts). */
+  destination?: CoolifyDestinationRef;
   /** Coolify's git-webhook auto-deploy flag. It lives on the
    *  `application_settings` row, so it is read from the `settings`
    *  relation when Coolify loads it and from a top-level key on builds
@@ -1718,9 +1786,25 @@ export interface CoolifyDeployment {
   applicationName?: string;
 }
 
+/** A resource's destination as embedded in its record. Either field can be
+ *  missing on older builds. */
+export interface CoolifyDestinationRef {
+  uuid?: string;
+  network?: string;
+}
+
+/** A Coolify destination: one Docker network on one server. */
+export interface CoolifyDestination {
+  uuid: string;
+  name: string;
+  network: string;
+}
+
 export interface ApplicationCreateInput {
   projectUuid: string;
   serverUuid: string;
+  /** Docker network to run on. See deploy/project-network.ts. */
+  destinationUuid?: string;
   environmentName?: string;
   /** Full URL for public repos (`https://github.com/owner/name`) or
    *  the `owner/name` shorthand for private-github-app. Coolify
@@ -1823,6 +1907,18 @@ export function isPublicGithubSource(app: {
  *  response. Coolify versions differ on where it lands — older builds
  *  nest it under `destination.server`, newer ones under `server`. Both
  *  forms are shallow JSON objects with a `uuid` string. */
+/** The Docker network a resource runs on, from the `destination` relation
+ *  Coolify embeds in an application or database record. */
+function extractDestination(raw: Record<string, unknown>): CoolifyDestinationRef | undefined {
+  const dest = raw.destination;
+  if (!dest || typeof dest !== "object") return undefined;
+  const d = dest as { uuid?: unknown; network?: unknown };
+  const ref: CoolifyDestinationRef = {};
+  if (typeof d.uuid === "string") ref.uuid = d.uuid;
+  if (typeof d.network === "string") ref.network = d.network;
+  return ref.uuid || ref.network ? ref : undefined;
+}
+
 function extractServerUuid(raw: Record<string, unknown>): string | undefined {
   const dest = raw.destination;
   if (dest && typeof dest === "object") {

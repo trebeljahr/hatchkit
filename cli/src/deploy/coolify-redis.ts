@@ -22,7 +22,9 @@ import { getCoolifyConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { dotenvxSet } from "../utils/dotenvx-safe.js";
+import { findCoolifyAppsForProject } from "./coolify-app.js";
 import { joinProjectAppsToDatabaseNetwork } from "./coolify-db-network.js";
+import { placeProjectResource } from "./project-network.js";
 
 export interface RedisProvisionResult {
   /** Coolify uuid of the new database — recorded in the run ledger so a
@@ -83,6 +85,14 @@ export async function provisionCoolifyRedis(
     throw err;
   }
 
+  // The project's own Docker network, or the one its app already runs on.
+  const apps = await findCoolifyAppsForProject(config.name, config.topology).catch(() => []);
+  const { placement, note } = await placeProjectResource(api, {
+    serverUuid,
+    projectName: config.name,
+    appUuids: apps.map((a) => a.uuid),
+  });
+
   const create = ora("Coolify: creating Redis container").start();
   let databaseUuid: string;
   let internalUrl: string;
@@ -90,6 +100,7 @@ export async function provisionCoolifyRedis(
     const res = await api.createRedisDatabase({
       serverUuid,
       projectUuid,
+      destinationUuid: placement?.uuid,
       name: `${config.name}-redis`,
       instantDeploy: true,
     });
@@ -105,7 +116,7 @@ export async function provisionCoolifyRedis(
         "Coolify created the database but didn't return an internal_db_url. Set REDIS_URL manually from the dashboard.",
       );
     }
-    create.succeed(`Redis ready (uuid: ${databaseUuid})`);
+    create.succeed(`Redis ready (uuid: ${databaseUuid}), ${note}`);
   } catch (err) {
     create.fail();
     throw err;

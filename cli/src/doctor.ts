@@ -4209,8 +4209,9 @@ export async function checkProjectNginxConfigState(projectDir: string): Promise<
  *      env names a managed database ALSO shows crash restarts. That
  *      pairing is the signature of a missing
  *      `connect_to_docker_network`: the app sits on a network named
- *      after its own uuid, the database sits on the shared `coolify`
- *      network, and the hostname Coolify handed us cannot resolve.
+ *      after its own uuid, the database sits on its destination network
+ *      (`coolify` or the project's own), and the hostname Coolify handed
+ *      us cannot resolve.
  *      deploy/coolify-db-network.ts has the full story.
  *
  *  The two conditions are deliberately joined by AND. The setting is
@@ -4447,6 +4448,7 @@ export async function checkProjectCoolifyAppHealthState(
     needsDockerNetwork,
     readTheLogRecipe,
   } = await import("./deploy/coolify-db-network.js");
+  const { SHARED_NETWORK, projectNetworkName } = await import("./deploy/project-network.js");
 
   for (const step of appSteps) {
     let app: Awaited<ReturnType<CoolifyApi["getApplication"]>>;
@@ -4494,6 +4496,32 @@ export async function checkProjectCoolifyAppHealthState(
       });
     }
 
+    // Which Docker network the app runs on — no extra call, the app
+    // record carries it. A warn, not a fail: it works, it is just not
+    // contained (deploy/project-network.ts).
+    const network = app.destination?.network;
+    if (network === SHARED_NETWORK) {
+      out.push({
+        name: `Project ${manifest.name} (Docker network)`,
+        status: "warn",
+        detail:
+          `"${label}" runs on the shared \`${SHARED_NETWORK}\` network, with every other ` +
+          "project's databases and Coolify's own; a compromised app can connect to all of them.",
+        hint: [
+          `New projects get a network of their own (${projectNetworkName(manifest.name)}).`,
+          "Coolify has no API to move a running app or database to another network: the app",
+          "and its databases have to move together. The procedure is in",
+          "cli/src/deploy/project-network.ts.",
+        ],
+      });
+    } else if (network) {
+      out.push({
+        name: `Project ${manifest.name} (Docker network)`,
+        status: "ok",
+        detail: `"${label}" on \`${network}\``,
+      });
+    }
+
     // Only worth two more API calls when there is a fault to explain.
     if (!crashing) continue;
     const references = await findCoolifyDbReferences(api, step.uuid);
@@ -4511,7 +4539,8 @@ export async function checkProjectCoolifyAppHealthState(
         ...readTheLogRecipe(cfg.url, step.uuid).slice(1),
         "",
         "A dockercompose app runs on a Docker network named after its own uuid; a",
-        "Coolify-managed database runs on the shared `coolify` network. They are isolated,",
+        "Coolify-managed database runs on its destination network (`coolify`, or the",
+        "project's own). They are isolated,",
         "so the app cannot resolve the hostname Coolify itself put in the connection string.",
         "",
         ...connectToDockerNetworkRecipe(cfg.url, step.uuid),

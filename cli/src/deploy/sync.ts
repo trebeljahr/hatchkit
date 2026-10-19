@@ -152,6 +152,7 @@ import {
   healthCheckToConverge,
   resolveCoolifyRuntime,
 } from "./image-runtime.js";
+import { placeProjectResource } from "./project-network.js";
 import { isRoutedWorkerSite, routedWorkerSiteEdge, workersPhrase } from "./routed-worker-site.js";
 import {
   type EdgePlan,
@@ -747,6 +748,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
           api,
           missing,
           projectName: manifest.name,
+          existingAppUuids: [...locations.values()].map((l) => l.uuid),
           description: manifest.description,
           projectDir: opts.projectDir,
           json: opts.json,
@@ -1400,6 +1402,9 @@ async function createMissingApps(args: {
   api: CoolifyApi;
   missing: RoutedApp[];
   projectName: string;
+  /** Apps of the project that already exist — the new ones join their
+   *  Docker network (deploy/project-network.ts). */
+  existingAppUuids: string[];
   description?: string;
   projectDir: string;
   json?: boolean;
@@ -1482,6 +1487,13 @@ async function createMissingApps(args: {
 
   const repoRef = normalizeCoolifyGitRepository(repoUrl, isPrivate);
 
+  const { placement, note } = await placeProjectResource(api, {
+    serverUuid: resolvedServer.uuid,
+    projectName,
+    appUuids: args.existingAppUuids,
+  });
+  if (!args.json) console.log(chalk.dim(`  Docker network: ${note}`));
+
   const out: Array<{ appName: string; uuid: string; name: string; created: boolean }> = [];
   for (const routed of missing) {
     const made = await provisionRoutedApp({
@@ -1495,6 +1507,7 @@ async function createMissingApps(args: {
       githubAppUuid,
       githubAppHtmlUrl,
       forceDomainOverride: args.force,
+      destinationUuid: placement?.uuid,
     });
     out.push({ appName: routed.appName, uuid: made.uuid, name: made.name, created: made.created });
   }

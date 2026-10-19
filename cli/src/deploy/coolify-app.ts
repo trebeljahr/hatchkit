@@ -8,8 +8,9 @@ import { CoolifyApi } from "../utils/coolify-api.js";
 import { type PublicIps, discoverPublicIps } from "../utils/coolify-server-ips.js";
 import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
 import { DEPLOY_HOOK_WATCH_PATH } from "./coolify-deploy-hook.js";
-import { deployImageDefaults } from "./coolify.js";
+import { deployImageDefaults, existingAppUuids } from "./coolify.js";
 import { type CoolifyDeployApp, repoSlugFromRemote } from "./gh-actions-secrets.js";
+import { placeProjectResource } from "./project-network.js";
 import { type RoutedApp, type RoutingPlan, type Topology, computeRoutingPlan } from "./routing.js";
 import { pushNativeOriginsToServerApps } from "./trusted-origins.js";
 
@@ -301,6 +302,14 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     created: boolean;
   }> = [];
 
+  // One Docker network for the whole project (deploy/project-network.ts).
+  const { placement, note } = await placeProjectResource(api, {
+    serverUuid: resolveServer.uuid,
+    projectName: input.projectName,
+    appUuids: await existingAppUuids(api, plan.apps),
+  });
+  console.log(chalk.dim(`  Docker network: ${note}`));
+
   for (const routed of plan.apps) {
     // Validate the routed service names against the compose file BEFORE
     // any write. Coolify answers a `docker_compose_domains` PATCH that
@@ -421,6 +430,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
     const baseInput: ApplicationCreateInput = {
       projectUuid,
       serverUuid: resolveServer.uuid,
+      destinationUuid: placement?.uuid,
       gitRepository: repoRef.gitRepository,
       gitBranch: input.gitBranch ?? "main",
       portsExposes: routed.portsExposes,

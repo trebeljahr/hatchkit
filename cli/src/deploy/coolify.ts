@@ -47,6 +47,7 @@ import {
   installUrlForSlug,
 } from "./github-app-access.js";
 import { formatImageRef, healthCheckFor } from "./image-runtime.js";
+import { placeProjectResource } from "./project-network.js";
 import { type RoutedApp, computeRoutingPlan } from "./routing.js";
 import { type NativeOriginsOutcome, pushNativeOriginsToServerApps } from "./trusted-origins.js";
 
@@ -307,6 +308,14 @@ export async function runCoolifySetup(
   // single hatchkit-managed Coolify install, project names are unique
   // enough that a hit means "the same app" — same assumption
   // coolify-mongo makes when it resolves the project.
+  // One Docker network for the whole project: every half of it, and the
+  // databases provisioned after it (deploy/project-network.ts).
+  const { placement, note } = await placeProjectResource(api, {
+    serverUuid,
+    projectName: config.name,
+    appUuids: await existingAppUuids(api, plan.apps),
+  });
+  console.log(chalk.dim(`  Docker network: ${note}`));
   const provisioned: RunCoolifySetupResult["apps"] = [];
   for (const routed of plan.apps) {
     provisioned.push(
@@ -320,6 +329,7 @@ export async function runCoolifySetup(
         isPrivateRepo,
         githubAppUuid,
         githubAppHtmlUrl,
+        destinationUuid: placement?.uuid,
       }),
     );
   }
@@ -425,6 +435,22 @@ export async function runCoolifySetup(
  *  plan has an opinion about it — a path-free layout leaves the field
  *  unsent, because Coolify attaches no stripprefix middleware there and
  *  some builds reject the key outright. */
+/** Uuids of the plan's apps that already exist, matched the way
+ *  {@link provisionRoutedApp} matches them: own name, then aliases. */
+export async function existingAppUuids(api: CoolifyApi, apps: RoutedApp[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const routed of apps) {
+    for (const name of [routed.appName, ...routed.aliases]) {
+      const hit = await api.findApplicationByName(name).catch(() => null);
+      if (hit) {
+        out.push(hit.uuid);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 export async function provisionRoutedApp(args: {
   api: CoolifyApi;
   routed: RoutedApp;
@@ -441,6 +467,9 @@ export async function provisionRoutedApp(args: {
    *  reading it — see ApplicationCreateInput.forceDomainOverride). Do
    *  not present this to users as a fix for a create-time 409. */
   forceDomainOverride?: boolean;
+  /** Docker network for a NEW app (deploy/project-network.ts). An app
+   *  that already exists stays where it is. */
+  destinationUuid?: string;
 }): Promise<{ uuid: string; name: string; role: RoutedApp["role"]; created: boolean }> {
   const { api, routed, projectUuid, serverUuid, description, repoRef, isPrivateRepo } = args;
 
@@ -533,6 +562,7 @@ export async function provisionRoutedApp(args: {
     const createInput: ApplicationCreateInput = {
       projectUuid,
       serverUuid,
+      destinationUuid: args.destinationUuid,
       environmentName: "production",
       gitRepository: repoRef.gitRepository,
       gitBranch: "main",
@@ -616,6 +646,7 @@ async function provisionImageApp(args: {
   serverUuid: string;
   description?: string;
   forceDomainOverride?: boolean;
+  destinationUuid?: string;
   existingApp: { uuid: string; name: string } | null;
 }): Promise<{ uuid: string; name: string; role: RoutedApp["role"]; created: boolean }> {
   const { api, routed, existingApp } = args;
@@ -667,6 +698,7 @@ async function provisionImageApp(args: {
     const created = await api.createDockerImageApplication({
       projectUuid: args.projectUuid,
       serverUuid: args.serverUuid,
+      destinationUuid: args.destinationUuid,
       environmentName: "production",
       name: routed.appName,
       description: args.description,

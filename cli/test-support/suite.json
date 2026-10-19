@@ -58,6 +58,7 @@
   "test-trusted-origins.ts",
   "test-coolify-patch-limits.ts",
   "test-coolify-db-network.ts",
+  "test-project-network.ts",
   "test-sync-aliases.ts",
   "test-sync-project-app.ts",
   "test-force-domain-override.ts",

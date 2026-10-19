@@ -858,6 +858,9 @@ export async function migrate(
       const created = await api.createDockerImageApplication({
         projectUuid: placement.projectUuid,
         serverUuid: source.serverUuid,
+        // The legacy app's own network: that is where its databases are,
+        // whether it is the shared `coolify` or the project's (project-network.ts).
+        destinationUuid: source.destination?.uuid,
         environmentUuid: placement.environmentUuid,
         environmentName: placement.environmentName,
         name: app.appName,

@@ -16,8 +16,9 @@
  *
  * Coolify-MANAGED databases — anything created through `/databases/*`,
  * which is every datastore `provisionCoolifyMongo` / `-Postgres` /
- * `-Redis` creates — are put on the shared `coolify` network instead.
- * The two networks are isolated. So the app cannot resolve the database
+ * `-Redis` creates — are put on their DESTINATION network instead: the
+ * shared `coolify` one, or since 2026-10-19 the project's own
+ * `hk-<project>` (project-network.ts). The two networks are isolated. So the app cannot resolve the database
  * by the container hostname that Coolify itself handed us in
  * `internal_db_url` and that we then encrypted into `.env.production`
  * as MONGODB_URI / POSTGRES_URL / REDIS_URL.
@@ -247,8 +248,9 @@ export async function enableDockerNetworkForApps(
  *  {@link joinProjectAppsToDatabaseNetwork}. */
 const joinedThisRun = new Set<string>();
 
-/** Join a project's Coolify application(s) to the shared `coolify`
- *  network, right after provisioning a managed database for them.
+/** Join a project's Coolify application(s) to their destination network
+ *  (where the database just went — see project-network.ts), right after
+ *  provisioning a managed database for them.
  *
  *  Called from the three provisioners because they are what CREATES the
  *  hazard: the moment a `<db-uuid>` hostname is written into the
@@ -305,7 +307,7 @@ export async function joinProjectAppsToDatabaseNetwork(args: {
   if (okCount > 0) {
     console.log(
       chalk.green(
-        `  ✓ ${okCount} Coolify app(s) joined to the shared \`coolify\` network ` +
+        `  ✓ ${okCount} Coolify app(s) joined to the database's network ` +
           chalk.dim("(connect_to_docker_network — takes effect on the next deploy)"),
       ),
     );

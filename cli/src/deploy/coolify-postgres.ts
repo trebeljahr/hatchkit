@@ -19,7 +19,9 @@ import { getCoolifyConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { dotenvxSet } from "../utils/dotenvx-safe.js";
+import { findCoolifyAppsForProject } from "./coolify-app.js";
 import { joinProjectAppsToDatabaseNetwork } from "./coolify-db-network.js";
+import { placeProjectResource } from "./project-network.js";
 
 export interface PostgresProvisionResult {
   /** Coolify uuid of the new database — useful for later teardown. */
@@ -77,6 +79,14 @@ export async function provisionCoolifyPostgres(
     throw err;
   }
 
+  // The project's own Docker network, or the one its app already runs on.
+  const apps = await findCoolifyAppsForProject(config.name, config.topology).catch(() => []);
+  const { placement, note } = await placeProjectResource(api, {
+    serverUuid,
+    projectName: config.name,
+    appUuids: apps.map((a) => a.uuid),
+  });
+
   const create = ora("Coolify: creating Postgres container (this takes ~30s)").start();
   let databaseUuid: string;
   let internalUrl: string;
@@ -84,6 +94,7 @@ export async function provisionCoolifyPostgres(
     const res = await api.createPostgresqlDatabase({
       serverUuid,
       projectUuid,
+      destinationUuid: placement?.uuid,
       // Use the project name as the db name — matches what the starter's
       // local docker-compose Postgres would call it, so dev↔prod schemas
       // line up with no surprises.
@@ -102,7 +113,7 @@ export async function provisionCoolifyPostgres(
         "Coolify created the database but didn't return an internal_db_url. Set POSTGRES_URL manually from the dashboard.",
       );
     }
-    create.succeed(`Postgres ready (uuid: ${databaseUuid})`);
+    create.succeed(`Postgres ready (uuid: ${databaseUuid}), ${note}`);
   } catch (err) {
     create.fail();
     throw err;
