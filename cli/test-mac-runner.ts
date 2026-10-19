@@ -23,6 +23,7 @@ import {
   pickDispatchedRun,
   releaseSha,
   repoFromRemote,
+  runIdFromDispatchOutput,
   runnerEnv,
   runnerPackage,
   scrubKeychains,
@@ -167,6 +168,13 @@ check("jobs are matched to the label, not to any self-hosted runner", () => {
     queued: ["macos / build"],
     running: ["ios / build"],
   });
+});
+
+check("the run id comes from gh's dispatch output, for this repo only", () => {
+  const out = "https://github.com/trebeljahr/mesozoic-protocol/actions/runs/39185284478\n";
+  assert.equal(runIdFromDispatchOutput(out, "trebeljahr/mesozoic-protocol"), 39185284478);
+  assert.equal(runIdFromDispatchOutput(out, "trebeljahr/tiao"), null);
+  assert.equal(runIdFromDispatchOutput("Created workflow_dispatch event", "a/b"), null);
 });
 
 check("run states", () => {

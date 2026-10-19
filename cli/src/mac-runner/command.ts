@@ -45,6 +45,7 @@ import {
   pickDispatchedRun,
   releaseSha,
   repoFromRemote,
+  runIdFromDispatchOutput,
   runnerEnv,
   runnerPackage,
   scrubKeychains,
@@ -444,7 +445,7 @@ async function dispatchAndServe(flags: Flags): Promise<number> {
   ]);
   const ref = flags.ref ?? info.default_branch;
   const since = Date.now();
-  await gh([
+  const dispatched = await gh([
     "workflow",
     "run",
     String(wf.id),
@@ -455,6 +456,9 @@ async function dispatchAndServe(flags: Flags): Promise<number> {
     ...fields.flatMap((f) => ["-f", f]),
   ]);
   console.log(chalk.green(`✓ Dispatched ${wf.name} on ${ref}`));
+  // Recent gh prints the new run's URL; older versions print nothing.
+  const printed = runIdFromDispatchOutput(dispatched, repo);
+  if (printed !== null) return serve({ ...flags, repo }, printed);
   for (let attempt = 0; attempt < 20; attempt++) {
     await sleep(3000);
     const runs = await ghApi<{ workflow_runs: RunSummary[] }>(
@@ -621,23 +625,37 @@ async function serve(flags: Flags, onlyRun?: number): Promise<number> {
 
   try {
     let lastLine = "";
+    // A dropped connection must not stop serve in the middle of a job: an
+    // API call that fails is retried on the next tick, for up to 5 minutes.
+    let apiFailures = 0;
     while (true) {
       if (failedStarts >= 3) {
         console.error(chalk.red("✗ The runner exited at start three times in a row; stopping."));
         stopping = true;
       }
+      if (apiFailures >= 30) {
+        console.error(chalk.red("✗ GitHub has not answered for 5 minutes; stopping."));
+        stopping = true;
+      }
       if (!stopping) {
-        for (const [id] of watched) {
-          const run = await ghApi<RunDetail>(`repos/${repo}/actions/runs/${id}`);
-          if (!isActiveRun(run.status)) {
-            watched.delete(id);
-            finished.set(id, run);
-            console.log(
-              `${run.conclusion === "success" ? chalk.green("✓") : chalk.red("✗")} ${run.name} #${id}: ${run.conclusion} ${chalk.dim(run.html_url)}`,
-            );
+        try {
+          for (const [id] of watched) {
+            const run = await ghApi<RunDetail>(`repos/${repo}/actions/runs/${id}`);
+            if (!isActiveRun(run.status)) {
+              watched.delete(id);
+              finished.set(id, run);
+              console.log(
+                `${run.conclusion === "success" ? chalk.green("✓") : chalk.red("✗")} ${run.name} #${id}: ${run.conclusion} ${chalk.dim(run.html_url)}`,
+              );
+            }
           }
+          if (watched.size === 0) stopping = true;
+          apiFailures = 0;
+        } catch (err) {
+          apiFailures++;
+          if (apiFailures === 1)
+            console.error(chalk.yellow(`! ${(err as Error).message}; retrying`));
         }
-        if (watched.size === 0) stopping = true;
       }
       if (stopping) {
         // A job from another run may have started on a runner meanwhile;
@@ -648,7 +666,16 @@ async function serve(flags: Flags, onlyRun?: number): Promise<number> {
         if (line !== lastLine) console.log(chalk.dim(line));
         lastLine = line;
       } else {
-        for (const slot of slots) if (!slot.child) await startSlot(slot);
+        for (const slot of slots) {
+          if (slot.child) continue;
+          try {
+            await startSlot(slot);
+          } catch (err) {
+            apiFailures++;
+            if (apiFailures === 1)
+              console.error(chalk.yellow(`! ${(err as Error).message}; retrying`));
+          }
+        }
         const line = await waitingLine(repo, label, [...watched.keys()]);
         if (line && line !== lastLine) console.log(chalk.dim(line));
         lastLine = line;

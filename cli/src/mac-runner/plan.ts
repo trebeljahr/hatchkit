@@ -88,6 +88,14 @@ export function parseFields(values: string[]): { fields: string[]; problem: stri
   return { fields: values, problem: null };
 }
 
+/** The run id in `gh workflow run` output (`…/<repo>/actions/runs/<id>`),
+ *  when this gh prints one and it is for this repo. */
+export function runIdFromDispatchOutput(output: string, repo: string): number | null {
+  const escaped = repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = output.match(new RegExp(`github\\.com/${escaped}/actions/runs/(\\d+)`));
+  return match ? Number(match[1]) : null;
+}
+
 export interface RunSummary {
   id: number;
   created_at: string;
