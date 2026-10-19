@@ -9,7 +9,8 @@
  *   · its app_id is in APPS and its channel is in CHANNELS;
  *   · a pointer exists for (app, channel, version_build), so the bundle was
  *     built for this native version line;
- *   · its version_code is at least the pointer's min_version_code;
+ *   · its version_code is at least the pointer's min_version_code (on iOS:
+ *     its build number is at least min_ios_build, when the pointer has one);
  *   · its key_id matches the key the bundle was encrypted with;
  *   · its version_name differs from the pointer's version.
  *
@@ -51,6 +52,8 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const CHECKSUM = /^[0-9A-Za-z+/=]{8,1024}$/;
 const SESSION_KEY = /^[0-9A-Za-z+/=]{8,1024}:[0-9A-Za-z+/=]{8,1024}$/;
 const KEY_ID = /^[0-9A-Za-z+/=]{1,64}$/;
+// CFBundleVersion: one to three period-separated integers.
+const IOS_BUILD = /^\d{1,10}(\.\d{1,10}){0,2}$/;
 const FILE_KEY = /^apps\/([^/]+)\/files\/[0-9a-f]{64}$/;
 
 const encoder = new TextEncoder();
@@ -282,7 +285,15 @@ async function handleUpdate(request, env, ctx) {
     log("no_pointer");
     return noUpdate("No live update for this native version");
   }
-  if (pointer.min_version_code != null) {
+  if (str(body.platform) === "ios" && pointer.min_ios_build) {
+    // iOS build numbers may be dotted ("21345.67.89"), which no integer
+    // minimum can describe; compare them the way the App Store does.
+    const build = str(body.version_code);
+    if (!IOS_BUILD.test(build) || compareIosBuilds(build, pointer.min_ios_build) < 0) {
+      log("below_min_code", { min: pointer.min_ios_build });
+      return noUpdate("This store build is older than the live update's native shell");
+    }
+  } else if (pointer.min_version_code != null) {
     const code = Number(str(body.version_code));
     if (!Number.isFinite(code) || code < pointer.min_version_code) {
       log("below_min_code", { min: pointer.min_version_code });
@@ -684,17 +695,19 @@ function historyEntry(pointer) {
   return {
     version: pointer.version,
     min_version_code: pointer.min_version_code ?? null,
+    min_ios_build: pointer.min_ios_build ?? null,
     promoted_at: pointer.promoted_at,
   };
 }
 
-function pointerFrom(meta, { app, channel, native, minVersionCode, history, now }) {
+function pointerFrom(meta, { app, channel, native, minVersionCode, minIosBuild, history, now }) {
   const base = {
     schema: 1,
     app_id: app,
     channel,
     native,
     min_version_code: minVersionCode ?? null,
+    min_ios_build: minIosBuild ?? null,
     promoted_at: now,
     history,
   };
@@ -730,11 +743,30 @@ function minCode(value) {
   return Number.isInteger(n) && n >= 0 ? { ok: true, value: n } : { ok: false };
 }
 
+function minIosBuild(value) {
+  if (value == null || value === "") return { ok: true, value: null };
+  return typeof value === "string" && IOS_BUILD.test(value) ? { ok: true, value } : { ok: false };
+}
+
+/** Compares two CFBundleVersion strings component by component; a missing
+ *  component counts as 0, so "7" equals "7.0.0". */
+export function compareIosBuilds(a, b) {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return Math.sign(d);
+  }
+  return 0;
+}
+
 async function promote(env, origin, app, channel, body) {
   const version = str(body.version);
   if (!VERSION.test(version)) return badRequest("version must be semver");
   const code = minCode(body.min_version_code);
   if (!code.ok) return badRequest("min_version_code must be a non-negative integer");
+  const iosBuild = minIosBuild(body.min_ios_build);
+  if (!iosBuild.ok) return badRequest("min_ios_build must be one to three period-separated integers");
   const meta = await readJson(env, keys.bundleMeta(app, version));
   if (!meta) return json({ error: "not_found", message: `No bundle ${version}` }, 404);
   const native = meta.native;
@@ -751,6 +783,7 @@ async function promote(env, origin, app, channel, body) {
     channel,
     native,
     minVersionCode: code.value,
+    minIosBuild: iosBuild.value,
     history: history.slice(0, HISTORY_LIMIT),
     now: new Date().toISOString(),
   });
@@ -777,7 +810,7 @@ async function rollback(env, origin, app, channel, body) {
   } else {
     const to = str(body.to);
     if (to !== "builtin" && !VERSION.test(to)) return badRequest("to must be a version or builtin");
-    target = history.find((e) => e.version === to) ?? { version: to, min_version_code: null };
+    target = history.find((e) => e.version === to) ?? { version: to, min_version_code: null, min_ios_build: null };
     rest = history.filter((e) => e.version !== to);
   }
   let meta = "builtin";
@@ -793,6 +826,7 @@ async function rollback(env, origin, app, channel, body) {
     channel,
     native,
     minVersionCode: target.min_version_code ?? current.min_version_code ?? null,
+    minIosBuild: target.min_ios_build ?? current.min_ios_build ?? null,
     history: rest.slice(0, HISTORY_LIMIT),
     now: new Date().toISOString(),
   });
@@ -814,6 +848,7 @@ async function listPointers(env, app, channel) {
         version: pointer.version,
         kind: pointer.version === "builtin" ? "builtin" : (pointer.kind ?? "zip"),
         min_version_code: pointer.min_version_code ?? null,
+        min_ios_build: pointer.min_ios_build ?? null,
         promoted_at: pointer.promoted_at,
       });
     }

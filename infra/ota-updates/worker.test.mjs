@@ -159,6 +159,28 @@ describe("update check", () => {
     assert.equal((await (await check(device({ version_code: "9" }))).json()).version, "1.1.3-ota.1");
   });
 
+  test("min_ios_build compares dotted iOS build numbers; Android keeps min_version_code", async () => {
+    // Build 213450507 as Android versionCode and as Mesozoic's iOS CFBundleVersion.
+    await publish("1.1.3-ota.1", "beta", { min_version_code: 213450507, min_ios_build: "21345.5.7" });
+    const ios = (code) => check(device({ platform: "ios", version_code: code })).then((r) => r.json());
+    const android = (code) => check(device({ platform: "android", version_code: code })).then((r) => r.json());
+    assert.equal((await ios("21345.5.7")).version, "1.1.3-ota.1");
+    assert.equal((await ios("21345.10.0")).version, "1.1.3-ota.1");
+    assert.equal((await ios("21346")).version, "1.1.3-ota.1");
+    assert.equal((await ios("21345.4.99")).kind, "up_to_date");
+    assert.equal((await ios("21345")).kind, "up_to_date");
+    assert.equal((await ios("not-a-build")).kind, "up_to_date");
+    assert.equal((await android("213450507")).version, "1.1.3-ota.1");
+    assert.equal((await android("213450506")).kind, "up_to_date");
+    assert.equal((await admin("/channels/beta/promote", { version: "1.1.3-ota.1", min_ios_build: "1.2.3.4" })).status, 400);
+  });
+
+  test("without min_ios_build, iOS build numbers meet min_version_code as before", async () => {
+    await publish("1.1.3-ota.1", "beta", { min_version_code: 9 });
+    assert.equal((await (await check(device({ platform: "ios", version_code: "8" }))).json()).kind, "up_to_date");
+    assert.equal((await (await check(device({ platform: "ios", version_code: "9" }))).json()).version, "1.1.3-ota.1");
+  });
+
   test("the pointer is cached at the edge, misses included", async () => {
     await publish("1.1.3-ota.1");
     env.BUCKET.reads = 0;
@@ -287,11 +309,12 @@ describe("admin API", () => {
   });
 
   test("rollback to a named version keeps min_version_code from history", async () => {
-    await publish("1.1.3-ota.1", "beta", { min_version_code: 5 });
-    await publish("1.1.3-ota.2", "beta", { min_version_code: 7 });
+    await publish("1.1.3-ota.1", "beta", { min_version_code: 5, min_ios_build: "5.0.1" });
+    await publish("1.1.3-ota.2", "beta", { min_version_code: 7, min_ios_build: "7.0.1" });
     const res = await (await admin("/channels/beta/rollback", { native: "1.1.3", to: "1.1.3-ota.1" })).json();
     assert.equal(res.pointer.version, "1.1.3-ota.1");
     assert.equal(res.pointer.min_version_code, 5);
+    assert.equal(res.pointer.min_ios_build, "5.0.1");
   });
 
   test("status lists the lines of a channel", async () => {

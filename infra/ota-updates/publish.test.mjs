@@ -190,6 +190,13 @@ describe("publish.mjs", () => {
     await publishCli(["promote", "--app", APP, "--channel", "beta", "--version", "1.1.3-ota.4"]);
     assert.equal((await deviceCheck()).version, "1.1.3-ota.4");
   });
+
+  test("--min-ios-build sets the iOS minimum next to --min-version-code", async () => {
+    await publishCli([...PUBLISH, "--min-version-code", "213450507", "--min-ios-build", "21345.5.7"]);
+    assert.equal((await deviceCheck({ platform: "ios", version_code: "21345.5.7" })).version, "1.1.3-ota.4");
+    assert.equal((await deviceCheck({ platform: "ios", version_code: "21345.5.6" })).kind, "up_to_date");
+    assert.equal((await deviceCheck({ platform: "android", version_code: "213450507" })).version, "1.1.3-ota.4");
+  });
 });
 
 const DELTA = [...PUBLISH, "--delta"];

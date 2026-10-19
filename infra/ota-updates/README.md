@@ -27,7 +27,10 @@ The Worker answers with a bundle only when all of these hold:
 2. A pointer exists for that app, channel and `version_build`: the bundle was built for this
    native version line. A device on any other line gets "no update".
 3. `version_code` is at least the pointer's `min_version_code`, when one is set. Use it when two
-   store builds share a marketing version but not the same native code.
+   store builds share a marketing version but not the same native code. On iOS, when the pointer
+   also has `min_ios_build` (`--min-ios-build`), the build number (`CFBundleVersion`) is compared
+   with it instead, one period-separated number at a time: an app whose iOS build numbers are
+   dotted (Mesozoic Protocol's `21345.5.7`) cannot be described by one integer.
 4. `key_id` matches the key the bundle was encrypted with. A device that would fail to decrypt
    the bundle is never offered it.
 5. `version_name` differs from the pointer's version.
@@ -106,7 +109,8 @@ Other commands, same environment:
 
 ```sh
 node publish.mjs status   --app <id> --channel beta [--native 1.1.3]
-node publish.mjs promote  --app <id> --channel production --version 1.1.3-ota.42
+node publish.mjs promote  --app <id> --channel production --version 1.1.3-ota.42 \
+  [--min-version-code 7] [--min-ios-build 21345.5.7]
 node publish.mjs rollback --app <id> --channel production --native 1.1.3 [--to 1.1.3-ota.40|builtin]
 ```
 

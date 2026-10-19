@@ -6,9 +6,10 @@
  *
  *   node publish.mjs publish  --app <id> --channel <beta|production> \
  *        --native <X.Y.Z> --version <semver> [--dist dist] [--delta] \
- *        [--min-version-code <n>] [--expect-public-key <file>] [--no-promote] \
- *        [--allow-missing-notify-app-ready]
+ *        [--min-version-code <n>] [--min-ios-build <a.b.c>] [--expect-public-key <file>] \
+ *        [--no-promote] [--allow-missing-notify-app-ready]
  *   node publish.mjs promote  --app <id> --channel <c> --version <v> [--min-version-code <n>]
+ *        [--min-ios-build <a.b.c>]
  *   node publish.mjs rollback --app <id> --channel <c> --native <X.Y.Z> [--to <version|builtin>]
  *   node publish.mjs status   --app <id> --channel <c> [--native <X.Y.Z>]
  *
@@ -393,6 +394,7 @@ async function promote(values) {
   const body = { version: values.version };
   if (values.native) body.native = values.native;
   if (values["min-version-code"]) body.min_version_code = Number(values["min-version-code"]);
+  if (values["min-ios-build"]) body.min_ios_build = values["min-ios-build"];
   return api("POST", `/admin/apps/${enc(values.app)}/channels/${enc(values.channel)}/promote`, {
     body: JSON.stringify(body),
     headers: { "content-type": "application/json" },
@@ -427,6 +429,7 @@ export async function main(argv = process.argv.slice(2)) {
       dist: { type: "string" },
       to: { type: "string" },
       "min-version-code": { type: "string" },
+      "min-ios-build": { type: "string" },
       "expect-public-key": { type: "string" },
       "no-promote": { type: "boolean" },
       delta: { type: "boolean" },
