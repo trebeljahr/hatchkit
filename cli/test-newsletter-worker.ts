@@ -5,17 +5,18 @@
  *
  * Pinned here:
  *
- *   1. Signup with a magnet: the subscriber is created on no list with
- *      `attribs.signup`, the confirm link carries the magnet key, the
- *      click adds the list and mails a download link, and that link
- *      streams the R2 object.
+ *   1. Signup with a magnet: the subscriber is created on no list with no
+ *      attribs, the confirm link carries the magnet key, the click adds
+ *      the list and mails a download link, and that link streams the R2
+ *      object.
  *   2. Unknown magnets are refused; a confirmed member gets the download
  *      straight from the form; a second confirm click sends nothing.
  *   3. A failed delivery still confirms and logs `delivery_failed`.
  *   4. Download tokens expire and are not interchangeable with confirm
  *      tokens.
- *   5. The cron deletes only this form's signups that sit on no list for
- *      30 days; the form mails one inbox at the limiter's rate.
+ *   5. The cron deletes only enabled subscribers on no list for 30 days
+ *      and refuses a mass delete; the form mails one inbox at the
+ *      limiter's rate.
  *
  * Run: `pnpm test` (via the script in cli/package.json).
  */
@@ -182,7 +183,7 @@ async function quietly<T>(fn: () => Promise<T>): Promise<{ result: T; errors: st
   }
 }
 
-await test("token → delivery → attribs: confirm mails a link that streams the R2 object", async () => {
+await test("token → delivery: confirm mails a link that streams the R2 object", async () => {
   const lm = fakeListmonk();
   await quietly(async () => {
     const res = await post({ email: "Fan@Example.com", magnet: "wallpapers", source: "home-hero" });
@@ -190,7 +191,7 @@ await test("token → delivery → attribs: confirm mails a link that streams th
 
     const created = lm.writes.find((w) => w.call === "POST /api/subscribers")?.body;
     assert.deepEqual(created.lists, []);
-    assert.deepEqual(created.attribs, { signup: { list: LIST_ID, source: "home-hero", magnet: "wallpapers" } });
+    assert.equal("attribs" in created, false);
 
     const confirmUrl = linkIn(lm.txs()[0]);
     const token = new URL(confirmUrl).searchParams.get("token") ?? "";
@@ -198,7 +199,6 @@ await test("token → delivery → attribs: confirm mails a link that streams th
       ok: true,
       email: "fan@example.com",
       magnet: "wallpapers",
-      source: "home-hero",
     });
 
     const confirmed = await get(confirmUrl);
@@ -296,7 +296,7 @@ await test("magnets.json entries are checked one by one", () => {
   assert.equal(problems.length, 3);
 });
 
-await test("cron: deletes only this form's signups on no list for 30 days", async () => {
+await test("cron: deletes only enabled subscribers on no list for 30 days; refuses a mass delete", async () => {
   const now = Date.now();
   const at = (days: number) => new Date(now - days * 86_400_000).toISOString();
   const sub = (id: number, extra: Partial<FakeSubscriber> = {}): FakeSubscriber => ({
@@ -305,7 +305,6 @@ await test("cron: deletes only this form's signups on no list for 30 days", asyn
     name: `s${id}@example.com`,
     status: "enabled",
     lists: [],
-    attribs: { signup: { list: LIST_ID } },
     created_at: at(40),
     ...extra,
   });
@@ -316,15 +315,18 @@ await test("cron: deletes only this form's signups on no list for 30 days", asyn
     sub(4, { lists: [{ id: LIST_ID, subscription_status: "unsubscribed" }] }),
     sub(5, { status: "blocklisted" }),
     sub(6, { status: "disabled" }),
-    sub(7, { attribs: { signup: { list: 99 } } }),
-    sub(8, { attribs: {} }),
   ]);
   const waits: Promise<unknown>[] = [];
   await quietly(async () => {
     await handleScheduled({}, env, { waitUntil: (p) => void waits.push(p) });
     await Promise.all(waits);
   });
-  assert.deepEqual(lm.subscribers.map((s) => s.id), [2, 3, 4, 5, 6, 7, 8]);
+  assert.deepEqual(lm.subscribers.map((s) => s.id), [2, 3, 4, 5, 6]);
+
+  const many = fakeListmonk(Array.from({ length: 20 }, (_, i) => sub(i + 1)));
+  const { result } = await quietly(() => worker.pruneUnconfirmed(env, now));
+  assert.equal(result.refused, true);
+  assert.deepEqual(many.calls(), []);
 });
 
 await test("the form mails a confirmed inbox only while the per-address limiter allows", async () => {

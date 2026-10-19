@@ -253,7 +253,7 @@ function addSteps(kind: "server" | "worker", key: string, entry: LeadMagnetEntry
   steps.push(
     kind === "worker"
       ? `Add \`<input type="hidden" name="magnet" value="${key}">\` to the signup form.`
-      : `Use it in a form: \`<SubscribeForm magnet="${key}" source="<where-the-form-is>" />\`.`,
+      : `Use it in a form: \`<SubscribeForm magnet="${key}" />\`.`,
   );
   steps.push(
     kind === "worker"

@@ -60,19 +60,19 @@ A confirmation email that never arrives is usually the SES sandbox:
 Listmonk → Settings → Logs.
 
 Lead magnets (`services/newsletter/magnets.ts`): `<SubscribeForm
-magnet="<key>" source="<label>" />`. The key must be in `magnets.json`
+magnet="<key>" />`. The key must be in `magnets.json`
 (`hatchkit add <project> lead-magnet` edits it); the server never takes a
 URL from the form. The confirm route emails a signed 30-day download link
 after the list add, and a failed send never fails the confirm: it logs
-`newsletter.delivery` / `delivery_failed`. Attribs (`attribs.signup`) are
-written only when a subscriber is created: `PUT /api/subscribers/:id`
-would delete the address from every other project's list.
+`newsletter.delivery` / `delivery_failed`. The app writes no attribs:
+nothing records where a person signed up or which file they asked for.
+Keep it that way, and never call `PUT /api/subscribers/:id`: it would
+delete the address from every other project's list.
 
-`services/newsletter/prune.ts` deletes this project's never-confirmed
-signups 30 days after creation, once a day in production: `enabled`, on
-no list, and `attribs.signup.list` is this project's list. "No list"
-alone is not proof on a shared instance (deleted lists, other projects'
-pending signups), so keep the attribs check.
+`services/newsletter/prune.ts` deletes `enabled` subscribers on no list
+30 days after creation, once a day in production, across the whole
+shared instance. It also removes addresses whose only list was deleted.
+Do not give "on no list" any other meaning.
 
 <!-- hatchkit:endif -->
 Before giving Hatchkit setup advice, run `hatchkit status --json` and

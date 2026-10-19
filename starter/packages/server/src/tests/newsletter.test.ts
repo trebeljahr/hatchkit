@@ -16,8 +16,8 @@
  * Also covered: the sender on the confirmation email, which env var names
  * the list for each NODE_ENV, which host the confirm link and its
  * redirects point at, lead-magnet delivery (token → email → download,
- * and the signup attribs), and the cleanup of never-confirmed
- * subscribers.
+ * with nothing about the signup stored on the subscriber), and the
+ * cleanup of never-confirmed subscribers.
  */
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
@@ -512,28 +512,29 @@ describe("lead magnets", () => {
   beforeEach(() => _setMagnetsForTests(MAGNETS));
   afterEach(() => _setMagnetsForTests(null));
 
-  test("token → delivery → attribs: the confirm click emails a link that downloads the file", async () => {
+  test("token → delivery: the confirm click emails a link that downloads the file", async () => {
     const lm = fakeListmonk();
 
-    const res = await post({ email: "fan@example.com", magnet: "wallpapers", source: "Home-Hero" });
+    const res = await post({ email: "fan@example.com", magnet: "wallpapers", source: "home-hero" });
     assert.equal(res.status, 200);
 
-    // The new subscriber carries where it came from, still on no list.
+    // The new subscriber is on no list and carries no record of the
+    // signup: no attribs, so no page, site or magnet.
     const created = lm.writes.find((w) => w.call === "POST /api/subscribers")!.body;
     assert.deepEqual(created.lists, []);
-    assert.deepEqual(created.attribs, {
-      signup: { list: LIST_ID, source: "home-hero", magnet: "wallpapers" },
-    });
+    assert.equal("attribs" in created, false);
 
-    // The confirm link carries the magnet key, never a URL.
+    // The confirm link carries the magnet key, never a URL. A `source`
+    // field in the post is ignored.
     const confirmUrl = new URL(linkIn(lm.txs()[0]));
     const token = verifyConfirmToken(confirmUrl.searchParams.get("token")!);
-    assert.deepEqual(token, { ok: true, email: "fan@example.com", magnet: "wallpapers", source: "home-hero" });
+    assert.deepEqual(token, { ok: true, email: "fan@example.com", magnet: "wallpapers" });
 
     const confirmed = await realFetch(confirmUrl, { redirect: "manual" });
     assert.equal(confirmed.status, 303);
     assert.equal(confirmed.headers.get("location"), `${base}/sub/confirmed?delivery=sent`);
     assert.equal(lm.membership("fan@example.com"), "confirmed");
+    for (const { body } of lm.writes) assert.equal(body && "attribs" in body, false);
 
     // Second email: the download, from the project's sender.
     const delivery = lm.txs()[1];
@@ -661,11 +662,9 @@ describe("lead magnets", () => {
 describe("pruneUnconfirmed", () => {
   const now = Date.parse("2026-10-20T00:00:00Z");
   const daysAgo = (n: number) => new Date(now - n * 24 * 60 * 60 * 1000).toISOString();
-  const ours = { signup: { list: LIST_ID } };
   const sub = (id: number, email: string, extra: Partial<FakeSubscriber>): FakeSubscriber => ({
     ...existing(email, []),
     id,
-    attribs: ours,
     created_at: daysAgo(40),
     ...extra,
   });
@@ -674,15 +673,14 @@ describe("pruneUnconfirmed", () => {
     sub(1, "stale@example.com", {}),
     sub(2, "recent@example.com", { created_at: daysAgo(5) }),
     sub(3, "member@example.com", { lists: [{ id: LIST_ID, subscription_status: "confirmed" }] }),
-    sub(4, "left@example.com", { lists: [{ id: LIST_ID, subscription_status: "unsubscribed" }] }),
-    sub(5, "blocked@example.com", { status: "blocklisted" }),
-    // On no list, but not this form's pending signup: another project's,
-    // one from before attribs existed, and one whose list was deleted.
-    sub(6, "theirs@example.com", { attribs: { signup: { list: 99 } } }),
-    sub(7, "legacy@example.com", { attribs: {} }),
+    // Confirmed on another project's list only: kept.
+    sub(4, "other@example.com", { lists: [{ id: 99, subscription_status: "confirmed" }] }),
+    sub(5, "left@example.com", { lists: [{ id: LIST_ID, subscription_status: "unsubscribed" }] }),
+    sub(6, "blocked@example.com", { status: "blocklisted" }),
+    sub(7, "off@example.com", { status: "disabled" as any }),
   ];
 
-  test("deletes only this form's signups on no list for more than 30 days", async () => {
+  test("deletes only enabled subscribers on no list for more than 30 days", async () => {
     const lm = fakeListmonk(instance());
 
     const result = await pruneUnconfirmed({ now });
@@ -713,15 +711,16 @@ describe("pruneUnconfirmed", () => {
     assert.deepEqual(lm.calls(), []);
   });
 
-  test("findUnconfirmed keeps disabled subscribers and ones with no creation date", () => {
-    const candidates = findUnconfirmed(
-      [
-        sub(1, "off@example.com", { status: "disabled" as any }) as any,
-        sub(2, "x@example.com", { created_at: undefined }) as any,
-      ],
-      [LIST_ID],
-      now,
-    );
-    assert.deepEqual(candidates, []);
+  test("refuses when most of the instance looks unconfirmed", async () => {
+    const lm = fakeListmonk(Array.from({ length: 20 }, (_, i) => sub(i + 1, `s${i}@example.com`, {})));
+
+    const { result } = await captureErrors(() => pruneUnconfirmed({ now }));
+
+    assert.ok(result.refused);
+    assert.deepEqual(lm.calls(), []);
+  });
+
+  test("findUnconfirmed skips a subscriber with no creation date", () => {
+    assert.deepEqual(findUnconfirmed([sub(1, "x@example.com", { created_at: undefined }) as any], now), []);
   });
 });

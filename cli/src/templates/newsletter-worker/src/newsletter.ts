@@ -7,7 +7,7 @@
  *   POST /api/newsletter/subscribe  form post → confirmation mail → 303 /sub/check-email
  *   GET  /api/newsletter/confirm    signed link → list membership (+ download mail) → 303 /sub/confirmed
  *   GET  /api/newsletter/download   signed link → the lead-magnet file
- *   cron (daily)                    delete this form's signups that never confirmed (30 days)
+ *   cron (daily)                    delete subscribers that never confirmed (30 days)
  *
  * Membership order matters (see "Double opt-in" in hatchkit's email docs):
  * the address exists as a Listmonk subscriber on NO list until the link
@@ -15,9 +15,11 @@
  * would make Listmonk send its own shared-sender opt-in mail as well.
  *
  * Tokens are stateless: `<base64url payload>.<base64url HMAC-SHA256>`,
- * keyed by NEWSLETTER_TOKEN_SECRET. Confirm payload `{ e, x, m?, s? }`
- * (email, expiry ms, magnet key, source); download payload
- * `{ p: "dl", m, x }`. Each verifier refuses the other kind.
+ * keyed by NEWSLETTER_TOKEN_SECRET. Confirm payload `{ e, x, m? }`
+ * (email, expiry ms, magnet key); download payload `{ p: "dl", m, x }`.
+ * Each verifier refuses the other kind. The tokens are the only place a
+ * magnet key is kept: the Listmonk subscriber gets no attribs, so it
+ * holds no record of which page or site the signup came from.
  *
  * Every response to the form is a redirect, so the form works without JS.
  * Valid addresses always land on the same "check your inbox" page, whether
@@ -47,9 +49,6 @@ export interface Env {
   LISTMONK_TX_TEMPLATE_ID: string;
   LISTMONK_FROM: string;
   LISTMONK_LIST_ID: string;
-  /** Optional: the test list, so the cleanup also covers signups a local
-   *  `wrangler dev --var LISTMONK_LIST_ID:<test id>` run made. */
-  LISTMONK_TEST_LIST_ID?: string;
   NEWSLETTER_TOKEN_SECRET: string;
   /** Origin of the static site that holds /sub/* pages. */
   SITE_URL: string;
@@ -163,7 +162,6 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
       return redirect(env, "/sub/error?reason=unknown_magnet");
     }
   }
-  const source = normalizeSource(form.get("source"));
 
   try {
     if (await isConfirmedOnList(env, email)) {
@@ -183,10 +181,9 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
       }
       return redirect(env, "/sub/check-email");
     }
-    const signup = { source, magnet: magnet?.key };
-    const token = await mintConfirmToken(env.NEWSLETTER_TOKEN_SECRET, email, signup);
+    const token = await mintConfirmToken(env.NEWSLETTER_TOKEN_SECRET, email, { magnet: magnet?.key });
     const confirmUrl = `${trimSlash(env.API_URL)}${CONFIRM_PATH}?token=${encodeURIComponent(token)}`;
-    await ensureSubscriber(env, email, signup);
+    await ensureSubscriber(env, email);
     await sendTransactional(env, {
       to: email,
       subject: `Confirm your subscription · ${env.SITE_NAME}`,
@@ -213,10 +210,7 @@ async function handleConfirm(url: URL, env: Env): Promise<Response> {
 
   let alreadyConfirmed: boolean;
   try {
-    ({ alreadyConfirmed } = await confirmSubscription(env, result.email, {
-      source: result.source,
-      magnet: result.magnet,
-    }));
+    ({ alreadyConfirmed } = await confirmSubscription(env, result.email));
   } catch (err) {
     log("error", "confirm", "list_add_failed", { message: (err as Error).message });
     return redirect(env, "/sub/error?reason=list_add_failed");
@@ -377,16 +371,6 @@ export function _setMagnetsForTests(raw: unknown | null): void {
   magnetCache = raw === null ? null : parseMagnets(raw).magnets;
 }
 
-// A short label the page chooses, e.g. `home-hero`. Anything else is
-// dropped rather than refused: it is analytics, not worth a lost signup.
-const SOURCE_RE = /^[a-z0-9][a-z0-9._:/-]{0,63}$/;
-
-function normalizeSource(raw: unknown): string | undefined {
-  if (typeof raw !== "string") return undefined;
-  const trimmed = raw.trim().toLowerCase();
-  return SOURCE_RE.test(trimmed) ? trimmed : undefined;
-}
-
 /** RFC 6266: an ASCII `filename` for old agents plus a UTF-8 `filename*`. */
 function attachmentDisposition(filename: string): string {
   const ascii = filename.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "");
@@ -420,7 +404,6 @@ async function hmacKey(secret: string): Promise<CryptoKey> {
 }
 
 type TokenFailure = { ok: false; reason: "malformed" | "bad_signature" | "expired" };
-type SignupInfo = { source?: string; magnet?: string };
 
 async function signToken(secret: string, payload: object): Promise<string> {
   const payloadStr = b64urlEncode(encoder.encode(JSON.stringify(payload)));
@@ -467,27 +450,26 @@ const optionalString = (v: unknown): v is string | undefined => v === undefined 
 export async function mintConfirmToken(
   secret: string,
   email: string,
-  signup: SignupInfo = {},
+  opts: { magnet?: string } = {},
   now: number = Date.now(),
 ): Promise<string> {
   return signToken(secret, {
     e: email.toLowerCase(),
     x: now + CONFIRM_TOKEN_TTL_MS,
-    ...(signup.magnet ? { m: signup.magnet } : {}),
-    ...(signup.source ? { s: signup.source } : {}),
+    ...(opts.magnet ? { m: opts.magnet } : {}),
   });
 }
 
-export type VerifyResult = ({ ok: true; email: string } & SignupInfo) | TokenFailure;
+export type VerifyResult = { ok: true; email: string; magnet?: string } | TokenFailure;
 
 export async function verifyConfirmToken(secret: string, token: string, now: number = Date.now()): Promise<VerifyResult> {
   const opened = await openToken(secret, token, now);
   if (!opened.ok) return opened;
-  const { e, m, s, p } = opened.payload;
-  if (typeof e !== "string" || p !== undefined || !optionalString(m) || !optionalString(s)) {
+  const { e, m, p } = opened.payload;
+  if (typeof e !== "string" || p !== undefined || !optionalString(m)) {
     return { ok: false, reason: "malformed" };
   }
-  return { ok: true, email: e, ...(m ? { magnet: m } : {}), ...(s ? { source: s } : {}) };
+  return { ok: true, email: e, ...(m ? { magnet: m } : {}) };
 }
 
 export async function mintDownloadToken(secret: string, magnet: string, now: number = Date.now()): Promise<string> {
@@ -527,7 +509,6 @@ type ListmonkSubscriber = {
   email: string;
   status?: "enabled" | "disabled" | "blocklisted";
   created_at?: string;
-  attribs?: Record<string, unknown>;
   lists?: { id: number; subscription_status: "unconfirmed" | "confirmed" | "unsubscribed" }[];
 };
 
@@ -573,21 +554,10 @@ async function isConfirmedOnList(env: Env, email: string): Promise<boolean> {
   return sub?.lists?.find((l) => l.id === id)?.subscription_status === "confirmed";
 }
 
-/** `attribs.signup` on a NEW subscriber: which list's form, which source
- *  and magnet. Never written to an existing subscriber: the only call
- *  that changes attribs (`PUT /api/subscribers/:id`) also deletes every
- *  membership missing from its `lists`, i.e. every other project's. */
-function signupAttribs(env: Env, signup: SignupInfo): Record<string, unknown> {
-  return {
-    signup: {
-      list: listId(env),
-      ...(signup.source ? { source: signup.source } : {}),
-      ...(signup.magnet ? { magnet: signup.magnet } : {}),
-    },
-  };
-}
-
-async function createSubscriber(env: Env, email: string, listIds: number[], signup: SignupInfo): Promise<void> {
+/** Writes no attribs. Never update an existing subscriber with
+ *  `PUT /api/subscribers/:id`: it deletes every membership missing from
+ *  its `lists`, i.e. every other project's. */
+async function createSubscriber(env: Env, email: string, listIds: number[]): Promise<void> {
   await listmonkFetch(env, "/api/subscribers", {
     method: "POST",
     body: JSON.stringify({
@@ -596,7 +566,6 @@ async function createSubscriber(env: Env, email: string, listIds: number[], sign
       name: email,
       status: "enabled",
       lists: listIds,
-      attribs: signupAttribs(env, signup),
       // Marks lists in `listIds` confirmed and suppresses Listmonk's own
       // opt-in mail, which would go out from the shared sender.
       preconfirm_subscriptions: true,
@@ -607,17 +576,17 @@ async function createSubscriber(env: Env, email: string, listIds: number[], sign
 /** Make sure the address exists as a subscriber, on no list. An existing
  *  subscriber stays untouched: it may be on other projects' lists, or
  *  unsubscribed from ours, and a repeat form post must not change that. */
-async function ensureSubscriber(env: Env, email: string, signup: SignupInfo): Promise<void> {
-  if (!(await findSubscriber(env, email))) await createSubscriber(env, email, [], signup);
+async function ensureSubscriber(env: Env, email: string): Promise<void> {
+  if (!(await findSubscriber(env, email))) await createSubscriber(env, email, []);
 }
 
 /** Add the address to the list as `confirmed`. Idempotent. A subscriber
  *  deleted since the token was issued is created again on the list. */
-async function confirmSubscription(env: Env, email: string, signup: SignupInfo): Promise<{ alreadyConfirmed: boolean }> {
+async function confirmSubscription(env: Env, email: string): Promise<{ alreadyConfirmed: boolean }> {
   const id = listId(env);
   const existing = await findSubscriber(env, email);
   if (!existing) {
-    await createSubscriber(env, email, [id], signup);
+    await createSubscriber(env, email, [id]);
     return { alreadyConfirmed: false };
   }
   const alreadyConfirmed = existing.lists?.find((l) => l.id === id)?.subscription_status === "confirmed";
@@ -646,27 +615,30 @@ async function sendTransactional(env: Env, params: { to: string; subject: string
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Cleanup of never-confirmed signups (same rule as the starter's prune.ts)
+// Cleanup of never-confirmed subscribers (same rule as the starter's prune.ts)
 //
-// Deleted only when all hold: this form created the subscriber
-// (`attribs.signup.list` is LISTMONK_LIST_ID or LISTMONK_TEST_LIST_ID),
-// it is on no list, its status is `enabled` (a blocklisted or disabled
-// one must stay to keep its block), and Listmonk created it more than 30
-// days ago. "On no list" alone is not enough on a shared instance: a
-// deleted list or a membership removed by hand leaves subscribers there
-// too, and so do other projects' pending signups. Each candidate is read
-// again just before the delete, so a confirm click in between keeps it.
-// At most MAX_PRUNE_PER_RUN go per run. It needs `subscribers:get_all`
-// and `subscribers:manage`, which hatchkit's per-project API user has.
+// Deleted only when all hold: on no list (the form creates the
+// subscriber there; only the confirm click adds one), status `enabled`
+// (a blocklisted or disabled one must stay to keep its block), and
+// Listmonk created it more than 30 days ago. Nothing on a subscriber
+// says which form made it, so this covers the whole shared instance;
+// every project's form follows the same rule. It also deletes an address
+// whose only list was deleted or whose membership was removed by hand:
+// there is no subscription left to keep it for.
+//
+// Guards: each candidate is read again just before the delete, so a
+// confirm click in between keeps it; at most MAX_PRUNE_PER_RUN go per
+// run; and nothing is deleted when more than half of the enabled
+// subscribers look unconfirmed, which is what a Listmonk change that hid
+// other projects' memberships from this API user would look like. It
+// needs `subscribers:get_all` and `subscribers:manage`, which hatchkit's
+// per-project API user has.
 // ─────────────────────────────────────────────────────────────────────
 
 const MAX_PRUNE_PER_RUN = 500;
 
-function isUnconfirmed(s: ListmonkSubscriber, ownLists: number[], cutoff: number): boolean {
+function isUnconfirmed(s: ListmonkSubscriber, cutoff: number): boolean {
   if (s.status !== "enabled" || (s.lists?.length ?? 0) > 0) return false;
-  const signup = s.attribs?.signup;
-  const list = typeof signup === "object" && signup !== null ? (signup as { list?: unknown }).list : undefined;
-  if (!ownLists.includes(list as number)) return false;
   const created = s.created_at ? Date.parse(s.created_at) : Number.NaN;
   return Number.isFinite(created) && created < cutoff;
 }
@@ -674,26 +646,31 @@ function isUnconfirmed(s: ListmonkSubscriber, ownLists: number[], cutoff: number
 export async function pruneUnconfirmed(
   env: Env,
   now: number = Date.now(),
-): Promise<{ total: number; candidates: number; deleted: number }> {
-  const ownLists = [listId(env), Number(env.LISTMONK_TEST_LIST_ID)].filter((n) => Number.isInteger(n) && n > 0);
+): Promise<{ total: number; candidates: number; deleted: number; refused?: boolean }> {
   const cutoff = now - UNCONFIRMED_TTL_DAYS * DAY_MS;
   const res = await listmonkFetch<{ data: { results: ListmonkSubscriber[] } }>(env, "/api/subscribers?per_page=all");
-  const stale = res.data.results.filter((s) => isUnconfirmed(s, ownLists, cutoff));
+  const all = res.data.results;
+  const stale = all.filter((s) => isUnconfirmed(s, cutoff));
+  const enabled = all.filter((s) => s.status === "enabled").length;
+  if (stale.length > 10 && stale.length * 2 > enabled) {
+    log("error", "prune", "refused", { total: all.length, candidates: stale.length });
+    return { total: all.length, candidates: stale.length, deleted: 0, refused: true };
+  }
   let deleted = 0;
   const batch = stale.slice(0, MAX_PRUNE_PER_RUN);
   for (let i = 0; i < batch.length; i += 100) {
     const ids: number[] = [];
     for (const s of batch.slice(i, i + 100)) {
       const fresh = await listmonkFetch<{ data: ListmonkSubscriber }>(env, `/api/subscribers/${s.id}`).catch(() => null);
-      if (fresh && isUnconfirmed(fresh.data, ownLists, cutoff)) ids.push(s.id);
+      if (fresh && isUnconfirmed(fresh.data, cutoff)) ids.push(s.id);
     }
     if (ids.length === 0) continue;
     const params = new URLSearchParams(ids.map((id) => ["id", String(id)]));
     await listmonkFetch(env, `/api/subscribers?${params}`, { method: "DELETE" });
     deleted += ids.length;
   }
-  log("info", "prune", "pruned", { total: res.data.results.length, candidates: stale.length, deleted });
-  return { total: res.data.results.length, candidates: stale.length, deleted };
+  log("info", "prune", "pruned", { total: all.length, candidates: stale.length, deleted });
+  return { total: all.length, candidates: stale.length, deleted };
 }
 
 // ─────────────────────────────────────────────────────────────────────

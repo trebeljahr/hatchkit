@@ -1,8 +1,9 @@
 #!/usr/bin/env -S npx tsx
 /**
- * Delete this project's signups that never confirmed, 30 days after
- * Listmonk created the subscriber. The deployed server already does this
- * once a day; run it by hand to see what it would delete. The rule is in
+ * Delete Listmonk subscribers that never confirmed, 30 days after
+ * Listmonk created them, across the whole shared instance. The deployed
+ * server already does this once a day; run it by hand to see what it
+ * would delete. The rule and its guards are in
  * packages/server/src/services/newsletter/prune.ts. This script deletes
  * whatever NODE_ENV says, so use --dry-run first.
  *
@@ -30,9 +31,13 @@ async function main(): Promise<void> {
 
   const result = await pruneUnconfirmed({ dryRun, days });
   console.info(
-    `[newsletter:prune] ${result.total} subscriber(s) on the instance, ${result.candidates} of this project's signups unconfirmed for more than ${days} days.`,
+    `[newsletter:prune] ${result.total} subscriber(s) on the instance, ${result.candidates} on no list for more than ${days} days.`,
   );
   if (dryRun) for (const email of result.emails) console.info(`  ${email}`);
+  if (result.refused) {
+    console.error(`[newsletter:prune] ${result.refused}`);
+    process.exit(1);
+  }
   console.info(
     dryRun
       ? "[newsletter:prune] --dry-run: nothing deleted."

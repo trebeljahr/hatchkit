@@ -1,33 +1,42 @@
 /**
- * Delete this project's signups that never confirmed, 30 days after the
- * subscriber was created. The privacy policy promises this.
+ * Delete subscribers that never confirmed, 30 days after Listmonk
+ * created them. The privacy policy promises this.
  *
  * A subscriber is deleted only when ALL of these hold:
  *
- *   - this project's signup form created it: `attribs.signup.list` is
- *     this project's live or test list (listmonk.ts writes it on create);
- *   - it is on no list at all: the form creates it there, and only the
- *     confirm click adds one (see "Double opt-in and list membership" in
- *     listmonk.ts);
- *   - its status is `enabled`: deleting a blocklisted or disabled
+ *   - it is on no list at all. The signup form creates the subscriber
+ *     there, and only the confirm click adds one (see "Double opt-in and
+ *     list membership" in listmonk.ts). Account emails send with
+ *     `subscriber_mode: "external"` (services/email.ts) and create no
+ *     subscriber. An address that unsubscribed keeps its membership as
+ *     `unsubscribed`, so it is not on "no list";
+ *   - its status is `enabled`. Deleting a blocklisted or disabled
  *     subscriber would forget that it must not get mail;
  *   - Listmonk created it more than 30 days ago. Posting the form again
- *     does not restart the clock; a confirm link clicked after the
- *     cleanup still works, because the confirm route creates the
- *     subscriber again on the list.
+ *     does not restart the clock. A confirm link clicked after the
+ *     cleanup still works: the confirm route creates the subscriber
+ *     again, on the list.
  *
- * "On no list" alone is not enough on a shared instance: deleting a list
- * (`hatchkit remove … listmonk-ses`) or removing a membership by hand
- * also leaves subscribers on no list, and so do other projects' pending
- * signups. The `attribs.signup` check keeps the cleanup to subscribers
- * this project's form made. One case remains: a subscriber this form
- * created and confirmed, whose membership is later removed from every
- * list, is deleted too.
+ * The app stores nothing on a subscriber about where it signed up, so
+ * the rule cannot tell projects apart and looks at the whole shared
+ * instance. Every project's signup form follows the same rule, so that
+ * is right for each of them, and several projects or replicas running
+ * it delete nothing twice. It also deletes an address left on no list
+ * for another reason: its only list was deleted (`hatchkit remove …
+ * listmonk-ses`), or its membership was removed by hand. Such an
+ * address has no subscription left to keep it for. Export a list before
+ * deleting it if you want its addresses.
  *
- * Each candidate is read again right before the delete, so a confirm
- * click between the listing and the delete keeps the subscriber. At most
- * MAX_PER_RUN are deleted per run; the rest wait for the next day, which
- * limits what a bug in this rule can delete.
+ * Guards, because the rule reads every project's subscribers:
+ *   - each candidate is read again right before the delete, so a confirm
+ *     click between the listing and the delete keeps it;
+ *   - at most MAX_PER_RUN are deleted per run; the rest wait a day;
+ *   - the run deletes nothing when more than half of the enabled
+ *     subscribers look unconfirmed. A working signup form does not leave
+ *     that behind. A Listmonk change that hid other projects'
+ *     memberships from this API user would, and it would empty the
+ *     instance. The rule depends on `lists` holding every membership
+ *     (see listAllSubscribers in listmonk.ts).
  *
  * It runs once a day in production (`scheduleUnconfirmedCleanup`, from
  * routes.ts) and on demand with `pnpm newsletter:prune [--dry-run]`.
@@ -38,7 +47,6 @@ import {
   getSubscriber,
   type ListmonkSubscriber,
   listAllSubscribers,
-  projectListIds,
 } from "./listmonk.js";
 
 export const UNCONFIRMED_TTL_DAYS = 30;
@@ -52,21 +60,11 @@ function log(level: "info" | "error", event: string, extra: object = {}): void {
   else console.info(line);
 }
 
-function signupList(sub: ListmonkSubscriber): unknown {
-  const signup = sub.attribs?.signup;
-  return typeof signup === "object" && signup !== null ? (signup as { list?: unknown }).list : undefined;
-}
-
-/** Subscribers the rule above deletes, given this project's list ids. */
-export function findUnconfirmed(
-  subscribers: ListmonkSubscriber[],
-  ownLists: number[],
-  cutoff: number,
-): ListmonkSubscriber[] {
+/** Subscribers the rule above deletes. */
+export function findUnconfirmed(subscribers: ListmonkSubscriber[], cutoff: number): ListmonkSubscriber[] {
   return subscribers.filter((sub) => {
     if (sub.status !== "enabled") return false;
     if ((sub.lists?.length ?? 0) > 0) return false;
-    if (!ownLists.includes(signupList(sub) as number)) return false;
     const created = sub.created_at ? Date.parse(sub.created_at) : Number.NaN;
     return Number.isFinite(created) && created < cutoff;
   });
@@ -79,19 +77,18 @@ export type PruneResult = {
   /** Candidates left for the next run by MAX_PER_RUN. */
   deferred: number;
   emails: string[];
+  /** Set when the run refused to delete anything. */
+  refused?: string;
 };
 
-/** Find and (unless `dryRun`) delete this project's never-confirmed
- *  signups. */
+/** Find and (unless `dryRun`) delete never-confirmed subscribers. */
 export async function pruneUnconfirmed(
   opts: { dryRun?: boolean; now?: number; days?: number } = {},
 ): Promise<PruneResult> {
   const now = opts.now ?? Date.now();
-  const days = opts.days ?? UNCONFIRMED_TTL_DAYS;
-  const ownLists = projectListIds();
-  if (ownLists.length === 0) throw new Error("No Listmonk list id in the environment");
+  const cutoff = now - (opts.days ?? UNCONFIRMED_TTL_DAYS) * DAY_MS;
   const subscribers = await listAllSubscribers();
-  const stale = findUnconfirmed(subscribers, ownLists, now - days * DAY_MS);
+  const stale = findUnconfirmed(subscribers, cutoff);
   const batch = stale.slice(0, MAX_PER_RUN);
   const result: PruneResult = {
     total: subscribers.length,
@@ -101,13 +98,20 @@ export async function pruneUnconfirmed(
     emails: stale.map((s) => s.email),
   };
 
+  const enabled = subscribers.filter((s) => s.status === "enabled").length;
+  if (stale.length > 10 && stale.length * 2 > enabled) {
+    result.refused = `${stale.length} of ${enabled} enabled subscribers look unconfirmed; refusing to delete that many. Check Listmonk → Subscribers; if they really are pending signups, delete them in Listmonk → Maintenance.`;
+    log("error", "refused", { total: result.total, candidates: stale.length });
+    return result;
+  }
+
   if (!opts.dryRun) {
     for (let i = 0; i < batch.length; i += BATCH) {
       const ids: number[] = [];
       for (const sub of batch.slice(i, i + BATCH)) {
         // Read it again: a confirm click since the listing added a list.
         const fresh = await getSubscriber(sub.id);
-        if (fresh && findUnconfirmed([fresh], ownLists, now - days * DAY_MS).length === 1) ids.push(sub.id);
+        if (fresh && findUnconfirmed([fresh], cutoff).length === 1) ids.push(sub.id);
       }
       await deleteSubscribers(ids);
       result.deleted += ids.length;

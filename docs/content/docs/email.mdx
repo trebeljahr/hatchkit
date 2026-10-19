@@ -239,8 +239,8 @@ A lead magnet is a free file that a reader gets for signing up: a wallpaper pack
 
 ### How delivery works
 
-1. **Form.** `<SubscribeForm magnet="wallpapers" source="home-hero" />` posts the magnet's key and a short source label. The form never sends a URL. The server accepts only keys listed in `packages/server/src/services/newsletter/magnets.json` and answers `400 unknown_magnet` for any other key.
-2. **Confirmation email.** The signed confirm token carries the magnet key and the source. A new subscriber gets `attribs.signup = { list, source, magnet }`.
+1. **Form.** `<SubscribeForm magnet="wallpapers" />` posts the magnet's key. The form never sends a URL. The server accepts only keys listed in `packages/server/src/services/newsletter/magnets.json` and answers `400 unknown_magnet` for any other key.
+2. **Confirmation email.** The signed confirm token carries the magnet key. Nothing about the signup is written to the subscriber (see [What is stored](#what-is-stored)).
 3. **Confirm click.** The server adds the list membership first. Then it sends a second email through `/api/tx` with a download link, and redirects to `/sub/confirmed?delivery=sent`.
 4. **Download.** The link goes to `/api/newsletter/download?token=…` on the API origin. The token is signed with `NEWSLETTER_TOKEN_SECRET` and expires after 30 days. The route answers with a redirect to the file.
 
@@ -275,11 +275,17 @@ hatchkit add <project> lead-magnet --key wallpapers --remove
 
 Add `--dry-run` to see the change without writing it. Upload an `object` file to the bucket yourself, in the R2 dashboard or with `wrangler r2 object put <bucket>/magnets/wallpapers.zip --file wallpapers.zip --remote`.
 
-### Segmenting by signup
+### What is stored
 
-A new subscriber carries `attribs.signup.list`, `.source` and `.magnet`. A Listmonk campaign can target a magnet with a query such as `subscribers.attribs->'signup'->>'magnet' = 'wallpapers'`. That query needs the `subscribers:sql_query` permission, which the Listmonk admin user has.
+A subscriber in Listmonk holds the email address and its list memberships, and nothing else. The starter writes no attribs. So no record says which page or site a person signed up on, or which file they asked for. The magnet key lives only in the signed confirm and download links, which expire.
 
-The starter writes attribs only when it creates a subscriber. A subscriber that already exists, for example from another project's list, keeps its attribs. The only Listmonk call that changes an existing subscriber's attribs is `PUT /api/subscribers/:id`. That call also deletes every list membership that its `lists` field leaves out. A project's API user can name only its own lists, so the call would remove the address from every other project's list.
+Counts are in aggregate only:
+
+- **Subscribers per project:** the size of the project's list in Listmonk.
+- **Downloads per magnet:** count the `newsletter.delivery` / `delivery_sent` and `newsletter.download` / `served` log lines by their `magnet` field. These lines carry no address.
+- **Signups per page:** if you want this, send an aggregate analytics event (for example a Plausible goal) when the form is submitted. Do not store it on the subscriber.
+
+The starter also never changes an existing subscriber with `PUT /api/subscribers/:id`. That call deletes every list membership that its `lists` field leaves out. A project's API user can name only its own lists, so the call would remove the address from every other project's list.
 
 ### Checking delivery
 
@@ -310,14 +316,13 @@ The scaffold gives a static project no newsletter, because it has no server to r
 
 ## Deleting never-confirmed signups
 
-The starter deletes a signup that was never confirmed 30 days after Listmonk created the subscriber. It deletes a subscriber only when all of these are true:
+The starter deletes a subscriber that never confirmed 30 days after Listmonk created it. It deletes a subscriber only when all of these are true:
 
-- This project's signup form created it. The form writes `attribs.signup.list`, and the value must be the project's live or test list.
-- It is on no list. The form creates the subscriber on no list, and only the confirm click adds one.
+- It is on no list. The signup form creates the subscriber on no list, and only the confirm click adds one. Account emails use `subscriber_mode: "external"` and create no subscriber. A subscriber who unsubscribed keeps an `unsubscribed` membership, so it is not on "no list".
 - Its status is `enabled`. A blocklisted or disabled subscriber stays, because deleting it removes the block.
 - Listmonk created it more than 30 days ago. Sending the form again does not restart this clock.
 
-"On no list" alone is not enough on a shared instance. A deleted list, a membership removed by hand and another project's pending signups also leave subscribers on no list. One case remains: a subscriber that this form created and that confirmed, but that is later removed from every list, is deleted too.
+The subscriber stores nothing about which form created it, so the rule cannot tell projects apart. It covers the whole Listmonk instance. Every project's signup form follows the same rule, so the result is correct for each of them, and several projects that run it delete nothing twice. The rule also deletes an address that is on no list for another reason: its only list was deleted (`hatchkit remove <project> listmonk-ses` deletes the project's lists), or somebody removed its membership by hand. Such an address has no subscription left. Export a list before you delete it if you want to keep its addresses.
 
 When it runs:
 
@@ -325,9 +330,13 @@ When it runs:
 - `pnpm newsletter:prune --dry-run` lists what it would delete. `pnpm newsletter:prune` deletes it, wherever you run it.
 - The newsletter Worker runs the same cleanup from a daily cron trigger.
 
-The cleanup reads every subscriber with `subscribers:get_all` and deletes with `subscribers:manage`. Every project's API user has both. Just before it deletes a subscriber, it reads that subscriber again, so a confirm click in between keeps the subscriber. It deletes at most 500 subscribers per run and leaves the rest for the next day. A confirm link clicked after the cleanup still works, because the confirm route creates the subscriber again, on the list.
+Guards:
 
-Subscribers created before this change have no `attribs.signup`, so the cleanup never deletes them. To remove those pending signups once, use **Listmonk → Maintenance → Delete orphan subscribers**. That deletes every subscriber on no list on the whole instance, including other projects' pending signups, so check the list first.
+- Just before it deletes a subscriber, the cleanup reads that subscriber again. A confirm click in between keeps the subscriber.
+- It deletes at most 500 subscribers per run and leaves the rest for the next day.
+- It deletes nothing when more than 10 subscribers, and more than half of the enabled subscribers, look unconfirmed. It logs `newsletter.prune` / `refused` instead. A working signup form does not leave that pattern. A Listmonk change that hides other projects' memberships from the project's API user would. If the subscribers really are pending signups, delete them in **Listmonk → Maintenance**.
+
+The cleanup reads every subscriber with `subscribers:get_all` and deletes with `subscribers:manage`. Every project's API user has both. A confirm link clicked after the cleanup still works, because the confirm route creates the subscriber again, on the list.
 
 ## Tearing down
 

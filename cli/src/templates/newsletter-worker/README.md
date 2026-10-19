@@ -11,10 +11,10 @@ the site's repo as `workers/newsletter/` and fill in `wrangler.jsonc`.
 
 | Route | Does |
 | --- | --- |
-| `POST /api/newsletter/subscribe` | Form post (`email`, optional `magnet` and `source`). Creates the subscriber on no list, mails the signed link, 303 → `/sub/check-email` |
+| `POST /api/newsletter/subscribe` | Form post (`email`, optional `magnet`). Creates the subscriber on no list, mails the signed link, 303 → `/sub/check-email` |
 | `GET /api/newsletter/confirm?token=…` | Verifies the token, adds the list as `confirmed`, mails the download link when the signup asked for a magnet, 303 → `/sub/confirmed` (`?delivery=sent` or `?delivery=failed`) |
 | `GET /api/newsletter/download?token=…` | Verifies the download token, streams the R2 object or redirects to the magnet's URL |
-| cron, daily | Deletes subscribers this form created that never confirmed, 30 days after creation |
+| cron, daily | Deletes subscribers on no list, 30 days after Listmonk created them |
 
 Errors redirect to `/sub/error?reason=…`. The site serves the `/sub/*`
 pages as static files: `check-email`, `confirmed` and `error`.
@@ -25,7 +25,6 @@ pages as static files: `check-email`, `confirmed` and `error`.
 <form method="post" action="/api/newsletter/subscribe">
   <input type="email" name="email" required>
   <input type="hidden" name="magnet" value="wallpapers">
-  <input type="hidden" name="source" value="home-hero">
   <!-- honeypot: hide it from people -->
   <input type="text" name="website" tabindex="-1" autocomplete="off" hidden>
   <button>Subscribe</button>
@@ -50,6 +49,11 @@ An `object` is streamed from the R2 bucket bound as `MAGNETS`; uncomment
 `workers/newsletter/src/magnets.json`. Removing an entry stops every link
 already sent for it, until an entry with the same key is added again.
 
+The subscriber in Listmonk gets no attribs: nothing records which page or
+site it signed up on, or which magnet it asked for. The magnet key lives
+only in the signed links. Count downloads from the `newsletter.delivery`
+log lines.
+
 `/api/tx` answers before SMTP runs, so a `delivery_sent` log line means
 "queued". An SES rejection shows only in Listmonk → Settings → Logs.
 
@@ -64,8 +68,8 @@ pnpm --dir workers/newsletter exec wrangler deploy
 
 `LISTMONK_API_TOKEN` is the project's own Listmonk API user (`hatchkit
 listmonk user <project>`); the cleanup needs its `subscribers:get_all` and
-`subscribers:manage`. Set `LISTMONK_TEST_LIST_ID` in `vars` too if you test
-against the test list, so the cleanup covers those signups. Changing `NEWSLETTER_TOKEN_SECRET` invalidates every
+`subscribers:manage`. The cleanup covers the whole shared Listmonk instance,
+the same rule as the starter's (see hatchkit's email docs). Changing `NEWSLETTER_TOKEN_SECRET` invalidates every
 confirm and download link already sent. Wrangler needs
 `CLOUDFLARE_API_TOKEN` (Workers Scripts edit, Workers Routes edit on the
 zone) and `CLOUDFLARE_ACCOUNT_ID`. Deploy the Worker before the site

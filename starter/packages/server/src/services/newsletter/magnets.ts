@@ -12,7 +12,9 @@
  *   }
  *
  *   key       lowercase letters, digits and dashes; the form sends it, and
- *             it is stored as `attribs.signup.magnet` on a new subscriber
+ *             only the signed links carry it. Nothing on the Listmonk
+ *             subscriber records it; count deliveries from the
+ *             `newsletter.delivery` log lines instead.
  *   title     shown in the email
  *   object    a key in the project's bucket (S3_BUCKET_NAME). The download
  *             route answers with a 10-minute presigned GET, so the bucket

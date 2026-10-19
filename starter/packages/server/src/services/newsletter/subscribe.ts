@@ -18,7 +18,7 @@
  * via HMAC-SHA256. Compact format: `<base64url-payload>.<base64url-sig>`.
  *
  * Two kinds share the secret:
- *   confirm   `{ e: email, x, m?: magnet key, s?: source }`
+ *   confirm   `{ e: email, x, m?: magnet key }`
  *   download  `{ p: "dl", m: magnet key, x }` — the link in the lead-magnet
  *             email (see magnets.ts). Each verifier refuses the other
  *             kind's payload, so neither link works as the other.
@@ -29,7 +29,6 @@ import {
   ensureSubscriber,
   isConfirmedOnList,
   confirmSubscription as listmonkConfirm,
-  type SignupInfo,
   sendTransactional,
 } from "./listmonk.js";
 
@@ -105,29 +104,30 @@ function optionalString(value: unknown): value is string | undefined {
   return value === undefined || typeof value === "string";
 }
 
+/** `magnet` is the lead magnet the reader asked for; the confirm route
+ *  mails its download. The token is the only place it is kept. */
 export function mintConfirmToken(
   email: string,
-  signup: SignupInfo = {},
+  opts: { magnet?: string } = {},
   now: number = Date.now(),
 ): string {
   return signToken({
     e: email.toLowerCase(),
     x: now + CONFIRM_TOKEN_TTL_MS,
-    ...(signup.magnet ? { m: signup.magnet } : {}),
-    ...(signup.source ? { s: signup.source } : {}),
+    ...(opts.magnet ? { m: opts.magnet } : {}),
   });
 }
 
-export type VerifyResult = ({ ok: true; email: string } & SignupInfo) | TokenFailure;
+export type VerifyResult = { ok: true; email: string; magnet?: string } | TokenFailure;
 
 export function verifyConfirmToken(token: string, now: number = Date.now()): VerifyResult {
   const opened = openToken(token, now);
   if (!opened.ok) return opened;
-  const { e, m, s, p } = opened.payload;
-  if (typeof e !== "string" || p !== undefined || !optionalString(m) || !optionalString(s)) {
+  const { e, m, p } = opened.payload;
+  if (typeof e !== "string" || p !== undefined || !optionalString(m)) {
     return { ok: false, reason: "malformed" };
   }
-  return { ok: true, email: e, ...(m ? { magnet: m } : {}), ...(s ? { source: s } : {}) };
+  return { ok: true, email: e, ...(m ? { magnet: m } : {}) };
 }
 
 export function mintDownloadToken(magnet: string, now: number = Date.now()): string {
@@ -156,17 +156,6 @@ export function normalizeEmail(raw: unknown): string | null {
   return trimmed;
 }
 
-// A short label the page chooses, e.g. `home-hero` or `blog/raptors`.
-// Anything else is dropped rather than refused: it is analytics, and a
-// bad label must not cost a signup.
-const SOURCE_RE = /^[a-z0-9][a-z0-9._:/-]{0,63}$/;
-
-export function normalizeSource(raw: unknown): string | undefined {
-  if (typeof raw !== "string") return undefined;
-  const trimmed = raw.trim().toLowerCase();
-  return SOURCE_RE.test(trimmed) ? trimmed : undefined;
-}
-
 /** True when the address is already a confirmed member of the
  *  env-resolved list. Used by the subscribe route to short-circuit
  *  and skip the confirmation send for repeat signups. */
@@ -187,8 +176,6 @@ export type SendConfirmationEmailParams = {
   /** Display name of the site/newsletter — shown in the email body
    *  and the call-to-action. Falls back to "this newsletter". */
   siteName?: string;
-  /** Written as `attribs.signup` when the subscriber is new. */
-  signup?: SignupInfo;
 };
 
 /** Render + send the double-opt-in confirmation email. Customise the
@@ -199,7 +186,7 @@ export async function sendConfirmationEmail(params: SendConfirmationEmailParams)
   // The recipient must exist as a Listmonk subscriber before /api/tx
   // accepts the send. It stays off the list until the link is clicked
   // (see "Double opt-in and list membership" in listmonk.ts).
-  await ensureSubscriber(params.to, params.signup ?? {});
+  await ensureSubscriber(params.to);
   const siteName = params.siteName ?? "this newsletter";
   await sendTransactional({
     to: params.to,

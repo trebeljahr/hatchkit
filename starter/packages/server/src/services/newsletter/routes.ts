@@ -25,7 +25,6 @@ import {
   isAlreadySubscribed,
   mintConfirmToken,
   normalizeEmail,
-  normalizeSource,
   sendConfirmationEmail,
   verifyConfirmToken,
   verifyDownloadToken,
@@ -94,7 +93,6 @@ export function registerNewsletterRoutes(app: Express): void {
       email?: string;
       website?: string;
       magnet?: unknown;
-      source?: unknown;
     };
 
     // Honeypot — real users never fill this. Return a 200-shaped
@@ -131,7 +129,6 @@ export function registerNewsletterRoutes(app: Express): void {
         return;
       }
     }
-    const source = normalizeSource(body.source);
 
     // Short-circuit confirmed members — no point sending another
     // confirmation email or re-issuing a token that does nothing. The
@@ -172,12 +169,11 @@ export function registerNewsletterRoutes(app: Express): void {
       return;
     }
 
-    const signup = { source, magnet: magnet?.key };
-    const token = mintConfirmToken(email, signup);
+    const token = mintConfirmToken(email, { magnet: magnet?.key });
     const confirmUrl = `${api}/api/newsletter/confirm?token=${encodeURIComponent(token)}`;
 
     try {
-      await sendConfirmationEmail({ to: email, confirmUrl, siteName: siteName(), signup });
+      await sendConfirmationEmail({ to: email, confirmUrl, siteName: siteName() });
     } catch (err) {
       log("error", "subscribe", "send_confirmation_failed", {
         ip,
@@ -219,10 +215,7 @@ export function registerNewsletterRoutes(app: Express): void {
 
     let alreadyConfirmed: boolean;
     try {
-      ({ alreadyConfirmed } = await confirmSubscription(result.email, {
-        source: result.source,
-        magnet: result.magnet,
-      }));
+      ({ alreadyConfirmed } = await confirmSubscription(result.email));
     } catch (err) {
       log("error", "confirm", "list_add_failed", { message: (err as Error).message });
       res.redirect(303, `${base}/sub/error?reason=list_add_failed`);

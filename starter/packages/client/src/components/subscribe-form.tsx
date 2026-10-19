@@ -27,12 +27,9 @@ type SubscribeFormProps = {
    *  `services/newsletter/magnets.json`. The reader gets its download
    *  link by email once the address is confirmed. */
   magnet?: string;
-  /** Short label for where this form sits, e.g. `home-hero`. Stored on
-   *  new subscribers as `attribs.signup.source`. */
-  source?: string;
 };
 
-export function SubscribeForm({ magnet, source }: SubscribeFormProps = {}) {
+export function SubscribeForm({ magnet }: SubscribeFormProps = {}) {
   const [email, setEmail] = useState("");
   // Honeypot — wired but never shown. Bots that fill every input get
   // filtered server-side before any Listmonk call.
@@ -68,7 +65,7 @@ export function SubscribeForm({ magnet, source }: SubscribeFormProps = {}) {
       const res = await fetch(`${API_URL}/api/newsletter/subscribe`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email, website, magnet, source }),
+        body: JSON.stringify({ email, website, magnet }),
       });
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { message?: string };
