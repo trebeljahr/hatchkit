@@ -29,6 +29,10 @@
  *      (`POST …/email/routing/dns { name }`) before its records, so
  *      Cloudflare receives for it; the run ledger's undo stops it again
  *      and refuses anything that would switch off the whole zone.
+ *   7. The DMARC rua (dmarc@<host>) has a rule wherever no catch-all
+ *      receives it. Cloudflare's catch-all is apex-only, so on
+ *      broadcastdock/mood-magic/streaks.trebeljahr.com every aggregate
+ *      report bounced (2026-10-19).
  *
  * Run: `pnpm test` (via the script in cli/package.json).
  */
@@ -467,6 +471,9 @@ interface FakeCloudflareState {
   calls?: Array<{ method: string; path: string; body?: Record<string, unknown> }>;
   /** Email Routing destinations on the account. */
   destinations?: Array<{ id: string; email: string; verified: string | null }>;
+  /** Forwarding rules on the zone; when absent, the list reads empty and
+   *  POSTs are not kept. */
+  rules?: Array<{ id: string; matchers: unknown[]; actions: unknown[] }>;
 }
 
 /** Cloudflare's own MX records for a registered name: locked, stored
@@ -553,7 +560,10 @@ function installFakeCloudflare(state: FakeCloudflareState) {
       return ok(created);
     }
     if (path === "/zones/z1/email/routing/rules") {
-      return method === "GET" ? ok([]) : ok({ id: `rule${++seq}` });
+      if (method === "GET") return ok(state.rules ?? []);
+      const rule = { id: `rule${++seq}`, ...body };
+      state.rules?.push(rule);
+      return ok(rule);
     }
     if (path === "/zones/z1/email/routing/rules/catch_all") {
       return ok({ enabled: false, matchers: [{ type: "all" }], actions: [] });
@@ -750,8 +760,92 @@ await expect(
       [
         ["privacy@mail.example.com", true],
         ["imprint@mail.example.com", true],
+        ["dmarc@mail.example.com", true],
       ],
     );
+  },
+);
+
+await expect(
+  "DMARC reports get a rule where no catch-all receives them, and only there",
+  async () => {
+    const dmarcRules = (state: FakeCloudflareState) =>
+      (state.calls ?? []).filter(
+        (c) =>
+          c.method === "POST" &&
+          c.path === "/zones/z1/email/routing/rules" &&
+          JSON.stringify(c.body?.matchers).includes("dmarc@"),
+      );
+    const run = async (state: FakeCloudflareState, opts: Parameters<typeof runEmailSetup>[0]) => {
+      const restore = installFakeCloudflare(state);
+      try {
+        return await runEmailSetup(opts);
+      } finally {
+        restore();
+      }
+    };
+
+    // Below the zone the catch-all never applies (Cloudflare runs it on
+    // the apex only), so dmarc@<host> needs its own rule — and keeps it
+    // on a re-run without a second one.
+    const sub: FakeCloudflareState = { records: [], routingEnabled: true, rules: [], calls: [] };
+    const first = await run(sub, subOpts);
+    assert.match(
+      sub.records.find((r) => r.name === "_dmarc.mail.example.com")?.content ?? "",
+      /rua=mailto:dmarc@mail\.example\.com;/,
+    );
+    assert.deepEqual(
+      first.rules.find((r) => r.address === "dmarc@mail.example.com")?.created,
+      true,
+      "the ledger needs created: true to undo it",
+    );
+    assert.deepEqual(dmarcRules(sub)[0]?.body?.actions, [
+      { type: "forward", value: ["me@example.org"] },
+    ]);
+    const again = await run(sub, subOpts);
+    assert.equal(dmarcRules(sub).length, 1);
+    assert.ok(!again.rules.some((r) => r.address === "dmarc@mail.example.com"));
+
+    // A rule already on the address forwards where someone chose.
+    const chosen: FakeCloudflareState = {
+      records: [],
+      routingEnabled: true,
+      calls: [],
+      rules: [
+        {
+          id: "mine",
+          matchers: [{ type: "literal", field: "to", value: "dmarc@mail.example.com" }],
+          actions: [{ type: "forward", value: ["reports@example.org"] }],
+        },
+      ],
+    };
+    const kept = await run(chosen, subOpts);
+    assert.equal(dmarcRules(chosen).length, 0);
+    assert.ok(!(chosen.calls ?? []).some((c) => c.path.endsWith("/rules/mine")));
+    assert.ok(!kept.rules.some((r) => r.address === "dmarc@mail.example.com"));
+
+    // Asked for by name: one rule, not two.
+    const named: FakeCloudflareState = { records: [], routingEnabled: true, rules: [], calls: [] };
+    await run(named, { ...subOpts, addresses: ["dmarc", "privacy"] });
+    assert.equal(dmarcRules(named).length, 1);
+
+    // A report inbox off the host is the caller's to route.
+    const offHost: FakeCloudflareState = { records: [], routingEnabled: true, rules: [], calls: [] };
+    await run(offHost, { ...subOpts, dmarcRua: "dmarc@example.org" });
+    assert.equal(dmarcRules(offHost).length, 0);
+
+    // On the apex the catch-all receives it, when there is one.
+    const apex: FakeCloudflareState = { records: [], routingEnabled: true, rules: [], calls: [] };
+    await run(apex, setupOpts);
+    assert.equal(dmarcRules(apex).length, 0);
+    const apexNoCatchAll: FakeCloudflareState = {
+      records: [],
+      routingEnabled: true,
+      rules: [],
+      calls: [],
+    };
+    await run(apexNoCatchAll, { ...setupOpts, catchAll: false });
+    assert.equal(dmarcRules(apexNoCatchAll).length, 1, "the fake's catch-all is disabled");
   },
 );
 

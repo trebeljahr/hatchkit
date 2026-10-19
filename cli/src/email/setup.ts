@@ -18,7 +18,9 @@
  *      with `sp=none` to avoid breaking subdomain senders.
  *   6. Create the forwarding rules — one per `<localPart>@<zone>` →
  *      destination. Idempotent: existing rules with matching matchers
- *      get their forward updated; otherwise we POST a new rule.
+ *      get their forward updated; otherwise we POST a new rule. Plus
+ *      one for the DMARC report address when nothing else receives it
+ *      (the catch-all works only on the zone apex).
  *   7. Optionally set the catch-all (a single rule per zone, separate
  *      endpoint from the rule list).
  *
@@ -78,9 +80,9 @@ export interface EmailSetupOptions {
   /** DMARC policy. Defaults to "quarantine". */
   dmarcPolicy?: "none" | "quarantine" | "reject";
   /** Aggregate-report destination for DMARC. Defaults to
-   *  `dmarc@<domain>` (will be caught by the catch-all if enabled).
-   *  Override when you want CF Email Routing's reports forwarded to
-   *  a known inbox without relying on catch-all. */
+   *  `dmarc@<domain>`. When the address is on {@link domain} and no rule
+   *  or catch-all receives it, setup adds a literal rule for it (step 6b).
+   *  Override when the reports should go to an inbox outside the domain. */
   dmarcRua?: string;
   /** Leave an existing `_dmarc` record untouched instead of replacing
    *  it with {@link dmarcPolicy}. For additive callers (migrate-domain). */
@@ -284,6 +286,8 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
   // rather than loosening or tightening someone's deliberate choice.
   const dmarcName = `_dmarc.${opts.domain}`;
   const existingDmarc = await findApexTxt(cf, zone.id, dmarcName, DMARC_RE);
+  // The report address this run writes, when it writes one.
+  let rua: string | undefined;
   if (existingDmarc && opts.preserveExistingDmarc) {
     dnsRecords.push({
       id: existingDmarc.id,
@@ -294,8 +298,9 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
       updated: false,
     });
   } else {
+    rua = opts.dmarcRua ?? `dmarc@${opts.domain}`;
     const dmarcContent = buildDmarcRecord({
-      rua: opts.dmarcRua ?? `dmarc@${opts.domain}`,
+      rua,
       policy: opts.dmarcPolicy ?? "quarantine",
     });
     const dmarcRes = await cf.upsertRecord(zone.id, {
@@ -324,6 +329,40 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
       name: `Forward ${address}`,
     });
     rules.push({ address, id: res.id, created: res.created, updated: res.updated });
+  }
+
+  // Step 6b — a route for the DMARC aggregate reports. The default rua is
+  // dmarc@<domain>, and Cloudflare runs the catch-all only on the zone
+  // apex: on a hostname below it nothing receives that address, and every
+  // report bounces. So when no rule or catch-all takes the rua, add a
+  // literal rule for it. That keeps each host's reports on its own name
+  // and needs nothing from the apex — moving the rua to dmarc@<zone>
+  // would only work while the apex's own rules or catch-all (which this
+  // run does not own) keep receiving it. A rule already on the address
+  // forwards where someone chose, so it stays as it is.
+  const ruaAt = rua?.lastIndexOf("@") ?? -1;
+  const ruaLocal = rua && ruaAt > 0 ? rua.slice(0, ruaAt).toLowerCase() : undefined;
+  if (
+    rua &&
+    ruaLocal &&
+    rua.slice(ruaAt + 1).toLowerCase() === domain &&
+    !opts.addresses.some((a) => a.toLowerCase() === ruaLocal) &&
+    (subdomain || (!opts.catchAll && !(await catchAllReceives(cf, zone.id))))
+  ) {
+    const address = `${ruaLocal}@${opts.domain}`;
+    const existing = (await cf.listEmailRoutingRules(zone.id)).some((r) =>
+      r.matchers?.some(
+        (m) => m.type === "literal" && m.field === "to" && m.value?.toLowerCase() === address,
+      ),
+    );
+    if (!existing) {
+      const res = await cf.upsertEmailRoutingRule(zone.id, {
+        address,
+        forwardTo: [opts.destination],
+        name: `Forward ${address} (DMARC reports)`,
+      });
+      rules.push({ address, id: res.id, created: res.created, updated: res.updated });
+    }
   }
 
   // Step 7 — catch-all (zone-level singleton). `changed` reflects the
@@ -366,6 +405,16 @@ const DMARC_RE = /^"?v=DMARC1\b/i;
 
 function unquoteTxt(content: string): string {
   return content.trim().replace(/^"|"$/g, "").trim();
+}
+
+/** Whether the zone's catch-all delivers mail somewhere (a disabled or
+ *  dropping catch-all receives nothing). */
+async function catchAllReceives(cf: CloudflareApi, zoneId: string): Promise<boolean> {
+  const rule = await cf.getEmailCatchAll(zoneId);
+  return (
+    rule?.enabled === true &&
+    (rule.actions ?? []).some((a) => a.type === "forward" || a.type === "worker")
+  );
 }
 
 /** Re-read the zone's routing settings for one registered hostname. */
