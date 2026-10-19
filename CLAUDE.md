@@ -232,3 +232,7 @@ Key paths:
 - `services/`: ML templates.
 - `mcp/src/index.ts`: read-only MCP server.
 - `docs/content/docs/`: docs source.
+- `docs/app/(home)/privacy/page.tsx`: names every host a visitor's browser
+  contacts and every storage key the docs site writes. A new third-party
+  request (script, font, image, embed) or storage key updates it, and
+  `PRIVACY_UPDATED_AT` in `docs/lib/legal.ts`, in the same change.

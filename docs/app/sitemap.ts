@@ -1,5 +1,6 @@
 import type { MetadataRoute } from "next";
 import { source } from "@/lib/source";
+import { PRIVACY_UPDATED_AT } from "@/lib/legal";
 import { absoluteUrl, lastModifiedForDoc, lastModifiedForFile } from "@/lib/seo";
 
 export const dynamic = "force-static";
@@ -30,6 +31,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
     {
       url: absoluteUrl("/imprint"),
       lastModified: lastModifiedForFile("app/(home)/imprint/page.tsx"),
+      changeFrequency: "yearly",
+      priority: 0.3,
+    },
+    {
+      url: absoluteUrl("/privacy"),
+      lastModified: new Date(PRIVACY_UPDATED_AT),
       changeFrequency: "yearly",
       priority: 0.3,
     },

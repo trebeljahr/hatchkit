@@ -14,7 +14,14 @@ export const OPERATOR_ADDRESS = [
 ] as const;
 
 /** Footer and docs-sidebar links. Both pages are real routes outside the docs tree. */
-export const LEGAL_LINKS = [{ text: "Imprint", url: "/imprint" }] as const;
+export const LEGAL_LINKS = [
+  { text: "Privacy", url: "/privacy" },
+  { text: "Imprint", url: "/imprint" },
+] as const;
+
+/** Date shown at the top of /privacy and used as its sitemap date. Change it
+ *  together with the page. */
+export const PRIVACY_UPDATED_AT = "2026-10-19";
 
 export function legalMetadata({
   title,
