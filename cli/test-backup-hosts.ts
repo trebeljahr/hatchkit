@@ -66,8 +66,19 @@ const fs = require("node:fs");
 const { isDeepStrictEqual } = require("node:util");
 const statePath = ${JSON.stringify(statePath)};
 const [, target, command] = process.argv.slice(2);
-const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
 const input = fs.readFileSync(0, "utf8");
+// Hosts are asked in parallel. Two fakes writing the state at once tore
+// it, and the reader's JSON.parse crashed as "command failed (exit 1)".
+const lock = statePath + ".lock";
+const pause = new Int32Array(new SharedArrayBuffer(4));
+for (const start = Date.now(); ; ) {
+  try { fs.mkdirSync(lock); break; } catch (error) {
+    if (error.code !== "EEXIST" || Date.now() - start > 30000) throw error;
+    Atomics.wait(pause, 0, 0, 5);
+  }
+}
+process.on("exit", () => fs.rmdirSync(lock));
+const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
 const host = state.hosts[target];
 const save = () => fs.writeFileSync(statePath, JSON.stringify(state));
 const out = (value, code = 0) => { save(); console.log(typeof value === "string" ? value : JSON.stringify(value)); process.exit(code); };
