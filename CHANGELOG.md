@@ -32,6 +32,8 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 
 ### Fixed
 
+- `hatchkit update --dry-run` now describes the operational layer (verified deploy, deploy recovery, error reporting and the rest). It returned before the layer ran, so a dry run that listed nothing was followed by a real run that wrote those files.
+- Client error reporting is written into the project's own client, the same one deploy recovery uses, instead of always into `packages/client/src/lib/error-reporting`. A single-package site gets it beside its `app/`. A repository whose root package is a CLI or a library, with its web app in `docs/`, `site/` or `website/`, gets it there, and the browser SDK goes into that package's dependencies.
 - `hatchkit doctor` no longer fails on Plausible Community Edition, which never serves the Sites API. It checks `/api/health` and, inside a project, the Stats API for the project's domain, and warns only when the Stats API refuses that domain.
 - doctor's Cloudflare Workers provisioner row probes the zone grants on the zone of the project's domain, names the zone it probed, and prints each failing probe's error. A denied grant and a probe that got no answer are reported apart.
 - A provider check whose request failed in the network now names the reason, for example `fetch failed (ECONNRESET)`, instead of `fetch failed` alone.

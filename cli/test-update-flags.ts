@@ -146,14 +146,30 @@ const presets = { confirmAddFeatures: true, enableLocalDev: false, pushNativeOri
 // ── --dry-run writes nothing, and says what it would do ──────────────
 await withProject("dry-run", async (dir) => {
   const before = fingerprint(dir);
-  const result = await runUpdate(dir, {
-    dryRun: true,
-    presets: { ...presets, desiredFeatures: ["desktop"] },
-  });
+  // The operational layer runs after the additions in a real run, so the
+  // dry run has to describe it too. It once returned before the layer,
+  // and a dry run that showed nothing was followed by a real run that
+  // added error reporting and rewrote the deploy workflow.
+  const printed: string[] = [];
+  const log = console.log;
+  console.log = (...args: unknown[]) => {
+    printed.push(args.map(String).join(" "));
+  };
+  let result: Awaited<ReturnType<typeof runUpdate>>;
+  try {
+    result = await runUpdate(dir, {
+      dryRun: true,
+      presets: { ...presets, desiredFeatures: ["desktop"] },
+    });
+  } finally {
+    console.log = log;
+  }
   const after = fingerprint(dir);
+  const output = printed.join("\n");
   return [
     ["reports dryRun: true", result.dryRun === true],
     ["reports what it would add", result.added.join(",") === "desktop"],
+    ["describes the operational layer", output.includes("Operational layer")],
     ["the tree is byte-for-byte unchanged", before === after],
     ["no electron/ was created", !existsSync(join(dir, "electron"))],
     [

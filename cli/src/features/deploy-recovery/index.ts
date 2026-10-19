@@ -26,8 +26,11 @@
 import {
   type OperationalContext,
   type OperationalOutcome,
+  type PathExists,
   applied,
   hasClientHalf,
+  resolveClientDir,
+  resolveSourceRoot,
   skipped,
 } from "../operational-context.js";
 import {
@@ -68,12 +71,6 @@ export const BUILD_INFO_WRITER_REL_PATH = "scripts/write-version-json.mjs";
  *  {@link applyDeployRecovery}. */
 const CHUNK_RELOAD_CALL = "reloadOnceForChunkError";
 
-/** Client package directories to look in, in order, when the project
- *  does not have one at the root. Anything else has to be laid out like
- *  one of these — guessing deeper than this would start writing React
- *  files into a server package. */
-const CLIENT_DIR_CANDIDATES = ["packages/client", "apps/web", "packages/web", "client", "web"];
-
 /** Join project-relative path segments. Forward slashes throughout and
  *  no `.` segments, because these are ledger keys rather than host
  *  paths: the ledger reports them back to the user verbatim. */
@@ -81,31 +78,9 @@ function relJoin(...parts: string[]): string {
   return parts.filter((part) => part !== "" && part !== ".").join("/");
 }
 
-/** Tell whether a project-relative path is there, through the ledger
- *  rather than `node:fs` — one object decides what this module may see
- *  and what it may change. */
-type Exists = (rel: string) => boolean;
-
-/** Resolve the client package directory. Falls back to the project root,
- *  which is right for a single-package static site. */
-export function resolveClientDir(exists: Exists): string {
-  for (const candidate of CLIENT_DIR_CANDIDATES) {
-    if (exists(`${candidate}/package.json`)) return candidate;
-  }
-  return ".";
-}
-
-/**
- * Where the client's source tree starts, relative to the client package.
- *
- * Next.js accepts `app/` and `src/app/` and refuses to build with both,
- * so an existing `app/` decides it. With neither, `src/` is the shape the
- * starter uses.
- */
-export function resolveSourceRoot(exists: Exists, clientDirRel: string): string {
-  if (exists(relJoin(clientDirRel, "app"))) return ".";
-  return "src";
-}
+// Shared with error-reporting, which has to put its modules in the same
+// client. Re-exported so existing imports from this module keep working.
+export { resolveClientDir, resolveSourceRoot };
 
 /**
  * Apply the whole module.
@@ -147,7 +122,7 @@ export function applyDeployRecovery(ctx: OperationalContext): OperationalOutcome
   }
 
   const { ledger } = ctx;
-  const exists: Exists = (rel) => ledger.exists(rel);
+  const exists: PathExists = (rel) => ledger.exists(rel);
   const notes: string[] = [];
 
   const clientDirRel = resolveClientDir(exists);

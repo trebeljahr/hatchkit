@@ -28,11 +28,11 @@ import {
   type OperationalOutcome,
   applied,
   hasClientHalf,
+  resolveClientSourceRoot,
   skipped,
 } from "../operational-context.js";
 import { renderPrivacyCopy } from "./privacy.js";
 import {
-  CLIENT_ERROR_REPORTING_DIR,
   ERROR_REPORTING_DSN_VAR,
   ERROR_REPORTING_SDK_PACKAGE,
   ERROR_REPORTING_SDK_VERSION,
@@ -89,6 +89,11 @@ export function ancestorPackageJsonPaths(dir: string): string[] {
   return paths;
 }
 
+/** The generated modules' directory, under a client source root. */
+export function errorReportingDir(sourceRootRel: string): string {
+  return sourceRootRel ? `${sourceRootRel}/lib/error-reporting` : "lib/error-reporting";
+}
+
 /** What the walk up from the generated directory found. */
 interface ClientPackage {
   /** The nearest `package.json`: in a monorepo, the client package. The
@@ -143,13 +148,16 @@ function findClientPackage(ctx: OperationalContext, dir: string): ClientPackage 
  * and kept, because a dependency the user chose is theirs.
  */
 export function applyErrorReporting(ctx: OperationalContext): OperationalOutcome {
-  const dir = CLIENT_ERROR_REPORTING_DIR;
-
   if (!hasClientHalf(ctx.project.surfaces)) {
     return skipped(
       "this project has no browser half, and error reporting here is client-side only",
     );
   }
+
+  // The same client deploy-recovery writes into: `packages/client/src`
+  // in the starter, the root of a single-package site, or `docs/` when
+  // the root package is a CLI and the docs site is the browser half.
+  const dir = errorReportingDir(resolveClientSourceRoot((rel) => ctx.ledger.exists(rel)));
 
   const pkg = findClientPackage(ctx, dir);
   // A release string that is merely uninformative beats no error

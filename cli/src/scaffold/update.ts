@@ -686,6 +686,12 @@ export async function runUpdate(
       );
     }
     console.log(chalk.dim(`    ~ ${MANIFEST_FILENAME} (features, cliVersion, ports)`));
+    // The operational layer runs after the additions in a real run, so a
+    // dry run has to describe it too, for the feature set the project
+    // would have. Returning before it hid every file the layer would
+    // write: a dry run that said "nothing" was followed by a real run
+    // that rewrote the deploy workflow and added error reporting.
+    await applyAndReportOperationalLayer(projectDir, manifest, [...current, ...added], true);
     console.log(chalk.yellow("\n  --dry-run — nothing was written."));
     return { added, skipped: [], removed, dryRun: true };
   }
@@ -1041,34 +1047,14 @@ export async function runUpdate(
   // writes a placeholder owner over a correct one — the self-host
   // compose would go from the project's real image to `ghcr.io/OWNER/…`
   // on every update, which pulls nothing and says nothing about why.
-  const operationalRepoSlug = await detectRepoSlug(projectDir);
-  const operational = applyOperationalLayer({
-    projectDir,
-    // `updatedFeatures`, not `manifest.features`: the additions above
-    // have already run, and several modules read the feature set to
-    // decide what exists — which native origins a store client signs in
-    // from, which platforms a crash report can name. Handed the set the
-    // project had on the way IN, this writes for a project that no
-    // longer exists and the next `update` rewrites all of it.
-    project: {
-      ...operationalProjectFromManifest(manifest, operationalRepoSlug),
-      features: [...updatedFeatures],
-    },
-    mode: "update",
-    dryRun,
-  });
-  const operationalLines = renderOperationalLayer(operational);
-  if (operationalLines.length > 0) {
-    console.log(chalk.bold("\n  Operational layer"));
-    for (const line of operationalLines) {
-      console.log(line.endsWith(":") ? chalk.cyan(`  ${line}`) : chalk.dim(`  ${line}`));
-    }
-  }
-  const operationalSteps = operational.manualSteps;
-  if (operationalSteps.length > 0) {
-    console.log(chalk.dim("\n  Left for you:"));
-    for (const step of operationalSteps) console.log(`  ${chalk.yellow("·")} ${step}`);
-  }
+  //
+  // `updatedFeatures`, not `manifest.features`: the additions above
+  // have already run, and several modules read the feature set to
+  // decide what exists — which native origins a store client signs in
+  // from, which platforms a crash report can name. Handed the set the
+  // project had on the way IN, this writes for a project that no
+  // longer exists and the next `update` rewrites all of it.
+  await applyAndReportOperationalLayer(projectDir, manifest, [...updatedFeatures], dryRun);
 
   return {
     added: actuallyAdded,
@@ -1644,6 +1630,43 @@ async function detectRepoSlug(projectDir: string): Promise<string | undefined> {
   });
   if (res.exitCode !== 0) return undefined;
   return repoSlugFromRemote(res.stdout.trim());
+}
+
+/**
+ * Run the operational layer for a feature set and print what it did or,
+ * in a dry run, would do. Every write goes through the layer's ledger,
+ * so the dry run is decided there and nothing here checks the flag.
+ *
+ * The repository slug is resolved here, exactly as `create` resolves it.
+ * Several generated artefacts name a registry image built from it, and a
+ * run that cannot answer "which repository?" writes a placeholder owner
+ * over a correct one.
+ */
+async function applyAndReportOperationalLayer(
+  projectDir: string,
+  manifest: Parameters<typeof operationalProjectFromManifest>[0],
+  features: Feature[],
+  dryRun: boolean,
+): Promise<void> {
+  const operationalRepoSlug = await detectRepoSlug(projectDir);
+  const operational = applyOperationalLayer({
+    projectDir,
+    project: { ...operationalProjectFromManifest(manifest, operationalRepoSlug), features },
+    mode: "update",
+    dryRun,
+  });
+  const operationalLines = renderOperationalLayer(operational);
+  if (operationalLines.length > 0) {
+    console.log(chalk.bold("\n  Operational layer"));
+    for (const line of operationalLines) {
+      console.log(line.endsWith(":") ? chalk.cyan(`  ${line}`) : chalk.dim(`  ${line}`));
+    }
+  }
+  const operationalSteps = operational.manualSteps;
+  if (operationalSteps.length > 0) {
+    console.log(chalk.dim("\n  Left for you:"));
+    for (const step of operationalSteps) console.log(`  ${chalk.yellow("·")} ${step}`);
+  }
 }
 
 /** The starter's next.config.ts as the operational layer leaves it.

@@ -56,7 +56,10 @@ import {
  */
 export const ERROR_REPORTING_DSN_VAR = "NEXT_PUBLIC_SENTRY_DSN";
 
-/** Where the generated modules go, relative to the project root. */
+/** Where the generated modules go in the starter's layout, relative to
+ *  the project root. `applyErrorReporting` resolves the client of the
+ *  project it is looking at instead; this is the default for callers
+ *  that render without one. */
 export const CLIENT_ERROR_REPORTING_DIR = "packages/client/src/lib/error-reporting";
 
 /** The npm package the generated code loads, and the version range a

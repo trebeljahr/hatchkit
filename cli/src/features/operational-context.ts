@@ -151,6 +151,85 @@ export function hasClientHalf(surfaces: Surface): boolean {
   return surfaces !== "backend";
 }
 
+/** Tell whether a project-relative path is there. Modules pass
+ *  `ctx.ledger.exists`, so one object decides what a module may see and
+ *  what it may change. */
+export type PathExists = (rel: string) => boolean;
+
+/** Client package directories to look in, in order, when the project
+ *  does not have one at the root. Anything else has to be laid out like
+ *  one of these — guessing deeper than this would start writing React
+ *  files into a server package. */
+const CLIENT_DIR_CANDIDATES = ["packages/client", "apps/web", "packages/web", "client", "web"];
+
+/** Directories a single-package repository keeps its site in when the
+ *  root package is something else: a CLI or a library whose docs site is
+ *  its only browser half (conv3d keeps its Next.js docs in `docs/`).
+ *  Looked at only when the root is not a web app itself, and a directory
+ *  counts only with its own `package.json` and framework config, so a
+ *  folder of Markdown is never taken for a client. */
+const SITE_DIR_CANDIDATES = ["docs", "site", "website"];
+
+/** The config files that mark a directory as a web client. */
+const WEB_FRAMEWORK_CONFIGS = [
+  "next.config.ts",
+  "next.config.mjs",
+  "next.config.js",
+  "vite.config.ts",
+  "vite.config.mts",
+  "vite.config.js",
+];
+
+/** Join project-relative path segments. Forward slashes throughout and
+ *  no `.` segments, because these are ledger keys rather than host
+ *  paths: the ledger reports them back to the user verbatim. */
+function relJoin(...parts: string[]): string {
+  return parts.filter((part) => part !== "" && part !== ".").join("/");
+}
+
+function hasWebFrameworkConfig(exists: PathExists, dir: string): boolean {
+  return WEB_FRAMEWORK_CONFIGS.some((name) => exists(relJoin(dir, name)));
+}
+
+/**
+ * Resolve the client package directory, relative to the project root.
+ *
+ * In order: a monorepo client package; the root, when it is the web app
+ * itself; a site directory, when the root is not; and the root as the
+ * last resort, which is right for a single-package static site.
+ */
+export function resolveClientDir(exists: PathExists): string {
+  for (const candidate of CLIENT_DIR_CANDIDATES) {
+    if (exists(`${candidate}/package.json`)) return candidate;
+  }
+  if (hasWebFrameworkConfig(exists, ".")) return ".";
+  for (const candidate of SITE_DIR_CANDIDATES) {
+    if (exists(`${candidate}/package.json`) && hasWebFrameworkConfig(exists, candidate)) {
+      return candidate;
+    }
+  }
+  return ".";
+}
+
+/**
+ * Where the client's source tree starts, relative to the client package.
+ *
+ * Next.js accepts `app/` and `src/app/` and refuses to build with both,
+ * so an existing `app/` decides it. With neither, `src/` is the shape the
+ * starter uses.
+ */
+export function resolveSourceRoot(exists: PathExists, clientDirRel: string): string {
+  if (exists(relJoin(clientDirRel, "app"))) return ".";
+  return "src";
+}
+
+/** The client's source root, relative to the project root: where
+ *  `app/`, `lib/` and `components/` live. */
+export function resolveClientSourceRoot(exists: PathExists): string {
+  const clientDirRel = resolveClientDir(exists);
+  return relJoin(clientDirRel, resolveSourceRoot(exists, clientDirRel));
+}
+
 /**
  * The default API origin, as an origin with no path.
  *

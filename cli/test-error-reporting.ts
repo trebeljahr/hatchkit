@@ -580,6 +580,60 @@ check("writes the client modules, the privacy copy and the SDK dependency", () =
   }
 });
 
+check("a CLI whose docs site is the browser half gets the reporter in docs/", () => {
+  const dir = mkdtempSync(join(tmpdir(), "error-reporting-"));
+  try {
+    // conv3d's layout: the root package is the CLI, the Next.js site is
+    // a package of its own in docs/ with an app/ directory.
+    writeJson(dir, "package.json", { name: "conv3d", version: "1.0.6", bin: { conv3d: "x" } });
+    writeJson(dir, "docs/package.json", { name: "conv3d-docs", version: "0.1.0", private: true });
+    writeFileSync(join(dir, "docs/next.config.mjs"), "export default {};\n", "utf-8");
+    mkdirSync(join(dir, "docs/app"), { recursive: true });
+
+    const ctx = context(dir, { project: { surfaces: "static", features: [] } });
+    applyErrorReporting(ctx);
+
+    for (const name of ["scrub.ts", "sdk.ts", "reporter.ts"]) {
+      const file = `docs/lib/error-reporting/${name}`;
+      assert.equal(actionFor(ctx, file), "written", `${file} was not written`);
+    }
+    assert.ok(
+      !existsSync(join(dir, "packages")),
+      "nothing is written into a client that does not exist",
+    );
+    const docs = JSON.parse(readFileSync(join(dir, "docs/package.json"), "utf-8")) as {
+      dependencies?: Record<string, string>;
+    };
+    assert.equal(docs.dependencies?.[ERROR_REPORTING_SDK_PACKAGE], ERROR_REPORTING_SDK_VERSION);
+    const root = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8")) as {
+      dependencies?: Record<string, string>;
+    };
+    assert.equal(root.dependencies, undefined, "the CLI package does not get the browser SDK");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+check("a single-package site gets the reporter beside its own app/", () => {
+  const dir = mkdtempSync(join(tmpdir(), "error-reporting-"));
+  try {
+    // The root is the web app, so a docs/ package next to it is not the client.
+    writeJson(dir, "package.json", { name: "site", version: "3.0.0" });
+    writeFileSync(join(dir, "next.config.ts"), "export default {};\n", "utf-8");
+    mkdirSync(join(dir, "app"), { recursive: true });
+    writeJson(dir, "docs/package.json", { name: "site-docs", version: "0.0.1" });
+    writeFileSync(join(dir, "docs/next.config.mjs"), "export default {};\n", "utf-8");
+
+    const ctx = context(dir, { project: { surfaces: "static", features: [] } });
+    applyErrorReporting(ctx);
+
+    assert.equal(actionFor(ctx, "lib/error-reporting/reporter.ts"), "written");
+    assert.equal(actionFor(ctx, "docs/lib/error-reporting/reporter.ts"), undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 check("the privacy copy is the generated text, under a header saying it is regenerated", () => {
   const dir = mkdtempSync(join(tmpdir(), "error-reporting-"));
   try {
@@ -696,7 +750,9 @@ check("the version falls back to a visible placeholder rather than failing", () 
   try {
     writeJson(dir, "package.json", { name: "root", private: true });
     applyErrorReporting(context(dir));
-    assert.match(readFileSync(join(dir, GENERATED[2]), "utf-8"), /RELEASE = "hatchdemo@0\.0\.0"/);
+    // No client package, so the root is the client and `src/` its source root.
+    const reporter = join(dir, "src/lib/error-reporting/reporter.ts");
+    assert.match(readFileSync(reporter, "utf-8"), /RELEASE = "hatchdemo@0\.0\.0"/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
