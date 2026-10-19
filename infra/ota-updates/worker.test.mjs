@@ -316,6 +316,188 @@ describe("admin API", () => {
   });
 });
 
+const bytesOf = (text) => new TextEncoder().encode(text);
+
+function putFile(bytes, sha = sha256Hex(bytes), token = TOKEN, app = APP) {
+  return call(`/admin/apps/${app}/files/${sha}`, {
+    method: "PUT",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/octet-stream",
+      "content-length": String(bytes.length),
+    },
+    body: bytes,
+  });
+}
+
+async function missing(hashes) {
+  const res = await admin("/files/missing", { sha256: hashes });
+  assert.equal(res.status, 200, await res.clone().text());
+  return (await res.json()).missing;
+}
+
+function putManifest(version, files, extra = {}) {
+  return call(`/admin/apps/${APP}/bundles/${version}/manifest`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ native: "1.1.3", session_key: SESSION_KEY, key_id: KEY_ID, files, ...extra }),
+  });
+}
+
+/** Stand-ins for encrypted files: the Worker never looks inside them. */
+function entriesFor(files) {
+  return Object.entries(files).map(([name, text]) => {
+    const bytes = bytesOf(text);
+    return { file_name: name, file_hash: sha256Hex(`plain ${name}`), sha256: sha256Hex(bytes), size: bytes.length, bytes };
+  });
+}
+
+async function publishManifest(version, files, channel = "beta") {
+  const entries = entriesFor(files);
+  for (const e of entries) assert.ok([200, 201].includes((await putFile(e.bytes)).status));
+  const res = await putManifest(version, entries.map(({ bytes, ...e }) => e));
+  assert.equal(res.status, 201, await res.clone().text());
+  assert.equal((await admin(`/channels/${channel}/promote`, { version })).status, 200);
+  return entries;
+}
+
+const SITE = { "index.html": "<script src=main.js></script>", "main.js.br": "brotli bytes", "assets/a.png": "png" };
+
+describe("delta bundles", () => {
+  test("the missing check names only the files R2 lacks; a second upload stores nothing", async () => {
+    const [a, b] = [bytesOf("file a"), bytesOf("file b")];
+    assert.equal((await putFile(a)).status, 201);
+    assert.deepEqual(await missing([sha256Hex(a), sha256Hex(b), sha256Hex(a)]), [sha256Hex(b)]);
+    const again = await putFile(a);
+    assert.equal(again.status, 200);
+    assert.equal((await again.json()).stored, false);
+    assert.equal(env.BUCKET.objects.size, 1);
+  });
+
+  test("file uploads must match their name, use the app's token and stay in batches", async () => {
+    const bytes = bytesOf("file");
+    assert.equal((await putFile(bytes, "0".repeat(64))).status, 400);
+    assert.equal((await putFile(bytes, undefined, OTHER_TOKEN)).status, 401);
+    assert.equal((await putFile(bytes, "not-a-hash")).status, 404);
+    assert.equal(env.BUCKET.objects.size, 0);
+    const tooMany = Array.from({ length: 41 }, (_, i) => sha256Hex(String(i)));
+    assert.equal((await admin("/files/missing", { sha256: tooMany })).status, 400);
+    assert.equal((await admin("/files/missing", { sha256: ["../x"] })).status, 400);
+  });
+
+  test("a device gets a manifest whose links download each file's bytes", async () => {
+    const entries = await publishManifest("1.1.3-ota.1", SITE);
+    const res = await check(device());
+    assert.equal(res.headers.get("content-type"), "application/json");
+    const body = await res.json();
+    assert.equal(body.version, "1.1.3-ota.1");
+    assert.equal(body.session_key, SESSION_KEY);
+    assert.equal(body.error, undefined);
+    assert.equal(body.kind, undefined);
+    assert.equal(body.checksum, undefined);
+    assert.deepEqual(
+      body.manifest.map((m) => [m.file_name, m.file_hash]),
+      entries.map((e) => [e.file_name, e.file_hash]),
+    );
+    for (const [i, m] of body.manifest.entries()) {
+      assert.match(m.download_url, /^https:\/\/ota\.ricoslabs\.com\/dl\/apps\/com\.ricoslabs\.raptorrunner\/files\/[0-9a-f]{64}\?exp=\d+&sig=[\w-]+$/);
+      const dl = await worker.fetch(new Request(m.download_url), env, {});
+      assert.equal(dl.status, 200);
+      assert.deepEqual(new Uint8Array(await dl.arrayBuffer()), entries[i].bytes);
+    }
+    // The plugin refuses a reply without a valid url; this one serves the manifest.
+    const manifest = await (await worker.fetch(new Request(body.url), env, {})).json();
+    assert.deepEqual(manifest.map((m) => m.file_name), Object.keys(SITE));
+  });
+
+  test("file names keep quotes and non-ASCII characters through the reply", async () => {
+    const name = 'assets/"quoted" ü.js';
+    await publishManifest("1.1.3-ota.1", { "index.html": "x", [name]: "y" });
+    const body = await (await check(device())).json();
+    assert.equal(body.manifest[1].file_name, name);
+  });
+
+  test("a manifest reply costs no R2 read while the edge cache is warm", async () => {
+    await publishManifest("1.1.3-ota.1", SITE);
+    await check(device());
+    env.BUCKET.reads = 0;
+    await check(device());
+    await check(device({ platform: "android" }));
+    assert.equal(env.BUCKET.reads, 0);
+  });
+
+  test("a device with another key or already on the version gets no manifest", async () => {
+    await publishManifest("1.1.3-ota.1", SITE);
+    assert.equal((await (await check(device({ key_id: "MIIBCgKCAQEAzzzzzzzz" }))).json()).kind, "up_to_date");
+    assert.equal((await (await check(device({ version_name: "1.1.3-ota.1" }))).json()).kind, "up_to_date");
+  });
+
+  test("a files link opens every file of its app and nothing else", async () => {
+    await publishManifest("1.1.3-ota.1", SITE);
+    const { manifest } = await (await check(device())).json();
+    const link = manifest[0].download_url;
+    const sha = link.match(/files\/([0-9a-f]{64})/)[1];
+    // Another app's file store.
+    const otherBytes = bytesOf("tiao file");
+    await putFile(otherBytes, undefined, OTHER_TOKEN, OTHER);
+    const other = link.replace(`${APP}/files/${sha}`, `${OTHER}/files/${sha256Hex(otherBytes)}`);
+    assert.equal((await worker.fetch(new Request(other), env, {})).status, 403);
+    // A bundle zip, metadata or pointer of the same app.
+    await upload("1.1.3-ota.2", bytesOf("zip"));
+    for (const key of [keys.bundle(APP, "1.1.3-ota.2"), keys.bundleMeta(APP, "1.1.3-ota.1")]) {
+      const forged = link.replace(`apps/${APP}/files/${sha}`, key);
+      assert.equal((await worker.fetch(new Request(forged), env, {})).status, 403);
+    }
+    const longer = link.replace(/exp=(\d+)/, (_, n) => `exp=${Number(n) + 999}`);
+    assert.equal((await worker.fetch(new Request(longer), env, {})).status, 403);
+  });
+
+  test("manifests are checked before anything is stored", async () => {
+    const good = entriesFor(SITE).map(({ bytes, ...e }) => e);
+    const cases = [
+      [],
+      good.filter((e) => e.file_name !== "index.html"),
+      [...good, { ...good[2], file_name: "../escape.js" }],
+      [...good, { ...good[2], file_name: "/abs.js" }],
+      [...good, { ...good[2], file_name: "a//b.js" }],
+      [...good, { ...good[2], file_name: "{{files}}.js" }],
+      [...good, { ...good[2], file_name: "main.js" }],
+      [...good, { ...good[2], file_name: "x.js", file_hash: "" }],
+      [...good, { ...good[2], file_name: "x.js", size: 0 }],
+      [...good, { ...good[2], file_name: "x.js", sha256: "abc" }],
+    ];
+    for (const files of cases) assert.equal((await putManifest("1.1.3-ota.1", files)).status, 400, JSON.stringify(files.at(-1)));
+    assert.equal((await putManifest("1.1.3-ota.1", good, { session_key: "" })).status, 400);
+    assert.equal((await putManifest("1.1.3-ota.1", good, { native: "../x" })).status, 400);
+    // Files that were never uploaded.
+    assert.equal((await putManifest("1.1.3-ota.1", good)).status, 400);
+    assert.equal(env.BUCKET.objects.size, 0);
+  });
+
+  test("a version is published once, as a zip or as a manifest", async () => {
+    await publishManifest("1.1.3-ota.1", SITE);
+    assert.equal((await upload("1.1.3-ota.1", bytesOf("zip"))).status, 409);
+    const files = entriesFor(SITE).map(({ bytes, ...e }) => e);
+    assert.equal((await putManifest("1.1.3-ota.1", files)).status, 409);
+    await upload("1.1.3-ota.2", bytesOf("zip"));
+    assert.equal((await putManifest("1.1.3-ota.2", files)).status, 409);
+  });
+
+  test("rollback moves between manifest and zip bundles", async () => {
+    await publish("1.1.3-ota.1");
+    await publishManifest("1.1.3-ota.2", SITE);
+    const back = await (await admin("/channels/beta/rollback", { native: "1.1.3" })).json();
+    assert.equal(back.pointer.version, "1.1.3-ota.1");
+    const zip = await (await check(device())).json();
+    assert.equal(zip.manifest, undefined);
+    assert.match(zip.url, /1\.1\.3-ota\.1\.zip/);
+    await admin("/channels/beta/rollback", { native: "1.1.3", to: "1.1.3-ota.2" });
+    assert.equal((await (await check(device())).json()).manifest.length, 3);
+    const status = await (await admin("/channels/beta")).json();
+    assert.equal(status.lines[0].kind, "manifest");
+  });
+});
+
 describe("other endpoints", () => {
   test("stats are accepted", async () => {
     const res = await call("/stats", {

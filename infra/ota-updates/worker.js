@@ -17,11 +17,27 @@
  * after DOWNLOAD_TTL_SECONDS. Pointers are cached at the edge for
  * POINTER_CACHE_SECONDS, so a check costs no R2 read while the cache is
  * warm, and a promote or rollback reaches every location within that time.
+ *
+ * A bundle is either one encrypted zip or a manifest (delta bundle): one
+ * encrypted file per web file, stored once per app under its SHA-256, so a
+ * new version uploads only the files that changed, and a device downloads
+ * only the files its store build and earlier updates do not already hold.
  */
 
 const UPDATE_BODY_LIMIT = 16 * 1024;
 const ADMIN_JSON_LIMIT = 16 * 1024;
+const MANIFEST_JSON_LIMIT = 8 * 1024 * 1024;
 const HISTORY_LIMIT = 20;
+// Each file check is one R2 head; Workers Free counts every R2 call.
+const FILE_CHECK_LIMIT = 40;
+// Capgo's own limit for one manifest.
+const MANIFEST_FILE_LIMIT = 10_000;
+// Manifests are immutable, so their rendered replies can stay cached.
+const MANIFEST_CACHE_SECONDS = 24 * 3600;
+// Placeholders in a stored manifest reply, filled per request. File names
+// cannot contain braces, so these only ever match where they were put.
+const FILES_SLOT = "{{files}}";
+const QUERY_SLOT = "{{query}}";
 
 const APP_ID = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/;
 const CHANNEL = /^[a-z][a-z0-9-]{0,31}$/;
@@ -35,8 +51,18 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const CHECKSUM = /^[0-9A-Za-z+/=]{8,1024}$/;
 const SESSION_KEY = /^[0-9A-Za-z+/=]{8,1024}:[0-9A-Za-z+/=]{8,1024}$/;
 const KEY_ID = /^[0-9A-Za-z+/=]{1,64}$/;
+const FILE_KEY = /^apps\/([^/]+)\/files\/[0-9a-f]{64}$/;
 
 const encoder = new TextEncoder();
+
+/** A manifest file name as the plugin resolves it inside the bundle folder:
+ *  relative, no `.`/`..` segments, no control characters, backslashes or
+ *  braces (the reply placeholders). A `.br` suffix marks brotli transport. */
+function validFileName(name) {
+  if (typeof name !== "string" || name.length === 0 || name.length > 512) return false;
+  if (/[\u0000-\u001f\u007f\\{}]/.test(name)) return false;
+  return name.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+}
 
 export default {
   async fetch(request, env, ctx) {
@@ -115,6 +141,10 @@ function positiveInt(value, fallback) {
 export const keys = {
   bundle: (app, version) => `apps/${app}/bundles/${version}.zip`,
   bundleMeta: (app, version) => `apps/${app}/bundles/${version}.json`,
+  manifest: (app, version) => `apps/${app}/bundles/${version}.manifest.json`,
+  manifestReply: (app, version) => `apps/${app}/bundles/${version}.manifest-reply.json`,
+  file: (app, sha256) => `apps/${app}/files/${sha256}`,
+  filePrefix: (app) => `apps/${app}/files/`,
   pointer: (app, channel, native) => `apps/${app}/channels/${channel}/${native}.json`,
   pointerPrefix: (app, channel) => `apps/${app}/channels/${channel}/`,
 };
@@ -171,6 +201,32 @@ async function loadPointer(env, ctx, origin, app, channel, native, ttl) {
 async function forgetPointer(origin, app, channel, native) {
   const cache = edgeCache();
   if (cache) await cache.delete(pointerCacheKey(origin, app, channel, native));
+}
+
+/** The stored manifest reply (a JSON array with placeholders), as text.
+ *  It is rendered by string replacement: parsing and re-serialising a
+ *  manifest of a thousand files costs more than Workers Free's CPU budget. */
+async function loadManifestReply(env, ctx, origin, key) {
+  const cache = edgeCache();
+  const cacheKey = `${origin}/__manifest/${key.split("/").map(encodeURIComponent).join("/")}`;
+  if (cache) {
+    const hit = await cache.match(cacheKey);
+    if (hit) return hit.text();
+  }
+  const object = await env.BUCKET.get(key);
+  if (!object) return null;
+  const template = await object.text();
+  if (cache) {
+    const put = cache.put(
+      cacheKey,
+      new Response(template, {
+        headers: { "content-type": "application/json", "cache-control": `max-age=${MANIFEST_CACHE_SECONDS}` },
+      }),
+    );
+    if (ctx?.waitUntil) ctx.waitUntil(put);
+    else await put;
+  }
+  return template;
 }
 
 // ---------------------------------------------------------------------------
@@ -246,21 +302,33 @@ async function handleUpdate(request, env, ctx) {
     return noUpdate("Bundle is signed with a key this app does not hold");
   }
 
+  if (pointer.kind === "manifest") {
+    const template = await loadManifestReply(env, ctx, origin, pointer.manifest_reply_key);
+    if (!template) {
+      log("manifest_missing", { version: pointer.version });
+      return noUpdate("Bundle is unavailable", "failed", "bundle_unavailable");
+    }
+    // The plugin needs a valid `url` next to `manifest` but downloads only
+    // the manifest's files; this link serves the manifest itself.
+    const head = JSON.stringify({
+      version: pointer.version,
+      url: await signedUrl(env, origin, pointer.manifest_key, cfg.downloadTtl),
+      session_key: pointer.session_key,
+    });
+    const files = await filesLink(env, origin, app, cfg.downloadTtl);
+    const manifest = template.replaceAll(FILES_SLOT, () => files.prefix).replaceAll(QUERY_SLOT, () => files.query);
+    log("update", { version: pointer.version, files: pointer.files });
+    return new Response(`${head.slice(0, -1)},"manifest":${manifest}}`, {
+      headers: { "content-type": "application/json", "cache-control": "no-store" },
+    });
+  }
+
   const reply = {
     version: pointer.version,
     url: await signedUrl(env, origin, pointer.bundle_key, cfg.downloadTtl),
     checksum: pointer.checksum,
   };
   if (pointer.session_key) reply.session_key = pointer.session_key;
-  if (Array.isArray(pointer.manifest)) {
-    reply.manifest = await Promise.all(
-      pointer.manifest.map(async (entry) => ({
-        file_name: entry.file_name,
-        file_hash: entry.file_hash,
-        download_url: await signedUrl(env, origin, entry.key, cfg.downloadTtl),
-      })),
-    );
-  }
   log("update", { version: pointer.version });
   return json(reply);
 }
@@ -314,6 +382,19 @@ export async function signedUrl(env, origin, objectKey, ttlSeconds, now = Date.n
   return `${origin}/dl/${objectKey.split("/").map(encodeURIComponent).join("/")}?exp=${exp}&sig=${sig}`;
 }
 
+/** One signature for every file of an app's file store, so a manifest reply
+ *  costs one HMAC, not one per file. The files are the ones any device of
+ *  the app may fetch anyway; the link only keeps the bucket from being a
+ *  public download host. "*" never occurs in an object key. */
+async function filesLink(env, origin, app, ttlSeconds, now = Date.now()) {
+  const exp = Math.floor(now / 1000) + ttlSeconds;
+  const sig = await hmac(env, `${keys.filePrefix(app)}*\n${exp}`);
+  return {
+    prefix: `${origin}/dl/${keys.filePrefix(app).split("/").map(encodeURIComponent).join("/")}`,
+    query: `exp=${exp}&sig=${sig}`,
+  };
+}
+
 async function handleDownload(request, env, url) {
   const objectKey = url.pathname
     .slice("/dl/".length)
@@ -322,12 +403,14 @@ async function handleDownload(request, env, url) {
     .join("/");
   const exp = Number(url.searchParams.get("exp"));
   const sig = url.searchParams.get("sig") ?? "";
+  const fileApp = objectKey.match(FILE_KEY)?.[1];
+  const signed = fileApp ? `${keys.filePrefix(fileApp)}*` : objectKey;
   const valid =
     objectKey.startsWith("apps/") &&
     !objectKey.split("/").includes("..") &&
     Number.isInteger(exp) &&
     exp >= Math.floor(Date.now() / 1000) &&
-    safeEqual(sig, await hmac(env, `${objectKey}\n${exp}`));
+    safeEqual(sig, await hmac(env, `${signed}\n${exp}`));
   if (!valid) return json({ error: "forbidden", message: "Link expired or invalid" }, 403);
 
   const object =
@@ -390,6 +473,24 @@ async function handleAdmin(request, env, url) {
       return meta ? json(meta) : json({ error: "not_found", message: "No such bundle" }, 404);
     }
     return methodNotAllowed();
+  }
+
+  // PUT|GET /admin/apps/:app/bundles/:version/manifest
+  if (rest[0] === "bundles" && rest.length === 3 && rest[2] === "manifest") {
+    if (request.method === "PUT") return createManifestBundle(request, env, app, rest[1]);
+    if (request.method === "GET") {
+      if (!VERSION.test(rest[1])) return badRequest("Version must be semver");
+      const manifest = await readJson(env, keys.manifest(app, rest[1]));
+      return manifest ? json(manifest) : json({ error: "not_found", message: "No such manifest" }, 404);
+    }
+    return methodNotAllowed();
+  }
+
+  // POST /admin/apps/:app/files/missing   PUT /admin/apps/:app/files/:sha256
+  if (rest[0] === "files" && rest.length === 2) {
+    if (rest[1] === "missing" && request.method === "POST") return missingFiles(request, env, app);
+    if (HEX64.test(rest[1]) && request.method === "PUT") return uploadFile(request, env, app, rest[1]);
+    return json({ error: "not_found", message: "Not found" }, 404);
   }
 
   if (rest[0] === "channels" && rest[1]) {
@@ -467,6 +568,118 @@ async function uploadBundle(request, env, app, version) {
   return json(meta, 201);
 }
 
+// Delta bundles: files are stored once per app under the SHA-256 of their
+// uploaded (compressed, encrypted) bytes, so publish.mjs uploads only what
+// R2 does not hold yet, then creates the manifest that names them.
+
+async function missingFiles(request, env, app) {
+  const body = await readBodyJson(request, ADMIN_JSON_LIMIT);
+  const list = body?.sha256;
+  if (!Array.isArray(list) || list.length > FILE_CHECK_LIMIT || !list.every((h) => typeof h === "string" && HEX64.test(h))) {
+    return badRequest(`sha256 must list up to ${FILE_CHECK_LIMIT} hex SHA-256 values`);
+  }
+  const unique = [...new Set(list)];
+  const found = await Promise.all(unique.map((h) => env.BUCKET.head(keys.file(app, h))));
+  return json({ missing: unique.filter((_, i) => !found[i]) });
+}
+
+async function uploadFile(request, env, app, sha256) {
+  const length = Number(request.headers.get("content-length"));
+  if (!Number.isInteger(length) || length <= 0) return badRequest("content-length is required");
+  if (!request.body) return badRequest("Empty body");
+  const key = keys.file(app, sha256);
+  // Same name, same bytes: a second upload has nothing to add.
+  const existing = await env.BUCKET.head(key);
+  if (existing) return json({ sha256, size: existing.size, stored: false });
+  let stored;
+  try {
+    // R2 checks the SHA-256 against the bytes and rejects the write on mismatch.
+    stored = await env.BUCKET.put(key, request.body, {
+      sha256,
+      httpMetadata: { contentType: "application/octet-stream" },
+    });
+  } catch (err) {
+    return badRequest(`Upload rejected: ${err?.message ?? err}`);
+  }
+  return json({ sha256, size: stored?.size ?? length, stored: true }, 201);
+}
+
+async function createManifestBundle(request, env, app, version) {
+  if (!VERSION.test(version) || version.length > 64) return badRequest("Version must be semver");
+  const body = await readBodyJson(request, MANIFEST_JSON_LIMIT);
+  if (!body || typeof body !== "object") return badRequest("Expected a JSON body");
+  const native = str(body.native);
+  const sessionKey = str(body.session_key);
+  const keyId = str(body.key_id);
+  if (!NATIVE.test(native)) return badRequest("native must be the native version line");
+  if (!SESSION_KEY.test(sessionKey)) {
+    return badRequest("session_key is required: bundles must be encrypted (encryption v2)");
+  }
+  if (!KEY_ID.test(keyId)) return badRequest("key_id is required");
+  const files = body.files;
+  if (!Array.isArray(files) || files.length === 0) return badRequest("files must list the bundle's files");
+  if (files.length > MANIFEST_FILE_LIMIT) return badRequest(`A manifest holds at most ${MANIFEST_FILE_LIMIT} files`);
+
+  const entries = [];
+  const targets = new Map();
+  let size = 0;
+  for (const f of files) {
+    const name = f?.file_name;
+    // The plugin writes `x.br` to `x`; two entries for one path fail the download.
+    const target = typeof name === "string" && name.endsWith(".br") ? name.slice(0, -3) : name;
+    if (!validFileName(name) || !validFileName(target)) {
+      return badRequest(`Bad file name: ${JSON.stringify(String(name).slice(0, 120))}`);
+    }
+    if (targets.has(target)) return badRequest(`Two entries for ${target}`);
+    if (typeof f.file_hash !== "string" || !CHECKSUM.test(f.file_hash)) {
+      return badRequest(`file_hash of ${target} is missing or malformed`);
+    }
+    if (typeof f.sha256 !== "string" || !HEX64.test(f.sha256)) return badRequest(`sha256 of ${target} is malformed`);
+    if (!Number.isInteger(f.size) || f.size <= 0) return badRequest(`size of ${target} must be a positive integer`);
+    targets.set(target, f.sha256);
+    entries.push({ file_name: name, file_hash: f.file_hash, sha256: f.sha256, size: f.size });
+    size += f.size;
+  }
+  if (!targets.has("index.html")) return badRequest("The bundle has no index.html at its root");
+
+  if ((await env.BUCKET.head(keys.bundle(app, version))) || (await env.BUCKET.head(keys.bundleMeta(app, version)))) {
+    return json({ error: "exists", message: `Bundle ${version} already exists` }, 409);
+  }
+  // One R2 call per file does not fit Workers Free; publish.mjs checks every
+  // file after uploading. This catches a manifest sent without its files.
+  if (!(await env.BUCKET.head(keys.file(app, targets.get("index.html"))))) {
+    return badRequest("The files of this manifest are not uploaded");
+  }
+
+  const reply = entries.map((e) =>
+    JSON.stringify({
+      file_name: e.file_name,
+      file_hash: e.file_hash,
+      download_url: `${FILES_SLOT}${e.sha256}?${QUERY_SLOT}`,
+    }),
+  );
+  const asJson = { contentType: "application/json" };
+  await env.BUCKET.put(keys.manifest(app, version), JSON.stringify(entries), { httpMetadata: asJson });
+  await env.BUCKET.put(keys.manifestReply(app, version), `[${reply.join(",")}]`, { httpMetadata: asJson });
+  // The metadata goes last: promote only sees a bundle whose manifest exists.
+  const meta = {
+    schema: 1,
+    app_id: app,
+    version,
+    native,
+    kind: "manifest",
+    manifest_key: keys.manifest(app, version),
+    manifest_reply_key: keys.manifestReply(app, version),
+    files: entries.length,
+    size,
+    session_key: sessionKey,
+    key_id: keyId,
+    uploaded_at: new Date().toISOString(),
+  };
+  await writeJson(env, keys.bundleMeta(app, version), meta);
+  return json(meta, 201);
+}
+
 function historyEntry(pointer) {
   return {
     version: pointer.version,
@@ -486,6 +699,19 @@ function pointerFrom(meta, { app, channel, native, minVersionCode, history, now 
     history,
   };
   if (meta === "builtin") return { ...base, version: "builtin" };
+  if (meta.kind === "manifest") {
+    return {
+      ...base,
+      version: meta.version,
+      kind: "manifest",
+      manifest_key: meta.manifest_key,
+      manifest_reply_key: meta.manifest_reply_key,
+      files: meta.files,
+      size: meta.size,
+      session_key: meta.session_key,
+      key_id: meta.key_id,
+    };
+  }
   return {
     ...base,
     version: meta.version,
@@ -586,6 +812,7 @@ async function listPointers(env, app, channel) {
       lines.push({
         native: pointer.native,
         version: pointer.version,
+        kind: pointer.version === "builtin" ? "builtin" : (pointer.kind ?? "zip"),
         min_version_code: pointer.min_version_code ?? null,
         promoted_at: pointer.promoted_at,
       });

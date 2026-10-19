@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash, generateKeyPairSync } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { constants, createDecipheriv, createHash, generateKeyPairSync, publicDecrypt } from "node:crypto";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { keyIdFromPublicKey, publicKeyFromPrivate } from "./publish.mjs";
+import { brotliDecompressSync } from "node:zlib";
+import { deltaSession, keyIdFromPublicKey, publicKeyFromPrivate } from "./publish.mjs";
 import { FakeBucket, FakeCache, sha256Hex } from "./test-support.mjs";
 import worker from "./worker.js";
 
@@ -29,12 +30,14 @@ let server;
 let endpoint;
 let appDir;
 let capgoLog;
+let fileUploads;
 
 before(async () => {
   server = createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = chunks.length ? Buffer.concat(chunks) : undefined;
+    if (req.method === "PUT" && req.url.includes("/files/")) fileUploads++;
     const request = new Request(`${endpoint}${req.url}`, {
       method: req.method,
       headers: req.headers,
@@ -65,6 +68,7 @@ beforeEach(() => {
   writeFileSync(join(appDir, "dist", "main.js"), "CapacitorUpdater.notifyAppReady(); window.VERSION='1.1.3-ota.4';");
   writeFileSync(join(appDir, "public-key.pem"), publicKey);
   capgoLog = join(appDir, "capgo.log");
+  fileUploads = 0;
 });
 
 function publishCli(args, extraEnv = {}) {
@@ -185,5 +189,131 @@ describe("publish.mjs", () => {
     assert.equal((await deviceCheck()).kind, "up_to_date");
     await publishCli(["promote", "--app", APP, "--channel", "beta", "--version", "1.1.3-ota.4"]);
     assert.equal((await deviceCheck()).version, "1.1.3-ota.4");
+  });
+});
+
+const DELTA = [...PUBLISH, "--delta"];
+const deltaVersion = (version) => [...DELTA.slice(0, 8), version, "--delta"];
+const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+/** The web build of a game: code, a large compressible file, a sprite that
+ *  is already compressed, plus files a manifest leaves out. */
+function writeGame(dist) {
+  mkdirSync(join(dist, "assets", "sprites"), { recursive: true });
+  writeFileSync(join(dist, "assets", "level.json"), JSON.stringify({ tiles: Array(4000).fill("grass") }));
+  writeFileSync(join(dist, "assets", "sprites", "raptor.png"), Buffer.alloc(20_000, 7));
+  writeFileSync(join(dist, "empty.txt"), "");
+  writeFileSync(join(dist, ".DS_Store"), "finder");
+}
+
+/** What @capgo/capacitor-updater 8.53 does with a manifest reply
+ *  (CapgoUpdater.downloadManifest): for each entry, decrypt file_hash with
+ *  the public key; reuse the store build's file when its SHA-256 matches;
+ *  otherwise download, decrypt with the session key, unpack `.br` and
+ *  check the SHA-256. */
+async function deviceInstall(reply, builtinDir) {
+  const open = (bytes) => publicDecrypt({ key: publicKey, padding: constants.RSA_PKCS1_PADDING }, bytes);
+  const [iv, sealedKey] = reply.session_key.split(":");
+  const key = open(Buffer.from(sealedKey, "base64"));
+  const files = new Map();
+  const downloaded = [];
+  for (const entry of reply.manifest) {
+    const hash = open(Buffer.from(entry.file_hash, "hex")).toString("hex");
+    const target = entry.file_name.replace(/\.br$/, "");
+    const builtin = join(builtinDir, target);
+    if (existsSync(builtin) && sha(readFileSync(builtin)) === hash) {
+      files.set(target, readFileSync(builtin));
+      continue;
+    }
+    const res = await fetch(entry.download_url);
+    assert.equal(res.status, 200, target);
+    const decipher = createDecipheriv("aes-128-cbc", key, Buffer.from(iv, "base64"));
+    let bytes = Buffer.concat([decipher.update(Buffer.from(await res.arrayBuffer())), decipher.final()]);
+    if (entry.file_name.endsWith(".br")) bytes = brotliDecompressSync(bytes);
+    assert.equal(sha(bytes), hash, target);
+    files.set(target, bytes);
+    downloaded.push(target);
+  }
+  return { files, downloaded };
+}
+
+describe("publish.mjs --delta", () => {
+  test("a device rebuilds the web build from the manifest's files", async () => {
+    writeGame(join(appDir, "dist"));
+    const result = JSON.parse((await publishCli([...DELTA, "--expect-public-key", "public-key.pem"])).stdout);
+    assert.equal(result.kind, "manifest");
+    assert.equal(result.files, 4);
+    assert.equal(result.uploaded, 4);
+    assert.equal(result.promoted, true);
+    assert.equal(fileUploads, 4);
+
+    const reply = await deviceCheck();
+    assert.equal(reply.version, "1.1.3-ota.4");
+    assert.equal(reply.session_key, deltaSession(privateKey, APP).ivSessionKey);
+    // Large text travels brotli-compressed; the sprite and small files as they are.
+    // Empty files and .DS_Store are left out.
+    assert.deepEqual(
+      reply.manifest.map((m) => m.file_name),
+      ["assets/level.json.br", "assets/sprites/raptor.png", "index.html", "main.js"],
+    );
+
+    const { files, downloaded } = await deviceInstall(reply, mkdtempSync(join(appDir, "store-")));
+    assert.equal(downloaded.length, 4);
+    for (const [name, bytes] of files) assert.deepEqual(bytes, readFileSync(join(appDir, "dist", name)), name);
+  });
+
+  test("the next version uploads only changed files, and a device downloads only those", async () => {
+    writeGame(join(appDir, "dist"));
+    await publishCli(DELTA);
+    // The store build ships this web build.
+    const store = join(appDir, "store");
+    cpSync(join(appDir, "dist"), store, { recursive: true });
+
+    fileUploads = 0;
+    writeFileSync(join(appDir, "dist", "main.js"), "CapacitorUpdater.notifyAppReady(); window.VERSION='1.1.3-ota.5';");
+    const result = JSON.parse((await publishCli(deltaVersion("1.1.3-ota.5"))).stdout);
+    assert.equal(result.files, 4);
+    assert.equal(result.uploaded, 1);
+    assert.equal(fileUploads, 1);
+
+    const reply = await deviceCheck();
+    assert.equal(reply.version, "1.1.3-ota.5");
+    const { files, downloaded } = await deviceInstall(reply, store);
+    assert.deepEqual(downloaded, ["main.js"]);
+    assert.match(files.get("main.js").toString(), /1\.1\.3-ota\.5/);
+
+    // A rollback to the first version needs no upload at all.
+    const back = await publishCli(["rollback", "--app", APP, "--channel", "beta", "--native", "1.1.3"]);
+    assert.equal(JSON.parse(back.stdout).pointer.version, "1.1.3-ota.4");
+  });
+
+  test("delta mode runs no Capgo CLI and writes no key file", async () => {
+    await publishCli(DELTA);
+    assert.equal(existsSync(capgoLog), false);
+    assert.deepEqual(
+      readdirSync(appDir).filter((f) => f.startsWith("ota-publish-")),
+      [],
+    );
+  });
+
+  test("a build that cannot be a delta bundle stops before upload", async () => {
+    writeFileSync(join(appDir, "dist", "main.js"), "window.broken = true;");
+    await assert.rejects(publishCli(DELTA), /notifyAppReady/);
+
+    writeFileSync(join(appDir, "dist", "main.js"), "CapacitorUpdater.notifyAppReady();");
+    writeFileSync(join(appDir, "dist", "main.js.br"), "precompressed");
+    await assert.rejects(publishCli(DELTA), /main\.js\.br: the plugin unpacks every \.br file/);
+
+    const old = join(appDir, "node_modules", "@capgo", "capacitor-updater");
+    mkdirSync(old, { recursive: true });
+    writeFileSync(join(old, "package.json"), JSON.stringify({ version: "7.25.0" }));
+    await assert.rejects(publishCli(DELTA), /needs @capgo\/capacitor-updater 7\.30/);
+    assert.equal(env.BUCKET.objects.size, 0);
+  });
+
+  test("a version already published as a zip cannot become a manifest", async () => {
+    await publishCli(PUBLISH);
+    await assert.rejects(publishCli(DELTA), /409/);
+    assert.equal((await deviceCheck()).manifest, undefined);
   });
 });

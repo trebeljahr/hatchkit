@@ -6,8 +6,8 @@ one Cloudflare Worker plus one R2 bucket at `https://ota.ricoslabs.com`, shared 
 plugin and the app-side setup are the same.
 
 - `worker.js` — the Worker (no dependencies, no build step).
-- `publish.mjs` — what app CI runs: zip, encrypt, upload, move the pointer; also `promote`,
-  `rollback`, `status`.
+- `publish.mjs` — what app CI runs: zip, encrypt, upload, move the pointer (or, with `--delta`,
+  upload only the changed files and a manifest); also `promote`, `rollback`, `status`.
 - `../terraform/stacks/ota-updates/` — the Cloudflare resources. Run it with
   `hatchkit infra plan ota-updates`, then `hatchkit infra apply ota-updates`.
 - `make check` — syntax check plus the offline tests (`node --test`; no network, no credentials).
@@ -32,8 +32,9 @@ The Worker answers with a bundle only when all of these hold:
    the bundle is never offered it.
 5. `version_name` differs from the pointer's version.
 
-A bundle reply is `{ version, url, checksum, session_key }` (and `manifest` when the pointer holds
-one). The plugin reads `session_key`, not `sessionKey`. A no-update reply is
+A bundle reply is `{ version, url, checksum, session_key }`. For a delta bundle it is
+`{ version, url, session_key, manifest: [{ file_name, file_hash, download_url }] }` (see
+[Delta bundles](#delta-bundles)). The plugin reads `session_key`, not `sessionKey`. A no-update reply is
 `{ error: "no_new_version_available", message, kind: "up_to_date" }`; the plugin installs nothing
 from any reply that has `error` or `kind`. Unknown apps and channels get `kind: "blocked"`. The
 Worker never answers 429, the one status that makes the plugin back off.
@@ -55,8 +56,15 @@ Workers Logs delete entries after 3 days on Workers Free and 7 days on Workers P
 ```
 apps/<app>/bundles/<version>.zip           encrypted bundle (immutable)
 apps/<app>/bundles/<version>.json          its checksum, session key, key id, native line, size
+apps/<app>/bundles/<version>.manifest.json        a delta bundle's file list (immutable)
+apps/<app>/bundles/<version>.manifest-reply.json  the same list as devices get it, with placeholders
+apps/<app>/files/<sha256>                  one encrypted file of a delta bundle, named by the
+                                           SHA-256 of its bytes; shared by every version (immutable)
 apps/<app>/channels/<channel>/<native>.json   the pointer for one native line
 ```
+
+A version is either a zip or a delta bundle, never both. `promote`, `rollback` and `status` work
+the same for both kinds.
 
 A pointer names one bundle version and keeps the last 20 earlier ones in `history`. Each
 Cloudflare location caches a pointer, or its absence, for `POINTER_CACHE_SECONDS` (60 s), so an
@@ -106,6 +114,56 @@ Each app has its own publish token (Terraform output `publish_tokens`, stored as
 `OTA_PUBLISH_TOKEN` in that app's GitHub environment). A token can only write its own app's
 bundles and pointers.
 
+## Delta bundles
+
+A full zip makes every device download the whole web build for every update, and the upload must
+stay below 100 MB. A delta (manifest) bundle sends each file on its own: a device downloads only
+the files that its store build and earlier updates do not already hold, and CI uploads only the
+files R2 does not hold yet. Use it for large builds (Mesozoic Protocol) or to cut download size.
+
+```sh
+OTA_PUBLISH_TOKEN=… OTA_SIGNING_KEY="$(cat key.pem)" \
+node publish.mjs publish --delta --app com.ricoslabs.mesozoicprotocol --channel beta \
+  --native 1.0.0 --version 1.0.0-ota.7 --dist dist --expect-public-key ota/public-key.pub
+```
+
+Same flags as a zip publish. The JSON result adds `files` (in the manifest), `uploaded` (files
+that were new to R2) and `uploaded_bytes`. What it does, in the same format as
+`@capgo/cli bundle upload --delta` (CLI 8.87.2):
+
+1. Lists the files under `--dist`. It leaves out `.DS_Store`, `.git`, `.gitignore`,
+   `node_modules` and empty files (iOS refuses a file that decrypts to nothing). It stops when
+   there is no `index.html`, when no `.js` file calls `notifyAppReady()`, when a file already ends
+   in `.br`, or when the app's `@capgo/capacitor-updater` is older than 7.30.
+2. Compresses each file of 8 KB or more with brotli when that saves bytes, and names it `<file>.br`
+   (images, audio, video, fonts and archives are sent as they are). The plugin unpacks it to
+   `<file>`.
+3. Encrypts each file with AES-128-CBC and the session key, and encrypts the file's SHA-256 with
+   the private key (hex, the "V3" checksum format). The session key is derived from the private
+   key, so an unchanged file encrypts to the same bytes every time.
+4. `POST /admin/apps/<app>/files/missing` (40 hashes per call) asks which files R2 lacks, then
+   `PUT /admin/apps/<app>/files/<sha256>` uploads only those. R2 checks each SHA-256. It asks
+   again afterwards and stops if a file is still missing: the Worker checks only `index.html`,
+   because one R2 call per file does not fit Workers Free.
+5. `PUT /admin/apps/<app>/bundles/<version>/manifest` stores the manifest, then `promote` moves
+   the pointer as for a zip.
+
+No Capgo CLI runs in this mode, so nothing is sent to Capgo, and the private key stays in the
+publishing process.
+
+On the device (`CapgoUpdater.downloadManifest`, plugin 8.53), for every manifest entry: the plugin
+decrypts `file_hash` with the public key; copies the file from the store build's `public/` folder
+when its SHA-256 matches; else copies it from its download cache (files it fetched for earlier
+updates); else downloads `download_url`, decrypts it with `session_key`, unpacks `.br` and checks
+the SHA-256. The plugin still requires a valid `url` in the reply, and never downloads it when a
+manifest is present; the Worker points it at the manifest. A reply never carries an empty manifest:
+the plugin would install an empty bundle.
+
+The Worker keeps each manifest reply as text with placeholders and fills in one signed query for
+all files of the app: building it per request from JSON costs more than Workers Free's 10 ms CPU
+for a manifest of a thousand files. A files link opens any file of that app's file store until it
+expires, nothing else.
+
 ## App configuration
 
 ```ts
@@ -132,6 +190,10 @@ repository. Losing it means the next live update needs a store build with a new 
   token cannot make a device run code: without the private key the device rejects the bundle.
 - What a stolen publish token or Cloudflare access can do: withhold updates, or point a line at
   an older bundle that was signed for it. Keep the tokens in the app's release environment.
+- Delta bundles: all versions of an app share one session key, and the signed hash covers a
+  file's content, not its name. So the same attacker could also put together a manifest from
+  files of different signed versions. Every file must still be one the private key signed. The
+  session key never gave secrecy from anyone holding the app: the public key in the app opens it.
 - The URL signing key and the publish tokens are generated by Terraform. They sit in the
   Worker's secret bindings and in the local, gitignored Terraform state of the hatchkit checkout.
 - Desktop and Mac App Store builds never include the plugin.
@@ -141,5 +203,6 @@ repository. Losing it means the next live update needs a store build with a new 
 - Workers Free: 100,000 requests a day per account. Past that, update checks fail and apps keep
   their current bundle.
 - Request bodies are capped at 100 MB on Free, so a full-zip upload must stay below that. Larger
-  apps (Mesozoic Protocol) need delta bundles: the Worker serves a pointer's `manifest`, but
-  `publish.mjs` does not build manifests yet.
+  apps (Mesozoic Protocol) publish with `--delta`, where the cap applies to each file.
+- Workers Free allows 10 ms of CPU per request. A delta reply costs a string replacement over its
+  manifest, not a JSON parse. A manifest holds at most 10,000 files (Capgo's limit).
