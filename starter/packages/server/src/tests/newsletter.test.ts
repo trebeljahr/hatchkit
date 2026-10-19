@@ -14,8 +14,10 @@
  * the writes it received.
  *
  * Also covered: the sender on the confirmation email, which env var names
- * the list for each NODE_ENV, and which host the confirm link and its
- * redirects point at.
+ * the list for each NODE_ENV, which host the confirm link and its
+ * redirects point at, lead-magnet delivery (token → email → download,
+ * and the signup attribs), and the cleanup of never-confirmed
+ * subscribers.
  */
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
@@ -23,8 +25,16 @@ import { afterEach, beforeEach, describe, test } from "node:test";
 import express from "express";
 
 import { describeListTarget, findSubscriber, resolveListId, sendCampaign } from "../services/newsletter/listmonk.js";
+import { _setMagnetsForTests, parseMagnets } from "../services/newsletter/magnets.js";
+import { findUnconfirmed, pruneUnconfirmed } from "../services/newsletter/prune.js";
 import { registerNewsletterRoutes } from "../services/newsletter/routes.js";
-import { _resetRateLimit, mintConfirmToken } from "../services/newsletter/subscribe.js";
+import {
+  _resetRateLimit,
+  DOWNLOAD_TOKEN_TTL_MS,
+  mintConfirmToken,
+  mintDownloadToken,
+  verifyConfirmToken,
+} from "../services/newsletter/subscribe.js";
 
 const LISTMONK = "https://listmonk.test";
 const LIST_ID = 4;
@@ -42,13 +52,27 @@ process.env.LISTMONK_FROM = FROM;
 process.env.NEWSLETTER_TOKEN_SECRET = "test-secret";
 
 type Membership = { id: number; subscription_status: "unconfirmed" | "confirmed" | "unsubscribed" };
-type FakeSubscriber = { id: number; uuid: string; email: string; name: string; status: "enabled"; lists: Membership[] };
+type FakeSubscriber = {
+  id: number;
+  uuid: string;
+  email: string;
+  name: string;
+  status: "enabled" | "blocklisted";
+  lists: Membership[];
+  attribs?: Record<string, unknown>;
+  created_at?: string;
+};
 type Write = { call: string; body: any };
 
 const realFetch = globalThis.fetch;
 
-/** In-memory Listmonk: just the four endpoints the newsletter code uses. */
-function fakeListmonk(seed: FakeSubscriber[] = []) {
+/** In-memory Listmonk: just the endpoints the newsletter code uses.
+ *  `failTx` makes `/api/tx` answer 500 for the sends it matches;
+ *  `onGetById` runs before `GET /api/subscribers/:id` answers. */
+function fakeListmonk(
+  seed: FakeSubscriber[] = [],
+  opts: { failTx?: (body: any) => boolean; onGetById?: (sub: FakeSubscriber) => void } = {},
+) {
   const subscribers = [...seed];
   const writes: Write[] = [];
   const searches: URLSearchParams[] = [];
@@ -59,7 +83,15 @@ function fakeListmonk(seed: FakeSubscriber[] = []) {
   const handle = (url: URL, init: RequestInit = {}): Response => {
     const call = `${init.method ?? "GET"} ${url.pathname}`;
     const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
-    if (call !== "GET /api/subscribers") writes.push({ call, body });
+    if ((init.method ?? "GET") !== "GET") writes.push({ call, body });
+
+    const byId = /^GET \/api\/subscribers\/(\d+)$/.exec(call);
+    if (byId) {
+      const sub = subscribers.find((s) => s.id === Number(byId[1]));
+      if (!sub) return new Response("not found", { status: 404 });
+      opts.onGetById?.(sub);
+      return json(sub);
+    }
 
     switch (call) {
       case "GET /api/subscribers": {
@@ -81,9 +113,18 @@ function fakeListmonk(seed: FakeSubscriber[] = []) {
             id,
             subscription_status: body.preconfirm_subscriptions ? "confirmed" : "unconfirmed",
           })),
+          attribs: body.attribs ?? {},
+          created_at: new Date().toISOString(),
         };
         subscribers.push(sub);
         return json(sub);
+      }
+      case "DELETE /api/subscribers": {
+        const ids = url.searchParams.getAll("id").map(Number);
+        for (let i = subscribers.length - 1; i >= 0; i--) {
+          if (ids.includes(subscribers[i]!.id)) subscribers.splice(i, 1);
+        }
+        return json(true);
       }
       case "PUT /api/subscribers/lists": {
         for (const sub of subscribers.filter((s) => body.ids.includes(s.id))) {
@@ -95,6 +136,7 @@ function fakeListmonk(seed: FakeSubscriber[] = []) {
         return json(true);
       }
       case "POST /api/tx":
+        if (opts.failTx?.(body)) return new Response("smtp messenger down", { status: 500 });
         return json(true);
       default:
         return new Response("not found", { status: 404 });
@@ -113,6 +155,8 @@ function fakeListmonk(seed: FakeSubscriber[] = []) {
     /** Every Listmonk request except the subscriber lookups. */
     writes,
     calls: () => writes.map((w) => w.call),
+    /** The `/api/tx` sends, in order. */
+    txs: () => writes.filter((w) => w.call === "POST /api/tx").map((w) => w.body),
     membership: (email: string) =>
       subscribers.find((s) => s.email === email)?.lists.find((l) => l.id === LIST_ID)?.subscription_status,
   };
@@ -424,4 +468,260 @@ test("dedicated messenger is selected for confirmation and campaigns", async () 
     if (previousTemplate === undefined) delete process.env.LISTMONK_CAMPAIGN_TEMPLATE_ID;
     else process.env.LISTMONK_CAMPAIGN_TEMPLATE_ID = previousTemplate;
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Lead magnets
+// ─────────────────────────────────────────────────────────────────────
+
+const MAGNETS = {
+  wallpapers: { title: "Wallpaper pack", object: "magnets/wallpapers.zip", filename: "Wallpapers.zip" },
+  "reading-list": { title: "Reading list", url: "https://files.example.test/reading-list.pdf" },
+};
+
+function post(body: object): Promise<Response> {
+  return realFetch(`${base}/api/newsletter/subscribe`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** The first link in an email Listmonk was asked to send. */
+function linkIn(tx: any): string {
+  const href = /href="([^"]+)"/.exec(tx?.data?.body ?? "")?.[1]?.replace(/&amp;/g, "&");
+  assert.ok(href, "email has no link");
+  return href;
+}
+
+/** Collect console.error lines while `fn` runs. */
+async function captureErrors<T>(fn: () => Promise<T>): Promise<{ result: T; errors: string[] }> {
+  const errors: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    errors.push(args.map(String).join(" "));
+  };
+  try {
+    return { result: await fn(), errors };
+  } finally {
+    console.error = original;
+  }
+}
+
+describe("lead magnets", () => {
+  beforeEach(() => _setMagnetsForTests(MAGNETS));
+  afterEach(() => _setMagnetsForTests(null));
+
+  test("token → delivery → attribs: the confirm click emails a link that downloads the file", async () => {
+    const lm = fakeListmonk();
+
+    const res = await post({ email: "fan@example.com", magnet: "wallpapers", source: "Home-Hero" });
+    assert.equal(res.status, 200);
+
+    // The new subscriber carries where it came from, still on no list.
+    const created = lm.writes.find((w) => w.call === "POST /api/subscribers")!.body;
+    assert.deepEqual(created.lists, []);
+    assert.deepEqual(created.attribs, {
+      signup: { list: LIST_ID, source: "home-hero", magnet: "wallpapers" },
+    });
+
+    // The confirm link carries the magnet key, never a URL.
+    const confirmUrl = new URL(linkIn(lm.txs()[0]));
+    const token = verifyConfirmToken(confirmUrl.searchParams.get("token")!);
+    assert.deepEqual(token, { ok: true, email: "fan@example.com", magnet: "wallpapers", source: "home-hero" });
+
+    const confirmed = await realFetch(confirmUrl, { redirect: "manual" });
+    assert.equal(confirmed.status, 303);
+    assert.equal(confirmed.headers.get("location"), `${base}/sub/confirmed?delivery=sent`);
+    assert.equal(lm.membership("fan@example.com"), "confirmed");
+
+    // Second email: the download, from the project's sender.
+    const delivery = lm.txs()[1];
+    assert.equal(lm.txs().length, 2);
+    assert.equal(delivery.subscriber_email, "fan@example.com");
+    assert.equal(delivery.from_email, FROM);
+    assert.match(delivery.data.subject, /Wallpaper pack/);
+    const downloadUrl = new URL(linkIn(delivery));
+    assert.equal(downloadUrl.origin, base);
+    assert.equal(downloadUrl.pathname, "/api/newsletter/download");
+
+    const download = await realFetch(downloadUrl, { redirect: "manual" });
+    assert.equal(download.status, 302);
+    assert.equal(download.headers.get("cache-control"), "no-store");
+    const target = new URL(download.headers.get("location")!);
+    assert.match(target.pathname, /\/magnets\/wallpapers\.zip$/);
+    assert.ok(target.searchParams.get("X-Amz-Signature"), "object download is not presigned");
+    assert.match(target.searchParams.get("response-content-disposition") ?? "", /Wallpapers\.zip/);
+  });
+
+  test("a url magnet redirects to its url", async () => {
+    fakeListmonk();
+    const res = await realFetch(
+      `${base}/api/newsletter/download?token=${encodeURIComponent(mintDownloadToken("reading-list"))}`,
+      { redirect: "manual" },
+    );
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get("location"), MAGNETS["reading-list"].url);
+  });
+
+  test("an unknown magnet is refused before anything reaches Listmonk", async () => {
+    const lm = fakeListmonk();
+
+    const { result: res } = await captureErrors(() =>
+      post({ email: "fan@example.com", magnet: "https://evil.example/file.exe" }),
+    );
+
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as { error: string }).error, "unknown_magnet");
+    assert.deepEqual(lm.calls(), []);
+  });
+
+  test("a confirmed subscriber who asks again gets the download straight away", async () => {
+    const lm = fakeListmonk([existing("done@example.com", [{ id: LIST_ID, subscription_status: "confirmed" }])]);
+
+    const res = await post({ email: "done@example.com", magnet: "reading-list" });
+
+    assert.deepEqual(await res.json(), { ok: true, alreadySubscribed: true, delivered: true });
+    assert.deepEqual(lm.calls(), ["POST /api/tx"]);
+    assert.equal(new URL(linkIn(lm.txs()[0])).pathname, "/api/newsletter/download");
+  });
+
+  test("the form mails a confirmed subscriber one download per magnet per 15 minutes", async () => {
+    const lm = fakeListmonk([existing("done@example.com", [{ id: LIST_ID, subscription_status: "confirmed" }])]);
+
+    await post({ email: "done@example.com", magnet: "reading-list" });
+    const again = await post({ email: "done@example.com", magnet: "reading-list" });
+
+    assert.deepEqual(await again.json(), { ok: true, alreadySubscribed: true, delivered: true });
+    assert.equal(lm.txs().length, 1);
+  });
+
+  test("a second click on the confirm link sends no second download", async () => {
+    const lm = fakeListmonk([existing("done@example.com", [{ id: LIST_ID, subscription_status: "confirmed" }])]);
+    const token = encodeURIComponent(mintConfirmToken("done@example.com", { magnet: "wallpapers" }));
+
+    const res = await realFetch(`${base}/api/newsletter/confirm?token=${token}`, { redirect: "manual" });
+
+    assert.equal(res.headers.get("location"), `${base}/sub/confirmed`);
+    assert.deepEqual(lm.txs(), []);
+  });
+
+  test("a failed delivery still confirms, and is logged as an error", async () => {
+    const lm = fakeListmonk([existing("reader@example.com", [])], { failTx: () => true });
+    const token = encodeURIComponent(mintConfirmToken("reader@example.com", { magnet: "wallpapers" }));
+
+    const { result: res, errors } = await captureErrors(() =>
+      realFetch(`${base}/api/newsletter/confirm?token=${token}`, { redirect: "manual" }),
+    );
+
+    assert.equal(res.status, 303);
+    assert.equal(res.headers.get("location"), `${base}/sub/confirmed?delivery=failed`);
+    assert.equal(lm.membership("reader@example.com"), "confirmed");
+    const line = errors.map((e) => JSON.parse(e)).find((e) => e.event === "delivery_failed");
+    assert.equal(line?.scope, "newsletter.delivery");
+    assert.equal(line?.level, "error");
+    assert.equal(line?.magnet, "wallpapers");
+  });
+
+  test("download links expire, cannot be forged from a confirm link, and stop when the magnet goes", async () => {
+    fakeListmonk();
+    const download = (token: string) =>
+      realFetch(`${base}/api/newsletter/download?token=${encodeURIComponent(token)}`, { redirect: "manual" });
+    const reason = (res: Response) => new URL(res.headers.get("location")!).searchParams.get("reason");
+
+    const old = mintDownloadToken("wallpapers", Date.now() - DOWNLOAD_TOKEN_TTL_MS - 1000);
+    assert.equal(reason(await download(old)), "download_expired");
+    assert.equal(reason(await download(mintConfirmToken("fan@example.com", { magnet: "wallpapers" }))), "download_invalid");
+    // ...and a download token does not confirm anybody.
+    assert.deepEqual(verifyConfirmToken(mintDownloadToken("wallpapers")), { ok: false, reason: "malformed" });
+
+    _setMagnetsForTests({});
+    const { result: gone } = await captureErrors(() => download(mintDownloadToken("wallpapers")));
+    assert.equal(reason(gone), "download_unavailable");
+  });
+
+  test("magnets.json entries are checked one by one", () => {
+    const { magnets, problems } = parseMagnets({
+      ok: { title: "Fine", url: "https://example.test/a.pdf" },
+      Bad_Key: { title: "x", url: "https://example.test/a.pdf" },
+      both: { title: "x", url: "https://example.test/a.pdf", object: "a.zip" },
+      plain: { title: "x", url: "http://example.test/a.pdf" },
+      escape: { title: "x", object: "magnets/../secrets.env" },
+      untitled: { object: "a.zip" },
+    });
+    assert.deepEqual([...magnets.keys()], ["ok"]);
+    assert.equal(problems.length, 5);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Cleanup of never-confirmed subscribers
+// ─────────────────────────────────────────────────────────────────────
+
+describe("pruneUnconfirmed", () => {
+  const now = Date.parse("2026-10-20T00:00:00Z");
+  const daysAgo = (n: number) => new Date(now - n * 24 * 60 * 60 * 1000).toISOString();
+  const ours = { signup: { list: LIST_ID } };
+  const sub = (id: number, email: string, extra: Partial<FakeSubscriber>): FakeSubscriber => ({
+    ...existing(email, []),
+    id,
+    attribs: ours,
+    created_at: daysAgo(40),
+    ...extra,
+  });
+
+  const instance = (): FakeSubscriber[] => [
+    sub(1, "stale@example.com", {}),
+    sub(2, "recent@example.com", { created_at: daysAgo(5) }),
+    sub(3, "member@example.com", { lists: [{ id: LIST_ID, subscription_status: "confirmed" }] }),
+    sub(4, "left@example.com", { lists: [{ id: LIST_ID, subscription_status: "unsubscribed" }] }),
+    sub(5, "blocked@example.com", { status: "blocklisted" }),
+    // On no list, but not this form's pending signup: another project's,
+    // one from before attribs existed, and one whose list was deleted.
+    sub(6, "theirs@example.com", { attribs: { signup: { list: 99 } } }),
+    sub(7, "legacy@example.com", { attribs: {} }),
+  ];
+
+  test("deletes only this form's signups on no list for more than 30 days", async () => {
+    const lm = fakeListmonk(instance());
+
+    const result = await pruneUnconfirmed({ now });
+
+    assert.equal(result.deleted, 1);
+    assert.deepEqual(lm.calls(), ["DELETE /api/subscribers"]);
+    assert.deepEqual(lm.subscribers.map((s) => s.id), [2, 3, 4, 5, 6, 7]);
+  });
+
+  test("keeps a subscriber that confirmed between the listing and the delete", async () => {
+    const lm = fakeListmonk(instance(), {
+      onGetById: (s) => s.lists.push({ id: LIST_ID, subscription_status: "confirmed" }),
+    });
+
+    const result = await pruneUnconfirmed({ now });
+
+    assert.equal(result.candidates, 1);
+    assert.equal(result.deleted, 0);
+    assert.ok(lm.subscribers.some((s) => s.id === 1));
+  });
+
+  test("--dry-run reports and deletes nothing", async () => {
+    const lm = fakeListmonk(instance());
+
+    const result = await pruneUnconfirmed({ now, dryRun: true });
+
+    assert.deepEqual(result.emails, ["stale@example.com"]);
+    assert.deepEqual(lm.calls(), []);
+  });
+
+  test("findUnconfirmed keeps disabled subscribers and ones with no creation date", () => {
+    const candidates = findUnconfirmed(
+      [
+        sub(1, "off@example.com", { status: "disabled" as any }) as any,
+        sub(2, "x@example.com", { created_at: undefined }) as any,
+      ],
+      [LIST_ID],
+      now,
+    );
+    assert.deepEqual(candidates, []);
+  });
 });

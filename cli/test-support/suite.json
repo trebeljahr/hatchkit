@@ -41,6 +41,8 @@
   "test-routing.ts",
   "test-client-host.ts",
   "test-routed-worker-site.ts",
+  "test-newsletter-worker.ts",
+  "test-lead-magnet.ts",
   "test-image-runtime.ts",
   "test-traefik-drain.ts",
   "test-split-readiness.ts",

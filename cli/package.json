@@ -56,6 +56,8 @@
     "test:cloudflare-audit": "node scripts/test.mjs test-cloudflare-audit.ts",
     "test:mac-runner": "node scripts/test.mjs test-mac-runner.ts",
     "test:routed-worker-site": "node scripts/test.mjs test-routed-worker-site.ts",
+    "test:newsletter-worker": "node scripts/test.mjs test-newsletter-worker.ts",
+    "test:lead-magnet": "node scripts/test.mjs test-lead-magnet.ts",
     "test:image-runtime": "node scripts/test.mjs test-image-runtime.ts",
     "test:traefik-drain": "node scripts/test.mjs test-traefik-drain.ts",
     "test:runtime-carry-volume": "node scripts/test.mjs test-runtime-carry-volume.ts",

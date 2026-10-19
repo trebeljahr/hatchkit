@@ -72,10 +72,13 @@ export function createApp(options: { accessLogStream?: { write(message: string):
   app.use(express.urlencoded({ extended: true }));
 
   // ── 4. Logging ─────────────────────────────────────────────────────
-  // The newsletter confirm URL carries a 21-day bearer token. Its route
-  // already logs outcomes without the URL, so omit it from access logs.
+  // The newsletter confirm and download URLs carry bearer tokens (21
+  // and 30 days). Their routes already log outcomes without the URL, so
+  // omit them from access logs. Express matches routes case-insensitively
+  // and with or without a trailing slash, so compare the same way.
+  const tokenPaths = new Set(["/api/newsletter/confirm", "/api/newsletter/download"]);
   app.use(morgan(env.isProduction ? "combined" : "dev", {
-    skip: (req) => req.path === "/api/newsletter/confirm",
+    skip: (req) => tokenPaths.has(req.path.toLowerCase().replace(/\/+$/, "")),
     stream: options.accessLogStream,
   }));
 
@@ -86,7 +89,7 @@ export function createApp(options: { accessLogStream?: { write(message: string):
   }) as RequestHandler;
   app.use("/api/trpc", trpcMiddleware);
 
-  // ── 5b. Newsletter (Listmonk + SES double-opt-in subscribe + confirm)
+  // ── 5b. Newsletter (Listmonk + SES double-opt-in subscribe + confirm + downloads)
   registerNewsletterRoutes(app);
 
   // ── 6. Health endpoint ─────────────────────────────────────────────

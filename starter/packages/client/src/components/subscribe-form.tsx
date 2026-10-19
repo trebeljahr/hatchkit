@@ -17,12 +17,22 @@ type Status =
   | { kind: "idle" }
   | { kind: "submitting" }
   | { kind: "success" }
-  | { kind: "already-subscribed" }
+  | { kind: "already-subscribed"; delivered: boolean }
   | { kind: "error"; message: string };
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 
-export function SubscribeForm() {
+type SubscribeFormProps = {
+  /** Key of a lead magnet in the server's
+   *  `services/newsletter/magnets.json`. The reader gets its download
+   *  link by email once the address is confirmed. */
+  magnet?: string;
+  /** Short label for where this form sits, e.g. `home-hero`. Stored on
+   *  new subscribers as `attribs.signup.source`. */
+  source?: string;
+};
+
+export function SubscribeForm({ magnet, source }: SubscribeFormProps = {}) {
   const [email, setEmail] = useState("");
   // Honeypot — wired but never shown. Bots that fill every input get
   // filtered server-side before any Listmonk call.
@@ -58,7 +68,7 @@ export function SubscribeForm() {
       const res = await fetch(`${API_URL}/api/newsletter/subscribe`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email, website }),
+        body: JSON.stringify({ email, website, magnet, source }),
       });
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { message?: string };
@@ -68,8 +78,15 @@ export function SubscribeForm() {
         });
         return;
       }
-      const data = (await res.json().catch(() => ({}))) as { alreadySubscribed?: boolean };
-      setStatus({ kind: data.alreadySubscribed ? "already-subscribed" : "success" });
+      const data = (await res.json().catch(() => ({}))) as {
+        alreadySubscribed?: boolean;
+        delivered?: boolean;
+      };
+      setStatus(
+        data.alreadySubscribed
+          ? { kind: "already-subscribed", delivered: data.delivered === true }
+          : { kind: "success" },
+      );
     } catch {
       setStatus({ kind: "error", message: "Network error. Please try again." });
     }
@@ -80,8 +97,10 @@ export function SubscribeForm() {
       <div role="status" aria-live="polite" className="rounded-lg border p-5 text-sm">
         <p className="font-medium">Check your inbox.</p>
         <p className="mt-1 text-gray-600">
-          Tap the confirmation link to finish. Spam folder is the usual suspect if it does not
-          surface.
+          {magnet
+            ? "Tap the confirmation link to finish. We then email you the download link."
+            : "Tap the confirmation link to finish."}{" "}
+          Spam folder is the usual suspect if it does not surface.
         </p>
       </div>
     );
@@ -92,7 +111,9 @@ export function SubscribeForm() {
       <div role="status" aria-live="polite" className="rounded-lg border p-5 text-sm">
         <p className="font-medium">You are already on the list.</p>
         <p className="mt-1 text-gray-600">
-          That address is already a confirmed subscriber. Nothing to do.
+          {status.delivered
+            ? "We emailed you the download link."
+            : "That address is already a confirmed subscriber. Nothing to do."}
         </p>
       </div>
     );

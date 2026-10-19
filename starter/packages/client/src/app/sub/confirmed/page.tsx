@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Suspense } from "react";
+import { DeliveryNote } from "./delivery-note";
 
 export const metadata: Metadata = {
   title: "Subscription confirmed",
@@ -11,6 +13,9 @@ export default function ConfirmedPage() {
     <div className="mx-auto max-w-xl px-4 py-16 text-center">
       <h1 className="text-3xl md:text-4xl font-semibold">You&apos;re in.</h1>
       <p className="mt-3 text-gray-600">Subscription confirmed.</p>
+      <Suspense fallback={null}>
+        <DeliveryNote />
+      </Suspense>
       <p className="mt-2 text-gray-600">
         The next issue will arrive at the usual cadence. Unsubscribe link in every email.
       </p>

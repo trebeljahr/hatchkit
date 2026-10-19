@@ -53,6 +53,7 @@
     "newsletter:test-tx": "tsx scripts/newsletter-test-tx.ts",
     "newsletter:welcome": "tsx scripts/newsletter-welcome.ts",
     "newsletter:verify": "tsx scripts/newsletter-verify.ts",
+    "newsletter:prune": "tsx scripts/newsletter-prune.ts",
     "electron:ensure": "node scripts/ensure-electron.mjs",
     "test:electron": "node --import tsx --test \"electron/src/**/*.test.ts\"",
     "test:desktop:release": "node --test scripts/lib/desktop-release.test.mjs scripts/lib/desktop-rollout.test.mjs",

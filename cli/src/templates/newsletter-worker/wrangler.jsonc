@@ -1,0 +1,45 @@
+// Mailing-list double opt-in + lead-magnet downloads for a static site.
+// Copy this directory to <repo>/workers/newsletter, replace every
+// example.com / PROJECT value below, then see README.md.
+//
+// Secrets, set with `pnpm exec wrangler secret put <NAME>`, never in this file:
+//   LISTMONK_API_TOKEN       token of the project's Listmonk API user
+//                            (keychain: hatchkit / listmonk:project:PROJECT:api-token)
+//   NEWSLETTER_TOKEN_SECRET  random HMAC key for the confirm and download links
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "PROJECT-newsletter",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-20",
+  "workers_dev": false,
+  // The apex is proxied through Cloudflare, so the Worker answers on the
+  // site's own origin and the site never sees these paths.
+  "routes": [{ "pattern": "example.com/api/newsletter/*", "zone_name": "example.com" }],
+  "vars": {
+    "LISTMONK_URL": "https://listmonk.example.com",
+    "LISTMONK_API_USER": "PROJECT",
+    // Ids from `hatchkit add PROJECT listmonk-ses` (the <project>-tx
+    // template and the live list). Local runs override the list with the
+    // test list: `wrangler dev --var LISTMONK_LIST_ID:<test id>`.
+    "LISTMONK_TX_TEMPLATE_ID": "0",
+    "LISTMONK_LIST_ID": "0",
+    "LISTMONK_FROM": "PROJECT <noreply@mail.example.com>",
+    "SITE_URL": "https://example.com",
+    "API_URL": "https://example.com",
+    "SITE_NAME": "PROJECT"
+  },
+  // Only when magnets.json has an `object` magnet: the bucket the
+  // download route streams it from.
+  // "r2_buckets": [{ "binding": "MAGNETS", "bucket_name": "PROJECT-assets" }],
+  // Delete subscribers on no list for 30 days, once a day.
+  "triggers": { "crons": ["17 4 * * *"] },
+  // Five subscribe posts per minute per client IP. namespace_id is any
+  // integer not used by another rate limiter in the account.
+  "ratelimits": [
+    { "name": "SUBSCRIBE_LIMITER", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } }
+  ],
+  // Keep our own JSON log lines (no address, no IP) but not Cloudflare's
+  // per-request invocation logs, which would store client IPs and the
+  // confirm and download links.
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } }
+}

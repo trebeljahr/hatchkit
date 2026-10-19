@@ -49,7 +49,9 @@ async function listmonkFetch<T = unknown>(path: string, init: RequestInit = {}):
   });
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(`listmonk ${init.method ?? "GET"} ${path}: ${res.status} ${text}`);
+    // Path without the query: a subscriber lookup carries the address
+    // in `search`, and this message reaches the logs.
+    throw new Error(`listmonk ${init.method ?? "GET"} ${path.split("?")[0]}: ${res.status} ${text}`);
   }
   if (!text) return undefined as unknown as T;
   return JSON.parse(text) as T;
@@ -92,6 +94,15 @@ export function resolveListId(): number {
   return n;
 }
 
+/** Every list id this project's env names: live (either name) and test.
+ *  The unconfirmed cleanup (prune.ts) deletes only subscribers whose
+ *  `attribs.signup.list` is one of these. */
+export function projectListIds(): number[] {
+  return [process.env.LISTMONK_LIVE_LIST_ID || process.env.LISTMONK_LIST_ID, process.env.LISTMONK_TEST_LIST_ID]
+    .map(Number)
+    .filter((n) => Number.isInteger(n) && n > 0);
+}
+
 export function describeListTarget(): string {
   const name = listIdVar();
   return `${name}=${process.env[name]} (${isProductionSend() ? "production" : "non-production"})`;
@@ -117,7 +128,27 @@ export type ListmonkSubscriber = {
   name: string;
   status: "enabled" | "disabled" | "blocklisted";
   lists?: ListmonkSubscriberList[];
+  attribs?: Record<string, unknown>;
+  created_at?: string;
 };
+
+/** Where a signup came from. Stored on the subscriber as
+ *  `attribs.signup = { list, source?, magnet? }`, so a campaign can
+ *  segment on it: `subscribers.attribs->'signup'->>'magnet' = 'wallpapers'`.
+ *  `list` says which project's form wrote it: attribs belong to the
+ *  subscriber, and a subscriber is shared by every project on the
+ *  instance. */
+export type SignupInfo = { source?: string; magnet?: string };
+
+function signupAttribs(signup: SignupInfo): Record<string, unknown> {
+  return {
+    signup: {
+      list: resolveListId(),
+      ...(signup.source ? { source: signup.source } : {}),
+      ...(signup.magnet ? { magnet: signup.magnet } : {}),
+    },
+  };
+}
 
 type SubscribersQueryResponse = {
   data: { results: ListmonkSubscriber[]; total: number };
@@ -171,9 +202,21 @@ export async function isConfirmedOnList(email: string): Promise<boolean> {
 // single-opt-in list Listmonk mails every member not `unsubscribed`,
 // `unconfirmed` included, so an early membership would get every
 // campaign without a confirm click.
+//
+// Attribs (`SignupInfo`) are written only when this code CREATES a
+// subscriber. `PUT /api/subscribers/:id` is the only call that changes
+// an existing subscriber's attribs, and it also deletes every
+// membership missing from its `lists` (Listmonk v6.0.0
+// `update-subscriber-with-lists`). This project's API user can name only
+// its own lists there, so the call would drop the address from every
+// other project's list on a shared instance.
 // ─────────────────────────────────────────────────────────────────────
 
-async function createSubscriber(email: string, listIds: number[]): Promise<ListmonkSubscriber> {
+async function createSubscriber(
+  email: string,
+  listIds: number[],
+  attribs?: Record<string, unknown>,
+): Promise<ListmonkSubscriber> {
   type CreateResp = { data: ListmonkSubscriber };
   const created = await listmonkFetch<CreateResp>("/api/subscribers", {
     method: "POST",
@@ -184,6 +227,7 @@ async function createSubscriber(email: string, listIds: number[]): Promise<Listm
       name: email.toLowerCase(),
       status: "enabled",
       lists: listIds,
+      ...(attribs ? { attribs } : {}),
       // Marks any list in `listIds` as `confirmed` and stops Listmonk's
       // own opt-in email. With `false`, Listmonk would mail its
       // confirmation for every double-opt-in list in `listIds`.
@@ -195,13 +239,20 @@ async function createSubscriber(email: string, listIds: number[]): Promise<Listm
 
 /** Make sure `email` exists as a Listmonk subscriber, without adding it
  *  to any list. Call this before sending the confirmation email.
+ *  `signup`, when given, becomes `attribs.signup` on a new subscriber.
  *
  *  An existing subscriber is returned untouched. It may belong to
  *  other projects' lists on a shared instance, or be `unsubscribed`
  *  from ours, and submitting the form again must not put it on our
  *  list before the confirm click. */
-export async function ensureSubscriber(email: string): Promise<ListmonkSubscriber> {
-  return (await findSubscriber(email)) ?? (await createSubscriber(email, []));
+export async function ensureSubscriber(
+  email: string,
+  signup?: SignupInfo,
+): Promise<ListmonkSubscriber> {
+  return (
+    (await findSubscriber(email)) ??
+    (await createSubscriber(email, [], signup ? signupAttribs(signup) : undefined))
+  );
 }
 
 /** Add `email` to the env-resolved list as `confirmed`. Only the
@@ -209,15 +260,23 @@ export async function ensureSubscriber(email: string): Promise<ListmonkSubscribe
  *  the address (and `newsletter:verify`, for your own inbox). Idempotent:
  *  an existing membership, whatever its status, becomes `confirmed`.
  *  A subscriber that has gone missing since the token was issued is
- *  recreated on the list. The `PUT /api/subscribers/lists` path sends
- *  no Listmonk opt-in email. */
-export async function confirmSubscription(email: string): Promise<void> {
+ *  recreated on the list, with `signup` as its attribs. The
+ *  `PUT /api/subscribers/lists` path sends no Listmonk opt-in email.
+ *
+ *  `alreadyConfirmed` is true when the membership was `confirmed` before
+ *  this call: the link was clicked before, or a mail scanner opened it. */
+export async function confirmSubscription(
+  email: string,
+  signup?: SignupInfo,
+): Promise<{ alreadyConfirmed: boolean }> {
   const listId = resolveListId();
   const existing = await findSubscriber(email);
   if (!existing) {
-    await createSubscriber(email, [listId]);
-    return;
+    await createSubscriber(email, [listId], signup ? signupAttribs(signup) : undefined);
+    return { alreadyConfirmed: false };
   }
+  const alreadyConfirmed =
+    existing.lists?.find((l) => l.id === listId)?.subscription_status === "confirmed";
   await listmonkFetch("/api/subscribers/lists", {
     method: "PUT",
     body: JSON.stringify({
@@ -227,6 +286,34 @@ export async function confirmSubscription(email: string): Promise<void> {
       status: "confirmed",
     }),
   });
+  return { alreadyConfirmed };
+}
+
+/** Every subscriber on the instance, with their memberships. Needs
+ *  `subscribers:get_all`, which every project's API user has (see
+ *  hatchkit's listmonk-project-user.ts). `lists` holds ALL of a
+ *  subscriber's memberships, not only this project's (v6.0.0
+ *  `get-subscriber-lists-lazy` does not filter by permission). */
+export async function listAllSubscribers(): Promise<ListmonkSubscriber[]> {
+  const res = await listmonkFetch<SubscribersQueryResponse>("/api/subscribers?per_page=all");
+  return res.data.results;
+}
+
+/** One subscriber with its memberships, or null when it is gone. */
+export async function getSubscriber(id: number): Promise<ListmonkSubscriber | null> {
+  try {
+    return (await listmonkFetch<{ data: ListmonkSubscriber }>(`/api/subscribers/${id}`)).data;
+  } catch (err) {
+    if (/: 404 /.test((err as Error).message)) return null;
+    throw err;
+  }
+}
+
+/** Delete subscribers by id (`subscribers:manage`). */
+export async function deleteSubscribers(ids: number[]): Promise<void> {
+  if (ids.length === 0) return;
+  const params = new URLSearchParams(ids.map((id) => ["id", String(id)]));
+  await listmonkFetch(`/api/subscribers?${params}`, { method: "DELETE" });
 }
 
 // ─────────────────────────────────────────────────────────────────────

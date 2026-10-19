@@ -102,6 +102,7 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   old site. Production write: `--dry-run` first, ask before the real run.
   See `cli/src/host/plausible-merge.ts`.
 - `hatchkit listmonk user <project> [--dry-run]`: give a project its own Listmonk API user (user role + list role + API user, needs the `hatchkit-admin` token in keychain `listmonk:admin-api-token`) and rewrite LISTMONK_API_USER/TOKEN in its env. Never pushes; `hatchkit sync` after. `hatchkit add … listmonk-ses` does the same for new projects.
+- `hatchkit add <project> lead-magnet [--key <k> --title <t> (--object <bucket key>|--url <https>) [--filename <f>] | --key <k> --remove] [--dry-run]`: edit the newsletter's `magnets.json` (starter `packages/server/src/services/newsletter/`, or a static site's `workers/newsletter/src/`); no flags lists them. Local file only, warns about missing env; never uploads the file. Delivery, the download route and the 30-day cleanup of never-confirmed subscribers live in the starter's `services/newsletter/` (`magnets.ts`, `prune.ts`); the static-site Worker port is `cli/src/templates/newsletter-worker/` (not scaffolded).
 - `hatchkit backup sources [--project <name>]`: read-only; resolves every
   registered backup selector on the host and prints the exact fix for stale
   ones (`backup update-source … --container|--remove`, `backup deregister`,

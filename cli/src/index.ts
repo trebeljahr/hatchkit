@@ -1251,6 +1251,7 @@ async function handleAdd(): Promise<void> {
   //   hatchkit add <project> signing           (apply signing to project)
   //   hatchkit add i18n                        (add a language to cwd)
   //   hatchkit add <project> i18n              (add a language to project)
+  //   hatchkit add <project> lead-magnet --key <key> …   (newsletter magnets.json)
 
   // Signing has a totally different shape from the env-var-emitting
   // services routed through runProvision (workflow files, native
@@ -1328,6 +1329,32 @@ async function handleAdd(): Promise<void> {
       ghRepoSlug: flagValue("--repo"),
     });
     if (!audit.ok) process.exitCode = 1;
+    return;
+  }
+
+  // A lead magnet is an entry in the newsletter's magnets.json — a local
+  // file edit plus read-only env checks, no provider call — so it skips
+  // the provisioning dispatcher like i18n below. Rollback: `git checkout`.
+  const wantsLeadMagnet = positional0[0] === "lead-magnet" || positional0[1] === "lead-magnet";
+  if (wantsLeadMagnet) {
+    const { applyLeadMagnet, printLeadMagnetResult } = await import(
+      "./features/lead-magnet/index.js"
+    );
+    const projectDirArg = positional0[0] === "lead-magnet" ? undefined : positional0[0];
+    const projectDir = projectDirArg ? resolve(projectDirArg) : resolve(".");
+    const dryRun = args.includes("--dry-run");
+    const result = applyLeadMagnet({
+      projectDir,
+      key: flagValue("--key"),
+      title: flagValue("--title"),
+      object: flagValue("--object"),
+      url: flagValue("--url"),
+      filename: flagValue("--filename"),
+      remove: args.includes("--remove"),
+      dryRun,
+    });
+    printLeadMagnetResult(result, dryRun);
+    if (!result.ok) process.exitCode = 1;
     return;
   }
 
@@ -5183,6 +5210,12 @@ function printHelp(topic?: HelpTopic): void {
     i18n        A second language for the scaffolded app: typed catalogs, the
                 first-paint gate, per-language public pages (see
                 \`hatchkit help i18n\`). Local files only — no provider call.
+    lead-magnet A free file the newsletter emails after a signup confirms:
+                adds, changes or removes an entry in the newsletter's
+                magnets.json (no flags: lists them). --key <key> --title <t>
+                (--object <bucket key> | --url <https url>) [--filename <f>]
+                [--remove] [--dry-run]. Local file only; warns when the env
+                lacks what a delivery needs. Uploading the file is yours.
 
   ${chalk.bold("Deferred steps:")}
     Every service above is optional. Declining its credential prompt — or a

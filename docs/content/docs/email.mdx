@@ -233,6 +233,102 @@ Lists that `hatchkit add` created before this change are single opt-in. `hatchki
 
 The confirmation link points at the API's origin, `BETTER_AUTH_URL`. The confirm route then redirects to `/sub/confirmed` or `/sub/error` on the site's origin, `NEWSLETTER_SITE_URL` (else `FRONTEND_URL`). Under the `split` topology these are two hosts, and only the API host serves `/api/newsletter/confirm`. Projects created before 2026-09-29 built the link on the site's origin, so under `split` it returned a 404. `hatchkit update` moves the link to `BETTER_AUTH_URL`.
 
+## Lead magnets
+
+A lead magnet is a free file that a reader gets for signing up: a wallpaper pack, a printable PDF, an asset pack or a reading list. The starter emails the download link after the reader confirms. The pages that use the file stay open to everyone. Only the emailed copy needs a signup.
+
+### How delivery works
+
+1. **Form.** `<SubscribeForm magnet="wallpapers" source="home-hero" />` posts the magnet's key and a short source label. The form never sends a URL. The server accepts only keys listed in `packages/server/src/services/newsletter/magnets.json` and answers `400 unknown_magnet` for any other key.
+2. **Confirmation email.** The signed confirm token carries the magnet key and the source. A new subscriber gets `attribs.signup = { list, source, magnet }`.
+3. **Confirm click.** The server adds the list membership first. Then it sends a second email through `/api/tx` with a download link, and redirects to `/sub/confirmed?delivery=sent`.
+4. **Download.** The link goes to `/api/newsletter/download?token=…` on the API origin. The token is signed with `NEWSLETTER_TOKEN_SECRET` and expires after 30 days. The route answers with a redirect to the file.
+
+A reader who is already confirmed gets the download email straight from the form, with no confirm step. That is also how a reader gets a new link after the old one expires. The form sends one such email per address and magnet every 15 minutes, whatever IP the requests come from.
+
+Only the first click on a confirm link sends the download. Mail scanners often open links before the reader does, so the reader's own click sends no second copy.
+
+### magnets.json
+
+```json
+{
+  "wallpapers": { "title": "Desktop wallpaper pack", "object": "magnets/wallpapers.zip", "filename": "wallpapers.zip" },
+  "reading-list": { "title": "Reading list", "url": "https://example.com/reading-list.pdf" }
+}
+```
+
+- `object` is a key in the project's bucket (`S3_BUCKET_NAME`). The download route redirects to a presigned GET that expires after 10 minutes, so the bucket can stay private. `filename` sets the name the browser saves.
+- `url` is an https URL. The download route redirects to it. Use it for a file that is public anyway.
+
+The server checks every entry the first time it reads the file. It leaves out an invalid entry and logs `newsletter.magnets` / `config_invalid`. Removing an entry stops every download link already sent for it. A token carries only the key, so the old links work again if you add an entry with the same key. Use a new key for a different file.
+
+`hatchkit add` edits the file for you. It changes only `magnets.json` and reads the env files to warn about missing settings. It does not upload the file.
+
+```sh
+hatchkit add <project> lead-magnet                     # list the magnets
+hatchkit add <project> lead-magnet --key wallpapers --title "Desktop wallpaper pack" \
+  --object magnets/wallpapers.zip --filename wallpapers.zip
+hatchkit add <project> lead-magnet --key reading-list --title "Reading list" \
+  --url https://example.com/reading-list.pdf
+hatchkit add <project> lead-magnet --key wallpapers --remove
+```
+
+Add `--dry-run` to see the change without writing it. Upload an `object` file to the bucket yourself, in the R2 dashboard or with `wrangler r2 object put <bucket>/magnets/wallpapers.zip --file wallpapers.zip --remote`.
+
+### Segmenting by signup
+
+A new subscriber carries `attribs.signup.list`, `.source` and `.magnet`. A Listmonk campaign can target a magnet with a query such as `subscribers.attribs->'signup'->>'magnet' = 'wallpapers'`. That query needs the `subscribers:sql_query` permission, which the Listmonk admin user has.
+
+The starter writes attribs only when it creates a subscriber. A subscriber that already exists, for example from another project's list, keeps its attribs. The only Listmonk call that changes an existing subscriber's attribs is `PUT /api/subscribers/:id`. That call also deletes every list membership that its `lists` field leaves out. A project's API user can name only its own lists, so the call would remove the address from every other project's list.
+
+### Checking delivery
+
+`/api/tx` answers `200` when Listmonk queues the email, before SMTP runs. So a send that SES rejects still looks like a success to the app. The starter logs each step as one JSON line:
+
+| Line | Means |
+|---|---|
+| `newsletter.delivery` / `delivery_sent` | Listmonk queued the download email |
+| `newsletter.delivery` / `delivery_failed` (level `error`) | the send failed. The reader is still subscribed and sees "We could not send the download email" |
+| `newsletter.download` / `served` | somebody opened a download link |
+| `newsletter.download` / `unavailable` (level `error`) | a link names a magnet that is gone, or the presign failed |
+
+To test the whole path, run:
+
+```sh
+pnpm newsletter:verify --magnet wallpapers
+```
+
+It checks that every magnet's file exists (a `HEAD` on the bucket object or the URL), then sends the download email to `LISTMONK_TEST_RECIPIENT`. When the email does not arrive, read **Listmonk → Settings → Logs**.
+
+### Existing projects
+
+`hatchkit update` does not add lead magnets to a project scaffolded earlier. The newsletter files belong to the project once it exists, and many projects change the email copy, so a retrofit would overwrite their edits. Copy `magnets.ts`, `magnets.json` and `prune.ts` from the starter's `packages/server/src/services/newsletter/`, then merge the changes to `routes.ts`, `subscribe.ts`, `listmonk.ts` and `services/storage.ts` by hand. On the client, the changes are in `components/subscribe-form.tsx` and the `/sub/confirmed` and `/sub/error` pages. Until `magnets.json` exists, `hatchkit add <project> lead-magnet` stops and says so.
+
+### Static sites
+
+The scaffold gives a static project no newsletter, because it has no server to run one. For a static site on Cloudflare, hatchkit keeps a Worker with the same routes, magnets and cleanup in `cli/src/templates/newsletter-worker/`. Copy it into the site's repo as `workers/newsletter/` and follow its README. The Worker streams `object` magnets from an R2 bucket bound as `MAGNETS`. `hatchkit add <project> lead-magnet` edits `workers/newsletter/src/magnets.json`. hatchkit does not deploy this Worker. A scaffolded Worker would need its own zone route, secrets and release workflow, and only one hatchkit project needs it today.
+
+## Deleting never-confirmed signups
+
+The starter deletes a signup that was never confirmed 30 days after Listmonk created the subscriber. It deletes a subscriber only when all of these are true:
+
+- This project's signup form created it. The form writes `attribs.signup.list`, and the value must be the project's live or test list.
+- It is on no list. The form creates the subscriber on no list, and only the confirm click adds one.
+- Its status is `enabled`. A blocklisted or disabled subscriber stays, because deleting it removes the block.
+- Listmonk created it more than 30 days ago. Sending the form again does not restart this clock.
+
+"On no list" alone is not enough on a shared instance. A deleted list, a membership removed by hand and another project's pending signups also leave subscribers on no list. One case remains: a subscriber that this form created and that confirmed, but that is later removed from every list, is deleted too.
+
+When it runs:
+
+- The deployed server runs the cleanup once a day: 10 to 20 minutes after it starts, then every 24 hours. The timer starts only when `NODE_ENV=production`.
+- `pnpm newsletter:prune --dry-run` lists what it would delete. `pnpm newsletter:prune` deletes it, wherever you run it.
+- The newsletter Worker runs the same cleanup from a daily cron trigger.
+
+The cleanup reads every subscriber with `subscribers:get_all` and deletes with `subscribers:manage`. Every project's API user has both. Just before it deletes a subscriber, it reads that subscriber again, so a confirm click in between keeps the subscriber. It deletes at most 500 subscribers per run and leaves the rest for the next day. A confirm link clicked after the cleanup still works, because the confirm route creates the subscriber again, on the list.
+
+Subscribers created before this change have no `attribs.signup`, so the cleanup never deletes them. To remove those pending signups once, use **Listmonk → Maintenance → Delete orphan subscribers**. That deletes every subscriber on no list on the whole instance, including other projects' pending signups, so check the list first.
+
 ## Tearing down
 
 ```sh
@@ -306,6 +402,8 @@ The credentials belong to one machine's keychain. A run on a machine without the
 **`hatchkit doctor` says the SNS subscription is pending confirmation** — SNS sent its confirmation request before `bounce.ses_enabled` was on, or it could not reach the Listmonk URL. Check that the URL works from outside your network, then run `hatchkit doctor --fix`. It subscribes again, and SNS sends a new confirmation request.
 
 **Send fails: `554 ... not authorized to send`** — SES SMTP credentials are derived from the IAM secret. Don't paste the IAM secret directly into Listmonk. `hatchkit ses smtp --show-password` prints the *derived* password. Use that.
+
+**The subscription is confirmed, but the download email never arrives** — first look for `delivery_failed` in the server log. If the log says `delivery_sent`, Listmonk queued the email, and the reason is in **Listmonk → Settings → Logs**. Usually it is the SES sandbox. The reader can enter the address in the form again to get a new email.
 
 **`hatchkit listmonk user` stops: the API user exists, but no stored token works** — Listmonk shows a token only once. If you have the working token, store it with `security add-generic-password -U -s hatchkit -a listmonk:project:<project>:api-token -w` and run the command again. Otherwise run it with `--regenerate-token`, then `hatchkit sync` and redeploy right away.
 

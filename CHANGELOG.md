@@ -4,6 +4,15 @@ All notable user-facing changes should be documented here.
 
 This project follows npm package versions for the `hatchkit` CLI. Dates use `YYYY-MM-DD`.
 
+## Unreleased
+
+### Added
+
+- **Lead magnets in the starter's newsletter.** A signup form can ask for a free file: `<SubscribeForm magnet="wallpapers" source="home-hero" />`. The key must be in `services/newsletter/magnets.json`, which names a bucket object (served by a 10-minute presigned URL) or an https URL. The form never sends a URL. The confirm token carries the key, and the confirm route emails a signed download link that works for 30 days. A failed send logs `newsletter.delivery` / `delivery_failed` and never fails the confirm. A confirmed subscriber gets the download straight from the form. New subscribers carry `attribs.signup = { list, source, magnet }`. `pnpm newsletter:verify --magnet <key>` checks the file and mails the download.
+- `hatchkit add <project> lead-magnet` lists, adds, changes or removes an entry in `magnets.json` (`--dry-run` previews). It edits only that file and warns when the env lacks what a delivery needs.
+- The starter deletes its own signups that never confirmed, 30 days after Listmonk created the subscriber: once a day in production, or `pnpm newsletter:prune [--dry-run]`. It deletes only `enabled` subscribers on no list whose `attribs.signup.list` is the project's list, reads each one again before the delete, and deletes at most 500 per run.
+- `cli/src/templates/newsletter-worker/`: the same double opt-in, lead magnets and cleanup as a Cloudflare Worker, for a static site with no server. hatchkit does not scaffold or deploy it.
+
 ## 0.3.0
 
 ### Security

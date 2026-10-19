@@ -40,6 +40,8 @@ pnpm newsletter:test-tx             # send one /api/tx email to LISTMONK_TEST_RE
 pnpm newsletter:welcome             # send emails/welcome.html to LISTMONK_TEST_RECIPIENT
 pnpm newsletter:draft emails/digest-sample.html --subject "Issue 1"   # stage digest as a Listmonk draft
 NODE_ENV=production pnpm newsletter:send emails/digest-sample.html --subject "..." --confirm   # real broadcast
+pnpm newsletter:verify --magnet <key>   # also check a lead magnet's file and mail its download
+pnpm newsletter:prune --dry-run     # never-confirmed subscribers the daily cleanup would delete
 ```
 
 Hatchkit auto-subscribes your default forwarding email onto
@@ -56,6 +58,21 @@ single-opt-in list it would get every campaign without a confirm click.
 A confirmation email that never arrives is usually the SES sandbox:
 `/api/tx` returns 200 before SMTP runs, and the rejection shows only in
 Listmonk → Settings → Logs.
+
+Lead magnets (`services/newsletter/magnets.ts`): `<SubscribeForm
+magnet="<key>" source="<label>" />`. The key must be in `magnets.json`
+(`hatchkit add <project> lead-magnet` edits it); the server never takes a
+URL from the form. The confirm route emails a signed 30-day download link
+after the list add, and a failed send never fails the confirm: it logs
+`newsletter.delivery` / `delivery_failed`. Attribs (`attribs.signup`) are
+written only when a subscriber is created: `PUT /api/subscribers/:id`
+would delete the address from every other project's list.
+
+`services/newsletter/prune.ts` deletes this project's never-confirmed
+signups 30 days after creation, once a day in production: `enabled`, on
+no list, and `attribs.signup.list` is this project's list. "No list"
+alone is not proof on a shared instance (deleted lists, other projects'
+pending signups), so keep the attribs check.
 
 <!-- hatchkit:endif -->
 Before giving Hatchkit setup advice, run `hatchkit status --json` and

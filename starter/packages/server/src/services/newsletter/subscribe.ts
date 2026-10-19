@@ -16,6 +16,12 @@
  * Tokens are stateless — no DB row, no Redis key. Validity is encoded
  * in the payload (`x` = expiry) and protected by `NEWSLETTER_TOKEN_SECRET`
  * via HMAC-SHA256. Compact format: `<base64url-payload>.<base64url-sig>`.
+ *
+ * Two kinds share the secret:
+ *   confirm   `{ e: email, x, m?: magnet key, s?: source }`
+ *   download  `{ p: "dl", m: magnet key, x }` — the link in the lead-magnet
+ *             email (see magnets.ts). Each verifier refuses the other
+ *             kind's payload, so neither link works as the other.
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -23,6 +29,7 @@ import {
   ensureSubscriber,
   isConfirmedOnList,
   confirmSubscription as listmonkConfirm,
+  type SignupInfo,
   sendTransactional,
 } from "./listmonk.js";
 
@@ -30,6 +37,11 @@ import {
 // vacation inbox still works on return, short enough that truly
 // abandoned tokens stop being one click from a live subscription.
 export const CONFIRM_TOKEN_TTL_MS = 21 * 24 * 60 * 60 * 1000;
+
+// The download link only hands out a free file, so it can outlive the
+// confirm link. A reader whose link expired enters the address in the
+// form again and gets a new one.
+export const DOWNLOAD_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 function tokenSecret(): string {
   const explicit = process.env.NEWSLETTER_TOKEN_SECRET;
@@ -51,20 +63,20 @@ function b64urlDecode(s: string): Buffer {
   return Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/") + pad, "base64");
 }
 
-type TokenPayload = { e: string; x: number };
+type TokenFailure = { ok: false; reason: "malformed" | "bad_signature" | "expired" };
 
-export function mintConfirmToken(email: string, now: number = Date.now()): string {
-  const payload: TokenPayload = { e: email.toLowerCase(), x: now + CONFIRM_TOKEN_TTL_MS };
+function signToken(payload: object): string {
   const payloadStr = b64urlEncode(Buffer.from(JSON.stringify(payload), "utf8"));
   const sig = b64urlEncode(createHmac("sha256", tokenSecret()).update(payloadStr).digest());
   return `${payloadStr}.${sig}`;
 }
 
-export type VerifyResult =
-  | { ok: true; email: string }
-  | { ok: false; reason: "malformed" | "bad_signature" | "expired" };
-
-export function verifyConfirmToken(token: string, now: number = Date.now()): VerifyResult {
+/** Check the signature and expiry, and return the payload for the
+ *  caller to check its shape. */
+function openToken(
+  token: string,
+  now: number,
+): { ok: true; payload: Record<string, unknown> } | TokenFailure {
   const parts = token.split(".");
   if (parts.length !== 2) return { ok: false, reason: "malformed" };
   const [payloadStr, sig] = parts;
@@ -75,17 +87,61 @@ export function verifyConfirmToken(token: string, now: number = Date.now()): Ver
     return { ok: false, reason: "bad_signature" };
   }
 
-  let payload: TokenPayload;
+  let payload: unknown;
   try {
-    payload = JSON.parse(b64urlDecode(payloadStr).toString("utf8")) as TokenPayload;
+    payload = JSON.parse(b64urlDecode(payloadStr).toString("utf8"));
   } catch {
     return { ok: false, reason: "malformed" };
   }
-  if (typeof payload.e !== "string" || typeof payload.x !== "number") {
+  if (typeof payload !== "object" || payload === null || typeof (payload as { x?: unknown }).x !== "number") {
     return { ok: false, reason: "malformed" };
   }
-  if (payload.x < now) return { ok: false, reason: "expired" };
-  return { ok: true, email: payload.e };
+  const record = payload as Record<string, unknown>;
+  if ((record.x as number) < now) return { ok: false, reason: "expired" };
+  return { ok: true, payload: record };
+}
+
+function optionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === "string";
+}
+
+export function mintConfirmToken(
+  email: string,
+  signup: SignupInfo = {},
+  now: number = Date.now(),
+): string {
+  return signToken({
+    e: email.toLowerCase(),
+    x: now + CONFIRM_TOKEN_TTL_MS,
+    ...(signup.magnet ? { m: signup.magnet } : {}),
+    ...(signup.source ? { s: signup.source } : {}),
+  });
+}
+
+export type VerifyResult = ({ ok: true; email: string } & SignupInfo) | TokenFailure;
+
+export function verifyConfirmToken(token: string, now: number = Date.now()): VerifyResult {
+  const opened = openToken(token, now);
+  if (!opened.ok) return opened;
+  const { e, m, s, p } = opened.payload;
+  if (typeof e !== "string" || p !== undefined || !optionalString(m) || !optionalString(s)) {
+    return { ok: false, reason: "malformed" };
+  }
+  return { ok: true, email: e, ...(m ? { magnet: m } : {}), ...(s ? { source: s } : {}) };
+}
+
+export function mintDownloadToken(magnet: string, now: number = Date.now()): string {
+  return signToken({ p: "dl", m: magnet, x: now + DOWNLOAD_TOKEN_TTL_MS });
+}
+
+export type DownloadVerifyResult = { ok: true; magnet: string } | TokenFailure;
+
+export function verifyDownloadToken(token: string, now: number = Date.now()): DownloadVerifyResult {
+  const opened = openToken(token, now);
+  if (!opened.ok) return opened;
+  const { p, m } = opened.payload;
+  if (p !== "dl" || typeof m !== "string") return { ok: false, reason: "malformed" };
+  return { ok: true, magnet: m };
 }
 
 // HTML5's good-enough check. The confirmation step is the actual proof
@@ -98,6 +154,17 @@ export function normalizeEmail(raw: unknown): string | null {
   if (trimmed.length === 0 || trimmed.length > 254) return null;
   if (!EMAIL_RE.test(trimmed)) return null;
   return trimmed;
+}
+
+// A short label the page chooses, e.g. `home-hero` or `blog/raptors`.
+// Anything else is dropped rather than refused: it is analytics, and a
+// bad label must not cost a signup.
+const SOURCE_RE = /^[a-z0-9][a-z0-9._:/-]{0,63}$/;
+
+export function normalizeSource(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim().toLowerCase();
+  return SOURCE_RE.test(trimmed) ? trimmed : undefined;
 }
 
 /** True when the address is already a confirmed member of the
@@ -120,6 +187,8 @@ export type SendConfirmationEmailParams = {
   /** Display name of the site/newsletter — shown in the email body
    *  and the call-to-action. Falls back to "this newsletter". */
   siteName?: string;
+  /** Written as `attribs.signup` when the subscriber is new. */
+  signup?: SignupInfo;
 };
 
 /** Render + send the double-opt-in confirmation email. Customise the
@@ -130,7 +199,7 @@ export async function sendConfirmationEmail(params: SendConfirmationEmailParams)
   // The recipient must exist as a Listmonk subscriber before /api/tx
   // accepts the send. It stays off the list until the link is clicked
   // (see "Double opt-in and list membership" in listmonk.ts).
-  await ensureSubscriber(params.to);
+  await ensureSubscriber(params.to, params.signup ?? {});
   const siteName = params.siteName ?? "this newsletter";
   await sendTransactional({
     to: params.to,
@@ -201,7 +270,26 @@ export function checkRateLimit(ip: string, now: number = Date.now()): boolean {
   return true;
 }
 
+// The subscribe form mails a confirmed subscriber's download without a
+// confirm step, so cap it per address as well as per IP: one email per
+// address and magnet per 15 minutes, whatever IPs the posts come from.
+// Process-local and bounded, like the IP limit above.
+const DELIVERY_COOLDOWN_MS = 15 * 60_000;
+const recentDeliveries = new Map<string, number>();
+
+export function checkDeliveryCooldown(email: string, magnet: string, now: number = Date.now()): boolean {
+  if (recentDeliveries.size >= RATE_MAX_BUCKETS) {
+    for (const [key, until] of recentDeliveries) if (until <= now) recentDeliveries.delete(key);
+    if (recentDeliveries.size >= RATE_MAX_BUCKETS) return false;
+  }
+  const key = `${email} ${magnet}`;
+  if ((recentDeliveries.get(key) ?? 0) > now) return false;
+  recentDeliveries.set(key, now + DELIVERY_COOLDOWN_MS);
+  return true;
+}
+
 export function _resetRateLimit(): void {
   ipBuckets.clear();
+  recentDeliveries.clear();
   nextSweepAt = 0;
 }

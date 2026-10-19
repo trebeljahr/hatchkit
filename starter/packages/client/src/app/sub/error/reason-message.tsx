@@ -9,6 +9,11 @@ const MESSAGES: Record<string, string> = {
   expired: "This confirmation link has expired. Please resubscribe to get a fresh one.",
   list_add_failed:
     "Something went wrong on our end while adding you to the list. Please try again.",
+  download_expired:
+    "This download link has expired. Enter your address in the signup form again to get a new one.",
+  download_invalid:
+    "This download link is invalid. Enter your address in the signup form again to get a new one.",
+  download_unavailable: "This download is not available any more.",
 };
 
 // Shown when there is no `reason` param, when it is not one we recognise, and

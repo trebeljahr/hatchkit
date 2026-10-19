@@ -8,10 +8,12 @@
  *
  *   1. Listmonk admin reachable           GET /api/lists
  *   2. List ids resolvable                LISTMONK_TEST_LIST_ID, plus LISTMONK_LIVE_LIST_ID in production
- *   3. Test recipient on the test list    add as confirmed (your own inbox)
- *   4. Transactional send                 POST /api/tx with the smoke payload
+ *   3. Lead magnets resolve               every magnets.json entry: the bucket object exists, the url answers
+ *   4. Test recipient on the test list    add as confirmed (your own inbox)
+ *   5. Transactional send                 POST /api/tx with the smoke payload
+ *   6. Lead-magnet send (--magnet <key>)  the download email a new subscriber gets
  *
- * Step 4 sends a real email — make sure LISTMONK_TEST_RECIPIENT is an
+ * Steps 5 and 6 send real email — make sure LISTMONK_TEST_RECIPIENT is an
  * inbox you own. Hatchkit's listmonk-ses provisioner pre-fills this
  * from `defaults.forwardingEmail` when one is configured.
  *
@@ -19,7 +21,8 @@
  *
  *   pnpm newsletter:verify                       use LISTMONK_TEST_RECIPIENT
  *   pnpm newsletter:verify you@example.com       override the recipient
- *   pnpm newsletter:verify --skip-send           steps 1-3 only (no real send)
+ *   pnpm newsletter:verify --skip-send           steps 1-4 only (no real send)
+ *   pnpm newsletter:verify --magnet wallpapers   also send that magnet's download email
  */
 import {
   confirmSubscription,
@@ -28,6 +31,11 @@ import {
   resolveListId,
   sendTransactional,
 } from "../packages/server/src/services/newsletter/listmonk.js";
+import {
+  getMagnet,
+  listMagnets,
+  sendMagnetEmail,
+} from "../packages/server/src/services/newsletter/magnets.js";
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(`--${name}`);
@@ -57,9 +65,17 @@ async function listmonkRequest<T>(path: string): Promise<T> {
 }
 
 async function main(): Promise<void> {
-  const to = process.argv.find((a, i, arr) => !a.startsWith("--") && i >= 2 && arr[i - 1] !== "--subject")
-    ?? process.env.LISTMONK_TEST_RECIPIENT;
+  const to = process.argv.find(
+    (a, i, arr) => !a.startsWith("--") && i >= 2 && arr[i - 1] !== "--subject" && arr[i - 1] !== "--magnet",
+  ) ?? process.env.LISTMONK_TEST_RECIPIENT;
   const skipSend = hasFlag("skip-send");
+  const magnetIdx = process.argv.indexOf("--magnet");
+  const magnetKey = magnetIdx === -1 ? undefined : process.argv[magnetIdx + 1];
+  const magnet = magnetKey === undefined ? undefined : getMagnet(magnetKey);
+  if (magnetKey !== undefined && !magnet) {
+    console.error(`[newsletter:verify] No valid magnet "${magnetKey}" in magnets.json.`);
+    process.exit(1);
+  }
 
   if (!to && !skipSend) {
     console.error(
@@ -94,6 +110,25 @@ async function main(): Promise<void> {
         return `${live ? `${liveVar}=${live}` : `${liveVar} unset (production only)`} · LISTMONK_TEST_LIST_ID=${test} · env-resolved=${env}`;
       },
     },
+    {
+      label: "Lead magnets resolve",
+      run: async () => {
+        const magnets = listMagnets();
+        if (magnets.length === 0) return "none in magnets.json";
+        const missing: string[] = [];
+        for (const m of magnets) {
+          if (m.object) {
+            const { objectExists } = await import("../packages/server/src/services/storage.js");
+            if (!(await objectExists(m.object))) missing.push(`${m.key}: no object ${m.object} in the bucket`);
+          } else if (m.url) {
+            const res = await fetch(m.url, { method: "HEAD", redirect: "follow" });
+            if (!res.ok) missing.push(`${m.key}: ${m.url} answered ${res.status}`);
+          }
+        }
+        if (missing.length) throw new Error(missing.join("; "));
+        return magnets.map((m) => m.key).join(", ");
+      },
+    },
   ];
 
   if (to) {
@@ -123,6 +158,20 @@ async function main(): Promise<void> {
         // /api/tx returns 200 once the message is queued, before SMTP
         // runs, so a success here does not mean SES accepted it.
         return "queued — check inbox; SES rejections show only in Listmonk's log (GET /api/logs)";
+      },
+    });
+  }
+
+  if (to && !skipSend && magnet) {
+    steps.push({
+      label: `Lead-magnet send (${magnet.key}) → ${to}`,
+      run: async () => {
+        await sendMagnetEmail({
+          to,
+          magnet,
+          siteName: process.env.NEWSLETTER_SITE_NAME ?? "this newsletter",
+        });
+        return "queued — open the link to check the download; SES rejections show only in Listmonk's log";
       },
     });
   }

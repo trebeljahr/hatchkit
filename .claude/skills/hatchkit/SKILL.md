@@ -84,6 +84,7 @@ rotation URL, required scopes, and exact `hatchkit config add <provider>` comman
 | `hatchkit plausible rename <old> <new>` | Move a Plausible site to a new domain, keeping stats history |
 | `hatchkit plausible merge <old> <new> --dry-run` | Community Edition: fold the old site into an existing new site (backups, row copy, goals, old site deleted); production write, dry run first |
 | `hatchkit listmonk user <project>` | Give a project its own Listmonk API user + roles and rewrite its env (`--dry-run` first; needs the `hatchkit-admin` keychain token; never pushes) |
+| `hatchkit add <project> lead-magnet` | List, add or remove a newsletter lead magnet in `magnets.json` (`--key --title --object\|--url`, `--remove`, `--dry-run`); local file only |
 | `hatchkit rename-domain` | Rename project domain and related deploy config |
 | `hatchkit regen-infra` | Regenerate project infra files |
 | `hatchkit provision s3` | Create project S3/R2 buckets and env entries |
