@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkProjectRollingDeployState } from "./src/doctor.js";
 import { withTraefikDrain } from "./src/deploy/traefik-drain.js";
+import { checkProjectDeployedRefState, checkProjectRollingDeployState } from "./src/doctor.js";
 import { CoolifyApi } from "./src/utils/coolify-api.js";
 
 const dir = mkdtempSync(join(tmpdir(), "hatchkit-doctor-rolling-"));
@@ -135,6 +135,12 @@ try {
   const wiped = await doctorOn(coolifyLabels, 10);
   assert.equal(wiped[0].status, "warn");
   assert.match(wiped[0].detail, /lost Traefik's drain check/);
+  // A Docker Image project reads no compose file at a git ref, so the
+  // deployed-ref check has nothing to look for (sync's preflight agrees).
+  const refs = await checkProjectDeployedRefState(dir);
+  assert.equal(refs.length, 1);
+  assert.equal(refs[0].status, "skip");
+  assert.match(refs[0].detail, /Docker Image/);
   console.log("✓ Coolify name-setting mappings and doctor rolling-deployment qualification");
 } finally {
   globalThis.fetch = originalFetch;

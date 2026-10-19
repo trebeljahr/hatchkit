@@ -3738,6 +3738,7 @@ export async function checkProjectDeployedRefState(projectDir: string): Promise<
     ports?: { server?: number; client?: number };
     projectSubdir?: string;
     deploymentMode?: string;
+    coolifyRuntime?: string;
   };
   try {
     manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
@@ -3748,6 +3749,17 @@ export async function checkProjectDeployedRefState(projectDir: string): Promise<
   // Only Coolify clones a git ref to find a compose file. gh-pages and
   // scaffold-only projects have no such relationship.
   if (manifest.deploymentMode !== "coolify") return out;
+  // Neither do Docker Image apps: they pull an image, so no compose file
+  // is ever read at a git ref. sync's preflight skips them the same way.
+  const { resolveCoolifyRuntime } = await import("./deploy/image-runtime.js");
+  if (resolveCoolifyRuntime(manifest.coolifyRuntime) === "image") {
+    out.push({
+      name: `Project ${manifest.name} (deployed ref)`,
+      status: "skip",
+      detail: "Docker Image apps pull an image — no compose file is read at a git ref",
+    });
+    return out;
+  }
 
   const { computeRoutingPlan, inferTopology } = await import("./deploy/routing.js");
   const {
