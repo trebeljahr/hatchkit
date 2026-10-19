@@ -32,7 +32,8 @@
  *   7. The DMARC rua (dmarc@<host>) has a rule wherever no catch-all
  *      receives it. Cloudflare's catch-all is apex-only, so on
  *      broadcastdock/mood-magic/streaks.trebeljahr.com every aggregate
- *      report bounced (2026-10-19).
+ *      report bounced (2026-10-19). Rule lists are read past
+ *      Cloudflare's first page of 20 (trebeljahr.com has 25).
  *
  * Run: `pnpm test` (via the script in cli/package.json).
  */
@@ -560,7 +561,12 @@ function installFakeCloudflare(state: FakeCloudflareState) {
       return ok(created);
     }
     if (path === "/zones/z1/email/routing/rules") {
-      if (method === "GET") return ok(state.rules ?? []);
+      if (method === "GET") {
+        // Like Cloudflare: pages of 20 unless per_page says otherwise.
+        const per = Number(u.searchParams.get("per_page") ?? 20);
+        const page = Number(u.searchParams.get("page") ?? 1);
+        return ok((state.rules ?? []).slice((page - 1) * per, page * per));
+      }
       const rule = { id: `rule${++seq}`, ...body };
       state.rules?.push(rule);
       return ok(rule);
@@ -830,7 +836,12 @@ await expect(
     assert.equal(dmarcRules(named).length, 1);
 
     // A report inbox off the host is the caller's to route.
-    const offHost: FakeCloudflareState = { records: [], routingEnabled: true, rules: [], calls: [] };
+    const offHost: FakeCloudflareState = {
+      records: [],
+      routingEnabled: true,
+      rules: [],
+      calls: [],
+    };
     await run(offHost, { ...subOpts, dmarcRua: "dmarc@example.org" });
     assert.equal(dmarcRules(offHost).length, 0);
 
@@ -848,6 +859,43 @@ await expect(
     assert.equal(dmarcRules(apexNoCatchAll).length, 1, "the fake's catch-all is disabled");
   },
 );
+
+await expect("rules past Cloudflare's first page are found, not added again", async () => {
+  const rule = (to: string, fwd = "me@example.org") => ({
+    id: `r-${to}`,
+    matchers: [{ type: "literal", field: "to", value: to }],
+    actions: [{ type: "forward", value: [fwd] }],
+  });
+  const state: FakeCloudflareState = {
+    records: [],
+    routingEnabled: true,
+    calls: [],
+    rules: [
+      ...Array.from({ length: 60 }, (_, i) => rule(`filler${i}@example.com`)),
+      rule("privacy@mail.example.com"),
+      rule("imprint@mail.example.com"),
+      rule("dmarc@mail.example.com", "reports@example.org"),
+    ],
+  };
+  const restore = installFakeCloudflare(state);
+  let result: Awaited<ReturnType<typeof runEmailSetup>>;
+  try {
+    result = await runEmailSetup(subOpts);
+  } finally {
+    restore();
+  }
+  assert.ok(
+    !(state.calls ?? []).some(
+      (c) =>
+        c.method !== "GET" &&
+        c.path.includes("/email/routing/rules") &&
+        !c.path.endsWith("/catch_all"),
+    ),
+    "a rule on page 4 was written again",
+  );
+  assert.equal(state.rules?.length, 63);
+  assert.ok(result.rules.every((r) => !r.created && !r.updated));
+});
 
 await expect("an already registered hostname is not registered again", async () => {
   const state: FakeCloudflareState = {

@@ -1373,10 +1373,22 @@ export class CloudflareApi {
     }
   }
 
-  /** List forwarding rules on a zone (excluding the catch-all, which has
-   *  its own endpoint). */
+  /** List every forwarding rule on a zone. The list also holds the
+   *  catch-all (matcher type "all"). Cloudflare pages it, 20 rules by
+   *  default: on trebeljahr.com (25 rules, 2026-10-19) one page hid the
+   *  apex's own rules from upserts and `email forward`. */
   async listEmailRoutingRules(zoneId: string): Promise<CfEmailRoutingRule[]> {
-    return this.request<CfEmailRoutingRule[]>("GET", `/zones/${zoneId}/email/routing/rules`);
+    const perPage = 50;
+    const all: CfEmailRoutingRule[] = [];
+    for (let page = 1; page <= 20; page++) {
+      const rules = await this.request<CfEmailRoutingRule[]>(
+        "GET",
+        `/zones/${zoneId}/email/routing/rules?per_page=${perPage}&page=${page}`,
+      );
+      all.push(...rules);
+      if (rules.length < perPage) break;
+    }
+    return all;
   }
 
   /** Upsert a forwarding rule keyed on the rule's literal `to` matcher.
