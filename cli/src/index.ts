@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { confirm, select } from "@inquirer/prompts";
 import chalk from "chalk";
+import { AUDIT_USAGE, runAuditCommand } from "./audit/command.js";
 import { BACKUP_USAGE, runBackupCommand } from "./backups/command.js";
 import {
   PAUSABLE_PROVIDERS,
@@ -123,8 +124,13 @@ async function main(): Promise<void> {
 
   const isJson = args.includes("--json");
 
-  // Suppress the banner for machine-readable output so stdout is pure JSON.
-  if (!isJson) {
+  // Suppress the banner for machine-readable output so stdout is pure
+  // JSON, Markdown (audit's job summary) or YAML (audit's workflow).
+  const machineOutput =
+    isJson ||
+    args.includes("--markdown") ||
+    (command === "audit" && args[1] === "cloudflare" && args[2] === "workflow");
+  if (!machineOutput) {
     console.log(chalk.bold(`\n  hatchkit v${getCliVersion()}\n`));
   }
 
@@ -165,6 +171,9 @@ async function main(): Promise<void> {
     case "host":
       if (args[1] === "updates") await runUpdatesCommand(args.slice(2));
       else await runHostCommand(args.slice(1));
+      break;
+    case "audit":
+      await runAuditCommand(args.slice(1));
       break;
     case "init":
     case "setup":
@@ -3890,6 +3899,9 @@ function printCommandHelp(cmd: string | undefined): void {
       console.log(HOST_USAGE);
       console.log(UPDATES_USAGE);
       return;
+    case "audit":
+      console.log(AUDIT_USAGE);
+      return;
     case "provision":
       printProvisionUsage();
       return;
@@ -5908,6 +5920,7 @@ function printHelp(topic?: HelpTopic): void {
     listmonk user   Give a project its own Listmonk API user (roles + env rewrite)
     host integrity  Scan the Coolify host for signs of a compromised container (read-only; install = daily mail)
     host updates    Flag shared services (Coolify, Traefik, Plausible, …) that a high/critical advisory covers (read-only; install = weekly mail)
+    audit cloudflare  Report tokens, audit-log entries and resources hatchkit did not create (read-only)
     email           Set up Cloudflare Email Routing + MX/SPF/DMARC (setup/status)
     keys show <p>   Print the dotenvx private key for a project
     keys set <p>    Upsert the key into the OS keychain (after \`dotenvx rotate\`)

@@ -90,6 +90,9 @@ export const SECRET_KEYS = {
    *  Terraform each get a token minted from it. Grants:
    *  `CLOUDFLARE_OPERATOR_GRANTS` in config.ts. */
   cloudflareOperatorToken: "cloudflare:operator",
+  /** The read-only `hatchkit-audit` user token `hatchkit audit cloudflare`
+   *  reads with. Never the operator token; see audit/cloudflare.ts. */
+  cloudflareAuditToken: "cloudflare:audit",
   /** @deprecated The ONE Cloudflare token older hatchkit pushed to every
    *  Worker repo as `CLOUDFLARE_API_TOKEN`. Never read for a push any
    *  more; kept so doctor can flag a copy of it and reset can clear it. */
@@ -263,7 +266,13 @@ export async function getCloudflareToken(
 ): Promise<{ token: string; source: string } | null> {
   for (const slot of CLOUDFLARE_TOKEN_SLOTS[use]) {
     const token = await getSecret(slot);
-    if (token) return { token, source: slot };
+    if (!token) continue;
+    if (slot === SECRET_KEYS.cloudflareOperatorToken) {
+      // The daily audit trusts the operator's audit-log entries only
+      // inside a recorded run window.
+      (await import("../audit/operator-uses.js")).recordOperatorUse();
+    }
+    return { token, source: slot };
   }
   return null;
 }

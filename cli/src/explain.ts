@@ -85,6 +85,12 @@ const MODEL: ExplainModel = {
       when: "`hatchkit doctor` shows it as one row (GitHub read through the local gh login). `install` adds a weekly timer next to the backup runner that mails findings through the backup-alert SMTP; it needs `backup install` and `backup alerts` on that host first. GlitchTip publishes no advisories and is compared with its latest tag only.",
     },
     {
+      name: "hatchkit audit cloudflare [--json|--markdown] [--hours <n>] | accept|forget <kind>:<value> | publish [--repo] | workflow | set-token",
+      summary:
+        "Read-only check of the Cloudflare account against what hatchkit created: API tokens it has no record of (by id), audit-log entries by the operator token outside a recorded hatchkit run or by an unknown credential, and Workers, R2 buckets, zones, Email Routing destinations and rules, members and OAuth clients nobody accepted.",
+      when: "Runs daily from a GitHub Action in a private repo (`workflow` prints it; a failed run mails Rico) with its own read-only user token `hatchkit-audit`, never the operator token. Run it locally after a scare or before trusting the account. `accept` and `publish` write only the local config and the repo variable HATCHKIT_CLOUDFLARE_EXPECTED.",
+    },
+    {
       name: "hatchkit migrate-client [--dry-run|--repo-only|--rollback|--cleanup]",
       summary:
         "Serve a deployed fullstack project's client from Cloudflare Workers static assets; the API stays on Coolify on the same hostname.",
@@ -206,6 +212,10 @@ const MODEL: ExplainModel = {
     },
   ],
   state_locations: [
+    {
+      what: "Operator-token run windows",
+      where: "~/<conf-dir>/cloudflare-operator-uses.jsonl (30 days; read by `audit cloudflare`)",
+    },
     {
       what: "Provider metadata (no secrets)",
       where: "~/<conf-dir>/config.json via the `conf` package",

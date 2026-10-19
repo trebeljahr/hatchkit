@@ -4,6 +4,7 @@ import { Separator, confirm, input, password, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import Conf from "conf";
 import ora from "ora";
+import type { CloudflareAuditConfig } from "./audit/expected.js";
 import { CloudflareApi } from "./utils/cloudflare-api.js";
 import { verifyCoolify } from "./utils/coolify-api.js";
 import { execOk } from "./utils/exec.js";
@@ -390,6 +391,9 @@ export interface CliConfig {
   /** Per-Worker deploy tokens hatchkit minted, keyed by Worker name. Ids
    *  only; see `CloudflareDeployTokenRecord`. */
   cloudflareDeployTokens?: Record<string, CloudflareDeployTokenRecord>;
+  /** `hatchkit audit cloudflare`: the repo running the daily check and
+   *  what Rico accepted on the account. See `audit/expected.ts`. */
+  cloudflareAudit?: CloudflareAuditConfig;
   /** Ports that are already assigned to scaffolded projects so the
    *  picker avoids collisions across `hatchkit create` invocations. */
   usedPorts: number[];
@@ -1237,6 +1241,12 @@ function r2AccountId(): string | undefined {
 /** The account the operator token works on, from the first metadata
  *  that names one. */
 function cloudflareAccountId(): string | undefined {
+  return getConfiguredCloudflareAccountId();
+}
+
+/** `cloudflareAccountId()` for callers outside this file. Reads config
+ *  only, never the keychain. */
+export function getConfiguredCloudflareAccountId(): string | undefined {
   const cf = store.get("providers.cloudflare") as CloudflareMeta | undefined;
   const workers = store.get("providers.cloudflareWorkers") as CloudflareWorkersMeta | undefined;
   const dns = store.get("providers.dns") as DnsMeta | undefined;

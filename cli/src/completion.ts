@@ -22,6 +22,7 @@ const TOP_LEVEL = [
   "assets",
   "backup",
   "host",
+  "audit",
   "release",
   "keys",
   "config",
@@ -289,6 +290,8 @@ function topDesc(cmd: string): string {
       return "Manage encrypted project data backups over Tailscale";
     case "host":
       return "Scan the Coolify hosts for a compromised container or a shared service with a known advisory";
+    case "audit":
+      return "Report what is on the Cloudflare account that hatchkit did not create";
     case "release":
       return "Coordinate one version across every surface";
     case "keys":

@@ -76,6 +76,8 @@ const DANGEROUS_ARGV: string[][] = [
   ["migrate-client", "--rollback", "--yes", "--help"],
   ["migrate-client", "--cleanup", "--yes", "--help"],
   ["host", "integrity", "install", "--help"],
+  ["audit", "cloudflare", "publish", "--help"],
+  ["audit", "cloudflare", "accept", "--inventory", "--help"],
   ["host", "integrity", "uninstall", "--help"],
   ["host", "updates", "install", "--host", "dedicated-vps", "--help"],
   ["host", "updates", "uninstall", "--host", "dedicated-vps", "--help"],
@@ -212,6 +214,7 @@ checkHelpRun(
   ["host", "updates", "install", "--help"],
   "hatchkit host updates install --host <name>",
 );
+checkHelpRun(["audit", "cloudflare", "publish", "--help"], "hatchkit audit cloudflare publish");
 
 // The topic has to be the command's own — root help would satisfy a
 // looser assertion while telling the user nothing about what they
