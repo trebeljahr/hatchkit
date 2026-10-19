@@ -53,6 +53,7 @@
     "test:host-integrity-docker": "node scripts/test.mjs test-host-integrity-docker.ts",
     "test:update-watch": "node scripts/test.mjs test-update-watch.ts",
     "test:cloudflare-audit": "node scripts/test.mjs test-cloudflare-audit.ts",
+    "test:mac-runner": "node scripts/test.mjs test-mac-runner.ts",
     "test:routed-worker-site": "node scripts/test.mjs test-routed-worker-site.ts",
     "test:image-runtime": "node scripts/test.mjs test-image-runtime.ts",
     "test:traefik-drain": "node scripts/test.mjs test-traefik-drain.ts",

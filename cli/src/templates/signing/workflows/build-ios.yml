@@ -37,7 +37,11 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-15
+    # GitHub's macOS runner unless the repo variable APPLE_RUNNER names a
+    # self-hosted label: then the job waits for `hatchkit mac-runner serve` on
+    # the operator's Mac. Steps that assume a throwaway machine are skipped
+    # or kept inside RUNNER_TEMP there.
+    runs-on: ${{ vars.APPLE_RUNNER || 'macos-15' }}
     timeout-minutes: 60
     env:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -52,9 +56,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: __HATCHKIT_NODE_VERSION__
-          cache: pnpm
+          # Not on a self-hosted Mac, whose pnpm store is the operator's own.
+          cache: ${{ runner.environment == 'github-hosted' && 'pnpm' || '' }}
 
+      # Switches Xcode with sudo xcode-select: GitHub's runners only. A
+      # self-hosted Mac builds with the Xcode it has selected.
       - uses: maxim-lobanov/setup-xcode@v1
+        if: runner.environment == 'github-hosted'
         with:
           xcode-version: latest-stable
 
@@ -133,6 +141,17 @@ jobs:
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
           ls -lah "$RUNNER_TEMP/ipa"
 
+      # The action writes the key to ~/private_keys and deletes that whole
+      # directory afterwards. On a self-hosted Mac, refuse rather than delete
+      # a directory the operator keeps keys in.
+      - name: Protect ~/private_keys on a self-hosted Mac
+        if: runner.environment == 'self-hosted'
+        run: |
+          if [ -e "$HOME/private_keys" ]; then
+            echo "::error::$HOME/private_keys exists; the TestFlight upload would delete it. Move it (altool also reads ~/.appstoreconnect/private_keys)."
+            exit 1
+          fi
+
       - name: Upload to TestFlight
         uses: apple-actions/upload-testflight-build@v3
         with:
@@ -147,6 +166,8 @@ jobs:
           KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
         run: |
           security delete-keychain "$RUNNER_TEMP/build.keychain" || true
+          # Outlives the job on a self-hosted Mac otherwise.
+          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/dist.mobileprovision"
 
       - uses: actions/upload-artifact@v4
         with:

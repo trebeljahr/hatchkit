@@ -79,6 +79,9 @@ const DANGEROUS_ARGV: string[][] = [
   ["audit", "cloudflare", "publish", "--help"],
   ["audit", "cloudflare", "deploy", "--from", "a@b.c", "--help"],
   ["audit", "cloudflare", "accept", "--inventory", "--help"],
+  ["mac-runner", "on", "--repo", "a/b", "--help"],
+  ["mac-runner", "serve", "--help"],
+  ["mac-runner", "run", "build-macos.yml", "-f", "upload=true", "--help"],
   ["host", "integrity", "uninstall", "--help"],
   ["host", "updates", "install", "--host", "dedicated-vps", "--help"],
   ["host", "updates", "uninstall", "--host", "dedicated-vps", "--help"],
@@ -219,6 +222,11 @@ checkHelpRun(["audit", "cloudflare", "publish", "--help"], "hatchkit audit cloud
 checkHelpRun(
   ["audit", "cloudflare", "deploy", "--from", "a@b.c", "--help"],
   "hatchkit audit cloudflare deploy",
+);
+checkHelpRun(["mac-runner", "serve", "--help"], "hatchkit mac-runner serve");
+checkHelpRun(
+  ["mac-runner", "run", "build-macos.yml", "--help"],
+  "hatchkit mac-runner run <workflow>",
 );
 
 // The topic has to be the command's own — root help would satisfy a

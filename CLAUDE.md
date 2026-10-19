@@ -127,6 +127,14 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   runs it every 6 h and mails through SES only on findings; `deploy` and
   `publish` write that Worker and its bucket with the operator token (ask
   first). `accept`/`forget` change the local allowlist. See `cli/src/audit/`.
+- `hatchkit mac-runner status|on|off|serve [--run <id>]|run <workflow>`:
+  run a private repo's Apple jobs on this Mac instead of GitHub's macOS
+  runners (10x minutes). The jobs read `runs-on: ${{ vars.APPLE_RUNNER ||
+  'macos-15' }}`; `on` sets the variable (refuses a public repo), `serve`
+  registers a just-in-time runner only while it runs and hosts the queued
+  jobs until the watched runs finish, `run` dispatches and serves. A job
+  nobody serves fails after 24 h. Jobs get a minimal environment (no
+  operator tokens). See `cli/src/mac-runner/`.
 - `hatchkit explain --json`: source-of-truth mental model.
 
 Check `hatchkit help <command>` before using flags you have not verified.

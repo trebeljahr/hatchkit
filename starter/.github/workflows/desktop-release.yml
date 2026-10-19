@@ -120,7 +120,12 @@ jobs:
               release/*.tar.gz
               release/latest-linux-arm64.yml
 
-    runs-on: ${{ matrix.os }}
+    # The mac leg runs on GitHub's macOS runner unless the repo variable
+    # APPLE_RUNNER names a self-hosted label: then it waits for
+    # `hatchkit mac-runner serve` on the operator's Mac. electron-builder
+    # signs from its own temporary keychain and the API key stays in
+    # RUNNER_TEMP, so the leg leaves that Mac as it found it.
+    runs-on: ${{ matrix.channel == 'mac' && vars.APPLE_RUNNER || matrix.os }}
 
     # Job-level, so a step's `if:` can read them (a step's own `env:` is not in
     # scope for its `if:`). Each channel sees only its own certificate:
@@ -156,7 +161,8 @@ jobs:
         with:
           # Node 26's electron download leaves a truncated binary.
           node-version: 24
-          cache: pnpm
+          # Not on a self-hosted Mac, whose pnpm store is the operator's own.
+          cache: ${{ runner.environment == 'github-hosted' && 'pnpm' || '' }}
 
       - name: Check the API origin
         shell: bash

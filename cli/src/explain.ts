@@ -91,6 +91,12 @@ const MODEL: ExplainModel = {
       when: "The Worker hatchkit-audit runs it every 6 h (cron 17 */6 * * *) with its own read-only user token and mails Rico through SES only when something unexpected happened; hatchkit writes the signed expected state and its operator-token run windows to the bucket hatchkit-audit. Run it locally after a scare: it also checks the Worker is still the one hatchkit deployed and ran in the last 8 h. `deploy` and `publish` write with the operator token (ask first); `accept`/`forget` change only the local config.",
     },
     {
+      name: "hatchkit mac-runner status|on|off|serve [--run <id>]|run <workflow> [--repo <owner/name>]",
+      summary:
+        "Run a repo's Apple jobs (macOS and iOS builds) on this Mac instead of GitHub's macOS runners, which bill 10x Linux minutes in a private repo. The jobs read the repo variable APPLE_RUNNER: unset, they run on GitHub; set to a label, they wait for this Mac. Artifacts, TestFlight, Steam, itch and draft releases stay in the same workflow.",
+      when: "`on` once per private repo (it refuses a public one: a fork's pull request could run code here, and public macOS minutes are free). Then `run <workflow>` dispatches and hosts the run, or `serve` hosts what a tag push or an agent queued. A just-in-time runner exists only while serve runs; a job nobody serves fails after 24 hours. `off` sends the jobs back to GitHub.",
+    },
+    {
       name: "hatchkit migrate-client [--dry-run|--repo-only|--rollback|--cleanup]",
       summary:
         "Serve a deployed fullstack project's client from Cloudflare Workers static assets; the API stays on Coolify on the same hostname.",

@@ -762,6 +762,34 @@ The read-only token is a user token (My Profile → API Tokens) with User · API
 
 ---
 
+## `hatchkit mac-runner`
+
+Runs a private repo's Apple jobs (macOS and iOS builds) on this Mac instead of GitHub's macOS runners. In a private repo, a macOS minute counts as ten Linux minutes. In a public repo it is free, so the command refuses public repos.
+
+```bash
+hatchkit mac-runner on                        # set APPLE_RUNNER=hatchkit-mac on this checkout's repo
+hatchkit mac-runner run build-macos.yml -f upload=false   # dispatch, then host the run's Apple jobs here
+hatchkit mac-runner serve                     # host what a tag push or an agent queued
+hatchkit mac-runner serve --run 1234567890    # host one run
+hatchkit mac-runner status [--json]           # the variable, and the jobs waiting for this Mac
+hatchkit mac-runner off                       # Apple jobs go back to GitHub
+```
+
+The Apple jobs choose their runner with `runs-on: ${{ vars.APPLE_RUNNER || 'macos-15' }}`. The starter's `mobile-release.yml` and `desktop-release.yml` and the signing template `build-ios.yml` already do this. With the variable unset, nothing changes. With it set, the jobs wait for this Mac. The rest of the workflow stays on GitHub: artifacts, TestFlight, Steam, itch and the draft release.
+
+`serve` downloads the latest `actions/runner` once and checks its SHA-256 against the release notes. Then it registers a just-in-time runner for the repo. The runner takes one job and deregisters. `serve` starts a new runner after each job until the watched runs finish, then removes the job workspaces. No runner exists while `serve` is not running, so no job can start on this Mac unasked. A job that nobody serves fails after 24 hours.
+
+The jobs run as the logged-in user, niced, with `caffeinate` holding off sleep. Their environment holds only `HOME`, `PATH`, `USER`, `SHELL`, `TMPDIR` and `LANG`, so none of your tokens reach a step. A workflow that runs on both kinds of runner must keep to these rules on a self-hosted Mac:
+
+- Keep signing material in `RUNNER_TEMP`. Never delete a home directory such as `~/.appstoreconnect`, because it holds your own keys.
+- Skip `maxim-lobanov/setup-xcode` and anything else that uses `sudo` (`if: runner.environment == 'github-hosted'`).
+- Turn off the `setup-node` pnpm cache (`cache: ${{ runner.environment == 'github-hosted' && 'pnpm' || '' }}`). Otherwise it uploads your whole pnpm store to the Actions cache.
+- Delete a temporary keychain in an `if: always()` step. If a job stops before that step, `serve` removes the keychain from the search list when it exits.
+
+`--parallel 2` runs two jobs at once. The jobs then share one keychain search list, so two signing jobs that start at the same second can drop each other's entry. `--keep-work` keeps the workspaces in `~/Library/Caches/hatchkit/mac-runner/slots` for inspection.
+
+---
+
 ## `hatchkit keys`
 
 Manage per-project dotenvx private keys.

@@ -44,6 +44,7 @@ import { printReleaseUsage } from "./features/release/command.js";
 import { type HelpTopic, helpTopicForCommand, isHelpRequest } from "./help-routing.js";
 import { HOST_USAGE, runHostCommand } from "./host/integrity.js";
 import { UPDATES_USAGE, runUpdatesCommand } from "./host/updates.js";
+import { MAC_RUNNER_USAGE, runMacRunnerCommand } from "./mac-runner/command.js";
 import {
   type Feature,
   type GpuPlatform,
@@ -169,6 +170,9 @@ async function main(): Promise<void> {
       break;
     case "audit":
       await runAuditCommand(args.slice(1));
+      break;
+    case "mac-runner":
+      await runMacRunnerCommand(args.slice(1));
       break;
     case "init":
     case "setup":
@@ -3897,6 +3901,9 @@ function printCommandHelp(cmd: string | undefined): void {
     case "audit":
       console.log(AUDIT_USAGE);
       return;
+    case "mac-runner":
+      console.log(MAC_RUNNER_USAGE);
+      return;
     case "provision":
       printProvisionUsage();
       return;
@@ -5908,6 +5915,7 @@ function printHelp(topic?: HelpTopic): void {
     set-description Update a project's description across manifest, package.json, Coolify, GitHub
     sync            Push the manifest's domain/ports onto the matching Coolify app(s)
     release         Coordinate one version across every surface (plan/cut/status/check)
+    mac-runner      Run a private repo's macOS/iOS CI jobs on this Mac, on demand (on/off/serve/run)
     gh-pages        Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
     cloudflare      Wire Cloudflare Workers Static Assets for the current repo
     dns             DNS reconciliation helpers (publish, link-to-cloudflare)
