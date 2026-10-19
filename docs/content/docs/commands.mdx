@@ -785,6 +785,8 @@ The jobs run as the logged-in user, niced, with `caffeinate` holding off sleep. 
 - Skip `maxim-lobanov/setup-xcode` and anything else that uses `sudo` (`if: runner.environment == 'github-hosted'`).
 - Turn off the `setup-node` pnpm cache (`cache: ${{ runner.environment == 'github-hosted' && 'pnpm' || '' }}`). Otherwise it uploads your whole pnpm store to the Actions cache.
 - Delete a temporary keychain in an `if: always()` step. If a job stops before that step, `serve` removes the keychain from the search list when it exits.
+- Sign with the SHA-1 of the identity you imported (`security find-identity -v -p codesigning "$KEYCHAIN_PATH"`), not with its name. The Mac's login keychain usually holds an identity with the same name, and `codesign` refuses a name that matches in two keychains as ambiguous.
+- Read a Keychain `.p12` export with `/usr/bin/openssl` (LibreSSL). Its RC2-40 encryption fails in Homebrew's OpenSSL 3+, which comes first on the Mac's `PATH`.
 
 `--parallel 2` runs two jobs at once. The jobs then share one keychain search list, so two signing jobs that start at the same second can drop each other's entry. `--keep-work` keeps the workspaces in `~/Library/Caches/hatchkit/mac-runner/slots` for inspection.
 
