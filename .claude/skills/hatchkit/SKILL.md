@@ -82,6 +82,7 @@ rotation URL, required scopes, and exact `hatchkit config add <provider>` comman
 | `hatchkit migrate-runtime [app]` | Move a deployed Coolify compose app to Docker Image apps so deploys stop taking the site down (`--dry-run`, `--rollback`, `--cleanup`). Refuses a volume unless named with `--carry-volume <service>=<volume>`, which mounts the same Docker volume on the new app; pair it with `--same-json <service>=/path:<field>` |
 | `hatchkit migrate-client` | Serve a deployed project's client from Cloudflare Workers, API stays on Coolify (`--dry-run`, `--repo-only`, `--rollback`, `--cleanup`). Writes `clientHost: "cloudflare"` once the cutover checks pass |
 | `hatchkit plausible rename <old> <new>` | Move a Plausible site to a new domain, keeping stats history |
+| `hatchkit plausible merge <old> <new> --dry-run` | Community Edition: fold the old site into an existing new site (backups, row copy, goals, old site deleted); production write, dry run first |
 | `hatchkit listmonk user <project>` | Give a project its own Listmonk API user + roles and rewrite its env (`--dry-run` first; needs the `hatchkit-admin` keychain token; never pushes) |
 | `hatchkit rename-domain` | Rename project domain and related deploy config |
 | `hatchkit regen-infra` | Regenerate project infra files |

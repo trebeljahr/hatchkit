@@ -2082,8 +2082,17 @@ async function handleDns(): Promise<void> {
 // as a redirect alias for a transition window). Used when a deployed
 // project changes its canonical hostname — e.g. after adding aliases
 // and flipping which one is primary.
+//
+// `hatchkit plausible merge <old> <new>` — the Community Edition path:
+// fold the old site into a new site that already exists, in the
+// databases on the backup host (see host/plausible-merge.ts).
 async function handlePlausible(): Promise<void> {
   const sub = args[1];
+  if (sub === "merge") {
+    const { runPlausibleMerge } = await import("./host/plausible-merge.js");
+    await runPlausibleMerge(args.slice(2));
+    return;
+  }
   if (sub !== "rename") {
     printHelp("plausible");
     if (sub !== undefined) process.exit(1);
@@ -4796,12 +4805,41 @@ function printHelp(topic?: HelpTopic): void {
                     so a later ${chalk.cyan("hatchkit add <project> plausible")} doesn't
                     recreate the old site.
 
-  ${chalk.bold("After renaming:")}
+    merge <old-domain> <new-domain> [--dry-run] [--allow-overlap]
+          [--host <name>] [--service <uuid>] [--yes] [--json]
+        Community Edition, where rename cannot reach (no Sites API) or the
+        new domain already has a site: fold the old site into the new one
+        in Postgres and ClickHouse on the backup host that runs Plausible
+        (Tailscale SSH, containers plausible-<uuid>, plausible-db-<uuid>,
+        plausible-events-db-<uuid>). In order:
+          1. checks — both sites exist; their event time ranges do not
+             overlap (a pageview tracked by both would count twice;
+             ${chalk.dim("--allow-overlap")} accepts it); the old site's events do not
+             all come after the new site's (swapped domains); the old site
+             holds no imported data; no earlier merge left backup tables
+          2. backups — pg_dump -Fc to /root/plausible-site-merge-<date>/,
+             both sites' rows to premerge_<date>_site<old>_* tables
+          3. copy the old site's events_v2, sessions_v2, ingest_counters
+             rows to the new site id (and checks the copy)
+          4. the new site's native_stats_start_at / stats_start_date move
+             back to the old site's when those are earlier
+          5. goals the new site lacks, via Plausible.Goals.create
+          6. delete the old site (Plausible.Site.Removal.run/1), then its
+             ClickHouse rows (mutations_sync = 2)
+          7. events, sessions (sum of sign) and visitors before and after
+        Production write: run ${chalk.dim("--dry-run")} first (every read and check,
+        the planned writes, nothing written). It asks before writing;
+        ${chalk.dim("--yes")} skips the prompt. ${chalk.dim("--host")} picks the backup host (default:
+        the one that runs Plausible), ${chalk.dim("--service")} the Plausible service
+        when one host runs several.
+
+  ${chalk.bold("After renaming or merging:")}
     Update PLAUSIBLE_DOMAIN / the script tag's ${chalk.dim("data-domain")} in the
     deployed app — the tracker must report the NEW domain.
 
   ${chalk.bold("Prerequisites:")}
-    ${chalk.cyan("hatchkit config add plausible")} (API key with Sites API access).
+    rename: ${chalk.cyan("hatchkit config add plausible")} (API key with Sites API access).
+    merge: a backup host (${chalk.cyan("hatchkit backup hosts")}) that runs Plausible.
     Creating sites is ${chalk.cyan("hatchkit add <project> plausible")}; deleting is
     ${chalk.cyan("hatchkit remove")}.
 `);
@@ -5980,7 +6018,7 @@ function printHelp(topic?: HelpTopic): void {
     gh-pages        Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
     cloudflare      Wire Cloudflare Workers Static Assets for the current repo
     dns             DNS reconciliation helpers (publish, link-to-cloudflare)
-    plausible       Plausible site helpers (rename — domain change with history kept)
+    plausible       Plausible site helpers (rename — domain change with history kept; merge — fold a CE site into another)
     listmonk user   Give a project its own Listmonk API user (roles + env rewrite)
     host integrity  Scan the Coolify host for signs of a compromised container (read-only; install = daily mail)
     host updates    Flag shared services (Coolify, Traefik, Plausible, …) that a high/critical advisory covers (read-only; install = weekly mail)

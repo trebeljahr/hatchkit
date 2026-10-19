@@ -93,6 +93,14 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
 - `hatchkit migrate-client [--dry-run|--repo-only|--rollback|--cleanup]`: serve a deployed fullstack project's client from Cloudflare Workers static assets while the API stays on Coolify, same hostname. Workers routes `<domain>/api/*` (and the ACME path) with no Worker, `<domain>/*` → the assets-only Worker; manifest `clientHost: "cloudflare"` (+ optional `originPaths`; `/x` routes `/x/*`, `/x*` also the bare `/x`, e.g. a WebSocket at `wss://<domain>/trpc`). The Coolify client app keeps running until `--cleanup`; `--rollback` is a route deletion. See `cli/src/deploy/client-host.ts` and `migrate-client.ts`.
 - `hatchkit dns publish [--dry-run]`: upsert Cloudflare A/AAAA records for the manifest's domain + aliases, pointing at the Coolify server.
 - `hatchkit plausible rename <old> <new>`: move a Plausible site to a new domain (stats history preserved).
+- `hatchkit plausible merge <old> <new> [--dry-run] [--allow-overlap] [--host <name>] [--yes]`:
+  Community Edition (no Sites API): fold the old site into an existing new
+  site in Postgres + ClickHouse on the backup host that runs Plausible.
+  Refuses missing sites, overlapping event ranges, swapped domains, imported
+  data and a half-done earlier merge; backs up (pg_dump + `premerge_<date>_site<id>_*`
+  tables), copies rows, moves the start dates back, copies goals, deletes the
+  old site. Production write: `--dry-run` first, ask before the real run.
+  See `cli/src/host/plausible-merge.ts`.
 - `hatchkit listmonk user <project> [--dry-run]`: give a project its own Listmonk API user (user role + list role + API user, needs the `hatchkit-admin` token in keychain `listmonk:admin-api-token`) and rewrite LISTMONK_API_USER/TOKEN in its env. Never pushes; `hatchkit sync` after. `hatchkit add … listmonk-ses` does the same for new projects.
 - `hatchkit backup sources [--project <name>]`: read-only; resolves every
   registered backup selector on the host and prints the exact fix for stale

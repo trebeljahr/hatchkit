@@ -94,6 +94,7 @@
   "test-glitchtip-env.ts",
   "test-provision-s3-env.ts",
   "test-plausible-ce.ts",
+  "test-plausible-merge.ts",
   "test-release-channels.ts",
   "test-release-runtime.ts",
   "test-release-policy.ts",

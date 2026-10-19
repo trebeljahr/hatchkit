@@ -749,6 +749,40 @@ A check it could not make (a feed error, a version nothing names, an advisory ra
 
 ---
 
+## `hatchkit plausible merge`
+
+Folds one Plausible Community Edition site into another site that already exists, with its history. Use it when a project moved to a new domain, the new domain already has a site, and the old site now only redirects. `hatchkit plausible rename` cannot do this: it uses the Sites API, which Community Edition does not serve, and a rename cannot target a domain that has a site. Plausible itself has no merge.
+
+```bash
+hatchkit plausible merge <old-domain> <new-domain> --dry-run   # every read and check, writes nothing
+hatchkit plausible merge <old-domain> <new-domain>             # asks before it writes
+hatchkit plausible merge <old-domain> <new-domain> --yes [--json]
+```
+
+It runs on the backup host that runs Plausible, over Tailscale SSH. `--host <name>` picks the host; without it, hatchkit uses the only backup host, or the one host that runs Plausible. It finds the containers `plausible-<uuid>`, `plausible-db-<uuid>` and `plausible-events-db-<uuid>` by name; `--service <uuid>` picks one when a host runs several. The database names come from `DATABASE_URL` and `CLICKHOUSE_DATABASE_URL` inside the app container, so the database password does not leave it.
+
+It refuses, before it writes anything, when:
+
+- one of the two sites does not exist;
+- the two sites' event time ranges overlap. A pageview that both sites recorded would count twice. `--allow-overlap` merges anyway;
+- the old site's events all come after the new site's. The domains are probably swapped, and the merge would delete the site that still receives traffic;
+- the old site holds imported data (`imported_*` tables). Deleting the site deletes the import, and the merge does not carry it;
+- backup tables of an earlier merge of the old site exist. That merge stopped part-way; finish or undo it by hand first;
+- a goal it would copy has the display name of a different goal on the new site.
+
+Then, in this order:
+
+1. A `pg_dump -Fc` of the Postgres database to `/root/plausible-site-merge-<date>/plausible-db-site<old id>-<time>.pgdump` on the host, and the two sites' rows of `events_v2`, `sessions_v2` and `ingest_counters` to `premerge_<date>_site<old id>_*` tables in ClickHouse.
+2. The old site's rows are copied from those tables to the new site id (`SELECT * REPLACE (<new> AS site_id)`; `ingest_counters` also gets the new domain). It checks the new site's counts before it deletes anything.
+3. The new site's `native_stats_start_at` and `stats_start_date` move back to the old site's when those are earlier. Otherwise the dashboard hides the old events.
+4. Goals that the new site does not have are created with `Plausible.Goals.create` (through `bin/plausible rpc`).
+5. The old site is deleted with `Plausible.Site.Removal.run/1`, then its ClickHouse rows (`ALTER TABLE … DELETE`, `mutations_sync = 2`).
+6. It prints events, sessions (the sum of `sign`) and unique visitors of both sites, before and after, and fails when the new site has fewer events or sessions than the two sites had together.
+
+When the old site recorded an event in the last hour, the plan says so: events it receives between the copy and the delete are lost. The new site keeps its own timezone. If a step after the backups fails, the error lists how to undo the merge from the dump and the backup tables. Drop the `premerge_*` tables when nobody needs the rollback; they are also in the daily snapshot of the ClickHouse volume. Update `data-domain` in the deployed app if it still reports the old domain.
+
+---
+
 ## `hatchkit audit cloudflare`
 
 Reports what is on the Cloudflare account that hatchkit did not create. hatchkit's operator token can mint account API tokens, so a leaked copy owns the account, and an attacker's first move is a second token. A Worker runs this check every 6 hours and mails you when it finds something. The check reads with its own read-only token and changes nothing on Cloudflare.

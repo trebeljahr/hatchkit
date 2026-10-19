@@ -87,6 +87,7 @@ const DANGEROUS_ARGV: string[][] = [
   ["host", "integrity", "uninstall", "--help"],
   ["host", "updates", "install", "--host", "dedicated-vps", "--help"],
   ["host", "updates", "uninstall", "--host", "dedicated-vps", "--help"],
+  ["plausible", "merge", "old.example.com", "new.example.com", "--yes", "--help"],
 ];
 
 for (const argv of DANGEROUS_ARGV) {
@@ -230,6 +231,10 @@ checkHelpRun(
   "hatchkit audit cloudflare deploy",
 );
 checkHelpRun(["mac-runner", "serve", "--help"], "hatchkit mac-runner serve");
+checkHelpRun(
+  ["plausible", "merge", "old.example.com", "new.example.com", "--yes", "--help"],
+  "merge <old-domain> <new-domain>",
+);
 checkHelpRun(
   ["mac-runner", "run", "build-macos.yml", "--help"],
   "hatchkit mac-runner run <workflow>",
