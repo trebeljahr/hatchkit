@@ -75,7 +75,7 @@ App CI runs `publish.mjs` from the app repository root (the Capgo CLI reads `cap
 ```sh
 OTA_PUBLISH_TOKEN=… OTA_SIGNING_KEY="$(cat key.pem)" \
 node publish.mjs publish --app com.ricoslabs.raptorrunner --channel beta \
-  --native 1.1.3 --version 1.1.3-ota.42 --dist dist --expect-public-key ota/public-key.pem
+  --native 1.1.3 --version 1.1.3-ota.42 --dist dist --expect-public-key ota/public-key.pub
 ```
 
 1. `npx @capgo/cli@8.87.2 bundle zip` (telemetry off). It fails when the build never calls
@@ -115,7 +115,9 @@ CapacitorUpdater: {
 }
 ```
 
-Create one key pair per app with `npx @capgo/cli key create`. The private key goes into a GitHub
+Create one key pair per app with `npx @capgo/cli key create` (RSA 2048, PKCS#1). Commit the public
+half as `ota/public-key.pub`, not `.pem`: the machine-wide gitignore drops `*.pem`, so a `.pem`
+file is silently left out of the commit. The private key goes into a GitHub
 environment with a required reviewer and into a password manager as the backup; never into a
 repository. Losing it means the next live update needs a store build with a new public key.
 
