@@ -42,6 +42,9 @@ export interface CfDnsRecord {
   proxied: boolean;
   priority?: number;
   ttl?: number;
+  /** Set on the MX records Email Routing writes and locks itself
+   *  (`{ email_routing: true, read_only: true }`). A PATCH on them fails. */
+  meta?: { email_routing?: boolean; read_only?: boolean };
 }
 
 /** A single record in Cloudflare's "recommended DNS for Email Routing"
@@ -64,16 +67,40 @@ export interface CfEmailRoutingSettings {
   status?: string;
   skip_wizard?: boolean;
   tag?: string;
+  /** Hostnames below the zone that Email Routing receives for. Each one
+   *  is registered with `POST /zones/{id}/email/routing/dns` — MX records
+   *  alone do not make Cloudflare accept mail for the name. */
+  subdomains?: CfEmailRoutingSubdomain[];
+}
+
+export interface CfEmailRoutingSubdomain {
+  id?: string;
+  tag?: string;
+  /** Full hostname, e.g. "mail.example.com". */
+  name: string;
+  enabled?: boolean;
+  /** "ready" once Cloudflare's MX + SPF records are in place. */
+  status?: string;
 }
 
 export interface CfEmailDestination {
   id: string;
   /** Destination email address. */
   email: string;
-  /** "pending" until the user clicks the verify link, "active" after. */
+  /** When the user clicked the verify link, as an ISO timestamp; null
+   *  until then. Read it through {@link isEmailDestinationVerified}. */
   verified?: string | null;
   created?: string;
   modified?: string;
+}
+
+/** Whether a destination accepts forwards. Cloudflare answers `verified`
+ *  with the verification time (e.g. "2026-04-10T09:23:18.086829Z") or
+ *  null — never the string "active", which hatchkit compared against
+ *  until 2026-10-19 and so reported every verified inbox as pending.
+ *  "pending" stays unverified in case an older shape still sends it. */
+export function isEmailDestinationVerified(verified: string | null | undefined): boolean {
+  return typeof verified === "string" && verified !== "" && verified !== "pending";
 }
 
 export interface CfEmailRoutingMatcher {
@@ -1211,8 +1238,11 @@ export class CloudflareApi {
   // Enable order (matters):
   //   1. POST /zones/{id}/email/routing/enable      (creates the service)
   //   2. POST /zones/{id}/email/routing/dns         (have CF write its MX/SPF —
-  //      idempotent; we instead upsert via the generic dns_records API so
-  //      hatchkit owns the records consistently)
+  //      idempotent; for the apex we instead upsert via the generic
+  //      dns_records API so hatchkit owns the records consistently. A
+  //      hostname below the zone needs this call with `{ name }`: without
+  //      it Cloudflare never lists the name under `subdomains` and does
+  //      not receive its mail, whatever MX records point at it)
   //   3. POST /accounts/{aid}/email/routing/addresses { email }
   //      (sends verification email — destination won't accept forwards
   //      until the user clicks the link in their inbox)
@@ -1242,6 +1272,33 @@ export class CloudflareApi {
       `/zones/${zoneId}/email/routing/enable`,
       {},
     );
+  }
+
+  /** Register a hostname below the zone with Email Routing. Cloudflare
+   *  writes and locks the name's MX records and adds an SPF TXT, then
+   *  lists it under `subdomains` in {@link getEmailRouting}. */
+  async enableEmailRoutingSubdomain(zoneId: string, name: string): Promise<void> {
+    await this.request<unknown>("POST", `/zones/${zoneId}/email/routing/dns`, { name });
+  }
+
+  /** Undo {@link enableEmailRoutingSubdomain}: Cloudflare stops receiving
+   *  for the name and removes the MX records it added there. The same
+   *  endpoint without a name disables Email Routing for the WHOLE zone,
+   *  so an empty name is refused here; callers must also never pass the
+   *  zone apex. Idempotent: 404 → "not-found". */
+  async disableEmailRoutingSubdomain(
+    zoneId: string,
+    name: string,
+  ): Promise<"deleted" | "not-found"> {
+    if (!name.trim())
+      throw new Error("Refusing to disable Email Routing without a subdomain name.");
+    try {
+      await this.request<unknown>("DELETE", `/zones/${zoneId}/email/routing/dns`, { name });
+      return "deleted";
+    } catch (err) {
+      if ((err as { status?: number }).status === 404) return "not-found";
+      throw err;
+    }
   }
 
   /** Cloudflare's recommendation for the MX + SPF records that should

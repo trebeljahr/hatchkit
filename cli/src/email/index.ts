@@ -27,7 +27,7 @@ import {
   getPersonalEmailLocalPart,
 } from "../config.js";
 import { readManifest, writeManifest } from "../scaffold/manifest.js";
-import { CloudflareApi } from "../utils/cloudflare-api.js";
+import { CloudflareApi, isEmailDestinationVerified } from "../utils/cloudflare-api.js";
 import { multiselect } from "../utils/multiselect.js";
 import { DEFAULT_CATCH_ALL, buildForwardPresets } from "./presets.js";
 import { assertEmailRoutingAccess, probeEmailRouting } from "./routing-access.js";
@@ -266,6 +266,20 @@ export async function runEmailStatus(
   console.log(
     `  Routing:      ${routing?.enabled ? chalk.green("enabled") : chalk.red("disabled")}${routing?.status ? chalk.dim(` (${routing.status})`) : ""}`,
   );
+  if (domain.toLowerCase() !== zone.name.toLowerCase()) {
+    // Below the apex, the zone's toggle is not enough: Cloudflare receives
+    // only for the names it lists under `subdomains`.
+    const sub = routing?.subdomains?.find((s) => s.name.toLowerCase() === domain.toLowerCase());
+    console.log(
+      `  Subdomain:    ${
+        !sub
+          ? chalk.red(`not registered — run hatchkit email setup --domain ${domain}`)
+          : sub.enabled !== false && sub.status === "ready"
+            ? chalk.green(sub.status)
+            : chalk.yellow(`${sub.status ?? "unknown"}${sub.enabled === false ? ", disabled" : ""}`)
+      }`,
+    );
+  }
   console.log(
     `  MX records:   ${mx.length > 0 ? chalk.green(`${mx.length} (${mx.map((r) => r.content).join(", ")})`) : chalk.red("none")}`,
   );
@@ -274,7 +288,9 @@ export async function runEmailStatus(
   console.log(`  DMARC:        ${dmarc[0] ? chalk.green(dmarc[0].content) : chalk.red("missing")}`);
   console.log(`  Destinations: ${destinations.length} on account`);
   for (const d of destinations) {
-    const tag = d.verified === "active" ? chalk.green("✓ verified") : chalk.yellow("· pending");
+    const tag = isEmailDestinationVerified(d.verified)
+      ? chalk.green("✓ verified")
+      : chalk.yellow("· pending");
     console.log(`    ${tag} ${d.email}`);
   }
   console.log(`  Rules:        ${rules.length}`);
@@ -343,7 +359,7 @@ export async function runEmailForward(rest: string[], cwd: string = process.cwd(
     );
   }
   const saved = await cf.addEmailDestination(accountId, destination);
-  if (saved.verified !== "active") {
+  if (!isEmailDestinationVerified(saved.verified)) {
     console.log(
       chalk.yellow(
         `  ${destination} is pending verification. Click the Cloudflare email, then re-run this command. No rule created.`,
@@ -358,6 +374,36 @@ export async function runEmailForward(rest: string[], cwd: string = process.cwd(
   });
   recordForwarding(cwd, domain, localPart.toLowerCase(), destination);
   console.log(chalk.green(`  ✓ ${address} → ${destination}`));
+}
+
+/** Record a finished `hatchkit email setup` in `.hatchkit.json` when it ran
+ *  for the project's own domain, as the provision step does — doctor, the
+ *  Cloudflare audit and migrate-domain read forwarding from there. Keeps
+ *  per-address destinations an earlier `email forward` recorded. */
+export function recordEmailSetup(cwd: string, result: EmailSetupResult): void {
+  const manifest = readManifest(cwd);
+  if (manifest?.domain?.toLowerCase() !== result.domain.toLowerCase()) return;
+  const old = manifest.integrations?.email;
+  const sameDomain = old?.domain?.toLowerCase() === result.domain.toLowerCase();
+  writeManifest(cwd, {
+    ...manifest,
+    integrations: {
+      ...manifest.integrations,
+      email: {
+        ...(sameDomain ? old : {}),
+        domain: result.domain,
+        configuredAt: new Date().toISOString(),
+        destinationEmail: result.destination.record.email,
+        addresses: [
+          ...new Set([
+            ...(sameDomain ? (old?.addresses ?? []) : []),
+            ...result.rules.map((r) => r.address.split("@")[0]),
+          ]),
+        ],
+        catchAll: result.catchAll?.enabled ?? (sameDomain ? old?.catchAll : undefined) ?? false,
+      },
+    },
+  });
 }
 
 export function recordForwarding(
@@ -452,9 +498,11 @@ export async function handleEmailCommand(rest: string[]): Promise<void> {
     case "forward":
       await runEmailForward(rest.slice(1), resolve("."));
       return;
-    case "setup":
-      await runEmailSetupForDomain(flags, resolve("."));
+    case "setup": {
+      const result = await runEmailSetupForDomain(flags, resolve("."));
+      recordEmailSetup(resolve("."), result);
       return;
+    }
     case "status":
       await runEmailStatus(flags, resolve("."));
       return;

@@ -72,7 +72,7 @@ import {
   setSesMailFromDomain,
 } from "../provision/ses.js";
 import { type ProjectManifest, readManifest, writeManifest } from "../scaffold/manifest.js";
-import { CloudflareApi } from "../utils/cloudflare-api.js";
+import { CloudflareApi, isEmailDestinationVerified } from "../utils/cloudflare-api.js";
 import { getCloudflareTokenValue } from "../utils/secrets.js";
 import { readSesFromEnv, rewriteFromAddress, rewriteSesFromEnv } from "./ses-env.js";
 
@@ -745,7 +745,7 @@ export const stepEmailRoutingSetup: StepFn = async (ctx) => {
   }
   for (const [, email] of alternateDestinations) {
     const saved = await cf.addEmailDestination(accountId!, email);
-    if (saved.verified !== "active") {
+    if (!isEmailDestinationVerified(saved.verified)) {
       throw new Error(
         `Forwarding destination ${email} needs Cloudflare verification before migration can continue.`,
       );
@@ -797,6 +797,7 @@ export const stepEmailRoutingSetup: StepFn = async (ctx) => {
 
   const changed =
     result.routingEnabledThisRun ||
+    result.subdomain?.registeredThisRun === true ||
     result.destination.createdThisRun ||
     result.dnsRecords.some((r) => r.created || r.updated) ||
     result.rules.some((r) => r.created || r.updated) ||
@@ -810,7 +811,7 @@ export const stepEmailRoutingSetup: StepFn = async (ctx) => {
     `rules: ${forwarding.addresses.length > 0 ? forwarding.addresses.map((a) => `${a}@`).join(", ") : "(none)"} (${sourceNote[forwarding.source]}); catch-all ${forwarding.catchAll ? "on" : "off"}`,
     `MX/SPF/DMARC: ${result.dnsRecords.filter((r) => r.created).length} created, ${result.dnsRecords.filter((r) => r.updated).length} updated`,
   ];
-  if (result.destination.verified !== "active") {
+  if (!isEmailDestinationVerified(result.destination.verified)) {
     detail.push(
       `${result.destination.record.email} must click Cloudflare's verification email before forwards deliver`,
     );

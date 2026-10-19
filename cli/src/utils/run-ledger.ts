@@ -197,6 +197,18 @@ export type LedgerStep =
       ruleId: string;
       address: string;
     }
+  /** A hostname below the zone apex that hatchkit registered with Email
+   *  Routing (`POST /zones/{zoneId}/email/routing/dns { name }`). Recorded
+   *  only when this run added it. Destroy sends the same body to DELETE,
+   *  which stops Cloudflare receiving for the name and removes the MX
+   *  records it locked there. The bare DELETE disables the WHOLE zone, so
+   *  undo refuses when `name` is not strictly below `zoneName`. */
+  | {
+      kind: "cloudflareEmailRoutingSubdomain";
+      zoneId: string;
+      zoneName: string;
+      name: string;
+    }
   /** GitHub Pages site set up via `hatchkit gh-pages` (or the
    *  create/adopt flows' gh-pages path). Recorded when Pages was
    *  enabled — destroy hands this off to `runPagesUndo`, which

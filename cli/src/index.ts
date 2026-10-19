@@ -1210,6 +1210,16 @@ function recordProvisionedEvent(ledger: RunLedger, event: ProvisionedEvent): voi
         email: event.destinationEmail,
       });
     }
+    // Before the DNS records: the reverse-order undo deletes hatchkit's
+    // own records first, then lets Cloudflare drop the MX it locked.
+    if (event.routingSubdomain) {
+      ledger.record({
+        kind: "cloudflareEmailRoutingSubdomain",
+        zoneId: event.zoneId,
+        zoneName: event.routingSubdomain.zoneName,
+        name: event.routingSubdomain.name,
+      });
+    }
     for (const dns of event.dnsRecords) {
       ledger.record({
         kind: "cloudflareDnsRecord",

@@ -2854,6 +2854,14 @@ async function executePlan(
                 email: event.destinationEmail,
               });
             }
+            if (event.routingSubdomain) {
+              ledger.record({
+                kind: "cloudflareEmailRoutingSubdomain",
+                zoneId: event.zoneId,
+                zoneName: event.routingSubdomain.zoneName,
+                name: event.routingSubdomain.name,
+              });
+            }
             for (const dns of event.dnsRecords) {
               ledger.record({
                 kind: "cloudflareDnsRecord",

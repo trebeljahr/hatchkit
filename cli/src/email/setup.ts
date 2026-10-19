@@ -2,7 +2,10 @@
  * Email setup orchestrator.
  *
  * Configures Cloudflare Email Routing end-to-end for one zone:
- *   1. Enable Email Routing on the zone (idempotent).
+ *   1. Enable Email Routing on the zone (idempotent). For a hostname
+ *      below the zone, also register it with Email Routing — Cloudflare
+ *      receives only for the apex and the names listed under
+ *      `subdomains`, whatever MX records point at a name.
  *   2. Verify (or add) the destination address — the verification email
  *      lands in the user's inbox; they click the link before routing
  *      starts working. Skipping verify isn't an option — Cloudflare
@@ -29,6 +32,7 @@ import {
   type CfDnsRecord,
   type CfEmailDestination,
   CloudflareApi,
+  isEmailDestinationVerified,
 } from "../utils/cloudflare-api.js";
 import { assertEmailRoutingAccess } from "./routing-access.js";
 import { buildDmarcRecord, buildSpfRecord, mergeSpfRecord } from "./spf.js";
@@ -88,16 +92,21 @@ export interface EmailSetupOptions {
 export interface EmailSetupResult {
   domain: string;
   zoneId: string;
+  zoneName: string;
   accountId: string;
   /** True when this run was the one that enabled routing on the zone. */
   routingEnabledThisRun: boolean;
+  /** Set when {@link domain} is below the zone apex: the hostname's own
+   *  Email Routing registration. `registeredThisRun` is true only when
+   *  this run added it (use for the rollback ledger). */
+  subdomain?: { name: string; registeredThisRun: boolean; status?: string };
   destination: {
     record: CfEmailDestination;
     /** True when this run created the destination (verification email
      *  was just sent). False when it already existed. */
     createdThisRun: boolean;
-    /** "active" / "pending" — the user must click the verify link
-     *  before forwards land. */
+    /** Verification time, or null while the user has not clicked the
+     *  verify link. Test it with `isEmailDestinationVerified`. */
     verified: string | null;
   };
   /** DNS records the run created/updated. Each entry's `created` is
@@ -152,12 +161,29 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
   }
   const routingEnabledThisRun = !beforeRouting?.enabled;
 
+  // Step 1b — a hostname below the zone gets its own registration. It
+  // must come before the MX/SPF steps: Cloudflare writes and locks the
+  // name's MX records itself, and those steps then find them in place.
+  const domain = opts.domain.toLowerCase().replace(/\.$/, "");
+  let subdomain: EmailSetupResult["subdomain"];
+  if (domain !== zone.name.toLowerCase()) {
+    const routing = routingEnabledThisRun ? await cf.getEmailRouting(zone.id) : beforeRouting;
+    const listed = routing?.subdomains?.find((s) => s.name.toLowerCase() === domain);
+    if (!listed || listed.enabled === false) {
+      await cf.enableEmailRoutingSubdomain(zone.id, domain);
+    }
+    const after = listed?.status === "ready" ? listed : await findSubdomain(cf, zone.id, domain);
+    subdomain = { name: domain, registeredThisRun: !listed, status: after?.status };
+  }
+
   // Step 2 — destination address. CF sends a verification email if it
   // didn't already exist.
   const dest = await cf.addEmailDestination(accountId, opts.destination);
 
   // Step 3 — MX records. Fetch CF's recommended list first (in case the
-  // hosts change), fall back to the constant if the call fails.
+  // hosts change), fall back to the constant if the call fails. MX records
+  // Email Routing locked at the name (its own registration wrote them) are
+  // left alone: they are what Cloudflare checks, and a PATCH on them fails.
   let mxRecords = CLOUDFLARE_EMAIL_ROUTING_MX.map((m) => ({
     name: opts.domain,
     content: m.host,
@@ -169,7 +195,9 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
     if (mx.length > 0) {
       mxRecords = mx.map((r) => ({
         name: opts.domain,
-        content: r.content,
+        // CF lists "route1.mx.cloudflare.net." but stores records without
+        // the trailing dot; the upsert below compares contents exactly.
+        content: r.content.replace(/\.$/, ""),
         priority: r.priority ?? 10,
       }));
     }
@@ -180,7 +208,20 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
   }
 
   const dnsRecords: EmailSetupResult["dnsRecords"] = [];
-  for (const mx of mxRecords) {
+  const lockedMx = (await cf.findRecordsByName(zone.id, opts.domain, "MX")).filter(
+    (r) => r.meta?.email_routing && r.meta.read_only,
+  );
+  for (const mx of lockedMx) {
+    dnsRecords.push({
+      id: mx.id,
+      name: opts.domain,
+      type: "MX",
+      content: mx.content,
+      created: false,
+      updated: false,
+    });
+  }
+  for (const mx of lockedMx.length > 0 ? [] : mxRecords) {
     const res = await cf.upsertRecord(zone.id, {
       type: "MX",
       name: mx.name,
@@ -208,21 +249,35 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
   // TXT upserts match on content, so a merged record that differs from
   // the one on the zone is a NEW row. Write it first, then drop every
   // other SPF TXT at the name — exactly one SPF record per name per
-  // RFC 7208; two is a PermError at every receiver.
-  const spfRes = await cf.upsertRecord(zone.id, {
-    type: "TXT",
-    name: opts.domain,
-    content: spfContent,
-  });
-  await deleteOtherTxtRecords(cf, zone.id, opts.domain, SPF_RE, spfRes.id);
-  dnsRecords.push({
-    id: spfRes.id,
-    name: opts.domain,
-    type: "TXT",
-    content: spfContent,
-    created: spfRes.created,
-    updated: spfRes.updated,
-  });
+  // RFC 7208; two is a PermError at every receiver. A record that only
+  // differs by its quotes (Cloudflare's own SPF is stored quoted) is the
+  // same record and stays as it is.
+  if (existingSpf && unquoteTxt(existingSpf.content) === spfContent) {
+    await deleteOtherTxtRecords(cf, zone.id, opts.domain, SPF_RE, existingSpf.id);
+    dnsRecords.push({
+      id: existingSpf.id,
+      name: opts.domain,
+      type: "TXT",
+      content: existingSpf.content,
+      created: false,
+      updated: false,
+    });
+  } else {
+    const spfRes = await cf.upsertRecord(zone.id, {
+      type: "TXT",
+      name: opts.domain,
+      content: spfContent,
+    });
+    await deleteOtherTxtRecords(cf, zone.id, opts.domain, SPF_RE, spfRes.id);
+    dnsRecords.push({
+      id: spfRes.id,
+      name: opts.domain,
+      type: "TXT",
+      content: spfContent,
+      created: spfRes.created,
+      updated: spfRes.updated,
+    });
+  }
 
   // Step 5 — DMARC. Same one-record rule as SPF. A caller doing an
   // additive run (migrate-domain) keeps a DMARC policy already in place
@@ -291,8 +346,10 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
   return {
     domain: opts.domain,
     zoneId: zone.id,
+    zoneName: zone.name,
     accountId,
     routingEnabledThisRun,
+    subdomain,
     destination: {
       record: dest,
       createdThisRun: !dest.existed,
@@ -306,6 +363,16 @@ export async function runEmailSetup(opts: EmailSetupOptions): Promise<EmailSetup
 
 const SPF_RE = /^"?v=spf1\b/i;
 const DMARC_RE = /^"?v=DMARC1\b/i;
+
+function unquoteTxt(content: string): string {
+  return content.trim().replace(/^"|"$/g, "").trim();
+}
+
+/** Re-read the zone's routing settings for one registered hostname. */
+async function findSubdomain(cf: CloudflareApi, zoneId: string, name: string) {
+  const routing = await cf.getEmailRouting(zoneId);
+  return routing?.subdomains?.find((s) => s.name.toLowerCase() === name);
+}
 
 /** Find the TXT record at `name` whose content matches `pattern` (SPF or
  *  DMARC). Returns null when none exists yet. Other TXT records at the
@@ -347,11 +414,19 @@ export function printEmailSetupSummary(result: EmailSetupResult): void {
   } else {
     console.log(chalk.dim("  · Email Routing already enabled"));
   }
+  if (result.subdomain) {
+    const status = result.subdomain.status ? ` (${result.subdomain.status})` : "";
+    console.log(
+      result.subdomain.registeredThisRun
+        ? chalk.green(`  ✓ Registered ${result.subdomain.name} with Email Routing${status}`)
+        : chalk.dim(`  · ${result.subdomain.name} already registered with Email Routing${status}`),
+    );
+  }
 
-  const verifySuffix =
-    result.destination.verified === "active"
-      ? chalk.green(" (verified)")
-      : chalk.yellow(" (pending — check inbox + click verify link)");
+  const verified = isEmailDestinationVerified(result.destination.verified);
+  const verifySuffix = verified
+    ? chalk.green(" (verified)")
+    : chalk.yellow(" (pending — check inbox + click verify link)");
   if (result.destination.createdThisRun) {
     console.log(
       chalk.green(`  ✓ Added destination ${result.destination.record.email}`) + verifySuffix,
@@ -386,7 +461,7 @@ export function printEmailSetupSummary(result: EmailSetupResult): void {
     console.log(`  ${tag} catch-all *@${result.domain}`);
   }
 
-  if (result.destination.verified !== "active") {
+  if (!verified) {
     console.log(
       chalk.yellow(
         `\n  ! Forwards won't deliver until ${result.destination.record.email} clicks the Cloudflare verification email.`,

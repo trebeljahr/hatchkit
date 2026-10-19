@@ -245,6 +245,9 @@ export type ProvisionedEvent =
       destinationEmail: string;
       destinationCreatedThisRun: boolean;
       routingEnabledThisRun: boolean;
+      /** Hostname this run registered with Email Routing (below the zone
+       *  apex only); absent when it was registered before. */
+      routingSubdomain?: { zoneName: string; name: string };
       dnsRecords: Array<{ id: string; name: string; type: "MX" | "TXT" }>;
       rules: Array<{ id: string; address: string; created: boolean }>;
     }
@@ -1228,6 +1231,9 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
           destinationEmail: result.destination.record.email,
           destinationCreatedThisRun: result.destination.createdThisRun,
           routingEnabledThisRun: result.routingEnabledThisRun,
+          routingSubdomain: result.subdomain?.registeredThisRun
+            ? { zoneName: result.zoneName, name: result.subdomain.name }
+            : undefined,
           dnsRecords: result.dnsRecords
             .filter((r) => r.created)
             .map((r) => ({ id: r.id, name: r.name, type: r.type })),

@@ -339,6 +339,10 @@ function recipeFor(step: LedgerStep): string | null {
       return chalk.dim(
         `# manual: delete Email Routing rule for ${step.address} in zone ${step.zoneId}`,
       );
+    case "cloudflareEmailRoutingSubdomain":
+      return chalk.dim(
+        `# manual: remove ${step.name} under Email Routing → Settings → Subdomains in zone ${step.zoneName}`,
+      );
     case "ghPages":
       return `cd ${shellEscape(step.projectDir)} && hatchkit gh-pages --undo --yes`;
     case "cloudflareWorkerDomain":
@@ -385,6 +389,14 @@ function recipeFor(step: LedgerStep): string | null {
     case "signingWorkflowFile":
       return `rm ${shellEscape(step.path)}`;
   }
+}
+
+/** True when `name` is a hostname strictly below `zone` ("a.example.com"
+ *  under "example.com"; never the apex itself). */
+export function isStrictlyBelow(name: string, zone: string): boolean {
+  const n = name.trim().toLowerCase().replace(/\.$/, "");
+  const z = zone.trim().toLowerCase().replace(/\.$/, "");
+  return z !== "" && n.endsWith(`.${z}`) && n.length > z.length + 1;
 }
 
 function shellEscape(s: string): string {
@@ -528,6 +540,8 @@ function isDestructive(step: LedgerStep): boolean {
     // before the prompt below.
     step.kind === "coolifyGhcrSshLogin" ||
     step.kind === "cloudflareDnsRecord" ||
+    // Cloudflare stops receiving mail for the hostname.
+    step.kind === "cloudflareEmailRoutingSubdomain" ||
     // R2 bucket delete drops every object inside it. Token revocation
     // is reversible (just re-mint), so it stays out of this list.
     step.kind === "r2Bucket"
@@ -636,6 +650,8 @@ function describeStep(step: LedgerStep): string {
       return `revoke Email Routing destination ${chalk.cyan(step.email)}`;
     case "cloudflareEmailRoutingRule":
       return `delete Email Routing rule for ${chalk.cyan(step.address)}`;
+    case "cloudflareEmailRoutingSubdomain":
+      return `stop Email Routing for ${chalk.cyan(step.name)}`;
     case "ghPages":
       return `tear down GitHub Pages for ${chalk.cyan(step.repo)}`;
     case "cloudflareWorkerDomain":
@@ -1026,6 +1042,21 @@ async function undoStep(
       const { CloudflareApi } = await import("../utils/cloudflare-api.js");
       const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
       const result = await cf.deleteEmailRoutingRule(step.zoneId, step.ruleId);
+      return result === "not-found" ? "not-found" : "done";
+    }
+    case "cloudflareEmailRoutingSubdomain": {
+      if (!isStrictlyBelow(step.name, step.zoneName)) {
+        throw new Error(
+          `Refusing to disable Email Routing for "${step.name}": not below zone ${step.zoneName}, and the call would switch off the whole zone.`,
+        );
+      }
+      const dns = await getDnsConfig();
+      if (!dns || !dns.apiToken) {
+        throw new Error("Cloudflare credentials no longer in keychain — re-add them, then retry");
+      }
+      const { CloudflareApi } = await import("../utils/cloudflare-api.js");
+      const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
+      const result = await cf.disableEmailRoutingSubdomain(step.zoneId, step.name);
       return result === "not-found" ? "not-found" : "done";
     }
     case "mlService":

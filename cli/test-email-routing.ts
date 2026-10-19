@@ -21,6 +21,14 @@
  *      keeps an existing DMARC when asked to be additive.
  *   4. `hatchkit doctor` turns the missing scope into a red row with the
  *      fix.
+ *   5. A verified destination reads as verified. Cloudflare answers
+ *      `verified` with a timestamp, never "active" (2026-10-19:
+ *      `email status` showed the verified inbox as pending and `email
+ *      forward` refused with "No rule created").
+ *   6. A hostname below the zone is registered with Email Routing
+ *      (`POST …/email/routing/dns { name }`) before its records, so
+ *      Cloudflare receives for it; the run ledger's undo stops it again
+ *      and refuses anything that would switch off the whole zone.
  *
  * Run: `pnpm test` (via the script in cli/package.json).
  */
@@ -45,7 +53,14 @@ const {
   summarizeEmailRoutingProbe,
 } = await import("./src/email/routing-access.js");
 const { runEmailSetup } = await import("./src/email/setup.js");
-const { parseEmailFlags, recordForwarding } = await import("./src/email/index.js");
+const { parseEmailFlags, recordEmailSetup, recordForwarding } = await import(
+  "./src/email/index.js"
+);
+const { isEmailDestinationVerified } = await import("./src/utils/cloudflare-api.js");
+const { RunLedger } = await import("./src/utils/run-ledger.js");
+const { isStrictlyBelow, runRollback } = await import("./src/deploy/rollback.js");
+const { getStore } = await import("./src/config.js");
+const { SECRET_KEYS, setSecret } = await import("./src/utils/secrets.js");
 const { readManifest } = await import("./src/scaffold/manifest.js");
 const { MIGRATION_PROVIDERS, planDomainMigration, planEmailRouting, selectActions } = await import(
   "./src/migrate/plan.js"
@@ -437,14 +452,35 @@ interface Rec {
   name: string;
   content: string;
   priority?: number;
+  meta?: { email_routing?: boolean; read_only?: boolean };
 }
 
-/** Just enough of the Cloudflare v4 API for `runEmailSetup`. */
-function installFakeCloudflare(state: {
+interface FakeCloudflareState {
   records: Rec[];
   routingEnabled?: boolean;
   auth?: boolean;
-}) {
+  /** Hostnames registered with Email Routing below the zone. */
+  subdomains?: Array<{ name: string; enabled: boolean; status: string }>;
+  /** What `GET …/email/routing/dns` recommends; [] → the setup's constants. */
+  recommended?: Rec[];
+  /** Every request, in order. */
+  calls?: Array<{ method: string; path: string; body?: Record<string, unknown> }>;
+}
+
+/** Cloudflare's own MX records for a registered name: locked, stored
+ *  without the trailing dot its recommendation list shows. */
+const lockedMx = (name: string, at = 0): Rec[] =>
+  [57, 29, 12].map((priority, i) => ({
+    id: `locked-${name}-${at + i}`,
+    type: "MX",
+    name,
+    content: `route${i + 1}.mx.cloudflare.net`,
+    priority,
+    meta: { email_routing: true, read_only: true },
+  }));
+
+/** Just enough of the Cloudflare v4 API for `runEmailSetup`. */
+function installFakeCloudflare(state: FakeCloudflareState) {
   let seq = 0;
   const ok = (result: unknown) =>
     new Response(JSON.stringify({ success: true, errors: [], messages: [], result }), {
@@ -461,6 +497,7 @@ function installFakeCloudflare(state: {
     const path = u.pathname.replace("/client/v4", "");
     const method = init?.method ?? "GET";
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    state.calls?.push({ method, path, body });
     if (method === "GET" && path === "/zones") {
       const name = u.searchParams.get("name");
       return ok(
@@ -472,12 +509,37 @@ function installFakeCloudflare(state: {
     if (path.includes("/email/routing") && state.auth === false) {
       return fail(10000, "Authentication error");
     }
-    if (path === "/zones/z1/email/routing") return ok({ enabled: !!state.routingEnabled });
+    if (path === "/zones/z1/email/routing") {
+      return ok({ enabled: !!state.routingEnabled, subdomains: state.subdomains ?? [] });
+    }
     if (path === "/zones/z1/email/routing/enable") {
       state.routingEnabled = true;
       return ok({ enabled: true });
     }
-    if (path === "/zones/z1/email/routing/dns") return ok([]);
+    if (path === "/zones/z1/email/routing/dns" && method === "GET") {
+      return ok(state.recommended ?? []);
+    }
+    if (path === "/zones/z1/email/routing/dns" && method === "POST") {
+      // Like Cloudflare: register the name, write + lock its MX, add SPF.
+      state.subdomains = [
+        ...(state.subdomains ?? []).filter((s) => s.name !== body.name),
+        { name: body.name, enabled: true, status: "ready" },
+      ];
+      state.records.push(...lockedMx(body.name, ++seq * 10), {
+        id: `r${++seq}`,
+        type: "TXT",
+        name: body.name,
+        content: '"v=spf1 include:_spf.mx.cloudflare.net ~all"',
+      });
+      return ok({ name: body.name });
+    }
+    if (path === "/zones/z1/email/routing/dns" && method === "DELETE") {
+      if (!body?.name) return fail(1000, "would disable the whole zone", 400);
+      if (!state.subdomains?.some((s) => s.name === body.name)) return fail(1001, "nope", 404);
+      state.subdomains = state.subdomains.filter((s) => s.name !== body.name);
+      state.records = state.records.filter((r) => !(r.name === body.name && r.meta?.read_only));
+      return ok({ name: body.name });
+    }
     if (path === "/accounts/acc1/email/routing/addresses") {
       return method === "GET" ? ok([]) : ok({ id: "d1", email: body.email, verified: "active" });
     }
@@ -489,6 +551,14 @@ function installFakeCloudflare(state: {
     }
     if (path === "/zones/z1/dns_records") {
       if (method === "POST") {
+        const same = state.records.find(
+          (r) =>
+            r.name === body.name &&
+            r.type === body.type &&
+            r.content === body.content &&
+            r.priority === body.priority,
+        );
+        if (same) return fail(81058, "An identical record already exists.", 400);
         const rec = { id: `r${++seq}`, ...body };
         state.records.push(rec);
         return ok(rec);
@@ -504,6 +574,9 @@ function installFakeCloudflare(state: {
       );
     }
     const byId = path.match(/^\/zones\/z1\/dns_records\/(.+)$/);
+    if (byId && method !== "GET" && state.records.find((r) => r.id === byId[1])?.meta?.read_only) {
+      return fail(1004, "This record is managed by Email Routing and is read-only.", 400);
+    }
     if (byId && method === "DELETE") {
       state.records = state.records.filter((r) => r.id !== byId[1]);
       return ok({ id: byId[1] });
@@ -598,6 +671,248 @@ await expect(
     assert.equal(state.records.length, 0);
   },
 );
+
+await expect("a destination verified at a timestamp is verified; null and pending are not", () => {
+  assert.equal(isEmailDestinationVerified("2026-04-10T09:23:18.086829Z"), true);
+  assert.equal(isEmailDestinationVerified("active"), true);
+  assert.equal(isEmailDestinationVerified(null), false);
+  assert.equal(isEmailDestinationVerified(undefined), false);
+  assert.equal(isEmailDestinationVerified(""), false);
+  assert.equal(isEmailDestinationVerified("pending"), false);
+});
+
+const subOpts = { ...setupOpts, domain: "mail.example.com", addresses: ["privacy", "imprint"] };
+
+await expect(
+  "a hostname below the zone is registered with Email Routing before its records",
+  async () => {
+    const state: FakeCloudflareState = {
+      records: [],
+      routingEnabled: true,
+      subdomains: [],
+      recommended: [57, 29, 12].map((priority, i) => ({
+        id: "",
+        type: "MX",
+        name: "example.com",
+        content: `route${i + 1}.mx.cloudflare.net.`,
+        priority,
+      })),
+      calls: [],
+    };
+    const restore = installFakeCloudflare(state);
+    let result: Awaited<ReturnType<typeof runEmailSetup>>;
+    try {
+      result = await runEmailSetup(subOpts);
+    } finally {
+      restore();
+    }
+    const calls = state.calls ?? [];
+    const register = calls.findIndex(
+      (c) => c.method === "POST" && c.path === "/zones/z1/email/routing/dns",
+    );
+    assert.ok(register >= 0, "no POST /email/routing/dns");
+    assert.deepEqual(calls[register].body, { name: "mail.example.com" });
+    const firstWrite = calls.findIndex(
+      (c) => c.method !== "GET" && c.path.startsWith("/zones/z1/dns_records"),
+    );
+    assert.ok(firstWrite > register, "records were written before the registration");
+    assert.deepEqual(result.subdomain, {
+      name: "mail.example.com",
+      registeredThisRun: true,
+      status: "ready",
+    });
+    // Cloudflare's locked MX and its quoted SPF stay as they are.
+    const mx = state.records.filter((r) => r.name === "mail.example.com" && r.type === "MX");
+    assert.equal(mx.length, 3);
+    assert.ok(mx.every((r) => r.meta?.read_only));
+    assert.ok(result.dnsRecords.filter((r) => r.type === "MX").every((r) => !r.created));
+    const spf = state.records.filter((r) => r.name === "mail.example.com" && r.type === "TXT");
+    assert.deepEqual(
+      spf.map((r) => r.content),
+      ['"v=spf1 include:_spf.mx.cloudflare.net ~all"'],
+    );
+    assert.equal(
+      state.records.filter((r) => r.name === "_dmarc.mail.example.com").length,
+      1,
+      "DMARC",
+    );
+    assert.deepEqual(
+      result.rules.map((r) => [r.address, r.created]),
+      [
+        ["privacy@mail.example.com", true],
+        ["imprint@mail.example.com", true],
+      ],
+    );
+  },
+);
+
+await expect("an already registered hostname is not registered again", async () => {
+  const state: FakeCloudflareState = {
+    records: [
+      ...lockedMx("mail.example.com"),
+      {
+        id: "cf-spf",
+        type: "TXT",
+        name: "mail.example.com",
+        content: '"v=spf1 include:_spf.mx.cloudflare.net ~all"',
+      },
+    ],
+    routingEnabled: true,
+    subdomains: [{ name: "mail.example.com", enabled: true, status: "ready" }],
+    calls: [],
+  };
+  const restore = installFakeCloudflare(state);
+  let result: Awaited<ReturnType<typeof runEmailSetup>>;
+  try {
+    result = await runEmailSetup(subOpts);
+  } finally {
+    restore();
+  }
+  assert.ok(!(state.calls ?? []).some((c) => c.method === "POST" && c.path.endsWith("/dns")));
+  assert.deepEqual(result.subdomain, {
+    name: "mail.example.com",
+    registeredThisRun: false,
+    status: "ready",
+  });
+  assert.ok(
+    result.dnsRecords
+      .filter((r) => r.type !== "TXT" || r.name === "mail.example.com")
+      .every((r) => !r.created && !r.updated),
+  );
+});
+
+await expect("the zone apex is never registered as a subdomain", async () => {
+  const state: FakeCloudflareState = { records: [], routingEnabled: true, calls: [] };
+  const restore = installFakeCloudflare(state);
+  let result: Awaited<ReturnType<typeof runEmailSetup>>;
+  try {
+    result = await runEmailSetup(setupOpts);
+  } finally {
+    restore();
+  }
+  assert.ok(
+    !(state.calls ?? []).some(
+      (c) => c.path === "/zones/z1/email/routing/dns" && c.method !== "GET",
+    ),
+  );
+  assert.equal(result.subdomain, undefined);
+});
+
+await expect("re-running on CF's trailing-dot MX leaves the records alone", async () => {
+  const recommended = [57, 29, 12].map((priority, i) => ({
+    id: "",
+    type: "MX",
+    name: "example.com",
+    content: `route${i + 1}.mx.cloudflare.net.`,
+    priority,
+  }));
+  const state: FakeCloudflareState = { records: [], routingEnabled: true, recommended };
+  const restore = installFakeCloudflare(state);
+  let second: Awaited<ReturnType<typeof runEmailSetup>>;
+  try {
+    await runEmailSetup(setupOpts);
+    second = await runEmailSetup(setupOpts);
+  } finally {
+    restore();
+  }
+  assert.equal(state.records.filter((r) => r.type === "MX").length, 3);
+  assert.ok(second.dnsRecords.every((r) => !r.created && !r.updated));
+});
+
+await expect(
+  "destroy stops routing for the registered hostname, and never for the apex",
+  async () => {
+    assert.equal(isStrictlyBelow("mail.example.com", "example.com"), true);
+    assert.equal(isStrictlyBelow("Mail.Example.com.", "example.com"), true);
+    assert.equal(isStrictlyBelow("example.com", "example.com"), false);
+    assert.equal(isStrictlyBelow("badexample.com", "example.com"), false);
+    assert.equal(isStrictlyBelow("example.com", ""), false);
+
+    getStore().set("providers.dns", { status: "configured", provider: "cloudflare" });
+    await setSecret(SECRET_KEYS.cloudflareOperatorToken, "t");
+    const state: FakeCloudflareState = {
+      records: lockedMx("mail.example.com"),
+      routingEnabled: true,
+      subdomains: [{ name: "mail.example.com", enabled: true, status: "ready" }],
+      calls: [],
+    };
+    const ledger = RunLedger.start("email-subdomain-undo");
+    ledger.record({
+      kind: "cloudflareEmailRoutingSubdomain",
+      zoneId: "z1",
+      zoneName: "example.com",
+      name: "example.com",
+    });
+    ledger.record({
+      kind: "cloudflareEmailRoutingSubdomain",
+      zoneId: "z1",
+      zoneName: "example.com",
+      name: "mail.example.com",
+    });
+    const restore = installFakeCloudflare(state);
+    try {
+      await runRollback(ledger, { yes: true });
+    } finally {
+      restore();
+    }
+    const deletes = (state.calls ?? []).filter(
+      (c) => c.method === "DELETE" && c.path === "/zones/z1/email/routing/dns",
+    );
+    assert.deepEqual(
+      deletes.map((c) => c.body),
+      [{ name: "mail.example.com" }],
+    );
+    assert.deepEqual(state.subdomains, []);
+    assert.equal(state.records.length, 0, "Cloudflare's locked MX go with the name");
+    // The refused apex step stays in the ledger for a human to look at.
+    assert.deepEqual(
+      RunLedger.load("email-subdomain-undo")?.steps.map((s) => (s as { name?: string }).name),
+      ["example.com"],
+    );
+  },
+);
+
+await expect("email setup records its forwarding in the project manifest", () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-setup-manifest-"));
+  try {
+    writeFileSync(
+      join(dir, ".hatchkit.json"),
+      JSON.stringify({
+        ...COB,
+        name: "app",
+        domain: "app.example.com",
+        integrations: {
+          email: {
+            domain: "app.example.com",
+            configuredAt: "x",
+            destinationEmail: "me@example.org",
+            addresses: ["support"],
+            addressDestinations: { support: "help@example.org" },
+          },
+        },
+      }),
+    );
+    const result = {
+      domain: "app.example.com",
+      rules: [
+        { address: "privacy@app.example.com", id: "1", created: true, updated: false },
+        { address: "support@app.example.com", id: "2", created: false, updated: false },
+      ],
+      destination: { record: { id: "d1", email: "me@example.org" } },
+    } as never;
+    recordEmailSetup(dir, result);
+    const email = readManifest(dir)?.integrations?.email;
+    assert.deepEqual(email?.addresses, ["support", "privacy"]);
+    assert.deepEqual(email?.addressDestinations, { support: "help@example.org" });
+    assert.equal(email?.catchAll, false);
+
+    // Another domain's setup leaves the manifest alone.
+    recordEmailSetup(dir, { ...(result as object), domain: "other.example.com" } as never);
+    assert.equal(readManifest(dir)?.integrations?.email?.domain, "app.example.com");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 // ---------------------------------------------------------------------------
 
