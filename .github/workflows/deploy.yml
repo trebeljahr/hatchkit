@@ -81,6 +81,11 @@ jobs:
         working-directory: docs
         env:
           NEXT_PUBLIC_BUILD_COMMIT: ${{ github.sha }}
+          # The loader in docs/app/layout.tsx stays off unless both are set,
+          # and only beacons on this hostname. Unset since 866544a, so the
+          # docs sent no pageviews from 2026-05-14 on.
+          NEXT_PUBLIC_PLAUSIBLE_DOMAIN: hatchkit.trebeljahr.com
+          NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL: https://plausible.trebeljahr.com/js/script.file-downloads.hash.outbound-links.pageview-props.revenue.tagged-events.js
         # --ignore-workspace: docs/ is its own project (docs/.npmrc), but pnpm
         # finds the root pnpm-workspace.yaml first and installs cli/ + mcp/
         # instead. The Docker build never saw this: it copied docs/ alone.
