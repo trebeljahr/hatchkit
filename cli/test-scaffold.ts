@@ -45,12 +45,12 @@ process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-${process.pid}`;
 // the real user's Caddy setup. Cleaned up at the end of the run
 // alongside HATCHKIT_CONF_DIR.
 process.env.HATCHKIT_DEV_CONFIG_DIR = mkdtempSync(join(tmpdir(), "scaffold-devdir-"));
-// enableProjectLocalDev asks `tailscale status --json` for the machine
-// name it writes into docs/dev-setup.md. A fake on PATH answers instead
-// of the local daemon, so the docs do not depend on whether this
-// machine's tailnet is up (setup.mjs refuses a real tailscale). It logs
-// each call, refuses anything but the two status reads, and fails like
-// an offline daemon while its state file says "stopped".
+// The localDev cases must never reach the local Tailscale daemon. A fake
+// on PATH answers any read instead (setup.mjs refuses a real tailscale),
+// and reports a machine name docs/dev-setup.md must NOT contain: projects
+// commit that file, often publicly. It logs each call, refuses anything
+// but the two status reads, and fails like an offline daemon while its
+// state file says "stopped".
 const fakeTailscaleDir = mkdtempSync(join(tmpdir(), "scaffold-tailscale-"));
 const fakeTailscale = {
   host: "fake-mac.tail0000.ts.net",
@@ -3755,9 +3755,10 @@ console.log("\n── adopt: gitignore + private-key guard ───────
         ["scaffold returns localDev info", result.localDev?.slug === slug],
         ["scaffold returns derived localDev domain", result.localDev?.domain === "local.example.com"],
         [
-          "docs name the tailnet host the fake tailscale reports",
-          docs.includes(`CNAME to ${fakeTailscale.host}?`),
+          "docs name a placeholder tailnet host",
+          docs.includes("CNAME to <your-machine>.<tailnet>.ts.net?"),
         ],
+        ["docs name no machine", !docs.includes(fakeTailscale.host)],
         ["fragment exists at projects/<slug>.caddy", existsSync(fragmentPath)],
         [
           `fragment proxies the client dev port (${result.ports.client})`,
@@ -4136,8 +4137,8 @@ console.log("\n── adopt: gitignore + private-key guard ───────
     }
   })();
 
-  // Case 8: Tailscale stopped. Enable still wires the project; the docs
-  // name a placeholder host instead of a machine.
+  // Case 8: Tailscale stopped. Enable still wires the project, with the
+  // same machine-neutral docs as when the daemon is up.
   results.localDevTailscaleStopped = await (async () => {
     const d = mkdtempSync(join(tmpdir(), "scaffold-localdev-ts-down-"));
     const slug = `ld-ts-down-${process.pid}`;
@@ -4174,14 +4175,14 @@ console.log("\n── adopt: gitignore + private-key guard ───────
     }
   })();
 
-  // Every local-dev case above asked the fake, and only read from it.
-  // `tailscale serve --bg …` (dev-setup init) would change the real
-  // daemon's config.
+  // The local-dev cases above may not ask Tailscale anything; whatever
+  // they ask must be a read. `tailscale serve --bg …` (dev-setup init)
+  // would change the real daemon's config.
   results.localDevTailscaleReadOnly = (() => {
     console.log("\n── localDev: Tailscale only read ──────────────────");
     const calls = readFileSync(fakeTailscale.calls, "utf-8").split("\n").filter(Boolean);
+    console.log(`  ${calls.length} call(s) to the fake tailscale`);
     const checks: Check[] = [
-      ["fake tailscale answered the status reads", calls.includes("status --json")],
       [
         "no call beyond `status --json` / `serve status --json`",
         calls.every((c) => c === "status --json" || c === "serve status --json"),

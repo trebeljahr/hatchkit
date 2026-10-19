@@ -1070,11 +1070,7 @@ export async function enableProjectLocalDev(
   const wroteFragment = writeProjectFragment(input.slug, input.devPort, localDevDomain);
 
   const docsPath = join(input.projectDir, "docs", "dev-setup.md");
-  const docsContent = renderDevSetupDocs({
-    slug: input.slug,
-    localDevDomain,
-    tailscale: await tailscaleIdentity(),
-  });
+  const docsContent = renderDevSetupDocs({ slug: input.slug, localDevDomain });
   let wroteDocs = false;
   if (!existsSync(docsPath) || readFileSync(docsPath, "utf-8") !== docsContent) {
     const docsDir = join(input.projectDir, "docs");
@@ -1442,16 +1438,17 @@ function patchPluginPackageJsonDep(
 // Per-project docs/dev-setup.md renderer
 // ---------------------------------------------------------------------------
 
+// Projects commit this file, often to public repos, so it names no
+// machine: the developer's `<machine>.tail<id>.ts.net` would leak their
+// tailnet. Readers run `tailscale status` for their own.
 export interface DevSetupDocsInput {
   slug: string;
   localDevDomain?: string;
-  tailscale?: TailscaleIdentity | null;
 }
 
 export function renderDevSetupDocs(input: DevSetupDocsInput): string {
   const localDevDomain = normaliseLocalDevDomain(input.localDevDomain) ?? LOCAL_DEV_DOMAIN;
   const wildcard = `*.${localDevDomain}`;
-  const tailnetHostname = input.tailscale?.fullName ?? "<your-machine>.<tailnet>.ts.net";
   const url = localDevUrl(input.slug, localDevDomain);
   return `# Dev URL setup (\`${url}\`)
 
@@ -1490,11 +1487,11 @@ keychain entry as a fallback) — the same token Caddy already needs for
 DNS-01 ACME. Required permissions: \`Zone:DNS:Edit\` + \`Zone:Zone:Read\`
 on the parent zone.
 
-**Why a direct A record instead of a CNAME to ${tailnetHostname}?**
-A CNAME to a \`.ts.net\` name only resolves when each peer has
-Tailscale's MagicDNS resolver in front of its public DNS. iOS's stub
-resolver caches NXDOMAIN for the intermediate lookup, so phone requests
-silently fail. Pointing the wildcard at the laptop's tailnet IP makes
+**Why a direct A record instead of a CNAME to <your-machine>.<tailnet>.ts.net?**
+(\`tailscale status\` prints your machine's name.) A CNAME to a
+\`.ts.net\` name only resolves when each peer has Tailscale's MagicDNS
+resolver in front of its public DNS. iOS's stub resolver caches NXDOMAIN
+for the intermediate lookup, so phone requests silently fail. Pointing the wildcard at the laptop's tailnet IP makes
 the resolution a single hop — tailnet peers reach the laptop, anyone
 else gets a useless 100.x address (intended).
 
