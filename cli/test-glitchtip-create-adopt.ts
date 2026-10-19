@@ -47,9 +47,13 @@ process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-glitchtip-create-adopt-${pr
 
 const { getStore } = await import("./src/config.js");
 const { setSecret, clearAllSecrets, SECRET_KEYS } = await import("./src/utils/secrets.js");
-const { DSN_DELIVERY_STEP_KEY, deliverProvisionedDsn, dsnDeliveryFollowUp } = await import(
-  "./src/provision/glitchtip-delivery.js"
-);
+const {
+  DSN_DELIVERY_STEP_KEY,
+  deliverProvisionedDsn,
+  dsnDeliveryFollowUp,
+  readGlitchtipDsnFromEnv,
+} = await import("./src/provision/glitchtip-delivery.js");
+const { writeProdEnv } = await import("./src/provision/write-env.js");
 const { deferralForStep, persistDeferredSteps, readDeferredSteps } = await import(
   "./src/provision/deferrals.js"
 );
@@ -295,6 +299,29 @@ await check("adopt: after its repo, Coolify wiring and provisioning", () => {
   assert.match(body, /caveats\.push\(\{\s*title: "GlitchTip DSN not delivered to production"/);
 });
 
+await check(
+  "adopt --resume: a skipped GlitchTip is read from the env files, then delivered",
+  () => {
+    const body = bodyOf(
+      readFileSync(join(HERE, "src/adopt.ts"), "utf-8"),
+      "async function executePlan(",
+    );
+    assertOrder(body, [
+      "const resumeServices = filterServicesForResume(",
+      "if (resumeServices.length > 0) {",
+      "provisionedGlitchtip = provisionResult.glitchtip;",
+      '!resumeServices.includes("glitchtip")',
+      "await readGlitchtipDsnFromEnv(",
+      "await deliverProvisionedDsn(",
+    ]);
+    // Delivery sits after the block that only runs when something is left
+    // to provision, so a resume that provisions nothing still delivers.
+    const block = body.slice(body.indexOf("if (resumeServices.length > 0) {"));
+    const closing = block.indexOf("provisionedGlitchtip = provisionResult.glitchtip;\n    }");
+    assert.ok(closing > 0 && closing < block.indexOf("await deliverProvisionedDsn("));
+  },
+);
+
 await check("add, create and adopt share the delivery call", () => {
   const index = readFileSync(join(HERE, "src/index.ts"), "utf-8");
   assert.match(bodyOf(index, "async function handleAdd("), /await deliverProvisionedDsn\(/);
@@ -474,6 +501,116 @@ await check("another project's manifest further up is not used", async () => {
   assert.equal(coolifyWrites.length, 0);
   assert.equal(coolifyApps.parent.SENTRY_DSN, "");
   assert.match(r.followUp?.reason ?? "", /no \.hatchkit\.json to find the server app from/);
+});
+
+// ── 5. adopt --resume reads the DSN from .env.production ─────────────
+
+console.log("\n── 5. adopt --resume ──");
+
+const WRONG_HOST = "https://oldkey@glitchtip.example.com/8";
+const SENTRY_IO = "https://abc@o1.ingest.sentry.io/42";
+
+/** An adopted project whose GlitchTip names are already in its
+ *  encrypted .env.production (so the resume filter skipped GlitchTip). */
+function adoptedProject(name: string, env: Record<string, string>): string {
+  const dir = makeProject(name);
+  writeProdEnv(
+    join(dir, ".env.production"),
+    Object.entries(env).map(([key, value]) => ({ key, value })),
+  );
+  return dir;
+}
+
+function readEnvDsn(dir: string, name: string, extra: Record<string, unknown> = {}) {
+  return readGlitchtipDsnFromEnv({
+    project: name,
+    projectDir: dir,
+    serverEnvPath: join(dir, ".env.production"),
+    clientEnvPath: join(dir, ".env.production"),
+    glitchtipUrl: GT,
+    ...extra,
+  });
+}
+
+await check("the 2026-10-19 shape: SENTRY_DSN wins over an example.com GLITCHTIP_DSN", async () => {
+  const dir = adoptedProject("resumed", {
+    GLITCHTIP_DSN: WRONG_HOST,
+    SENTRY_DSN: DSN,
+    PUBLIC_GLITCHTIP_DSN: CLIENT_DSN,
+  });
+  const fromEnv = await readEnvDsn(dir, "resumed");
+  assert.deepEqual(fromEnv, { server: DSN, client: CLIENT_DSN, problems: [] });
+  // What adopt then does with it.
+  coolifyApps = { resumed: { SENTRY_DSN: "" } };
+  resetGh();
+  const r = await deliverProvisionedDsn({
+    project: "resumed",
+    projectDir: dir,
+    ...fromEnv,
+    write: true,
+    log: () => {},
+  });
+  assert.equal(r.followUp, null);
+  assert.equal(coolifyApps.resumed.SENTRY_DSN, DSN);
+  assert.equal(ghVar("NEXT_PUBLIC_SENTRY_DSN"), CLIENT_DSN);
+});
+
+await check("two DSNs on this GlitchTip: the one the server reads wins", async () => {
+  const dir = adoptedProject("tie", {
+    GLITCHTIP_DSN: "https://oldkey@glitchtip.test/8",
+    SENTRY_DSN: DSN,
+  });
+  const fromEnv = await readEnvDsn(dir, "tie", { clientEnvPath: null });
+  assert.deepEqual(fromEnv, { server: DSN, problems: [] });
+});
+
+await check("only wrong-host DSNs: nothing to deliver, the problem names hosts only", async () => {
+  const dir = adoptedProject("wronghost", {
+    GLITCHTIP_DSN: WRONG_HOST,
+    PUBLIC_GLITCHTIP_DSN: WRONG_HOST,
+  });
+  const fromEnv = await readEnvDsn(dir, "wronghost");
+  assert.equal(fromEnv.server, undefined);
+  assert.equal(fromEnv.client, undefined);
+  assert.equal(fromEnv.problems.length, 2);
+  assert.match(
+    fromEnv.problems[0],
+    /^GLITCHTIP_DSN in \.env\.production points at glitchtip\.example\.com, not glitchtip\.test/,
+  );
+  assert.ok(!fromEnv.problems.join(" ").includes("oldkey"), "no DSN in the problem");
+});
+
+await check("without a configured GlitchTip only hatchkit's own name counts", async () => {
+  const dir = adoptedProject("nourl", { SENTRY_DSN: SENTRY_IO, GLITCHTIP_DSN: DSN });
+  const fromEnv = await readEnvDsn(dir, "nourl", { glitchtipUrl: null, clientEnvPath: null });
+  assert.deepEqual(fromEnv, { server: DSN, problems: [] });
+});
+
+await check("no .env.keys: the key comes from the keychain", async () => {
+  const dir = adoptedProject("keychain", { GLITCHTIP_DSN: DSN });
+  const keys = readFileSync(join(dir, ".env.keys"), "utf-8");
+  const key = /DOTENV_PRIVATE_KEY_PRODUCTION="?([0-9a-f]+)/.exec(keys)?.[1];
+  assert.ok(key);
+  rmSync(join(dir, ".env.keys"));
+  await setSecret(SECRET_KEYS.dotenvxPrivateKey("keychain"), key);
+  const fromEnv = await readEnvDsn(dir, "keychain", { clientEnvPath: null });
+  assert.deepEqual(fromEnv, { server: DSN, problems: [] });
+});
+
+await check("no key anywhere: a problem, never the ciphertext", async () => {
+  const dir = adoptedProject("nokey", { GLITCHTIP_DSN: DSN });
+  rmSync(join(dir, ".env.keys"));
+  const fromEnv = await readEnvDsn(dir, "nokey", { clientEnvPath: null });
+  assert.equal(fromEnv.server, undefined);
+  assert.deepEqual(fromEnv.problems, [
+    "couldn't decrypt .env.production: no DOTENV_PRIVATE_KEY_PRODUCTION in .env.keys or the keychain",
+  ]);
+});
+
+await check("a side without an env file is skipped quietly", async () => {
+  const dir = makeProject("nofile");
+  const fromEnv = await readEnvDsn(dir, "nofile");
+  assert.deepEqual(fromEnv, { problems: [] });
 });
 
 // ── teardown ─────────────────────────────────────────────────────────

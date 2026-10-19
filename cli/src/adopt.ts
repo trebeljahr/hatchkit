@@ -2732,6 +2732,7 @@ async function executePlan(
       );
     }
 
+    let provisionedGlitchtip: Awaited<ReturnType<typeof runProvision>>["glitchtip"];
     if (resumeServices.length > 0) {
       console.log();
       const provisionResult = await runProvision({
@@ -2890,31 +2891,65 @@ async function executePlan(
           recovery: [step.command, ...(step.hint ?? [])],
         });
       }
+      provisionedGlitchtip = provisionResult.glitchtip;
+    }
 
-      // Step 4-dsn: GlitchTip DSN → Coolify SENTRY_DSN on the server app
-      // and the NEXT_PUBLIC_SENTRY_DSN repo variable. The env files alone
-      // don't reach production: the compose file gives Coolify an EMPTY
-      // SENTRY_DSN, which hides .env.production, and the client build
-      // reads the repo variable. Steps 3 and 3b made the repo and the
-      // app, so both exist by now unless the plan skipped them; then the
-      // delivery says what's left and it lands in the caveats. See
-      // provision/glitchtip-delivery.ts.
-      if (provisionResult.glitchtip) {
-        const { deliverProvisionedDsn } = await import("./provision/glitchtip-delivery.js");
-        const { followUp } = await deliverProvisionedDsn({
-          project: plan.name,
-          projectDir: provisionResult.glitchtip.projectDir ?? state.projectDir,
-          server: provisionResult.glitchtip.server,
-          client: provisionResult.glitchtip.client,
-          write: true,
+    // Step 4-dsn: GlitchTip DSN → Coolify SENTRY_DSN on the server app
+    // and the NEXT_PUBLIC_SENTRY_DSN repo variable. The env files alone
+    // don't reach production: the compose file gives Coolify an EMPTY
+    // SENTRY_DSN, which hides .env.production, and the client build
+    // reads the repo variable. Steps 3 and 3b made the repo and the
+    // app, so both exist by now unless the plan skipped them; then the
+    // delivery says what's left and it lands in the caveats. See
+    // provision/glitchtip-delivery.ts.
+    //
+    // A resume that skipped GlitchTip above (its names are already in
+    // .env.production) provisioned nothing, so the DSN comes from those
+    // files. That is what repairs a project adopted before adopt
+    // delivered, or whose delivery failed last time.
+    const glitchtipSkippedOnResume =
+      opts.resume === true &&
+      plan.services.includes("glitchtip") &&
+      !resumeServices.includes("glitchtip");
+    if (!provisionedGlitchtip && glitchtipSkippedOnResume) {
+      const { readGlitchtipDsnFromEnv } = await import("./provision/glitchtip-delivery.js");
+      const fromEnv = await readGlitchtipDsnFromEnv({
+        project: plan.name,
+        projectDir: state.projectDir,
+        serverEnvPath: plan.serverDir ? join(plan.serverDir, ".env.production") : null,
+        clientEnvPath: plan.clientDir ? join(plan.clientDir, ".env.production") : null,
+      });
+      if (fromEnv.problems.length > 0) {
+        console.log(chalk.yellow(`\n  ! GlitchTip DSN: ${fromEnv.problems.join("; ")}`));
+        caveats.push({
+          title: "GlitchTip DSN not delivered to production",
+          reason: fromEnv.problems.join("; "),
+          recovery: [`hatchkit add ${plan.name} glitchtip --adopt`],
         });
-        if (followUp) {
-          caveats.push({
-            title: "GlitchTip DSN not delivered to production",
-            reason: followUp.reason,
-            recovery: [followUp.command],
-          });
-        }
+      }
+      if (fromEnv.server || fromEnv.client) {
+        provisionedGlitchtip = {
+          server: fromEnv.server,
+          client: fromEnv.client,
+          projectDir: state.projectDir,
+        };
+      }
+    }
+    if (provisionedGlitchtip) {
+      const { deliverProvisionedDsn } = await import("./provision/glitchtip-delivery.js");
+      const { followUp } = await deliverProvisionedDsn({
+        project: plan.name,
+        projectDir: provisionedGlitchtip.projectDir ?? state.projectDir,
+        server: provisionedGlitchtip.server,
+        client: provisionedGlitchtip.client,
+        write: true,
+      });
+      if (followUp) {
+        caveats.push({
+          title: "GlitchTip DSN not delivered to production",
+          reason: followUp.reason,
+          recovery: [followUp.command],
+        });
       }
     }
 

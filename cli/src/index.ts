@@ -5297,7 +5297,10 @@ function printHelp(topic?: HelpTopic): void {
     you want to retry, pass \`--resume\` to re-run over the existing
     manifest. Already-finished steps (encrypted .env, configured
     git origin, existing Coolify app) auto-skip; only the unfinished
-    bits actually run.
+    bits actually run. GlitchTip is skipped when its names are already
+    in .env.production; the resume then reads the DSN from there and
+    still writes ${chalk.cyan("SENTRY_DSN")} on Coolify and the repo variable (only a
+    DSN on the configured GlitchTip host).
 
   ${chalk.bold("--regenerate-pipeline")}
     Re-render the build pipeline files (Dockerfile, docker-compose.yml,

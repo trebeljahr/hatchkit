@@ -58,6 +58,11 @@
  *     before either target exists.
  *   · `hatchkit adopt`, after its provisioning step, which already comes
  *     after the Coolify wiring and the push.
+ *   · `hatchkit adopt --resume` when it skipped GlitchTip because
+ *     `.env.production` already has its names. Nothing was provisioned,
+ *     so the DSN comes from those files (`readGlitchtipDsnFromEnv`). A
+ *     project adopted before adopt delivered, or whose delivery failed,
+ *     is repaired by the resume itself.
  *
  * create and adopt go through `deliverProvisionedDsn`: a target left
  * without the DSN becomes one entry in the flow's own end-of-run list
@@ -67,9 +72,11 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { parse as parseDotenv } from "@dotenvx/dotenvx";
 import chalk from "chalk";
 import { getCoolifyConfig, getGlitchtipConfig } from "../config.js";
+import { locateEnvKeysFile, parsePrivateKeyValue } from "../deploy/keys.js";
 import { findServerAppsForProject } from "../deploy/trusted-origins.js";
 import {
   type ProjectManifest,
@@ -80,6 +87,7 @@ import {
 import { detectRepoSlug } from "../secrets/push.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { exec } from "../utils/exec.js";
+import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
 import { type DeferralKind, resolveDeferredSteps } from "./deferrals.js";
 import { CLIENT_DSN_VAR, SENTRY_DSN_KEY, dsnHostMismatch } from "./glitchtip.js";
 
@@ -339,6 +347,110 @@ export async function deliverProvisionedDsn(
     }
   }
   return { outcomes, followUp };
+}
+
+// ── adopt --resume ───────────────────────────────────────────────────
+
+/** Where a resumed adopt looks for the DSN, per side: the name the
+ *  starter reads first, so when both hold a DSN on this GlitchTip the
+ *  one the app runs with wins; then hatchkit's own, last because
+ *  `readGlitchtipDsnFromEnv` keeps only it when no GlitchTip URL is
+ *  configured. A DSN on another host (the glitchtip.example.com values
+ *  `add` wrote before f49c942) is dropped by the host check, whatever
+ *  its place. */
+const RESUME_DSN_NAMES = {
+  server: [SENTRY_DSN_KEY, "GLITCHTIP_DSN"],
+  client: [CLIENT_DSN_VAR, "PUBLIC_GLITCHTIP_DSN"],
+} as const;
+
+export interface DsnFromEnv {
+  server?: string;
+  client?: string;
+  /** Why a side yields no DSN, one line each. Never holds a value. */
+  problems: string[];
+}
+
+/** The DSNs a project's `.env.production` files hold, for `adopt
+ *  --resume`. Per side, the first name whose value is a DSN on the
+ *  configured GlitchTip host; without a configured URL, only hatchkit's
+ *  own name (`SENTRY_DSN` may belong to another tracker). Values are
+ *  decrypted in memory with the key from `.env.keys` or the keychain,
+ *  and never printed. Never throws. */
+export async function readGlitchtipDsnFromEnv(args: {
+  project: string;
+  projectDir: string;
+  serverEnvPath?: string | null;
+  clientEnvPath?: string | null;
+  /** Test seams. Default: the configured GlitchTip URL, and the
+   *  project's `.env.keys` then its keychain entry. */
+  glitchtipUrl?: string | null;
+  privateKey?: string | null;
+}): Promise<DsnFromEnv> {
+  const out: DsnFromEnv = { problems: [] };
+  const glitchtipUrl =
+    args.glitchtipUrl === undefined
+      ? (await getGlitchtipConfig().catch(() => null))?.url
+      : (args.glitchtipUrl ?? undefined);
+  let cachedKey = args.privateKey;
+  const keyFor = async (envPath: string): Promise<string | undefined> => {
+    if (cachedKey !== undefined) return cachedKey ?? undefined;
+    cachedKey = null;
+    for (const keysPath of [
+      join(dirname(envPath), ".env.keys"),
+      locateEnvKeysFile(args.projectDir),
+    ]) {
+      if (keysPath && existsSync(keysPath)) {
+        cachedKey = parsePrivateKeyValue(readFileSync(keysPath, "utf-8")) ?? null;
+        if (cachedKey) return cachedKey;
+      }
+    }
+    cachedKey =
+      (await getSecret(SECRET_KEYS.dotenvxPrivateKey(args.project)).catch(() => null)) ?? null;
+    return cachedKey ?? undefined;
+  };
+
+  for (const side of ["server", "client"] as const) {
+    const envPath = side === "server" ? args.serverEnvPath : args.clientEnvPath;
+    if (!envPath || !existsSync(envPath)) continue;
+    const file = relative(args.projectDir, envPath) || envPath;
+    try {
+      const text = readFileSync(envPath, "utf-8");
+      const privateKey = await keyFor(envPath);
+      // Without a key dotenvx prints an error per encrypted value; one
+      // line here says the same.
+      if (!privateKey && /^\s*[A-Za-z_]\w*\s*=\s*["']?encrypted:/m.test(text)) {
+        out.problems.push(
+          `couldn't decrypt ${file}: no DOTENV_PRIVATE_KEY_PRODUCTION in .env.keys or the keychain`,
+        );
+        continue;
+      }
+      const env = parseDotenv(text, { privateKey, processEnv: {} }) as Record<string, string>;
+      const names = glitchtipUrl ? RESUME_DSN_NAMES[side] : RESUME_DSN_NAMES[side].slice(-1);
+      const present = names.filter((name) => (env[name] ?? "").trim() !== "");
+      if (present.some((name) => env[name].startsWith("encrypted:"))) {
+        out.problems.push(
+          `couldn't decrypt ${file}: the DOTENV_PRIVATE_KEY_PRODUCTION found doesn't open it`,
+        );
+        continue;
+      }
+      const dsns = present.filter((name) => dsnKey(env[name].trim()) !== undefined);
+      const pick = dsns.find(
+        (name) => !glitchtipUrl || !dsnHostMismatch(env[name].trim(), glitchtipUrl),
+      );
+      if (pick) {
+        out[side] = env[pick].trim();
+      } else if (dsns.length > 0) {
+        out.problems.push(
+          `${dsns.join(" / ")} in ${file} point${dsns.length === 1 ? "s" : ""} at ${hostOf(env[dsns[0]].trim())}, not ${hostOf(glitchtipUrl ?? "")}. If GlitchTip's GLITCHTIP_DOMAIN was wrong, fix it and redeploy GlitchTip`,
+        );
+      } else {
+        out.problems.push(`no GlitchTip DSN under ${names.join(" / ")} in ${file}`);
+      }
+    } catch (err) {
+      out.problems.push(`couldn't read ${file}: ${firstLine(err)}`);
+    }
+  }
+  return out;
 }
 
 // ── Coolify ──────────────────────────────────────────────────────────
