@@ -68,6 +68,10 @@ const FILE_UPLOAD_LIMIT = 95 * 1024 * 1024;
 // Matches the Worker's FILE_CHECK_LIMIT.
 const FILE_CHECK_BATCH = 40;
 const UPLOAD_CONCURRENCY = 6;
+const RETRIES = 3;
+const RETRY_DELAY_MS = Number(process.env.OTA_RETRY_DELAY_MS) || 1000;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const log = (message) => process.stderr.write(`${message}\n`);
 
@@ -161,6 +165,7 @@ async function missingFiles(app, hashes) {
     const res = await api("POST", `/admin/apps/${enc(app)}/files/missing`, {
       body: JSON.stringify({ sha256: hashes.slice(i, i + FILE_CHECK_BATCH) }),
       headers: { "content-type": "application/json" },
+      retries: RETRIES,
     });
     missing.push(...res.missing);
   }
@@ -189,26 +194,44 @@ function capgo(args, cwd) {
   }
 }
 
-async function api(method, path, { body, headers = {} } = {}) {
+async function api(method, path, { body, headers = {}, retries = 0 } = {}) {
   const endpoint = (process.env.OTA_ENDPOINT || DEFAULT_ENDPOINT).replace(/\/+$/, "");
   const token = process.env.OTA_PUBLISH_TOKEN;
   if (!token) throw new UsageError("OTA_PUBLISH_TOKEN is not set");
-  const res = await fetch(endpoint + path, {
-    method,
-    headers: { authorization: `Bearer ${token}`, ...headers },
-    body,
-  });
-  const text = await res.text();
-  let value;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    value = { raw: text };
+  for (let attempt = 0; ; attempt++) {
+    // Only idempotent calls pass `retries`: a delta publish makes hundreds of
+    // requests, and one dropped connection must not fail the whole run.
+    const retry = attempt < retries;
+    let res;
+    try {
+      res = await fetch(endpoint + path, {
+        method,
+        headers: { authorization: `Bearer ${token}`, ...headers },
+        body,
+      });
+    } catch (err) {
+      if (retry) {
+        await sleep(RETRY_DELAY_MS * 2 ** attempt);
+        continue;
+      }
+      throw new Error(`${method} ${path} failed: ${err.cause?.message ?? err.message}`);
+    }
+    const text = await res.text();
+    if (retry && (res.status >= 500 || res.status === 429)) {
+      await sleep(RETRY_DELAY_MS * 2 ** attempt);
+      continue;
+    }
+    let value;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      value = { raw: text };
+    }
+    if (!res.ok) {
+      throw new Error(`${method} ${path} → ${res.status}: ${value.message ?? value.error ?? text}`);
+    }
+    return value;
   }
-  if (!res.ok) {
-    throw new Error(`${method} ${path} → ${res.status}: ${value.message ?? value.error ?? text}`);
-  }
-  return value;
 }
 
 const enc = encodeURIComponent;
@@ -353,6 +376,7 @@ async function publishDelta(values, { cwd, dist, privatePem, keyId }) {
       await api("PUT", `/admin/apps/${enc(values.app)}/files/${sha}`, {
         body: bytes,
         headers: { "content-type": "application/octet-stream", "content-length": String(bytes.length) },
+        retries: RETRIES,
       });
       uploadedBytes += bytes.length;
     });

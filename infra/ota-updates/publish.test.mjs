@@ -31,13 +31,19 @@ let endpoint;
 let appDir;
 let capgoLog;
 let fileUploads;
+let failures;
 
 before(async () => {
   server = createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = chunks.length ? Buffer.concat(chunks) : undefined;
-    if (req.method === "PUT" && req.url.includes("/files/")) fileUploads++;
+    if (req.method === "PUT" && req.url.includes("/files/")) {
+      fileUploads++;
+      // A dropped connection, then a Cloudflare error page.
+      if (failures.drop > 0 && failures.drop--) return req.socket.destroy();
+      if (failures.status > 0 && failures.status--) return res.writeHead(503).end("<html>busy</html>");
+    }
     const request = new Request(`${endpoint}${req.url}`, {
       method: req.method,
       headers: req.headers,
@@ -69,6 +75,7 @@ beforeEach(() => {
   writeFileSync(join(appDir, "public-key.pem"), publicKey);
   capgoLog = join(appDir, "capgo.log");
   fileUploads = 0;
+  failures = { drop: 0, status: 0 };
 });
 
 function publishCli(args, extraEnv = {}) {
@@ -82,6 +89,7 @@ function publishCli(args, extraEnv = {}) {
       OTA_CAPGO_CLI: `${process.execPath} ${join(here, "fake-capgo.mjs")}`,
       FAKE_CAPGO_LOG: capgoLog,
       RUNNER_TEMP: appDir,
+      OTA_RETRY_DELAY_MS: "1",
       ...extraEnv,
     },
   });
@@ -292,6 +300,14 @@ describe("publish.mjs --delta", () => {
     // A rollback to the first version needs no upload at all.
     const back = await publishCli(["rollback", "--app", APP, "--channel", "beta", "--native", "1.1.3"]);
     assert.equal(JSON.parse(back.stdout).pointer.version, "1.1.3-ota.4");
+  });
+
+  test("a dropped connection or a 503 during a file upload is retried", async () => {
+    failures = { drop: 1, status: 2 };
+    const result = JSON.parse((await publishCli(DELTA)).stdout);
+    assert.equal(result.uploaded, 2);
+    assert.equal(fileUploads, 5);
+    assert.equal((await deviceCheck()).version, "1.1.3-ota.4");
   });
 
   test("delta mode runs no Capgo CLI and writes no key file", async () => {
