@@ -487,6 +487,20 @@ undone. Every step is recorded under the hatchkit config directory, so
 It refuses apps with a datastore service or a volume, apps that publish host
 ports, and apps that never deployed.
 
+### Where the Traefik checks go
+
+The checks send a GET straight to Traefik, with the hostname as the `Host`
+header. Hatchkit uses the first address that applies:
+
+1. `HATCHKIT_TRAEFIK_ADDRESS`, an IP address or hostname you set.
+2. The tailnet IPv4 of the backup host (`providers.backups.host`, read with
+   `tailscale ip -4`), when that host is the app's Coolify server.
+3. The server's public IPv4.
+
+The run prints the address it uses. `--dry-run` also sends one GET there and
+prints Traefik's answer. A server that accepts 80/443 only from Cloudflare
+drops a request to its public IPv4, so it needs option 1 or 2.
+
 ### Carry a named volume
 
 Some apps keep their state in a file. A SQLite database in a Docker volume is

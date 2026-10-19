@@ -82,6 +82,7 @@ import {
   planRuntimeMigration,
 } from "./migrate-runtime-plan.js";
 import { type RoutedApp, computeRoutingPlan, projectImageApp } from "./routing.js";
+import { TRAEFIK_ADDRESS_ENV, traefikAddressFor } from "./traefik-address.js";
 
 export interface MigrateRuntimeOptions {
   /** Coolify app names or uuids. Empty → the compose apps of the
@@ -391,7 +392,10 @@ export async function runMigrateRuntime(opts: MigrateRuntimeOptions): Promise<bo
       allOk = false;
       continue;
     }
-    if (opts.dryRun) continue;
+    if (opts.dryRun) {
+      allOk = (await checkTraefikReachable(api, plan)) && allOk;
+      continue;
+    }
     if (!opts.yes) {
       const go = await confirm({
         message:
@@ -564,6 +568,63 @@ function renderPlan(plan: RuntimeMigrationPlan): void {
 // Migrate
 // ---------------------------------------------------------------------------
 
+/** Dry run: the address the real run verifies through, and whether
+ *  Traefik answers there for each app's public hostname. One GET of the
+ *  readiness path per app; nothing is changed. False where the real run
+ *  would refuse the cutover for want of a reachable Traefik. */
+export async function checkTraefikReachable(
+  api: CoolifyApi,
+  plan: RuntimeMigrationPlan,
+  dependencies: Partial<
+    Pick<MigrationDependencies, "discoverPublicIps" | "traefikAddressFor" | "probeViaHost">
+  > = {},
+): Promise<boolean> {
+  const run = { discoverPublicIps, traefikAddressFor, probeViaHost, ...dependencies };
+  const source = await api.getApplication(plan.source.uuid);
+  if (!source.serverUuid) {
+    console.log(chalk.red("  Couldn't resolve the Coolify server this app lives in."));
+    return false;
+  }
+  const serverIp = (await api.listServers()).find((s) => s.uuid === source.serverUuid)?.ip ?? "";
+  const ips = await run
+    .discoverPublicIps(api, source.serverUuid, serverIp)
+    .catch(() => ({}) as { v4?: string });
+  if (!ips.v4) {
+    console.log(
+      chalk.red("  No public IPv4 address for a private verification host; the run would refuse."),
+    );
+    return false;
+  }
+  const traefik = await run.traefikAddressFor(source.serverUuid, ips.v4);
+  if (!traefik.ok) {
+    console.log(chalk.red(`  ${traefik.reason} The run would refuse the cutover.`));
+    return false;
+  }
+  let ok = true;
+  for (const app of plan.apps) {
+    const url = publicProbeUrls(app)[0];
+    if (!url) continue;
+    const host = new URL(url).host;
+    const status = await run.probeViaHost(traefik.address, host, app.healthCheck.path);
+    if (status === null) {
+      console.log(
+        chalk.red(
+          `  Traefik does not answer at ${traefik.address} (${traefik.detail}) for ${host}; the run would refuse the cutover.\n` +
+            `  Point it at a reachable address: ${TRAEFIK_ADDRESS_ENV}=<ip> hatchkit migrate-runtime …`,
+        ),
+      );
+      ok = false;
+      continue;
+    }
+    console.log(
+      chalk.dim(
+        `  Traefik answers at ${traefik.address} (${traefik.detail}): Host ${host} GET ${app.healthCheck.path} → ${status}`,
+      ),
+    );
+  }
+  return ok;
+}
+
 export async function migrate(
   api: CoolifyApi,
   coolifyUrl: string,
@@ -581,6 +642,7 @@ export async function migrate(
     ghSecretExists,
     readJson,
     readJsonViaHost,
+    traefikAddressFor,
     ...dependencies,
   };
   if (plan.apps.some((app) => app.sourceImage) && !opts.keepLiveTag) {
@@ -683,6 +745,12 @@ export async function migrate(
     );
     return false;
   }
+  const traefik = await run.traefikAddressFor(source.serverUuid, ips.v4);
+  if (!traefik.ok) {
+    console.log(chalk.red(`  ${traefik.reason} Refusing an unverified cutover.`));
+    return false;
+  }
+  console.log(chalk.dim(`  Traefik checks go to ${traefik.address} (${traefik.detail})`));
 
   const verificationToken = randomUUID().slice(0, 8);
   const verificationHost = (index: number, stage: "verify" | "activate") =>
@@ -892,13 +960,13 @@ export async function migrate(
 
     if (verifyHost && ips.v4) {
       const status = await run.waitFor(
-        () => run.probeViaHost(ips.v4 as string, verifyHost, app.healthCheck.path),
+        () => run.probeViaHost(traefik.address, verifyHost, app.healthCheck.path),
         (s) => s === 200,
         60_000,
       );
       if (!status) {
         return abort(
-          `${app.appName} is healthy inside its container but Traefik doesn't route to it (http://${verifyHost}${app.healthCheck.path}). Wrong port?`,
+          `${app.appName} is healthy inside its container but Traefik doesn't route to it (http://${verifyHost}${app.healthCheck.path} via ${traefik.address}). Wrong port?`,
         );
       }
       console.log(
@@ -913,7 +981,7 @@ export async function migrate(
       const got = await run.waitFor(
         async () =>
           jsonField(
-            await run.readJsonViaHost(ips.v4 as string, verifyHost, check.path),
+            await run.readJsonViaHost(traefik.address, verifyHost, check.path),
             check.field,
           ) ?? null,
         (value) => value !== null,
@@ -949,7 +1017,7 @@ export async function migrate(
       if (outcome !== "finished")
         return abort(`Activating production routes for ${app.appName}: ${outcome}`);
       const routed = await run.waitFor(
-        () => run.probeViaHost(ips.v4 as string, verifyHost, app.healthCheck.path),
+        () => run.probeViaHost(traefik.address, verifyHost, app.healthCheck.path),
         (status) => status === 200,
         60_000,
       );
@@ -1625,6 +1693,7 @@ interface MigrationDependencies {
   ghSecretExists: typeof ghSecretExists;
   readJson: typeof readJson;
   readJsonViaHost: typeof readJsonViaHost;
+  traefikAddressFor: typeof traefikAddressFor;
 }
 
 /** GET `url` and parse a 2xx body as JSON; null for anything else. */

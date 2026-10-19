@@ -5446,6 +5446,15 @@ function printHelp(topic?: HelpTopic): void {
                                   A difference stops the run with the compose app serving
     --dir <path>                  Project directory (default: cwd)
 
+  ${chalk.bold("Traefik checks")} send each readiness GET straight to Traefik, with the
+  app's hostname as the Host header. The address, first that applies:
+    1. ${chalk.cyan("HATCHKIT_TRAEFIK_ADDRESS")}=<ip|host>   an explicit choice
+    2. the tailnet IPv4 of the backup host (${chalk.dim("providers.backups.host")}, read with
+       ${chalk.dim("tailscale ip -4")}) when that host is this app's Coolify server
+    3. the server's public IPv4
+  The run prints the one it uses; --dry-run also checks that Traefik answers
+  there. A server whose public 80/443 accept only Cloudflare needs 1 or 2.
+
   A compose \`cap_drop\` is carried over as Coolify run options (\`--cap-drop=…\`).
 
   With --image, retain the old image digest in the legacy Compose file and pin

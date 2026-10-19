@@ -45,6 +45,7 @@
   "test-split-readiness.ts",
   "test-runtime-cutover.ts",
   "test-runtime-carry-volume.ts",
+  "test-traefik-address.ts",
   "test-doctor-rolling.ts",
   "test-shutdown-drain.ts",
   "test-deployed-ref.ts",

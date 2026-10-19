@@ -19,6 +19,7 @@ import {
   runMigrateRuntimeCli,
   setManifestRuntime,
 } from "./src/deploy/migrate-runtime.js";
+import type { TraefikAddress } from "./src/deploy/traefik-address.js";
 import type { CoolifyApi } from "./src/utils/coolify-api.js";
 
 const dir = mkdtempSync(join(tmpdir(), "hatchkit-cutover-"));
@@ -61,6 +62,7 @@ function fixture(
   const configured = new Map<string, string[]>();
   const deployed = new Map<string, string[]>();
   const states = new Map([["old", "running:healthy"]]);
+  const probed: { ip: string; host: string }[] = [];
   let ledger: MigrationLedger | undefined;
   let seq = 0;
   const api = {
@@ -141,6 +143,9 @@ function fixture(
     async discoverPublicIps() {
       return { v4: "192.0.2.1" };
     },
+    async traefikAddressFor(): Promise<TraefikAddress> {
+      return { ok: true, address: "100.64.0.7", source: "tailnet", detail: "tailnet address" };
+    },
     saveLedger(value: MigrationLedger) {
       ledger = structuredClone(value);
       calls.push(`ledger:${value.phase}`);
@@ -148,7 +153,8 @@ function fixture(
     async probeStatus() {
       return states.get("old") === "exited" ? (settings.publicAfter ?? 200) : 200;
     },
-    async probeViaHost(_ip: string, host: string) {
+    async probeViaHost(ip: string, host: string) {
+      probed.push({ ip, host });
       return [...deployed].some(
         ([uuid, domains]) =>
           states.get(uuid)?.startsWith("running") && domains.includes(`http://${host}`),
@@ -174,7 +180,7 @@ function fixture(
       return done(value) ? value : null;
     },
   };
-  return { api, deps, calls, configured, deployed, states, ledger: () => ledger };
+  return { api, deps, calls, configured, deployed, states, probed, ledger: () => ledger };
 }
 
 try {
@@ -267,6 +273,28 @@ try {
       "rollback state is durable before stopping source",
     );
     assert.equal(f.ledger()?.phase, "cut-over");
+    assert.ok(f.probed.length > 0);
+    assert.ok(
+      f.probed.every((p) => p.ip === "100.64.0.7"),
+      "Traefik probes go to the resolved address, not the public IPv4",
+    );
+    assert.ok(
+      f.probed.every((p) => p.host.endsWith(".192.0.2.1.sslip.io")),
+      "the private verification host still embeds the public IPv4",
+    );
+  }
+  {
+    const f = fixture();
+    assert.equal(
+      await migrate(f.api, "https://coolify.example", basePlan(), options, {
+        ...f.deps,
+        async traefikAddressFor(): Promise<TraefikAddress> {
+          return { ok: false, reason: "HATCHKIT_TRAEFIK_ADDRESS is not an IP address." };
+        },
+      }),
+      false,
+    );
+    assert.deepEqual(f.calls, [], "no reachable Traefik refuses before any change");
   }
   {
     const f = fixture();
