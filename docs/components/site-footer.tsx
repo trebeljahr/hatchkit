@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { LEGAL_LINKS } from "@/lib/legal";
 import { ProjectDonateLink } from "./project-donate-link";
 const links = [
   { text: "GitHub", url: "https://github.com/trebeljahr/hatchkit" },
@@ -17,6 +19,11 @@ export function SiteFooter() {
             {link.text}
           </a>
           )
+        ))}
+        {LEGAL_LINKS.map((link) => (
+          <Link key={link.text} href={link.url} className="transition-colors hover:text-fd-foreground">
+            {link.text}
+          </Link>
         ))}
       </nav>
     </footer>
