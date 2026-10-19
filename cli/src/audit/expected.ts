@@ -35,8 +35,6 @@ import {
 } from "./cloudflare.js";
 import { readOperatorRuns } from "./operator-uses.js";
 
-/** The GitHub Actions variable the scheduled check reads. */
-export const EXPECTED_VARIABLE = "HATCHKIT_CLOUDFLARE_EXPECTED";
 /** Run windows older than this are not published. */
 const RUN_HISTORY_MS = 3 * 24 * 60 * 60 * 1000;
 
@@ -53,9 +51,21 @@ export interface CloudflareAuditAccepted {
   oauthApps?: string[];
 }
 
+/** The deployed audit Worker (`hatchkit audit cloudflare deploy`). */
+export interface AuditWorkerConfig {
+  name: string;
+  bucket: string;
+  mailFrom: string;
+  mailTo: string;
+  sesRegion: string;
+  /** Latest deployment id right after hatchkit deployed it. A different
+   *  one later means someone else changed the Worker. */
+  deploymentId?: string;
+  deployedAt?: string;
+}
+
 export interface CloudflareAuditConfig {
-  /** `owner/repo` of the private repo that runs the daily check. */
-  repo?: string;
+  worker?: AuditWorkerConfig;
   accepted?: CloudflareAuditAccepted;
 }
 
@@ -63,13 +73,12 @@ export function getAuditConfig(): CloudflareAuditConfig {
   return (getStore().get("cloudflareAudit") as CloudflareAuditConfig | undefined) ?? {};
 }
 
-export function getAuditRepo(): string | undefined {
-  return getAuditConfig().repo;
+export function getAuditWorker(): AuditWorkerConfig | undefined {
+  return getAuditConfig().worker;
 }
 
-export function setAuditRepo(repo: string): void {
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error(`Not an owner/repo: ${repo}`);
-  getStore().set("cloudflareAudit", { ...getAuditConfig(), repo });
+export function setAuditWorker(worker: AuditWorkerConfig): void {
+  getStore().set("cloudflareAudit", { ...getAuditConfig(), worker });
 }
 
 const LIST_KINDS = {
@@ -265,6 +274,11 @@ export function buildLocalExpected(opts: BuildExpectedOptions): CloudflareExpect
   }
 
   for (const [id, note] of Object.entries(accepted.tokens ?? {})) addToken(id, "accepted", note);
+  const auditWorker = getAuditWorker();
+  if (auditWorker) {
+    workers.add(auditWorker.name);
+    buckets.add(auditWorker.bucket);
+  }
 
   const accountId = getConfiguredCloudflareAccountId() ?? "";
   const since = new Date(opts.now.getTime() - RUN_HISTORY_MS);

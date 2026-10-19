@@ -93,6 +93,13 @@ export const SECRET_KEYS = {
   /** The read-only `hatchkit-audit` user token `hatchkit audit cloudflare`
    *  reads with. Never the operator token; see audit/cloudflare.ts. */
   cloudflareAuditToken: "cloudflare:audit",
+  /** Signs what hatchkit writes to the audit Worker's bucket; the Worker
+   *  holds the same key as a secret. See audit/signed-state.ts. */
+  cloudflareAuditHmacKey: "cloudflare:audit-hmac",
+  /** The audit Worker's own SES key: ses:SendEmail from one address to
+   *  Rico only. Not hatchkit's SES admin key (`ses:*` above). */
+  cloudflareAuditSesAccessKeyId: "cloudflare:audit-ses:access-key-id",
+  cloudflareAuditSesSecretAccessKey: "cloudflare:audit-ses:secret-access-key",
   /** @deprecated The ONE Cloudflare token older hatchkit pushed to every
    *  Worker repo as `CLOUDFLARE_API_TOKEN`. Never read for a push any
    *  more; kept so doctor can flag a copy of it and reset can clear it. */
@@ -270,7 +277,7 @@ export async function getCloudflareToken(
     if (slot === SECRET_KEYS.cloudflareOperatorToken) {
       // The daily audit trusts the operator's audit-log entries only
       // inside a recorded run window.
-      (await import("../audit/operator-uses.js")).recordOperatorUse();
+      (await import("../audit/operator-uses.js")).recordOperatorUse(token);
     }
     return { token, source: slot };
   }

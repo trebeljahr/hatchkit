@@ -117,15 +117,16 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   Cloudflare IP ranges that drifted from `HATCHKIT-CF` / Hetzner firewalls /
   the pinned snapshot. One `doctor` row. `install --host <name> [--dry-run]` adds a weekly timer that
   mails findings (production write; ask first). See `cli/src/host/updates.ts`.
-- `hatchkit audit cloudflare [--json|--markdown] [--hours <n>]`: read-only
-  check of the Cloudflare account against what hatchkit created: tokens it
-  has no record of (by id), audit-log entries by the operator token outside a
-  recorded hatchkit run or by an unknown credential, and Workers, buckets,
-  zones, Email Routing, members and OAuth clients nobody accepted. Reads with
-  its own read-only token (`HATCHKIT_CLOUDFLARE_AUDIT_TOKEN` or keychain
-  `cloudflare:audit`), never the operator token. `accept`/`forget` change the
-  local allowlist; `publish` writes the repo variable the daily GitHub Action
-  reads (ask first); `workflow` prints that Action. See `cli/src/audit/`.
+- `hatchkit audit cloudflare [--json] [--hours <n>]`: read-only check of the
+  Cloudflare account against what hatchkit created: tokens it has no record
+  of (by id), audit-log entries by the operator token outside a recorded
+  hatchkit run or by an unknown credential, and Workers, buckets, zones, Email
+  Routing, members and OAuth clients nobody accepted. Reads with its own
+  read-only token (`HATCHKIT_CLOUDFLARE_AUDIT_TOKEN` or keychain
+  `cloudflare:audit`), never the operator token. The Worker `hatchkit-audit`
+  runs it every 6 h and mails through SES only on findings; `deploy` and
+  `publish` write that Worker and its bucket with the operator token (ask
+  first). `accept`/`forget` change the local allowlist. See `cli/src/audit/`.
 - `hatchkit explain --json`: source-of-truth mental model.
 
 Check `hatchkit help <command>` before using flags you have not verified.

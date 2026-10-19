@@ -85,10 +85,10 @@ const MODEL: ExplainModel = {
       when: "`hatchkit doctor` shows it as one row (GitHub read through the local gh login). `install` adds a weekly timer next to the backup runner that mails findings through the backup-alert SMTP; it needs `backup install` and `backup alerts` on that host first. GlitchTip publishes no advisories and is compared with its latest tag only.",
     },
     {
-      name: "hatchkit audit cloudflare [--json|--markdown] [--hours <n>] | accept|forget <kind>:<value> | publish [--repo] | workflow | set-token",
+      name: "hatchkit audit cloudflare [--json] [--hours <n>] | accept|forget <kind>:<value> | deploy --from <addr> [--dry-run] | publish | set-token | set-ses-key | test-mail",
       summary:
         "Read-only check of the Cloudflare account against what hatchkit created: API tokens it has no record of (by id), audit-log entries by the operator token outside a recorded hatchkit run or by an unknown credential, and Workers, R2 buckets, zones, Email Routing destinations and rules, members and OAuth clients nobody accepted.",
-      when: "Runs daily from a GitHub Action in a private repo (`workflow` prints it; a failed run mails Rico) with its own read-only user token `hatchkit-audit`, never the operator token. Run it locally after a scare or before trusting the account. `accept` and `publish` write only the local config and the repo variable HATCHKIT_CLOUDFLARE_EXPECTED.",
+      when: "The Worker hatchkit-audit runs it every 6 h (cron 17 */6 * * *) with its own read-only user token and mails Rico through SES only when something unexpected happened; hatchkit writes the signed expected state and its operator-token run windows to the bucket hatchkit-audit. Run it locally after a scare: it also checks the Worker is still the one hatchkit deployed and ran in the last 8 h. `deploy` and `publish` write with the operator token (ask first); `accept`/`forget` change only the local config.",
     },
     {
       name: "hatchkit migrate-client [--dry-run|--repo-only|--rollback|--cleanup]",

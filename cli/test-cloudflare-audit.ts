@@ -7,9 +7,16 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// Every Cloudflare, R2 and SES call here goes through an injected fetch.
+// Anything that reaches the global one is a bug: fail loudly, never send.
+const POISONED_FETCH = (async (input: unknown) => {
+  throw new Error(`Unexpected network access: ${String(input)}`);
+}) as typeof fetch;
+globalThis.fetch = POISONED_FETCH;
+
 const config = await import("./src/config.js");
 const { getStore, setCloudflareDeployTokenRecord } = config;
-const { SECRET_KEYS, setSecret, deleteSecret, getCloudflareToken } = await import(
+const { SECRET_KEYS, setSecret, deleteSecret, getSecret, getCloudflareToken } = await import(
   "./src/utils/secrets.js"
 );
 const { RunLedger } = await import("./src/utils/run-ledger.js");
@@ -20,7 +27,11 @@ const expectedMod = await import("./src/audit/expected.js");
 const { buildLocalExpected, parseAcceptArg, updateAccepted } = expectedMod;
 const uses = await import("./src/audit/operator-uses.js");
 const command = await import("./src/audit/command.js");
-const { runAuditCommand, renderAuditMarkdown, renderAuditWorkflow, printable } = command;
+const { runAuditCommand } = command;
+const signed = await import("./src/audit/signed-state.js");
+const ses = await import("./src/audit/ses-send.js");
+const worker = await import("./src/audit/worker.js");
+const deploy = await import("./src/audit/deploy.js");
 
 type Snapshot = import("./src/audit/cloudflare.js").CloudflareSnapshot;
 type Expected = import("./src/audit/cloudflare.js").CloudflareExpected;
@@ -648,10 +659,9 @@ async function captureStdout(fn: () => Promise<void>): Promise<string> {
   return out;
 }
 
-const ciEnv = (exp: Expected) => ({
+const envWith = (exp: Expected) => ({
   HATCHKIT_CLOUDFLARE_AUDIT_TOKEN: "audit-token-value",
   HATCHKIT_CLOUDFLARE_EXPECTED: JSON.stringify(exp),
-  GITHUB_ACTIONS: "true",
 });
 
 async function withDeny<T>(fn: () => Promise<T>): Promise<T> {
@@ -664,7 +674,7 @@ async function withDeny<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-await test("CI path: --json, only GETs, only the audit token, paginated, exit 1 on alerts", async () => {
+await test("--json, only GETs, only the audit token, paginated, exit 1 on alerts", async () => {
   await setSecret(SECRET_KEYS.cloudflareOperatorToken, "operator-value");
   const cf = fakeCloudflare();
   process.exitCode = 0;
@@ -673,7 +683,7 @@ await test("CI path: --json, only GETs, only the audit token, paginated, exit 1 
       runAuditCommand(["cloudflare", "--json"], {
         fetch: cf.fetch,
         now: () => NOW,
-        env: ciEnv(expected({ runs: [] })),
+        env: envWith(expected({ runs: [] })),
       }),
     ),
   );
@@ -696,6 +706,10 @@ await test("CI path: --json, only GETs, only the audit token, paginated, exit 1 
     cf.calls.some((c) => c.url.searchParams.get("cursor") === "next"),
     "audit log cursor followed",
   );
+  assert.ok(
+    cf.calls.some((c) => c.url.searchParams.get("action_type.not") === "view"),
+    "views filtered on the server",
+  );
   assert.equal(report.auditTokenId, AUDIT_SELF);
   assert.deepEqual(
     report.findings
@@ -710,28 +724,16 @@ await test("CI path: --json, only GETs, only the audit token, paginated, exit 1 
   );
   await deleteSecret(SECRET_KEYS.cloudflareOperatorToken);
 });
-await test("CI path refuses an empty expected variable instead of using an empty config", async () => {
-  const cf = fakeCloudflare();
-  await assert.rejects(
-    withDeny(() =>
-      runAuditCommand(["cloudflare"], {
-        fetch: cf.fetch,
-        env: {
-          HATCHKIT_CLOUDFLARE_AUDIT_TOKEN: "t",
-          HATCHKIT_CLOUDFLARE_EXPECTED: "",
-          GITHUB_ACTIONS: "true",
-        },
-      }),
-    ),
-    /HATCHKIT_CLOUDFLARE_EXPECTED is empty/,
-  );
-  assert.equal(cf.calls.length, 0);
-});
 await test("no audit token under keychain deny: a clear error and no request", async () => {
   const cf = fakeCloudflare();
   store.set("providers.cloudflare", { status: "configured", accountId: ACCOUNT });
   await assert.rejects(
-    withDeny(() => runAuditCommand(["cloudflare"], { fetch: cf.fetch, env: {} })),
+    withDeny(() =>
+      runAuditCommand(["cloudflare"], {
+        fetch: cf.fetch,
+        env: { HATCHKIT_PROJECTS_ROOTS: "/nonexistent" },
+      }),
+    ),
     /Could not read the audit token/,
   );
   assert.equal(cf.calls.length, 0);
@@ -742,48 +744,28 @@ await test("the operator token is never a fallback for a missing audit token", a
   const cf = fakeCloudflare();
   // Keychain allowed here on purpose: the audit slot is empty, the operator slot is not.
   await assert.rejects(
-    runAuditCommand(["cloudflare"], { fetch: cf.fetch, env: {} }),
+    runAuditCommand(["cloudflare"], {
+      fetch: cf.fetch,
+      env: { HATCHKIT_PROJECTS_ROOTS: "/nonexistent" },
+    }),
     /No Cloudflare audit token/,
   );
   assert.equal(cf.calls.length, 0);
   await deleteSecret(SECRET_KEYS.cloudflareOperatorToken);
-});
-await test("local run: the watchdog alerts when the Action has not run for 36 h", async () => {
-  store.set("providers.cloudflare", { status: "configured", accountId: ACCOUNT });
-  expectedMod.setAuditRepo("o/hatchkit-audit");
-  const cf = fakeCloudflare({
-    [`/accounts/${ACCOUNT}/tokens`]: [],
-    [`/accounts/${ACCOUNT}/logs/audit`]: [],
-  });
-  const report = await withDeny(() =>
-    command.runCloudflareAudit(
-      {},
-      {
-        fetch: cf.fetch,
-        now: () => NOW,
-        env: { HATCHKIT_CLOUDFLARE_AUDIT_TOKEN: "t", HATCHKIT_PROJECTS_ROOTS: "/nonexistent" },
-        lastWorkflowRun: async (repo) => {
-          assert.equal(repo, "o/hatchkit-audit");
-          return { createdAt: "2026-10-17T06:17:00Z", conclusion: "success" };
-        },
-      },
-    ),
-  );
-  const watchdog = report.findings.find((f) => f.check === "watchdog");
-  assert.equal(watchdog?.severity, "alert");
-  assert.match(watchdog?.detail ?? "", /more than 36 h/);
 });
 await test("bad flags are rejected before any request", async () => {
   const cf = fakeCloudflare();
   for (const argv of [
     ["cloudflare", "--hours", "-1"],
     ["cloudflare", "--nope"],
-    ["cloudflare", "--json", "--markdown"],
+    ["cloudflare", "--markdown"],
     ["cloudflare", "accept"],
-    ["cloudflare", "publish", "--repo"],
+    ["cloudflare", "publish", "--repo", "x"],
+    ["cloudflare", "deploy", "--from"],
+    ["cloudflare", "workflow"],
   ]) {
     await assert.rejects(
-      withDeny(() => runAuditCommand(argv, { fetch: cf.fetch, env: ciEnv(expected()) })),
+      withDeny(() => runAuditCommand(argv, { fetch: cf.fetch, env: envWith(expected()) })),
       undefined,
       argv.join(" "),
     );
@@ -792,33 +774,553 @@ await test("bad flags are rejected before any request", async () => {
   assert.equal(cf.calls.length, 0);
 });
 
-console.log("8. output:");
-await test("Markdown escapes attacker-chosen names; human output strips control bytes", () => {
+console.log("8. output, signing, SES:");
+await test("text output strips control, newline and bidi characters", () => {
   const snap = snapshot();
   if (snap.accountTokens.ok)
     snap.accountTokens.items.push({
       id: ROGUE,
-      name: "[click](https://evil.test) | <img src=x>",
+      name: "x\n  ✓ tokens — nothing unexpected",
       status: "active",
     });
-  const out = renderAuditMarkdown(diff(snap));
-  assert.ok(!out.includes("[click](https://evil.test)"));
-  assert.ok(!out.includes("<img"));
-  assert.match(out, /\\\[click\\\]\\\(https\\:\/\/evil\\\.test\\\) \\\| &lt;img/);
-  assert.ok(!/https:\/\/evil/.test(out), "no autolink");
-  assert.equal(printable("ok\u001b[31mred\u0007"), "ok?[31mred?");
-  assert.equal(printable("a\n  ✓ tokens‮"), "a?  ✓ tokens?");
+  const out = audit.renderAuditText(diff(snap));
+  assert.ok(!out.includes("x\n  ✓ tokens — nothing"), "no forged line");
+  assert.equal(audit.printable("ok\u001b[31mred\u0007"), "ok?[31mred?");
+  assert.equal(audit.printable("a\n  ✓ tokens‮"), "a?  ✓ tokens?");
 });
-await test("the workflow pins the version, has no permissions and never names the operator", () => {
-  const yml = renderAuditWorkflow("0.2.19");
-  assert.match(yml, /npx -y hatchkit@0\.2\.19 audit cloudflare --markdown/);
-  assert.match(yml, /^permissions: \{\}$/m);
-  assert.match(yml, /cron: "17 6 \* \* \*"/);
-  assert.match(yml, /node-version: "24"/);
-  assert.match(yml, /HATCHKIT_KEYCHAIN_ACCESS: deny/);
-  assert.match(yml, /secrets\.CLOUDFLARE_AUDIT_TOKEN/);
-  assert.ok(!/operator/i.test(yml));
-  assert.throws(() => renderAuditWorkflow("latest"), /Not a version/);
+await test("signed envelopes verify, and reject tampering, a wrong kind or a wrong key", async () => {
+  const key = signed.newHmacKey();
+  const env = await signed.signEnvelope(key, "run", { start: "2026-10-19T09:00:00Z" });
+  assert.deepEqual(await signed.openEnvelope(key, "run", env), { start: "2026-10-19T09:00:00Z" });
+  const forged = env.replace("09:00:00", "03:00:00");
+  await assert.rejects(signed.openEnvelope(key, "run", forged), /bad signature/);
+  await assert.rejects(signed.openEnvelope(key, "expected", env), /not a signed expected/);
+  await assert.rejects(signed.openEnvelope(signed.newHmacKey(), "run", env), /bad signature/);
+  await assert.rejects(signed.openEnvelope(key, "run", "{}"), /not a signed run/);
+  await assert.rejects(signed.signEnvelope("abcd", "run", {}), /at least 32 bytes/);
+});
+await test("SigV4 matches AWS's published get-vanilla test vector", async () => {
+  const auth = await ses.sigV4Authorization({
+    method: "GET",
+    host: "example.amazonaws.com",
+    path: "/",
+    headers: { host: "example.amazonaws.com", "x-amz-date": "20150830T123600Z" },
+    body: "",
+    service: "service",
+    region: "us-east-1",
+    accessKeyId: "AKIDEXAMPLE",
+    secretAccessKey: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+    amzDate: "20150830T123600Z",
+  });
+  assert.equal(
+    auth,
+    "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31",
+  );
+});
+await test("SES SendEmail: one signed POST to the region's v2 endpoint with a text body", async () => {
+  const seen: Array<{ url: string; init?: RequestInit }> = [];
+  const r = await ses.sendSesTextMail({
+    credentials: {
+      accessKeyId: "AKIAEXAMPLEEXAMPLE",
+      secretAccessKey: "s",
+      region: "eu-central-1",
+    },
+    from: "audit@example.com",
+    to: "rico@example.org",
+    subject: "hi",
+    text: "body",
+    now: NOW,
+    fetch: async (url, init) => {
+      seen.push({ url, init });
+      return new Response(JSON.stringify({ MessageId: "m-1" }), { status: 200 });
+    },
+  });
+  assert.equal(r.messageId, "m-1");
+  assert.equal(seen[0].url, "https://email.eu-central-1.amazonaws.com/v2/email/outbound-emails");
+  const headers = seen[0].init?.headers as Record<string, string>;
+  assert.match(
+    headers.authorization,
+    /^AWS4-HMAC-SHA256 Credential=AKIAEXAMPLEEXAMPLE\/20261019\/eu-central-1\/ses\/aws4_request, SignedHeaders=content-type;host;x-amz-date, Signature=[0-9a-f]{64}$/,
+  );
+  const body = JSON.parse(String(seen[0].init?.body));
+  assert.deepEqual(body.Destination, { ToAddresses: ["rico@example.org"] });
+  assert.equal(body.Content.Simple.Body.Text.Data, "body");
+  await assert.rejects(
+    ses.sendSesTextMail({
+      credentials: { accessKeyId: "a", secretAccessKey: "s", region: "eu-central-1" },
+      from: "a@b.c",
+      to: "d@e.f",
+      subject: "s",
+      text: "t",
+      fetch: async () =>
+        new Response(JSON.stringify({ message: "Email address is not verified." }), {
+          status: 400,
+        }),
+    }),
+    /HTTP 400 Email address is not verified/,
+  );
+});
+
+console.log("9. audit Worker:");
+class FakeBucket {
+  objects = new Map<string, { text: string; uploaded: Date }>();
+  async get(key: string) {
+    const o = this.objects.get(key);
+    return o ? { text: async () => o.text } : null;
+  }
+  async put(key: string, value: string) {
+    this.objects.set(key, { text: value, uploaded: NOW });
+  }
+  async list(opts: { prefix?: string }) {
+    return {
+      objects: [...this.objects.entries()]
+        .filter(([k]) => k.startsWith(opts.prefix ?? ""))
+        .map(([key, o]) => ({ key, uploaded: o.uploaded })),
+      truncated: false,
+    };
+  }
+  async delete(keys: string | string[]) {
+    for (const k of Array.isArray(keys) ? keys : [keys]) this.objects.delete(k);
+  }
+}
+const HMAC = "ab".repeat(32);
+async function workerEnv(
+  exp: Expected | null,
+  runs: Array<{ key: string; run: unknown; uploaded?: Date; key2?: string }> = [],
+) {
+  const bucket = new FakeBucket();
+  if (exp)
+    await bucket.put(
+      "expected.json",
+      await signed.signEnvelope(HMAC, "expected", { ...exp, runs: [] }),
+    );
+  for (const r of runs) {
+    await bucket.put(r.key, await signed.signEnvelope(r.key2 ?? HMAC, "run", r.run));
+    if (r.uploaded) bucket.objects.get(r.key)!.uploaded = r.uploaded;
+  }
+  const env = {
+    AUDIT_BUCKET: bucket,
+    ACCOUNT_ID: ACCOUNT,
+    CLOUDFLARE_AUDIT_TOKEN: "audit-token-value",
+    EXPECTED_HMAC_KEY: HMAC,
+    SES_ACCESS_KEY_ID: "AKIAEXAMPLEEXAMPLE",
+    SES_SECRET_ACCESS_KEY: "secret",
+    SES_REGION: "eu-central-1",
+    MAIL_FROM: "audit@example.com",
+    MAIL_TO: "rico@example.org",
+  };
+  return { env, bucket };
+}
+function workerFetch(over: Record<string, unknown> = {}) {
+  const cf = fakeCloudflare(over);
+  const mails: Array<{ subject: string; text: string }> = [];
+  const fetch = async (input: string, init?: RequestInit) => {
+    if (input.startsWith("https://email.")) {
+      const body = JSON.parse(String(init?.body));
+      mails.push({
+        subject: body.Content.Simple.Subject.Data,
+        text: body.Content.Simple.Body.Text.Data,
+      });
+      return new Response(JSON.stringify({ MessageId: `m-${mails.length}` }), { status: 200 });
+    }
+    return cf.fetch(input, init);
+  };
+  return { fetch, mails, calls: cf.calls };
+}
+// The default fake account: the operator at 03:00 (outside any window) and an unknown token.
+const cleanAccount = {
+  [`/accounts/${ACCOUNT}/tokens`]: [
+    { id: OPERATOR, name: "hatchkit-cloudflare", status: "active" },
+  ],
+  [`/accounts/${ACCOUNT}/logs/audit`]: [],
+  [`/accounts/${ACCOUNT}/oauth_clients`]: [],
+};
+
+await test("a clean run sends no mail and writes a signed last run", async () => {
+  const { env, bucket } = await workerEnv(expected());
+  const f = workerFetch(cleanAccount);
+  const r = await worker.runScheduledAudit(env, NOW, { fetch: f.fetch });
+  assert.equal(r.error, undefined);
+  assert.equal(r.mailed, false);
+  assert.equal(f.mails.length, 0);
+  assert.ok(f.calls.every((c) => c.method === "GET" && c.auth === "Bearer audit-token-value"));
+  const last = await signed.openEnvelope<{ at: string; alerts: number }>(
+    HMAC,
+    "last-run",
+    (await bucket.get("state/last-run.json"))!.text
+      ? await (await bucket.get("state/last-run.json"))!.text()
+      : "",
+  );
+  assert.equal(last.at, NOW.toISOString());
+  assert.equal(last.alerts, 0);
+  const since = f.calls
+    .find((c) => c.url.pathname.endsWith("/logs/audit"))
+    ?.url.searchParams.get("since");
+  assert.equal(since, "2026-10-19T05:00:00Z", "6 h interval + 1 h margin");
+});
+await test("an alert mails once; the same alert 6 h later does not; 24 h later it reminds", async () => {
+  const { env } = await workerEnv(expected({ runs: [] }));
+  const f = workerFetch({ [`/accounts/${ACCOUNT}/oauth_clients`]: [] });
+  const first = await worker.runScheduledAudit(env, NOW, { fetch: f.fetch });
+  assert.equal(first.mailed, true);
+  assert.equal(f.mails.length, 1);
+  assert.match(f.mails[0].subject, /^hatchkit audit: \d+ alert\(s\) on Cloudflare$/);
+  assert.match(f.mails[0].text, /sneaky/);
+  assert.match(f.mails[0].text, /Runbook: revoke hatchkit-cloudflare first/);
+  const later = await worker.runScheduledAudit(env, new Date(NOW.getTime() + 6 * 3600_000), {
+    fetch: f.fetch,
+  });
+  assert.equal(later.mailed, false);
+  const dayLater = await worker.runScheduledAudit(env, new Date(NOW.getTime() + 24 * 3600_000), {
+    fetch: f.fetch,
+  });
+  assert.equal(dayLater.mailed, true);
+  assert.match(f.mails[1].subject, /still open/);
+});
+await test("a new change by the same actor mails again; the overlap re-read does not", async () => {
+  const { env } = await workerEnv(expected());
+  const log: unknown[] = [
+    entry({ context: "api_token", token_id: ROGUE, token_name: "x" }, "2026-10-19T06:00:00Z"),
+  ];
+  const f = workerFetch({ ...cleanAccount, [`/accounts/${ACCOUNT}/logs/audit`]: log });
+  assert.equal((await worker.runScheduledAudit(env, NOW, { fetch: f.fetch })).mailed, true);
+  const t2 = new Date(NOW.getTime() + 6 * 3600_000);
+  // Same entry seen again in the 1 h overlap: no mail.
+  assert.equal((await worker.runScheduledAudit(env, t2, { fetch: f.fetch })).mailed, false);
+  log.push(
+    entry({ context: "api_token", token_id: ROGUE, token_name: "x" }, "2026-10-19T17:00:00Z"),
+  );
+  assert.equal((await worker.runScheduledAudit(env, t2, { fetch: f.fetch })).mailed, true);
+});
+await test("a signed run window covers the operator's change; a forged one is an integrity alert", async () => {
+  const ok = await workerEnv(expected(), [
+    { key: "runs/a.json", run: { start: "2026-10-19T02:50:00Z", end: "2026-10-19T03:10:00Z" } },
+  ]);
+  const f = workerFetch({
+    [`/accounts/${ACCOUNT}/tokens`]: [
+      { id: OPERATOR, name: "hatchkit-cloudflare", status: "active" },
+    ],
+    [`/accounts/${ACCOUNT}/oauth_clients`]: [],
+    [`/accounts/${ACCOUNT}/logs/audit`]: [
+      entry(
+        { context: "api_token", token_id: OPERATOR, token_name: "hatchkit-cloudflare" },
+        "2026-10-19T08:00:00Z",
+      ),
+    ],
+  });
+  // 08:00 is outside the 02:50–03:10 window.
+  let r = await worker.runScheduledAudit(ok.env, NOW, { fetch: f.fetch });
+  assert.equal(r.mailed, true);
+  const covered = await workerEnv(expected(), [
+    { key: "runs/b.json", run: { start: "2026-10-19T07:55:00Z", end: "2026-10-19T08:10:00Z" } },
+  ]);
+  r = await worker.runScheduledAudit(covered.env, NOW, { fetch: f.fetch });
+  assert.equal(r.mailed, false, "inside a signed window");
+  const forged = await workerEnv(expected(), [
+    { key: "runs/c.json", run: { start: "2026-10-19T07:55:00Z" }, key2: "cd".repeat(32) },
+  ]);
+  r = await worker.runScheduledAudit(forged.env, NOW, { fetch: f.fetch });
+  assert.equal(r.mailed, true);
+  assert.ok(r.report?.findings.some((x) => x.check === "integrity" && x.subject === "runs/c.json"));
+  assert.ok(
+    r.report?.findings.some((x) => x.check === "audit-log" && x.severity === "alert"),
+    "the forged window does not cover",
+  );
+});
+await test("a missing or forged expected state mails 'could not run' and records the error", async () => {
+  const missing = await workerEnv(null);
+  const f = workerFetch(cleanAccount);
+  let r = await worker.runScheduledAudit(missing.env, NOW, { fetch: f.fetch });
+  assert.match(r.error ?? "", /expected.json is missing/);
+  assert.equal(r.mailed, true);
+  assert.match(f.mails[0].subject, /could not run/);
+  const forged = await workerEnv(null);
+  await forged.bucket.put(
+    "expected.json",
+    await signed.signEnvelope("cd".repeat(32), "expected", expected()),
+  );
+  r = await worker.runScheduledAudit(forged.env, NOW, { fetch: f.fetch });
+  assert.match(r.error ?? "", /does not verify/);
+  const last = await signed.openEnvelope<{ error?: string }>(
+    HMAC,
+    "last-run",
+    await (await forged.bucket.get("state/last-run.json"))!.text(),
+  );
+  assert.match(last.error ?? "", /does not verify/);
+});
+await test("a forged alert state cannot silence a mail", async () => {
+  const { env, bucket } = await workerEnv(expected({ runs: [] }));
+  const f = workerFetch({ [`/accounts/${ACCOUNT}/oauth_clients`]: [] });
+  await bucket.put(
+    "state/alert.json",
+    JSON.stringify({
+      v: 1,
+      kind: "alert-state",
+      payload: JSON.stringify({
+        fingerprints: ["tokens|sneaky (" + ROGUE + ")"],
+        mailedAt: NOW.toISOString(),
+      }),
+      sig: "00".repeat(32),
+    }),
+  );
+  const r = await worker.runScheduledAudit(env, NOW, { fetch: f.fetch });
+  assert.equal(r.mailed, true);
+  assert.ok(
+    r.report?.findings.some((x) => x.check === "integrity" && x.subject === "state/alert.json"),
+  );
+});
+await test("run windows older than 7 days are deleted, 3–7 days ignored", async () => {
+  const { env, bucket } = await workerEnv(expected(), [
+    {
+      key: "runs/old.json",
+      run: { start: "2026-10-01T00:00:00Z" },
+      uploaded: new Date("2026-10-01T00:00:00Z"),
+    },
+    {
+      key: "runs/mid.json",
+      run: { start: "2026-10-15T00:00:00Z" },
+      uploaded: new Date("2026-10-15T00:00:00Z"),
+    },
+  ]);
+  await worker.runScheduledAudit(env, NOW, { fetch: workerFetch(cleanAccount).fetch });
+  assert.ok(!bucket.objects.has("runs/old.json"));
+  assert.ok(bucket.objects.has("runs/mid.json"));
+});
+await test("the scheduled handler hands the run to waitUntil", async () => {
+  let waited: Promise<unknown> | undefined;
+  const { env } = await workerEnv(null);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("{}", { status: 500 })) as typeof fetch;
+  try {
+    await worker.default.scheduled({ scheduledTime: NOW.getTime() }, env, {
+      waitUntil: (p) => {
+        waited = p;
+      },
+    });
+    const r = (await waited) as { error?: string };
+    assert.match(r.error ?? "", /missing/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal((await worker.default.fetch()).status, 404);
+});
+
+console.log("10. deploy, publish, run windows, watchdog:");
+const MODULE_SRC = (name: string) => `// ${name}\nexport {};\n`;
+function deployFetch() {
+  const calls: Array<{ method: string; path: string; auth: string; body?: unknown }> = [];
+  const fetch = async (input: string, init?: RequestInit) => {
+    const url = new URL(input);
+    const path = url.pathname.replace("/client/v4", "");
+    calls.push({
+      method: init?.method ?? "GET",
+      path,
+      auth: String((init?.headers as Record<string, string>)?.Authorization),
+      body: init?.body,
+    });
+    const ok = (result: unknown) =>
+      new Response(JSON.stringify({ success: true, errors: [], messages: [], result }), {
+        status: 200,
+      });
+    if (path.endsWith("/deployments")) return ok({ deployments: [{ id: "dep-1" }] });
+    if (path === `/accounts/${ACCOUNT}/r2/buckets` && init?.method === "POST")
+      return ok({ name: "hatchkit-audit" });
+    return ok({});
+  };
+  return { fetch, calls };
+}
+await test("deploy --dry-run lists the steps and touches nothing; missing secrets are named", async () => {
+  const d = deployFetch();
+  await assert.rejects(
+    deploy.deployAuditWorker(
+      { from: "audit@example.com", to: "rico@example.org", region: "eu-central-1", dryRun: true },
+      { fetch: d.fetch, readModule: MODULE_SRC },
+    ),
+    /Missing before deploy: CLOUDFLARE_AUDIT_TOKEN .*SES_ACCESS_KEY_ID/,
+  );
+  await setSecret(SECRET_KEYS.cloudflareAuditToken, "audit-token-value");
+  await setSecret(SECRET_KEYS.cloudflareAuditSesAccessKeyId, "AKIAEXAMPLEEXAMPLE");
+  await setSecret(SECRET_KEYS.cloudflareAuditSesSecretAccessKey, "ses-secret");
+  const plan = await deploy.deployAuditWorker(
+    { from: "audit@example.com", to: "rico@example.org", region: "eu-central-1", dryRun: true },
+    { fetch: d.fetch, readModule: MODULE_SRC },
+  );
+  assert.equal(plan.cron, "17 */6 * * *");
+  assert.equal(plan.hours, 7);
+  assert.deepEqual(plan.modules, ["worker.js", "cloudflare.js", "ses-send.js", "signed-state.js"]);
+  assert.equal(d.calls.length, 0);
+  assert.equal(await getSecret(SECRET_KEYS.cloudflareAuditHmacKey), null, "dry run makes no key");
+  await assert.rejects(
+    deploy.deployAuditWorker(
+      { from: "nope", to: "rico@example.org", region: "eu-central-1", dryRun: true },
+      { readModule: MODULE_SRC },
+    ),
+    /email addresses/,
+  );
+});
+await test("deploy: bucket, Worker with R2 binding and kept secrets, four secrets, cron, signed expected state, deployment id", async () => {
+  store.set("providers.cloudflare", { status: "configured", accountId: ACCOUNT });
+  const d = deployFetch();
+  await deploy.deployAuditWorker(
+    { from: "audit@example.com", to: "rico@example.org", region: "eu-central-1", dryRun: false },
+    {
+      fetch: d.fetch,
+      readModule: MODULE_SRC,
+      operator: async () => ({ token: "operator-value", accountId: ACCOUNT }),
+      now: () => NOW,
+    },
+  );
+  assert.ok(
+    d.calls.every((c) => c.auth === "Bearer operator-value"),
+    "deploy writes with the operator token",
+  );
+  const script = `/accounts/${ACCOUNT}/workers/scripts/hatchkit-audit`;
+  const upload = d.calls.find((c) => c.method === "PUT" && c.path === script);
+  assert.ok(upload?.body instanceof FormData);
+  const meta = JSON.parse(await ((upload.body as FormData).get("metadata") as Blob).text());
+  assert.equal(meta.main_module, "worker.js");
+  assert.deepEqual(meta.keep_bindings, ["secret_text"]);
+  assert.ok(
+    meta.bindings.some(
+      (b: { type: string; bucket_name?: string }) =>
+        b.type === "r2_bucket" && b.bucket_name === "hatchkit-audit",
+    ),
+  );
+  assert.ok(
+    meta.bindings.some(
+      (b: { name: string; text?: string }) => b.name === "MAIL_TO" && b.text === "rico@example.org",
+    ),
+  );
+  assert.ok(!JSON.stringify(meta).includes("audit-token-value"), "no secret in plain bindings");
+  const secrets = d.calls
+    .filter((c) => c.path === `${script}/secrets`)
+    .map((c) => JSON.parse(String(c.body)).name);
+  assert.deepEqual(secrets, [
+    "CLOUDFLARE_AUDIT_TOKEN",
+    "EXPECTED_HMAC_KEY",
+    "SES_ACCESS_KEY_ID",
+    "SES_SECRET_ACCESS_KEY",
+  ]);
+  const sched = d.calls.find((c) => c.path === `${script}/schedules`);
+  assert.deepEqual(JSON.parse(String(sched?.body)), [{ cron: "17 */6 * * *" }]);
+  const exp = d.calls.find(
+    (c) => c.path === `/accounts/${ACCOUNT}/r2/buckets/hatchkit-audit/objects/expected.json`,
+  );
+  const hmac = await getSecret(SECRET_KEYS.cloudflareAuditHmacKey);
+  assert.ok(hmac && hmac.length === 64, "HMAC key generated and kept in the keychain");
+  const published = await signed.openEnvelope<Expected>(
+    hmac as string,
+    "expected",
+    String(exp?.body),
+  );
+  assert.ok(
+    published.workers.includes("hatchkit-audit") && published.buckets.includes("hatchkit-audit"),
+  );
+  assert.equal(expectedMod.getAuditWorker()?.deploymentId, "dep-1");
+});
+await test("run windows go to the bucket signed: start at once, end + expected state before exit", async () => {
+  const uploads: Array<{ key: string; run: unknown }> = [];
+  let published = 0;
+  uses.resetOperatorUseForTests();
+  const before = process.listeners("beforeExit").length;
+  uses.recordOperatorUse("operator-value", {
+    now: () => NOW,
+    remote: {
+      upload: async (key, run) => {
+        uploads.push({ key, run });
+      },
+      publish: async () => {
+        published++;
+      },
+    },
+  });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(uploads.length, 1);
+  assert.deepEqual(uploads[0].run, { start: NOW.toISOString() });
+  assert.match(uploads[0].key, /^runs\/2026-10-19T120000000Z-\d+\.json$/);
+  const listener = process.listeners("beforeExit").slice(before)[0] as (code: number) => void;
+  listener(0);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(uploads.length, 2);
+  assert.deepEqual(uploads[1].run, { start: NOW.toISOString(), end: NOW.toISOString() });
+  assert.equal(published, 1);
+  uses.resetOperatorUseForTests();
+});
+await test("the default run-window hook never fires under the test runner", async () => {
+  // HATCHKIT_TEST_KEYCHAIN_DIR is set by scripts/test.mjs; a deployed Worker must not change that.
+  expectedMod.setAuditWorker({
+    name: "hatchkit-audit",
+    bucket: "hatchkit-audit",
+    mailFrom: "a@b.c",
+    mailTo: "d@e.f",
+    sesRegion: "eu-central-1",
+  });
+  const originalFetch = globalThis.fetch;
+  let called = 0;
+  globalThis.fetch = (async () => {
+    called++;
+    return new Response("{}");
+  }) as typeof fetch;
+  try {
+    uses.resetOperatorUseForTests();
+    uses.recordOperatorUse("operator-value");
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(called, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    uses.resetOperatorUseForTests();
+  }
+});
+await test("watchdog: a changed deployment, a missing cron, missing secrets and a stale last run all alert", async () => {
+  expectedMod.setAuditWorker({
+    name: "hatchkit-audit",
+    bucket: "hatchkit-audit",
+    mailFrom: "a@b.c",
+    mailTo: "d@e.f",
+    sesRegion: "eu-central-1",
+    deploymentId: "dep-1",
+  });
+  const script = `/accounts/${ACCOUNT}/workers/scripts/hatchkit-audit`;
+  const lastRun = (at: string) => signed.signEnvelope(HMAC, "last-run", { at });
+  const fresh = await lastRun("2026-10-19T08:17:00Z");
+  const make = (over: { deployment?: string; cron?: string; secrets?: string[]; last?: string }) =>
+    new audit.CloudflareReader("audit-token-value", async (input: string) => {
+      const path = new URL(input).pathname.replace("/client/v4", "");
+      const ok = (result: unknown) =>
+        new Response(JSON.stringify({ success: true, result }), { status: 200 });
+      if (path === `${script}/deployments`)
+        return ok({ deployments: [{ id: over.deployment ?? "dep-1" }] });
+      if (path === `${script}/schedules`)
+        return ok({ schedules: [{ cron: over.cron ?? "17 */6 * * *" }] });
+      if (path === `${script}/secrets`)
+        return ok((over.secrets ?? deploy.WORKER_SECRETS).map((name) => ({ name })));
+      if (path.endsWith("/objects/state/last-run.json"))
+        return new Response(over.last ?? fresh, { status: 200 });
+      return new Response("{}", { status: 404 });
+    });
+  assert.deepEqual(await deploy.auditWorkerWatchdog(make({}), ACCOUNT, NOW, HMAC), []);
+  const bad = await deploy.auditWorkerWatchdog(
+    make({
+      deployment: "dep-evil",
+      cron: "0 0 1 1 *",
+      secrets: ["CLOUDFLARE_AUDIT_TOKEN"],
+      last: await lastRun("2026-10-18T20:00:00Z"),
+    }),
+    ACCOUNT,
+    NOW,
+    HMAC,
+  );
+  assert.equal(bad.length, 4);
+  assert.ok(bad.every((f) => f.severity === "alert" && f.check === "watchdog"));
+  const forgedLast = await deploy.auditWorkerWatchdog(
+    make({
+      last: await signed.signEnvelope("cd".repeat(32), "last-run", { at: NOW.toISOString() }),
+    }),
+    ACCOUNT,
+    NOW,
+    HMAC,
+  );
+  assert.match(forgedLast[0]?.detail ?? "", /bad signature/);
 });
 
 if (failures.length > 0) {

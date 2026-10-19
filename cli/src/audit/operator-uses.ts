@@ -6,16 +6,16 @@
  * `getCloudflareToken` calls `recordOperatorUse` when the operator slot
  * answers. The first call in a process appends `{pid, start}` and hooks
  * process exit to append `{pid, end}`. Records older than 30 days are
- * dropped on the next write. Once `cloudflareAudit.repo` is set, the
- * exit hook also republishes the expected state in a detached `gh`, so
- * the scheduled check sees this run's window.
+ * dropped on the next write. With an audit Worker deployed, the same
+ * windows go to its bucket, signed (see `recordOperatorUse`).
  */
-import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getStore } from "../config.js";
+import { getConfiguredCloudflareAccountId } from "../config.js";
 import type { RunWindow } from "./cloudflare.js";
-import { EXPECTED_VARIABLE, buildLocalExpected, getAuditRepo } from "./expected.js";
+import { publishExpectedToWorker, uploadRunWindow } from "./deploy.js";
+import { getAuditWorker } from "./expected.js";
 
 const KEEP_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -77,25 +77,55 @@ function prune(path: string, now: Date): void {
   renameSync(tmp, path);
 }
 
-export interface RecordOperatorUseDeps {
-  now?: () => Date;
-  /** Republish on exit; default reads `cloudflareAudit.repo`. Tests pass a stub. */
-  onExit?: () => void;
+export interface RemoteWindowHooks {
+  /** Upload `runs/<key>` with this window (operator token, signed). */
+  upload(key: string, run: RunWindow): Promise<void>;
+  /** Republish the signed expected state. */
+  publish(): Promise<void>;
 }
 
-/** Note that this process holds the operator token. Never throws. */
-export function recordOperatorUse(deps: RecordOperatorUseDeps = {}): void {
+export interface RecordOperatorUseDeps {
+  now?: () => Date;
+  /** Where windows go besides the local log. Default: the audit Worker's
+   *  bucket when one is deployed. Tests pass stubs. */
+  remote?: RemoteWindowHooks | null;
+}
+
+function defaultRemote(token: string): RemoteWindowHooks | null {
+  // Never from the test runner (a real write), never when switched off.
+  if (process.env.HATCHKIT_TEST_KEYCHAIN_DIR || process.env.HATCHKIT_AUDIT_AUTOPUBLISH === "0")
+    return null;
+  if (!getAuditWorker()) return null;
+  const accountId = getConfiguredCloudflareAccountId();
+  if (!accountId) return null;
+  const op = { token, accountId };
+  return {
+    upload: (key, run) => uploadRunWindow(op, key, run),
+    publish: async () => {
+      await publishExpectedToWorker({ operator: async () => op });
+    },
+  };
+}
+
+/** Note that this process holds the operator token. Never throws.
+ *
+ *  Locally: `{pid, start}` now, `{pid, end}` on exit. With an audit
+ *  Worker: the signed window goes to its bucket now (so a long run is
+ *  covered while it runs), and again with its end plus the expected
+ *  state once the command finishes (`beforeExit`; a `process.exit` path
+ *  skips it and leaves the 2 h start-only window). */
+export function recordOperatorUse(token = "", deps: RecordOperatorUseDeps = {}): void {
   if (recorded) return;
   recorded = true;
   const now = deps.now ?? (() => new Date());
+  const start = now().toISOString();
   try {
     const path = operatorUsesPath();
     prune(path, now());
-    appendFileSync(path, `${JSON.stringify({ pid: process.pid, start: now().toISOString() })}\n`);
+    appendFileSync(path, `${JSON.stringify({ pid: process.pid, start })}\n`);
     process.once("exit", () => {
       try {
         appendFileSync(path, `${JSON.stringify({ pid: process.pid, end: now().toISOString() })}\n`);
-        (deps.onExit ?? publishOnExit)();
       } catch {
         // The audit then reports this run as unmatched: a false alarm, not a miss.
       }
@@ -103,32 +133,28 @@ export function recordOperatorUse(deps: RecordOperatorUseDeps = {}): void {
   } catch {
     // Same: losing a window can only cause a false alarm.
   }
+  let remote: RemoteWindowHooks | null = null;
+  try {
+    remote = deps.remote === undefined ? defaultRemote(token) : deps.remote;
+  } catch {
+    remote = null;
+  }
+  if (!remote) return;
+  const key = `runs/${start.replace(/[:.]/g, "")}-${process.pid}.json`;
+  const first = remote.upload(key, { start }).catch(() => undefined);
+  let finished = false;
+  process.once("beforeExit", () => {
+    if (finished) return;
+    finished = true;
+    void (async () => {
+      await first;
+      await remote.upload(key, { start, end: now().toISOString() }).catch(() => undefined);
+      await remote.publish().catch(() => undefined);
+    })();
+  });
 }
 
 /** Test seam: forget that this process recorded a use. */
 export function resetOperatorUseForTests(): void {
   recorded = false;
-}
-
-/** Exit hook: hand the expected state to a detached `gh`. Sync work only. */
-function publishOnExit(): void {
-  const repo = getAuditRepo();
-  // Never from the test runner: a stray `gh variable set` is a real write.
-  if (
-    !repo ||
-    process.env.HATCHKIT_AUDIT_AUTOPUBLISH === "0" ||
-    process.env.HATCHKIT_TEST_KEYCHAIN_DIR
-  )
-    return;
-  const body = JSON.stringify(buildLocalExpected({ now: new Date() }));
-  const child = spawn(
-    "gh",
-    ["variable", "set", EXPECTED_VARIABLE, "--repo", repo, "--body", body],
-    {
-      detached: true,
-      stdio: "ignore",
-    },
-  );
-  child.on("error", () => undefined);
-  child.unref();
 }

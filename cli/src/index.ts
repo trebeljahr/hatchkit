@@ -124,13 +124,8 @@ async function main(): Promise<void> {
 
   const isJson = args.includes("--json");
 
-  // Suppress the banner for machine-readable output so stdout is pure
-  // JSON, Markdown (audit's job summary) or YAML (audit's workflow).
-  const machineOutput =
-    isJson ||
-    args.includes("--markdown") ||
-    (command === "audit" && args[1] === "cloudflare" && args[2] === "workflow");
-  if (!machineOutput) {
+  // Suppress the banner for machine-readable output so stdout is pure JSON.
+  if (!isJson) {
     console.log(chalk.bold(`\n  hatchkit v${getCliVersion()}\n`));
   }
 

@@ -732,29 +732,33 @@ A check it could not make (a feed error, a version nothing names, an advisory ra
 
 ## `hatchkit audit cloudflare`
 
-Reports what is on the Cloudflare account that hatchkit did not create. hatchkit's operator token can mint account API tokens, so a leaked copy owns the account, and an attacker's first move is a second token. This check notices it within a day. It reads with its own read-only token and changes nothing on Cloudflare.
+Reports what is on the Cloudflare account that hatchkit did not create. hatchkit's operator token can mint account API tokens, so a leaked copy owns the account, and an attacker's first move is a second token. A Worker runs this check every 6 hours and mails you when it finds something. The check reads with its own read-only token and changes nothing on Cloudflare.
 
 ```bash
-hatchkit audit cloudflare [--json | --markdown] [--hours 36]   # exits 1 on an alert
+hatchkit audit cloudflare [--json] [--hours 36]   # run it here; exits 1 on an alert
 hatchkit audit cloudflare accept token:<id>=<why> worker:<name> …
-hatchkit audit cloudflare accept --inventory    # first run: keep every current non-token resource
+hatchkit audit cloudflare accept --inventory      # first run: keep every current non-token resource
 hatchkit audit cloudflare forget <kind>:<value>
-hatchkit audit cloudflare publish --repo <owner/private-repo>
-hatchkit audit cloudflare workflow              # the daily GitHub Action
-hatchkit audit cloudflare set-token             # store the read-only token in the keychain
+hatchkit audit cloudflare set-token               # the read-only Cloudflare token, into the keychain
+hatchkit audit cloudflare set-ses-key             # the Worker's own SES key, into the keychain
+hatchkit audit cloudflare test-mail --from <sender> --region <aws region>
+hatchkit audit cloudflare deploy --from <sender> [--region <aws region>] [--dry-run]
+hatchkit audit cloudflare publish                 # re-sign and upload the expected state
 ```
 
 It reports:
 
 - an account-owned or user-owned API token, disabled or not, that is not a recorded per-Worker CI token, a recorded per-project R2 token, an accepted token, or a `hatchkit-terraform-*` token younger than one hour. Tokens and OAuth clients are matched by id; a name proves nothing;
-- audit-log entries (v2, last 36 hours) made by the operator token outside a recorded hatchkit run, by an unknown token, by the Global API Key, or by an OAuth app that is not allowed (Wrangler and the two Cloudflare MCP servers are);
+- audit-log entries (v2) made by the operator token outside a recorded hatchkit run, by an unknown token, by the Global API Key, or by an OAuth app that is not allowed (Wrangler and the two Cloudflare MCP servers are);
 - a Worker, R2 bucket, zone, Email Routing destination, member or OAuth client nobody accepted, and an Email Routing rule that forwards to an unknown address or Worker.
 
-A list it cannot read counts as a failure, never as clean. The expected state comes from hatchkit's own records: `cloudflareDeployTokens`, run ledgers, the `.hatchkit.json` files under `~/projects` and `~/work`, accepted entries, and the times hatchkit held the operator token (`cloudflare-operator-uses.jsonl` in the config dir). `--expected <file>` or `HATCHKIT_CLOUDFLARE_EXPECTED` replaces it; the scheduled run uses that.
+A list it cannot read, or one longer than the page cap, counts as a failure, never as clean. The expected state comes from hatchkit's own records: `cloudflareDeployTokens`, run ledgers, the `.hatchkit.json` files under `~/projects` and `~/work`, accepted entries, and the times hatchkit held the operator token. `--expected <file>` or `HATCHKIT_CLOUDFLARE_EXPECTED` replaces it.
 
-The daily run belongs in a private GitHub repo: `workflow` prints the Action, which needs the secret `CLOUDFLARE_AUDIT_TOKEN` and the variable `HATCHKIT_CLOUDFLARE_EXPECTED`. `publish` writes that variable. After that, every hatchkit command that used the operator token republishes it when it exits. A failed run mails the repo owner. Locally, the command also alerts when the last scheduled run of the Action is older than 36 hours or failed.
+`deploy` creates the R2 bucket and the Worker `hatchkit-audit` with the operator token, sets its secrets from the keychain, adds the cron trigger `17 */6 * * *`, and publishes the expected state. Each run looks at the last 7 hours of the audit log. It mails through SES only when an alert appears that the last mail did not list, when alerts are still open 24 hours after the last mail, or when the run cannot finish. There is no all-clear mail. Everything in the bucket is signed with a key that only the keychain and the Worker hold, so the operator token alone cannot forge the expected state or a run window. hatchkit uploads its run window, and republishes the expected state, during every command that uses the operator token.
 
-The read-only token is a user token (My Profile → API Tokens) with User · API Tokens · Read; Account · Account API Tokens · Read, Account Settings · Read, Workers Scripts · Read, Workers R2 Storage · Read, Email Routing Addresses · Read; Zone · Zone · Read and Email Routing Rules · Read on all zones; optionally Account · OAuth Clients · Read.
+The operator token can still replace or delete the Worker. So a local run also checks that the Worker's deployment is the one hatchkit deployed, that the cron trigger and secrets are there, and that the last run is less than 8 hours old.
+
+The read-only token is a user token (My Profile → API Tokens) with User · API Tokens · Read; Account · Account API Tokens · Read, Account Settings · Read, Workers Scripts · Read, Workers R2 Storage · Read, Email Routing Addresses · Read; Zone · Zone · Read and Email Routing Rules · Read on all zones; optionally Account · OAuth Clients · Read. The SES key belongs to an IAM user that may only call `ses:SendEmail` from the sender to your address.
 
 ---
 

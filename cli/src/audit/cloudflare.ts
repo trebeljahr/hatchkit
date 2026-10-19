@@ -78,7 +78,8 @@ export type AuditCheck =
   | "email-rules"
   | "members"
   | "oauth-clients"
-  | "watchdog";
+  | "watchdog"
+  | "integrity";
 
 export interface AuditFinding {
   /** `alert` fails the run; `info` is reported only. */
@@ -87,6 +88,10 @@ export interface AuditFinding {
   subject: string;
   detail: string;
   hint?: string;
+  /** What makes this finding new for the mail dedupe; default check + subject.
+   *  Audit-log findings add their newest entry, so a later change by the
+   *  same actor mails again. */
+  dedupeKey?: string;
 }
 
 export interface AuditCheckStatus {
@@ -161,6 +166,22 @@ export class CloudflareReader {
       throw new CloudflareReadError(`GET ${path}: HTTP ${res.status} ${why}`, res.status);
     }
     return json;
+  }
+
+  /** A non-JSON body, such as an R2 object. */
+  async raw(path: string): Promise<string> {
+    let res: Response;
+    try {
+      res = await this.fetchImpl(`${API_BASE}${path}`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${this.token}` },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+    } catch (err) {
+      throw new CloudflareReadError(`GET ${path}: ${(err as Error).message}`, 0);
+    }
+    if (!res.ok) throw new CloudflareReadError(`GET ${path}: HTTP ${res.status}`, res.status);
+    return res.text();
   }
 
   /** All items of a `page`/`per_page` list. */
@@ -421,6 +442,45 @@ export function inRunWindow(at: string | undefined, runs: readonly RunWindow[]):
   });
 }
 
+/** Strip control bytes: names on the account are attacker-controlled.
+ *  Newlines and tabs too (a forged "✓ … nothing unexpected" line), and
+ *  bidi and line-separator characters that reorder or split what is shown. */
+export const printable = (text: string): string =>
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control bytes are what we strip
+  text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, "?");
+
+/** Plain text, for the terminal and the alert mail. */
+export function renderAuditText(report: CloudflareAuditReport): string {
+  const lines = [
+    `Cloudflare audit — account ${report.accountId}, ${report.window.since} → ${report.window.before}`,
+  ];
+  for (const check of report.checks) {
+    const icon = check.status === "ok" ? "✓" : check.status === "skipped" ? "-" : "✗";
+    lines.push(`  ${icon} ${check.check} — ${printable(check.detail)}`);
+  }
+  for (const f of report.findings) {
+    lines.push(
+      `  ${f.severity === "alert" ? "ALERT" : "info "} [${f.check}] ${printable(f.subject)} — ${printable(f.detail)}`,
+    );
+    if (f.hint) lines.push(`        → ${printable(f.hint)}`);
+  }
+  lines.push(
+    auditFailed(report)
+      ? `${report.summary.alerts} alert(s), ${report.summary.errors} check(s) failed.`
+      : "Nothing unexpected.",
+  );
+  return lines.join("\n");
+}
+
+/** Add findings found outside the diff (tampering, watchdog) and re-sort. */
+export function addFindings(report: CloudflareAuditReport, extra: AuditFinding[]): void {
+  for (const f of extra) {
+    report.findings.push(f);
+    report.summary[f.severity === "alert" ? "alerts" : "info"]++;
+  }
+  report.findings.sort((x, y) => (x.severity === y.severity ? 0 : x.severity === "alert" ? -1 : 1));
+}
+
 /** Quote a value for a hint the reader may paste into a shell: names and
  *  addresses on the account are the attacker's choice. */
 export function shellQuote(value: string): string {
@@ -628,7 +688,11 @@ function diffAuditLog(
     groups.set(c.key, group);
   }
   for (const group of groups.values()) {
+    const newest = group.entries
+      .map((e) => e.action?.time ?? "")
+      .reduce((a, b) => (b > a ? b : a), "");
     findings.push({
+      dedupeKey: `audit-log|${group.subject}|${newest}`,
       severity: group.severity,
       check: "audit-log",
       subject: group.subject,
