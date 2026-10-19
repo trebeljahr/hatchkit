@@ -3,7 +3,7 @@ INVENTORY ?= ansible/inventories/production/hosts.ini
 STACK ?= node-realtime
 TF_DIR := terraform/stacks/$(STACK)
 
-.PHONY: help ansible-deps bootstrap harden lockdown verify tf-init tf-plan tf-apply tf-destroy create
+.PHONY: help ansible-deps bootstrap harden lockdown tailscale verify tf-init tf-plan tf-apply tf-destroy create
 
 help:
 	@echo "Targets:"
@@ -11,6 +11,7 @@ help:
 	@echo "  Server hardening:"
 	@echo "    harden      Run full security hardening       INVENTORY=<path>"
 	@echo "    lockdown    Close Coolify bootstrap ports     INVENTORY=<path>"
+	@echo "    tailscale   Re-apply Tailscale role only      INVENTORY=<path> [ARGS=--check]"
 	@echo "    bootstrap   Legacy baseline (use 'harden')    INVENTORY=<path>"
 	@echo "    verify      Post-install checks               HOST=<domain> SSH_TARGET=<user@host>"
 	@echo ""
@@ -36,6 +37,10 @@ ansible-deps:
 # Post-Coolify lockdown: remove bootstrap ports (8000, 6001, 6002)
 lockdown:
 	ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i $(INVENTORY) ansible/playbooks/lockdown-coolify.yml
+
+# Tailscale role alone (exit node offer, SSH restriction) without full hardening
+tailscale: ansible-deps
+	ANSIBLE_CONFIG=ansible/ansible.cfg ansible-playbook -i $(INVENTORY) ansible/playbooks/tailscale.yml $(ARGS)
 
 # Legacy bootstrap (kept for backwards compatibility)
 bootstrap:

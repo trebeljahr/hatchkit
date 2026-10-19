@@ -1,0 +1,13 @@
+# Apply only the Tailscale role, e.g. to change the exit node offer on a
+# hardened box without re-running every other hardening role.
+#
+# Usage:
+#   make tailscale INVENTORY=<path>
+#   make tailscale INVENTORY=<path> ARGS="--check --diff"
+
+- name: Apply Tailscale settings
+  hosts: all
+  become: true
+  roles:
+    - role: tailscale
+      when: tailscale_enabled | bool

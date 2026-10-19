@@ -521,6 +521,8 @@ ufw allow from 100.64.0.0/10 to any port 22 proto tcp comment 'SSH via Tailscale
 
 **Automation:** `ansible/roles/tailscale/`
 
+**Exit node (optional):** Set `tailscale_advertise_exit_node: true` in the inventory and run `make tailscale INVENTORY=<path>` to offer the server as an exit node. It persists IPv4 and IPv6 forwarding in `/etc/sysctl.d/99-tailscale.conf` and runs `tailscale set --advertise-exit-node`. Use it when a laptop sits on a network whose URL filter blocks one of your own hosts. An admin still has to approve the node in the Tailscale console, and each device opts in from its Tailscale menu. UFW needs no change: Tailscale's `ts-forward` chain runs before UFW's routed-deny rules. Check that `ip -6 route show default` says `proto static` first, because IPv6 forwarding makes Linux ignore router advertisements. Hetzner Cloud routes IPv6 statically.
+
 > **Further reading:**
 > - [How Tailscale Works](https://tailscale.com/blog/how-tailscale-works) — the official deep dive; beautifully written, covers NAT traversal, DERP relays, the coordination server, and why the control plane never sees your traffic. One of the best technical blog posts on the internet.
 > - [About WireGuard (Tailscale Docs)](https://tailscale.com/kb/1035/wireguard) — explains the WireGuard foundation: Noise protocol framework, ChaCha20-Poly1305, and why it's "the most secure VPN protocol"

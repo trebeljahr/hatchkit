@@ -6,3 +6,14 @@ tailscale_hostname: "{{ inventory_hostname }}"
 # WARNING: Only enable this if you've verified Tailscale SSH works first.
 # If Tailscale is down and this is true, you can only access via Hetzner console.
 tailscale_restrict_ssh: false
+
+# Offer this server as a Tailscale exit node, e.g. to route a laptop around a
+# network that filters a site. Persists IPv4 + IPv6 forwarding and runs
+# `tailscale set --advertise-exit-node`. The node is usable only after an admin
+# approves it in the Tailscale console (Machines → Edit route settings).
+# Setting it back to false withdraws the offer; forwarding stays on, since
+# Docker needs IPv4 forwarding anyway.
+# IPv6 forwarding makes Linux ignore router advertisements. Hetzner Cloud
+# routes IPv6 statically (via fe80::1), so this is safe there; check
+# `ip -6 route show default` says "proto static" on other providers.
+tailscale_advertise_exit_node: false
