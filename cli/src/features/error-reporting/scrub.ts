@@ -40,7 +40,7 @@ import {
 } from "./allowlist.js";
 
 /** An email address inside free text. A server refusal can quote the address it refused. */
-const EMAIL = /[^\s@<>"'(),;:]+@[^\s@<>"'(),;:]+\.[a-z]{2,}/gi;
+const EMAIL = /[^\s@<>"'(),;:/]+@[^\s@<>"'(),;:/]+\.[a-z]{2,}/gi;
 /** A bearer token inside free text. An auth failure can quote the header it rejected. */
 const BEARER = /\bBearer\s+[\w.~+/=-]+/gi;
 /** A leftover `?…` or `#…` inside free text, after the URL rule has run. */

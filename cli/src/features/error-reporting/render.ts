@@ -202,7 +202,7 @@ ${setLiteral("ALLOWED_REQUEST_HEADERS", allowedRequestHeaders(fields))}
 
 ${setLiteral("ALLOWED_BREADCRUMBS", allowedBreadcrumbs(fields))}
 
-const EMAIL = /[^\\s@<>"'(),;:]+@[^\\s@<>"'(),;:]+\\.[a-z]{2,}/gi;
+const EMAIL = /[^\\s@<>"'(),;:/]+@[^\\s@<>"'(),;:/]+\\.[a-z]{2,}/gi;
 const BEARER = /\\bBearer\\s+[\\w.~+/=-]+/gi;
 const QUERY_IN_TEXT = /[?#][^\\s"'<>]*/g;
 const URL_IN_TEXT = /(?:\\b[a-z][\\w+.-]*:\\/\\/|(?<![\\w.])\\/)[^\\s"'<>?#]*(?:[?#]\\S*)?/gi;

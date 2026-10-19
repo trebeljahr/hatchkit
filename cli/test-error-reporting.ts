@@ -42,6 +42,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 // Nothing in this feature opens the config store, but a sibling import
 // could grow one — keep any store away from the user's real config.
@@ -234,6 +235,16 @@ check("replaces email addresses and bearer tokens inside a message", () => {
   assert.equal(scrubText(plain), plain);
 });
 
+/** A native module's path: the `@version` in it is not an address. */
+const PNPM_PATH =
+  "/app/node_modules/.pnpm/better-sqlite3@12.11.1/node_modules/better-sqlite3/build/Release/better_sqlite3.node";
+
+check("keeps package paths that only look like addresses", () => {
+  const message = `The module '${PNPM_PATH}' was compiled`;
+  assert.equal(scrubText(message), message);
+  assert.equal(scrubText("mailto:me@example.com"), "mailto:[email]");
+});
+
 check("strips the query string from the page URL", () => {
   const event = scrubEvent(fullEvent());
   assert.equal(event.request?.url, "https://hatchdemo.dev/invite/");
@@ -379,6 +390,19 @@ check("the SDK is loaded by name, so the lazy chunk is not the whole package", (
 check("the generated scrubber takes the SDK types only as types", () => {
   const scrub = withoutComments(renderScrubModule());
   assert.match(scrub, /^import type \{ Breadcrumb, ErrorEvent \} from "@sentry\/browser";/m);
+});
+
+// The generated copy has only type imports, so it loads on its own.
+const generatedScrubDir = mkdtempSync(join(tmpdir(), "error-reporting-scrub-"));
+const generatedScrubPath = join(generatedScrubDir, "scrub.ts");
+writeFileSync(generatedScrubPath, renderScrubModule(), "utf-8");
+const generatedScrub = await import(pathToFileURL(generatedScrubPath).href);
+rmSync(generatedScrubDir, { recursive: true, force: true });
+
+check("the generated scrubber keeps package paths that only look like addresses", () => {
+  const message = `The module '${PNPM_PATH}' was compiled`;
+  assert.equal(generatedScrub.scrubText(message), message);
+  assert.equal(generatedScrub.scrubText("mailto:me@example.com"), "mailto:[email]");
 });
 
 // ---------------------------------------------------------------------
