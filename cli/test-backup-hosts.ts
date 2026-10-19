@@ -2,6 +2,7 @@
 // project between hosts with the stale-policy guard. A fake `tailscale`
 // on PATH plays both hosts from one state file; no network or keychain.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -181,6 +182,23 @@ async function cli(...args: string[]) {
   }
   return JSON.parse(printed);
 }
+
+// test-support/setup.mjs refuses a real `tailscale ssh` or ssh, also from
+// an env without PATH (libuv then searches /usr/bin:/bin), and a caller
+// that swallows the error (status, sources) still fails the run. Were the
+// guard open, these would only print usage and a version.
+const realHost = spawnSync(
+  process.execPath,
+  [
+    "-e",
+    `const { spawnSync } = require("node:child_process");
+for (const [bin, args, options] of [["tailscale", ["ssh", "--help"]], ["ssh", ["-V"]], ["ssh", ["-V"], { env: {} }]])
+  try { spawnSync(bin, args, options); } catch {}`,
+  ],
+  { encoding: "utf8" },
+);
+assert.equal(realHost.status, 1, realHost.stderr);
+assert.equal(realHost.stderr.match(/Tests cannot reach a real host/g)?.length, 3, realHost.stderr);
 
 try {
   // --- A config from before multi-host support reads as one host ---------
