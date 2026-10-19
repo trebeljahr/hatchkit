@@ -228,6 +228,23 @@ const byName = (rows: ReturnType<typeof integrityRows>) =>
   );
   assert.equal(stale["Host integrity daily check"].status, "fail");
   assert.match(stale["Host integrity daily check"].detail ?? "", /50 h ago/);
+  // Staleness counts from checkedAt, the end of the run: one that began
+  // 37 h ago and finished an hour later is still current.
+  const late = lastCheck("2026-10-17T20:00:13+00:00");
+  const ended = byName(
+    integrityRows(
+      report([], {
+        timer: {
+          ...late,
+          lastCheck: { ...late.lastCheck, startedAt: "2026-10-17T19:00:00+00:00" },
+        },
+      }),
+      TARGET,
+      now,
+    ),
+  );
+  assert.equal(ended["Host integrity daily check"].status, "ok");
+  assert.equal(ended["Host integrity: CPU (daily check, 1 h)"].status, "fail");
 }
 
 // --- timer states ------------------------------------------------------------
@@ -376,6 +393,33 @@ try {
       hint: ["Retry: hatchkit host integrity --json"],
     },
   ]);
+
+  // Two hosts through doctor: each scan row names its host once (the
+  // 2026-10-19 drill printed "Host integrity (dedicated-vps) (dedicated-vps)").
+  const single = getStore().get("providers.backups");
+  const meta = { transport: "tailscale" as const, target: TARGET, serverUuid: "server-uuid" };
+  getStore().set("providers.backups", {
+    status: "configured",
+    repositoryBase: "s3:https://account.eu.r2.cloudflarestorage.com/backups",
+    hosts: {
+      "dedicated-vps": meta,
+      "shared-vps": { ...meta, target: "root@shared-vps", serverUuid: "shared-uuid" },
+    },
+    autoRegister: false,
+  });
+  for (const host of ["dedicated-vps", "shared-vps"])
+    writeFileSync(join(dir, `root@${host}.json`), `${JSON.stringify(report([], { host }))}\n`);
+  fake(`cat "${dir}/$2.json"`);
+  assert.deepEqual(
+    (await checkHostIntegrity()).map((r) => r.name),
+    [
+      "Host integrity (dedicated-vps)",
+      "Host integrity daily check (dedicated-vps)",
+      "Host integrity (shared-vps)",
+      "Host integrity daily check (shared-vps)",
+    ],
+  );
+  getStore().set("providers.backups", single);
 
   // install --dry-run: the payload is the three files, and the host script
   // stops after its read-only first scan.

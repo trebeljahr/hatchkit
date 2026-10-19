@@ -63,7 +63,10 @@ export interface IntegrityFinding {
 }
 
 export interface LastCheck {
+  /** When the run's result was known: the end of its hour-long scan. */
   checkedAt: string;
+  /** When the run began; absent in status files written before 2026-10-19. */
+  startedAt?: string;
   ok: boolean;
   error: string | null;
   containers: number | null;

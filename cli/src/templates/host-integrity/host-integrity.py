@@ -404,8 +404,9 @@ def image_glob(image):
 
 
 def name_glob(name):
-    """Coolify names app containers `<uuid>-<deploy time>`: keep the uuid."""
-    match = re.match(r'^(.+)-\d{9,}$', name)
+    """Coolify names app containers `<uuid>-<deploy time>`, the time as digits
+    (`-211834526961`) or as YYYYMMDDTHHMMSS (`-20261018T233753`): keep the uuid."""
+    match = re.match(r'^(.+)-(?:\d{9,}|\d{8}T\d{6})$', name)
     return match.group(1) + '-*' if match else name
 
 
@@ -912,9 +913,13 @@ def write_status(work, state):
     temporary.replace(path)
 
 
-def check(host, work, config, send, now=None, window=CHECK_WINDOW):
+def utc_now():
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def check(host, work, config, send, clock=utc_now, window=CHECK_WINDOW):
     """One timer run. Mails findings, a failed run, and the first clean run after either."""
-    now = now or dt.datetime.now(dt.timezone.utc)
+    started = clock()
     try:
         previous = json.loads((work / STATUS_NAME).read_text())
     except (OSError, ValueError):
@@ -926,6 +931,9 @@ def check(host, work, config, send, now=None, window=CHECK_WINDOW):
         error = str(failure)
     except Exception as failure:  # never echo a message that might carry host data
         error = type(failure).__name__
+    # The scan takes the whole window: the result is from when it ends, and
+    # doctor's staleness check reads checkedAt.
+    finished = clock()
     findings = report['findings'] if report else []
     hostname = socket.gethostname()
     kind, subject = None, None
@@ -936,7 +944,8 @@ def check(host, work, config, send, now=None, window=CHECK_WINDOW):
                                      + ('' if len(findings) == 1 else 's') + ' — ' + hostname)
     elif previous.get('findings') or previous.get('error'):
         kind, subject = 'recovery', '[Hatchkit] Host integrity clear — ' + hostname
-    state = {'checkedAt': now.isoformat(timespec='seconds'), 'ok': not error and not findings,
+    state = {'checkedAt': finished.isoformat(timespec='seconds'),
+             'startedAt': started.isoformat(timespec='seconds'), 'ok': not error and not findings,
              'error': error, 'containers': report and report['containers'],
              'cpuWindowSeconds': report and report['cpuWindowSeconds'], 'findings': findings[:50],
              'skipped': (report or {}).get('skipped', []), 'mailed': None, 'messageId': None}

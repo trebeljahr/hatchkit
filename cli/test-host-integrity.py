@@ -396,7 +396,20 @@ class Detectors(unittest.TestCase):
         self.assertEqual([(f['container'], f['percent']) for f in findings], [('busy', 60.0)])
         self.assertEqual(findings[0]['allow'], {'cpuLimits': {'busy': 70}})
         self.assertEqual(hi.name_glob('bbu24hzgels1n2m1sznx3fdu-211834526961'), 'bbu24hzgels1n2m1sznx3fdu-*')
+        self.assertEqual(hi.name_glob('bbu24hzgels1n2m1sznx3fdu-20261018T233753'), 'bbu24hzgels1n2m1sznx3fdu-*')
+        for fixed in ('coolify-proxy', 'postgres-yxhctpxl6dqfhs3vpacg5it2', 'app-2026', 'app-20261018T2337'):
+            self.assertEqual(hi.name_glob(fixed), fixed)
         self.assertIn('60 % of one core averaged over 60 min (limit 50 %)', findings[0]['summary'])
+
+    def test_cpu_allow_survives_a_redeploy(self):
+        """The allow entry for one deploy's container still applies to the next."""
+        for first, second in (('bbu24hzgels1n2m1sznx3fdu-20261018T233753', 'bbu24hzgels1n2m1sznx3fdu-20261019T050102'),
+                              ('bbu24hzgels1n2m1sznx3fdu-211834526961', 'bbu24hzgels1n2m1sznx3fdu-20261019T050102')):
+            before = {'id': 'a', 'name': first, 'image': 'ghcr.io/x/encoder:1'}
+            allow = hi.cpu_hogs([before], {'a': 60.0}, 3600, {})[0]['allow']
+            self.assertEqual(allow, {'cpuLimits': {'bbu24hzgels1n2m1sznx3fdu-*': 70}})
+            after = {'id': 'b', 'name': second, 'image': 'ghcr.io/x/encoder:2'}
+            self.assertEqual(hi.cpu_hogs([after], {'b': 60.0}, 3600, allow), [])
 
     def test_cgroup_v1_usage(self):
         cid = self.fx.container('v1', 'redis:7', 10)
@@ -505,12 +518,15 @@ class Check(unittest.TestCase):
         return '<id-%d>' % len(self.sent)
 
     def run_check(self, scan=None, error=None, send=None):
+        # The timer starts at 05:00; the scan takes its hour.
+        times = iter([dt.datetime(2026, 10, 19, 5, tzinfo=dt.timezone.utc),
+                      dt.datetime(2026, 10, 19, 6, 0, 13, tzinfo=dt.timezone.utc)])
         def fake(host, window, site, only=None):
             if error:
                 raise error
             return scan
         with patch.object(hi, 'scan', side_effect=fake), patch.object(hi, 'read_site', return_value={}):
-            return hi.check(None, self.work, self.config, send or self.send, now=dt.datetime(2026, 10, 19, 5, tzinfo=dt.timezone.utc))
+            return hi.check(None, self.work, self.config, send or self.send, clock=lambda: next(times))
 
     def report(self, findings):
         return {'containers': 31, 'cpuWindowSeconds': 3600, 'findings': findings}
@@ -526,6 +542,9 @@ class Check(unittest.TestCase):
         self.assertIn('hatchkit host integrity --json', body)
         status = json.loads((self.work / hi.STATUS_NAME).read_text())
         self.assertEqual(status['findings'], [finding])
+        # checkedAt is when the result is known, not when the hour began.
+        self.assertEqual((status['startedAt'], status['checkedAt']),
+                         ('2026-10-19T05:00:00+00:00', '2026-10-19T06:00:13+00:00'))
         self.run_check(self.report([finding]))
         self.assertEqual(len(self.sent), 2)  # every daily run with findings mails
         state, _ = self.run_check(self.report([]))
