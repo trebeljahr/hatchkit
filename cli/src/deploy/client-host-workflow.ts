@@ -14,10 +14,13 @@
  *                  check, and it says whether it deployed at all.
  *   deploy-client  new, after `deploy`: waits until the server reports
  *                  this commit, then `wrangler versions deploy`, then
- *                  polls /version.json. Server first: the client switch
+ *                  polls /version.json, then records the web deploy as
+ *                  a GitHub Deployment. Server first: the client switch
  *                  is one atomic step, so it can wait for a verified
  *                  server, and an old tab calling a new server is the
- *                  direction the release compat suite covers.
+ *                  direction the release compat suite covers. The
+ *                  `deploy` job's own web record goes: the Coolify
+ *                  deploy no longer makes the site live, the switch does.
  *   release-summary  always runs and says which half is live; the run is
  *                  red when either half failed.
  *
@@ -160,6 +163,116 @@ export function readWebhookGate(
 }
 
 // ---------------------------------------------------------------------------
+// The web deploy's GitHub Deployment
+// ---------------------------------------------------------------------------
+
+/** deploy-client's token scopes. `deployments: write` for the record; no
+ *  `packages: write`, because this job only talks to Cloudflare, the site
+ *  and the Deployments API. */
+const CLIENT_JOB_PERMISSIONS = [
+  "    permissions:",
+  "      contents: read",
+  "      deployments: write",
+];
+
+/** The last steps of deploy-client: the web channel's record, once the
+ *  Worker serves this commit. No `if:` of their own: the switch has none,
+ *  and the job's `if:` gates both. */
+const CLIENT_RECORD_STEPS = `      # Leave a GitHub Deployment for this commit on the \`web\` channel, so
+      # launchdeck's Shipped view and the Environments page show what is
+      # live. Here and not in \`deploy\`: the Worker switch makes the site
+      # live. This job has no checkout, so the action is fetched on its own.
+      - name: Check out the record-ship action
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions/record-ship
+          persist-credentials: false
+
+      - name: Record the web deploy
+        uses: ./.github/actions/record-ship
+        with:
+          environment: web
+          url: \${{ env.SITE_URL }}`;
+
+const RECORD_SHIP_USE = /^\s+uses: \.\/\.github\/actions\/record-ship\s*$/m;
+const RECORD_SHIP_CHECKOUT = /^\s+sparse-checkout: \.github\/actions(?:\/record-ship)?\s*$/m;
+
+/** Remove the steps that record a GitHub Deployment (the record-ship call
+ *  and the sparse checkout that fetches it) from a job, each with the
+ *  comment and blank line that lead into it, and the job's
+ *  `deployments: write`. A sparse checkout another local action of the
+ *  job still needs stays. Returns the lines unchanged when it has none. */
+function dropRecordShipSteps(lines: string[], job: JobBlock): string[] {
+  const starts: number[] = [];
+  for (let i = job.start + 1; i < job.end; i++) if (/^ {6}- /.test(lines[i])) starts.push(i);
+  const otherLocalAction = lines
+    .slice(job.start, job.end)
+    .some((l) => /^\s+(?:- )?uses: \.\/\.github\/actions\//.test(l) && !RECORD_SHIP_USE.test(l));
+  const drop = new Set<number>();
+  starts.forEach((start, k) => {
+    let end = starts[k + 1] ?? job.end;
+    // Trailing comments and blanks lead into the next step.
+    while (end - 1 > start && /^\s*(#.*)?$/.test(lines[end - 1])) end--;
+    const body = lines.slice(start, end).join("\n");
+    const checkout = RECORD_SHIP_CHECKOUT.test(body) && !otherLocalAction;
+    if (!RECORD_SHIP_USE.test(body) && !checkout) return;
+    let lead = start;
+    while (lead - 1 > job.start && /^ {6}#/.test(lines[lead - 1])) lead--;
+    if (lead - 1 > job.start && !lines[lead - 1].trim()) lead--;
+    for (let i = lead; i < end; i++) drop.add(i);
+  });
+  if (!drop.size) return lines;
+  const permsAt = lines.findIndex(
+    (l, i) => i > job.start && i < job.end && /^ {4}permissions:\s*$/.test(l),
+  );
+  if (permsAt !== -1) {
+    for (let i = permsAt + 1; i < job.end && /^ {6}/.test(lines[i]); i++) {
+      if (/^ {6}deployments: write\s*$/.test(lines[i])) drop.add(i);
+    }
+  }
+  return lines.filter((_, i) => !drop.has(i));
+}
+
+/** The `deploy` job without its web record: once the client is on
+ *  Workers, the Coolify deploy no longer makes the site live. */
+function dropDeployWebRecord(yaml: string): string {
+  const lines = yaml.split("\n");
+  const deploy = listJobs(lines).find((j) => j.name === "deploy");
+  return deploy ? dropRecordShipSteps(lines, deploy).join("\n") : yaml;
+}
+
+/** The web record belongs to deploy-client once the client is on
+ *  Workers. Moves it there in a workflow rewritten before it existed, or
+ *  one whose `deploy` job came from a starter that records the Coolify
+ *  deploy. A workflow with no deploy-client is not this rewrite's and is
+ *  returned as it is. Idempotent. */
+export function moveWebRecordToClient(yaml: string): string {
+  if (!/^ {2}deploy-client:\s*$/m.test(yaml)) return yaml;
+  const lines = dropDeployWebRecord(yaml).split("\n");
+  const client = listJobs(lines).find((j) => j.name === "deploy-client");
+  if (!client) return lines.join("\n");
+  const body = lines.slice(client.start, client.end);
+  if (body.some((l) => RECORD_SHIP_USE.test(l))) return lines.join("\n");
+  const permsAt = body.findIndex((l) => /^ {4}permissions:\s*$/.test(l));
+  let insert: Array<[at: number, add: string[]]>;
+  if (permsAt === -1) {
+    const ifAt = body.findIndex((l) => /^ {4}if:/.test(l));
+    const at = ifAt === -1 ? body.findIndex((l) => /^ {4}runs-on:/.test(l)) : ifAt;
+    insert = [[client.start + at + 1, CLIENT_JOB_PERMISSIONS]];
+  } else if (!body.some((l) => /^ {6}deployments: write\s*$/.test(l))) {
+    insert = [[client.start + permsAt + 1, ["      deployments: write"]]];
+  } else insert = [];
+  const out = [
+    ...lines.slice(0, client.end),
+    "",
+    ...CLIENT_RECORD_STEPS.split("\n"),
+    ...lines.slice(client.end),
+  ];
+  for (const [at, add] of insert) out.splice(at, 0, ...add);
+  return out.join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
 
@@ -282,6 +395,7 @@ export function renderDeployClientJobs(
     runs-on: ubuntu-latest
     needs: [build-client, deploy]
     if: needs.deploy.outputs.server_deployed == 'true'
+${CLIENT_JOB_PERMISSIONS.join("\n")}
     env:
       SITE_URL: ${site}
       API_URL: ${api}
@@ -324,6 +438,8 @@ export function renderDeployClientJobs(
             sleep 5
           done
           echo "::error::$SITE_URL/version.json never reported $GITHUB_SHA"; exit 1
+
+${CLIENT_RECORD_STEPS}
 
   # Always runs, so a half-finished release says which half is live.
   release-summary:
@@ -368,15 +484,21 @@ export function rewriteWorkflowForWorkerClient(
 ): WorkflowRewrite {
   const notes: string[] = [];
   if (/^ {2}deploy-client:\s*$/m.test(yaml)) {
-    const fixed = fixRecordStepEnv(yaml);
+    const envFixed = fixRecordStepEnv(yaml);
+    const fixed = moveWebRecordToClient(envFixed);
+    if (envFixed !== yaml) {
+      notes.push("deploy: the server-deployed step now sees the env its gate reads");
+    }
+    if (fixed !== envFixed) notes.push("deploy-client: records the web deploy after the switch");
     return fixed === yaml
       ? { text: yaml, notes: ["workflow already deploys the client to Cloudflare"] }
-      : {
-          text: fixed,
-          notes: ["deploy: the server-deployed step now sees the env its gate reads"],
-        };
+      : { text: fixed, notes };
   }
-  let lines = yaml.split("\n");
+  // The starter's deploy job records the Coolify web deploy; with the
+  // client on Workers that record moves to deploy-client.
+  const withoutRecord = dropDeployWebRecord(yaml);
+  if (withoutRecord !== yaml) notes.push("deploy: no longer records the web deploy");
+  let lines = withoutRecord.split("\n");
   let jobs = listJobs(lines);
   const buildClient = jobs.find((j) => j.name === "build-client");
   const deploy = jobs.find((j) => j.name === "deploy");
@@ -457,6 +579,8 @@ export function rewriteWorkflowForWorkerClient(
     .map((j) => j.name)
     .filter((n) => n.startsWith("build-"));
   const text = `${lines.join("\n").replace(/\n*$/, "\n")}${renderDeployClientJobs(input, { buildJobs })}`;
-  notes.push("deploy-client + release-summary added (server first, then the Worker switch)");
+  notes.push(
+    "deploy-client + release-summary added (server first, then the Worker switch, then the web record)",
+  );
   return { text, notes };
 }

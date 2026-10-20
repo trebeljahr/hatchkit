@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { CLOUDFLARE_WRANGLER_REL_PATH } from "../scaffold/cloudflare-mode.js";
+import { RECORD_SHIP_ACTION_REL_PATH, writeRecordShipAction } from "../scaffold/record-ship.js";
 import {
   defaultCompatibilityDate,
   findImmutable404Rules,
@@ -417,6 +418,9 @@ export function writeClientRepoFiles(
   const carry: string[] = [];
   writeCarryScript(projectDir, carry);
   if (carry.length) changes.push("wrote: scripts/carry-static.mjs");
+
+  // deploy-client records the web deploy through this local action.
+  if (writeRecordShipAction(projectDir)) changes.push(`wrote: ${RECORD_SHIP_ACTION_REL_PATH}`);
 
   if (rewritten.text !== readFileSync(workflowPath, "utf-8")) {
     writeFileSync(workflowPath, rewritten.text, "utf-8");

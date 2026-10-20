@@ -1,11 +1,13 @@
 /*
  * cli/src/features/signing/workflow-writer.ts — Write the three
  * signing workflow files + the iOS ExportOptions plist template into
- * the user's project, with __HATCHKIT_*__ token substitution.
+ * the user's project, with __HATCHKIT_*__ token substitution, and the
+ * record-ship action the iOS and Android workflows call.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { RECORD_SHIP_ACTION_REL_PATH, writeRecordShipAction } from "../../scaffold/record-ship.js";
 import { type RenderTokens, renderSigningTemplate } from "./render.js";
 import type { SigningPlatform } from "./types.js";
 
@@ -65,6 +67,13 @@ export function writeSigningWorkflows(input: WriteWorkflowsInput): WriteWorkflow
     const result = writeIfChanged(dest, rendered);
     if (result === "written") written.push("scripts/ios-ExportOptions.plist.template");
     else unchanged.push("scripts/ios-ExportOptions.plist.template");
+  }
+
+  // The iOS and Android workflows record each store upload through this
+  // local action. A copy already there is the project's own and stays.
+  if (input.platforms.includes("ios") || input.platforms.includes("android")) {
+    if (writeRecordShipAction(input.projectDir)) written.push(RECORD_SHIP_ACTION_REL_PATH);
+    else unchanged.push(RECORD_SHIP_ACTION_REL_PATH);
   }
 
   return { written, unchanged };

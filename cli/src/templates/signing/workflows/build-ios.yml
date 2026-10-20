@@ -43,6 +43,10 @@ jobs:
     # or kept inside RUNNER_TEMP there.
     runs-on: ${{ vars.APPLE_RUNNER || 'macos-15' }}
     timeout-minutes: 60
+    # deployments: write for the TestFlight record below.
+    permissions:
+      contents: read
+      deployments: write
     env:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       APPLE_PROVISIONING_PROFILE_NAME: ${{ secrets.APPLE_PROVISIONING_PROFILE_NAME }}
@@ -159,6 +163,14 @@ jobs:
           issuer-id: ${{ secrets.APPSTORE_API_ISSUER_ID }}
           api-key-id: ${{ secrets.APPSTORE_API_KEY_ID }}
           api-private-key: ${{ secrets.APPSTORE_API_KEY_P8_BASE64 }}
+
+      # A GitHub Deployment per upload, so launchdeck's Shipped view shows
+      # which build TestFlight has. Same gate as the upload: a failed upload
+      # stops the job before it, so it records only what was uploaded.
+      - name: Record the TestFlight upload
+        uses: ./.github/actions/record-ship
+        with:
+          environment: testflight
 
       - name: Clean up keychain
         if: always()

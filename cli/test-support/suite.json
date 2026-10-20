@@ -40,6 +40,7 @@
   "test-manifest.ts",
   "test-routing.ts",
   "test-client-host.ts",
+  "test-record-ship.ts",
   "test-routed-worker-site.ts",
   "test-newsletter-worker.ts",
   "test-lead-magnet.ts",

@@ -37,6 +37,7 @@ import { ensureDockerignoreAllowsEnvProduction } from "../utils/dockerignore.js"
 import { renderTemplate } from "../utils/template.js";
 import { setWorkflowVerifyUrlValues } from "./deploy-verification.js";
 import { stripWorkflowE2eS3 } from "./e2e-s3.js";
+import { RECORD_SHIP_ACTION_REL_PATH, recordShipActionSource } from "./record-ship.js";
 
 /** Default Node major used when the project doesn't pin one via
  *  `engines.node`. Bumped to 24 (LTS since Oct 2025) to match what
@@ -656,6 +657,11 @@ export function scaffoldBuildPipeline(
       apiUrl: "",
     });
     write(DEPLOY_WORKFLOW_PATH, verified, workflowExistedBefore, repoRoot);
+    // The deploy job records each web deploy through this local action.
+    // A copy already there is the repo's own and stays.
+    if (!existsSync(join(repoRoot, RECORD_SHIP_ACTION_REL_PATH))) {
+      write(RECORD_SHIP_ACTION_REL_PATH, recordShipActionSource(), false, repoRoot);
+    }
   } else {
     skipped.push(DEPLOY_WORKFLOW_PATH);
   }

@@ -62,7 +62,8 @@ Pick `static` for the project shape, then `Cloudflare Workers` for the deploymen
 | `wrangler.jsonc` | What to serve (`packages/client/out`), how to handle 404s, `workers_dev: true` |
 | `.node-version` | Toolchain pin, read by CI and by Cloudflare's own build image |
 | `packages/client/public/_headers` | Immutable caching for `/_next/static/*`, no-store for `/version.json` |
-| `.github/workflows/deploy.yml` | Build, then `cloudflare/wrangler-action@v4` |
+| `.github/workflows/deploy.yml` | Build, upload a Worker version, activate it, then record the deploy as a GitHub Deployment (`web`) |
+| `.github/actions/record-ship/action.yml` | The step that records the deploy; launchdeck's Shipped view reads it |
 
 It also rewrites `packages/client/next.config.ts` for static export and removes the starter's GHCR image workflow — there is no image to build, and it would fail on every push.
 

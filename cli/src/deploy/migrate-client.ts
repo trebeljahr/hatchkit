@@ -14,8 +14,8 @@
  *      proxied records, foreign routes, the HTTPS rule.
  *   1. Repo files, written locally and never committed or pushed:
  *      wrangler.jsonc, _headers, _redirects, scripts/carry-static.mjs,
- *      the workflow rewrite (client-host-workflow.ts). `--repo-only`
- *      stops here.
+ *      the record-ship action, the workflow rewrite
+ *      (client-host-workflow.ts). `--repo-only` stops here.
  *   2. The Worker, its own deploy token, CLOUDFLARE_API_TOKEN /
  *      CLOUDFLARE_ACCOUNT_ID on the repo (existing hatchkit code).
  *   3. First version: a local export of HEAD, uploaded and activated.

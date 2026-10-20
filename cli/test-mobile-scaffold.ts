@@ -231,6 +231,21 @@ try {
       "the keychain plugin is a dependency — the preference store is readable from an unencrypted backup",
     );
 
+    // The native sign-in check probes the API with the origins written
+    // here. Left at `${{ vars.HATCHKIT_API_URL }}`, a variable hatchkit
+    // never sets, it fails every deploy with "HATCHKIT_API_URL is empty".
+    const wf = read(d, ".github/workflows/build-and-deploy.yml");
+    const native = wf.slice(wf.indexOf("- name: Verify native clients can sign in"));
+    assert(
+      native.includes('HATCHKIT_NATIVE_ORIGINS: "capacitor://localhost,https://localhost"'),
+      "the native sign-in check lists the phone origins",
+    );
+    assert(
+      native.includes("HATCHKIT_API_URL: https://withmobile.example.com\n"),
+      "the native sign-in check probes the project's API URL",
+    );
+    assert(!wf.includes("vars.HATCHKIT_API_URL"), "no API URL is left to an unset repo variable");
+
     const cap = read(d, "capacitor.config.ts");
     assert(cap.includes("com.example.withmobile"), "the bundle id is substituted");
     assert(!cap.includes("{{"), "no template placeholder survives");

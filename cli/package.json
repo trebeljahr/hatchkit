@@ -47,6 +47,7 @@
     "test:routing": "node scripts/test.mjs test-routing.ts",
     "test:carry-static": "node scripts/test.mjs test-carry-static.ts",
     "test:client-host": "node scripts/test.mjs test-client-host.ts",
+    "test:record-ship": "node scripts/test.mjs test-record-ship.ts",
     "test:backup-host-exec": "node scripts/test.mjs test-backup-host-exec.ts",
     "test:backup-hosts": "node scripts/test.mjs test-backup-hosts.ts",
     "test:host-integrity": "node scripts/test.mjs test-host-integrity.ts",

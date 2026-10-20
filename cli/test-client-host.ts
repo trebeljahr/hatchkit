@@ -51,6 +51,7 @@ const { findImmutable404Rules, findWranglerBillingKeys } = await import(
   "./src/scaffold/worker-assets.js"
 );
 const { locateSyncApps } = await import("./src/deploy/sync.js");
+const { recordShipActionSource } = await import("./src/scaffold/record-ship.js");
 type RoutingInput = import("./src/deploy/routing.js").RoutingInput;
 type CfWorkerRoute = import("./src/utils/cloudflare-api.js").CfWorkerRoute;
 type CfRuleset = import("./src/utils/cloudflare-api.js").CfRuleset;
@@ -856,7 +857,7 @@ await test("scan: the starter's dev-only /api rewrite is fine", () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-await test("repo files: wrangler, _headers, _redirects, carry script, workflow; idempotent", () => {
+await test("repo files: wrangler, _headers, _redirects, carry script, record-ship, workflow; idempotent", () => {
   const dir = project({
     ".nvmrc": "24\n",
     "packages/client/next.config.ts": MOOD_NEXT_CONFIG,
@@ -871,7 +872,7 @@ await test("repo files: wrangler, _headers, _redirects, carry script, workflow; 
     compatibilityDate: "2026-10-15",
   };
   const changes = writeClientRepoFiles(dir, input, scan);
-  assert.equal(changes.length, 5, changes.join("\n"));
+  assert.equal(changes.length, 6, changes.join("\n"));
   const wrangler = readFileSync(join(dir, "wrangler.jsonc"), "utf-8");
   assert.match(wrangler, /"name": "mood-client"/);
   assert.match(wrangler, /"directory": "\.\/packages\/client\/out"/);
@@ -892,6 +893,11 @@ await test("repo files: wrangler, _headers, _redirects, carry script, workflow; 
   assert.match(
     readFileSync(join(dir, "scripts/carry-static.mjs"), "utf-8"),
     /release-assets\.json/,
+  );
+  // deploy-client records the web deploy through it.
+  assert.equal(
+    readFileSync(join(dir, ".github/actions/record-ship/action.yml"), "utf-8"),
+    recordShipActionSource(),
   );
   assert.match(
     readFileSync(join(dir, ".github/workflows/build-and-deploy.yml"), "utf-8"),

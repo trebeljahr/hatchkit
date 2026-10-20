@@ -13,7 +13,8 @@
 //   .node-version                  — pin the CI toolchain
 //   packages/client/public/_headers — no-cache rules (see worker-assets.ts)
 //   scripts/carry-static.mjs       — carries old hashed chunks into each upload
-//   .github/workflows/deploy.yml   — build, carry, upload, then activate
+//   .github/workflows/deploy.yml   — build, carry, upload, activate, record
+//   .github/actions/record-ship    — records the deploy as a GitHub Deployment
 //
 // Everything here is idempotent: each step checks for the desired end
 // state first, so re-running against an already-converted project is a
@@ -22,6 +23,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readPackageName, readWorkspacePackageNames } from "./pkg-json.js";
+import { RECORD_SHIP_ACTION_REL_PATH, writeRecordShipAction } from "./record-ship.js";
 import { removeIfExists } from "./starter-files.js";
 import {
   CARRY_SCRIPT_REL_PATH,
@@ -230,8 +232,10 @@ function writeHeaders(outputDir: string, modifications: string[]): void {
  *  derives dates from the filesystem (a sitemap's `lastmod` is the
  *  usual victim).
  *
- *  A workflow hatchkit wrote before 2026-10-15 (one-step `wrangler
- *  deploy`, no carry) is replaced; any other existing file is left alone.
+ *  A workflow hatchkit wrote earlier (one-step `wrangler deploy` before
+ *  2026-10-15, or no deploy record before 2026-10-20) is replaced; any
+ *  other existing file is left alone. The record-ship action comes along
+ *  whenever the project runs hatchkit's workflow.
  */
 function writeDeployWorkflow(
   outputDir: string,
@@ -244,21 +248,29 @@ function writeDeployWorkflow(
   const body = renderDeployWorkflow(branch, siteUrl);
   if (existsSync(path)) {
     const current = readFileSync(path, "utf-8");
-    if (current === body) return;
-    if (current !== renderLegacyDeployWorkflow(branch)) {
+    if (current !== body) {
+      const earlier = [
+        renderLegacyDeployWorkflow(branch),
+        renderWorkflow(branch, siteUrl, { recordShip: false }),
+      ];
+      if (!earlier.includes(current)) {
+        modifications.push(
+          `cloudflare: ${CLOUDFLARE_WORKFLOW_REL_PATH} already exists — left untouched`,
+        );
+        return;
+      }
+      writeFileSync(path, body, "utf-8");
       modifications.push(
-        `cloudflare: ${CLOUDFLARE_WORKFLOW_REL_PATH} already exists — left untouched`,
+        `cloudflare: replaced ${CLOUDFLARE_WORKFLOW_REL_PATH} (upload, then activate, then record; carry old chunks)`,
       );
-      return;
     }
+  } else {
     writeFileSync(path, body, "utf-8");
-    modifications.push(
-      `cloudflare: replaced ${CLOUDFLARE_WORKFLOW_REL_PATH} (upload, then activate; carry old chunks)`,
-    );
-    return;
+    modifications.push(`cloudflare: wrote ${CLOUDFLARE_WORKFLOW_REL_PATH}`);
   }
-  writeFileSync(path, body, "utf-8");
-  modifications.push(`cloudflare: wrote ${CLOUDFLARE_WORKFLOW_REL_PATH}`);
+  if (writeRecordShipAction(outputDir)) {
+    modifications.push(`cloudflare: wrote ${RECORD_SHIP_ACTION_REL_PATH}`);
+  }
 }
 
 /** Exported for the test suite and for `hatchkit cloudflare`, which
@@ -269,6 +281,38 @@ function writeDeployWorkflow(
  *  (canary, 2026-10-12). `versions upload`, a 43 s pause and `versions
  *  deploy` had no 404 in 14 samples. The pause here is 30 s. */
 export function renderDeployWorkflow(branch: string, siteUrl?: string): string {
+  return renderWorkflow(branch, siteUrl, { recordShip: true });
+}
+
+/** `recordShip: false` is the workflow hatchkit wrote from 2026-10-15
+ *  until 2026-10-20, kept so a re-run recognises it as its own. */
+function renderWorkflow(
+  branch: string,
+  siteUrl: string | undefined,
+  opts: { recordShip: boolean },
+): string {
+  // The record is a GitHub Deployment on the `web` channel, so the
+  // job's token must be allowed to write one (a repo's default token is
+  // often read-only).
+  const permissions = opts.recordShip
+    ? `
+    permissions:
+      contents: read
+      deployments: write`
+    : "";
+  // Last, and with no \`if:\` of its own, like the activation: a run whose
+  // activation failed stops before it, so it records only what went live.
+  const record = opts.recordShip
+    ? `
+
+      # Leave a GitHub Deployment for this commit on the \`web\` channel, so
+      # launchdeck's Shipped view and the Environments page show what is live.
+      - name: Record the web deploy
+        uses: ./.github/actions/record-ship
+        with:
+          environment: web
+          url: \${{ env.SITE_URL }}`
+    : "";
   return `name: Deploy to Cloudflare
 
 on:
@@ -289,7 +333,7 @@ env:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest${permissions}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -343,7 +387,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: \${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: \${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: pnpm dlx "$WRANGLER" versions deploy "\${{ steps.upload.outputs.version_id }}@100%" --message "$GITHUB_SHA" --yes
+        run: pnpm dlx "$WRANGLER" versions deploy "\${{ steps.upload.outputs.version_id }}@100%" --message "$GITHUB_SHA" --yes${record}
 `;
 }
 

@@ -625,6 +625,39 @@ expect("native-origin check: inserted right after the verify step, before any la
   assert.equal(upgradeWorkflowNativeOriginCheck(out, ["mobile"]), out, "not idempotent");
 });
 
+// The native sign-in check declares its own HATCHKIT_API_URL. Left at
+// `${{ vars.HATCHKIT_API_URL }}` (a variable hatchkit never sets) while the
+// origin list is filled in, it failed every deploy of a project with a
+// native client: "HATCHKIT_NATIVE_ORIGINS is set but HATCHKIT_API_URL is
+// empty".
+expect("every HATCHKIT_API_URL line follows the manifest, the native check's too", () => {
+  const wf = `jobs:\n  deploy:\n    steps:\n${WORKFLOW_VERIFY_STEP}\n${WORKFLOW_NATIVE_ORIGIN_STEP}`;
+  assert.equal(wf.split("HATCHKIT_API_URL: ${{ vars.HATCHKIT_API_URL }}\n").length - 1, 2);
+  const set = setWorkflowDeployVerifyUrls(wf, "example.com", "split", "split");
+  assert.equal(set.split("HATCHKIT_API_URL: https://api.example.com\n").length - 1, 2);
+  assert.ok(!set.includes("vars.HATCHKIT_API_URL"));
+});
+
+expect("a native check added after the URLs were written probes the same API URL", () => {
+  // `hatchkit update` / `regen-infra` order: URLs first, then the check.
+  const pre = setWorkflowDeployVerifyUrls(
+    `jobs:\n  deploy:\n    steps:\n${WORKFLOW_VERIFY_STEP}`,
+    "example.com",
+    "split",
+    "split",
+  );
+  const out = upgradeWorkflowNativeOriginCheck(pre, ["mobile"]);
+  const native = out.slice(out.indexOf("- name: Verify native clients can sign in"));
+  assert.ok(native.includes("HATCHKIT_API_URL: https://api.example.com\n"), native);
+  assert.ok(!out.includes("vars.HATCHKIT_API_URL"));
+  assert.equal(upgradeWorkflowNativeOriginCheck(out, ["mobile"]), out, "not idempotent");
+  const retrofit = deployVerificationRetrofits("example.com", "split", "split", ["mobile"]).find(
+    ([, rel]) => rel === WORKFLOW_REL,
+  )?.[2];
+  assert.ok(retrofit);
+  assert.equal(retrofit(pre), out);
+});
+
 expect("native-origin check: no-ops without native features or without the verify anchor", () => {
   const pre =
     "jobs:\n  deploy:\n    steps:\n      - name: Verify the deployment is actually live\n        run: echo v\n";

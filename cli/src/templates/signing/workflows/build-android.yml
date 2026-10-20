@@ -48,6 +48,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # deployments: write for the Google Play record below.
+    permissions:
+      contents: read
+      deployments: write
     env:
       ANDROID_VERSION_CODE: ${{ github.run_number }}
       ANDROID_VERSION_NAME: ${{ github.ref_type == 'tag' && github.ref_name || format('0.0.{0}', github.run_number) }}
@@ -125,6 +129,15 @@ jobs:
           track: ${{ github.event.inputs.track || 'internal' }}
           status: completed
           changesNotSentForReview: false
+
+      # A GitHub Deployment per upload, so launchdeck's Shipped view shows
+      # which version each track has. Same gate as the upload: a failed
+      # upload stops the job before it, so it records only what was uploaded.
+      - name: Record the Google Play upload
+        uses: ./.github/actions/record-ship
+        with:
+          environment: google-play
+          branch: ${{ github.event.inputs.track || 'internal' }}
 
       - name: Clean up keystore artifacts
         if: always()

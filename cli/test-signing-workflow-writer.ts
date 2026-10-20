@@ -9,6 +9,8 @@
  *      not Hatchkit-time.
  *   3. YAML `${{ secrets.X }}` placeholders survive verbatim.
  *   4. Idempotent re-runs: same input twice → second pass writes 0 files.
+ *   5. The record-ship action the iOS and Android workflows call comes
+ *      along (test-record-ship.ts covers the record steps themselves).
  *
  * Run: pnpm --filter hatchkit test:signing-workflow-writer
  */
@@ -45,6 +47,7 @@ try {
     ".github/workflows/build-ios.yml",
     ".github/workflows/build-android.yml",
     "scripts/ios-ExportOptions.plist.template",
+    ".github/actions/record-ship/action.yml",
   ];
   for (const f of expectedWritten) {
     assert(first.written.includes(f), `first run wrote ${f}`);
@@ -96,7 +99,7 @@ try {
   // Idempotent re-run.
   const second = writeSigningWorkflows(args);
   assert(second.written.length === 0, `re-run wrote ${second.written.length} (expected 0)`);
-  assert(second.unchanged.length === 4, `re-run reported ${second.unchanged.length} unchanged`);
+  assert(second.unchanged.length === 5, `re-run reported ${second.unchanged.length} unchanged`);
 
   if (failed === 0) {
     console.log("test-signing-workflow-writer: ok");

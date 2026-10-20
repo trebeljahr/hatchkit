@@ -108,6 +108,8 @@ The three workflow files are byte-for-byte copies of mesozoic-protocol's referen
 
 Triggered on `git tag v*` (or `workflow_dispatch`).
 
+After each upload, the iOS and Android workflows record a GitHub Deployment for the channel (`testflight`, and `google-play` with the track), which launchdeck's Shipped view reads. The step calls `.github/actions/record-ship`, which `hatchkit signing` writes when the project has no copy.
+
 ## Reuse + idempotency
 
 Manifest fields populated after the first successful run:

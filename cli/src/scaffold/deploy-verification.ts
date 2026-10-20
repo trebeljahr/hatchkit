@@ -637,10 +637,10 @@ export function addWorkflowCommitShaBuildArg(content: string, dockerfilePath: st
 
 /** Point the gate at this project's public URLs. Anchors on the
  *  `HATCHKIT_WEB_URL:` / `HATCHKIT_API_URL:` env lines the verify step
- *  (and, for the web URL, the deploy record step) declares, so nothing
- *  else in the workflow can match. No-op when the
- *  step is absent — use {@link upgradeWorkflowDeployVerification} to
- *  insert it first. */
+ *  (and, for the API URL, the native sign-in check; for the web URL, the
+ *  deploy record step) declares, so nothing else in the workflow can
+ *  match. No-op when the step is absent — use
+ *  {@link upgradeWorkflowDeployVerification} to insert it first. */
 export function setWorkflowDeployVerifyUrls(
   content: string,
   domain: string,
@@ -658,11 +658,14 @@ export function setWorkflowDeployVerifyUrls(
  *
  *  Every `HATCHKIT_WEB_URL:` line, not only the verify step's: the step
  *  that records the web deploy as a GitHub Deployment declares one too,
- *  and its link must follow a rename like the probe does. */
+ *  and its link must follow a rename like the probe does. Every
+ *  `HATCHKIT_API_URL:` line too: the native sign-in check declares its
+ *  own, and left at `${{ vars.HATCHKIT_API_URL }}` (a variable hatchkit
+ *  never sets) it fails every deploy of a project with a native client. */
 export function setWorkflowVerifyUrlValues(content: string, urls: DeployVerifyUrls): string {
   return content
     .replace(/^(\s*HATCHKIT_WEB_URL:).*$/gm, `$1 ${urls.webUrl || '""'}`)
-    .replace(/^(\s*HATCHKIT_API_URL:).*$/m, `$1 ${urls.apiUrl || '""'}`);
+    .replace(/^(\s*HATCHKIT_API_URL:).*$/gm, `$1 ${urls.apiUrl || '""'}`);
 }
 
 /** Write the native-origin probe list into the workflow. Anchors on the
@@ -681,10 +684,13 @@ export function setWorkflowNativeOriginsValue(content: string, value: string): s
  *
  *  Inserts {@link WORKFLOW_NATIVE_ORIGIN_STEP} right after the verify
  *  step when the project has a native client and the workflow predates
- *  the check, then writes the literal origin list. A workflow without
- *  the check is left alone for a project with no native client — adding
- *  a step that can only print "nothing to check" is churn. Returns the
- *  content unchanged when the verify step it anchors on is missing. */
+ *  the check, then writes the literal origin list. The inserted step
+ *  probes the API URL the verify step already names: the URLs were
+ *  written before this step existed, so nothing else would fill its
+ *  line. A workflow without the check is left alone for a project with
+ *  no native client — adding a step that can only print "nothing to
+ *  check" is churn. Returns the content unchanged when the verify step
+ *  it anchors on is missing. */
 export function upgradeWorkflowNativeOriginCheck(
   content: string,
   features: readonly string[],
@@ -695,7 +701,15 @@ export function upgradeWorkflowNativeOriginCheck(
     if (origins.length === 0) return content;
     const at = endOfWorkflowStep(out, "- name: Verify the deployment is actually live");
     if (at === undefined) return content;
-    out = `${out.slice(0, at)}\n${WORKFLOW_NATIVE_ORIGIN_STEP}${out.slice(at)}`;
+    const apiUrl = out.match(/^\s*HATCHKIT_API_URL:[ \t]*(.*)$/m)?.[1];
+    const step =
+      apiUrl === undefined
+        ? WORKFLOW_NATIVE_ORIGIN_STEP
+        : WORKFLOW_NATIVE_ORIGIN_STEP.replace(
+            /^(\s*HATCHKIT_API_URL:).*$/m,
+            (_, key: string) => `${key} ${apiUrl}`,
+          );
+    out = `${out.slice(0, at)}\n${step}${out.slice(at)}`;
   }
   return setWorkflowNativeOriginsValue(out, origins.join(","));
 }

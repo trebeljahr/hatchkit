@@ -5546,7 +5546,8 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("What it does:")}
     1. Writes wrangler.jsonc (assets only), _headers, _redirects (from next.config
-       redirects()), scripts/carry-static.mjs and the workflow rewrite. Not committed.
+       redirects()), scripts/carry-static.mjs, the record-ship action and the
+       workflow rewrite. Not committed.
     2. Creates the Worker, its own deploy token and the repo's CLOUDFLARE_* secrets.
     3. Builds HEAD as a static export locally and uploads it as the first version.
     4. Adds the hosts to hatchkit's HTTP→HTTPS redirect rule on the zone.
