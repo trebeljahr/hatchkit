@@ -192,6 +192,19 @@ It reads the list ids from the project's env (`LISTMONK_LIVE_LIST_ID`, or `LISTM
 
 It does not push to Coolify. Run `hatchkit sync` and redeploy. Sync only adds and updates variables, so delete `SES_SMTP_*` from the Coolify app's environment by hand. When no project holds the `hatchkit` token any more, retire it with `hatchkit secrets rotate --global listmonk`.
 
+### More lists for a project
+
+A project that wants a second mailing list next to its first pair, such as an announce-only list or a supporters list, gets another pair:
+
+```sh
+hatchkit listmonk list <project> announce --name "New things" --dry-run
+hatchkit listmonk list <project> announce --name "New things"
+```
+
+It creates the live list (named `--name`, else `<project>-announce`) and `<project>-announce-test`. Both are private and double opt-in. The project's list role `<project>` gets `list:get` + `list:manage` on both, and keeps every list it already had. The project needs its own API user first (`hatchkit listmonk user <project>`); without the list role the command stops before it creates anything.
+
+A list that already exists by name is reused. A public or single-opt-in one is reported and left as it is: changing it would change who receives the next campaign. The run prints both ids and writes no env file, because the variable name is the project's choice. Put the live id in the production env and the test id everywhere else. The created lists go into the project's run ledger, so `hatchkit destroy <project>` removes them.
+
 ### Transactional-only apps and custom env files
 
 Apps that only send transactional mail can use a user with `tx:send` and no list role:

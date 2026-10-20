@@ -113,10 +113,10 @@ class FakeListmonk {
     },
   ];
   listRoles: FListRole[] = [];
-  lists = [
-    { id: 7, name: "demo" },
-    { id: 8, name: "demo-test" },
-    { id: 9, name: "other" },
+  lists: Array<{ id: number; name: string; type?: string; optin?: string; tags?: string[] }> = [
+    { id: 7, name: "demo", type: "private", optin: "double" },
+    { id: 8, name: "demo-test", type: "private", optin: "double" },
+    { id: 9, name: "other", type: "private", optin: "double" },
   ];
   /** Every call, `METHOD /path`. */
   calls: string[] = [];
@@ -207,6 +207,18 @@ class FakeListmonk {
     }
     if (method === "GET" && path === "/api/lists") {
       return this.json(200, { data: { results: this.lists, total: this.lists.length } });
+    }
+    if (method === "POST" && path === "/api/lists") {
+      if (!need("lists:manage_all")) return denied();
+      const l = {
+        id: this.nextId++,
+        name: body.name,
+        type: body.type,
+        optin: body.optin,
+        tags: body.tags,
+      };
+      this.lists.push(l);
+      return this.json(200, { data: l });
     }
     if (path === "/api/users" && method === "GET") {
       return need("users:get")
@@ -991,6 +1003,162 @@ await check("custom env creation also preserves the default newsletter workflow"
     [7, 8],
   );
   assert.ok(existsSync(join(dir, "server", ".env")));
+});
+
+// ---------------------------------------------------------------------------
+// one more list pair for an existing project
+// ---------------------------------------------------------------------------
+
+console.log("\nensureListmonkProjectLists:");
+
+const { ensureListmonkProjectLists, projectListNames, runListmonkListCli } = await import(
+  "./src/provision/listmonk-project-list.js"
+);
+
+async function withDemoUser(): Promise<void> {
+  await ensureListmonkProjectUser({
+    admin,
+    name: "demo",
+    listIds: [7, 8],
+    reservedNames: reserved,
+  });
+}
+
+await check("names: --name for the live list, <project>-<key>-test for the test list", () => {
+  assert.deepEqual(projectListNames("demo", "announce"), {
+    live: "demo-announce",
+    test: "demo-announce-test",
+  });
+  assert.deepEqual(projectListNames("demo", "announce", "New things"), {
+    live: "New things",
+    test: "demo-announce-test",
+  });
+});
+
+await check("creates both lists private + double and grants them, keeping 7 and 8", async () => {
+  fresh();
+  await withDemoUser();
+  const res = await ensureListmonkProjectLists({
+    admin,
+    project: "demo",
+    key: "announce",
+    liveName: "New things",
+  });
+  const live = lm.lists.find((l) => l.name === "New things");
+  const test = lm.lists.find((l) => l.name === "demo-announce-test");
+  assert.ok(live && test);
+  for (const l of [live, test]) {
+    assert.equal(l.type, "private");
+    assert.equal(l.optin, "double");
+    assert.deepEqual(l.tags, ["demo"]);
+  }
+  assert.deepEqual(
+    [res.live.id, res.test.id, res.live.createdThisRun, res.test.createdThisRun],
+    [live.id, test.id, true, true],
+  );
+  const role = lm.listRoles.find((r) => r.name === "demo");
+  assert.deepEqual(
+    role?.lists.map((l) => [l.id, l.permissions]),
+    [
+      [7, ["list:get", "list:manage"]],
+      [8, ["list:get", "list:manage"]],
+      [live.id, ["list:get", "list:manage"]],
+      [test.id, ["list:get", "list:manage"]],
+    ],
+  );
+});
+
+await check("a re-run writes nothing", async () => {
+  fresh();
+  await withDemoUser();
+  await ensureListmonkProjectLists({ admin, project: "demo", key: "announce" });
+  lm.calls = [];
+  const res = await ensureListmonkProjectLists({ admin, project: "demo", key: "announce" });
+  assert.deepEqual(lm.writes(), []);
+  assert.deepEqual(res.changes, []);
+  assert.equal(res.live.createdThisRun, false);
+});
+
+await check("dry run writes nothing and names every change", async () => {
+  fresh();
+  await withDemoUser();
+  lm.calls = [];
+  const res = await ensureListmonkProjectLists({
+    admin,
+    project: "demo",
+    key: "announce",
+    dryRun: true,
+  });
+  assert.deepEqual(lm.writes(), []);
+  assert.equal(res.changes.length, 4);
+  assert.match(res.changes[0], /create list demo-announce \(private, double opt-in\)/);
+  assert.match(res.changes[3], /demo-announce-test to list role demo/);
+});
+
+await check("an existing public or single-opt-in list is reused, reported, unchanged", async () => {
+  fresh();
+  await withDemoUser();
+  lm.lists.push({ id: 50, name: "demo-announce", type: "public", optin: "single" });
+  const res = await ensureListmonkProjectLists({ admin, project: "demo", key: "announce" });
+  assert.equal(res.live.id, 50);
+  assert.equal(res.live.createdThisRun, false);
+  assert.equal(res.warnings.length, 1);
+  assert.match(res.warnings[0], /public .* and single opt-in/);
+  assert.deepEqual(
+    lm.lists.find((l) => l.id === 50),
+    {
+      id: 50,
+      name: "demo-announce",
+      type: "public",
+      optin: "single",
+    },
+  );
+  assert.ok(lm.listRoles.find((r) => r.name === "demo")?.lists.some((l) => l.id === 50));
+});
+
+await check("no list role: stops before creating any list", async () => {
+  fresh();
+  lm.calls = [];
+  await assert.rejects(
+    ensureListmonkProjectLists({ admin, project: "demo", key: "announce" }),
+    /no list role demo.*hatchkit listmonk user demo/,
+  );
+  assert.deepEqual(lm.writes(), []);
+});
+
+await check("refuses a bad key and the project's first list names", async () => {
+  fresh();
+  await withDemoUser();
+  await assert.rejects(
+    ensureListmonkProjectLists({ admin, project: "demo", key: "Announce" }),
+    /cannot be a list key/,
+  );
+  await assert.rejects(
+    ensureListmonkProjectLists({ admin, project: "demo", key: "x", liveName: "demo" }),
+    /first list/,
+  );
+});
+
+await check("CLI: `list <project> <key>` creates the pair with the admin credential", async () => {
+  fresh();
+  await withDemoUser();
+  const { getStore } = await import("./src/config.js");
+  const { SECRET_KEYS, setSecret } = await import("./src/utils/secrets.js");
+  getStore().set("providers.listmonk", {
+    status: "configured",
+    url: URL_BASE,
+    apiUser: "hatchkit",
+  });
+  await setSecret(SECRET_KEYS.listmonkAdminApiToken, "ADMINTOKEN");
+  await runListmonkListCli(["demo", "supporters", "--dry-run"]);
+  assert.equal(
+    lm.lists.some((l) => l.name === "demo-supporters"),
+    false,
+  );
+  await runListmonkListCli(["demo", "supporters"]);
+  assert.ok(lm.lists.some((l) => l.name === "demo-supporters"));
+  assert.ok(lm.lists.some((l) => l.name === "demo-supporters-test"));
+  await assert.rejects(runListmonkListCli(["demo"]), /Usage: hatchkit listmonk list/);
 });
 
 globalThis.fetch = realFetch;

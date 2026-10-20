@@ -62,6 +62,34 @@ export const PROJECT_USER_PERMISSIONS = [
 /** Per-list rights on the project's live and test lists. */
 export const PROJECT_LIST_PERMISSIONS = ["list:get", "list:manage"] as const;
 
+/** Add PROJECT_LIST_PERMISSIONS on `listIds` to an existing list role.
+ *  `PUT /api/roles/lists/:id` replaces the whole set, so the request
+ *  carries every list the role already has, with the missing rights
+ *  added. `change` is null when nothing was missing. */
+export async function grantListsOnListRole(
+  admin: ListmonkAuth,
+  role: ListmonkListRole,
+  listIds: number[],
+  dryRun: boolean,
+): Promise<{ role: ListmonkListRole; change: string | null }> {
+  const byId = new Map(role.lists.map((l) => [l.id, [...l.permissions]]));
+  const added: string[] = [];
+  for (const id of listIds) {
+    const have = byId.get(id) ?? [];
+    const missing = PROJECT_LIST_PERMISSIONS.filter((p) => !have.includes(p));
+    if (missing.length === 0) continue;
+    byId.set(id, [...have, ...missing]);
+    added.push(`${missing.join(" + ")} on list ${id}`);
+  }
+  if (added.length === 0) return { role, change: null };
+  const lists = [...byId].map(([id, permissions]) => ({ id, permissions }));
+  if (!dryRun) await updateListmonkListRole(admin, role.id, { name: role.name, lists });
+  return {
+    role: { ...role, lists },
+    change: `add ${added.join(", ")} to list role ${role.name} (id ${role.id})`,
+  };
+}
+
 /** Listmonk's built-in Super Admin role passes every permission check. */
 const SUPER_ADMIN_ROLE_ID = 1;
 
@@ -266,23 +294,9 @@ export async function ensureListmonkProjectUser(
       }
       created.listRole = true;
     } else {
-      // PUT replaces the whole set, so send every list the role has, with
-      // the missing rights added to ours.
-      const byId = new Map(listRole.lists.map((l) => [l.id, [...l.permissions]]));
-      const added: string[] = [];
-      for (const id of listIds) {
-        const have = byId.get(id) ?? [];
-        const missing = listPerms.filter((p) => !have.includes(p));
-        if (missing.length === 0) continue;
-        byId.set(id, [...have, ...missing]);
-        added.push(`${missing.join(" + ")} on list ${id}`);
-      }
-      if (added.length > 0) {
-        const lists = [...byId].map(([id, permissions]) => ({ id, permissions }));
-        changes.push(`add ${added.join(", ")} to list role ${name} (id ${listRole.id})`);
-        if (!dry) await updateListmonkListRole(admin, listRole.id, { name, lists });
-        listRole = { ...listRole, lists };
-      }
+      const grant = await grantListsOnListRole(admin, listRole, listIds, dry);
+      if (grant.change) changes.push(grant.change);
+      listRole = grant.role;
     }
     events.onRole?.({
       roleType: "list",

@@ -2183,6 +2183,16 @@ async function handleListmonkCommand(rest: string[]): Promise<void> {
     await runListmonkIsolationPlan(rest.slice(1));
     return;
   }
+  if (rest[0] === "list") {
+    const { runListmonkListCli } = await import("./provision/listmonk-project-list.js");
+    try {
+      await runListmonkListCli(rest.slice(1));
+    } catch (err) {
+      console.log(chalk.red(`\n  ${(err as Error).message.split("\n").join("\n  ")}\n`));
+      process.exitCode = 1;
+    }
+    return;
+  }
   if (rest[0] !== "user") {
     printListmonkUsage();
     if (rest[0] !== undefined) process.exitCode = 1;
@@ -4146,6 +4156,15 @@ function printListmonkUsage(): void {
                            and recreate it without asking. The deployed old token
                            stops working until the app redeploys.
     --keep-ses-smtp        Leave SES_SMTP_* in the env files
+
+    ${chalk.cyan("list <project> <key> [--name <live list name>] [--dry-run]")}
+                       One more mailing list pair for a project that has its own
+                       API user: the live list (${chalk.cyan("--name")}, else ${chalk.cyan("<project>-<key>")})
+                       and ${chalk.cyan("<project>-<key>-test")}, both private and double
+                       opt-in, and get + manage on both for list role ${chalk.cyan("<project>")}.
+                       Reuses a list that exists by name and never changes it.
+                       Prints the two ids; writes no env file. Needs the admin
+                       credential, like user.
 `);
 }
 
