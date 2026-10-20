@@ -316,6 +316,35 @@ section("the workflow is actually gated on the plan");
     );
   }
 
+  // Every store upload leaves a GitHub Deployment, under the upload's own
+  // gate: a record step with any other `if:` records a ship that did not
+  // happen, or misses one that did.
+  for (const [upload, record, environment] of [
+    ["Upload to Google Play", "Record the Google Play upload", "google-play"],
+    ["Upload to TestFlight", "Record the TestFlight upload", "testflight"],
+  ] as const) {
+    const step = (name: string): string => {
+      const at = yml.indexOf(`- name: ${name}\n`);
+      if (at === -1) return "";
+      const next = yml.indexOf("\n      - ", at + 1);
+      return yml.slice(at, next === -1 ? undefined : next);
+    };
+    const gate = (body: string): string | undefined => body.match(/\n {8}if: (.+)\n/)?.[1];
+    const up = step(upload);
+    const rec = step(record);
+    assert(rec.includes("uses: ./.github/actions/record-ship"), `${record} uses record-ship`);
+    assert(rec.includes(`environment: ${environment}`), `${record} records ${environment}`);
+    assert(
+      gate(up) !== undefined && gate(up) === gate(rec),
+      `${record} has the same if: as ${upload}`,
+    );
+    assert(yml.indexOf(rec) > yml.indexOf(up), `${record} runs after ${upload}`);
+  }
+  assert(
+    (yml.match(/^ {6}deployments: write$/gm) ?? []).length === 2,
+    "both build jobs may write deployments",
+  );
+
   assert(
     yml.includes("jarsigner -verify"),
     "CI verifies the Android artifact is signed — an unsigned AAB must not pass quietly",

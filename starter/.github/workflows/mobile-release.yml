@@ -161,6 +161,9 @@ jobs:
     # fromJSON('') is an error, not false.
     if: needs.plan.outputs.plan && fromJSON(needs.plan.outputs.plan).android.build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
     env:
       PLAN_VERSION: ${{ fromJSON(needs.plan.outputs.plan).version || '0.0.0' }}
       PLAN_BUILD_NUMBER: ${{ fromJSON(needs.plan.outputs.plan).buildNumber }}
@@ -273,6 +276,16 @@ jobs:
           track: ${{ fromJSON(needs.plan.outputs.plan).android.track }}
           status: completed
 
+      # A GitHub Deployment per upload, so launchdeck's Shipped view shows
+      # which version each track has. Same gate as the upload: no upload, no
+      # record.
+      - name: Record the Google Play upload
+        if: fromJSON(needs.plan.outputs.plan).android.upload
+        uses: ./.github/actions/record-ship
+        with:
+          environment: google-play
+          branch: ${{ fromJSON(needs.plan.outputs.plan).android.track }}
+
       # The keystore is a private key sitting in the workspace, readable by
       # every later step and by any action this job runs. Delete it even when
       # the build failed.
@@ -292,6 +305,9 @@ jobs:
     # is somebody's own machine, so nothing here may touch state outside
     # RUNNER_TEMP that the job did not create.
     runs-on: ${{ vars.APPLE_RUNNER || 'macos-latest' }}
+    permissions:
+      contents: read
+      deployments: write
     env:
       PLAN_VERSION: ${{ fromJSON(needs.plan.outputs.plan).version || '0.0.0' }}
       PLAN_BUILD_NUMBER: ${{ fromJSON(needs.plan.outputs.plan).buildNumber }}
@@ -463,6 +479,13 @@ jobs:
             --type ios \
             --apiKey "$APPLE_API_KEY_ID" \
             --apiIssuer "$APPLE_API_ISSUER_ID"
+
+      # Same gate as the upload: a run that uploaded nothing records nothing.
+      - name: Record the TestFlight upload
+        if: fromJSON(needs.plan.outputs.plan).ios.upload
+        uses: ./.github/actions/record-ship
+        with:
+          environment: testflight
 
       # The API key can create, expire and release builds for the whole team.
       # Remove it whether or not the upload worked.

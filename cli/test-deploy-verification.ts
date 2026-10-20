@@ -186,6 +186,24 @@ if (!starterPresent) {
     );
   });
 
+  expect("the web deploy is recorded last, under the deploy's own gate, at the live URL", () => {
+    const wf = read(WORKFLOW_REL);
+    const at = wf.indexOf("- name: Record the web deploy");
+    assert.ok(at > wf.indexOf("- name: Verify native clients can sign in"), "not after the checks");
+    const record = wf.slice(at);
+    assert.ok(record.includes("uses: ./.github/actions/record-ship"));
+    assert.ok(record.includes("environment: web"));
+    // The signed deploy's gate, with the env that gate reads.
+    assert.ok(record.includes("COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}"));
+    assert.ok(record.includes("if: env.COOLIFY_BASE_URL != ''"));
+    assert.ok(WORKFLOW_SIGNED_DEPLOY_STEP.includes("if: env.COOLIFY_BASE_URL != ''"));
+    assert.ok(/^ {4}permissions:\n(?: {6}.+\n)* {6}deployments: write$/m.test(wf));
+    // The link follows the same literal the probe does, rename included.
+    const set = setWorkflowDeployVerifyUrls(wf, "app.example.com", "split", "split");
+    assert.equal(set.split("HATCHKIT_WEB_URL: https://app.example.com\n").length - 1, 2);
+    assert.ok(set.slice(set.indexOf("- name: Record the web deploy")).includes("app.example.com"));
+  });
+
   // ------------------------------------------------------------------
   // Generated output
   // ------------------------------------------------------------------

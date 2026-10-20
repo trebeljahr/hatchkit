@@ -65,6 +65,17 @@ export const MOBILE_PATHS: readonly string[] = [
 ];
 
 /**
+ * Starter paths the feature NEEDS but does not own: copied when `mobile` is
+ * added, never stripped when it is not.
+ *
+ * `mobile-release.yml` records each store upload through the local
+ * `record-ship` action, and `build-and-deploy.yml` records web deploys
+ * through the same one. So a project without mobile still keeps it, and
+ * the strip in `scaffold/app.ts` must not see this list.
+ */
+export const MOBILE_SHARED_PATHS: readonly string[] = [".github/actions/record-ship"];
+
+/**
  * Paths whose files carry identifier-bearing literals — storage keys the
  * project's own `storagePrefix` has to be written into.
  *

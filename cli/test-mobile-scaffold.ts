@@ -38,7 +38,7 @@ if (!existsSync(join(STARTER, "package.json"))) {
 
 const { scaffoldApp } = await import("./src/scaffold/app.js");
 const { runUpdate } = await import("./src/scaffold/update.js");
-const { MOBILE_DEPS, MOBILE_PATHS, MOBILE_SCRIPTS } = await import(
+const { MOBILE_DEPS, MOBILE_PATHS, MOBILE_SCRIPTS, MOBILE_SHARED_PATHS } = await import(
   "./src/scaffold/mobile-feature.js"
 );
 const { mobileLiveReloadOrigins, nativeClientOrigins } = await import(
@@ -153,6 +153,12 @@ try {
 
     for (const rel of MOBILE_PATHS) {
       assert(!existsSync(join(d, rel)), `stripped: ${rel}`);
+    }
+    for (const rel of MOBILE_SHARED_PATHS) {
+      assert(
+        existsSync(join(d, rel)),
+        `kept: ${rel} — build-and-deploy.yml records web deploys through it`,
+      );
     }
 
     const pkg = pkgOf(d);
@@ -326,6 +332,8 @@ try {
     const d = scratch("update");
     await scaffoldApp(cfg("updated", []), d);
     assert(!existsSync(join(d, "capacitor.config.ts")), "precondition: no mobile yet");
+    // A project scaffolded before the record-ship action existed.
+    for (const rel of MOBILE_SHARED_PATHS) rmSync(join(d, rel), { recursive: true, force: true });
 
     await runUpdate(d, {
       presets: {
@@ -339,6 +347,9 @@ try {
     for (const rel of MOBILE_PATHS) {
       if (rel === "ios" || rel === "android") continue;
       assert(existsSync(join(d, rel)), `update copied: ${rel}`);
+    }
+    for (const rel of MOBILE_SHARED_PATHS) {
+      assert(existsSync(join(d, rel)), `update copied: ${rel} — mobile-release.yml calls it`);
     }
 
     const pkg = pkgOf(d);

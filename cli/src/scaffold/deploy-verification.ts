@@ -637,7 +637,8 @@ export function addWorkflowCommitShaBuildArg(content: string, dockerfilePath: st
 
 /** Point the gate at this project's public URLs. Anchors on the
  *  `HATCHKIT_WEB_URL:` / `HATCHKIT_API_URL:` env lines the verify step
- *  declares, so nothing else in the workflow can match. No-op when the
+ *  (and, for the web URL, the deploy record step) declares, so nothing
+ *  else in the workflow can match. No-op when the
  *  step is absent — use {@link upgradeWorkflowDeployVerification} to
  *  insert it first. */
 export function setWorkflowDeployVerifyUrls(
@@ -653,10 +654,14 @@ export function setWorkflowDeployVerifyUrls(
  *  them from a manifest. `hatchkit adopt` uses this: it knows the
  *  project's public domain but not where — or whether — the app serves
  *  an API, so it sets the web URL and leaves the API one empty rather
- *  than guessing a path the gate would then fail on forever. */
+ *  than guessing a path the gate would then fail on forever.
+ *
+ *  Every `HATCHKIT_WEB_URL:` line, not only the verify step's: the step
+ *  that records the web deploy as a GitHub Deployment declares one too,
+ *  and its link must follow a rename like the probe does. */
 export function setWorkflowVerifyUrlValues(content: string, urls: DeployVerifyUrls): string {
   return content
-    .replace(/^(\s*HATCHKIT_WEB_URL:).*$/m, `$1 ${urls.webUrl || '""'}`)
+    .replace(/^(\s*HATCHKIT_WEB_URL:).*$/gm, `$1 ${urls.webUrl || '""'}`)
     .replace(/^(\s*HATCHKIT_API_URL:).*$/m, `$1 ${urls.apiUrl || '""'}`);
 }
 

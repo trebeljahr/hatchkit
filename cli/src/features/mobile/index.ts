@@ -57,6 +57,7 @@ import {
   MOBILE_IDENTIFIER_RENAME_PATHS,
   MOBILE_PATHS,
   MOBILE_SCRIPTS,
+  MOBILE_SHARED_PATHS,
   NATIVE_GENERATED_TRACKED,
   NATIVE_GENERATED_UNTRACKED,
 } from "../../scaffold/mobile-feature.js";
@@ -143,9 +144,12 @@ export function applyMobile(ctx: FeatureContext, starterRoot: string = STARTER_R
  * `pnpm cap:add:*` and then committed, so the starter has no copy to
  * hand over. (`copyIfAbsent` would report `absent` anyway; skipping
  * keeps that out of the run summary, where it reads as a fault.)
+ *
+ * `MOBILE_SHARED_PATHS` come along too: the release workflow calls the
+ * `record-ship` action, which an older project does not have.
  */
 function copyOwnedPaths(ctx: FeatureContext, starterRoot: string): void {
-  for (const rel of MOBILE_PATHS) {
+  for (const rel of [...MOBILE_PATHS, ...MOBILE_SHARED_PATHS]) {
     if (rel === "ios" || rel === "android") continue;
     for (const file of starterFilesUnder(starterRoot, rel)) {
       ctx.ledger.copyIfAbsent(file, join(starterRoot, file));

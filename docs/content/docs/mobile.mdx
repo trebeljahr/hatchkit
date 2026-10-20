@@ -171,6 +171,10 @@ decides every job before anything is built, and the build jobs are gated on it:
 Build numbers come from the run number. Both stores permanently reject a number
 they have already seen, so it must never be derived from the package version.
 
+Each upload records a GitHub Deployment for its channel (`google-play` with the
+track, `testflight`, and `web` from `build-and-deploy.yml`), which launchdeck's
+Shipped view reads.
+
 Signing is environment-driven and optional: `android/app/build.gradle` builds a
 release config only when the keystore file exists *and* all three environment
 variables are set, so `./gradlew bundleRelease` works on a checkout with no key.
