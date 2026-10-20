@@ -123,6 +123,7 @@ function pruneToServerOnly(outputDir: string, modifications: string[]): void {
     "build:client",
     "test:client",
     "test:e2e",
+    "test:e2e:export",
     ...NATIVE_SCRIPTS,
   ]);
   // `test:unit` chains the desktop suites, whose scripts the strip above just
@@ -232,6 +233,7 @@ function pruneToClientOnly(outputDir: string, modifications: string[]): void {
   removeIfExists(join(outputDir, "docs-site"));
   removeIfExists(join(outputDir, "e2e"));
   removeIfExists(join(outputDir, "playwright.config.ts"));
+  removeIfExists(join(outputDir, "playwright.export.config.ts"));
   removeIfExists(join(outputDir, "seed"));
   dropWorkspaceEntry(outputDir, "docs-site");
 
@@ -261,6 +263,7 @@ function pruneToClientOnly(outputDir: string, modifications: string[]): void {
     "contract:emit",
     "test:unit",
     "test:e2e",
+    "test:e2e:export",
     "seed:assets",
     "assets:push",
     "assets:pull",
@@ -608,6 +611,7 @@ const CLIENT_SIDE_TOP_LEVEL = [
   "resources",
   "e2e",
   "playwright.config.ts",
+  "playwright.export.config.ts",
   ".github/workflows/mobile-release.yml",
   // The mobile build/release tooling. Every one of these drives a
   // `next build` of packages/client, which a backend-only surface has

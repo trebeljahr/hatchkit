@@ -178,6 +178,14 @@ try {
       !layout.includes("ROOT_MARKER_SCRIPT"),
       "the pre-paint marker is out of the layout — its module was just deleted",
     );
+    // With the marker gone the analytics tag is <head>'s only child. Gated
+    // with `&&`, an empty NEXT_PUBLIC_PLAUSIBLE_DOMAIN (CI's default) makes
+    // that child "", hydration fails and React drops the stylesheet
+    // (streaks and mood-magic live, 2026-10-20).
+    assert(
+      !/process\.env\.NEXT_PUBLIC_\w+\s*&&/.test(layout),
+      "no NEXT_PUBLIC_* && <element> in the layout — an empty value renders as text",
+    );
     assert(
       layout.includes("viewportFit"),
       "the viewport export STAYS: `viewport-fit=cover` is not a mobile setting, and one static " +

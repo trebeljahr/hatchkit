@@ -63,7 +63,14 @@ export default function RootLayout({
           `document.body` does not.
         */}
         <script dangerouslySetInnerHTML={{ __html: ROOT_MARKER_SCRIPT }} />
-        {process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN && (
+        {/*
+          A ternary, never `domain && <script/>`. CI passes "" when the repo
+          variable is unset, and `"" && …` renders "" as a text node in
+          <head>. The exported HTML has none, hydration fails (React #418),
+          and React's client re-render drops every <link> in <head> — the
+          stylesheet included. e2e/export/landing-styles.spec.ts checks it.
+        */}
+        {process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN ? (
           <script
             defer
             data-domain={process.env.NEXT_PUBLIC_PLAUSIBLE_DOMAIN}
@@ -72,7 +79,7 @@ export default function RootLayout({
               "https://plausible.io/js/script.js"
             }
           />
-        )}
+        ) : null}
       </head>
       <body className="min-h-screen bg-background font-sans antialiased">
         <MobileBridgeLoader />

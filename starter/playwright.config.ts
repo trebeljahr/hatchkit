@@ -8,7 +8,8 @@ export default defineConfig({
   // The Electron harness lives in e2e/desktop and brings its own config,
   // servers and build (e2e/desktop/playwright.config.ts). Without this it
   // would also run here, against a browser and the wrong servers.
-  testIgnore: "desktop/**",
+  // e2e/export checks the static export (playwright.export.config.ts).
+  testIgnore: ["desktop/**", "export/**"],
   fullyParallel: false,
   workers: 1,
   retries: process.env.CI ? 2 : 0,

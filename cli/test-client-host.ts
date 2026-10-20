@@ -587,6 +587,28 @@ await test("workflow: build-client uploads a version, nothing activates there", 
   assert.ok(body.indexOf("carry-static") < body.indexOf("versions upload"));
 });
 
+await test("workflow: build-client checks the export stays styled before it uploads", () => {
+  const { text } = rewriteWorkflowForWorkerClient(STARTER_WORKFLOW, wfInput);
+  const lines = text.split("\n");
+  const job = listJobs(lines).find((j) => j.name === "build-client");
+  assert.ok(job);
+  const body = lines.slice(job.start, job.end).join("\n");
+  // streaks and mood-magic, 2026-10-20: an empty NEXT_PUBLIC_* rendered ""
+  // in <head>, hydration failed and the live page lost its stylesheet.
+  const check = body.indexOf("pnpm test:e2e:export");
+  assert.ok(check > body.indexOf("Build the static client"), "runs on the built export");
+  assert.ok(check < body.indexOf("versions upload"), "runs before the upload");
+  assert.match(
+    body,
+    /if: hashFiles\('playwright\.export\.config\.ts'\) != ''/,
+    "a project without the check skips the step",
+  );
+  assert.ok(
+    existsSync(resolve(import.meta.dirname, "..", "starter", "playwright.export.config.ts")),
+    "the starter ships the config the step looks for",
+  );
+});
+
 await test("workflow: server first, then the Worker switch, then /version.json", () => {
   const { text } = rewriteWorkflowForWorkerClient(STARTER_WORKFLOW, wfInput);
   const lines = text.split("\n");

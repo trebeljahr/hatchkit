@@ -233,6 +233,19 @@ ${build}
           fi
           printf '{"commit":"%s","apiUrl":"%s"}\\n' "$COMMIT_SHA" "$NEXT_PUBLIC_API_URL" > ${out}/version.json
 
+      # The HTML can be fine and the page still lose its stylesheet once
+      # React hydrates: a mismatch in the root layout (an empty NEXT_PUBLIC_*
+      # rendered as text in <head>) makes React drop every <link> in <head>.
+      # Check the exact export this job uploads, built with the real env.
+      # A project without the check (no playwright.export.config.ts) skips it.
+      - name: Check the exported landing page stays styled after hydration
+        if: hashFiles('playwright.export.config.ts') != ''
+        env:
+          CI: "true"
+        run: |
+          npx playwright install --with-deps chromium
+          pnpm test:e2e:export
+
       # A Worker version serves only its own files. Carry the last two
       # releases' hashed files so tabs opened before this deploy keep
       # loading their chunks.
