@@ -72,3 +72,7 @@ secrets/
 /bin/
 /lib/
 .pnpm-store/
+
+# Generated package documentation (copied during build).
+/cli/README.md
+/cli/LICENSE

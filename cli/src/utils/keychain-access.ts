@@ -46,3 +46,14 @@ export function createKeychainQueue(checkAccess: () => void = assertKeychainAcce
     return next;
   };
 }
+
+/** Credential storage unavailable says nothing about whether a token is valid. */
+export function isKeychainUnavailable(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (/Keychain (?:read|write|delete) failed|keychain access (?:is disabled|stopped)|fixture store is not loaded/i.test(
+      error.message,
+    ) ||
+      isKeychainUnavailable(error.cause))
+  );
+}

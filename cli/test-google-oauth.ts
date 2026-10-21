@@ -354,4 +354,17 @@ assert.throws(
   assert.equal(after?.integrations?.searchConsole?.siteUrl, "sc-domain:search.example.com");
 }
 
+{
+  getStore().set("providers.googleSearchConsole", { status: "configured", oauthMode: "hatchkit-pkce", scopes: [] });
+  await setSecret(SECRET_KEYS.googleSearchConsoleClientId, "saved-client-id");
+  await setSecret(SECRET_KEYS.googleSearchConsoleClientSecret, "saved-client-secret");
+  await setSecret(SECRET_KEYS.googleSearchConsoleRefreshToken, "saved-refresh");
+  const { ensureGoogleSearchConsole } = await import("./src/config.js");
+  for (const cfg of [await getGoogleSearchConsoleConfig(), await ensureGoogleSearchConsole()]) {
+    assert.equal(cfg?.clientId, "saved-client-id");
+    assert.equal(cfg?.clientSecret, "saved-client-secret");
+    assert.equal(cfg?.refreshToken, "saved-refresh");
+  }
+}
+
 console.log("google oauth callback checks ok");

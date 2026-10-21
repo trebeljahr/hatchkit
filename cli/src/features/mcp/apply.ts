@@ -1,3 +1,4 @@
+import { resolveAssetRoot } from "../../utils/asset-root.js";
 /*
  * cli/src/features/mcp/apply.ts — layering `packages/mcp` onto a project
  * through the ledger.
@@ -24,7 +25,7 @@
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { clientBuildArgUrls } from "../../scaffold/client-build-args.js";
 import { substituteIdentifierTokens } from "../../scaffold/identifiers.js";
 // Through the feature's own door rather than its internals: the walker
@@ -42,7 +43,7 @@ import {
 } from "./types.js";
 
 /** Monorepo root → the starter template, four hops up from the compiled file. */
-const MONOREPO_ROOT = resolve(join(import.meta.dirname, "..", "..", "..", ".."));
+const MONOREPO_ROOT = resolveAssetRoot();
 const STARTER_ROOT = join(MONOREPO_ROOT, "starter");
 
 export type ApplyMcpResult = {

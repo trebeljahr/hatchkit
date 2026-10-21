@@ -249,6 +249,18 @@ export function registerNewsletterRoutes(app: Express): void {
 
   // GET /api/newsletter/download
   app.get("/api/newsletter/download", async (req: Request, res: Response) => {
+    // Free files are available before and independently of newsletter signup.
+    if (typeof req.query.key === "string") {
+      const magnet = getMagnet(req.query.key);
+      if (!magnet) { res.status(404).json({ error: "download_unavailable" }); return; }
+      try {
+        const target = await magnetDownloadUrl(magnet);
+        res.set("Cache-Control", "no-store");
+        res.set("Referrer-Policy", "no-referrer");
+        res.redirect(302, target);
+      } catch { res.status(503).json({ error: "download_unavailable" }); }
+      return;
+    }
     const base = siteUrl();
     const tokenParam = req.query.token;
     const token = typeof tokenParam === "string" ? tokenParam : "";

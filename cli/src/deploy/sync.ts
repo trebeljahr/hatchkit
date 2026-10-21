@@ -99,7 +99,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
-import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import {
   type ProjectManifest,
@@ -117,6 +116,7 @@ import {
 } from "../utils/coolify-api.js";
 import { discoverPublicIps } from "../utils/coolify-server-ips.js";
 import { exec } from "../utils/exec.js";
+import ora from "../utils/spinner.js";
 import { readWorkerName } from "./cloudflare.js";
 import { normalizeCoolifyGitRepository, wireDns } from "./coolify-app.js";
 import {

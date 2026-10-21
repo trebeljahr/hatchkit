@@ -26,10 +26,10 @@
 
 import { confirm, select } from "@inquirer/prompts";
 import chalk from "chalk";
-import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { exec } from "../utils/exec.js";
+import ora from "../utils/spinner.js";
 import { appSlugFromHtmlUrl, listUserInstallations } from "./github-app-access.js";
 
 export interface CoolifyGithubAppResult {

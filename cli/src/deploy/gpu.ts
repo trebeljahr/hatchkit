@@ -1,8 +1,8 @@
 import chalk from "chalk";
-import ora from "ora";
 import { ensureGpuProvider, registerMlService } from "../config.js";
 import type { GpuPlatform, MlService } from "../prompts.js";
 import { exec } from "../utils/exec.js";
+import ora from "../utils/spinner.js";
 
 /** Per-service map of platform → endpoint URL. The default runtime
  *  backend is the first platform in the input array; `ML_BACKEND` on

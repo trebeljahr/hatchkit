@@ -19,9 +19,15 @@ the site's repo as `workers/newsletter/` and fill in `wrangler.jsonc`.
 Errors redirect to `/sub/error?reason=…`. The site serves the `/sub/*`
 pages as static files: `check-email`, `confirmed` and `error`.
 
+## Direct downloads
+
+Link to `/api/newsletter/download?key=wallpapers` for a configured entry. The file is available immediately, without email, membership or a signed token. Put any optional newsletter signup after that link. Existing signed email links continue to work.
+
 ## The form
 
 ```html
+<a href="/api/newsletter/download?key=wallpapers">Download</a>
+<p>Want an email when the next one is out? Signup is optional.</p>
 <form method="post" action="/api/newsletter/subscribe">
   <input type="email" name="email" required>
   <input type="hidden" name="magnet" value="wallpapers">

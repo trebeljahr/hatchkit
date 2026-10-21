@@ -25,7 +25,7 @@
     "mlops"
   ],
   "scripts": {
-    "build": "pnpm --filter hatchkit run build",
+    "build": "pnpm -r --workspace-concurrency=1 --filter @hatchkit/dev-shared --filter @hatchkit/dev-plugin-next --filter @hatchkit/dev-plugin-vite --filter @hatchkit/mcp run build && pnpm --filter hatchkit run build",
     "predev": "pnpm --filter @hatchkit/dev-shared run build",
     "dev": "concurrently -n shared,docs,cli,mcp -c blue,cyan,magenta,yellow \"pnpm --filter @hatchkit/dev-shared run dev\" \"pnpm -C docs run dev\" \"pnpm -C cli run dev:typecheck\" \"pnpm -C mcp run dev:typecheck\"",
     "dev:docs": "pnpm -C docs run dev",

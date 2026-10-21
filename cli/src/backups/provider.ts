@@ -305,7 +305,7 @@ export function backupHostExec(
           : hostError
             ? `Backup host ${host.name}: ${hostError}`
             : timedOut
-              ? `Backup host ${host.name} command timed out after ${timeoutMs / 1000} s and was stopped. Check \`tailscale ssh ${host.target}\` and the host journal.`
+              ? `Backup host ${host.name} command timed out after ${timeoutMs / 1000} s and was stopped. Complete the Tailscale SSH check with \`tailscale ssh ${host.target}\` in an interactive terminal, then retry.`
               : `Backup host ${host.name} command failed (exit ${code ?? "signal"}). Check Tailscale and the host journal.`,
       );
     };

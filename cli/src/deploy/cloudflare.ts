@@ -18,7 +18,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { confirm, input } from "@inquirer/prompts";
 import chalk from "chalk";
-import ora from "ora";
 import {
   deleteCloudflareDeployTokenRecord,
   ensureCloudflareProvisioner,
@@ -36,6 +35,7 @@ import { readManifest } from "../scaffold/manifest.js";
 import { type CfDnsRecord, CloudflareApi } from "../utils/cloudflare-api.js";
 import { exec } from "../utils/exec.js";
 import type { RunLedger } from "../utils/run-ledger.js";
+import ora from "../utils/spinner.js";
 import { parseDomain, validateDomain } from "../utils/validate.js";
 import { maskId, workerDeployTokenName } from "./cloudflare-deploy-token.js";
 import {

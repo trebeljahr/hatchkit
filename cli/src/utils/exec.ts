@@ -1,5 +1,5 @@
 import { execa } from "execa";
-import ora from "ora";
+import ora from "./spinner.js";
 
 export interface ExecResult {
   stdout: string;

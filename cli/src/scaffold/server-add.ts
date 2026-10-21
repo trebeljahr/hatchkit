@@ -1,3 +1,4 @@
+import { resolveAssetRoot } from "../utils/asset-root.js";
 /*
  * `hatchkit server add` — retrofit the Hatchkit server surface into a
  * client-only project.
@@ -29,7 +30,7 @@ import {
 import { readPackageName, setPackageJsonScript } from "./pkg-json.js";
 import { applyPorts, applyProjectName, updateEnvExample } from "./starter-files.js";
 
-const MONOREPO_ROOT = resolve(join(import.meta.dirname, "..", "..", ".."));
+const MONOREPO_ROOT = resolveAssetRoot();
 const STARTER_ROOT = join(MONOREPO_ROOT, "starter");
 
 export interface ServerAddOptions {

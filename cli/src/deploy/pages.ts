@@ -11,10 +11,10 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
-import ora from "ora";
 import { ensureDns, getDnsConfig } from "../config.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { exec } from "../utils/exec.js";
+import ora from "../utils/spinner.js";
 import { parseDomain, validateDomain } from "../utils/validate.js";
 
 // ---------------------------------------------------------------------------

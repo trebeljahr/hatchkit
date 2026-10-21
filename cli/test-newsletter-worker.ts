@@ -183,6 +183,20 @@ async function quietly<T>(fn: () => Promise<T>): Promise<{ result: T; errors: st
   }
 }
 
+await test("direct downloads need no email, membership or token", async () => {
+  const lm = fakeListmonk();
+  {
+    const response = await get(`${SITE}/api/newsletter/download?key=reading-list`);
+    assert.equal(response.status, 302);
+    assert.match(response.headers.get("location") ?? "", /^https:/);
+    const object = await get(`${SITE}/api/newsletter/download?key=wallpapers`);
+    assert.equal(object.status, 200);
+    assert.deepEqual(new Uint8Array(await object.arrayBuffer()), FILE);
+    assert.equal((await get(`${SITE}/api/newsletter/download?key=unknown`)).status, 404);
+    assert.equal(lm.txs().length, 0);
+  }
+});
+
 await test("token → delivery: confirm mails a link that streams the R2 object", async () => {
   const lm = fakeListmonk();
   await quietly(async () => {

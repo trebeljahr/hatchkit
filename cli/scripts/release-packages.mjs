@@ -9,7 +9,8 @@
  *   1. @hatchkit/dev-shared        (no @hatchkit/* deps)
  *   2. @hatchkit/dev-plugin-next   (depends on dev-shared)
  *   3. @hatchkit/dev-plugin-vite   (depends on dev-shared)
- *   4. hatchkit                    (the CLI; depends on dev-shared)
+ *   4. @hatchkit/mcp              (operator tools; depends on the SDK)
+ *   5. hatchkit                    (the CLI; depends on dev-shared)
  *
  * Version sync: every `@hatchkit/dev-*` package matches the CLI's
  * version. release-bump.mjs bumps them in lockstep; this script refuses
@@ -66,6 +67,9 @@ for (const name of DEV_PACKAGES) {
   }
 }
 
+if (readJson(join(repoRoot, "mcp", "package.json")).version !== cliVersion) {
+  throw new Error("mcp/package.json must match the CLI release version.");
+}
 const pnpm = resolvePnpm();
 if (!pnpm) {
   console.error("  release-packages: pnpm not found (not on PATH, no corepack). Aborting.");
@@ -75,8 +79,8 @@ const { env, cleanup } = envWithPnpm(pnpm);
 process.on("exit", cleanup);
 
 const skipDev = process.env.RELEASE_SKIP_PACKAGES === "1";
-if (skipDev) console.log("  release-packages: RELEASE_SKIP_PACKAGES=1 — CLI only.");
-const dirs = [...(skipDev ? [] : DEV_PACKAGES.map((name) => join("packages", name))), "cli"];
+if (skipDev) console.log("  release-packages: RELEASE_SKIP_PACKAGES=1 — CLI and operator MCP only.");
+const dirs = [...(skipDev ? [] : DEV_PACKAGES.map((name) => join("packages", name))), "mcp", "cli"];
 
 console.log(`  release-packages: publishing v${cliVersion}.`);
 

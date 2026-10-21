@@ -65,10 +65,10 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
-import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import { exec } from "../utils/exec.js";
 import type { RunLedger } from "../utils/run-ledger.js";
+import ora from "../utils/spinner.js";
 import {
   DeployTokenError,
   type DeployTokenScope,

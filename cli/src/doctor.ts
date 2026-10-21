@@ -1,3 +1,4 @@
+import { isKeychainUnavailable } from "./utils/keychain-access.js";
 /*
  * `hatchkit doctor` — health check for every configured provider.
  *
@@ -81,6 +82,7 @@ interface CheckResult {
    *  as stopped on purpose, so the summary counts it apart from the
    *  providers that were never configured. */
   paused?: boolean;
+  unverified?: boolean;
   /** A fix doctor can apply itself, offered only under `--fix`. Plain
    *  doctor never calls it. `run` must be idempotent and returns the
    *  line to print on success. */
@@ -2091,13 +2093,47 @@ async function unlessPaused(
 ): Promise<CheckResult[]> {
   const paused = pausedResult(id);
   if (paused) return [paused];
-  const out = await run();
-  return Array.isArray(out) ? out : [out];
+  return guardedDoctorCheck(PAUSABLE_PROVIDERS[id], run);
+}
+
+async function guardedDoctorCheck(
+  name: string,
+  run: () => Promise<CheckResult | CheckResult[]>,
+): Promise<CheckResult[]> {
+  try {
+    const out = await run();
+    return (Array.isArray(out) ? out : [out]).map((row) =>
+      row.status === "fail" && isKeychainUnavailable(new Error(row.detail ?? ""))
+        ? {
+            ...row,
+            status: "skip" as const,
+            unverified: true,
+            detail:
+              "Credential check blocked: keychain access is unavailable; credentials were not verified.",
+          }
+        : row,
+    );
+  } catch (error) {
+    if (!isKeychainUnavailable(error))
+      return [{ name, status: "fail", detail: errorDetail(error) }];
+    return [
+      {
+        name: name.replace(/^check/, ""),
+        status: "skip",
+        unverified: true,
+        detail:
+          "Credential check blocked: keychain access is unavailable; credentials were not verified.",
+        hint: [
+          "Run hatchkit doctor in your interactive terminal when credential access is intended.",
+        ],
+      },
+    ];
+  }
 }
 
 export async function collectDoctorResults(): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
-  results.push(await checkGitHub());
+  results.push(...(await guardedDoctorCheck("checkGitHub", () => checkGitHub())));
   results.push(
     ...(await unlessPaused("coolify", async () => [
       await checkCoolify(),
@@ -2108,33 +2144,41 @@ export async function collectDoctorResults(): Promise<CheckResult[]> {
     ])),
   );
   results.push(...(await unlessPaused("hetzner", checkHetzner)));
-  results.push(await checkCloudflareOperator());
+  results.push(
+    ...(await guardedDoctorCheck("checkCloudflareOperator", () => checkCloudflareOperator())),
+  );
   results.push(...(await unlessPaused("dns", checkDns)));
   results.push(...(await unlessPaused("cloudflare-workers", checkCloudflareWorkers)));
-  for (const p of ["hetzner", "aws", "r2"] as const) results.push(await checkS3(p));
-  for (const p of ["modal", "runpod", "hf", "replicate"]) results.push(await checkGpu(p));
+  for (const p of ["hetzner", "aws", "r2"] as const)
+    results.push(...(await guardedDoctorCheck("checkS3", () => checkS3(p))));
+  for (const p of ["modal", "runpod", "hf", "replicate"])
+    results.push(...(await guardedDoctorCheck("checkGpu", () => checkGpu(p))));
   results.push(...(await unlessPaused("glitchtip", checkGlitchtip)));
   results.push(...(await unlessPaused("plausible", checkPlausible)));
   results.push(...(await unlessPaused("listmonk", () => checkListmonk())));
   results.push(...(await unlessPaused("search-console", checkGoogleSearchConsole)));
   results.push(...(await unlessPaused("stripe", checkStripe)));
   results.push(...(await unlessPaused("ses", () => checkSesBounceFeedback())));
-  for (const r of await checkBackupSources()) results.push(r);
+  for (const r of await guardedDoctorCheck("checkBackupSources", () => checkBackupSources()))
+    results.push(r);
   // Read-only scan of the same host for signs of a compromised container
   // (the 2026-10-18 Plausible miner ran for days unnoticed). [] when no
   // backup host is configured.
   const { checkHostIntegrity } = await import("./host/integrity.js");
-  for (const r of await checkHostIntegrity()) results.push(r);
+  for (const r of await guardedDoctorCheck("checkHostIntegrity", () => checkHostIntegrity()))
+    results.push(r);
   // Shared services (Coolify, Traefik, Plausible, …) against their upstream
   // advisories: Plausible ran four months past a critical fix. One row for
   // every backup host; [] when none is configured.
   const { checkUpdateWatch } = await import("./host/updates.js");
-  for (const r of await checkUpdateWatch()) results.push(r);
+  for (const r of await guardedDoctorCheck("checkUpdateWatch", () => checkUpdateWatch()))
+    results.push(r);
   // Local-dev (Tailscale-served per-project URLs). Returns [] when the
   // user hasn't run `hatchkit dev-setup init`, so doctor stays quiet for
   // anyone not opted in.
   const { checkLocalDevHost } = await import("./dev-setup.js");
-  for (const r of await checkLocalDevHost()) results.push(r);
+  for (const r of await guardedDoctorCheck("checkLocalDevHost", () => checkLocalDevHost()))
+    results.push(r);
   // Project-local checks — only run when doctor was invoked inside a
   // hatchkit-managed project (manifest at cwd). Globally they're a
   // no-op, so `hatchkit doctor` from $HOME stays clean.
@@ -4917,7 +4961,7 @@ export async function runDoctor(
   const results = await collectDoctorResults();
   const okCount = results.filter((r) => r.status === "ok").length;
   const failCount = results.filter((r) => r.status === "fail").length;
-  const skipCount = results.filter((r) => r.status === "skip" && !r.paused).length;
+  const skipCount = results.filter((r) => r.status === "skip" && !r.paused && !r.unverified).length;
   const pausedCount = results.filter((r) => r.paused).length;
   const deferredResults = results.filter((r) => r.status === "deferred");
   const warnResults = results.filter((r) => r.status === "warn");
@@ -4929,6 +4973,7 @@ export async function runDoctor(
         failing: failCount,
         warnings: warnResults.length,
         not_configured: skipCount,
+        unverified: results.filter((r) => r.unverified).length,
         paused: pausedCount,
         deferred: deferredResults.length,
       },
@@ -4936,6 +4981,7 @@ export async function runDoctor(
         name: r.name,
         status: r.status,
         ...(r.paused ? { paused: true } : {}),
+        ...(r.unverified ? { unverified: true } : {}),
         detail: r.detail,
         hint: r.hint,
       })),
@@ -4975,7 +5021,7 @@ export async function runDoctor(
       deferredResults.length
         ? chalk.yellow(`${deferredResults.length} deferred`)
         : chalk.dim("0 deferred")
-    }  ${chalk.dim(`${skipCount} not configured`)}${
+    }  ${chalk.dim(`${skipCount} not configured`)}  ${chalk.dim(`${results.filter((r) => r.unverified).length} unverified`)}${
       pausedCount ? chalk.dim(`  ${pausedCount} paused`) : ""
     }\n`,
   );

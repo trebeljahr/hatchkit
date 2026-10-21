@@ -1,3 +1,4 @@
+import { resolveAssetRoot } from "../../utils/asset-root.js";
 /*
  * cli/src/features/mobile/index.ts — the `mobile` (Capacitor) feature,
  * registered on `features/contract.ts`.
@@ -50,7 +51,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, posix, relative, resolve, sep } from "node:path";
+import { join, posix, relative, sep } from "node:path";
 import { substituteIdentifierTokens } from "../../scaffold/identifiers.js";
 import {
   MOBILE_DEPS,
@@ -65,7 +66,7 @@ import { renameStarterIdentifiers } from "../client-core/rename.js";
 import { type FeatureContext, registerFeature } from "../contract.js";
 
 /** Monorepo root → the starter template, four hops up from this file. */
-const MONOREPO_ROOT = resolve(join(import.meta.dirname, "..", "..", "..", ".."));
+const MONOREPO_ROOT = resolveAssetRoot();
 const STARTER_ROOT = join(MONOREPO_ROOT, "starter");
 
 const LAYOUT = "packages/client/src/app/layout.tsx";

@@ -9,10 +9,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
-import ora from "ora";
 import { ownerFromRemote, repoSlugFromRemote } from "../../deploy/gh-actions-secrets.js";
 import { readManifest } from "../../scaffold/manifest.js";
 import { exec } from "../../utils/exec.js";
+import ora from "../../utils/spinner.js";
 import { provisionAppleForProject } from "./apple.js";
 import { resolveAzureValues, verifyAzureCanList } from "./azure.js";
 import { writePostSigningChecklist } from "./checklist.js";

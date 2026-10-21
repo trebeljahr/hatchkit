@@ -1,3 +1,4 @@
+import { resolveAssetRoot } from "../utils/asset-root.js";
 /*
  * `hatchkit update` — add feature scaffolding to an already-scaffolded
  * project.
@@ -34,7 +35,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
 import { installBackupScripts } from "../backups/scripts.js";
@@ -119,7 +120,7 @@ import {
 
 // Same derivation as scaffold/app.ts — STARTER_ROOT lives next to the
 // monorepo root, two hops up from this file's compiled location.
-const MONOREPO_ROOT = resolve(join(import.meta.dirname, "..", "..", ".."));
+const MONOREPO_ROOT = resolveAssetRoot();
 const STARTER_ROOT = join(MONOREPO_ROOT, "starter");
 
 /** The project's frozen identifier set.

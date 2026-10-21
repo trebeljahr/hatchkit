@@ -16,6 +16,7 @@
  * mutating; the user runs them directly.
  */
 
+import { readFileSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -82,7 +83,7 @@ const TOOLS = [
 // ---------------------------------------------------------------------------
 
 const server = new Server(
-  { name: "hatchkit-mcp", version: "0.1.0" },
+  { name: "hatchkit-mcp", version: JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version },
   { capabilities: { tools: {} } },
 );
 

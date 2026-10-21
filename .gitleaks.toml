@@ -8,14 +8,15 @@
 [extend]
 useDefault = true
 
-# cli/test-secrets-rotate.ts contains fake credential shapes
-# (sk_test_…, whsec_…, "looks-password", etc.) used to exercise the
-# secrets-rotation redaction code paths. They never leave the test
-# process and are not real secrets.
+# Exact synthetic values used to exercise secrets-rotation redaction.
+# Do not exempt the test file: real credentials there must still be caught.
 [[allowlists]]
-description = "Fake Stripe / generic keys used by secrets-rotation unit tests, never sent anywhere."
-paths = [
-  '''cli/test-secrets-rotate\.ts''',
+description = "Reviewed synthetic redaction fixtures (exact values)."
+regexes = [
+  '''^sk_test_abcdefghijklmnop12345$''',
+  '''^sk_test_abcdefghijklmnopqrst$''',
+  '''^whsec_qwertyuiopasdfghjkl1234567$''',
+  '''^AbCdEfGhIjKlMnOpQrStUvWx1234$''',
 ]
 
 # Published test vectors and fixtures, allowed anywhere in the repo so new

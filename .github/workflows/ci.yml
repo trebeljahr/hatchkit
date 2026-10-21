@@ -26,6 +26,8 @@ on:
       - "cli/**"
       - "starter/**"
       - "packages/**"
+      - "mcp/**"
+      - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
       - ".github/workflows/ci.yml"
@@ -34,6 +36,8 @@ on:
       - "cli/**"
       - "starter/**"
       - "packages/**"
+      - "mcp/**"
+      - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
       - ".github/workflows/ci.yml"
@@ -95,7 +99,7 @@ jobs:
           # parse, still fails the step.
           doctor_json="$RUNNER_TEMP/doctor.json"
           doctor_rc=0
-          hatchkit doctor --json > "$doctor_json" || doctor_rc=$?
+          HATCHKIT_KEYCHAIN_ACCESS=deny hatchkit doctor --json > "$doctor_json" || doctor_rc=$?
           [ "$doctor_rc" -le 1 ] || exit "$doctor_rc"
           parse_json < "$doctor_json"
 
@@ -304,3 +308,27 @@ jobs:
       - name: Unit tests in stamped project
         working-directory: ${{ runner.temp }}/stamp
         run: pnpm run test:unit
+
+  packed-install:
+    name: packed-install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      NEXT_PUBLIC_API_URL: https://example.test
+      HATCHKIT_KEYCHAIN_ACCESS: deny
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
+      - run: pnpm --filter @hatchkit/mcp run typecheck
+      - run: pnpm --filter @hatchkit/mcp test
+      - run: pnpm --filter hatchkit run check:package --build

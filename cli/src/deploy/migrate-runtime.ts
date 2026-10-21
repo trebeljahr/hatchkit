@@ -57,16 +57,16 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
-import ora from "ora";
 import { getCoolifyConfig, getStore } from "../config.js";
 import { readManifest } from "../scaffold/manifest.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { discoverPublicIps } from "../utils/coolify-server-ips.js";
+import ora from "../utils/spinner.js";
 import {
   ghSecretExists,
   ghSecretSet,
@@ -145,6 +145,7 @@ export interface MigrationLedger {
     /** Docker volumes this app mounts that the compose app created. */
     carriedVolumes?: CarriedVolume[];
   }>;
+  pendingApp?: Omit<MigrationLedger["apps"][number], "uuid"> & { description: string };
   /** Secrets this run repointed, and the uuid they held before. */
   secrets: Array<{ repo: string; name: string; previousUuid: string }>;
   phase: "prepared" | "cutting-over" | "cut-over" | "rolled-back" | "cleaned";
@@ -853,6 +854,17 @@ export async function migrate(
     const create = ora(
       `Creating ${app.appName} (Docker Image, ${formatImageRef(app.image)})`,
     ).start();
+    ledger.pendingApp = {
+      name: app.appName,
+      service: app.service,
+      steadyTag: app.steadyTag,
+      image: formatImageRef(app.image),
+      verificationHost: verifyHost,
+      ...(app.sourceImage ? { sourceImage: formatImageRef(app.sourceImage) } : {}),
+      ...(app.carriedVolumes ? { carriedVolumes: app.carriedVolumes } : {}),
+      description: `Replaces ${plan.legacyName} — hatchkit migration ${ledger.source.uuid}/${randomUUID()}`,
+    };
+    run.saveLedger(ledger);
     let uuid: string;
     try {
       const created = await api.createDockerImageApplication({
@@ -864,7 +876,7 @@ export async function migrate(
         environmentUuid: placement.environmentUuid,
         environmentName: placement.environmentName,
         name: app.appName,
-        description: `Replaces ${plan.legacyName} — Docker Image, rolling deploys (hatchkit migrate-runtime)`,
+        description: ledger.pendingApp.description,
         image: app.image,
         portsExposes: String(app.port),
         // Do not register production routers until the private host has
@@ -878,7 +890,6 @@ export async function migrate(
         instantDeploy: false,
       });
       uuid = created.uuid;
-      create.succeed(`Created ${app.appName} (${uuid})`);
     } catch (err) {
       create.fail();
       return abort(`Creating ${app.appName} failed: ${(err as Error).message}`);
@@ -893,7 +904,9 @@ export async function migrate(
       verificationHost: verifyHost,
       ...(app.carriedVolumes ? { carriedVolumes: app.carriedVolumes } : {}),
     });
+    delete ledger.pendingApp;
     run.saveLedger(ledger);
+    create.succeed(`Created ${app.appName} (${uuid})`);
 
     try {
       await api.setAppEnvRows(uuid, app.env);
@@ -1290,6 +1303,25 @@ export async function rollback(
       ),
     );
     return true;
+  }
+  if (ledger.pendingApp) {
+    const pending = ledger.pendingApp;
+    const matches = (await api.listApplications()).filter(
+      (app) => app.description === pending.description,
+    );
+    if (matches.length !== 1) {
+      console.log(
+        chalk.red(
+          "Creation has an unknown outcome. Leave replacements in place and retry rollback after checking Coolify; no app was deleted.",
+        ),
+      );
+      return false;
+    }
+    const { description: _description, ...record } = pending;
+    if (!ledger.apps.some((app) => app.uuid === matches[0].uuid))
+      ledger.apps.push({ ...record, uuid: matches[0].uuid });
+    delete ledger.pendingApp;
+    run.saveLedger(ledger);
   }
   if (ledger.phase === "cut-over" || ledger.phase === "cutting-over") {
     if (ledger.source.rollbackGitCommitSha) {
@@ -1797,10 +1829,10 @@ function ledgerDir(): string {
 function saveLedger(ledger: MigrationLedger): void {
   ledger.updatedAt = new Date().toISOString();
   mkdirSync(ledgerDir(), { recursive: true });
-  writeFileSync(
-    join(ledgerDir(), `${ledger.source.uuid}.json`),
-    `${JSON.stringify(ledger, null, 2)}\n`,
-  );
+  const target = join(ledgerDir(), `${ledger.source.uuid}.json`);
+  const temp = `${target}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(ledger, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temp, target);
 }
 
 function findLedgers(targets: string[], projectDir: string): MigrationLedger[] {

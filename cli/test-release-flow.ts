@@ -110,6 +110,7 @@ if (args[0] === "run" && args[1] === "build" && process.env.FAKE_NESTED === "1")
   const nested = spawnSync("/bin/sh", ["-c", "pnpm nested-probe"], { stdio: "inherit" });
   process.exit(nested.status ?? 1);
 }
+if (args[0] === "run" && process.env.FAKE_GATE_FAIL === args[1]) process.exit(1);
 if (args[0] === "publish") {
   const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
   if (process.env.FAKE_PUBLISH_FAIL === pkg.name) {
@@ -170,7 +171,7 @@ function wrapper(path: string, target: string): void {
 // ── scratch monorepo ──────────────────────────────────────────────────
 
 const DEV = ["dev-shared", "dev-plugin-next", "dev-plugin-vite"];
-const ALL = [...DEV.map((name) => `@hatchkit/${name}`), "hatchkit"];
+const ALL = [...DEV.map((name) => `@hatchkit/${name}`), "@hatchkit/mcp", "hatchkit"];
 let repoCount = 0;
 
 interface Repo {
@@ -201,6 +202,8 @@ function makeRepo(version = "0.3.0"): Repo {
     mkdirSync(join(dir, "packages", name), { recursive: true });
     writeJson(join(dir, "packages", name, "package.json"), { name: `@hatchkit/${name}`, version });
   }
+  mkdirSync(join(dir, "mcp"));
+  writeJson(join(dir, "mcp", "package.json"), { name: "@hatchkit/mcp", version });
   const repo: Repo = {
     dir,
     remote,
@@ -363,7 +366,7 @@ await test("publishes inherit the terminal; the push names the tag", () => {
 
 // ── whole flow ─────────────────────────────────────────────────────────
 
-await test("a patch release publishes all four packages, then pushes an annotated tag", () => {
+await test("a patch release publishes all five packages, then pushes an annotated tag", () => {
   const repo = makeRepo();
   const run = release(repo, ["patch"]);
   assert.equal(run.status, 0, run.stdout + run.stderr);
@@ -375,7 +378,7 @@ await test("a patch release publishes all four packages, then pushes an annotate
   const npmCalls = calls(repo).filter((c) => c.tool === "npm");
   assert.ok(!npmCalls.some((c) => c.args[0] === "publish"), "the CLI must not use npm publish");
   assert.ok(
-    npmCalls.some((c) => c.args.join(" ") === "install -g ."),
+    npmCalls.some((c) => c.args.join(" ") === "install -g hatchkit@0.3.1"),
     "global install ran",
   );
 
@@ -414,7 +417,7 @@ await test("a stopped publish pushes nothing; resume publishes the rest and push
   const mark = calls(repo).length;
   const resumed = release(repo, ["resume"]);
   assert.equal(resumed.status, 0, resumed.stdout + resumed.stderr);
-  assert.deepEqual(publishAttempts(repo, mark), ["@hatchkit/dev-plugin-vite", "hatchkit"]);
+  assert.deepEqual(publishAttempts(repo, mark), ["@hatchkit/dev-plugin-vite", "@hatchkit/mcp", "hatchkit"]);
   assert.equal(
     remoteGit(repo, ["rev-parse", "refs/tags/v0.3.1^{commit}"]).stdout,
     git(repo, ["rev-parse", "HEAD"]),
@@ -463,6 +466,16 @@ await test("with no pnpm anywhere, the release stops before it bumps", () => {
   assert.match(run.stderr, /npm install -g pnpm@10\.33\.2/);
   assert.equal(cliVersion(repo), "0.3.0");
   assert.equal(git(repo, ["rev-parse", "HEAD"]), head);
+});
+
+await test("failed checks or packed-install smoke refuse every publish", () => {
+  for (const gate of ["check", "check:package"]) {
+    const repo = makeRepo();
+    const result = release(repo, ["patch"], { env: { FAKE_GATE_FAIL: gate } });
+    assert.notEqual(result.status, 0);
+    assert.deepEqual(publishAttempts(repo), []);
+    assert.equal(remoteGit(repo, ["rev-parse", "main"]).stdout.trim(), git(repo, ["rev-parse", "HEAD~1"]));
+  }
 });
 
 rmSync(root, { recursive: true, force: true });

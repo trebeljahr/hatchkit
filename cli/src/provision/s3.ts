@@ -35,11 +35,11 @@
 
 import { join } from "node:path";
 import chalk from "chalk";
-import ora from "ora";
 import { type ProjectManifest, readManifest, writeManifest } from "../scaffold/manifest.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { resolveEnvFileTarget } from "../utils/env-files.js";
 import { getCloudflareTokenValue } from "../utils/secrets.js";
+import ora from "../utils/spinner.js";
 import { accountIdFromR2Endpoint } from "./s3-buckets.js";
 
 /** One bucket entry from `.hatchkit.json` paired with its minted creds. */

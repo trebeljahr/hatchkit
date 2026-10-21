@@ -6,9 +6,19 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 
 ## Unreleased
 
+### Fixed
+
+- Published CLI packages include tracked starter, infrastructure and ML templates. Scaffold and update commands resolve those bundled assets after installation.
+- Releases run lint, fixture tests, MCP checks and a packed-install scaffold check before publishing. CI checks packed installs on macOS and Linux.
+- Doctor returns structured JSON when keychain access is unavailable. Status marks those credentials unverified without suggesting they are broken.
+- Ctrl+C crosses skipped steps and revisits the last prompt inside a multi-prompt step. Optional provider setup can be deferred before scaffolding.
+- Runtime migrations journal an app creation before the provider request. Rollback can recover an unknown creation by its unique marker. Zero-column terminals disable spinner animation.
+- Free newsletter downloads work without signup through `/api/newsletter/download?key=<key>`. The starter shows the direct link before optional signup. Existing signed email links remain valid.
+- The operator MCP package joins the release flow. Its docs explain source installation until the next npm release.
+
 ### Added
 
-- **Lead magnets in the starter's newsletter.** A signup form can ask for a free file: `<SubscribeForm magnet="wallpapers" />`. The key must be in `services/newsletter/magnets.json`, which names a bucket object (served by a 10-minute presigned URL) or an https URL. The form never sends a URL. The confirm token carries the key, and the confirm route emails a signed download link that works for 30 days. A failed send logs `newsletter.delivery` / `delivery_failed` and never fails the confirm. A confirmed subscriber gets the download straight from the form, at most once per magnet every 15 minutes. The subscriber stores nothing about the signup: no attribs, so no record of the page, site or file. Counts come from the list sizes and the `newsletter.delivery` log lines. `pnpm newsletter:verify --magnet <key>` checks the file and mails the download.
+- **Free files with optional email delivery.** A form shows a direct download followed by optional signup: `<SubscribeForm magnet="wallpapers" />`. The key must be in `services/newsletter/magnets.json`, which names a bucket object (served by a 10-minute presigned URL) or an https URL. The form never sends a URL. The confirm token carries the key, and the confirm route emails a signed download link that works for 30 days. A failed send logs `newsletter.delivery` / `delivery_failed` and never fails the confirm. A confirmed subscriber gets the download straight from the form, at most once per magnet every 15 minutes. The subscriber stores nothing about the signup: no attribs, so no record of the page, site or file. Counts come from the list sizes and the `newsletter.delivery` log lines. `pnpm newsletter:verify --magnet <key>` checks the file and mails the download.
 - `hatchkit add <project> lead-magnet` lists, adds, changes or removes an entry in `magnets.json` (`--dry-run` previews). It edits only that file and warns when the env lacks what a delivery needs.
 - The starter deletes subscribers that never confirmed, 30 days after Listmonk created them: once a day in production, or `pnpm newsletter:prune [--dry-run]`. It deletes `enabled` subscribers on no list, across the shared instance. It reads each one again before the delete, deletes at most 500 per run, and deletes nothing when more than half of the instance looks unconfirmed.
 - `hatchkit listmonk list <project> <key> [--name <live list name>]` gives a project one more mailing list pair: the live list and `<project>-<key>-test`, both private and double opt-in, with get + manage for the project's list role. A list found by name is reused and never changed; a public or single-opt-in one is reported. `--dry-run` prints the plan.

@@ -46,7 +46,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import chalk from "chalk";
-import ora from "ora";
 import { getDnsConfig } from "../config.js";
 import {
   type BucketCors,
@@ -59,6 +58,7 @@ import { CloudflareApi, type R2CorsRule } from "../utils/cloudflare-api.js";
 import { dotenvxSet } from "../utils/dotenvx-safe.js";
 import { locateEnvFile, resolveEnvFileTarget, resolveEnvSearchRoot } from "../utils/env-files.js";
 import { SECRET_KEYS, deleteSecret, getCloudflareTokenValue, getSecret } from "../utils/secrets.js";
+import ora from "../utils/spinner.js";
 import { readEnvKeys } from "./write-env.js";
 
 export type EnvPrefix = "R2" | "S3" | "AWS";

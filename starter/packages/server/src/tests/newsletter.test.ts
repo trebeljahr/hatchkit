@@ -509,6 +509,17 @@ async function captureErrors<T>(fn: () => Promise<T>): Promise<{ result: T; erro
 }
 
 describe("lead magnets", () => {
+  test("public file download does not require signup or a token", async () => {
+    _setMagnetsForTests(MAGNETS);
+    const lm = fakeListmonk();
+    const response = await realFetch(`${base}/api/newsletter/download?key=reading-list`, { redirect: "manual" });
+    assert.equal(response.status, 302);
+    assert.match(response.headers.get("location") ?? "", /^https:/);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal((await realFetch(`${base}/api/newsletter/download?key=missing`, { redirect: "manual" })).status, 404);
+    assert.equal(lm.txs().length, 0);
+  });
+
   beforeEach(() => _setMagnetsForTests(MAGNETS));
   afterEach(() => _setMagnetsForTests(null));
 

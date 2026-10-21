@@ -1,3 +1,4 @@
+import { resolveAssetRoot } from "../../utils/asset-root.js";
 /*
  * cli/src/features/client-core/apply.ts — the feature's `apply`, layering the
  * shared client kit onto a project through the ledger.
@@ -30,7 +31,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, posix, relative, resolve, sep } from "node:path";
+import { join, posix, relative, sep } from "node:path";
 import { substituteIdentifierTokens } from "../../scaffold/identifiers.js";
 import type { FeatureContext } from "../contract.js";
 import {
@@ -54,8 +55,8 @@ import {
   CORE_PACKAGE_NAME,
 } from "./types.js";
 
-/** Monorepo root → the starter template, two hops up from the compiled file. */
-const MONOREPO_ROOT = resolve(join(import.meta.dirname, "..", "..", "..", ".."));
+/** Checkout assets in development, bundled templates after installation. */
+const MONOREPO_ROOT = resolveAssetRoot();
 const STARTER_ROOT = join(MONOREPO_ROOT, "starter");
 
 /** What an apply could not place. Written to the post-apply checklist. */

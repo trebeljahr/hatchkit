@@ -35,12 +35,12 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import chalk from "chalk";
 import { PrivateKey } from "eciesjs";
-import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { locateEnvFile } from "../utils/env-files.js";
 import { exec } from "../utils/exec.js";
 import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
+import ora from "../utils/spinner.js";
 import { repoSlugFromRemote } from "./gh-actions-secrets.js";
 
 export type KeysTarget = "coolify" | "gh" | "both";

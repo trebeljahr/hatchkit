@@ -24,8 +24,8 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 type SubscribeFormProps = {
   /** Key of a lead magnet in the server's
-   *  `services/newsletter/magnets.json`. The reader gets its download
-   *  link by email once the address is confirmed. */
+   *  `services/newsletter/magnets.json`. The reader can download
+   *  immediately; newsletter signup below the link is optional. */
   magnet?: string;
 };
 
@@ -120,6 +120,11 @@ export function SubscribeForm({ magnet }: SubscribeFormProps = {}) {
   const visibleError = formatError ?? (status.kind === "error" ? status.message : null);
 
   return (
+    <div className="space-y-4">
+      {magnet && <div>
+        <a href={`${API_URL}/api/newsletter/download?key=${encodeURIComponent(magnet)}`} className="underline">Download</a>
+        <p className="mt-2 text-sm">Want an email when the next one is out? Signup below is optional.</p>
+      </div>}
     <form onSubmit={onSubmit} className="space-y-3" noValidate>
       <label htmlFor="newsletter-email" className="sr-only">
         Email address
@@ -173,5 +178,6 @@ export function SubscribeForm({ magnet }: SubscribeFormProps = {}) {
         One email at a regular cadence. Unsubscribe link in every issue.
       </p>
     </form>
+    </div>
   );
 }

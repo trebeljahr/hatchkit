@@ -1,3 +1,4 @@
+import { isKeychainUnavailable } from "./utils/keychain-access.js";
 /*
  * Shared status collection — what's configured, what's blocked, what's
  * next. Used by the top-level menu, `hatchkit status`, `hatchkit doctor`,
@@ -34,6 +35,7 @@ export interface ProviderSnapshot {
    *  the stored credential is configured but the provider rejects it.
    *  Absent when no live check ran. */
   verified?: boolean;
+  verification?: "ok" | "failed" | "blocked" | "unavailable";
   /** Why `verified` is false. */
   problem?: string;
 }
@@ -354,13 +356,23 @@ export async function verifyProviderCredentials(
       if (res.status === 401 || res.status === 403) {
         problem = `API user "${auth.apiUser}" rejected (HTTP ${res.status}): deleted, disabled, or token changed`;
       } else if (!res.ok) {
-        problem = `GET /api/profile answered HTTP ${res.status}`;
+        row.verification = "unavailable";
+        delete row.verified;
+        row.problem = `GET /api/profile answered HTTP ${res.status}; credentials were not verified.`;
+        return s;
       }
     }
   } catch (err) {
-    problem = `unreachable: ${(err instanceof Error ? err.message : String(err)).split("\n")[0]}`;
+    row.verification = isKeychainUnavailable(err) ? "blocked" : "unavailable";
+    delete row.verified;
+    row.problem = isKeychainUnavailable(err)
+      ? "Credential check blocked: keychain access is unavailable; credentials were not verified."
+      : "Provider could not be reached; credentials were not verified.";
+    return s;
   }
   row.verified = !problem;
+  row.verification = problem ? "failed" : "ok";
+  if (!problem) delete row.problem;
   if (problem) {
     row.problem = problem;
     s.suggestions.unshift({
@@ -477,13 +489,22 @@ export function renderStatusHuman(s: StatusSnapshot): string {
   lines.push("");
   for (const p of s.providers) {
     const broken = p.configured && p.verified === false;
-    const icon = broken ? chalk.red("✗") : p.configured ? chalk.green("✓") : chalk.dim("·");
+    const unverified = p.verification === "blocked" || p.verification === "unavailable";
+    const icon = unverified
+      ? chalk.yellow("?")
+      : broken
+        ? chalk.red("✗")
+        : p.configured
+          ? chalk.green("✓")
+          : chalk.dim("·");
     const detail = p.detail ? chalk.dim(` (${p.detail})`) : "";
-    const hint = broken
-      ? chalk.red(`  — ${p.problem}; run hatchkit doctor`)
-      : p.configured
-        ? ""
-        : chalk.dim(`  — ${p.configureCommand ?? "not configured"}`);
+    const hint = unverified
+      ? chalk.yellow(`  — ${p.problem}`)
+      : broken
+        ? chalk.red(`  — ${p.problem}; run hatchkit doctor`)
+        : p.configured
+          ? ""
+          : chalk.dim(`  — ${p.configureCommand ?? "not configured"}`);
     lines.push(`  ${icon} ${p.label.padEnd(24)}${detail}${hint}`);
   }
   lines.push("");

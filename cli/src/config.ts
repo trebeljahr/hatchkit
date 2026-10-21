@@ -3,7 +3,6 @@ import { createServer } from "node:http";
 import { Separator, confirm, input, password, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import Conf from "conf";
-import ora from "ora";
 import type { CloudflareAuditConfig } from "./audit/expected.js";
 import { CloudflareApi } from "./utils/cloudflare-api.js";
 import { verifyCoolify } from "./utils/coolify-api.js";
@@ -26,6 +25,7 @@ import {
   getSecret,
   setSecret,
 } from "./utils/secrets.js";
+import ora from "./utils/spinner.js";
 import { type Step, runSteps } from "./utils/step-runner.js";
 import { validateRequired, validateUrl } from "./utils/validate.js";
 
@@ -2805,24 +2805,18 @@ export async function ensureGoogleSearchConsole(): Promise<GoogleSearchConsoleCo
   const existingMode = existing?.oauthMode ?? (existingClientId ? "byo-client" : "hatchkit-pkce");
 
   if (existing?.status === "configured" && existingRefreshToken) {
-    if (existingMode === "hatchkit-pkce" && hatchkitClientId) {
+    const resolvedId =
+      existingClientId ?? (existingMode === "hatchkit-pkce" ? hatchkitClientId : undefined);
+    if (resolvedId)
       return {
         ...existing,
-        oauthMode: "hatchkit-pkce",
-        clientId: hatchkitClientId,
-        clientSecret: hatchkitGoogleSearchConsoleClientSecret(),
+        oauthMode: existingMode,
+        clientId: resolvedId,
+        clientSecret:
+          existingClientSecret ??
+          (resolvedId === hatchkitClientId ? hatchkitGoogleSearchConsoleClientSecret() : undefined),
         refreshToken: existingRefreshToken,
       };
-    }
-    if (existingClientId) {
-      return {
-        ...existing,
-        oauthMode: "byo-client",
-        clientId: existingClientId,
-        clientSecret: existingClientSecret ?? undefined,
-        refreshToken: existingRefreshToken,
-      };
-    }
   }
 
   console.log(chalk.yellow("\n  Google Search Console is not configured yet. Let's set it up."));
@@ -2837,7 +2831,14 @@ export async function ensureGoogleSearchConsole(): Promise<GoogleSearchConsoleCo
   let clientId: string;
   let clientSecret: string | undefined;
   let oauthMode: GoogleSearchConsoleMeta["oauthMode"];
-  if (hatchkitClientId) {
+  if (existingClientId && existingClientSecret) {
+    clientId = existingClientId;
+    clientSecret = existingClientSecret;
+    oauthMode = "byo-client";
+    console.log(
+      chalk.dim("  Reusing your saved Google OAuth client. Renew account authorization below."),
+    );
+  } else if (hatchkitClientId) {
     clientId = hatchkitClientId;
     clientSecret = hatchkitGoogleSearchConsoleClientSecret();
     oauthMode = "hatchkit-pkce";
@@ -2909,14 +2910,11 @@ export async function ensureGoogleSearchConsole(): Promise<GoogleSearchConsoleCo
     lastVerified: new Date().toISOString(),
   };
   store.set("providers.googleSearchConsole", meta);
-  if (oauthMode === "byo-client") {
-    await setSecret(SECRET_KEYS.googleSearchConsoleClientId, clientId);
-    if (clientSecret) await setSecret(SECRET_KEYS.googleSearchConsoleClientSecret, clientSecret);
-    else await deleteSecret(SECRET_KEYS.googleSearchConsoleClientSecret);
-  } else {
-    await deleteSecret(SECRET_KEYS.googleSearchConsoleClientId);
-    await deleteSecret(SECRET_KEYS.googleSearchConsoleClientSecret);
-  }
+  // A refresh token belongs to this exact OAuth client. Preserve the pair
+  // even when setup used environment variables or a packaged client.
+  await setSecret(SECRET_KEYS.googleSearchConsoleClientId, clientId);
+  if (clientSecret) await setSecret(SECRET_KEYS.googleSearchConsoleClientSecret, clientSecret);
+  else await deleteSecret(SECRET_KEYS.googleSearchConsoleClientSecret);
   await setSecret(SECRET_KEYS.googleSearchConsoleRefreshToken, oauth.refreshToken);
   console.log(chalk.green("  ✓ Google Search Console configured"));
   return { ...meta, clientId, clientSecret, refreshToken: oauth.refreshToken };
@@ -2931,13 +2929,13 @@ export async function getGoogleSearchConsoleConfig(): Promise<GoogleSearchConsol
   const refreshToken = await getSecret(SECRET_KEYS.googleSearchConsoleRefreshToken);
   if (!refreshToken) return null;
   if (oauthMode === "hatchkit-pkce") {
-    const hatchkitClientId = hatchkitGoogleSearchConsoleClientId();
-    if (!hatchkitClientId) return null;
+    const resolvedId = clientId ?? hatchkitGoogleSearchConsoleClientId();
+    if (!resolvedId) return null;
     return {
       ...meta,
       oauthMode,
-      clientId: hatchkitClientId,
-      clientSecret: hatchkitGoogleSearchConsoleClientSecret(),
+      clientId: resolvedId,
+      clientSecret: clientSecret ?? hatchkitGoogleSearchConsoleClientSecret(),
       refreshToken,
     };
   }

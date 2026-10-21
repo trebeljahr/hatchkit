@@ -26,10 +26,14 @@ interactive and state-mutating; the user runs them directly.
 ## Install
 
 ```bash
-pnpm add -g hatchkit @hatchkit/mcp
+# From a Hatchkit source checkout:
+pnpm install --frozen-lockfile
+pnpm --filter hatchkit run build
+pnpm --filter @hatchkit/mcp run build
+node mcp/dist/index.js
 ```
 
-Or use `npx`-style invocation from your MCP client config.
+Earlier releases published only the CLI. If npm cannot find the operator package, use the source build above. Configure your host with `node` plus the absolute path to `mcp/dist/index.js`. Put `hatchkit` on PATH or set `HATCHKIT_BIN` to the absolute path to `cli/dist/index.js`. The release flow publishes CLI and operator packages together.
 
 ## Claude Desktop / Claude Code config
 

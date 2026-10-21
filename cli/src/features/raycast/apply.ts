@@ -1,3 +1,4 @@
+import { resolveAssetRoot } from "../../utils/asset-root.js";
 /*
  * cli/src/features/raycast/apply.ts — layer the launcher extension onto a
  * project, through the ledger.
@@ -22,7 +23,7 @@
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { substituteIdentifierTokens } from "../../scaffold/identifiers.js";
 import { renameStarterIdentifiers, starterFilesUnder } from "../client-core/index.js";
 import type { FeatureContext, FeaturePlanContext } from "../contract.js";
@@ -31,7 +32,7 @@ import { type RaycastNames, raycastNamesFrom, renameRaycastIdentifiers } from ".
 import { RAYCAST_OWNED_PATHS, isBinaryAsset, raycastRootScripts } from "./types.js";
 
 /** Monorepo root → the starter template, four hops up from the compiled file. */
-const MONOREPO_ROOT = resolve(join(import.meta.dirname, "..", "..", "..", ".."));
+const MONOREPO_ROOT = resolveAssetRoot();
 const STARTER_ROOT = join(MONOREPO_ROOT, "starter");
 
 /**

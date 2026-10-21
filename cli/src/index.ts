@@ -1,9 +1,10 @@
 #!/usr/bin/env node
+import { prepareInfrastructureRoot, resolveAssetRoot } from "./utils/asset-root.js";
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { confirm, select } from "@inquirer/prompts";
+import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
 import { AUDIT_USAGE, runAuditCommand } from "./audit/command.js";
 import { BACKUP_USAGE, runBackupCommand } from "./backups/command.js";
@@ -109,13 +110,16 @@ import { getCliVersion } from "./utils/version.js";
 const args = process.argv.slice(2);
 const command = args[0];
 
-// Resolve the monorepo root. From both `cli/src/index.ts` (tsx) and
-// `cli/dist/index.js` (compiled), two parent hops land at the worktree.
+// Source commands use the checkout. Compiled commands use the template bundle shipped in the npm package.
 // STARTER_ROOT is resolved inside scaffold/app.ts (not here) — it's
 // only needed from that module.
-const MONOREPO_ROOT = resolve(join(import.meta.dirname, "..", ".."));
+const MONOREPO_ROOT = resolveAssetRoot();
 const INFRA_ROOT = join(MONOREPO_ROOT, "infra");
 const SERVICES_ROOT = join(MONOREPO_ROOT, "services");
+function runtimeAssetRoot(): string {
+  if (args.includes("--dry-run") || args.includes("--recipe")) return MONOREPO_ROOT;
+  return prepareInfrastructureRoot(join(dirname(getConfigPath()), "templates", getCliVersion()));
+}
 
 async function main(): Promise<void> {
   // --version / -v short-circuit before the banner and any config work.
@@ -176,7 +180,7 @@ async function main(): Promise<void> {
       await runMacRunnerCommand(args.slice(1));
       break;
     case "infra":
-      await runInfraCommand(args.slice(1), { infraRoot: INFRA_ROOT });
+      await runInfraCommand(args.slice(1), { infraRoot: join(runtimeAssetRoot(), "infra") });
       break;
     case "init":
     case "setup":
@@ -253,12 +257,12 @@ async function main(): Promise<void> {
       break;
     case "rename-domain": {
       const { runRenameDomainCli } = await import("./deploy/rename-domain.js");
-      await runRenameDomainCli(args.slice(1), MONOREPO_ROOT);
+      await runRenameDomainCli(args.slice(1), runtimeAssetRoot());
       break;
     }
     case "migrate-domain": {
       const { runMigrateDomainCli } = await import("./migrate/index.js");
-      await runMigrateDomainCli(args.slice(1), MONOREPO_ROOT);
+      await runMigrateDomainCli(args.slice(1), runtimeAssetRoot());
       break;
     }
     case "migrate-runtime": {
@@ -278,7 +282,7 @@ async function main(): Promise<void> {
     }
     case "rename-project": {
       const { runRenameProjectCli } = await import("./deploy/rename-project.js");
-      await runRenameProjectCli(args.slice(1), MONOREPO_ROOT);
+      await runRenameProjectCli(args.slice(1), runtimeAssetRoot());
       break;
     }
     case "sync": {
@@ -288,7 +292,7 @@ async function main(): Promise<void> {
     }
     case "regen-infra": {
       const { runRegenInfraCli } = await import("./deploy/regen-infra.js");
-      await runRegenInfraCli(args.slice(1), MONOREPO_ROOT);
+      await runRegenInfraCli(args.slice(1), runtimeAssetRoot());
       break;
     }
     case "signing": {
@@ -2473,7 +2477,10 @@ function createProvisionServices(config: ProjectConfig): ProvisionService[] {
   return [];
 }
 
-async function ensureCreateProvisionProviders(services: ProvisionService[]): Promise<void> {
+const createPreflightDeferrals: DeferredStep[] = [];
+
+async function ensureCreateProvisionProviders(config: ProjectConfig): Promise<void> {
+  const services = createProvisionServices(config);
   if (services.length === 0) return;
   const unique = new Set(services);
   const {
@@ -2485,20 +2492,62 @@ async function ensureCreateProvisionProviders(services: ProvisionService[]): Pro
     ensureSes,
   } = await import("./config.js");
 
-  if (unique.has("glitchtip")) await ensureGlitchtip();
-  if (unique.has("plausible")) await ensurePlausible();
-  if (unique.has("listmonk-ses")) {
-    await ensureSes();
-    await ensureListmonk();
+  const {
+    classifyOptionalStepError,
+    deferralForService,
+    confirmConfigureOrDefer,
+    labelForService,
+    setupCommandsForService,
+  } = await import("./provision/deferrals.js");
+  const deferred: DeferredStep[] = [];
+  const active = new Set(services);
+  for (const service of unique) {
+    if (!["glitchtip", "plausible", "listmonk-ses", "email", "search-console"].includes(service))
+      continue;
+    try {
+      const provider =
+        service === "search-console"
+          ? "googleSearchConsole"
+          : service === "listmonk-ses"
+            ? "listmonk"
+            : service === "email"
+              ? "dns"
+              : service;
+      await confirmConfigureOrDefer({
+        label: labelForService(service),
+        configured:
+          getConfig().providers?.[provider as keyof ReturnType<typeof getConfig>["providers"]]
+            ?.status === "configured",
+        setupCommands: setupCommandsForService(service),
+      });
+      if (service === "glitchtip") await ensureGlitchtip();
+      if (service === "plausible") await ensurePlausible();
+      if (service === "listmonk-ses") {
+        await ensureSes();
+        await ensureListmonk();
+      }
+      if (service === "email") {
+        await ensureDns();
+        await ensureDefaultForwardingEmail();
+      }
+      if (service === "search-console") {
+        await ensureGoogleSearchConsole();
+        await ensureDns();
+      }
+    } catch (error) {
+      const outcome =
+        error instanceof Error && error.name === "ExitPromptError"
+          ? { kind: "declined" as const, reason: "Optional credential setup cancelled." }
+          : classifyOptionalStepError(error);
+      if (!outcome) throw error;
+      active.delete(service);
+      const step = deferralForService({ service, project: config.name, ...outcome });
+      deferred.push(step);
+      console.log(chalk.yellow(`  » ${step.label} deferred. Finish later: ${step.command}`));
+    }
   }
-  if (unique.has("email")) {
-    await ensureDns();
-    await ensureDefaultForwardingEmail();
-  }
-  if (unique.has("search-console")) {
-    await ensureGoogleSearchConsole();
-    await ensureDns();
-  }
+  config.provisionServices = [...active];
+  createPreflightDeferrals.push(...deferred);
 }
 
 // ---------------------------------------------------------------------------
@@ -2526,6 +2575,27 @@ async function findEnclosingGitRoot(cwd: string): Promise<string | undefined> {
  *  Idempotent — already-configured providers return instantly. Called
  *  before the review loop (so credentials are collected pre-"Proceed")
  *  and again after each in-review edit that might add new providers. */
+async function deferCreateProvider(
+  config: ProjectConfig,
+  error: unknown,
+  service: "s3" | "stripe",
+): Promise<void> {
+  const { classifyOptionalStepError, deferralForService, deferralForStripe } = await import(
+    "./provision/deferrals.js"
+  );
+  const outcome =
+    error instanceof Error && error.name === "ExitPromptError"
+      ? { kind: "declined" as const, reason: "Optional credential setup cancelled." }
+      : classifyOptionalStepError(error);
+  if (!outcome) throw error;
+  const step =
+    service === "stripe"
+      ? deferralForStripe({ project: config.name, ...outcome })
+      : deferralForService({ service, project: config.name, ...outcome });
+  createPreflightDeferrals.push(step);
+  console.log(chalk.yellow(`  » ${step.label} deferred. Finish later: ${step.command}`));
+}
+
 async function ensureRequiredProviders(config: ProjectConfig): Promise<void> {
   if (config.deploymentMode === "coolify" && config.runDeployment && !config.dryRun) {
     const dns = await ensureDns();
@@ -2561,28 +2631,50 @@ async function ensureRequiredProviders(config: ProjectConfig): Promise<void> {
       config.s3Provider === "aws" ||
       config.s3Provider === "r2"
     ) {
-      await ensureS3(config.s3Provider);
+      try {
+        const { confirmConfigureOrDefer } = await import("./provision/deferrals.js");
+        await confirmConfigureOrDefer({
+          label: "S3",
+          configured: getConfig().providers.s3?.[config.s3Provider]?.status === "configured",
+        });
+        await ensureS3(config.s3Provider);
+      } catch (error) {
+        await deferCreateProvider(config, error, "s3");
+        config.s3Provider = "none";
+        config.provisionServices = createProvisionServices(config).filter((s) => s !== "s3");
+      }
     }
   }
 
-  const provisionServices = createProvisionServices(config);
-  if (!config.dryRun) await ensureCreateProvisionProviders(provisionServices);
+  if (!config.dryRun) await ensureCreateProvisionProviders(config);
 
-  if (config.features.includes("stripe")) {
-    const { ensureStripe } = await import("./config.js");
-    await ensureStripe();
+  if (
+    config.features.includes("stripe") &&
+    !createPreflightDeferrals.some((s) => s.key === "stripe")
+  ) {
+    try {
+      const { confirmConfigureOrDefer } = await import("./provision/deferrals.js");
+      await confirmConfigureOrDefer({
+        label: "Stripe",
+        configured: !!getConfig().providers.stripe,
+      });
+      const { ensureStripe } = await import("./config.js");
+      await ensureStripe();
 
-    // Pre-collect per-project Stripe keys so execution doesn't prompt.
-    // Keys are cached in keychain — subsequent calls return instantly.
-    if (config.surfaces !== "static") {
-      const { collectPerProjectKeys } = await import("./provision/stripe.js");
-      const master = await ensureStripe();
-      if (master.hasTestMaster) {
-        await collectPerProjectKeys({ projectName: config.name, mode: "test", reprompt: false });
+      // Pre-collect per-project Stripe keys so execution doesn't prompt.
+      // Keys are cached in keychain — subsequent calls return instantly.
+      if (config.surfaces !== "static") {
+        const { collectPerProjectKeys } = await import("./provision/stripe.js");
+        const master = await ensureStripe();
+        if (master.hasTestMaster) {
+          await collectPerProjectKeys({ projectName: config.name, mode: "test", reprompt: false });
+        }
+        if (master.hasLiveMaster) {
+          await collectPerProjectKeys({ projectName: config.name, mode: "live", reprompt: false });
+        }
       }
-      if (master.hasLiveMaster) {
-        await collectPerProjectKeys({ projectName: config.name, mode: "live", reprompt: false });
-      }
+    } catch (error) {
+      await deferCreateProvider(config, error, "stripe");
     }
   }
 }
@@ -2592,6 +2684,7 @@ async function ensureRequiredProviders(config: ProjectConfig): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function handleCreate(): Promise<void> {
+  createPreflightDeferrals.length = 0;
   // Parse CLI flags. `--yes` (with optional `--config <path>`) turns
   // the flow non-interactive; otherwise we still prompt for anything
   // not supplied via flags / config file.
@@ -2634,6 +2727,10 @@ async function handleCreate(): Promise<void> {
   await ensureRequiredProviders(config);
 
   const provisionServices = createProvisionServices(config);
+  const infraRoot =
+    config.deploymentMode === "coolify" && !config.dryRun
+      ? join(runtimeAssetRoot(), "infra")
+      : INFRA_ROOT;
 
   // Resolve where this new project lives on disk. Default: fresh
   // directory at `./<name>`. When cwd is inside an existing git
@@ -2642,47 +2739,12 @@ async function handleCreate(): Promise<void> {
   // having to clone twice. Non-interactive falls back to the
   // default; automation sets `projectSubdir` on the preset directly.
   let appDir = resolve(config.name);
-  if (!nonInteractive && !config.projectSubdir) {
+  if (config.projectSubdir) {
     const enclosingRepo = await findEnclosingGitRoot(process.cwd());
-    if (enclosingRepo && enclosingRepo !== resolve(process.cwd(), "..")) {
-      const choice = await select<"fresh" | "subfolder" | "adopt">({
-        message: "Where should this project live?",
-        default: "fresh",
-        choices: [
-          {
-            name: `Fresh directory at ./${config.name}`,
-            value: "fresh",
-          },
-          {
-            name: `Subfolder of the current repo (${relative(process.cwd(), enclosingRepo) || "."}/${config.name})`,
-            value: "subfolder",
-          },
-          {
-            name: "Cancel — I'll adopt the existing repo instead",
-            value: "adopt",
-          },
-        ],
-      });
-      if (choice === "adopt") {
-        console.log(
-          chalk.dim(
-            "\n  Run `hatchkit adopt` from the existing repo to bring it under Hatchkit\n  management instead.\n",
-          ),
-        );
-        return;
-      }
-      if (choice === "subfolder") {
-        config.projectSubdir = config.name;
-        appDir = join(enclosingRepo, config.name);
-      }
-    }
-  } else if (config.projectSubdir) {
-    const enclosingRepo = await findEnclosingGitRoot(process.cwd());
-    if (!enclosingRepo) {
+    if (!enclosingRepo)
       throw new Error(
-        "config.projectSubdir was set but the current directory isn't inside a git repo. Run `git init` first or unset projectSubdir.",
+        "config.projectSubdir requires an existing git repo. Run git init or unset projectSubdir.",
       );
-    }
     appDir = join(enclosingRepo, config.projectSubdir);
   }
 
@@ -2763,7 +2825,10 @@ async function handleCreate(): Promise<void> {
   // the user gets one list of what's still outstanding plus the exact
   // command per item.
   const configuredSteps: string[] = [];
-  const deferredSteps: DeferredStep[] = [];
+  const deferredSteps: DeferredStep[] = createPreflightDeferrals.map((step) => ({
+    ...step,
+    command: step.command.replace(/^hatchkit add \S+ /, `hatchkit add ${config.name} `),
+  }));
   /** Deferral keys this run *completed* — cleared out of the manifest
    *  so a resumed create doesn't keep reporting a step as pending. */
   const resolvedStepKeys: string[] = [];
@@ -2858,7 +2923,11 @@ async function handleCreate(): Promise<void> {
       // records a deferral. The same helper backs
       // `hatchkit add <project> stripe`, so the follow-up command in
       // the summary resumes exactly here.
-      if (config.features.includes("stripe") && config.surfaces !== "static") {
+      if (
+        config.features.includes("stripe") &&
+        config.surfaces !== "static" &&
+        !deferredSteps.some((step) => step.key === "stripe")
+      ) {
         const { wireStripeForProject } = await import("./provision/stripe-wiring.js");
         const stripeResult = await wireStripeForProject({
           projectName: config.name,
@@ -2883,7 +2952,7 @@ async function handleCreate(): Promise<void> {
       // nothing equivalent — neither reads env, and scaffold-only
       // writes no infra.
       if (config.deploymentMode === "coolify") {
-        scaffoldInfra(config, INFRA_ROOT, {
+        scaffoldInfra(config, infraRoot, {
           serverPort: scaffoldResult?.ports.server,
           clientPort: scaffoldResult?.ports.client,
         });
@@ -2958,7 +3027,7 @@ async function handleCreate(): Promise<void> {
     }
 
     // Step 4: Generate infra configs (with repo URL + ports baked in).
-    const infraResult = scaffoldInfra(config, INFRA_ROOT, {
+    const infraResult = scaffoldInfra(config, infraRoot, {
       repoUrl: repoUrl ?? undefined,
       serverPort: scaffoldResult?.ports.server,
       clientPort: scaffoldResult?.ports.client,
@@ -2974,7 +3043,7 @@ async function handleCreate(): Promise<void> {
     // gh-pages handles its own DNS via `runPagesSetupProgrammatic`
     // a few steps down, and `scaffold-only` skips deploy entirely.
     if (config.runDeployment && config.deploymentMode === "coolify") {
-      const tfResult = await runTerraform(config, INFRA_ROOT);
+      const tfResult = await runTerraform(config, infraRoot);
       if (tfResult.applied) {
         ledger?.record({
           kind: "terraformApplied",

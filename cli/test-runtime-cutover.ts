@@ -184,6 +184,30 @@ function fixture(
 }
 
 try {
+  {
+    const f = fixture();
+    const create = f.api.createDockerImageApplication.bind(f.api);
+    let description = "";
+    f.api.createDockerImageApplication = async (input) => {
+      description = input.description ?? "";
+      await create(input);
+      throw new Error("connection lost after provider created the app");
+    };
+    assert.equal(await migrate(f.api, "https://coolify.example", basePlan(), options, f.deps), false);
+    const ledger = f.ledger()!;
+    assert.ok(ledger.pendingApp, "unknown creation must be journaled before the request");
+    f.api.listApplications = async () => [];
+    assert.equal(await rollback(f.api, ledger, options, f.deps), false);
+    assert.ok(!f.calls.some((call) => call.startsWith("delete:")), "unknown outcomes never guess by name");
+    f.api.listApplications = async () => [
+      { uuid: "new1", name: "site", description },
+      { uuid: "foreign", name: "site", description: "another project's app" },
+    ];
+    assert.equal(await rollback(f.api, ledger, options, f.deps), true);
+    assert.ok(f.calls.includes("delete:new1"));
+    assert.ok(!f.calls.includes("delete:foreign"));
+    assert.equal(ledger.pendingApp, undefined);
+  }
   for (const args of [
     ["--image"],
     ["--image", "app=ghcr.io/test/site:latest", "--keep-live-tag"],

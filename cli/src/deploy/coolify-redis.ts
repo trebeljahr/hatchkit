@@ -17,11 +17,11 @@
 
 import { join } from "node:path";
 import chalk from "chalk";
-import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { dotenvxSet } from "../utils/dotenvx-safe.js";
+import ora from "../utils/spinner.js";
 import { findCoolifyAppsForProject } from "./coolify-app.js";
 import { joinProjectAppsToDatabaseNetwork } from "./coolify-db-network.js";
 import { placeProjectResource } from "./project-network.js";

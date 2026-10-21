@@ -20,7 +20,7 @@ Hatchkit's ML service wrapper code ships under this repo's MIT license. Model we
 | `3d-extraction` | TripoSR (`stabilityai/TripoSR`) | MIT | [TripoSR LICENSE](https://github.com/VAST-AI-Research/TripoSR/blob/main/LICENSE) |
 | `image-recognition` | CLIP ViT-L/14 (`openai/clip-vit-large-patch14`) | MIT | [CLIP LICENSE](https://github.com/openai/CLIP/blob/main/LICENSE) |
 | `subtitles` | Whisper large-v3 (`openai-whisper` `large-v3`) | MIT | [Whisper LICENSE](https://github.com/openai/whisper/blob/main/LICENSE) |
-| `background-removal` | TBD (`rembg` `birefnet-general` alias; service does not pin an upstream weight repo) | TBD | TBD |
+| `background-removal` | BiRefNet (`birefnet-general` via rembg) | MIT | [BiRefNet LICENSE](https://github.com/ZhengPeng7/BiRefNet/blob/main/LICENSE) |
 
 `custom-hf` is user-selected rather than a fixed template under `services/ml/`; its model weights carry the license of the Hugging Face model ID you choose. If you override any service's runtime model parameter, check the selected model's license separately.
 
@@ -34,11 +34,11 @@ Single image → 3D mesh (GLB). Five options — pick by quality, license, and i
 |---|---|---|---|
 | `3d-sam-objects` | **SAM 3D Objects** (Meta) | Open weights | SOTA on real-image textures (5:1 human-preference win). Default. |
 | `3d-sam-body` | **SAM 3D Body** (Meta) | Open weights | Posed human-body reconstruction. For apparel / try-on. |
-| `3d-hunyuan` | **Hunyuan3D** (Tencent) | Non-commercial† | 4–8K PBR textures. Highest open-weight quality. |
+| `3d-hunyuan` | **Hunyuan3D** (Tencent) | Tencent Community License† | 4–8K PBR textures. Highest open-weight quality. |
 | `3d-trellis` | **TRELLIS 2** (Microsoft) | MIT | Sparse-voxel geometry. Strong topology. |
 | `3d-extraction` | **TripoSR** (Stability AI) | MIT | Legacy — lost the 2024–2025 benchmarks. Kept for back-compat. |
 
-†Tencent offers a separate commercial license on request — verify terms before shipping.
+†Review the Tencent Hunyuan 3D 2.1 Community License, including its territory restrictions and separate licence requirement above its monthly-active-user threshold.
 
 ### Which one to pick
 

@@ -5,13 +5,13 @@
  *   node scripts/release.mjs patch|minor|major   prep, bump, then finish
  *   node scripts/release.mjs resume              finish a release that stopped
  *
- * Finish = build, typecheck, publish every package npm does not have
+ * Finish = build, all checks, packed install, publish every package npm does not have
  * yet (release-packages.mjs), push the version commit and its tag,
  * install the CLI globally.
  *
  * Publishing comes before the push. A publish that stops (npm's 2FA,
  * the network) leaves nothing on GitHub, and `pnpm release:resume`
- * runs the finish again: build and typecheck repeat, packages already
+ * runs the finish again: build and every check repeat, packages already
  * on npm are skipped, and the push is a no-op once done.
  *
  * pnpm is resolved once (release-lib.mjs) and put on PATH for every
@@ -84,8 +84,11 @@ const notPushed = [
   "  Packages that already reached npm are skipped.",
 ].join("\n");
 
-step("build", pnpm.command, [...pnpm.args, "run", "build"], { hint: notPushed });
-step("typecheck", pnpm.command, [...pnpm.args, "run", "typecheck"], { hint: notPushed });
+step("build", pnpm.command, [...pnpm.args, "run", "build"], { cwd: repoRoot, hint: notPushed });
+step("check", pnpm.command, [...pnpm.args, "run", "check"], { hint: notPushed });
+step("MCP typecheck", pnpm.command, [...pnpm.args, "run", "typecheck"], { cwd: join(repoRoot, "mcp"), hint: notPushed });
+step("MCP tests", pnpm.command, [...pnpm.args, "run", "test"], { cwd: join(repoRoot, "mcp"), hint: notPushed });
+step("packed install", pnpm.command, [...pnpm.args, "run", "check:package"], { hint: notPushed });
 step("publish", process.execPath, [join(here, "release-packages.mjs")], { hint: notPushed });
 
 const branch = gitMaybe(["symbolic-ref", "--quiet", "--short", "HEAD"]);
@@ -101,8 +104,8 @@ step("push", "git", pushArgs({ remote, branchRef, version }), {
   ].join("\n"),
 });
 
-step("global install", "npm", ["install", "-g", "."], {
-  hint: `  v${version} is on npm and GitHub. Only the global install failed:\n\n      cd ${cliDir} && npm install -g .`,
+step("global install", "npm", ["install", "-g", `hatchkit@${version}`], {
+  hint: `  v${version} is on npm and GitHub. Only the global install failed:\n\n      npm install -g hatchkit@${version}`,
 });
 
 console.log(`\n  ✓ release: v${version} is on npm and pushed to ${remote}.`);

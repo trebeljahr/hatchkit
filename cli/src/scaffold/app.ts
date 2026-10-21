@@ -1,3 +1,4 @@
+import { resolveAssetRoot } from "../utils/asset-root.js";
 /*
  * scaffoldApp orchestrator.
  *
@@ -26,7 +27,6 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import chalk from "chalk";
-import ora from "ora";
 import { installBackupScripts } from "../backups/scripts.js";
 import { addUsedPorts, getUsedPorts, removeUsedPorts } from "../config.js";
 import { expandFeatureSelection } from "../features/all.js";
@@ -41,6 +41,7 @@ import {
 import type { Feature, MlService, ProjectConfig } from "../prompts.js";
 import { explainFsError } from "../utils/errors.js";
 import { type ProjectPorts, pickProjectPorts } from "../utils/ports.js";
+import ora from "../utils/spinner.js";
 import { getCliVersion } from "../utils/version.js";
 import { applyClaudeMd } from "./claude-md.js";
 import { applyWorkflowClientBuildArgUrls } from "./client-build-args.js";
@@ -99,8 +100,8 @@ import {
   surfaceHasServer,
 } from "./surfaces.js";
 
-// Monorepo root → starter submodule
-const MONOREPO_ROOT = resolve(join(import.meta.dirname, "..", "..", ".."));
+// Source checkout in development, shipped template bundle after installation.
+const MONOREPO_ROOT = resolveAssetRoot();
 const STARTER_ROOT = join(MONOREPO_ROOT, "starter");
 
 export interface ScaffoldResult {

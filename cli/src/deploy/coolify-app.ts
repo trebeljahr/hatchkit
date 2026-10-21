@@ -1,5 +1,4 @@
 import chalk from "chalk";
-import ora from "ora";
 import { getCoolifyConfig, getDnsConfig } from "../config.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { composeServicesOf, validateComposeServices } from "../utils/compose.js";
@@ -7,6 +6,7 @@ import type { ApplicationCreateInput } from "../utils/coolify-api.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { type PublicIps, discoverPublicIps } from "../utils/coolify-server-ips.js";
 import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
+import ora from "../utils/spinner.js";
 import { DEPLOY_HOOK_WATCH_PATH } from "./coolify-deploy-hook.js";
 import { deployImageDefaults, existingAppUuids } from "./coolify.js";
 import { type CoolifyDeployApp, repoSlugFromRemote } from "./gh-actions-secrets.js";

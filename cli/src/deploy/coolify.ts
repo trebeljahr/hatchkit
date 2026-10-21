@@ -31,11 +31,11 @@
  *     after we return, once we know the app uuid.
  */
 import chalk from "chalk";
-import ora from "ora";
 import { getCoolifyConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
 import { readImageEnvDefaults } from "../scaffold/deploy-verification.js";
 import { workflowsPromotingLive } from "../scaffold/signed-deploy.js";
+import ora from "../utils/spinner.js";
 import { liveImageRefs } from "./coolify-deploy-hook.js";
 
 import { composeServicesOf, validateComposeServices } from "../utils/compose.js";

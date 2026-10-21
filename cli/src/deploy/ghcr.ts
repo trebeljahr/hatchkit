@@ -31,7 +31,6 @@
  * 403 at the finish line).
  */
 
-import ora from "ora";
 import type { CoolifyApi, CoolifyServer } from "../utils/coolify-api.js";
 import {
   type CoolifyServerSshTarget,
@@ -42,6 +41,7 @@ import {
 } from "../utils/coolify-ssh.js";
 import { exec, execOk } from "../utils/exec.js";
 import { ghTokenScopes } from "../utils/gh-token.js";
+import ora from "../utils/spinner.js";
 
 export interface GhcrSetupOptions {
   /** Owner/repo slug, e.g. `acme/extinction-protocol`. */

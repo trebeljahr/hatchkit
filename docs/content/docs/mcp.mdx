@@ -7,14 +7,14 @@ Hatchkit has two [MCP](https://modelcontextprotocol.io) servers because they con
 
 | Server | Code location | What it can access | How to get it |
 |---|---|---|---|
-| `@hatchkit/mcp` | Separate package in this repository's `mcp/` directory | Local Hatchkit CLI status, doctor, explain, and a requested dotenvx key | Install the separate `@hatchkit/mcp` package. |
+| `@hatchkit/mcp` | Separate package in this repository's `mcp/` directory | Local Hatchkit CLI status, doctor, explain, and a requested dotenvx key | Build the operator server from this checkout; see below. |
 | Project `mcp` feature | `packages/mcp` in each generated app | That app's `/api/v1` records, subject to the supplied API token | Select `--features mcp` or add it with `hatchkit update`. |
 
 Both run as stdio processes under an MCP host. The operator server does not access an app's records. The project server does not read local Hatchkit provider configuration. You can install either server alone.
 
 ## Operator server: `@hatchkit/mcp`
 
-Install `hatchkit` and `@hatchkit/mcp` on the machine that holds your Hatchkit configuration. Set your MCP host's command to `hatchkit-mcp`. It runs the CLI's JSON commands and exposes `hatchkit_status`, `hatchkit_doctor`, `hatchkit_explain`, and `hatchkit_keys_show`. The last tool returns a live private key; call it only when the user asks for that key.
+Earlier releases published only the CLI. If npm cannot find the operator package, build it from this repository: run `pnpm install --frozen-lockfile`, `pnpm --filter hatchkit run build`, and `pnpm --filter @hatchkit/mcp run build`. Set your MCP host's command to `node` with the absolute path to `mcp/dist/index.js` as its argument. Put `hatchkit` on PATH or set `HATCHKIT_BIN` to the built CLI entry point. The release flow publishes the operator package alongside the CLI. It runs the CLI's JSON commands and exposes `hatchkit_status`, `hatchkit_doctor`, `hatchkit_explain`, and `hatchkit_keys_show`. The last tool returns a live private key; call it only when the user asks for that key.
 
 The operator server has no create, deploy, or provider-write tools. See its [package README](https://github.com/trebeljahr/hatchkit/tree/main/mcp) for installation and host configuration. Its bridge tests run with `pnpm --filter @hatchkit/mcp test`.
 

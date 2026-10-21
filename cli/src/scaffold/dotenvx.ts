@@ -26,10 +26,10 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
-import ora from "ora";
 import type { ProjectConfig } from "../prompts.js";
 import { dotenvxSet } from "../utils/dotenvx-safe.js";
 import { SECRET_KEYS, setSecret } from "../utils/secrets.js";
+import ora from "../utils/spinner.js";
 
 export interface DotenvxValues {
   /** Values to encrypt into .env.production. User-supplied only —

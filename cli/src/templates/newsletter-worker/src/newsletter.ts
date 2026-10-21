@@ -241,7 +241,11 @@ async function handleConfirm(url: URL, env: Env): Promise<Response> {
 }
 
 async function handleDownload(url: URL, env: Env): Promise<Response> {
-  const result = await verifyDownloadToken(env.NEWSLETTER_TOKEN_SECRET, url.searchParams.get("token") ?? "");
+  const directKey = url.searchParams.get("key");
+  if (directKey !== null && !getMagnet(directKey)) return new Response("Download unavailable", { status: 404 });
+  const result = directKey !== null
+    ? { ok: true as const, magnet: directKey }
+    : await verifyDownloadToken(env.NEWSLETTER_TOKEN_SECRET, url.searchParams.get("token") ?? "");
   if (!result.ok) {
     log("info", "download", "verify_failed", { reason: result.reason });
     return redirect(env, `/sub/error?reason=${result.reason === "expired" ? "download_expired" : "download_invalid"}`);

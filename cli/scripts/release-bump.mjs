@@ -78,6 +78,12 @@ for (const name of lockstepPackages) {
   console.log(`  release-bump: packages/${name} → ${next}`);
 }
 
+const mcpPath = join(repoRoot, "mcp", "package.json");
+const mcp = JSON.parse(readFileSync(mcpPath, "utf8"));
+mcp.version = next;
+writeFileSync(mcpPath, `${JSON.stringify(mcp, null, 2)}\n`);
+stagedPaths.push(join("mcp", "package.json"));
+
 // Stage + commit + tag from the repo root so the paths in the commit
 // are repo-relative regardless of where the script was invoked. The tag
 // is annotated: `git push --follow-tags` skips lightweight tags, which

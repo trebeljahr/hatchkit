@@ -178,7 +178,7 @@ hatchkit/
 │  ├─ subtitles/
 │  ├─ 3d-extraction/
 │  └─ background-removal/
-├─ docs/             # Next.js/Fumadocs docs site — deployed to GitHub Pages
+├─ docs/             # Next.js/Fumadocs docs site — deployed to Cloudflare Workers
 └─ .github/workflows/
    ├─ ci.yml         # typecheck + lint + scaffold matrix
    ├─ gitleaks.yml   # secret scanning

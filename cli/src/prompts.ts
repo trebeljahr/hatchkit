@@ -1,4 +1,10 @@
-import { confirm, input, select } from "@inquirer/prompts";
+import { resolve } from "node:path";
+import {
+  confirm as inquirerConfirm,
+  input as inquirerInput,
+  password as inquirerPassword,
+  select as inquirerSelect,
+} from "@inquirer/prompts";
 import chalk from "chalk";
 import {
   detectPersonalEmailLocalPart,
@@ -29,14 +35,21 @@ import type { ProvisionService } from "./provision/index.js";
 import type { ProjectIdentifiers } from "./scaffold/identifiers.js";
 import { CoolifyApi, type CoolifyServer } from "./utils/coolify-api.js";
 import { discoverPublicIps } from "./utils/coolify-server-ips.js";
-import { multiselect } from "./utils/multiselect.js";
-import { type Step, runSteps } from "./utils/step-runner.js";
+import { exec } from "./utils/exec.js";
+import { multiselect as inquirerMultiselect } from "./utils/multiselect.js";
+import { type Step, rememberStepPrompt, runSteps } from "./utils/step-runner.js";
 import {
   parseDomain,
   validateCoolifyDescription,
   validateDomain,
   validateProjectName,
 } from "./utils/validate.js";
+
+const confirm = rememberStepPrompt(inquirerConfirm);
+const input = rememberStepPrompt(inquirerInput);
+const password = rememberStepPrompt(inquirerPassword);
+const select = rememberStepPrompt(inquirerSelect);
+const multiselect = rememberStepPrompt(inquirerMultiselect);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -838,6 +851,24 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       },
     },
     {
+      name: "Project location",
+      skip: () => presets.projectSubdir !== undefined || presets.scaffoldRepo !== undefined,
+      run: async (c) => {
+        const result = await exec("git", ["rev-parse", "--show-toplevel"], { silent: true });
+        const root = result.exitCode === 0 ? result.stdout.trim() : "";
+        if (!root || root === resolve(process.cwd(), "..")) return c;
+        const location = await select({
+          message: "Where should this project live?",
+          default: c.projectSubdir ? "subfolder" : "fresh",
+          choices: [
+            { name: `Fresh directory at ./${c.name}`, value: "fresh" },
+            { name: `Subfolder of the current repo (${root}/${c.name})`, value: "subfolder" },
+          ],
+        });
+        return { ...c, projectSubdir: location === "subfolder" ? c.name : undefined };
+      },
+    },
+    {
       name: "Description",
       skip: () => presets.description !== undefined,
       run: async (c) => {
@@ -1229,9 +1260,8 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
           message: "S3 access key:",
           default: c.s3ExistingAccessKey,
         });
-        const s3ExistingSecretKey = await input({
+        const s3ExistingSecretKey = await password({
           message: "S3 secret key:",
-          default: c.s3ExistingSecretKey,
         });
         const s3ExistingRegion = await input({
           message: "S3 region:",
