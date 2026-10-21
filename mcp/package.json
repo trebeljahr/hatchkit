@@ -1,7 +1,7 @@
 {
   "name": "@hatchkit/mcp",
-  "version": "0.3.0",
-  "description": "Model Context Protocol server for hatchkit \u2014 exposes status, doctor, explain, and keys show as MCP tools.",
+  "version": "0.3.1",
+  "description": "Model Context Protocol server for hatchkit — exposes status, doctor, explain, and keys show as MCP tools.",
   "license": "MIT",
   "homepage": "https://hatchkit.trebeljahr.com/",
   "repository": {
