@@ -6,6 +6,8 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 
 ## Unreleased
 
+## 0.3.1 — 2026-10-21
+
 ### Fixed
 
 - Published CLI packages include tracked starter, infrastructure and ML templates. Scaffold and update commands resolve those bundled assets after installation.
@@ -14,7 +16,7 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 - Ctrl+C crosses skipped steps and revisits the last prompt inside a multi-prompt step. Optional provider setup can be deferred before scaffolding.
 - Runtime migrations journal an app creation before the provider request. Rollback can recover an unknown creation by its unique marker. Zero-column terminals disable spinner animation.
 - Free newsletter downloads work without signup through `/api/newsletter/download?key=<key>`. The starter shows the direct link before optional signup. Existing signed email links remain valid.
-- The operator MCP package joins the release flow. Its docs explain source installation until the next npm release.
+- The operator MCP package joins the release flow and ships as `@hatchkit/mcp@0.3.1`.
 
 ### Added
 
