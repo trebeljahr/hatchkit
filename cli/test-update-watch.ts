@@ -80,15 +80,15 @@ assert.deepEqual(
 
 const now = new Date("2026-10-19T08:00:00Z");
 const DEDICATED: BackupHost = {
-  name: "dedicated-vps",
+  name: "app-vps",
   transport: "tailscale",
-  target: "root@dedicated-vps",
+  target: "root@app-vps",
   serverUuid: "qjtg",
 };
 const SHARED: BackupHost = {
-  name: "shared-vps",
+  name: "ops-vps",
   transport: "tailscale",
-  target: "root@shared-vps",
+  target: "root@ops-vps",
   serverUuid: "s2",
 };
 const ran = (checkedAt: string, extra: Partial<LastCheck> = {}): LastCheck => ({
@@ -140,7 +140,7 @@ const scan = (
   assert.match(hints, /GHSA-w8wm-r924-f65v/);
   assert.match(hints, /failed 10 run\(s\) in a row since 2026-10-09 00:00:12/);
   assert.match(hints, /REGISTRY_URL=docker\.io/);
-  assert.match(hints, /tailscale ssh root@dedicated-vps 'tail -5/);
+  assert.match(hints, /tailscale ssh root@app-vps 'tail -5/);
   assert.ok(row.hint!.at(-1)!.startsWith("Re-check: hatchkit host updates --json"));
   assert.doesNotMatch(row.detail!, /ClickHouse|GlitchTip/, "current ones are not failures");
 }
@@ -152,29 +152,29 @@ const scan = (
   assert.equal(row.hint, undefined);
   assert.match(
     row.detail!,
-    /^no high\/critical advisory covers dedicated-vps: Coolify 4\.4\.6, Traefik 3\.7\.15; shared-vps: /,
+    /^no high\/critical advisory covers app-vps: Coolify 4\.4\.6, Traefik 3\.7\.15; ops-vps: /,
   );
   assert.match(row.detail!, /Plausible CE 3\.2\.1/);
   assert.match(
     row.detail!,
-    /behind the latest release: ClickHouse 24\.12\.6\.70-alpine on shared-vps \(latest 26\.7\.34\.3-stable\)/,
+    /behind the latest release: ClickHouse 24\.12\.6\.70-alpine on ops-vps \(latest 26\.7\.34\.3-stable\)/,
   );
   assert.match(
     row.detail!,
-    /weekly check last ran dedicated-vps 2026-10-19, shared-vps 2026-10-19/,
+    /daily check last ran app-vps 2026-10-19, ops-vps 2026-10-19/,
   );
   assert.match(
     row.detail!,
-    /Cloudflare ranges unchanged \(etag 38f79d05\), matched by HATCHKIT-CF on dedicated-vps;/,
+    /Cloudflare ranges unchanged \(etag 38f79d05\), matched by HATCHKIT-CF on app-vps;/,
   );
   const withFirewall = updateRow(
     [scan(DEDICATED, fixtures.new), scan(SHARED, fixtures.shared)],
     now,
-    { checked: ["shared-vps-fw"], mismatches: [] },
+    { checked: ["ops-vps-fw"], mismatches: [] },
   );
   assert.match(
     withFirewall.detail!,
-    /matched by HATCHKIT-CF on dedicated-vps, Hetzner firewall shared-vps-fw/,
+    /matched by HATCHKIT-CF on app-vps, Hetzner firewall ops-vps-fw/,
   );
 }
 
@@ -185,10 +185,10 @@ const scan = (
   assert.ok(live.includes("198.51.100.0/22") && !live.includes("131.0.72.0/22"));
   assert.equal(live.length, 22);
   const row = updateRow(scans, now, {
-    checked: ["shared-vps-fw"],
+    checked: ["ops-vps-fw"],
     mismatches: [
       {
-        name: "shared-vps-fw",
+        name: "ops-vps-fw",
         port: "443",
         missing: ["198.51.100.0/22"],
         extra: ["131.0.72.0/22"],
@@ -204,16 +204,16 @@ const scan = (
   );
   assert.match(
     row.detail!,
-    /chain HATCHKIT-CF on dedicated-vps does not match Cloudflare's ranges/,
+    /chain HATCHKIT-CF on app-vps does not match Cloudflare's ranges/,
   );
-  assert.match(row.detail!, /Hetzner firewall shared-vps-fw \(port 443\) does not match/);
+  assert.match(row.detail!, /Hetzner firewall ops-vps-fw \(port 443\) does not match/);
   const hints = row.hint!.join("\n");
   assert.match(hints, /added 198\.51\.100\.0\/22; removed 131\.0\.72\.0\/22/);
   assert.match(hints, /update-watch-cloudflare\.json/);
-  assert.match(hints, /tailscale ssh root@dedicated-vps iptables -S HATCHKIT-CF/);
+  assert.match(hints, /tailscale ssh root@app-vps iptables -S HATCHKIT-CF/);
   assert.match(
     hints,
-    /shared-vps-fw, port 443: missing 198\.51\.100\.0\/22 \(dropped\); not Cloudflare's 131\.0\.72\.0\/22/,
+    /ops-vps-fw, port 443: missing 198\.51\.100\.0\/22 \(dropped\); not Cloudflare's 131\.0\.72\.0\/22/,
   );
   const unread = updateRow([scan(DEDICATED, fixtures.new)], now, {
     checked: [],
@@ -239,7 +239,7 @@ const scan = (
     return new Response(
       JSON.stringify({
         firewalls: [
-          { name: "shared-vps-fw", rules },
+          { name: "ops-vps-fw", rules },
           {
             name: "open-fw",
             rules: [
@@ -259,7 +259,7 @@ const scan = (
       { direction: "in", protocol: "udp", port: "41641", source_ips: ["0.0.0.0/0"] },
     ];
     assert.deepEqual(await compareHetznerFirewalls(live), {
-      checked: ["shared-vps-fw"],
+      checked: ["ops-vps-fw"],
       mismatches: [],
     });
     assert.deepEqual(seen, [
@@ -267,10 +267,10 @@ const scan = (
     ]);
     rules = [{ direction: "in", protocol: "tcp", port: "80-443", source_ips: live.slice(1) }];
     assert.deepEqual(await compareHetznerFirewalls([...live, "198.51.100.0/22"]), {
-      checked: ["shared-vps-fw"],
+      checked: ["ops-vps-fw"],
       mismatches: [
         {
-          name: "shared-vps-fw",
+          name: "ops-vps-fw",
           port: "80-443",
           missing: ["173.245.48.0/20", "198.51.100.0/22"],
           extra: [],
@@ -287,7 +287,7 @@ const scan = (
   }
 }
 
-// --- the weekly timer, per host -----------------------------------------------
+// --- the daily timer, per host -----------------------------------------------
 {
   const missing = updateRow(
     [
@@ -297,12 +297,12 @@ const scan = (
     now,
   );
   assert.equal(missing.status, "warn");
-  assert.match(missing.detail!, /^no high\/critical advisory covers dedicated-vps: /);
-  assert.match(missing.detail!, /weekly check not installed on dedicated-vps/);
-  assert.match(missing.detail!, /weekly check not installed on shared-vps/);
+  assert.match(missing.detail!, /^no high\/critical advisory covers app-vps: /);
+  assert.match(missing.detail!, /daily check not installed on app-vps/);
+  assert.match(missing.detail!, /daily check not installed on ops-vps/);
   assert.ok(
     missing.hint!.includes(
-      "Preview (reads only): hatchkit host updates install --host shared-vps --dry-run",
+      "Preview (reads only): hatchkit host updates install --host ops-vps --dry-run",
     ),
   );
 
@@ -325,7 +325,7 @@ const scan = (
   );
   assert.equal(unmailed.status, "fail");
   assert.ok(
-    unmailed.hint!.includes("Test the mail path: hatchkit host updates test --host dedicated-vps"),
+    unmailed.hint!.includes("Test the mail path: hatchkit host updates test --host app-vps"),
   );
 
   const inactive = updateRow(
@@ -352,20 +352,20 @@ const scan = (
           "Traefik: GitHub API rate limit reached for this address; it resets at 07:00 UTC",
         ],
       }),
-      { host: SHARED, error: "Backup host shared-vps command failed (exit 255)." },
+      { host: SHARED, error: "Backup host ops-vps command failed (exit 255)." },
     ],
     now,
   );
   assert.equal(skipped.status, "warn");
-  assert.match(skipped.detail!, /1 check not made on dedicated-vps/);
-  assert.match(skipped.detail!, /couldn't scan shared-vps: Backup host shared-vps command failed/);
+  assert.match(skipped.detail!, /1 check not made on app-vps/);
+  assert.match(skipped.detail!, /couldn't scan ops-vps: Backup host ops-vps command failed/);
   assert.ok(
     skipped.hint!.some((h) =>
-      h.startsWith("Not checked on dedicated-vps: Traefik: GitHub API rate limit"),
+      h.startsWith("Not checked on app-vps: Traefik: GitHub API rate limit"),
     ),
   );
   assert.ok(
-    skipped.hint!.includes("Retry one host: hatchkit host updates --host shared-vps --json"),
+    skipped.hint!.includes("Retry one host: hatchkit host updates --host ops-vps --json"),
   );
 }
 
@@ -377,8 +377,8 @@ try {
     status: "configured",
     repositoryBase: "s3:https://account.eu.r2.cloudflarestorage.com/backups",
     hosts: {
-      "dedicated-vps": { transport: "tailscale", target: "root@dedicated-vps", serverUuid: "qjtg" },
-      "shared-vps": { transport: "tailscale", target: "root@shared-vps", serverUuid: "s2" },
+      "app-vps": { transport: "tailscale", target: "root@app-vps", serverUuid: "qjtg" },
+      "ops-vps": { transport: "tailscale", target: "root@ops-vps", serverUuid: "s2" },
     },
     autoRegister: false,
   });
@@ -401,11 +401,11 @@ try {
       .split("\n");
   const stdin = (host: string) => JSON.parse(readFileSync(join(dir, `stdin-${host}`), "utf8"));
   writeFileSync(
-    join(dir, "dedicated-vps.json"),
+    join(dir, "app-vps.json"),
     `${JSON.stringify({ ...fixtures.old, timer: { installed: false, lastCheck: null } })}\n`,
   );
   writeFileSync(
-    join(dir, "shared-vps.json"),
+    join(dir, "ops-vps.json"),
     `${JSON.stringify({ ...fixtures.shared, timer: { installed: false, lastCheck: null } })}\n`,
   );
   tailscale(`cat "${dir}/$t.json"`);
@@ -414,16 +414,16 @@ try {
   script("gh", "exit 1");
   const [row] = await checkUpdateWatch();
   assert.equal(row.status, "fail");
-  assert.match(row.detail!, /Plausible CE 3\.0\.1 on dedicated-vps: 1 advisory \(critical\)/);
-  assert.match(row.detail!, /weekly check not installed on shared-vps/);
-  const sent = stdin("dedicated-vps");
+  assert.match(row.detail!, /Plausible CE 3\.0\.1 on app-vps: 1 advisory \(critical\)/);
+  assert.match(row.detail!, /daily check not installed on ops-vps/);
+  const sent = stdin("app-vps");
   assert.equal(sent.script, readFileSync("src/templates/update-watch/update-watch.py", "utf8"));
   assert.deepEqual(sent.services, watchedServices());
   assert.deepEqual(sent.cloudflare, pinnedCloudflare());
   assert.equal(sent.cloudflare.etag, "38f79d050aa027e3be3865e495dcc9bc");
   assert.deepEqual(sent.feeds, {});
-  assert.deepEqual(argv("shared-vps").slice(0, 2), ["ssh", "root@shared-vps"]);
-  const command = argv("dedicated-vps")[2];
+  assert.deepEqual(argv("ops-vps").slice(0, 2), ["ssh", "root@ops-vps"]);
+  const command = argv("app-vps")[2];
   assert.match(command, /^python3 -c '[^']+' scan$/);
 
   // The command runs the script from stdin under a real shell, with PAYLOAD.
@@ -447,7 +447,7 @@ try {
 esac`,
   );
   await checkUpdateWatch();
-  const feeds = stdin("shared-vps").feeds;
+  const feeds = stdin("ops-vps").feeds;
   assert.deepEqual(
     Object.keys(feeds).sort(),
     watchedServices()
@@ -473,22 +473,22 @@ esac`,
   });
 
   // One host down: its own warning, the other still reported.
-  tailscale(`[ "$t" = shared-vps ] && exit 255\ncat "${dir}/$t.json"`);
+  tailscale(`[ "$t" = ops-vps ] && exit 255\ncat "${dir}/$t.json"`);
   const [partial] = await checkUpdateWatch();
   assert.equal(partial.status, "fail");
-  assert.match(partial.detail!, /couldn't scan shared-vps: Backup host shared-vps command failed/);
+  assert.match(partial.detail!, /couldn't scan ops-vps: Backup host ops-vps command failed/);
 
   // install --dry-run: six files and the boot line; the installer stops after
   // its read-only first scan and checks every prerequisite before writing.
-  tailscale(`printf '{"host": "shared-vps", "applied": false, "findingsNow": []}\\n'`);
+  tailscale(`printf '{"host": "ops-vps", "applied": false, "findingsNow": []}\\n'`);
   const preview = await installUpdateWatch(SHARED, true);
   assert.equal(preview.applied, false);
-  assert.equal(preview.backupHost, "shared-vps");
+  assert.equal(preview.backupHost, "ops-vps");
   assert.equal(
     preview.rollback,
-    "hatchkit host updates uninstall --host shared-vps (keeps the last status)",
+    "hatchkit host updates uninstall --host ops-vps (keeps the last status)",
   );
-  const payload = stdin("shared-vps");
+  const payload = stdin("ops-vps");
   assert.equal(payload.dryRun, true);
   assert.deepEqual(Object.keys(payload).sort(), ["boot", "dryRun", "feeds", "files"]);
   assert.deepEqual(Object.keys(payload.files).sort(), [
@@ -501,7 +501,7 @@ esac`,
   ]);
   assert.match(
     payload.files["hatchkit-update-watch.timer"],
-    /OnCalendar=Mon \*-\*-\* 06:00:00 UTC/,
+    /OnCalendar=\*-\*-\* 06:00:00 UTC/,
   );
   assert.match(
     payload.files["hatchkit-update-watch.service"],
@@ -511,7 +511,7 @@ esac`,
   assert.match(payload.files["hatchkit-update-watch-failed.service"], /update-watch\.py failed/);
   assert.equal(command.includes(payload.boot), true, "install probes with the same boot line");
   const installer = Buffer.from(
-    argv("shared-vps")[2].match(/b64decode\("([^"]+)"\)/)![1],
+    argv("ops-vps")[2].match(/b64decode\("([^"]+)"\)/)![1],
     "base64",
   ).toString();
   const dryExit = installer.indexOf("if payload['dryRun']:");
@@ -531,7 +531,7 @@ esac`,
     removed: [],
     kept: [],
   });
-  assert.match(argv("dedicated-vps")[2], /sys\.argv=\["hatchkit","dry"\]/);
+  assert.match(argv("app-vps")[2], /sys\.argv=\["hatchkit","dry"\]/);
 
   // Arguments: a write names its host when there are several.
   await assert.rejects(runUpdatesCommand(["install", "--dry-run"]), /Several backup hosts/);

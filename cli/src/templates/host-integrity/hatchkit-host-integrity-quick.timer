@@ -1,0 +1,11 @@
+[Unit]
+Description=Hatchkit host integrity check every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=15s
+Unit=hatchkit-host-integrity-quick.service
+
+[Install]
+WantedBy=timers.target

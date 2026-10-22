@@ -15,7 +15,7 @@
  * GitHub repository advisories and the latest release, and reads Coolify's
  * upgrade logs. It also compares Cloudflare's published IP ranges with the
  * snapshot the origin firewalls were built from and with each host's
- * HATCHKIT-CF chain: both hosts drop non-Cloudflare traffic on 80/443, so a
+ * HATCHKIT-CF chain: a hardened host drops non-Cloudflare traffic on 80/443, so a
  * new Cloudflare edge would be dropped. doctor adds the Hetzner firewalls
  * that restrict 80/443 (read with the Hetzner token). Two ways to run it:
  *
@@ -24,8 +24,8 @@
  *    run would otherwise spend the host's 60 unauthenticated requests an
  *    hour). One doctor row covers every host.
  *  - `hatchkit host updates install --host <name>` puts it next to the
- *    backup runner with a weekly timer that mails findings through the
- *    backup-alert SMTP, so an advisory is flagged within a week.
+ *    backup runner with a daily timer that mails findings through the
+ *    backup-alert SMTP, so an advisory is flagged within a day.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -33,8 +33,8 @@ import { type BackupHost, backupHost, backupHostExec, backupHosts } from "../bac
 import { getHetznerConfig, getProviderPause } from "../config.js";
 import { exec } from "../utils/exec.js";
 
-/** A weekly check older than this has missed a run. */
-const STALE_DAYS = 8;
+/** A daily check older than this has missed a run. */
+const STALE_DAYS = 2;
 const GITHUB = "https://api.github.com";
 
 export interface ServiceSpec {
@@ -313,8 +313,8 @@ export function liveCloudflare(scans: HostScan[]): string[] | null {
 
 /**
  * Every Hetzner firewall rule that allows TCP 80 or 443 from a source list
- * (not from anywhere), against Cloudflare's live ranges. shared-vps filters
- * there, not in iptables, so the host cannot see it. null when Hetzner is
+ * (not from anywhere), against Cloudflare's live ranges. A host that
+ * filters there, not in iptables, cannot see it itself. null when Hetzner is
  * not configured or paused.
  */
 export async function compareHetznerFirewalls(
@@ -392,7 +392,7 @@ function days(since: string, now: Date): number {
   return (now.getTime() - new Date(since).getTime()) / 86_400_000;
 }
 
-/** The weekly timer on one host: null when healthy, else what is wrong. */
+/** The daily timer on one host: null when healthy, else what is wrong. */
 function timerProblem(
   scan: HostScan & { report: UpdateReport },
   now: Date,
@@ -405,7 +405,7 @@ function timerProblem(
   if (!timer.installed)
     return {
       status: "warn",
-      line: `weekly check not installed on ${host.name}`,
+      line: `daily check not installed on ${host.name}`,
       hint: [
         preview,
         `Install (writes the script and a timer to the host): hatchkit host updates install --host ${host.name}`,
@@ -414,13 +414,13 @@ function timerProblem(
   if (!timer.active)
     return {
       status: "fail",
-      line: `weekly check on ${host.name} is installed, but its timer is not active`,
+      line: `daily check on ${host.name} is installed, but its timer is not active`,
       hint: [`Start it: ${ssh} systemctl enable --now hatchkit-update-watch.timer`],
     };
   if (timer.serviceResult && timer.serviceResult !== "success")
     return {
       status: "fail",
-      line: `weekly check on ${host.name}: last run ended with systemd result "${timer.serviceResult}"`,
+      line: `daily check on ${host.name}: last run ended with systemd result "${timer.serviceResult}"`,
       hint: [logs],
     };
   const last = timer.lastCheck;
@@ -429,13 +429,13 @@ function timerProblem(
   if (age > STALE_DAYS)
     return {
       status: "fail",
-      line: `weekly check on ${host.name}: last run ${last.checkedAt}, ${Math.round(age)} days ago`,
+      line: `daily check on ${host.name}: last run ${last.checkedAt}, ${Math.round(age)} days ago`,
       hint: [logs, `Run one now: ${ssh} systemctl start --no-block hatchkit-update-watch.service`],
     };
   if (last.mailError)
     return {
       status: "fail",
-      line: `weekly check on ${host.name} could not mail its result: ${last.mailError}`,
+      line: `daily check on ${host.name} could not mail its result: ${last.mailError}`,
       hint: [
         `Test the mail path: hatchkit host updates test --host ${host.name}`,
         "Re-send the SMTP settings: hatchkit backup alerts --to <email> --from <verified-ses-email>",
@@ -572,7 +572,7 @@ export function updateRow(
     ...(behind.length && !failures.length
       ? [`behind the latest release: ${behind.join(", ")}`]
       : []),
-    ...(lastRuns.length && status === "ok" ? [`weekly check last ran ${lastRuns.join(", ")}`] : []),
+    ...(lastRuns.length && status === "ok" ? [`daily check last ran ${lastRuns.join(", ")}`] : []),
   ];
   const cloudflare = scans.find((s) => s.report?.cloudflare?.etag)?.report?.cloudflare;
   if (cloudflare && !failures.length) {
@@ -722,8 +722,8 @@ export async function installUpdateWatch(host: BackupHost, dryRun: boolean) {
   return {
     backupHost: host.name,
     ...result,
-    schedule: "weekly, Monday 06:00 UTC (+ up to 30 min)",
-    mail: "through the backup-alert SMTP; findings and checks it could not make every run, one all-clear after they clear",
+    schedule: "daily 06:00 UTC (+ up to 15 min)",
+    mail: "through the backup-alert SMTP; new or changed abnormalities only; healthy and unchanged runs stay silent",
     nextSteps: dryRun
       ? [`Install: hatchkit host updates install --host ${host.name}`]
       : [
@@ -766,8 +766,8 @@ GitHub is read here through gh; what fails here the host reads itself. Exits 1
 on a finding. hatchkit doctor shows the same as one row.
 
 install puts the script next to the backup runner (/opt/hatchkit-backups) with
-a weekly timer (Monday 06:00 UTC) that mails findings through the backup-alert
-SMTP (hatchkit backup alerts), so a new advisory is flagged within a week. It
+a daily timer (06:00 UTC) that mails findings through the backup-alert
+SMTP (hatchkit backup alerts), so a new advisory is flagged within a day. It
 refuses a host without the backup runner or its alert mail, and runs one
 read-only scan before it writes. --dry-run runs only that scan and prints what
 the first mail would list. uninstall removes the script and the timer.

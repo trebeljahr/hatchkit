@@ -1,9 +1,9 @@
 [Unit]
-Description=Weekly Hatchkit update watch
+Description=Daily Hatchkit update watch
 
 [Timer]
-OnCalendar=Mon *-*-* 06:00:00 UTC
-RandomizedDelaySec=30m
+OnCalendar=*-*-* 06:00:00 UTC
+RandomizedDelaySec=15m
 Persistent=true
 Unit=hatchkit-update-watch.service
 

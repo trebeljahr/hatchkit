@@ -27,14 +27,14 @@ const python = spawnSync("python3", ["test-host-integrity.py"], { stdio: "inheri
 assert.equal(python.status, 0, "Python detector tests failed");
 
 const now = new Date("2026-10-19T08:00:00Z");
-const TARGET = "root@dedicated-vps";
+const TARGET = "root@app-vps";
 
 function report(
   findings: IntegrityFinding[],
   extra: Partial<IntegrityReport> = {},
 ): IntegrityReport {
   return {
-    host: "dedicated-vps",
+    host: "app-vps",
     scannedAt: now.toISOString(),
     cpuWindowSeconds: 10,
     cpuLimit: 50,
@@ -103,16 +103,52 @@ const miner: IntegrityFinding[] = [
     detector: "outbound-peer",
     container: plausible,
     image,
-    peer: "103.189.234.47:80",
+    peer: "203.0.113.47:80",
     pid: 1002,
     process: "linuxsys",
-    summary: `${plausible}: outbound TCP connection to 103.189.234.47:80 from linuxsys (pid 1002)`,
-    allow: { peers: ["103.189.234.47/32"] },
+    summary: `${plausible}: outbound TCP connection to 203.0.113.47:80 from linuxsys (pid 1002)`,
+    allow: { peers: ["203.0.113.47/32"] },
   },
 ];
 
 const byName = (rows: ReturnType<typeof integrityRows>) =>
   Object.fromEntries(rows.map((r) => [r.name, r]));
+
+// A stopped or stale quick check must be visible even when the full scan passed.
+{
+  const quick = {
+    installed: true,
+    active: true,
+    serviceResult: "success",
+    lastCheck: {
+      checkedAt: now.toISOString(),
+      ok: true,
+      error: null,
+      containers: 31,
+      cpuWindowSeconds: 0,
+      findings: [],
+      mailed: null,
+    },
+  } as const;
+  const status = (extra = {}) =>
+    byName(
+      integrityRows(
+        report([], {
+          timer: {
+            installed: true,
+            active: true,
+            lastCheck: null,
+            quick: { ...quick, ...extra, lastCheck: { ...quick.lastCheck, findings: [] } },
+          },
+        }),
+        TARGET,
+        now,
+      ),
+    )["Host integrity quick check"].status;
+  assert.equal(status(), "ok");
+  assert.equal(status({ active: false }), "fail");
+  assert.equal(status({ serviceResult: "timeout" }), "fail");
+}
 
 // --- a clean host: one ok row, and the missing timer is a warning --------
 {
@@ -120,7 +156,7 @@ const byName = (rows: ReturnType<typeof integrityRows>) =>
   assert.deepEqual(
     rows.map((r) => [r.name, r.status]),
     [
-      ["Host integrity (dedicated-vps)", "ok"],
+      ["Host integrity (app-vps)", "ok"],
       ["Host integrity daily check", "warn"],
     ],
   );
@@ -181,7 +217,7 @@ const byName = (rows: ReturnType<typeof integrityRows>) =>
       "Confirm over an hour: hatchkit host integrity --cpu-window 3600 (runs about an hour)",
     ),
   );
-  assert.equal(rows["Host integrity (dedicated-vps)"], undefined);
+  assert.equal(rows["Host integrity (app-vps)"], undefined);
 }
 
 // --- an hour-long sample, and the daily check's CPU ------------------------
@@ -300,7 +336,7 @@ const byName = (rows: ReturnType<typeof integrityRows>) =>
       now,
     ),
   );
-  assert.equal(rows["Host integrity (dedicated-vps)"].status, "ok");
+  assert.equal(rows["Host integrity (app-vps)"].status, "ok");
   assert.equal(rows["Host integrity: not checked"].status, "warn");
   assert.ok(
     rows["Host integrity: not checked"].hint?.[0].startsWith("coolify: docker diff failed"),
@@ -389,41 +425,41 @@ try {
     {
       name: "Host integrity",
       status: "warn",
-      detail: "couldn't scan the host: Backup host dedicated-vps: docker ps failed",
+      detail: "couldn't scan the host: Backup host app-vps: docker ps failed",
       hint: ["Retry: hatchkit host integrity --json"],
     },
   ]);
 
   // Two hosts through doctor: each scan row names its host once (the
-  // 2026-10-19 drill printed "Host integrity (dedicated-vps) (dedicated-vps)").
+  // 2026-10-19 drill printed "Host integrity (app-vps) (app-vps)").
   const single = getStore().get("providers.backups");
   const meta = { transport: "tailscale" as const, target: TARGET, serverUuid: "server-uuid" };
   getStore().set("providers.backups", {
     status: "configured",
     repositoryBase: "s3:https://account.eu.r2.cloudflarestorage.com/backups",
     hosts: {
-      "dedicated-vps": meta,
-      "shared-vps": { ...meta, target: "root@shared-vps", serverUuid: "shared-uuid" },
+      "app-vps": meta,
+      "ops-vps": { ...meta, target: "root@ops-vps", serverUuid: "shared-uuid" },
     },
     autoRegister: false,
   });
-  for (const host of ["dedicated-vps", "shared-vps"])
+  for (const host of ["app-vps", "ops-vps"])
     writeFileSync(join(dir, `root@${host}.json`), `${JSON.stringify(report([], { host }))}\n`);
   fake(`cat "${dir}/$2.json"`);
   assert.deepEqual(
     (await checkHostIntegrity()).map((r) => r.name),
     [
-      "Host integrity (dedicated-vps)",
-      "Host integrity daily check (dedicated-vps)",
-      "Host integrity (shared-vps)",
-      "Host integrity daily check (shared-vps)",
+      "Host integrity (app-vps)",
+      "Host integrity daily check (app-vps)",
+      "Host integrity (ops-vps)",
+      "Host integrity daily check (ops-vps)",
     ],
   );
   getStore().set("providers.backups", single);
 
   // install --dry-run: the payload is the three files, and the host script
   // stops after its read-only first scan.
-  fake(`printf '{"host": "dedicated-vps", "applied": false, "findingsNow": []}\\n'`);
+  fake(`printf '{"host": "app-vps", "applied": false, "findingsNow": []}\\n'`);
   const preview = await installHostIntegrity(true);
   assert.equal(preview.applied, false);
   assert.equal(
@@ -434,6 +470,9 @@ try {
   assert.equal(payload.dryRun, true);
   assert.deepEqual(Object.keys(payload.files).sort(), [
     "hatchkit-host-integrity-failed.service",
+    "hatchkit-host-integrity-quick-failed.service",
+    "hatchkit-host-integrity-quick.service",
+    "hatchkit-host-integrity-quick.timer",
     "hatchkit-host-integrity.service",
     "hatchkit-host-integrity.timer",
     "host-integrity.py",
@@ -449,6 +488,8 @@ try {
   assert.equal(payload.files["host-integrity.py"], script);
   assert.match(payload.files["hatchkit-host-integrity.timer"], /OnCalendar=\*-\*-\* 05:00:00 UTC/);
   assert.match(payload.files["hatchkit-host-integrity.service"], /TimeoutStartSec=3h/);
+  assert.match(payload.files["hatchkit-host-integrity-quick.timer"], /OnUnitInactiveSec=5min/);
+  assert.match(payload.files["hatchkit-host-integrity-quick.service"], /check --quick/);
   const command = argv()[2];
   const installer = Buffer.from(command.match(/b64decode\("([^"]+)"\)/)![1], "base64").toString();
   const dryExit = installer.indexOf("if payload['dryRun']:");

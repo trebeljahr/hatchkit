@@ -10,7 +10,7 @@ versions they run after the 2026-10-18/19 upgrades must flag nothing.
 test-support/update-watch-feeds-2026-10-19.json is GitHub's, GitLab's and
 Cloudflare's answers on 2026-10-19, trimmed to the fields the matcher reads.
 DEDICATED_CHAIN is what `iptables -S HATCHKIT-CF` / `ip6tables -S HATCHKIT-CF`
-printed on dedicated-vps that day.
+printed on app-vps that day.
 """
 import datetime as dt
 import json
@@ -191,7 +191,7 @@ DEDICATED_CHAIN = {
 
 
 def no_chain(binary):
-    return None  # shared-vps: Hetzner's firewall filters 80/443, not iptables
+    return None  # ops-vps: Hetzner's firewall filters 80/443, not iptables
 
 
 def cloudflare_answer(etag, add=(), drop=()):
@@ -237,11 +237,11 @@ class Cloudflare(unittest.TestCase):
         self.assertEqual(ranges['added'], ['198.51.100.0/22', '2001:db8::/32'])
         self.assertEqual(ranges['removed'], ['131.0.72.0/22'])
         self.assertIn('drops traffic from the new edges', ranges['summary'])
-        # dedicated-vps still allows only the old list: the new edges are dropped there
+        # app-vps still allows only the old list: the new edges are dropped there
         chain = next(f for f in findings if f['kind'] == 'cloudflare-chain')
         self.assertEqual(chain['missing'], ['198.51.100.0/22', '2001:db8::/32'])
         self.assertEqual(chain['extra'], ['131.0.72.0/22'])
-        # shared-vps has no chain; the etag alone raises it there
+        # ops-vps has no chain; the etag alone raises it there
         state, findings = self.check(answer, chain=no_chain)
         self.assertEqual([f['kind'] for f in findings], ['cloudflare-ranges'])
 
@@ -507,9 +507,9 @@ class Check(unittest.TestCase):
         self.assertIn('Chain HATCHKIT-CF on this host does not match', body)
         state, _ = uw.check(FakeDocker(NEW_HOST), SERVICES, uw.Feeds(FEEDS, get=offline), self.work, self.config,
                             self.send, NOW, str(self.source), CLOUDFLARE, DEDICATED_CHAIN.get)
-        self.assertEqual(state['mailed'], 'recovery')
+        self.assertIsNone(state['mailed'])
 
-    def test_findings_mail_every_run_then_recovery_once(self):
+    def test_changed_findings_mail_and_green_runs_stay_silent(self):
         state, error = self.run_check(OLD_HOST, OLD_EXECS)
         self.assertIsNone(error)
         self.assertEqual(state['mailed'], 'findings')
@@ -521,13 +521,13 @@ class Check(unittest.TestCase):
         stored = json.loads((self.work / uw.STATUS_NAME).read_text())
         self.assertFalse(stored['ok'])
         self.run_check(OLD_HOST, OLD_EXECS)
-        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(len(self.sent), 1)
         state, _ = self.run_check(NEW_HOST)
-        self.assertEqual(state['mailed'], 'recovery')
+        self.assertIsNone(state['mailed'])
         self.assertTrue(state['ok'])
         state, _ = self.run_check(NEW_HOST)
         self.assertIsNone(state['mailed'])
-        self.assertEqual(len(self.sent), 3)
+        self.assertEqual(len(self.sent), 1)
 
     def test_incomplete_run_mails_what_it_could_not_check(self):
         def unreachable(url):
@@ -539,6 +539,19 @@ class Check(unittest.TestCase):
         self.assertIn('could not check everything', subject)
         self.assertIn('Not checked this run:', body)
         self.assertIn('Traefik: could not read https://api.github.com/repos/traefik/traefik/', body)
+
+    def test_recurrence_and_mail_failure_retry(self):
+        self.run_check(OLD_HOST, OLD_EXECS)
+        self.run_check(NEW_HOST)
+        self.run_check(OLD_HOST, OLD_EXECS)
+        self.assertEqual(len(self.sent), 2)
+        self.run_check(NEW_HOST)
+        def refuse(*args):
+            raise OSError('private SMTP details')
+        uw.check(FakeDocker(OLD_HOST, OLD_EXECS), SERVICES, uw.Feeds(FEEDS, get=offline), self.work,
+                 self.config, refuse, NOW, str(self.source))
+        self.run_check(OLD_HOST, OLD_EXECS)
+        self.assertEqual(len(self.sent), 3)
 
     def test_failed_scan_mails_the_safe_reason_only(self):
         def broken(args, timeout=60):

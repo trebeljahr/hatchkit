@@ -2,7 +2,7 @@
 
 The compromised fixture is the 2026-10-18 Plausible miner: `linuxsys` run
 from a deleted /tmp binary inside the Plausible container, 90 % of a core,
-holding a connection to 103.189.234.47:80. Each detector must name it. The
+holding a connection to 203.0.113.47:80. Each detector must name it. The
 clean fixture is what the shared Coolify host runs on a good day; it must
 raise nothing.
 """
@@ -220,7 +220,7 @@ def compromised_host(fx):
     tcp = tcp_table([
         ('0A', ('0.0.0.0', 8000), ('0.0.0.0', 0), '1100'),
         ('01', ('10.0.2.5', 8000), ('10.0.2.1', 40000), '1101'),
-        ('01', ('10.0.2.5', 45678), ('103.189.234.47', 80), '1102'),   # the pool connection
+        ('01', ('10.0.2.5', 45678), ('203.0.113.47', 80), '1102'),   # the pool connection
     ])
     fx.process(1000, 'beam.smp', '/app/erts-15.2/bin/beam.smp', cid, netns='net:[1000]', tcp=tcp)
     fx.process(1001, 'erl_child_setup', '/app/erts-15.2/bin/erl_child_setup', cid, netns='net:[1000]')
@@ -275,7 +275,7 @@ class Detectors(unittest.TestCase):
         self.assertEqual(round(by['cpu'][0]['percent']), 90)
         self.assertIn('averaged over 60 min', by['cpu'][0]['summary'])
         peer = by['outbound-peer'][0]
-        self.assertEqual((peer['peer'], peer['pid'], peer['process']), ('103.189.234.47:80', 1002, 'linuxsys'))
+        self.assertEqual((peer['peer'], peer['pid'], peer['process']), ('203.0.113.47:80', 1002, 'linuxsys'))
 
     def test_renamed_sleep_from_var_tmp(self):
         """The acceptance case: cp sleep /var/tmp/x; /var/tmp/x &; rm /var/tmp/x."""
@@ -480,13 +480,13 @@ class Detectors(unittest.TestCase):
         samples = [
             sample(held, cloudflare, six, (('10.0.0.5', 40001, '1.2.3.4', 443), '2')),
             # A pool client that re-dials: a new local port each time.
-            sample(held, cloudflare, six, (('10.0.0.5', 41000, '103.189.234.47', 80), '7')),
-            sample(held, six, (('10.0.0.5', 41001, '103.189.234.47', 80), '8')),
-            sample(held, six, (('10.0.0.5', 40002, '5.6.7.8', 443), '4'), (('10.0.0.5', 41002, '103.189.234.47', 80), '9')),
+            sample(held, cloudflare, six, (('10.0.0.5', 41000, '203.0.113.47', 80), '7')),
+            sample(held, six, (('10.0.0.5', 41001, '203.0.113.47', 80), '8')),
+            sample(held, six, (('10.0.0.5', 40002, '5.6.7.8', 443), '4'), (('10.0.0.5', 41002, '203.0.113.47', 80), '9')),
         ]
         findings, notes = hi.outbound_peers(samples, 180, {'peerContainers': ['uptime-kuma*']},
                                             lambda cs, inode: (7, 'node') if inode == '1' else None)
-        self.assertEqual([f['peer'] for f in findings], ['103.189.234.47:80', '2a01:4f8::1:443', '8.8.8.8:853'])
+        self.assertEqual([f['peer'] for f in findings], ['203.0.113.47:80', '2a01:4f8::1:443', '8.8.8.8:853'])
         self.assertIn('open in 3 of 4 samples over 3 min', findings[0]['summary'])
         self.assertEqual(findings[2]['process'], 'node')
         self.assertEqual(findings[1]['allow'], {'peers': ['2a01:4f8::1/128']})
@@ -494,21 +494,21 @@ class Detectors(unittest.TestCase):
         # Two samples (a short window): only what is open at both ends.
         short, _ = hi.outbound_peers(samples[2:], 10, {}, lambda cs, inode: None)
         self.assertEqual([f['peer'] for f in short if f['container'] == 'app'],
-                         ['103.189.234.47:80', '2a01:4f8::1:443', '8.8.8.8:853'])
-        site = {'peers': ['8.8.8.0/24', '2a01:4f8::/32', '103.189.234.0/24'], 'peerContainers': ['louislam/*']}
+                         ['203.0.113.47:80', '2a01:4f8::1:443', '8.8.8.8:853'])
+        site = {'peers': ['8.8.8.0/24', '2a01:4f8::/32', '203.0.113.0/24'], 'peerContainers': ['louislam/*']}
         self.assertEqual(hi.outbound_peers(samples, 180, site, lambda cs, inode: None)[0], [])
 
     def test_tcp_parsing(self):
         rows = hi.parse_tcp(tcp_table([('0A', ('0.0.0.0', 80), ('0.0.0.0', 0), '9'),
-                                       ('01', ('172.18.0.4', 33000), ('103.189.234.47', 80), '10')]))
-        self.assertEqual(rows[1][1:5], (ipaddress.ip_address('172.18.0.4'), 33000, ipaddress.ip_address('103.189.234.47'), 80))
-        self.assertEqual(hi.outbound(rows), {('172.18.0.4', 33000, '103.189.234.47', 80): '10'})
+                                       ('01', ('172.18.0.4', 33000), ('203.0.113.47', 80), '10')]))
+        self.assertEqual(rows[1][1:5], (ipaddress.ip_address('172.18.0.4'), 33000, ipaddress.ip_address('203.0.113.47'), 80))
+        self.assertEqual(hi.outbound(rows), {('172.18.0.4', 33000, '203.0.113.47', 80): '10'})
         six = hi.parse_tcp(tcp_table([('01', ('::ffff:172.18.0.4', 1), ('::ffff:1.2.3.4', 2), '1'),
                                       ('01', ('2a01:4f8::2', 3), ('2606:4700::1', 443), '2')], v6=True), v6=True)
         self.assertEqual([str(r[3]) for r in six], ['1.2.3.4', '2606:4700::1'])
         self.assertTrue(hi.peer_allowed('2606:4700::1', {}))
-        self.assertTrue(hi.peer_allowed('100.117.14.6', {}))
-        self.assertFalse(hi.peer_allowed('103.189.234.47', {}))
+        self.assertTrue(hi.peer_allowed('100.64.0.30', {}))
+        self.assertFalse(hi.peer_allowed('203.0.113.47', {}))
 
     def test_host_network_and_shared_netns(self):
         a = self.fx.container('host-net', 'ghcr.io/x/a:1', 10, network='host')
@@ -576,7 +576,7 @@ class Check(unittest.TestCase):
     def report(self, findings):
         return {'containers': 31, 'cpuWindowSeconds': 3600, 'findings': findings}
 
-    def test_findings_mail_then_recovery_once(self):
+    def test_changed_findings_mail_and_green_runs_stay_silent(self):
         finding = {'detector': 'cpu', 'container': 'plausible', 'summary': 'plausible: 90 % of one core averaged over 60 min'}
         state, error = self.run_check(self.report([finding]))
         self.assertEqual((state['mailed'], state['ok'], error), ('findings', False, None))
@@ -591,12 +591,11 @@ class Check(unittest.TestCase):
         self.assertEqual((status['startedAt'], status['checkedAt']),
                          ('2026-10-19T05:00:00+00:00', '2026-10-19T06:00:13+00:00'))
         self.run_check(self.report([finding]))
-        self.assertEqual(len(self.sent), 2)  # every daily run with findings mails
+        self.assertEqual(len(self.sent), 1)  # unchanged findings do not repeat
         state, _ = self.run_check(self.report([]))
-        self.assertEqual(state['mailed'], 'recovery')
-        self.assertIn('clear', self.sent[2][1])
+        self.assertIsNone(state['mailed'])
         state, _ = self.run_check(self.report([]))
-        self.assertEqual((state['mailed'], len(self.sent)), (None, 3))
+        self.assertEqual((state['mailed'], len(self.sent)), (None, 1))
 
     def test_failed_scan_mails_the_safe_reason_only(self):
         state, _ = self.run_check(error=hi.IntegrityError('docker ps failed'))
@@ -605,6 +604,38 @@ class Check(unittest.TestCase):
         state, _ = self.run_check(error=RuntimeError('token=' + SECRET))
         self.assertEqual(state['error'], 'RuntimeError')
         self.assertNotIn(SECRET, json.dumps(self.sent) + (self.work / hi.STATUS_NAME).read_text())
+
+    def test_notification_changes_recurrence_and_retry(self):
+        finding = {'detector': 'unexpected-process', 'container': 'plausible', 'process': 'miner', 'pid': 1, 'summary': 'miner pid 1'}
+        self.run_check(self.report([finding]))
+        changed_pid = dict(finding, pid=2, summary='miner pid 2')
+        self.run_check(self.report([changed_pid]))
+        self.assertEqual(len(self.sent), 1)
+        self.run_check(self.report([dict(finding, process='other-miner')]))
+        self.assertEqual(len(self.sent), 2)
+        self.run_check(self.report([]))
+        self.run_check(self.report([finding]))
+        self.assertEqual(len(self.sent), 3)
+        self.run_check(self.report([]))
+        def refused(*args):
+            raise OSError('private SMTP details')
+        self.run_check(self.report([finding]), send=refused)
+        self.run_check(self.report([finding]))
+        self.assertEqual(len(self.sent), 4)
+
+    def test_quick_checks_do_not_replace_full_status_or_report_snapshot_cpu_peers(self):
+        daily = self.report([])
+        self.run_check(daily)
+        previous = (self.work / hi.STATUS_NAME).read_text()
+        report = self.report([{'detector': 'cpu', 'summary': 'cpu'}, {'detector': 'outbound-peer', 'summary': 'peer'}])
+        with patch.object(hi, 'scan', return_value=report), patch.object(hi, 'read_site', return_value={}):
+            state, error = hi.check(None, self.work, self.config, self.send, window=0,
+                                    status_name='host-integrity-quick-status.json')
+        self.assertTrue(state['ok'])
+        self.assertIsNone(error)
+        self.assertEqual(self.sent, [])
+        self.assertEqual((self.work / hi.STATUS_NAME).read_text(), previous)
+        self.assertTrue((self.work / 'host-integrity-quick-status.json').exists())
 
     def test_mail_failure_is_recorded_without_its_message(self):
         def broken(settings, subject, body):

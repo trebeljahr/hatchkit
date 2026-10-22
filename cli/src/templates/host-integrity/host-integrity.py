@@ -34,6 +34,7 @@ SITE_KEYS). Every finding carries the exact entry that would allow it.
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
+import hashlib
 from email.utils import formataddr, parseaddr
 from fnmatch import fnmatch
 import ipaddress
@@ -903,6 +904,15 @@ def timer_state(work):
         state['lastCheck'] = json.loads((work / STATUS_NAME).read_text())
     except (OSError, ValueError):
         state['lastCheck'] = None
+    quick_timer = 'hatchkit-host-integrity-quick.timer'
+    if Path('/etc/systemd/system/' + quick_timer).exists():
+        quick = {'installed': True, 'active': unit_value(quick_timer, 'ActiveState') == 'active',
+                 'serviceResult': unit_value('hatchkit-host-integrity-quick.service', 'Result') or None}
+        try:
+            quick['lastCheck'] = json.loads((work / 'host-integrity-quick-status.json').read_text())
+        except (OSError, ValueError):
+            quick['lastCheck'] = None
+        state['quick'] = quick
     return state
 
 
@@ -939,9 +949,9 @@ def mail_body(report, error):
     return '\n'.join(lines) + '\n' + MAIL_FOOTER
 
 
-def write_status(work, state):
-    path = work / STATUS_NAME
-    temporary = work / (STATUS_NAME + '.tmp')
+def write_status(work, state, status_name=STATUS_NAME):
+    path = work / status_name
+    temporary = work / (status_name + '.tmp')
     temporary.write_text(json.dumps(state, indent=2) + '\n')
     temporary.replace(path)
 
@@ -950,16 +960,34 @@ def utc_now():
     return dt.datetime.now(dt.timezone.utc)
 
 
-def check(host, work, config, send, clock=utc_now, window=CHECK_WINDOW):
-    """One timer run. Mails findings, a failed run, and the first clean run after either."""
+def notification_fingerprint(kind, findings, error):
+    # Process IDs and CPU samples change without creating a new incident.
+    def stable(value):
+        if isinstance(value, dict):
+            return {k: stable(v) for k, v in value.items()
+                    if k not in ('summary', 'pid', 'pids', 'percent', 'windowSeconds')}
+        if isinstance(value, list):
+            return sorted((stable(v) for v in value), key=lambda v: json.dumps(v, sort_keys=True))
+        return value
+    body = json.dumps(stable([kind, findings, error]), sort_keys=True)
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+def check(host, work, config, send, clock=utc_now, window=CHECK_WINDOW, status_name=STATUS_NAME):
+    """Mail new or changed abnormalities; healthy and unchanged runs stay silent."""
     started = clock()
     try:
-        previous = json.loads((work / STATUS_NAME).read_text())
+        previous = json.loads((work / status_name).read_text())
     except (OSError, ValueError):
         previous = {}
     report, error = None, None
     try:
         report = scan(host, window, read_site())
+        if window == 0:
+            # A snapshot cannot establish sustained CPU use or a persistent peer.
+            report['findings'] = [f for f in report['findings']
+                                  if f.get('detector') not in ('cpu', 'outbound-peer')]
+            report.setdefault('skipped', []).append('Sustained CPU and outbound peers use the daily full scan.')
     except IntegrityError as failure:
         error = str(failure)
     except Exception as failure:  # never echo a message that might carry host data
@@ -975,26 +1003,24 @@ def check(host, work, config, send, clock=utc_now, window=CHECK_WINDOW):
     elif findings:
         kind, subject = 'findings', ('[Hatchkit] Host integrity: ' + str(len(findings)) + ' finding'
                                      + ('' if len(findings) == 1 else 's') + ' — ' + hostname)
-    elif previous.get('findings') or previous.get('error'):
-        kind, subject = 'recovery', '[Hatchkit] Host integrity clear — ' + hostname
+    fingerprint = notification_fingerprint(kind, findings, error) if kind else None
     state = {'checkedAt': finished.isoformat(timespec='seconds'),
              'startedAt': started.isoformat(timespec='seconds'), 'ok': not error and not findings,
              'error': error, 'containers': report and report['containers'],
              'cpuWindowSeconds': report and report['cpuWindowSeconds'], 'findings': findings[:50],
-             'skipped': (report or {}).get('skipped', []), 'mailed': None, 'messageId': None}
+             'skipped': (report or {}).get('skipped', []), 'mailed': None, 'messageId': None,
+             'notifiedFingerprint': previous.get('notifiedFingerprint') if kind else None}
     mail_error = None
-    if kind:
-        if kind == 'recovery':
-            body = '\n'.join(['Every checked container passed every detector.'] + not_checked(report)) + '\n' + MAIL_FOOTER
-        else:
-            body = mail_body(report, error)
+    if kind and fingerprint != previous.get('notifiedFingerprint'):
+        body = mail_body(report, error)
         try:
             state['messageId'] = send(mail_settings(config), subject, body)
             state['mailed'] = kind
+            state['notifiedFingerprint'] = fingerprint
         except Exception as failure:  # SMTP errors may echo login details; keep the type only
             mail_error = failure if isinstance(failure, IntegrityError) else type(failure).__name__
             state['mailError'] = str(mail_error)
-    write_status(work, state)
+    write_status(work, state, status_name)
     return state, mail_error
 
 
@@ -1004,7 +1030,10 @@ def main():
     parser.add_argument('action', choices=['scan', 'check', 'failed', 'test'])
     parser.add_argument('--cpu-window', type=int, default=10)
     parser.add_argument('--only')
+    parser.add_argument('--quick', action='store_true', help='check processes and files without the one-hour CPU window')
     args = parser.parse_args()
+    if args.quick and args.action not in ('check', 'failed'):
+        raise IntegrityError('--quick applies to check and failed only')
     if not 0 <= args.cpu_window <= CHECK_WINDOW:
         raise IntegrityError('--cpu-window must be between 0 and ' + str(CHECK_WINDOW) + ' seconds')
     work, config = work_dir()
@@ -1021,20 +1050,22 @@ def main():
     if args.action == 'test':
         message_id = send_email(mail_settings(config), '[Hatchkit] Host integrity alert test — ' + hostname,
                                 'Host integrity alerts are configured for this address.\n\n'
-                                'This is a test. The daily check mails when a process runs a deleted binary, a container '
+                                'This is a test. The five-minute quick check and daily CPU check alert when a process runs a deleted binary, a container '
                                 'runs a process its image does not explain, a new file appears in /tmp, /var/tmp or /dev/shm '
                                 'of a container, a container uses more than 50 % of one core over an hour, or a container '
-                                'keeps an outbound connection outside private ranges and Cloudflare. The first clean run '
-                                'after findings sends one all-clear.\n' + MAIL_FOOTER)
+                                'keeps an outbound connection outside private ranges and Cloudflare. Only new or changed '
+                                'abnormalities send mail; healthy and unchanged runs stay silent.\n' + MAIL_FOOTER)
         print(json.dumps({'sent': True, 'messageId': message_id}))
         return
     if args.action == 'failed':
         message_id = send_email(mail_settings(config), '[Hatchkit] Host integrity check did not finish — ' + hostname,
-                                'systemd stopped the daily host integrity check before it finished (a timeout, the '
+                                'systemd stopped the ' + ('quick' if args.quick else 'daily') + ' host integrity check before it finished (a timeout, the '
                                 'memory limit, or a crash). Nothing was checked this run.\n' + MAIL_FOOTER)
         print(json.dumps({'sent': True, 'messageId': message_id}))
         return
-    state, mail_error = check(Host(), work, config, send_email)
+    state, mail_error = check(Host(), work, config, send_email,
+                             window=0 if args.quick else CHECK_WINDOW,
+                             status_name='host-integrity-quick-status.json' if args.quick else STATUS_NAME)
     print(json.dumps({'ok': state['ok'], 'findings': len(state['findings']), 'error': state['error'],
                       'mailed': state['mailed'], 'mailError': state.get('mailError')}))
     # A failed scan that was mailed is recorded, not a unit failure: the

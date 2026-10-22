@@ -17,7 +17,8 @@
  *    there samples a few seconds, so it only warns; the hour-long figure
  *    comes from the daily check's last result.
  *  - `hatchkit host integrity install` puts it next to the backup runner
- *    with a daily timer that averages CPU over one hour and mails findings
+ *    with quick checks every five minutes and a daily hour-long CPU sample.
+ *    New or changed abnormalities send mail
  *    through the backup-alert SMTP (`hatchkit backup alerts`).
  *
  * The script never prints environment values, command lines or file
@@ -83,6 +84,7 @@ export interface TimerState {
   serviceResult?: string | null;
   nextRun?: string | null;
   lastCheck: LastCheck | null;
+  quick?: Omit<TimerState, "quick">;
 }
 
 export interface IntegrityReport {
@@ -389,6 +391,28 @@ export function integrityRows(
       hint: [...report.skipped, rerun],
     });
   rows.push(timerRow(report, ssh, now));
+  if (report.timer.quick) {
+    const quick = report.timer.quick;
+    const last = quick.lastCheck;
+    const stale = last && hours(last.checkedAt, now) > 0.25;
+    const failed =
+      !quick.active ||
+      stale ||
+      (quick.serviceResult && quick.serviceResult !== "success") ||
+      last?.mailError ||
+      last?.error ||
+      last?.findings.length;
+    rows.push({
+      name: "Host integrity quick check",
+      status: failed ? "fail" : last ? "ok" : "warn",
+      detail: failed
+        ? "five-minute check is inactive, stale, failed, or has findings"
+        : last
+          ? `last checked ${last.checkedAt}; no findings`
+          : "installed; awaiting first result",
+      hint: failed ? [`${ssh} journalctl -u hatchkit-host-integrity-quick.service -n 50`] : [],
+    });
+  }
   return rows;
 }
 
@@ -450,6 +474,9 @@ const UNITS = [
   "hatchkit-host-integrity.service",
   "hatchkit-host-integrity.timer",
   "hatchkit-host-integrity-failed.service",
+  "hatchkit-host-integrity-quick.service",
+  "hatchkit-host-integrity-quick.timer",
+  "hatchkit-host-integrity-quick-failed.service",
 ];
 
 // Runs as root on the host, files on stdin over Tailscale SSH. It checks the
@@ -463,7 +490,7 @@ def fail(message):
 payload=json.load(sys.stdin)
 opt=pathlib.Path('/opt/hatchkit-backups')
 units=pathlib.Path('/etc/systemd/system')
-names=('host-integrity.py','hatchkit-host-integrity.service','hatchkit-host-integrity.timer','hatchkit-host-integrity-failed.service')
+names=('host-integrity.py','hatchkit-host-integrity.service','hatchkit-host-integrity.timer','hatchkit-host-integrity-failed.service','hatchkit-host-integrity-quick.service','hatchkit-host-integrity-quick.timer','hatchkit-host-integrity-quick-failed.service')
 if sorted(payload['files'])!=sorted(names):
  fail('unexpected installer files')
 if not (opt/'alerts.py').exists() or not (opt/'runner.py').exists():
@@ -495,7 +522,7 @@ for name,target in targets.items():
  written.append(str(target))
 try:
  subprocess.run(['systemctl','daemon-reload'],check=True,capture_output=True)
- subprocess.run(['systemctl','enable','--now','hatchkit-host-integrity.timer'],check=True,capture_output=True)
+ subprocess.run(['systemctl','enable','--now','hatchkit-host-integrity.timer','hatchkit-host-integrity-quick.timer'],check=True,capture_output=True)
 except subprocess.CalledProcessError as error:
  fail('systemctl '+error.cmd[1]+' failed; the files are in place, the timer may not be active. Undo: hatchkit host integrity uninstall')
 next_run=subprocess.run(['systemctl','show','hatchkit-host-integrity.timer','--property=NextElapseUSecRealtime','--value'],capture_output=True,text=True).stdout.strip()
@@ -504,11 +531,11 @@ print(json.dumps(dict(result,applied=True,timerEnabled=True,nextRun=next_run or 
 
 const UNINSTALL = `import json,pathlib,subprocess,sys
 dry=sys.argv[1]=='dry'
-paths=['/etc/systemd/system/hatchkit-host-integrity.timer','/etc/systemd/system/hatchkit-host-integrity.service','/etc/systemd/system/hatchkit-host-integrity-failed.service','/opt/hatchkit-backups/host-integrity.py']
+paths=['/etc/systemd/system/hatchkit-host-integrity.timer','/etc/systemd/system/hatchkit-host-integrity.service','/etc/systemd/system/hatchkit-host-integrity-failed.service','/opt/hatchkit-backups/host-integrity.py','/etc/systemd/system/hatchkit-host-integrity-quick.service','/etc/systemd/system/hatchkit-host-integrity-quick.timer','/etc/systemd/system/hatchkit-host-integrity-quick-failed.service']
 present=[p for p in paths if pathlib.Path(p).exists()]
-kept=[p for p in ('/etc/hatchkit-backups/host-integrity.json','/var/lib/hatchkit-backups/host-integrity-status.json') if pathlib.Path(p).exists()]
+kept=[p for p in ('/etc/hatchkit-backups/host-integrity.json','/var/lib/hatchkit-backups/host-integrity-status.json','/var/lib/hatchkit-backups/host-integrity-quick-status.json') if pathlib.Path(p).exists()]
 if not dry:
- for unit in ('hatchkit-host-integrity.timer','hatchkit-host-integrity.service'):
+ for unit in ('hatchkit-host-integrity.timer','hatchkit-host-integrity.service','hatchkit-host-integrity-quick.timer','hatchkit-host-integrity-quick.service'):
   subprocess.run(['systemctl','disable','--now',unit],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  for p in present:
   pathlib.Path(p).unlink()
@@ -542,8 +569,9 @@ export async function installHostIntegrity(dryRun: boolean, host: BackupHost = b
   const on = (text: string) => (backupHosts().length > 1 ? forHost(text, host.name) : text);
   return {
     ...result,
-    schedule: "daily 05:00 UTC (+ up to 15 min); CPU averaged over the following hour",
-    mail: "through the backup-alert SMTP; findings every run, one all-clear after they clear",
+    schedule:
+      "quick process/file checks every five minutes; daily 05:00 UTC (+ up to 15 min), CPU averaged over the following hour",
+    mail: "through the backup-alert SMTP; new or changed abnormalities only; healthy and unchanged runs stay silent",
     nextSteps: (dryRun
       ? ["Install: hatchkit host integrity install"]
       : [
@@ -588,7 +616,9 @@ It never prints environment values, command lines or file contents. Exits 1
 when it finds something. hatchkit doctor runs the same scan.
 
 install puts the script next to the backup runner (/opt/hatchkit-backups) with
-a daily timer (05:00 UTC) that averages CPU over one hour and mails findings
+a quick timer every five minutes, plus a daily timer (05:00 UTC) that averages
+CPU over one hour. New or changed abnormalities send mail; healthy and unchanged
+runs stay silent. Mail goes
 through the backup-alert SMTP (hatchkit backup alerts). It refuses a host
 without the backup runner or its alert mail, and runs one read-only scan
 before it writes. --dry-run runs only that scan and prints what the first

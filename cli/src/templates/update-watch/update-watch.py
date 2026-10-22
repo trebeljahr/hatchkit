@@ -20,7 +20,7 @@ Listmonk, Uptime Kuma, GlitchTip, ClickHouse):
 It also reports Coolify's own auto-update failing (the newest
 /data/coolify/source/upgrade-*.log ends in an error), and Cloudflare's
 published IP ranges drifting from the ones the origin firewalls allow on
-80/443: both hosts drop everything else, so a new Cloudflare edge would be
+80/443: a hardened host drops everything else, so a new Cloudflare edge would be
 dropped. The ranges are compared with the pinned snapshot
 (update-watch-cloudflare.json) and with this host's HATCHKIT-CF chain.
 
@@ -31,7 +31,7 @@ image's env it reads only the version keys the services file names.
 
   scan    print the report as JSON
   check   scan, mail findings through the backup-alert SMTP and record the
-          result (what the weekly timer runs)
+          result (what the daily timer runs)
   failed  mail that a check did not finish (systemd OnFailure)
   test    send a test mail
 """
@@ -445,7 +445,7 @@ def read_upgrade_log(path):
 def coolify_auto_update(source=COOLIFY_SOURCE, now=None):
     """Coolify's nightly auto-update runs upgrade.sh when a newer version is
     out. A pull that fails leaves an upgrade-*.log ending in ERROR and nobody
-    is told (every night from 2026-09-27 to 2026-10-18 on dedicated-vps)."""
+    is told, night after night."""
     logs = sorted(Path(source).glob('upgrade-*.log'))[-UPGRADE_LOGS:]
     runs = [r for r in (read_upgrade_log(p) for p in reversed(logs)) if r]
     if not runs:
@@ -769,7 +769,7 @@ MAIL_FOOTER = ('\nInspect: hatchkit host updates --json\n'
 
 def mail_body(report, error):
     if error:
-        return 'The weekly update watch could not finish: ' + error + '.\n' + MAIL_FOOTER
+        return 'The daily update watch could not finish: ' + error + '.\n' + MAIL_FOOTER
     lines = []
     if report['findings']:
         lines += [str(len(report['findings'])) + ' finding(s):', '']
@@ -789,9 +789,8 @@ def write_status(work, state):
 
 
 def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_SOURCE, cloudflare=None,
-          chain=read_chain, runtime=False):
-    """One timer run. Mails findings and checks it could not make every week,
-    a failed run, and the first clean run after either."""
+          chain=read_chain):
+    """Mail new or changed abnormalities; healthy and unchanged runs stay silent."""
     now = now or dt.datetime.now(dt.timezone.utc)
     try:
         previous = json.loads((work / STATUS_NAME).read_text())
@@ -815,24 +814,20 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
                                      + ('' if len(findings) == 1 else 's') + ' — ' + hostname)
     elif skipped:
         kind, subject = 'incomplete', '[Hatchkit] Update watch could not check everything — ' + hostname
-    elif previous.get('findings') or previous.get('error') or previous.get('skipped'):
-        kind, subject = 'recovery', '[Hatchkit] Update watch clear — ' + hostname
+    fingerprint = hashlib.sha256(json.dumps([kind, findings, error, skipped], sort_keys=True).encode()).hexdigest() if kind else None
     state = {'checkedAt': now.isoformat(timespec='seconds'), 'ok': not error and not findings and not skipped,
              'error': error, 'services': [{'service': s['service'], 'version': s['version'],
                                            'latest': (s['latest'] or {}).get('version')}
                                           for s in (report or {}).get('services', [])],
-             'findings': findings[:50], 'skipped': skipped, 'mailed': None, 'messageId': None}
+             'findings': findings[:50], 'skipped': skipped, 'mailed': None, 'messageId': None,
+             'notifiedFingerprint': previous.get('notifiedFingerprint') if kind else None}
     mail_error = None
-    if kind:
-        if kind == 'recovery':
-            body = ('Every watched service runs a version with no known high or critical advisory, '
-                    'Coolify auto-update is not failing, and Cloudflare\'s IP ranges match what the origins '
-                    'allow.\n' + MAIL_FOOTER)
-        else:
-            body = mail_body(report, error)
+    if kind and fingerprint != previous.get('notifiedFingerprint'):
+        body = mail_body(report, error)
         try:
             state['messageId'] = send(mail_settings(config), subject, body)
             state['mailed'] = kind
+            state['notifiedFingerprint'] = fingerprint
         except Exception as failure:  # SMTP errors may echo login details; keep the type only
             mail_error = failure if isinstance(failure, WatchError) else type(failure).__name__
             state['mailError'] = str(mail_error)
@@ -867,17 +862,17 @@ def main(payload=None):
     if args.action == 'test':
         message_id = send_email(mail_settings(config), '[Hatchkit] Update watch alert test — ' + hostname,
                                 'Update watch alerts are configured for this address.\n\n'
-                                'This is a test. The weekly check mails when a shared service (Coolify, Traefik, '
+                                'This is a test. The daily check mails when a shared service (Coolify, Traefik, '
                                 'Plausible CE, Listmonk, Uptime Kuma, GlitchTip, ClickHouse) runs a version that a '
                                 'high or critical upstream advisory covers, when Coolify auto-update fails, when '
                                 'Cloudflare changes the IP ranges the origin firewalls allow, and when it could not '
-                                'check something. The first clean run after that sends one all-clear.\n'
+                                'check something. Healthy and unchanged runs stay silent.\n'
                                 + MAIL_FOOTER)
         print(json.dumps({'sent': True, 'messageId': message_id}))
         return
     if args.action == 'failed':
         message_id = send_email(mail_settings(config), '[Hatchkit] Update watch did not finish — ' + hostname,
-                                'systemd stopped the weekly update watch before it finished (a timeout, the memory '
+                                'systemd stopped the daily update watch before it finished (a timeout, the memory '
                                 'limit, or a crash). Nothing was checked this run.\n' + MAIL_FOOTER)
         print(json.dumps({'sent': True, 'messageId': message_id}))
         return
