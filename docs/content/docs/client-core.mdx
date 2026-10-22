@@ -1,6 +1,6 @@
 ---
 title: Client Core
-description: The opt-in client-core feature scaffolds a host-free client package with an offline mutation queue, a one-way sync client and the client/server version handshake.
+description: Share API calls, offline mutations, sync, and version checks across app surfaces with Hatchkit's host-independent client-core package.
 ---
 
 The starter ships three packages: `client`, `server` and `shared`. That is enough for one web app and no more. The moment a project grows a second surface — a browser extension, a launcher extension, a desktop shell, a phone build — each one needs its own copy of "how do I call the API", "what do I do when the network is gone", and "what happens when this build is newer than the server". Written per surface, those three answers drift, and the ways they drift lose data.

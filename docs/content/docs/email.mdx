@@ -424,7 +424,8 @@ The offline result contains the exact simulation requests and the required read-
 The checks cover the permitted identity/configuration set, missing and foreign context, foreign resources, SMTP/legacy sends, administrative actions and overlapping Allow policies. Failed or incomplete responses stop verification. No email is sent and no AWS resources are created or changed.
 
 A successful simulation verifies only the supplied policy and context. It does not verify a deployed principal, MIME parsing, tenant associations, delivery or shared Listmonk isolation. AWS documents this distinction in [SimulateCustomPolicy](https://docs.aws.amazon.com/IAM/latest/APIReference/API_SimulateCustomPolicy.html). A live rollout still needs the sender audit and an approved one-recipient test.
-# Add one forwarding address
+
+## Add one forwarding address
 
 For an existing domain that already receives mail through Cloudflare Email Routing:
 

@@ -6,7 +6,7 @@ export const metadata = legalMetadata({
   title: "Imprint",
   path: "/imprint",
   description:
-    "Provider information for hatchkit and hatchkit.trebeljahr.com under § 5 DDG and § 18 (2) MStV.",
+    "Provider details and contact information for hatchkit and hatchkit.trebeljahr.com, with notices under § 5 DDG and § 18 (2) MStV.",
 });
 
 function Address() {

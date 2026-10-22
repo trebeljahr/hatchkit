@@ -1,6 +1,11 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import styles from "./page.module.css";
+
+export const metadata: Metadata = {
+  title: { absolute: "hatchkit | Scaffold and Deploy TypeScript Apps" },
+};
 
 function Hero() {
   return (

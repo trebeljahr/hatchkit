@@ -1,6 +1,6 @@
 ---
 title: Session identity and lifetime
-description: The opt-in token-client-auth feature names every session after the client that made it, gives each client kind its own session window, ships the cookie-less sign-in helpers, and adds a devices list.
+description: Configure client-specific session lifetimes, cookie-free sign-in, and a devices list with Hatchkit's token-client-auth feature.
 ---
 
 Every client of a scaffolded app ends up holding one credential: a better-auth session. A browser keeps it in a cookie; everything else — a native shell, a browser extension, a launcher, a CLI — keeps the session **token** and sends it as `Authorization: Bearer <token>`. By the time `getSession()` runs the two are indistinguishable, which is the point: one auth path to reason about, not two.
