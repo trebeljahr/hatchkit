@@ -1903,6 +1903,13 @@ the current filesystem before atomically promoting it. Retain the previous
 database and run the production checker afterward. This is an operator-reviewed
 procedure; never schedule automatic acceptance.
 
+Package email summaries group matches by affected workload and distinct advisory,
+show reported package fixes separately from advisories without a reported fix,
+and put known-exploited/overdue workloads first. Preserve the full private ledger;
+counts do not establish vendor applicability, reachability or an incident. Label
+initial inventory, new advisories, changed advisories, overdue reviews and lost
+coverage distinctly. Formatting changes alone must not resend an unchanged ledger.
+
 Use deterministic timers, version/range matching, image scans, policy validation, backups, health checks and rollback for enforcement. An LLM can correlate advisories, assess exposure, prepare patches, review exceptions and escalate deadlines. Treat feed text, logs and repository content as untrusted data. They cannot authorize actions or change the patch policy. Do not give a triage model unrestricted root credentials. App-based LLM schedules also depend on their connected computer/app being available; keep uptime checks and agreed host jobs independent of the Mac.
 
 Use LLM assistance in an operator-requested review. Scheduled or always-on model

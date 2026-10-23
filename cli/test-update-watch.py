@@ -594,7 +594,8 @@ class Check(unittest.TestCase):
         first=check(NOW)
         self.assertEqual(len(first['findings']),250)
         self.assertEqual(len(first['findingFirstSeen']),250)
-        self.assertIn('200 further findings retained',self.sent[-1][2])
+        self.assertIn('250 distinct advisories',self.sent[-1][2])
+        self.assertIn('Full finding ledger:',self.sent[-1][2])
         for r in rows:
             r['service']='sha256:new';r['containers']=['app-20261024T010000']
         rebuilt=check(NOW+dt.timedelta(hours=24))
@@ -602,6 +603,30 @@ class Check(unittest.TestCase):
         self.assertEqual(first['findingFirstSeen'],rebuilt['findingFirstSeen'])
         sent=len(self.sent);check(NOW+dt.timedelta(hours=25));self.assertEqual(len(self.sent),sent)
         check(NOW+dt.timedelta(hours=48));self.assertEqual(len(self.sent),sent+1)
+
+    def test_package_mail_groups_replicas_aliases_fixes_and_urgent_workloads(self):
+        row={'kind':'image-package','service':'sha256:old','id':'GHSA-test',
+             'aliases':['CVE-2026-1234'],'name':'pkg','version':'1','fixed':'1.1',
+             'severity':'high','containers':['web','worker'],'summary':'package match'}
+        rows=[dict(row),{**row,'id':'CVE-2026-1234','aliases':[]},
+              {**row,'containers':['urgent'],'knownExploited':True,'overdue':True,'fixed':None}]
+        body=uw.mail_body({'findings':rows,'skipped':[]},None)
+        self.assertLess(body.index('- urgent:'),body.index('- web, worker:'))
+        self.assertIn('web, worker: 1 distinct advisories; 1 package fixes reported',body)
+        self.assertIn('KNOWN EXPLOITED; OVERDUE',body)
+        self.assertIn('applicability and application reachability still need review',body)
+
+    def test_subject_distinguishes_inventory_new_overdue_and_changed_findings(self):
+        rows=[{'kind':'advisory','service':'host-docker','id':'GHSA-test','severity':'critical','summary':'test'}]
+        def check(when):
+            with patch.object(uw,'scan',side_effect=lambda *a,**kw:{'services':[],'findings':[dict(r)for r in rows],'skipped':[]}):
+                return uw.check(None,[],None,self.work,self.config,self.send,when)[0]
+        self.assertEqual(check(NOW)['notificationCategory'],'Initial inventory')
+        self.assertEqual(check(NOW+dt.timedelta(hours=24))['notificationCategory'],'Overdue review')
+        rows[0]['fixed']='1.1'
+        self.assertEqual(check(NOW+dt.timedelta(hours=25))['notificationCategory'],'Advisory changes')
+        rows.append({**rows[0],'id':'GHSA-another'})
+        self.assertEqual(check(NOW+dt.timedelta(hours=26))['notificationCategory'],'New advisories')
 
     def test_rebuild_and_replica_changes_are_quiet_but_a_new_fix_is_actionable(self):
         rows=[{'kind':'image-package','service':'sha256:old','id':'CVE-2026-1234',

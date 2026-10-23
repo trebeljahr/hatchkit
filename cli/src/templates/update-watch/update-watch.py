@@ -893,19 +893,63 @@ MAIL_FOOTER = ('\nInspect: hatchkit host updates --json\n'
                'Server logs: journalctl -u ' + SERVICE + '\n')
 
 
+def advisory_id(finding):
+    aliases = [finding.get('id', '')] + (finding.get('aliases') or [])
+    return next(iter(sorted(a for a in aliases if a.startswith('CVE-'))), finding.get('id', 'unknown'))
+
+
+def package_mail_groups(findings):
+    groups = {}
+    for finding in findings:
+        workloads = tuple(sorted(set(finding.get('containers') or [finding.get('service', 'unknown image')])))
+        groups.setdefault(workloads, []).append(finding)
+    def priority(item):
+        names, rows = item
+        return (not any(r.get('knownExploited') for r in rows),
+                not any(r.get('overdue') for r in rows),
+                not any(r.get('severity') == 'critical' for r in rows), names)
+    lines = []
+    for names, rows in sorted(groups.items(), key=priority)[:MAX_MAIL_FINDINGS]:
+        advisories = {advisory_id(r) for r in rows}
+        fixes = {(r.get('name'), r.get('version'), r.get('fixed')) for r in rows if r.get('fixed')}
+        unreviewed = {advisory_id(r) for r in rows if not r.get('fixed')}
+        flags = []
+        if any(r.get('knownExploited') for r in rows):
+            flags.append('KNOWN EXPLOITED')
+        if any(r.get('overdue') for r in rows):
+            flags.append('OVERDUE')
+        due = [r['dueAt'] for r in rows if r.get('dueAt')]
+        if due:
+            flags.append('earliest due ' + min(due))
+        lines.append('- ' + ', '.join(names) + ': ' + str(len(advisories)) + ' distinct advisories; '
+                     + str(len(fixes)) + ' package fixes reported; ' + str(len(unreviewed))
+                     + ' advisories without a reported fix'
+                     + ('; ' + '; '.join(flags) if flags else ''))
+    if len(groups) > MAX_MAIL_FINDINGS:
+        lines.append(str(len(groups) - MAX_MAIL_FINDINGS) + ' further workload groups retained in the private ledger.')
+    return lines
+
+
 def mail_body(report, error):
     if error:
         return 'The daily update watch could not finish: ' + error + '.\n' + MAIL_FOOTER
     lines = []
     if report['findings']:
-        lines += [str(len(report['findings'])) + ' finding(s):', '']
-        lines += ['- ' + ('OVERDUE: ' if f.get('overdue') else '') + f['summary']
-                  + ('; due ' + f['dueAt'] if f.get('dueAt') else '') for f in report['findings'][:MAX_MAIL_FINDINGS]]
-        if len(report['findings']) > MAX_MAIL_FINDINGS:
-            lines += ['Full finding ledger: /var/lib/hatchkit-backups/update-watch-status.json; '
-                      + str(len(report['findings']) - MAX_MAIL_FINDINGS) + ' further findings retained there.']
-        lines += ['', 'Upgrade each service to its fixed version or the latest release, then run '
-                  'hatchkit host updates to confirm.']
+        packages = [f for f in report['findings'] if f.get('kind') == 'image-package']
+        direct = [f for f in report['findings'] if f.get('kind') != 'image-package']
+        if direct:
+            lines += ['Runtime/service advisories and configuration checks:', '']
+            lines += ['- ' + ('OVERDUE: ' if f.get('overdue') else '') + f['summary']
+                      + ('; due ' + f['dueAt'] if f.get('dueAt') else '') for f in direct[:MAX_MAIL_FINDINGS]]
+            if len(direct) > MAX_MAIL_FINDINGS:
+                lines.append(str(len(direct) - MAX_MAIL_FINDINGS) + ' further direct findings retained in the private ledger.')
+        if packages:
+            lines += ['', 'Image package matches by workload:',
+                      'Vendor applicability and application reachability still need review; these are not incident counts.', '']
+            lines += package_mail_groups(packages)
+        lines += ['', 'Full finding ledger: /var/lib/hatchkit-backups/update-watch-status.json',
+                  'Review vendor guidance and exposure, then apply compatible fixes with backup, functional checks and rollback. '
+                  'Keep original deadlines; record any exception with evidence and an expiry.']
     if report['skipped']:
         lines += ['', 'Not checked this run:'] + ['- ' + s for s in report['skipped']]
     return '\n'.join(lines) + '\n' + MAIL_FOOTER
@@ -1032,6 +1076,14 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
         now - dt.datetime.fromisoformat(previous['lastNotifiedAt']) >= dt.timedelta(hours=24))
     state['lastNotifiedAt'] = previous.get('lastNotifiedAt')
     if kind and (fingerprint != prior_notified or overdue_reminder):
+        if kind == 'findings':
+            old_ids = {finding_identity(f) for f in previous.get('findings', [])}
+            new_ids = {finding_identity(f) for f in findings} - old_ids
+            category = ('Initial inventory' if not previous.get('checkedAt') else
+                        'New advisories' if new_ids else
+                        'Overdue review' if overdue_reminder else 'Advisory changes')
+            subject = '[Hatchkit] Update watch: ' + category + ('; coverage incomplete' if skipped else '') + ' — ' + hostname
+            state['notificationCategory'] = category
         body = mail_body(report, error)
         try:
             state['messageId'] = send(mail_settings(config), subject, body)
