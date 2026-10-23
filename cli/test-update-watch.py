@@ -691,12 +691,36 @@ class HostRuntimeCoverage(unittest.TestCase):
         rows=[{'kind':'image-package','service':'image','id':'GHSA-test','aliases':['CVE-2026-1234'],
                'name':'pkg','version':'1','severity':'high','summary':'test'}]
         with tempfile.TemporaryDirectory()as root, patch.object(uw,'image_package_findings',return_value=(rows,[])):
-            feed=uw.Feeds({uw.KEV_URL:{'dateReleased':NOW.isoformat(),'vulnerabilities':[{'cveID':'CVE-2026-1234'}]}},get=offline)
+            feed=uw.Feeds({uw.KEV_URL:{'dateReleased':NOW.isoformat(),'count':1,'vulnerabilities':[{'cveID':'CVE-2026-1234'}]}},get=offline)
             result=uw.scan(FakeDocker([]),[],feed,source=root,image_packages=True,kev=True)
             self.assertTrue(result['findings'][0]['knownExploited'])
             feed=uw.Feeds({},get=lambda url: (_ for _ in ()).throw(uw.FeedError('feed unavailable')))
             result=uw.scan(FakeDocker([]),[],feed,source=root,kev=True)
             self.assertTrue(any('CISA' in s for s in result['skipped']))
+
+    def test_cisa_official_mirror_preserves_coverage_when_primary_is_blocked(self):
+        catalog={'dateReleased':NOW.isoformat(),'count':1,'vulnerabilities':[{'cveID':'CVE-2026-1234'}]}
+        calls=[]
+        def get(url):
+            calls.append(url)
+            if url==uw.KEV_URL:raise uw.FeedError('HTTP 403')
+            return catalog,''
+        identifiers,metadata=uw.known_exploited_catalog(uw.Feeds(get=get),NOW)
+        self.assertEqual(identifiers,{'CVE-2026-1234'})
+        self.assertEqual(calls,[uw.KEV_URL,uw.KEV_MIRROR_URL])
+        self.assertEqual(metadata['source'],uw.KEV_MIRROR_URL)
+
+    def test_invalid_stale_future_or_truncated_cisa_data_cannot_clear_coverage_gap(self):
+        good={'dateReleased':NOW.isoformat(),'count':1,'vulnerabilities':[{'cveID':'CVE-2026-1234'}]}
+        bad=[good|{'count':0},good|{'count':True},good|{'count':2},
+             good|{'vulnerabilities':[{'cveID':'not-a-CVE'}]},
+             good|{'dateReleased':(NOW-dt.timedelta(days=15)).isoformat()},
+             good|{'dateReleased':(NOW+dt.timedelta(minutes=6)).isoformat()},
+             good|{'dateReleased':'2026-10-19T00:00:00'},
+             good|{'vulnerabilities':None},{}]
+        for catalog in bad:
+            with self.subTest(catalog=catalog),self.assertRaises(uw.FeedError):
+                uw.known_exploited_catalog(uw.Feeds({uw.KEV_URL:catalog,uw.KEV_MIRROR_URL:catalog}),NOW)
 
     def test_host_docker_advisory_is_checked_even_without_app_services(self):
         spec = uw.HOST_RUNTIMES[0]

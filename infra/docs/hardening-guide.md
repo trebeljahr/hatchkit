@@ -1840,6 +1840,19 @@ Hardening is a recurring operating practice. Inventory the host OS/kernel, Docke
 
 Compare running versions with vendor advisories, repository GHSAs and the CISA known-exploited catalog. An empty product advisory feed does not establish dependency security. Check vendor bulletins that are not published as GHSAs, supported-release lifecycles and distribution backports. Preserve the upstream package/version evidence when assessing a scanner match; a scanner severity alone does not prove an exposed attack path.
 
+If CISA's canonical download is unavailable, use its own
+[`cisagov/kev-data` mirror](https://github.com/cisagov/kev-data), which CISA says
+normally synchronizes within minutes. Validate count, CVE identifiers and release
+time; malformed, future-dated or more than 14-day-old catalogs leave coverage
+incomplete. Record which source and catalog release were used. Never replace a
+failed feed with an empty catalog.
+
+Repeated image checks may reuse a report for at most 24 hours only when the
+immutable image ID, scanner version and verified vulnerability database match.
+Use the report's provenance time, not its filesystem modification time. A new
+database invalidates every cached report. Re-enumerate running images after the
+scan; a deployment race leaves the inventory incomplete until another check.
+
 Assess actively exploited issues and public unauthenticated RCEs immediately; patch or isolate within 24 hours. Critical findings use the same target; other high-severity findings have a 72-hour target. Review routine patches weekly and supported versions monthly. Record first seen, affected resource/package, installed and fixed versions, exposure, owner, due date, action and live verification. Rebuilding the same vulnerable package must not reset its deadline. Keep the full ledger even when email shows only the first findings. Unresolved overdue findings remain visible and get at most one daily reminder. Any exception needs evidence, compensating controls, a named owner and an expiry.
 
 Local checks cannot reliably report their own disappearance. Send fixed health timestamps and counts to an independently operated monitor using one ping-only credential per host. The monitor needs its own schedule, state and verified delivery path. Alert on missing publishers, stale checks, failed delivery and incomplete scans. Test a missed-run condition and monitor the external monitor's own last sweep/deployment from a separate observer. Root can forge local health, so retain independent probes and off-host evidence as well.
@@ -1849,6 +1862,14 @@ Use deterministic timers, version/range matching, image scans, policy validation
 An automatic patch runner needs a reviewed allowlist: same supported release line, fixed trusted registries, verified artifacts, no package removals, no database major upgrades or destructive migrations, fresh verified recovery points, one service at a time, functional checks and a bounded rollback. Stop and alert on unexpected versions, changed upstream compatibility code, failed backup/health/rollback, conflicting deployments or an expired exception. Record before/after IDs and results without secrets. Keep built-in updaters enabled until a tested replacement is operating and the operator approves the handover.
 
 Container policy must survive deployment. Start with measured memory/CPU/PID limits, `no-new-privileges`, dropped capabilities, a supported non-root user and a read-only root plus explicit writable volumes/tmpfs. Test migrations, uploads, queues, temporary files and graceful shutdown per service; database entrypoints may need narrowly scoped initialization capabilities. Preserve data ownership. A runtime `docker update` alone does not make a rolling deployment retain its limits. Verify the newly created container after a real redeploy and alert on drift.
+
+A setup-option flag is not proof that an application selected a database backend.
+Configure the intended backend explicitly in a disposable test, query its actual
+schema, and restart initialized data. Include an isolated application restore
+from a verified backup on the original host, with no published ports or external
+network and private temporary records removed after the containers stop. Where
+initialization changes ownership and then changes permissions, test both actions:
+`CHOWN` does not replace `FOWNER`. Add only the capability demonstrated necessary.
 
 Keep database-only networks internal and separate from public proxy networks. Permit only the application/database pairs that need access; block container access to cloud metadata and host management endpoints. Observe outbound requirements before enforcing an allowlist, including DNS, mail, storage, API callbacks and IPv6. A proxy sharing the database network weakens isolation. A read-only Docker socket mount still permits mutating API calls: remove it where possible or use an authenticated, method/path-restricted discovery API without granting container creation, exec or archive access. Document any management component that still has host-level trust.
 

@@ -64,6 +64,7 @@ COOLIFY_SOURCE = '/data/coolify/source'
 GITHUB = 'https://api.github.com'
 GITLAB = 'https://gitlab.com/api/v4'
 KEV_URL = 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'
+KEV_MIRROR_URL = 'https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.json'
 FLAGGED = ('critical', 'high')
 # Distro and channel suffixes are not prereleases: 24.12.6.70-alpine,
 # v23.8.15.35-lts, v26.7.34.3-stable.
@@ -266,6 +267,33 @@ def http_get(url):
         raise FeedError('HTTP ' + str(error.code) + ' from ' + url.split('?')[0]) from None
     except (urllib.error.URLError, OSError, ValueError):
         raise FeedError('could not read ' + url.split('?')[0]) from None
+
+
+def known_exploited_catalog(feeds, now):
+    """CISA's own mirror is a fallback when its canonical site blocks a host.
+
+    CISA documents synchronization within minutes. Do not accept malformed,
+    empty, future-dated or more than 14-day-old data as successful coverage.
+    A catalog can legitimately remain unchanged between new KEV additions.
+    """
+    for url in (KEV_URL, KEV_MIRROR_URL):
+        try:
+            catalog = feeds.json(url)
+            entries = catalog['vulnerabilities']
+            count = catalog['count']
+            released = dt.datetime.fromisoformat(catalog['dateReleased'].replace('Z', '+00:00'))
+            if (not isinstance(entries, list) or not isinstance(count, int) or isinstance(count, bool)
+                    or count < 1 or count != len(entries) or released.tzinfo is None
+                    or released > now + dt.timedelta(minutes=5)
+                    or now - released > dt.timedelta(days=14)):
+                raise FeedError('invalid or stale CISA KEV feed')
+            identifiers = {entry['cveID'] for entry in entries}
+            if len(identifiers) != count or not all(re.fullmatch(r'CVE-\d{4}-\d{4,}', value) for value in identifiers):
+                raise FeedError('invalid CISA KEV identifiers')
+            return identifiers, {'source': url, 'dateReleased': catalog['dateReleased'], 'count': count}
+        except (FeedError, AttributeError, KeyError, TypeError, ValueError):
+            continue
+    raise FeedError('CISA known exploited vulnerability catalog could not be checked')
 
 
 class Feeds:
@@ -786,15 +814,13 @@ def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=No
         findings += image_findings
         skipped += image_skipped
     if kev:
+        kev_state = None
         try:
-            catalog = feeds.json(KEV_URL)
-            if not isinstance(catalog.get('vulnerabilities'), list) or not catalog.get('dateReleased'):
-                raise FeedError('invalid CISA KEV feed')
-            exploited = {v['cveID'] for v in catalog['vulnerabilities'] if isinstance(v.get('cveID'), str)}
+            exploited, kev_state = known_exploited_catalog(feeds, now)
             for finding in findings:
                 ids = {finding.get('id'), finding.get('cve'), *finding.get('aliases', [])}
                 finding['knownExploited'] = bool(ids & exploited)
-        except (FeedError, AttributeError, KeyError, TypeError):
+        except FeedError:
             skipped.append('CISA known exploited vulnerability catalog could not be checked')
     severity_rank = {'critical': 0, 'high': 1}
     findings.sort(key=lambda f: (f['kind'] != 'auto-update', severity_rank.get(f.get('severity'), 2), f['service']))
@@ -802,7 +828,8 @@ def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=No
              for g in report_services if not g['advisorySource']]
     return safe({'host': socket.gethostname(), 'scannedAt': now.isoformat(timespec='seconds'),
                  'services': report_services, 'findings': findings, 'autoUpdate': auto_update,
-                 'cloudflare': cloudflare_state, 'skipped': skipped, 'notes': notes})
+                 'cloudflare': cloudflare_state, 'skipped': skipped, 'notes': notes,
+                 **({'kev': kev_state} if kev else {})})
 
 
 # --- timer --------------------------------------------------------------------
@@ -943,6 +970,8 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
              'findings': findings, 'skipped': skipped, 'mailed': None, 'messageId': None,
              'notifiedFingerprint': previous.get('notifiedFingerprint') if kind else None,
              'findingFirstSeen': first_seen}
+    if kev:
+        state['kev'] = (report or {}).get('kev')
     mail_error = None
     overdue_reminder = any(f.get('overdue') for f in findings) and (
         not previous.get('lastNotifiedAt') or
