@@ -916,10 +916,21 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
         kind, subject = 'incomplete', '[Hatchkit] Update watch could not check everything — ' + hostname
     first_seen = {identity: started for identity, started in (previous.get('findingFirstSeen') or {}).items()
                   if now - dt.datetime.fromisoformat(started) < dt.timedelta(days=180)}
+    # Migrate clocks from earlier identity schemes without granting a fresh
+    # deadline during a monitor upgrade. Prior reports already carry dueAt.
+    for old in previous.get('findings', []):
+        started = old.get('firstSeenAt')
+        if not started and old.get('dueAt') and old.get('severity') in ('critical', 'high'):
+            hours = 24 if old.get('severity') == 'critical' or old.get('knownExploited') else 72
+            started = (dt.datetime.fromisoformat(old['dueAt']) - dt.timedelta(hours=hours)).isoformat(timespec='seconds')
+        if started:
+            identity = finding_identity(old)
+            first_seen[identity] = min(first_seen.get(identity, started), started)
     for finding in findings:
         identity = finding_identity(finding)
-        started = (previous.get('findingFirstSeen') or {}).get(identity, now.isoformat(timespec='seconds'))
+        started = first_seen.get(identity, now.isoformat(timespec='seconds'))
         first_seen[identity] = started
+        finding['firstSeenAt'] = started
         if finding.get('severity') in ('critical', 'high'):
             hours = 24 if finding.get('severity') == 'critical' or finding.get('knownExploited') else 72
             finding['dueAt'] = (dt.datetime.fromisoformat(started) + dt.timedelta(hours=hours)).isoformat(timespec='seconds')

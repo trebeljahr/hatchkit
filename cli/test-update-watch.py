@@ -603,6 +603,19 @@ class Check(unittest.TestCase):
         sent=len(self.sent);check(NOW+dt.timedelta(hours=25));self.assertEqual(len(self.sent),sent)
         check(NOW+dt.timedelta(hours=48));self.assertEqual(len(self.sent),sent+1)
 
+    def test_monitor_upgrade_migrates_legacy_deadline_without_resetting_it(self):
+        old={'kind':'image-package','service':'sha256:old','id':'CVE-old','name':'pkg',
+             'version':'1','containers':['old-name'],'severity':'critical','summary':'test',
+             'dueAt':NOW.isoformat()}
+        (self.work / uw.STATUS_NAME).write_text(json.dumps({'findings':[old],
+            'findingFirstSeen':{'legacy-image-identity':(NOW-dt.timedelta(hours=24)).isoformat()}}))
+        current={**old,'service':'sha256:rebuilt','containers':['new-name']}
+        current.pop('dueAt')
+        with patch.object(uw,'scan',return_value={'findings':[current],'services':[],'skipped':[]}):
+            state,_=uw.check(None,[],None,self.work,self.config,self.send,NOW)
+        self.assertTrue(state['findings'][0]['overdue'])
+        self.assertEqual(dt.datetime.fromisoformat(state['findings'][0]['dueAt']),NOW)
+
     def test_unconfigured_mail_is_a_safe_error(self):
         self.config = {}
         state, error = self.run_check(OLD_HOST, OLD_EXECS)
