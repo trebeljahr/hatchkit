@@ -789,7 +789,7 @@ def write_status(work, state):
 
 
 def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_SOURCE, cloudflare=None,
-          chain=read_chain):
+          chain=read_chain, runtime=False):
     """Mail new or changed abnormalities; healthy and unchanged runs stay silent."""
     now = now or dt.datetime.now(dt.timezone.utc)
     try:
