@@ -1938,6 +1938,15 @@ the replacement database and keep functional checks inside the rollback boundary
 Tie permission proof to exact candidate/live IDs and an expiry; a passing test on
 another image or an earlier deployment cannot authorize the current rollout.
 
+Preserve upstream database repository basenames in derived image aliases and
+test the controller's classification using the actual service context. An
+arbitrary local image name can make the next deployment treat a database as a
+different component. Check generated bind modes too: the current service parser
+can discard long-form `read_only`. For existing managed files, compare stored
+contents with the live hashes before converting only those mounts to supported
+short-form `source:target:ro`. Preserve managed-file ownership and contents, and
+verify the generated deployment before calling the policy durable.
+
 Keep database-only networks internal and separate from public proxy networks. Permit only the application/database pairs that need access; block container access to cloud metadata and host management endpoints. Observe outbound requirements before enforcing an allowlist, including DNS, mail, storage, API callbacks and IPv6. A proxy sharing the database network weakens isolation. A read-only Docker socket mount still permits mutating API calls: remove it where possible or use an authenticated, method/path-restricted discovery API without granting container creation, exec or archive access. Document any management component that still has host-level trust.
 
 Close incident credentials at their issuer: removing an environment variable does not revoke an OAuth client secret, mail API key or controller token. Identify the exact credential and dependent clients, create/test the replacement, then revoke the old credential and verify rejection. Keep provider account audit evidence and original incident artifacts. Never print credential values into the patch ledger.
