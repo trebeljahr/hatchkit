@@ -113,6 +113,14 @@ hatchkit cloudflare
 
 Writes whatever of the four files is missing (idempotent — it never overwrites one you already have), then sets the CI secrets.
 
+For a repository-owned version-based workflow, apply `wrangler triggers deploy`
+after `wrangler versions deploy`. Activating a version does not apply the
+`workers_dev`, route, or custom-domain settings. A first deployment can upload
+successfully while its public hostname still returns Cloudflare's empty-site
+404. Check a real public page before recording success. Keep production domains
+out of the routing configuration until the migration target is verified; then
+record the intended domains/routes there so later deployments preserve them.
+
 ## Secrets
 
 `CLOUDFLARE_API_TOKEN` holds the Worker's own token. `CLOUDFLARE_ACCOUNT_ID` identifies its account.

@@ -251,7 +251,8 @@ function writeDeployWorkflow(
     if (current !== body) {
       const earlier = [
         renderLegacyDeployWorkflow(branch),
-        renderWorkflow(branch, siteUrl, { recordShip: false }),
+        renderWorkflow(branch, siteUrl, { recordShip: false, applyTriggers: false }),
+        renderWorkflow(branch, siteUrl, { recordShip: true, applyTriggers: false }),
       ];
       if (!earlier.includes(current)) {
         modifications.push(
@@ -289,7 +290,7 @@ export function renderDeployWorkflow(branch: string, siteUrl?: string): string {
 function renderWorkflow(
   branch: string,
   siteUrl: string | undefined,
-  opts: { recordShip: boolean },
+  opts: { recordShip: boolean; applyTriggers?: boolean },
 ): string {
   // The record is a GitHub Deployment on the `web` channel, so the
   // job's token must be allowed to write one (a repo's default token is
@@ -313,6 +314,17 @@ function renderWorkflow(
           environment: web
           url: \${{ env.SITE_URL }}`
     : "";
+  // Versions activation does not apply routing settings. A newly-created
+  // Worker otherwise stays unreachable at workers.dev after a green CI run.
+  const triggers = opts.applyTriggers === false
+    ? ""
+    : `
+
+      - name: Apply routing settings
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm dlx "$WRANGLER" triggers deploy`;
   return `name: Deploy to Cloudflare
 
 on:
@@ -387,7 +399,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: \${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: \${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: pnpm dlx "$WRANGLER" versions deploy "\${{ steps.upload.outputs.version_id }}@100%" --message "$GITHUB_SHA" --yes${record}
+        run: pnpm dlx "$WRANGLER" versions deploy "\${{ steps.upload.outputs.version_id }}@100%" --message "$GITHUB_SHA" --yes${triggers}${record}
 `;
 }
 
