@@ -1,0 +1,56 @@
+- name: Install file and kernel audit tools
+  ansible.builtin.apt:
+    name: [aide, auditd, audispd-plugins]
+    state: present
+
+- name: Create private integrity directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  loop:
+    - /etc/hatchkit-security
+    - /var/lib/hatchkit-security/aide
+    - /opt/hatchkit-backups
+
+- name: Install reviewed baseline policy
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../cli/src/templates/file-integrity/aide.conf"
+    dest: /etc/hatchkit-security/aide.conf
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Install integrity runner and units
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../cli/src/templates/file-integrity/{{ item.name }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {name: file-integrity.py, dest: /opt/hatchkit-backups/file-integrity.py, mode: '0700'}
+    - {name: hatchkit-file-integrity.service, dest: /etc/systemd/system/hatchkit-file-integrity.service, mode: '0644'}
+    - {name: hatchkit-file-integrity.timer, dest: /etc/systemd/system/hatchkit-file-integrity.timer, mode: '0644'}
+
+- name: Stop duplicate distribution timer
+  ansible.builtin.systemd:
+    name: dailyaidecheck.timer
+    enabled: false
+    state: stopped
+  failed_when: false
+
+- name: Enable baseline checks (missing baseline fails visibly)
+  ansible.builtin.systemd:
+    name: hatchkit-file-integrity.timer
+    daemon_reload: true
+    enabled: true
+    state: started
+
+- name: Enable kernel auditing
+  ansible.builtin.service:
+    name: auditd
+    enabled: true
+    state: started

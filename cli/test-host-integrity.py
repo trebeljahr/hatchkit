@@ -393,6 +393,19 @@ class Detectors(unittest.TestCase):
         self.assertEqual([(f['detector'], f['process'], f['pids'], f['exe']) for f in findings],
                          [('unexpected-process', 'runc:[2:INIT]', [2635850], '/usr/bin/echo')])
 
+    def test_derived_image_identity_preserves_narrow_process_checks(self):
+        cases = [('clickhouse/clickhouse-server:24.12-alpine', 'clickhouse-serv', '/usr/bin/clickhouse'),
+                 ('glitchtip/glitchtip:6.2.6', 'granian', '/usr/local/bin/python3.14')]
+        for original, comm, exe in cases:
+            container = {'id': 'c', 'name': 'service', 'image': 'hatchkit-security/web:20261023',
+                         'originalImage': original, 'argv0': []}
+            expected = {'pid': 2, 'comm': comm, 'exe': exe, 'container': 'c'}
+            miner = {'pid': 3, 'comm': 'linuxsys', 'exe': '/var/tmp/linuxsys (deleted)', 'container': 'c'}
+            findings, _ = hi.unexpected_processes([expected, miner], [container], {}, {'c': set()}, {'c': ['/']})
+            self.assertEqual([f['process'] for f in findings], ['linuxsys'])
+            changed, _ = hi.unexpected_processes([expected], [container], {}, {'c': {exe}}, {'c': ['/']})
+            self.assertEqual([f['process'] for f in changed], [comm])
+
     def test_temp_files(self):
         cid = self.fx.container('app', 'node:22', 10)
         stat = {'size': 3, 'mode': 0o100644, 'modified': '2026-10-19 05:00 UTC'}

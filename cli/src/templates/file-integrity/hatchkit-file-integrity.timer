@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily reviewed host file integrity check
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

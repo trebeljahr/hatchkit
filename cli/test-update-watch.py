@@ -569,6 +569,40 @@ class Check(unittest.TestCase):
         self.assertEqual(state['mailError'], 'OSError')
         self.assertIsNotNone(error)
 
+    def test_overdue_finding_alerts_once_after_its_deadline(self):
+        def report():
+            return {'services': [], 'findings': [{'kind': 'advisory', 'service': 'host-docker',
+                    'id': 'GHSA-test', 'severity': 'critical', 'summary': 'A real test finding'}], 'skipped': []}
+        def check(when):
+            with patch.object(uw, 'scan', side_effect=lambda *a, **kw: report()):
+                return uw.check(None, [], None, self.work, self.config, self.send, when)[0]
+        self.assertFalse(check(NOW)['findings'][0]['overdue'])
+        check(NOW + dt.timedelta(hours=1))
+        self.assertEqual(len(self.sent), 1)
+        self.assertTrue(check(NOW + dt.timedelta(hours=24))['findings'][0]['overdue'])
+        self.assertEqual(len(self.sent), 2)
+        check(NOW + dt.timedelta(hours=25))
+        self.assertEqual(len(self.sent), 2)
+
+    def test_large_ledger_and_image_rebuild_preserve_all_deadlines(self):
+        rows = [{'kind':'image-package','service':'sha256:old','id':'CVE-'+str(n),
+                 'name':'pkg','version':'1.0','containers':['app-20261023T010000'],
+                 'severity':'critical','summary':'fixed available'} for n in range(250)]
+        def check(when):
+            with patch.object(uw,'scan',side_effect=lambda *a,**kw:{'services':[], 'findings':[dict(r)for r in rows], 'skipped':[]}):
+                return uw.check(None,[],None,self.work,self.config,self.send,when)[0]
+        first=check(NOW)
+        self.assertEqual(len(first['findings']),250)
+        self.assertEqual(len(first['findingFirstSeen']),250)
+        self.assertIn('200 further findings retained',self.sent[-1][2])
+        for r in rows:
+            r['service']='sha256:new';r['containers']=['app-20261024T010000']
+        rebuilt=check(NOW+dt.timedelta(hours=24))
+        self.assertTrue(all(r['overdue']for r in rebuilt['findings']))
+        self.assertEqual(first['findingFirstSeen'],rebuilt['findingFirstSeen'])
+        sent=len(self.sent);check(NOW+dt.timedelta(hours=25));self.assertEqual(len(self.sent),sent)
+        check(NOW+dt.timedelta(hours=48));self.assertEqual(len(self.sent),sent+1)
+
     def test_unconfigured_mail_is_a_safe_error(self):
         self.config = {}
         state, error = self.run_check(OLD_HOST, OLD_EXECS)
@@ -615,6 +649,56 @@ class RuntimeSecurityTests(unittest.TestCase):
         findings,skipped=uw.runtime_trust(docker)
         self.assertFalse(findings)
         self.assertEqual(len(skipped),1)
+
+
+class HostRuntimeCoverage(unittest.TestCase):
+    def test_versions_are_collected_by_fixed_commands_and_fail_closed(self):
+        answers = {'docker': '29.9.2\n', 'containerd': 'containerd containerd v2.4.2 hash',
+                   'runc': 'runc version 1.5.2\n', 'tailscale': '1.104.2\n'}
+        rows, skipped = uw.host_runtime_versions(lambda argv: answers[argv[0]])
+        self.assertEqual([str(v) for _, v in rows], ['29.9.2', '2.4.2', '1.5.2', '1.104.2'])
+        self.assertEqual(skipped, [])
+        rows, skipped = uw.host_runtime_versions(lambda argv: 'unreadable')
+        self.assertEqual(rows, [])
+        self.assertEqual(len(skipped), 4)
+
+    def test_image_scan_staleness_and_errors_are_not_clean(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'images.json'
+            findings, skipped = uw.image_package_findings(NOW, path)
+            self.assertEqual(len(skipped), 1)
+            path.write_text(json.dumps({'checkedAt': NOW.isoformat(), 'complete': True, 'findings': []}))
+            self.assertEqual(uw.image_package_findings(NOW, path), ([], []))
+            self.assertTrue(uw.image_package_findings(NOW + dt.timedelta(hours=37), path)[1])
+            path.write_text(json.dumps({'checkedAt': NOW.isoformat(), 'complete': False,
+                                       'errors': ['image unavailable'], 'findings': []}))
+            self.assertTrue(uw.image_package_findings(NOW, path)[1])
+
+    def test_cisa_matches_aliases_and_missing_feed_fails_visible(self):
+        rows=[{'kind':'image-package','service':'image','id':'GHSA-test','aliases':['CVE-2026-1234'],
+               'name':'pkg','version':'1','severity':'high','summary':'test'}]
+        with tempfile.TemporaryDirectory()as root, patch.object(uw,'image_package_findings',return_value=(rows,[])):
+            feed=uw.Feeds({uw.KEV_URL:{'dateReleased':NOW.isoformat(),'vulnerabilities':[{'cveID':'CVE-2026-1234'}]}},get=offline)
+            result=uw.scan(FakeDocker([]),[],feed,source=root,image_packages=True,kev=True)
+            self.assertTrue(result['findings'][0]['knownExploited'])
+            feed=uw.Feeds({},get=lambda url: (_ for _ in ()).throw(uw.FeedError('feed unavailable')))
+            result=uw.scan(FakeDocker([]),[],feed,source=root,kev=True)
+            self.assertTrue(any('CISA' in s for s in result['skipped']))
+
+    def test_host_docker_advisory_is_checked_even_without_app_services(self):
+        spec = uw.HOST_RUNTIMES[0]
+        feeds = uw.Feeds({uw.latest_url(spec['github']): {'tag_name': 'v29.9.2'},
+                         uw.advisories_url(spec['github']): [{
+                             'ghsa_id': 'GHSA-test', 'severity': 'high', 'summary': 'Host escape',
+                             'vulnerabilities': [{'package': {'name': 'Docker Engine'},
+                                                  'vulnerable_version_range': '< 29.5.1',
+                                                  'patched_versions': '29.5.1'}]}]}, get=offline)
+        with tempfile.TemporaryDirectory() as root, patch.object(uw, 'host_runtime_versions',
+                return_value=([(spec, uw.Version('29.3.0'))], [])):
+            report = uw.scan(FakeDocker([]), [], feeds, source=root, host_runtime=True)
+        self.assertTrue(any(f.get('id') == 'GHSA-test' for f in report['findings']))
+        self.assertTrue(any(f['kind'] == 'host-runtime' for f in report['findings']))
+        self.assertEqual(report['services'][0]['versionSource'], 'host binary')
 
 
 if __name__ == '__main__':

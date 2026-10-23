@@ -46,6 +46,7 @@ A deep dive into securing a Linux VPS on Hetzner Cloud. Each section explains wh
   - [3.14 Cloudflare Tunnel](#314-cloudflare-tunnel)
   - [3.15 Backups](#315-backups)
 - [Coolify-specific hardening](#coolify-specific-hardening)
+- [Ongoing security operations](#ongoing-security-operations)
 - [Emergency recovery](#emergency-recovery)
 - [Hardening checklist](#hardening-checklist)
 - [Sources](#sources)
@@ -119,7 +120,7 @@ ps aux | grep -E 'docker|containerd'
 docker ps -q | xargs -I{} docker inspect --format '{{.Name}}: User={{.Config.User}}' {}
 ```
 
-**How Docker users work:** The Docker daemon itself always runs as root — this is normal and required (it needs root to manage namespaces, cgroups, and networking). But the processes *inside* containers can run as any user. When `Config.User` is empty, the container runs as whatever user is specified in the Dockerfile's `USER` directive (or root if none is set).
+**How Docker users work:** The standard Docker daemon runs as root; rootless Docker is another deployment model (it needs root to manage namespaces, cgroups, and networking). But the processes *inside* containers can run as any user. When `Config.User` is empty, the container runs as whatever user is specified in the Dockerfile's `USER` directive (or root if none is set).
 
 Running as root *inside* a container is less dangerous than root on the host because Docker uses Linux namespaces — the container's "root" is isolated from the host. But it's still better practice for containers to use a non-root user, because namespace escapes (container breakouts) do happen, and a non-root container user limits the damage.
 
@@ -515,7 +516,7 @@ ufw allow from 100.64.0.0/10 to any port 22 proto tcp comment 'SSH via Tailscale
 
 **What could go wrong:**
 - **Locking yourself out by closing port 22 too early:** If Tailscale isn't working and you've already closed public SSH, you're locked out. ALWAYS verify Tailscale SSH works from another device before closing port 22. The Ansible role verifies Tailscale connectivity before modifying UFW.
-- **Tailscale outage:** If Tailscale's coordination servers go down, existing connections survive but new ones can't be established. Emergency access: use Hetzner's web console (VNC) to temporarily re-allow port 22.
+- **Tailscale outage:** If Tailscale's coordination servers go down, existing connections survive but new ones can't be established. Emergency access: use Hetzner's web console (VNC) to repair Tailscale. Keep public SSH closed.
 - **Auth key expiry:** Tailscale auth keys can expire. Use a reusable, pre-authorized key and be aware it's valid for 90 days by default. Generate a new one in the Tailscale admin console.
 - **Tailscale + Docker:** Tailscale runs in userspace by default. If you also use it as a Docker network (exit node, subnet router), configuration gets complex. For basic SSH access, the default setup is fine.
 
@@ -1177,155 +1178,21 @@ aa-complain /etc/apparmor.d/*
 
 ### 3.3 AIDE — file integrity monitoring
 
-**What it does:** AIDE (Advanced Intrusion Detection Environment) creates a database of cryptographic hashes for system files. Periodic checks compare current files against the database, alerting you if anything changed.
+**What it does:** Compares selected system files with a reviewed hash baseline. A scheduled job without a readable baseline provides no file-integrity coverage.
 
-**Why it matters:** If an attacker modifies system binaries (rootkit), adds SSH keys, or changes config files, AIDE detects it. This is your alarm system for "someone was here."
+**Why it matters:** Application RCE can become persistence in executables, systemd units, cron, PAM or SSH settings. AIDE adds evidence about changes; root can still alter a local checker or its database.
 
-**How to apply:**
+**Establish trust before initializing:** On an existing host, review incident evidence, package verification, unexpected processes, accounts and startup units. Compare security-critical executables with signed distribution packages. If host compromise is suspected, rebuild from trusted media and restore verified data. Creating a baseline does not prove a host was clean.
 
-```bash
-apt install aide -y
-```
+Use one explicit configuration and database path. Exclude volatile Docker/containerd state, runtime files and logs, and retain checks for operating-system binaries, `/etc`, boot files, cron and service definitions. Send logs off-host separately. The check must report a missing database as a failure.
 
-During installation, `apt` will pull in a mail transport agent (`postfix`) as a dependency for the `mail` command used in AIDE's cron job. This triggers a configuration wizard — choose **No configuration** for now. We'll set up `msmtp` instead, which is lighter and more reliable for sending alerts to an external email address.
+**Never automatically accept the current filesystem:** Remove unconditional APT hooks that run `aide --update` and replace the baseline. Such a hook can bless unrelated malicious changes during a legitimate upgrade. After an update, review the precise package/configuration changes before promoting a new baseline. Keep the previous database and a signed or otherwise independently protected copy.
 
-The wizard then asks for a **System mail name** — just accept the default (your hostname) and continue.
+**Prove detection:** In an isolated fixture, initialize the same policy, change a harmless monitored file, and require a nonzero difference result. Then run the production check and verify its freshness/alert path. A successful process exit or a line saying “no changes” is insufficient when the same log reports a missing database.
 
-> **Why not use postfix directly?** Sending mail directly from a VPS almost never works. Cloud VPS IPs are on spam blocklists, most providers block outbound port 25, and Gmail will silently drop messages from unknown servers. The reliable approach is relaying through an authenticated SMTP service — and `msmtp` is the simplest way to do that.
+Use the existing configured alert transport with verified TLS. Healthy runs stay quiet; failures and unexpected changes alert. Avoid a second daily cron job alongside systemd, and do not solve mail errors by handing an unprivileged checker broad credential-file access.
 
-**Setting up email alerts with msmtp + Gmail:**
-
-You'll need a Gmail **App Password** (Gmail blocks plain password login from scripts). Generate one at: Google Account > Security > 2-Step Verification > App passwords. Select "Mail" and any device name — you'll get a 16-character password.
-
-**Step 1 — Install msmtp and set it as the system default:**
-
-```bash
-apt install msmtp msmtp-mta bsd-mailx -y
-```
-
-`msmtp-mta` installs a symlink at `/usr/sbin/sendmail` that points to `msmtp`, so any program that sends mail (cron, `mail`, AIDE) will automatically route through it.
-
-**Step 2 — Configure msmtp** by creating `/etc/msmtprc`:
-
-```
-# Gmail SMTP relay
-defaults
-auth           on
-tls            on
-tls_trust_file /etc/ssl/certs/ca-certificates.crt
-logfile        /var/log/msmtp.log
-
-account        gmail
-host           smtp.gmail.com
-port           587
-from           your-email@gmail.com
-user           your-email@gmail.com
-password       xxxx-xxxx-xxxx-xxxx
-
-account default : gmail
-```
-
-Replace `your-email@gmail.com` with your Gmail address and `xxxx-xxxx-xxxx-xxxx` with the App Password you generated.
-
-**Step 3 — Secure the config** (it contains your password):
-
-```bash
-chmod 600 /etc/msmtprc
-```
-
-**Step 4 — Test it:**
-
-```bash
-echo "Test from $(hostname)" | mail -s "VPS alert test" your-email@gmail.com
-```
-
-Check your Gmail inbox (and spam folder the first time). If it works, every cron job and system alert on the server will now deliver to your email.
-
-**Step 5 — Set up a mail alias** so mail sent to `root` (which is where most system alerts go) forwards to your email. Create or edit `/etc/aliases`:
-
-```
-root: your-email@gmail.com
-default: your-email@gmail.com
-```
-
-**Reducing false positives — what AIDE should and shouldn't monitor:**
-
-AIDE's default config on Ubuntu (`/etc/aide/aide.conf`) monitors almost everything, which means you'll get flooded with alerts from routine activity: security updates changing system binaries, Docker rebuilding container layers on every deploy, log files rotating. The fix is to tell AIDE to ignore paths that change legitimately, so that when you do get an alert, it actually means something.
-
-Create `/etc/aide/aide.conf.d/99-exclusions.conf` to exclude noisy paths:
-
-```
-# Docker — everything under here changes on every container build/deploy.
-# AIDE monitoring Docker internals is pointless: container images, layers,
-# overlay filesystems, and volumes all change constantly during normal
-# Coolify/Docker operation.
-!/var/lib/docker
-!/var/lib/containerd
-
-# Package manager state — changes on every apt upgrade/install.
-# These are the database files that track what's installed, not the
-# actual binaries (which we DO want to monitor).
-!/var/lib/dpkg
-!/var/lib/apt
-!/var/cache/apt
-!/var/cache/debconf
-
-# Logs — rotate and grow constantly. Not useful for integrity monitoring
-# (use log shipping to an external service for tamper-evident logging).
-!/var/log
-
-# Temporary and runtime state
-!/tmp
-!/var/tmp
-!/run
-!/var/run
-
-# Coolify-specific state
-!/var/lib/coolify
-
-# Mail spool (changes when AIDE sends its own reports)
-!/var/mail
-!/var/spool/mail
-```
-
-**What AIDE still monitors after these exclusions:** The things that actually matter — system binaries (`/usr/bin`, `/usr/sbin`), configuration files (`/etc`), kernel modules (`/lib/modules`), boot files (`/boot`), and cron jobs (`/etc/cron*`). If an attacker replaces `sshd`, adds a backdoor to `/etc/pam.d/`, or drops a rootkit in `/usr/lib/`, AIDE will catch it.
-
-**Auto-updating after unattended-upgrades:**
-
-Security updates legitimately change system binaries — that's the whole point. To avoid getting alerted every time `unattended-upgrades` patches a package, set up a hook that automatically refreshes the AIDE database after successful upgrades.
-
-Create `/etc/apt/apt.conf.d/99-aide-update`:
-
-```
-// After unattended-upgrades runs successfully, update the AIDE database
-// so patched binaries become the new baseline (not flagged as tampered).
-Dpkg::Post-Invoke { "if [ -x /usr/bin/aide ]; then /usr/bin/aide --update && mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db; fi"; };
-```
-
-This runs after any `dpkg` operation (including unattended-upgrades). It rebuilds the AIDE database with the newly installed binaries as the baseline, so the next AIDE check only flags changes that happened *outside* of legitimate package management.
-
-Now initialize the AIDE database:
-
-```bash
-aide --init
-mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
-```
-
-Set up a daily check via cron (replace the email address with your own):
-
-```bash
-echo '0 5 * * * root /usr/bin/aide --check | mail -s "AIDE report" your-email@gmail.com' \
-  > /etc/cron.d/aide-check
-```
-
-**What this means in practice:** With these exclusions and the auto-update hook, you should get near-zero noise from daily reports. A report with changes in it now actually means something — either a file was modified outside of `apt` (suspicious), or you manually edited a config file (expected, run `aide --update` afterward). If you deploy a new app through Coolify, no alert. If `unattended-upgrades` patches OpenSSL overnight, no alert. If someone replaces `/usr/bin/sshd` with a backdoor, you get an alert.
-
-**What could go wrong:**
-- **An attacker who has root could update AIDE's database** to hide their changes. AIDE is a tripwire, not a prevention mechanism — it catches unsophisticated attacks and gives you an audit trail, but a skilled attacker with root access can tamper with AIDE itself. For stronger guarantees, store the AIDE database on a read-only mount or off-server.
-- **The `Dpkg::Post-Invoke` hook adds time to every apt operation.** AIDE database rebuilds take 30-60 seconds depending on how many files are monitored. This is a one-time cost after each upgrade, not a ongoing performance hit.
-- **Gmail rate limits:** Gmail limits App Password accounts to ~500 emails/day. For daily AIDE reports this is a non-issue, but if you add other alerting (fail2ban notifications, logwatch, etc.) keep the total volume in mind.
-- **App Password revoked:** If you revoke the App Password or change your Google account password, mail silently stops sending. Check `/var/log/msmtp.log` if alerts stop arriving.
-- **Password in plaintext:** The App Password sits in `/etc/msmtprc`. The `chmod 600` restricts it to root, but it's still plaintext on disk. This is an acceptable trade-off for a single-operator server — the App Password only grants SMTP access, not full Google account access. If this bothers you, use a dedicated throwaway Gmail account for server alerts.
+**Recovery:** Preserve findings and the old baseline. Investigate before accepting a change. Restore the previous checker/configuration if deployment fails; do not overwrite production data or discard incident evidence to get a green result.
 
 ---
 
@@ -1755,28 +1622,15 @@ systemctl enable cloudflared
 - **2** different storage types (local + remote)
 - **1** copy offsite (different provider or region)
 
-**For a Hetzner VPS:**
+**For a Docker/Coolify VPS:** use consistent logical database dumps and explicit persistent-file sources. Copying a live database volume can produce an unusable backup. The Hatchkit runner performs native dumps, encrypts them with restic, downloads the uploaded archive, verifies its SHA-256 and only then advances retention. Failed capture, upload or verification must preserve existing recovery points.
 
-```bash
-# Hetzner Cloud snapshots (easiest, not true offsite)
-hcloud server create-image --type snapshot <server-id>
+New policies retain 30 verified generations per project (`keepLast`, accepted range 3–365). An existing three-generation policy needs an explicit migration; a changed template cannot create missing history retroactively. Daily retention gives roughly a month of history only when daily captures succeed. Keep longer protected checkpoints because an intrusion may remain unnoticed for weeks.
 
-# Automated backup with restic to Hetzner Object Storage (S3)
-apt install restic -y
-export AWS_ACCESS_KEY_ID="..."
-export AWS_SECRET_ACCESS_KEY="..."
-restic -r s3:https://nbg1.your-objectstorage.com/backups init
-restic -r s3:https://nbg1.your-objectstorage.com/backups backup /var/lib/docker/volumes
+Keep a second encrypted recovery history under credentials the VPS cannot use to delete it. Use a separate bucket/account or offline copy, record its retention and storage size, and prove restoration before relying on it. Do not enable object locking underneath an active restic repository that still prunes: its mutable index/snapshot lifecycle needs a separate archival design. Keep the recovery password in independently recoverable custody.
 
-# Daily backup via cron
-echo '0 3 * * * root restic -r s3:... backup /var/lib/docker/volumes --quiet' \
-  > /etc/cron.d/backup
-```
+Schedule isolated native restore drills weekly and an application recovery exercise at least quarterly. Drill containers must have no published ports, no production data mounts and no external network. Record each project's result, restored engine, elapsed time and application-startup result. A checksum check alone does not prove the database can be imported or the application can start.
 
-**What could go wrong:**
-- **Untested backups:** A backup you've never restored from is not a backup. Test restoration quarterly.
-- **Backup credentials on the server:** If the attacker has your server and your backup credentials, they can delete your backups too. Use append-only backup credentials where possible.
-- **Backing up the wrong things:** For Docker/Coolify, the important data is in `/var/lib/docker/volumes/` (databases, uploads) and your `.env` files. The server itself is reproducible via Terraform + Ansible.
+The restored archives contain personal data and credentials. Keep drill files root-private, dispose only of task-owned disposable containers/volumes, and require explicit approval for a new upload destination. Metadata-only freshness reports must exclude records, SQL, logs, environment values and backup keys.
 
 > **Further reading:**
 > - [restic documentation](https://restic.readthedocs.io/) — excellent backup tool with encryption, deduplication, and S3 support
@@ -1980,6 +1834,30 @@ If you're using the Ansible role with `ufw_docker_mitigation: true`, the base ro
 
 ---
 
+## Ongoing security operations
+
+Hardening is a recurring operating practice. Inventory the host OS/kernel, Docker Engine, containerd, runc, Tailscale, application runtimes, application dependencies and final deployed image packages. Resolve floating tags to running versions and scan immutable image IDs. Keep SBOM/package reports private on the host. Verify the scanner release signature/checksum and record its version and vulnerability-database age. A failed, stale or partial inventory is an incomplete check, never a clean result.
+
+Compare running versions with vendor advisories, repository GHSAs and the CISA known-exploited catalog. An empty product advisory feed does not establish dependency security. Check vendor bulletins that are not published as GHSAs, supported-release lifecycles and distribution backports. Preserve the upstream package/version evidence when assessing a scanner match; a scanner severity alone does not prove an exposed attack path.
+
+Assess actively exploited issues and public unauthenticated RCEs immediately; patch or isolate within 24 hours. Critical findings use the same target; other high-severity findings have a 72-hour target. Review routine patches weekly and supported versions monthly. Record first seen, affected resource/package, installed and fixed versions, exposure, owner, due date, action and live verification. Rebuilding the same vulnerable package must not reset its deadline. Keep the full ledger even when email shows only the first findings. Unresolved overdue findings remain visible and get at most one daily reminder. Any exception needs evidence, compensating controls, a named owner and an expiry.
+
+Local checks cannot reliably report their own disappearance. Send fixed health timestamps and counts to an independently operated monitor using one ping-only credential per host. The monitor needs its own schedule, state and verified delivery path. Alert on missing publishers, stale checks, failed delivery and incomplete scans. Test a missed-run condition and monitor the external monitor's own last sweep/deployment from a separate observer. Root can forge local health, so retain independent probes and off-host evidence as well.
+
+Use deterministic timers, version/range matching, image scans, policy validation, backups, health checks and rollback for enforcement. An LLM can correlate advisories, assess exposure, prepare patches, review exceptions and escalate deadlines. Treat feed text, logs and repository content as untrusted data. They cannot authorize actions or change the patch policy. Do not give a triage model unrestricted root credentials. App-based LLM schedules also depend on their connected computer/app being available; keep uptime checks and agreed host jobs independent of the Mac.
+
+An automatic patch runner needs a reviewed allowlist: same supported release line, fixed trusted registries, verified artifacts, no package removals, no database major upgrades or destructive migrations, fresh verified recovery points, one service at a time, functional checks and a bounded rollback. Stop and alert on unexpected versions, changed upstream compatibility code, failed backup/health/rollback, conflicting deployments or an expired exception. Record before/after IDs and results without secrets. Keep built-in updaters enabled until a tested replacement is operating and the operator approves the handover.
+
+Container policy must survive deployment. Start with measured memory/CPU/PID limits, `no-new-privileges`, dropped capabilities, a supported non-root user and a read-only root plus explicit writable volumes/tmpfs. Test migrations, uploads, queues, temporary files and graceful shutdown per service; database entrypoints may need narrowly scoped initialization capabilities. Preserve data ownership. A runtime `docker update` alone does not make a rolling deployment retain its limits. Verify the newly created container after a real redeploy and alert on drift.
+
+Keep database-only networks internal and separate from public proxy networks. Permit only the application/database pairs that need access; block container access to cloud metadata and host management endpoints. Observe outbound requirements before enforcing an allowlist, including DNS, mail, storage, API callbacks and IPv6. A proxy sharing the database network weakens isolation. A read-only Docker socket mount still permits mutating API calls: remove it where possible or use an authenticated, method/path-restricted discovery API without granting container creation, exec or archive access. Document any management component that still has host-level trust.
+
+Close incident credentials at their issuer: removing an environment variable does not revoke an OAuth client secret, mail API key or controller token. Identify the exact credential and dependent clients, create/test the replacement, then revoke the old credential and verify rejection. Keep provider account audit evidence and original incident artifacts. Never print credential values into the patch ledger.
+
+Source templates: `cli/src/templates/update-watch`, `file-integrity`, `security-controller` and `backups`; Ansible's `file_integrity` role; and `infra/coolify-runtime` compatibility tests. Review every upstream Coolify change before relying on its custom Docker option parser: unsupported or truncated options must not be silently accepted as persistent containment.
+
+---
+
 ## Emergency recovery
 
 ### "I locked myself out of SSH"
@@ -2003,11 +1881,11 @@ systemctl start fail2ban
 ### "Tailscale is down and SSH is restricted to tailnet"
 
 ```bash
-# From Hetzner console:
-ufw allow 22/tcp
-# SSH in from your public IP, fix Tailscale
-# Then re-restrict:
-ufw delete allow 22/tcp
+# Work inside Hetzner's authenticated web console. Keep public SSH closed.
+systemctl status tailscaled
+journalctl -u tailscaled -n 100
+# Repair its package/configuration or restore the preceding verified version.
+# Verify a fresh SSH connection over the tailnet before leaving the console.
 ```
 
 ### "Unattended upgrades broke something"

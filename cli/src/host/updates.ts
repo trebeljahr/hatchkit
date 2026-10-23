@@ -34,7 +34,7 @@ import { getHetznerConfig, getProviderPause } from "../config.js";
 import { exec } from "../utils/exec.js";
 
 /** A daily check older than this has missed a run. */
-const STALE_DAYS = 2;
+const STALE_DAYS = 1 / 3;
 const GITHUB = "https://api.github.com";
 
 export interface ServiceSpec {
@@ -74,7 +74,7 @@ export interface WatchedService {
 }
 
 export interface UpdateFinding {
-  kind: "advisory" | "auto-update" | "cloudflare-ranges" | "cloudflare-chain";
+  kind: "advisory" | "auto-update" | "cloudflare-ranges" | "cloudflare-chain" | "host-runtime" | "node-runtime" | "certificate-trust" | "image-package";
   service: string;
   name: string;
   summary: string;
@@ -199,6 +199,7 @@ export const latestUrl = (repo: string) => `${GITHUB}/repos/${repo}/releases/lat
 
 interface Advisory {
   ghsa_id: string;
+  cve_id?: string | null;
   severity: string;
   summary: string;
   html_url: string;
@@ -217,6 +218,7 @@ interface Advisory {
 function trimAdvisory(a: Advisory) {
   return {
     ghsa_id: a.ghsa_id,
+    cve_id: a.cve_id ?? null,
     severity: a.severity,
     summary: a.summary,
     html_url: a.html_url,
@@ -252,17 +254,18 @@ async function ghJson(url: string, paginate: boolean): Promise<unknown> {
 export async function prefetchFeeds(specs = watchedServices()): Promise<Record<string, unknown>> {
   const feeds: Record<string, unknown> = {};
   await Promise.all(
-    specs.flatMap((s) =>
-      s.github
+    [...new Set([...specs.map((s) => s.github), "moby/moby", "containerd/containerd", "opencontainers/runc", "tailscale/tailscale"])]
+      .filter((repo): repo is string => !!repo).flatMap((repo) =>
+      repo
         ? [
-            ghJson(advisoriesUrl(s.github), true).then((data) => {
+            ghJson(advisoriesUrl(repo), true).then((data) => {
               if (Array.isArray(data))
-                feeds[advisoriesUrl(s.github!)] = (data as Advisory[]).map(trimAdvisory);
+                feeds[advisoriesUrl(repo)] = (data as Advisory[]).map(trimAdvisory);
             }),
-            ghJson(latestUrl(s.github), false).then((data) => {
+            ghJson(latestUrl(repo), false).then((data) => {
               const release = data as { tag_name?: string; published_at?: string } | null;
               if (release?.tag_name)
-                feeds[latestUrl(s.github!)] = {
+                feeds[latestUrl(repo)] = {
                   tag_name: release.tag_name,
                   published_at: release.published_at ?? null,
                 };
@@ -621,6 +624,9 @@ const FILES = [
   "update-watch.py",
   "update-watch-services.json",
   "update-watch-cloudflare.json",
+  "image-vulnerabilities.py",
+  "hatchkit-image-vulnerabilities.service",
+  "hatchkit-image-vulnerabilities.timer",
   "hatchkit-update-watch.service",
   "hatchkit-update-watch.timer",
   "hatchkit-update-watch-failed.service",
@@ -637,9 +643,11 @@ def fail(message):
 payload=json.load(sys.stdin)
 opt=pathlib.Path('/opt/hatchkit-backups')
 units=pathlib.Path('/etc/systemd/system')
-names=('update-watch.py','update-watch-services.json','update-watch-cloudflare.json','hatchkit-update-watch.service','hatchkit-update-watch.timer','hatchkit-update-watch-failed.service')
+names=('update-watch.py','update-watch-services.json','update-watch-cloudflare.json','hatchkit-update-watch.service','hatchkit-update-watch.timer','hatchkit-update-watch-failed.service','image-vulnerabilities.py','hatchkit-image-vulnerabilities.service','hatchkit-image-vulnerabilities.timer')
 if sorted(payload['files'])!=sorted(names):
  fail('unexpected installer files')
+if not pathlib.Path('/usr/local/bin/grype').is_file():
+ fail('Install a pinned, signature-verified Grype release at /usr/local/bin/grype before enabling final-image checks')
 if not (opt/'alerts.py').exists():
  fail('the backup runner is not installed; run hatchkit backup install first')
 try:
@@ -656,7 +664,7 @@ except (IndexError,ValueError):
  report={}
 if probe.returncode!=0 or 'findings' not in report:
  fail('the first scan failed ('+str(report.get('error') or 'no report')+'); nothing was installed')
-targets={name:(opt if name.startswith('update-watch') else units)/name for name in names}
+targets={name:(opt if name.startswith('update-watch') or name=='image-vulnerabilities.py' else units)/name for name in names}
 result={'host':report['host'],'mailTo':alerts['to'],'alreadyInstalled':targets['hatchkit-update-watch.timer'].exists(),
  'services':[s['name']+' '+s['version'] for s in report['services']],
  'findingsNow':[f['summary'] for f in report['findings']],'skippedNow':report.get('skipped',[]),'files':[str(t) for t in targets.values()]}
@@ -670,7 +678,7 @@ for name,target in targets.items():
  written.append(str(target))
 try:
  subprocess.run(['systemctl','daemon-reload'],check=True,capture_output=True)
- subprocess.run(['systemctl','enable','--now','hatchkit-update-watch.timer'],check=True,capture_output=True)
+ subprocess.run(['systemctl','enable','--now','hatchkit-update-watch.timer','hatchkit-image-vulnerabilities.timer'],check=True,capture_output=True)
 except subprocess.CalledProcessError as error:
  fail('systemctl '+error.cmd[1]+' failed; the files are in place, the timer may not be active. Undo: hatchkit host updates uninstall')
 next_run=subprocess.run(['systemctl','show','hatchkit-update-watch.timer','--property=NextElapseUSecRealtime','--value'],capture_output=True,text=True).stdout.strip()
@@ -679,11 +687,11 @@ print(json.dumps(dict(result,applied=True,timerEnabled=True,nextRun=next_run or 
 
 const UNINSTALL = `import json,pathlib,subprocess,sys
 dry=sys.argv[1]=='dry'
-paths=['/etc/systemd/system/hatchkit-update-watch.timer','/etc/systemd/system/hatchkit-update-watch.service','/etc/systemd/system/hatchkit-update-watch-failed.service','/opt/hatchkit-backups/update-watch.py','/opt/hatchkit-backups/update-watch-services.json','/opt/hatchkit-backups/update-watch-cloudflare.json']
+paths=['/etc/systemd/system/hatchkit-image-vulnerabilities.timer','/etc/systemd/system/hatchkit-image-vulnerabilities.service','/opt/hatchkit-backups/image-vulnerabilities.py','/etc/systemd/system/hatchkit-update-watch.timer','/etc/systemd/system/hatchkit-update-watch.service','/etc/systemd/system/hatchkit-update-watch-failed.service','/opt/hatchkit-backups/update-watch.py','/opt/hatchkit-backups/update-watch-services.json','/opt/hatchkit-backups/update-watch-cloudflare.json']
 present=[p for p in paths if pathlib.Path(p).exists()]
-kept=[p for p in ('/var/lib/hatchkit-backups/update-watch-status.json',) if pathlib.Path(p).exists()]
+kept=[p for p in ('/var/lib/hatchkit-backups/update-watch-status.json','/var/lib/hatchkit-backups/image-vulnerability-status.json') if pathlib.Path(p).exists()]
 if not dry:
- for unit in ('hatchkit-update-watch.timer','hatchkit-update-watch.service'):
+ for unit in ('hatchkit-update-watch.timer','hatchkit-update-watch.service','hatchkit-image-vulnerabilities.timer','hatchkit-image-vulnerabilities.service'):
   subprocess.run(['systemctl','disable','--now',unit],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  for p in present:
   pathlib.Path(p).unlink()
@@ -722,7 +730,7 @@ export async function installUpdateWatch(host: BackupHost, dryRun: boolean) {
   return {
     backupHost: host.name,
     ...result,
-    schedule: "daily 06:00 UTC (+ up to 15 min)",
+    schedule: "every 4 hours UTC (+ up to 15 min)",
     mail: "through the backup-alert SMTP; new or changed abnormalities only; healthy and unchanged runs stay silent",
     nextSteps: dryRun
       ? [`Install: hatchkit host updates install --host ${host.name}`]

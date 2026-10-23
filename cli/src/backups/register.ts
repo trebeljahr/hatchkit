@@ -19,7 +19,7 @@ export interface BackupSource {
 }
 export interface BackupProject {
   name: string;
-  keepLast: 3;
+  keepLast: number;
   sources: BackupSource[];
 }
 
@@ -48,7 +48,7 @@ export function createBackupProject(input: {
     throw new Error(
       "No managed backup sources found. Register external databases and persistent files explicitly.",
     );
-  return { name: input.name, keepLast: 3, sources };
+  return { name: input.name, keepLast: 30, sources };
 }
 
 export function shouldRegisterBackups(serverUuid: string): boolean {

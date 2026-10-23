@@ -59,9 +59,9 @@ other's snapshots.
 
 ```sh
 hatchkit backup hosts
-hatchkit backup add-host --name shared-vps --target root@shared-vps \
+hatchkit backup add-host --name ops-vps --target root@ops-vps \
   --server-uuid COOLIFY_SERVER_UUID --schedule 17:00 --dry-run
-hatchkit backup install --host shared-vps --dry-run
+hatchkit backup install --host ops-vps --dry-run
 ```
 
 `add-host` only changes the local config. `--schedule` is the host's daily
@@ -137,7 +137,7 @@ Example host config (keep outside application Git repositories):
   "passwordFile": "/etc/hatchkit-backups/password",
   "projects": [{
     "name": "example",
-    "keepLast": 3,
+    "keepLast": 30,
     "sources": [{
       "name": "database",
       "kind": "postgres",
@@ -197,7 +197,7 @@ restore containers. Repeat native drills after engine upgrades or source changes
 
 Each project has a separate encrypted restic repository. Every run creates
 native database exports and consistent SQLite copies, uploads an archive,
-downloads it and checks its SHA-256, then keeps the latest three snapshots and
+downloads it and checks its SHA-256, then keeps the configured verified snapshots (30 by default for new policies) and
 prunes unreferenced data. A fourth snapshot exists briefly before verification
 and pruning. Failures never prune previous snapshots. File archives can fail if
 files change while copied; retry after quiescing the relevant writer.

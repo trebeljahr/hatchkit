@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict';
+import {sanitize,issuesFor,sweep,CHECKS} from './src/templates/security-controller/worker-core.mjs';
+const now=Date.parse('2026-10-23T04:00:00Z');
+const healthy={schema:1,checks:Object.fromEntries(Object.keys(CHECKS).map(k=>[k,{checkedAt:new Date(now).toISOString(),ok:true,complete:true,findings:0}]))};
+const clean=sanitize({...healthy,secret:'MUST_NOT_LEAVE_HOST'},now);
+assert(!JSON.stringify(clean).includes('MUST_NOT'));assert.deepEqual(issuesFor('host',clean,now),[]);
+assert.match(issuesFor('host',clean,now+21*60000)[0],/publisher missing/);
+for(const [check,age] of Object.entries(CHECKS)) {
+ const old=structuredClone(clean);old.checks[check].checkedAt=new Date(now-(age+1)*1000).toISOString();
+ assert(issuesFor('host',old,now).some(s=>s.includes(`${check} check missing or overdue`)));
+}
+assert.throws(()=>sanitize({...healthy,checks:{...healthy.checks,files:{ok:true,complete:true,checkedAt:new Date(now+300001).toISOString()}}},now),/future/);
+const incomplete=structuredClone(clean);incomplete.checks.images.complete=false;assert.match(issuesFor('host',incomplete,now)[0],/incomplete/);
+const data=new Map([['hosts/app-vps.json',clean],['hosts/ops-vps.json',clean]]);let sent=0,fail=false;
+const env={STATE:{get:async k=>data.has(k)?{json:async()=>structuredClone(data.get(k))}:null,put:async(k,v)=>data.set(k,JSON.parse(v))},EMAIL:{send:async()=>{if(fail)throw Error('delivery failed');sent++;return{messageId:'test'};}},MAIL_FROM:'security@example.com',MAIL_TO:'owner@example.com'};
+await sweep(env,now);assert.equal(sent,0);
+data.delete('hosts/ops-vps.json');fail=true;await assert.rejects(sweep(env,now),/delivery failed/);assert(!data.get('sweep.json').lastMailedAt);
+fail=false;await sweep(env,now+1);assert.equal(sent,1);
+await sweep(env,now+2);assert.equal(sent,1);
+data.set('hosts/ops-vps.json',clean);fail=true;await assert.rejects(sweep(env,now+3));
+fail=false;await sweep(env,now+4);assert.equal(sent,2);
+console.log('External freshness, metadata boundary, quiet healthy runs and delivery retry passed.');
+const {default:api}=await import('./src/templates/security-controller/worker-core.mjs');
+const liveEnv={...env,DEDICATED_PING_KEY:'a'.repeat(43),SHARED_PING_KEY:'b'.repeat(43),READER_KEY:'c'.repeat(43)};
+const payload={schema:1,checks:Object.fromEntries(Object.keys(CHECKS).map(k=>[k,{checkedAt:new Date().toISOString(),ok:true,complete:true,findings:0}]))};
+data.delete('hosts/app-vps.json');
+const ping=key=>new Request('https://monitor.test/ping/app-vps',{method:'POST',headers:{Authorization:'Bearer '+key},body:JSON.stringify(payload)});
+assert.equal((await api.fetch(ping(liveEnv.DEDICATED_PING_KEY),liveEnv)).status,200);
+assert.equal((await api.fetch(ping(liveEnv.SHARED_PING_KEY),liveEnv)).status,403);
+assert.equal((await api.fetch(ping(liveEnv.DEDICATED_PING_KEY),liveEnv)).status,429);
+console.log('Per-host authentication, cross-host denial and replay limiting passed.');

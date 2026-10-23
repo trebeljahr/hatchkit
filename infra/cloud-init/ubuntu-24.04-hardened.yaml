@@ -17,6 +17,9 @@ package_upgrade: true
 
 packages:
   - ca-certificates
+  - aide
+  - auditd
+  - audispd-plugins
   - curl
   - fail2ban
   - git

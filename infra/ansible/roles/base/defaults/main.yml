@@ -46,7 +46,7 @@ fail2ban_ignoreip:
   - 100.64.0.0/10
 
 # Unattended upgrades
-unattended_upgrades_auto_reboot: "true"
+unattended_upgrades_auto_reboot: "false"
 unattended_upgrades_reboot_time: "04:00"
 
 # sysctl hardening

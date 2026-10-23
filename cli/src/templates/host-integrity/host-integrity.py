@@ -140,7 +140,8 @@ HOST_UPGRADE_PREFIXES = ('/usr/', '/bin/', '/sbin/', '/lib/', '/lib64/', '/opt/'
 INSPECT = ('{{json .Id}}\t{{json .Name}}\t{{json .Config.Image}}\t{{.State.Pid}}\t'
            '{{if .Config.Entrypoint}}{{json (index .Config.Entrypoint 0)}}{{else}}null{{end}}\t'
            '{{if .Config.Cmd}}{{json (index .Config.Cmd 0)}}{{else}}null{{end}}\t'
-           '{{json .HostConfig.NetworkMode}}')
+           '{{json .HostConfig.NetworkMode}}\t'
+           '{{json (index .Config.Labels "io.hatchkit.security.original-image")}}')
 DELETED = ' (deleted)'
 # runc re-executes itself from a memfd for the moment it takes to start a
 # container process (every exec and healthcheck). Only that moment is exempt:
@@ -201,13 +202,16 @@ def list_containers(host, only=None):
     for line in host.docker(['inspect', '--type', 'container', '--format', INSPECT, *ids]).splitlines():
         fields = line.split('\t')
         try:
-            if len(fields) != 7:
+            if len(fields) not in (7, 8):
                 raise ValueError(line)
             cid, name, image = json.loads(fields[0]), json.loads(fields[1]), json.loads(fields[2])
             pid = int(fields[3])
             argv0 = [os.path.basename(v)[:COMM_MAX] for v in (json.loads(fields[4]), json.loads(fields[5]))
                      if isinstance(v, str) and v]
             network = json.loads(fields[6]) or ''
+            original_image = json.loads(fields[7]) if len(fields) == 8 else None
+            if original_image is not None and not isinstance(original_image, str):
+                raise ValueError('Invalid image provenance')
         except ValueError:
             unreadable += 1
             continue
@@ -215,7 +219,7 @@ def list_containers(host, only=None):
         if pid <= 0 or (only and not fnmatch(name, only)):
             continue
         containers.append({'id': cid, 'name': name, 'image': image or '', 'pid': pid,
-                           'argv0': argv0, 'network': network})
+                           'argv0': argv0, 'network': network, 'originalImage': original_image or ''})
     return containers, unreadable
 
 
@@ -492,7 +496,7 @@ def allowed_processes(container, processes, site, layer=None, mounts=()):
     exes, site_names = set(), set()
     running = runtime_binaries(processes, layer, mounts)
     for family in FAMILIES:
-        if (re.search(family['image'], container['image'], re.I)
+        if (re.search(family['image'], container.get('originalImage') or container['image'], re.I)
                 or set(family['argv0']) & (set(container['argv0']) | running)):
             names |= set(family['names'])
             exes |= set(family.get('exes', ()))

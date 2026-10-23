@@ -27,5 +27,7 @@
       when: tailscale_enabled | bool
     - role: docker
       when: docker_install | default(false) | bool
+    - role: file_integrity
+      when: file_integrity_enabled | default(true) | bool
     - role: lynis
       when: lynis_enabled | default(true) | bool

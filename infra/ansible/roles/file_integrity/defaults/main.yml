@@ -1,0 +1,3 @@
+# Never initialize an existing host implicitly. Review trust first, then initialize
+# manually using the documented command and keep the preceding baseline off-host.
+file_integrity_enabled: true

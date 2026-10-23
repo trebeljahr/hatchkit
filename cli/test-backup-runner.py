@@ -126,13 +126,13 @@ class BackupSafety(unittest.TestCase):
             self.assertTrue((root / 'safe/0/settings.json').exists())
             self.assertFalse((root / 'safe/0/mariadb').exists())
 
-    def exercise_backup(self, *, corrupt=False, missing=False):
+    def exercise_backup(self, *, corrupt=False, missing=False, keep=3):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             data = root / 'app.txt'
             if not missing:
                 data.write_text('data that must survive')
-            project = {'name': 'example', 'sources': [{'name': 'files', 'kind': 'files', 'paths': [str(data)]}]}
+            project = {'name': 'example', 'keepLast': keep, 'sources': [{'name': 'files', 'kind': 'files', 'paths': [str(data)]}]}
             config = {'repositoryBase': 's3:https://example.test/backups'}
             events = []
             captured = b''
@@ -157,7 +157,7 @@ class BackupSafety(unittest.TestCase):
                         return b'[]'
                     return b'[{"id":"verified123","tags":["hatchkit-verified"]}]'
                 if argv[0] == 'forget':
-                    self.assertEqual(argv, ['forget', '--tag', 'hatchkit-verified', '--keep-last', '3', '--group-by', '', '--prune'])
+                    self.assertEqual(argv, ['forget', '--tag', 'hatchkit-verified', '--keep-last', str(keep), '--group-by', '', '--prune'])
                     self.assertIn('dump', events[:-1])
                 return b'{}'
             with patch.object(runner, 'run', fake_run), patch.object(runner, 'restic', fake_restic):
@@ -169,6 +169,14 @@ class BackupSafety(unittest.TestCase):
                     result = runner.backup_project(project, config, {}, [], root)
                     self.assertTrue(result['ok'])
                     self.assertEqual(events, ['cat', 'backup', 'dump', 'tag', 'snapshots', 'snapshots', 'forget'])
+
+    def test_longer_retention_requires_verification_before_pruning(self):
+        self.exercise_backup(keep=30)
+        self.exercise_backup(keep=30, corrupt=True)
+        for invalid in [True, 0, 2, 366, '30']:
+            with self.assertRaises(runner.BackupError):
+                runner.validate_project({'name': 'example', 'keepLast': invalid,
+                                         'sources': [{'name': 'data', 'kind': 'files', 'paths': ['/srv/data']}]})
 
     def test_verified_backup_advances_three_snapshot_policy(self):
         self.exercise_backup()

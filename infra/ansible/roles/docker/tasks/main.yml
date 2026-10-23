@@ -14,11 +14,28 @@
     state: present
     update_cache: true
 
-- name: Write Docker daemon config
+- name: Inspect existing Docker daemon configuration
+  ansible.builtin.stat:
+    path: /etc/docker/daemon.json
+  register: docker_daemon_file
+
+- name: Read existing Docker daemon configuration
+  ansible.builtin.slurp:
+    src: /etc/docker/daemon.json
+  register: docker_daemon_existing
+  when: docker_daemon_file.stat.exists
+
+- name: Merge Docker baseline without discarding operator settings
+  ansible.builtin.set_fact:
+    docker_daemon_merged: "{{ (docker_daemon_existing.content | default('e30=') | b64decode | from_json) | combine(docker_daemon_config, recursive=true) }}"
+
+- name: Write and validate merged Docker daemon configuration
   ansible.builtin.copy:
-    content: "{{ docker_daemon_config | to_nice_json }}\n"
+    content: "{{ docker_daemon_merged | to_nice_json }}\n"
     dest: /etc/docker/daemon.json
     mode: "0644"
+    backup: true
+    validate: /usr/bin/dockerd --validate --config-file=%s
   notify: Restart docker
 
 - name: Enable Docker

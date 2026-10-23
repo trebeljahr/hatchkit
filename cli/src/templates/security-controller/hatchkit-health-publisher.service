@@ -1,0 +1,18 @@
+[Unit]
+Description=Publish fixed security freshness metadata to independent monitor
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/hatchkit-backups/publish-health.py
+User=root
+UMask=0077
+CPUQuota=10%
+MemoryMax=64M
+TimeoutStartSec=45
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/hatchkit-backups

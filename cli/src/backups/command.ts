@@ -97,7 +97,7 @@ Existing custom scripts are preserved. Commands require Hatchkit on PATH.
 
 The runner captures native PostgreSQL, MongoDB, ClickHouse and Redis backups and
 SQLite-safe file copies. It encrypts each project with restic, downloads and verifies
-the new archive, then retains the latest three snapshots. See the bundle README.
+the new archive, then retains the configured verified snapshots (30 by default for new policies). See the bundle README.
 `;
 
 export function backupPlan(cwd: string) {

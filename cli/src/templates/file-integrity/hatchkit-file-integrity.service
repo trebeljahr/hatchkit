@@ -1,0 +1,17 @@
+[Unit]
+Description=Check reviewed AIDE host file baseline
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/hatchkit-backups/file-integrity.py
+User=root
+UMask=0077
+Nice=15
+CPUQuota=50%
+MemoryMax=512M
+TimeoutStartSec=35min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only

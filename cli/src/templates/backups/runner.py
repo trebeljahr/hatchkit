@@ -64,8 +64,9 @@ def valid_name(name):
 
 def validate_project(project):
     valid_name(project['name'])
-    if project.get('keepLast', 3) != 3:
-        raise BackupError('This policy retains exactly three successful generations')
+    keep = project.get('keepLast', 3)
+    if isinstance(keep, bool) or not isinstance(keep, int) or not 3 <= keep <= 365:
+        raise BackupError('Retention must keep between 3 and 365 verified generations')
     if not project.get('sources'):
         raise BackupError('No backup sources configured')
     names = set()
@@ -461,7 +462,7 @@ def backup_project(project, config, env, inventory, work):
         if pending:
             restic(['forget', *[item['id'] for item in pending]], project_env)
         # Only verified snapshots can advance retention. No pruning follows failed dumps/uploads/restores.
-        restic(['forget', '--tag', 'hatchkit-verified', '--keep-last', '3', '--group-by', '', '--prune'], project_env)
+        restic(['forget', '--tag', 'hatchkit-verified', '--keep-last', str(project.get('keepLast', 3)), '--group-by', '', '--prune'], project_env)
         return {'project': name, 'ok': True, 'snapshot': snapshot, 'bytes': archive.stat().st_size,
                 'files': len(manifest['files']), 'verifiedAt': dt.datetime.now(dt.timezone.utc).isoformat()}
 

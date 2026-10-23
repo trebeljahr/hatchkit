@@ -63,6 +63,7 @@ try {
     composeAppUuid: "app-uuid",
     composeServices: ["server", "redis"],
   });
+  assert.equal(project.keepLast, 30);
   assert.deepEqual(
     project.sources.map((s) => s.selector),
     [

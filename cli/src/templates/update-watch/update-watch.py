@@ -63,6 +63,7 @@ SERVICE = 'hatchkit-update-watch.service'
 COOLIFY_SOURCE = '/data/coolify/source'
 GITHUB = 'https://api.github.com'
 GITLAB = 'https://gitlab.com/api/v4'
+KEV_URL = 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'
 FLAGGED = ('critical', 'high')
 # Distro and channel suffixes are not prereleases: 24.12.6.70-alpine,
 # v23.8.15.35-lts, v26.7.34.3-stable.
@@ -71,7 +72,7 @@ VERSION = re.compile(r'^[vV]?(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-
 CONSTRAINT = re.compile(r'(>=|<=|==|=|>|<)?\s*([vV]?\d[0-9A-Za-z.+-]*)')
 # How many upgrade logs to read, newest first, to count a failing streak.
 UPGRADE_LOGS = 60
-MAX_FINDINGS = 100
+MAX_MAIL_FINDINGS = 50
 
 
 class WatchError(Exception):
@@ -621,7 +622,59 @@ def runtime_trust(docker):
     return findings, skipped
 
 
-def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=None, chain=read_chain, runtime=False):
+HOST_RUNTIMES = (
+    {'key': 'host-docker', 'name': 'Docker Engine', 'github': 'moby/moby',
+     'argv': ['docker', 'version', '--format', '{{.Server.Version}}'], 'pattern': r'^(\d+\.\d+\.\d+)',
+     'packageWords': ['docker engine'], 'floor': '29.9.2'},
+    {'key': 'host-containerd', 'name': 'containerd', 'github': 'containerd/containerd',
+     'argv': ['containerd', '--version'], 'pattern': r'containerd.*?v?(\d+\.\d+\.\d+)',
+     'packageWords': ['containerd']},
+    {'key': 'host-runc', 'name': 'runc', 'github': 'opencontainers/runc',
+     'argv': ['runc', '--version'], 'pattern': r'runc version v?(\d+\.\d+\.\d+)',
+     'packageWords': ['runc']},
+    {'key': 'host-tailscale', 'name': 'Tailscale', 'github': 'tailscale/tailscale',
+     'argv': ['tailscale', 'version'], 'pattern': r'^(\d+\.\d+\.\d+)',
+     'packageWords': ['tailscale'], 'floor': '1.104.2'},
+)
+
+
+def host_runtime_versions(run=None):
+    """Only fixed version commands; never process arguments or host credentials."""
+    if run is None:
+        def run(argv):
+            p = subprocess.run(argv, capture_output=True, text=True, timeout=20)
+            if p.returncode:
+                raise WatchError('host runtime version command failed')
+            return p.stdout
+    rows, skipped = [], []
+    for spec in HOST_RUNTIMES:
+        try:
+            match = re.search(spec['pattern'], run(spec['argv']))
+            version = parse_version(match.group(1)) if match else None
+            if not version:
+                raise WatchError('unreadable version')
+            rows.append((spec, version))
+        except (WatchError, OSError, subprocess.SubprocessError):
+            skipped.append(spec['name'] + ': host version could not be checked')
+    return rows, skipped
+
+
+def image_package_findings(now, path=None):
+    path = Path(path) if path is not None else work_dir()[0] / 'image-vulnerability-status.json'
+    try:
+        report = json.loads(path.read_text())
+        checked = dt.datetime.fromisoformat(report['checkedAt'])
+        if now - checked > dt.timedelta(hours=36) or checked > now + dt.timedelta(minutes=5):
+            raise ValueError('stale image scan')
+        findings = report.get('findings', [])
+        if not report.get('complete') or report.get('errors'):
+            return findings, ['Final image vulnerability scan is incomplete; inspect its private status']
+        return findings, []
+    except (OSError, ValueError, KeyError, TypeError):
+        return [], ['Final image vulnerability scan is missing, invalid or older than 36 hours']
+
+
+def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=None, chain=read_chain, runtime=False, host_runtime=False, image_packages=False, kev=False):
     now = now or dt.datetime.now(dt.timezone.utc)
     containers, images = list_services(docker, services)
     groups = {}
@@ -648,6 +701,19 @@ def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=No
         if not tag_version or tag_version != version:
             group['floatingTag'] = container['tag']
     findings = []
+    if host_runtime:
+        host_rows, host_skipped = host_runtime_versions()
+        skipped.extend(host_skipped)
+        for spec, version in host_rows:
+            groups[(spec['key'], str(version))] = {
+                'service': spec['key'], 'name': spec['name'], 'version': str(version),
+                'versionSource': 'host binary', 'containers': [], 'images': [], 'digests': [],
+                '_version': version, '_service': spec}
+            floor = parse_version(spec.get('floor', ''))
+            if floor and version < floor:
+                findings.append({'kind': 'host-runtime', 'service': spec['key'], 'name': spec['name'],
+                                 'severity': 'high', 'version': str(version), 'fixed': str(floor),
+                                 'summary': spec['name'] + ' is below the required security release ' + str(floor)})
     report_services = []
     for group in sorted(groups.values(), key=lambda g: (g['service'], g['_version'].key())):
         service, version = group.pop('_service'), group.pop('_version')
@@ -676,7 +742,7 @@ def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=No
                     covered = covers(version, advisory, service, released_at)
                 entry = {'id': advisory.get('ghsa_id'), 'severity': advisory.get('severity'),
                          'summary': safe((advisory.get('summary') or '')[:200]),
-                         'url': advisory.get('html_url'), 'published': (advisory.get('published_at') or '')[:10]}
+                         'url': advisory.get('html_url'), 'published': (advisory.get('published_at') or '')[:10], 'cve': advisory.get('cve_id')}
                 if covered is None:
                     ranges = [e.get('vulnerable_version_range') for e in advisory.get('vulnerabilities') or []]
                     group['unknown'].append(dict(entry, range=safe(', '.join(r or '' for r in ranges))))
@@ -687,6 +753,7 @@ def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=No
                         'kind': 'advisory', 'service': group['service'], 'name': group['name'],
                         'version': group['version'], 'containers': group['containers'], 'id': entry['id'],
                         'severity': entry['severity'], 'fixed': fixed, 'latest': latest, 'url': entry['url'],
+                        'cve': entry['cve'],
                         'summary': '%s %s (%s): %s %s, %s; latest %s. %s' % (
                             group['name'], group['version'], ', '.join(group['containers']), entry['id'],
                             entry['severity'], 'fixed in ' + fixed if fixed else 'no fixed release yet',
@@ -714,12 +781,27 @@ def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=No
         runtime_findings, runtime_skipped = runtime_trust(docker)
         findings += runtime_findings
         skipped += runtime_skipped
+    if image_packages:
+        image_findings, image_skipped = image_package_findings(now)
+        findings += image_findings
+        skipped += image_skipped
+    if kev:
+        try:
+            catalog = feeds.json(KEV_URL)
+            if not isinstance(catalog.get('vulnerabilities'), list) or not catalog.get('dateReleased'):
+                raise FeedError('invalid CISA KEV feed')
+            exploited = {v['cveID'] for v in catalog['vulnerabilities'] if isinstance(v.get('cveID'), str)}
+            for finding in findings:
+                ids = {finding.get('id'), finding.get('cve'), *finding.get('aliases', [])}
+                finding['knownExploited'] = bool(ids & exploited)
+        except (FeedError, AttributeError, KeyError, TypeError):
+            skipped.append('CISA known exploited vulnerability catalog could not be checked')
     severity_rank = {'critical': 0, 'high': 1}
     findings.sort(key=lambda f: (f['kind'] != 'auto-update', severity_rank.get(f.get('severity'), 2), f['service']))
     notes = [g['name'] + ' publishes no advisory feed; it is compared with its latest release only.'
              for g in report_services if not g['advisorySource']]
     return safe({'host': socket.gethostname(), 'scannedAt': now.isoformat(timespec='seconds'),
-                 'services': report_services, 'findings': findings[:MAX_FINDINGS], 'autoUpdate': auto_update,
+                 'services': report_services, 'findings': findings, 'autoUpdate': auto_update,
                  'cloudflare': cloudflare_state, 'skipped': skipped, 'notes': notes})
 
 
@@ -773,7 +855,11 @@ def mail_body(report, error):
     lines = []
     if report['findings']:
         lines += [str(len(report['findings'])) + ' finding(s):', '']
-        lines += ['- ' + f['summary'] for f in report['findings']]
+        lines += ['- ' + ('OVERDUE: ' if f.get('overdue') else '') + f['summary']
+                  + ('; due ' + f['dueAt'] if f.get('dueAt') else '') for f in report['findings'][:MAX_MAIL_FINDINGS]]
+        if len(report['findings']) > MAX_MAIL_FINDINGS:
+            lines += ['Full finding ledger: /var/lib/hatchkit-backups/update-watch-status.json; '
+                      + str(len(report['findings']) - MAX_MAIL_FINDINGS) + ' further findings retained there.']
         lines += ['', 'Upgrade each service to its fixed version or the latest release, then run '
                   'hatchkit host updates to confirm.']
     if report['skipped']:
@@ -788,8 +874,22 @@ def write_status(work, state):
     temporary.replace(path)
 
 
+def finding_identity(finding):
+    """Rebuilding an image or changing a rolling container name never resets its deadline."""
+    service = finding.get('service')
+    if finding.get('kind') == 'image-package':
+        # One host-level clock per vulnerable package/version. Adding/removing a
+        # replica, changing an image ID or renaming a workload cannot restart it.
+        service = 'host-image-packages'
+    key = {k: finding.get(k) for k in ('kind', 'id', 'name', 'version')}
+    key['service'] = service
+    if not finding.get('id'):
+        key['summary'] = finding.get('summary')
+    return hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()
+
+
 def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_SOURCE, cloudflare=None,
-          chain=read_chain, runtime=False):
+          chain=read_chain, runtime=False, host_runtime=False, image_packages=False, kev=False):
     """Mail new or changed abnormalities; healthy and unchanged runs stay silent."""
     now = now or dt.datetime.now(dt.timezone.utc)
     try:
@@ -798,7 +898,7 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
         previous = {}
     report, error = None, None
     try:
-        report = scan(docker, services, feeds, source, now, cloudflare, chain, runtime=runtime)
+        report = scan(docker, services, feeds, source, now, cloudflare, chain, runtime=runtime, host_runtime=host_runtime, image_packages=image_packages, kev=kev)
     except WatchError as failure:
         error = str(failure)
     except Exception as failure:  # never echo a message that might carry host data
@@ -814,20 +914,36 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
                                      + ('' if len(findings) == 1 else 's') + ' — ' + hostname)
     elif skipped:
         kind, subject = 'incomplete', '[Hatchkit] Update watch could not check everything — ' + hostname
+    first_seen = {identity: started for identity, started in (previous.get('findingFirstSeen') or {}).items()
+                  if now - dt.datetime.fromisoformat(started) < dt.timedelta(days=180)}
+    for finding in findings:
+        identity = finding_identity(finding)
+        started = (previous.get('findingFirstSeen') or {}).get(identity, now.isoformat(timespec='seconds'))
+        first_seen[identity] = started
+        if finding.get('severity') in ('critical', 'high'):
+            hours = 24 if finding.get('severity') == 'critical' or finding.get('knownExploited') else 72
+            finding['dueAt'] = (dt.datetime.fromisoformat(started) + dt.timedelta(hours=hours)).isoformat(timespec='seconds')
+            finding['overdue'] = now >= dt.datetime.fromisoformat(finding['dueAt'])
     fingerprint = hashlib.sha256(json.dumps([kind, findings, error, skipped], sort_keys=True).encode()).hexdigest() if kind else None
     state = {'checkedAt': now.isoformat(timespec='seconds'), 'ok': not error and not findings and not skipped,
              'error': error, 'services': [{'service': s['service'], 'version': s['version'],
                                            'latest': (s['latest'] or {}).get('version')}
                                           for s in (report or {}).get('services', [])],
-             'findings': findings[:50], 'skipped': skipped, 'mailed': None, 'messageId': None,
-             'notifiedFingerprint': previous.get('notifiedFingerprint') if kind else None}
+             'findings': findings, 'skipped': skipped, 'mailed': None, 'messageId': None,
+             'notifiedFingerprint': previous.get('notifiedFingerprint') if kind else None,
+             'findingFirstSeen': first_seen}
     mail_error = None
-    if kind and fingerprint != previous.get('notifiedFingerprint'):
+    overdue_reminder = any(f.get('overdue') for f in findings) and (
+        not previous.get('lastNotifiedAt') or
+        now - dt.datetime.fromisoformat(previous['lastNotifiedAt']) >= dt.timedelta(hours=24))
+    state['lastNotifiedAt'] = previous.get('lastNotifiedAt')
+    if kind and (fingerprint != previous.get('notifiedFingerprint') or overdue_reminder):
         body = mail_body(report, error)
         try:
             state['messageId'] = send(mail_settings(config), subject, body)
             state['mailed'] = kind
             state['notifiedFingerprint'] = fingerprint
+            state['lastNotifiedAt'] = now.isoformat(timespec='seconds')
         except Exception as failure:  # SMTP errors may echo login details; keep the type only
             mail_error = failure if isinstance(failure, WatchError) else type(failure).__name__
             state['mailError'] = str(mail_error)
@@ -851,7 +967,7 @@ def main(payload=None):
     cloudflare = load(payload, 'cloudflare', CLOUDFLARE_NAME)
     feeds = Feeds((payload or {}).get('feeds'))
     if args.action == 'scan':
-        report = scan(run_docker, services, feeds, cloudflare=cloudflare, runtime=True)
+        report = scan(run_docker, services, feeds, cloudflare=cloudflare, runtime=True, host_runtime=True, image_packages=True, kev=True)
         report['timer'] = timer_state(work)
         print(json.dumps(report))
         return
@@ -876,7 +992,7 @@ def main(payload=None):
                                 'limit, or a crash). Nothing was checked this run.\n' + MAIL_FOOTER)
         print(json.dumps({'sent': True, 'messageId': message_id}))
         return
-    state, mail_error = check(run_docker, services, feeds, work, config, send_email, cloudflare=cloudflare, runtime=True)
+    state, mail_error = check(run_docker, services, feeds, work, config, send_email, cloudflare=cloudflare, runtime=True, host_runtime=True, image_packages=True, kev=True)
     print(json.dumps({'ok': state['ok'], 'findings': len(state['findings']), 'error': state['error'],
                       'mailed': state['mailed'], 'mailError': state.get('mailError')}))
     if mail_error:

@@ -51,7 +51,7 @@ fail2ban_ignoreip:
   # - 203.0.113.7/32  # your address, while public SSH is open
 
 # Unattended upgrades
-unattended_upgrades_auto_reboot: "true"
+unattended_upgrades_auto_reboot: "false"
 unattended_upgrades_reboot_time: "04:00"
 
 # sysctl

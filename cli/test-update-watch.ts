@@ -30,8 +30,12 @@ import {
 } from "./src/host/updates.js";
 import { SECRET_KEYS, setSecret } from "./src/utils/secrets.js";
 
-const python = spawnSync("python3", ["test-update-watch.py"], { stdio: "inherit" });
-assert.equal(python.status, 0, "Python update-watch tests failed");
+for (const file of ["test-update-watch.py", "test-image-vulnerabilities.py", "test-health-publisher.py"]) {
+  const python = spawnSync("python3", [file], { stdio: "inherit" });
+  assert.equal(python.status, 0, `${file} failed`);
+}
+const controller = spawnSync(process.execPath, ["test-security-controller.mjs"], { stdio: "inherit" });
+assert.equal(controller.status, 0, "Independent security controller tests failed");
 
 // The host script's own reports for the fixture hosts (test-update-watch.py).
 const generated = spawnSync(
@@ -450,9 +454,9 @@ esac`,
   const feeds = stdin("ops-vps").feeds;
   assert.deepEqual(
     Object.keys(feeds).sort(),
-    watchedServices()
-      .filter((s) => s.github)
-      .flatMap((s) => [advisoriesUrl(s.github!), latestUrl(s.github!)])
+    [...new Set([...watchedServices().map((s) => s.github), "moby/moby", "containerd/containerd", "opencontainers/runc", "tailscale/tailscale"])]
+      .filter((repo): repo is string => !!repo)
+      .flatMap((repo) => [advisoriesUrl(repo), latestUrl(repo)])
       .sort(),
     "GlitchTip (GitLab) is read by the host",
   );
@@ -478,7 +482,7 @@ esac`,
   assert.equal(partial.status, "fail");
   assert.match(partial.detail!, /couldn't scan ops-vps: Backup host ops-vps command failed/);
 
-  // install --dry-run: six files and the boot line; the installer stops after
+  // install --dry-run: scanner files and the boot line; the installer stops after
   // its read-only first scan and checks every prerequisite before writing.
   tailscale(`printf '{"host": "ops-vps", "applied": false, "findingsNow": []}\\n'`);
   const preview = await installUpdateWatch(SHARED, true);
@@ -492,16 +496,19 @@ esac`,
   assert.equal(payload.dryRun, true);
   assert.deepEqual(Object.keys(payload).sort(), ["boot", "dryRun", "feeds", "files"]);
   assert.deepEqual(Object.keys(payload.files).sort(), [
+    "hatchkit-image-vulnerabilities.service",
+    "hatchkit-image-vulnerabilities.timer",
     "hatchkit-update-watch-failed.service",
     "hatchkit-update-watch.service",
     "hatchkit-update-watch.timer",
+    "image-vulnerabilities.py",
     "update-watch-cloudflare.json",
     "update-watch-services.json",
     "update-watch.py",
   ]);
   assert.match(
     payload.files["hatchkit-update-watch.timer"],
-    /OnCalendar=\*-\*-\* 06:00:00 UTC/,
+    /OnCalendar=\*-\*-\* 00\/4:00:00 UTC/,
   );
   assert.match(
     payload.files["hatchkit-update-watch.service"],

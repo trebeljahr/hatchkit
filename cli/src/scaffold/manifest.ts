@@ -153,7 +153,7 @@ export interface ProjectManifest {
    *  actual serverId/IP is not in the manifest. */
   deployTarget: "existing" | "new";
   /** Backup intent only. The host runner status proves deployment and recovery. */
-  backups?: { provider: "r2"; schedule: "daily"; keepLast: 3 };
+  backups?: { provider: "r2"; schedule: "daily"; keepLast: number };
   /** How the project is deployed. Optional for back-compat — older
    *  manifests predate the field; readers should fall back to
    *  `coolify` when absent. `gh-pages` and `cloudflare` projects skip
@@ -606,7 +606,7 @@ export function toManifest(
           backups: {
             provider: "r2" as const,
             schedule: "daily" as const,
-            keepLast: 3 as const,
+            keepLast: 30,
           },
         }
       : {}),

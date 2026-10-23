@@ -1,0 +1,20 @@
+[Unit]
+Description=Scan final deployed images for OS and application dependency vulnerabilities
+Wants=network-online.target
+After=network-online.target docker.service
+OnFailure=hatchkit-update-watch-failed.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/hatchkit-backups/image-vulnerabilities.py
+ExecStartPost=/usr/bin/python3 /opt/hatchkit-backups/update-watch.py check
+User=root
+UMask=0077
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=100%
+MemoryMax=3G
+TimeoutStartSec=2h
+PrivateTmp=true
+ProtectHome=read-only
+NoNewPrivileges=true
