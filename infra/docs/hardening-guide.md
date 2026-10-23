@@ -1628,6 +1628,19 @@ New policies retain 30 verified generations per project (`keepLast`, accepted ra
 
 Keep a second encrypted recovery history under credentials the VPS cannot use to delete it. Use a separate bucket/account or offline copy, record its retention and storage size, and prove restoration before relying on it. Do not enable object locking underneath an active restic repository that still prunes: its mutable index/snapshot lifecycle needs a separate archival design. Keep the recovery password in independently recoverable custody.
 
+For immutable recovery copies, use a full independent restic tree for each
+generation, with source-ETag copy conditions, identical before/after inventories,
+destination verification and a completion marker written last. Count incomplete
+generations toward the storage cap and serialize writers with a conditional
+lease. Never apply object-age expiry to a shared content-addressed repository:
+a recent snapshot may depend on an old pack. Verify locks using the actual
+constrained writer and verify that VPS credentials cannot access the destination.
+Keep the copy credential outside both VPSs; exclude asset buckets. Obtain explicit
+approval naming the records and destination before transferring personal data.
+The prepared `protected-recovery` template contains the guarded generation engine
+and S3 adapter, with fixture coverage; its scheduler, protected restore selection,
+independent alerts and live lock tests remain activation requirements.
+
 Schedule isolated native restore drills weekly and an application recovery exercise at least quarterly. Drill containers must have no published ports, no production data mounts and no external network. Record each project's result, restored engine, elapsed time and application-startup result. A checksum check alone does not prove the database can be imported or the application can start.
 
 The restored archives contain personal data and credentials. Keep drill files root-private, dispose only of task-owned disposable containers/volumes, and require explicit approval for a new upload destination. Metadata-only freshness reports must exclude records, SQL, logs, environment values and backup keys.
