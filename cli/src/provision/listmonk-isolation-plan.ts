@@ -1,5 +1,5 @@
 /** Offline staging bundle only. Never reads credentials or changes deployments. */
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readManifest } from "../scaffold/manifest.js";
@@ -98,12 +98,16 @@ export async function runListmonkIsolationPlan(argv: string[]): Promise<void> {
     );
     mkdirSync(dirname(output), { recursive: true });
     mkdirSync(output, { mode: 0o700 });
-    cpSync(template, output, {
-      recursive: true,
-      errorOnExist: true,
-      force: false,
-      filter: (path) => !["node_modules", ".env", "secrets"].includes(basename(path)),
-    });
+    // The private destination already exists. Copy its children separately
+    // so errorOnExist protects assets without rejecting our own directory.
+    for (const entry of readdirSync(template)) {
+      cpSync(join(template, entry), join(output, entry), {
+        recursive: true,
+        errorOnExist: true,
+        force: false,
+        filter: (path) => !["node_modules", ".env", "secrets"].includes(basename(path)),
+      });
+    }
     const substitutions: Record<string, string> = {
       __PROJECT_SLUG__: slug,
       __PUBLIC_URL__: publicUrl.origin,
