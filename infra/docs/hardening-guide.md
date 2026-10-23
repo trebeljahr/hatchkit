@@ -1854,6 +1854,17 @@ Keep database-only networks internal and separate from public proxy networks. Pe
 
 Close incident credentials at their issuer: removing an environment variable does not revoke an OAuth client secret, mail API key or controller token. Identify the exact credential and dependent clients, create/test the replacement, then revoke the old credential and verify rejection. Keep provider account audit evidence and original incident artifacts. Never print credential values into the patch ledger.
 
+For a controller operator token, preserve the intended owner, team, permissions
+and expiry during an equivalent rotation. Store the replacement in the normal
+operator credential store, read it back, and test a real authenticated endpoint
+before revoking the exact old token. Verify the old token receives an
+authentication rejection and the replacement still works. Keep operator tokens
+off application hosts and CI; use one application's deploy webhook for CI.
+Interrupted rotations must stop safely: retain the old credential until storage
+verification succeeds, prevent duplicate issuance, and remove any temporary
+plaintext recovery credential once the verified replacement is stored. A denied
+credential-store request stops the operation without a different access route.
+
 Source templates: `cli/src/templates/update-watch`, `file-integrity`, `security-controller` and `backups`; Ansible's `file_integrity` role; and `infra/coolify-runtime` compatibility tests. Review every upstream Coolify change before relying on its custom Docker option parser: unsupported or truncated options must not be silently accepted as persistent containment.
 
 ---
