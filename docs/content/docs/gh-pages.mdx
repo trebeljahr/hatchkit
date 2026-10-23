@@ -5,6 +5,11 @@ description: Wire a GitHub Pages deployment for the current repo — static / SP
 
 `hatchkit gh-pages` wires a GitHub Pages deployment for the **current repo** — including custom domain + DNS — in one command.
 
+This command targets **GitHub Pages**. For Cloudflare hosting, use
+[`hatchkit cloudflare`](./cloudflare#choose-the-hosting-product), which targets
+Workers Static Assets. The separate Cloudflare Pages product has no dedicated
+Hatchkit mode.
+
 Built for the kind of project where `hatchkit create` is overkill: a sprite editor, a color-picker demo, a landing page, a palette tool, a SPA that talks to someone else's API, a `docs/` folder that you want live on the web.
 
 ## TL;DR

@@ -35,6 +35,34 @@ If `@hatchkit/mcp` is configured, prefer its read-only tools:
 
 ## CLI Guard Rails
 
+### Static hosting names
+
+| User's target | Hatchkit mode / command | Hosting product |
+|---|---|---|
+| Cloudflare static site | `cloudflare` / `hatchkit cloudflare` | Workers Static Assets |
+| GitHub Pages | `gh-pages` / `hatchkit gh-pages` | GitHub Pages |
+| Cloudflare Pages | No dedicated Hatchkit mode | Separate Cloudflare product |
+
+If the user says only “Pages”, resolve the provider from context before acting.
+Do not interpret `gh-pages` as Cloudflare Pages. Earlier Cloudflare migrations
+may use Workers Static Assets even when described informally as static pages.
+An assets-only Worker has an `assets.directory` and no `main` script. It needs
+no PHP, container, Coolify app, or application server.
+
+Read [the hosting comparison](docs/content/docs/cloudflare.mdx#choose-the-hosting-product)
+and inspect the project's manifest, Wrangler config, and workflow. A hybrid
+app's `clientHost: "cloudflare"` differs from a static-only project's
+`deploymentMode: "cloudflare"`; preserve any existing API deployment.
+
+`hatchkit adopt` is interactive and can bootstrap dotenvx, create a remote,
+wire Coolify, set deployment credentials, and push. Review those rows before
+applying. A public static archive usually needs no dotenvx bootstrap. Verify
+its actual build command and output directory before accepting generated CI.
+`hatchkit cloudflare` also creates a Worker and publishes deployment secrets;
+it is not a read-only planning command. A blank custom domain keeps setup on
+`workers.dev` for validation before a live domain migration. Keep the local
+operator credential out of CI; use the per-Worker deployment token.
+
 - `hatchkit doctor` is safe and read-only. `hatchkit doctor --fix` writes to
   providers; ask before running it.
 - `hatchkit create`, `setup`, and `config add` are interactive. Do not run them

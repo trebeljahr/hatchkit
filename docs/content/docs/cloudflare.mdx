@@ -5,6 +5,34 @@ description: Serve a static site from Cloudflare Workers Static Assets — free,
 
 `hatchkit cloudflare` serves a static site from **Cloudflare Workers Static Assets**. It is the `cloudflare` deployment mode's command, and it also works standalone on any repo that already builds a flat directory of files.
 
+## Choose the hosting product
+
+“Pages” can refer to two different providers. Hatchkit names them explicitly:
+
+| Product | Hatchkit command | Static delivery | Optional server code |
+|---|---|---|---|
+| Cloudflare Workers Static Assets | `hatchkit cloudflare` | Free, unlimited asset requests | Worker script |
+| Cloudflare Pages | No dedicated mode | Free, unlimited asset requests | Pages Functions |
+| GitHub Pages | [`hatchkit gh-pages`](./gh-pages) | GitHub's Pages hosting | None |
+
+Workers Static Assets and Cloudflare Pages are separate Cloudflare products.
+Both serve static files without charging per asset request. Running a Worker
+script or Pages Function uses Workers compute pricing. An assets-only Wrangler
+configuration has an `assets.directory` and no `main`; it runs no application
+code. Avoid `run_worker_first` unless you intend to invoke code for asset requests.
+
+For a static photo archive, neither product has an inherent speed advantage
+established here. Both use Cloudflare's network. Image dimensions, compression,
+cache headers, and browser loading behavior matter more than the product name.
+Hatchkit uses Workers Static Assets with GitHub Actions. Cloudflare also supports
+migrating Pages projects to Workers; choosing Workers does not require a server.
+
+Check current [Workers asset billing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/),
+[Pages pricing](https://developers.cloudflare.com/pages/functions/pricing/), and
+[Cloudflare's migration comparison](https://developers.cloudflare.com/workers/static-assets/migration-guides/migrate-from-pages/)
+before planning costs or product-specific features. GitHub Actions has its own
+usage policy; its build time is separate from Cloudflare's built-in build quotas.
+
 ## Why this mode exists
 
 Cloudflare serves static asset requests free and unmetered. Only Worker *script invocations* count against the free plan's daily quota, and a pure static site runs none — the assets are served before your code would run.
